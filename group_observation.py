@@ -2683,6 +2683,20 @@ class GroupObservationMixin:
         retry_key = f"{task}_retry_after"
         error_key = f"{task}_last_error"
         running_key = f"{task}_running_at"
+        error_text = _single_line(error, 180)
+        if task == "group_slang" and error_text == "invalid_json":
+            async with self._data_lock:
+                current = self._get_group(group_id)
+                current["last_slang_summary_at"] = now
+                current[retry_key] = 0
+                current[error_key] = ""
+                current[running_key] = 0
+                self._save_data_sync()
+            logger.debug(
+                "[PrivateCompanion] 群黑话释义 JSON 解析失败,已跳过本轮刷新: group=%s",
+                group_id,
+            )
+            return
         delay = 10 * 60
         if task == "group_episode":
             delay = min(max(10 * 60, _safe_int(getattr(self, "group_episode_refresh_minutes", 60), 60, 1) * 60), 30 * 60)
@@ -2691,7 +2705,7 @@ class GroupObservationMixin:
         async with self._data_lock:
             current = self._get_group(group_id)
             current[retry_key] = now + delay
-            current[error_key] = _single_line(error, 180)
+            current[error_key] = error_text
             current[running_key] = 0
             self._save_data_sync()
         logger.warning(
