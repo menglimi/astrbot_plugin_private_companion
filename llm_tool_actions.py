@@ -16,6 +16,7 @@ except ImportError:
     from astrbot.api.message_components import At, Plain
 
 from .helpers import _now_ts, _safe_float, _safe_int, _single_line
+from .qzone_selection import parse_qzone_post_selection
 
 
 class LlmToolActionsMixin:
@@ -51,13 +52,22 @@ class LlmToolActionsMixin:
         return """
 【QQ 空间动态工具】
 当用户明确要求你查看说说、QQ 空间动态、点赞/评论说说,或要求你发一条说说时,可以使用 Private Companion 的 QQ 空间工具。
-- 查看说说：使用 `pc_qzone_view_feed`。不知道目标 QQ 时默认当前用户。
+- 查看说说：使用 `pc_qzone_view_feed`。不知道目标 QQ 时默认当前用户；可用 `selector` 传“最新”“第2条”“最后”或 fid。
 - 发布说说：使用 `pc_qzone_publish_feed`。必须把最终要发布的正文放进 `text` 参数,例如 `{"text":"今天想慢一点。"}`；如需带图,可传 `{"text":"配图说说","images":["本地图片路径或图片URL"]}`；如果用户明确要求“发布刚才/最近生成的生活说说草稿”,可传 `{"use_latest_draft":true}`；不要空调用,不要把草稿当作已发布。
 - 发布内容必须服从当前人格与世界观,但不要泄露私聊隐私、内部状态数值、关系网资料或插件实现。
 - 工具失败时简短说明失败原因,不要假装已经发布或点赞。
 """.strip()
 
-    async def _pc_qzone_view_feed_impl(self, event: AstrMessageEvent, user_id: str = "", pos: int = 0, like: bool = False, reply: bool = False) -> str:
+    async def _pc_qzone_view_feed_impl(
+        self,
+        event: AstrMessageEvent,
+        user_id: str = "",
+        pos: int = 0,
+        like: bool = False,
+        reply: bool = False,
+        selector: str = "",
+        fid: str = "",
+    ) -> str:
         if not self.enable_qzone_integration:
             return json.dumps({"status": "disabled", "message": "QQ 空间动态层未启用"}, ensure_ascii=False)
         target = _single_line(user_id, 40)
@@ -67,7 +77,19 @@ class LlmToolActionsMixin:
             except Exception:
                 target = ""
         try:
-            posts = await self._qzone_query_feeds(event, target_id=target or None, pos=max(0, int(pos or 0)), num=1, with_detail=True)
+            selection = parse_qzone_post_selection(user_id=target, selector=selector, pos=pos, fid=fid)
+            if selection.fid:
+                candidates = await self._qzone_query_feeds(event, target_id=selection.target_id or None, pos=0, num=20, with_detail=True)
+                posts = [
+                    item for item in candidates
+                    if str(getattr(item, "tid", "") or "") == selection.fid
+                    or str(self._qzone_post_value(item, "fid", "") or "") == selection.fid
+                ][:1]
+            elif selection.is_last:
+                candidates = await self._qzone_query_feeds(event, target_id=selection.target_id or None, pos=0, num=10, with_detail=True)
+                posts = candidates[-1:] if candidates else []
+            else:
+                posts = await self._qzone_query_feeds(event, target_id=selection.target_id or None, pos=max(0, int(selection.pos or 0)), num=1, with_detail=True)
             if not posts:
                 return json.dumps({"status": "empty", "message": "查询结果为空"}, ensure_ascii=False)
             post = posts[0]
@@ -75,13 +97,16 @@ class LlmToolActionsMixin:
             if reply:
                 comment = await self._qzone_comment_post(event, post)
                 action_msg = f"已评论：{comment}"
+            like_result: dict[str, Any] | None = None
             if like:
-                await self._qzone_like_post(event, post)
-                action_msg = (action_msg + "；已点赞") if action_msg else "已点赞"
+                like_result = await self._qzone_like_post(event, post)
+                like_text = "已点赞" if like_result.get("verified") else "点赞请求已受理，等待 QQ 空间同步"
+                action_msg = (action_msg + f"；{like_text}") if action_msg else like_text
             return json.dumps(
                 {
                     "status": "success",
                     "action": action_msg,
+                    "like_result": like_result or {},
                     "author": _single_line(getattr(post, "name", ""), 60),
                     "uin": str(getattr(post, "uin", "") or ""),
                     "text": _single_line(getattr(post, "text", "") or getattr(post, "rt_con", ""), 300),
@@ -119,7 +144,7 @@ class LlmToolActionsMixin:
                 },
                 ensure_ascii=False,
             )
-        result = await self._publish_qzone_text(content, event, images=images)
+        result = await self._publish_qzone_text(content, event, images=images, auto_generate_image=True)
         return json.dumps({"status": "success" if result.get("success") else "error", **result}, ensure_ascii=False)
 
     def _interaction_query_platform(self, event: AstrMessageEvent) -> str:
@@ -889,7 +914,8 @@ class LlmToolActionsMixin:
                     {
                         "status": "success",
                         "destination": "group",
-                        "final_reply": "说过啦。",
+                        "final_reply": "带到了。",
+                        "final_reply_reference": "参考意图：转述已经成功发到目标群；只给用户一个很短的成功回执，不要复述转述正文，也不要写工具执行状态。",
                         "sent_text": send_text,
                         "recipient": recipient,
                         "group_id": group_id,
@@ -898,8 +924,9 @@ class LlmToolActionsMixin:
             return json.dumps(
                 {
                     "status": "success" if ok else "error",
-                    "message": result,
-                    "final_reply": "消息已发送。" if ok else "",
+                    "message": "带到了。" if ok else result,
+                    "final_reply": "带到了。" if ok else "",
+                    "final_reply_reference": "参考意图：转述已经成功发到目标群；只给用户一个很短的成功回执，不要复述转述正文，也不要写工具执行状态。" if ok else "",
                     "sent_text": send_text if ok else "",
                 },
                 ensure_ascii=False,
@@ -963,18 +990,32 @@ class LlmToolActionsMixin:
                 event,
                 "private_companion_atrelay_tool_result",
                 {
-                    "status": "success",
-                    "destination": "private",
-                    "final_reply": "说过啦。" if not need_receipt else "说过啦，有回复我再告诉你。",
-                    "sent_text": send_text,
-                    "recipient": target_user,
-                },
-            )
+                        "status": "success",
+                        "destination": "private",
+                        "final_reply": "带到了。" if not need_receipt else "带到了，有回复我再告诉你。",
+                        "final_reply_reference": (
+                            "参考意图：转述已经成功发给目标私聊用户，并且如果对方回复会再告诉当前用户；只给一个很短的成功回执。"
+                            if need_receipt
+                            else "参考意图：转述已经成功发给目标私聊用户；只给用户一个很短的成功回执，不要复述转述正文，也不要写工具执行状态。"
+                        ),
+                        "sent_text": send_text,
+                        "recipient": target_user,
+                    },
+                )
         return json.dumps(
             {
                 "status": "success" if ok else "error",
-                "message": result,
-                "final_reply": "消息已发送，会等对方回复。" if ok and need_receipt else ("消息已发送。" if ok else ""),
+                "message": "带到了，有回复我再告诉你。" if ok and need_receipt else ("带到了。" if ok else result),
+                "final_reply": "带到了，有回复我再告诉你。" if ok and need_receipt else ("带到了。" if ok else ""),
+                "final_reply_reference": (
+                    "参考意图：转述已经成功发给目标私聊用户，并且如果对方回复会再告诉当前用户；只给一个很短的成功回执。"
+                    if ok and need_receipt
+                    else (
+                        "参考意图：转述已经成功发给目标私聊用户；只给用户一个很短的成功回执，不要复述转述正文，也不要写工具执行状态。"
+                        if ok
+                        else ""
+                    )
+                ),
                 "sent_text": send_text if ok else "",
             },
             ensure_ascii=False,

@@ -1,6 +1,7 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import asyncio
 import json
 import hashlib
 import html
@@ -23,6 +24,8 @@ from .qzone_media import QzoneIntegrationError, QzoneMediaMixin
 class QzoneMixin(QzoneMediaMixin):
     """QQ Zone integration helpers."""
 
+    _QZONE_COOKIE_DOMAIN = "user.qzone.qq.com"
+
     def _qzone_plugin_dir(self) -> Path:
         candidates = [
             Path(__file__).resolve().parent.parent / "astrbot_plugin_qzone",
@@ -42,8 +45,25 @@ class QzoneMixin(QzoneMediaMixin):
     def _qzone_note_event_bot(self, event: AstrMessageEvent | None) -> None:
         """Cache the latest OneBot connection for background Qzone jobs."""
         bot = getattr(event, "bot", None) if event is not None else None
-        if bot is not None:
-            self._qzone_last_bot = bot
+        if bot is None:
+            return
+        for candidate in self._qzone_runtime_bot_candidates(bot):
+            if self._qzone_runtime_bot_usable(candidate):
+                self._qzone_last_bot = candidate
+                self._qzone_clear_no_onebot_auth_failure()
+                return
+        self._qzone_last_bot = bot
+
+    def _qzone_clear_no_onebot_auth_failure(self) -> None:
+        state = self._qzone_state_dict()
+        if not isinstance(state, dict):
+            return
+        reason = str(state.get("last_auth_failure_reason") or "")
+        if "没有可用的 OneBot 连接" not in reason and "未配置手动 QZONE_COOKIE" not in reason:
+            return
+        clearer = getattr(self, "_qzone_clear_auth_failure", None)
+        if callable(clearer):
+            clearer(state)
 
     @staticmethod
     def _qzone_runtime_bot_usable(candidate: Any) -> bool:
@@ -95,6 +115,21 @@ class QzoneMixin(QzoneMediaMixin):
         bot = getattr(self, "_qzone_last_bot", None)
         if self._qzone_runtime_bot_usable(bot):
             return bot
+        context = getattr(self, "context", None)
+        if context is not None:
+            try:
+                platform = context.get_platform("aiocqhttp")
+            except Exception:
+                platform = None
+            if platform is not None:
+                direct_bot = getattr(platform, "bot", None)
+                if self._qzone_runtime_bot_usable(direct_bot):
+                    self._qzone_last_bot = direct_bot
+                    return direct_bot
+                for candidate in self._qzone_runtime_bot_candidates(platform):
+                    if self._qzone_runtime_bot_usable(candidate):
+                        self._qzone_last_bot = candidate
+                        return candidate
         for candidate in self._qzone_runtime_bot_candidates(bot):
             if self._qzone_runtime_bot_usable(candidate):
                 self._qzone_last_bot = candidate
@@ -119,6 +154,35 @@ class QzoneMixin(QzoneMediaMixin):
                         self._qzone_last_bot = candidate
                         return candidate
         return None
+
+    async def _qzone_try_direct_cookie_fetch(self, bot: Any, domain: str) -> dict[str, str]:
+        direct = getattr(bot, "get_cookies", None)
+        result = None
+        if callable(direct):
+            try:
+                maybe = direct(domain=domain)
+                result = await maybe if hasattr(maybe, "__await__") else maybe
+            except TypeError:
+                try:
+                    maybe = direct()
+                    result = await maybe if hasattr(maybe, "__await__") else maybe
+                except Exception:
+                    result = None
+            except Exception:
+                result = None
+        if result is None:
+            api = getattr(bot, "api", None)
+            call_action = getattr(api, "call_action", None)
+            if not callable(call_action):
+                call_action = getattr(bot, "call_action", None)
+            if callable(call_action):
+                try:
+                    maybe = call_action("get_cookies", domain=domain)
+                    result = await maybe if hasattr(maybe, "__await__") else maybe
+                except Exception:
+                    result = None
+        cookie_text = self._qzone_extract_cookie_text(result)
+        return self._qzone_parse_cookie_text(cookie_text) if cookie_text else {}
 
     @staticmethod
     def _qzone_gtk(p_skey: str) -> str:
@@ -320,7 +384,11 @@ class QzoneMixin(QzoneMediaMixin):
             try:
                 ctx = self._qzone_context_from_cookies(manual_cookie)
             except Exception as exc:
-                raise RuntimeError(f"手动 QZONE_COOKIE 不可用：{_single_line(exc, 120)}") from exc
+                raise RuntimeError(
+                    "手动 QZONE_COOKIE 不可用："
+                    f"{_single_line(exc, 120)}；"
+                    "需包含 uin/p_uin 与 p_skey 或 skey，可从已登录 QQ 空间的浏览器请求头 Cookie 复制"
+                ) from exc
             logger.debug("[PrivateCompanion] QQ 空间使用手动 QZONE_COOKIE: uin=%s", ctx.get("uin"))
             return ctx["cookie_header"]
         bot = getattr(event, "bot", None) if event is not None else None
@@ -336,10 +404,19 @@ class QzoneMixin(QzoneMediaMixin):
         if bot is not None:
             self._qzone_last_bot = bot
         if bot is None:
-            raise RuntimeError("没有可用的 OneBot 连接，无法获取 QQ 空间 Cookie")
+            raise RuntimeError(
+                "没有可用的 OneBot 连接，且未配置手动 QZONE_COOKIE；"
+                "请在配置页填写浏览器 QQ 空间 Cookie，或确认 OneBot 已连接并支持 get_cookies/get_credentials"
+            )
+        direct_cookies = await self._qzone_try_direct_cookie_fetch(bot, self._QZONE_COOKIE_DOMAIN)
+        if self._qzone_normalize_uin(direct_cookies) and (direct_cookies.get("p_skey") or direct_cookies.get("pskey") or direct_cookies.get("skey")):
+            cookie_text = self._qzone_cookie_header(direct_cookies)
+            ctx = self._qzone_context_from_cookies(cookie_text)
+            logger.debug("[PrivateCompanion] QQ 空间直接获取 Cookie 成功: uin=%s domain=%s", ctx.get("uin"), self._QZONE_COOKIE_DOMAIN)
+            return ctx["cookie_header"]
         merged: dict[str, str] = {}
         domains = [
-            "user.qzone.qq.com",
+            self._QZONE_COOKIE_DOMAIN,
             "qzone.qq.com",
             "h5.qzone.qq.com",
             "mobile.qzone.qq.com",
@@ -402,7 +479,13 @@ class QzoneMixin(QzoneMediaMixin):
                 pass
             if self._qzone_normalize_uin(merged):
                 return cookie_text
-        raise RuntimeError("获取 QQ 空间 Cookie 失败")
+        raise RuntimeError(
+            "获取 QQ 空间 Cookie 失败"
+            f"（uin={'有' if self._qzone_normalize_uin(merged) else '无'}"
+            f"，skey={'有' if bool(merged.get('skey')) else '无'}"
+            f"，p_skey={'有' if bool(merged.get('p_skey') or merged.get('pskey')) else '无'}）；"
+            "可改填手动 QZONE_COOKIE，需包含 uin/p_uin 与 p_skey 或 skey"
+        )
 
     @staticmethod
     def _qzone_parse_response(text: str) -> dict[str, Any]:
@@ -416,8 +499,18 @@ class QzoneMixin(QzoneMediaMixin):
         payload = raw[start : end + 1].replace("undefined", "null")
         try:
             parsed = json.loads(payload)
-        except Exception as exc:
-            return {"code": -1, "message": f"JSON 解析失败：{_single_line(exc, 80)}"}
+        except Exception:
+            try:
+                relaxed = re.sub(r",\s*([}\]])", r"\1", payload)
+                relaxed = re.sub(r"([{,]\s*)([A-Za-z_$][\w$]*)\s*:", r'\1"\2":', relaxed)
+                parsed = json.loads(relaxed)
+            except Exception:
+                try:
+                    import json5  # type: ignore
+
+                    parsed = json5.loads(payload)
+                except Exception as exc:
+                    return {"code": -1, "message": f"JSON 解析失败：{_single_line(exc, 80)}"}
         if isinstance(parsed, dict) and isinstance(parsed.get("data"), dict):
             nested = dict(parsed.get("data") or {})
             nested.setdefault("_raw_code", parsed.get("code", parsed.get("ret")))
@@ -448,7 +541,7 @@ class QzoneMixin(QzoneMediaMixin):
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
             "Cookie": ctx["cookie_header"],
             "Referer": f"https://user.qzone.qq.com/{ctx['uin']}",
-            "Origin": origin,
+            "Origin": "https://user.qzone.qq.com",
             "Host": parsed_url.netloc or "user.qzone.qq.com",
             "Connection": "keep-alive",
         }
@@ -665,10 +758,45 @@ class QzoneMixin(QzoneMediaMixin):
                     images=images,
                     comments=self._qzone_parse_comments_from_msg(msg),
                     create_time=msg.get("created_time") or 0,
+                    appid=str(msg.get("appid") or "311"),
+                    typeid=str(msg.get("typeid") or msg.get("type") or "0"),
+                    abstime=_safe_int(msg.get("created_time") or msg.get("abstime"), 0, 0),
+                    fid=str(msg.get("tid") or msg.get("fid") or ""),
+                    unikey=str(msg.get("unikey") or msg.get("likeKey") or msg.get("like_key") or ""),
+                    curkey=str(msg.get("curkey") or msg.get("curlikekey") or msg.get("likeKey") or msg.get("like_key") or ""),
+                    raw=msg,
                     status="approved",
                 )
             )
         return posts
+
+    @staticmethod
+    def _qzone_post_value(post: Any, key: str, default: Any = "") -> Any:
+        value = getattr(post, key, None)
+        if value not in (None, ""):
+            return value
+        raw = getattr(post, "raw", None)
+        if isinstance(raw, dict):
+            value = raw.get(key)
+            if value not in (None, ""):
+                return value
+        return default
+
+    def _qzone_post_like_url(self, post: Any, *, uin: str, tid: str) -> str:
+        raw = getattr(post, "raw", None)
+        for key in ("unikey", "curkey", "curlikekey", "likeKey", "like_key", "url"):
+            value = getattr(post, key, None)
+            if value not in (None, ""):
+                return str(value)
+            if isinstance(raw, dict) and raw.get(key) not in (None, ""):
+                return str(raw.get(key))
+        html_text = str(raw.get("html") or "") if isinstance(raw, dict) else ""
+        if html_text:
+            for attr in ("data-unikey", "data-curkey", "unikey", "curkey"):
+                match = re.search(rf"""{re.escape(attr)}\s*=\s*["']([^"']+)["']""", html_text, flags=re.IGNORECASE)
+                if match:
+                    return html.unescape(match.group(1)).strip()
+        return f"https://user.qzone.qq.com/{uin}/mood/{tid}"
 
     async def _qzone_query_feeds(
         self,
@@ -678,8 +806,10 @@ class QzoneMixin(QzoneMediaMixin):
         pos: int = 0,
         num: int = 1,
         with_detail: bool = False,
+        cookie_header: str | None = None,
     ) -> list[Any]:
-        cookie_header = await self._qzone_get_cookies(event)
+        if cookie_header is None:
+            cookie_header = await self._qzone_get_cookies(event)
         ctx = self._qzone_context_from_cookies(cookie_header)
         target = _single_line(target_id, 40)
         if not target:
@@ -712,13 +842,72 @@ class QzoneMixin(QzoneMediaMixin):
             msglist = []
         return self._qzone_parse_feeds(msglist)
 
-    async def _qzone_like_post(self, event: AstrMessageEvent | None, post: Any) -> None:
+    async def _qzone_verify_like_post(
+        self,
+        event: AstrMessageEvent | None,
+        post: Any,
+        *,
+        cookie_header: str,
+        target_liked: bool = True,
+    ) -> dict[str, Any]:
+        tid = str(getattr(post, "tid", "") or "")
+        uin = str(getattr(post, "uin", "") or "")
+        fid = str(self._qzone_post_value(post, "fid", tid) or tid)
+        if not tid or not uin:
+            return {"verified": False, "liked": None, "message": "缺少说说 tid 或 uin，无法反查点赞状态"}
+        for attempt, delay in enumerate((0.0, 0.45, 1.2), start=1):
+            if delay > 0:
+                await asyncio.sleep(delay)
+            try:
+                feeds = await self._qzone_query_feeds(
+                    event,
+                    target_id=uin,
+                    pos=0,
+                    num=10,
+                    with_detail=False,
+                    cookie_header=cookie_header,
+                )
+            except Exception as exc:
+                if attempt >= 3:
+                    return {"verified": False, "liked": None, "message": f"点赞反查失败：{_single_line(exc, 120)}"}
+                continue
+            for feed in feeds:
+                feed_tid = str(getattr(feed, "tid", "") or "")
+                feed_fid = str(self._qzone_post_value(feed, "fid", feed_tid) or feed_tid)
+                if (tid and feed_tid == tid) or (fid and feed_fid == fid):
+                    liked = bool(getattr(feed, "liked", False))
+                    try:
+                        setattr(post, "liked", liked)
+                    except Exception:
+                        pass
+                    if liked == bool(target_liked):
+                        return {"verified": True, "liked": liked, "message": "已反查到点赞状态"}
+                    if attempt >= 3:
+                        return {
+                            "verified": False,
+                            "liked": liked,
+                            "message": "点赞请求已受理，但最近动态反查到的状态仍未变化",
+                        }
+            if attempt >= 3:
+                return {"verified": False, "liked": None, "message": "点赞请求已受理，但最近动态中暂未反查到这条说说"}
+        return {"verified": False, "liked": None, "message": "点赞请求已受理，但暂未完成反查"}
+
+    async def _qzone_like_post(self, event: AstrMessageEvent | None, post: Any) -> dict[str, Any]:
         cookie_header = await self._qzone_get_cookies(event)
         ctx = self._qzone_context_from_cookies(cookie_header)
         tid = str(getattr(post, "tid", "") or "")
         uin = str(getattr(post, "uin", "") or "")
         if not tid or not uin:
             raise RuntimeError("说说 tid 或 uin 为空，无法点赞")
+        like_url = self._qzone_post_like_url(post, uin=uin, tid=tid)
+        curkey = str(self._qzone_post_value(post, "curkey", "") or "") or like_url
+        unikey = str(self._qzone_post_value(post, "unikey", "") or "") or like_url
+        appid = str(self._qzone_post_value(post, "appid", "311") or "311")
+        typeid = str(self._qzone_post_value(post, "typeid", "0") or "0")
+        fid = str(self._qzone_post_value(post, "fid", tid) or tid)
+        abstime = _safe_int(self._qzone_post_value(post, "abstime", 0), 0, 0)
+        if abstime <= 0:
+            abstime = _safe_int(getattr(post, "create_time", 0), 0, 0) or int(time.time())
         payload = await self._qzone_request(
             event,
             "POST",
@@ -727,22 +916,123 @@ class QzoneMixin(QzoneMediaMixin):
             data={
                 "qzreferrer": f"https://user.qzone.qq.com/{ctx['uin']}",
                 "opuin": ctx["uin"],
-                "unikey": f"https://user.qzone.qq.com/{uin}/mood/{tid}",
-                "curkey": f"https://user.qzone.qq.com/{uin}/mood/{tid}",
-                "appid": 311,
+                "unikey": unikey,
+                "curkey": curkey,
+                "appid": appid,
                 "from": 1,
-                "typeid": 0,
-                "abstime": int(time.time()),
-                "fid": tid,
+                "typeid": typeid,
+                "abstime": abstime,
+                "fid": fid,
                 "active": 0,
                 "format": "json",
                 "fupdate": 1,
+            },
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                "Referer": f"https://user.qzone.qq.com/{uin}/mood/{tid}",
+                "Origin": "https://user.qzone.qq.com",
             },
             cookie_header=cookie_header,
         )
         code = payload.get("code", 0)
         if code not in {0, "0"}:
+            logger.warning(
+                "[PrivateCompanion] QQ 空间点赞失败: code=%s message=%s uin=%s tid=%s appid=%s typeid=%s fid=%s http=%s",
+                code,
+                _single_line(payload.get("message") or payload.get("msg") or payload.get("_raw_message"), 100),
+                uin,
+                tid,
+                appid,
+                typeid,
+                fid,
+                payload.get("_http_status"),
+            )
             raise RuntimeError(_single_line(payload.get("message") or payload.get("msg") or f"点赞失败 code={code}", 160))
+        verification = await self._qzone_verify_like_post(event, post, cookie_header=cookie_header, target_liked=True)
+        logger.info(
+            "[PrivateCompanion] QQ 空间点赞成功: uin=%s tid=%s appid=%s typeid=%s fid=%s verified=%s",
+            uin,
+            tid,
+            appid,
+            typeid,
+            fid,
+            bool(verification.get("verified")),
+        )
+        return {
+            "success": True,
+            "liked": True if verification.get("liked") is None else bool(verification.get("liked")),
+            "verified": bool(verification.get("verified")),
+            "verify_message": verification.get("message") or "",
+            "tid": tid,
+            "uin": uin,
+            "fid": fid,
+        }
+
+    async def _qzone_delete_post(
+        self,
+        event: AstrMessageEvent | None,
+        post: Any,
+        *,
+        cookie_header: str | None = None,
+    ) -> None:
+        if cookie_header is None:
+            cookie_header = await self._qzone_get_cookies(event)
+        ctx = self._qzone_context_from_cookies(cookie_header)
+        tid = str(getattr(post, "tid", "") or "")
+        uin = str(getattr(post, "uin", "") or "")
+        if not tid or not uin:
+            raise RuntimeError("说说 tid 或 uin 为空，无法删除")
+        if str(ctx.get("uin") or "") != uin:
+            raise RuntimeError("只能删除当前登录 QQ 自己发布的说说")
+        appid = str(self._qzone_post_value(post, "appid", "311") or "311")
+        fid = str(self._qzone_post_value(post, "fid", tid) or tid)
+        unikey = str(self._qzone_post_value(post, "unikey", "") or "") or f"https://user.qzone.qq.com/{uin}/mood/{tid}"
+        curkey = str(self._qzone_post_value(post, "curkey", "") or "") or unikey
+        abstime = _safe_int(self._qzone_post_value(post, "abstime", 0), 0, 0)
+        if abstime <= 0:
+            abstime = _safe_int(getattr(post, "create_time", 0), 0, 0)
+        payload = await self._qzone_request(
+            event,
+            "POST",
+            "https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_delete_v6",
+            params={"g_tk": ctx["gtk"]},
+            data={
+                "hostuin": uin,
+                "tid": tid,
+                "t1_source": 1,
+                "code_version": 1,
+                "format": "json",
+                "qzreferrer": f"https://user.qzone.qq.com/{uin}/mood/{tid}",
+                "topicId": f"{uin}_{tid}__1",
+                "uin": uin,
+                "feedsType": 100,
+                "feedsAppid": appid,
+                "feedsKey": fid or tid,
+                "feedsTime": abstime,
+                "unikey": unikey,
+                "curkey": curkey,
+            },
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "Referer": f"https://user.qzone.qq.com/{uin}/mood/{tid}",
+                "Origin": "https://user.qzone.qq.com",
+                "X-Requested-With": "XMLHttpRequest",
+            },
+            cookie_header=cookie_header,
+        )
+        code = payload.get("code", payload.get("ret", payload.get("_raw_code", 0)))
+        if code not in {0, "0", None, ""}:
+            logger.warning(
+                "[PrivateCompanion] QQ 空间删除说说失败: code=%s message=%s uin=%s tid=%s http=%s",
+                code,
+                _single_line(payload.get("message") or payload.get("msg") or payload.get("_raw_message"), 100),
+                uin,
+                tid,
+                payload.get("_http_status"),
+            )
+            raise RuntimeError(_single_line(payload.get("message") or payload.get("msg") or f"删除失败 code={code}", 160))
+        logger.info("[PrivateCompanion] QQ 空间删除说说成功: uin=%s tid=%s", uin, tid)
 
     async def _qzone_generate_comment(self, post: Any) -> str:
         prompt = f"""
@@ -1055,6 +1345,20 @@ class QzoneMixin(QzoneMediaMixin):
             f"正文：{text}"
         )
 
+    async def _qzone_memory_companion_context(self, *, purpose: str, query: str = "") -> str:
+        getter = getattr(self, "_memory_companion_compose_feature_context", None)
+        if not callable(getter):
+            return ""
+        try:
+            return await getter(
+                kind=f"qzone_{_single_line(purpose, 40) or 'context'}",
+                query=query or "QQ空间公开动态 当前日程 最近生活 日记余味 今日穿搭 自我时间线",
+                top_k=5,
+                max_chars=760,
+            )
+        except Exception:
+            return ""
+
     async def _qzone_decide_comment_reply(self, post: Any, comment: Any, *, own_uin: int) -> dict[str, str]:
         content = _single_line(getattr(comment, "content", ""), 180)
         if not content:
@@ -1063,6 +1367,10 @@ class QzoneMixin(QzoneMediaMixin):
             return {"decision": "skip", "reply": "", "reason": "自己的评论"}
         author_context = self._qzone_comment_author_context(comment)
         post_context = self._qzone_post_brief_context(post)
+        memory_context = await self._qzone_memory_companion_context(
+            purpose="comment_reply",
+            query=f"QQ空间评论回复 {content} 所在说说 {_single_line(getattr(post, 'text', ''), 180)} 关系边界 最近公开生活",
+        )
         prompt = f"""
 你在处理 Bot 自己 QQ 空间说说下的新评论。请判断是否需要公开回复。
 只输出 JSON，不要解释。
@@ -1088,6 +1396,10 @@ class QzoneMixin(QzoneMediaMixin):
 {_single_line(getattr(comment, "name", ""), 40) or str(getattr(comment, "uin", "") or "对方")}
 
 {author_context}
+
+【我会牢牢记住你 公开边界参考】
+{memory_context or "暂无"}
+使用方式：只帮助判断公开回复边界和最近生活连续性；不要泄露私聊、记忆来源或内部记录。
 
 【评论内容】
 {content}
@@ -1355,6 +1667,156 @@ class QzoneMixin(QzoneMediaMixin):
         hints.append("只能写成自然感受,不要写状态标签、数值或内部变量。")
         return "；".join(hints)
 
+    @staticmethod
+    def _qzone_temporal_context() -> str:
+        now = time.localtime()
+        weekday_names = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
+        hour = now.tm_hour
+        if 0 <= hour < 6:
+            period = "凌晨"
+        elif hour < 9:
+            period = "早晨"
+        elif hour < 12:
+            period = "上午"
+        elif hour < 16:
+            period = "下午"
+        elif hour < 19:
+            period = "傍晚"
+        elif hour < 22:
+            period = "晚上"
+        else:
+            period = "深夜"
+        if now.tm_mon in (12, 1, 2):
+            season = "冬天"
+        elif now.tm_mon in (3, 4, 5):
+            season = "春天"
+        elif now.tm_mon in (6, 7, 8, 9):
+            season = "夏天"
+        else:
+            season = "秋天"
+        weekday = weekday_names[min(6, max(0, now.tm_wday))]
+        day_type = "周末" if now.tm_wday >= 5 else "工作日"
+        return f"{time.strftime('%Y年%m月%d日 %H:%M', now)}，{weekday}，{day_type}，{season}，{period}。"
+
+    @staticmethod
+    def _qzone_publish_theme_hint() -> str:
+        themes = (
+            "记录当前时段里一件具体的小事",
+            "写一个自然冒出来的心情余味",
+            "轻轻吐槽一个生活里的小麻烦",
+            "记录眼前看到、听到或碰到的具体画面",
+            "写一段短短的碎碎念，不要总结成道理",
+            "记录一个让人稍微开心或安心的小瞬间",
+            "写写天气、光线、食物、衣物、路上或桌边的生活细节",
+            "从当前日程里挑一个最不像任务汇报的切面",
+        )
+        return random.choice(themes)
+
+    def _qzone_recent_publish_context(self, state: dict[str, Any], *, limit: int = 5) -> str:
+        items = state.get("recent_life_publish_texts") if isinstance(state, dict) else []
+        if not isinstance(items, list):
+            return ""
+        lines: list[str] = []
+        for item in items[-max(1, int(limit or 5)) :]:
+            text = _single_line(item.get("text") if isinstance(item, dict) else item, 120)
+            if text:
+                lines.append(f"- {text}")
+        if not lines:
+            return ""
+        return "最近已发说说：\n" + "\n".join(lines) + "\n本次请换一个场景、情绪或观察角度，不要重复同一类表达。"
+
+    def _qzone_note_recent_publish(
+        self,
+        state: dict[str, Any],
+        text: Any,
+        *,
+        reason: str,
+        now: float | None = None,
+        tid: str = "",
+        image_count: int = 0,
+        verified: bool | None = None,
+        source: str = "",
+    ) -> None:
+        if not isinstance(state, dict):
+            return
+        clean = _single_line(text, 180)
+        if not clean:
+            return
+        current = _now_ts() if now is None else float(now)
+        items = state.get("recent_life_publish_texts")
+        if not isinstance(items, list):
+            items = []
+        deduped: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in items:
+            raw = item.get("text") if isinstance(item, dict) else item
+            item_text = _single_line(raw, 180)
+            key = re.sub(r"\s+", "", item_text)
+            if not item_text or key in seen or key == re.sub(r"\s+", "", clean):
+                continue
+            seen.add(key)
+            if isinstance(item, dict):
+                deduped.append(dict(item))
+            else:
+                deduped.append({"text": item_text, "at": 0, "reason": ""})
+        entry = {
+            "text": clean,
+            "at": current,
+            "reason": _single_line(reason, 40),
+            "tid": _single_line(tid, 80),
+            "image_count": _safe_int(image_count, 0, 0, 99),
+            "source": _single_line(source, 40),
+        }
+        if verified is not None:
+            entry["verified"] = bool(verified)
+        deduped.append(entry)
+        state["recent_life_publish_texts"] = deduped[-8:]
+
+    async def _qzone_record_published_post(
+        self,
+        text: Any,
+        *,
+        reason: str = "manual_publish",
+        tid: str = "",
+        image_count: int = 0,
+        verified: bool | None = None,
+        event: AstrMessageEvent | None = None,
+    ) -> None:
+        state = self._qzone_state_dict()
+        now = _now_ts()
+        clean = _single_line(text, 300)
+        if not clean:
+            return
+        self._qzone_note_recent_publish(
+            state,
+            clean,
+            reason=reason,
+            now=now,
+            tid=tid,
+            image_count=image_count,
+            verified=verified,
+            source="publish_success",
+        )
+        state["last_publish_recorded_at"] = now
+        state["last_publish_recorded_text"] = _single_line(clean, 180)
+        state["last_publish_recorded_reason"] = _single_line(reason, 40)
+        state["last_publish_recorded_tid"] = _single_line(tid, 80)
+        state["last_publish_recorded_images"] = _safe_int(image_count, 0, 0, 99)
+        recorder = getattr(self, "_memory_companion_record_qzone_publish", None)
+        if callable(recorder):
+            await recorder(
+                text=clean,
+                reason=reason,
+                tid=tid,
+                image_count=image_count,
+                verified=verified,
+                event=event,
+            )
+        try:
+            self._save_data_sync()
+        except Exception as exc:
+            logger.debug("[PrivateCompanion] QQ 空间发布记录保存失败: %s", _single_line(exc, 120))
+
     def _qzone_text_leaks_internal_state(self, text: str) -> bool:
         compact = str(text or "")
         if not compact.strip():
@@ -1438,9 +1900,17 @@ class QzoneMixin(QzoneMediaMixin):
             )
         )
 
+        qzone_state = self._qzone_state_dict()
         daily_state = self.data.get("daily_state", {})
         current_item = self._get_current_plan_item(self.data.get("daily_plan", {}))
         diary_context = self._recent_diary_context(count=2)
+        theme_hint = self._qzone_publish_theme_hint()
+        temporal_context = self._qzone_temporal_context()
+        recent_publish_context = self._qzone_recent_publish_context(qzone_state)
+        memory_context = await self._qzone_memory_companion_context(
+            purpose="publish_test",
+            query="QQ空间生活说说 今日公开可写生活 当前日程 今日穿搭 最近吃饭 日记余味 自我时间线",
+        )
         prompt = f"""
 请以当前 Bot 人格写一条 QQ 空间说说。
 只输出说说正文,不要解释,不要加标题。
@@ -1451,6 +1921,10 @@ class QzoneMixin(QzoneMediaMixin):
 - 可以带一点公开可见的心情、天气或日记余味,但不要暴露插件、模型、内部状态数值。
 - 禁止出现“能量”“心理能量”“/100”“状态变量”“当前状态”等内部汇报词。
 - 不要 @ 用户,不要泄露私聊内容,不要写得像营销文。
+- 写作角度：{theme_hint}
+
+【当前时间与季节】
+{temporal_context}
 
 【公开可写的状态余味】
 {self._qzone_public_state_hint(daily_state if isinstance(daily_state, dict) else {})}
@@ -1460,6 +1934,13 @@ class QzoneMixin(QzoneMediaMixin):
 
 【近日私密日记余味】
 {diary_context or "暂无"}
+
+【我会牢牢记住你 公开可写生活参考】
+{memory_context or "暂无"}
+使用方式：只选公开可写、不会泄露私聊或内部记忆来源的生活连续性。
+
+【最近说说去重】
+{recent_publish_context or "暂无最近记录。"}
 
 {self._format_worldview_adaptation_prompt()}
 """.strip()
@@ -1480,10 +1961,164 @@ class QzoneMixin(QzoneMediaMixin):
             lines.append(f"- 草稿正文：{draft}")
         else:
             lines.append("- 草稿生成：失败或为空")
+        image_enabled = bool(getattr(self, "enable_qzone_generated_image_publish", False))
+        image_probability = max(0.0, min(1.0, _safe_float(getattr(self, "qzone_generated_image_probability", 0.25), 0.25)))
+        generator_available = callable(getattr(self, "_generate_photo_image", None))
+        backend_summary = ""
+        summary_getter = getattr(self, "_photo_generation_backend_config_summary", None)
+        if callable(summary_getter):
+            try:
+                backend_summary = _single_line(summary_getter(), 180)
+            except Exception:
+                backend_summary = ""
+        prefix = self._qzone_reason_prefix("life_publish")
+        last_image_status = _single_line(qzone_state.get(f"last_{prefix}_generated_image_status"), 80)
+        last_image_note = _single_line(qzone_state.get(f"last_{prefix}_generated_image_note"), 160)
+        lines.append(
+            "- 配图预检："
+            f"开关={'开启' if image_enabled else '关闭'}，"
+            f"概率={image_probability:.0%}，"
+            f"生图入口={'可用' if generator_available else '不可用'}"
+        )
+        if backend_summary:
+            lines.append(f"- 生图后端：{backend_summary}")
+        if last_image_status or last_image_note:
+            lines.append(f"- 上次配图状态：{last_image_status or '-'} {last_image_note or ''}".rstrip())
+        if image_enabled and image_probability <= 0:
+            lines.append("- 配图结论：概率为 0，不会自动带图。")
+        elif not image_enabled:
+            lines.append("- 配图结论：说说配图开关未开启，不会自动带图。")
+        elif not generator_available:
+            lines.append("- 配图结论：缺少生图入口，不会自动带图。")
+        else:
+            lines.append("- 配图结论：满足发布条件时会按概率尝试生成 1 张配图；生成失败会回退纯文字。")
         lines.append("结果：模拟完成。若要真实发布,请使用 `陪伴 发说说 <正文>` 或让模型调用带 text 的 `pc_qzone_publish_feed`。")
         return "\n".join(lines)
 
-    async def _test_qzone_integration(self, event: AstrMessageEvent, target_id: str = "") -> str:
+    async def _test_qzone_publish_image_chain(self, event: AstrMessageEvent | None = None) -> str:
+        lines = ["QQ 空间配图链路测试："]
+        lines.append("- 真实发布：否，本指令只生成草稿和配图，不发 QQ 空间")
+        image_enabled = bool(getattr(self, "enable_qzone_generated_image_publish", False))
+        image_probability = max(0.0, min(1.0, _safe_float(getattr(self, "qzone_generated_image_probability", 0.25), 0.25)))
+        generator_available = callable(getattr(self, "_generate_photo_image", None))
+        lines.append(f"- 配图开关：{'开启' if image_enabled else '关闭'}")
+        lines.append(f"- 自动配图概率：{image_probability:.0%}（本测试会绕过概率，只检查生图链路）")
+        lines.append(f"- 生图入口：{'可用' if generator_available else '不可用'}")
+        summary_getter = getattr(self, "_photo_generation_backend_config_summary", None)
+        if callable(summary_getter):
+            try:
+                backend_summary = _single_line(summary_getter(), 180)
+            except Exception:
+                backend_summary = ""
+            if backend_summary:
+                lines.append(f"- 生图后端：{backend_summary}")
+        if not self.enable_qzone_integration:
+            lines.append("结果：QQ 空间动态层未启用，配图测试取消。")
+            return "\n".join(lines)
+        if not image_enabled:
+            lines.append("结果：说说配图开关未开启，配图测试取消。")
+            return "\n".join(lines)
+        if not generator_available:
+            lines.append("结果：缺少主动生图入口，配图测试取消。")
+            return "\n".join(lines)
+
+        state = self._qzone_state_dict()
+        daily_state = self.data.get("daily_state", {})
+        current_item = self._get_current_plan_item(self.data.get("daily_plan", {}))
+        diary_context = self._recent_diary_context(count=2)
+        prompt = f"""
+请以当前 Bot 人格写一条 QQ 空间说说，用来测试配图生成。
+只输出说说正文,不要解释,不要加标题。
+
+要求：
+- 30 到 100 字。
+- 像自然生活动态,最好包含一个能被画出来的具体场景或物件。
+- 不要 @ 用户,不要泄露私聊内容,不要出现插件、模型、系统提示、内部状态数值。
+- 写作角度：{self._qzone_publish_theme_hint()}
+
+【当前时间与季节】
+{self._qzone_temporal_context()}
+
+【公开可写的状态余味】
+{self._qzone_public_state_hint(daily_state if isinstance(daily_state, dict) else {})}
+
+【当前/附近日程】
+{self._format_plan_item_for_prompt(current_item) or "无明确日程"}
+
+【近日私密日记余味】
+{diary_context or "暂无"}
+
+【最近说说去重】
+{self._qzone_recent_publish_context(state) or "暂无最近记录。"}
+
+{self._format_worldview_adaptation_prompt()}
+""".strip()
+        try:
+            draft = await self._llm_call(
+                prompt,
+                max_tokens=160,
+                provider_id=self._task_provider(self.mai_style_provider_id, self.llm_provider_id),
+                task="qzone_publish_image_test_draft",
+            )
+            draft = await self._sanitize_qzone_life_post_text(draft, prompt=prompt)
+        except Exception as exc:
+            lines.append(f"结果：草稿生成失败，{_single_line(exc, 160)}")
+            return "\n".join(lines)
+        if not draft:
+            lines.append("结果：草稿为空或不安全，配图测试取消。")
+            return "\n".join(lines)
+        lines.append(f"- 草稿正文：{draft}")
+        images = await self._maybe_generate_qzone_publish_image(
+            post_text=draft,
+            reason="life_publish",
+            daily_state=daily_state if isinstance(daily_state, dict) else {},
+            current_item=current_item,
+            diary_context=diary_context,
+            state=state,
+            force=True,
+        )
+        prefix = self._qzone_reason_prefix("life_publish")
+        status = _single_line(state.get(f"last_{prefix}_generated_image_status"), 80)
+        note = _single_line(state.get(f"last_{prefix}_generated_image_note"), 160)
+        backend = _single_line(state.get(f"last_{prefix}_generated_image_backend"), 60)
+        caption = _single_line(state.get(f"last_{prefix}_generated_image_caption"), 160)
+        visual_anchor = _single_line(state.get(f"last_{prefix}_generated_image_anchor"), 120)
+        composition = _single_line(state.get(f"last_{prefix}_generated_image_composition"), 120)
+        reference_image = _single_line(state.get(f"last_{prefix}_generated_image_reference"), 220)
+        reference_exists = bool(state.get(f"last_{prefix}_generated_image_reference_exists", False))
+        if callable(getattr(self, "_save_data_sync", None)):
+            try:
+                self._save_data_sync()
+            except Exception:
+                pass
+        if images:
+            lines.append("- 生图结果：成功")
+            if backend:
+                lines.append(f"- 后端：{backend}")
+            if caption:
+                lines.append(f"- 画面说明：{caption}")
+            if visual_anchor:
+                lines.append(f"- 视觉锚点：{visual_anchor}")
+            if composition:
+                lines.append(f"- 构图：{composition}")
+            if reference_image:
+                lines.append(f"- 自拍参考图：{'可用' if reference_exists else '不可用'} {_single_line(reference_image, 160)}")
+            lines.append(f"- 图片路径：{_single_line(images[0], 220)}")
+            lines.append("结果：配图生成链路可用。下一步可用 `陪伴 发说说 <正文>` 或等待自动说说验证上传。")
+        else:
+            lines.append(f"- 生图结果：{status or '失败'}")
+            if note:
+                lines.append(f"- 原因：{note}")
+            if visual_anchor:
+                lines.append(f"- 视觉锚点：{visual_anchor}")
+            if composition:
+                lines.append(f"- 构图：{composition}")
+            if reference_image:
+                lines.append(f"- 自拍参考图：{'可用' if reference_exists else '不可用'} {_single_line(reference_image, 160)}")
+            lines.append("结果：没有生成可用于说说的图片。")
+        return "\n".join(lines)
+
+    async def _test_qzone_integration(self, event: AstrMessageEvent | None, target_id: str = "") -> str:
         lines = ["QQ 空间测试："]
 
         lines.append(f"- 整合开关：{'开启' if self.enable_qzone_integration else '关闭'}")
@@ -1496,13 +2131,21 @@ class QzoneMixin(QzoneMediaMixin):
 
         target = _single_line(target_id, 40)
         try:
-            ctx = self._qzone_context_from_cookies(await self._qzone_get_cookies(event))
+            cookie_header = await self._qzone_get_cookies(event)
+            ctx = self._qzone_context_from_cookies(cookie_header)
             target = target or str(ctx.get("uin") or "")
             lines.append(f"- Cookie：已获取，登录 QQ {ctx.get('uin')}")
             lines.append("- 读取动态：可用")
             lines.append("- 发布说说：可用")
             lines.append("- 点赞/评论：可用")
-            posts = await self._qzone_query_feeds(event, target_id=target or None, pos=0, num=1, with_detail=True)
+            posts = await self._qzone_query_feeds(
+                event,
+                target_id=target or None,
+                pos=0,
+                num=1,
+                with_detail=True,
+                cookie_header=cookie_header,
+            )
             if not posts:
                 lines.append(f"- 查询目标：{target or '默认'}")
                 lines.append("- 查询结果：空")
@@ -1530,7 +2173,11 @@ class QzoneMixin(QzoneMediaMixin):
 
     @staticmethod
     def _qzone_reason_prefix(reason: str) -> str:
-        return "emotional_vent" if reason == "emotional_vent" else "life_publish"
+        if reason == "emotional_vent":
+            return "emotional_vent"
+        if reason == "manual_publish":
+            return "manual_publish"
+        return "life_publish"
 
     def _qzone_reusable_draft(self, state: dict[str, Any], reason: str, *, now: float | None = None, max_age_hours: float = 72.0) -> str:
         if not isinstance(state, dict):
@@ -1564,6 +2211,42 @@ class QzoneMixin(QzoneMediaMixin):
         logger.info("[PrivateCompanion] QQ 空间复用待发布配图: reason=%s path=%s", reason, _single_line(image_path, 160))
         return [image_path]
 
+    def _qzone_note_publish_image_status(
+        self,
+        state: dict[str, Any] | None,
+        reason: str,
+        status: str,
+        note: Any = "",
+        *,
+        path: Any = "",
+        backend: Any = "",
+        caption: Any = "",
+        reference_image: Any = "",
+        reference_exists: bool | None = None,
+        visual_anchor: Any = "",
+        composition: Any = "",
+    ) -> None:
+        if not isinstance(state, dict):
+            return
+        prefix = self._qzone_reason_prefix(reason)
+        state[f"last_{prefix}_generated_image_status"] = _single_line(status, 60)
+        state[f"last_{prefix}_generated_image_note"] = _single_line(note, 180)
+        state[f"last_{prefix}_generated_image_checked_at"] = _now_ts()
+        if path:
+            state[f"last_{prefix}_generated_image_path"] = _single_line(path, 260)
+        if backend:
+            state[f"last_{prefix}_generated_image_backend"] = _single_line(backend, 40)
+        if caption:
+            state[f"last_{prefix}_generated_image_caption"] = _single_line(caption, 180)
+        if reference_image:
+            state[f"last_{prefix}_generated_image_reference"] = _single_line(reference_image, 260)
+        if reference_exists is not None:
+            state[f"last_{prefix}_generated_image_reference_exists"] = bool(reference_exists)
+        if visual_anchor:
+            state[f"last_{prefix}_generated_image_anchor"] = _single_line(visual_anchor, 120)
+        if composition:
+            state[f"last_{prefix}_generated_image_composition"] = _single_line(composition, 120)
+
     def _qzone_clear_pending_publish_assets(self, state: dict[str, Any], reason: str) -> None:
         if not isinstance(state, dict):
             return
@@ -1574,8 +2257,10 @@ class QzoneMixin(QzoneMediaMixin):
             f"last_{prefix}_generated_image_path",
             f"last_{prefix}_generated_image_at",
             f"last_{prefix}_generated_image_text",
-            f"last_{prefix}_generated_image_caption",
-            f"last_{prefix}_generated_image_backend",
+            f"last_{prefix}_generated_image_reference",
+            f"last_{prefix}_generated_image_reference_exists",
+            f"last_{prefix}_generated_image_anchor",
+            f"last_{prefix}_generated_image_composition",
         ):
             state.pop(key, None)
 
@@ -1588,24 +2273,30 @@ class QzoneMixin(QzoneMediaMixin):
         current_item: Any = None,
         diary_context: str = "",
         state: dict[str, Any] | None = None,
+        force: bool = False,
     ) -> list[str]:
-        reusable = self._qzone_reusable_generated_image(state if isinstance(state, dict) else {}, reason, post_text)
+        reusable = [] if force else self._qzone_reusable_generated_image(state if isinstance(state, dict) else {}, reason, post_text)
         if reusable:
+            self._qzone_note_publish_image_status(state, reason, "reused", "复用上次待发布配图", path=reusable[0])
             return reusable
         if not (
             getattr(self, "enable_qzone_generated_image_publish", False)
             and getattr(self, "enable_qzone_integration", False)
         ):
+            self._qzone_note_publish_image_status(state, reason, "skipped:disabled", "QQ 空间配图开关未开启")
             return []
         probability = max(0.0, min(1.0, _safe_float(getattr(self, "qzone_generated_image_probability", 0.25), 0.25)))
-        if probability <= 0 or random.random() > probability:
+        if not force and (probability <= 0 or random.random() > probability):
+            self._qzone_note_publish_image_status(state, reason, "skipped:probability", f"未命中配图概率 {probability:.0%}")
             return []
         if callable(getattr(self, "_daily_token_soft_limit_should_defer", None)) and self._daily_token_soft_limit_should_defer("photo_prompt"):
             logger.info("[PrivateCompanion] QQ 空间主动配图跳过: token_soft_limit")
+            self._qzone_note_publish_image_status(state, reason, "skipped:token_budget", "token 软上限保护")
             return []
         generator = getattr(self, "_generate_photo_image", None)
         if not callable(generator):
             logger.info("[PrivateCompanion] QQ 空间主动配图跳过: image_generator_unavailable")
+            self._qzone_note_publish_image_status(state, reason, "skipped:no_generator", "缺少 _generate_photo_image 生图入口")
             return []
 
         style_name, style_instruction = self._get_photo_style_instruction()
@@ -1616,6 +2307,30 @@ class QzoneMixin(QzoneMediaMixin):
             content_options = self._format_content_choice_options_for_prompt()
         except Exception:
             content_options = "生活小物、窗边光影、路上风景、桌面一角、随手自拍、偶遇小动物。"
+        qzone_selfie_reference_path = ""
+        qzone_selfie_reference_exists = False
+        reference_getter = getattr(self, "_photo_persona_reference_image_for_kind_async", None)
+        if callable(reference_getter):
+            try:
+                qzone_selfie_reference_path = await reference_getter("selfie", allow_daily_outfit=True)
+            except Exception as ref_exc:
+                logger.info(
+                    "[PrivateCompanion] QQ 空间自拍参考图预检失败: reason=%s error=%s",
+                    _single_line(reason, 40),
+                    _single_line(ref_exc, 120),
+                )
+                qzone_selfie_reference_path = ""
+        try:
+            qzone_selfie_reference_exists = bool(
+                qzone_selfie_reference_path and Path(str(qzone_selfie_reference_path)).exists()
+            )
+        except (OSError, ValueError):
+            qzone_selfie_reference_exists = False
+        reference_text = (
+            "有可用参考图。优先选择 selfie，让人物成为画面主角；prompt 必须写明保持参考图中的人物身份、脸部、发色、瞳色、穿搭连续性。"
+            if qzone_selfie_reference_path
+            else "当前没有可用自拍参考图。仍优先让人物自然入镜，人物外貌参考人格描述和公开状态；可用第一视角手部、侧脸、背影、镜中局部、肩颈半身等方式让人物成为主角，避免凭空追加人格里没有的脸部细节。"
+        )
         prompt = f"""
 请为一条即将公开发布到 QQ 空间的说说生成一张配图提示词。
 只输出 JSON，不要解释。
@@ -1640,50 +2355,89 @@ class QzoneMixin(QzoneMediaMixin):
 【可选画面方向】
 {content_options}
 
+【自拍参考图状态】
+{reference_text}
+
 【生图风格】
 {style_name}
 风格要求：{style_instruction}
 
 输出 JSON：
 {{
-  "kind": "selfie 或 text2img；有人像/自拍时用 selfie，其他生活碎片用 text2img",
-  "prompt": "给生图后端的中文提示词，包含主体、场景、光线、构图、情绪；不要写聊天口吻",
+  "kind": "selfie 或 text2img；优先 selfie，只有人物完全不适合入镜时才用 text2img",
+  "visual_anchor": "本图唯一视觉锚点，例如半身自拍/镜前穿搭/第一视角手部与饮品/侧脸看窗边光影/背影走在路上；必须具体",
+  "composition": "构图一句话，例如半身自拍/镜前中景/第一视角手部近景/侧脸三分构图/背影环境中景",
+  "prompt": "给生图后端的中文提示词，包含唯一主体、场景、光线、构图、情绪和风格；不要写聊天口吻",
   "caption": "一句画面说明"
 }}
 
 要求：
 1. 图片必须像公开动态配图，不要包含私聊、系统、插件、模型、内部状态数值。
-2. 画面要贴合说说正文和当前日程，不要为了配图硬画无关内容。
-3. 没有明确自拍动机时优先 text2img；不要频繁默认自拍。
-4. 不要包含 NSFW、真实用户隐私、聊天截图或电脑屏幕内容。
-5. prompt 必须体现上面的生图风格要求。
+2. 先确定一个“唯一视觉锚点”，不要把多个主体拼在一张图里；画面要贴合说说正文和当前日程，不要为了配图硬画无关内容。
+3. 优先使用 selfie 自拍/人物入镜模式，人物是主角；即使没有明确自拍动机，也尽量让人物以第一视角手部、侧脸、背影、镜中局部、肩颈半身等自然方式入镜，避免纯景物照片。
+4. 如果有自拍参考图，选择 selfie 时必须写清“保留参考图人物身份和外观”“脸部完整清晰”“不要裁脸/遮脸/只拍身体局部”，并让场景来自当前日程。
+5. 如果没有自拍参考图，仍可选择 selfie；人物外貌以人格描述、公开状态和风格设定为准，不要追加人格里没有的脸部细节。优先使用不强依赖精确脸部的自然入镜方式，比如侧脸、背影、第一视角手部、肩颈半身、镜中远景。
+6. 如果选择 text2img：也要尽量保留人的存在感，如手边物件、脚步、背影、影子或随身小物；只有画面确实不适合人物入镜时才纯物件/纯风景。
+7. 不要包含 NSFW、真实用户隐私、聊天截图或电脑屏幕内容；避免文字、水印、UI、二维码、聊天气泡。
+8. prompt 必须体现上面的生图风格要求，且不能是泛泛的“好看的照片/生活记录/天气图”。
 """.strip()
         try:
             text = await self._llm_call(
                 prompt,
-                max_tokens=260,
+                max_tokens=360,
                 provider_id=self._task_provider(self.photo_prompt_provider_id, self.mai_style_provider_id),
                 task=f"qzone_{reason}_photo_prompt",
             )
             payload = self._extract_json_payload(text or "")
             if isinstance(payload, dict):
-                workflow_kind = _single_line(payload.get("kind"), 20).lower()
+                workflow_kind = _single_line(payload.get("kind"), 60).lower()
+                visual_anchor = _single_line(payload.get("visual_anchor"), 120)
+                composition = _single_line(payload.get("composition"), 120)
                 image_prompt = _single_line(payload.get("prompt"), 600)
                 caption = _single_line(payload.get("caption"), 180)
             else:
                 workflow_kind = "text2img"
+                visual_anchor = ""
+                composition = ""
                 image_prompt = _single_line(text, 600)
                 caption = image_prompt
-            if workflow_kind in {"portrait", "自拍", "人像"}:
+            if any(token in workflow_kind for token in ("selfie", "portrait", "自拍", "人像", "人物", "出镜")):
                 workflow_kind = "selfie"
-            if workflow_kind not in {"selfie", "text2img"}:
+            elif any(token in workflow_kind for token in ("text2img", "scene", "photo", "风景", "静物", "物件")):
+                workflow_kind = "text2img"
+            else:
                 workflow_kind = "text2img"
             if not image_prompt:
                 image_prompt = f"QQ 空间公开动态配图，{_single_line(post_text, 160)}，{style_instruction}"
+            if visual_anchor and visual_anchor not in image_prompt:
+                image_prompt = f"唯一视觉锚点：{visual_anchor}。{image_prompt}"
+            if composition and composition not in image_prompt:
+                image_prompt = f"{image_prompt}。构图：{composition}"
+            if workflow_kind == "selfie":
+                if qzone_selfie_reference_path:
+                    image_prompt = (
+                        f"{image_prompt}。保留参考图中的人物身份、脸部、发色、瞳色和穿搭连续性；"
+                        "脸部完整清晰，头发、肩颈和上半身自然入镜；不要裁脸、遮脸、背影、只拍身体局部。"
+                    )
+                else:
+                    image_prompt = (
+                        f"{image_prompt}。人物是画面主角，外貌参考人格描述、公开状态和风格设定；没有可用自拍参考图时不要追加人格里没有的脸部细节；"
+                        "优先使用第一视角手部、侧脸、背影、镜中局部、肩颈半身等自然入镜方式，保持公开动态随手拍质感。"
+                    )
+            else:
+                image_prompt = (
+                    f"{image_prompt}。画面像 QQ 空间公开生活配图，单一主体清楚，不出现聊天截图、UI、二维码、水印或虚构人物脸部。"
+                )
+            reference_image_path = qzone_selfie_reference_path if workflow_kind == "selfie" else ""
+            reference_exists = qzone_selfie_reference_exists if workflow_kind == "selfie" else False
             logger.info(
-                "[PrivateCompanion] QQ 空间配图生图开始: reason=%s kind=%s post=%s prompt=%s",
+                "[PrivateCompanion] QQ 空间配图生图开始: reason=%s kind=%s anchor=%s composition=%s reference=%s reference_exists=%s post=%s prompt=%s",
                 _single_line(reason, 40),
                 _single_line(workflow_kind, 30),
+                _single_line(visual_anchor, 80) or "-",
+                _single_line(composition, 80) or "-",
+                bool(reference_image_path),
+                reference_exists,
                 _single_line(post_text, 120),
                 _single_line(image_prompt, 180),
             )
@@ -1691,15 +2445,47 @@ class QzoneMixin(QzoneMediaMixin):
                 workflow_kind=workflow_kind,
                 prompt_text=image_prompt,
                 session_key=f"qzone_{reason}",
+                reference_image_path=reference_image_path,
             )
         except Exception as exc:
             logger.info("[PrivateCompanion] QQ 空间主动配图失败: %s", _single_line(exc, 120))
+            self._qzone_note_publish_image_status(
+                state,
+                reason,
+                "failed:prompt_or_generate",
+                exc,
+                reference_image=qzone_selfie_reference_path,
+                reference_exists=qzone_selfie_reference_exists,
+            )
             return []
         if not image_path:
             logger.info("[PrivateCompanion] QQ 空间主动配图跳过: %s", _single_line(workflow_note, 160))
+            self._qzone_note_publish_image_status(
+                state,
+                reason,
+                "failed:no_image",
+                workflow_note,
+                backend=backend_name,
+                reference_image=reference_image_path,
+                reference_exists=reference_exists,
+                visual_anchor=visual_anchor,
+                composition=composition,
+            )
             return []
         if not re.match(r"^(?:https?://|file://|data:)", str(image_path), flags=re.I) and not Path(str(image_path)).exists():
             logger.info("[PrivateCompanion] QQ 空间主动配图跳过: image_path_missing path=%s", _single_line(image_path, 160))
+            self._qzone_note_publish_image_status(
+                state,
+                reason,
+                "failed:path_missing",
+                "生图返回路径不存在",
+                path=image_path,
+                backend=backend_name,
+                reference_image=reference_image_path,
+                reference_exists=reference_exists,
+                visual_anchor=visual_anchor,
+                composition=composition,
+            )
             return []
         if isinstance(state, dict):
             prefix = self._qzone_reason_prefix(reason)
@@ -1708,15 +2494,41 @@ class QzoneMixin(QzoneMediaMixin):
             state["last_generated_image_reason"] = reason
             state["last_generated_image_caption"] = _single_line(caption, 180)
             state["last_generated_image_backend"] = _single_line(backend_name, 40)
+            if visual_anchor:
+                state["last_generated_image_anchor"] = _single_line(visual_anchor, 120)
+            if composition:
+                state["last_generated_image_composition"] = _single_line(composition, 120)
+            if reference_image_path:
+                state["last_generated_image_reference"] = _single_line(reference_image_path, 260)
+            state["last_generated_image_reference_exists"] = bool(reference_exists)
             state[f"last_{prefix}_generated_image_path"] = _single_line(image_path, 260)
             state[f"last_{prefix}_generated_image_at"] = _now_ts()
             state[f"last_{prefix}_generated_image_text"] = _single_line(post_text, 300)
             state[f"last_{prefix}_generated_image_caption"] = _single_line(caption, 180)
             state[f"last_{prefix}_generated_image_backend"] = _single_line(backend_name, 40)
+            if visual_anchor:
+                state[f"last_{prefix}_generated_image_anchor"] = _single_line(visual_anchor, 120)
+            if composition:
+                state[f"last_{prefix}_generated_image_composition"] = _single_line(composition, 120)
+            self._qzone_note_publish_image_status(
+                state,
+                reason,
+                "generated",
+                workflow_note or "ok",
+                path=image_path,
+                backend=backend_name,
+                caption=caption,
+                reference_image=reference_image_path,
+                reference_exists=reference_exists,
+                visual_anchor=visual_anchor,
+                composition=composition,
+            )
         logger.info(
-            "[PrivateCompanion] QQ 空间主动配图完成: reason=%s backend=%s path=%s",
+            "[PrivateCompanion] QQ 空间主动配图完成: reason=%s backend=%s reference=%s reference_exists=%s path=%s",
             reason,
             _single_line(backend_name, 40),
+            bool(reference_image_path),
+            reference_exists,
             _single_line(image_path, 160),
         )
         return [image_path]
@@ -1759,6 +2571,13 @@ class QzoneMixin(QzoneMediaMixin):
         daily_state = self.data.get("daily_state", {})
         current_item = self._get_current_plan_item(self.data.get("daily_plan", {}))
         diary_context = self._recent_diary_context(count=2)
+        theme_hint = self._qzone_publish_theme_hint()
+        temporal_context = self._qzone_temporal_context()
+        recent_publish_context = self._qzone_recent_publish_context(state)
+        memory_context = await self._qzone_memory_companion_context(
+            purpose="publish",
+            query="QQ空间生活说说 今日公开可写生活 当前日程 今日穿搭 最近吃饭 日记余味 自我时间线",
+        )
         if reusable_text:
             text = reusable_text
             logger.info(
@@ -1776,6 +2595,10 @@ class QzoneMixin(QzoneMediaMixin):
 - 可以带一点公开可见的心情、天气或日记余味,但不要暴露插件、模型、内部状态数值。
 - 禁止出现“能量”“心理能量”“/100”“状态变量”“当前状态”等内部汇报词。
 - 不要 @ 用户,不要泄露私聊内容,不要写得像营销文。
+- 写作角度：{theme_hint}
+
+【当前时间与季节】
+{temporal_context}
 
 【公开可写的状态余味】
 {self._qzone_public_state_hint(daily_state if isinstance(daily_state, dict) else {})}
@@ -1785,6 +2608,13 @@ class QzoneMixin(QzoneMediaMixin):
 
 【近日私密日记余味】
 {diary_context or "暂无"}
+
+【我会牢牢记住你 公开可写生活参考】
+{memory_context or "暂无"}
+使用方式：只选公开可写、不会泄露私聊或内部记忆来源的生活连续性。
+
+【最近说说去重】
+{recent_publish_context or "暂无最近记录。"}
 
 {self._format_worldview_adaptation_prompt()}
 """.strip()
@@ -1815,18 +2645,32 @@ class QzoneMixin(QzoneMediaMixin):
                 diary_context=diary_context,
                 state=state,
             )
-        result = await self._publish_qzone_text(text, images=image_sources)
+        result = await self._publish_qzone_text(text, images=image_sources, publish_reason="life_publish")
         if result.get("success"):
             state["last_life_publish_at"] = now
             state.pop("last_life_publish_failed_at", None)
             state["last_life_publish_status"] = "published"
+            if result.get("image_fallback"):
+                self._qzone_note_publish_image_status(
+                    state,
+                    "life_publish",
+                    "failed:upload_fallback",
+                    result.get("image_fallback_message") or "配图发布失败，已降级纯文字发布",
+                )
+                state["last_life_publish_image_fallback"] = {
+                    "stage": _single_line(result.get("image_fallback_stage"), 40),
+                    "message": _single_line(result.get("image_fallback_message"), 180),
+                    "at": now,
+                }
+            else:
+                state.pop("last_life_publish_image_fallback", None)
             self._qzone_clear_pending_publish_assets(state, "life_publish")
         else:
             state["last_life_publish_failed_at"] = now
             state["last_life_publish_status"] = f"failed:{_single_line(result.get('message'), 80)}"
         state["last_life_publish_checked_at"] = now
         state["last_life_publish_text"] = _single_line(result.get("text") or text, 180)
-        state["last_life_publish_images"] = len(image_sources) if result.get("success") else 0
+        state["last_life_publish_images"] = _safe_int(result.get("image_count"), len(result.get("images") or []), 0, 99) if result.get("success") else 0
         self._save_data_sync()
 
     async def _maybe_publish_qzone_emotional_vent(
@@ -1951,11 +2795,25 @@ class QzoneMixin(QzoneMediaMixin):
                     diary_context="",
                     state=state,
                 )
-            result = await self._publish_qzone_text(text, images=image_sources)
+            result = await self._publish_qzone_text(text, images=image_sources, publish_reason="emotional_vent")
             if result.get("success"):
                 state["last_emotional_vent_at"] = now
                 state.pop("last_emotional_vent_failed_at", None)
                 state["last_emotional_vent_status"] = "published"
+                if result.get("image_fallback"):
+                    self._qzone_note_publish_image_status(
+                        state,
+                        "emotional_vent",
+                        "failed:upload_fallback",
+                        result.get("image_fallback_message") or "配图发布失败，已降级纯文字发布",
+                    )
+                    state["last_emotional_vent_image_fallback"] = {
+                        "stage": _single_line(result.get("image_fallback_stage"), 40),
+                        "message": _single_line(result.get("image_fallback_message"), 180),
+                        "at": now,
+                    }
+                else:
+                    state.pop("last_emotional_vent_image_fallback", None)
                 self._qzone_clear_pending_publish_assets(state, "emotional_vent")
                 logger.info("[PrivateCompanion] 公开心情动态已发布: score=%s text=%s", mood_score, _single_line(result.get("text") or text, 120))
             else:
@@ -1964,7 +2822,7 @@ class QzoneMixin(QzoneMediaMixin):
                 logger.warning("[PrivateCompanion] 公开心情动态发布失败: %s", _single_line(result.get("message"), 120))
             state["last_emotional_vent_checked_at"] = now
             state["last_emotional_vent_text"] = _single_line(result.get("text") or text, 180)
-            state["last_emotional_vent_images"] = len(image_sources) if result.get("success") else 0
+            state["last_emotional_vent_images"] = _safe_int(result.get("image_count"), len(result.get("images") or []), 0, 99) if result.get("success") else 0
             self._save_data_sync()
         except Exception as exc:
             state["last_emotional_vent_failed_at"] = now

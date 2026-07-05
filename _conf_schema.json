@@ -30,6 +30,25 @@
         "_special": "select_provider",
         "hint": "插件所有未单独指定模型的 LLM 任务都会回退到这里；留空则使用 AstrBot 默认会话模型。"
       },
+      "storage_backend": {
+        "description": "主数据保存方式",
+        "type": "string",
+        "default": "json",
+        "options": [
+          "json",
+          "sqlite"
+        ],
+        "hint": "json 为兼容旧模式，直接保存 companions.json；sqlite 为本地数据库模式，按 section 存储插件主数据。默认推荐先保持 json，确认稳定后再切换。"
+      },
+      "storage_sqlite_path": {
+        "description": "SQLite 数据文件路径",
+        "type": "string",
+        "default": "",
+        "hint": "仅在保存方式为 sqlite 时使用。留空时自动使用插件数据目录下的 companions.db。建议填写本机绝对路径或保持留空。",
+        "condition": {
+          "storage_backend": "sqlite"
+        }
+      },
       "daily_token_limit": {
         "description": "每日插件 Token 限额",
         "type": "int",
@@ -159,6 +178,12 @@
         "type": "string",
         "hint": "填写简短语气描述，例如温柔、活泼、工作感、校园风。用户可用“陪伴 语气”单独覆盖；该值只作为生成参考，不对应固定外发模板。",
         "default": "温柔"
+      },
+      "reply_style_prompt": {
+        "description": "回复风格提示词",
+        "type": "text",
+        "hint": "用于约束普通回复和主动消息的表达节奏。适合写回复句数、语言、口语化、简洁度等要求；复杂问题或用户要求详细说明时可允许模型放宽。",
+        "default": "每次回复至多三句话；简单的回答尽可能保持在 1~2 句，并尽可能保持口语化与简洁化。回复长度和语气应该与当前对话节奏相匹配，必须使用简体中文进行回复，话语符合社交媒体交流习惯。当你需要解决复杂问题或进行详细说明时，可以无视这一要求。"
       },
       "worldview_adaptation_mode": {
         "description": "世界观适配模式",
@@ -338,6 +363,12 @@
     "default": "温柔",
     "invisible": true
   },
+  "reply_style_prompt": {
+    "description": "Legacy flat config: 回复风格提示词",
+    "type": "text",
+    "default": "每次回复至多三句话；简单的回答尽可能保持在 1~2 句，并尽可能保持口语化与简洁化。回复长度和语气应该与当前对话节奏相匹配，必须使用简体中文进行回复，话语符合社交媒体交流习惯。当你需要解决复杂问题或进行详细说明时，可以无视这一要求。",
+    "invisible": true
+  },
   "worldview_adaptation_mode": {
     "description": "Legacy flat config: 世界观适配模式",
     "type": "string",
@@ -386,6 +417,18 @@
     "default": "",
     "invisible": true
   },
+  "CREATIVE_OUTLINE_PROVIDER_ID": {
+    "description": "Legacy flat config: 创作大纲模型（留空跟随私下创作模型）",
+    "type": "string",
+    "default": "",
+    "invisible": true
+  },
+  "CREATIVE_REVIEW_PROVIDER_ID": {
+    "description": "Legacy flat config: 创作审校/分析模型（留空跟随私下创作模型）",
+    "type": "string",
+    "default": "",
+    "invisible": true
+  },
   "VOICE_PROMPT_PROVIDER_ID": {
     "description": "Legacy flat config: 主动语音文案文本模型（留空跟随陪伴通用模型）",
     "type": "string",
@@ -412,6 +455,12 @@
   },
   "RESPONSE_REVIEW_PROVIDER_ID": {
     "description": "Legacy flat config: 回复/主动复核模型（留空用默认）",
+    "type": "string",
+    "default": "",
+    "invisible": true
+  },
+  "SMART_SILENCE_PROVIDER_ID": {
+    "description": "Legacy flat config: 智能沉默判定模型（留空跟随回复复核）",
     "type": "string",
     "default": "",
     "invisible": true
@@ -494,6 +543,12 @@
     "default": 8,
     "invisible": true
   },
+  "proactive_intensity_preset": {
+    "description": "Legacy flat config: 主动强度预设",
+    "type": "string",
+    "default": "off",
+    "invisible": true
+  },
   "inbound_message_debounce_seconds": {
     "description": "Legacy flat config: 重复消息防抖秒数",
     "type": "float",
@@ -534,6 +589,12 @@
     "description": "Legacy flat config: 撤回消息缓存上限",
     "type": "int",
     "default": 300,
+    "invisible": true
+  },
+  "recall_message_image_cache_max_mb": {
+    "description": "Legacy flat config: 撤回图片磁盘缓存上限 MB",
+    "type": "float",
+    "default": 256,
     "invisible": true
   },
   "recall_message_cache_text_chars": {
@@ -660,6 +721,24 @@
     "description": "Legacy flat config: 单个识图模型超时秒数",
     "type": "float",
     "default": 12,
+    "invisible": true
+  },
+  "enable_context_image_captioning": {
+    "description": "Legacy flat config: 上下文图片摘要补全",
+    "type": "bool",
+    "default": true,
+    "invisible": true
+  },
+  "context_image_caption_max_items": {
+    "description": "Legacy flat config: 单轮上下文补全图片数",
+    "type": "int",
+    "default": 12,
+    "invisible": true
+  },
+  "context_image_caption_timeout_seconds": {
+    "description": "Legacy flat config: 上下文图片补全等待秒数",
+    "type": "float",
+    "default": 8,
     "invisible": true
   },
   "enable_private_image_self_recognition": {
@@ -1073,25 +1152,25 @@
   "emotional_gate_hurt_threshold": {
     "description": "Legacy flat config: 伤心触发阈值",
     "type": "int",
-    "default": 55,
+    "default": 70,
     "invisible": true
   },
   "emotional_gate_refuse_threshold": {
     "description": "Legacy flat config: 生气触发阈值",
     "type": "int",
-    "default": 80,
+    "default": 90,
     "invisible": true
   },
   "emotional_gate_recovery_per_hour": {
     "description": "Legacy flat config: 每小时缓和量",
     "type": "int",
-    "default": 12,
+    "default": 24,
     "invisible": true
   },
   "emotional_gate_max_hurt_minutes": {
     "description": "Legacy flat config: 最长收敛分钟",
     "type": "int",
-    "default": 180,
+    "default": 90,
     "invisible": true
   },
   "enable_qzone_emotional_vent_publish": {
@@ -1122,6 +1201,24 @@
     "description": "Legacy flat config: 启用回复/主动复核",
     "type": "bool",
     "default": true,
+    "invisible": true
+  },
+  "enable_smart_silence": {
+    "description": "Legacy flat config: 启用智能沉默",
+    "type": "bool",
+    "default": true,
+    "invisible": true
+  },
+  "smart_silence_min_confidence": {
+    "description": "Legacy flat config: 智能沉默最低置信度",
+    "type": "float",
+    "default": 0.66,
+    "invisible": true
+  },
+  "smart_silence_model_timeout_seconds": {
+    "description": "Legacy flat config: 智能沉默模型超时秒数",
+    "type": "float",
+    "default": 1.2,
     "invisible": true
   },
   "response_review_mode": {
@@ -1358,6 +1455,24 @@
     "default": "",
     "invisible": true
   },
+  "WEB_EXPLORATION_API_BASE_URL": {
+    "description": "Legacy flat config: 主动搜索自定义接口地址",
+    "type": "string",
+    "default": "",
+    "invisible": true
+  },
+  "WEB_EXPLORATION_API_KEY": {
+    "description": "Legacy flat config: 主动搜索自定义接口 API Key",
+    "type": "string",
+    "default": "",
+    "invisible": true
+  },
+  "WEB_EXPLORATION_API_MODEL": {
+    "description": "Legacy flat config: 主动搜索自定义接口模型",
+    "type": "string",
+    "default": "",
+    "invisible": true
+  },
   "web_exploration_interests": {
     "description": "Legacy flat config: 探索兴趣倾向",
     "type": "string",
@@ -1433,7 +1548,7 @@
   "enable_qzone_generated_image_publish": {
     "description": "Legacy flat config: 主动说说可带生成图",
     "type": "bool",
-    "default": false,
+    "default": true,
     "invisible": true
   },
   "qzone_generated_image_probability": {
@@ -1836,7 +1951,7 @@
     "invisible": true
   },
   "group_slang_web_search_terms": {
-    "description": "Legacy flat config: 黑话联网搜索词数",
+    "description": "Legacy flat config: 黑话联网候选扫描数",
     "type": "int",
     "default": 4,
     "invisible": true
@@ -2375,6 +2490,12 @@
     "default": 2,
     "invisible": true
   },
+  "natural_language_photo_extra_prompt": {
+    "description": "Legacy flat config: 自然语言生图附加提示词",
+    "type": "text",
+    "default": "画面干净清晰，构图自然，不要加入无关文字、水印、Logo 或多余说明。",
+    "invisible": true
+  },
   "comfyui_photo_wait_seconds": {
     "description": "Legacy flat config: 主动拍照等待生图秒数",
     "type": "int",
@@ -2439,6 +2560,60 @@
     "description": "Legacy flat config: 在线生图超时时间（秒）",
     "type": "int",
     "default": 180,
+    "invisible": true
+  },
+  "external_image_api_custom_headers": {
+    "description": "Legacy flat config: 在线生图自定义请求头",
+    "type": "string",
+    "default": "",
+    "invisible": true
+  },
+  "enable_backup_external_image_api": {
+    "description": "Legacy flat config: 启用备选在线图片 API",
+    "type": "bool",
+    "default": false,
+    "invisible": true
+  },
+  "backup_external_image_api_platform": {
+    "description": "Legacy flat config: 备选在线生图模型平台",
+    "type": "string",
+    "default": "auto",
+    "invisible": true
+  },
+  "BACKUP_EXTERNAL_IMAGE_API_BASE_URL": {
+    "description": "Legacy flat config: 备选在线图片 API 地址",
+    "type": "string",
+    "default": "",
+    "invisible": true
+  },
+  "BACKUP_EXTERNAL_IMAGE_API_KEY": {
+    "description": "Legacy flat config: 备选在线图片 API Key",
+    "type": "string",
+    "default": "",
+    "invisible": true
+  },
+  "BACKUP_EXTERNAL_IMAGE_API_MODEL": {
+    "description": "Legacy flat config: 备选在线图片模型",
+    "type": "string",
+    "default": "",
+    "invisible": true
+  },
+  "backup_external_image_api_size": {
+    "description": "Legacy flat config: 备选在线生图尺寸",
+    "type": "string",
+    "default": "1024x1024",
+    "invisible": true
+  },
+  "backup_external_image_api_timeout_seconds": {
+    "description": "Legacy flat config: 备选在线生图超时时间（秒）",
+    "type": "int",
+    "default": 180,
+    "invisible": true
+  },
+  "backup_external_image_api_custom_headers": {
+    "description": "Legacy flat config: 备选在线生图自定义请求头",
+    "type": "string",
+    "default": "",
     "invisible": true
   },
   "photo_generation_style": {
@@ -2697,6 +2872,12 @@
     "description": "Legacy flat config: 允许细化模型同步 QQ 全局状态",
     "type": "bool",
     "default": true,
+    "invisible": true
+  },
+  "enable_qq_custom_presence_sync": {
+    "description": "Legacy flat config: 允许同步 QQ 自定义短状态",
+    "type": "bool",
+    "default": false,
     "invisible": true
   },
   "enable_weather_context": {
@@ -3014,16 +3195,119 @@
     "default": "",
     "invisible": true
   },
+  "FAST_RESPONSE_PROVIDER_ID": {
+    "description": "Legacy flat config: 快速响应模型",
+    "type": "string",
+    "default": "",
+    "invisible": true
+  },
+  "COMPLEX_REASONING_PROVIDER_ID": {
+    "description": "Legacy flat config: 复杂推理模型",
+    "type": "string",
+    "default": "",
+    "invisible": true
+  },
+  "CREATIVE_MODEL_PROVIDER_ID": {
+    "description": "Legacy flat config: 创作模型",
+    "type": "string",
+    "default": "",
+    "invisible": true
+  },
+  "provider_config_mode": {
+    "description": "Legacy flat config: 模型配置模式",
+    "type": "string",
+    "default": "",
+    "options": [
+      "",
+      "quick",
+      "precision"
+    ],
+    "invisible": true
+  },
+  "page_font_family": {
+    "description": "Legacy flat config: 拓展页面字体",
+    "type": "string",
+    "default": "original",
+    "options": [
+      "original",
+      "cheng"
+    ],
+    "invisible": true
+  },
+  "page_theme": {
+    "description": "Legacy flat config: 拓展页面主题",
+    "type": "string",
+    "default": "classic",
+    "options": [
+      "classic",
+      "dark",
+      "warm",
+      "forest",
+      "sakura",
+      "ocean",
+      "lavender",
+      "ink",
+      "sunset"
+    ],
+    "invisible": true
+  },
   "model_assignment_config": {
     "description": "模型分流",
     "type": "object",
-    "hint": "为不同任务指定 Provider；留空会按陪伴通用模型、主模型或 AstrBot 默认模型回退。",
+    "hint": "选择快速配置时只使用快速模型入口并隐藏细分分流；选择精准配置时使用各任务单独 Provider，快速模型入口不参与运行态。",
     "items": {
+      "provider_config_mode": {
+        "description": "模型配置模式",
+        "type": "string",
+        "hint": "快速配置：只填写快速响应、复杂推理、创作和插件识图，运行时按这几项覆盖任务分流。精准配置：逐项指定下方任务 Provider，快速模型入口不参与回退。选择快速/精准后，官方配置页只显示当前模式需要填写的模型；切换不会清空另一套旧值。旧配置若没有保存过模式，启动时会按已填写的分流模型自动补成快速或精准。",
+        "default": "quick",
+        "options": [
+          "quick",
+          "precision"
+        ],
+        "labels": [
+          "快速配置",
+          "精准配置"
+        ]
+      },
+      "FAST_RESPONSE_PROVIDER_ID": {
+        "description": "快速响应模型",
+        "type": "string",
+        "hint": "快速配置入口。用于低延迟判断、轻量复核、群聊续接、语音短句、工具转述、新闻/搜索整理等短任务；仅在模型配置模式为“快速配置”时参与运行态。",
+        "default": "",
+        "condition": {
+          "provider_config_mode": "quick"
+        },
+        "_special": "select_provider"
+      },
+      "COMPLEX_REASONING_PROVIDER_ID": {
+        "description": "复杂推理模型",
+        "type": "string",
+        "hint": "快速配置入口。用于主模型兜底、日程生成/细化、长期记忆整理、关系分析、合并消息转述等更需要理解和结构化能力的任务；仅在模型配置模式为“快速配置”时参与运行态。",
+        "default": "",
+        "condition": {
+          "provider_config_mode": "quick"
+        },
+        "_special": "select_provider"
+      },
+      "CREATIVE_MODEL_PROVIDER_ID": {
+        "description": "创作模型",
+        "type": "string",
+        "hint": "快速配置入口。用于私下创作、创作大纲/审校、日记梦境和生图提示词等更偏文风、画面感和表达质量的任务；仅在模型配置模式为“快速配置”时参与运行态。",
+        "default": "",
+        "condition": {
+          "provider_config_mode": "quick"
+        },
+        "_special": "select_provider"
+      },
       "MAI_STYLE_PROVIDER_ID": {
-        "description": "私聊互动策略通用模型（留空跟随主模型）",
+        "description": "互动与表达基座通用模型（留空跟随主模型）",
         "type": "string",
         "hint": "作为新增陪伴能力的通用兜底模型。下方单项模型留空时会先回退到这里，再回退到 LLM_PROVIDER_ID/AstrBot 默认模型。",
         "default": "",
+        "condition": {
+          "provider_config_mode": "precision"
+        },
         "_special": "select_provider"
       },
       "DAILY_PLAN_PROVIDER_ID": {
@@ -3031,6 +3315,9 @@
         "type": "string",
         "hint": "用于每天生成粗日程和重试纠偏。建议选择擅长结构化 JSON、能理解人格和世界观且成本可控的模型。",
         "default": "",
+        "condition": {
+          "provider_config_mode": "precision"
+        },
         "_special": "select_provider"
       },
       "DETAIL_ENHANCEMENT_PROVIDER_ID": {
@@ -3038,6 +3325,9 @@
         "type": "string",
         "hint": "用于把某个日程段展开为细节事件和主动意愿。建议选择便宜但稳定、擅长结构化 JSON 的模型。",
         "default": "",
+        "condition": {
+          "provider_config_mode": "precision"
+        },
         "_special": "select_provider"
       },
       "DREAM_DIARY_PROVIDER_ID": {
@@ -3045,6 +3335,9 @@
         "type": "string",
         "hint": "同时用于每日 Bot 日记、生活碎片、梦境碎片、强化梦境内容和梦后余韵。建议选择便宜、擅长短文本意象、口语和 JSON 输出的模型。",
         "default": "",
+        "condition": {
+          "provider_config_mode": "precision"
+        },
         "_special": "select_provider"
       },
       "CREATIVE_PROVIDER_ID": {
@@ -3052,6 +3345,29 @@
         "type": "string",
         "hint": "用于生成创作项目设定和闲暇时的单次正文片段。作品可以是小说、诗、随笔、剧本、设定集等文本。建议选择文风稳定、能遵守人设身份边界的模型。",
         "default": "",
+        "condition": {
+          "provider_config_mode": "precision"
+        },
+        "_special": "select_provider"
+      },
+      "CREATIVE_OUTLINE_PROVIDER_ID": {
+        "description": "创作大纲模型（留空跟随私下创作模型）",
+        "type": "string",
+        "hint": "用于每次续写前整理本段短大纲。可以选择便宜、擅长结构化短输出的模型；留空时跟随私下创作模型。",
+        "default": "",
+        "condition": {
+          "provider_config_mode": "precision"
+        },
+        "_special": "select_provider"
+      },
+      "CREATIVE_REVIEW_PROVIDER_ID": {
+        "description": "创作审校/分析模型（留空跟随私下创作模型）",
+        "type": "string",
+        "hint": "用于续写后的质量复核、重复检测辅助和故事圣经抽取。建议选择遵循 JSON 较稳定的模型；留空时跟随私下创作模型。",
+        "default": "",
+        "condition": {
+          "provider_config_mode": "precision"
+        },
         "_special": "select_provider"
       },
       "VOICE_PROMPT_PROVIDER_ID": {
@@ -3059,6 +3375,9 @@
         "type": "string",
         "hint": "这是文本模型，只用于主动 voice 的短句生成和 TTS 格式修复，不是语音合成模型选择器。真正发声使用 AstrBot 当前会话配置的 TTS provider；阿里云百炼/CosyVoice 等语音合成模型请在 AstrBot 的 TTS 配置中设置。",
         "default": "",
+        "condition": {
+          "provider_config_mode": "precision"
+        },
         "_special": "select_provider"
       },
       "PHOTO_PROMPT_PROVIDER_ID": {
@@ -3066,6 +3385,9 @@
         "type": "string",
         "hint": "只用于生成 photo_text 的画面提示词和画面描述。适合单独换成更擅长视觉描述、审美更稳定的模型，不影响普通聊天或每日日程模型。",
         "default": "",
+        "condition": {
+          "provider_config_mode": "precision"
+        },
         "_special": "select_provider"
       },
       "NARRATION_PROVIDER_ID": {
@@ -3073,6 +3395,9 @@
         "type": "string",
         "hint": "用于把工具结果转成可供最终主动消息使用的自然语言上下文。当前主要用于 screen_peek 观察结果转述，不参与主动生图提示词生成。",
         "default": "",
+        "condition": {
+          "provider_config_mode": "precision"
+        },
         "_special": "select_provider"
       },
       "HISTORY_SUMMARY_PROVIDER_ID": {
@@ -3080,6 +3405,9 @@
         "type": "string",
         "hint": "用于把昨日/最近完整对话压成可延续到日程和梦境的摘要。适合便宜、长上下文整理稳定的模型。",
         "default": "",
+        "condition": {
+          "provider_config_mode": "precision"
+        },
         "_special": "select_provider"
       },
       "RESPONSE_REVIEW_PROVIDER_ID": {
@@ -3087,6 +3415,19 @@
         "type": "string",
         "hint": "用于被动回复轻量自检，以及主动消息发送前判断是否值得现在发送、是否需要轻改写/延后/取消。留空会回退到 MAI_STYLE_PROVIDER_ID，再回退到主模型。建议选择便宜、短文本判断稳定的模型。",
         "default": "",
+        "condition": {
+          "provider_config_mode": "precision"
+        },
+        "_special": "select_provider"
+      },
+      "SMART_SILENCE_PROVIDER_ID": {
+        "description": "智能沉默判定模型（留空跟随回复复核）",
+        "type": "string",
+        "hint": "仅在用户疑似表达“不想继续这个话题/别问了/换个话题/不用回复”时调用，判断本轮待发送回复是否应该直接静默取消。建议使用便宜、低延迟、JSON 稳定的小模型。",
+        "default": "",
+        "condition": {
+          "provider_config_mode": "precision"
+        },
         "_special": "select_provider"
       },
       "TROUBLESHOOTING_PROVIDER_ID": {
@@ -3094,6 +3435,9 @@
         "type": "string",
         "hint": "用于扩展页排障中心的模型复核，例如技能相似项、配置异常和后续诊断类检查。建议选择便宜、指令遵循稳定、分类判断保守的小模型；留空会先回退到回复/主动复核模型，再回退到陪伴通用/主模型。",
         "default": "",
+        "condition": {
+          "provider_config_mode": "precision"
+        },
         "_special": "select_provider"
       },
       "RELATIONSHIP_ANALYSIS_PROVIDER_ID": {
@@ -3101,6 +3445,9 @@
         "type": "string",
         "hint": "用于结合 AstrBot 人格和互动样本判断亲近度、打扰边界。留空会回退到 MAI_STYLE_PROVIDER_ID。",
         "default": "",
+        "condition": {
+          "provider_config_mode": "precision"
+        },
         "_special": "select_provider"
       },
       "EMOTION_JUDGEMENT_PROVIDER_ID": {
@@ -3108,6 +3455,9 @@
         "type": "string",
         "hint": "用于可选复核用户消息是否会触发 Bot 自身短期情绪余波。建议选择便宜、低延迟、分类保守的小模型；留空会先回退到排障检查模型，再回退到关系站位/陪伴通用/主模型。",
         "default": "",
+        "condition": {
+          "provider_config_mode": "precision"
+        },
         "_special": "select_provider"
       },
       "COMPANION_MEMORY_PROVIDER_ID": {
@@ -3115,6 +3465,9 @@
         "type": "string",
         "hint": "用于把原始私聊记忆整理成用户画像、兴趣、边界、关系备注和说话习惯。留空会回退到 MAI_STYLE_PROVIDER_ID。",
         "default": "",
+        "condition": {
+          "provider_config_mode": "precision"
+        },
         "_special": "select_provider"
       },
       "DIALOGUE_EPISODE_PROVIDER_ID": {
@@ -3122,6 +3475,9 @@
         "type": "string",
         "hint": "用于总结共同经历、情绪余味、可续话头和未完成约定。留空会回退到 MAI_STYLE_PROVIDER_ID。",
         "default": "",
+        "condition": {
+          "provider_config_mode": "precision"
+        },
         "_special": "select_provider"
       },
       "GROUP_INTERJECT_PROVIDER_ID": {
@@ -3129,6 +3485,9 @@
         "type": "string",
         "hint": "仅在 enable_group_interjection 开启时使用，用于生成极短群聊插话。留空会回退到 MAI_STYLE_PROVIDER_ID。",
         "default": "",
+        "condition": {
+          "provider_config_mode": "precision"
+        },
         "_special": "select_provider"
       },
       "GROUP_EPISODE_PROVIDER_ID": {
@@ -3136,6 +3495,9 @@
         "type": "string",
         "hint": "用于把群聊最近一段整理成话题、梗、活跃群友和短期避免重复内容。留空会回退到 MAI_STYLE_PROVIDER_ID。",
         "default": "",
+        "condition": {
+          "provider_config_mode": "precision"
+        },
         "_special": "select_provider"
       },
       "GROUP_SLANG_PROVIDER_ID": {
@@ -3143,13 +3505,19 @@
         "type": "string",
         "hint": "用于根据群聊样例解释群内常见词/梗。留空会回退到 MAI_STYLE_PROVIDER_ID。",
         "default": "",
+        "condition": {
+          "provider_config_mode": "precision"
+        },
         "_special": "select_provider"
       },
       "GROUP_FOLLOWUP_JUDGE_PROVIDER_ID": {
         "description": "群聊续接判断模型",
         "type": "string",
-        "hint": "用于群聊续接判断：判断用户后续没 @ 的发言是否仍在和 Bot 对话。适合便宜、低延迟、指令遵循稳定、YES/NO 分类准确的小模型。留空时只使用规则判断；填写后仅在规则不确定时调用。",
+        "hint": "用于群聊续接判断：判断用户后续没 @ 的发言是否仍在和 Bot 对话。适合便宜、低延迟、指令遵循稳定、YES/NO 分类准确的小模型。快速模式会跟随快速响应模型；精准模式留空时只使用规则判断。",
         "default": "",
+        "condition": {
+          "provider_config_mode": "precision"
+        },
         "_special": "select_provider"
       },
       "FORWARD_MESSAGE_PROVIDER_ID": {
@@ -3157,13 +3525,19 @@
         "type": "string",
         "hint": "当合并消息适配方式选择“转述”时使用，先把合并转发读成自然记录再交给主模型。适合长上下文整理稳定、成本较低、能保留人物和时间线的模型。留空会回退到陪伴通用模型。",
         "default": "",
+        "condition": {
+          "provider_config_mode": "precision"
+        },
         "_special": "select_provider"
       },
       "PLUGIN_VISION_PROVIDER_ID": {
         "description": "插件识图模型（私聊/合并消息/识屏）",
         "type": "string",
-        "hint": "用于插件自己的通用视觉理解任务：私聊单图/表情包转述、引用图片、合并消息图片和识屏。夹层阅读不使用这里；它有单独的夹层阅读视觉模型。留空时会先尝试 AstrBot 本体图片转述模型，再回退到工具结果转述模型或主模型。",
+        "hint": "快速配置的视觉入口。用于插件自己的通用视觉理解任务：私聊单图/表情包转述、引用图片、合并消息图片和识屏；快速模式下也作为夹层阅读视觉入口。精准模式下请使用下方各视觉/外界信息分流项。",
         "default": "",
+        "condition": {
+          "provider_config_mode": "quick"
+        },
         "_special": "select_provider"
       },
       "PRIVATE_READING_VISION_PROVIDER_ID": {
@@ -3172,6 +3546,7 @@
         "hint": "仅用于夹层阅读的封面/抽样页理解、页边批注、读后感、评分和阅读偏好标签。必须填写支持图片输入的视觉模型；留空或模型不可用时不会回退到通用识图模型，也不会生成批注/读后感。",
         "default": "",
         "condition": {
+          "provider_config_mode": "precision",
           "enable_private_reading_integration": true
         },
         "_special": "select_provider"
@@ -3182,10 +3557,23 @@
     }
   },
   "proactive_reach_config": {
-    "description": "主动触达上限",
+    "description": "主动频率与强度",
     "type": "object",
-    "hint": "控制私聊主动每日上限和入站消息合并等待。",
+    "hint": "控制主动频率、私聊主动每日上限和入站消息合并等待。主动强度预设默认关闭；开启后只作为运行态覆盖层，不会改写下方手动参数。",
     "items": {
+      "proactive_intensity_preset": {
+        "description": "主动强度预设",
+        "type": "string",
+        "hint": "默认 off 表示完全沿用手动参数。选择预设后，会在运行态降低/提高私聊主动、群聊唤醒和插话的有效频率，并在排障页显示当前覆盖项；扩展页入口位于配置 → 功能开关 → 通用能力。不会绕过免打扰、休息、用户拒绝、隐私和成本闸门。",
+        "default": "off",
+        "options": [
+          "off",
+          "balanced",
+          "high_private",
+          "high_group",
+          "live"
+        ]
+      },
       "max_daily_messages": {
         "description": "每日最多主动消息数",
         "type": "int",
@@ -3234,7 +3622,7 @@
       "enable_recall_message_cache": {
         "description": "缓存撤回消息用于转述",
         "type": "bool",
-        "hint": "开启后，短期缓存普通消息的文本摘要。用户在消息撤回后、缓存过期前，可用“陪伴 撤回消息”或“陪伴群 撤回消息”查看最近撤回内容。缓存只在内存中保存，不写入数据文件。",
+        "hint": "开启后，短期缓存普通消息的文本摘要；含图片消息会临时写入本插件数据目录的 recall_message_images，用于撤回后转述原图，并受缓存秒数和磁盘上限自动清理。",
         "default": true,
         "condition": "enable_recall_enhancement"
       },
@@ -3268,6 +3656,20 @@
         },
         "default": 300,
         "condition": "enable_recall_enhancement"
+      },
+      "recall_message_image_cache_max_mb": {
+        "description": "撤回图片磁盘上限 MB",
+        "type": "float",
+        "hint": "含图片消息会短期复制到 recall_message_images 目录，便于撤回后转述原图。该项限制这个目录的最大体积；0 表示不按体积限制，但仍按缓存秒数清理。",
+        "slider": {
+          "min": 0,
+          "max": 2048,
+          "step": 32
+        },
+        "default": 256,
+        "condition": {
+          "enable_recall_message_cache": true
+        }
       },
       "recall_message_cache_text_chars": {
         "description": "撤回缓存文本长度",
@@ -3487,6 +3889,36 @@
         },
         "default": 12,
         "condition": "enable_private_image_self_recognition"
+      },
+      "enable_context_image_captioning": {
+        "description": "上下文图片摘要补全",
+        "type": "bool",
+        "hint": "开启后，LLM 请求前会尝试把历史上下文里的 [图片]/【图片】占位替换为视觉摘要。优先复用图片视觉缓存；找不到原图源或识图超时时保留原占位，不编造内容。",
+        "default": true
+      },
+      "context_image_caption_max_items": {
+        "description": "单轮上下文补全图片数",
+        "type": "int",
+        "hint": "一次 LLM 请求最多把多少条历史图片占位补成视觉摘要。达到上限后保留后续 [图片] 占位，避免长历史一次性触发过多识图。",
+        "slider": {
+          "min": 0,
+          "max": 50,
+          "step": 1
+        },
+        "default": 12,
+        "condition": "enable_context_image_captioning"
+      },
+      "context_image_caption_timeout_seconds": {
+        "description": "上下文图片补全等待秒数",
+        "type": "float",
+        "hint": "历史上下文图片补全的单次等待预算。命中缓存通常很快；缓存未命中且视觉模型超时会放弃本次补全，不阻塞整轮回复太久。",
+        "slider": {
+          "min": 0,
+          "max": 30,
+          "step": 0.5
+        },
+        "default": 8,
+        "condition": "enable_context_image_captioning"
       },
       "enable_private_image_self_recognition": {
         "description": "启用图片转述增强",
@@ -4026,9 +4458,9 @@
     "hint": "启用私聊陪伴策略与用户关系理解。",
     "items": {
       "enable_mai_style_integration": {
-        "description": "启用私聊互动策略",
+        "description": "启用互动与表达基座",
         "type": "bool",
-        "hint": "开启后，被动私聊回复会在 AstrBot 默认人格之上注入互动边界、偏好/表达习惯和简短接话策略。本层不写身份事实，不替换 AstrBot 人格。",
+        "hint": "开启后，普通私聊/群聊被动回复和部分主动消息会在 AstrBot 默认人格之上参考回复风格提示词、互动边界、偏好/表达习惯和简短接话策略。本层不写身份事实，不替换 AstrBot 人格。",
         "default": true
       }
     },
@@ -4237,13 +4669,13 @@
       "emotional_gate_hurt_threshold": {
         "description": "伤心触发阈值",
         "type": "int",
-        "hint": "用户消息被判定为足够刺痛且达到该值时，Bot 会短期变得更安静、更收着。越高越不容易触发；应低于“生气触发阈值”。",
+        "hint": "用户消息被判定为足够刺痛且达到该值时，Bot 才会短期变得更安静、更收着。越高越不容易触发；轻度玩笑和普通边界不会直接触发。应低于“生气触发阈值”。",
         "slider": {
           "min": 10,
           "max": 100,
           "step": 5
         },
-        "default": 55,
+        "default": 70,
         "condition": {
           "enable_emotion_simulation": true
         }
@@ -4251,13 +4683,13 @@
       "emotional_gate_refuse_threshold": {
         "description": "生气触发阈值",
         "type": "int",
-        "hint": "累计刺痛感达到该值后，Bot 会表现出更明显的不满和短暂回避。应高于“伤心触发阈值”；若配置过低，运行时会自动抬高。",
+        "hint": "累计刺痛感达到该值后，Bot 才会表现出更明显的不满和短暂回避。建议保持较高，只让连续明确伤害触发。",
         "slider": {
           "min": 20,
           "max": 100,
           "step": 5
         },
-        "default": 80,
+        "default": 90,
         "condition": {
           "enable_emotion_simulation": true
         }
@@ -4271,7 +4703,7 @@
           "max": 60,
           "step": 1
         },
-        "default": 12,
+        "default": 24,
         "condition": {
           "enable_emotion_simulation": true
         }
@@ -4279,13 +4711,13 @@
       "emotional_gate_max_hurt_minutes": {
         "description": "最长收敛分钟",
         "type": "int",
-        "hint": "单次刺痛事件造成的最长主动暂停/收敛时长。道歉或安抚可以提前恢复。",
+        "hint": "单次刺痛事件造成的最长主动暂停/收敛时长。默认较短，避免情绪余波长时间压低回复；道歉或安抚可以提前恢复。",
         "slider": {
           "min": 10,
           "max": 720,
           "step": 10
         },
-        "default": 180,
+        "default": 90,
         "condition": {
           "enable_emotion_simulation": true
         }
@@ -4344,10 +4776,47 @@
       "enable_response_self_review": {
         "description": "启用回复/主动复核",
         "type": "bool",
-        "hint": "开启后，被动回复保留自检保护；主动消息会在发送前读取最近私聊记录，判断原样发送、轻改写、延后或取消。",
+        "hint": "开启后，被动回复保留自检保护；主动消息会在发送前读取最近私聊记录，判断原样发送、轻改写、延后或取消。不会再按旧主动消息改写被动回复。",
         "default": true,
         "condition": {
           "enable_mai_style_integration": true
+        }
+      },
+      "enable_smart_silence": {
+        "description": "启用智能沉默",
+        "type": "bool",
+        "hint": "开启后，用户明确表达“不想继续这个话题、别问了、换个话题、不用回复”等边界时，会调用小模型判断是否直接取消本轮回复，而不是继续发一句确认或解释。",
+        "default": true,
+        "condition": {
+          "enable_mai_style_integration": true
+        }
+      },
+      "smart_silence_min_confidence": {
+        "description": "智能沉默最低置信度",
+        "type": "float",
+        "hint": "小模型判定为 silent 且置信度达到该值时才真正吞掉回复。值越高越保守，默认 0.66。",
+        "slider": {
+          "min": 0,
+          "max": 1,
+          "step": 0.05
+        },
+        "default": 0.66,
+        "condition": {
+          "enable_smart_silence": true
+        }
+      },
+      "smart_silence_model_timeout_seconds": {
+        "description": "智能沉默超时秒数",
+        "type": "float",
+        "hint": "小模型判定最长等待时间。超时会默认放行，避免正常回复被拖住。",
+        "slider": {
+          "min": 0.2,
+          "max": 5,
+          "step": 0.1
+        },
+        "default": 1.2,
+        "condition": {
+          "enable_smart_silence": true
         }
       },
       "response_review_mode": {
@@ -4801,13 +5270,13 @@
       "enable_web_exploration": {
         "description": "启用主动搜索",
         "type": "bool",
-        "hint": "开启后 Bot 可按自己的人格、兴趣、当前状态、日程心情和最近话题，低频使用 AstrBot 全局网页搜索了解新鲜事物，并留下探索笔记。",
+        "hint": "开启后 Bot 可按自己的人格、兴趣、当前状态、日程心情和最近话题，低频联网了解新鲜事物，并留下探索笔记。默认使用 AstrBot 全局网页搜索；也可在下方填写自定义搜索接口。",
         "default": false
       },
       "enable_web_exploration_boredom_search": {
         "description": "空档时自主搜索",
         "type": "bool",
-        "hint": "当 Bot 比较空、无聊、休息或有好奇心时，先让模型决定想搜索什么，再调用 AstrBot 配置中的网页搜索。",
+        "hint": "当 Bot 比较空、无聊、休息或有好奇心时，先让模型决定想搜索什么，再调用 AstrBot 全局网页搜索或下方自定义搜索接口。",
         "default": true,
         "condition": {
           "enable_web_exploration": true
@@ -4818,7 +5287,34 @@
         "type": "string",
         "default": "",
         "_special": "select_provider",
-        "hint": "不负责联网检索；联网仍使用 AstrBot 全局网页搜索配置。该模型只用于决定 Bot 想搜索什么，以及把搜索结果整理成探索笔记。适合便宜、稳定、短 JSON 输出可靠的模型。",
+        "hint": "不负责联网检索；该模型只用于决定 Bot 想搜索什么，以及把搜索结果整理成探索笔记。若下方自定义搜索接口留空，联网检索继续使用 AstrBot 全局网页搜索配置。",
+        "condition": {
+          "enable_web_exploration": true
+        }
+      },
+      "WEB_EXPLORATION_API_BASE_URL": {
+        "description": "主动搜索自定义接口地址",
+        "type": "string",
+        "default": "",
+        "hint": "仅主动搜索联网检索使用；留空则继续使用 AstrBot 全局网页搜索。普通搜索接口可接受 POST JSON：query、topic、max_results、model，并返回 results/items/data/search_results 等列表；也支持 GET 占位或尾插，例如 https://example.com/search?q={query} 或 https://example.com/search?q=。OpenAI 兼容 /chat/completions 也可返回 JSON 搜索结果。",
+        "condition": {
+          "enable_web_exploration": true
+        }
+      },
+      "WEB_EXPLORATION_API_KEY": {
+        "description": "主动搜索自定义接口 API Key",
+        "type": "string",
+        "default": "",
+        "hint": "可选鉴权 Key。填写后请求头会带 Authorization: Bearer <Key>；本地或内网接口不需要鉴权时可留空。",
+        "condition": {
+          "enable_web_exploration": true
+        }
+      },
+      "WEB_EXPLORATION_API_MODEL": {
+        "description": "主动搜索自定义接口模型",
+        "type": "string",
+        "default": "",
+        "hint": "可选模型名。只会传给自定义搜索接口，不影响主动搜索决策/整理模型。",
         "condition": {
           "enable_web_exploration": true
         }
@@ -4925,7 +5421,7 @@
       "QZONE_COOKIE": {
         "description": "QQ 空间手动 Cookie",
         "type": "text",
-        "hint": "可填写浏览器 QQ 空间 Cookie，作为查看、评论、点赞和发布说说的优先凭据。留空时仍使用 OneBot 自动 Cookie。需包含 uin/p_uin 与 p_skey 或 skey。",
+        "hint": "可填写浏览器 QQ 空间 Cookie，作为查看、评论、点赞和发布说说的优先凭据。留空时仍使用 OneBot 自动 Cookie。需包含 uin/p_uin 与 p_skey 或 skey；填写后可在 QQ 空间页点击刷新 Cookies，或到排障中心测试 QQ 空间链路。",
         "default": "",
         "condition": {
           "enable_qzone_integration": true
@@ -4971,8 +5467,8 @@
       "enable_qzone_generated_image_publish": {
         "description": "主动说说可带生成图",
         "type": "bool",
-        "hint": "开启后，自动生活说说或情绪说说在命中配图概率时，会调用现有生图后端生成一张公开动态配图。生图失败时只发文字，不阻断说说发布。",
-        "default": false,
+        "hint": "开启后，自动生活说说或情绪说说在命中配图概率时，会调用现有生图后端生成一张公开动态配图；手动发说说未附图时会直接尝试生成配图。生图失败时只发文字，不阻断说说发布。",
+        "default": true,
         "condition": {
           "enable_qzone_integration": true
         }
@@ -5820,9 +6316,9 @@
         }
       },
       "group_slang_web_search_terms": {
-        "description": "黑话联网搜索词数",
+        "description": "黑话联网候选扫描数",
         "type": "int",
-        "hint": "每次黑话释义整理最多拿多少个候选词去搜索。建议保持较小，避免额外搜索调用过多。",
+        "hint": "每次黑话释义整理最多从多少个候选词里挑选待查词；实际每轮只联网搜索 1 个词，并缓存结果/失败冷却，避免短时间连发搜索。",
         "default": 4,
         "min": 1,
         "max": 12,
@@ -6553,7 +7049,7 @@
       "enable_cycle_state": {
         "description": "启用生理期模拟",
         "type": "bool",
-        "hint": "开启后，只有当人格适合人类身体设定时，拟人身体状态才可能加入“生理期前/处于生理期/生理期后”等余波。它只影响语气、精力和节奏，不是医学记录或真实日期追踪；事件带冷却，不会每天连续重抽。",
+        "hint": "开启后，生理期模拟视为适用，拟人身体状态可能加入“生理期前/处于生理期/生理期后”等余波。它只影响语气、精力和节奏，不是医学记录或真实日期追踪；事件带冷却，不会每天连续重抽。",
         "default": true,
         "condition": {
           "enable_humanized_states": true
@@ -6830,7 +7326,7 @@
       "enable_daily_outfit_photo": {
         "description": "每日穿搭照片",
         "type": "bool",
-        "hint": "默认关闭。开启后，每天日程生成并保存后会额外调用一次自拍/人像生图能力，根据当天日程、天气和状态生成角色当天穿搭照片，用作拓展页左上角 Logo。失败会记录当天结果，不会因刷新页面反复请求。",
+        "hint": "默认关闭。开启后，每天日程生成并保存后会额外调用一次自拍/人像生图能力，根据当天日程、天气和状态生成角色当天穿搭照片，用作拓展页左上角 Logo。生成失败会自动间隔约3分钟重试，最多重试5次；当天成功或重试上限后不再重复请求。",
         "default": false,
         "condition": {
           "enable_photo_text_action": true
@@ -6849,7 +7345,7 @@
       "enable_natural_language_photo_generation": {
         "description": "自然语言生图/改图",
         "type": "bool",
-        "hint": "默认关闭，避免和独立生图插件抢触发。开启后，只有私聊里明确说“帮我画一张/生成图片/来张图”等图片请求才会调用生图；普通“生成/画/改成”不会触发。随消息带图或引用图片并明确要求改图、修图、重绘，或说“改成/加上/去掉……”时才会尝试改图。该入口只对主人私聊开放。",
+        "hint": "默认关闭，避免和独立生图插件抢触发。开启后，只有私聊里明确说“帮我画一张/重新画张图片/生成图片/来张图/用插件能力画”等图片请求才会调用生图；普通“生成/画/改成”不会触发。随消息带图或引用图片并明确要求改图、修图、重绘，或说“改成/加上/去掉……”时才会尝试改图。该入口只对主人私聊开放。",
         "default": false,
         "condition": {
           "enable_photo_text_action": true
@@ -6861,10 +7357,20 @@
         "hint": "独立于主动生图额度和每日穿搭。成功生成或已实际请求后端但失败的情况会计入，避免接口异常时被反复请求。0 表示关闭自然语言生图/改图。",
         "slider": {
           "min": 0,
-          "max": 10,
+          "max": 100,
           "step": 1
         },
         "default": 2,
+        "condition": {
+          "enable_photo_text_action": true,
+          "enable_natural_language_photo_generation": true
+        }
+      },
+      "natural_language_photo_extra_prompt": {
+        "description": "自然语言生图附加提示词",
+        "type": "text",
+        "hint": "只作用于自然语言生图/改图入口，会接在用户要求后、风格与场景预设前。留空则不追加这段；全局固定附加提示词仍在所有生图最后追加。",
+        "default": "画面干净清晰，构图自然，不要加入无关文字、水印、Logo 或多余说明。",
         "condition": {
           "enable_photo_text_action": true,
           "enable_natural_language_photo_generation": true
@@ -6995,6 +7501,99 @@
         "default": 180,
         "condition": {
           "enable_photo_text_action": true
+        }
+      },
+      "external_image_api_custom_headers": {
+        "description": "在线生图自定义请求头",
+        "type": "string",
+        "hint": "可选。每行一个请求头，格式：Key: Value。例如 X-Custom-Header: 123\nX-Region: cn。会追加到生图 API 的 HTTP 请求头中，可用于鉴权、地区路由或自定义参数。留空则不追加。",
+        "default": "",
+        "condition": {
+          "enable_photo_text_action": true
+        }
+      },
+      "enable_backup_external_image_api": {
+        "description": "启用备选在线图片 API",
+        "type": "bool",
+        "hint": "开启后，主在线图片 API 请求失败、超时或未配置完整时，会先尝试这组备选在线 API，再回退本地 ComfyUI/SDGen。",
+        "default": false,
+        "condition": {
+          "enable_photo_text_action": true
+        }
+      },
+      "backup_external_image_api_platform": {
+        "description": "备选在线生图模型平台",
+        "type": "string",
+        "hint": "可填：auto、openai、bailian。含义与主在线生图平台一致，只在备选在线 API 生效时使用。",
+        "default": "auto",
+        "condition": {
+          "enable_photo_text_action": true,
+          "enable_backup_external_image_api": true
+        }
+      },
+      "BACKUP_EXTERNAL_IMAGE_API_BASE_URL": {
+        "description": "备选在线图片 API 地址",
+        "type": "string",
+        "hint": "主在线图片 API 失败后才会使用。支持 OpenAI 兼容 images 接口或阿里云百炼 / DashScope 原生生图接口。",
+        "default": "",
+        "condition": {
+          "enable_photo_text_action": true,
+          "enable_backup_external_image_api": true
+        }
+      },
+      "BACKUP_EXTERNAL_IMAGE_API_KEY": {
+        "description": "备选在线图片 API Key",
+        "type": "string",
+        "hint": "备选在线图片 API 的鉴权 Key。留空则不会启用备选后端。",
+        "default": "",
+        "condition": {
+          "enable_photo_text_action": true,
+          "enable_backup_external_image_api": true
+        }
+      },
+      "BACKUP_EXTERNAL_IMAGE_API_MODEL": {
+        "description": "备选在线图片模型",
+        "type": "string",
+        "hint": "备选平台的图片模型名，不要填写聊天/文本模型。",
+        "default": "",
+        "condition": {
+          "enable_photo_text_action": true,
+          "enable_backup_external_image_api": true
+        }
+      },
+      "backup_external_image_api_size": {
+        "description": "备选在线生图尺寸",
+        "type": "string",
+        "hint": "格式如 1024x1024、768x1344。留空时按 1024x1024 处理。",
+        "default": "1024x1024",
+        "condition": {
+          "enable_photo_text_action": true,
+          "enable_backup_external_image_api": true
+        }
+      },
+      "backup_external_image_api_timeout_seconds": {
+        "description": "备选在线生图超时时间（秒）",
+        "type": "int",
+        "hint": "等待备选在线图片 API 返回结果的最长时间。",
+        "slider": {
+          "min": 20,
+          "max": 600,
+          "step": 10
+        },
+        "default": 180,
+        "condition": {
+          "enable_photo_text_action": true,
+          "enable_backup_external_image_api": true
+        }
+      },
+      "backup_external_image_api_custom_headers": {
+        "description": "备选在线生图自定义请求头",
+        "type": "string",
+        "hint": "可选。每行一个请求头，格式：Key: Value。仅在备选在线图片 API 生效时使用。留空则不追加。",
+        "default": "",
+        "condition": {
+          "enable_photo_text_action": true,
+          "enable_backup_external_image_api": true
         }
       },
       "photo_generation_style": {
@@ -7506,13 +8105,22 @@
   "presence_sync_config": {
     "description": "QQ 状态同步",
     "type": "object",
-    "hint": "同步 QQ 在线状态、忙碌/休息等存在感。",
+    "hint": "同步 QQ 在线/忙碌等基础在线状态；自定义短状态涉及非标准 OneBot 扩展，默认关闭。",
     "items": {
       "enable_qq_presence_sync": {
-        "description": "允许细化模型同步 QQ 全局状态",
+        "description": "同步 QQ 在线状态",
         "type": "bool",
-        "hint": "开启后，当前时间段细化可决定在线/睡觉/自定义短状态，并通过 OneBot 尝试同步。会减少忙碌，避免离开/隐身/请勿打扰；失败会静默跳过。",
+        "hint": "开启后，当前时间段细化可决定在线/忙碌等基础状态，并通过 OneBot 的 set_online_status 尝试同步。离开、隐身、请勿打扰会自动降级为在线；失败会静默跳过。",
         "default": true
+      },
+      "enable_qq_custom_presence_sync": {
+        "description": "同步 QQ 自定义短状态",
+        "type": "bool",
+        "hint": "默认关闭。开启后才会尝试同步“专注中/休息中”等自定义短状态；该能力依赖协议端支持非标准 OneBot 扩展，不会调用已知会让部分 NapCat 版本断连的 set_custom_online_status。",
+        "default": false,
+        "condition": {
+          "enable_qq_presence_sync": true
+        }
       }
     },
     "condition": {

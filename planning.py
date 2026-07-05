@@ -35,7 +35,22 @@ async def generate_detail_enhancement(
     state: dict[str, Any],
 ) -> dict[str, Any]:
     await plugin._ensure_weather_context()
-    prompt = plugin._build_detail_enhancement_prompt(segment, plan, state)
+    memory_companion_context = ""
+    memory_companion_context_getter = getattr(plugin, "_memory_companion_compose_schedule_context", None)
+    if callable(memory_companion_context_getter):
+        memory_companion_context = await memory_companion_context_getter(
+            kind="detail",
+            segment=segment,
+            plan=plan,
+            state=state,
+            max_chars=1100,
+        )
+    prompt = plugin._build_detail_enhancement_prompt(
+        segment,
+        plan,
+        state,
+        memory_companion_context=memory_companion_context,
+    )
     detail_provider = plugin._task_provider(
         getattr(plugin, "detail_enhancement_provider_id", ""),
         getattr(plugin, "daily_plan_provider_id", ""),
@@ -103,6 +118,9 @@ async def generate_detail_enhancement(
                     field=f"detail.state_variables.{index}.{key}",
                 )
     normalized["presence_status"] = normalize_presence_status(payload.get("presence_status"))
+    memory_companion_recorder = getattr(plugin, "_memory_companion_record_detail_enhancement", None)
+    if callable(memory_companion_recorder):
+        await memory_companion_recorder(segment=segment, plan=plan, detail=normalized)
     return normalized
 
 
@@ -414,7 +432,11 @@ async def generate_daily_plan(plugin) -> dict[str, Any]:
     today = _today_key()
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     await plugin._ensure_weather_context()
-    prompt = plugin._build_daily_plan_prompt(now)
+    memory_companion_context = ""
+    memory_companion_context_getter = getattr(plugin, "_memory_companion_compose_schedule_context", None)
+    if callable(memory_companion_context_getter):
+        memory_companion_context = await memory_companion_context_getter(kind="daily_plan", max_chars=1300)
+    prompt = plugin._build_daily_plan_prompt(now, memory_companion_context=memory_companion_context)
     plan_provider = plugin._task_provider(
         getattr(plugin, "daily_plan_provider_id", ""),
         getattr(plugin, "mai_style_provider_id", ""),
@@ -491,6 +513,9 @@ async def generate_daily_plan(plugin) -> dict[str, Any]:
         "items": items,
     }
     plugin._remember_daily_plan_history(plan)
+    memory_companion_recorder = getattr(plugin, "_memory_companion_record_daily_plan", None)
+    if callable(memory_companion_recorder):
+        await memory_companion_recorder(plan)
     return plan
 
 
@@ -525,7 +550,7 @@ def get_schedule_planning_prompt(plugin) -> str:
     return "\n\n".join(parts)
 
 
-def build_daily_plan_prompt(plugin, now: str) -> str:
+def build_daily_plan_prompt(plugin, now: str, memory_companion_context: str = "") -> str:
     custom = plugin.daily_plan_prompt
     schedule_prompt = plugin._get_schedule_planning_prompt()
     can_do_text = plugin._format_can_do_for_prompt()
@@ -539,6 +564,8 @@ def build_daily_plan_prompt(plugin, now: str) -> str:
     recent_plan_history = plugin._format_recent_daily_plan_history_for_prompt()
     skill_growth_context = plugin._format_skill_growth_schedule_context()
     user_habits = plugin._format_all_user_behavior_habits_for_schedule()
+    memory_companion_context = str(memory_companion_context or "").strip()
+    memory_companion_context_block = memory_companion_context or "暂无可用 MemoryCompanion 连续性参考。"
     try:
         now_dt = datetime.strptime(now, "%Y-%m-%d %H:%M")
         weekday_text = "一二三四五六日"[now_dt.weekday()]
@@ -556,6 +583,8 @@ def build_daily_plan_prompt(plugin, now: str) -> str:
             schedule_adjustments=schedule_adjustments,
             skill_growth_context=skill_growth_context,
             user_habits=user_habits,
+            memory_companion_context=memory_companion_context,
+            memory_companion_context_block=memory_companion_context_block,
             recent_plan_history=recent_plan_history,
             calendar_context=calendar_context,
             recent_diaries=recent_diaries,
@@ -573,6 +602,7 @@ def build_daily_plan_prompt(plugin, now: str) -> str:
 2. 再看日程参考设定：年龄、身份、作息、生活背景决定今天的大主线。
 3. 再看拟人状态和天气：决定节奏快慢、出门意愿、情绪收放和户外时刻。
 4. 再看昨日完整对话摘要、昨日屏幕观察日记和今日互动造成的日程偏移：把它们作为身体、情绪、关系、未完成约定、作息节奏和梦境碎片的残留来源；用户今天明确介入过的事情必须产生合理后果,不要像没发生一样。
+4.5 再看 MemoryCompanion 连续性参考：它只用于承接 Bot 自己最近做过/读过/写过/搜过/主动说过的事情,以及用户明确偏好、约定和边界；不要把它当作当前正在发生的现场,不要在输出里提到 MemoryCompanion 或记忆来源。
 5. 最后参考可做事项、最近日记、重要日期：只拿来补充细节,不要反客为主。
 
 【生成要求】
@@ -648,6 +678,9 @@ Bot 名字：{plugin.bot_name}
 用户行为习惯线索：
 {user_habits}
 
+MemoryCompanion 连续性参考：
+{memory_companion_context_block}
+
 最近日程骨架（今天要避免照抄）：
 {recent_plan_history}
 
@@ -673,6 +706,7 @@ def build_detail_enhancement_prompt(
     segment: dict[str, Any],
     plan: dict[str, Any],
     state: dict[str, Any],
+    memory_companion_context: str = "",
 ) -> str:
     item = segment.get("item") if isinstance(segment, dict) else {}
     previous_item = segment.get("previous_item") if isinstance(segment, dict) else {}
@@ -684,6 +718,8 @@ def build_detail_enhancement_prompt(
     calendar_context = plugin._format_calendar_context_for_prompt()
     schedule_adjustments = plugin._format_schedule_adjustments_for_prompt()
     user_habits = plugin._format_all_user_behavior_habits_for_schedule()
+    memory_companion_context = str(memory_companion_context or "").strip()
+    memory_companion_context_block = memory_companion_context or "暂无可用 MemoryCompanion 连续性参考。"
     yesterday_screen_diary = plugin._format_yesterday_screen_diary_context_for_prompt()
     photo_available = bool(getattr(plugin, "_photo_text_planning_available", lambda *_args, **_kwargs: False)())
     photo_action_hint = (
@@ -726,6 +762,7 @@ def build_detail_enhancement_prompt(
 · 强度为“强”的用户介入必须至少影响 2 个输出位置：summary、state_variables、today_events、proactive_events 或 presence_status 中任选两个以上。强干涉通常还要影响下一段或今日后续,不能只在当前几分钟消失。
 · 如果用户给了照顾/休息/边界/约定/任务帮助,要把它当成事实承接：照顾会放慢节奏,边界会收敛主动,约定会留下等待或预留空档,任务帮助会推进进度或松开卡点。不要把用户介入写成“看了一眼就过去了”。
 · 如果上一段或最近互动留下了影响,当前段要自然体现残留：收到消息后的回暖、没等到回复后的轻微失落、被用户打断后计划变慢、某句话在脑子里转了一会儿。没有互动就不要硬编。
+· MemoryCompanion 连续性参考只用于承接 Bot 自己最近做过/读过/写过/搜过/主动说过的事情,以及用户明确偏好、约定和边界；不要把它当作当前现场,不要在输出里提到 MemoryCompanion 或记忆来源。
 · 依据日期语境调整节奏：周末/节假日/假期不要写成普通工作日,除非设定里明确有补课、补班、值班、考试等例外。
 · 人际关系边界：细化只放大 Bot 自己怎样度过这一段,不要把未明确要求的社交互动写进 summary、state_variables、today_events 或 proactive_events。家人、父母、兄弟姐妹、亲戚、室友、同学、老师、同事、朋友、邻居、前辈、后辈等只能在材料明确出现且确实属于角色当前生活时使用；没有依据时用“路人”“店员”“旁边的人”“群友”“别人”等弱关系,或只保留角色自己的行动。
 · 朋友用户禁区：禁止加入与朋友用户的互动。这里的“朋友用户”指插件里关系角色为 friend 的私聊对象,不是普通剧情里的路人朋友。不要在 summary、state_variables、today_events、proactive_events 里写 Bot 和朋友用户聊天、发消息、回消息、被提醒、互相吐槽、约饭、夜宵、见面、出门或一起做事；也不要把用户介入改写成 Bot 与朋友用户之间的互动。如果需要表现手机或消息氛围,只能写成“手机震了一下,她没有点开”“看见通知又扣下屏幕”“把想说的话先存在输入框里”,对象只能是当前主人/用户或不指名对象。
@@ -813,6 +850,9 @@ def build_detail_enhancement_prompt(
 
 【用户行为习惯线索】
 {user_habits}
+
+【MemoryCompanion 连续性参考】
+{memory_companion_context_block}
 
 【天气】
 {weather_info}

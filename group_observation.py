@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 GroupObservationMixin — 从 main.py 重新拆分出的群聊观察
 """
@@ -485,6 +485,140 @@ class GroupObservationMixin:
             return filtered_recent[-1]
         return raw_recent[-1] if raw_recent else None
 
+    def _format_group_recent_flow_for_review(
+        self,
+        group: dict[str, Any],
+        *,
+        sender_id: str = "",
+        text: str = "",
+        max_lines: int = 12,
+        max_chars: int = 1400,
+        include_current: bool = True,
+    ) -> str:
+        """Format real group chat flow for small-model review and rewrite decisions."""
+        recent = self._filtered_group_recent_messages(group)
+        cleaned = _single_line(text, 260)
+        current_sender_id = str(sender_id or "").strip()
+        current_index = -1
+        if cleaned:
+            for index in range(len(recent) - 1, -1, -1):
+                item = recent[index]
+                if not isinstance(item, dict):
+                    continue
+                if current_sender_id and str(item.get("sender_id") or "") != current_sender_id:
+                    continue
+                if _single_line(item.get("text"), 260) != cleaned:
+                    continue
+                current_index = index
+                break
+
+        line_limit = max(2, _safe_int(max_lines, 12, 2))
+        start = max(0, len(recent) - line_limit)
+        selected: list[tuple[dict[str, Any], int | None]] = [
+            (item, start + offset)
+            for offset, item in enumerate(recent[start:])
+            if isinstance(item, dict)
+        ]
+        if include_current and cleaned and current_index < start:
+            selected.append(
+                (
+                    {
+                        "sender_id": current_sender_id,
+                        "name": "",
+                        "identity_name": "",
+                        "text": cleaned,
+                        "_review_current": True,
+                    },
+                    None,
+                )
+            )
+            if len(selected) > line_limit:
+                selected = selected[-line_limit:]
+
+        lines: list[str] = []
+        for item, index in selected:
+            msg = _single_line(item.get("text"), 120)
+            if not msg:
+                continue
+            item_sender_id = _single_line(item.get("sender_id"), 40)
+            name = self._group_member_identity_label(
+                item_sender_id,
+                item.get("identity_name") or item.get("name"),
+                limit=24,
+            )
+            if item_sender_id:
+                name = f"{name}[QQ:{item_sender_id}]"
+            current_mark = "（当前）" if item.get("_review_current") or index == current_index else ""
+            lines.append(f"- {current_mark}{name}: {msg}")
+
+        char_limit = max(200, _safe_int(max_chars, 1400, 200))
+        while lines and len("\n".join(lines)) > char_limit:
+            lines.pop(0)
+        return "\n".join(lines)
+
+    def _group_name_from_event(self, event: Any) -> str:
+        if event is None:
+            return ""
+
+        def clean(value: Any) -> str:
+            text = _single_line(value, 80)
+            if not text or text.isdigit():
+                return ""
+            return text
+
+        getter = getattr(event, "get_group_name", None)
+        if callable(getter):
+            try:
+                value = getter()
+                if hasattr(value, "__await__"):
+                    value = ""
+                name = clean(value)
+                if name:
+                    return name
+            except Exception:
+                pass
+
+        raw: dict[str, Any] = {}
+        raw_getter = getattr(self, "_event_raw_payload", None)
+        if callable(raw_getter):
+            try:
+                payload = raw_getter(event)
+                raw = payload if isinstance(payload, dict) else {}
+            except Exception:
+                raw = {}
+        for key in ("group_name", "group_card", "group_display_name", "group_remark", "name", "display_name", "title"):
+            value = clean(raw.get(key))
+            if value:
+                return value
+        for obj_key in ("group", "group_info", "sender_group", "guild"):
+            group_obj = raw.get(obj_key) if isinstance(raw.get(obj_key), dict) else {}
+            for key in ("group_name", "name", "display_name", "group_remark", "title", "card"):
+                value = clean(group_obj.get(key))
+                if value:
+                    return value
+        message_obj = getattr(event, "message_obj", None)
+        sources = [message_obj]
+        if message_obj is not None:
+            raw_message = getattr(message_obj, "raw_message", None)
+            if isinstance(raw_message, dict):
+                sources.append(raw_message)
+            sources.append(getattr(message_obj, "group", None))
+            sources.append(getattr(message_obj, "group_info", None))
+        for source in sources:
+            if source is None:
+                continue
+            for attr in ("group_name", "name", "display_name", "group_card", "group_remark", "title", "card"):
+                if isinstance(source, dict):
+                    value = clean(source.get(attr))
+                else:
+                    try:
+                        value = clean(getattr(source, attr, None))
+                    except Exception:
+                        value = ""
+                if value:
+                    return value
+        return ""
+
     def _update_group_observation(
         self,
         group: dict[str, Any],
@@ -495,6 +629,7 @@ class GroupObservationMixin:
         group_id: str = "",
         scene: dict[str, Any] | None = None,
         message_id: str = "",
+        event: Any = None,
     ) -> None:
         cleaned = _single_line(text, 260)
         if not cleaned:
@@ -503,6 +638,11 @@ class GroupObservationMixin:
         injection_guard = self._analyze_group_injection_guard(cleaned, sender_id=sender_id)
         blocked_by_guard = bool(injection_guard.get("blocked"))
         group["group_id"] = str(group_id or group.get("group_id") or group.get("id") or "")
+        group_name = self._group_name_from_event(event)
+        if group_name and group_name != group["group_id"]:
+            group["name"] = group_name
+            group["group_name"] = group_name
+            group["last_group_name_seen_at"] = now
         group["last_seen"] = now
         group["message_count"] = _safe_int(group.get("message_count"), 0, 0) + 1
 
@@ -909,6 +1049,83 @@ class GroupObservationMixin:
             user["last_group_share_at"] = now
             changed = True
         return changed
+
+    def _maybe_schedule_group_ignore_complaint(
+        self,
+        group_id: str,
+        group: dict[str, Any],
+        *,
+        sender_id: str = "",
+        sender_name: str = "",
+        text: str = "",
+        now: float | None = None,
+    ) -> bool:
+        if not sender_id or not self.enable_group_companion:
+            return False
+        users = self.data.get("users")
+        if not isinstance(users, dict):
+            return False
+        user = users.get(str(sender_id))
+        if not isinstance(user, dict) or not user.get("enabled", True) or not user.get("umo"):
+            return False
+        if self._private_user_role(user, str(sender_id)) == "friend":
+            return False
+        awaiting_since = _safe_float(user.get("awaiting_reply_since"), 0)
+        last_sent = _safe_float(user.get("last_sent"), 0)
+        if awaiting_since <= 0 or last_sent <= 0:
+            return False
+        now = _now_ts() if now is None else now
+        wait_seconds = now - max(awaiting_since, last_sent)
+        if wait_seconds < 90 * 60:
+            return False
+        if _safe_int(user.get("ignored_streak"), 0, 0) <= 0:
+            return False
+        cooldown_key = f"group_ignore_complaint:{_today_key()}"
+        if str(user.get("last_group_ignore_complaint_key") or "") == cooldown_key:
+            return False
+        if now - _safe_float(user.get("last_group_ignore_complaint_at"), 0) < 24 * 3600:
+            return False
+        if _safe_float(user.get("next_proactive_at"), 0) > 0 and _safe_float(user.get("next_proactive_at"), 0) <= now + 90 * 60:
+            return False
+        profile = self._persona_action_profile()
+        chance = 0.035
+        if profile.get("clingy"):
+            chance += 0.055
+        if profile.get("playful"):
+            chance += 0.035
+        if profile.get("observant"):
+            chance += 0.015
+        if not (profile.get("clingy") or profile.get("playful") or profile.get("observant")):
+            chance *= 0.35
+        chance += min(0.035, max(0, _safe_int(user.get("ignored_streak"), 0, 0) - 1) * 0.015)
+        if random.random() > min(0.16, chance):
+            return False
+        delay_minutes = random.randint(12, 36)
+        display_name = self._group_member_identity_name(str(sender_id), sender_name or str(sender_id), limit=24)
+        group_name = _single_line(group.get("name") or group.get("group_name"), 40) or str(group_id)
+        accepted = self._offer_proactive_candidate(
+            str(sender_id),
+            user,
+            {
+                "source": "group_ignore_complaint",
+                "reason": "quiet_care",
+                "action": "message",
+                "scheduled_ts": now + delay_minutes * 60,
+                "topic": "刚才私聊没回但在群里冒泡",
+                "score": 68,
+                "motive": (
+                    f"{display_name} 已经有 {self._format_elapsed(wait_seconds).removesuffix('前')}没回私聊，"
+                    f"但刚刚在群 {group_name} 里冒泡了；如果符合人格，可以低压地小声抱怨一句或撒娇一下，不要质问，不要泄露群聊细节。"
+                ),
+            },
+        )
+        if not accepted:
+            return False
+        user["last_group_ignore_complaint_key"] = cooldown_key
+        user["last_group_ignore_complaint_at"] = now
+        user["last_group_ignore_complaint_group_id"] = str(group_id)
+        user["last_group_ignore_complaint_text"] = _single_line(text, 80)
+        return True
 
     def _learn_group_slang(self, group: dict[str, Any], text: str) -> None:
         if self._group_text_blocked_by_injection_guard(text):
@@ -1665,7 +1882,13 @@ class GroupObservationMixin:
             lines.append(
                 "群聊边界：私聊记忆、用户私聊偏好和内部记录只作避错背景,不要说到群里。"
             )
-        livingmemory_guidance = self._format_livingmemory_guidance(scope="group")
+        livingmemory_guidance = (
+            ""
+            if getattr(self, "_memory_companion_should_defer_prompt_section", lambda *_args, **_kwargs: False)(
+                "livingmemory_guidance"
+            )
+            else self._format_livingmemory_guidance(scope="group")
+        )
         if livingmemory_guidance:
             lines.append(livingmemory_guidance)
         if len(lines) <= 1:
@@ -1738,6 +1961,15 @@ class GroupObservationMixin:
 
         if details:
             lines.append("；".join(details) + "。")
+        recent_flow = self._format_group_recent_flow_for_review(
+            group,
+            sender_id=sender_id,
+            text=text,
+            max_lines=max(4, self.group_scene_recent_limit + 2),
+            max_chars=900,
+        )
+        if recent_flow:
+            lines.append("真实最近群聊：\n" + recent_flow)
         return "\n".join(lines)
 
     def _format_group_current_sender_identity_guard(self, group: dict[str, Any], *, sender_id: str = "", text: str = "") -> str:
@@ -2013,15 +2245,19 @@ class GroupObservationMixin:
     def _group_interjection_allowed(self, group: dict[str, Any], text: str) -> tuple[bool, str]:
         if not self.enable_group_interjection:
             return False, "群聊主动插话未开启"
-        if self.group_interject_max_daily <= 0:
+        max_daily_getter = getattr(self, "_effective_group_interject_max_daily", None)
+        max_daily = max_daily_getter() if callable(max_daily_getter) else self.group_interject_max_daily
+        min_interval_getter = getattr(self, "_effective_group_interject_min_interval_minutes", None)
+        min_interval = min_interval_getter() if callable(min_interval_getter) else self.group_interject_min_interval_minutes
+        if max_daily <= 0:
             return False, "群聊主动插话上限为 0"
         today = _today_key()
         if group.get("interject_day") != today:
             group["interject_day"] = today
             group["interject_today"] = 0
-        if _safe_int(group.get("interject_today"), 0, 0) >= self.group_interject_max_daily:
+        if _safe_int(group.get("interject_today"), 0, 0) >= max_daily:
             return False, "今日群聊插话已达上限"
-        if _now_ts() - _safe_float(group.get("last_interject_at"), 0) < self.group_interject_min_interval_minutes * 60:
+        if _now_ts() - _safe_float(group.get("last_interject_at"), 0) < min_interval * 60:
             return False, "群聊插话间隔太近"
         recent = self._filtered_group_recent_messages(group)
         current = recent[-1] if recent and isinstance(recent[-1], dict) else {}
@@ -2302,9 +2538,11 @@ class GroupObservationMixin:
         if group.get("interject_day") != today:
             group["interject_day"] = today
             group["interject_today"] = 0
-        if self.group_interject_max_daily <= 0:
+        max_daily_getter = getattr(self, "_effective_group_interject_max_daily", None)
+        max_daily = max_daily_getter() if callable(max_daily_getter) else self.group_interject_max_daily
+        if max_daily <= 0:
             return {}
-        if _safe_int(group.get("interject_today"), 0, 0) >= self.group_interject_max_daily:
+        if _safe_int(group.get("interject_today"), 0, 0) >= max_daily:
             return {}
         follow_probability = min(0.85, _safe_float(state.get("follow_probability"), self.group_repeat_follow_probability))
         interrupt_probability = min(0.85, _safe_float(state.get("interrupt_probability"), self.group_repeat_interrupt_probability))
@@ -2352,12 +2590,33 @@ class GroupObservationMixin:
         allowed, reason = self._group_interjection_allowed(group, text)
         if not allowed:
             return
+        memory_context = ""
+        composer = getattr(self, "_memory_companion_compose_feature_context", None)
+        if callable(composer):
+            try:
+                memory_context = await composer(
+                    kind="group_interjection",
+                    query=(
+                        f"群聊主动插话判断：群={group.get('group_id') or ''}；触发消息={_single_line(text, 180)}；"
+                        "群聊最近谁在对话、谁不喜欢被cue、上次插话效果、关系边界、常聊话题、是否适合轻接一句"
+                    ),
+                    event=event,
+                    top_k=5,
+                    max_chars=900,
+                    timeout_seconds=1.2,
+                )
+            except Exception as exc:
+                logger.debug("[PrivateCompanion] 群聊插话 我会牢牢记住你 上下文读取失败: %s", _single_line(exc, 120))
         prompt = f"""
 你在一个群聊里,系统认为现在也许可以非常轻地接一句,但你必须先判断这句会不会显得硬插话。
 只输出要发到群里的正文,不要解释。
 
 【主动插话判断上下文】
 {self._format_group_context_for_prompt(group)}
+
+【我会牢牢记住你 群聊场合参考】
+{memory_context or '暂无可用长期参考。'}
+使用方式：只用于判断这个群、这些人和这个话题是否适合接话；不要在回复里提到记忆来源。
 
 【刚刚触发的消息】
 {_single_line(text, 180)}
@@ -2539,6 +2798,15 @@ class GroupObservationMixin:
                 examples.append(f"{_single_line(item.get('name'), 18) or '群友'}: {text}")
         if not examples:
             return
+        acquired = await self._try_acquire_group_background_task(
+            group_id,
+            "group_slang",
+            now,
+            refresh_key="last_slang_summary_at",
+            refresh_seconds=self.group_slang_summary_minutes * 60,
+        )
+        if not acquired:
+            return
         web_evidence = await self._collect_group_slang_web_evidence(group_id, terms, examples)
         web_evidence_block = (
             "【联网参考】\n"
@@ -2578,15 +2846,6 @@ class GroupObservationMixin:
 
 入库标准：只输出 confidence >= 0.65 的词。无法达到就省略。
 """.strip()
-        acquired = await self._try_acquire_group_background_task(
-            group_id,
-            "group_slang",
-            now,
-            refresh_key="last_slang_summary_at",
-            refresh_seconds=self.group_slang_summary_minutes * 60,
-        )
-        if not acquired:
-            return
         try:
             raw = await self._llm_call(
                 prompt,
@@ -2726,26 +2985,105 @@ class GroupObservationMixin:
                 break
         if not picked_terms:
             return ""
-        lines: list[str] = []
-        for term in picked_terms:
-            query = f"群聊环境下的网络用语“{term}”是什么意思？"
-            try:
-                results = await searcher(query, umo=search_umo, topic="general")
-            except Exception as exc:
-                logger.debug("[PrivateCompanion] 群黑话联网参考搜索失败: group=%s term=%s err=%s", group_id, term, _single_line(exc, 120))
-                continue
-            hits = []
-            for item in results[:result_limit]:
+        now = _now_ts()
+        async with self._data_lock:
+            current = self._get_group(group_id)
+            web_state = current.setdefault("slang_web_search_state", {})
+            if not isinstance(web_state, dict):
+                web_state = {}
+                current["slang_web_search_state"] = web_state
+            per_term = web_state.setdefault("terms", {})
+            if not isinstance(per_term, dict):
+                per_term = {}
+                web_state["terms"] = per_term
+            cursor = _safe_int(web_state.get("cursor"), 0, 0)
+            ordered_terms = picked_terms[cursor % len(picked_terms):] + picked_terms[:cursor % len(picked_terms)]
+            selected_term = ""
+            cached_evidence = ""
+            for term in ordered_terms:
+                item = per_term.get(term)
                 if not isinstance(item, dict):
+                    item = {}
+                    per_term[term] = item
+                evidence = str(item.get("evidence") or "").strip()
+                if evidence and now - _safe_float(item.get("last_success_at"), 0.0, 0.0) < 7 * 24 * 3600:
+                    cached_evidence = evidence
                     continue
-                title = _single_line(item.get("title"), 80)
-                snippet = _single_line(item.get("snippet"), 180)
-                if not title and not snippet:
+                if now < _safe_float(item.get("retry_after"), 0.0, 0.0):
                     continue
-                hits.append(f"- {title}: {snippet}".strip())
-            if hits:
-                lines.append(f"{term}（搜索：{query}）:\n" + "\n".join(hits))
+                selected_term = term
+                break
+            if not selected_term and cached_evidence:
+                return cached_evidence[:1800]
+            if not selected_term:
+                return ""
+        lines: list[str] = []
+        term = selected_term
+        query = f"群聊环境下的网络用语“{term}”是什么意思？"
+        try:
+            results = await searcher(query, umo=search_umo, topic="general")
+        except Exception as exc:
+            results = []
+            self._last_web_search_error = _single_line(exc, 240)
+            logger.debug("[PrivateCompanion] 群黑话联网参考搜索失败: group=%s term=%s err=%s", group_id, term, _single_line(exc, 120))
+        error_text = _single_line(getattr(self, "_last_web_search_error", ""), 240)
+        if error_text and not results:
+            async with self._data_lock:
+                current = self._get_group(group_id)
+                web_state = current.setdefault("slang_web_search_state", {})
+                if isinstance(web_state, dict):
+                    per_term = web_state.setdefault("terms", {})
+                    if isinstance(per_term, dict):
+                        item = per_term.setdefault(term, {})
+                        if isinstance(item, dict):
+                            item["last_error"] = error_text
+                            item["retry_after"] = now + 30 * 60
+                    try:
+                        web_state["cursor"] = (picked_terms.index(term) + 1) % len(picked_terms)
+                    except ValueError:
+                        web_state["cursor"] = 0
+                    web_state["last_error"] = error_text
+                    web_state["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self._save_data_sync()
+            logger.info(
+                "[PrivateCompanion] 群黑话联网参考单词搜索失败并冷却: group=%s term=%s error=%s",
+                group_id,
+                term,
+                error_text,
+            )
+            return ""
+        hits = []
+        for item in results[:result_limit]:
+            if not isinstance(item, dict):
+                continue
+            title = _single_line(item.get("title"), 80)
+            snippet = _single_line(item.get("snippet"), 180)
+            if not title and not snippet:
+                continue
+            hits.append(f"- {title}: {snippet}".strip())
+        if hits:
+            lines.append(f"{term}（搜索：{query}）:\n" + "\n".join(hits))
+        async with self._data_lock:
+            current = self._get_group(group_id)
+            web_state = current.setdefault("slang_web_search_state", {})
+            if isinstance(web_state, dict):
+                per_term = web_state.setdefault("terms", {})
+                if isinstance(per_term, dict):
+                    item = per_term.setdefault(term, {})
+                    if isinstance(item, dict):
+                        item["last_search_at"] = now
+                        item["retry_after"] = 0
+                        item["last_error"] = ""
+                        if lines:
+                            item["last_success_at"] = now
+                            item["evidence"] = "\n".join(lines)[:1800]
+                try:
+                    web_state["cursor"] = (picked_terms.index(term) + 1) % len(picked_terms)
+                except ValueError:
+                    web_state["cursor"] = 0
+                web_state["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self._save_data_sync()
         if lines:
-            logger.info("[PrivateCompanion] 群黑话联网参考已收集: group=%s terms=%s", group_id, len(lines))
+            logger.info("[PrivateCompanion] 群黑话联网参考已收集: group=%s term=%s", group_id, term)
         return "\n".join(lines)[:1800]
 

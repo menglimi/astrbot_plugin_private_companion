@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 ProactiveMessageMixin — 主动消息生成、动作执行和发送链路
 """
@@ -1147,10 +1147,19 @@ class ProactiveMessageMixin:
 {{timer_hint}}
 
 只取一个最自然的切口开口,不要把洗漱/穿搭/天气/心情/日程逐项列成状态清单；如果已经有一个具体画面或一句话,就停在那里。
-只输出要发给 {{name}} 的正文。
+最后留下来的文本就是聊天窗口里的下一句话。像正常聊天一样收住，只保留角色真正要说出口的内容。
+只输出这句正文。
 """.strip()
 
-    def _build_framework_proactive_prompt(
+    def _proactive_natural_delivery_hint(self) -> str:
+        return (
+            "【自然交付提醒】\n"
+            "这一轮的最终文本会成为对话里的下一句。"
+            "请把注意力放在这句聊天内容本身，像平时主动开口那样自然收住；"
+            "过程中的执行状态只供系统判断，不需要写进正文。"
+        )
+
+    async def _build_framework_proactive_prompt(
         self,
         *,
         user: dict[str, Any],
@@ -1187,6 +1196,22 @@ class ProactiveMessageMixin:
         timer_hint = self._format_llm_timer_context(user)
         time_guard = self._proactive_time_guard_hint(reason, current_item)
         recent_topics_hint = self._format_recent_proactive_topics_hint(user)
+        # Search for unresolved open-loop / promise memories from the memory plugin
+        open_loops_hint = ""
+        try:
+            umo = str(user.get("umo") or "").strip()
+            if umo:
+                open_loops = await self._memory_companion_search_open_loops(session_id=umo, limit=2)
+                if open_loops:
+                    loop_texts = []
+                    for loop in open_loops[:2]:
+                        content_preview = _single_line(loop.get("content"), 80)
+                        age = loop.get("age_days")
+                        age_str = f"（{age:.0f}天前）" if age is not None else ""
+                        loop_texts.append(f"- {content_preview}{age_str}")
+                    open_loops_hint = "你心里还挂着这些没完成的事，如果自然可以提一下：\n" + "\n".join(loop_texts)
+        except Exception:
+            pass
         current_schedule = self._sanitize_schedule_context_for_private_user(current_schedule, user)
         compact_motive = _single_line(motive, 36) or "有一点想靠近对方"
         topic_hint = _single_line(user.get("planned_proactive_topic"), 40)
@@ -1219,10 +1244,51 @@ class ProactiveMessageMixin:
             "{{action_context}}": action_prompt_context if action_prompt_context and action_prompt_context != "（无额外上下文）" else "什么都没做,就是忽然想来找你",
             "{{unanswered_count}}": str(unanswered_count) if unanswered_count > 0 else "",
             "{{unanswered_hint}}": unanswered_hint,
+            "{{open_loops_hint}}": open_loops_hint,
             "{{current_time}}": current_time,
         }
         for key, value in replacements.items():
             prompt = prompt.replace(key, value)
+        reply_style = self._format_reply_style_prompt() if callable(getattr(self, "_format_reply_style_prompt", None)) else ""
+        reply_style_marker = "<!-- private_companion_reply_style_v1 -->"
+        if reply_style and reply_style_marker not in prompt:
+            prompt = f"{prompt.rstrip()}\n\n{reply_style_marker}\n{reply_style}"
+        delivery_hint = self._proactive_natural_delivery_hint()
+        if delivery_hint and "自然交付提醒" not in prompt:
+            prompt = f"{prompt.rstrip()}\n\n{delivery_hint}"
+        if open_loops_hint and "没完成的事" not in prompt:
+            prompt = f"{prompt.rstrip()}\n\n{open_loops_hint}"
+        memory_getter = getattr(self, "_memory_companion_compose_feature_context", None)
+        if callable(memory_getter):
+            user_id = _single_line(user.get("user_id") or user.get("id"), 80)
+            query = " ".join(
+                part
+                for part in (
+                    "主动消息正文生成",
+                    reason,
+                    action,
+                    topic_hint,
+                    compact_motive,
+                    "用户习惯 最近互动 当前穿搭 当前日程 自我时间线 避雷",
+                )
+                if _single_line(part, 180)
+            )
+            memory_context = await memory_getter(
+                kind="proactive_generation",
+                query=query,
+                user=user,
+                user_id=user_id,
+                top_k=5,
+                max_chars=760,
+            )
+            if memory_context:
+                prompt = (
+                    f"{prompt.rstrip()}\n\n"
+                    "<!-- private_companion_memory_generation_context_v1 -->\n"
+                    "【我会牢牢记住你 可用记忆】\n"
+                    f"{memory_context}\n"
+                    "使用方式：只作为自然连续性和边界参考；能贴住当前切口就轻轻用,不相关就忽略。不要说“我查到/我记忆里”。"
+                )
         return prompt.strip()
 
     def _format_proactive_generation_intent_hint(
@@ -1296,6 +1362,11 @@ class ProactiveMessageMixin:
             lines.append("这是有来源的续接/提醒：可以顺着来源，但不要写成用户刚刚又发了新消息。")
         elif kind in {"self_share", "external_share", "observation"}:
             lines.append("这是分享/观察型主动：只取一个最小切口，不写成报告、推荐文或观察总结。")
+            true_external_info = reason in {"bili_video_share", "news_share", "web_exploration_share"} or anchor_type == "external_info"
+            if true_external_info:
+                lines.append("外界分享必须贴住这次看到的标题、视频、新闻或资料本身；如果只是低压地放一句，也要围绕来源表达感受，不要改成无关的个人状态或泛泛压力询问。")
+            elif anchor_type == "group_context":
+                lines.append("群聊见闻只是一段共同群里的小片段：可以轻轻转述一个具体笑点或画面，不要把内部话题名写成“标题/新闻/资料”。")
         elif kind in {"care", "check_in", "light_touch"}:
             lines.append("这是靠近型主动：不要直接说想念、关心或刷存在感，要侧着落到一个小动作或小片段。")
 
@@ -1307,7 +1378,7 @@ class ProactiveMessageMixin:
         if _safe_int(user.get("ignored_streak"), 0, 0) > 0:
             lines.append("对方最近还没回应：不要连续提问，不要控诉，也不要把沉默写成对方故意不理。")
         if "message" == str(action or "message") and not _single_line(action_context, 120):
-            lines.append("本轮没有真实媒体或工具结果：不要声称已经看见、拍到、转述、发送或执行了什么。")
+            lines.append("本轮没有真实媒体或工具结果：正文只围绕聊天内容本身，不描述动作结果。")
         lines.append("以上只用于决定怎么写，最终正文里不要出现“语义/自然度/压力/风险/开口欲/关系温度/犹豫”等分析词。")
         return "\n".join(lines) if len(lines) > 2 else ""
 
@@ -1474,6 +1545,8 @@ class ProactiveMessageMixin:
             return False
         normalized = re.sub(r"[^a-z0-9\u4e00-\u9fff_]+", " ", cleaned).strip()
         compact = re.sub(r"[^a-z0-9\u4e00-\u9fff_]+", "", cleaned)
+        if self._is_proactive_delivery_receipt_text(text):
+            return True
         if (
             ("差不多20条" in cleaned or "差不多 20 条" in cleaned or "20条不同" in cleaned)
             and any(token in cleaned for token in ("没收到回复", "发消息", "消息主要是", "工具调用"))
@@ -1760,6 +1833,33 @@ class ProactiveMessageMixin:
 
         return await self._conversation_db_operation(label, _read)
 
+    async def _ensure_conversation_id_for_umo(self, umo: str, *, title: str = "Private Companion 主动消息") -> str:
+        conv_mgr = getattr(getattr(self, "context", None), "conversation_manager", None)
+        if conv_mgr is None:
+            return ""
+        conv_id = await conv_mgr.get_curr_conversation_id(umo)
+        if conv_id:
+            return str(conv_id)
+        session = self._parse_message_session(umo)
+        platform_id = _single_line(getattr(session, "platform_id", ""), 80) if session is not None else ""
+        try:
+            if platform_id:
+                conv_id = await conv_mgr.new_conversation(umo, platform_id)
+            else:
+                conv_id = await conv_mgr.new_conversation(umo, title=title)
+        except TypeError:
+            try:
+                conv_id = await conv_mgr.new_conversation(umo, title=title)
+            except TypeError:
+                conv_id = await conv_mgr.new_conversation(umo)
+        if conv_id:
+            logger.info(
+                "[PrivateCompanion] 已为主动消息存档创建 AstrBot 会话: umo=%s cid=%s",
+                _single_line(umo, 140),
+                _single_line(conv_id, 80),
+            )
+        return str(conv_id or "")
+
     def _proactive_synthetic_event(self, umo: str, *, prompt: str, name: str) -> AstrMessageEvent | None:
         session = self._parse_message_session(umo)
         if not session:
@@ -1877,7 +1977,12 @@ class ProactiveMessageMixin:
         umo = str(user.get("umo") or "").strip()
         if not umo:
             return ""
-        prompt = self._build_framework_proactive_prompt(
+        # Pull cross-session emotional drift before generating proactive message
+        try:
+            self._memory_companion_apply_emotional_drift(session_id="")
+        except Exception:
+            pass
+        prompt = await self._build_framework_proactive_prompt(
             user=user,
             name=name,
             reason=reason,
@@ -1972,6 +2077,106 @@ class ProactiveMessageMixin:
                 lines.append(f"用户: {last_user}")
         return "\n".join(lines[-max(1, limit):])
 
+    def _clean_persona_reference_rewrite_text(self, text: Any, *, limit: int = 160) -> str:
+        cleaned = self._sanitize_proactive_text(str(text or ""))
+        if not cleaned:
+            return ""
+        cleaned = _strip_internal_message_blocks(cleaned)
+        cleaned = self._strip_parenthetical_stage_directions(cleaned)
+        cleaned = re.sub(r"^(?:最终(?:聊天)?正文|正文|输出|回复)[:：]\s*", "", cleaned).strip()
+        cleaned = re.sub(r"\s+", " ", cleaned).strip().strip('"').strip("'")
+        if not cleaned:
+            return ""
+        forbidden = (
+            "参考意图", "参考文案", "兜底", "模板", "系统", "提示词", "工具调用",
+            "执行状态", "已发送给用户", "消息已发送", "发送成功", "无文字",
+        )
+        if any(token in cleaned for token in forbidden):
+            return ""
+        if self._framework_agent_meta_summary_leak(cleaned):
+            return ""
+        return _single_line(cleaned, limit)
+
+    async def _rewrite_reference_reply_with_persona(
+        self,
+        reference_text: str,
+        *,
+        scene: str = "",
+        user: dict[str, Any] | None = None,
+        event: AstrMessageEvent | None = None,
+        history: str = "",
+        fallback_text: str = "",
+        task: str = "persona_reference_rewrite",
+        max_chars: int = 120,
+        allow_fallback: bool = False,
+        preserve_status: bool = False,
+    ) -> str:
+        reference = _single_line(reference_text, 420)
+        if not reference:
+            return _single_line(fallback_text, max_chars) if allow_fallback else ""
+        umo = ""
+        if event is not None:
+            umo = str(getattr(event, "unified_msg_origin", "") or "").strip()
+        if not umo and isinstance(user, dict):
+            umo = str(user.get("umo") or "").strip()
+        refresher = getattr(self, "_refresh_default_persona_prompt", None)
+        if callable(refresher):
+            try:
+                await refresher(umo)
+            except Exception:
+                pass
+        persona = self._get_default_persona_prompt()
+        reply_style = self._format_reply_style_prompt()
+        if not history and isinstance(user, dict):
+            try:
+                history = await self._recent_private_conversation_for_proactive_review(user, limit=6)
+            except Exception:
+                history = ""
+        prompt = f"""
+你要把一条“参考意图”改写成当前人格会自然说出的聊天正文。参考意图只说明要表达什么，不是要照抄的句子。
+
+【当前人格】
+{persona or "保持自然、简洁、有边界。"}
+
+【回复风格】
+{reply_style or "像日常聊天一样短一点，不要报告式。"}
+
+【最近对话】
+{history or "（无可用历史）"}
+
+【场景】
+{_single_line(scene, 180) or "普通聊天回执"}
+
+【参考意图】
+{reference}
+
+要求：
+- 只输出最终聊天正文，不要解释。
+- 1 句，最多 2 句；尽量像这个人格平时聊天，不要像客服、公告或模板。
+- 不要照抄参考意图里的固定说法；只保留事实和语义。
+- 不要出现“参考/兜底/模板/系统/工具/执行/已发送给用户/消息已发送”等字样。
+- 不要新增事实、承诺、动作小剧场或没有发生的状态。
+{"- 必须保留成功/失败/等待/完成/稍后再说等状态语义，不要把失败说成成功。" if preserve_status else "- 如果只是轻轻递一句，不要补多余解释。"}
+""".strip()
+        try:
+            raw = await self._llm_call(
+                prompt,
+                max_tokens=140,
+                provider_id=self._task_provider(
+                    getattr(self, "response_review_provider_id", ""),
+                    getattr(self, "mai_style_provider_id", ""),
+                    getattr(self, "llm_provider_id", ""),
+                ),
+                task=task,
+            )
+        except Exception as exc:
+            logger.debug("[PrivateCompanion] 人格参考意图改写失败: %s", _single_line(exc, 120))
+            raw = ""
+        cleaned = self._clean_persona_reference_rewrite_text(raw, limit=max_chars)
+        if cleaned:
+            return cleaned
+        return _single_line(fallback_text, max_chars) if allow_fallback else ""
+
     def _local_proactive_send_decision(
         self,
         user: dict[str, Any],
@@ -1979,11 +2184,18 @@ class ProactiveMessageMixin:
         *,
         reason: str,
         action: str,
+        motive: str = "",
+        topic: str = "",
+        action_context: str = "",
     ) -> dict[str, Any]:
         strength = self._proactive_review_strength()
         cleaned = _single_line(text, 500)
         if not cleaned:
             return {"decision": "drop", "reason": "主动消息为空", "hard": True}
+        if self._is_proactive_delivery_receipt_text(cleaned):
+            return {"decision": "drop", "reason": "主动消息是工具/执行状态回执", "hard": True}
+        if self._framework_agent_meta_summary_leak(cleaned):
+            return {"decision": "drop", "reason": "主动候选疑似工具循环/内部发送摘要泄漏", "hard": True}
         semantics: dict[str, Any] = {}
         semantic_getter = getattr(self, "_planned_proactive_semantics", None)
         if callable(semantic_getter):
@@ -1992,9 +2204,14 @@ class ProactiveMessageMixin:
             except Exception:
                 semantics = {}
         semantic_kind = _single_line(semantics.get("kind"), 40)
+        semantic_anchor_type = _single_line(semantics.get("anchor_type"), 40)
         semantic_score = _safe_float(semantics.get("score"), 0.5)
         semantic_pressure = _safe_float(semantics.get("pressure"), 0.4)
         semantic_risk = _safe_float(semantics.get("risk"), 0.0)
+        external_info_reasons = {"bili_video_share", "news_share", "web_exploration_share"}
+        external_share_active = reason in external_info_reasons or (
+            semantic_kind == "external_share" and semantic_anchor_type == "external_info"
+        )
         default_hard_risk = 0.70 if strength == "lenient" else 0.45
         hard_risk_threshold = max(
             0.0,
@@ -2020,7 +2237,8 @@ class ProactiveMessageMixin:
             "好呀", "好啊", "可以呀", "行啊", "那就", "你说呢", "要不", "刚看到", "才看到",
             "你来了", "你叫我", "你问", "我帮你查", "我去问", "我去说",
         )
-        if any(cleaned.startswith(token) for token in reply_like_openers):
+        matched_reply_opener = next((token for token in reply_like_openers if cleaned.startswith(token)), "")
+        if matched_reply_opener and not (external_share_active and matched_reply_opener in {"刚看到", "才看到"}):
             if strength != "strict":
                 rewritten = re.sub(
                     r"^(?:好呀|好啊|可以呀|行啊|那就|你说呢|要不|刚看到|才看到|你来了|你叫我|你问|我帮你查|我去问|我去说)[，,。！!？?\s]*",
@@ -2041,6 +2259,17 @@ class ProactiveMessageMixin:
             return {"decision": "defer", "reason": "普通主动过于泛泛", "delay_minutes": 60}
         if strength != "lenient" and semantic_kind in {"self_share", "external_share", "observation"} and any(token in cleaned for token in vague):
             return {"decision": "defer", "reason": "生成结果偏离分享型由头", "delay_minutes": 60}
+        if external_share_active:
+            external_fix = self._external_share_source_consistency_decision(
+                user,
+                cleaned,
+                reason=reason,
+                topic=topic,
+                motive=motive,
+                action_context=action_context,
+            )
+            if external_fix:
+                return external_fix
         role = self._private_user_role(user) if isinstance(user, dict) else "friend"
         if role == "owner":
             social_checker = getattr(self, "_daily_plan_clause_has_named_message_interaction", None)
@@ -2057,6 +2286,166 @@ class ProactiveMessageMixin:
         if _safe_int(user.get("ignored_streak"), 0, 0) >= 2 and len(cleaned) > 36:
             return {"decision": "rewrite", "reason": "连续未回应时主动偏长", "text": cleaned[:36].rstrip("，,。") + "。"}
         return {"decision": "send", "reason": "本地检查通过"}
+
+    def _external_share_source_consistency_decision(
+        self,
+        user: dict[str, Any],
+        text: str,
+        *,
+        reason: str = "",
+        topic: str = "",
+        motive: str = "",
+        action_context: str = "",
+    ) -> dict[str, Any] | None:
+        cleaned = _single_line(text, 240)
+        if not cleaned:
+            return None
+        source_text = self._external_share_anchor_text(
+            user,
+            reason=reason,
+            topic=topic,
+            motive=motive,
+            action_context=action_context,
+        )
+        if not source_text:
+            return None
+        if self._external_share_text_mentions_source(cleaned, source_text):
+            return None
+        reference = self._external_share_fallback_reference(source_text)
+        if reference:
+            return {
+                "decision": "rewrite",
+                "reason": "外界分享正文偏离来源",
+                "text": "",
+                "reference_text": reference,
+                "hard": True,
+            }
+        return {
+            "decision": "defer",
+            "reason": "外界分享缺少可承接来源",
+            "delay_minutes": 75,
+            "hard": True,
+        }
+
+    def _external_share_anchor_text(
+        self,
+        user: dict[str, Any],
+        *,
+        reason: str = "",
+        topic: str = "",
+        motive: str = "",
+        action_context: str = "",
+    ) -> str:
+        parts: list[str] = []
+
+        def add(value: Any, limit: int = 160) -> None:
+            text = _single_line(value, limit)
+            if text and text not in parts:
+                parts.append(text)
+
+        add(topic, 180)
+        add(action_context, 520)
+        if isinstance(user, dict):
+            for key in ("bilibili_video_context", "news_context", "web_exploration_context"):
+                payload = user.get(key)
+                if not isinstance(payload, dict):
+                    continue
+                for field in ("title", "headline", "topic", "summary", "comment", "review", "source", "selected_source"):
+                    add(payload.get(field), 180)
+        if not parts:
+            add(motive, 140)
+        return _single_line("；".join(parts), 760)
+
+    def _external_share_text_mentions_source(self, text: str, source_text: str) -> bool:
+        message = _single_line(text, 260).lower()
+        source = _single_line(source_text, 760).lower()
+        if not message or not source:
+            return True
+        source_markers = (
+            "看到", "刷到", "看见", "标题", "视频", "新闻", "文章", "资料", "这条", "这个", "那条",
+            "b站", "bili", "链接", "分享", "外面", "报道", "内容",
+        )
+        anchor_tokens = self._external_share_anchor_tokens(source)
+        for token in anchor_tokens:
+            if token and token in message:
+                return True
+        # If the source itself has no concrete title/topic tokens, do not over-block
+        # a clearly source-shaped short share.
+        if not anchor_tokens and any(marker in message for marker in source_markers):
+            return True
+        return False
+
+    def _external_share_anchor_tokens(self, source_text: str) -> list[str]:
+        text = _single_line(source_text, 760)
+        if not text:
+            return []
+        tokens: list[str] = []
+
+        def add(value: str) -> None:
+            clean = value.strip(" \t\r\n，。！？；：、,.!?;:()（）[]【】《》“”\"'")
+            if len(clean) >= 2 and clean not in tokens:
+                tokens.append(clean)
+
+        for item in re.findall(r"[A-Za-z]+[-_A-Za-z0-9]*|[0-9]+(?:多年|年|月|日|次|个|%)?", text):
+            add(item.lower())
+        for chunk in re.split(r"[\s，。！？；：、,.!?;:|｜/\\\\()（）\\[\\]【】《》“”\"']+", text):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            if re.fullmatch(r"[\u4e00-\u9fff]{2,12}", chunk):
+                add(chunk)
+                if len(chunk) > 4:
+                    for size in (4, 3, 2):
+                        for index in range(0, max(0, len(chunk) - size + 1)):
+                            add(chunk[index:index + size])
+            elif re.search(r"[\u4e00-\u9fff]", chunk):
+                for item in re.findall(r"[\u4e00-\u9fff]{2,8}", chunk):
+                    add(item)
+        generic = {
+            "标题", "视频", "新闻", "文章", "资料", "来源", "分享", "短评", "回味", "评分", "链接",
+            "刚刷到一个视频", "刚刷到", "刷到一", "到一个", "一个视", "个视频", "一个视频",
+            "b站视频分享线索", "站视频分享线索", "视频分享线索", "分享线索",
+            "新闻阅读线索", "阅读线索", "刚扫过", "扫过几", "几条新", "条新闻",
+            "网页探索线索", "探索线索", "内部探索笔记", "探索笔记",
+            "http", "https", "www", "com", "cn", "bilibili", "video",
+        }
+        generic_phrases = (
+            "b站视频分享线索刚刷到一个视频",
+            "新闻阅读线索刚扫过几条新闻其中一条让自己有点想私下提一句",
+            "网页探索线索bot刚刚按自己的兴趣主动搜索并了解了一点新东西这是一条内部探索笔记",
+            "表达要求不要像播报新闻不要夸大或补充未知事实",
+        )
+        return [
+            token
+            for token in tokens
+            if token not in generic and not any(token in phrase for phrase in generic_phrases)
+        ][:24]
+
+    def _external_share_fallback_reference(self, source_text: str) -> str:
+        source = _single_line(source_text, 760)
+        if not source:
+            return ""
+        title = ""
+        for pattern in (
+            r"(?:标题|摘要重点|话题|headline|topic)[:：]\s*([^；。\n\r|｜]{2,90})",
+            r"^([^；。\n\r]{4,90})",
+        ):
+            match = re.search(pattern, source, flags=re.I)
+            if match:
+                title = _single_line(match.group(1), 64)
+                title = re.split(
+                    r"\s+(?:链接|UP|评分|心情|短评|回味|来源|内部印象|表达气质|额外边界|参考来源|搜索词)[:：]",
+                    title,
+                    maxsplit=1,
+                    flags=re.I,
+                )[0]
+                break
+        if not title:
+            return ""
+        title = title.strip(" ，。！？；：、,.!?;:|｜")
+        if not title:
+            return ""
+        return _single_line(f"外部分享偏离来源时的参考意图：低压提到刚看到的内容“{title}”，像日常分享一样递给对方。", 180)
 
     def _strip_proactive_motive_leak_text(self, text: str) -> str:
         cleaned = str(text or "").strip()
@@ -2133,8 +2522,51 @@ class ProactiveMessageMixin:
         image_path: str = "",
     ) -> dict[str, Any]:
         strength = self._proactive_review_strength()
-        local = self._local_proactive_send_decision(user, text, reason=reason, action=action)
+        review_context = _single_line(action_summary, 240)
+        if image_path:
+            review_context = _single_line(f"{review_context}\n真实图片文件：{image_path}", 360)
+        local = self._local_proactive_send_decision(
+            user,
+            text,
+            reason=reason,
+            action=action,
+            motive=motive,
+            topic=topic,
+            action_context=review_context,
+        )
         if local.get("decision") in {"drop", "defer"} and (strength != "lenient" or bool(local.get("hard"))):
+            return local
+        if local.get("decision") == "rewrite" and str(local.get("reference_text") or "").strip():
+            rewritten_reference = await self._rewrite_reference_reply_with_persona(
+                str(local.get("reference_text") or ""),
+                scene=_single_line(f"主动消息兜底改写；reason={reason or 'check_in'}；action={action or 'message'}", 180),
+                user=user,
+                fallback_text="",
+                task="proactive_reference_rewrite",
+                max_chars=140,
+                allow_fallback=False,
+            )
+            if rewritten_reference:
+                rewritten_reference = self._sanitize_action_boundaries(
+                    self._sanitize_proactive_text(rewritten_reference),
+                    reason=reason,
+                    action=action,
+                    action_context=review_context,
+                    has_real_image=bool(image_path) or "真实图片文件：" in review_context or "图片路径：" in review_context,
+                )
+                rewritten_reference = self._normalize_proactive_sentence_flow(rewritten_reference)
+            if rewritten_reference:
+                local = dict(local)
+                local["text"] = rewritten_reference
+                local.pop("reference_text", None)
+            else:
+                return {
+                    "decision": "defer",
+                    "reason": _single_line(local.get("reason"), 80) or "兜底参考意图未能按人格改写",
+                    "delay_minutes": 60,
+                    "hard": True,
+                }
+        if local.get("decision") == "rewrite" and bool(local.get("hard")):
             return local
         if not bool(getattr(self, "enable_response_self_review", True)):
             return local
@@ -2144,9 +2576,6 @@ class ProactiveMessageMixin:
         if mode == "local_only":
             return local
         history = await self._recent_private_conversation_for_proactive_review(user, limit=10)
-        review_context = _single_line(action_summary, 240)
-        if image_path:
-            review_context = _single_line(f"{review_context}\n真实图片文件：{image_path}", 360)
         intent_hint = self._format_proactive_generation_intent_hint(
             user,
             reason=reason,
@@ -2155,7 +2584,7 @@ class ProactiveMessageMixin:
             action_context=review_context,
         )
         prompt = f"""
-你是主动私聊发送前的价值复核模型。请判断候选主动消息是否值得现在发给用户。
+你是主动私聊发送前的价值复核模型。请判断候选主动消息是否适合现在进入对话。
 
 只输出 JSON 对象，不要解释。
 
@@ -2172,6 +2601,7 @@ class ProactiveMessageMixin:
 - 不要把内部动机、犹豫过程或发送理由写进正文，例如“本来想跟你说”“怕说太早”“绕了一圈还是来找你”；这类内容应 rewrite 成具体片段，或 drop。
 - 如果最近用户刚刚在聊正事或刚聊完，倾向 defer；如果候选本身没价值，drop。
 - 候选消息必须贴合“本轮主动来源”和“内在约束”：分享型要有分享落点，关心型要低压，续接型要有真实来源，虚由头要短。
+- 如果候选只是在汇报系统动作、发送状态或工具执行结果，而不是角色真正要说出口的聊天内容，decision=drop。
 - rewrite 只能轻改写，不能新增事实，不能添加工具、转述、查询、发图等承诺。
 
 【最近私聊记录】
@@ -2453,6 +2883,8 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
             flags.append("inverts_initiator")
         if re.search(r"(?:你问|你说|你刚才说|你刚刚说)[^。！？\n]{0,24}(?:我觉得|我也|确实|可以|好呀|好啊)", cleaned):
             flags.append("answers_old_context")
+        if self._is_proactive_delivery_receipt_text(cleaned):
+            flags.append("delivery_receipt")
         if reason in {"morning_greeting", "noon_greeting", "evening_greeting", "check_in"} and re.search(
             r"(?:一直等着|等你问|你到时候|到时候叫|到时候喊|那就这么说定|按你说的)",
             cleaned,
@@ -2536,7 +2968,8 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
 - 不要把“用户”“对方”“收信人”这类内部称呼写进正文；需要称呼时用自然的“你”或对方昵称
 - 不要写成“好呀/确实/我也觉得/刚看到/你刚刚问我/你来找我了”
 - 不要把历史消息当成当前正在发生的对话
-- 没有真实图片或工具结果时，不要说已经发图、看图、转述或执行动作
+- 没有真实图片或工具结果时，只写聊天内容本身，不描述动作结果
+- 如果原文只是过程状态或工具结果，请不要改写成另一种状态汇报；改不成自然聊天就输出空文本
 - 改写后仍要贴合内在约束里的候选语义；不能把分享型改成泛泛问候，也不能把低压关心改成追问
 - 尽量 1 到 2 句，像自然想起对方后随手说一句
 """.strip()
@@ -2900,14 +3333,20 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
             cleaned = cleaned.replace("要听吗", "你有空再听嘛")
         if action == "photo_text":
             if has_real_image:
+                if reason not in {"bili_video_share", "news_share", "web_exploration_share"}:
+                    cleaned = self._repair_non_external_title_share_text(
+                        cleaned,
+                        reason=reason,
+                        action_context=action_context,
+                    )
                 replacements = {
-                    "我画了一张图": "刚看到一个画面",
-                    "我刚画了张图": "刚看到一个画面",
-                    "我生成了一张图": "刚看到一个画面",
-                    "我做了张图": "刚看到一个画面",
-                    "我生了一张图": "刚看到一个画面",
-                    "我渲染了一张图": "刚看到一个画面",
-                    "画面是": "刚好是",
+                    "我画了一张图": "这个画面",
+                    "我刚画了张图": "这个画面",
+                    "我生成了一张图": "这个画面",
+                    "我做了张图": "这个画面",
+                    "我生了一张图": "这个画面",
+                    "我渲染了一张图": "这个画面",
+                    "画面是": "画面里是",
                 }
                 for old, new in replacements.items():
                     cleaned = cleaned.replace(old, new)
@@ -2927,7 +3366,7 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
                 for old, new in queue_replacements.items():
                     cleaned = cleaned.replace(old, new)
                 for old in ("要看看吗", "要看吗", "想看吗"):
-                    cleaned = cleaned.replace(old, "我先发你看")
+                    cleaned = cleaned.replace(old, "")
                 cleaned = self._deemphasize_state_report_preamble(cleaned, reason=reason)
                 return self._soften_social_proactive_text(cleaned, action=action)
             replacements = {
@@ -2943,6 +3382,36 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
                 cleaned = cleaned.replace(old, new)
         cleaned = self._deemphasize_state_report_preamble(cleaned, reason=reason)
         return self._soften_social_proactive_text(cleaned, action=action)
+
+    def _repair_non_external_title_share_text(
+        self,
+        text: str,
+        *,
+        reason: str = "",
+        action_context: str = "",
+    ) -> str:
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return ""
+        if reason in {"bili_video_share", "news_share", "web_exploration_share"}:
+            return cleaned
+        title_leak_pattern = r"刚看到[，,、\s]*[“\"『「].{2,60}[”\"』」](?:这个)?标题"
+        if not re.search(title_leak_pattern, cleaned):
+            return cleaned
+        context = _single_line(action_context, 520)
+        if reason == "group_share" or "群" in context:
+            repaired = re.sub(rf"{title_leak_pattern}[，,。！？!?\s]*", "", cleaned, count=1).strip()
+            return repaired if len(repaired) >= 2 else ""
+        if "图片路径：" in context or "真实图片文件：" in context or "photo_text" in context:
+            repaired = re.sub(rf"{title_leak_pattern}[，,。！？!?\s]*", "", cleaned, count=1).strip()
+            return repaired if len(repaired) >= 2 else ""
+        repaired = re.sub(
+            r"刚看到[，,、\s]*[“\"『「]([^”\"』」]{2,60})[”\"』」](?:这个)?标题[，,。！？!?\s]*",
+            "",
+            cleaned,
+            count=1,
+        )
+        return repaired.strip()
 
     def _remove_unbacked_media_claims(self, text: str) -> str:
         cleaned = str(text or "").strip()
@@ -3026,7 +3495,7 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
         if reason == "noon_greeting":
             return "中午了诶。你吃东西没有,别又随便糊弄过去。"
         if reason in {"activity_share", "diary_share", "background_schedule"}:
-            return "我刚刚想到一件小事,就想跟你说一下。"
+            return "有件小事想跟你说一下。"
         return "刚好到能休息一小会儿的时候,想问你一句。"
 
     async def _execute_proactive_action(
@@ -3714,12 +4183,15 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
         return False, f"平台不支持 set_online_status：{label}"
 
     async def _set_qq_custom_presence(self, text: str) -> tuple[bool, str]:
+        if not getattr(self, "enable_qq_custom_presence_sync", False):
+            return False, "QQ 自定义短状态未开启"
         client = self._resolve_aiocqhttp_client()
         if client is None:
             return False, "未找到可用 QQ 客户端"
         custom_text = _single_line(text, 8)
         if not custom_text:
             return False, "自定义状态文本为空,跳过同步"
+        # Avoid set_custom_online_status: some OneBot adapters disconnect on this unsupported extension API.
         variants = (
             ("set_diy_online_status", {"face_id": 21, "face_type": 1, "wording": custom_text}),
             ("set_diy_online_status", {"face_id": "21", "face_type": "1", "wording": custom_text}),
@@ -3730,8 +4202,6 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
             ("set_diy_online_status", {"faceId": 21, "text": custom_text}),
             ("set_diy_online_status", {"id": 21, "text": custom_text}),
             ("set_diy_online_status", {"text": custom_text}),
-            ("set_custom_online_status", {"text": custom_text}),
-            ("set_custom_online_status", {"face_id": 21, "text": custom_text}),
         )
         for action, params in variants:
             if await self._call_onebot_action(client, action, **params):
@@ -4103,6 +4573,8 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
         source = str(text or "").strip()
         if not source:
             return ""
+        if self._is_proactive_delivery_receipt_text(source):
+            return ""
         placeholder_cleaner = getattr(self, "_sanitize_orphan_tts_placeholders", None)
         if callable(placeholder_cleaner):
             source = placeholder_cleaner(source)
@@ -4238,12 +4710,31 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
             return await self._record_daily_outfit_photo_result(today, "", "主动拍照/生图未开启")
         if not self._photo_text_available():
             return await self._record_daily_outfit_photo_result(today, "", "当前没有可用的生图后端")
-        prompt_text = self._build_daily_outfit_photo_prompt(diary if isinstance(diary, dict) else {})
+        memory_context = ""
+        composer = getattr(self, "_memory_companion_compose_feature_context", None)
+        if callable(composer):
+            try:
+                memory_context = await composer(
+                    kind="daily_outfit_photo",
+                    query=(
+                        "今日穿搭生成：历史穿搭、今天日程、天气、地点、用户常问衣服颜色、"
+                        "最近自拍、服装连续性、需要避免的造型重复"
+                    ),
+                    top_k=5,
+                    max_chars=900,
+                )
+            except Exception as exc:
+                logger.debug("[PrivateCompanion] 每日穿搭 我会牢牢记住你 上下文读取失败: %s", _single_line(exc, 120))
+        prompt_text = self._build_daily_outfit_photo_prompt(
+            diary if isinstance(diary, dict) else {},
+            memory_context=memory_context,
+        )
         backend_name, image_path, note = await self._generate_photo_image(
             workflow_kind="selfie",
             prompt_text=prompt_text,
             session_key="daily_outfit",
             image_size="1024x1024",
+            allow_daily_outfit_reference=False,
         )
         if image_path:
             return await self._record_daily_outfit_photo_result(
@@ -4286,6 +4777,7 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
             self.data["daily_outfit_photo"] = item
             self._save_data_sync()
         if image_path:
+            await self._memory_companion_record_daily_outfit(item)
             logger.info(
                 "[PrivateCompanion] 每日穿搭照片已生成: backend=%s path=%s",
                 _single_line(backend, 80) or "-",
@@ -4317,7 +4809,7 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
             lines.append(line)
         return _single_line("；".join(lines), 620)
 
-    def _build_daily_outfit_photo_prompt(self, diary: dict[str, Any]) -> str:
+    def _build_daily_outfit_photo_prompt(self, diary: dict[str, Any], *, memory_context: str = "") -> str:
         persona = self._daily_outfit_role_appearance_text()
         style_name, style_instruction = self._get_photo_style_instruction()
         state = self.data.get("daily_state", {}) if isinstance(getattr(self, "data", {}), dict) else {}
@@ -4338,6 +4830,12 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
             f"今日日程穿搭依据：{schedule_hint or '没有明确日程时,按普通居家日常处理。'}",
             "穿搭决策：优先服从日程里明确出现的衣服、外套、校服、睡衣、发夹、饰品、出门、上课、运动、雨天或居家线索；如果一天有多段活动,选最能代表白天主要生活/外出安排的一套,不要只按深夜睡前状态生成睡衣。",
             f"补充生活余味：{diary_hint or '暂无额外余味,主要服从今日日程、天气和状态来决定当天搭配。'}",
+            (
+                "我会牢牢记住你 穿搭连续性参考："
+                f"{_single_line(memory_context, 700)}。使用方式：优先保持今日穿搭、近期自拍、用户常问衣服颜色和当前地点的一致性；不要在最终图片中出现文字说明。"
+                if memory_context
+                else ""
+            ),
             "画面要求：角色本人必须露脸,头部、脸、发型和表情完整入镜；可以是半身、七分身或全身,但绝不能裁掉头、遮住脸或只拍衣服。衣服搭配要清楚,姿态自然,像今天顺手拍下来的 selfie outfit photo。",
             "尺寸与安全区：按 1:1 方形头像/封面构图生成,角色的脸、头发、肩颈和主要穿搭都要落在画面中央安全区内,四周留出足够边距,缩进方形卡片时也不能裁脸或裁身体主体。",
             "构图要求：主体居中或略偏中,脸部位于画面上半部但要和画面上边缘保持明显留白,肩颈和上半身自然可见；不要极近自拍、手臂占据前景、无头构图、背影、低头挡脸、书本/手机/头发遮脸、只拍身体局部、只拍裙子或外套。",
@@ -4418,6 +4916,9 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
         external_base = _single_line(self._normalized_external_image_api_base_url(), 120)
         if external_base:
             external_base = re.sub(r"([?&](?:key|token|access_token|api_key)=)[^&]+", r"\1***", external_base, flags=re.I)
+        backup_base = _single_line(getattr(self, "backup_external_image_api_base_url", ""), 120)
+        if backup_base:
+            backup_base = re.sub(r"([?&](?:key|token|access_token|api_key)=)[^&]+", r"\1***", backup_base, flags=re.I)
         return (
             f"preferred={_single_line(getattr(self, 'photo_generation_backend', ''), 30) or 'auto'} "
             f"comfyui={self._comfyui_photo_available()} "
@@ -4426,7 +4927,11 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
             f"external_platform={self._resolved_external_image_api_platform()} "
             f"external_model={_single_line(getattr(self, 'external_image_api_model', ''), 80) or '-'} "
             f"external_size={_single_line(getattr(self, 'external_image_api_size', ''), 40) or '-'} "
-            f"external_base={external_base or '-'}"
+            f"external_base={external_base or '-'} "
+            f"backup_external={self._backup_external_photo_available()} "
+            f"backup_platform={_single_line(getattr(self, 'backup_external_image_api_platform', ''), 30) or '-'} "
+            f"backup_model={_single_line(getattr(self, 'backup_external_image_api_model', ''), 80) or '-'} "
+            f"backup_base={backup_base or '-'}"
         )
 
     def _record_recent_photo_generation(
@@ -4480,6 +4985,83 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
         if fixed in prompt:
             return _single_line(prompt, 1800)
         return _single_line(f"{prompt}\n\n【固定生图提示词】\n{fixed}".strip(), 1800)
+
+    def _photo_generation_selfie_schedule_scene_hint(self) -> str:
+        plan = self.data.get("daily_plan", {}) if isinstance(getattr(self, "data", {}), dict) else {}
+        plan = plan if isinstance(plan, dict) else {}
+        state = self.data.get("daily_state", {}) if isinstance(getattr(self, "data", {}), dict) else {}
+        state = state if isinstance(state, dict) else {}
+
+        current_schedule = ""
+        try:
+            current_item = self._get_current_plan_item(plan)
+            if isinstance(current_item, dict):
+                current_schedule = _single_line(self._format_plan_item_for_prompt(current_item), 260)
+        except Exception:
+            current_schedule = ""
+        if not current_schedule and callable(getattr(self, "_format_schedule_context_for_prompt", None)):
+            try:
+                current_schedule = _single_line(self._format_schedule_context_for_prompt(plan), 260)
+            except Exception:
+                current_schedule = ""
+
+        location = ""
+        if callable(getattr(self, "_current_location_state_text", None)):
+            try:
+                location = _single_line(self._current_location_state_text(state), 60)
+            except Exception:
+                location = ""
+        coarse_location = ""
+        if location and callable(getattr(self, "_coarse_roleplay_location_text", None)):
+            try:
+                coarse_location = _single_line(self._coarse_roleplay_location_text(location), 40)
+            except Exception:
+                coarse_location = ""
+        location_text = coarse_location or location
+        if location and coarse_location and location != coarse_location:
+            location_text = f"{coarse_location}（{location}）"
+
+        parts: list[str] = []
+        if current_schedule:
+            parts.append(f"当前日程：{current_schedule}")
+        if location_text:
+            parts.append(f"当前位置：{location_text}")
+        return _single_line("；".join(parts), 460)
+
+    def _apply_photo_generation_selfie_schedule_scene_prompt(
+        self,
+        prompt_text: str,
+        workflow_kind: str,
+        *,
+        allow_daily_outfit_reference: bool = True,
+    ) -> tuple[str, str]:
+        prompt = str(prompt_text or "").strip()
+        normalized = str(workflow_kind or "").strip().lower()
+        if normalized not in {"selfie", "portrait", "自拍", "人像"}:
+            return _single_line(prompt, 1800), ""
+        if not allow_daily_outfit_reference:
+            return _single_line(prompt, 1800), ""
+        if "【自拍当前场景约束】" in prompt:
+            return _single_line(prompt, 1800), ""
+        if any(token in prompt for token in ("基于用户提供或引用的参考图进行改图", "保留用户未要求修改的主体", "只改变明确要求的部分")):
+            return _single_line(prompt, 1800), ""
+
+        scene_hint = self._photo_generation_selfie_schedule_scene_hint()
+        if not scene_hint:
+            return _single_line(prompt, 1800), ""
+        outfit_reference = self._daily_outfit_reference_image_path()
+        outfit_hint = (
+            "本次自拍参考图会优先使用今日穿搭图,画面中的衣服、配饰和整体穿搭要沿用今日穿搭。"
+            if outfit_reference
+            else "如已有今日穿搭或人设参考图,画面中的衣服、配饰和角色外观要保持一致。"
+        )
+        extra = (
+            "【自拍当前场景约束】"
+            f"{outfit_hint}"
+            f"自拍必须发生在当前日程对应地点/场景中：{scene_hint}。"
+            "不要生成棚拍、无关房间、默认背景或与当前日程冲突的地点；除非当前日程确实在家里/房间,否则不要默认室内卧室。"
+        )
+        return _single_line(f"{prompt}\n\n{extra}".strip(), 1800), scene_hint
 
     def _builtin_photo_generation_scene_presets(self) -> dict[str, str]:
         return {
@@ -4598,26 +5180,44 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
         session_key: str,
         reference_image_path: str = "",
         image_size: str = "",
+        allow_daily_outfit_reference: bool = True,
     ) -> tuple[str, str, str]:
         started = time.time()
         trace_id = self._photo_generation_trace_id(session_key, workflow_kind)
+        prompt_text, selfie_scene_hint = self._apply_photo_generation_selfie_schedule_scene_prompt(
+            prompt_text,
+            workflow_kind,
+            allow_daily_outfit_reference=allow_daily_outfit_reference,
+        )
         prompt_text, preset_names = self._apply_photo_generation_scene_presets(prompt_text, workflow_kind)
         prompt_text = self._apply_photo_generation_fixed_prompt(prompt_text)
         reference_image_path = _single_line(reference_image_path, 260)
         if not reference_image_path:
-            reference_image_path = await self._photo_persona_reference_image_for_kind_async(workflow_kind)
+            reference_image_path = await self._photo_persona_reference_image_for_kind_async(
+                workflow_kind,
+                allow_daily_outfit=allow_daily_outfit_reference,
+            )
+        if selfie_scene_hint:
+            logger.info(
+                "[PrivateCompanion] 自拍生图已加入当前日程地点约束: trace=%s session=%s hint=%s reference=%s",
+                trace_id,
+                _single_line(session_key, 80),
+                _single_line(selfie_scene_hint, 180),
+                bool(reference_image_path),
+            )
         preferred = self.photo_generation_backend
         try:
             reference_exists = bool(reference_image_path and Path(reference_image_path).exists())
         except (OSError, ValueError):
             reference_exists = False
         logger.info(
-            "[PrivateCompanion] 生图开始: trace=%s session=%s kind=%s presets=%s prompt_chars=%s prompt=%s reference=%s reference_exists=%s image_size=%s %s",
+            "[PrivateCompanion] 生图开始: trace=%s session=%s kind=%s presets=%s prompt_chars=%s prompt_preview_chars=%s prompt_preview=%s reference=%s reference_exists=%s image_size=%s %s",
             trace_id,
             _single_line(session_key, 80),
             _single_line(workflow_kind, 30),
             ",".join(preset_names) or "-",
             len(str(prompt_text or "")),
+            180,
             _single_line(prompt_text, 180),
             bool(reference_image_path),
             reference_exists,
@@ -4682,14 +5282,6 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
             return finish("SDGen", image_path, note)
         if preferred == "external":
             if not self._external_photo_available():
-                # external unavailable, try gitee_aiimg directly
-                if self._find_gitee_aiimg_plugin() is not None:
-                    image_path, note = await self._run_gitee_aiimg_photo_generation(
-                        prompt_text,
-                        session_key=session_key,
-                        image_size=image_size,
-                    )
-                    return finish("Gitee AI Image", image_path, note)
                 return finish("在线图片 API", "", "在线图片 API 后端不可用或未配置")
             image_path, note = await self._run_external_photo_generation(
                 prompt_text,
@@ -4697,20 +5289,7 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
                 reference_image_path=reference_image_path,
                 image_size=image_size,
             )
-            logger.info("[PrivateCompanion] external 返回: trace=%s image_path=%s note=%s", trace_id, _single_line(str(image_path), 80) or "-", _single_line(note, 120))
-            if image_path:
-                return finish("在线图片 API", image_path, note)
-            # external failed, try gitee_aiimg
-            logger.info("[PrivateCompanion] external 失败,查找 gitee_aiimg: trace=%s", trace_id)
-            if self._find_gitee_aiimg_plugin() is not None:
-                logger.info("[PrivateCompanion] external 失败,回退 Gitee AI Image: trace=%s note=%s", trace_id, _single_line(note, 180))
-                image_path, note = await self._run_gitee_aiimg_photo_generation(
-                    prompt_text,
-                    session_key=session_key,
-                    image_size=image_size,
-                )
-                return finish("Gitee AI Image", image_path, note)
-            return finish("在线图片 API", "", note)
+            return finish("在线图片 API", image_path, note)
         external_note = ""
         if self._external_photo_available():
             image_path, note = await self._run_external_photo_generation(
@@ -4726,21 +5305,6 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
         else:
             external_note = "在线图片 API 后端不可用或未配置"
             logger.info("[PrivateCompanion] 生图后端跳过: trace=%s backend=external note=%s", trace_id, external_note)
-        # Gitee AI Image fallback
-        gitee_aiimg_note = ""
-        if self._find_gitee_aiimg_plugin() is not None:
-            image_path, note = await self._run_gitee_aiimg_photo_generation(
-                prompt_text,
-                session_key=session_key,
-                image_size=image_size,
-            )
-            if image_path:
-                return finish("Gitee AI Image", image_path, note)
-            gitee_aiimg_note = note
-            logger.info("[PrivateCompanion] 生图后端回退: trace=%s backend=gitee_aiimg note=%s", trace_id, _single_line(note, 180))
-        else:
-            gitee_aiimg_note = "Gitee AI Image 插件未加载"
-            logger.info("[PrivateCompanion] 生图后端跳过: trace=%s backend=gitee_aiimg note=%s", trace_id, gitee_aiimg_note)
         if self._comfyui_photo_available():
             busy_state = self._local_photo_generation_busy_state(force_refresh=True)
             if busy_state:
@@ -4782,7 +5346,7 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
         else:
             sdgen_note = "SDGen 插件不可用或未配置"
             logger.info("[PrivateCompanion] 生图后端跳过: trace=%s backend=sdgen note=%s", trace_id, sdgen_note)
-        return finish("Gitee AI Image", "", f"在线图片 API 失败：{external_note}；Gitee AI Image 失败：{gitee_aiimg_note}；ComfyUI 失败：{comfyui_note}；SDGen 失败：{sdgen_note}")
+        return finish("在线图片 API", "", f"在线图片 API 失败：{external_note}；ComfyUI 失败：{comfyui_note}；SDGen 失败：{sdgen_note}")
 
     async def _build_photo_scene_prompt(
         self, user: dict[str, Any], name: str, reason: str
@@ -4900,9 +5464,38 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
             return str(path)
         return ""
 
-    def _photo_persona_reference_image_for_kind(self, workflow_kind: str) -> str:
+    def _daily_outfit_reference_image_path(self) -> str:
+        item = self.data.get("daily_outfit_photo") if isinstance(getattr(self, "data", None), dict) else {}
+        if not isinstance(item, dict):
+            return ""
+        if _single_line(item.get("date"), 20) != _today_key():
+            return ""
+        raw = _single_line(item.get("path"), 500).strip().strip('"').strip("'")
+        if not raw:
+            return ""
+        try:
+            path = Path(raw).expanduser()
+            if not path.is_absolute():
+                path = Path(self.data_dir) / raw
+            path = path.resolve()
+        except Exception:
+            path = Path(raw)
+        try:
+            if not path.exists() or not path.is_file():
+                return ""
+        except (OSError, ValueError):
+            return ""
+        if path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
+            return ""
+        return str(path)
+
+    def _photo_persona_reference_image_for_kind(self, workflow_kind: str, *, allow_daily_outfit: bool = True) -> str:
         if str(workflow_kind or "").strip().lower() not in {"selfie", "portrait", "自拍", "人像"}:
             return ""
+        if allow_daily_outfit:
+            outfit_path = self._daily_outfit_reference_image_path()
+            if outfit_path:
+                return outfit_path
         return self._photo_persona_reference_image_path()
 
     async def _photo_persona_reference_image_path_async(self) -> str:
@@ -4932,9 +5525,22 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
         logger.info("[PrivateCompanion] 配置页人设参考图 URL 已缓存为本地文件: path=%s", _single_line(stable_path, 160))
         return stable_path
 
-    async def _photo_persona_reference_image_for_kind_async(self, workflow_kind: str) -> str:
+    async def _photo_persona_reference_image_for_kind_async(
+        self,
+        workflow_kind: str,
+        *,
+        allow_daily_outfit: bool = True,
+    ) -> str:
         if str(workflow_kind or "").strip().lower() not in {"selfie", "portrait", "自拍", "人像"}:
             return ""
+        if allow_daily_outfit:
+            outfit_path = self._daily_outfit_reference_image_path()
+            if outfit_path:
+                logger.info(
+                    "[PrivateCompanion] 自拍参考图优先使用今日穿搭图: path=%s",
+                    _single_line(outfit_path, 160),
+                )
+                return outfit_path
         return await self._photo_persona_reference_image_path_async()
 
     async def _run_comfyui_photo_workflow(
@@ -4995,7 +5601,7 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
                 need = "images=1 或 images=0" if use_reference_image else "images=0"
                 return "", f"未找到匹配工作流 {workflow_name}（需要 texts>=1、{need}、videos=0）"
             logger.info(
-                "[PrivateCompanion] ComfyUI 生图提交准备: workflow=%s file=%s text_count=%s image_count=%s reference=%s wait=%ss prompt=%s",
+                "[PrivateCompanion] ComfyUI 生图提交准备: workflow=%s file=%s text_count=%s image_count=%s reference=%s wait=%ss prompt_preview=%s",
                 _single_line(workflow_name, 80),
                 _single_line(workflow_file, 160),
                 text_count,
@@ -5114,7 +5720,7 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
             if callable(build_prompt):
                 positive_prompt = build_prompt(prompt_text, "")
             logger.info(
-                "[PrivateCompanion] SDGen 生图提交: session=%s prompt=%s positive_chars=%s",
+                "[PrivateCompanion] SDGen 生图提交: session=%s prompt_preview=%s positive_chars=%s",
                 _single_line(session_key, 80),
                 _single_line(prompt_text, 180),
                 len(str(positive_prompt or "")),
@@ -5408,6 +6014,47 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
         prefix = "参考图接口" if reference else ""
         return f"{prefix}HTTP {status}: {_single_line(text, 180)}"
 
+    def _url_same_origin(self, left: str, right: str) -> bool:
+        try:
+            l_parsed = urlparse(str(left or ""))
+            r_parsed = urlparse(str(right or ""))
+        except Exception:
+            return False
+        return bool(
+            l_parsed.scheme
+            and r_parsed.scheme
+            and l_parsed.scheme.lower() == r_parsed.scheme.lower()
+            and l_parsed.netloc.lower() == r_parsed.netloc.lower()
+        )
+
+    def _external_image_download_headers(self, target_url: str) -> tuple[dict[str, str], str]:
+        headers: dict[str, str] = {
+            "User-Agent": "Mozilla/5.0 AstrBot PrivateCompanion/5.0.0",
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        }
+        api_endpoint = self._external_image_endpoint("generations")
+        api_base = str(getattr(self, "external_image_api_base_url", "") or "").strip()
+        same_origin = self._url_same_origin(target_url, api_endpoint) or self._url_same_origin(target_url, api_base)
+        custom_count = 0
+        auth_sent = False
+        if same_origin:
+            if getattr(self, "external_image_api_key", ""):
+                headers["Authorization"] = f"Bearer {self.external_image_api_key}"
+                auth_sent = True
+            for key, value in self._external_image_custom_headers().items():
+                normalized = str(key or "").strip()
+                if normalized.lower() in {"content-length", "content-type", "host", "connection", "transfer-encoding"}:
+                    continue
+                headers[normalized] = str(value)
+                custom_count += 1
+            if not any(key.lower() == "referer" for key in headers):
+                referer = api_endpoint or api_base
+                if referer:
+                    headers["Referer"] = referer
+        note = f"same_origin={same_origin},auth={auth_sent},custom={custom_count},referer={any(key.lower() == 'referer' for key in headers)}"
+        return headers, note
+
     def _external_image_timeout_note(self, *, reference: bool = False, download: bool = False, label: str = "") -> str:
         timeout_seconds = _safe_int(getattr(self, "external_image_api_timeout_seconds", 180), 180, 1)
         if label:
@@ -5452,13 +6099,15 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
         try:
             import aiohttp
 
+            headers, header_note = self._external_image_download_headers(target)
             timeout = aiohttp.ClientTimeout(total=float(self.external_image_api_timeout_seconds))
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(target) as response:
+                async with session.get(target, headers=headers) as response:
                     if response.status >= 400:
                         logger.info(
-                            "[PrivateCompanion] 下载在线生图结果失败: status=%s url=%s",
+                            "[PrivateCompanion] 下载在线生图结果失败: status=%s headers=%s url=%s",
                             response.status,
+                            header_note,
                             _single_line(target, 180),
                         )
                         return "", f"下载图片失败：HTTP {response.status}"
@@ -5518,9 +6167,10 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
                 "Authorization": f"Bearer {self.external_image_api_key}",
                 "Content-Type": "application/json",
             }
+            headers.update(self._external_image_custom_headers())
             timeout = aiohttp.ClientTimeout(total=float(self.external_image_api_timeout_seconds))
             logger.info(
-                "[PrivateCompanion] 百炼多模态生图提交: endpoint=%s model=%s size=%s reference=%s prompt=%s",
+                "[PrivateCompanion] 百炼多模态生图提交: endpoint=%s model=%s size=%s reference=%s prompt_preview=%s",
                 _single_line(endpoint, 160),
                 _single_line(self.external_image_api_model, 80),
                 _single_line(payload["parameters"]["size"], 40),
@@ -5600,6 +6250,7 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
                 "Content-Type": "application/json",
                 "X-DashScope-Async": "enable",
             }
+            headers.update(self._external_image_custom_headers())
             payload = {
                 "model": self.external_image_api_model,
                 "input": {"prompt": prompt_text},
@@ -5611,7 +6262,7 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 for endpoint in endpoints:
                     logger.info(
-                        "[PrivateCompanion] 百炼异步生图提交: endpoint=%s model=%s size=%s prompt=%s",
+                        "[PrivateCompanion] 百炼异步生图提交: endpoint=%s model=%s size=%s prompt_preview=%s",
                         _single_line(endpoint, 160),
                         _single_line(self.external_image_api_model, 80),
                         _single_line(payload["parameters"]["size"], 40),
@@ -5653,7 +6304,11 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
                 while True:
                     if time.monotonic() >= deadline:
                         return "", self._external_image_timeout_note(label="百炼异步生图任务轮询")
-                    async with session.get(task_endpoint, headers={"Authorization": f"Bearer {self.external_image_api_key}"}) as response:
+                    task_headers = {
+                        "Authorization": f"Bearer {self.external_image_api_key}",
+                        **self._external_image_custom_headers(),
+                    }
+                    async with session.get(task_endpoint, headers=task_headers) as response:
                         text = await response.text()
                         logger.info(
                             "[PrivateCompanion] 百炼任务查询响应: status=%s task=%s chars=%s preview=%s",
@@ -5731,6 +6386,131 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
         reference_image_path: str = "",
         image_size: str = "",
     ) -> tuple[str, str]:
+        lock = getattr(self, "_external_image_api_runtime_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._external_image_api_runtime_lock = lock
+        async with lock:
+            return await self._run_external_photo_generation_serial(
+                prompt_text,
+                session_key=session_key,
+                reference_image_path=reference_image_path,
+                image_size=image_size,
+            )
+
+    def _parse_custom_headers(self, raw: str) -> dict[str, str]:
+        """Parse custom HTTP headers from multi-line 'Key: Value' text."""
+        result: dict[str, str] = {}
+        if not raw or not isinstance(raw, str):
+            return result
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            idx = line.find(":")
+            if idx <= 0:
+                continue
+            key = line[:idx].strip()
+            value = line[idx + 1:].strip()
+            if key:
+                result[key] = value
+        return result
+
+    def _external_image_custom_headers(self) -> dict[str, str]:
+        """Return parsed custom headers for the currently active (primary or backup) image API."""
+        return self._parse_custom_headers(getattr(self, "external_image_api_custom_headers", ""))
+
+    async def _run_external_photo_generation_serial(
+        self,
+        prompt_text: str,
+        *,
+        session_key: str,
+        reference_image_path: str = "",
+        image_size: str = "",
+    ) -> tuple[str, str]:
+        primary_configured = bool(
+            getattr(self, "external_image_api_base_url", "")
+            and getattr(self, "external_image_api_key", "")
+            and getattr(self, "external_image_api_model", "")
+        )
+        primary_note = ""
+        if primary_configured:
+            image_path, primary_note = await self._run_external_photo_generation_once(
+                prompt_text,
+                session_key=session_key,
+                reference_image_path=reference_image_path,
+                image_size=image_size,
+            )
+            if image_path:
+                return image_path, primary_note
+        else:
+            primary_note = "主在线图片 API 未配置完整"
+
+        if self._backup_external_photo_available():
+            logger.info(
+                "[PrivateCompanion] 主在线图片 API 未成功,尝试备选在线图片 API: primary_note=%s backup_model=%s",
+                _single_line(primary_note, 180),
+                _single_line(getattr(self, "backup_external_image_api_model", ""), 80),
+            )
+            image_path, backup_note = await self._run_external_photo_generation_with_backup(
+                prompt_text,
+                session_key=session_key,
+                reference_image_path=reference_image_path,
+                image_size=image_size,
+            )
+            if image_path:
+                return image_path, f"{backup_note}；已使用备选在线图片 API"
+            return "", f"{primary_note}；备选在线图片 API 失败：{_single_line(backup_note, 220)}"
+        return "", primary_note
+
+    async def _run_external_photo_generation_with_backup(
+        self,
+        prompt_text: str,
+        *,
+        session_key: str,
+        reference_image_path: str = "",
+        image_size: str = "",
+    ) -> tuple[str, str]:
+        keys = (
+            "external_image_api_platform",
+            "external_image_api_base_url",
+            "external_image_api_key",
+            "external_image_api_model",
+            "external_image_api_size",
+            "external_image_api_timeout_seconds",
+            "external_image_api_custom_headers",
+        )
+        old_values = {key: getattr(self, key, None) for key in keys}
+        backup_values = {
+            "external_image_api_platform": getattr(self, "backup_external_image_api_platform", "auto"),
+            "external_image_api_base_url": getattr(self, "backup_external_image_api_base_url", ""),
+            "external_image_api_key": getattr(self, "backup_external_image_api_key", ""),
+            "external_image_api_model": getattr(self, "backup_external_image_api_model", ""),
+            "external_image_api_size": getattr(self, "backup_external_image_api_size", "1024x1024"),
+            "external_image_api_timeout_seconds": getattr(self, "backup_external_image_api_timeout_seconds", 180),
+            "external_image_api_custom_headers": getattr(self, "backup_external_image_api_custom_headers", ""),
+        }
+        try:
+            for key, value in backup_values.items():
+                setattr(self, key, value)
+            return await self._run_external_photo_generation_once(
+                prompt_text,
+                session_key=session_key,
+                reference_image_path=reference_image_path,
+                image_size=image_size,
+            )
+        finally:
+            for key, value in old_values.items():
+                setattr(self, key, value)
+
+    async def _run_external_photo_generation_once(
+        self,
+        prompt_text: str,
+        *,
+        session_key: str,
+        reference_image_path: str = "",
+        image_size: str = "",
+    ) -> tuple[str, str]:
         platform = self._resolved_external_image_api_platform()
         endpoint = self._external_image_endpoint()
         if platform == "bailian":
@@ -5776,7 +6556,7 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
             return "", note
         if reference_image_path and os.path.exists(reference_image_path):
             logger.info(
-                "[PrivateCompanion] 在线图片 API 尝试参考图接口: endpoint=%s model=%s size=%s reference=%s prompt=%s",
+                "[PrivateCompanion] 在线图片 API 尝试参考图接口: endpoint=%s model=%s size=%s reference=%s prompt_preview=%s",
                 _single_line(self._external_image_endpoint("edits"), 160),
                 _single_line(self.external_image_api_model, 80),
                 self._sanitize_external_image_size(image_size),
@@ -5806,17 +6586,19 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
                 "size": self._sanitize_external_image_size(image_size),
             }
             logger.info(
-                "[PrivateCompanion] 在线图片 API 生图提交: endpoint=%s model=%s size=%s prompt_chars=%s prompt=%s",
+                "[PrivateCompanion] 在线图片 API 生图提交: endpoint=%s model=%s size=%s prompt_chars=%s prompt_preview_chars=%s prompt_preview=%s",
                 _single_line(endpoint, 160),
                 _single_line(self.external_image_api_model, 80),
                 payload["size"],
                 len(str(prompt_text or "")),
+                180,
                 _single_line(prompt_text, 180),
             )
             headers = {
                 "Authorization": f"Bearer {self.external_image_api_key}",
                 "Content-Type": "application/json",
             }
+            headers.update(self._external_image_custom_headers())
             timeout = aiohttp.ClientTimeout(total=float(self.external_image_api_timeout_seconds))
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(endpoint, headers=headers, json=payload) as response:
@@ -5873,53 +6655,6 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
             logger.warning(f"[PrivateCompanion] 在线图片 API 生图失败: {e}", exc_info=True)
             return "", str(e)
 
-    def _find_gitee_aiimg_plugin(self) -> Any:
-        """Find gitee_aiimg plugin instance via AstrBot star_registry."""
-        try:
-            from astrbot.core.star.star import star_registry
-            for metadata in star_registry:
-                name = str(getattr(metadata, "name", "") or "").lower()
-                module_path = str(getattr(metadata, "module_path", "") or "").lower()
-                star_cls = getattr(metadata, "star_cls", None)
-                has_draw = hasattr(star_cls, "draw") if star_cls else False
-                logger.info("[PrivateCompanion] 扫描插件: name=%s module_path=%s has_draw=%s", name, module_path, has_draw)
-                if "gitee_aiimg" in name or "gitee_aiimg" in module_path:
-                    if star_cls is not None and has_draw:
-                        logger.info("[PrivateCompanion] 找到 gitee_aiimg 插件: %s", name)
-                        return star_cls
-                    logger.info("[PrivateCompanion] 找到 gitee_aiimg 但 star_cls=%s has_draw=%s attrs=%s", star_cls is not None, has_draw, [a for a in dir(star_cls) if not a.startswith("_") and "draw" in a.lower()] if star_cls else [])
-        except Exception as e:
-            logger.warning("[PrivateCompanion] _find_gitee_aiimg_plugin 异常: %s", e, exc_info=True)
-        return None
-
-    async def _run_gitee_aiimg_photo_generation(
-        self,
-        prompt_text: str,
-        *,
-        session_key: str,
-        image_size: str = "",
-    ) -> tuple[str, str]:
-        """Generate image via gitee_aiimg plugin's ImageDrawService."""
-        plugin = self._find_gitee_aiimg_plugin()
-        if plugin is None:
-            return "", "Gitee AI Image 插件未加载"
-        draw_service = getattr(plugin, "draw", None)
-        if draw_service is None:
-            return "", "Gitee AI Image 插件 draw_service 不可用"
-        try:
-            path = await asyncio.wait_for(
-                draw_service.generate(prompt_text),
-                timeout=180,
-            )
-            if path and Path(path).exists():
-                return str(path), "ok"
-            return "", "Gitee AI Image 未返回有效图片"
-        except asyncio.TimeoutError:
-            return "", "Gitee AI Image 生图超时"
-        except Exception as e:
-            logger.warning(f"[PrivateCompanion] Gitee AI Image 生图失败: {e}", exc_info=True)
-            return "", str(e)
-
     async def _run_external_photo_edit_generation(
         self,
         prompt_text: str,
@@ -5957,9 +6692,10 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
                 content_type=content_type,
             )
             headers = {"Authorization": f"Bearer {self.external_image_api_key}"}
+            headers.update(self._external_image_custom_headers())
             timeout = aiohttp.ClientTimeout(total=float(self.external_image_api_timeout_seconds))
             logger.info(
-                "[PrivateCompanion] 在线图片 API 参考图提交: endpoint=%s model=%s size=%s reference=%s bytes=%s prompt=%s",
+                "[PrivateCompanion] 在线图片 API 参考图提交: endpoint=%s model=%s size=%s reference=%s bytes=%s prompt_preview=%s",
                 _single_line(endpoint, 160),
                 _single_line(self.external_image_api_model, 80),
                 self._sanitize_external_image_size(image_size),
@@ -6114,6 +6850,23 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
         except Exception:
             return None
 
+    def _platform_instance_id(self, platform: Any | None) -> str:
+        if platform is None:
+            return ""
+        try:
+            meta = platform.meta()
+        except Exception:
+            return ""
+        return str(getattr(meta, "id", "") or getattr(meta, "name", "") or "").strip()
+
+    def _session_for_platform(self, session: MessageSession, platform: Any | None = None) -> MessageSession:
+        platform_id = self._platform_instance_id(platform) or str(getattr(session, "platform_id", "") or "")
+        return MessageSession(
+            platform_name=platform_id,
+            message_type=self._message_type_for_session(session),
+            session_id=str(getattr(session, "session_id", "") or ""),
+        )
+
     def _get_platform_for_session(self, session: MessageSession) -> Any | None:
         platform_id = str(getattr(session, "platform_id", "") or "")
         manager = getattr(self.context, "platform_manager", None)
@@ -6158,11 +6911,7 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
         message_type = _single_line(getattr(session, "message_type", ""), 60)
         platform_desc = "found" if platform else "missing"
         if platform:
-            try:
-                meta = platform.meta()
-                platform_desc = _single_line(getattr(meta, "id", "") or getattr(meta, "name", ""), 80) or "found"
-            except Exception:
-                platform_desc = platform.__class__.__name__
+            platform_desc = _single_line(self._platform_instance_id(platform), 80) or platform.__class__.__name__
         return (
             f"umo={_single_line(umo, 140) or '-'} "
             f"platform_id={platform_id or '-'} type={message_type or '-'} session_id={session_id or '-'} platform={platform_desc}"
@@ -6273,6 +7022,49 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
     def _contains_inline_image_tag(text: str) -> bool:
         return bool(re.search(r"<img\b[^>]*\bsrc\s*=", str(text or ""), flags=re.IGNORECASE))
 
+    @staticmethod
+    def _is_proactive_delivery_receipt_text(text: str) -> bool:
+        raw = _single_line(text, 240)
+        if not raw:
+            return False
+        compact = re.sub(r"[\s。.!！?？,，；;:：、~～\"'“”‘’（）()【】\[\]]+", "", raw).lower()
+        if not compact:
+            return False
+        if compact in {
+            "已发送",
+            "发送成功",
+            "发送完成",
+            "发送完毕",
+            "已成功发送",
+            "消息已发送",
+            "消息发送成功",
+            "messagesent",
+            "sent",
+        }:
+            return True
+        long_receipt_markers = (
+            ("已经把", "转给"),
+            ("已把", "转给"),
+            ("已经将", "转给"),
+            ("已将", "转给"),
+            ("已经发给", "就假装"),
+            ("已经发送给", "就假装"),
+            ("就假装", "语气很自然"),
+            ("随手分享", "语气很自然"),
+        )
+        if any(all(token in raw for token in pair) for pair in long_receipt_markers):
+            return True
+        if (
+            any(token in compact for token in ("视频链接转给", "链接转给", "消息转给", "内容转给"))
+            and any(token in compact for token in ("已经", "已", "完成", "成功"))
+        ):
+            return True
+        return (
+            len(compact) <= 32
+            and any(token in compact for token in ("发送给用户", "发给用户", "发送给对方", "发给对方", "发出去了"))
+            and any(token in compact for token in ("已", "已经", "完成", "成功"))
+        )
+
     def _strip_proactive_delivery_receipt_lines(self, text: str) -> str:
         kept: list[str] = []
         for raw_line in str(text or "").splitlines():
@@ -6283,6 +7075,16 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
                 continue
             kept.append(line)
         return "\n".join(kept).strip()
+
+    def _proactive_archive_context_text(self, text: str) -> bool:
+        cleaned = _single_line(text, 500)
+        if not cleaned:
+            return False
+        if "【主动承接占位】" in cleaned or "下一条是 Bot 主动发出的内容" in cleaned:
+            return True
+        if self._is_proactive_delivery_receipt_text(cleaned):
+            return True
+        return False
 
     @staticmethod
     def _strip_leading_sentence_boundary_artifacts(text: str) -> str:
@@ -6606,11 +7408,7 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
                 if status is not None and status != PlatformStatus.RUNNING:
                     logger.warning("[PrivateCompanion] 目标平台未运行,跳过主动发送: %s", umo)
                     return
-                session_obj = MessageSession(
-                    platform_name=str(getattr(session, "platform_id", "") or ""),
-                    message_type=self._message_type_for_session(session),
-                    session_id=str(getattr(session, "session_id", "") or ""),
-                )
+                session_obj = self._session_for_platform(session, platform)
                 await platform.send_by_session(session_obj, MessageChain(processed_chain))
                 return
             except Exception as e:
@@ -6622,8 +7420,11 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
                 )
         core_error: Exception | None = None
         core_result: Any = None
+        core_session: str | MessageSession = umo
+        if session and platform:
+            core_session = self._session_for_platform(session, platform)
         try:
-            core_result = await self.context.send_message(umo, self._build_result_from_chain(processed_chain))
+            core_result = await self.context.send_message(core_session, self._build_result_from_chain(processed_chain))
             if core_result is not False:
                 return
             logger.warning(
@@ -6824,25 +7625,7 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
         extra_components: list[Any] | None = None,
     ) -> Any:
         chain = self._build_outbound_chain(text, image_path, extra_components=extra_components)
-        try:
-            from astrbot.api.event import MessageEventResult
-        except ImportError:
-            from astrbot.core.message.message_event_result import MessageEventResult
-        try:
-            result = MessageEventResult(chain=chain)
-        except TypeError:
-            result = MessageEventResult().chain_result(chain)
-        if hasattr(result, "use_t2i"):
-            try:
-                result = result.use_t2i(False)
-            except Exception:
-                pass
-        elif hasattr(result, "use_t2i_"):
-            try:
-                result.use_t2i_ = False
-            except Exception:
-                pass
-        return result
+        return self._build_result_from_chain(chain)
 
     def _build_proactive_archive_user_prompt(
         self,
@@ -6852,19 +7635,10 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
         motive: str = "",
         action_summary: str = "",
     ) -> str:
-        action_text = _single_line(action, 40) or "message"
-        motive_text = _single_line(motive, 120)
-        lines = [
-            "[主动消息]",
-            f"触发原因：{_single_line(reason, 40) or 'unknown'}",
-            f"行为结果：{action_text}",
-        ]
-        if motive_text:
-            lines.append(f"内部动机：{motive_text}")
-        if action_summary:
-            lines.append(f"动作摘要：{_single_line(action_summary, 160)}")
-        lines.append("说明：这不是用户消息，而是 Private Companion 插件为触发主动消息写入的记录。")
-        return "；".join(lines)
+        # AstrBot history is stored as user/assistant pairs, so proactive sends
+        # need a tiny synthetic user side. Keep it neutral: internal reason,
+        # motive and action details stay in plugin state instead of visible chat.
+        return "【主动承接占位】用户还没发来新消息；下一条是 Bot 主动发出的内容。后续如果用户回应，顺着上一条主动消息自然接住就好。"
 
     def _build_proactive_archive_assistant_text(
         self,
@@ -6874,6 +7648,7 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
         extra_components: list[Any] | None = None,
         action_summary: str = "",
     ) -> str:
+        original_is_receipt = self._is_proactive_delivery_receipt_text(text)
         message_text = self._visible_text_without_tts_reading(text, limit=1000)
         attachment_notes: list[str] = []
         if image_path:
@@ -6895,6 +7670,8 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
             message_text = f"{message_text}{suffix}" if message_text else suffix
         if message_text:
             return message_text
+        if original_is_receipt:
+            return ""
         return _single_line(action_summary, 160) or "主动向用户发送了一条消息。"
 
     async def _archive_proactive_message_to_conversation(
@@ -6912,7 +7689,7 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
                 user_msg_obj = UserMessageSegment(content=str(user_prompt or ""))
                 assistant_msg_obj = AssistantMessageSegment(content=str(assistant_response or ""))
                 async def _write():
-                    conv_id = await self.context.conversation_manager.get_curr_conversation_id(umo)
+                    conv_id = await self._ensure_conversation_id_for_umo(umo, title="Private Companion 主动消息")
                     if not conv_id:
                         return False
                     await self.context.conversation_manager.add_message_pair(
@@ -6924,7 +7701,7 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
 
                 written = await self._conversation_db_operation("archive_proactive_message", _write)
                 if not written:
-                    logger.debug("[PrivateCompanion] 当前私聊没有活动对话,跳过主动消息存档: %s", umo)
+                    logger.warning("[PrivateCompanion] 主动消息存档失败: 无法获取或创建 AstrBot 会话 history umo=%s", _single_line(umo, 140))
                     return
                 if attempt > 0:
                     logger.info("[PrivateCompanion] 主动消息写入 AstrBot 会话历史成功: %s retry=%s", umo, attempt)
@@ -7362,14 +8139,14 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
         cleaned = re.sub(r"^(?:早上好|早安|上午好|中午好|午安|下午好|晚上好)[,,\s]*", "", cleaned)
 
         _SOCIAL_REPLACEMENTS = [
-            ("刷一下存在感", "来打个招呼"),
-            ("冒个泡", "来打个招呼"),
-            ("冒个头", "来打个招呼"),
-            ("顺手冒了个头", "来打个招呼"),
-            ("突然想起你", "想到一件小事"),
-            ("刚好想到你", "想到一件小事"),
-            ("我刚刚想到你了。", "想到一件小事。"),
-            ("我刚刚想到你了", "想到一件小事"),
+            ("刷一下存在感", ""),
+            ("冒个泡", ""),
+            ("冒个头", ""),
+            ("顺手冒了个头", ""),
+            ("突然想起你", ""),
+            ("刚好想到你", ""),
+            ("我刚刚想到你了。", ""),
+            ("我刚刚想到你了", ""),
             ("没什么大不了的,就是", ""),
             ("没什么大道理,就是", ""),
             ("免得你又忘了我", "怕你忙过头"),
@@ -7410,11 +8187,11 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
                 ("刚给你留了句语音,", "刚给你留了句语音,"),
             ],
             "photo_text": [
-                ("路边的植物看着很有生机,给你拍了张照片。", "路边那点绿刚好有点顺眼,就顺手发你了。"),
-                ("给你拍了张照片。", "顺手拍给你了。"),
-                ("给你拍了张照片", "顺手拍给你了"),
-                ("给你拍了照片", "顺手拍给你了"),
-                ("发给你啦。", "就丢给你啦。"),
+                ("路边的植物看着很有生机,给你拍了张照片。", "路边那点绿刚好有点顺眼。"),
+                ("给你拍了张照片。", ""),
+                ("给你拍了张照片", ""),
+                ("给你拍了照片", ""),
+                ("发给你啦。", ""),
             ],
         }
         if action in _ACTION_SPECIFIC_REPLACEMENTS:
@@ -7550,4 +8327,3 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
         style = _single_line(user.get("style") or self.default_style, 24)
         style_hint = f"；参考语气偏好：{style}" if style else ""
         return "check_in", f"无明确来源时的轻量开场{style_hint}；优先贴近关系事实、当前状态或当前日程，不使用固定模板。"
-

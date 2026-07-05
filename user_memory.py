@@ -339,8 +339,8 @@ class UserMemoryMixin:
         now = _now_ts()
         mood_score = self._decay_relationship_mood_score(rel_state, now=now)
         hurt_active = _safe_float(rel_state.get("hurt_until"), 0) > now
-        hurt_threshold = _safe_int(getattr(self, "emotional_gate_hurt_threshold", 55), 55, 10, 100)
-        refuse_threshold = _safe_int(getattr(self, "emotional_gate_refuse_threshold", 80), 80, 20, 100)
+        hurt_threshold = _safe_int(getattr(self, "emotional_gate_hurt_threshold", 70), 70, 10, 100)
+        refuse_threshold = _safe_int(getattr(self, "emotional_gate_refuse_threshold", 90), 90, 20, 100)
         if mode == "refusing" and hurt_active and abs(mood_score) >= refuse_threshold:
             return "对用户刚才的言行还有些不满,表现得回避一点；回复短一些、安静一些,先别急着贴近。"
         if mode == "hurt" and hurt_active and abs(mood_score) >= hurt_threshold:
@@ -382,7 +382,7 @@ class UserMemoryMixin:
     def _update_expression_profile_from_message(self, user: dict[str, Any], text: str) -> None:
         if not self.enable_expression_learning:
             return
-        cleaned = _single_line(text, self._expression_sample_max_chars())
+        cleaned = _single_line(_strip_internal_message_blocks(text), self._expression_sample_max_chars())
         if not cleaned:
             return
         if self._should_skip_expression_sample(cleaned):
@@ -1518,7 +1518,11 @@ class UserMemoryMixin:
             return "", "", ""
         category = "聊天话题"
         topic = cleaned
-        if any(token in cleaned for token in ("吃饭", "午饭", "晚饭", "早饭", "早餐", "午餐", "晚餐", "夜宵", "饿", "饱")):
+        profile = self._detect_private_user_retrieval_habit(cleaned)
+        if profile:
+            category = "固定检索"
+            topic = _single_line(profile.get("topic"), 80) or cleaned
+        elif any(token in cleaned for token in ("吃饭", "午饭", "晚饭", "早饭", "早餐", "午餐", "晚餐", "夜宵", "饿", "饱")):
             category = "饮食节奏"
             if any(token in cleaned for token in ("还没", "没吃", "没来得及", "没饭", "没到饭点")):
                 topic = "还没吃/饭点偏晚"
@@ -1548,6 +1552,39 @@ class UserMemoryMixin:
             topic = cleaned
         signature = self._proactive_topic_signature(category, topic or cleaned, lowered)
         return category, _single_line(topic, 80), signature
+
+    def _detect_private_user_retrieval_habit(self, text: str) -> dict[str, Any]:
+        cleaned = _single_line(text, 220)
+        compact = re.sub(r"\s+", "", cleaned).lower()
+        if not compact:
+            return {}
+        is_question = bool(re.search(r"[？?]|什么|啥|哪|几|多少|有没有|吗|呢|了没|了吗|颜色|色", compact))
+        if not is_question:
+            return {}
+        if any(token in compact for token in ("衣服", "穿搭", "穿着", "穿什么", "穿了什么", "裙子", "外套", "上衣", "校服", "裤子", "鞋子")) and any(
+            token in compact for token in ("颜色", "什么色", "啥色", "什么颜色", "穿什么", "穿了什么", "今天穿", "现在穿")
+        ):
+            return {
+                "intent": "current_outfit_query",
+                "topic": "询问 Bot 当前穿着/衣服颜色",
+                "query_anchors": ["当前穿搭", "今日穿搭", "每日穿搭", "衣服颜色", "穿什么", "穿了什么", "daily_outfit", "persona_life"],
+                "answer_hints": ["优先检索今日穿搭图、当前日程和最近自我生活记忆", "回答时直接说当前准确穿着和颜色,不要泛泛说可能"],
+            }
+        if any(token in compact for token in ("吃了什么", "吃什么", "晚饭", "午饭", "早餐", "夜宵")) and any(token in compact for token in ("你", "bot", "星缘", "今天", "刚才", "现在")):
+            return {
+                "intent": "current_meal_query",
+                "topic": "询问 Bot 最近吃了什么",
+                "query_anchors": ["self_meal", "吃了什么", "午餐", "晚餐", "早餐", "夜宵", "persona_life"],
+                "answer_hints": ["优先检索 Bot 自我进食记录和当前日程", "如果没有准确记录,说明没记清,不要编具体食物"],
+            }
+        if any(token in compact for token in ("在干嘛", "在做什么", "忙什么", "现在做", "刚才做")) and any(token in compact for token in ("你", "bot", "星缘", "现在", "刚才", "今天")):
+            return {
+                "intent": "current_activity_query",
+                "topic": "询问 Bot 当前/最近在做什么",
+                "query_anchors": ["当前日程", "日程细化", "self_timeline", "persona_life", "在做什么"],
+                "answer_hints": ["优先检索当前日程、日程细化和自我时间线", "按最近准确记录回答,不要把很久前的状态当现在"],
+            }
+        return {}
 
     def _update_user_behavior_habits_from_message(self, user: dict[str, Any], text: str) -> None:
         if not self.enable_user_habit_learning:
@@ -1587,6 +1624,22 @@ class UserMemoryMixin:
                 "created_ts": _now_ts(),
             }
             patterns.append(matched)
+        retrieval_profile = self._detect_private_user_retrieval_habit(cleaned)
+        if retrieval_profile:
+            matched["intent"] = _single_line(retrieval_profile.get("intent"), 60)
+            matched["query_anchors"] = [
+                _single_line(item, 40)
+                for item in retrieval_profile.get("query_anchors", [])
+                if _single_line(item, 40)
+            ][:12]
+            matched["answer_hints"] = [
+                _single_line(item, 80)
+                for item in retrieval_profile.get("answer_hints", [])
+                if _single_line(item, 80)
+            ][:8]
+            matched["memory_key"] = hashlib.sha1(
+                f"{str(user.get('user_id') or user.get('id') or '')}|{key}".encode("utf-8", errors="ignore")
+            ).hexdigest()[:20]
         count = _safe_int(matched.get("count"), 0, 0) + 1
         old_avg = _safe_float(matched.get("avg_minute"), minute)
         matched["count"] = min(999, count)
@@ -1607,6 +1660,30 @@ class UserMemoryMixin:
         )
         del patterns[self.user_habit_max_items:]
         habits["updated_at"] = now_dt.strftime("%Y-%m-%d %H:%M")
+        self._maybe_sync_user_behavior_habit_to_memory_companion(user, matched)
+
+    def _maybe_sync_user_behavior_habit_to_memory_companion(self, user: dict[str, Any], habit: dict[str, Any]) -> None:
+        if not isinstance(user, dict) or not isinstance(habit, dict):
+            return
+        if str(habit.get("category") or "") != "固定检索":
+            return
+        min_count = max(2, self.user_habit_min_count)
+        if _safe_int(habit.get("count"), 0, 0) < min_count:
+            return
+        now = _now_ts()
+        if now - _safe_float(habit.get("memory_synced_at"), 0) < 12 * 3600:
+            return
+        recorder = getattr(self, "_memory_companion_record_user_habit", None)
+        if not callable(recorder):
+            return
+        user_id = _single_line(user.get("user_id") or user.get("id"), 80)
+        if not user_id:
+            return
+        habit["memory_synced_at"] = now
+        try:
+            asyncio.create_task(recorder(user=user, user_id=user_id, habit=dict(habit)))
+        except Exception:
+            habit["memory_synced_at"] = 0
 
     def _format_user_habit_time(self, minute_value: Any) -> str:
         minute = int(max(0, min(1439, round(_safe_float(minute_value, 0)))))
@@ -1799,6 +1876,8 @@ class UserMemoryMixin:
         item = candidates[0][2]
         category = _single_line(item.get("category"), 20)
         topic = _single_line(item.get("topic"), 70)
+        if self._habit_topic_is_greeting_like(topic or category) and self._recent_activity_suppresses_habit_greeting(user, now=now):
+            return None
         bucket = _single_line(item.get("bucket"), 12)
         delay_minutes = random.randint(4, 28)
         return {
@@ -1815,6 +1894,26 @@ class UserMemoryMixin:
             "_scheduled_ts": now + delay_minutes * 60,
             "_habit_awareness": True,
         }
+
+    def _habit_topic_is_greeting_like(self, text: str) -> bool:
+        compact = re.sub(r"\s+", "", _single_line(text, 80))
+        if not compact:
+            return False
+        return bool(re.fullmatch(r"(?:早|早安|早上好|上午好|午安|中午好|晚上好|晚安)", compact))
+
+    def _recent_activity_suppresses_habit_greeting(self, user: dict[str, Any], *, now: float) -> bool:
+        recent_at = self._latest_private_user_activity_ts(user)
+        if recent_at <= 0:
+            return False
+        if now - recent_at < max(0, self._effective_user_greeting_idle_minutes(user)) * 60:
+            return True
+        suppressed = user.get("greetings_suppressed_by_inbound", [])
+        if not isinstance(suppressed, list):
+            return False
+        return any(
+            reason in suppressed and self._inbound_satisfies_greeting(reason, now=now)
+            for reason in ("morning_greeting", "noon_greeting", "evening_greeting")
+        )
 
     def _is_structured_or_diagnostic_text(self, text: str) -> bool:
         cleaned = _single_line(text, 260)
@@ -2030,9 +2129,9 @@ class UserMemoryMixin:
                 "confidence": confidence,
             }
         if identity_hurt:
-            return {"event": "hurt", "intensity": 72, "reason": "否定情感真实性或人格", "target": "bot", "rule": "identity_hurt", "confidence": 0.84}
+            return {"event": "hurt", "intensity": 76, "reason": "否定情感真实性或人格", "target": "bot", "rule": "identity_hurt", "confidence": 0.84}
         if mild_hurt:
-            return {"event": "hurt", "intensity": 58, "reason": "轻度否定或拉开距离", "target": "bot", "rule": "mild_hurt", "confidence": 0.72}
+            return {"event": "hurt", "intensity": 48, "reason": "轻度否定或拉开距离", "target": "bot", "rule": "mild_hurt", "confidence": 0.66}
         if apology:
             return {"event": "apology", "intensity": 68, "reason": "道歉或修复", "target": "bot", "rule": "apology", "confidence": 0.84}
         if comfort:
@@ -2213,7 +2312,7 @@ target 只能是 bot/self/other/ambiguous/none。
             state["mood_updated_ts"] = now
             return score
         hours = max(0.0, (now - last_ts) / 3600)
-        recovery = max(1, _safe_int(getattr(self, "emotional_gate_recovery_per_hour", 12), 12, 1, 60))
+        recovery = max(1, _safe_int(getattr(self, "emotional_gate_recovery_per_hour", 24), 24, 1, 60))
         delta = int(hours * recovery)
         if delta <= 0:
             return score
@@ -2252,19 +2351,25 @@ target 只能是 bot/self/other/ambiguous/none。
         reason = _single_line(intent.get("emotion_reason"), 80)
         target = _single_line(intent.get("emotion_target"), 24) or "none"
         rule = _single_line(intent.get("emotion_rule"), 40)
-        hurt_threshold = _safe_int(getattr(self, "emotional_gate_hurt_threshold", 55), 55, 10, 100)
-        refuse_threshold = _safe_int(getattr(self, "emotional_gate_refuse_threshold", 80), 80, 20, 100)
+        hurt_threshold = _safe_int(getattr(self, "emotional_gate_hurt_threshold", 70), 70, 10, 100)
+        refuse_threshold = _safe_int(getattr(self, "emotional_gate_refuse_threshold", 90), 90, 20, 100)
         if refuse_threshold <= hurt_threshold:
             refuse_threshold = min(100, hurt_threshold + 5)
         min_until = _safe_float(state.get("emotion_min_until"), 0)
         if emotion_enabled and emotion_event == "hurt" and target in {"bot", "ambiguous"} and intensity >= hurt_threshold:
-            mood_score = max(-100, mood_score - max(8, int(intensity * 0.8)))
+            over_threshold = max(0, intensity - hurt_threshold)
+            penalty = max(8, 12 + int(over_threshold * 0.65))
+            if target == "ambiguous":
+                penalty = max(6, int(penalty * 0.75))
+            if emotion_confidence < 0.82:
+                penalty = max(5, int(penalty * 0.8))
+            mood_score = max(-100, mood_score - penalty)
             hurt_minutes = min(
-                _safe_int(getattr(self, "emotional_gate_max_hurt_minutes", 180), 180, 10, 720),
-                max(15, int(intensity * 1.8)),
+                _safe_int(getattr(self, "emotional_gate_max_hurt_minutes", 90), 90, 10, 720),
+                max(10, int(intensity * 1.0)),
             )
             state["hurt_until"] = now + hurt_minutes * 60
-            min_minutes = 25 if abs(mood_score) >= refuse_threshold else 12
+            min_minutes = 15 if abs(mood_score) >= refuse_threshold else 8
             state["emotion_min_until"] = max(min_until, now + min(min_minutes, hurt_minutes) * 60)
             state["silence_turns"] = max(
                 _safe_int(state.get("silence_turns"), 0, 0, 5),
@@ -2318,6 +2423,8 @@ target 只能是 bot/self/other/ambiguous/none。
         elif relation_enabled and inbound_intent == "boundary" and intent_confidence >= 0.68:
             current = "backoff"
             state["backoff_until"] = now + 6 * 3600
+            state["last_backoff_reason"] = reason or "用户表达边界或不想继续当前互动"
+            state["last_backoff_text"] = _single_line(intent.get("text"), 160)
         elif relation_enabled and pressure >= 2 and intent_confidence >= 0.65:
             current = "careful"
         elif relation_enabled and inbound_intent in {"intimacy", "play"} and intent_confidence >= 0.68:
@@ -2438,6 +2545,206 @@ target 只能是 bot/self/other/ambiguous/none。
             parts.append("你要是愿意，我也可以直接帮你把曲目列出来。")
         return "".join(parts)
 
+    def _smart_silence_trigger_reason(self, inbound_text: str) -> str:
+        cleaned = _single_line(inbound_text, 260)
+        if not cleaned:
+            return ""
+        compact = re.sub(r"\s+", "", cleaned)
+        if not compact:
+            return ""
+        direct_markers = (
+            "别聊这个",
+            "不要聊这个",
+            "不聊这个",
+            "别说这个",
+            "不要说这个",
+            "别提这个",
+            "不要提这个",
+            "不想聊这个",
+            "不想说这个",
+            "不想继续",
+            "别继续",
+            "不要继续",
+            "别问了",
+            "不要问了",
+            "别追问",
+            "不要追问",
+            "到此为止",
+            "这个话题到此为止",
+            "结束这个话题",
+            "结束话题",
+            "换个话题",
+            "跳过这个",
+            "略过这个",
+            "打住",
+            "停一下",
+            "先别说了",
+            "先不说了",
+            "别说了",
+            "不要回复",
+            "不用回复",
+            "别回了",
+            "不必回复",
+        )
+        for marker in direct_markers:
+            if marker in compact:
+                return marker
+        topic_patterns = (
+            r"(这个|这件事|这事|这话|这个话题|这话题).{0,8}(算了|别聊|别说|别提|不聊|不说|不提|跳过|略过|到此为止)",
+            r"(算了|够了|停|打住).{0,8}(别聊|别说|别问|别提|不聊|不说|不问|不提)",
+            r"(别|不要|不用).{0,6}(安慰|解释|分析|劝|讲道理|追问)",
+        )
+        for pattern in topic_patterns:
+            if re.search(pattern, compact):
+                return "topic_boundary"
+        return ""
+
+    async def _decide_smart_silence(
+        self,
+        *,
+        inbound_text: str,
+        response_text: str,
+        user: dict[str, Any] | None = None,
+        session_kind: str = "",
+        recent_context: list[str] | None = None,
+    ) -> dict[str, Any]:
+        if not bool(getattr(self, "enable_smart_silence", True)):
+            return {"decision": "send", "reason": "disabled", "confidence": 0.0, "source": "disabled"}
+        inbound = _single_line(inbound_text, 320)
+        response = _single_line(response_text, 600)
+        trigger = self._smart_silence_trigger_reason(inbound)
+        if not trigger:
+            return {"decision": "send", "reason": "no_boundary_trigger", "confidence": 0.0, "source": "prefilter"}
+        if not response:
+            return {"decision": "send", "reason": "empty_response", "confidence": 0.0, "source": "prefilter"}
+        cache_key = hashlib.sha1(
+            f"{session_kind}\n{inbound}\n{response[:240]}".encode("utf-8", errors="ignore")
+        ).hexdigest()
+        cache = getattr(self, "_smart_silence_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            setattr(self, "_smart_silence_cache", cache)
+        now = _now_ts()
+        cached = cache.get(cache_key)
+        if isinstance(cached, dict) and now - _safe_float(cached.get("ts"), 0) <= 120:
+            result = dict(cached.get("result") or {})
+            result["source"] = "cache"
+            return result
+        if len(cache) > 256:
+            for key, item in list(cache.items())[:64]:
+                if not isinstance(item, dict) or now - _safe_float(item.get("ts"), 0) > 120:
+                    cache.pop(key, None)
+
+        provider_id = self._task_provider(
+            getattr(self, "smart_silence_provider_id", ""),
+            getattr(self, "response_review_provider_id", ""),
+            getattr(self, "smart_message_debounce_provider_id", ""),
+            getattr(self, "mai_style_provider_id", ""),
+            getattr(self, "llm_provider_id", ""),
+        )
+        if not provider_id:
+            return {"decision": "send", "reason": "no_provider", "confidence": 0.0, "source": "prefilter"}
+
+        last_companion = _single_line((user or {}).get("last_companion_message"), 260) if isinstance(user, dict) else ""
+        recent_lines = []
+        for item in (recent_context or [])[-6:]:
+            line = _single_line(item, 120)
+            if line:
+                recent_lines.append(f"- {line}")
+        prompt = f"""
+你是聊天回复发送前的智能沉默判定器。判断用户是否在表达“不要继续这个话题/不要再追问/先别回复/换掉当前话题”，从而应该直接不发这条待发送回复。
+
+只输出 JSON：{{"decision":"send|silent","confidence":0-1,"reason":"不超过20字"}}
+
+判定原则：
+- 用户明确说别聊、别问、别继续、到此为止、算了别说了、换个话题，且待发送回复仍在确认、安慰、解释、追问或继续这个话题，decision=silent。
+- 如果用户同一句已经开启了新请求或新问题，例如“算了，帮我看这个”“换个话题，今天吃什么”，且待发送回复是在处理新请求，decision=send。
+- 如果待发送回复只是“好，那不聊这个了”“嗯我闭嘴了”这类对边界的重复确认，通常 silent；真实聊天里安静退开更自然。
+- 不要因为用户说“算了”两个字就一定沉默，要看它是不是结束当前话题，而不是普通口头禅。
+- 不确定时 send。
+
+会话类型：{_single_line(session_kind, 40) or "未知"}
+触发词：{trigger}
+
+【最近上下文】
+{chr(10).join(recent_lines) or "（无）"}
+
+【Bot 上次发出的话】
+{last_companion or "（无）"}
+
+【用户刚才说】
+{inbound}
+
+【待发送回复】
+{response}
+""".strip()
+        timeout_seconds = max(
+            0.2,
+            min(5.0, _safe_float(getattr(self, "smart_silence_model_timeout_seconds", 1.2), 1.2, 0.2)),
+        )
+        started = time.perf_counter()
+        raw = ""
+        try:
+            raw = await asyncio.wait_for(
+                self._llm_call(
+                    prompt,
+                    max_tokens=100,
+                    provider_id=provider_id,
+                    task="smart_silence",
+                ),
+                timeout=timeout_seconds,
+            ) or ""
+        except asyncio.TimeoutError:
+            result = {"decision": "send", "reason": f"timeout>{timeout_seconds:.1f}s", "confidence": 0.0, "source": "timeout"}
+            cache[cache_key] = {"ts": now, "result": result}
+            logger.info(
+                "[PrivateCompanion] 智能沉默判定超时,默认放行: trigger=%s timeout=%.1fs text=%s",
+                trigger,
+                timeout_seconds,
+                _single_line(inbound, 100),
+            )
+            return result
+        except Exception as exc:
+            result = {"decision": "send", "reason": _single_line(exc, 80), "confidence": 0.0, "source": "error"}
+            cache[cache_key] = {"ts": now, "result": result}
+            logger.info("[PrivateCompanion] 智能沉默判定失败,默认放行: %s", _single_line(exc, 120))
+            return result
+
+        payload = self._extract_json_payload(raw or "")
+        if not isinstance(payload, dict):
+            result = {"decision": "send", "reason": "invalid_json", "confidence": 0.0, "source": "model"}
+            cache[cache_key] = {"ts": now, "result": result}
+            return result
+        decision = str(payload.get("decision") or "").strip().lower()
+        if decision not in {"send", "silent"}:
+            decision = "send"
+        confidence = max(0.0, min(1.0, _safe_float(payload.get("confidence"), 0.0, 0.0)))
+        reason = _single_line(payload.get("reason"), 80) or "模型判定"
+        threshold = max(0.0, min(1.0, _safe_float(getattr(self, "smart_silence_min_confidence", 0.66), 0.66, 0.0)))
+        if decision == "silent" and confidence < threshold:
+            decision = "send"
+            reason = f"低置信度:{reason}"
+        result = {
+            "decision": decision,
+            "reason": reason,
+            "confidence": confidence,
+            "source": "model",
+            "trigger": trigger,
+            "elapsed_ms": int((time.perf_counter() - started) * 1000),
+        }
+        cache[cache_key] = {"ts": now, "result": result}
+        logger.info(
+            "[PrivateCompanion] 智能沉默判定: decision=%s confidence=%.2f trigger=%s elapsed=%dms reason=%s user=%s reply=%s",
+            decision,
+            confidence,
+            trigger,
+            result["elapsed_ms"],
+            reason,
+            _single_line(inbound, 120),
+            _single_line(response, 140),
+        )
+        return result
+
     async def _review_and_rewrite_response(
         self,
         user: dict[str, Any],
@@ -2459,9 +2766,6 @@ target 只能是 bot/self/other/ambiguous/none。
                     _single_line(fallback, 120),
                 )
                 return fallback or response_text
-        trimmed = self._trim_abrupt_closing_topic_shift(response_text, inbound_text=inbound_text)
-        if trimmed and trimmed != str(response_text or "").strip():
-            return trimmed
         if isinstance(music_album_context, dict) and self._music_album_reply_needs_disambiguation_fix(response_text):
             fallback = self._music_album_reply_from_context(music_album_context, user_text=inbound_text)
             if fallback:
@@ -2471,27 +2775,42 @@ target 只能是 bot/self/other/ambiguous/none。
                     _single_line(fallback, 160),
                 )
                 return fallback
+        if not bool(getattr(self, "enable_response_self_review", True)):
+            return self._fallback_temporal_or_continuity_confused_reply(inbound_text, response_text, user=user) or response_text
         flags = self._response_review_flags(response_text, user, inbound_text=inbound_text)
         if not flags:
             return response_text
         review_mode = str(getattr(self, "response_review_mode", "severe_only") or "severe_only").strip().lower()
         if review_mode not in {"local_only", "severe_only", "full"}:
             review_mode = "severe_only"
-        if not self.enable_response_self_review:
-            return response_text
         if review_mode == "local_only":
-            return response_text
+            return self._fallback_temporal_or_continuity_confused_reply(
+                inbound_text,
+                response_text,
+                flags=flags,
+                user=user,
+            ) or response_text
         severe_flags = self._response_review_severe_flags(flags)
         if review_mode == "severe_only" and not severe_flags:
             return response_text
         effective_flags = severe_flags if review_mode == "severe_only" else flags
         lightweight_checker = getattr(self, "_is_lightweight_private_passive_inbound", None)
         if callable(lightweight_checker) and lightweight_checker(inbound_text):
-            critical_flags = {"too_long", "meta_or_assistant", "over_structured", "leaks_internal", "repeats_last_bot_message"}
+            critical_flags = {
+                "too_long",
+                "meta_or_assistant",
+                "over_structured",
+                "leaks_internal",
+                "repeats_last_bot_message",
+                "invalid_current_time_anchor",
+                "false_no_reply_claim",
+            }
             if not any(flag in critical_flags for flag in effective_flags):
                 return response_text
         intent = user.get("intent_profile") if isinstance(user.get("intent_profile"), dict) else {}
+        allow_repeat = self._inbound_explicitly_requests_repeat(inbound_text)
         last_message = _single_line(user.get("last_companion_message"), 300)
+        last_message_label = "用户本轮明确要求复述上一条,仅用于确认原文" if allow_repeat else "刚才 Bot 已经说过，禁止复述或换皮重复"
         prompt = f"""
 把下面这条回复改写成更像真实私聊里的自然回复。
 保留原意,不要新增事实,不要解释你在改写。
@@ -2499,7 +2818,7 @@ target 只能是 bot/self/other/ambiguous/none。
 【用户刚才说】
 {_single_line(inbound_text, 260) or '（无）'}
 
-【刚才 Bot 已经说过，禁止复述或换皮重复】
+【{last_message_label}】
 {last_message or '（无）'}
 
 【原回复】
@@ -2511,6 +2830,9 @@ target 只能是 bot/self/other/ambiguous/none。
 【当前意图/情绪】
 {intent.get('intent', 'chat')}｜{intent.get('emotion', 'neutral')}｜{intent.get('reply_style', 'natural')}
 
+【真实当前时间】
+{self._environment_now().strftime('%Y-%m-%d %H:%M')}
+
 要求：
 - 只输出改写后的正文
 - 不要标题、列表、JSON、括号动作、系统/AI/提示词字眼
@@ -2519,9 +2841,14 @@ target 只能是 bot/self/other/ambiguous/none。
 - 如果用户情绪低,先接住情绪,少讲道理
 - 如果是边界/不想被打扰,短一点,退一步
 - 如果回复已经在说晚安、睡觉、做梦、告别,不要再突然追加天气、日程、生活观察或另一个新话题
-- 如果问题是重复上一条 Bot 消息,必须直接承接用户这句话,不要再说上一条里的“吃饱犯困/下午还有事/有什么安排”等同义内容
+- 如果用户明确要求复述/原话/再说一遍,允许保留上一条 Bot 原文,不要把它误判为复读
+- 如果问题是无意重复上一条 Bot 消息,必须直接承接用户这句话,不要再说上一条里的“吃饱犯困/下午还有事/有什么安排”等同义内容
+- 如果用户并未要求复述,且无论怎样改写都只能重复上一条 Bot 消息,只输出 {self._response_review_drop_marker()}；不要为了“不重复”再补一句客套话
 - 如果原回复为了表现困、迷糊、半梦半醒或低能量而变得含混,优先改成清楚承接用户；状态只能留在语气里,不能牺牲回答质量
+- 如果用户没有问 Bot 近况,删掉由内部模拟状态带出的“我刚在/正在/继续做某事”等动作或日程复述；不要把模拟状态说成现实事件
 - 如果问题是表达学习过头、异常断句或照抄用户样本,保留意思,改成自然中文私聊；不要为了模仿口癖而加奇怪逗号、空格、断句或复读用户原话
+- 如果问题是 invalid_current_time_anchor,删除或改正“快十一点/该睡了/晚安”等与真实当前时间冲突的说法；不要继续围绕错误时间展开
+- 如果问题是 false_no_reply_claim,不要说“看你没回我/等你回话/你没理我”；用户本轮已经发来消息,直接解释上一句或重新接住当前问题
 """.strip()
         started = time.perf_counter()
         try:
@@ -2537,7 +2864,12 @@ target 只能是 bot/self/other/ambiguous/none。
                 ",".join(effective_flags),
                 _single_line(exc, 160),
             )
-            return response_text
+            return self._fallback_temporal_or_continuity_confused_reply(
+                inbound_text,
+                response_text,
+                flags=effective_flags,
+                user=user,
+            ) or response_text
         logger.info(
             "[PrivateCompanion] 被动回复模型自检完成: mode=%s flags=%s elapsed=%dms",
             review_mode,
@@ -2547,17 +2879,29 @@ target 只能是 bot/self/other/ambiguous/none。
         cleaned = str(rewritten or "").strip()
         if not cleaned:
             return response_text
+        if self._is_response_review_drop_marker(cleaned):
+            logger.info(
+                "[PrivateCompanion] 被动回复模型自检判定重复,已标记丢弃: flags=%s before=%s",
+                ",".join(effective_flags),
+                _single_line(response_text, 120),
+            )
+            return self._response_review_drop_marker()
         if len(cleaned) > max(len(response_text) + 80, self.response_review_max_chars + 160):
             fallback = self._fallback_overlong_casual_reply(inbound_text, response_text)
             return fallback or response_text
         if re.search(r"(提示词|系统|JSON|改写后|以下是)", cleaned, re.IGNORECASE):
-            return response_text
-        if last_message and self._text_repeats_recent_message(cleaned, last_message):
+            return self._fallback_temporal_or_continuity_confused_reply(
+                inbound_text,
+                response_text,
+                flags=effective_flags,
+                user=user,
+            ) or response_text
+        if last_message and not allow_repeat and self._text_repeats_recent_message(cleaned, last_message):
             logger.info(
-                "[PrivateCompanion] 被动回复模型自检后仍复读,不启用本地兜底: before=%s",
+                "[PrivateCompanion] 被动回复模型自检后仍复读,已标记丢弃: before=%s",
                 _single_line(cleaned, 120),
             )
-            return response_text
+            return self._response_review_drop_marker()
         if (
             any(flag in effective_flags for flag in ("casual_overexplained", "weather_overexplained"))
             and len(cleaned) > self._casual_reply_review_limit(inbound_text)
@@ -2573,6 +2917,8 @@ target 只能是 bot/self/other/ambiguous/none。
             "repeats_last_bot_message",
             "casual_overexplained",
             "weather_overexplained",
+            "invalid_current_time_anchor",
+            "false_no_reply_claim",
         }
         if self._expression_style_review_enabled():
             severe.update({"unnatural_punctuation", "expression_overfit", "copied_user_expression_sample"})
@@ -2608,6 +2954,99 @@ target 只能是 bot/self/other/ambiguous/none。
         if parts:
             return _single_line(parts[0], 70)
         return ""
+
+    def _response_has_invalid_current_time_anchor(self, text: str) -> bool:
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return False
+        now = self._environment_now()
+        current_minutes = now.hour * 60 + now.minute
+        explicit_late_anchor = bool(
+            re.search(r"(快|差不多|都|已经)?\s*(?:晚上)?(?:十一|11|23)\s*[点點]|23\s*[:：]\s*\d{1,2}", cleaned)
+        )
+        sleep_anchor = bool(re.search(r"(困不困|该睡|睡觉|睡了|晚安|熬夜|夜深|深夜)", cleaned))
+        if explicit_late_anchor and not (22 * 60 <= current_minutes or current_minutes <= 90):
+            return True
+        if sleep_anchor and re.search(r"(快|差不多|都|已经).{0,8}(?:十一|11|23)\s*[点點]", cleaned):
+            return not (22 * 60 <= current_minutes or current_minutes <= 90)
+        return False
+
+    def _has_open_proactive_awaiting_reply(self, user: dict[str, Any]) -> bool:
+        if not isinstance(user, dict):
+            return False
+        now = _now_ts()
+        afterglow = user.get("proactive_afterglow")
+        if isinstance(afterglow, dict) and afterglow.get("status") == "awaiting_reply":
+            ts = _safe_float(afterglow.get("ts"), 0)
+            if not ts or now - ts <= 6 * 3600:
+                return True
+        for item in reversed(self._action_consequence_items(user)):
+            if not isinstance(item, dict) or item.get("status") != "awaiting_reply":
+                continue
+            ts = _safe_float(item.get("ts"), 0)
+            if not ts or now - ts <= 6 * 3600:
+                return True
+        return False
+
+    def _response_has_false_no_reply_claim(self, text: str, inbound_text: str, user: dict[str, Any]) -> bool:
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return False
+        if not re.search(r"(看你|见你|以为你|还以为你|你).{0,8}(没回|不回|没理|不理|没搭理)|等你回|等你回复|等你消息", cleaned):
+            return False
+        inbound = str(inbound_text or "").strip()
+        if not inbound:
+            return False
+        if re.search(r"(之前|前面|上一条|上次|刚才那条|我那条)", cleaned) and self._has_open_proactive_awaiting_reply(user):
+            return False
+        return True
+
+    def _fallback_temporal_or_continuity_confused_reply(
+        self,
+        inbound_text: str,
+        response_text: str,
+        *,
+        flags: list[str] | None = None,
+        user: dict[str, Any] | None = None,
+    ) -> str:
+        cleaned = _strip_internal_message_blocks(str(response_text or "")).strip()
+        if not cleaned:
+            return ""
+        active_flags = set(flags or [])
+        user = user if isinstance(user, dict) else {}
+        if "invalid_current_time_anchor" not in active_flags and self._response_has_invalid_current_time_anchor(cleaned):
+            active_flags.add("invalid_current_time_anchor")
+        if "false_no_reply_claim" not in active_flags and self._response_has_false_no_reply_claim(cleaned, inbound_text, user):
+            active_flags.add("false_no_reply_claim")
+        if not active_flags.intersection({"invalid_current_time_anchor", "false_no_reply_claim"}):
+            return ""
+        last_message = _single_line(_strip_internal_message_blocks(user.get("last_companion_message")), 260)
+        if (
+            "false_no_reply_claim" in active_flags
+            and self._compact_repeat_text(inbound_text) in {"", "？", "?", "啥", "什么", "shenme"}
+            and last_message
+            and self._response_has_invalid_current_time_anchor(last_message)
+        ):
+            return "啊，刚才那句时间感说偏了，是我没接稳你前一句。"
+        if "false_no_reply_claim" in active_flags and self._compact_repeat_text(inbound_text) in {"", "？", "?", "啥", "什么", "shenme"}:
+            return "啊，我刚才那句是顺口接你问的“有意思的什么”，不是说你没回。"
+        cleaned = re.sub(
+            r"[，,。！？!?；;、\s]*(?:比折，?)?(?:快|差不多|都|已经)?\s*(?:晚上)?(?:十一|11|23)\s*[点點][了啦]?[，,、\s]*(?:困不困|该睡了?|睡觉吧?|晚安)?[？?。！!~～]*",
+            "",
+            cleaned,
+        ).strip()
+        cleaned = re.sub(
+            r"[，,。！？!?；;、\s]*(?:看你|见你|以为你|还以为你|你).{0,8}(?:没回|不回|没理|不理|没搭理).{0,16}?(?:嘛|啦|了|而已|就)?[，,。！？!?~～]*",
+            "",
+            cleaned,
+        ).strip()
+        cleaned = re.sub(r"[，,；;、\s]+$", "", cleaned).strip()
+        if cleaned:
+            return cleaned
+        inbound = str(inbound_text or "").strip()
+        if inbound in {"？", "?"}:
+            return "啊，我刚才那句没说清楚，是在接你问“有意思的什么”。"
+        return "刚才那句我说偏了，重新接你这句。"
 
     def _simulation_active(self, user: dict[str, Any]) -> bool:
         raw = user.get("simulation_mode")
@@ -2650,7 +3089,6 @@ target 只能是 bot/self/other/ambiguous/none。
             user_id = str(event.get_sender_id())
         except Exception:
             return ""
-
         consume_suspended = False
         async with self._data_lock:
             user = dict(self._get_user(user_id))
@@ -2686,14 +3124,7 @@ target 只能是 bot/self/other/ambiguous/none。
                 + f"今天预设的生活线索：{self._format_story_plan_for_prompt()}"
             )
 
-        last_sent = _safe_float(user.get("last_sent"), 0)
-        last_message = _single_line(user.get("last_companion_message"), 240)
-        if not last_sent or not last_message:
-            return ""
-        if _now_ts() - last_sent > self.proactive_reply_context_hours * 3600:
-            return ""
-
-        return self._build_proactive_reply_core(user)
+        return ""
 
 
     async def _collect_recent_private_conversation_text(
@@ -2771,6 +3202,8 @@ target 只能是 bot/self/other/ambiguous/none。
 普通问答、日志、报错、临时调试、一次性闲聊如果没有情绪余味,不要硬整理成重要经历。
 玩笑、反讽、口嗨和临时抱怨不要写成长期事实；不确定就写得轻一点。
 open_loops 只写之后仍需要回头处理、确认、兑现的事；普通“以后还能聊”的内容放进 reusable_topic。
+严格区分说话人：用户行才可以写入 user_events；Bot/助手行里的第一人称动作、身体状态、日程和生活片段多半是拟人化表达，只能当作当时回复风格或轻微情绪余味。
+bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或之后处理的事；不要把“我刚在吃饭/整理/路上/犯困/继续做某事”这类模拟状态当承诺或共同经历。
 
 【AstrBot 默认人格】
 {self._get_default_persona_prompt()}
@@ -2950,6 +3383,53 @@ open_loops 只写之后仍需要回头处理、确认、兑现的事；普通“
         if not deduped:
             return ""
         return "【相处线索】\n" + "\n".join(f"- {line}" for line in deduped[: max(1, int(limit or 1))])
+
+    def _format_short_reaction_context_for_prompt(self, user: dict[str, Any], inbound_text: str) -> str:
+        if not isinstance(user, dict):
+            return ""
+        inbound = str(inbound_text or "").strip()
+        if not inbound:
+            return ""
+        compact = self._compact_repeat_text(inbound)
+        short_reactions = {
+            "？",
+            "?",
+            "啊",
+            "诶",
+            "嗯",
+            "哈",
+            "啥",
+            "什么",
+            "什么意思",
+            "你说啥",
+            "说啥",
+            "怎么",
+            "为啥",
+        }
+        if compact not in short_reactions and inbound not in short_reactions:
+            return ""
+        last_message = _single_line(_strip_internal_message_blocks(user.get("last_companion_message")), 260)
+        if not last_message:
+            return ""
+        last_at = _safe_float(user.get("last_companion_message_at"), 0) or _safe_float(user.get("last_sent"), 0)
+        if last_at > 0 and _now_ts() - last_at > 20 * 60:
+            return ""
+        question_like = inbound in {"？", "?"} or compact in {"什么", "什么意思", "你说啥", "说啥", "啥", "怎么", "为啥"}
+        if not question_like:
+            return ""
+        correction_hint = ""
+        if self._response_has_invalid_current_time_anchor(last_message):
+            correction_hint = (
+                "\n上一条 Bot 回复里含有与当前真实时间冲突的时间判断；用户这个短反应优先是在质疑这处错误。"
+                "优先自然承认刚才时间感说偏/没接稳，再轻轻接回话题；避免解释成普通关心、主动问候或用户没回消息。"
+            )
+        return (
+            "【本轮短反应锚点】\n"
+            f"用户本轮只发了“{_single_line(inbound, 20)}”，这是紧接上一条 Bot 回复的追问、疑惑或质疑，不是用户长时间没有回应。\n"
+            f"上一条 Bot 回复：{last_message}\n"
+            "回复时直接解释上一句、承认刚才说偏/没说清，或重新接住用户当前疑问；禁止说“看你没回我”“等你回话”“你没理我”。"
+            f"{correction_hint}"
+        )
 
     def _format_private_identity_anchor_for_prompt(self, user_id: str, user: dict[str, Any], event: Any | None = None) -> str:
         worldbook_profile = None
@@ -3254,6 +3734,60 @@ open_loops 只写之后仍需要回头处理、确认、兑现的事；普通“
                 lines.append(f"- {self._format_timestamp_elapsed(item.get('ts'))}回复过：{text}")
         return "\n".join(lines)
 
+    def _inbound_explicitly_requests_repeat(self, inbound_text: str) -> bool:
+        compact = self._compact_repeat_text(inbound_text)
+        if not compact:
+            return False
+        if re.search(r"(重复一遍|再说一遍|重说一遍|复述|原话|原文|照原样|原样发|复制|copy|quote)", compact, re.IGNORECASE):
+            return True
+        return bool(
+            re.search(r"(刚才|刚刚|上句|上一句|那句|这句|你刚说)", compact)
+            and re.search(r"(再说|再发|重发|重复|复述|原话|原文|复制)", compact)
+        )
+
+    def _response_review_drop_marker(self) -> str:
+        return "__PRIVATE_COMPANION_DROP_DUPLICATE__"
+
+    def _is_response_review_drop_marker(self, text: Any) -> bool:
+        raw = str(text or "").strip()
+        if not raw:
+            return False
+        if raw == self._response_review_drop_marker():
+            return True
+        compact = re.sub(r"[\s<>\[\]{}_'\"`“”‘’：:。.!！?？-]+", "", raw).upper()
+        return compact in {"PRIVATECOMPANIONDROPDUPLICATE", "DROPDUPLICATE", "丢弃重复", "取消重复"}
+
+    def _text_is_near_duplicate_reply(self, text: str, recent_text: str) -> bool:
+        current = self._compact_repeat_text(text)
+        recent = self._compact_repeat_text(recent_text)
+        if len(current) < 8 or len(recent) < 8:
+            return False
+        if current == recent:
+            return True
+        short, long = (current, recent) if len(current) <= len(recent) else (recent, current)
+        return len(short) >= 12 and short in long and len(short) / max(1, len(long)) >= 0.82
+
+    def _should_drop_duplicate_reply_text(
+        self,
+        user: dict[str, Any],
+        inbound_text: str,
+        response_text: str,
+    ) -> tuple[bool, str]:
+        if not isinstance(user, dict):
+            return False, ""
+        if self._inbound_explicitly_requests_repeat(inbound_text):
+            return False, ""
+        visible = _single_line(_strip_internal_message_blocks(response_text), 500)
+        last_message = _single_line(user.get("last_companion_message"), 500)
+        if not visible or not last_message:
+            return False, ""
+        last_at = _safe_float(user.get("last_companion_message_at"), 0) or _safe_float(user.get("last_sent"), 0)
+        if last_at > 0 and _now_ts() - last_at > 30 * 60:
+            return False, ""
+        if self._text_is_near_duplicate_reply(visible, last_message):
+            return True, "最终回复与上一条 Bot 消息几乎相同"
+        return False, ""
+
     def _response_review_flags(self, text: str, user: dict[str, Any], *, inbound_text: str = "") -> list[str]:
         cleaned = str(text or "").strip()
         flags: list[str] = []
@@ -3285,19 +3819,25 @@ open_loops 只写之后仍需要回头处理、确认、兑现的事；普通“
             flags.append("over_structured")
         if re.search(r"(能量\s*\d+|关系站位|状态机|内部规划|用户意图|表达学习|陪伴记忆)", cleaned):
             flags.append("leaks_internal")
+        if self._response_has_invalid_current_time_anchor(cleaned):
+            flags.append("invalid_current_time_anchor")
+        if self._response_has_false_no_reply_claim(cleaned, inbound_text, user):
+            flags.append("false_no_reply_claim")
         if self._expression_style_review_enabled():
             flags.extend(self._expression_review_flags(cleaned, user))
         signature = self._proactive_topic_signature(cleaned)
-        if self._has_abrupt_closing_topic_shift(cleaned, inbound_text=""):
-            flags.append("abrupt_topic_shift")
         if self.enable_passive_topic_suppression:
             for item in self._cleanup_recent_passive_topics(user):
                 if self._topic_signature_similar(signature, str(item.get("signature") or "")):
                     flags.append("repeated_topic")
                     break
         last_message = _single_line(user.get("last_companion_message"), 300)
-        last_sent = _safe_float(user.get("last_sent"), 0)
-        if last_message and self._text_repeats_recent_message(cleaned, last_message):
+        last_sent = _safe_float(user.get("last_companion_message_at"), 0) or _safe_float(user.get("last_sent"), 0)
+        if (
+            last_message
+            and not self._inbound_explicitly_requests_repeat(inbound_text)
+            and self._text_repeats_recent_message(cleaned, last_message)
+        ):
             if not last_sent or _now_ts() - last_sent <= self.proactive_reply_context_hours * 3600:
                 flags.append("repeats_last_bot_message")
         return list(dict.fromkeys(flags))
@@ -3443,44 +3983,6 @@ Bot 主动后用户回复次数：{reply_count}
             current = self._get_user(user_id)
             current["persona_relationship"] = profile
             self._save_data_sync()
-
-    def _build_proactive_reply_core(self, user: dict[str, Any]) -> str:
-        last_sent = _safe_float(user.get("last_sent"), 0)
-        last_message = _single_line(user.get("last_companion_message"), 240)
-        if not last_sent or not last_message:
-            return ""
-        sent_at = datetime.fromtimestamp(last_sent).strftime("%H:%M")
-        reason = _single_line(user.get("last_proactive_reason"), 40)
-        action = _single_line(user.get("last_proactive_action"), 40)
-        behavior = _single_line(user.get("last_proactive_behavior_summary"), 80)
-        motive = _single_line(user.get("last_proactive_motive"), 120)
-        detail_parts = []
-        if reason:
-            detail_parts.append(f"原因：{reason}")
-        if action and action != "message":
-            detail_parts.append(f"行为：{action}" + (f"（{behavior}）" if behavior else ""))
-        elif behavior:
-            detail_parts.append(f"行为：{behavior}")
-        if motive:
-            detail_parts.append(f"当时想法：{motive}")
-        detail = "\n" + "；".join(detail_parts) if detail_parts else ""
-        return (
-            "【主动消息回复上下文】\n"
-            f"你在 {sent_at} 主动向用户发送了“{last_message}”。{detail}\n"
-            "用户当前消息可能是在回应这条主动消息；请优先自然承接用户这句话。如果用户明显另起话题,再自然切换。\n"
-            "上一条主动消息已经发出过,现在绝对不要完整复述,也不要同义改写其中的事实、情绪和问题。"
-            "尤其不要把刚才问过的问题再问一遍；如果用户已经回答了,先接住回答。\n"
-            "如果用户问“做啥了/怎么了/发生啥了”,优先补充刚才没说过的具体动作或原因；如果没新信息,就短短承认一下。"
-        )
-
-    def _build_proactive_reply_context_for_user(self, user: dict[str, Any]) -> str:
-        last_sent = _safe_float(user.get("last_sent"), 0)
-        last_message = _single_line(user.get("last_companion_message"), 240)
-        if not last_sent or not last_message:
-            return "（暂无最近一次主动消息承接上下文）"
-        if _now_ts() - last_sent > self.proactive_reply_context_hours * 3600:
-            return "（最近一次主动消息已超出承接窗口）"
-        return self._build_proactive_reply_core(user)
 
     def _format_relationship_summary(self, user: dict[str, Any]) -> str:
         profile = self._relationship_profile(user)

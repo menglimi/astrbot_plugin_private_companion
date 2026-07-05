@@ -4,7 +4,20 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>陪伴面板</title>
-  <link rel="stylesheet" href="./app.css?v=20260627-outfit-contain1" />
+  <link rel="stylesheet" href="./app.css?v=20260704-theme-fouc-fix" />
+  <script>
+    (function () {
+      try {
+        var theme = localStorage.getItem("pc_theme") || "classic";
+        var font = localStorage.getItem("pc_font") || "original";
+        var allowedThemes = ["classic", "dark", "warm", "forest", "sakura", "ocean", "lavender", "ink", "sunset"];
+        if (allowedThemes.indexOf(theme) === -1) theme = "classic";
+        if (font !== "cheng") font = "original";
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.dataset.pageFont = font;
+      } catch (e) {}
+    })();
+  </script>
 </head>
 <body>
   <main class="shell">
@@ -90,18 +103,19 @@
       <nav class="annotations" aria-label="视图">
         <div class="annot-axis" aria-hidden="true"></div>
         <button class="tab is-active" data-tab="dashboard"><i>01</i><span>总览</span></button>
-        <button class="tab" data-tab="roleplay"><i>02</i><span>角色设定</span></button>
+        <button class="tab" data-tab="roleplay"><i>02</i><span>世界知识</span></button>
         <button class="tab" data-tab="private"><i>03</i><span>私聊</span></button>
         <button class="tab" data-tab="group"><i>04</i><span>群聊</span></button>
         <button class="tab" data-tab="worldbook"><i>05</i><span>关系网</span></button>
         <button class="tab" data-tab="memory"><i>06</i><span>观察</span></button>
         <button class="tab" data-tab="proactive"><i>07</i><span>主动</span></button>
         <button class="tab" data-tab="bookshelf"><i>08</i><span>书柜</span></button>
-        <button class="tab" data-tab="tokens"><i>09</i><span>Token</span></button>
-        <button class="tab" data-tab="troubleshooting"><i>10</i><span>排障</span></button>
-        <button class="tab" data-tab="modules"><i>11</i><span>模块</span></button>
-        <button class="tab" data-tab="config"><i>12</i><span>配置</span></button>
-        <button class="tab" data-tab="models"><i>13</i><span>模型</span></button>
+        <button class="tab" data-tab="qzone"><i>09</i><span>QQ空间</span></button>
+        <button class="tab" data-tab="tokens"><i>10</i><span>Token</span></button>
+        <button class="tab" data-tab="troubleshooting"><i>11</i><span>排障</span></button>
+        <button class="tab" data-tab="modules"><i>12</i><span>模块</span></button>
+        <button class="tab" data-tab="config"><i>13</i><span>配置</span></button>
+        <button class="tab" data-tab="models"><i>14</i><span>模型</span></button>
       </nav>
 
       <section class="panel is-active" id="panel-dashboard">
@@ -129,10 +143,6 @@
           <article class="wide">
             <h2>配置健康检查</h2>
             <div id="healthPanel" class="health-list"></div>
-          </article>
-          <article class="wide">
-            <h2>运行诊断</h2>
-            <div id="diagnosticPanel" class="diagnostic-list"></div>
           </article>
           <article class="wide">
             <h2>拓展页自检</h2>
@@ -172,32 +182,46 @@
       <section class="panel" id="panel-roleplay">
         <div class="section-head">
           <div>
-            <h2>角色和世界观设定</h2>
-            <span class="muted">集中维护本插件用于日程、状态、主动行为、识图和世界观翻译的设定补充</span>
+            <h2>世界知识</h2>
+            <span class="muted">维护陪伴插件使用的背景资料；真正决定聊天人格的是 AstrBot 主回复人格。</span>
           </div>
         </div>
-        <article class="module-card">
+        <div class="world-knowledge-brief" aria-label="人格与世界知识区别">
+          <section>
+            <b>主回复人格</b>
+            <span>AstrBot 当前人格或插件指定人格，决定 Bot 在私聊和群聊里“是谁、怎么说话”。</span>
+          </section>
+          <section>
+            <b>世界知识</b>
+            <span>本页资料只作为日程、状态、主动动机、日记、识图、生图和世界观转写的背景补充。</span>
+          </section>
+          <section>
+            <b>群聊边界</b>
+            <span>这里不会直接覆盖群聊人格；只有相关功能注入背景时才会被当作线索参考。</span>
+          </section>
+        </div>
+        <article class="module-card persona-source-card">
           <div class="module-card-head">
             <div>
-              <h2>主回复人格</h2>
-              <span class="section-desc">这里决定 Bot 以谁的主身份说话；留空则继承 AstrBot 当前默认人格。</span>
+              <h2>主回复人格来源</h2>
+              <span class="section-desc">这里用于查看聊天人格来源，不是编辑入口；需要修改时请到 AstrBot 人格或插件配置里调整。</span>
             </div>
-            <span class="module-badge">Persona</span>
+            <span class="module-badge">只读</span>
           </div>
           <div class="module-form">
-            <label>当前使用人格
+            <label>当前聊天人格
               <input id="currentPersonaDisplay" readonly value="读取中..." />
             </label>
-            <p class="section-desc">和下方“设定工作台”的区别：这里是主回复人格，会影响私聊被动回复、关系评估和主动消息；下方角色设定补充只给日程、状态、日记、识图和生活背景使用，不应拿来覆盖主聊天人格。</p>
-            <p class="section-desc">如需修改，请到 AstrBot 插件配置页，打开“我会永远陪着你”的配置项，在“插件指定人格 ID”里使用人格选择器选择；留空即继承 AstrBot 当前默认人格。</p>
+            <p class="section-desc">主回复人格会影响被动回复、群聊人格、关系评估和主动消息口吻；本页下方的资料只是背景知识，不应拿来当完整人格覆盖它。</p>
+            <p class="section-desc">如需指定人格，请到 AstrBot 插件配置页，打开“我会永远陪着你”的配置项，在“插件指定人格 ID”里使用人格选择器选择；留空即继承 AstrBot 当前默认人格。</p>
             <div class="persona-draft-actions">
               <div class="persona-draft-scope" aria-label="草稿生成范围">
-                <label><input type="checkbox" data-roleplay-draft-scope="persona" checked /> 角色设定</label>
-                <label><input type="checkbox" data-roleplay-draft-scope="world" /> 世界观设定</label>
-                <label><input type="checkbox" data-roleplay-draft-scope="user" /> 主人/用户设定</label>
+                <label><input type="checkbox" data-roleplay-draft-scope="persona" checked /> 角色资料</label>
+                <label><input type="checkbox" data-roleplay-draft-scope="world" /> 世界观资料</label>
+                <label><input type="checkbox" data-roleplay-draft-scope="user" /> 用户与关系</label>
               </div>
-              <button type="button" id="generateRoleplayDraftBtn">根据主回复人格生成草稿</button>
-              <span>只抽取明确写在主回复人格里的内容；生成后先预览，不会自动保存。</span>
+              <button type="button" id="generateRoleplayDraftBtn">提取为世界知识草稿</button>
+              <span>只抽取主回复人格里明确写出的信息；生成后先预览，不会自动保存，也不会修改人格。</span>
             </div>
             <div id="roleplayPersonaDraftPanel" class="persona-draft-panel" hidden></div>
           </div>
@@ -205,10 +229,10 @@
         <article class="roleplay-studio module-card" data-roleplay-mode="standard">
           <div class="module-card-head">
             <div>
-              <h2>设定工作台</h2>
-              <span class="section-desc">不会覆盖 AstrBot 主人格；这里是给陪伴插件使用的角色和生活背景补充。</span>
+              <h2>世界知识工作台</h2>
+              <span class="section-desc">把角色资料、世界观和用户关系整理成插件可引用的背景材料；不会覆盖 AstrBot 主人格。</span>
             </div>
-            <span class="module-badge">Roleplay</span>
+            <span class="module-badge">知识</span>
           </div>
           <div class="roleplay-mode-switch" role="group" aria-label="设定填写模式">
             <button type="button" data-roleplay-mode="freeform">旧版文案</button>
@@ -219,15 +243,15 @@
               <div class="persona-card-head">
                 <span class="persona-avatar" aria-hidden="true">设</span>
                 <div>
-                  <h3>角色设定补充</h3>
-                  <p>她今天怎样生活、有哪些外貌/世界观/日常细节；这是陪伴插件的背景材料，不是 AstrBot 主人格。</p>
+                  <h3>角色资料</h3>
+                  <p>外观、身份、日常习惯和关键细节；供日程、状态、识图、生图和主动行为参考，不是聊天人格全文。</p>
                 </div>
                 <button type="button" class="roleplay-example-btn" data-roleplay-example="persona">填入示例</button>
               </div>
               <input name="bot_name" type="hidden" />
               <input name="default_style" type="hidden" />
               <input name="roleplay_knowledge_source_ids" type="hidden" />
-              <label class="roleplay-textarea roleplay-freeform">角色设定补充
+              <label class="roleplay-textarea roleplay-freeform">角色资料补充
                 <textarea name="schedule_persona_prompt" rows="10" placeholder="姓名：
 种族：
 生日：
@@ -274,18 +298,18 @@
             <section class="world-blueprint">
               <div class="blueprint-head">
                 <div>
-                  <span>World Blueprint</span>
+                  <span>世界蓝图</span>
                   <h3>世界观蓝图</h3>
                 </div>
                 <button type="button" class="roleplay-example-btn" data-roleplay-example="world">填入示例</button>
                 <label>适配模式
                   <select name="worldview_adaptation_mode">
-                    <option value="auto">auto</option>
-                    <option value="modern">modern</option>
-                    <option value="fantasy">fantasy</option>
-                    <option value="sci_fi">sci_fi</option>
-                    <option value="custom">custom</option>
-                    <option value="off">off</option>
+                    <option value="auto">自动</option>
+                    <option value="modern">现代日常</option>
+                    <option value="fantasy">幻想世界</option>
+                    <option value="sci_fi">科幻世界</option>
+                    <option value="custom">自定义</option>
+                    <option value="off">关闭</option>
                   </select>
                 </label>
               </div>
@@ -316,17 +340,21 @@ QQ空间 = 公开札记
                   <label>世界观关系网 <textarea data-roleplay-world-part="network" rows="2"></textarea></label>
                   <label class="wide-field">其他补充信息 <textarea data-roleplay-world-part="extra" rows="2"></textarea></label>
                 </div>
-                <div class="roleplay-optional-note roleplay-standard">
-                  <b>平台称呼转写是可选项</b>
-                  <span>只有角色世界观需要把“群聊、识屏、B站、QQ空间、书柜”换成设定内说法时再填；普通现代日常可以全部留空。</span>
-                </div>
-                <div class="roleplay-standard translation-standard-grid">
-                  <label>群聊（可选） <input data-roleplay-translation-part="群聊" placeholder="可留空，例如 公会闲谈" /></label>
-                  <label>识屏（可选） <input data-roleplay-translation-part="识屏" placeholder="可留空，例如 水晶映像" /></label>
-                  <label>B站（可选） <input data-roleplay-translation-part="B站" placeholder="可留空，例如 影像记录" /></label>
-                  <label>QQ空间（可选） <input data-roleplay-translation-part="QQ空间" placeholder="可留空，例如 公开札记" /></label>
-                  <label>书柜（可选） <input data-roleplay-translation-part="书柜" placeholder="可留空，例如 行囊书匣" /></label>
-                </div>
+                <details class="roleplay-standard translation-collapsible">
+                  <summary class="translation-summary">
+                    <div class="translation-summary-text">
+                      <b>平台称呼转写（可选）</b>
+                      <span>只有角色世界观需要把"群聊、识屏、B站、QQ空间、书柜"换成设定内说法时再填；普通现代日常可以全部留空。</span>
+                    </div>
+                  </summary>
+                  <div class="roleplay-standard translation-standard-grid">
+                    <label>群聊（可选） <input data-roleplay-translation-part="群聊" placeholder="可留空，例如 公会闲谈" /></label>
+                    <label>识屏（可选） <input data-roleplay-translation-part="识屏" placeholder="可留空，例如 水晶映像" /></label>
+                    <label>B站（可选） <input data-roleplay-translation-part="B站" placeholder="可留空，例如 影像记录" /></label>
+                    <label>QQ空间（可选） <input data-roleplay-translation-part="QQ空间" placeholder="可留空，例如 公开札记" /></label>
+                    <label>书柜（可选） <input data-roleplay-translation-part="书柜" placeholder="可留空，例如 行囊书匣" /></label>
+                  </div>
+                </details>
               </div>
               <div class="roleplay-knowledge-panel">
                 <div class="roleplay-knowledge-head">
@@ -342,14 +370,14 @@ QQ空间 = 公开札记
 
             <section class="roleplay-user-card">
               <div>
-                <h3>用户</h3>
-                <p>角色如何称呼用户、如何理解彼此关系，以及平时怎样相处。</p>
+                <h3>用户与关系资料</h3>
+                <p>稳定称呼、关系和相处方式；用于理解这位用户，不会覆盖群聊里其他人的身份。</p>
               </div>
               <button type="button" class="roleplay-example-btn" data-roleplay-example="user">填入示例</button>
               <div class="roleplay-user-fields">
                 <label>对用户的称呼 <input name="default_nickname" /></label>
               </div>
-              <label class="roleplay-textarea roleplay-freeform">用户补充信息
+              <label class="roleplay-textarea roleplay-freeform">用户与关系补充
                 <textarea name="roleplay_user_profile_prompt" rows="5" placeholder="对用户的称呼：
 用户性别：
 用户生日：
@@ -368,7 +396,7 @@ QQ空间 = 公开札记
               </div>
             </section>
 
-            <button type="submit">保存角色设定</button>
+            <button type="submit">保存世界知识</button>
           </form>
         </article>
       </section>
@@ -614,25 +642,29 @@ QQ空间 = 公开札记
       <section class="panel" id="panel-bookshelf">
         <div class="section-head">
           <h2>书柜</h2>
-          <span class="muted">上层放正在写的书，下层抽屉收着日记本和私密阅读记录</span>
+          <span class="muted">创作作品 · 私密日记 · 夹层阅读 — 管理可见性与内容</span>
         </div>
         <div id="bookcaseHome" class="bookcase-home">
           <div class="bookcase-hero">
             <article>
               <span>书架作品</span>
               <b id="bookshelfPublicCount">0</b>
+              <small>Bot 自主推进的创作</small>
             </article>
             <article>
               <span>抽屉夹层</span>
               <b id="bookshelfSecretCount">0</b>
+              <small>密码保护的私密内容</small>
             </article>
             <article>
               <span>日记本</span>
               <b id="bookshelfDiaryCount">0</b>
+              <small>按日期归档的内心独白</small>
             </article>
             <article>
               <span>阅读</span>
               <b id="bookshelfJmCount">0</b>
+              <small>夹层阅读记录</small>
             </article>
           </div>
           <div class="bookcase-layout">
@@ -642,7 +674,7 @@ QQ空间 = 公开札记
                   <h2>上层书架</h2>
                   <p id="bookshelfIntro" class="section-desc"></p>
                 </div>
-                <dl id="creativeSettings"></dl>
+                <div id="creativeSettings" class="creative-status-bar"></div>
               </div>
               <div id="bookshelfPublicBooks" class="book-category-list"></div>
             </article>
@@ -650,7 +682,7 @@ QQ空间 = 公开札记
               <div class="drawer-head">
                 <div>
                   <h2>抽屉夹层</h2>
-                  <p class="section-desc">需要密码</p>
+                  <p class="section-desc">日记与私密阅读 · 需要密码解锁</p>
                 </div>
                 <span id="bookshelfLockState" class="module-badge">未解锁</span>
               </div>
@@ -727,6 +759,21 @@ QQ空间 = 公开札记
             <h2>AstrBot 主链最近对话</h2>
             <div id="tokenExternalRecentTable" class="table-wrap compact-table"></div>
           </article>
+          <article class="wide token-memory-plugin-card">
+            <h2>记忆插件消耗</h2>
+            <div id="tokenMemoryPluginSummary" class="token-plugin-panel"></div>
+          </article>
+          <article class="wide">
+            <h2>记忆插件任务 / Provider</h2>
+            <div class="token-plugin-split">
+              <div id="tokenMemoryPluginTaskTable" class="table-wrap compact-table"></div>
+              <div id="tokenMemoryPluginProviderTable" class="table-wrap compact-table"></div>
+            </div>
+          </article>
+          <article class="wide">
+            <h2>记忆插件最近调用</h2>
+            <div id="tokenMemoryPluginRecentTable" class="table-wrap compact-table"></div>
+          </article>
         </div>
       </section>
 
@@ -792,6 +839,13 @@ QQ空间 = 公开札记
             </div>
             <div id="troubleshootingFaq" class="troubleshooting-faq"></div>
           </article>
+          <article class="troubleshooting-diagnostics-panel">
+            <div>
+              <h2>运行诊断</h2>
+              <span class="muted">从配置、目标用户、群聊开关和运行态中整理出的诊断项</span>
+            </div>
+            <div id="diagnosticPanel" class="diagnostic-list"></div>
+          </article>
         </div>
       </section>
 
@@ -804,6 +858,7 @@ QQ空间 = 公开札记
         <div id="moduleSummary" class="module-summary"></div>
         <nav class="module-nav" aria-label="模块工作台分组">
           <a href="#moduleWorkbench">工作台</a>
+          <a href="#module-tool-quick">快速启动</a>
           <a href="#module-tool-presets">预设</a>
           <a href="#module-tool-segmented">分段实验室</a>
           <a href="#module-tool-news">新闻源</a>
@@ -818,6 +873,35 @@ QQ空间 = 公开札记
           <button type="button" data-jump-tab="config">打开配置页</button>
         </section>
         <div class="module-tool-grid">
+          <article class="module-tool-card wide" id="module-tool-quick">
+            <header>
+              <div>
+                <span>Admin Setup</span>
+                <h3>快速启动</h3>
+                <p>设定 Bot 的运行平台、服务对象与转发策略，并配置免打扰时段和管理命令权限范围。面板仅管理员可见，以下配置项变更后立即生效。</p>
+              </div>
+            </header>
+            <form id="quickModuleForm" class="module-form">
+              <div class="module-subgroup">
+                <h3>部署与目标</h3>
+                <label class="wide-field">运行平台
+                  <input name="target_platform" placeholder="如 aiocqhttp" />
+                </label>
+                <label class="wide-field">私聊服务对象 QQ
+                  <textarea name="target_user_ids" rows="3" placeholder="一行一个 QQ 号，或用逗号分隔"></textarea>
+                </label>
+                <label class="wide-field">大号→小号转发映射
+                  <textarea name="private_user_delivery_aliases" rows="2" placeholder="格式：大号QQ=小号QQ，一行一组"></textarea>
+                </label>
+              </div>
+              <div class="module-subgroup">
+                <h3>运行策略与权限</h3>
+                <label>免打扰时段 <input name="quiet_hours" placeholder="如 23:00-08:30" /></label>
+                <label class="toggle-row"><input name="require_private_opt_in" type="checkbox" /> <span>管理命令仅限私聊执行（群聊中不响应状态修改指令）</span></label>
+              </div>
+              <button type="submit">保存配置</button>
+            </form>
+          </article>
           <article class="module-tool-card wide" id="module-tool-presets">
             <header>
               <div>
@@ -900,20 +984,13 @@ QQ空间 = 公开札记
             </div>
             <div id="legacyPresetCards" class="preset-grid"></div>
           </article>
-          <article class="module-card" id="module-quick">
+          <article class="module-card" id="module-quick" hidden aria-hidden="true">
             <div class="module-card-head">
               <div>
-                <h2>快速启动</h2>
+                <h2>快速启动（旧）</h2>
               </div>
               <span class="module-badge">基础</span>
             </div>
-            <form id="quickModuleForm" class="module-form">
-              <label>目标平台 <input name="target_platform" /></label>
-              <label>私聊目标 QQ <textarea name="target_user_ids" rows="4" placeholder="一行一个或逗号分隔"></textarea></label>
-              <label>主动发送到小号 <textarea name="private_user_delivery_aliases" rows="3" placeholder="大号QQ=小号QQ"></textarea></label>
-              <label>免打扰时间 <input name="quiet_hours" placeholder="23:00-08:30" /></label>
-              <button type="submit">保存快速启动</button>
-            </form>
           </article>
           <article class="module-card" id="module-environment">
             <div class="module-card-head">
@@ -939,9 +1016,9 @@ QQ空间 = 公开札记
           <article class="module-card" id="module-private">
             <div class="module-card-head">
               <div>
-                <h2>私聊主动</h2>
+                <h2>私聊频率</h2>
               </div>
-              <span class="module-badge">频率</span>
+              <span class="module-badge">节奏</span>
             </div>
             <form id="privateModuleForm" class="module-form">
               <label>每日主动上限 <input name="max_daily_messages" type="number" min="0" max="12" /></label>
@@ -973,6 +1050,7 @@ QQ空间 = 公开札记
                 <label>不分段字数阈值 <input name="segmented_proactive_threshold" type="number" min="20" max="500" /></label>
                 <label>短片段合并阈值 <input name="segmented_proactive_min_segment_chars" type="number" min="1" max="40" /></label>
                 <label>最多分段数 <input name="segmented_proactive_max_segments" type="number" min="1" max="8" /></label>
+                <label class="toggle-row"><input name="segmented_proactive_send_as_forward" type="checkbox" /> <span>分段后合并发送</span></label>
                 <label>分段模式
                   <select name="segmented_proactive_split_mode">
                     <option value="regex">正则</option>
@@ -1013,7 +1091,7 @@ QQ空间 = 公开札记
                   <div id="legacySegmentedPreviewOutput" class="segmented-preview-output"></div>
                 </section>
               </div>
-              <button type="submit">保存私聊主动</button>
+              <button type="submit">保存私聊频率</button>
             </form>
           </article>
           <article class="module-card" id="module-group">
@@ -1206,12 +1284,14 @@ QQ空间 = 公开札记
 
       <section class="panel" id="panel-config">
         <div class="config-grid">
-          <article class="config-card wide migration-card">
-            <div class="migration-head">
+          <details class="config-card wide migration-card migration-collapsible">
+            <summary class="migration-head migration-summary">
               <div>
                 <h2>配置迁移</h2>
-                  <p>导出或导入可迁移配置与关系、群聊、候选菜单等资料；也兼容旧版快照文件。缓存、Token、最近消息和运行日志不会写入备份。</p>
+                <p>导出或导入可迁移配置与关系、群聊、候选菜单等资料；也兼容旧版快照文件。缓存、Token、最近消息和运行日志不会写入备份。</p>
               </div>
+            </summary>
+            <div class="migration-body">
               <div class="migration-actions">
                 <button id="exportConfigBtn" type="button">导出配置备份</button>
                 <label class="file-pick">
@@ -1219,55 +1299,128 @@ QQ空间 = 公开札记
                   选择备份文件
                 </label>
               </div>
-            </div>
-            <div class="migration-options" aria-label="导出内容">
-              <span>导出内容</span>
-              <label><input type="checkbox" data-export-section="basic" checked /> 基础配置</label>
-              <label><input type="checkbox" data-export-section="relations" checked /> 关系/群资料</label>
-              <label><input type="checkbox" data-export-section="food_skills" checked /> 候选菜单/技能</label>
-              <label><input type="checkbox" data-export-section="providers" /> 模型配置</label>
-              <label><input type="checkbox" data-export-section="sensitive" /> 敏感配置</label>
-            </div>
-            <div class="migration-flow">
-              <label>
-                导入方式
-                <select id="configImportMode">
-                  <option value="merge">合并导入，保留现有资料</option>
-                  <option value="replace">覆盖可迁移资料</option>
-                </select>
-              </label>
-              <label>
-                字段冲突
-                <select id="configImportConflict">
-                  <option value="use_backup">使用备份内容</option>
-                  <option value="keep_current">保留当前内容</option>
-                  <option value="fill_empty">只补当前空字段</option>
-                </select>
-              </label>
-              <button id="previewConfigImportBtn" type="button" disabled>预览导入</button>
-              <button id="applyConfigImportBtn" type="button" disabled>确认导入</button>
-            </div>
+              <div class="migration-options" aria-label="导出内容">
+                <span>导出内容</span>
+                <label><input type="checkbox" data-export-section="basic" checked /> 基础配置</label>
+                <label><input type="checkbox" data-export-section="relations" checked /> 关系/群资料</label>
+                <label><input type="checkbox" data-export-section="food_skills" checked /> 候选菜单/技能</label>
+                <label><input type="checkbox" data-export-section="providers" /> 模型配置</label>
+                <label><input type="checkbox" data-export-section="sensitive" /> 敏感配置</label>
+              </div>
+              <div class="migration-flow">
+                <label>
+                  导入方式
+                  <select id="configImportMode">
+                    <option value="merge">合并导入，保留现有资料</option>
+                    <option value="replace">覆盖可迁移资料</option>
+                  </select>
+                </label>
+                <label>
+                  字段冲突
+                  <select id="configImportConflict">
+                    <option value="use_backup">使用备份内容</option>
+                    <option value="keep_current">保留当前内容</option>
+                    <option value="fill_empty">只补当前空字段</option>
+                  </select>
+                </label>
+                <label class="migration-risk-option">
+                  <input id="configAllowChecksumMismatch" type="checkbox" />
+                  校验失败仍继续预览/导入
+                </label>
+                <button id="previewConfigImportBtn" type="button" disabled>预览导入</button>
+                <button id="applyConfigImportBtn" type="button" disabled>确认导入</button>
+              </div>
               <div id="configMigrationPreview" class="migration-preview">
                 还没有选择备份或快照文件。
               </div>
-            <div class="migration-aftercare">
-              <div>
-                <h3>最近自动备份</h3>
-                <div id="configBackupList" class="migration-backup-list">暂无自动备份。</div>
-              </div>
-              <div>
-                <h3>导入后检查</h3>
-                <div id="configImportChecks" class="migration-check-list">导入后会在这里显示轻量检查结果。</div>
+              <div class="migration-aftercare">
+                <div>
+                  <h3>最近自动备份</h3>
+                  <div id="configBackupList" class="migration-backup-list">暂无自动备份。</div>
+                </div>
+                <div>
+                  <h3>导入后检查</h3>
+                  <div id="configImportChecks" class="migration-check-list">导入后会在这里显示轻量检查结果。</div>
+                </div>
               </div>
             </div>
-          </article>
+          </details>
+          <details class="config-card storage-collapsible">
+            <summary class="storage-summary">
+              <div>
+                <h2>存储方式</h2>
+                <p>控制陪伴插件主数据的保存后端（json / sqlite）。默认收起，展开后可切换后端与路径。</p>
+              </div>
+            </summary>
+            <div class="storage-body">
+              <form id="storageConfigForm" class="storage-config-form">
+                <div class="form-grid">
+                  <label>
+                    主数据保存方式
+                    <select id="storageBackendSelect" name="storage_backend">
+                      <option value="json">json</option>
+                      <option value="sqlite">sqlite</option>
+                    </select>
+                  </label>
+                  <label id="storageSqlitePathWrap">
+                    SQLite 数据文件路径
+                    <input id="storageSqlitePathInput" name="storage_sqlite_path" type="text" placeholder="留空时自动使用插件数据目录下 companions.db" />
+                  </label>
+                </div>
+                <div id="storageConfigSummary" class="storage-config-summary"></div>
+                <p class="storage-config-note">这里控制陪伴插件主数据的保存后端。配置备份导入/导出不会携带这一项，避免换机器时误改本机存储路径。</p>
+                <div class="actions">
+                  <button id="saveStorageConfigBtn" type="submit">保存存储方式</button>
+                </div>
+              </form>
+            </div>
+          </details>
+          <details class="config-card wide appearance-collapsible">
+            <summary class="appearance-summary">
+              <div>
+                <h2>拓展页设置</h2>
+                <p>切换拓展页面的字体与配色主题，即时预览。默认收起，展开后可调整外观偏好。</p>
+              </div>
+            </summary>
+            <div class="appearance-body">
+              <div class="appearance-form">
+                <label class="appearance-field">
+                  <span>页面字体</span>
+                  <select id="appearanceFontSelect">
+                    <option value="original">原始字体</option>
+                    <option value="cheng">13.woff2</option>
+                  </select>
+                </label>
+                <div class="appearance-field appearance-theme-field">
+                  <span>配色主题</span>
+                  <div class="appearance-theme-grid" id="appearanceThemeGrid" role="radiogroup" aria-label="配色主题"></div>
+                </div>
+                <div class="appearance-preview" id="appearancePreview" aria-hidden="true">
+                  <div class="appearance-preview-card">
+                    <h3>预览</h3>
+                    <p class="appearance-preview-text">这里是一段示例文字，用来展示当前主题的配色与字体效果。</p>
+                    <div class="appearance-preview-actions">
+                      <button type="button" disabled>示例按钮</button>
+                      <span class="appearance-preview-tag">标签</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </details>
           <article class="config-card wide">
             <h2>群聊名单覆盖</h2>
             <div id="listCoverage" class="coverage-grid"></div>
           </article>
-          <article class="config-card wide">
-            <h2>群聊名单</h2>
-            <form id="accessForm" class="access-manager">
+          <details class="config-card wide access-collapsible">
+            <summary class="access-card-summary">
+              <div>
+                <h2>群聊名单</h2>
+                <p>管理白名单 / 黑名单模式与目标群号。默认收起，展开后可切换模式、快捷勾选或批量编辑群号。</p>
+              </div>
+            </summary>
+            <div class="access-body">
+              <form id="accessForm" class="access-manager">
               <div class="access-mode-row">
                 <select id="groupAccessMode" aria-label="群聊名单模式">
                   <option value="whitelist">白名单模式</option>
@@ -1297,7 +1450,8 @@ QQ空间 = 公开札记
                 <button type="submit">保存名单</button>
               </div>
             </form>
-          </article>
+            </div>
+          </details>
           <article class="wide">
             <h2>功能开关</h2>
             <div id="proactiveOnlyModeCard"></div>
@@ -1321,6 +1475,16 @@ QQ空间 = 公开札记
         </div>
         <div id="providerSummary" class="provider-summary"></div>
         <div id="providerFlow" class="provider-flow"></div>
+        <div class="provider-config-mode-card">
+          <div>
+            <b>模型配置模式</b>
+            <span id="providerConfigModeHint">快速配置和精准配置互斥，保存时只写入当前模式下可见的模型。</span>
+          </div>
+          <div class="provider-config-mode" aria-label="模型配置模式">
+            <button type="button" data-provider-config-mode="quick" class="active">快速配置</button>
+            <button type="button" data-provider-config-mode="precision">精准配置</button>
+          </div>
+        </div>
         <div class="provider-toolbar">
           <input id="providerFilter" type="search" placeholder="筛选模型名称 / 配置键 / 用途 / 低延迟 / 效果" />
           <div class="provider-mode-switch" aria-label="模型配置筛选">
@@ -1333,14 +1497,88 @@ QQ空间 = 公开札记
           </div>
           <div class="provider-toolbar-actions">
             <button id="testAllProvidersBtn" type="button">测试全部模型</button>
-            <button id="saveProvidersBtn" type="button">保存模型配置</button>
+            <button id="saveProvidersBtn" type="button">保存并覆盖两套模型配置</button>
           </div>
         </div>
         <form id="providerForm" class="provider-groups"></form>
       </section>
+
+      <section class="panel" id="panel-qzone">
+        <div class="section-head">
+          <div>
+            <h2>QQ 空间</h2>
+            <span class="muted">整合查看、点赞、评论和发布说说入口，布局沿用陪伴面板风格。</span>
+          </div>
+          <div class="actions compact">
+            <button id="qzoneRefreshCookiesBtn" type="button">刷新 Cookies</button>
+            <button id="qzoneRefreshBtn" type="button">刷新动态</button>
+          </div>
+        </div>
+        <div class="qzone-shell">
+          <aside class="qzone-rail">
+            <article class="qzone-card qzone-account-card">
+              <div>
+                <h3 id="qzoneAccountName">QQ 空间</h3>
+                <p id="qzoneAccountMeta" class="muted">等待加载</p>
+              </div>
+              <div id="qzoneQuickSummary" class="qzone-mini-summary"></div>
+            </article>
+
+            <article class="qzone-card qzone-filter-card">
+              <div class="qzone-scope-switch">
+                <button type="button" class="active" data-qzone-scope="friends">好友动态</button>
+                <button type="button" data-qzone-scope="self">我的空间</button>
+                <button type="button" data-qzone-scope="profile">指定 QQ</button>
+              </div>
+              <form id="qzoneTargetForm" class="inline-form compact-form">
+                <input id="qzoneTargetUin" inputmode="numeric" placeholder="输入 QQ 号后查看" />
+                <button type="submit">查看</button>
+              </form>
+            </article>
+
+            <article class="qzone-card qzone-compose-card">
+              <h3>发布说说</h3>
+              <form id="qzonePublishForm" class="stack-form">
+                <textarea id="qzonePublishContent" rows="5" placeholder="写点公开发到 QQ 空间的话"></textarea>
+                <button type="submit">发布到空间</button>
+              </form>
+            </article>
+          </aside>
+
+          <div class="qzone-main">
+            <div id="qzoneNotice" class="qzone-notice" hidden></div>
+            <div class="qzone-feed-head">
+              <div>
+                <h3>空间动态</h3>
+                <span id="qzoneFeedMeta" class="muted">准备加载</span>
+              </div>
+            </div>
+            <div id="qzoneFeed" class="qzone-feed-list"></div>
+          </div>
+
+          <aside class="qzone-detail-pane">
+            <div id="qzoneDetailEmpty" class="qzone-empty detail-empty">
+              <b>选择一条说说</b>
+              <span>这里会显示完整内容和评论。</span>
+            </div>
+            <div id="qzoneDetailContent" hidden></div>
+          </aside>
+        </div>
+      </section>
     </section>
   </main>
 
-  <script src="./app.js?v=20260627-outfit-after-plan2"></script>
+  <div id="dailyOutfitPreview" class="daily-outfit-preview" aria-hidden="true">
+    <div class="daily-outfit-preview__dialog" role="dialog" aria-modal="true" aria-label="今日穿搭预览">
+      <button id="dailyOutfitPreviewClose" type="button" class="daily-outfit-preview__close" data-preview-dismiss="1" aria-label="关闭预览">×</button>
+      <img id="dailyOutfitPreviewImage" class="daily-outfit-preview__image" alt="今日穿搭预览" />
+      <div id="dailyOutfitPreviewMeta" class="daily-outfit-preview__meta"></div>
+    </div>
+  </div>
+
+  <script src="./js/features/daily-outfit.js?v=20260702-outfit-preview"></script>
+  <script src="./js/panels/provider-tree.js?v=20260702-provider-tree"></script>
+  <script src="./js/panels/qzone-panel.js?v=20260704-qzone-stable-api"></script>
+  <script src="./app.js?v=20260704-page-bridge-route-fallback"></script>
 </body>
 </html>

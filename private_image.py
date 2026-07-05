@@ -26,7 +26,7 @@ from astrbot.core import file_token_service
 from astrbot.core.astr_main_agent import MainAgentBuildConfig, build_main_agent
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
-from .helpers import _now_ts, _safe_float, _safe_int, _single_line, _strip_internal_message_blocks
+from .helpers import _missing_optional_model_dependency, _now_ts, _safe_float, _safe_int, _single_line, _strip_internal_message_blocks
 from .segmented_message import split_plain_component_chain
 
 class PrivateImageMixin:
@@ -40,6 +40,26 @@ class PrivateImageMixin:
             if class_name == "image":
                 return True
         return bool(self._raw_private_image_sources(event))
+
+    def _private_event_has_image_safe(self, event: AstrMessageEvent, *, label: str = "") -> bool:
+        try:
+            return self._private_event_has_image(event)
+        except Exception as exc:
+            missing = _missing_optional_model_dependency(exc)
+            if missing:
+                logger.warning(
+                    "[PrivateCompanion] 私聊图片存在性检测缺少可选模型依赖，已按无图片继续: label=%s module=%s err=%s",
+                    _single_line(label, 40) or "-",
+                    missing,
+                    _single_line(exc, 160),
+                )
+                return False
+            logger.warning(
+                "[PrivateCompanion] 私聊图片存在性检测失败，已按无图片继续: label=%s err=%s",
+                _single_line(label, 40) or "-",
+                _single_line(exc, 160),
+            )
+            return False
 
     def _is_private_image_only_message(self, event: AstrMessageEvent, text: str) -> bool:
         cleaned = _single_line(text, 120)
@@ -1158,6 +1178,30 @@ class PrivateImageMixin:
             )
         )
 
+    @staticmethod
+    def _exception_indicates_tool_schema_invalid(exc: Exception) -> bool:
+        text = str(exc or "").lower()
+        return bool(
+            ("functiondeclaration" in text or "function declaration" in text)
+            and ("schema" in text and "type" in text)
+        )
+
+    @staticmethod
+    def _private_image_reply_is_internal_error(text: str) -> bool:
+        lowered = str(text or "").lower()
+        if not lowered:
+            return False
+        markers = (
+            "all chat models failed",
+            "badrequesterror",
+            "provider api error",
+            "invalid_request",
+            "functiondeclaration",
+            "schema didn't specify",
+            "traceback",
+        )
+        return any(marker in lowered for marker in markers)
+
     def _private_image_role_self_recognition_hint(self) -> str:
         raw = str(getattr(self, "private_image_self_recognition_hint", "") or "")
         if not raw.strip():
@@ -1587,13 +1631,35 @@ class PrivateImageMixin:
 
     async def _transcribe_private_inbound_images(self, image_sources: list[str], *, umo: str = "", user_text: str = "", force_contextual: bool = False) -> str:
         original_sources = [str(item).strip() for item in (image_sources or []) if str(item or "").strip()][:5]
-        sources = await self._prepare_private_image_sources_for_model(
-            original_sources,
-            namespace="private_vision",
-        )
+        try:
+            sources = await self._prepare_private_image_sources_for_model(
+                original_sources,
+                namespace="private_vision",
+            )
+        except Exception as exc:
+            missing = _missing_optional_model_dependency(exc)
+            if missing:
+                logger.warning(
+                    "[PrivateCompanion] 私聊图片预处理缺少可选模型依赖，已跳过本轮识图: module=%s err=%s",
+                    missing,
+                    _single_line(exc, 160),
+                )
+                return ""
+            raise
         if not sources:
             return ""
-        image_items, source_image_count, has_gif_frames = self._private_image_model_image_items_with_meta(sources)
+        try:
+            image_items, source_image_count, has_gif_frames = self._private_image_model_image_items_with_meta(sources)
+        except Exception as exc:
+            missing = _missing_optional_model_dependency(exc)
+            if missing:
+                logger.warning(
+                    "[PrivateCompanion] 私聊图片模型输入构造缺少可选模型依赖，已跳过本轮识图: module=%s err=%s",
+                    missing,
+                    _single_line(exc, 160),
+                )
+                return ""
+            raise
         image_keys = [key for key, _ in image_items]
         image_urls = [url for _, url in image_items]
         if not image_urls:
@@ -1756,6 +1822,16 @@ class PrivateImageMixin:
                 self._mark_private_image_provider_failure(provider_id, provider_source, timeout_note, task="private_image_vision")
                 continue
             except Exception as exc:
+                missing = _missing_optional_model_dependency(exc)
+                if missing:
+                    logger.warning(
+                        "[PrivateCompanion] 私聊图片视觉 provider 缺少可选模型依赖，已降级跳过该 provider: provider=%s module=%s err=%s",
+                        provider_id,
+                        missing,
+                        _single_line(exc, 160),
+                    )
+                    self._mark_private_image_provider_failure(provider_id, provider_source, exc, task="private_image_vision")
+                    continue
                 self._record_llm_usage(
                     provider_id=provider_id,
                     task="private_image_vision",
@@ -1770,6 +1846,347 @@ class PrivateImageMixin:
                 continue
         logger.info("[PrivateCompanion] 私聊图片视觉转述失败: 所有候选 provider 均不可用或失败 attempts=%s", attempts)
         return ""
+
+    @staticmethod
+    def _context_image_placeholder_pattern() -> re.Pattern[str]:
+        return re.compile(r"(?:\[图片\]|【图片】)")
+
+    def _context_image_has_placeholder(self, text: Any) -> bool:
+        return bool(self._context_image_placeholder_pattern().search(str(text or "")))
+
+    def _context_image_plain_text(self, value: Any, *, depth: int = 0) -> str:
+        if value is None or depth > 5:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+        if isinstance(value, list):
+            return "\n".join(self._context_image_plain_text(item, depth=depth + 1) for item in value)
+        if isinstance(value, tuple):
+            return "\n".join(self._context_image_plain_text(item, depth=depth + 1) for item in value)
+        if isinstance(value, dict):
+            parts: list[str] = []
+            for key in ("content", "text", "message", "value"):
+                if key in value:
+                    parts.append(self._context_image_plain_text(value.get(key), depth=depth + 1))
+            data = value.get("data")
+            if isinstance(data, dict):
+                for key in ("content", "text", "message", "value"):
+                    if key in data:
+                        parts.append(self._context_image_plain_text(data.get(key), depth=depth + 1))
+            return "\n".join(part for part in parts if part)
+        for attr in ("content", "text", "message", "value"):
+            current = getattr(value, attr, None)
+            if current is not None:
+                text = self._context_image_plain_text(current, depth=depth + 1)
+                if text:
+                    return text
+        return ""
+
+    def _context_image_inline_sources(self, value: Any, *, depth: int = 0) -> list[str]:
+        if value is None or depth > 5:
+            return []
+        sources: list[str] = []
+
+        def add(source: Any) -> None:
+            text = str(source or "").strip()
+            if text and text not in sources:
+                sources.append(text)
+
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                for source in self._context_image_inline_sources(item, depth=depth + 1):
+                    add(source)
+            return sources
+        if isinstance(value, dict):
+            type_name = str(value.get("type") or value.get("post_type") or "").strip().lower()
+            data = value.get("data") if isinstance(value.get("data"), dict) else value
+            if type_name == "image":
+                extractor = getattr(self, "_extract_image_url_from_segment_data", None)
+                if callable(extractor):
+                    try:
+                        add(extractor(data))
+                    except Exception:
+                        pass
+                for key in ("url", "origin_url", "source_url", "path", "image_path", "file_path", "local_path", "file"):
+                    add(data.get(key) if isinstance(data, dict) else "")
+            for key in ("content", "message", "messages", "value", "data"):
+                nested = value.get(key)
+                if nested is not value:
+                    for source in self._context_image_inline_sources(nested, depth=depth + 1):
+                        add(source)
+            return sources
+        type_name = str(getattr(value, "type", "") or value.__class__.__name__).strip().lower()
+        if type_name == "image":
+            add(self._image_component_source(value))
+        for attr in ("content", "message", "messages", "value", "data"):
+            nested = getattr(value, attr, None)
+            if nested is not None and nested is not value:
+                for source in self._context_image_inline_sources(nested, depth=depth + 1):
+                    add(source)
+        return sources
+
+    def _replace_context_image_placeholder(self, value: Any, replacement: str, *, depth: int = 0) -> tuple[Any, bool]:
+        if value is None or depth > 5:
+            return value, False
+        pattern = self._context_image_placeholder_pattern()
+        if isinstance(value, str):
+            inserted = False
+
+            def repl(_match: re.Match[str]) -> str:
+                nonlocal inserted
+                if inserted:
+                    return ""
+                inserted = True
+                return replacement
+
+            updated = pattern.sub(repl, value)
+            updated = re.sub(r"[ \t]{2,}", " ", updated).strip()
+            return updated, updated != value
+        if isinstance(value, list):
+            changed = False
+            updated_items: list[Any] = []
+            for item in value:
+                updated, item_changed = self._replace_context_image_placeholder(item, replacement, depth=depth + 1)
+                changed = changed or item_changed
+                updated_items.append(updated)
+            return updated_items, changed
+        if isinstance(value, tuple):
+            updated, changed = self._replace_context_image_placeholder(list(value), replacement, depth=depth + 1)
+            return tuple(updated), changed
+        if isinstance(value, dict):
+            changed = False
+            updated = dict(value)
+            for key in ("content", "text", "message", "value"):
+                if key not in updated:
+                    continue
+                new_value, item_changed = self._replace_context_image_placeholder(updated.get(key), replacement, depth=depth + 1)
+                if item_changed:
+                    updated[key] = new_value
+                    changed = True
+            return updated, changed
+        for attr in ("content", "text", "message", "value"):
+            current = getattr(value, attr, None)
+            if current is None:
+                continue
+            new_value, changed = self._replace_context_image_placeholder(current, replacement, depth=depth + 1)
+            if not changed:
+                continue
+            try:
+                setattr(value, attr, new_value)
+            except Exception:
+                return value, False
+            return value, True
+        return value, False
+
+    def _context_image_skip_text(self, text: str) -> bool:
+        raw = str(text or "")
+        if not raw:
+            return True
+        if not self._context_image_has_placeholder(raw):
+            return True
+        skip_markers = (
+            "【本轮延迟图片】",
+            "【本轮引用图片】",
+            "【当前引用图片锚点】",
+            "【本轮合并消息】",
+            "【本轮合并消息转述】",
+            "合并消息中的图片：",
+            "不要把摘要里的[图片]当成已看见原图",
+            "遇到 [图片]",
+            "图片占位",
+        )
+        return any(marker in raw for marker in skip_markers)
+
+    @staticmethod
+    def _context_image_normalize_text(text: str) -> str:
+        normalized = re.sub(r"\s+", "", str(text or ""))
+        normalized = re.sub(r"^(?:user|assistant|system|用户|机器人|bot|Bot)[:：]", "", normalized)
+        return normalized[:1000]
+
+    def _context_image_recall_rows_for_event(self, event: AstrMessageEvent) -> list[dict[str, Any]]:
+        cache = getattr(self, "_recall_message_cache", None)
+        if not isinstance(cache, dict):
+            return []
+        cleaner = getattr(self, "_cleanup_recall_message_cache", None)
+        if callable(cleaner):
+            try:
+                cleaner()
+            except Exception:
+                pass
+        try:
+            scope = _single_line(self._event_scope_key(event), 160)
+        except Exception:
+            scope = ""
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for key, row in list(cache.items()):
+            if not isinstance(row, dict):
+                continue
+            row_scope = _single_line(row.get("scope"), 160)
+            if scope and row_scope and row_scope != scope:
+                continue
+            unique = _single_line(row.get("message_id"), 120) or _single_line(key, 120)
+            if unique and unique in seen:
+                continue
+            text = str(row.get("text") or "")
+            image_items = []
+            getter = getattr(self, "_recall_image_items_from_snapshot", None)
+            if callable(getter):
+                try:
+                    image_items = getter(row)
+                except Exception:
+                    image_items = []
+            if not image_items and not self._context_image_has_placeholder(text):
+                continue
+            if unique:
+                seen.add(unique)
+            rows.append(row)
+        rows.sort(key=lambda item: _safe_float(item.get("ts"), 0))
+        return rows
+
+    def _context_image_sources_from_recall_row(self, row: dict[str, Any]) -> list[str]:
+        items = []
+        getter = getattr(self, "_recall_image_items_from_snapshot", None)
+        if callable(getter):
+            try:
+                items = getter(row)
+            except Exception:
+                items = []
+        sources: list[str] = []
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            source = str(item.get("source") or "").strip()
+            tier = _single_line(item.get("tier"), 40)
+            if source and tier != "placeholder" and source not in sources:
+                sources.append(source)
+        if sources:
+            return sources[:5]
+        for source in row.get("images") if isinstance(row.get("images"), list) else []:
+            text = str(source or "").strip()
+            if text and text not in sources:
+                sources.append(text)
+        return sources[:5]
+
+    def _match_context_image_recall_row(
+        self,
+        text: str,
+        rows: list[dict[str, Any]],
+        used_rows: set[str],
+    ) -> dict[str, Any] | None:
+        normalized = self._context_image_normalize_text(text)
+        if not normalized:
+            return None
+        for row in rows:
+            unique = _single_line(row.get("message_id"), 120)
+            if unique and unique in used_rows:
+                continue
+            row_text = self._context_image_normalize_text(str(row.get("text") or ""))
+            if row_text and (row_text in normalized or normalized in row_text):
+                return row
+        if len(normalized) <= 220:
+            for row in rows:
+                unique = _single_line(row.get("message_id"), 120)
+                if unique and unique in used_rows:
+                    continue
+                if self._context_image_sources_from_recall_row(row):
+                    return row
+        return None
+
+    async def _caption_context_image_sources(self, sources: list[str], *, umo: str = "") -> str:
+        clean_sources = [str(item).strip() for item in sources if str(item or "").strip()][:5]
+        if not clean_sources:
+            return ""
+        wait_seconds = max(0.0, _safe_float(getattr(self, "context_image_caption_timeout_seconds", 8.0), 8.0, 0.0))
+        task = self._transcribe_private_inbound_images(clean_sources, umo=umo)
+        try:
+            if wait_seconds > 0:
+                return _single_line(await asyncio.wait_for(task, timeout=wait_seconds), self._private_image_vision_text_limit(len(clean_sources)))
+            return _single_line(await task, self._private_image_vision_text_limit(len(clean_sources)))
+        except asyncio.TimeoutError:
+            logger.info("[PrivateCompanion] 上下文图片补全等待超时: images=%s timeout=%.1fs", len(clean_sources), wait_seconds)
+            return ""
+        except Exception as exc:
+            logger.info("[PrivateCompanion] 上下文图片补全失败: images=%s error=%s", len(clean_sources), _single_line(exc, 120))
+            return ""
+
+    async def _enrich_request_context_image_placeholders(self, event: AstrMessageEvent, req: ProviderRequest) -> dict[str, int]:
+        if not bool(getattr(self, "enable_context_image_captioning", True)):
+            return {"contexts": 0, "replaced": 0, "missed": 0}
+        contexts = getattr(req, "contexts", None)
+        if not isinstance(contexts, list) or not contexts:
+            return {"contexts": 0, "replaced": 0, "missed": 0}
+        max_items = max(0, _safe_int(getattr(self, "context_image_caption_max_items", 12), 12, 0, 50))
+        if max_items <= 0:
+            return {"contexts": len(contexts), "replaced": 0, "missed": 0}
+
+        rows = self._context_image_recall_rows_for_event(event)
+        used_rows: set[str] = set()
+        caption_cache: dict[tuple[str, ...], str] = {}
+        changed = False
+        replaced = 0
+        missed = 0
+        updated_contexts = list(contexts)
+        umo = str(getattr(event, "unified_msg_origin", "") or "")
+
+        for index, item in enumerate(contexts):
+            if replaced >= max_items:
+                break
+            text = self._context_image_plain_text(item)
+            inline_sources = self._context_image_inline_sources(item)
+            has_placeholder = self._context_image_has_placeholder(text)
+            if not has_placeholder and not inline_sources:
+                continue
+            if self._context_image_skip_text(text):
+                continue
+
+            sources = inline_sources[:5]
+            row = None
+            if not sources:
+                row = self._match_context_image_recall_row(text, rows, used_rows)
+                if row:
+                    sources = self._context_image_sources_from_recall_row(row)
+            if not sources:
+                missed += 1
+                continue
+
+            cache_key = tuple(sources)
+            caption = caption_cache.get(cache_key, "")
+            if not caption:
+                caption = await self._caption_context_image_sources(sources, umo=umo)
+                if caption:
+                    caption_cache[cache_key] = caption
+            if not caption:
+                missed += 1
+                continue
+
+            replacement = f"【图片摘要：{caption}】"
+            updated_item, item_changed = self._replace_context_image_placeholder(item, replacement)
+            if not item_changed:
+                missed += 1
+                continue
+            updated_contexts[index] = updated_item
+            changed = True
+            replaced += 1
+            if row:
+                unique = _single_line(row.get("message_id"), 120)
+                if unique:
+                    used_rows.add(unique)
+
+        if changed:
+            try:
+                req.contexts = updated_contexts
+            except Exception:
+                return {"contexts": len(contexts), "replaced": 0, "missed": missed}
+            logger.info(
+                "[PrivateCompanion] 已将历史上下文图片占位替换为视觉摘要: contexts=%s replaced=%s missed=%s",
+                len(contexts),
+                replaced,
+                missed,
+            )
+        return {"contexts": len(contexts), "replaced": replaced, "missed": missed}
 
     def _message_debounce_seconds(self, kind: str = "text") -> float:
         if not bool(getattr(self, "enable_message_debounce", getattr(self, "enable_semantic_message_debounce", True))):
@@ -2327,6 +2744,15 @@ class PrivateImageMixin:
         user_id: str,
         buffer: dict[str, Any],
     ) -> None:
+        feature_checker = getattr(self, "_feature_enabled_or_temp_unlocked", None)
+        feature_enabled = (
+            feature_checker("enable_private_image_self_recognition")
+            if callable(feature_checker)
+            else bool(getattr(self, "enable_private_image_self_recognition", True))
+        )
+        if not feature_enabled:
+            logger.info("[PrivateCompanion] 私聊单图延迟任务已跳过: 图片转述增强已关闭 user=%s", user_id)
+            return
         images = buffer.get("images") if isinstance(buffer.get("images"), list) else []
         vision_task = buffer.get("vision_task")
         image_limit = self._private_image_vision_text_limit(len(images))
@@ -2402,6 +2828,7 @@ class PrivateImageMixin:
             setattr(framework_event, "private_companion_deferred_private_image_only_ready", True)
             setattr(framework_event, "private_companion_deferred_private_image_only", False)
             setattr(framework_event, "private_companion_skip_external_token_stats", True)
+            setattr(framework_event, "private_companion_force_sanitize_tools", True)
             setattr(framework_event, "private_companion_delayed_image_vision_text", vision_text)
             setattr(framework_event, "private_companion_delayed_image_sources", list(request_image_refs))
             buffered_image_mode = _single_line(buffer.get("image_mode"), 20)
@@ -2512,12 +2939,24 @@ class PrivateImageMixin:
             llm_resp = None
             try:
                 async def _runner_factory():
-                    return await build_main_agent(
+                    built = await build_main_agent(
                         event=framework_event,
                         plugin_context=self.context,
                         config=build_cfg,
                         req=req,
                     )
+                    built_req = getattr(built, "provider_request", None)
+                    if built_req is not None:
+                        sanitizer = getattr(self, "_sanitize_passive_private_agent_tools", None)
+                        if callable(sanitizer):
+                            sanitizer(framework_event, built_req)
+                        runner_obj = getattr(built, "agent_runner", None)
+                        if runner_obj is not None:
+                            try:
+                                runner_obj.req = built_req
+                            except Exception:
+                                pass
+                    return built
 
                 capture_runner = getattr(self, "_capture_framework_send_message_calls", None)
                 framework_lock = getattr(self, "_framework_agent_lock", None)
@@ -2554,6 +2993,16 @@ class PrivateImageMixin:
                     reply = ""
                     reply_source = "image_input_unsupported_fallback"
                     result = None
+                elif self._exception_indicates_tool_schema_invalid(exc):
+                    logger.warning(
+                        "[PrivateCompanion] 私聊单图主链工具 schema 不兼容,已转入兜底回复: user=%s error=%s",
+                        user_id,
+                        _single_line(exc, 180),
+                    )
+                    direct_image_mode = False
+                    reply = ""
+                    reply_source = "tool_schema_invalid_fallback"
+                    result = None
                 else:
                     raise
             finally:
@@ -2569,6 +3018,14 @@ class PrivateImageMixin:
                 reply = str(getattr(llm_resp, "completion_text", "") or "").strip()
             if "reply_source" not in locals():
                 reply_source = "main_chain"
+            if reply and self._private_image_reply_is_internal_error(reply):
+                logger.warning(
+                    "[PrivateCompanion] 私聊单图主链返回内部错误文本,已拦截转入兜底: user=%s preview=%s",
+                    user_id,
+                    _single_line(reply, 180),
+                )
+                reply = ""
+                reply_source = "internal_error_fallback"
             if not reply and captured_tool_sends:
                 captured_text_parts: list[str] = []
                 sanitizer = getattr(self, "_sanitize_captured_plain_text", None)
@@ -2660,6 +3117,13 @@ class PrivateImageMixin:
                     task="private_image_only_fallback",
                 )
                 reply = _single_line(_strip_internal_message_blocks(fallback_reply or ""), 500)
+                if reply and self._private_image_reply_is_internal_error(reply):
+                    logger.warning(
+                        "[PrivateCompanion] 私聊单图兜底 LLM 返回内部错误文本,已丢弃: user=%s preview=%s",
+                        user_id,
+                        _single_line(reply, 180),
+                    )
+                    reply = ""
                 reply_source = "fallback_llm"
                 logger.info(
                     "[PrivateCompanion] 私聊单图兜底回复生成: user=%s chars=%s intent=%s ownership=%s objective=%s reply_preview=%s",

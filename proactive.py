@@ -238,6 +238,195 @@ _PLATFORM_DISPLAY_NAMES = {
 class ProactiveMixin:
     """主动消息调度"""
 
+    _PROACTIVE_INTENSITY_PRESETS: dict[str, dict[str, Any]] = {
+        "off": {
+            "label": "关闭预设",
+            "description": "沿用手动配置，不覆盖任何主动频率参数。",
+            "effects": {},
+        },
+        "balanced": {
+            "label": "标准偏主动",
+            "description": "略微提高主动触达，仍保持低打扰边界。",
+            "effects": {
+                "max_daily_messages": 8,
+                "idle_minutes": 45,
+                "min_interval_minutes": 90,
+                "unanswered_slowdown_start": 2,
+                "unanswered_max_interval_multiplier": 1.8,
+                "friend_unanswered_max_cooldown_hours": 36,
+                "delay_factor": 0.82,
+                "proactive_persona_judge_send_threshold": 56,
+                "proactive_review_strength": "lenient",
+                "group_wakeup_cooldown_seconds": 60,
+                "group_high_intensity_cooldown_seconds": 120,
+                "group_interject_min_interval_minutes": 120,
+                "group_interject_max_daily": 3,
+            },
+        },
+        "high_private": {
+            "label": "私聊高频",
+            "description": "明显提高私聊主动频率，适合希望 Bot 经常来找的用户。",
+            "effects": {
+                "max_daily_messages": 12,
+                "idle_minutes": 20,
+                "min_interval_minutes": 35,
+                "unanswered_slowdown_start": 3,
+                "unanswered_max_interval_multiplier": 1.35,
+                "friend_unanswered_max_cooldown_hours": 18,
+                "delay_factor": 0.55,
+                "proactive_persona_judge_send_threshold": 48,
+                "proactive_review_strength": "lenient",
+                "group_wakeup_cooldown_seconds": 60,
+                "group_high_intensity_cooldown_seconds": 120,
+                "group_interject_min_interval_minutes": 120,
+                "group_interject_max_daily": 3,
+            },
+        },
+        "high_group": {
+            "label": "群聊活跃",
+            "description": "降低群聊唤醒和插话冷却，让 Bot 更容易参与群聊。",
+            "effects": {
+                "max_daily_messages": 8,
+                "idle_minutes": 45,
+                "min_interval_minutes": 90,
+                "unanswered_slowdown_start": 2,
+                "unanswered_max_interval_multiplier": 1.8,
+                "friend_unanswered_max_cooldown_hours": 36,
+                "delay_factor": 0.8,
+                "proactive_persona_judge_send_threshold": 55,
+                "proactive_review_strength": "lenient",
+                "group_wakeup_cooldown_seconds": 35,
+                "group_high_intensity_cooldown_seconds": 75,
+                "group_interject_min_interval_minutes": 45,
+                "group_interject_max_daily": 8,
+            },
+        },
+        "live": {
+            "label": "在线陪伴",
+            "description": "短间隔高频陪伴感；仍会尊重免打扰、休息、拒绝和隐私闸门。",
+            "effects": {
+                "max_daily_messages": 12,
+                "idle_minutes": 10,
+                "min_interval_minutes": 20,
+                "unanswered_slowdown_start": 4,
+                "unanswered_max_interval_multiplier": 1.2,
+                "friend_unanswered_max_cooldown_hours": 12,
+                "delay_factor": 0.38,
+                "proactive_persona_judge_send_threshold": 44,
+                "proactive_review_strength": "lenient",
+                "group_wakeup_cooldown_seconds": 20,
+                "group_high_intensity_cooldown_seconds": 45,
+                "group_interject_min_interval_minutes": 20,
+                "group_interject_max_daily": 12,
+            },
+        },
+    }
+
+    def _normalize_proactive_intensity_preset(self, value: Any) -> str:
+        preset = str(value or "off").strip().lower()
+        aliases = {
+            "": "off",
+            "manual": "off",
+            "none": "off",
+            "default": "off",
+            "standard": "balanced",
+            "active": "high_private",
+            "private": "high_private",
+            "group": "high_group",
+            "online": "live",
+            "直播": "live",
+            "高频": "live",
+        }
+        preset = aliases.get(preset, preset)
+        return preset if preset in self._PROACTIVE_INTENSITY_PRESETS else "off"
+
+    def _proactive_intensity_runtime(self) -> dict[str, Any]:
+        preset = self._normalize_proactive_intensity_preset(
+            getattr(self, "proactive_intensity_preset", "off")
+        )
+        spec = self._PROACTIVE_INTENSITY_PRESETS.get(preset) or self._PROACTIVE_INTENSITY_PRESETS["off"]
+        effects = dict(spec.get("effects") or {})
+        return {
+            "preset": preset,
+            "enabled": preset != "off",
+            "label": str(spec.get("label") or preset),
+            "description": str(spec.get("description") or ""),
+            "effects": effects,
+        }
+
+    def _proactive_intensity_effect(self, key: str, default: Any = None) -> Any:
+        runtime = self._proactive_intensity_runtime()
+        if not runtime.get("enabled"):
+            return default
+        return runtime.get("effects", {}).get(key, default)
+
+    def _effective_proactive_int(self, key: str, configured: int, *, minimum: int = 0, maximum: int | None = None) -> int:
+        value = configured
+        effect = self._proactive_intensity_effect(key, None)
+        if effect is not None:
+            value = _safe_int(effect, configured, minimum, maximum if maximum is not None else 10**9)
+        value = max(minimum, value)
+        if maximum is not None:
+            value = min(maximum, value)
+        return value
+
+    def _effective_proactive_float(self, key: str, configured: float, *, minimum: float = 0.0, maximum: float | None = None) -> float:
+        value = configured
+        effect = self._proactive_intensity_effect(key, None)
+        if effect is not None:
+            value = _safe_float(effect, configured, minimum)
+        value = max(minimum, float(value))
+        if maximum is not None:
+            value = min(maximum, value)
+        return value
+
+    def _effective_group_wakeup_cooldown_seconds(self) -> int:
+        return self._effective_proactive_int(
+            "group_wakeup_cooldown_seconds",
+            _safe_int(getattr(self, "group_wakeup_cooldown_seconds", 90), 90, 0, 3600),
+            minimum=0,
+            maximum=3600,
+        )
+
+    def _effective_group_high_intensity_cooldown_seconds(self) -> int:
+        return self._effective_proactive_int(
+            "group_high_intensity_cooldown_seconds",
+            _safe_int(getattr(self, "group_high_intensity_cooldown_seconds", 150), 150, 30, 1800),
+            minimum=30,
+            maximum=1800,
+        )
+
+    def _effective_group_interject_min_interval_minutes(self) -> int:
+        return self._effective_proactive_int(
+            "group_interject_min_interval_minutes",
+            _safe_int(getattr(self, "group_interject_min_interval_minutes", 180), 180, 10, 1440),
+            minimum=10,
+            maximum=1440,
+        )
+
+    def _effective_group_interject_max_daily(self) -> int:
+        return self._effective_proactive_int(
+            "group_interject_max_daily",
+            _safe_int(getattr(self, "group_interject_max_daily", 2), 2, 0, 12),
+            minimum=0,
+            maximum=12,
+        )
+
+    def _effective_proactive_persona_judge_send_threshold(self) -> int:
+        return self._effective_proactive_int(
+            "proactive_persona_judge_send_threshold",
+            _safe_int(getattr(self, "proactive_persona_judge_send_threshold", 62), 62, 0, 100),
+            minimum=0,
+            maximum=100,
+        )
+
+    def _effective_proactive_review_strength(self) -> str:
+        value = str(self._proactive_intensity_effect("proactive_review_strength", "") or "").strip().lower()
+        if value in {"lenient", "balanced", "strict"}:
+            return value
+        configured = str(getattr(self, "proactive_review_strength", "lenient") or "lenient").strip().lower()
+        return configured if configured in {"lenient", "balanced", "strict"} else "lenient"
+
     def _configured_target_ids(self) -> list[str]:
         raw = self.target_user_ids
         if isinstance(raw, str):
@@ -278,6 +467,21 @@ class ProactiveMixin:
     def _private_delivery_umo_for_user_id(self, user_id: str) -> str:
         return self._default_private_umo_for_user_id(self._private_delivery_user_id_for(user_id))
 
+    def _private_umo_matches_user_id(self, umo: str, user_id: str) -> bool:
+        clean_umo = _single_line(umo, 180)
+        clean_user_id = str(user_id or "").strip()
+        if not clean_umo or not clean_user_id:
+            return False
+        if f":FriendMessage:{clean_user_id}" not in clean_umo:
+            return False
+        parser = getattr(self, "_parse_message_session", None)
+        if callable(parser):
+            try:
+                return parser(clean_umo) is not None
+            except Exception:
+                return False
+        return True
+
     def _note_private_user_umo(self, user_id: str, user: dict[str, Any] | None, umo: str) -> None:
         if not isinstance(user, dict):
             return
@@ -285,12 +489,14 @@ class ProactiveMixin:
         if not clean_umo:
             return
         user_id = self._canonical_private_user_id(str(user_id or user.get("user_id") or "").strip())
-        delivery_umo = self._private_delivery_umo_for_user_id(user_id)
-        if delivery_umo:
+        user["last_inbound_umo"] = clean_umo
+        delivery_id = self._private_delivery_user_id_for(user_id)
+        if delivery_id and delivery_id != user_id:
+            delivery_umo = self._private_delivery_umo_for_user_id(user_id)
             user["umo"] = delivery_umo
-            user["last_inbound_umo"] = clean_umo
             return
-        user["umo"] = clean_umo
+        if self._private_umo_matches_user_id(clean_umo, user_id):
+            user["umo"] = clean_umo
 
     def _ensure_private_user_umo(self, user_id: str, user: dict[str, Any] | None) -> bool:
         if not isinstance(user, dict):
@@ -306,6 +512,15 @@ class ProactiveMixin:
             expected_suffix = f":FriendMessage:{delivery_id}"
             if not current.endswith(expected_suffix):
                 user["umo"] = fallback
+                return True
+        else:
+            last_inbound_umo = _single_line(user.get("last_inbound_umo"), 180)
+            if (
+                last_inbound_umo
+                and last_inbound_umo != current
+                and self._private_umo_matches_user_id(last_inbound_umo, canonical_id)
+            ):
+                user["umo"] = last_inbound_umo
                 return True
         if not current:
             user["umo"] = fallback
@@ -355,7 +570,7 @@ class ProactiveMixin:
     def _runtime_max_daily_messages(self) -> int:
         runtime_value = _safe_int(getattr(self, "max_daily_messages", 8), 8, 0, 12)
         if runtime_value > 0:
-            return runtime_value
+            return self._effective_proactive_int("max_daily_messages", runtime_value, minimum=0, maximum=12)
         config = getattr(self, "config", None)
         getter = getattr(config, "get", None)
         if callable(getter):
@@ -363,7 +578,7 @@ class ProactiveMixin:
                 configured_value = _safe_int(getter("max_daily_messages", runtime_value), runtime_value, 0, 12)
                 if configured_value > 0:
                     self.max_daily_messages = configured_value
-                    return configured_value
+                    return self._effective_proactive_int("max_daily_messages", configured_value, minimum=0, maximum=12)
             except Exception:
                 pass
         return runtime_value
@@ -385,9 +600,15 @@ class ProactiveMixin:
         override = self._user_profile_override_int(user, "proactive_idle_minutes")
         if override is not None:
             return override
+        base_idle = self._effective_proactive_int(
+            "idle_minutes",
+            _safe_int(getattr(self, "idle_minutes", 60), 60, 0, 1440),
+            minimum=0,
+            maximum=1440,
+        )
         if self._private_user_role(user) == "friend":
-            return max(self.idle_minutes, 180)
-        return max(0, self.idle_minutes)
+            return max(base_idle, 180)
+        return max(0, base_idle)
 
     def _effective_user_greeting_idle_minutes(self, user: dict[str, Any]) -> int:
         if self._private_user_role(user) == "friend":
@@ -398,9 +619,15 @@ class ProactiveMixin:
         override = self._user_profile_override_int(user, "proactive_min_interval_minutes")
         if override is not None:
             return override
+        base_interval = self._effective_proactive_int(
+            "min_interval_minutes",
+            _safe_int(getattr(self, "min_interval_minutes", 120), 120, 0, 2880),
+            minimum=0,
+            maximum=2880,
+        )
         if self._private_user_role(user) == "friend":
-            return max(self.min_interval_minutes, 360)
-        return max(0, self.min_interval_minutes)
+            return max(base_interval, 360)
+        return max(0, base_interval)
 
     def _effective_user_photo_daily_limit(self, user: dict[str, Any] | None = None) -> int:
         if isinstance(user, dict):
@@ -490,6 +717,10 @@ class ProactiveMixin:
                 "topic": normalized_topic,
                 "motive": normalized_motive,
             }
+        normalized_reason = str(reason or "check_in")
+        unanswered_level = self._friend_unanswered_downgrade_level(user)
+        if unanswered_level >= 1 and self._friend_unanswered_should_remove_action(normalized_action):
+            normalized_action = "message"
         if self._friend_sensitive_proactive_action(normalized_action):
             normalized_action = "message"
         sensitive_markers = (
@@ -499,9 +730,25 @@ class ProactiveMixin:
         combined = f"{normalized_topic} {normalized_motive}"
         has_sensitive_action_text = any(token in combined for token in sensitive_markers)
         has_friend_interaction_text = self._friend_plan_has_private_interaction_text(combined)
+        unanswered_patch = self._friend_unanswered_plan_patch(
+            user,
+            level=unanswered_level,
+            reason=normalized_reason,
+            action=normalized_action,
+            topic=normalized_topic,
+            motive=normalized_motive,
+        )
+        if unanswered_patch:
+            normalized_reason = unanswered_patch["reason"]
+            normalized_action = unanswered_patch["action"]
+            normalized_topic = unanswered_patch["topic"]
+            normalized_motive = unanswered_patch["motive"]
+            combined = f"{normalized_topic} {normalized_motive}"
+            has_sensitive_action_text = any(token in combined for token in sensitive_markers)
+            has_friend_interaction_text = self._friend_plan_has_private_interaction_text(combined)
         if not has_sensitive_action_text and not has_friend_interaction_text:
             return {
-                "reason": str(reason or "check_in"),
+                "reason": normalized_reason,
                 "action": normalized_action,
                 "topic": normalized_topic,
                 "motive": normalized_motive,
@@ -515,7 +762,7 @@ class ProactiveMixin:
                 else "按朋友关系做一次克制的普通文字分享,不写成和朋友用户聊天或约见"
             )
             return {
-                "reason": str(reason or "check_in"),
+                "reason": normalized_reason,
                 "action": normalized_action,
                 "topic": normalized_topic,
                 "motive": normalized_motive,
@@ -531,14 +778,91 @@ class ProactiveMixin:
             normalized_topic = "问一句近况"
         normalized_motive = (
             "作为朋友想起对方可能正忙,只轻轻问一句,不要求立刻回复"
-            if str(reason or "") in {"", "check_in", "quiet_care", "state_share"}
+            if normalized_reason in {"", "check_in", "quiet_care", "state_share"}
             else "按朋友关系顺手补一句,只做普通文字关心,不涉及屏幕观察"
         )
         return {
-            "reason": str(reason or "check_in"),
+            "reason": normalized_reason,
             "action": normalized_action,
             "topic": normalized_topic,
             "motive": normalized_motive,
+        }
+
+    def _friend_unanswered_downgrade_level(self, user: dict[str, Any] | None, *, now: float | None = None) -> int:
+        if not isinstance(user, dict) or self._private_user_role(user) != "friend":
+            return 0
+        level = 0
+        ignored = _safe_int(user.get("ignored_streak"), 0, 0, 20)
+        if ignored >= 3:
+            level = 3
+        elif ignored >= 2:
+            level = 2
+        elif ignored >= 1:
+            level = 1
+        check_now = _now_ts() if now is None else now
+        awaiting_since = _safe_float(user.get("awaiting_reply_since"), 0)
+        if awaiting_since > 0:
+            hours = max(0.0, (check_now - awaiting_since) / 3600.0)
+            if hours >= 24:
+                level = max(level, 3)
+            elif hours >= 10:
+                level = max(level, 2)
+            elif hours >= 4:
+                level = max(level, 1)
+        return level
+
+    @staticmethod
+    def _friend_unanswered_should_remove_action(action: str) -> bool:
+        parts = {part.strip() for part in str(action or "").split("+") if part.strip()}
+        return bool(parts & {"poke", "voice", "photo_text", "screen_peek", "jm_cosmos_read"})
+
+    def _friend_unanswered_plan_patch(
+        self,
+        user: dict[str, Any],
+        *,
+        level: int,
+        reason: str,
+        action: str,
+        topic: str,
+        motive: str,
+    ) -> dict[str, str]:
+        if level <= 0:
+            return {}
+        high_pressure_reasons = {
+            "check_in",
+            "quiet_care",
+            "state_share",
+            "activity_share",
+            "background_schedule",
+            "diary_share",
+            "morning_greeting",
+            "noon_greeting",
+            "evening_greeting",
+            "habit_awareness",
+        }
+        normalized_reason = str(reason or "check_in")
+        normalized_action = "message" if self._friend_unanswered_should_remove_action(action) else (str(action or "message") or "message")
+        if level == 1:
+            if normalized_reason in high_pressure_reasons:
+                normalized_reason = "quiet_care" if normalized_reason in {"check_in", "state_share", "habit_awareness"} else normalized_reason
+            return {
+                "reason": normalized_reason,
+                "action": normalized_action,
+                "topic": _single_line(topic, 80) or "轻一点的近况",
+                "motive": "对方前面还没接话,作为朋友把主动放轻一点；只顺手留一句,不催、不追问、不要求立刻回复",
+            }
+        if level == 2:
+            return {
+                "reason": "quiet_care",
+                "action": "message",
+                "topic": "低压近况",
+                "motive": "对方已经有一阵没有回应,这次只保留一条很短的低压关心；不贴近、不连问、不要求回复",
+            }
+        return {
+            "reason": "quiet_care",
+            "action": "message",
+            "topic": "留出空间",
+            "motive": "连续没有回应时,朋友关系要主动退一步；如果还要发,只放一小句很轻的话,说完就把空间留给对方",
         }
 
     @staticmethod
@@ -633,12 +957,22 @@ class ProactiveMixin:
 
     def _unanswered_slowdown_count(self, user: dict[str, Any]) -> int:
         ignored_streak = _safe_int(user.get("ignored_streak"), 0)
-        start = _safe_int(getattr(self, "proactive_unanswered_slowdown_start", 1), 1, 1, 10)
+        start = self._effective_proactive_int(
+            "unanswered_slowdown_start",
+            _safe_int(getattr(self, "proactive_unanswered_slowdown_start", 1), 1, 1, 10),
+            minimum=1,
+            maximum=10,
+        )
         return max(0, ignored_streak - start + 1)
 
     def _unanswered_interval_multiplier(self, user: dict[str, Any]) -> float:
         active_count = self._unanswered_slowdown_count(user)
-        max_multiplier = max(1.0, _safe_float(getattr(self, "proactive_unanswered_max_interval_multiplier", 2.2), 2.2, 1.0))
+        max_multiplier = self._effective_proactive_float(
+            "unanswered_max_interval_multiplier",
+            max(1.0, _safe_float(getattr(self, "proactive_unanswered_max_interval_multiplier", 2.2), 2.2, 1.0)),
+            minimum=1.0,
+            maximum=8.0,
+        )
         return min(max_multiplier, 1.0 + active_count * 0.35)
 
     def _effective_min_interval_seconds(self, user: dict[str, Any]) -> int:
@@ -853,7 +1187,12 @@ class ProactiveMixin:
         if daily_limit <= 1 or sent_today <= 0:
             return None
         ignored_slowdown = self._unanswered_slowdown_count(user)
-        max_cooldown = max(1.0, _safe_float(getattr(self, "friend_unanswered_max_cooldown_hours", 60.0), 60.0, 1.0))
+        max_cooldown = self._effective_proactive_float(
+            "friend_unanswered_max_cooldown_hours",
+            max(1.0, _safe_float(getattr(self, "friend_unanswered_max_cooldown_hours", 60.0), 60.0, 1.0)),
+            minimum=1.0,
+            maximum=168.0,
+        )
 
         def cap_delay(delay: tuple[float, float]) -> tuple[float, float]:
             low, high = delay
@@ -1108,6 +1447,14 @@ class ProactiveMixin:
                 if callable(saver):
                     saver()
                 return "情绪 hurt 收敛中,亲密主动候选已延后"
+            scheduler = getattr(self, "_schedule_next_proactive", None)
+            if callable(scheduler):
+                scheduler(user, now=base_after, delay_hours=(0.5, 2.0))
+            if _safe_float(user.get("next_proactive_at"), 0) <= check_now:
+                user["next_proactive_at"] = base_after
+                user["planned_proactive_window_start_at"] = base_after
+                user["planned_proactive_best_until_at"] = base_after + 45 * 60
+                user["planned_proactive_expire_at"] = base_after + 90 * 60
             saver = getattr(self, "_schedule_data_save", None)
             if callable(saver):
                 saver()
@@ -1412,6 +1759,12 @@ class ProactiveMixin:
         now = now or _now_ts()
         if delay_hours is None:
             delay_hours = self._fallback_proactive_delay_hours(user, now=now)
+        delay_factor = self._effective_proactive_float("delay_factor", 1.0, minimum=0.2, maximum=1.0)
+        if delay_hours is not None and delay_factor < 1.0:
+            delay_hours = (
+                max(0.05, delay_hours[0] * delay_factor),
+                max(0.08, delay_hours[1] * delay_factor),
+            )
         intensity_factor = self._daily_intensity_factor(user)
         if delay_hours is not None and intensity_factor > 0:
             widen = max(0.85, min(1.8, 1.25 - intensity_factor * 0.45))
@@ -1505,6 +1858,54 @@ class ProactiveMixin:
             return 0.0
         return rest_until
 
+    @staticmethod
+    def _user_rest_text_is_meta_discussion(cleaned: str) -> bool:
+        if not cleaned:
+            return False
+        return bool(
+            re.search(
+                r"(?:关键词|关键字|正则|规则|命中|误判|拦截|挡了|工具|日志|之前对话|历史消息|提示词|注入|主动问候|主动消息|用户反馈|反馈|bug)",
+                cleaned,
+            )
+            or re.search(r"(?:为什么|怎么|是否|会不会|是不是).{0,40}(?:晚安|睡|休息|别回|打扰)", cleaned)
+        )
+
+    @staticmethod
+    def _user_rest_text_is_quoted_or_report(cleaned: str) -> bool:
+        if not cleaned:
+            return False
+        return bool(
+            re.search(r"(?:他说|她说|它说|bot说|模型说|原文|内容是|比如|例如|类似|这句|那句)", cleaned)
+            or any(mark in cleaned for mark in ("“", "”", '"', "'"))
+        )
+
+    def _user_rest_signal_should_block_current_reply(self, text: str) -> bool:
+        cleaned = _single_line(text, 260).lower()
+        if not cleaned:
+            return False
+        if self._user_rest_text_is_meta_discussion(cleaned) or self._user_rest_text_is_quoted_or_report(cleaned):
+            return False
+        compact = re.sub(r"\s+", "", cleaned)
+        no_reply_boundary = r"(?:了|啦|吧|我|这(?:个|条|句|段)(?:消息|话|话题|内容|问题)?|这(?:条)?消息|本条消息|消息|哈|噢|哦|$|[，。！？,.!?])"
+        no_reply = re.search(
+            r"(?:不用|不必|无需|别|不要|先别|暂时别|今晚别|今天别)(?:再)?(?:回(?:复)?|理我|搭理我|接话|说话|出声)"
+            + no_reply_boundary,
+            compact,
+        )
+        proactive_only = re.search(
+            r"(?:别|不要|先别|暂时别|今晚别|今天别).{0,10}主动.{0,8}(?:打扰|吵|发消息|找我|回(?:复)?|理我|搭理我|接话|说话)",
+            compact,
+        )
+        if proactive_only and not no_reply:
+            return False
+        hard_quiet = re.search(
+            r"(?:别|不要|先别|暂时别|今晚别|今天别).{0,10}(?:打扰|吵我|叫我|主动|发消息|找我)"
+            r"|(?:让我|叫我).{0,6}(?:安静|清静|静一静)"
+            r"|(?:闭嘴|别说话|不要说话|安静点)",
+            compact,
+        )
+        return bool(no_reply or hard_quiet)
+
     def _next_user_rest_morning_ts(self, *, now: float) -> float:
         timezone_name = _single_line(getattr(self, "environment_perception_timezone", ""), 64) or "Asia/Shanghai"
         try:
@@ -1524,19 +1925,24 @@ class ProactiveMixin:
         check_now = _now_ts() if now is None else now
         # Keyword/rule discussions should not become real proactive-message
         # silence. Otherwise a stray "我休息" in debugging text can block greetings.
-        if re.search(r"(?:关键词|关键字|正则|规则|命中|误判|拦截|挡了|工具|日志|之前对话|历史消息|提示词|注入|主动问候|主动消息)", cleaned):
+        if self._user_rest_text_is_meta_discussion(cleaned):
             return 0.0
-        quoted_or_report = bool(
-            re.search(r"(?:他说|她说|它说|bot说|模型说|原文|内容是|比如|例如|类似|这句|那句)", cleaned)
-            or any(mark in cleaned for mark in ("“", "”", '"', "'"))
-        )
+        quoted_or_report = self._user_rest_text_is_quoted_or_report(cleaned)
         cancel_pattern = (
             r"(?:我|俺|咱|人家).{0,10}(?:醒了|起床了|睡醒了|不睡了|回来了|可以聊)"
             r"|(?:睡醒了|起床了|不睡了|可以聊了|回来了)"
         )
         if re.search(cancel_pattern, cleaned):
             return -1.0
-        hard_quiet = re.search(r"(?:别|不要|先别|暂时别|今晚别|今天别).{0,10}(?:打扰|吵|主动|发消息|找我)", cleaned)
+        if quoted_or_report:
+            return 0.0
+        no_reply_boundary = r"(?:了|啦|吧|我|这(?:个|条|句|段)(?:消息|话|话题|内容|问题)?|这(?:条)?消息|本条消息|消息|哈|噢|哦|$|[，。！？,.!?])"
+        hard_quiet = re.search(
+            r"(?:别|不要|先别|暂时别|今晚别|今天别).{0,10}(?:打扰|吵|主动|发消息|找我)"
+            r"|(?:不用|不必|无需|别|不要|先别|暂时别|今晚别|今天别)(?:再)?(?:回(?:复)?|理我|搭理我|接话|说话|出声)"
+            + no_reply_boundary,
+            cleaned,
+        )
         tomorrow = re.search(r"(?:明天|明早|早上)再(?:聊|说|回|看|找我)", cleaned)
         sleep = re.search(
             r"(?:晚安|睡觉去了|先睡了|去睡了|睡了哈|睡啦|我睡了|我先睡|我去睡|我要睡|我准备睡|我困了先睡|困死了先睡|补觉去了|我要补觉|先补觉)",
@@ -1550,8 +1956,6 @@ class ProactiveMixin:
             r"(?:我|俺|咱|人家).{0,10}(?:要|先|去|准备|现在|马上)(?:休息(?:一下|会儿?|一会儿?)?|歇一下|躺一下|缓一会儿?)",
             cleaned,
         )
-        if quoted_or_report and not (hard_quiet or tomorrow or sleep):
-            return 0.0
         if hard_quiet or tomorrow or sleep:
             return self._next_user_rest_morning_ts(now=check_now)
         if nap:
@@ -1731,6 +2135,7 @@ class ProactiveMixin:
                     ("当前细化", self._ensure_detail_enhancement),
                     ("当前在线感", self._ensure_current_detail_presence_status),
                     ("日记", self._ensure_daily_diary),
+                    ("每日穿搭", self._ensure_daily_outfit_photo),
                     ("创作推进", self._maybe_advance_creative_projects),
                     ("被动注入缓存", self._refresh_passive_injection_cache),
                 ):
@@ -1756,6 +2161,7 @@ class ProactiveMixin:
                 ("当前细化", self._ensure_detail_enhancement),
                 ("当前在线感", self._ensure_current_detail_presence_status),
                 ("日记", self._ensure_daily_diary),
+                ("每日穿搭", self._ensure_daily_outfit_photo),
                 ("创作推进", self._maybe_advance_creative_projects),
                 ("被动注入缓存", self._refresh_passive_injection_cache),
             ):
@@ -1806,4 +2212,3 @@ class ProactiveMixin:
         if nearest_due_in <= 6 * 60:
             return max(20.0, min(base * 0.5, nearest_due_in * random.uniform(0.18, 0.42)))
         return max(35.0, min(base, random.uniform(base * 0.55, base * 0.95)))
-

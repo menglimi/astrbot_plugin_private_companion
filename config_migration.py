@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -46,23 +47,63 @@ LEGACY_PROACTIVE_ACTION_FLAG_KEYS: dict[str, str] = {
     "voice": "enable_voice_action",
 }
 
+PRECISION_PROVIDER_MODE_KEYS: tuple[str, ...] = (
+    "MAI_STYLE_PROVIDER_ID",
+    "DAILY_PLAN_PROVIDER_ID",
+    "DETAIL_ENHANCEMENT_PROVIDER_ID",
+    "DREAM_DIARY_PROVIDER_ID",
+    "CREATIVE_PROVIDER_ID",
+    "CREATIVE_OUTLINE_PROVIDER_ID",
+    "CREATIVE_REVIEW_PROVIDER_ID",
+    "VOICE_PROMPT_PROVIDER_ID",
+    "tts_conversion_provider_id",
+    "PHOTO_PROMPT_PROVIDER_ID",
+    "NARRATION_PROVIDER_ID",
+    "HISTORY_SUMMARY_PROVIDER_ID",
+    "RESPONSE_REVIEW_PROVIDER_ID",
+    "SMART_SILENCE_PROVIDER_ID",
+    "PROACTIVE_PERSONA_JUDGE_PROVIDER_ID",
+    "TROUBLESHOOTING_PROVIDER_ID",
+    "SMART_MESSAGE_DEBOUNCE_PROVIDER_ID",
+    "REST_WAKEUP_PROVIDER_ID",
+    "RELATIONSHIP_ANALYSIS_PROVIDER_ID",
+    "EMOTION_JUDGEMENT_PROVIDER_ID",
+    "COMPANION_MEMORY_PROVIDER_ID",
+    "DIALOGUE_EPISODE_PROVIDER_ID",
+    "GROUP_INTERJECT_PROVIDER_ID",
+    "GROUP_EPISODE_PROVIDER_ID",
+    "GROUP_SLANG_PROVIDER_ID",
+    "GROUP_FOLLOWUP_JUDGE_PROVIDER_ID",
+    "FORWARD_MESSAGE_PROVIDER_ID",
+    "PRIVATE_READING_VISION_PROVIDER_ID",
+    "NEWS_PROVIDER_ID",
+    "WEB_EXPLORATION_PROVIDER_ID",
+)
+
 
 def migrate_flat_config_into_schema_groups(
     config: Any,
     *,
     schema_path: Path,
     logger: Any | None = None,
+    save: bool = True,
 ) -> int:
     """Copy legacy flat config values into the new AstrBot schema groups."""
     try:
-        return _migrate_flat_config_into_schema_groups(config, schema_path=schema_path, logger=logger)
+        return _migrate_flat_config_into_schema_groups(config, schema_path=schema_path, logger=logger, save=save)
     except Exception as exc:
         if logger is not None:
             logger.warning("[PrivateCompanion] 配置分组迁移失败，已跳过且不影响插件加载: %s", _single_line(exc, 160))
         return 0
 
 
-def _migrate_flat_config_into_schema_groups(config: Any, *, schema_path: Path, logger: Any | None = None) -> int:
+def _migrate_flat_config_into_schema_groups(
+    config: Any,
+    *,
+    schema_path: Path,
+    logger: Any | None = None,
+    save: bool = True,
+) -> int:
     root = _config_root_mapping(config)
     if not isinstance(root, dict):
         return 0
@@ -72,6 +113,8 @@ def _migrate_flat_config_into_schema_groups(config: Any, *, schema_path: Path, l
 
     changed: list[str] = []
     for key, item in schema_map.items():
+        if key == "provider_config_mode":
+            continue
         if key not in root:
             continue
         old_value = root.get(key)
@@ -101,6 +144,8 @@ def _migrate_flat_config_into_schema_groups(config: Any, *, schema_path: Path, l
                 if _copy_into_schema_group(root, schema_map, new_key, old_value):
                     changed.append(f"{old_key}->{new_key}")
 
+    if _ensure_provider_config_mode(root, schema_map):
+        changed.append("provider_config_mode~mode-infer")
     added_compat_defaults = _ensure_flat_schema_compat_defaults(root, schema_map)
     if added_compat_defaults:
         changed.extend(f"{key}~compat-default" for key in added_compat_defaults)
@@ -110,18 +155,32 @@ def _migrate_flat_config_into_schema_groups(config: Any, *, schema_path: Path, l
     roleplay_hint_changes = _migrate_legacy_roleplay_image_hint(root, schema_map)
     changed.extend(roleplay_hint_changes)
 
-    # 旧别名键只负责迁移；仍在 schema 中登记的 flat 兼容键会保留默认值，
+    # 旧别名键只负责迁移；仍在 schema 中登记的 flat 兼容键重置为默认值，
     # 避免 AstrBot 每次启动都反复补齐并刷屏。
     removed_legacy_keys: list[str] = []
     cleanup_keys = set(LEGACY_KEY_ALIASES) | {LEGACY_PROACTIVE_ACTIONS_KEY, "require_target_group"}
     for old_key in cleanup_keys:
+        item = schema_map.get(old_key)
         if old_key in root:
-            root.pop(old_key, None)
-            removed_legacy_keys.append(old_key)
-        if isinstance(legacy_group, dict) and old_key in legacy_group:
-            legacy_group.pop(old_key, None)
-            if old_key not in removed_legacy_keys:
+            if item:
+                default_value = _coerce_schema_value(item.get("default"), item)
+                if root.get(old_key) != default_value:
+                    root[old_key] = default_value
+                    removed_legacy_keys.append(old_key)
+            else:
+                root.pop(old_key, None)
                 removed_legacy_keys.append(old_key)
+        if isinstance(legacy_group, dict) and old_key in legacy_group:
+            if item and str(item.get("group") or "") == "legacy_compat_config":
+                default_value = _coerce_schema_value(item.get("default"), item)
+                if legacy_group.get(old_key) != default_value:
+                    legacy_group[old_key] = default_value
+                    if old_key not in removed_legacy_keys:
+                        removed_legacy_keys.append(old_key)
+            else:
+                legacy_group.pop(old_key, None)
+                if old_key not in removed_legacy_keys:
+                    removed_legacy_keys.append(old_key)
     if removed_legacy_keys:
         changed.extend(f"{key}~cleanup" for key in removed_legacy_keys)
 
@@ -129,8 +188,95 @@ def _migrate_flat_config_into_schema_groups(config: Any, *, schema_path: Path, l
         return 0
     if logger is not None:
         logger.info("[PrivateCompanion] 已将旧版扁平配置迁移到新版分组配置: %s 项", len(changed))
-    _save_config_after_schema_migration(config, logger=logger)
+    if save:
+        _save_config_after_schema_migration(config, logger=logger)
     return len(changed)
+
+
+def _ensure_provider_config_mode(root: dict[str, Any], schema_map: dict[str, dict[str, Any]]) -> bool:
+    item = schema_map.get("provider_config_mode")
+    if not item:
+        return False
+    group_key = str(item.get("group") or "")
+    group = root.get(group_key)
+    if not isinstance(group, dict):
+        group = {}
+        root[group_key] = group
+
+    root_mode = _normalize_provider_config_mode_value(root.get("provider_config_mode"))
+    group_mode = _normalize_provider_config_mode_value(group.get("provider_config_mode"))
+    quick_keys = (
+        "FAST_RESPONSE_PROVIDER_ID",
+        "COMPLEX_REASONING_PROVIDER_ID",
+        "CREATIVE_MODEL_PROVIDER_ID",
+        "PLUGIN_VISION_PROVIDER_ID",
+    )
+    has_quick_provider = _has_any_configured_provider(root, group, quick_keys)
+    has_precision_provider = _has_any_configured_provider(root, group, PRECISION_PROVIDER_MODE_KEYS)
+    explicit = ""
+    if group_mode and root_mode and group_mode != root_mode:
+        # Official AstrBot config pages save the visible schema group first.
+        # When it disagrees with the hidden flat compatibility key, prefer what
+        # the user can actually see and just sync the hidden copy afterward.
+        explicit = group_mode
+    elif group_mode:
+        if not root_mode and group_mode == "quick" and has_precision_provider and not has_quick_provider:
+            explicit = ""
+        else:
+            explicit = group_mode
+    elif root_mode:
+        explicit = root_mode
+    if explicit:
+        changed = False
+        if group.get("provider_config_mode") != explicit:
+            group["provider_config_mode"] = explicit
+            changed = True
+        if root.get("provider_config_mode") != explicit:
+            root["provider_config_mode"] = explicit
+            changed = True
+        return changed
+
+    inferred = "precision" if has_precision_provider else "quick"
+    group["provider_config_mode"] = inferred
+    root["provider_config_mode"] = inferred
+    return True
+
+
+def _normalize_provider_config_mode_value(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    aliases = {
+        "quick": "quick",
+        "fast": "quick",
+        "simple": "quick",
+        "快速": "quick",
+        "快速配置": "quick",
+        "precision": "precision",
+        "precise": "precision",
+        "advanced": "precision",
+        "detail": "precision",
+        "detailed": "precision",
+        "精准": "precision",
+        "精准配置": "precision",
+        "分流": "precision",
+        "分流模型": "precision",
+    }
+    return aliases.get(text, "")
+
+
+def _has_any_configured_provider(
+    root: dict[str, Any],
+    mode_group: dict[str, Any],
+    keys: tuple[str, ...],
+) -> bool:
+    for key in keys:
+        if str(mode_group.get(key) or "").strip():
+            return True
+        if str(root.get(key) or "").strip():
+            return True
+        for value in root.values():
+            if isinstance(value, dict) and str(value.get(key) or "").strip():
+                return True
+    return False
 
 
 def _cleanup_flat_schema_item_keys(root: dict[str, Any], schema_map: dict[str, dict[str, Any]]) -> list[str]:
@@ -435,6 +581,7 @@ def _save_config_after_schema_migration(config: Any, *, logger: Any | None = Non
         if not callable(save):
             continue
         try:
+            _ensure_config_parent_dir(config, logger=logger)
             result = save()
             if asyncio.iscoroutine(result) or hasattr(result, "__await__"):
                 try:
@@ -448,10 +595,84 @@ def _save_config_after_schema_migration(config: Any, *, logger: Any | None = Non
             return
         except TypeError:
             continue
+        except FileNotFoundError as exc:
+            if _ensure_config_parent_dir(config, error=exc, logger=logger):
+                try:
+                    result = save()
+                    if asyncio.iscoroutine(result) or hasattr(result, "__await__"):
+                        try:
+                            asyncio.get_running_loop().create_task(result)
+                        except RuntimeError:
+                            close = getattr(result, "close", None)
+                            if callable(close):
+                                close()
+                    return
+                except Exception as retry_exc:
+                    if logger is not None:
+                        logger.warning("[PrivateCompanion] 重试保存配置分组迁移结果失败: %s", _single_line(retry_exc, 160))
+                    return
+            if logger is not None:
+                logger.warning("[PrivateCompanion] 保存配置分组迁移结果失败: %s", _single_line(exc, 160))
+            return
         except Exception as exc:
             if logger is not None:
                 logger.warning("[PrivateCompanion] 保存配置分组迁移结果失败: %s", _single_line(exc, 160))
             return
+
+
+def _ensure_config_parent_dir(
+    config: Any,
+    *,
+    error: BaseException | None = None,
+    logger: Any | None = None,
+) -> bool:
+    paths: list[str] = []
+    for attr in (
+        "path",
+        "file",
+        "filepath",
+        "file_path",
+        "config_path",
+        "_path",
+        "_file",
+        "_filepath",
+        "_file_path",
+        "_config_path",
+    ):
+        try:
+            value = getattr(config, attr, None)
+        except Exception:
+            value = None
+        if value:
+            paths.append(str(value))
+    if isinstance(config, dict):
+        for key in ("path", "file", "filepath", "file_path", "config_path"):
+            value = config.get(key)
+            if value:
+                paths.append(str(value))
+    if error is not None:
+        match = re.search(r"['\"]([^'\"]+?\.tmp)['\"]", str(error))
+        if match:
+            paths.append(match.group(1))
+    changed = False
+    for raw in paths:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        if text.endswith(".tmp"):
+            parent = Path(text).expanduser().parent
+        else:
+            candidate = Path(text).expanduser()
+            parent = candidate if text.endswith(("/", "\\")) else candidate.parent
+        if not str(parent):
+            continue
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+            changed = True
+        except Exception as exc:
+            if logger is not None:
+                logger.debug("[PrivateCompanion] 创建配置目录失败: %s", _single_line(exc, 160))
+    return changed
 
 
 def _is_empty(value: Any) -> bool:

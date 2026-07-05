@@ -606,18 +606,20 @@ class GroupWakeupMixin:
             return {"active": False, "reason": "disabled", "recent_wakeups": 0, "threshold": 0, "until_ts": 0.0}
         window = max(15, _safe_int(getattr(self, "group_high_intensity_wakeup_window_seconds", 60), 60, 15, 600))
         threshold = max(2, _safe_int(getattr(self, "group_high_intensity_wakeup_threshold", 3), 3, 2, 20))
-        cooldown = max(30, _safe_int(getattr(self, "group_high_intensity_cooldown_seconds", 150), 150, 30, 1800))
+        cooldown_getter = getattr(self, "_effective_group_high_intensity_cooldown_seconds", None)
+        cooldown = cooldown_getter() if callable(cooldown_getter) else max(30, _safe_int(getattr(self, "group_high_intensity_cooldown_seconds", 150), 150, 30, 1800))
         recent_wakeups = self._group_recent_wakeup_count(group, now=now, window_seconds=window)
         fatigue = self._group_wakeup_fatigue(group)
         until_ts = _safe_float(group.get("group_high_intensity_until"), 0.0, 0.0)
         reason = ""
+        burst_floor = max(2, min(threshold, threshold - 1 if threshold > 2 else threshold))
         triggered = False
         if recent_wakeups >= threshold:
             triggered = True
             reason = "recent_wakeups"
-        elif str(fatigue.get("level") or "") == "high":
+        elif str(fatigue.get("level") or "") == "high" and recent_wakeups >= burst_floor:
             triggered = True
-            reason = "fatigue_high"
+            reason = "fatigue_high_recent"
         if triggered and mutate:
             next_until = now + cooldown
             if next_until > until_ts:
@@ -626,11 +628,14 @@ class GroupWakeupMixin:
         active = bool(triggered or until_ts > now)
         if active and not reason:
             reason = "cooldown"
+        merge_active = bool(active and recent_wakeups >= burst_floor)
         return {
             "active": active,
+            "merge_active": merge_active,
             "reason": reason,
             "recent_wakeups": recent_wakeups,
             "threshold": threshold,
+            "merge_recent_floor": burst_floor,
             "window_seconds": window,
             "cooldown_seconds": cooldown,
             "until_ts": round(until_ts, 3) if until_ts > 0 else 0.0,
@@ -1060,7 +1065,9 @@ class GroupWakeupMixin:
                     note="群聊处于高强度收口模式,暂停弱相关、解惑、冷群和兴趣唤醒,优先合并处理明确叫到 Bot 的消息。",
                 )
             return {}
-        if self.group_wakeup_cooldown_seconds > 0 and now - _safe_float(group.get("last_group_wakeup_at"), 0) < self.group_wakeup_cooldown_seconds:
+        cooldown_getter = getattr(self, "_effective_group_wakeup_cooldown_seconds", None)
+        group_wakeup_cooldown = cooldown_getter() if callable(cooldown_getter) else self.group_wakeup_cooldown_seconds
+        if group_wakeup_cooldown > 0 and now - _safe_float(group.get("last_group_wakeup_at"), 0) < group_wakeup_cooldown:
             if soft_signal_hit:
                 self._record_group_wakeup_log(
                     group,

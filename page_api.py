@@ -21,14 +21,16 @@ from astrbot.api import logger
 from quart import request, send_file
 
 from .constants import _REASON_TEXT
+from .config_migration import _ensure_config_parent_dir
 from .helpers import _flat_get, _safe_int, _set_into_config, _strip_internal_message_blocks, _text_looks_garbled, _text_similarity, _today_key
+from .page_api_qzone import PrivateCompanionPageApiQzoneMixin
 from .page_api_users_groups import PrivateCompanionPageApiUsersGroupsMixin
 
 PLUGIN_NAME = "astrbot_plugin_private_companion"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 
-class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
+class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanionPageApiUsersGroupsMixin):
     """AstrBot 官方插件拓展页面 API。"""
 
     PERCENT_PROBABILITY_KEYS = {
@@ -61,6 +63,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
         "proactive_review_hard_risk_threshold",
         "proactive_review_low_score_threshold",
         "proactive_review_pressure_threshold",
+        "smart_silence_min_confidence",
         "private_reading_share_probability",
         "private_reading_ask_probability",
         "creative_inspiration_probability",
@@ -79,6 +82,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             ("/users", self.list_users, ["GET"], "Private Companion Page users"),
             ("/user", self.get_user, ["GET"], "Private Companion Page user detail"),
             ("/user/update", self.update_user, ["POST"], "Private Companion Page update user"),
+            ("/user/delete", self.delete_user, ["POST"], "Private Companion Page delete user"),
             ("/groups", self.list_groups, ["GET"], "Private Companion Page groups"),
             ("/group", self.get_group, ["GET"], "Private Companion Page group detail"),
             ("/group/update", self.update_group, ["POST"], "Private Companion Page update group"),
@@ -91,6 +95,8 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             ("/config/import/preview", self.preview_migration_config_import, ["POST"], "Private Companion Page preview migration config import"),
             ("/config/import/apply", self.apply_migration_config_import, ["POST"], "Private Companion Page apply migration config import"),
             ("/proactive_only/unlock", self.update_proactive_only_unlock, ["POST"], "Private Companion Page proactive-only temporary unlock"),
+            ("/proactive/candidate/delete", self.delete_proactive_candidate, ["POST"], "Private Companion Page delete proactive candidate"),
+            ("/proactive/candidate/prune", self.prune_proactive_candidates, ["POST"], "Private Companion Page prune proactive candidates"),
             ("/diagnostics", self.get_diagnostics, ["GET"], "Private Companion Page diagnostics"),
             ("/troubleshooting", self.get_troubleshooting, ["GET"], "Private Companion Page troubleshooting"),
             ("/troubleshooting/test", self.run_troubleshooting_test, ["POST"], "Private Companion Page troubleshooting test"),
@@ -109,6 +115,38 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             ("/bookshelf/rate", self.rate_bookshelf_item, ["POST"], "Private Companion Page rate bookshelf item"),
             ("/bookshelf/tags", self.update_bookshelf_item_tags, ["POST"], "Private Companion Page update bookshelf item tags"),
             ("/bookshelf/comments/update", self.update_bookshelf_item_comments, ["POST"], "Private Companion Page update bookshelf item comments"),
+            ("/qzone/status", self.get_qzone_status, ["GET"], "Private Companion Page qzone status"),
+            ("/qzone/health", self.get_qzone_status, ["GET"], "Private Companion Page qzone status alias"),
+            ("/qzone/summary", self.get_qzone_status, ["GET"], "Private Companion Page qzone status alias"),
+            ("/qzone/state", self.get_qzone_status, ["GET"], "Private Companion Page qzone status alias"),
+            ("/qzone/feed", self.get_qzone_feed, ["GET"], "Private Companion Page qzone feed"),
+            ("/qzone/feeds", self.get_qzone_feed, ["GET"], "Private Companion Page qzone feed alias"),
+            ("/qzone/list", self.get_qzone_feed, ["GET"], "Private Companion Page qzone feed alias"),
+            ("/qzone/detail", self.get_qzone_detail, ["GET"], "Private Companion Page qzone detail"),
+            ("/qzone/post", self.get_qzone_detail, ["GET"], "Private Companion Page qzone detail alias"),
+            ("/qzone/item", self.get_qzone_detail, ["GET"], "Private Companion Page qzone detail alias"),
+            ("/qzone/refresh_cookies", self.refresh_qzone_cookies, ["POST"], "Private Companion Page qzone refresh cookies"),
+            ("/qzone/refresh-cookies", self.refresh_qzone_cookies, ["POST"], "Private Companion Page qzone refresh cookies alias"),
+            ("/qzone/cookies/refresh", self.refresh_qzone_cookies, ["POST"], "Private Companion Page qzone refresh cookies alias"),
+            ("/qzone/cookie/refresh", self.refresh_qzone_cookies, ["POST"], "Private Companion Page qzone refresh cookies alias"),
+            ("/qzone/refresh", self.refresh_qzone_cookies, ["POST"], "Private Companion Page qzone refresh cookies alias"),
+            ("/qzone/publish", self.publish_qzone_post, ["POST"], "Private Companion Page qzone publish"),
+            ("/qzone/post/publish", self.publish_qzone_post, ["POST"], "Private Companion Page qzone publish alias"),
+            ("/qzone/post", self.publish_qzone_post, ["POST"], "Private Companion Page qzone publish alias"),
+            ("/qzone/like", self.like_qzone_post, ["POST"], "Private Companion Page qzone like"),
+            ("/qzone/post/like", self.like_qzone_post, ["POST"], "Private Companion Page qzone like alias"),
+            ("/qzone/comment", self.comment_qzone_post, ["POST"], "Private Companion Page qzone comment"),
+            ("/qzone/post/comment", self.comment_qzone_post, ["POST"], "Private Companion Page qzone comment alias"),
+            ("/qzone/delete", self.delete_qzone_post, ["POST"], "Private Companion Page qzone delete"),
+            ("/qzone/post/delete", self.delete_qzone_post, ["POST"], "Private Companion Page qzone delete alias"),
+            ("/creative/project", self.get_creative_project, ["GET"], "Private Companion Page creative project detail"),
+            ("/creative/project/update", self.update_creative_project, ["POST"], "Private Companion Page update creative project"),
+            ("/creative/project/chunk/update", self.update_creative_chunk, ["POST"], "Private Companion Page update creative chunk"),
+            ("/creative/project/outline/update", self.update_creative_outline, ["POST"], "Private Companion Page update creative outline"),
+            ("/creative/project/characters/update", self.update_creative_characters, ["POST"], "Private Companion Page update creative characters"),
+            ("/creative/project/reanalyze", self.reanalyze_creative_project, ["POST"], "Private Companion Page reanalyze creative project"),
+            ("/creative/project/rebuild_memory", self.rebuild_creative_memory, ["POST"], "Private Companion Page rebuild creative memory"),
+            ("/creative/project/delete", self.delete_creative_project, ["POST"], "Private Companion Page delete creative project"),
             ("/worldbook/import", self.import_worldbook, ["POST"], "Private Companion Page import worldbook"),
             ("/worldbook/member/livingmemory", self.get_worldbook_member_livingmemory, ["GET"], "Private Companion Page worldbook member LivingMemory"),
             ("/worldbook/member/update", self.update_worldbook_member, ["POST"], "Private Companion Page update worldbook member"),
@@ -127,12 +165,17 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             register(f"{PAGE_API_PREFIX}{path}", handler, methods, desc)
 
     async def get_overview(self) -> dict[str, Any]:
+        start = time.perf_counter()
         try:
             async with self.plugin._data_lock:
-                self._auto_import_worldbook_if_needed_locked()
                 refresher = getattr(self.plugin, "_refresh_sleep_runtime_state", None)
                 if callable(refresher):
                     refresher()
+                detail_sanitizer = getattr(self.plugin, "_sanitize_detail_enhanced_segments_inplace", None)
+                if callable(detail_sanitizer):
+                    enhanced = self.plugin.data.get("detail_enhanced_segments")
+                    if isinstance(enhanced, dict) and detail_sanitizer(enhanced):
+                        self.plugin._save_data_sync()
                 data = self._overview_data_snapshot_locked(self.plugin.data)
                 token_stats = self._token_overview_payload(self.plugin.data.get("token_usage", {}))
             users = data.get("users") if isinstance(data.get("users"), dict) else {}
@@ -144,62 +187,78 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
                 if isinstance(group, dict) and not self._looks_like_member_shadow_group(str(group_id), group)
             }
             enabled_groups = sum(1 for item in visible_groups.values() if isinstance(item, dict) and item.get("enabled", True))
-            return self._ok(
-                {
-                    "plugin": {
-                        "enabled": bool(getattr(self.plugin, "enabled", False)),
-                        "bot_name": getattr(self.plugin, "bot_name", ""),
-                        "data_file": getattr(self.plugin, "data_file", ""),
-                        "data_version": data.get("version"),
-                    },
-                    "private": {
-                        "user_count": len(users),
-                        "enabled_user_count": enabled_users,
-                        "require_opt_in": bool(getattr(self.plugin, "require_private_opt_in", True)),
-                        "max_daily_messages": getattr(self.plugin, "max_daily_messages", 0),
-                        "idle_minutes": getattr(self.plugin, "idle_minutes", 0),
-                        "min_interval_minutes": getattr(self.plugin, "min_interval_minutes", 0),
-                    },
-                    "group": {
-                        "enabled": bool(getattr(self.plugin, "enable_group_companion", False)),
-                        "group_count": len(visible_groups),
-                        "enabled_group_count": enabled_groups,
-                        "shadow_group_count": max(0, len(groups) - len(visible_groups)),
-                        "access_mode": getattr(self.plugin, "group_access_mode", "whitelist"),
-                        "whitelist": self.plugin._configured_group_ids(),
-                        "blacklist": self.plugin._configured_group_blacklist_ids(),
-                        "interjection_enabled": bool(getattr(self.plugin, "enable_group_interjection", False)),
-                        "repeat_follow_enabled": bool(getattr(self.plugin, "enable_group_repeat_follow", False)),
-                    },
-                    "features": self._feature_flags(),
-                    "proactive_only": self._proactive_only_mode_snapshot(),
-                    "providers": self._provider_settings(),
-                    "settings": self._runtime_settings(),
-                    "cache": self._cache_summary(data),
-                    "livingmemory": self._livingmemory_summary(),
-                    "screen_companion": self._screen_companion_summary(data),
-                    "knowledge": self.plugin._roleplay_knowledge_summary(),
-                    "worldbook": self._worldbook_summary(data),
-                    "proactive_candidates": self._proactive_candidate_summary(data),
-                    "proactive_tasks": self._proactive_task_summary(data),
-                    "message_debounce": self._message_debounce_summary(data),
-                    "bilibili": self._bilibili_summary(data),
-                    "news": self._news_summary(data),
-                    "web_exploration": self._web_exploration_summary(data),
-                    "qzone": self._qzone_summary(data),
-                    "private_reading": self._jm_cosmos_summary(data),
-                    "creative": self._creative_summary(data),
-                    "bookshelf": await self._bookshelf_summary(data, unlocked=False),
-                    "skill_growth": self._skill_growth_summary(data),
-                    "food_menu": self._food_menu_summary(data),
-                    "external_abilities": self._external_ability_summary(data),
-                    "life_observation": self._life_observation_summary(data),
-                    "daily_state": self._daily_state_summary(data.get("daily_state")),
-                    "daily_timeline": self._daily_timeline_summary(data),
-                    "daily_outfit": self._daily_outfit_summary(data),
-                    "token_stats": token_stats,
-                }
-            )
+            payload = {
+                "plugin": {
+                    "enabled": bool(getattr(self.plugin, "enabled", False)),
+                    "bot_name": getattr(self.plugin, "bot_name", ""),
+                    "data_file": getattr(self.plugin, "data_file", ""),
+                    "storage_backend": getattr(self.plugin, "storage_backend", "json"),
+                    "storage_sqlite_path": getattr(
+                        self.plugin,
+                        "storage_sqlite_effective_path",
+                        getattr(self.plugin, "storage_sqlite_path", ""),
+                    ),
+                    "data_version": data.get("version"),
+                },
+                "private": {
+                    "user_count": len(users),
+                    "enabled_user_count": enabled_users,
+                    "require_opt_in": bool(getattr(self.plugin, "require_private_opt_in", True)),
+                    "admin_ids": list(self.plugin._configured_admin_ids()) if hasattr(self.plugin, "_configured_admin_ids") else [],
+                    "target_user_ids": list(self.plugin._configured_target_ids()) if hasattr(self.plugin, "_configured_target_ids") else [],
+                    "max_daily_messages": getattr(self.plugin, "max_daily_messages", 0),
+                    "idle_minutes": getattr(self.plugin, "idle_minutes", 0),
+                    "min_interval_minutes": getattr(self.plugin, "min_interval_minutes", 0),
+                },
+                "group": {
+                    "enabled": bool(getattr(self.plugin, "enable_group_companion", False)),
+                    "group_count": len(visible_groups),
+                    "enabled_group_count": enabled_groups,
+                    "shadow_group_count": max(0, len(groups) - len(visible_groups)),
+                    "access_mode": getattr(self.plugin, "group_access_mode", "whitelist"),
+                    "whitelist": self.plugin._configured_group_ids(),
+                    "blacklist": self.plugin._configured_group_blacklist_ids(),
+                    "interjection_enabled": bool(getattr(self.plugin, "enable_group_interjection", False)),
+                    "repeat_follow_enabled": bool(getattr(self.plugin, "enable_group_repeat_follow", False)),
+                },
+                "features": self._feature_flags(),
+                "proactive_intensity": self._proactive_intensity_summary(),
+                "proactive_only": self._proactive_only_mode_snapshot(),
+                "providers": self._provider_settings(),
+                "settings": self._runtime_settings(),
+                "cache": self._cache_summary(data),
+                "livingmemory": self._livingmemory_summary(),
+                "screen_companion": self._screen_companion_summary(data),
+                "knowledge": self.plugin._roleplay_knowledge_summary(),
+                "worldbook": self._worldbook_summary(data),
+                "proactive_candidates": self._proactive_candidate_summary(data),
+                "proactive_tasks": self._proactive_task_summary(data),
+                "message_debounce": self._message_debounce_summary(data),
+                "bilibili": self._bilibili_summary(data),
+                "news": self._news_summary(data),
+                "web_exploration": self._web_exploration_summary(data),
+                "qzone": self._qzone_summary(data),
+                "private_reading": self._jm_cosmos_summary(data),
+                "creative": self._creative_summary(data),
+                "bookshelf": await self._bookshelf_summary(data, unlocked=False),
+                "skill_growth": self._skill_growth_summary(data),
+                "food_menu": self._food_menu_summary(data),
+                "external_abilities": self._external_ability_summary(data),
+                "life_observation": self._life_observation_summary(data),
+                "daily_state": self._daily_state_summary(data.get("daily_state")),
+                "daily_timeline": self._daily_timeline_summary(data),
+                "daily_outfit": self._daily_outfit_summary(data),
+                "token_stats": token_stats,
+            }
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
+            if elapsed_ms > 1200:
+                logger.warning(
+                    "[PrivateCompanionPage] 总览接口耗时较高: elapsed=%sms users=%s groups=%s",
+                    elapsed_ms,
+                    len(users),
+                    len(visible_groups),
+                )
+            return self._ok(payload)
         except Exception as exc:
             logger.error(f"[PrivateCompanionPage] 获取总览失败: {exc}", exc_info=True)
             return self._error(str(exc))
@@ -260,6 +319,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "updated_at": self._single_line(usage.get("updated_at"), 24),
             "totals": totals,
             "budget": budget,
+            "memory_plugin": self._token_memory_plugin_payload(self._memory_plugin_token_usage_raw()),
             "partial": True,
         }
 
@@ -283,9 +343,80 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
                 return []
             return list(value[-limit:])
 
+        scalar_user_keys = (
+            "enabled",
+            "manual_enabled",
+            "manual_disabled",
+            "nickname",
+            "style",
+            "umo",
+            "relationship_role",
+            "last_seen",
+            "last_sent",
+            "sent_today",
+            "sent_day",
+            "last_proactive_skip_at",
+            "last_proactive_skip_reason",
+            "last_proactive_skip_prefix",
+            "proactive_daily_limit",
+            "proactive_idle_minutes",
+            "proactive_min_interval_minutes",
+            "photo_daily_limit",
+            "screen_peek_daily_limit",
+            "poke_daily_limit",
+            "proactive_boundary_note",
+            "inbound_count",
+            "reply_count",
+            "proactive_sent_count",
+            "relationship_score",
+            "planned_proactive_reason",
+            "planned_proactive_action",
+            "planned_proactive_source",
+            "planned_proactive_topic",
+            "planned_proactive_motive",
+            "planned_proactive_impulse_id",
+            "planned_candidate_id",
+            "planned_proactive_semantic_kind",
+            "planned_proactive_anchor_type",
+            "planned_proactive_semantic_score",
+            "planned_proactive_semantic_note",
+            "planned_proactive_window_start_at",
+            "planned_proactive_best_until_at",
+            "planned_proactive_expire_at",
+            "planned_proactive_model_judge_at",
+            "next_proactive_at",
+            "proactive_sending",
+            "last_proactive_hesitation_at",
+            "last_proactive_hesitation_note",
+        )
+
+        def user_snapshot(value: Any) -> dict[str, Any]:
+            if not isinstance(value, dict):
+                return {}
+            snapshot = {key: value.get(key) for key in scalar_user_keys if key in value}
+            for key in (
+                "relationship_state",
+                "persona_relationship",
+                "llm_timer_event",
+                "planned_proactive_model_judge_result",
+                "proactive_afterglow",
+            ):
+                raw = value.get(key)
+                if isinstance(raw, dict):
+                    snapshot[key] = dict(raw)
+            aliases = value.get("alias_user_ids")
+            if isinstance(aliases, list):
+                snapshot["alias_user_ids"] = list(aliases[:8])
+            hesitations = value.get("recent_proactive_hesitations")
+            if isinstance(hesitations, list):
+                snapshot["recent_proactive_hesitations"] = [
+                    dict(item) for item in hesitations[-3:] if isinstance(item, dict)
+                ]
+            return snapshot
+
         data: dict[str, Any] = {
             "version": raw_data.get("version"),
-            "users": {str(key): dict(value) for key, value in raw_data.get("users", {}).items() if isinstance(value, dict)}
+            "users": {str(key): user_snapshot(value) for key, value in raw_data.get("users", {}).items() if isinstance(value, dict)}
             if isinstance(raw_data.get("users"), dict)
             else {},
             "groups": {
@@ -340,11 +471,35 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             data[key] = list_tail(raw_data.get(key), limit)
 
         image_cache = raw_data.get("private_image_vision_cache")
-        data["private_image_vision_cache"] = image_cache if isinstance(image_cache, dict) else {}
+        data["private_image_vision_cache_count"] = len(image_cache) if isinstance(image_cache, dict) else 0
+        data["private_image_vision_cache"] = {}
 
         profiles = raw_data.get("worldbook_member_profiles")
-        data["worldbook_member_profiles"] = profiles if isinstance(profiles, dict) else {}
+        if isinstance(profiles, dict):
+            profile_items = [(str(key), value) for key, value in profiles.items() if isinstance(value, dict)]
+            data["worldbook_member_profile_count"] = len(profile_items)
+            data["worldbook_enabled_member_profile_count"] = sum(1 for _, value in profile_items if bool(value.get("enabled", True)))
+            data["worldbook_pending_observation_total"] = sum(
+                len(value.get("pending_observations"))
+                for _, value in profile_items
+                if isinstance(value.get("pending_observations"), list)
+            )
+            data["worldbook_member_profiles"] = {key: value for key, value in profile_items[:160]}
+        else:
+            data["worldbook_member_profile_count"] = 0
+            data["worldbook_enabled_member_profile_count"] = 0
+            data["worldbook_pending_observation_total"] = 0
+            data["worldbook_member_profiles"] = {}
+        worldbook_groups = raw_data.get("worldbook_group_profiles")
+        if isinstance(worldbook_groups, dict):
+            group_items = [(str(key), value) for key, value in worldbook_groups.items() if isinstance(value, dict)]
+            data["worldbook_group_profile_count"] = len(group_items)
+            data["worldbook_group_profiles"] = {key: value for key, value in group_items[:120]}
+        else:
+            data["worldbook_group_profile_count"] = 0
+            data["worldbook_group_profiles"] = {}
         entries = raw_data.get("worldbook_entries")
+        data["worldbook_entry_count"] = len(entries) if isinstance(entries, list) else 0
         data["worldbook_entries"] = list_tail(entries, 300) if isinstance(entries, list) else []
 
         news_state = shallow_dict(raw_data.get("news_integration"))
@@ -393,6 +548,8 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "backend": self._single_line(item.get("backend"), 80),
             "error": self._single_line(item.get("error"), 220),
             "generated_at": self.plugin._format_timestamp_elapsed(item.get("generated_at", 0)) if item else "",
+            "retry_count": int(item.get("retry_count", 0) or 0),
+            "retry_max": 5,
         }
 
     def _daily_outfit_image_path(self) -> Path | None:
@@ -437,6 +594,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
 
     def _cache_summary(self, data: dict[str, Any]) -> dict[str, Any]:
         image_cache = data.get("private_image_vision_cache") if isinstance(data.get("private_image_vision_cache"), dict) else {}
+        image_cache_count = self._int(data.get("private_image_vision_cache_count")) if "private_image_vision_cache_count" in data else len(image_cache)
         metrics = data.get("cache_metrics") if isinstance(data.get("cache_metrics"), dict) else {}
 
         def metric_row(name: str) -> dict[str, Any]:
@@ -468,7 +626,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
         return {
             "private_image_vision": {
                 "enabled": bool(getattr(self.plugin, "enable_private_image_vision_cache", False)),
-                "items": len(image_cache),
+                "items": image_cache_count,
                 "max_items": int(getattr(self.plugin, "private_image_vision_cache_max_items", 0) or 0),
                 "private": metric_row("image_vision:private_image"),
                 "forward": metric_row("image_vision:forward_image"),
@@ -719,14 +877,32 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
                     changed[key] = self._normalize_bool_value(value)
                 elif key in self._schema_bool_keys() and key in self._allowed_setting_keys():
                     changed[key] = self._normalize_bool_value(value)
+            provider_payload: dict[str, Any] = {}
             for key, value in (payload.get("providers") or {}).items():
                 if key in self._allowed_provider_keys():
-                    changed[key] = self._single_line(value, 160)
+                    provider_payload[key] = self._single_line(value, 160)
             for key, value in (payload.get("settings") or {}).items():
                 if key in self._allowed_setting_keys():
                     changed[key] = self._normalize_setting_value(key, value)
+            if provider_payload:
+                if bool(payload.get("overwrite_provider_modes")):
+                    mode_value = changed.get("provider_config_mode") or self._config_get("provider_config_mode") or getattr(self.plugin, "provider_config_mode", "quick")
+                    provider_payload = self._expand_provider_overwrite_bundle(str(mode_value), provider_payload)
+                changed.update(provider_payload)
+            storage_changed = bool({"storage_backend", "storage_sqlite_path"} & set(changed))
+            apply_overrides = dict(changed)
+            if storage_changed:
+                apply_overrides["__defer_storage_rebuild"] = True
             for key, value in changed.items():
-                self._apply_config_value(key, value, changed)
+                self._apply_config_value(key, value, apply_overrides)
+            if storage_changed:
+                rebuild = getattr(self.plugin, "_rebuild_store_manager", None)
+                if callable(rebuild):
+                    rebuild(reload_data=True)
+            if any(key in self._allowed_provider_keys() for key in changed) or "provider_config_mode" in changed:
+                apply_quick = getattr(self.plugin, "_apply_quick_provider_defaults", None)
+                if callable(apply_quick):
+                    apply_quick()
             clearer = getattr(self.plugin, "_clear_proactive_only_temp_unlocks_if_mode_off", None)
             if callable(clearer):
                 clearer()
@@ -786,7 +962,10 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
     async def preview_migration_config_import(self) -> dict[str, Any]:
         payload = await request.get_json(silent=True) or {}
         try:
-            package = self._extract_migration_package(payload)
+            package = self._extract_migration_package(
+                payload,
+                allow_checksum_mismatch=self._normalize_bool_value(payload.get("allow_checksum_mismatch")),
+            )
             normalized = self._normalize_migration_package(package)
             summary = await self._migration_import_summary(normalized)
             summary["message"] = "已读取备份，确认后才会写入。"
@@ -798,7 +977,10 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
     async def apply_migration_config_import(self) -> dict[str, Any]:
         payload = await request.get_json(silent=True) or {}
         try:
-            package = self._extract_migration_package(payload)
+            package = self._extract_migration_package(
+                payload,
+                allow_checksum_mismatch=self._normalize_bool_value(payload.get("allow_checksum_mismatch")),
+            )
             mode = str(payload.get("mode") or "merge").strip().lower()
             if mode not in {"merge", "replace"}:
                 mode = "merge"
@@ -838,6 +1020,90 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             logger.error(f"[PrivateCompanionPage] 更新主动专用临时放行失败: {exc}", exc_info=True)
             return self._error(str(exc))
 
+    async def delete_proactive_candidate(self) -> dict[str, Any]:
+        payload = await request.get_json(silent=True) or {}
+        candidate_id = self._single_line(payload.get("candidate_id") or payload.get("id"), 40)
+        if not candidate_id:
+            return self._error("缺少 candidate_id")
+        try:
+            async with self.plugin._data_lock:
+                raw = self.plugin.data.get("proactive_candidate_pool")
+                if not isinstance(raw, list):
+                    raw = []
+                    self.plugin.data["proactive_candidate_pool"] = raw
+                removed_item = None
+                kept = []
+                for item in raw:
+                    if not isinstance(item, dict):
+                        continue
+                    if self._single_line(item.get("id"), 40) == candidate_id and removed_item is None:
+                        removed_item = dict(item)
+                        continue
+                    kept.append(item)
+                if removed_item is None:
+                    return self._error("没有找到对应主动候选")
+                self.plugin.data["proactive_candidate_pool"] = kept
+                user_id = self._single_line(removed_item.get("user_id"), 40)
+                users = self.plugin.data.get("users") if isinstance(self.plugin.data.get("users"), dict) else {}
+                cleared_current_plan = False
+                if user_id and isinstance(users.get(user_id), dict):
+                    user = users[user_id]
+                    if self._single_line(user.get("planned_candidate_id"), 40) == candidate_id:
+                        clearer = getattr(self.plugin, "_clear_pending_proactive_plan", None)
+                        scheduler = getattr(self.plugin, "_schedule_next_proactive", None)
+                        if callable(clearer):
+                            clearer(user)
+                            cleared_current_plan = True
+                        if callable(scheduler):
+                            scheduler(user, now=time.time())
+                    shrinker = getattr(self.plugin, "_shrink_user_proactive_candidates", None)
+                    if callable(shrinker):
+                        shrinker(user_id, note="page_delete")
+                self.plugin._save_data_sync()
+                data = self._overview_data_snapshot_locked(self.plugin.data)
+            message = "已删除主动候选"
+            if cleared_current_plan:
+                message += "，并重新安排了下一次主动检查"
+            return self._ok(
+                {
+                    "message": message,
+                    "removed": True,
+                    "cleared_current_plan": cleared_current_plan,
+                    "proactive_candidates": self._proactive_candidate_summary(data),
+                    "proactive_tasks": self._proactive_task_summary(data),
+                }
+            )
+        except Exception as exc:
+            logger.error(f"[PrivateCompanionPage] 删除主动候选失败: {exc}", exc_info=True)
+            return self._error(str(exc))
+
+    async def prune_proactive_candidates(self) -> dict[str, Any]:
+        payload = await request.get_json(silent=True) or {}
+        user_id = self._single_line(payload.get("user_id"), 40)
+        if not user_id:
+            return self._error("缺少 user_id")
+        keep = self._int(payload.get("keep"), 160, 1, 400)
+        try:
+            async with self.plugin._data_lock:
+                shrinker = getattr(self.plugin, "_shrink_user_proactive_candidates", None)
+                if not callable(shrinker):
+                    return self._error("当前插件缺少主动候选收缩能力")
+                removed = int(shrinker(user_id, pending_cap=keep, note="page_prune") or 0)
+                self.plugin._save_data_sync()
+                data = self._overview_data_snapshot_locked(self.plugin.data)
+            return self._ok(
+                {
+                    "message": f"已为用户压缩 {removed} 条未发送候选",
+                    "removed": removed,
+                    "kept_limit": keep,
+                    "proactive_candidates": self._proactive_candidate_summary(data),
+                    "proactive_tasks": self._proactive_task_summary(data),
+                }
+            )
+        except Exception as exc:
+            logger.error(f"[PrivateCompanionPage] 压缩主动候选失败: {exc}", exc_info=True)
+            return self._error(str(exc))
+
     async def get_diagnostics(self) -> dict[str, Any]:
         try:
             async with self.plugin._data_lock:
@@ -864,11 +1130,15 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             cache = self._cache_summary(data)
             tts = self._tts_runtime_summary(users)
             sqlite_status = await self._sqlite_wal_status_summary()
+            passive_no_reply = self._passive_no_reply_summary(data)
+            screen_companion = self._screen_companion_summary(data)
+            qzone = self._qzone_summary(data)
             recent_events = self._troubleshooting_recent_events(
                 diagnostics=diagnostics,
                 proactive_tasks=proactive_tasks,
                 proactive_candidates=proactive_candidates,
                 token_stats=token_stats,
+                passive_no_reply=passive_no_reply,
             )
             checks = self._troubleshooting_checks(
                 data=data,
@@ -903,7 +1173,11 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
                     "sqlite": sqlite_status,
                     "chain_tests": self._troubleshooting_test_results(data),
                     "recent_photo_generations": self._recent_photo_generation_summary(data),
+                    "passive_no_reply": passive_no_reply,
                     "prompt_injections": self._prompt_injection_summary(data),
+                    "screen_companion": screen_companion,
+                    "qzone": qzone,
+                    "proactive_intensity": self._proactive_intensity_summary(),
                     "proactive_runtime": proactive_tasks.get("runtime", {}),
                     "token_budget": token_stats.get("budget", {}),
                     "cache": cache,
@@ -927,6 +1201,10 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
                 result = await self._run_image_generation_chain_test(image_payload)
             elif test_type == "tts_generation":
                 result = await self._run_tts_generation_chain_test(payload)
+            elif test_type == "screen_peek":
+                result = await self._run_screen_peek_chain_test(payload)
+            elif test_type == "qzone_integration":
+                result = await self._run_qzone_chain_test(payload)
             elif test_type == "proactive_message":
                 result = await self._run_proactive_message_chain_test(payload)
             elif test_type in {"skill_similarity", "model_diagnostics"}:
@@ -1109,6 +1387,204 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             seen.add(item)
             unique.append(item)
         return self._single_line("，".join(unique), 420)
+
+    async def _run_screen_peek_chain_test(self, payload: dict[str, Any]) -> dict[str, Any]:
+        getter = getattr(self.plugin, "_get_screen_companion_plugin", None)
+        screen_plugin = getter() if callable(getter) else None
+        if screen_plugin is None or not callable(getattr(screen_plugin, "_invoke_screen_skill", None)):
+            return {
+                "ok": False,
+                "title": "窥屏链路测试",
+                "error": "未检测到可用的 screen_companion 插件或识屏入口",
+            }
+        async with self.plugin._data_lock:
+            users = deepcopy(self.plugin.data.get("users") if isinstance(self.plugin.data.get("users"), dict) else {})
+        umo = self._single_line(payload.get("umo"), 180) or self._preferred_tts_test_umo(users)
+        event = None
+        if umo and callable(getattr(screen_plugin, "_create_virtual_event", None)):
+            try:
+                event = screen_plugin._create_virtual_event(umo)
+            except Exception as exc:
+                logger.info(
+                    "[PrivateCompanionPage] 窥屏排障虚拟事件创建失败,将无事件调用: umo=%s error=%s",
+                    self._single_line(umo, 120),
+                    self._single_line(exc, 120),
+                )
+        prompt = self._single_line(payload.get("prompt"), 500) or (
+            "这是一次插件排障中心发起的授权识屏链路测试。请只判断当前屏幕观察能力是否可用，"
+            "用一句很短的内部摘要描述大概画面类型；不要输出账号、完整聊天内容、隐私细节或长文本。"
+        )
+        started = time.time()
+        try:
+            raw_result = await asyncio.wait_for(
+                screen_plugin._invoke_screen_skill(
+                    event,
+                    request_prompt=prompt,
+                    history_user_text="Private Companion 排障中心正在测试 screen_companion 识屏链路。",
+                    task_id="private_companion_troubleshooting_screen_peek",
+                ),
+                timeout=max(15, self._int(payload.get("timeout_seconds"), 60, 5, 180)),
+            )
+        except Exception as exc:
+            elapsed_ms = int((time.time() - started) * 1000)
+            error = self._single_line(exc, 220)
+            logger.warning("[PrivateCompanionPage] 窥屏排障测试失败: %s", error, exc_info=True)
+            return {
+                "ok": False,
+                "title": "窥屏链路测试",
+                "umo": umo,
+                "elapsed_ms": elapsed_ms,
+                "error": error or repr(exc),
+            }
+        elapsed_ms = int((time.time() - started) * 1000)
+        context = "screen_peek：\n" + (self._single_line(raw_result, 500) if raw_result else "没有得到屏幕观察结果")
+        unusable_checker = getattr(self.plugin, "_is_unusable_screen_peek_context", None)
+        unusable = bool(unusable_checker(context)) if callable(unusable_checker) else not bool(raw_result)
+        preview = self._single_line(raw_result, 220)
+        logger.info(
+            "[PrivateCompanionPage] 窥屏排障测试结束: ok=%s elapsed=%sms umo=%s preview=%s",
+            not unusable,
+            elapsed_ms,
+            self._single_line(umo, 120),
+            preview,
+        )
+        return {
+            "ok": not unusable,
+            "title": "窥屏链路测试",
+            "umo": umo,
+            "provider": "screen_companion",
+            "detail": "已成功获得屏幕观察摘要" if not unusable else "识屏返回为空或不可用结果",
+            "text_preview": preview,
+            "context_chars": len(str(raw_result or "")),
+            "elapsed_ms": elapsed_ms,
+            "error": "" if not unusable else (preview or "没有得到屏幕观察结果"),
+        }
+
+    async def _run_qzone_chain_test(self, payload: dict[str, Any]) -> dict[str, Any]:
+        steps: list[dict[str, str]] = []
+
+        def add_step(name: str, status: str, detail: str) -> None:
+            steps.append(
+                {
+                    "name": self._single_line(name, 40),
+                    "status": self._single_line(status, 16),
+                    "detail": self._single_line(detail, 180),
+                }
+            )
+
+        started = time.time()
+        service_available = bool(
+            callable(getattr(self.plugin, "_test_qzone_integration", None))
+            and callable(getattr(self.plugin, "_qzone_get_cookies", None))
+        )
+        enabled = bool(getattr(self.plugin, "enable_qzone_integration", False))
+        comment_enabled = bool(getattr(self.plugin, "enable_qzone_comment_inbox", False))
+        add_step("内置服务", "ok" if service_available else "error", "可用" if service_available else "QQ 空间模块入口不可用")
+        add_step("整合开关", "ok" if enabled else "warn", "已开启" if enabled else "已关闭")
+        if not service_available or not enabled:
+            return {
+                "ok": False,
+                "title": "QQ 空间链路测试",
+                "provider": "qzone",
+                "detail": "QQ 空间整合未启用或模块入口不可用",
+                "text_preview": "开启 QQ 空间整合后再测试 Cookie、读取和发布工具链路。",
+                "steps": steps,
+                "elapsed_ms": int((time.time() - started) * 1000),
+                "error": "QQ 空间整合未启用或模块入口不可用",
+            }
+
+        target_id = self._single_line(payload.get("target_id"), 40)
+        read_text = ""
+        read_ok = False
+        read_detail = ""
+        reader = getattr(self.plugin, "_test_qzone_integration", None)
+        if callable(reader):
+            try:
+                read_text = await asyncio.wait_for(
+                    reader(None, target_id=target_id),
+                    timeout=max(15, self._int(payload.get("timeout_seconds"), 45, 10, 180)),
+                )
+                read_ok = ("读取链路正常" in read_text) or ("读取链路可调用" in read_text)
+                read_detail = (
+                    (self._qzone_test_line_with_prefix(read_text, "查询结果：失败") if not read_ok else "")
+                    or self._qzone_test_last_result_line(read_text)
+                    or self._single_line(read_text, 180)
+                )
+                add_step("Cookie/读取", "ok" if read_ok else "error", read_detail or "读取测试未返回明确结果")
+            except Exception as exc:
+                read_detail = self._single_line(exc, 180)
+                add_step("Cookie/读取", "error", read_detail or "读取测试异常")
+        else:
+            add_step("Cookie/读取", "error", "缺少 _test_qzone_integration 测试入口")
+
+        publish_ok = False
+        publish_detail = ""
+        publisher = getattr(self.plugin, "_pc_qzone_publish_feed_impl", None)
+        if callable(publisher):
+            try:
+                raw = await asyncio.wait_for(publisher(None, ""), timeout=15)
+                parsed = json.loads(raw) if isinstance(raw, str) else {}
+                status = self._single_line(parsed.get("status"), 40) if isinstance(parsed, dict) else ""
+                message = self._single_line(parsed.get("message"), 160) if isinstance(parsed, dict) else self._single_line(raw, 160)
+                publish_ok = status == "need_text"
+                publish_detail = "空参数返回 need_text，发布工具入口正常" if publish_ok else (message or f"返回 {status or '未知状态'}")
+                add_step("发布模拟", "ok" if publish_ok else "warn", publish_detail)
+            except Exception as exc:
+                publish_detail = self._single_line(exc, 180)
+                add_step("发布模拟", "error", publish_detail or "发布工具空参数测试异常")
+        else:
+            add_step("发布模拟", "warn", "缺少发布工具入口，无法测试空参数模拟")
+
+        async with self.plugin._data_lock:
+            qzone_state = deepcopy(
+                self.plugin.data.get("qzone_integration")
+                if isinstance(self.plugin.data.get("qzone_integration"), dict)
+                else {}
+            )
+        list_len = lambda key: len(qzone_state.get(key)) if isinstance(qzone_state.get(key), list) else 0
+        seen_count = list_len("comment_inbox_seen_ids") + list_len("comment_inbox_seen_keys")
+        replied_count = list_len("comment_inbox_replied_ids") + list_len("comment_inbox_replied_keys")
+        inbox_status = self._single_line(qzone_state.get("last_comment_inbox_status"), 120)
+        inbox_detail = (
+            f"{'已开启' if comment_enabled else '未开启'}；已见 {seen_count}，已回复 {replied_count}"
+            + (f"；最近 {inbox_status}" if inbox_status else "")
+        )
+        add_step("评论收件箱", "ok" if comment_enabled else "info", inbox_detail)
+
+        ok = bool(read_ok and publish_ok)
+        preview_parts = [
+            read_detail,
+            publish_detail,
+            inbox_detail,
+        ]
+        if read_text:
+            preview_parts.append(self._single_line(read_text, 500))
+        return {
+            "ok": ok,
+            "title": "QQ 空间链路测试",
+            "provider": "qzone",
+            "detail": "QQ 空间读取和发布模拟正常" if ok else "QQ 空间链路存在需要处理的项",
+            "text_preview": self._single_line("；".join(part for part in preview_parts if part), 500),
+            "steps": steps,
+            "elapsed_ms": int((time.time() - started) * 1000),
+            "error": "" if ok else (read_detail or publish_detail or "QQ 空间链路测试未通过"),
+        }
+
+    @staticmethod
+    def _qzone_test_last_result_line(text: str) -> str:
+        for line in reversed(str(text or "").replace("\r", "\n").split("\n")):
+            clean = line.strip().lstrip("-").strip()
+            if clean.startswith("结果："):
+                return clean
+        return ""
+
+    @staticmethod
+    def _qzone_test_line_with_prefix(text: str, prefix: str) -> str:
+        for line in str(text or "").replace("\r", "\n").split("\n"):
+            clean = line.strip().lstrip("-").strip()
+            if clean.startswith(prefix):
+                return clean
+        return ""
 
     async def _run_tts_generation_chain_test(self, payload: dict[str, Any]) -> dict[str, Any]:
         context = getattr(self.plugin, "context", None)
@@ -2324,6 +2800,9 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "error": self._single_line(result.get("error"), 220),
             "prompt": self._single_line(result.get("prompt"), 500),
             "text_preview": self._single_line(result.get("text_preview"), 220),
+            "original_text_preview": self._single_line(result.get("original_text_preview"), 220),
+            "final_text_preview": self._single_line(result.get("final_text_preview"), 220),
+            "context_chars": self._int(result.get("context_chars")),
             "action": self._single_line(result.get("action"), 60),
             "reason": self._single_line(result.get("reason"), 40),
             "extra_count": self._int(result.get("extra_count")),
@@ -2371,10 +2850,84 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "image_generation_text2img": "文生图链路测试",
             "image_generation_selfie": "自拍参考图链路测试",
             "tts_generation": "TTS 生成链路测试",
+            "screen_peek": "窥屏链路测试",
+            "qzone_integration": "QQ 空间链路测试",
             "proactive_message": "主动消息链路测试",
             "model_diagnostics": "模型数据排障",
             "skill_similarity": "技能相似项检查",
         }.get(test_type, "排障链路测试")
+
+    @staticmethod
+    def _token_task_label(task: Any) -> str:
+        normalized = str(task or "").strip()
+        if not normalized:
+            return "模型调用"
+        labels = {
+            "daily_plan": "日程生成",
+            "detail": "日程细化",
+            "dream": "梦境内容",
+            "diary": "日记整理",
+            "memory_profile": "长期画像",
+            "dialogue_episode": "私聊片段",
+            "response_review": "回复/主动复核",
+            "emotion_judgement": "情绪判断",
+            "relationship": "关系分析",
+            "group_interject": "群聊插话",
+            "group_episode": "群聊片段",
+            "group_slang": "黑话释义",
+            "group_question_wakeup_reply_review": "群聊答疑复核",
+            "group_followup_judge": "群聊续接判断",
+            "worldbook_registration": "关系网自登记",
+            "web_exploration_query": "探索选题",
+            "web_exploration_digest": "探索笔记",
+            "external_event_self_link": "外界信息关联",
+            "news_digest": "新闻整理",
+            "creative_project": "创作立项",
+            "creative_outline": "创作大纲",
+            "creative_writing": "文本创作",
+            "creative_review": "创作审校",
+            "creative_extract": "创作抽取",
+            "photo_prompt": "生图提示",
+            "screen_narration": "识屏转述",
+            "forward_message": "合并转发转述",
+            "private_reading_vision": "夹层视觉",
+            "private_image_vision": "私聊图片识别",
+            "private_image_only_framework": "单图回复主链",
+            "private_image_only_fallback": "单图兜底回复",
+            "voice": "语音文本",
+            "proactive_framework": "主动主回复",
+            "proactive_persona_judge": "主动人格判定",
+            "voice_framework": "框架语音",
+            "voice_repair": "语音格式修复",
+            "smart_message_debounce": "智能收口防抖",
+            "rest_wakeup_judge": "休息醒来判断",
+            "yesterday_summary": "昨日摘要",
+            "full_test_detail": "完整测试细化",
+            "provider_test": "模型测试",
+            "qzone_comment": "空间评论",
+            "qzone_comment_inbox_decision": "空间评论判断",
+            "qzone_publish": "空间说说",
+            "qzone_publish_test": "空间发布测试",
+            "qzone_publish_sanitize": "空间文案清理",
+            "companion_manual_diagnosis": "陪伴答疑",
+            "astrbot_private_reply": "非插件私聊主回复",
+            "astrbot_group_reply": "非插件群聊主回复",
+            "astrbot_reply": "非插件主回复",
+            "other": "其他调用",
+        }
+        if normalized in labels:
+            return labels[normalized]
+        if normalized.startswith("qzone_") and normalized.endswith("_photo_prompt"):
+            return "空间配图提示"
+        if normalized.startswith("qzone_"):
+            return "QQ 空间任务"
+        if normalized.startswith("astrbot_"):
+            return "AstrBot 主回复"
+        if normalized.startswith("private_image_"):
+            return "私聊图片处理"
+        if normalized.startswith("web_exploration_"):
+            return "主动搜索"
+        return normalized
 
     def _troubleshooting_recent_events(
         self,
@@ -2383,6 +2936,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
         proactive_tasks: dict[str, Any],
         proactive_candidates: dict[str, Any],
         token_stats: dict[str, Any],
+        passive_no_reply: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
 
@@ -2446,7 +3000,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             add("warn", "主动候选", title, detail, ts=self._float(item.get("last_seen_ts") or item.get("created_ts")), jump="proactive")
 
         for item in self._active_token_failures(token_stats.get("recent", []), limit=50):
-            title = f"{self._single_line(item.get('task'), 40) or 'LLM 调用'} 失败"
+            title = f"{self._token_task_label(item.get('task'))}失败"
             detail = "；".join(
                 part
                 for part in [
@@ -2457,8 +3011,125 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             )
             add("error", "模型调用", title, detail, ts=self._float(item.get("ts")), jump="tokens")
 
+        passive_items = passive_no_reply.get("items", []) if isinstance(passive_no_reply, dict) else []
+        for item in passive_items[:40]:
+            if not isinstance(item, dict):
+                continue
+            count = self._int(item.get("count"))
+            source = self._single_line(item.get("source"), 40) or "被动未回复"
+            reason = self._single_line(item.get("reason"), 100) or "未说明原因"
+            inbound = self._single_line(item.get("last_inbound"), 100)
+            detail = "；".join(
+                part
+                for part in [
+                    f"已合并 {count} 次" if count > 1 else "最近 1 次",
+                    f"会话 {self._single_line(item.get('last_session'), 80)}" if item.get("last_session") else "",
+                    f"消息 {inbound}" if inbound else "",
+                    self._single_line(item.get("last_detail"), 120),
+                ]
+                if part
+            )
+            add(
+                self._single_line(item.get("level"), 12) or "info",
+                source,
+                reason,
+                detail,
+                ts=self._float(item.get("last_ts")),
+                action="同类原因已合并计数，刷新后可查看最近样本",
+                jump="troubleshooting",
+            )
+
         events.sort(key=lambda item: self._float(item.get("ts")), reverse=True)
         return events
+
+    def _passive_no_reply_item_is_obsolete_fixed_error(self, item: dict[str, Any]) -> bool:
+        checker = getattr(self.plugin, "_proactive_audit_note_is_obsolete_fixed_error", None)
+        texts = [
+            item.get("reason"),
+            item.get("last_detail"),
+            item.get("last_action"),
+            item.get("last_reply_preview"),
+        ]
+        samples = item.get("samples") if isinstance(item.get("samples"), list) else []
+        for sample in samples[:5]:
+            if not isinstance(sample, dict):
+                continue
+            texts.extend([sample.get("detail"), sample.get("reply_preview")])
+        joined = "\n".join(str(value or "") for value in texts)
+        if callable(checker) and checker(joined):
+            return True
+        return "NameError" in joined and any(
+            token in joined
+            for token in (
+                "name 'topic' is not defined",
+                "name 'name' is not defined",
+            )
+        )
+
+    def _passive_no_reply_summary(self, data: dict[str, Any]) -> dict[str, Any]:
+        raw = data.get("passive_no_reply_records")
+        if not isinstance(raw, dict):
+            return {"total": 0, "items": []}
+        items: list[dict[str, Any]] = []
+        now = time.time()
+        max_age_seconds = 2 * 60 * 60
+        hidden_stale = 0
+        hidden_obsolete = 0
+        for item in raw.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            last_ts = self._float(item.get("last_ts"))
+            if self._passive_no_reply_item_is_obsolete_fixed_error(item):
+                hidden_obsolete += 1
+                continue
+            if last_ts > 0 and now - last_ts > max_age_seconds:
+                hidden_stale += 1
+                continue
+            samples = []
+            for sample in item.get("samples", []) if isinstance(item.get("samples"), list) else []:
+                if not isinstance(sample, dict):
+                    continue
+                ts = self._float(sample.get("ts"))
+                samples.append(
+                    {
+                        "time": self.plugin._format_timestamp_elapsed(ts) if ts else self._single_line(sample.get("time"), 40),
+                        "session": self._single_line(sample.get("session"), 120),
+                        "sender_id": self._single_line(sample.get("sender_id"), 80),
+                        "inbound": self._single_line(sample.get("inbound"), 120),
+                        "detail": self._single_line(sample.get("detail"), 160),
+                        "reply_preview": self._single_line(sample.get("reply_preview"), 140),
+                        "ts": ts,
+                    }
+                )
+            items.append(
+                {
+                    "key": self._single_line(item.get("key"), 32),
+                    "level": self._single_line(item.get("level"), 12) or "info",
+                    "source": self._single_line(item.get("source"), 40) or "被动未回复",
+                    "reason": self._single_line(item.get("reason"), 120) or "未说明原因",
+                    "count": self._int(item.get("count")),
+                    "first_ts": self._float(item.get("first_ts")),
+                    "last_ts": last_ts,
+                    "last_time": self.plugin._format_timestamp_elapsed(last_ts) if last_ts else "",
+                    "last_session": self._single_line(item.get("last_session"), 120),
+                    "last_sender_id": self._single_line(item.get("last_sender_id"), 80),
+                    "last_inbound": self._single_line(item.get("last_inbound"), 120),
+                    "last_detail": self._single_line(item.get("last_detail"), 160),
+                    "last_action": self._single_line(item.get("last_action"), 120),
+                    "last_reply_preview": self._single_line(item.get("last_reply_preview"), 140),
+                    "samples": samples[:5],
+                }
+            )
+        items.sort(key=lambda item: self._float(item.get("last_ts")), reverse=True)
+        total = self._int(raw.get("total")) or sum(self._int(item.get("count")) for item in items)
+        return {
+            "total": total,
+            "last_ts": self._float(raw.get("last_ts")),
+            "items": items[:80],
+            "hidden_stale": hidden_stale,
+            "hidden_obsolete": hidden_obsolete,
+            "max_age_seconds": max_age_seconds,
+        }
 
     def _active_token_failures(
         self,
@@ -3666,6 +4337,10 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             for key, value in preset.get("features", {}).items():
                 if key in self._allowed_feature_keys():
                     self._apply_config_value(key, self._normalize_bool_value(value))
+            if any(key in self._allowed_provider_keys() for key in preset.get("settings", {})) or "provider_config_mode" in preset.get("settings", {}):
+                apply_quick = getattr(self.plugin, "_apply_quick_provider_defaults", None)
+                if callable(apply_quick):
+                    apply_quick()
             config_saved = await self._save_config_if_possible()
             overview = await self.get_overview()
             if overview.get("success"):
@@ -4671,6 +5346,8 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
     def _display_message_text(cls, value: Any, limit: int = 500) -> str:
         source = str(value or "").strip()
         source = source.strip("\"'“”‘’` ")
+        if cls._looks_like_internal_delivery_receipt(source):
+            return ""
         if re.fullmatch(r"[.。…~～\s\"'“”‘’`-]{0,12}", source):
             return ""
         if re.search(r"<t{2,}s\b[^>]*>.*?</t{2,}s>", source, flags=re.IGNORECASE | re.DOTALL):
@@ -4686,6 +5363,31 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             if kept and any(re.search(r"[\u4e00-\u9fff]", item) for item in kept):
                 source = "".join(kept)
         return cls._single_line(_strip_internal_message_blocks(source), limit)
+
+    @staticmethod
+    def _looks_like_internal_delivery_receipt(text: Any) -> bool:
+        raw = str(text or "").strip()
+        if not raw:
+            return False
+        compact = re.sub(r"[\s。.!！?？,，；;:：、~～\"'“”‘’（）()【】\[\]]+", "", raw).lower()
+        if compact in {"已发送", "发送成功", "发送完成", "发送完毕", "已成功发送", "消息已发送", "消息发送成功"}:
+            return True
+        markers = (
+            ("已经把", "转给"),
+            ("已把", "转给"),
+            ("已经将", "转给"),
+            ("已将", "转给"),
+            ("已经发给", "就假装"),
+            ("已经发送给", "就假装"),
+            ("就假装", "语气很自然"),
+            ("随手分享", "语气很自然"),
+        )
+        if any(all(token in raw for token in pair) for pair in markers):
+            return True
+        return (
+            any(token in compact for token in ("视频链接转给", "链接转给", "消息转给", "内容转给"))
+            and any(token in compact for token in ("已经", "已", "完成", "成功"))
+        )
 
     def _group_wakeup_runtime(self, group: dict[str, Any]) -> dict[str, Any]:
         fatigue = group.get("group_wakeup_fatigue") if isinstance(group.get("group_wakeup_fatigue"), dict) else {}
@@ -4719,9 +5421,11 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "updated": self.plugin._format_timestamp_elapsed(fatigue.get("updated_ts", 0)),
             "high_intensity": {
                 "active": bool(high_intensity.get("active")) if isinstance(high_intensity, dict) else False,
+                "merge_active": bool(high_intensity.get("merge_active")) if isinstance(high_intensity, dict) else False,
                 "reason": self._single_line(high_intensity.get("reason"), 40) if isinstance(high_intensity, dict) else "",
                 "recent_wakeups": self._int(high_intensity.get("recent_wakeups")) if isinstance(high_intensity, dict) else 0,
                 "threshold": self._int(high_intensity.get("threshold")) if isinstance(high_intensity, dict) else 0,
+                "merge_recent_floor": self._int(high_intensity.get("merge_recent_floor")) if isinstance(high_intensity, dict) else 0,
                 "remaining_seconds": self._float(high_intensity.get("remaining_seconds")) if isinstance(high_intensity, dict) else 0.0,
                 "merge_seconds": self._float(getattr(self.plugin, "group_high_intensity_merge_seconds", 8)),
                 "max_merge_messages": self._int(getattr(self.plugin, "group_high_intensity_max_merge_messages", 8)),
@@ -4845,23 +5549,42 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
         atmosphere = group.get("atmosphere") if isinstance(group.get("atmosphere"), dict) else {}
         slang_terms = group.get("slang_terms") if isinstance(group.get("slang_terms"), list) else []
         slang_meanings = group.get("slang_meanings") if isinstance(group.get("slang_meanings"), dict) else {}
+        members = group.get("members") if isinstance(group.get("members"), dict) else {}
+        group_id_text = str(group_id)
+        group_name = self._single_line(group.get("name") or group.get("group_name") or group.get("display_name"), 80)
+        if group_name == group_id_text:
+            group_name = ""
         cleaner = getattr(self.plugin, "_cleanup_group_slang_terms", None)
         if callable(cleaner):
             try:
-                group_for_filter = deepcopy(group)
+                group_for_filter = {
+                    "slang_terms": [dict(item) if isinstance(item, dict) else item for item in slang_terms],
+                    "slang_meanings": {str(key): dict(value) if isinstance(value, dict) else value for key, value in slang_meanings.items()},
+                    "members": {
+                        str(user_id): {
+                            key: member.get(key)
+                            for key in ("name", "identity_name", "display_name", "nickname", "card")
+                            if isinstance(member, dict) and key in member
+                        }
+                        for user_id, member in members.items()
+                        if isinstance(member, dict)
+                    },
+                }
                 if cleaner(group_for_filter):
                     slang_terms = group_for_filter.get("slang_terms") if isinstance(group_for_filter.get("slang_terms"), list) else []
             except Exception:
                 pass
-        members = group.get("members") if isinstance(group.get("members"), dict) else {}
         identity_count = sum(1 for item in members.values() if isinstance(item, dict) and item.get("identity_known"))
         wakeup_logs = group.get("group_wakeup_logs") if isinstance(group.get("group_wakeup_logs"), list) else []
         last_wakeup = group.get("last_group_wakeup") if isinstance(group.get("last_group_wakeup"), dict) else {}
         last_interjection = self._sanitize_last_bot_interjection(group.get("last_bot_interjection"))
         return {
-            "group_id": str(group_id),
+            "group_id": group_id_text,
+            "name": group_name,
+            "group_name": group_name,
+            "display_name": group_name or "未命名群聊",
             "enabled": bool(group.get("enabled", True)),
-            "allowed_by_mode": self.plugin._group_allowed_by_access_mode(str(group_id)),
+            "allowed_by_mode": self.plugin._group_allowed_by_access_mode(group_id_text),
             "message_count": group.get("message_count", 0),
             "last_seen_ts": group.get("last_seen", 0),
             "last_seen": self.plugin._format_timestamp_elapsed(group.get("last_seen", 0)),
@@ -4875,6 +5598,16 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "episode_count": len(group.get("group_episodes") or []),
             "relationship_edge_count": len(group.get("relationship_edges") or {}),
             "interject_today": group.get("interject_today", 0),
+            "effective_interject_max_daily": (
+                self.plugin._effective_group_interject_max_daily()
+                if hasattr(self.plugin, "_effective_group_interject_max_daily")
+                else getattr(self.plugin, "group_interject_max_daily", 0)
+            ),
+            "effective_interject_min_interval_minutes": (
+                self.plugin._effective_group_interject_min_interval_minutes()
+                if hasattr(self.plugin, "_effective_group_interject_min_interval_minutes")
+                else getattr(self.plugin, "group_interject_min_interval_minutes", 0)
+            ),
             "last_interject": self.plugin._format_timestamp_elapsed(group.get("last_interject_at", 0)),
             "last_bot_interjection": last_interjection,
             "wakeup_log_count": len(wakeup_logs),
@@ -5155,6 +5888,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "enable_expression_learning",
             "enable_intent_emotion_analysis",
             "enable_response_self_review",
+            "enable_smart_silence",
             "enable_llm_timer_scheduling",
             "enable_llm_proactive_message",
             "enable_llm_proactive_persona_judge",
@@ -5209,6 +5943,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "enable_group_wakeup_cold_group",
             "enable_group_high_intensity_mode",
             "enable_private_image_self_recognition",
+            "enable_backup_external_image_api",
             "enable_private_image_gif_enhancement",
             "enable_group_conversation_followup",
             "enable_group_interjection",
@@ -5259,10 +5994,6 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
         except Exception:
             bilibili_available = False
         try:
-            qzone_available = bool(getattr(self.plugin, "_qzone_available", lambda: False)())
-        except Exception:
-            qzone_available = False
-        try:
             screen_companion_available = bool(self._screen_companion_available())
         except Exception:
             screen_companion_available = False
@@ -5273,18 +6004,11 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
         values["enable_livingmemory_integration"] = bool(livingmemory_available and getattr(self.plugin, "enable_livingmemory_integration", False))
         values["enable_bilibili_integration"] = bool(bilibili_available and getattr(self.plugin, "enable_bilibili_integration", False))
         values["enable_bilibili_boredom_watch"] = bool(bilibili_available and getattr(self.plugin, "enable_bilibili_boredom_watch", False))
-        values["enable_qzone_integration"] = bool(qzone_available and getattr(self.plugin, "enable_qzone_integration", False))
-        values["enable_qzone_life_publish"] = bool(qzone_available and getattr(self.plugin, "enable_qzone_life_publish", False))
-        values["enable_qzone_generated_image_publish"] = bool(
-            qzone_available
-            and getattr(self.plugin, "enable_qzone_generated_image_publish", False)
-        )
-        values["enable_qzone_comment_inbox"] = bool(qzone_available and getattr(self.plugin, "enable_qzone_comment_inbox", False))
-        values["enable_qzone_emotional_vent_publish"] = bool(
-            qzone_available
-            and getattr(self.plugin, "enable_emotion_simulation", False)
-            and getattr(self.plugin, "enable_qzone_emotional_vent_publish", False)
-        )
+        values["enable_qzone_integration"] = bool(getattr(self.plugin, "enable_qzone_integration", False))
+        values["enable_qzone_life_publish"] = bool(getattr(self.plugin, "enable_qzone_life_publish", False))
+        values["enable_qzone_generated_image_publish"] = bool(getattr(self.plugin, "enable_qzone_generated_image_publish", False))
+        values["enable_qzone_comment_inbox"] = bool(getattr(self.plugin, "enable_qzone_comment_inbox", False))
+        values["enable_qzone_emotional_vent_publish"] = bool(getattr(self.plugin, "enable_qzone_emotional_vent_publish", False))
         values["enable_yesterday_screen_diary_context"] = bool(screen_companion_available and getattr(self.plugin, "enable_yesterday_screen_diary_context", False))
         values["enable_private_reading_integration"] = bool(private_reading_available and getattr(self.plugin, "enable_jm_cosmos_integration", False))
         values["enable_private_reading_boredom_read"] = bool(private_reading_available and getattr(self.plugin, "enable_jm_cosmos_boredom_read", False))
@@ -5336,18 +6060,24 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
 
     def _provider_settings(self) -> dict[str, str]:
         keys = [
+            "FAST_RESPONSE_PROVIDER_ID",
+            "COMPLEX_REASONING_PROVIDER_ID",
+            "CREATIVE_MODEL_PROVIDER_ID",
             "LLM_PROVIDER_ID",
             "MAI_STYLE_PROVIDER_ID",
             "DAILY_PLAN_PROVIDER_ID",
             "DETAIL_ENHANCEMENT_PROVIDER_ID",
             "DREAM_DIARY_PROVIDER_ID",
             "CREATIVE_PROVIDER_ID",
+            "CREATIVE_OUTLINE_PROVIDER_ID",
+            "CREATIVE_REVIEW_PROVIDER_ID",
             "VOICE_PROMPT_PROVIDER_ID",
             "tts_conversion_provider_id",
             "PHOTO_PROMPT_PROVIDER_ID",
             "NARRATION_PROVIDER_ID",
             "HISTORY_SUMMARY_PROVIDER_ID",
             "RESPONSE_REVIEW_PROVIDER_ID",
+            "SMART_SILENCE_PROVIDER_ID",
             "PROACTIVE_PERSONA_JUDGE_PROVIDER_ID",
             "TROUBLESHOOTING_PROVIDER_ID",
             "SMART_MESSAGE_DEBOUNCE_PROVIDER_ID",
@@ -5370,6 +6100,12 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             if key not in keys:
                 keys.append(key)
         values = {key: self._config_get(key) for key in keys}
+        if not values.get("FAST_RESPONSE_PROVIDER_ID"):
+            values["FAST_RESPONSE_PROVIDER_ID"] = str(getattr(self.plugin, "fast_response_provider_id", "") or "")
+        if not values.get("COMPLEX_REASONING_PROVIDER_ID"):
+            values["COMPLEX_REASONING_PROVIDER_ID"] = str(getattr(self.plugin, "complex_reasoning_provider_id", "") or "")
+        if not values.get("CREATIVE_MODEL_PROVIDER_ID"):
+            values["CREATIVE_MODEL_PROVIDER_ID"] = str(getattr(self.plugin, "creative_model_provider_id", "") or "")
         if not values.get("PLUGIN_VISION_PROVIDER_ID"):
             values["PLUGIN_VISION_PROVIDER_ID"] = str(getattr(self.plugin, "plugin_vision_provider_id", "") or "")
         if not values.get("PRIVATE_READING_VISION_PROVIDER_ID"):
@@ -5378,6 +6114,8 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             values["DREAM_DIARY_PROVIDER_ID"] = str(getattr(self.plugin, "dream_diary_provider_id", "") or "")
         if not values.get("SMART_MESSAGE_DEBOUNCE_PROVIDER_ID"):
             values["SMART_MESSAGE_DEBOUNCE_PROVIDER_ID"] = str(getattr(self.plugin, "smart_message_debounce_provider_id", "") or "")
+        if not values.get("SMART_SILENCE_PROVIDER_ID"):
+            values["SMART_SILENCE_PROVIDER_ID"] = str(getattr(self.plugin, "smart_silence_provider_id", "") or "")
         if not values.get("REST_WAKEUP_PROVIDER_ID"):
             values["REST_WAKEUP_PROVIDER_ID"] = str(getattr(self.plugin, "rest_wakeup_provider_id", "") or "")
         if not values.get("PROACTIVE_PERSONA_JUDGE_PROVIDER_ID"):
@@ -5385,6 +6123,99 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
         if not values.get("tts_conversion_provider_id"):
             values["tts_conversion_provider_id"] = str(getattr(self.plugin, "tts_conversion_provider_id", "") or "")
         return values
+
+    @staticmethod
+    def _normalize_provider_mode_value(value: Any) -> str:
+        text = str(value or "").strip().lower()
+        return "precision" if text in {"precision", "precise", "advanced", "精准", "精准配置", "分流"} else "quick"
+
+    def _precision_bundle_from_quick(self, values: dict[str, str]) -> dict[str, str]:
+        fast = self._single_line(values.get("FAST_RESPONSE_PROVIDER_ID"), 160)
+        complex_model = self._single_line(values.get("COMPLEX_REASONING_PROVIDER_ID") or values.get("LLM_PROVIDER_ID"), 160)
+        creative = self._single_line(values.get("CREATIVE_MODEL_PROVIDER_ID"), 160)
+        plugin_vision = self._single_line(values.get("PLUGIN_VISION_PROVIDER_ID"), 160)
+        return {
+            "LLM_PROVIDER_ID": complex_model,
+            "MAI_STYLE_PROVIDER_ID": fast or complex_model,
+            "DAILY_PLAN_PROVIDER_ID": complex_model,
+            "DETAIL_ENHANCEMENT_PROVIDER_ID": complex_model,
+            "HISTORY_SUMMARY_PROVIDER_ID": complex_model,
+            "RELATIONSHIP_ANALYSIS_PROVIDER_ID": complex_model,
+            "COMPANION_MEMORY_PROVIDER_ID": complex_model,
+            "DIALOGUE_EPISODE_PROVIDER_ID": complex_model,
+            "GROUP_EPISODE_PROVIDER_ID": complex_model,
+            "FORWARD_MESSAGE_PROVIDER_ID": complex_model,
+            "PROACTIVE_PERSONA_JUDGE_PROVIDER_ID": complex_model,
+            "RESPONSE_REVIEW_PROVIDER_ID": fast or complex_model,
+            "SMART_SILENCE_PROVIDER_ID": fast or complex_model,
+            "TROUBLESHOOTING_PROVIDER_ID": fast or complex_model,
+            "EMOTION_JUDGEMENT_PROVIDER_ID": fast or complex_model,
+            "SMART_MESSAGE_DEBOUNCE_PROVIDER_ID": fast or complex_model,
+            "REST_WAKEUP_PROVIDER_ID": fast or complex_model,
+            "GROUP_FOLLOWUP_JUDGE_PROVIDER_ID": fast,
+            "GROUP_INTERJECT_PROVIDER_ID": fast or complex_model,
+            "GROUP_SLANG_PROVIDER_ID": fast or complex_model,
+            "VOICE_PROMPT_PROVIDER_ID": fast or complex_model,
+            "tts_conversion_provider_id": fast or complex_model,
+            "NARRATION_PROVIDER_ID": fast or complex_model,
+            "NEWS_PROVIDER_ID": fast or complex_model,
+            "WEB_EXPLORATION_PROVIDER_ID": fast or complex_model,
+            "CREATIVE_PROVIDER_ID": creative or complex_model,
+            "CREATIVE_OUTLINE_PROVIDER_ID": creative or complex_model,
+            "CREATIVE_REVIEW_PROVIDER_ID": creative or complex_model,
+            "DREAM_DIARY_PROVIDER_ID": creative or complex_model,
+            "PHOTO_PROMPT_PROVIDER_ID": creative or complex_model,
+            "PRIVATE_READING_VISION_PROVIDER_ID": plugin_vision,
+        }
+
+    def _quick_bundle_from_precision(self, values: dict[str, str]) -> dict[str, str]:
+        fast = self._single_line(
+            values.get("FAST_RESPONSE_PROVIDER_ID")
+            or values.get("RESPONSE_REVIEW_PROVIDER_ID")
+            or values.get("SMART_MESSAGE_DEBOUNCE_PROVIDER_ID")
+            or values.get("SMART_SILENCE_PROVIDER_ID")
+            or values.get("MAI_STYLE_PROVIDER_ID"),
+            160,
+        )
+        complex_model = self._single_line(
+            values.get("COMPLEX_REASONING_PROVIDER_ID")
+            or values.get("LLM_PROVIDER_ID")
+            or values.get("DAILY_PLAN_PROVIDER_ID")
+            or values.get("COMPANION_MEMORY_PROVIDER_ID")
+            or values.get("MAI_STYLE_PROVIDER_ID"),
+            160,
+        )
+        creative = self._single_line(
+            values.get("CREATIVE_MODEL_PROVIDER_ID")
+            or values.get("CREATIVE_PROVIDER_ID")
+            or values.get("DREAM_DIARY_PROVIDER_ID")
+            or values.get("PHOTO_PROMPT_PROVIDER_ID")
+            or complex_model,
+            160,
+        )
+        plugin_vision = self._single_line(
+            values.get("PLUGIN_VISION_PROVIDER_ID")
+            or values.get("PRIVATE_READING_VISION_PROVIDER_ID")
+            or values.get("NARRATION_PROVIDER_ID"),
+            160,
+        )
+        return {
+            "FAST_RESPONSE_PROVIDER_ID": fast,
+            "COMPLEX_REASONING_PROVIDER_ID": complex_model,
+            "CREATIVE_MODEL_PROVIDER_ID": creative,
+            "PLUGIN_VISION_PROVIDER_ID": plugin_vision,
+        }
+
+    def _expand_provider_overwrite_bundle(self, mode: str, values: dict[str, str]) -> dict[str, str]:
+        merged = {key: self._single_line(value, 160) for key, value in self._provider_settings().items()}
+        for key, value in values.items():
+            if key in self._allowed_provider_keys():
+                merged[key] = self._single_line(value, 160)
+        if self._normalize_provider_mode_value(mode) == "quick":
+            merged.update(self._precision_bundle_from_quick(merged))
+        else:
+            merged.update(self._quick_bundle_from_precision(merged))
+        return {key: self._single_line(value, 160) for key, value in merged.items() if key in self._allowed_provider_keys()}
 
     def _migration_export_options_from_request(self) -> set[str]:
         raw = request.args.get("sections") or ""
@@ -5411,6 +6242,8 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             if self._should_apply_migration_value(current_value, normalized_value, conflict):
                 changed_config[key] = normalized_value
         for key, value in normalized.get("settings", {}).items():
+            if key in {"storage_backend", "storage_sqlite_path"}:
+                continue
             if key in {"group_whitelist_ids", "group_blacklist_ids"}:
                 normalized_value = self._normalize_id_list(value)
             elif key == "group_access_mode":
@@ -5423,6 +6256,10 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
                 changed_config[key] = normalized_value
         for key, value in changed_config.items():
             self._apply_config_value(key, value, changed_config)
+        if any(key in self._allowed_provider_keys() for key in changed_config) or "provider_config_mode" in changed_config:
+            apply_quick = getattr(self.plugin, "_apply_quick_provider_defaults", None)
+            if callable(apply_quick):
+                apply_quick()
         config_saved = True
         if changed_config:
             config_saved = await self._save_config_if_possible()
@@ -5484,6 +6321,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
                 "最近消息和输入状态",
                 "主动消息审计与冷却队列",
                 "临时任务、排障记录和运行时缓存",
+                "本机存储后端与 SQLite 路径",
             ],
         }
         if "providers" in selected:
@@ -5499,6 +6337,8 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
         allowed = self._allowed_setting_keys()
         settings = {}
         for key, value in runtime.items():
+            if key in {"storage_backend", "storage_sqlite_path"}:
+                continue
             if key not in allowed:
                 continue
             group = self._migration_setting_group(key)
@@ -5518,6 +6358,9 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             qzone_cookie = self._config_get("QZONE_COOKIE") or str(getattr(self.plugin, "qzone_cookie", "") or "")
             if qzone_cookie:
                 settings["QZONE_COOKIE"] = qzone_cookie
+            search_api_key = self._config_get("WEB_EXPLORATION_API_KEY") or str(getattr(self.plugin, "web_exploration_api_key", "") or "")
+            if search_api_key:
+                settings["WEB_EXPLORATION_API_KEY"] = search_api_key
         return settings
 
     def _migration_feature_snapshot(self, selected: set[str]) -> dict[str, bool]:
@@ -5579,7 +6422,13 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
     @staticmethod
     def _migration_setting_group(key: str) -> str:
         text = str(key)
+        if text in {"storage_backend", "storage_sqlite_path"}:
+            return "environment"
+        if text == "provider_config_mode":
+            return "providers"
         if text == "QZONE_COOKIE":
+            return "sensitive"
+        if text == "WEB_EXPLORATION_API_KEY":
             return "sensitive"
         if text.startswith("private_reading_") or text.startswith("enable_private_reading_"):
             return "sensitive"
@@ -5606,7 +6455,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "bookshelf_items": "书柜阅读记录",
         }.get(key, key)
 
-    def _extract_migration_package(self, payload: Any) -> dict[str, Any]:
+    def _extract_migration_package(self, payload: Any, *, allow_checksum_mismatch: bool = False) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ValueError("导入内容必须是 JSON 对象")
         package = self._unwrap_migration_package_payload(payload)
@@ -5619,7 +6468,10 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             return legacy
         checksum = str(package.get("checksum") or "").strip()
         if checksum and not self._migration_checksum_matches(package, checksum):
-            raise ValueError("备份校验失败：文件可能被截断或手动修改过")
+            if not allow_checksum_mismatch:
+                raise ValueError("备份校验失败：文件可能被截断或手动修改过。如确认只是手动脱敏/删改敏感字段，请勾选“校验失败仍继续预览/导入”。")
+            package = deepcopy(package)
+            package["_checksum_mismatch_allowed"] = True
         return package
 
     def _unwrap_migration_package_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -5650,6 +6502,8 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
         settings: dict[str, Any] = {}
         raw_settings = overview.get("settings") if isinstance(overview.get("settings"), dict) else {}
         for key, value in raw_settings.items():
+            if key in {"storage_backend", "storage_sqlite_path"}:
+                continue
             if key in self._allowed_setting_keys():
                 settings[key] = deepcopy(value)
         group_overview = overview.get("group") if isinstance(overview.get("group"), dict) else {}
@@ -5700,6 +6554,9 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
 
         raw_settings = package.get("settings") if isinstance(package.get("settings"), dict) else {}
         for key, value in raw_settings.items():
+            if key in {"storage_backend", "storage_sqlite_path"}:
+                ignored.append(str(key))
+                continue
             if key == "group_access_mode":
                 mode = str(value or "").strip().lower()
                 if mode in {"whitelist", "blacklist"}:
@@ -5746,6 +6603,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "included_sections": [str(item) for item in package.get("included_sections", []) if str(item).strip()],
             "checksum": str(package.get("checksum") or ""),
             "checksum_ok": bool(package.get("checksum")) and self._migration_checksum_matches(package, str(package.get("checksum") or "")),
+            "checksum_bypassed": bool(package.get("_checksum_mismatch_allowed")),
             "legacy_snapshot": bool(package.get("legacy_snapshot")),
             "settings": settings,
             "features": features,
@@ -5781,6 +6639,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "included_sections": normalized.get("included_sections", []),
             "checksum": normalized.get("checksum") or "",
             "checksum_ok": bool(normalized.get("checksum_ok")),
+            "checksum_bypassed": bool(normalized.get("checksum_bypassed")),
             "legacy_snapshot": bool(normalized.get("legacy_snapshot")),
             "config_count": config_count,
             "config_diff": config_diff,
@@ -6208,11 +7067,15 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
     def _runtime_settings(self) -> dict[str, Any]:
         keys = [
             "bot_name",
+            "page_font_family",
+            "page_theme",
+            "provider_config_mode",
             "plugin_specific_persona_id",
             "target_user_ids",
             "private_user_aliases",
             "private_user_delivery_aliases",
             "target_platform",
+            "require_private_opt_in",
             "environment_perception_timezone",
             "holiday_country",
             "enable_environment_perception",
@@ -6225,6 +7088,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "enable_almanac_perception",
             "default_nickname",
             "default_style",
+            "reply_style_prompt",
             "enable_llm_timer_scheduling",
             "proactive_prompt_template",
             "proactive_persona_judge_send_threshold",
@@ -6239,6 +7103,8 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "passive_injection_position",
             "framework_session_lock_mode",
             "response_review_mode",
+            "smart_silence_min_confidence",
+            "smart_silence_model_timeout_seconds",
             "proactive_review_strength",
             "proactive_review_hard_risk_threshold",
             "proactive_review_low_score_threshold",
@@ -6288,6 +7154,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "rest_backlog_max_messages",
             "REST_WAKEUP_PROVIDER_ID",
             "check_interval_seconds",
+            "proactive_intensity_preset",
             "idle_minutes",
             "min_interval_minutes",
             "proactive_unanswered_slowdown_start",
@@ -6334,21 +7201,35 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "daily_outfit_photo_prompt",
             "enable_natural_language_photo_generation",
             "natural_language_photo_generation_max_daily",
+            "natural_language_photo_extra_prompt",
             "comfyui_photo_wait_seconds",
             "enable_local_photo_load_guard",
             "local_photo_cpu_busy_percent",
             "local_photo_memory_busy_percent",
             "local_photo_defer_minutes",
+            "external_image_api_platform",
             "EXTERNAL_IMAGE_API_BASE_URL",
             "EXTERNAL_IMAGE_API_KEY",
             "EXTERNAL_IMAGE_API_MODEL",
             "external_image_api_size",
             "external_image_api_timeout_seconds",
+            "external_image_api_custom_headers",
+            "enable_backup_external_image_api",
+            "backup_external_image_api_platform",
+            "BACKUP_EXTERNAL_IMAGE_API_BASE_URL",
+            "BACKUP_EXTERNAL_IMAGE_API_KEY",
+            "BACKUP_EXTERNAL_IMAGE_API_MODEL",
+            "backup_external_image_api_size",
+            "backup_external_image_api_timeout_seconds",
+            "backup_external_image_api_custom_headers",
             "photo_generation_style",
             "photo_generation_style_custom_prompt",
             "photo_generation_fixed_prompt",
             "photo_generation_scene_presets",
             "private_image_vision_wait_seconds",
+            "enable_context_image_captioning",
+            "context_image_caption_max_items",
+            "context_image_caption_timeout_seconds",
             "enable_private_image_gif_enhancement",
             "private_image_gif_max_frames",
             "enable_private_image_self_recognition",
@@ -6423,6 +7304,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "enable_recall_transcribe_command",
             "recall_message_cache_ttl_seconds",
             "recall_message_cache_max_items",
+            "recall_message_image_cache_max_mb",
             "enable_forbidden_word_recall",
             "recall_forbidden_words",
             "recall_forbidden_scope",
@@ -6481,6 +7363,9 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "web_exploration_share_probability",
             "web_exploration_max_results",
             "web_exploration_interests",
+            "WEB_EXPLORATION_API_BASE_URL",
+            "WEB_EXPLORATION_API_KEY",
+            "WEB_EXPLORATION_API_MODEL",
             "enable_qzone_integration",
             "QZONE_COOKIE",
             "enable_qzone_life_publish",
@@ -6543,7 +7428,8 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             if key not in keys and key not in provider_keys:
                 keys.append(key)
         values = {key: getattr(self.plugin, key, self._config_get(key)) for key in keys}
-        values["private_user_aliases"] = self._config_get("private_user_aliases")
+        values["private_user_aliases"] = self._private_alias_config_text("private_user_aliases")
+        values["private_user_delivery_aliases"] = self._private_alias_config_text("private_user_delivery_aliases")
         values.update(
             {
                 "enable_private_reading_integration": bool(getattr(self.plugin, "enable_jm_cosmos_integration", False)),
@@ -6587,7 +7473,84 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
                 "rest_reply_probability": _percent_attr("rest_reply_probability", 0.18),
             }
         )
+        for key in self._schema_bool_keys():
+            if key in values:
+                values[key] = self._normalize_bool_value(values[key])
         return values
+
+    def _proactive_intensity_summary(self) -> dict[str, Any]:
+        runtime_getter = getattr(self.plugin, "_proactive_intensity_runtime", None)
+        runtime = runtime_getter() if callable(runtime_getter) else {}
+        if not isinstance(runtime, dict):
+            runtime = {}
+        effects = runtime.get("effects") if isinstance(runtime.get("effects"), dict) else {}
+
+        def call_or_attr(method_name: str, attr_name: str, default: Any) -> Any:
+            method = getattr(self.plugin, method_name, None)
+            if callable(method):
+                try:
+                    return method()
+                except Exception:
+                    pass
+            return getattr(self.plugin, attr_name, default)
+
+        effective = {
+            "max_daily_messages": call_or_attr("_runtime_max_daily_messages", "max_daily_messages", 0),
+            "idle_minutes": effects.get("idle_minutes", getattr(self.plugin, "idle_minutes", 0)),
+            "min_interval_minutes": effects.get("min_interval_minutes", getattr(self.plugin, "min_interval_minutes", 0)),
+            "proactive_persona_judge_send_threshold": call_or_attr(
+                "_effective_proactive_persona_judge_send_threshold",
+                "proactive_persona_judge_send_threshold",
+                62,
+            ),
+            "proactive_review_strength": call_or_attr("_effective_proactive_review_strength", "proactive_review_strength", "lenient"),
+            "group_wakeup_cooldown_seconds": call_or_attr(
+                "_effective_group_wakeup_cooldown_seconds",
+                "group_wakeup_cooldown_seconds",
+                90,
+            ),
+            "group_high_intensity_cooldown_seconds": call_or_attr(
+                "_effective_group_high_intensity_cooldown_seconds",
+                "group_high_intensity_cooldown_seconds",
+                150,
+            ),
+            "group_interject_min_interval_minutes": call_or_attr(
+                "_effective_group_interject_min_interval_minutes",
+                "group_interject_min_interval_minutes",
+                180,
+            ),
+            "group_interject_max_daily": call_or_attr(
+                "_effective_group_interject_max_daily",
+                "group_interject_max_daily",
+                2,
+            ),
+        }
+        configured = {
+            "max_daily_messages": getattr(self.plugin, "max_daily_messages", 0),
+            "idle_minutes": getattr(self.plugin, "idle_minutes", 0),
+            "min_interval_minutes": getattr(self.plugin, "min_interval_minutes", 0),
+            "proactive_persona_judge_send_threshold": getattr(self.plugin, "proactive_persona_judge_send_threshold", 62),
+            "proactive_review_strength": getattr(self.plugin, "proactive_review_strength", "lenient"),
+            "group_wakeup_cooldown_seconds": getattr(self.plugin, "group_wakeup_cooldown_seconds", 90),
+            "group_high_intensity_cooldown_seconds": getattr(self.plugin, "group_high_intensity_cooldown_seconds", 150),
+            "group_interject_min_interval_minutes": getattr(self.plugin, "group_interject_min_interval_minutes", 180),
+            "group_interject_max_daily": getattr(self.plugin, "group_interject_max_daily", 2),
+        }
+        changed = [
+            key
+            for key, value in effective.items()
+            if str(value) != str(configured.get(key))
+        ]
+        return {
+            "preset": self._single_line(runtime.get("preset") or "off", 40),
+            "enabled": bool(runtime.get("enabled")),
+            "label": self._single_line(runtime.get("label") or "关闭预设", 40),
+            "description": self._single_line(runtime.get("description"), 160),
+            "configured": configured,
+            "effective": effective,
+            "changed_keys": changed,
+            "note": "预设只覆盖运行态有效频率，不改写手动参数；免打扰、休息、用户拒绝、隐私和成本闸门仍然生效。",
+        }
 
     def _build_diagnostics(self, users: dict[str, Any], groups: dict[str, Any]) -> list[dict[str, str]]:
         items: list[dict[str, str]] = []
@@ -6612,6 +7575,29 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             add("ok", "主模型可见", providers.get("LLM_PROVIDER_ID") or "运行态已配置")
         else:
             add("info", "主模型留空", "会回退到 AstrBot 默认模型；建议为陪伴插件单独配置主模型")
+
+        intensity = self._proactive_intensity_summary()
+        if intensity.get("enabled"):
+            effective = intensity.get("effective") if isinstance(intensity.get("effective"), dict) else {}
+            add(
+                "warn",
+                f"正在使用主动强度预设：{intensity.get('label') or intensity.get('preset')}",
+                (
+                    f"私聊有效上限 {effective.get('max_daily_messages')} 条/天，"
+                    f"空闲 {effective.get('idle_minutes')} 分钟，"
+                    f"最小间隔 {effective.get('min_interval_minutes')} 分钟；"
+                    f"群唤醒冷却 {effective.get('group_wakeup_cooldown_seconds')} 秒，"
+                    f"群插话间隔 {effective.get('group_interject_min_interval_minutes')} 分钟。"
+                    "预设只覆盖运行态有效频率，不改写手动参数，也不会绕过免打扰、休息、用户拒绝、隐私和成本闸门。"
+                ),
+                "需要恢复原配置时，将“主动强度预设”改为关闭",
+            )
+        else:
+            add(
+                "info",
+                "主动强度预设未启用",
+                "当前完全沿用手动主动频率参数；如果想要高频主动，可在配置 → 功能开关 → 通用能力里选择预设。",
+            )
 
         tts_summary = self._tts_runtime_summary(users)
         if tts_summary.get("enhancement_enabled"):
@@ -6648,8 +7634,18 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             add("warn", "暂无启用的私聊对象", "私聊主动陪伴没有明确目标", "在私聊页新增对象或配置 target_user_ids")
 
         max_daily = int(getattr(self.plugin, "max_daily_messages", 0) or 0)
-        if max_daily > 0:
-            add("ok", "私聊主动额度可用", f"每日上限 {max_daily} 条")
+        effective_max_daily = max_daily
+        max_daily_getter = getattr(self.plugin, "_runtime_max_daily_messages", None)
+        if callable(max_daily_getter):
+            try:
+                effective_max_daily = int(max_daily_getter() or 0)
+            except Exception:
+                effective_max_daily = max_daily
+        if effective_max_daily > 0:
+            detail = f"每日有效上限 {effective_max_daily} 条"
+            if effective_max_daily != max_daily:
+                detail += f"（手动配置 {max_daily} 条）"
+            add("ok", "私聊主动额度可用", detail)
         else:
             add("warn", "私聊主动已关闭", "每日主动上限为 0", "在模块配置里调高每日主动上限")
 
@@ -6755,7 +7751,8 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             add("info", "群聊陪伴未开启", "当前不会记录群聊上下文")
 
         if features.get("enable_group_interjection"):
-            limit = int(getattr(self.plugin, "group_interject_max_daily", 0) or 0)
+            limit_getter = getattr(self.plugin, "_effective_group_interject_max_daily", None)
+            limit = int(limit_getter() if callable(limit_getter) else getattr(self.plugin, "group_interject_max_daily", 0) or 0)
             if limit > 0:
                 add("ok", "群聊插话可用", f"每群每日上限 {limit} 次")
             else:
@@ -6804,42 +7801,39 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
                 if self.plugin._private_user_role(item, str(item.get("user_id") or "")) == "owner":
                     break
         umo = self._single_line((enabled_user or {}).get("umo"), 180) if isinstance(enabled_user, dict) else ""
-        # Check mimo_tts plugin availability directly via star_registry
-        mimo_tts_plugin = None
-        mimo_tts_api_key = ""
-        try:
-            from astrbot.core.star.star import star_registry
-            for metadata in star_registry:
-                name = str(getattr(metadata, "name", "") or "").lower()
-                if "mimo_tts" in name:
-                    star_cls = getattr(metadata, "star_cls", None)
-                    if star_cls is not None:
-                        mimo_tts_plugin = star_cls
-                        mimo_tts_api_key = str(getattr(star_cls, "api_key", "") or "").strip()
-                        if not mimo_tts_api_key:
-                            pc = getattr(star_cls, "plugin_config", None)
-                            if pc is not None:
-                                mimo_tts_api_key = str(getattr(pc, "api_key", "") or "").strip()
-                        break
-        except Exception:
-            pass
-        provider_available = mimo_tts_plugin is not None and bool(mimo_tts_api_key)
+        config: dict[str, Any] = {}
+        provider_settings: dict[str, Any] = {}
+        provider = None
+        context = getattr(self.plugin, "context", None)
+        if context is not None:
+            getter = getattr(context, "get_config", None)
+            if callable(getter):
+                try:
+                    config = getter(umo) if umo else getter()
+                    if not isinstance(config, dict):
+                        config = {}
+                except Exception:
+                    config = {}
+            provider_settings = dict((config or {}).get("provider_tts_settings", {}) or {})
+            provider_getter = getattr(context, "get_using_tts_provider", None)
+            if callable(provider_getter):
+                try:
+                    provider = provider_getter(umo) if umo else provider_getter()
+                except Exception:
+                    provider = None
         provider_label = ""
-        if mimo_tts_plugin is not None:
-            if mimo_tts_api_key:
-                provider_label = "mimo_tts (API Key 已配置)"
-            else:
-                provider_label = "mimo_tts (API Key 未配置)"
+        if provider is not None:
+            provider_id = self._provider_id(provider)
+            provider_label = self._provider_name(provider, provider_id) if provider_id else getattr(provider, "__class__", type(provider)).__name__
         return {
             "enhancement_enabled": bool(getattr(self.plugin, "enable_tts_enhancement", False)),
             "mode": self._single_line(getattr(self.plugin, "tts_generation_mode", ""), 24) or "fast_tag",
             "language": self.plugin._tts_language_label() if hasattr(self.plugin, "_tts_language_label") else "",
             "umo": umo,
-            "settings_enabled": mimo_tts_plugin is not None,
-            "provider_available": provider_available,
-            "provider_label": provider_label or "mimo_tts 插件未加载",
+            "settings_enabled": bool(provider_settings.get("enable", False)),
+            "provider_available": provider is not None,
+            "provider_label": self._single_line(provider_label, 80) or "未知 provider",
         }
-
 
     def _message_debounce_summary(self, data: dict[str, Any]) -> dict[str, Any]:
         raw = data.get("smart_message_debounce")
@@ -7001,18 +7995,61 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
 
     def _apply_config_value(self, key: str, value: Any, overrides: dict[str, Any] | None = None) -> None:
         self._set_config_value(key, value)
+        if key == "provider_config_mode":
+            normalizer = getattr(self.plugin, "_normalize_provider_config_mode", None)
+            self.plugin.provider_config_mode = (
+                normalizer(value, getattr(self.plugin, "config", None))
+                if callable(normalizer)
+                else str(value or "quick").strip().lower()
+            )
+            return
+        if key == "proactive_intensity_preset":
+            normalizer = getattr(self.plugin, "_normalize_proactive_intensity_preset", None)
+            self.plugin.proactive_intensity_preset = (
+                normalizer(value)
+                if callable(normalizer)
+                else str(value or "off").strip().lower()
+            )
+            return
+        if key == "page_font_family":
+            text = str(value or "original").strip().lower()
+            self.plugin.page_font_family = text if text in {"original", "cheng"} else "original"
+            return
+        if key == "page_theme":
+            text = str(value or "classic").strip().lower()
+            self.plugin.page_theme = text if text in {"classic", "dark", "warm", "forest", "sakura", "ocean", "lavender", "ink", "sunset"} else "classic"
+            return
+        if key == "storage_backend":
+            backend = str(value or "json").strip().lower() or "json"
+            self.plugin.storage_backend = backend if backend in {"json", "sqlite"} else "json"
+            rebuild = getattr(self.plugin, "_rebuild_store_manager", None)
+            if callable(rebuild) and not bool((overrides or {}).get("__defer_storage_rebuild")):
+                rebuild(reload_data=True)
+            return
+        if key == "storage_sqlite_path":
+            self.plugin.storage_sqlite_path = str(value or "").strip()
+            rebuild = getattr(self.plugin, "_rebuild_store_manager", None)
+            if callable(rebuild) and not bool((overrides or {}).get("__defer_storage_rebuild")):
+                rebuild(reload_data=True)
+            return
         attr_map = {
+            "FAST_RESPONSE_PROVIDER_ID": "fast_response_provider_id",
+            "COMPLEX_REASONING_PROVIDER_ID": "complex_reasoning_provider_id",
+            "CREATIVE_MODEL_PROVIDER_ID": "creative_model_provider_id",
             "LLM_PROVIDER_ID": "llm_provider_id",
             "MAI_STYLE_PROVIDER_ID": "mai_style_provider_id",
             "DAILY_PLAN_PROVIDER_ID": "daily_plan_provider_id",
             "DETAIL_ENHANCEMENT_PROVIDER_ID": "detail_enhancement_provider_id",
             "DREAM_DIARY_PROVIDER_ID": "dream_diary_provider_id",
             "CREATIVE_PROVIDER_ID": "creative_provider_id",
+            "CREATIVE_OUTLINE_PROVIDER_ID": "creative_outline_provider_id",
+            "CREATIVE_REVIEW_PROVIDER_ID": "creative_review_provider_id",
             "VOICE_PROMPT_PROVIDER_ID": "voice_prompt_provider_id",
             "PHOTO_PROMPT_PROVIDER_ID": "photo_prompt_provider_id",
             "NARRATION_PROVIDER_ID": "narration_provider_id",
             "HISTORY_SUMMARY_PROVIDER_ID": "history_summary_provider_id",
             "RESPONSE_REVIEW_PROVIDER_ID": "response_review_provider_id",
+            "SMART_SILENCE_PROVIDER_ID": "smart_silence_provider_id",
             "PROACTIVE_PERSONA_JUDGE_PROVIDER_ID": "proactive_persona_judge_provider_id",
             "TROUBLESHOOTING_PROVIDER_ID": "troubleshooting_provider_id",
             "RELATIONSHIP_ANALYSIS_PROVIDER_ID": "relationship_analysis_provider_id",
@@ -7028,13 +8065,23 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "PRIVATE_READING_VISION_PROVIDER_ID": "jm_cosmos_vision_provider_id",
             "NEWS_PROVIDER_ID": "news_provider_id",
             "WEB_EXPLORATION_PROVIDER_ID": "web_exploration_provider_id",
+            "WEB_EXPLORATION_API_BASE_URL": "web_exploration_api_base_url",
+            "WEB_EXPLORATION_API_KEY": "web_exploration_api_key",
+            "WEB_EXPLORATION_API_MODEL": "web_exploration_api_model",
             "SMART_MESSAGE_DEBOUNCE_PROVIDER_ID": "smart_message_debounce_provider_id",
             "REST_WAKEUP_PROVIDER_ID": "rest_wakeup_provider_id",
             "COMFYUI_TEXT2IMG_WORKFLOW_NAME": "comfyui_text2img_workflow_name",
             "COMFYUI_SELFIE_WORKFLOW_NAME": "comfyui_selfie_workflow_name",
+            "external_image_api_platform": "external_image_api_platform",
             "EXTERNAL_IMAGE_API_BASE_URL": "external_image_api_base_url",
             "EXTERNAL_IMAGE_API_KEY": "external_image_api_key",
             "EXTERNAL_IMAGE_API_MODEL": "external_image_api_model",
+            "external_image_api_custom_headers": "external_image_api_custom_headers",
+            "backup_external_image_api_platform": "backup_external_image_api_platform",
+            "BACKUP_EXTERNAL_IMAGE_API_BASE_URL": "backup_external_image_api_base_url",
+            "BACKUP_EXTERNAL_IMAGE_API_KEY": "backup_external_image_api_key",
+            "BACKUP_EXTERNAL_IMAGE_API_MODEL": "backup_external_image_api_model",
+            "backup_external_image_api_custom_headers": "backup_external_image_api_custom_headers",
         }
         if key in attr_map:
             setattr(self.plugin, attr_map[key], str(value or "").strip())
@@ -7051,6 +8098,13 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             return
         if key == "group_blacklist_ids":
             self.plugin.group_blacklist_ids = list(value or [])
+            return
+        if key == "target_user_ids":
+            self.plugin.target_user_ids = [
+                str(item).strip()
+                for item in (value or [])
+                if str(item or "").strip()
+            ]
             return
         if key == "QZONE_COOKIE":
             self.plugin.qzone_cookie = str(value or "").strip()
@@ -7161,16 +8215,27 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             setattr(self.plugin, key, value)
 
     def _sync_photo_generation_runtime_config(self) -> None:
+        enabled_backup = self._config_get("enable_backup_external_image_api")
+        if enabled_backup not in ("", None):
+            self.plugin.enable_backup_external_image_api = self._normalize_bool_value(enabled_backup)
         mapping = {
             "photo_generation_backend": "photo_generation_backend",
             "COMFYUI_TEXT2IMG_WORKFLOW_NAME": "comfyui_text2img_workflow_name",
             "COMFYUI_SELFIE_WORKFLOW_NAME": "comfyui_selfie_workflow_name",
             "photo_persona_reference_image_path": "photo_persona_reference_image_path",
             "daily_outfit_photo_prompt": "daily_outfit_photo_prompt",
+            "external_image_api_platform": "external_image_api_platform",
             "EXTERNAL_IMAGE_API_BASE_URL": "external_image_api_base_url",
             "EXTERNAL_IMAGE_API_KEY": "external_image_api_key",
             "EXTERNAL_IMAGE_API_MODEL": "external_image_api_model",
             "external_image_api_size": "external_image_api_size",
+            "external_image_api_custom_headers": "external_image_api_custom_headers",
+            "backup_external_image_api_platform": "backup_external_image_api_platform",
+            "BACKUP_EXTERNAL_IMAGE_API_BASE_URL": "backup_external_image_api_base_url",
+            "BACKUP_EXTERNAL_IMAGE_API_KEY": "backup_external_image_api_key",
+            "BACKUP_EXTERNAL_IMAGE_API_MODEL": "backup_external_image_api_model",
+            "backup_external_image_api_size": "backup_external_image_api_size",
+            "backup_external_image_api_custom_headers": "backup_external_image_api_custom_headers",
             "photo_generation_style": "photo_generation_style",
             "photo_generation_style_custom_prompt": "photo_generation_style_custom_prompt",
             "photo_generation_fixed_prompt": "photo_generation_fixed_prompt",
@@ -7187,11 +8252,22 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
                     text = text.lower()
                     if text not in {"auto", "comfyui", "sdgen", "external"}:
                         text = "auto"
+                elif key in {"external_image_api_platform", "backup_external_image_api_platform"}:
+                    normalizer = getattr(self.plugin, "_normalize_external_image_api_platform", None)
+                    text = normalizer(text) if callable(normalizer) else text.lower()
+                    if text not in {"auto", "openai", "bailian"}:
+                        text = "auto"
                 setattr(self.plugin, attr, text)
         timeout = self._config_get("external_image_api_timeout_seconds")
         if timeout not in ("", None):
             try:
                 self.plugin.external_image_api_timeout_seconds = max(20, min(600, int(float(timeout))))
+            except Exception:
+                pass
+        backup_timeout = self._config_get("backup_external_image_api_timeout_seconds")
+        if backup_timeout not in ("", None):
+            try:
+                self.plugin.backup_external_image_api_timeout_seconds = max(20, min(600, int(float(backup_timeout))))
             except Exception:
                 pass
         wait_seconds = self._config_get("comfyui_photo_wait_seconds")
@@ -7215,6 +8291,15 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
         config = getattr(self.plugin, "config", None)
         if config is None:
             return
+        if key == "provider_config_mode":
+            self._set_provider_config_mode_value(config, value)
+            return
+        if key == "proactive_intensity_preset":
+            self._set_schema_compat_value(config, key, value)
+            return
+        if key in {"page_font_family", "page_theme"}:
+            self._set_schema_compat_value(config, key, value)
+            return
         if _set_into_config(config, key, value, allow_flat_fallback=False):
             return
         if self._set_schema_group_config_value(config, key, value):
@@ -7222,7 +8307,18 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
         _set_into_config(config, key, value)
         return
 
-    def _set_schema_group_config_value(self, config: Any, key: str, value: Any) -> bool:
+    def _set_provider_config_mode_value(self, config: Any, value: Any) -> None:
+        # Keep the visible schema group and the hidden legacy flat key in sync.
+        # AstrBot validates unknown flat keys during plugin load, while older
+        # page/API paths still read or write the flat name directly.
+        self._set_schema_group_config_value(config, "provider_config_mode", value, create_group=True)
+        _set_into_config(config, "provider_config_mode", value)
+
+    def _set_schema_compat_value(self, config: Any, key: str, value: Any) -> None:
+        self._set_schema_group_config_value(config, key, value, create_group=True)
+        _set_into_config(config, key, value)
+
+    def _set_schema_group_config_value(self, config: Any, key: str, value: Any, *, create_group: bool = False) -> bool:
         group_key = self._schema_group_for_key(key)
         if not group_key:
             return False
@@ -7231,6 +8327,9 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             group = target.get(group_key)
             if isinstance(group, dict):
                 group[key] = value
+                return True
+            if create_group:
+                target[group_key] = {key: value}
                 return True
             return False
 
@@ -7273,18 +8372,46 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
         except Exception:
             return ""
 
+    def _private_alias_config_text(self, key: str) -> str:
+        raw = self._config_get(key)
+        if raw:
+            return raw
+        mapping = getattr(self.plugin, key, None)
+        if not isinstance(mapping, dict):
+            return ""
+        lines: list[str] = []
+        for alias, target in mapping.items():
+            left = str(alias or "").strip()
+            right = str(target or "").strip()
+            if left and right:
+                lines.append(f"{left}={right}")
+        return "\n".join(lines)
+
     async def _save_config_if_possible(self) -> bool:
         config = getattr(self.plugin, "config", None)
         for method_name in ("save_config", "save", "save_conf"):
             save = getattr(config, method_name, None)
             if callable(save):
                 try:
+                    _ensure_config_parent_dir(config, logger=logger)
                     result = save()
                     if asyncio.iscoroutine(result) or hasattr(result, "__await__"):
                         await result
                     return True
                 except TypeError:
                     continue
+                except FileNotFoundError as exc:
+                    if _ensure_config_parent_dir(config, error=exc, logger=logger):
+                        try:
+                            result = save()
+                            if asyncio.iscoroutine(result) or hasattr(result, "__await__"):
+                                await result
+                            return True
+                        except Exception as retry_exc:
+                            logger.warning("[PrivateCompanionPage] 配置保存重试失败(%s): %s", method_name, self._single_line(retry_exc, 160))
+                            return False
+                    logger.warning("[PrivateCompanionPage] 配置保存失败(%s): %s", method_name, self._single_line(exc, 160))
+                    return False
                 except Exception as exc:
                     logger.warning("[PrivateCompanionPage] 配置保存失败(%s): %s", method_name, self._single_line(exc, 160))
                     return False
@@ -7303,6 +8430,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "enable_expression_learning",
             "enable_intent_emotion_analysis",
             "enable_response_self_review",
+            "enable_smart_silence",
             "enable_llm_timer_scheduling",
             "enable_llm_proactive_message",
             "enable_llm_proactive_persona_judge",
@@ -7401,18 +8529,24 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
 
     def _allowed_provider_keys(self) -> set[str]:
         keys = {
+            "FAST_RESPONSE_PROVIDER_ID",
+            "COMPLEX_REASONING_PROVIDER_ID",
+            "CREATIVE_MODEL_PROVIDER_ID",
             "LLM_PROVIDER_ID",
             "MAI_STYLE_PROVIDER_ID",
             "DAILY_PLAN_PROVIDER_ID",
             "DETAIL_ENHANCEMENT_PROVIDER_ID",
             "DREAM_DIARY_PROVIDER_ID",
             "CREATIVE_PROVIDER_ID",
+            "CREATIVE_OUTLINE_PROVIDER_ID",
+            "CREATIVE_REVIEW_PROVIDER_ID",
             "VOICE_PROMPT_PROVIDER_ID",
             "tts_conversion_provider_id",
             "PHOTO_PROMPT_PROVIDER_ID",
             "NARRATION_PROVIDER_ID",
             "HISTORY_SUMMARY_PROVIDER_ID",
             "RESPONSE_REVIEW_PROVIDER_ID",
+            "SMART_SILENCE_PROVIDER_ID",
             "PROACTIVE_PERSONA_JUDGE_PROVIDER_ID",
             "TROUBLESHOOTING_PROVIDER_ID",
             "SMART_MESSAGE_DEBOUNCE_PROVIDER_ID",
@@ -7437,12 +8571,16 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
     def _allowed_setting_keys(self) -> set[str]:
         keys = {
             "bot_name",
+            "page_font_family",
+            "page_theme",
+            "provider_config_mode",
             "enable_proactive_only_mode",
             "plugin_specific_persona_id",
             "target_user_ids",
             "private_user_aliases",
             "private_user_delivery_aliases",
             "target_platform",
+            "require_private_opt_in",
             "environment_perception_timezone",
             "holiday_country",
             "enable_environment_perception",
@@ -7455,7 +8593,10 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "enable_almanac_perception",
             "default_nickname",
             "default_style",
+            "reply_style_prompt",
             "response_review_mode",
+            "smart_silence_min_confidence",
+            "smart_silence_model_timeout_seconds",
             "proactive_review_strength",
             "proactive_review_hard_risk_threshold",
             "proactive_review_low_score_threshold",
@@ -7471,6 +8612,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "worldview_adaptation_prompt",
             "quiet_hours",
             "framework_session_lock_mode",
+            "proactive_intensity_preset",
             "proactive_prompt_template",
             "proactive_persona_judge_send_threshold",
             "proactive_persona_judge_cache_minutes",
@@ -7554,21 +8696,35 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "daily_outfit_photo_prompt",
             "enable_natural_language_photo_generation",
             "natural_language_photo_generation_max_daily",
+            "natural_language_photo_extra_prompt",
             "comfyui_photo_wait_seconds",
             "enable_local_photo_load_guard",
             "local_photo_cpu_busy_percent",
             "local_photo_memory_busy_percent",
             "local_photo_defer_minutes",
+            "external_image_api_platform",
             "EXTERNAL_IMAGE_API_BASE_URL",
             "EXTERNAL_IMAGE_API_KEY",
             "EXTERNAL_IMAGE_API_MODEL",
             "external_image_api_size",
             "external_image_api_timeout_seconds",
+            "external_image_api_custom_headers",
+            "enable_backup_external_image_api",
+            "backup_external_image_api_platform",
+            "BACKUP_EXTERNAL_IMAGE_API_BASE_URL",
+            "BACKUP_EXTERNAL_IMAGE_API_KEY",
+            "BACKUP_EXTERNAL_IMAGE_API_MODEL",
+            "backup_external_image_api_size",
+            "backup_external_image_api_timeout_seconds",
+            "backup_external_image_api_custom_headers",
             "photo_generation_style",
             "photo_generation_style_custom_prompt",
             "photo_generation_fixed_prompt",
             "photo_generation_scene_presets",
             "private_image_vision_wait_seconds",
+            "enable_context_image_captioning",
+            "context_image_caption_max_items",
+            "context_image_caption_timeout_seconds",
             "enable_private_image_gif_enhancement",
             "private_image_gif_max_frames",
             "enable_private_image_self_recognition",
@@ -7643,6 +8799,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "enable_recall_transcribe_command",
             "recall_message_cache_ttl_seconds",
             "recall_message_cache_max_items",
+            "recall_message_image_cache_max_mb",
             "enable_forbidden_word_recall",
             "recall_forbidden_words",
             "recall_forbidden_scope",
@@ -7703,6 +8860,9 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "external_event_self_link_cooldown_hours",
             "web_exploration_max_results",
             "web_exploration_interests",
+            "WEB_EXPLORATION_API_BASE_URL",
+            "WEB_EXPLORATION_API_KEY",
+            "WEB_EXPLORATION_API_MODEL",
             "enable_qzone_integration",
             "QZONE_COOKIE",
             "enable_qzone_life_publish",
@@ -7766,6 +8926,35 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             return self._normalize_id_list(value)
         if key == "plugin_specific_persona_id":
             return str(value or "").strip()[:160]
+        if key == "page_font_family":
+            text = str(value or "original").strip().lower()
+            return text if text in {"original", "cheng"} else "original"
+        if key == "page_theme":
+            text = str(value or "classic").strip().lower()
+            return text if text in {"classic", "dark", "warm", "forest", "sakura", "ocean", "lavender", "ink", "sunset"} else "classic"
+        if key == "provider_config_mode":
+            normalizer = getattr(self.plugin, "_normalize_provider_config_mode", None)
+            if callable(normalizer):
+                return normalizer(value, getattr(self.plugin, "config", None))
+            text = str(value or "quick").strip().lower()
+            aliases = {
+                "fast": "quick",
+                "simple": "quick",
+                "快速": "quick",
+                "快速配置": "quick",
+                "precise": "precision",
+                "advanced": "precision",
+                "精准": "precision",
+                "精准配置": "precision",
+                "分流": "precision",
+            }
+            text = aliases.get(text, text)
+            return text if text in {"quick", "precision"} else "quick"
+        if key == "storage_backend":
+            text = str(value or "json").strip().lower()
+            return text if text in {"json", "sqlite"} else "json"
+        if key == "storage_sqlite_path":
+            return str(value or "").strip()[:1000]
         if key == "passive_injection_position":
             normalizer = getattr(self.plugin, "_normalize_passive_injection_position", None)
             if callable(normalizer):
@@ -7813,6 +9002,19 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             return self._normalize_multiline_source_config(value, limit=4000)
         if key in {"news_hot_sources", "web_exploration_interests", "private_reading_default_keywords", "private_reading_blocked_tags"}:
             return str(value or "").strip()[:1200]
+        if key == "WEB_EXPLORATION_API_BASE_URL":
+            raw = str(value or "").strip()[:800]
+            if not raw or raw.startswith(("http://", "https://")):
+                return raw
+            if re.match(r"^[a-z][a-z0-9+.-]*://", raw, flags=re.I):
+                return raw
+            local_pattern = r"^(localhost|127\.|10\.|172\.(1[6-9]|2\d|3[0-1])\.|192\.168\.|\[?::1\]?)"
+            scheme = "http://" if re.match(local_pattern, raw, flags=re.I) else "https://"
+            return f"{scheme}{raw}"
+        if key == "WEB_EXPLORATION_API_KEY":
+            return str(value or "").strip()[:800]
+        if key == "WEB_EXPLORATION_API_MODEL":
+            return str(value or "").strip()[:160]
         if key == "worldbook_self_registration_block_words":
             return str(value or "").strip()[:1200]
         if key == "worldbook_self_registration_block_reply":
@@ -7905,7 +9107,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             return lang if lang in {"ja", "zh", "en"} else "ja"
         if key in {"tts_extra_prompt", "main_user_mention_voice_prompt"}:
             return str(value or "").strip()[:1200]
-        if key in {"photo_generation_fixed_prompt", "photo_generation_scene_presets"}:
+        if key in {"natural_language_photo_extra_prompt", "photo_generation_fixed_prompt", "photo_generation_scene_presets"}:
             return str(value or "").strip()[:5000]
         if key == "tts_conversion_provider_id":
             return str(value or "").strip()[:160]
@@ -7931,6 +9133,17 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
         if key == "photo_generation_backend":
             mode = str(value or "auto").strip().lower()
             return mode if mode in {"auto", "comfyui", "sdgen", "external"} else "auto"
+        if key in {"external_image_api_platform", "backup_external_image_api_platform"}:
+            mode = str(value or "auto").strip().lower()
+            aliases = {
+                "openai兼容": "openai",
+                "openai-compatible": "openai",
+                "百炼": "bailian",
+                "阿里云百炼": "bailian",
+                "dashscope": "bailian",
+            }
+            mode = aliases.get(mode, mode)
+            return mode if mode in {"auto", "openai", "bailian"} else "auto"
         if key == "segmented_proactive_split_mode":
             mode = str(value or "regex").strip().lower()
             return mode if mode in {"regex", "words"} else "regex"
@@ -8002,7 +9215,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
         if key == "atrelay_default_relay_style":
             mode = str(value or "persona").strip()
             return mode if mode in {"persona", "soft", "original"} else "persona"
-        if key == "worldview_adaptation_prompt":
+        if key in {"reply_style_prompt", "worldview_adaptation_prompt"}:
             return str(value or "").strip()[:1200]
         if key == "roleplay_knowledge_source_ids":
             normalizer = getattr(self.plugin, "_normalize_roleplay_knowledge_source_ids", None)
@@ -8031,7 +9244,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
                 return max(5, min(600, int(value)))
             except (TypeError, ValueError):
                 return 90
-        if key == "external_image_api_timeout_seconds":
+        if key in {"external_image_api_timeout_seconds", "backup_external_image_api_timeout_seconds"}:
             try:
                 return max(20, min(600, int(value)))
             except (TypeError, ValueError):
@@ -8043,7 +9256,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
                 return 1
         if key == "natural_language_photo_generation_max_daily":
             try:
-                return max(0, min(10, int(value)))
+                return max(0, min(100, int(value)))
             except (TypeError, ValueError):
                 return 2
         if key in self.PERCENT_PROBABILITY_KEYS:
@@ -8079,6 +9292,9 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
                 return max(0, min(100, int(value)))
             except (TypeError, ValueError):
                 return 62
+        if key == "proactive_intensity_preset":
+            normalizer = getattr(self.plugin, "_normalize_proactive_intensity_preset", None)
+            return normalizer(value) if callable(normalizer) else str(value or "off").strip().lower()
         if key == "quote_skip_short_reply_chars":
             try:
                 return max(0, min(120, int(value)))
@@ -8104,6 +9320,16 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
                 return max(5, min(1440, int(value)))
             except (TypeError, ValueError):
                 return 180
+        if key == "web_exploration_min_interval_hours":
+            try:
+                return max(1, min(168, int(value)))
+            except (TypeError, ValueError):
+                return 8
+        if key == "web_exploration_max_results":
+            try:
+                return max(3, min(20, int(value)))
+            except (TypeError, ValueError):
+                return 6
         if key in {
             "check_interval_seconds",
             "daily_token_limit",
@@ -8163,8 +9389,6 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "news_hot_max_items",
             "ai_daily_check_interval_minutes",
             "external_event_self_link_cooldown_hours",
-            "web_exploration_min_interval_hours",
-            "web_exploration_max_results",
             "qzone_life_publish_min_interval_hours",
             "qzone_emotional_vent_threshold",
             "qzone_emotional_vent_cooldown_hours",
@@ -8180,6 +9404,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "atrelay_member_cache_minutes",
             "atrelay_multi_target_limit",
             "private_image_vision_cache_max_items",
+            "context_image_caption_max_items",
             "group_slang_web_search_terms",
             "group_slang_web_search_results",
             "auto_voice_max_chars",
@@ -8241,11 +9466,23 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
                 return 8
         if key == "SMART_MESSAGE_DEBOUNCE_PROVIDER_ID":
             return self._single_line(value, 160)
+        if key == "SMART_SILENCE_PROVIDER_ID":
+            return self._single_line(value, 160)
+        if key == "smart_silence_model_timeout_seconds":
+            try:
+                return max(0.2, min(5.0, float(value)))
+            except (TypeError, ValueError):
+                return 1.2
         if key == "private_image_vision_wait_seconds":
             try:
                 return max(0.0, min(90.0, float(value)))
             except (TypeError, ValueError):
                 return 30.0
+        if key == "context_image_caption_timeout_seconds":
+            try:
+                return max(0.0, min(30.0, float(value)))
+            except (TypeError, ValueError):
+                return 8.0
         if key == "private_image_gif_max_frames":
             try:
                 return max(1, min(8, int(value)))
@@ -8354,6 +9591,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "enable_quote_private_proactive",
             "enable_local_photo_load_guard",
             "enable_private_image_self_recognition",
+            "enable_context_image_captioning",
             "enable_private_image_gif_enhancement",
             "enable_private_image_vision_cache",
             "enable_segmented_proactive_reply",
@@ -8728,6 +9966,11 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
         groups = data.get("worldbook_group_profiles") if isinstance(data.get("worldbook_group_profiles"), dict) else {}
         entries = data.get("worldbook_entries") if isinstance(data.get("worldbook_entries"), list) else []
         state = data.get("worldbook_import_state") if isinstance(data.get("worldbook_import_state"), dict) else {}
+        member_count = self._int(data.get("worldbook_member_profile_count")) if "worldbook_member_profile_count" in data else 0
+        enabled_member_count = self._int(data.get("worldbook_enabled_member_profile_count")) if "worldbook_enabled_member_profile_count" in data else 0
+        pending_observation_total = self._int(data.get("worldbook_pending_observation_total")) if "worldbook_pending_observation_total" in data else 0
+        group_count = self._int(data.get("worldbook_group_profile_count")) if "worldbook_group_profile_count" in data else 0
+        entry_count = self._int(data.get("worldbook_entry_count")) if "worldbook_entry_count" in data else len(entries)
         profile_items = []
         for user_id, item in profiles.items():
             if not isinstance(item, dict):
@@ -8778,6 +10021,10 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
                 }
             )
         profile_items.sort(key=lambda item: (not item.get("enabled", True), item.get("name") or item.get("user_id")))
+        if "worldbook_member_profile_count" not in data:
+            member_count = len(profile_items)
+            enabled_member_count = sum(1 for item in profile_items if item.get("enabled", True))
+            pending_observation_total = sum(self._clamp_int(item.get("pending_observation_count"), 0, 0, 999) for item in profile_items)
         group_items = [
             {
                 "group_id": self._single_line(group_id, 40),
@@ -8789,6 +10036,8 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             for group_id, item in groups.items()
             if isinstance(item, dict)
         ]
+        if "worldbook_group_profile_count" not in data:
+            group_count = len(group_items)
         return {
             "enabled": bool(getattr(self.plugin, "enable_worldbook_member_recognition", False)),
             "auto_import": bool(getattr(self.plugin, "worldbook_auto_import", False)),
@@ -8801,11 +10050,11 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             ),
             "auto_pending_observations": bool(getattr(self.plugin, "worldbook_auto_pending_observations", False)),
             "inject_limit": getattr(self.plugin, "worldbook_member_inject_limit", 0),
-            "entry_count": len(entries),
-            "member_count": len(profile_items),
-            "enabled_member_count": sum(1 for item in profile_items if item.get("enabled", True)),
-            "pending_observation_total": sum(self._clamp_int(item.get("pending_observation_count"), 0, 0, 999) for item in profile_items),
-            "group_count": len(group_items),
+            "entry_count": entry_count,
+            "member_count": member_count,
+            "enabled_member_count": enabled_member_count,
+            "pending_observation_total": pending_observation_total,
+            "group_count": group_count,
             "last_import": self.plugin._format_timestamp_elapsed(state.get("last_import_at", 0)),
             "source_files": state.get("source_files") if isinstance(state.get("source_files"), list) else [],
             "members": profile_items[:120],
@@ -8889,7 +10138,8 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             available = False
         latest = None
         try:
-            latest = self.plugin._latest_bilibili_video_candidate()
+            latest_getter = getattr(self.plugin, "_latest_bilibili_video_candidate", None)
+            latest = latest_getter(include_memory_api=False) if callable(latest_getter) else None
         except Exception:
             latest = None
         try:
@@ -8897,7 +10147,14 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
         except Exception:
             watch_log = ""
         try:
-            memory_api_available = bool(getattr(self.plugin, "_bilibili_memory_api_available", lambda: False)())
+            memory_checker = getattr(self.plugin, "_bilibili_memory_api_available", None)
+            if callable(memory_checker):
+                try:
+                    memory_api_available = bool(memory_checker(allow_probe=False))
+                except TypeError:
+                    memory_api_available = bool(memory_checker())
+            else:
+                memory_api_available = False
         except Exception:
             memory_api_available = False
         return {
@@ -9049,14 +10306,20 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
         digest = state.get("last_digest") if isinstance(state.get("last_digest"), dict) else {}
         notes = state.get("notes") if isinstance(state.get("notes"), list) else []
         history = self._browsing_history_entries(data)
+        custom_available = bool(getattr(self.plugin, "_custom_web_exploration_search_configured", lambda: False)())
         try:
-            available = bool(getattr(self.plugin, "_astrbot_any_web_search_available", lambda: False)())
+            astrbot_available = bool(getattr(self.plugin, "_astrbot_any_web_search_available", lambda: False)())
         except Exception:
-            available = False
+            astrbot_available = False
+        available = bool(custom_available or astrbot_available)
+        search_backend = "custom" if custom_available else ("astrbot" if astrbot_available else "none")
         return {
             "enabled": bool(getattr(self.plugin, "enable_web_exploration", False)),
             "boredom_search_enabled": bool(getattr(self.plugin, "enable_web_exploration_boredom_search", False)),
             "available": available,
+            "search_backend": search_backend,
+            "custom_search_enabled": custom_available,
+            "astrbot_search_available": astrbot_available,
             "last_explore_at": self.plugin._format_timestamp_elapsed(state.get("last_explore_at", 0)),
             "last_status": self._single_line(state.get("last_status"), 80),
             "last_query": {
@@ -9208,16 +10471,17 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
 
     def _qzone_summary(self, data: dict[str, Any]) -> dict[str, Any]:
         state = data.get("qzone_integration") if isinstance(data.get("qzone_integration"), dict) else {}
-        try:
-            available = bool(getattr(self.plugin, "_qzone_available", lambda: False)())
-        except Exception:
-            available = False
+        available = bool(
+            callable(getattr(self.plugin, "_qzone_get_cookies", None))
+            and callable(getattr(self.plugin, "_qzone_query_feeds", None))
+        )
+        enabled = bool(available and getattr(self.plugin, "enable_qzone_integration", False))
         return {
-            "enabled": bool(available and getattr(self.plugin, "enable_qzone_integration", False)),
-            "life_publish_enabled": bool(available and getattr(self.plugin, "enable_qzone_life_publish", False)),
-            "comment_inbox_enabled": bool(available and getattr(self.plugin, "enable_qzone_comment_inbox", False)),
+            "enabled": enabled,
+            "life_publish_enabled": bool(enabled and getattr(self.plugin, "enable_qzone_life_publish", False)),
+            "comment_inbox_enabled": bool(enabled and getattr(self.plugin, "enable_qzone_comment_inbox", False)),
             "emotional_vent_enabled": bool(
-                available
+                enabled
                 and getattr(self.plugin, "enable_emotion_simulation", False)
                 and getattr(self.plugin, "enable_qzone_emotional_vent_publish", False)
             ),
@@ -9225,9 +10489,37 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "last_life_publish_at": self.plugin._format_timestamp_elapsed(state.get("last_life_publish_at", 0)),
             "last_status": state.get("last_life_publish_status", ""),
             "last_text": state.get("last_life_publish_text", ""),
+            "generated_image_enabled": bool(enabled and getattr(self.plugin, "enable_qzone_generated_image_publish", False)),
+            "generated_image_probability": self._float(getattr(self.plugin, "qzone_generated_image_probability", 0)),
+            "last_life_publish_images": self._int(state.get("last_life_publish_images")),
+            "last_life_publish_generated_image_status": state.get("last_life_publish_generated_image_status", ""),
+            "last_life_publish_generated_image_note": state.get("last_life_publish_generated_image_note", ""),
+            "last_life_publish_generated_image_backend": state.get("last_life_publish_generated_image_backend", ""),
+            "last_life_publish_generated_image_caption": state.get("last_life_publish_generated_image_caption", ""),
+            "last_life_publish_generated_image_reference": state.get("last_life_publish_generated_image_reference", ""),
+            "last_life_publish_generated_image_reference_exists": bool(state.get("last_life_publish_generated_image_reference_exists", False)),
+            "last_life_publish_generated_image_anchor": state.get("last_life_publish_generated_image_anchor", ""),
+            "last_life_publish_generated_image_composition": state.get("last_life_publish_generated_image_composition", ""),
+            "last_manual_publish_generated_image_status": state.get("last_manual_publish_generated_image_status", ""),
+            "last_manual_publish_generated_image_note": state.get("last_manual_publish_generated_image_note", ""),
+            "last_manual_publish_generated_image_backend": state.get("last_manual_publish_generated_image_backend", ""),
+            "last_manual_publish_generated_image_caption": state.get("last_manual_publish_generated_image_caption", ""),
+            "last_manual_publish_generated_image_reference": state.get("last_manual_publish_generated_image_reference", ""),
+            "last_manual_publish_generated_image_reference_exists": bool(state.get("last_manual_publish_generated_image_reference_exists", False)),
+            "last_manual_publish_generated_image_anchor": state.get("last_manual_publish_generated_image_anchor", ""),
+            "last_manual_publish_generated_image_composition": state.get("last_manual_publish_generated_image_composition", ""),
             "last_emotional_vent_at": self.plugin._format_timestamp_elapsed(state.get("last_emotional_vent_at", 0)),
             "last_emotional_vent_status": state.get("last_emotional_vent_status", ""),
             "last_emotional_vent_text": state.get("last_emotional_vent_text", ""),
+            "last_emotional_vent_images": self._int(state.get("last_emotional_vent_images")),
+            "last_emotional_vent_generated_image_status": state.get("last_emotional_vent_generated_image_status", ""),
+            "last_emotional_vent_generated_image_note": state.get("last_emotional_vent_generated_image_note", ""),
+            "last_emotional_vent_generated_image_backend": state.get("last_emotional_vent_generated_image_backend", ""),
+            "last_emotional_vent_generated_image_caption": state.get("last_emotional_vent_generated_image_caption", ""),
+            "last_emotional_vent_generated_image_reference": state.get("last_emotional_vent_generated_image_reference", ""),
+            "last_emotional_vent_generated_image_reference_exists": bool(state.get("last_emotional_vent_generated_image_reference_exists", False)),
+            "last_emotional_vent_generated_image_anchor": state.get("last_emotional_vent_generated_image_anchor", ""),
+            "last_emotional_vent_generated_image_composition": state.get("last_emotional_vent_generated_image_composition", ""),
             "last_comment_inbox_checked_at": self.plugin._format_timestamp_elapsed(state.get("last_comment_inbox_checked_at", 0)),
             "last_comment_inbox_status": state.get("last_comment_inbox_status", ""),
             "last_comment_inbox_reply_text": state.get("last_comment_inbox_reply_text", ""),
@@ -9462,6 +10754,12 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
                     "progress": progress,
                     "content": full_text or self._single_line(chunks[-1].get("text") if chunks else "", 2000) or "这本书还没有正文。",
                     "chunks": chunk_entries,
+                    "outline_count": len(item.get("outline") or []) if isinstance(item.get("outline"), list) else 0,
+                    "character_count": len(item.get("characters") or []) if isinstance(item.get("characters"), list) else 0,
+                    "review_count": len(item.get("quality_reviews") or []) if isinstance(item.get("quality_reviews"), list) else 0,
+                    "manual_edit_count": len(item.get("manual_edits") or []) if isinstance(item.get("manual_edits"), list) else 0,
+                    "has_story_bible": bool(item.get("story_bible")) if isinstance(item.get("story_bible"), dict) else False,
+                    "last_manual_edit_summary": self._single_line(item.get("last_manual_edit_summary"), 120),
                     "created": self.plugin._format_timestamp_elapsed(item.get("created_at", 0)),
                 }
             )
@@ -9671,7 +10969,14 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "secret_books": secret_books,
         }
 
-    def _proactive_reason_label(self, reason: Any) -> str:
+    def _proactive_template_text(self, value: Any, *, target_name: Any = "", limit: int = 220) -> str:
+        text = self._single_line(value, limit)
+        if not text:
+            return ""
+        name = self._single_line(target_name, 40) or "对方"
+        return self._single_line(text.replace("{name}", name).replace("{{name}}", name), limit)
+
+    def _proactive_reason_label(self, reason: Any, *, target_name: Any = "") -> str:
         key = self._single_line(reason, 40)
         if not key:
             return "未记录原因"
@@ -9683,7 +10988,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "timer": "聊天中形成的临时约定",
             "troubleshooting_test": "排障测试触发",
         }
-        return extra.get(key) or _REASON_TEXT.get(key) or key
+        return self._proactive_template_text(extra.get(key) or _REASON_TEXT.get(key) or key, target_name=target_name, limit=80)
 
     def _proactive_source_meta(self, source: Any) -> dict[str, str]:
         key = self._single_line(source, 40)
@@ -9730,12 +11035,21 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
     def _proactive_source_note(self, source: Any) -> str:
         return self._single_line(self._proactive_source_meta(source).get("note"), 120)
 
-    def _proactive_reason_detail(self, *, reason: Any, source: Any = "", topic: Any = "", motive: Any = "", note: Any = "") -> str:
-        label = self._proactive_reason_label(reason)
+    def _proactive_reason_detail(
+        self,
+        *,
+        reason: Any,
+        source: Any = "",
+        topic: Any = "",
+        motive: Any = "",
+        note: Any = "",
+        target_name: Any = "",
+    ) -> str:
+        label = self._proactive_reason_label(reason, target_name=target_name)
         parts = [label]
-        topic_text = self._single_line(topic, 80)
-        motive_text = self._single_line(motive, 140)
-        note_text = self._single_line(note, 120)
+        topic_text = self._proactive_template_text(topic, target_name=target_name, limit=80)
+        motive_text = self._proactive_template_text(motive, target_name=target_name, limit=140)
+        note_text = self._proactive_template_text(note, target_name=target_name, limit=120)
         source_text = self._proactive_source_label(source)
         if topic_text:
             parts.append(f"话题：{topic_text}")
@@ -9756,6 +11070,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
         source_counts: dict[str, int] = {}
         user_counts: dict[str, dict[str, Any]] = {}
         total_attempts = 0
+        pending_total = 0
 
         def candidate_user_meta(user_id: str, user: Any) -> dict[str, str]:
             if not isinstance(user, dict):
@@ -9798,6 +11113,8 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             ):
                 continue
             total_attempts += repeat_count
+            if status != "sent":
+                pending_total += repeat_count
             user_meta = candidate_user_meta(user_id, user)
             user_bucket = user_counts.setdefault(
                 user_id or "unknown",
@@ -9807,10 +11124,13 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
                     "role": user_meta["role"],
                     "role_label": user_meta["role_label"],
                     "total": 0,
+                    "pending_total": 0,
                     "counts": {},
                 },
             )
             user_bucket["total"] = self._int(user_bucket.get("total")) + repeat_count
+            if status != "sent":
+                user_bucket["pending_total"] = self._int(user_bucket.get("pending_total")) + repeat_count
             bucket_counts = user_bucket.get("counts")
             if not isinstance(bucket_counts, dict):
                 bucket_counts = {}
@@ -9882,8 +11202,15 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
                         "source_label": self._proactive_source_label(display_source),
                         "source_note": self._proactive_source_note(display_source),
                         "reason": reason,
-                        "reason_label": self._proactive_reason_label(reason),
-                        "reason_detail": self._proactive_reason_detail(reason=reason, source=display_source, topic=topic, motive=motive, note=note),
+                        "reason_label": self._proactive_reason_label(reason, target_name=user_meta["label"]),
+                        "reason_detail": self._proactive_reason_detail(
+                            reason=reason,
+                            source=display_source,
+                            topic=topic,
+                            motive=motive,
+                            note=note,
+                            target_name=user_meta["label"],
+                        ),
                         "action": action,
                         "topic": topic,
                         "motive": motive,
@@ -9938,6 +11265,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
         items.sort(key=lambda item: item.get("last_seen_ts") or item.get("scheduled_ts") or 0, reverse=True)
         return {
             "total": total_attempts,
+            "pending_total": pending_total,
             "visible_total": len(items),
             "counts": counts,
             "source_counts": source_counts,
@@ -10183,8 +11511,15 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
                     "status": status,
                     "action": action,
                     "reason": reason,
-                    "reason_label": self._proactive_reason_label(reason),
-                    "reason_detail": self._proactive_reason_detail(reason=reason, source=source, topic=topic, motive=motive, note=user.get("last_proactive_skip_reason")),
+                    "reason_label": self._proactive_reason_label(reason, target_name=user_summary.get("display_name") or str(user_id)),
+                    "reason_detail": self._proactive_reason_detail(
+                        reason=reason,
+                        source=source,
+                        topic=topic,
+                        motive=motive,
+                        note=user.get("last_proactive_skip_reason"),
+                        target_name=user_summary.get("display_name") or str(user_id),
+                    ),
                     "topic": topic,
                     "motive": motive,
                     "planned_impulse_id": self._single_line(user.get("planned_proactive_impulse_id"), 40),
@@ -10234,6 +11569,8 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             meta_leak_checker = getattr(self.plugin, "_framework_agent_meta_summary_leak", None)
             if callable(meta_leak_checker) and (
                 meta_leak_checker(str(raw.get("text_preview") or ""))
+                or meta_leak_checker(str(raw.get("original_text_preview") or ""))
+                or meta_leak_checker(str(raw.get("final_text_preview") or ""))
                 or meta_leak_checker(str(raw.get("text") or ""))
                 or meta_leak_checker(str(raw.get("note") or ""))
             ):
@@ -10282,11 +11619,22 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
                     bucket,
                 )
             )
+            text_preview = self._display_message_text(raw.get("text_preview"), 180)
+            original_text_preview = self._display_message_text(raw.get("original_text_preview"), 180)
+            final_text_preview = self._display_message_text(raw.get("final_text_preview"), 180)
             existing = seen_audit_signatures.get(signature)
             if existing is not None:
-                existing["updated_ts"] = max(self._float(existing.get("updated_ts")), updated_ts)
+                previous_updated = self._float(existing.get("updated_ts"))
+                existing["updated_ts"] = max(previous_updated, updated_ts)
                 existing["updated"] = self.plugin._format_timestamp_elapsed(existing["updated_ts"])
                 existing["duplicate_count"] = max(1, self._int(existing.get("duplicate_count"))) + max(1, self._int(raw.get("duplicate_count")))
+                if updated_ts >= previous_updated:
+                    if text_preview:
+                        existing["text_preview"] = text_preview
+                    if original_text_preview:
+                        existing["original_text_preview"] = original_text_preview
+                    if final_text_preview:
+                        existing["final_text_preview"] = final_text_preview
                 continue
             audit_status_counts[status] = audit_status_counts.get(status, 0) + 1
             item = {
@@ -10300,8 +11648,15 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
                 "source_label": self._proactive_source_label(raw.get("source")),
                 "source_note": self._proactive_source_note(raw.get("source")),
                 "reason": audit_reason,
-                "reason_label": self._proactive_reason_label(audit_reason),
-                "reason_detail": self._proactive_reason_detail(reason=audit_reason, source=raw.get("source"), topic=audit_topic, motive=audit_motive, note=note),
+                "reason_label": self._proactive_reason_label(audit_reason, target_name=user_summary.get("display_name") or user_id),
+                "reason_detail": self._proactive_reason_detail(
+                    reason=audit_reason,
+                    source=raw.get("source"),
+                    topic=audit_topic,
+                    motive=audit_motive,
+                    note=note,
+                    target_name=user_summary.get("display_name") or user_id,
+                ),
                 "action": audit_action,
                 "topic": audit_topic,
                 "motive": audit_motive,
@@ -10312,7 +11667,9 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
                 "semantic_risk": self._int(raw.get("semantic_risk")),
                 "semantic_note": self._single_line(raw.get("semantic_note"), 180),
                 "note": note,
-                "text_preview": self._display_message_text(raw.get("text_preview"), 180),
+                "text_preview": text_preview,
+                "original_text_preview": original_text_preview,
+                "final_text_preview": final_text_preview,
                 "scheduled_ts": self._float(raw.get("scheduled_ts")),
                 "scheduled": self.plugin._format_timestamp_elapsed(raw.get("scheduled_ts", 0)),
                 "created_ts": self._float(raw.get("created_ts")),
@@ -10360,6 +11717,305 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             },
         }
 
+    # ============================================================
+    # Creative Project Management Endpoints
+    # ============================================================
+
+    def _creative_project_payload(self, project: dict[str, Any]) -> dict[str, Any]:
+        chunks = project.get("draft_chunks") if isinstance(project.get("draft_chunks"), list) else []
+        chunk_items = []
+        for idx, chunk in enumerate(chunks):
+            if not isinstance(chunk, dict):
+                continue
+            chunk_ts = chunk.get("at", 0) or chunk.get("created_at", 0) or chunk.get("created_ts", 0)
+            chunk_items.append(
+                {
+                    "index": idx,
+                    "text": self._single_line(chunk.get("text"), 8000),
+                    "chars": self._int(chunk.get("chars")),
+                    "at": chunk_ts,
+                    "created": self.plugin._format_timestamp_elapsed(chunk_ts),
+                    "manually_edited": bool(chunk.get("manually_edited")),
+                }
+            )
+        return {
+            "id": self._single_line(project.get("id"), 32),
+            "title": self._single_line(project.get("title"), 80),
+            "work_type": self._single_line(project.get("work_type"), 40) or "短篇小说",
+            "premise": self._single_line(project.get("premise"), 500),
+            "tone": self._single_line(project.get("tone"), 80),
+            "point_of_view": self._single_line(project.get("point_of_view"), 60),
+            "source": self._single_line(project.get("source"), 40),
+            "source_text": self._single_line(project.get("source_text"), 500),
+            "status": self._single_line(project.get("status"), 24),
+            "current_chars": self._int(project.get("current_chars")),
+            "target_chars": self._int(project.get("target_chars")),
+            "next_hint": self._single_line(project.get("next_hint"), 240),
+            "outline": project.get("outline") if isinstance(project.get("outline"), list) else [],
+            "characters": project.get("characters") if isinstance(project.get("characters"), list) else [],
+            "story_bible": project.get("story_bible") if isinstance(project.get("story_bible"), dict) else {},
+            "revision_notes": self._limited_list(project.get("revision_notes"), 20),
+            "quality_reviews": self._limited_list(project.get("quality_reviews"), 20),
+            "manual_edits": self._limited_list(project.get("manual_edits"), 30),
+            "creative_memory_pool": self._limited_list(project.get("creative_memory_pool"), 50),
+            "last_manual_edit_at": self.plugin._format_timestamp_elapsed(project.get("last_manual_edit_at", 0)),
+            "last_manual_edit_summary": self._single_line(project.get("last_manual_edit_summary"), 160),
+            "chunks": chunk_items,
+            "chunk_count": len(chunk_items),
+            "milestones": project.get("disclosed_milestones") if isinstance(project.get("disclosed_milestones"), list) else [],
+            "created_at": self.plugin._format_timestamp_elapsed(project.get("created_at", 0)),
+            "last_advanced": self.plugin._format_timestamp_elapsed(project.get("last_advanced_at", 0)),
+            "next_advance": self.plugin._format_timestamp_elapsed(project.get("next_advance_at", 0)),
+        }
+
+    async def get_creative_project(self) -> dict[str, Any]:
+        project_id = str(request.args.get("id", "")).strip()
+        if not project_id:
+            return self._error("缺少 id")
+        try:
+            async with self.plugin._data_lock:
+                projects = self.plugin.data.get("creative_projects") if isinstance(self.plugin.data.get("creative_projects"), list) else []
+                project = next((p for p in projects if isinstance(p, dict) and p.get("id") == project_id), None)
+                if not project:
+                    return self._error("作品不存在")
+                snapshot = deepcopy(project)
+            return self._ok(self._creative_project_payload(snapshot))
+        except Exception as exc:
+            logger.error("[PrivateCompanionPage] 获取创作项目详情失败: %s", exc, exc_info=True)
+            return self._error(str(exc))
+
+    async def update_creative_project(self) -> dict[str, Any]:
+        payload = await request.get_json(silent=True) or {}
+        project_id = str(payload.get("id", "")).strip()
+        if not project_id:
+            return self._error("缺少 id")
+        try:
+            changed_notes: list[str] = []
+            async with self.plugin._data_lock:
+                projects = self.plugin.data.get("creative_projects") if isinstance(self.plugin.data.get("creative_projects"), list) else []
+                project = next((p for p in projects if isinstance(p, dict) and p.get("id") == project_id), None)
+                if not project:
+                    return self._error("作品不存在")
+                for key, limit in (
+                    ("title", 80),
+                    ("work_type", 40),
+                    ("premise", 500),
+                    ("tone", 80),
+                    ("point_of_view", 60),
+                    ("next_hint", 240),
+                    ("source_text", 500),
+                ):
+                    if key not in payload:
+                        continue
+                    value = self._single_line(payload.get(key), limit)
+                    if value != self._single_line(project.get(key), limit):
+                        project[key] = value
+                        changed_notes.append(f"{key}: {value}")
+                if "status" in payload:
+                    status = self._single_line(payload.get("status"), 24)
+                    if status in ("drafting", "finished", "paused") and status != project.get("status"):
+                        project["status"] = status
+                        changed_notes.append(f"status: {status}")
+                if "target_chars" in payload:
+                    target_chars = _safe_int(payload.get("target_chars"), 2000, 300, 5200)
+                    if target_chars != self._int(project.get("target_chars")):
+                        project["target_chars"] = target_chars
+                        changed_notes.append(f"target_chars: {target_chars}")
+                if changed_notes:
+                    story_bible_getter = getattr(self.plugin, "_get_or_create_story_bible", None)
+                    if callable(story_bible_getter):
+                        story_bible = story_bible_getter(project)
+                        if "premise" in payload:
+                            story_bible["mainline_direction"] = self._single_line(project.get("premise"), 160)
+                        if "next_hint" in payload:
+                            story_bible["next_direction"] = self._single_line(project.get("next_hint"), 160)
+                    edits = project.setdefault("manual_edits", [])
+                    if not isinstance(edits, list):
+                        edits = []
+                        project["manual_edits"] = edits
+                    now = time.time()
+                    note = "；".join(changed_notes)
+                    edits.append(
+                        {
+                            "id": secrets.token_hex(6),
+                            "type": "project_meta",
+                            "title": "更新作品信息",
+                            "content": note[:2000],
+                            "chunk_index": -1,
+                            "created_at": now,
+                        }
+                    )
+                    del edits[:-10]
+                    project["last_manual_edit_at"] = now
+                    project["last_manual_edit_summary"] = "更新作品信息"
+                    pool_getter = getattr(self.plugin, "_get_or_create_memory_pool", None)
+                    add_memory = getattr(self.plugin, "_add_memory_entry", None)
+                    extract_keywords = getattr(self.plugin, "_extract_creative_keywords", None)
+                    if callable(pool_getter) and callable(add_memory):
+                        keywords = extract_keywords(note, limit=8) if callable(extract_keywords) else ["作品信息"]
+                        add_memory(
+                            pool_getter(project),
+                            project_id,
+                            "revision",
+                            f"更新作品信息: {self._single_line(note, 180)}",
+                            keywords or ["作品信息"],
+                            importance=5,
+                        )
+                self.plugin._save_data_sync()
+            return self._ok({"project_id": project_id, "changed": bool(changed_notes), "message": "作品已更新"})
+        except Exception as exc:
+            logger.error("[PrivateCompanionPage] 更新创作项目失败: %s", exc, exc_info=True)
+            return self._error(str(exc))
+
+    async def update_creative_chunk(self) -> dict[str, Any]:
+        payload = await request.get_json(silent=True) or {}
+        project_id = str(payload.get("id", "")).strip()
+        chunk_index = _safe_int(payload.get("chunk_index"), -1, -1)
+        text = str(payload.get("text", "")).strip()
+        if not project_id:
+            return self._error("缺少 id")
+        if chunk_index < 0:
+            return self._error("缺少 chunk_index")
+        if not text:
+            return self._error("缺少 text")
+        try:
+            apply_edit = getattr(self.plugin, "_apply_creative_manual_edit", None)
+            if not callable(apply_edit):
+                return self._error("创作编辑能力不可用")
+            result = await apply_edit(project_id, "chunk_text", text, f"修改第{chunk_index + 1}段", chunk_index)
+            if not result.get("success"):
+                return self._error(result.get("error") or "片段更新失败")
+            return self._ok({"project_id": project_id, "chunk_index": chunk_index, "message": "片段已更新"})
+        except Exception as exc:
+            logger.error("[PrivateCompanionPage] 更新创作片段失败: %s", exc, exc_info=True)
+            return self._error(str(exc))
+
+    async def update_creative_outline(self) -> dict[str, Any]:
+        payload = await request.get_json(silent=True) or {}
+        project_id = str(payload.get("id", "")).strip()
+        outline_text = str(payload.get("outline", "")).strip()
+        if not project_id:
+            return self._error("缺少 id")
+        try:
+            apply_edit = getattr(self.plugin, "_apply_creative_manual_edit", None)
+            if not callable(apply_edit):
+                return self._error("创作编辑能力不可用")
+            result = await apply_edit(project_id, "outline", outline_text, "更新大纲", -1)
+            if not result.get("success"):
+                return self._error(result.get("error") or "大纲更新失败")
+            return self._ok({"project_id": project_id, "message": "大纲已更新"})
+        except Exception as exc:
+            logger.error("[PrivateCompanionPage] 更新创作大纲失败: %s", exc, exc_info=True)
+            return self._error(str(exc))
+
+    async def update_creative_characters(self) -> dict[str, Any]:
+        payload = await request.get_json(silent=True) or {}
+        project_id = str(payload.get("id", "")).strip()
+        raw_characters = payload.get("characters")
+        if not project_id:
+            return self._error("缺少 id")
+        if not isinstance(raw_characters, list):
+            return self._error("角色必须是数组")
+        try:
+            characters = [item for item in raw_characters if isinstance(item, dict)]
+            apply_edit = getattr(self.plugin, "_apply_creative_manual_edit", None)
+            if not callable(apply_edit):
+                return self._error("创作编辑能力不可用")
+            result = await apply_edit(
+                project_id,
+                "characters",
+                json.dumps(characters, ensure_ascii=False),
+                "更新角色表",
+                -1,
+            )
+            if not result.get("success"):
+                return self._error(result.get("error") or "角色更新失败")
+            return self._ok({"project_id": project_id, "message": "角色已更新"})
+        except Exception as exc:
+            logger.error("[PrivateCompanionPage] 更新创作角色失败: %s", exc, exc_info=True)
+            return self._error(str(exc))
+
+    async def reanalyze_creative_project(self) -> dict[str, Any]:
+        payload = await request.get_json(silent=True) or {}
+        project_id = str(payload.get("id", "")).strip()
+        if not project_id:
+            return self._error("缺少 id")
+        try:
+            async with self.plugin._data_lock:
+                projects = self.plugin.data.get("creative_projects") if isinstance(self.plugin.data.get("creative_projects"), list) else []
+                project = next((p for p in projects if isinstance(p, dict) and p.get("id") == project_id), None)
+                if not project:
+                    return self._error("作品不存在")
+                snapshot = deepcopy(project)
+            chunks = snapshot.get("draft_chunks") if isinstance(snapshot.get("draft_chunks"), list) else []
+            latest = next((c for c in reversed(chunks) if isinstance(c, dict) and self._single_line(c.get("text"), 80)), None)
+            if not latest:
+                return self._error("还没有正文片段，无法分析")
+            story_bible = snapshot.get("story_bible") if isinstance(snapshot.get("story_bible"), dict) else {}
+            outline = "\n".join(snapshot.get("outline", [])) if isinstance(snapshot.get("outline"), list) else ""
+            safe_recent_chunks = [c for c in chunks[-5:] if isinstance(c, dict)]
+            reviewer = getattr(self.plugin, "_review_creative_chunk", None)
+            if not callable(reviewer):
+                return self._error("创作审校能力不可用")
+            review = await reviewer(snapshot, story_bible, outline, latest.get("text", ""), safe_recent_chunks)
+            if not isinstance(review, dict):
+                review = {}
+            async with self.plugin._data_lock:
+                projects = self.plugin.data.get("creative_projects") if isinstance(self.plugin.data.get("creative_projects"), list) else []
+                project = next((p for p in projects if isinstance(p, dict) and p.get("id") == project_id), None)
+                if not project:
+                    return self._error("作品不存在")
+                review["id"] = secrets.token_hex(6)
+                review["chunk_index"] = len(project.get("draft_chunks") or []) - 1
+                review["created_at"] = time.time()
+                reviews = project.setdefault("quality_reviews", [])
+                if not isinstance(reviews, list):
+                    reviews = []
+                    project["quality_reviews"] = reviews
+                reviews.append(review)
+                del reviews[:-20]
+                self.plugin._save_data_sync()
+            return self._ok({"project_id": project_id, "review": review})
+        except Exception as exc:
+            logger.error("[PrivateCompanionPage] 创作项目质量分析失败: %s", exc, exc_info=True)
+            return self._error(str(exc))
+
+    async def rebuild_creative_memory(self) -> dict[str, Any]:
+        payload = await request.get_json(silent=True) or {}
+        project_id = str(payload.get("id", "")).strip()
+        if not project_id:
+            return self._error("缺少 id")
+        try:
+            rebuild = getattr(self.plugin, "_rebuild_creative_memory_from_project", None)
+            if not callable(rebuild):
+                return self._error("创作记忆重建能力不可用")
+            result = await rebuild(project_id)
+            if not result.get("success"):
+                return self._error(result.get("error") or "重建失败")
+            return self._ok(result)
+        except Exception as exc:
+            logger.error("[PrivateCompanionPage] 重建创作记忆失败: %s", exc, exc_info=True)
+            return self._error(str(exc))
+
+    async def delete_creative_project(self) -> dict[str, Any]:
+        payload = await request.get_json(silent=True) or {}
+        project_id = str(payload.get("id", "")).strip()
+        if not project_id:
+            return self._error("缺少 id")
+        try:
+            async with self.plugin._data_lock:
+                projects = self.plugin.data.get("creative_projects") if isinstance(self.plugin.data.get("creative_projects"), list) else []
+                before = len(projects)
+                self.plugin.data["creative_projects"] = [
+                    p for p in projects if not (isinstance(p, dict) and p.get("id") == project_id)
+                ]
+                removed = before - len(self.plugin.data["creative_projects"])
+                self.plugin._save_data_sync()
+            return self._ok({"project_id": project_id, "removed": removed})
+        except Exception as exc:
+            logger.error("[PrivateCompanionPage] 删除创作项目失败: %s", exc, exc_info=True)
+            return self._error(str(exc))
+
     def _creative_summary(self, data: dict[str, Any]) -> dict[str, Any]:
         projects = data.get("creative_projects") if isinstance(data.get("creative_projects"), list) else []
         items = [item for item in projects if isinstance(item, dict)]
@@ -10389,6 +12045,11 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
                     "current_chars": self._int(item.get("current_chars")),
                     "target_chars": self._int(item.get("target_chars")),
                     "chunk_count": len(item.get("draft_chunks") or []) if isinstance(item.get("draft_chunks"), list) else 0,
+                    "outline_count": len(item.get("outline") or []) if isinstance(item.get("outline"), list) else 0,
+                    "character_count": len(item.get("characters") or []) if isinstance(item.get("characters"), list) else 0,
+                    "has_story_bible": bool(item.get("story_bible")) if isinstance(item.get("story_bible"), dict) else False,
+                    "review_count": len(item.get("quality_reviews") or []) if isinstance(item.get("quality_reviews"), list) else 0,
+                    "manual_edit_count": len(item.get("manual_edits") or []) if isinstance(item.get("manual_edits"), list) else 0,
                     "latest_snippet": self._single_line(
                         (item.get("draft_chunks") or [])[-1].get("text") if isinstance(item.get("draft_chunks"), list) and item.get("draft_chunks") else "",
                         260,
@@ -10494,7 +12155,10 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
                     "window": segment.get("window", str(key)),
                     "start": segment.get("start", 99999),
                     "status": snapshot.get("status", ""),
+                    "started_at": snapshot.get("started_at", ""),
                     "summary": snapshot.get("summary", ""),
+                    "error": snapshot.get("error", ""),
+                    "retry_after": snapshot.get("retry_after", ""),
                     "state_variables": self._limited_state_variables(snapshot.get("state_variables")),
                     "presence_status": snapshot.get("presence_status") if isinstance(snapshot.get("presence_status"), dict) else {},
                     "interaction_updates": self._limited_interaction_updates(snapshot.get("interaction_updates")),
@@ -10510,8 +12174,8 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "detail_day": data.get("detail_enhanced_day", ""),
             "segment_count": len(segments),
             "segments": segments,
-            "story_today_events": self._limited_story_items(story.get("today_events"), 12),
-            "story_proactive_events": self._limited_story_items(story.get("proactive_events"), 12),
+            "story_today_events": self._limited_story_items(story.get("today_events"), 48),
+            "story_proactive_events": self._limited_story_items(story.get("proactive_events"), 32),
             "adjustments": self._limited_adjustments(adjustments),
             "qq_presence_state": presence,
         }
@@ -10548,10 +12212,26 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             return {"window": key, "start": 99999}
         return {"window": f"{self.plugin._minutes_to_hhmm(start)}-{self.plugin._minutes_to_hhmm(end)}", "start": start}
 
+    def _memory_plugin_token_usage_raw(self) -> dict[str, Any]:
+        getter = getattr(self.plugin, "_memory_companion_token_usage_summary", None)
+        if not callable(getter):
+            return {"available": False, "display_name": "我会牢牢记住你", "reason": "陪伴插件当前未接入记忆插件桥"}
+        try:
+            usage = getter()
+        except Exception as exc:
+            return {"available": False, "display_name": "我会牢牢记住你", "reason": self._single_line(exc, 160)}
+        if not isinstance(usage, dict):
+            return {"available": False, "display_name": "我会牢牢记住你", "reason": "记忆插件返回的 Token 统计格式无效"}
+        usage.setdefault("available", True)
+        usage.setdefault("display_name", "我会牢牢记住你")
+        usage.setdefault("counted_in_private_companion_budget", False)
+        return usage
+
     def _token_stats_payload(self, usage: Any) -> dict[str, Any]:
         if not isinstance(usage, dict):
             usage = {}
         external_usage = usage.get("external") if isinstance(usage.get("external"), dict) else {}
+        memory_plugin_usage = self._memory_plugin_token_usage_raw()
         totals = self._token_bucket(usage.get("totals"))
         by_provider = self._token_ranked_map(usage.get("by_provider"))
         by_task = self._token_ranked_map(usage.get("by_task"))
@@ -10656,6 +12336,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "budget": budget,
             "recent": recent,
             "external": self._token_external_payload(external_usage),
+            "memory_plugin": self._token_memory_plugin_payload(memory_plugin_usage),
         }
 
     def _token_external_payload(self, usage: Any) -> dict[str, Any]:
@@ -10712,6 +12393,69 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
             "by_provider": self._token_ranked_map(usage.get("by_provider")),
             "by_task": self._token_ranked_map(usage.get("by_task")),
             "by_session": self._token_ranked_map(usage.get("by_session")),
+            "by_day": by_day,
+            "by_day_detail": by_day_detail,
+            "by_hour": self._token_series_map(usage.get("by_hour"), limit=48),
+            "recent": recent,
+        }
+
+    def _token_memory_plugin_payload(self, usage: Any) -> dict[str, Any]:
+        if not isinstance(usage, dict):
+            usage = {"available": False}
+        available = bool(usage.get("available", True))
+        by_day = self._token_series_map(usage.get("by_day"), limit=30)
+        by_day_provider_raw = usage.get("by_day_provider") if isinstance(usage.get("by_day_provider"), dict) else {}
+        by_day_task_raw = usage.get("by_day_task") if isinstance(usage.get("by_day_task"), dict) else {}
+        by_day_detail = []
+        for item in by_day:
+            day_key = item.get("key", "")
+            by_day_detail.append(
+                {
+                    **item,
+                    "providers": self._token_ranked_map(by_day_provider_raw.get(day_key))[:5],
+                    "tasks": self._token_ranked_map(by_day_task_raw.get(day_key))[:8],
+                }
+            )
+        recent = []
+        recent_raw = usage.get("recent")
+        if isinstance(recent_raw, list):
+            for item in recent_raw[-80:][::-1]:
+                if not isinstance(item, dict):
+                    continue
+                recent.append(
+                    {
+                        "time": self._single_line(item.get("time"), 24),
+                        "ts": self._float(item.get("ts")),
+                        "provider": self._single_line(item.get("provider"), 80),
+                        "task": self._single_line(item.get("task"), 60),
+                        "success": bool(item.get("success", True)),
+                        "prompt_tokens": self._int(item.get("prompt_tokens")),
+                        "completion_tokens": self._int(item.get("completion_tokens")),
+                        "total_tokens": self._int(item.get("total_tokens")),
+                        "cached_tokens": self._int(item.get("cached_tokens")),
+                        "cache_read_tokens": self._int(item.get("cache_read_tokens")),
+                        "cache_write_tokens": self._int(item.get("cache_write_tokens")),
+                        "estimated": bool(item.get("estimated", False)),
+                        "elapsed_ms": self._int(item.get("elapsed_ms")),
+                        "prompt_chars": self._int(item.get("prompt_chars")),
+                        "completion_chars": self._int(item.get("completion_chars")),
+                        "error": self._single_line(item.get("error"), 160),
+                    }
+                )
+        return {
+            "available": available,
+            "display_name": self._single_line(usage.get("display_name") or "我会牢牢记住你", 80),
+            "plugin_name": self._single_line(usage.get("plugin_name") or "astrbot_plugin_memory_companion", 80),
+            "reason": self._single_line(usage.get("reason"), 160),
+            "note": self._single_line(
+                usage.get("note") or "仅展示记忆插件自身模型消耗，不计入陪伴插件每日 Token 限额。",
+                220,
+            ),
+            "counted_in_private_companion_budget": bool(usage.get("counted_in_private_companion_budget", False)),
+            "updated_at": self._single_line(usage.get("updated_at"), 24),
+            "totals": self._token_bucket(usage.get("totals")),
+            "by_provider": self._token_ranked_map(usage.get("by_provider")),
+            "by_task": self._token_ranked_map(usage.get("by_task")),
             "by_day": by_day,
             "by_day_detail": by_day_detail,
             "by_hour": self._token_series_map(usage.get("by_hour"), limit=48),
@@ -10861,7 +12605,13 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
         if not isinstance(value, list):
             return []
         items: list[dict[str, str]] = []
-        for item in value[:limit]:
+        indexed_items = [
+            (PrivateCompanionPageApi._story_item_start_minutes(item), index, item)
+            for index, item in enumerate(value)
+            if isinstance(item, dict)
+        ]
+        indexed_items.sort(key=lambda row: (row[0], row[1]))
+        for _, _, item in indexed_items[:limit]:
             if not isinstance(item, dict):
                 continue
             items.append(
@@ -10881,6 +12631,20 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiUsersGroupsMixin):
                 }
             )
         return items
+
+    @staticmethod
+    def _story_item_start_minutes(item: Any) -> int:
+        if not isinstance(item, dict):
+            return 99999
+        text = PrivateCompanionPageApi._single_line(item.get("window") or item.get("time"), 32)
+        match = re.search(r"(\d{1,2}):(\d{2})", text)
+        if not match:
+            return 99999
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+        if hour > 23 or minute > 59:
+            return 99999
+        return hour * 60 + minute
 
     @staticmethod
     def _limited_adjustments(value: Any) -> list[dict[str, Any]]:

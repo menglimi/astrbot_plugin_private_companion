@@ -601,6 +601,33 @@ class AtRelayMixin:
         if not isinstance(result, dict) or _single_line(result.get("status"), 24) not in {"success", "scheduled"}:
             return
         final_reply = _single_line(result.get("final_reply"), 80) or "说过啦。"
+        reference = _single_line(result.get("final_reply_reference"), 260)
+        if reference:
+            sender_id = ""
+            try:
+                sender_id = self._canonical_private_user_id(str(event.get_sender_id()))
+            except Exception:
+                try:
+                    sender_id = str(event.get_sender_id())
+                except Exception:
+                    sender_id = ""
+            users = self.data.get("users") if isinstance(getattr(self, "data", None), dict) else {}
+            user = users.get(sender_id) if sender_id and isinstance(users, dict) and isinstance(users.get(sender_id), dict) else {}
+            rewriter = getattr(self, "_rewrite_reference_reply_with_persona", None)
+            if callable(rewriter):
+                rewritten = await rewriter(
+                    reference,
+                    scene="转述工具执行后的聊天回执",
+                    user=user,
+                    event=event,
+                    fallback_text=final_reply,
+                    task="atrelay_receipt_rewrite",
+                    max_chars=70,
+                    allow_fallback=True,
+                    preserve_status=True,
+                )
+                if rewritten:
+                    final_reply = rewritten
         text = str(getattr(resp, "completion_text", "") or "").strip()
         sent_text = _single_line(result.get("sent_text"), 120)
         if not text:

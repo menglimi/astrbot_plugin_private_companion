@@ -8,7 +8,7 @@ from typing import Any
 
 from astrbot.api import logger
 
-from .helpers import _single_line
+from .helpers import _single_line, _strip_nonstandard_chat_control_tags
 
 
 class TtsToolSanitizerMixin:
@@ -18,6 +18,14 @@ class TtsToolSanitizerMixin:
         text = str(raw_text or "")
         if not text:
             return ""
+        cleaned_control = _strip_nonstandard_chat_control_tags(text)
+        if cleaned_control != text:
+            logger.info(
+                "[PrivateCompanion] 已清理工具直发文本中的非标准控制标签: before=%s after=%s",
+                _single_line(text, 120),
+                _single_line(cleaned_control, 120),
+            )
+            text = cleaned_control
         if not re.search(r"</?(?:pc[_-]?tts|t{2,}s)\b", text, flags=re.IGNORECASE):
             return text
         try:

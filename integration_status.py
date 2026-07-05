@@ -259,17 +259,12 @@ class IntegrationStatusMixin:
         """Work around LivingMemory versions whose MemoryProcessor lacks config."""
         if not self.enable_livingmemory_integration:
             return
-        try:
-            module = importlib.import_module(
-                "data.plugins.astrbot_plugin_livingmemory.core.processors.memory_processor"
-            )
-        except Exception:
-            try:
-                module = importlib.import_module(
-                    "astrbot_plugin_livingmemory.core.processors.memory_processor"
-                )
-            except Exception:
-                return
+        module = (
+            sys.modules.get("data.plugins.astrbot_plugin_livingmemory.core.processors.memory_processor")
+            or sys.modules.get("astrbot_plugin_livingmemory.core.processors.memory_processor")
+        )
+        if module is None:
+            return
         processor_cls = getattr(module, "MemoryProcessor", None)
         if processor_cls is None or hasattr(processor_cls, "config"):
             return
@@ -438,7 +433,8 @@ class IntegrationStatusMixin:
         return (
             "【长期记忆检索】\n"
             f"上下文不够时可用 `{tool_name}` 查记忆。{boundary}结果只作接话背景。\n"
-            "召回结果里出现人名、昵称、QQ 或群成员别名时,不要直接当作稳定身份；能查关系网时先用关系网确认,不能确认就按召回文本里的具体说话人原样转述。"
+            "召回结果里出现人名、昵称、QQ 或群成员别名时,不要直接当作稳定身份；能查关系网时先用关系网确认,不能确认就按召回文本里的具体说话人原样转述。\n"
+            "如果召回到 Bot 曾说自己在吃饭、整理、犯困、路上、创作等状态/日程，只能理解为当时 Bot 的拟人化表达或历史自称；不要写成用户事实、现实证据或持续状态。"
         )
 
     def _format_livingmemory_status(self) -> str:

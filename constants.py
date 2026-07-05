@@ -5,6 +5,14 @@ import re
 PLUGIN_NAME = "astrbot_plugin_private_companion"
 DATA_VERSION = 1
 
+DEFAULT_REPLY_STYLE_PROMPT = (
+    "每次回复至多三句话；简单的回答尽可能保持在 1~2 句，并尽可能保持口语化与简洁化。"
+    "回复长度和语气应该与当前对话节奏相匹配，必须使用简体中文进行回复，话语符合社交媒体交流习惯。"
+    "当你需要解决复杂问题或进行详细说明时，可以无视这一要求。"
+)
+
+DEFAULT_NATURAL_LANGUAGE_PHOTO_EXTRA_PROMPT = "画面干净清晰，构图自然，不要加入无关文字、水印、Logo 或多余说明。"
+
 # 日常计划文案 - 生活化JK口语
 DEFAULT_DAILY_PLAN_ITEMS = [
     {"time": "08:20", "activity": "起床收拾", "mood": "开心", "message_seed": "新的一天开始啦——该起床咯~"},
@@ -70,6 +78,7 @@ _DATA_STORE_KEYS = (
     "important_dates",
     "qq_presence_state",
     "creative_projects",
+    "creative_memory_pool",
     "proactive_candidate_pool",
     "external_proactive_abilities",
     "worldbook_entries",
@@ -101,11 +110,11 @@ _REASON_TEXT = {
 
 # 动作描述 - 生活化
 _ACTION_TEXT = {
-    "message": "发了条消息给{name}",
+    "message": "主动留了一句话",
     "screen_peek": "看了眼本机屏幕",
-    "photo_text": "拍了张照片发给{name}",
+    "photo_text": "分享了一张照片",
     "poke": "戳了一下",
-    "voice": "发了段语音跟{name}说",
+    "voice": "用语音说了一句",
     "jm_cosmos_read": "私下翻了会儿漫画本子",
 }
 
@@ -215,6 +224,7 @@ _DEFAULT_USER_TEMPLATE = {
     "last_user_message": "",
     "last_user_message_at": 0,
     "last_companion_message": "",
+    "last_companion_message_at": 0,
     "last_proactive_reason": "",
     "last_proactive_action": "",
     "last_proactive_behavior_summary": "",
@@ -329,4 +339,96 @@ _DEFAULT_GROUP_TEMPLATE = {
     "last_summary_at": 0,
     "last_episode_refresh_at": 0,
     "last_slang_summary_at": 0,
+}
+
+# ---------- 创作系统数据结构 ----------
+
+CREATIVE_STORY_BIBLE_TEMPLATE = {
+    "mainline_direction": "",
+    "active_themes": [],
+    "resolved_threads": [],
+    "unresolved_threads": [],
+    "important_facts": [],
+    "next_direction": "",
+    "recent_keywords": [],
+    "recent_outlines": [],
+    "last_updated_chunk": 0,
+}
+
+CREATIVE_MEMORY_MAX_ENTRIES = 50
+CREATIVE_SIMILARITY_THRESHOLD = 0.72
+CREATIVE_SIMILARITY_RETRIES = 2
+CREATIVE_REVIEW_MIN_SCORE = 7
+CREATIVE_MAX_REVISION_HISTORY = 10
+CREATIVE_FALLBACK_CHUNKS = [
+    "她把那句话写到一半,忽然停住。窗外的声音很轻,像有人把另一个世界折起来,塞进了玻璃杯底。",
+    "她把那个念头又往后推了一小步,像把一枚很轻的纸片压进书页里,等下次再翻开。",
+    "笔尖在纸上停了一秒,又继续往下走。风从窗缝里挤进来,翻动了桌角的便签。",
+    "她忽然想到一个画面,远处的灯塔在雾里一闪一闪,像在给谁打暗号。",
+    "这段话写了又删,删了又写。最后她叹了口气,把手机屏幕朝下扣在桌上。",
+]
+
+DEFAULT_CREATIVE_PROJECT_TEMPLATE = {
+    "id": "",
+    "title": "",
+    "work_type": "短篇小说",
+    "premise": "",
+    "tone": "",
+    "point_of_view": "第三人称有限视角",
+    "source": "life",
+    "source_text": "",
+    "target_chars": 2000,
+    "current_chars": 0,
+    "status": "drafting",
+    "draft_chunks": [],
+    "disclosed_milestones": [],
+    "story_bible": {},
+    "creative_memory_pool": [],
+    "outline": [],
+    "characters": [],
+    "revision_notes": [],
+    "quality_reviews": [],
+    "manual_edits": [],
+    "last_manual_edit_at": 0,
+    "last_manual_edit_summary": "",
+    "writing_provider_id": "",
+    "review_provider_id": "",
+    "next_hint": "",
+    "created_at": 0,
+    "last_advanced_at": 0,
+    "next_advance_at": 0,
+    "last_share_at": 0,
+    "share_count": 0,
+}
+
+DEFAULT_CREATIVE_CHARACTER_TEMPLATE = {
+    "id": "",
+    "name": "",
+    "role": "",
+    "description": "",
+    "appearance": "",
+    "personality": "",
+    "background": "",
+    "relationships": [],
+    "must_keep_traits": [],
+    "status": "alive",
+    "created_at": 0,
+    "updated_at": 0,
+}
+
+DEFAULT_CREATIVE_REVIEW_TEMPLATE = {
+    "id": "",
+    "chunk_index": -1,
+    "scores": {
+        "persona": 0,
+        "progress": 0,
+        "repetition": 0,
+        "continuity": 0,
+        "coherence": 0,
+    },
+    "overall": 0,
+    "issues": [],
+    "suggestions": [],
+    "provider_id": "",
+    "created_at": 0,
 }

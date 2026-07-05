@@ -529,12 +529,17 @@ class ForwardMessageMixin:
         return sources[:5]
 
     async def _find_reply_image_sources_for_event(self, event: AstrMessageEvent) -> list[str]:
-        for item in self._event_components(event):
-            type_name = self._component_type_name(item)
-            if type_name == "reply" or "reply" in type_name:
-                sources = await self._extract_image_sources_from_reply(event, item)
-                if sources:
-                    return sources
+        chain = await self._reply_message_chain_for_event(event, max_depth=3)
+        for row in chain:
+            sources = self._extract_image_sources_from_message_obj(row.get("raw_message"))
+            if sources:
+                logger.info(
+                    "[PrivateCompanion] 引用链图片已解析: depth=%s message_id=%s images=%s",
+                    _safe_int(row.get("depth"), 1, 1),
+                    _single_line(row.get("message_id"), 120),
+                    len(sources),
+                )
+                return sources[:5]
         return []
 
     def _event_has_reply_component(self, event: AstrMessageEvent) -> bool:
@@ -1041,11 +1046,217 @@ class ForwardMessageMixin:
         )
         return ""
 
+    def _message_obj_reply_message_ids(self, message_obj: Any) -> list[str]:
+        ids: list[str] = []
+
+        def add(value: Any) -> None:
+            text = _single_line(value, 120)
+            if text and text not in ids:
+                ids.append(text)
+
+        def visit(value: Any, *, depth: int = 0) -> None:
+            if value is None or depth > 8:
+                return
+            if isinstance(value, str):
+                for match in re.finditer(r"\[CQ:reply,[^\]]*(?:id|message_id|msg_id)=([^,\]]+)", value, flags=re.I):
+                    add(html.unescape(match.group(1)).strip())
+                parsed = self._decode_possible_json_text(value)
+                if parsed is not None:
+                    visit(parsed, depth=depth + 1)
+                return
+            if isinstance(value, list):
+                for item in value:
+                    visit(item, depth=depth + 1)
+                return
+            type_name = self._component_type_name(value)
+            if type_name == "reply" or "reply" in type_name:
+                add(self._extract_reply_message_id(value))
+            if isinstance(value, dict):
+                data = self._component_data(value)
+                if data is not value:
+                    visit(data, depth=depth + 1)
+                for key in ("message", "raw_message", "content", "messages"):
+                    nested = value.get(key)
+                    if nested is not value:
+                        visit(nested, depth=depth + 1)
+                return
+            data = self._component_data(value)
+            if data:
+                visit(data, depth=depth + 1)
+
+        visit(message_obj)
+        return ids
+
+    def _message_obj_text_preview(self, message_obj: Any, *, limit: int = 260) -> str:
+        parts: list[str] = []
+
+        def add(value: Any) -> None:
+            text = _single_line(value, 180)
+            if text:
+                parts.append(text)
+
+        def visit(value: Any, *, depth: int = 0) -> None:
+            if value is None or depth > 6 or len(parts) >= 8:
+                return
+            if isinstance(value, str):
+                cleaned = re.sub(r"\[CQ:reply,[^\]]+\]", "[引用]", value)
+                cleaned = re.sub(r"\[CQ:image[^\]]+\]", "[图片]", cleaned)
+                cleaned = re.sub(r"\[CQ:record[^\]]+\]", "[语音]", cleaned)
+                add(cleaned)
+                parsed = self._decode_possible_json_text(value)
+                if parsed is not None:
+                    visit(parsed, depth=depth + 1)
+                return
+            if isinstance(value, list):
+                for item in value:
+                    visit(item, depth=depth + 1)
+                return
+            type_name = self._component_type_name(value)
+            data = self._component_data(value)
+            if type_name == "text" or type_name == "plain":
+                add(getattr(value, "text", "") or data.get("text") or data.get("content"))
+                return
+            if type_name == "image":
+                add("[图片]")
+                return
+            if type_name == "record":
+                add("[语音]")
+                return
+            if type_name == "reply" or "reply" in type_name:
+                return
+            if isinstance(value, dict):
+                for key in ("text", "content", "summary", "title", "desc", "prompt"):
+                    if key in value:
+                        add(value.get(key))
+                for key in ("message", "raw_message", "messages", "data"):
+                    nested = value.get(key)
+                    if nested is not value:
+                        visit(nested, depth=depth + 1)
+                return
+            for attr in ("text", "message", "content"):
+                add(getattr(value, attr, ""))
+            if data:
+                visit(data, depth=depth + 1)
+
+        visit(message_obj)
+        text = " ".join(part for part in parts if part).strip()
+        return _single_line(text, limit)
+
+    async def _get_message_obj_by_id(self, event: AstrMessageEvent, message_id: str) -> Any:
+        message_id = _single_line(message_id, 120)
+        if not message_id:
+            return None
+        for value in (int(message_id) if str(message_id).isdigit() else None, message_id):
+            if value is None:
+                continue
+            try:
+                raw = await self._call_platform_action(event, "get_msg", message_id=value)
+            except Exception:
+                raw = None
+            if raw:
+                return raw
+        cache = getattr(self, "_recall_message_cache", None)
+        snapshot = cache.get(message_id) if isinstance(cache, dict) else None
+        if isinstance(snapshot, dict):
+            return {
+                "message_id": message_id,
+                "message": snapshot.get("raw_message") if snapshot.get("raw_message") is not None else snapshot.get("text", ""),
+                "raw_message": snapshot.get("raw_message") if snapshot.get("raw_message") is not None else snapshot.get("text", ""),
+                "_private_companion_snapshot": snapshot,
+            }
+        return None
+
+    def _raw_message_from_message_obj(self, message_obj: Any) -> Any:
+        if isinstance(message_obj, dict):
+            for key in ("message", "raw_message", "content", "messages"):
+                value = message_obj.get(key)
+                if value is not None:
+                    return value
+        return message_obj
+
+    async def _reply_message_chain_for_event(self, event: AstrMessageEvent, *, max_depth: int = 3) -> list[dict[str, Any]]:
+        cached = getattr(event, "_private_companion_reply_message_chain", None)
+        if isinstance(cached, list):
+            return [item for item in cached if isinstance(item, dict)]
+
+        direct_ids: list[str] = []
+        for item in self._event_components(event):
+            type_name = self._component_type_name(item)
+            if type_name != "reply" and "reply" not in type_name:
+                continue
+            message_id = _single_line(self._extract_reply_message_id(item), 120)
+            if message_id and message_id not in direct_ids:
+                direct_ids.append(message_id)
+        queue: list[tuple[str, int]] = [(message_id, 1) for message_id in direct_ids]
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        current_scope = _single_line(self._event_scope_key(event), 160)
+        while queue and len(rows) < max(1, max_depth):
+            message_id, depth = queue.pop(0)
+            message_id = _single_line(message_id, 120)
+            if not message_id or message_id in seen or depth > max_depth:
+                continue
+            seen.add(message_id)
+            recalled_message_id = await self._should_cancel_reply_for_missing_or_recalled_trigger(event, message_id)
+            if recalled_message_id:
+                logger.info("[PrivateCompanion] 引用链读取跳过: 被引用消息已撤回或不可见 message_id=%s", recalled_message_id)
+                continue
+            message_obj = await self._get_message_obj_by_id(event, message_id)
+            if not message_obj:
+                continue
+            snapshot = message_obj.get("_private_companion_snapshot") if isinstance(message_obj, dict) else None
+            if isinstance(snapshot, dict):
+                snapshot_scope = _single_line(snapshot.get("scope"), 160)
+                if current_scope and snapshot_scope and snapshot_scope != current_scope:
+                    continue
+            raw_message = self._raw_message_from_message_obj(message_obj)
+            text = self._message_obj_text_preview(raw_message, limit=280)
+            rows.append({"message_id": message_id, "depth": depth, "raw_message": raw_message, "text": text})
+            next_ids = self._message_obj_reply_message_ids(raw_message)
+            if not next_ids and isinstance(snapshot, dict) and isinstance(snapshot.get("reply_message_ids"), list):
+                next_ids = [_single_line(item, 120) for item in snapshot.get("reply_message_ids") if _single_line(item, 120)]
+            for next_id in next_ids:
+                if next_id and next_id not in seen:
+                    queue.append((next_id, depth + 1))
+
+        try:
+            setattr(event, "_private_companion_reply_message_chain", list(rows))
+        except Exception:
+            pass
+        return rows
+
+    async def _format_reply_chain_context_for_prompt(self, event: AstrMessageEvent) -> str:
+        chain = await self._reply_message_chain_for_event(event, max_depth=3)
+        if len(chain) <= 1:
+            return ""
+        lines = [
+            "【引用链上下文】",
+            "用户这轮回复/引用了一条消息；被引用消息本身还引用了更早的消息。下面按距离当前消息由近到远列出，请优先理解最深层原始消息和用户当前文字之间的关系。",
+        ]
+        for row in chain:
+            depth = _safe_int(row.get("depth"), 1, 1)
+            message_id = _single_line(row.get("message_id"), 80)
+            text = _single_line(row.get("text"), 280) or "[无可读文字]"
+            label = "直接被引用" if depth == 1 else f"第 {depth} 层原始引用"
+            lines.append(f"- {label}（{message_id or '无ID'}）：{text}")
+        return "\n".join(lines)
+
     async def _reply_raw_message_for_event(self, event: AstrMessageEvent) -> tuple[str, Any]:
         cached = getattr(event, "_private_companion_reply_raw_message", None)
         if cached is not None:
             cached_id = _single_line(getattr(event, "_private_companion_reply_raw_message_id", ""), 120)
             return cached_id, cached
+        chain = await self._reply_message_chain_for_event(event, max_depth=3)
+        if chain:
+            row = chain[-1]
+            message_id = _single_line(row.get("message_id"), 120)
+            raw_message = row.get("raw_message")
+            try:
+                setattr(event, "_private_companion_reply_raw_message", raw_message)
+                setattr(event, "_private_companion_reply_raw_message_id", message_id)
+            except Exception:
+                pass
+            return message_id, raw_message
         for item in self._event_components(event):
             type_name = self._component_type_name(item)
             if type_name != "reply" and "reply" not in type_name:
@@ -1396,6 +1607,33 @@ class ForwardMessageMixin:
                     metadata={"注入位置": placement},
                 )
             return
+        reply_chain_context = await self._format_reply_chain_context_for_prompt(event)
+        if reply_chain_context:
+            chain_marker = "<!-- private_companion_reply_chain_v1 -->"
+            placement = "system_prompt"
+            helper = getattr(self, "_append_turn_prompt_fragment_by_position", None)
+            if callable(helper):
+                try:
+                    placement = "prompt" if helper(req, chain_marker, reply_chain_context, priority=64, source="forward_message") else "system_prompt"
+                except TypeError:
+                    placement = "prompt" if helper(req, chain_marker, reply_chain_context) else "system_prompt"
+            if placement == "system_prompt":
+                req.system_prompt = f"{req.system_prompt or ''}\n\n{chain_marker}\n{reply_chain_context}".strip()
+            try:
+                setattr(event, "private_companion_reply_chain_context_injected", True)
+            except Exception:
+                pass
+            recorder = getattr(self, "_record_request_prompt_fragment", None)
+            if callable(recorder):
+                await recorder(
+                    event,
+                    title="引用链上下文注入",
+                    key="reply.chain",
+                    text=reply_chain_context,
+                    source="forward_message",
+                    mode="reply_chain",
+                    metadata={"注入位置": placement},
+                )
         rich_card_context = await self._format_reply_rich_card_context_for_prompt(event)
         if rich_card_context:
             placement = "system_prompt"

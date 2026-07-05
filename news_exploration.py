@@ -128,6 +128,10 @@ DEFAULT_AI_DAILY_SOURCES = "\n".join(
 )
 BILIBILI_AI_BOT_PLUGIN_NAME = "astrbot_plugin_bilibili_ai_bot"
 BILIBILI_PUBLIC_INFO_PLUGIN_NAME = "astrbot_plugin_bilibili"
+BILIBILI_AI_BOT_LEGACY_DATA_NAMES = (
+    BILIBILI_AI_BOT_PLUGIN_NAME,
+    "astrbot_plugin_bilibili_bot",
+)
 
 DEFAULT_NEWS_SOURCES = "\n".join(
     [
@@ -663,7 +667,7 @@ class NewsExplorationMixin:
     def _bilibili_plugin_dir(self) -> Path:
         candidates = self._bilibili_ai_bot_plugin_dirs()
         for path in candidates:
-            if (path / "main.py").exists():
+            if self._is_bilibili_ai_bot_dir(path):
                 return path
         return Path(self.data_dir).parent.parent / "plugins" / BILIBILI_AI_BOT_PLUGIN_NAME
 
@@ -691,12 +695,13 @@ class NewsExplorationMixin:
         )
 
     def _bilibili_ai_bot_plugin_dirs(self) -> list[Path]:
+        # Startup-safe: do not glob all bilibili-like plugin folders here.
+        # A broad scan can interact badly with AstrBot's plugin loading phase.
         found: list[Path] = []
         seen: set[str] = set()
         for root in self._bilibili_plugin_roots():
-            direct = root / BILIBILI_AI_BOT_PLUGIN_NAME
-            for path in [direct, *root.glob("astrbot_plugin_bilibili*")]:
-                key = str(path.resolve()) if path.exists() else str(path)
+            for path in (root / BILIBILI_AI_BOT_PLUGIN_NAME,):
+                key = str(path)
                 if key in seen:
                     continue
                 seen.add(key)
@@ -705,20 +710,27 @@ class NewsExplorationMixin:
         return found
 
     def _bilibili_ai_bot_package_names(self) -> list[str]:
+        now = _now_ts()
+        cache = getattr(self, "_bilibili_ai_bot_package_names_cache", None)
+        if isinstance(cache, dict) and now - _safe_float(cache.get("ts"), 0) < 60:
+            names = cache.get("names")
+            if isinstance(names, list):
+                return [str(name) for name in names if str(name or "").strip()]
         names = [BILIBILI_AI_BOT_PLUGIN_NAME]
         for path in self._bilibili_ai_bot_plugin_dirs():
             if path.name not in names:
                 names.append(path.name)
+        try:
+            self._bilibili_ai_bot_package_names_cache = {"ts": now, "names": list(names)}
+        except Exception:
+            pass
         return names
 
     def _bilibili_ai_bot_data_dirs(self) -> list[Path]:
         candidates: list[Path] = []
-        for plugin_name in self._bilibili_ai_bot_package_names():
-            try:
-                candidates.append(Path(StarTools.get_data_dir(plugin_name)))
-            except Exception:
-                pass
-            candidates.append(self._bilibili_plugin_dir().parent.parent / "plugin_data" / plugin_name)
+        plugin_data_root = Path(self.data_dir).parent.parent / "plugin_data"
+        for plugin_name in BILIBILI_AI_BOT_LEGACY_DATA_NAMES:
+            candidates.append(plugin_data_root / plugin_name)
         deduped: list[Path] = []
         seen: set[str] = set()
         for path in candidates:
@@ -729,15 +741,6 @@ class NewsExplorationMixin:
         return deduped
 
     def _bilibili_watch_log_file(self) -> Path:
-        for package_name in self._bilibili_ai_bot_package_names():
-            for module_name in (f"data.plugins.{package_name}.core.config", f"{package_name}.core.config"):
-                try:
-                    module = importlib.import_module(module_name)
-                    path = getattr(module, "WATCH_LOG_FILE", "")
-                    if path:
-                        return Path(path)
-                except Exception:
-                    pass
         data_candidates = [path / "watch_log.json" for path in self._bilibili_ai_bot_data_dirs()]
         for path in data_candidates:
             if path.exists():
@@ -745,76 +748,138 @@ class NewsExplorationMixin:
         return data_candidates[0] if data_candidates else self._bilibili_plugin_dir() / "watch_log.json"
 
     def _bilibili_available(self) -> bool:
+        now = _now_ts()
+        cache = getattr(self, "_bilibili_available_cache", None)
+        if isinstance(cache, dict) and now - _safe_float(cache.get("ts"), 0) < 30:
+            return bool(cache.get("available"))
         try:
-            return bool(self._bilibili_ai_bot_plugin_dirs()) or self._bilibili_watch_log_file().exists()
+            available = bool(self._bilibili_ai_bot_plugin_dirs()) or self._bilibili_watch_log_file().exists()
         except Exception:
-            return False
+            available = False
+        try:
+            self._bilibili_available_cache = {"ts": now, "available": bool(available)}
+        except Exception:
+            pass
+        return bool(available)
 
     def _find_bilibili_bot_instance(self) -> Any | None:
+        now = _now_ts()
+        cache = getattr(self, "_bilibili_bot_instance_cache", None)
+        if isinstance(cache, dict) and now - _safe_float(cache.get("ts"), 0) < 30:
+            return cache.get("instance")
+        names = tuple(self._bilibili_ai_bot_package_names())
+        found = None
         try:
             getter = getattr(getattr(self, "context", None), "get_registered_star", None)
             if callable(getter):
-                for name in self._bilibili_ai_bot_package_names():
+                for name in names:
                     obj = getter(name)
                     if obj is not None and (
                         callable(getattr(obj, "_run_proactive", None)) or hasattr(obj, "memory_api")
                     ):
-                        return obj
+                        found = obj
+                        break
         except Exception:
             pass
-        for obj in gc.get_objects():
-            try:
-                cls = obj.__class__
-                module = str(getattr(cls, "__module__", ""))
-                if not any(name in module for name in self._bilibili_ai_bot_package_names()):
+        if found is None and names:
+            for obj in gc.get_objects():
+                try:
+                    cls = obj.__class__
+                    module = str(getattr(cls, "__module__", ""))
+                    if not any(name in module for name in names):
+                        continue
+                    if (callable(getattr(obj, "_run_proactive", None)) and hasattr(obj, "_proactive_task")) or hasattr(obj, "memory_api"):
+                        found = obj
+                        break
+                except Exception:
                     continue
-                if (callable(getattr(obj, "_run_proactive", None)) and hasattr(obj, "_proactive_task")) or hasattr(obj, "memory_api"):
-                    return obj
-            except Exception:
-                continue
-        return None
+        try:
+            self._bilibili_bot_instance_cache = {"ts": now, "instance": found}
+        except Exception:
+            pass
+        return found
 
     def _find_bilibili_memory_api(self) -> Any | None:
+        now = _now_ts()
+        cache = getattr(self, "_bilibili_memory_api_object_cache", None)
+        if isinstance(cache, dict) and now - _safe_float(cache.get("ts"), 0) < 30:
+            return cache.get("api")
         bili = self._find_bilibili_bot_instance()
         api = getattr(bili, "memory_api", None) if bili is not None else None
         if api is not None and callable(getattr(api, "get_recent_memories", None)):
+            try:
+                self._bilibili_memory_api_object_cache = {"ts": now, "api": api}
+            except Exception:
+                pass
             return api
+        names = tuple(self._bilibili_ai_bot_package_names())
         for obj in gc.get_objects():
             try:
                 cls = obj.__class__
                 module = str(getattr(cls, "__module__", ""))
-                if not any(name in module for name in self._bilibili_ai_bot_package_names()):
+                if not any(name in module for name in names):
                     continue
                 api = getattr(obj, "memory_api", None)
                 if api is not None and callable(getattr(api, "get_recent_memories", None)):
+                    try:
+                        self._bilibili_memory_api_object_cache = {"ts": now, "api": api}
+                    except Exception:
+                        pass
                     return api
             except Exception:
                 continue
+        try:
+            self._bilibili_memory_api_object_cache = {"ts": now, "api": None}
+        except Exception:
+            pass
         return None
 
-    def _bilibili_memory_api_available(self) -> bool:
-        return self._find_bilibili_memory_api() is not None
+    def _bilibili_memory_api_available(self, *, allow_probe: bool = True, ttl_seconds: int = 60) -> bool:
+        now = _now_ts()
+        cache = getattr(self, "_bilibili_memory_api_cache", None)
+        if isinstance(cache, dict) and now - _safe_float(cache.get("ts"), 0) < max(5, ttl_seconds):
+            return bool(cache.get("available"))
+        if not allow_probe:
+            return False
+        available = self._find_bilibili_memory_api() is not None
+        try:
+            self._bilibili_memory_api_cache = {"ts": now, "available": bool(available)}
+        except Exception:
+            pass
+        return bool(available)
 
     def _find_bilibili_runtime_objects(self) -> list[Any]:
+        now = _now_ts()
+        cache = getattr(self, "_bilibili_runtime_objects_cache", None)
+        if isinstance(cache, dict) and now - _safe_float(cache.get("ts"), 0) < 30:
+            objects = cache.get("objects")
+            if isinstance(objects, list):
+                return list(objects)
+        names = tuple(self._bilibili_ai_bot_package_names())
         found: list[Any] = []
         seen: set[int] = set()
-        for obj in gc.get_objects():
-            try:
-                cls = obj.__class__
-                module = str(getattr(cls, "__module__", ""))
-                if "astrbot_plugin_bilibili" not in module:
+        if names:
+            for obj in gc.get_objects():
+                try:
+                    cls = obj.__class__
+                    module = str(getattr(cls, "__module__", ""))
+                    if not any(name in module for name in names):
+                        continue
+                    if id(obj) in seen:
+                        continue
+                    if (
+                        callable(getattr(obj, "get_video_info", None))
+                        or callable(getattr(getattr(obj, "bili_client", None), "get_video_info", None))
+                        or callable(getattr(obj, "_http_get", None))
+                    ):
+                        seen.add(id(obj))
+                        found.append(obj)
+                except Exception:
                     continue
-                if id(obj) in seen:
-                    continue
-                if (
-                    callable(getattr(obj, "get_video_info", None))
-                    or callable(getattr(getattr(obj, "bili_client", None), "get_video_info", None))
-                    or callable(getattr(obj, "_http_get", None))
-                ):
-                    seen.add(id(obj))
-                    found.append(obj)
-            except Exception:
-                continue
+        try:
+            self._bilibili_runtime_objects_cache = {"ts": now, "objects": list(found)}
+        except Exception:
+            pass
         return found
 
     def _load_bilibili_watch_log(self) -> list[dict[str, Any]]:
@@ -902,7 +967,7 @@ class NewsExplorationMixin:
             }
         return None
 
-    def _latest_bilibili_video_candidate(self) -> dict[str, Any] | None:
+    def _latest_bilibili_video_candidate(self, *, include_memory_api: bool = True) -> dict[str, Any] | None:
         logs = self._load_bilibili_watch_log()
         if logs:
             for item in reversed(logs[-20:]):
@@ -928,9 +993,11 @@ class NewsExplorationMixin:
                     "time": _single_line(item.get("time"), 24),
                     "actions": list(item.get("actions") or []) if isinstance(item.get("actions"), list) else [],
                     "source": "watch_log",
-                    "memory_context": self._bilibili_memory_context_for_bvid(bvid),
+                    "memory_context": self._bilibili_memory_context_for_bvid(bvid) if include_memory_api else [],
                 }
-        return self._bilibili_video_candidate_from_memory()
+        if include_memory_api:
+            return self._bilibili_video_candidate_from_memory()
+        return None
 
     def _record_bilibili_share_to_memory(self, user_id: str, candidate: dict[str, Any]) -> None:
         api = self._find_bilibili_memory_api()
@@ -1014,7 +1081,8 @@ class NewsExplorationMixin:
     def _maybe_schedule_bilibili_video_share(self) -> bool:
         if not self.enable_bilibili_integration:
             return False
-        candidate = self._latest_bilibili_video_candidate()
+        include_memory_api = bool(self._bilibili_memory_api_available(allow_probe=False))
+        candidate = self._latest_bilibili_video_candidate(include_memory_api=include_memory_api)
         if not isinstance(candidate, dict):
             return False
         users = self.data.get("users")
@@ -3250,6 +3318,59 @@ class NewsExplorationMixin:
     def _astrbot_any_web_search_available(self) -> bool:
         return any(self._astrbot_web_search_available(umo) for umo in self._web_search_candidate_umos())
 
+    @staticmethod
+    def _normalize_web_exploration_api_base_url(value: Any) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        if raw.startswith(("http://", "https://")):
+            return raw
+        if re.match(r"^[a-z][a-z0-9+.-]*://", raw, flags=re.I):
+            return ""
+        local_pattern = r"^(localhost|127\.|10\.|172\.(1[6-9]|2\d|3[0-1])\.|192\.168\.|\[?::1\]?)"
+        scheme = "http://" if re.match(local_pattern, raw, flags=re.I) else "https://"
+        return f"{scheme}{raw}"
+
+    def _custom_web_exploration_search_configured(self) -> bool:
+        return bool(self._normalize_web_exploration_api_base_url(getattr(self, "web_exploration_api_base_url", "")))
+
+    def _custom_web_exploration_get_url(self, base_url: str, query: str, *, topic: str = "general", model: str = "") -> str:
+        cleaned_query = _single_line(query, 240)
+        if not base_url or not cleaned_query:
+            return ""
+        max_results = str(max(1, min(20, self.web_exploration_max_results)))
+        values = {
+            "query": cleaned_query,
+            "q": cleaned_query,
+            "keyword": cleaned_query,
+            "keywords": cleaned_query,
+            "wd": cleaned_query,
+            "text": cleaned_query,
+            "topic": "news" if topic == "news" else "general",
+            "max_results": max_results,
+            "limit": max_results,
+            "count": max_results,
+            "model": str(model or "").strip(),
+        }
+        formatted = base_url
+        replaced = False
+        for key, value in values.items():
+            encoded = quote(str(value), safe="")
+            for token in (f"{{{{{key}}}}}", f"{{{key}}}", f"${{{key}}}"):
+                if token in formatted:
+                    formatted = formatted.replace(token, encoded)
+                    replaced = True
+        if replaced:
+            return formatted
+        if formatted.endswith(("?", "&")):
+            return f"{formatted}query={quote(cleaned_query, safe='')}"
+        if re.search(r"[?&][^=&?#]+=$", formatted):
+            return f"{formatted}{quote(cleaned_query, safe='')}"
+        return ""
+
+    def _web_exploration_search_available(self) -> bool:
+        return self._custom_web_exploration_search_configured() or self._astrbot_any_web_search_available()
+
     def _pick_available_web_search_umo(self, preferred: str = "") -> str:
         candidates = []
         preferred = str(preferred or "").strip()
@@ -3263,16 +3384,306 @@ class NewsExplorationMixin:
                 return umo
         return ""
 
-    async def _run_astrbot_web_search(self, query: str, *, umo: str = "", topic: str = "general") -> list[dict[str, Any]]:
+    def _web_search_runtime_state(self) -> dict[str, Any]:
+        state = self.data.setdefault("web_search_runtime", {})
+        if not isinstance(state, dict):
+            self.data["web_search_runtime"] = {}
+            state = self.data["web_search_runtime"]
+        return state
+
+    def _web_search_cooldown_remaining(self, provider: str) -> float:
+        provider = _single_line(provider, 80) or "unknown"
+        state = self.data.get("web_search_runtime") if isinstance(self.data.get("web_search_runtime"), dict) else {}
+        item = state.get(provider) if isinstance(state, dict) else None
+        if not isinstance(item, dict):
+            return 0.0
+        retry_after = _safe_float(item.get("retry_after"), 0.0, 0.0)
+        return max(0.0, retry_after - _now_ts())
+
+    def _web_search_error_cooldown_seconds(self, error: Any) -> tuple[float, str]:
+        text = str(error or "")
+        if "QUOTA_USER_DAILY_FREE" in text or "Daily free quota" in text:
+            now_dt = datetime.now()
+            tomorrow = (now_dt + timedelta(days=1)).replace(hour=0, minute=10, second=0, microsecond=0)
+            return max(3600.0, min(24 * 3600.0, (tomorrow - now_dt).total_seconds())), "daily_quota"
+        if "RATE_LIMIT_SEARCH_QPS" in text or "QPS" in text:
+            return 10 * 60.0, "qps_limit"
+        if "429" in text or "rate limit" in text.lower() or "quota" in text.lower():
+            return 30 * 60.0, "rate_or_quota"
+        return 0.0, ""
+
+    def _mark_web_search_cooldown(self, provider: str, error: Any) -> None:
+        seconds, reason = self._web_search_error_cooldown_seconds(error)
+        if seconds <= 0:
+            return
+        provider = _single_line(provider, 80) or "unknown"
+        state = self._web_search_runtime_state()
+        state[provider] = {
+            "retry_after": _now_ts() + seconds,
+            "reason": reason,
+            "last_error": _single_line(error, 240),
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        try:
+            self._save_data_sync()
+        except Exception:
+            pass
+        logger.warning(
+            "[PrivateCompanion] 网页搜索进入冷却: provider=%s reason=%s retry=%ss error=%s",
+            provider,
+            reason,
+            int(seconds),
+            _single_line(error, 180),
+        )
+
+    @staticmethod
+    def _extract_custom_web_search_content(payload: Any) -> str:
+        if isinstance(payload, str):
+            return payload
+        if not isinstance(payload, dict):
+            return ""
+        choices = payload.get("choices")
+        if isinstance(choices, list) and choices:
+            first = choices[0] if isinstance(choices[0], dict) else {}
+            message = first.get("message") if isinstance(first, dict) else {}
+            if isinstance(message, dict):
+                content = message.get("content")
+                if isinstance(content, str):
+                    return content
+                if isinstance(content, list):
+                    parts: list[str] = []
+                    for item in content:
+                        if isinstance(item, dict):
+                            text = item.get("text") or item.get("content")
+                            if isinstance(text, str):
+                                parts.append(text)
+                        elif isinstance(item, str):
+                            parts.append(item)
+                    return "\n".join(parts)
+            text = first.get("text") if isinstance(first, dict) else ""
+            if isinstance(text, str):
+                return text
+        for key in ("answer", "content", "text", "summary"):
+            value = payload.get(key)
+            if isinstance(value, str):
+                return value
+        return ""
+
+    def _custom_web_search_items_from_payload(self, payload: Any) -> list[Any]:
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, str):
+            text = re.sub(r"^```(?:json)?\s*|\s*```$", "", payload.strip(), flags=re.I | re.S).strip()
+            candidates = [text]
+            match = re.search(r"\[.*\]", text, flags=re.S)
+            if match:
+                candidates.append(match.group(0))
+            for candidate in candidates:
+                try:
+                    parsed = json.loads(candidate)
+                except Exception:
+                    continue
+                if isinstance(parsed, list):
+                    return parsed
+                if isinstance(parsed, dict):
+                    return self._custom_web_search_items_from_payload(parsed)
+            return []
+        if not isinstance(payload, dict):
+            return []
+        for key in ("results", "items", "search_results", "web_results", "documents", "organic"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return value
+        data = payload.get("data")
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for key in ("results", "items", "search_results", "web_results", "documents", "organic"):
+                value = data.get(key)
+                if isinstance(value, list):
+                    return value
+        content = self._extract_custom_web_search_content(payload)
+        items = self._custom_web_search_items_from_payload(content)
+        if items:
+            return items
+        parsed = self._parse_json_object(content)
+        if isinstance(parsed, dict):
+            return self._custom_web_search_items_from_payload(parsed)
+        return []
+
+    def _normalize_custom_web_search_results(self, payload: Any, query: str) -> list[dict[str, Any]]:
+        cleaned_query = _single_line(query, 120)
+        items = self._custom_web_search_items_from_payload(payload)
+        results: list[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                text = _single_line(item, 360)
+                if not text:
+                    continue
+                title = text[:80]
+                url = ""
+                snippet = text
+            else:
+                title = _single_line(
+                    item.get("title")
+                    or item.get("name")
+                    or item.get("headline")
+                    or item.get("source_title")
+                    or item.get("site_name"),
+                    140,
+                )
+                url = _single_line(
+                    item.get("url")
+                    or item.get("link")
+                    or item.get("href")
+                    or item.get("source_url")
+                    or item.get("page_url"),
+                    420,
+                )
+                snippet = _single_line(
+                    item.get("snippet")
+                    or item.get("summary")
+                    or item.get("content")
+                    or item.get("description")
+                    or item.get("text")
+                    or item.get("body"),
+                    360,
+                )
+            if not title and not snippet:
+                continue
+            key = hashlib.sha1(f"custom|{cleaned_query}|{title}|{url}|{snippet}".encode("utf-8", errors="ignore")).hexdigest()[:16]
+            results.append({"key": key, "title": title or snippet[:80], "url": url, "snippet": snippet, "provider": "custom_web_exploration"})
+            if len(results) >= self.web_exploration_max_results:
+                break
+        if results:
+            return results[: self.web_exploration_max_results]
+
+        content = _single_line(self._extract_custom_web_search_content(payload), 720)
+        if content:
+            key = hashlib.sha1(f"custom|{cleaned_query}|{content}".encode("utf-8", errors="ignore")).hexdigest()[:16]
+            return [
+                {
+                    "key": key,
+                    "title": cleaned_query or "自定义主动搜索结果",
+                    "url": "",
+                    "snippet": content,
+                    "provider": "custom_web_exploration",
+                }
+            ]
+        return []
+
+    async def _run_custom_web_exploration_search(self, query: str, *, topic: str = "general") -> list[dict[str, Any]]:
+        cleaned_query = _single_line(query, 120)
+        base_url = self._normalize_web_exploration_api_base_url(getattr(self, "web_exploration_api_base_url", ""))
+        api_key = str(getattr(self, "web_exploration_api_key", "") or "").strip()
+        model = str(getattr(self, "web_exploration_api_model", "") or "").strip()
+        if not cleaned_query or not base_url:
+            return []
+        if not base_url.startswith(("http://", "https://")):
+            self._last_web_search_error = "custom_web_exploration:invalid_url"
+            return []
+        cooldown = self._web_search_cooldown_remaining("custom_web_exploration")
+        if cooldown > 0:
+            self._last_web_search_error = f"custom_web_exploration_cooldown:{int(cooldown)}s"
+            logger.info(
+                "[PrivateCompanion] 自定义主动搜索冷却中,跳过请求: retry=%ss query=%s",
+                int(cooldown),
+                cleaned_query,
+            )
+            return []
+
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "User-Agent": f"{PLUGIN_NAME}/web-exploration",
+        }
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        lower_url = base_url.lower()
+        get_url = self._custom_web_exploration_get_url(base_url, cleaned_query, topic=topic, model=model)
+        if get_url:
+            payload = None
+        elif "/chat/completions" in lower_url:
+            payload: dict[str, Any] = {
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "你是搜索接口适配器。请基于可用联网搜索能力返回 JSON, 格式为 "
+                            '{"results":[{"title":"","url":"","snippet":""}]}。'
+                        ),
+                    },
+                    {"role": "user", "content": cleaned_query},
+                ],
+                "temperature": 0.2,
+            }
+            if model:
+                payload["model"] = model
+        else:
+            payload = {
+                "query": cleaned_query,
+                "topic": "news" if topic == "news" else "general",
+                "max_results": max(1, min(20, self.web_exploration_max_results)),
+            }
+            if model:
+                payload["model"] = model
+        try:
+            import aiohttp
+
+            timeout = aiohttp.ClientTimeout(total=20)
+            async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+                if get_url:
+                    resp_ctx = session.get(get_url)
+                else:
+                    post_headers = {"Content-Type": "application/json"}
+                    resp_ctx = session.post(base_url, headers=post_headers, json=payload)
+                async with resp_ctx as resp:
+                    body_text = await resp.text()
+                    if resp.status >= 400:
+                        raise RuntimeError(f"HTTP {resp.status}: {_single_line(body_text, 180)}")
+                    try:
+                        raw_payload: Any = json.loads(body_text)
+                    except Exception:
+                        raw_payload = body_text
+        except asyncio.TimeoutError as exc:
+            detail = "请求超时"
+            self._last_web_search_error = f"custom_web_exploration:{detail}"
+            self._mark_web_search_cooldown("custom_web_exploration", detail)
+            logger.warning("[PrivateCompanion] 自定义主动搜索失败: query=%s err=%s", cleaned_query, detail)
+            return []
+        except Exception as exc:
+            detail = _single_line(exc, 220) or exc.__class__.__name__
+            self._last_web_search_error = f"custom_web_exploration:{detail}"
+            self._mark_web_search_cooldown("custom_web_exploration", exc)
+            logger.warning("[PrivateCompanion] 自定义主动搜索失败: query=%s err=%s", cleaned_query, exc)
+            return []
+
+        results = self._normalize_custom_web_search_results(raw_payload, cleaned_query)
+        if not results:
+            self._last_web_search_error = "custom_web_exploration:no_usable_results"
+        return results
+
+    async def _run_astrbot_web_search(self, query: str, *, umo: str = "", topic: str = "general", usage: str = "general") -> list[dict[str, Any]]:
         cleaned_query = _single_line(query, 120)
         self._last_web_search_error = ""
         if not cleaned_query:
             return []
+        if usage == "web_exploration" and self._custom_web_exploration_search_configured():
+            return await self._run_custom_web_exploration_search(cleaned_query, topic=topic)
         settings = self._astrbot_web_search_provider_settings(umo)
         if not settings.get("web_search", False):
             return []
         provider = str(settings.get("websearch_provider") or "").strip()
         if provider == "default":
+            return []
+        cooldown = self._web_search_cooldown_remaining(provider)
+        if cooldown > 0:
+            self._last_web_search_error = f"web_search_cooldown:{provider}:{int(cooldown)}s"
+            logger.info(
+                "[PrivateCompanion] AstrBot 网页搜索冷却中,跳过请求: provider=%s retry=%ss query=%s",
+                provider,
+                int(cooldown),
+                cleaned_query,
+            )
             return []
         for key in (
             "websearch_tavily_key",
@@ -3340,6 +3751,7 @@ class NewsExplorationMixin:
                 return []
         except Exception as exc:
             self._last_web_search_error = _single_line(str(exc), 240)
+            self._mark_web_search_cooldown(provider, exc)
             logger.warning("[PrivateCompanion] AstrBot 网页搜索失败: provider=%s query=%s err=%s", provider, cleaned_query, exc)
             return []
         results: list[dict[str, Any]] = []
@@ -3697,8 +4109,9 @@ class NewsExplorationMixin:
         ]
         target_user = random.choice(target_users)[1] if target_users else {}
         target_umo = str((target_user.get("umo") if isinstance(target_user, dict) else "") or "")
-        search_umo = self._pick_available_web_search_umo(target_umo)
-        if not search_umo:
+        use_custom_search = self._custom_web_exploration_search_configured()
+        search_umo = "" if use_custom_search else self._pick_available_web_search_umo(target_umo)
+        if not (use_custom_search or search_umo):
             state["last_probe_at"] = now
             state["last_status"] = "web_search_disabled_or_unconfigured"
             self._save_data_sync()
@@ -3712,6 +4125,7 @@ class NewsExplorationMixin:
             str(query_info.get("query") or ""),
             umo=search_umo,
             topic=str(query_info.get("topic") or "general"),
+            usage="web_exploration",
         )
         if not results:
             error_text = _single_line(getattr(self, "_last_web_search_error", ""), 240)
@@ -3744,6 +4158,7 @@ class NewsExplorationMixin:
         state["last_query"] = query_info
         state["last_digest"] = digest
         state["latest_results"] = results[:8]
+        self._queue_web_exploration_impulses(target_users, digest, wish, now=now)
         if digest.get("possible_share") and target_users:
             random.shuffle(target_users)
             for user_id, user in target_users[:3]:
@@ -3819,4 +4234,68 @@ class NewsExplorationMixin:
                     break
         self._save_data_sync()
         logger.info("[PrivateCompanion] 已完成一次网页探索: %s", _single_line(digest.get("topic"), 80))
+
+    def _queue_web_exploration_impulses(
+        self,
+        target_users: list[tuple[str, dict[str, Any]]],
+        digest: dict[str, Any],
+        wish: dict[str, Any] | None,
+        *,
+        now: float,
+    ) -> None:
+        if not isinstance(digest, dict) or not digest.get("possible_share"):
+            return
+        if not target_users:
+            return
+        topic = _single_line(digest.get("topic") or digest.get("query"), 80)
+        note = _single_line(digest.get("note"), 180)
+        if not topic and not note:
+            return
+        self_link_motive = _single_line(wish.get("motive") if isinstance(wish, dict) else "", 180)
+        self_link_tone = _single_line(wish.get("tone") if isinstance(wish, dict) else "", 60)
+        self_link_boundary = _single_line(wish.get("boundary") if isinstance(wish, dict) else "", 140)
+        context = {
+            **digest,
+            "share_tone": self_link_tone,
+            "share_boundary": self_link_boundary,
+            "queued_as_impulse": True,
+        }
+        motive = self_link_motive or "刚自己上网查了点新东西,不是急着汇报,但后面如果有合适空档可以轻轻提一句"
+        shuffled = list(target_users)
+        random.shuffle(shuffled)
+        queued = 0
+        for user_id, user in shuffled:
+            if not isinstance(user, dict):
+                continue
+            if not self._user_enabled_for_proactive(str(user_id), user):
+                continue
+            if now - _safe_float(user.get("last_web_exploration_impulse_at"), 0) < 6 * 3600:
+                continue
+            if now - _safe_float(user.get("last_seen"), 0) < max(self.idle_minutes, 60) * 60:
+                continue
+            start_at = now + random.randint(25, 120) * 60
+            impulse = self._build_proactive_impulse(
+                user,
+                reason="web_exploration_share",
+                action="message",
+                motive=motive,
+                topic=topic or "刚查到的新东西",
+                source="web_exploration",
+                window_start_at=start_at,
+                preferred_ts=start_at + random.randint(0, 45) * 60,
+                best_until_at=start_at + 4 * 3600,
+                expire_at=start_at + 10 * 3600,
+                context_key="web_exploration_context",
+                context=context,
+            )
+            impulse["salience"] = max(_safe_float(impulse.get("salience"), 0.0), 0.68)
+            impulse["warmth"] = max(_safe_float(impulse.get("warmth"), 0.0), 0.54)
+            impulse["urgency"] = min(_safe_float(impulse.get("urgency"), 0.0), 0.34)
+            self._queue_proactive_impulse(user, impulse)
+            user["last_web_exploration_impulse_at"] = now
+            queued += 1
+            if queued >= 3:
+                break
+        if queued:
+            logger.info("[PrivateCompanion] 主动搜索已转入后续主动念头: topic=%s users=%s", topic, queued)
 

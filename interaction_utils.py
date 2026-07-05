@@ -29,7 +29,13 @@ class InteractionUtilsMixin:
             "陪伴 重置日程\n"
             "陪伴 当前细化\n"
             "陪伴 重置细化\n"
+            "陪伴 今日穿搭图\n"
+            "陪伴 生图 <画面描述>\n"
+            "陪伴 自拍 [画面要求]\n"
+            "陪伴 改图 <修改要求>（带图或回复图片）\n"
             "陪伴 能力列表\n"
+            "陪伴 答疑 <问题>\n"
+            "陪伴 答疑确认 / 答疑取消 / 答疑设置 <配置项|中文名> <值>\n"
             "陪伴 TTS语种 日语|中文|英语|默认\n"
             "陪伴 参考图 <本地图片路径|图片URL|清空>（也可带图/回复图片）\n"
             "陪伴 查看提示词 日程|细化|主动|回复注入\n"
@@ -129,7 +135,14 @@ class InteractionUtilsMixin:
         return self._is_plugin_manager_user_id(user_id) or self._is_group_admin_event(event)
 
     def _management_denied_text(self) -> str:
-        return "这个操作会修改插件状态,需要 Bot 管理员、配置目标用户或群管理员来执行。"
+        return (
+            "这个操作需要管理权限。\n"
+            "管理权限来源：\n"
+            "1. Bot 管理员（AstrBot 全局配置 admins_id）\n"
+            "2. 插件目标用户（拓展页-配置-快速启动-私聊目标 QQ）\n"
+            "3. 群管理员（自动识别）\n"
+            "请检查以上配置后重试。"
+        )
 
     async def _reply(self, event: AstrMessageEvent, text: str, *, quote_current: bool = True):
         recalled_message_id = await self._should_cancel_reply_for_missing_or_recalled_trigger(event)

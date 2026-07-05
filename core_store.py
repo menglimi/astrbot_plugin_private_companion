@@ -104,7 +104,18 @@ from .dreaming import (
     recent_diary_tags,
     weighted_unique_fragment_sample,
 )
-from .helpers import _date_key, _now_ts, _safe_float, _safe_int, _single_line, _strip_internal_message_blocks, _today_key
+from .helpers import (
+    _date_key,
+    _now_ts,
+    _safe_float,
+    _safe_int,
+    _single_line,
+    _strip_internal_message_blocks,
+    _strip_nonstandard_chat_control_tags,
+    _today_key,
+)
+from .config_migration import _ensure_config_parent_dir
+from .storage.store_manager import StoreManager
 from .planning import (
     build_daily_plan_prompt,
     build_detail_enhancement_prompt,
@@ -243,13 +254,56 @@ _PLATFORM_DISPLAY_NAMES = {
 class CoreStoreMixin:
     """配置、数据存储、用户/群组基础访问"""
 
+    def _rebuild_store_manager(self, *, reload_data: bool = False) -> None:
+        backend = str(getattr(self, "storage_backend", "json") or "json").strip().lower() or "json"
+        if backend not in {"json", "sqlite"}:
+            backend = "json"
+        sqlite_path = str(getattr(self, "storage_sqlite_path", "") or "").strip() or os.path.join(self.data_dir, "companions.db")
+        self.storage_backend = backend
+        self.storage_sqlite_effective_path = sqlite_path
+        self.store_manager = StoreManager(
+            backend_name=backend,
+            data_file=self.data_file,
+            sqlite_path=sqlite_path,
+            ensure_defaults=self._ensure_store_defaults,
+            new_store=self._new_store,
+        )
+        if reload_data:
+            self.data = self.store_manager.load_initial_store()
+
     def _save_config_if_possible(self) -> None:
-        save = getattr(self.config, "save_config", None)
-        if callable(save):
+        for method_name in ("save_config", "save", "save_conf"):
+            save = getattr(self.config, method_name, None)
+            if not callable(save):
+                continue
             try:
-                save()
+                _ensure_config_parent_dir(self.config, logger=logger)
+                result = save()
+                if asyncio.iscoroutine(result) or hasattr(result, "__await__"):
+                    close = getattr(result, "close", None)
+                    if callable(close):
+                        close()
+                    logger.debug("[PrivateCompanion] 自动保存配置返回异步对象，已跳过同步等待: %s", method_name)
+                return
+            except TypeError:
+                continue
+            except FileNotFoundError as exc:
+                if _ensure_config_parent_dir(self.config, error=exc, logger=logger):
+                    try:
+                        result = save()
+                        if asyncio.iscoroutine(result) or hasattr(result, "__await__"):
+                            close = getattr(result, "close", None)
+                            if callable(close):
+                                close()
+                        return
+                    except Exception as retry_exc:
+                        logger.debug("[PrivateCompanion] 自动保存配置重试失败: %s", _single_line(retry_exc, 120))
+                        return
+                logger.debug("[PrivateCompanion] 自动保存配置失败: %s", _single_line(exc, 120))
+                return
             except Exception as exc:
                 logger.debug("[PrivateCompanion] 自动保存配置失败: %s", _single_line(exc, 120))
+                return
 
     def _set_runtime_bool_config(self, key: str, value: bool) -> None:
         setattr(self, key, bool(value))
@@ -303,9 +357,11 @@ class CoreStoreMixin:
             "daily_outfit_photo": {},
             "recent_photo_generations": [],
             "daily_story_plan": {},
+            "daily_story_plan_history": [],
             "skill_growth": {},
             "detail_enhanced_day": "",
             "detail_enhanced_segments": {},
+            "detail_enhanced_history": [],
             "schedule_adjustments": [],
             "yesterday_conversation_summary": {},
             "can_do": [],
@@ -320,6 +376,7 @@ class CoreStoreMixin:
             "bookshelf_items": [],
             "bookshelf_secret": {},
             "creative_projects": [],
+            "creative_memory_pool": [],
             "proactive_candidate_pool": [],
             "external_proactive_abilities": {},
             "worldbook_entries": [],
@@ -353,9 +410,11 @@ class CoreStoreMixin:
         data.setdefault("daily_outfit_photo", {})
         data.setdefault("recent_photo_generations", [])
         data.setdefault("daily_story_plan", {})
+        data.setdefault("daily_story_plan_history", [])
         data.setdefault("skill_growth", {})
         data.setdefault("detail_enhanced_day", "")
         data.setdefault("detail_enhanced_segments", {})
+        data.setdefault("detail_enhanced_history", [])
         data.setdefault("schedule_adjustments", [])
         data.setdefault("yesterday_conversation_summary", {})
         data.setdefault("can_do", [])
@@ -370,6 +429,7 @@ class CoreStoreMixin:
         data.setdefault("bookshelf_items", [])
         data.setdefault("bookshelf_secret", {})
         data.setdefault("creative_projects", [])
+        data.setdefault("creative_memory_pool", [])
         data.setdefault("proactive_candidate_pool", [])
         data.setdefault("external_proactive_abilities", {})
         data.setdefault("worldbook_entries", [])
@@ -417,7 +477,42 @@ class CoreStoreMixin:
         if detail:
             item["last_hit_detail" if hit else "last_miss_detail"] = _single_line(detail, 160)
 
+    def _sanitize_store_control_tags_inplace(self, value: Any) -> int:
+        """Remove leaked pseudo-control tags from persisted companion data."""
+        changed = 0
+        if isinstance(value, dict):
+            for key, item in list(value.items()):
+                if isinstance(item, str):
+                    cleaned = _strip_nonstandard_chat_control_tags(item)
+                    if cleaned != item:
+                        value[key] = cleaned
+                        changed += 1
+                elif isinstance(item, (dict, list)):
+                    changed += self._sanitize_store_control_tags_inplace(item)
+            return changed
+        if isinstance(value, list):
+            for idx, item in enumerate(list(value)):
+                if isinstance(item, str):
+                    cleaned = _strip_nonstandard_chat_control_tags(item)
+                    if cleaned != item:
+                        value[idx] = cleaned
+                        changed += 1
+                elif isinstance(item, (dict, list)):
+                    changed += self._sanitize_store_control_tags_inplace(item)
+            return changed
+        return 0
+
     def _load_data_sync(self) -> dict[str, Any]:
+        manager = getattr(self, "store_manager", None)
+        if manager is not None:
+            try:
+                data = manager.load_initial_store()
+                changed = self._sanitize_store_control_tags_inplace(data)
+                if changed:
+                    logger.warning("[PrivateCompanion] 启动读取数据时清理非标准控制标签: fields=%s", changed)
+                return data
+            except Exception as exc:
+                logger.warning("[PrivateCompanion] StoreManager 读取失败,回退 JSON: %s", _single_line(exc, 160))
         if not os.path.exists(self.data_file):
             return self._new_store()
         try:
@@ -425,13 +520,28 @@ class CoreStoreMixin:
                 data = json.load(f)
             if not isinstance(data, dict):
                 return self._new_store()
-            return self._ensure_store_defaults(data)
+            data = self._ensure_store_defaults(data)
+            changed = self._sanitize_store_control_tags_inplace(data)
+            if changed:
+                logger.warning("[PrivateCompanion] 启动读取 JSON 时清理非标准控制标签: fields=%s", changed)
+            return data
         except Exception as e:
             logger.warning(f"[PrivateCompanion] 读取数据失败,将使用空数据: {e}")
             return self._new_store()
 
     def _save_data_sync(self):
-        # Avoid losing migrated worldbook data if an older in-memory state is saved before reload finishes.
+        changed = self._sanitize_store_control_tags_inplace(self.data)
+        if changed:
+            logger.warning("[PrivateCompanion] 保存数据前清理非标准控制标签: fields=%s", changed)
+        manager = getattr(self, "store_manager", None)
+        if manager is not None:
+            manager.save_store(self.data)
+            if getattr(self, "storage_backend", "json") == "sqlite":
+                try:
+                    manager.export_current_to_json(self.data)
+                except Exception as exc:
+                    logger.debug("[PrivateCompanion] SQLite 镜像 JSON 写出失败: %s", _single_line(exc, 160))
+            return
         if not self.data.get("worldbook_entries") and os.path.exists(self.data_file):
             try:
                 with open(self.data_file, "r", encoding="utf-8") as f:
@@ -449,6 +559,18 @@ class CoreStoreMixin:
         self._atomic_write_data_file_sync(self.data)
 
     def _write_data_snapshot_sync(self, data: dict[str, Any]) -> None:
+        changed = self._sanitize_store_control_tags_inplace(data)
+        if changed:
+            logger.warning("[PrivateCompanion] 保存快照前清理非标准控制标签: fields=%s", changed)
+        manager = getattr(self, "store_manager", None)
+        if manager is not None:
+            manager.save_snapshot(data)
+            if getattr(self, "storage_backend", "json") == "sqlite":
+                try:
+                    manager.export_current_to_json(data)
+                except Exception as exc:
+                    logger.debug("[PrivateCompanion] SQLite 快照镜像 JSON 写出失败: %s", _single_line(exc, 160))
+            return
         self._atomic_write_data_file_sync(data)
 
     def _atomic_write_data_file_sync(self, data: dict[str, Any]) -> None:
@@ -616,6 +738,7 @@ class CoreStoreMixin:
     def _merge_user_record_values(self, target: dict[str, Any], source: dict[str, Any], alias_id: str) -> None:
         additive_keys = {
             "inbound_count",
+            "private_inbound_count",
             "reply_count",
             "proactive_sent_count",
             "relationship_score",
@@ -835,6 +958,24 @@ class CoreStoreMixin:
             _safe_float(user.get("last_user_message_at"), 0),
             _safe_float(user.get("last_reply_at"), 0),
         )
+
+    def _latest_private_user_activity_ts(self, user: dict[str, Any] | None) -> float:
+        if not isinstance(user, dict):
+            return 0.0
+        private_seen = _safe_float(user.get("last_private_seen"), 0)
+        return max(
+            private_seen,
+            _safe_float(user.get("last_private_activity_at"), private_seen),
+            _safe_float(user.get("last_private_reply_at"), 0),
+        )
+
+    def _note_private_inbound_activity(self, user: dict[str, Any], ts: float, *, text: str = "") -> None:
+        if not isinstance(user, dict):
+            return
+        user["last_private_seen"] = ts
+        user["last_private_activity_at"] = ts
+        if text:
+            user["private_inbound_count"] = _safe_int(user.get("private_inbound_count"), 0) + 1
 
     def _is_target_private_user(self, user_id: str, user: dict[str, Any] | None = None) -> bool:
         user_id = self._canonical_private_user_id(str(user_id or "").strip())

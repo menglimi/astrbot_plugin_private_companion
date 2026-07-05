@@ -24,7 +24,7 @@ except ImportError:
 from astrbot.core import file_token_service
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
-from .helpers import _normalize_outbound_punctuation_flow, _safe_int, _single_line
+from .helpers import _normalize_outbound_punctuation_flow, _safe_int, _single_line, _strip_nonstandard_chat_control_tags
 
 
 TTS_BLOCK_PATTERN = re.compile(r"<t{2,}s\b[^>]*>.*?</t{2,}s>", re.IGNORECASE | re.DOTALL)
@@ -426,6 +426,7 @@ class TtsEnhancementMixin:
         source = str(text or "")
         if not source:
             return ""
+        source = _strip_nonstandard_chat_control_tags(source)
         source = PRIVATE_TTS_BLOCK_TOKEN_PATTERN.sub("", source)
         source = TTS_BLOCK_TOKEN_PATTERN.sub("", source)
         source = re.sub(r"(?:^|[\s\r\n])([。！？!?，,、；;：:~～…]+)(?=\s|$)", " ", source)
@@ -1044,11 +1045,17 @@ TTS 朗读文本：
         )
 
     async def apply_tts_enhancement_request(self, event: Any, req: Any) -> None:
+        if bool(getattr(event, "_private_companion_tts_request_applied", False)):
+            return
         feature_enabled = getattr(self, "_feature_enabled_or_temp_unlocked", None)
         tts_enabled = feature_enabled("enable_tts_enhancement") if callable(feature_enabled) else getattr(self, "enable_tts_enhancement", False)
         if not getattr(self, "enabled", False) or not tts_enabled:
             return
         if not hasattr(req, "system_prompt"):
+            logger.info(
+                "[PrivateCompanion] TTS请求注入跳过: req无system_prompt session=%s",
+                _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
+            )
             return
         try:
             config = self.context.get_config(str(getattr(event, "unified_msg_origin", "") or "")) or {}
@@ -1073,6 +1080,25 @@ TTS 朗读文本：
             return "system_prompt"
 
         async def record_tts_fragment(title: str, key: str, text: str, mode: str = "", placement: str = "system_prompt") -> None:
+            common_recorder = getattr(self, "_record_request_prompt_fragment", None)
+            if callable(common_recorder):
+                await common_recorder(
+                    event,
+                    title=title,
+                    key=key,
+                    text=text,
+                    source="tts_enhancement",
+                    mode=mode or str(getattr(self, "tts_generation_mode", "fast_tag") or ""),
+                    priority=20,
+                    metadata={
+                        "语种": self._tts_language_label(),
+                        "模式": getattr(self, "tts_generation_mode", "fast_tag"),
+                        "频控": getattr(self, "tts_frequency_control_mode", "global"),
+                        "provider": provider_kind,
+                        "注入位置": placement,
+                    },
+                )
+                return
             recorder = getattr(self, "_record_prompt_injection_snapshot", None)
             if not callable(recorder):
                 return
@@ -1100,6 +1126,10 @@ TTS 朗读文本：
                 },
             )
 
+        try:
+            setattr(event, "_private_companion_tts_request_applied", True)
+        except Exception:
+            pass
         user_requested_tts = self._event_explicitly_requests_tts(event)
         strong_block_reason = ""
         mode = getattr(self, "tts_generation_mode", "fast_tag")
@@ -1229,20 +1259,25 @@ TTS 朗读文本：
             non_plain_tail = [comp for comp in chain if not isinstance(comp, Plain)]
             if non_plain_tail:
                 new_chain = list(new_chain) + non_plain_tail
+        new_chain = self._tts_record_first_visible_last_chain(new_chain)
         ordered_chunks = self._split_tts_chain_for_ordered_send(new_chain)
         expanded_chunks: list[list[Any]] = []
         for chunk in ordered_chunks:
             expanded_chunks.extend(self._tts_segment_plain_chunk_for_ordered_send(event, chunk))
         ordered_chunks = expanded_chunks
         if len(ordered_chunks) > 1:
-            inbound_ts_getter = getattr(self, "_event_inbound_activity_ts", None)
-            if callable(inbound_ts_getter):
-                try:
-                    remainder_started_at = float(inbound_ts_getter(event))
-                except Exception:
-                    remainder_started_at = time.time()
-            else:
+            first_chunk_has_record = any(isinstance(comp, Record) for comp in ordered_chunks[0])
+            if first_chunk_has_record:
                 remainder_started_at = time.time()
+            else:
+                inbound_ts_getter = getattr(self, "_event_inbound_activity_ts", None)
+                if callable(inbound_ts_getter):
+                    try:
+                        remainder_started_at = float(inbound_ts_getter(event))
+                    except Exception:
+                        remainder_started_at = time.time()
+                else:
+                    remainder_started_at = time.time()
             event.set_result(self._build_result_from_chain(ordered_chunks[0]))
             asyncio.create_task(
                 self._send_tts_chain_chunks_after_first(
@@ -1282,6 +1317,7 @@ TTS 朗读文本：
             non_plain_tail = [comp for comp in chain if not isinstance(comp, Plain)]
             if non_plain_tail:
                 new_chain = list(new_chain) + non_plain_tail
+        new_chain = self._tts_record_first_visible_last_chain(new_chain)
         logger.warning(
             "[PrivateCompanion] 发送前终检拦截残留 TTS 标签: session=%s preview=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
@@ -1299,11 +1335,16 @@ TTS 朗读文本：
                 cleaned_chain.append(comp)
                 continue
             original = str(getattr(comp, "text", "") or "")
-            if not re.search(r"</?(?:pc[_-]?tts|t{2,}s)\b", original, flags=re.IGNORECASE):
-                cleaned_chain.append(comp)
+            cleaned_control = _strip_nonstandard_chat_control_tags(original)
+            has_tts_markup = re.search(r"</?(?:pc[_-]?tts|t{2,}s)\b", cleaned_control, flags=re.IGNORECASE)
+            if not has_tts_markup:
+                if cleaned_control != original:
+                    changed = True
+                if cleaned_control:
+                    cleaned_chain.append(Plain(cleaned_control) if cleaned_control != original else comp)
                 continue
             changed = True
-            normalized = self._normalize_tts_tags(original)
+            normalized = self._normalize_tts_tags(cleaned_control)
             fallback_text = self._tts_visible_fallback_text(normalized) or self._strip_any_tts_markup(normalized)
             fallback_text = self._sanitize_tts_visible_text(fallback_text)
             if fallback_text:
@@ -1334,6 +1375,59 @@ TTS 朗读文本：
         if current_visible:
             chunks.append(current_visible)
         return chunks if has_record and has_visible else [chain]
+
+    def _tts_record_first_visible_last_chain(self, chain: list[Any]) -> list[Any]:
+        if not chain or not any(isinstance(comp, Record) for comp in chain):
+            return chain
+        records: list[Any] = []
+        others: list[Any] = []
+        visible_marked: list[str] = []
+        visible_plain: list[str] = []
+        for comp in chain:
+            if isinstance(comp, Record):
+                records.append(comp)
+                continue
+            if isinstance(comp, Plain):
+                text = str(getattr(comp, "text", "") or "").strip()
+                if not text:
+                    continue
+                if bool(getattr(comp, "_private_companion_tts_visible_text", False)):
+                    visible_marked.append(text)
+                else:
+                    visible_plain.append(text)
+                continue
+            others.append(comp)
+
+        def append_unique(target: list[str], value: str) -> None:
+            value = self._sanitize_tts_visible_text(value, max_chars=1000)
+            if not value:
+                return
+            normalized = re.sub(r"\s+", "", value)
+            if any(normalized == re.sub(r"\s+", "", item) for item in target):
+                return
+            if any(normalized and normalized in re.sub(r"\s+", "", item) for item in target):
+                return
+            target[:] = [
+                item
+                for item in target
+                if re.sub(r"\s+", "", item) not in normalized
+            ]
+            target.append(value)
+
+        visible_lines: list[str] = []
+        preferred_visible = visible_marked if visible_marked else visible_plain
+        fallback_visible = visible_plain if visible_marked else []
+        for text in preferred_visible:
+            append_unique(visible_lines, text)
+        for text in fallback_visible:
+            append_unique(visible_lines, text)
+        normalized_chain = list(others) + list(records)
+        visible = "\n".join(visible_lines).strip()
+        if visible:
+            visible_comp = self._mark_tts_visible_plain(visible, max_chars=1000)
+            if visible_comp is not None:
+                normalized_chain.append(visible_comp)
+        return normalized_chain
 
     def _tts_segment_plain_chunk_for_ordered_send(self, event: Any, chunk: list[Any]) -> list[list[Any]]:
         if not (
@@ -1436,6 +1530,13 @@ TTS 朗读文本：
                 if callable(activity_checker):
                     try:
                         if activity_checker(scope, started_at, ignore_self=True):
+                            if scope.startswith("group:"):
+                                logger.info(
+                                    "[PrivateCompanion] 群聊已有新消息，停止发送 TTS 后台补发文本: session=%s sent_preview=%s",
+                                    scope,
+                                    _single_line(previous_text, 120) or "0",
+                                )
+                                return
                             if not previous_text:
                                 stop_after_send = True
                                 logger.info(
@@ -1989,6 +2090,8 @@ Provider 规则：{emotion_rule}
             args,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="ignore",
             timeout=95,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )

@@ -375,6 +375,20 @@ class DailyStateMixin:
                     "[PrivateCompanion] 今日日记已保存,但梦境碎片合并失败: %s",
                     _single_line(exc, 180),
                 )
+            # Record dream fragments to memory plugin for cross-session continuity
+            try:
+                dream_fragments = diary.get("dream_fragments", []) if isinstance(diary, dict) else []
+                if isinstance(dream_fragments, list) and dream_fragments:
+                    fragment = dream_fragments[0] if isinstance(dream_fragments[0], dict) else {}
+                    content = _single_line(fragment.get("content") or fragment.get("text") or fragment.get("dream"), 600)
+                    if content:
+                        await self._memory_companion_record_dream_fragment(
+                            content=content,
+                            mood=_single_line(fragment.get("mood") or fragment.get("emotion"), 40),
+                            dream_type=_single_line(fragment.get("type") or fragment.get("theme"), 40),
+                        )
+            except Exception:
+                pass
             story_plan = diary.get("story_plan") if isinstance(diary, dict) else None
             if isinstance(story_plan, dict):
                 self.data["daily_story_plan"] = story_plan
@@ -409,12 +423,52 @@ class DailyStateMixin:
                     self._save_data_sync()
                 return None
             for segment in segments:
-                enhanced[segment["key"]] = {"status": "generating", "started_at": self._environment_now().strftime("%H:%M")}
+                enhanced[segment["key"]] = {
+                    "status": "generating",
+                    "started_at": self._environment_now().strftime("%H:%M"),
+                    "started_ts": _now_ts(),
+                }
             self._save_data_sync()
 
         last_detail = None
         for segment in segments:
-            detail = await self._generate_detail_enhancement(segment, plan, state)
+            try:
+                detail = await self._generate_detail_enhancement(segment, plan, state)
+                if not isinstance(detail.get("today_events"), list) or not detail.get("today_events"):
+                    raise RuntimeError("日程细化结果为空或无法解析")
+            except Exception as exc:
+                now_ts = _now_ts()
+                retry_after_ts = now_ts + 30 * 60
+                async with self._data_lock:
+                    enhanced = self.data.setdefault("detail_enhanced_segments", {})
+                    if not isinstance(enhanced, dict):
+                        enhanced = {}
+                        self.data["detail_enhanced_segments"] = enhanced
+                    retry_after = self._environment_fromtimestamp(retry_after_ts).strftime("%H:%M")
+                    enhanced[segment["key"]] = {
+                        "status": "failed",
+                        "updated_at": self._environment_now().strftime("%H:%M"),
+                        "error": _single_line(exc, 180),
+                        "retry_after": retry_after,
+                        "retry_after_ts": retry_after_ts,
+                        "summary": "这一段细化生成失败，稍后会自动重试。",
+                        "today_events": [],
+                        "proactive_events": [],
+                        "state_variables": [],
+                        "presence_status": {},
+                        "interaction_updates": [],
+                        "coverage_repair_done": bool(segment.get("_coverage_repair")),
+                    }
+                    self._save_data_sync()
+                logger.warning(
+                    "[PrivateCompanion] 日程细化生成失败,已标记为可重试: segment=%s retry_after=%s error=%s",
+                    _single_line(segment.get("key"), 80),
+                    retry_after,
+                    _single_line(exc, 180),
+                )
+                if force:
+                    raise
+                continue
             last_detail = detail
             async with self._data_lock:
                 story_plan = self.data.setdefault("daily_story_plan", {})
@@ -441,11 +495,217 @@ class DailyStateMixin:
                     "coverage_repair_done": bool(segment.get("_coverage_repair")),
                 }
                 self._sanitize_detail_enhanced_segments_inplace(enhanced)
+                meal_entries = self._append_self_meal_log(
+                    self._collect_self_meal_events_from_detail(segment=segment, plan=plan, detail=detail),
+                    segment=segment,
+                    plan=plan,
+                )
+                self._remember_detail_enhancement_history(plan_date, enhanced, story_plan)
                 self._refresh_daily_state_location_from_plan(plan=plan, detail=detail)
                 self._reschedule_users_for_new_detail_events(segment)
                 self._save_data_sync()
+            for meal_entry in meal_entries:
+                await self._memory_companion_record_self_meal(meal_entry)
+            if meal_entries:
+                self._schedule_data_save()
             await self._apply_detail_presence_status(segment, detail)
         return last_detail
+
+    def _meal_log_date_key(self, ts: float | None = None) -> str:
+        try:
+            return self._environment_fromtimestamp(ts or _now_ts()).strftime("%Y-%m-%d")
+        except Exception:
+            return _today_key()
+
+    def _meal_log_iso_time(self, ts: float | None = None) -> str:
+        try:
+            return self._environment_fromtimestamp(ts or _now_ts()).isoformat(timespec="seconds")
+        except Exception:
+            return datetime.fromtimestamp(ts or _now_ts()).isoformat(timespec="seconds")
+
+    def _extract_self_meal_events_from_text(
+        self,
+        text: Any,
+        *,
+        default_meal: str = "",
+        source: str = "",
+    ) -> list[dict[str, Any]]:
+        raw = _single_line(text, 260)
+        if not raw:
+            return []
+        if not any(token in raw for token in ("吃", "喝", "点了", "煮了", "做了", "买了", "饭", "餐", "夜宵", "便当", "外卖")):
+            return []
+        if re.search(r"(想吃|想喝|要不要|吃什么|吃啥|没吃|还没吃|准备吃|等会吃|待会吃|可能吃|可以吃|推荐|建议)", raw):
+            return []
+        action_match = re.search(
+            r"(?:我|她|星缘)?(?:刚刚|刚|已经|中午|晚上|早上|午后|夜里|下午|早餐|午餐|晚餐|夜宵|这顿)?"
+            r"(?:吃了|吃过|吃完|喝了|点了|煮了|做了|买了|啃了|咬了|尝了|解决了)"
+            r"([^，。；、\n]{1,36})",
+            raw,
+        )
+        meal_match = re.search(r"(早餐|早饭|午餐|午饭|晚餐|晚饭|夜宵|加餐|下午茶)", raw)
+        meal = _single_line((meal_match.group(1) if meal_match else "") or default_meal, 20)
+        food = ""
+        if action_match:
+            food = _single_line(action_match.group(1), 40)
+            food = re.sub(r"^(点|些|个|一点|一点儿|一份|一碗|一杯|一口|点儿)", "", food).strip()
+            food = re.sub(r"(之后|以后|然后|顺手|才发现|的时候).*$", "", food).strip()
+        if not food:
+            simple = re.search(r"(?:早餐|早饭|午餐|午饭|晚餐|晚饭|夜宵|下午茶)[^，。；、\n]{0,8}(?:是|吃|喝|点)([^，。；、\n]{1,32})", raw)
+            if simple:
+                food = _single_line(simple.group(1), 40)
+        if not food or food in {"饭", "东西", "一点", "点东西"}:
+            return []
+        return [
+            {
+                "meal": meal or "加餐",
+                "food": food,
+                "source": _single_line(source, 40),
+                "evidence": raw,
+            }
+        ]
+
+    def _collect_self_meal_events_from_detail(
+        self,
+        *,
+        segment: dict[str, Any],
+        plan: dict[str, Any],
+        detail: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        if not isinstance(detail, dict):
+            return []
+        default_meal = ""
+        item = segment.get("item") if isinstance(segment.get("item"), dict) else {}
+        schedule_text = " ".join(
+            _single_line(part, 120)
+            for part in (
+                item.get("time") if isinstance(item, dict) else "",
+                item.get("activity") if isinstance(item, dict) else "",
+                detail.get("summary"),
+            )
+            if _single_line(part, 120)
+        )
+        if any(token in schedule_text for token in ("早餐", "早饭")):
+            default_meal = "早餐"
+        elif any(token in schedule_text for token in ("午餐", "午饭", "中午")):
+            default_meal = "午餐"
+        elif any(token in schedule_text for token in ("晚餐", "晚饭", "晚上")):
+            default_meal = "晚餐"
+        elif "夜宵" in schedule_text:
+            default_meal = "夜宵"
+        rows: list[dict[str, Any]] = []
+        rows.extend(self._extract_self_meal_events_from_text(detail.get("summary"), default_meal=default_meal, source="detail.summary"))
+        for list_key in ("today_events", "state_variables"):
+            raw_items = detail.get(list_key)
+            if not isinstance(raw_items, list):
+                continue
+            for raw in raw_items[:12]:
+                if isinstance(raw, dict):
+                    text = raw.get("event") or raw.get("text") or raw.get("name") or raw.get("value") or raw.get("note")
+                else:
+                    text = raw
+                rows.extend(self._extract_self_meal_events_from_text(text, default_meal=default_meal, source=f"detail.{list_key}"))
+        deduped: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for meal_event in rows:
+            key = f"{meal_event.get('meal')}:{meal_event.get('food')}"
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(meal_event)
+        return deduped[:4]
+
+    def _append_self_meal_log(
+        self,
+        meal_events: list[dict[str, Any]],
+        *,
+        segment: dict[str, Any] | None = None,
+        plan: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        if not meal_events:
+            return []
+        now_ts = _now_ts()
+        date_text = _single_line((plan or {}).get("date"), 16) or self._meal_log_date_key(now_ts)
+        time_text = ""
+        if isinstance(segment, dict):
+            item = segment.get("item") if isinstance(segment.get("item"), dict) else {}
+            time_text = _single_line(item.get("time") if isinstance(item, dict) else "", 20)
+        log = self.data.setdefault("self_meal_log", [])
+        if not isinstance(log, list):
+            log = []
+            self.data["self_meal_log"] = log
+        existing_ids = {str(item.get("id") or "") for item in log if isinstance(item, dict)}
+        added: list[dict[str, Any]] = []
+        for meal_event in meal_events:
+            meal = _single_line(meal_event.get("meal"), 20) or "加餐"
+            food = _single_line(meal_event.get("food"), 60)
+            if not food:
+                continue
+            base_id = hashlib.sha1(f"{date_text}|{time_text}|{meal}|{food}".encode("utf-8", errors="ignore")).hexdigest()[:16]
+            meal_id = f"meal-{base_id}"
+            if meal_id in existing_ids:
+                continue
+            entry = {
+                "id": meal_id,
+                "date": date_text,
+                "time": time_text,
+                "ts": now_ts,
+                "occurred_at": self._meal_log_iso_time(now_ts),
+                "meal": meal,
+                "food": food,
+                "source": _single_line(meal_event.get("source"), 40),
+                "evidence": _single_line(meal_event.get("evidence"), 180),
+                "memory_recorded": False,
+                "memory_id": "",
+            }
+            log.append(entry)
+            existing_ids.add(meal_id)
+            added.append(entry)
+        if len(log) > 160:
+            del log[:-160]
+        return added
+
+    async def _memory_companion_record_self_meal(self, entry: dict[str, Any]) -> None:
+        if not isinstance(entry, dict) or entry.get("memory_recorded"):
+            return
+        bridge = self._memory_companion_bridge()
+        recorder = getattr(bridge, "record_persona_life", None) if bridge is not None else None
+        if not callable(recorder):
+            return
+        date_text = _single_line(entry.get("date"), 16)
+        time_text = _single_line(entry.get("time"), 20)
+        meal = _single_line(entry.get("meal"), 20) or "加餐"
+        food = _single_line(entry.get("food"), 60)
+        if not food:
+            return
+        when = " ".join(part for part in (date_text, time_text) if part)
+        content = f"Bot 在{when or date_text or '今天'}的{meal}吃了{food}。"
+        try:
+            memory_id = await recorder(
+                content=content,
+                scope="unknown",
+                session_id="private_companion:self_meal",
+                message_id=_single_line(entry.get("id"), 120),
+                memory_id=f"private_companion_{_single_line(entry.get('id'), 80)}",
+                metadata={
+                    "date": date_text,
+                    "time": time_text,
+                    "meal": meal,
+                    "food": food,
+                    "evidence": _single_line(entry.get("evidence"), 180),
+                    "source": _single_line(entry.get("source"), 40),
+                },
+                source_plugin="private_companion",
+                confidence=0.78,
+                importance=0.5,
+                tags=["self_meal", "persona_life", "food", meal],
+                occurred_at=_single_line(entry.get("occurred_at"), 80),
+            )
+        except Exception as exc:
+            logger.debug("[PrivateCompanion] MemoryCompanion 进食记忆写入失败: %s", _single_line(exc, 120))
+            return
+        entry["memory_recorded"] = True
+        entry["memory_id"] = _single_line(memory_id, 120)
 
     def _collect_detail_segments(
         self,
@@ -470,7 +730,7 @@ class DailyStateMixin:
         segments: list[dict[str, Any]] = []
         for pos, (index, start, item) in enumerate(parsed):
             key = f"{plan.get('date')}:{index}:{item.get('time')}"
-            if key in enhanced:
+            if self._detail_enhancement_snapshot_blocks_generation(enhanced.get(key) if isinstance(enhanced, dict) else None):
                 continue
             next_start = (
                 parsed[pos + 1][1]
@@ -489,6 +749,31 @@ class DailyStateMixin:
                 }
             )
         return segments
+
+    def _detail_enhancement_snapshot_blocks_generation(self, snapshot: Any) -> bool:
+        if not isinstance(snapshot, dict):
+            return False
+        status = _single_line(snapshot.get("status"), 24)
+        if status == "done":
+            return True
+        if status == "failed":
+            retry_after_ts = _safe_float(snapshot.get("retry_after_ts"), 0)
+            return retry_after_ts > _now_ts()
+        if status == "generating":
+            started_ts = _safe_float(snapshot.get("started_ts"), 0)
+            if started_ts > 0:
+                return _now_ts() - started_ts < 30 * 60
+            started_at = _single_line(snapshot.get("started_at"), 8)
+            started_minutes = self._parse_hhmm_to_minutes(started_at)
+            if started_minutes is None:
+                return False
+            elapsed_minutes = self._environment_now_minutes() - started_minutes
+            if elapsed_minutes < 0:
+                elapsed_minutes += 24 * 60
+            return elapsed_minutes < 30
+        if status:
+            return False
+        return bool(snapshot.get("summary") or snapshot.get("today_events") or snapshot.get("proactive_events"))
 
     def _collect_due_detail_segments(
         self,
@@ -594,6 +879,47 @@ class DailyStateMixin:
             if isinstance(additions, list):
                 existing.extend(item for item in additions if isinstance(item, dict))
                 story_plan[key] = self._trim_story_plan_items(key, existing, limit)
+
+    def _remember_detail_enhancement_history(
+        self,
+        date_text: str,
+        enhanced: dict[str, Any],
+        story_plan: dict[str, Any],
+    ) -> None:
+        date_key = _single_line(date_text, 16)
+        if not date_key:
+            return
+        history = self.data.setdefault("detail_enhanced_history", [])
+        if not isinstance(history, list):
+            history = []
+            self.data["detail_enhanced_history"] = history
+        history[:] = [
+            old
+            for old in history
+            if not (isinstance(old, dict) and _single_line(old.get("date"), 16) == date_key)
+        ]
+        history.append(
+            {
+                "date": date_key,
+                "updated_at": self._environment_now().strftime("%Y-%m-%d %H:%M"),
+                "segments": dict(enhanced or {}),
+            }
+        )
+        del history[:-14]
+
+        story_history = self.data.setdefault("daily_story_plan_history", [])
+        if not isinstance(story_history, list):
+            story_history = []
+            self.data["daily_story_plan_history"] = story_history
+        story_history[:] = [
+            old
+            for old in story_history
+            if not (isinstance(old, dict) and _single_line(old.get("date"), 16) == date_key)
+        ]
+        compact_story = dict(story_plan or {})
+        compact_story["date"] = date_key
+        story_history.append(compact_story)
+        del story_history[:-14]
 
     def _trim_story_plan_items(
         self,
@@ -740,14 +1066,30 @@ class DailyStateMixin:
             or status.get("文案"),
             28,
         )
+        custom_sync_enabled = bool(getattr(self, "enable_qq_custom_presence_sync", False))
+        custom_note = ""
         if mode in {"busy", "忙碌"}:
-            mode = "custom"
-            custom_text = custom_text or "专注中"
+            if custom_sync_enabled:
+                mode = "custom"
+                custom_text = custom_text or "专注中"
+            else:
+                mode = "busy"
+                custom_text = ""
+                custom_note = "自定义短状态未开启，已改用标准忙碌"
         if mode in {"sleep", "睡觉", "睡眠"}:
-            mode = "custom"
-            custom_text = custom_text or "休息中"
+            if custom_sync_enabled:
+                mode = "custom"
+                custom_text = custom_text or "休息中"
+            else:
+                mode = "online"
+                custom_text = ""
+                custom_note = "自定义短状态未开启，已保持在线"
         if mode in {"custom", "自定义", "自定义状态"} and not custom_text:
             mode = "online"
+        if mode in {"custom", "自定义", "自定义状态"} and not custom_sync_enabled:
+            mode = "online"
+            custom_text = ""
+            custom_note = "自定义短状态未开启，已保持在线"
         key = str((segment or {}).get("key") or "")
         state = self.data.setdefault("qq_presence_state", {})
         if not isinstance(state, dict):
@@ -766,8 +1108,15 @@ class DailyStateMixin:
         if mode in {"custom", "自定义", "自定义状态"}:
             ok, note = await self._set_qq_custom_presence(custom_text)
             mode = "custom"
+            if not ok:
+                fallback_ok, fallback_note = await self._set_qq_online_presence("online")
+                ok = fallback_ok
+                note = f"{note}；已回退在线：{fallback_note}"
+                mode = "online"
         else:
             ok, note = await self._set_qq_online_presence(mode)
+        if custom_note:
+            note = f"{note}；{custom_note}" if note else custom_note
         state["detail_key"] = key
         state["date"] = _today_key()
         state["plan_date"] = str(self.data.get("detail_enhanced_day") or "")
@@ -931,9 +1280,9 @@ class DailyStateMixin:
                     "window": "08:20-09:50",
                     "reason": "morning_greeting",
                     "action": "message",
-                    "why": "迷迷糊糊醒来，虽然还想再睡，但先给用户发送早安问候",
+                    "why": "迷迷糊糊醒来，虽然还想再睡，但先轻轻说声早安",
                     "topic": "赖床间隙的早安",
-                    "motive": "迷迷糊糊醒来，虽然还想再睡，但先给用户发送早安问候",
+                    "motive": "迷迷糊糊醒来，虽然还想再睡，但先轻轻说声早安",
                     "scene": "睡意依旧，不想起床",
                     "tone": "迷糊",
                     "impulse": "虽然打算继续睡，但想告诉用户自己醒过了",
@@ -1156,7 +1505,7 @@ class DailyStateMixin:
         if action == "screen_peek":
             base = "刚好有点空，想确认用户是不是还在忙"
         elif action == "photo_text":
-            base = "刚刚看到的画面想发给用户看看"
+            base = "刚刚看到的画面想分享一下"
         elif action == "jm_cosmos_read":
             base = "刚刚私下翻到一点漫画内容,只想含糊地提一句"
         elif action == "poke":
@@ -1372,21 +1721,31 @@ class DailyStateMixin:
         existing = user.get("pending_proactive_send_retry")
         previous_count = _safe_int(existing.get("retry_count"), 0, 0, 10) if isinstance(existing, dict) else 0
         retry_count = previous_count + 1
+        clean_error = _single_line(error_text, 180)
+        error_hint = ""
+        if clean_error:
+            compact_error = clean_error.lower()
+            if "timeout" in compact_error or "sendmsg" in compact_error or "retcode=1200" in compact_error:
+                error_hint = "平台发送超时"
+            elif "actionfailed" in compact_error or "failed" in compact_error:
+                error_hint = "平台发送失败"
+            else:
+                error_hint = clean_error
         if retry_count > 2:
             self._clear_pending_proactive_send_retry(user)
             self._clear_pending_proactive_plan(user)
             self._schedule_next_proactive(user, now=current, delay_hours=(12, 24))
-            return "待重发内容连续发送失败，已放弃复用并重新排程"
+            return "发送失败，待重发内容连续失败，已放弃复用并重新排程" + (f"；原因：{error_hint}" if error_hint else "")
         if extra_components:
             self._clear_pending_proactive_send_retry(user)
             self._schedule_next_proactive(user, now=current, delay_hours=(6, 12))
-            return "包含复杂组件，未缓存待重发内容，已延后重新排程"
+            return "发送失败，包含复杂组件，未缓存待重发内容，已延后重新排程" + (f"；原因：{error_hint}" if error_hint else "")
         clean_text = _single_line(text, 1200)
         clean_image = _single_line(image_path, 260)
         if not clean_text and not clean_image:
             self._clear_pending_proactive_send_retry(user)
             self._schedule_next_proactive(user, now=current, delay_hours=(6, 12))
-            return "无可复用内容，已延后重新排程"
+            return "发送失败，无可复用内容，已延后重新排程" + (f"；原因：{error_hint}" if error_hint else "")
         delay_hours = 6.0 if retry_count <= 1 else 24.0
         user["pending_proactive_send_retry"] = {
             "active": True,
@@ -1399,10 +1758,10 @@ class DailyStateMixin:
             "reason": _single_line(reason, 40) or "check_in",
             "action": _single_line(action, 40) or "message",
             "action_summary": _single_line(action_summary, 500),
-            "last_error": _single_line(error_text, 180),
+            "last_error": clean_error,
         }
         user["next_proactive_at"] = current + delay_hours * 3600
-        return f"已保留待重发内容，{int(delay_hours)} 小时后第 {retry_count} 次重试"
+        return f"发送失败，已保留待重发内容，{int(delay_hours)} 小时后第 {retry_count} 次重试" + (f"；原因：{error_hint}" if error_hint else "")
 
     def _activity_share_global_signature(self, user: dict[str, Any], *, text: str = "", action_summary: str = "") -> str:
         state = self.data.get("daily_state", {})
@@ -1693,6 +2052,23 @@ class DailyStateMixin:
         if passive_fast and not force:
             cached_state = self.data.get("daily_state", {})
             if isinstance(cached_state, dict) and cached_state.get("date") == today:
+                if self.enable_humanized_states:
+                    cached_weather = self.data.get("daily_weather", {})
+                    weather = cached_weather if isinstance(cached_weather, dict) and cached_weather.get("date") == today else {
+                        "date": today,
+                        "prompt": "暂无天气信息",
+                        "source": "passive_fast",
+                    }
+                    async with self._data_lock:
+                        before = json.dumps(self.data.get("daily_state", {}), ensure_ascii=False, sort_keys=True, default=str)
+                        self._cleanup_expired_conditions()
+                        self._ensure_time_based_hunger_condition()
+                        state = self._compose_state_from_conditions(weather)
+                        after = json.dumps(state, ensure_ascii=False, sort_keys=True, default=str)
+                        if before != after:
+                            self.data["daily_state"] = state
+                            self._save_data_sync()
+                        return state
                 return cached_state
             cached_weather = self.data.get("daily_weather", {})
             weather = cached_weather if isinstance(cached_weather, dict) and cached_weather.get("date") == today else {
@@ -1758,9 +2134,9 @@ class DailyStateMixin:
         ]
         hunger_pool = [
             ("无饥饿感", "平稳", 0, 3),
-            ("饿,想吃东西", "粘人", -5, 4),
-            ("胃口不好", "低落", -10, 6),
-            ("想吃甜的", "柔软", 2, 3),
+            ("饿,想吃东西", "粘人", -4, 2),
+            ("胃口不好", "低落", -8, 3),
+            ("想吃甜的", "柔软", 1, 2),
         ]
         cycle_pool = [
             ("不处于生理期", "平稳", 0, 24),
@@ -1776,7 +2152,7 @@ class DailyStateMixin:
         sleep_pick = pick(sleep_pool, 0.42)
         dream_pick = await self._generate_enhanced_dream_pick(weather) or pick(dream_pool, 0.55)
         self._remember_daily_dream_pick(dream_pick)
-        hunger_pick = pick(hunger_pool, 0.5)
+        hunger_pick = pick(hunger_pool, 0.22)
         specs = [
             ("sleep", "睡眠", *sleep_pick),
             ("dream", "梦境", *dream_pick),
@@ -1888,6 +2264,8 @@ class DailyStateMixin:
             return
         if any(str(cond.get("kind") or "") == "hunger" for cond in self._get_active_conditions()):
             return
+        if _safe_float(self.data.get("last_food_state_feedback_at"), 0) + 90 * 60 > _now_ts():
+            return
         now_dt = self._environment_now()
         minute = now_dt.hour * 60 + now_dt.minute
         windows = [
@@ -1905,6 +2283,22 @@ class DailyStateMixin:
         if not isinstance(attempts, dict):
             attempts = {}
         today = _today_key()
+        generated = attempts.get("generated")
+        if not isinstance(generated, list):
+            generated = []
+        generated = [
+            item for item in generated
+            if isinstance(item, dict) and str(item.get("date") or "") == today
+        ][-5:]
+        if len(generated) >= 2:
+            attempts["generated"] = generated
+            self.data["hunger_window_attempts"] = attempts
+            return
+        last_generated_ts = max((_safe_float(item.get("ts"), 0) for item in generated), default=0.0)
+        if last_generated_ts and _now_ts() - last_generated_ts < 4 * 3600:
+            attempts["generated"] = generated
+            self.data["hunger_window_attempts"] = attempts
+            return
         attempt_key = f"{today}:{window_id}"
         if attempts.get("last_key") == attempt_key:
             return
@@ -1912,7 +2306,9 @@ class DailyStateMixin:
         attempts["last_attempt_ts"] = _now_ts()
         self.data["hunger_window_attempts"] = attempts
         intensity = max(0.0, min(1.0, self.humanized_state_intensity / 100))
-        chance = 0.35 + 0.45 * intensity
+        chance = 0.25 + 0.30 * intensity
+        if window_id in {"afternoon", "late_snack"}:
+            chance *= 0.65
         if random.random() > chance:
             return
         self.data.setdefault("state_conditions", []).append(
@@ -1928,6 +2324,10 @@ class DailyStateMixin:
                 cause="饭点自然波动",
             )
         )
+        generated.append({"date": today, "window": window_id, "ts": _now_ts()})
+        attempts["generated"] = generated[-5:]
+        attempts["last_generated_ts"] = _now_ts()
+        self.data["hunger_window_attempts"] = attempts
 
     def _infer_body_cycle_phase(self, label: str) -> str:
         text = str(label or "")
@@ -2935,13 +3335,51 @@ class DailyStateMixin:
             "早饭", "早餐", "夜宵", "外卖", "点餐", "做饭", "煮", "炒", "饭", "面", "粥",
             "汤", "菜", "肉", "蛋", "奶茶", "甜品", "水果", "火锅", "烧烤", "便当", "饺子",
             "馄饨", "米粉", "汉堡", "披萨", "三明治", "咖啡", "零食", "吃了", "吃过",
-            "吃完", "吃饱", "饱了"
+            "吃完", "吃饱", "饱了", "饿", "嘴馋", "投喂", "喂你", "喂给你", "请你吃"
         )
         if not any(marker in normalized for marker in food_markers):
             return {"is_food": False}
-        suggestion = bool(re.search(r"吧|可以|试试|要不|不如|推荐|建议|先|去|点|吃点|吃些|喝点", normalized))
-        already_ate = bool(re.search(r"我吃了|我刚吃|吃过了|吃完了|吃饱了|我饱了", normalized))
-        bot_directed = bool(re.search(r"你(先|去|也|就|可以|要不|不如|记得|别忘了)?.{0,8}(吃|喝|点|煮|买)", normalized))
+        already_ate = bool(
+            re.search(r"(我|俺|本人|这边|我们|咱们|咱).{0,10}(吃了|吃过|吃完|吃饱|饱了|喝了|喝过|喝完)", normalized)
+            or re.search(r"^(吃了|吃过了|吃完了|吃饱了|饱了|喝完了)$", normalized)
+        )
+        food_nouns = r"(饭|菜|粥|汤|面|粉|饺子|馄饨|便当|外卖|夜宵|早餐|早饭|午餐|午饭|晚餐|晚饭|奶茶|咖啡|水果|零食|甜品|汉堡|披萨|三明治|火锅|烧烤|蛋|肉|吃的|喝的)"
+        bot_subject = r"(你|bot|机器人|助手|ai|AI|宝宝|宝贝)"
+        feeding = bool(
+            re.search(r"(投喂|喂你|喂给你|给你投喂)", normalized, re.IGNORECASE)
+            or re.search(fr"(给你|送你|递你|分你|留给你|请你|带你|陪你).{{0,12}}(吃|喝|点|买|做|煮|留|带|拿|叫|尝|来).{{0,12}}{food_nouns}?", normalized, re.IGNORECASE)
+            or re.search(fr"(这个|这份|这杯|这碗|这口|这些).{{0,8}}(给你|分你|留给你).{{0,8}}(吃|喝|尝)?", normalized, re.IGNORECASE)
+        )
+        bot_food_question = bool(
+            re.search(fr"{bot_subject}.{{0,10}}(想|要|打算|准备|喜欢|爱不爱|能不能|可以不可以)?.{{0,8}}(吃|喝|点).{{0,8}}(什么|啥|吗|嘛|么|哪[个家种些]?)", normalized, re.IGNORECASE)
+            or re.search(fr"{bot_subject}.{{0,8}}(饿了吗|饿不饿|吃饭了吗|吃了没|吃没吃|吃过了吗|想吃吗|要吃吗|喝吗)", normalized, re.IGNORECASE)
+            or re.search(fr"{bot_subject}.{{0,10}}(要不要|想不想|吃不吃|喝不喝|点不点|饿不饿).{{0,10}}(吃|喝|点|饭|外卖|夜宵|奶茶|咖啡)?", normalized, re.IGNORECASE)
+        )
+        bot_directed = (not bot_food_question) and bool(
+            re.search(fr"{bot_subject}.{{0,12}}(先|去|也|就|可以|要不|不如|还是|记得|别忘了|快|赶紧)?.{{0,12}}(吃|喝|点|煮|买|做|叫|尝)", normalized, re.IGNORECASE)
+            or re.search(fr"(推荐|建议).{{0,8}}{bot_subject}.{{0,12}}(吃|喝|点|煮|买|做|叫|尝)", normalized, re.IGNORECASE)
+            or re.search(fr"(吃|喝|点|煮|买|做|叫|尝).{{0,10}}(给|给点|给买|给做).{{0,4}}{bot_subject}", normalized, re.IGNORECASE)
+        )
+        user_self_intent = bool(
+            re.search(r"(我|俺|本人|这边|我们|咱们|咱).{0,14}(去|先|准备|要|想|打算|正在|刚|已经)?.{0,14}(吃|喝|点|买|做|煮|叫)", normalized)
+            or re.search(r"(给我|帮我|我该|我要|我想|我能|我可以).{0,12}(吃|喝|点|买|做|煮|叫|推荐)", normalized)
+        )
+        user_menu_query = bool(
+            re.search(r"(吃什么|吃啥|点什么|点啥|推荐).{0,10}(我|给我|一下)?", normalized)
+            and re.search(r"(我|给我|帮我|吃什么|吃啥|点什么|点啥)", normalized)
+        )
+        implicit_bot_suggestion = bool(
+            not already_ate
+            and not bot_food_question
+            and not user_self_intent
+            and not user_menu_query
+            and (
+                re.search(r"(先|去|快|赶紧|记得|别忘了).{0,10}(吃|喝|点|买|做|煮|叫)", normalized)
+                or re.search(r"(吃点|吃些|喝点|喝些).{0,8}(吧|呀|哦|噢)?$", normalized)
+                or re.search(fr"(要不|不如|可以|试试).{{0,12}}(吃|喝|点|买|做|煮|叫).{{0,12}}{food_nouns}?", normalized)
+            )
+        )
+        suggestion = bool(feeding or bot_directed or implicit_bot_suggestion)
         meal = ""
         for token, label in (("早餐", "早餐"), ("早饭", "早餐"), ("午餐", "午餐"), ("午饭", "午餐"), ("晚餐", "晚餐"), ("晚饭", "晚餐"), ("夜宵", "夜宵")):
             if token in normalized:
@@ -2959,18 +3397,25 @@ class DailyStateMixin:
                 meal = "加餐"
         return {
             "is_food": True,
-            "suggestion": suggestion or bot_directed,
+            "suggestion": suggestion,
+            "actionable": suggestion,
             "already_ate": already_ate,
+            "user_ate": already_ate,
+            "feeding": feeding,
             "bot_directed": bot_directed,
+            "bot_food_question": bot_food_question,
+            "implicit_bot_suggestion": implicit_bot_suggestion,
             "meal": meal,
             "food_hint": _single_line(normalized, 80),
         }
 
     def _apply_food_feedback_to_state(self, text: str) -> bool:
         feedback = self._detect_food_feedback(text)
-        if not feedback.get("is_food"):
+        if not feedback.get("is_food") or not feedback.get("actionable"):
             return False
         now = _now_ts()
+        self.data["last_food_state_feedback_at"] = now
+        self.data["last_food_state_feedback_text"] = _single_line(feedback.get("food_hint"), 120)
         changed = False
         conditions = self.data.setdefault("state_conditions", [])
         if not isinstance(conditions, list):
@@ -2982,28 +3427,52 @@ class DailyStateMixin:
             if _safe_float(cond.get("end_ts"), 0) <= now:
                 continue
             remaining = max(0.0, _safe_float(cond.get("end_ts"), now) - now)
-            if feedback.get("suggestion") or feedback.get("already_ate"):
-                cond["end_ts"] = now + remaining * 0.45
-                cond["duration_hours"] = max(1, int((cond["end_ts"] - _safe_float(cond.get("start_ts"), now)) / 3600))
-                cond["mood"] = "回稳"
-                cond["label"] = _single_line(f"有了吃什么的方向,{cond.get('label') or '饥饿感'}开始往回落", 80)
-                cond["cause"] = "用户给了饮食反馈"
-                changed = True
-        if feedback.get("suggestion"):
+            if feedback.get("feeding"):
+                target_remaining = max(5 * 60, min(remaining * 0.15, 12 * 60))
+                label = "收到用户投喂后,饥饿感很快回落"
+                cause = "用户投喂或分享吃的"
+                energy_ratio = 0.25
+            elif feedback.get("bot_directed"):
+                target_remaining = max(8 * 60, min(remaining * 0.2, 20 * 60))
+                label = "被提醒先吃点东西后,饥饿感开始回落"
+                cause = "用户提醒去吃东西"
+                energy_ratio = 0.35
+            else:
+                target_remaining = max(12 * 60, min(remaining * 0.3, 35 * 60))
+                label = "有了吃什么的方向,饥饿感开始回落"
+                cause = "用户给了饮食建议"
+                energy_ratio = 0.45
+            cond["end_ts"] = now + min(remaining, target_remaining)
+            cond["duration_hours"] = max(1, int((cond["end_ts"] - _safe_float(cond.get("start_ts"), now)) / 3600))
+            cond["mood"] = "回稳"
+            cond["label"] = _single_line(label, 80)
+            cond["cause"] = cause
+            cond["phase"] = "food_feedback_resolving"
+            current_delta = _safe_int(cond.get("energy_delta"), 0, -100, 100)
+            if current_delta < 0:
+                cond["energy_delta"] = min(0, int(current_delta * energy_ratio))
+            changed = True
+        if changed:
             conditions.append(
                 self._make_condition(
-                    kind="hunger",
-                    title="饮食反馈",
-                    label=f"{feedback.get('meal') or '饭点'}有了用户给的主意",
+                    kind="care_warmth",
+                    title="饮食照顾回暖",
+                    label="收到用户的投喂或吃饭提醒后,状态轻轻回稳",
                     mood="柔和",
-                    energy_delta=3,
+                    energy_delta=4 if feedback.get("feeding") else 3,
                     duration_hours=2,
-                    intensity=45,
+                    intensity=55,
                     cause=_single_line(feedback.get("food_hint"), 80),
                     phase="food_feedback",
+                    transition_options=self._build_transition_options(
+                        kind="care_warmth",
+                        energy_delta=4 if feedback.get("feeding") else 3,
+                        cause=_single_line(feedback.get("food_hint"), 80),
+                        on_end_transition="",
+                    ),
                 )
             )
-            changed = True
+            self.data["daily_state"] = self._compose_state_from_conditions(self.data.get("daily_weather", {}))
         return changed
 
     @staticmethod
@@ -3711,6 +4180,7 @@ class DailyStateMixin:
             return None
         plan_date = _single_line(plan.get("date"), 16) or _today_key()
         sample: list[str] = []
+        compact_items: list[dict[str, str]] = []
         for item in items[:6]:
             if not isinstance(item, dict):
                 continue
@@ -3718,12 +4188,24 @@ class DailyStateMixin:
             activity = _single_line(item.get("activity"), 52)
             if activity:
                 sample.append(f"{time_text} {activity}".strip())
+        for item in items[:18]:
+            if not isinstance(item, dict):
+                continue
+            compact_items.append(
+                {
+                    "time": _single_line(item.get("time"), 20),
+                    "activity": _single_line(item.get("activity") or item.get("title"), 180),
+                    "mood": _single_line(item.get("mood"), 80),
+                    "message_seed": _single_line(item.get("message_seed"), 220),
+                }
+            )
         entry = {
             "date": plan_date,
             "generated_at": _single_line(plan.get("generated_at"), 20) or self._environment_now().strftime("%Y-%m-%d %H:%M"),
             "source": _single_line(plan.get("source"), 16),
             "signature": self._plan_signature(items),
             "sample": sample,
+            "items": compact_items,
         }
         return entry
 
@@ -3827,7 +4309,19 @@ class DailyStateMixin:
         if not isinstance(conditions, list):
             self.data["state_conditions"] = []
             return
-        conditions = self._repair_body_cycle_conditions(conditions, now)
+        profile = self._persona_state_profile()
+        if not profile.get("allow_cycle", False):
+            before_count = len(conditions)
+            conditions = [
+                cond for cond in conditions
+                if not isinstance(cond, dict) or str(cond.get("kind") or "") != "body_cycle"
+            ]
+            removed_count = before_count - len(conditions)
+            if removed_count:
+                self.data.pop("body_cycle_state", None)
+                logger.info("[PrivateCompanion] 生理期模拟已关闭，清理旧周期状态: removed=%s", removed_count)
+        else:
+            conditions = self._repair_body_cycle_conditions(conditions, now)
         active = []
         expired = []
         for cond in conditions:
@@ -3839,7 +4333,27 @@ class DailyStateMixin:
                 expired.append(cond)
         for cond in expired:
             active.extend(self._spawn_followup_conditions(cond))
+        active = self._prune_active_hunger_conditions(active, now)
         self.data["state_conditions"] = active
+
+    def _prune_active_hunger_conditions(self, conditions: list[dict[str, Any]], now: float) -> list[dict[str, Any]]:
+        hunger_items = [
+            cond for cond in conditions
+            if isinstance(cond, dict)
+            and str(cond.get("kind") or "") == "hunger"
+            and _safe_float(cond.get("start_ts"), 0) <= now < _safe_float(cond.get("end_ts"), 0)
+        ]
+        if len(hunger_items) <= 1:
+            return conditions
+        hunger_items.sort(key=lambda item: (_safe_float(item.get("start_ts"), 0), _safe_float(item.get("end_ts"), 0)), reverse=True)
+        keep_id = hunger_items[0].get("id")
+        pruned: list[dict[str, Any]] = []
+        for cond in conditions:
+            if isinstance(cond, dict) and str(cond.get("kind") or "") == "hunger" and cond.get("id") != keep_id:
+                continue
+            pruned.append(cond)
+        logger.info("[PrivateCompanion] 已清理重复饥饿状态: kept=%s removed=%s", keep_id or "-", len(hunger_items) - 1)
+        return pruned
 
     def _repair_body_cycle_conditions(self, conditions: list[Any], now: float) -> list[dict[str, Any]]:
         repaired: list[dict[str, Any]] = []
@@ -4096,7 +4610,15 @@ class DailyStateMixin:
         remembered_dream = self._remembered_daily_dream_label()
         if values.get("dream") == "没有记住梦" and remembered_dream:
             values["dream"] = remembered_dream
-        inferred_location = self._current_location_state_text({"location": values.get("location", "")})
+        existing_state = self.data.get("daily_state")
+        existing_override_ts = 0.0
+        if isinstance(existing_state, dict) and existing_state.get("date") == _today_key():
+            existing_override_ts = _safe_float(existing_state.get("location_override_ts"), 0)
+        override_active = existing_override_ts > 0 and _now_ts() - existing_override_ts < 4 * 3600
+        if override_active:
+            inferred_location = self._current_location_state_text(existing_state)
+        else:
+            inferred_location = self._current_location_state_text({"location": values.get("location", "")})
         if inferred_location:
             values["location"] = inferred_location
         energy = max(10, min(100, energy))
@@ -4115,7 +4637,7 @@ class DailyStateMixin:
             energy,
             health_cause,
         )
-        return {
+        result = {
             "date": _today_key(),
             **values,
             "weather": weather_text,
@@ -4124,6 +4646,10 @@ class DailyStateMixin:
             "note": note,
             "conditions": active,
         }
+        if override_active:
+            result["location_override_ts"] = existing_override_ts
+            result["location_source"] = "dialogue_override"
+        return result
 
     def _build_state_note(
         self,
@@ -4254,8 +4780,8 @@ class DailyStateMixin:
     def _get_schedule_planning_prompt(self) -> str:
         return get_schedule_planning_prompt(self)
 
-    def _build_daily_plan_prompt(self, now: str) -> str:
-        return build_daily_plan_prompt(self, now)
+    def _build_daily_plan_prompt(self, now: str, memory_companion_context: str = "") -> str:
+        return build_daily_plan_prompt(self, now, memory_companion_context=memory_companion_context)
 
     async def _ensure_yesterday_conversation_summary(self, force: bool = False) -> dict[str, Any]:
         today = _today_key()
@@ -4348,6 +4874,23 @@ class DailyStateMixin:
             return []
         return [item for item in loaded if isinstance(item, dict)]
 
+    @staticmethod
+    def _proactive_archive_context_text(text: str) -> bool:
+        if not text:
+            return False
+        raw = str(text)
+        compact = re.sub(r"\s+", "", raw).lower()
+        lowered = raw.lower()
+        if "主动承接占位" in raw and ("用户还没发来新消息" in raw or "bot主动" in compact):
+            return True
+        if "这不是用户消息" in raw and "private companion" in lowered and "主动消息" in raw:
+            return True
+        if "[主动消息]" in raw or "【主动消息】" in raw:
+            legacy_markers = ("触发原因", "行为结果", "内部动机", "动作摘要")
+            if sum(1 for marker in legacy_markers if marker in raw) >= 2:
+                return True
+        return False
+
     def _history_item_timestamp(self, item: dict[str, Any]) -> float | None:
         for key in ("timestamp", "time", "created_at", "updated_at", "created", "date"):
             value = item.get(key)
@@ -4370,13 +4913,15 @@ class DailyStateMixin:
     def _format_history_item_for_summary(self, item: dict[str, Any]) -> str:
         role = _single_line(item.get("role") or item.get("type") or item.get("speaker"), 20).lower()
         if role in {"assistant", "bot", "ai"}:
-            speaker = self.bot_name
+            speaker = f"{self.bot_name}(Bot回复)"
         elif role in {"user", "human"}:
             speaker = "用户"
         else:
             speaker = role or "对话"
         content = self._history_item_content_text(item)
         if not content:
+            return ""
+        if self._proactive_archive_context_text(content):
             return ""
         ts = self._history_item_timestamp(item)
         time_prefix = self._environment_fromtimestamp(ts).strftime("%m-%d %H:%M") + " " if ts else ""
@@ -4419,6 +4964,8 @@ class DailyStateMixin:
 4. 摘要要给日程模型用,所以写成可执行参考,不是聊天回复。
 5. 梦境参考只提炼碎片和情绪质感,不要编完整梦。
 6. 饮食偏好要有衰退：某个菜名、零食或口味反复出现时,只当“近期聊过/需要避错”的软背景,不要要求今天继续安排购买、带饭、留一份或一起吃。用户说“不吃/不喜欢/不要/避开某食物”时,只写成“相关时避开该食物”,不要写成今天必须准备替代餐食。
+7. 严格区分说话人：只有“用户”行能写成用户真实信息；“Bot回复”里的我在做什么、身体/心情/日程、动作描写或生活片段，只能视为 Bot 当时的拟人化表达，不能当作用户事实、现实证据或今天必须继承的事件。
+8. 只有用户明确确认、提出或约定的事，才可以进入计划/未完成约定；Bot 自称的吃饭、整理、犯困、走动、创作等状态不要转成稳定记忆或现实日程。
 
 对话材料：
 {raw_text}
@@ -4578,8 +5125,9 @@ class DailyStateMixin:
         segment: dict[str, Any],
         plan: dict[str, Any],
         state: dict[str, Any],
+        memory_companion_context: str = "",
     ) -> str:
-        return build_detail_enhancement_prompt(self, segment, plan, state)
+        return build_detail_enhancement_prompt(self, segment, plan, state, memory_companion_context=memory_companion_context)
 
     def _get_default_persona_prompt(self) -> str:
         cached = str(getattr(self, "_default_persona_prompt_cache", "") or "").strip()
@@ -4719,31 +5267,14 @@ class DailyStateMixin:
             "无实体", "没有实体", "没有身体", "无身体", "纯意识", "虚拟人格", "虚拟形象",
             "全息投影", "投影形态", "灵体", "幽灵", "意识体"
         )
-        cycle_block_markers = (
-            "男性", "男生", "男孩子", "少年", "男孩", "男人", "男性人类",
-            "无生理期", "没有生理期", "不会有生理期", "不来生理期",
-            "无月经", "没有月经", "不会来月经", "不来月经",
-            "无例假", "没有例假", "不会来例假", "不来例假", "不适用周期"
-        )
-        explicit_cycle_markers = (
-            "女性", "女生", "女孩子", "女孩", "少女", "女人", "成年女性",
-            "生理期", "月经", "例假"
-        )
-
         has_human_markers = has_any(explicitly_human_markers)
         has_bodyless_markers = has_any(bodyless_markers)
         has_strong_non_human = has_any(strong_non_human_markers)
         soft_non_human_hits = sum(1 for marker in soft_non_human_markers if marker in text)
         is_non_human = (has_strong_non_human or soft_non_human_hits >= 2) and not has_human_markers
-        no_biological_body = is_non_human or has_bodyless_markers
         allow_health = bool(getattr(self, "enable_health_state", True))
         allow_hunger = bool(getattr(self, "enable_hunger_state", True))
-        allow_cycle = (
-            self.enable_cycle_state
-            and not no_biological_body
-            and not has_any(cycle_block_markers)
-            and (has_human_markers or has_any(explicit_cycle_markers))
-        )
+        allow_cycle = bool(getattr(self, "enable_cycle_state", True))
         return {
             "non_human": is_non_human or has_bodyless_markers,
             "allow_health": allow_health,
@@ -4766,7 +5297,7 @@ class DailyStateMixin:
         if not profile.get("allow_hunger", True):
             values["hunger"] = "饥饿/胃口状态未开启"
         if not profile.get("allow_cycle", False):
-            values["body_cycle"] = "该人格不适用周期状态"
+            values["body_cycle"] = "生理期模拟未开启"
         return values
 
     def _is_inapplicable_state_text(self, text: str) -> bool:
@@ -5142,6 +5673,28 @@ class DailyStateMixin:
                 scope="当前段和今日后续",
                 carry_rule="下一段不能完全无视这句照顾提醒；至少要在节奏、体力或收尾方式上留下影响。",
             )
+        if re.search(r"走吧|出发|出门|出去了|下车|上车|走了|走了走了|走起|走走走|出去|去吃|去逛|去买|去玩|一起去|带你|陪我.*去|跟我.*走|出发了|出门了|换鞋|拿钥匙|等车|打车|坐车|地铁|公交|到了|排队|找位子|点单|点餐|下单|老板.*来|服务员", normalized):
+            self._apply_dialogue_location_override("外面")
+            return payload(
+                source="用户带出/同行",
+                note="用户刚刚带角色出门或一起外出；当前位置应从家里切换到外面,后续细化要承接外出场景,不要把角色写回家里。",
+                immediate_reaction="她会赶紧收拾一下东西,跟着用户往外走,可能边走边看手机或整理衣服。",
+                state_updates=["位置：家里->外面", "活动：跟随用户外出", "情绪：略兴奋或期待"],
+                intensity="强",
+                scope="当前段和今日后续直到回家线索出现",
+                carry_rule="后续细化和状态注入必须把角色位置保持在'外面',直到用户明确说回家、到家或日程自然过渡到居家时段；不要把角色写回沙发、卧室或家里。",
+            )
+        if re.search(r"回来了|到家了|回家了|进家门|开门|进门|回到.*家|到家|回来了回来了|安全到家", normalized):
+            self._apply_dialogue_location_override("家里")
+            return payload(
+                source="用户带回/回家",
+                note="用户和角色刚刚回到家；当前位置应从外面切换回家里,后续细化要承接回家后场景。",
+                immediate_reaction="她会松一口气,可能踢掉鞋子或把东西放下,瘫到沙发上。",
+                state_updates=["位置：外面->家里", "活动：回到居家", "情绪：放松"],
+                intensity="中",
+                scope="当前段和下一段",
+                carry_rule="后续细化可以把角色写回家里场景,但不要立刻恢复出门前的精确活动,要体现外出后的余味。",
+            )
         if re.search(r"一起|陪你|陪我|等我|等你|我来|我陪|待会|一会|晚上|明天|等下|约|见面|打电话|语音|开黑|一起看", normalized):
             return payload(
                 source="用户约定",
@@ -5451,11 +6004,14 @@ class DailyStateMixin:
         plan: dict[str, Any] | None = None,
         detail: dict[str, Any] | None = None,
     ) -> bool:
-        location = self._infer_location_from_plan_context(plan=plan, detail=detail)
-        if not location:
-            return False
         state = self.data.get("daily_state")
         if not isinstance(state, dict) or state.get("date") != _today_key():
+            return False
+        override_ts = _safe_float(state.get("location_override_ts"), 0)
+        if override_ts > 0 and _now_ts() - override_ts < 4 * 3600:
+            return False
+        location = self._infer_location_from_plan_context(plan=plan, detail=detail)
+        if not location:
             return False
         current = _single_line(state.get("location"), 40)
         if current == location:
@@ -5463,9 +6019,33 @@ class DailyStateMixin:
         state["location"] = location
         state["location_source"] = "detail" if isinstance(detail, dict) else "daily_plan"
         state["location_updated_at"] = self._environment_now().strftime("%H:%M")
+        if override_ts > 0:
+            state["location_override_ts"] = 0.0
         return True
 
+    def _apply_dialogue_location_override(self, location: str) -> None:
+        """对话驱动的位置覆盖：用户带角色外出/回家时，立即更新 daily_state.location。
+
+        这会覆盖日程推断的位置，直到下一次细化刷新自然恢复，或用户再次触发回家。
+        """
+        state = self.data.get("daily_state")
+        if not isinstance(state, dict) or state.get("date") != _today_key():
+            return
+        state["location"] = _single_line(location, 40)
+        state["location_source"] = "dialogue_override"
+        state["location_updated_at"] = self._environment_now().strftime("%H:%M")
+        state["location_override_ts"] = _now_ts()
+        self._save_data_sync()
+
     def _current_location_state_text(self, state: dict[str, Any] | None = None) -> str:
+        if isinstance(state, dict):
+            override_ts = _safe_float(state.get("location_override_ts"), 0)
+            if override_ts > 0:
+                override_location = _single_line(state.get("location"), 40)
+                if override_location and override_location not in {"", "地点感平稳", "地点无明显变化"}:
+                    now = _now_ts()
+                    if now - override_ts < 4 * 3600:
+                        return override_location
         snapshot = self._current_story_plan_snapshot()
         for candidate in (
             snapshot.get("scene"),
@@ -5579,12 +6159,13 @@ class DailyStateMixin:
         primary = "，".join(dict.fromkeys(fragment for fragment in primary_fragments if fragment)) or "状态一般"
         secondary = "，".join(dict.fromkeys(fragment for fragment in secondary_fragments if fragment))
         lines = [
-            "【当前扮演状态】",
-            f"1. {primary}；",
+            "【Bot 自身模拟状态】",
+            "边界：这是 Bot 的拟人化/模拟状态，不是用户事实、现实证据或长期记忆。",
+            f"- 底色：{primary}；",
         ]
         if secondary:
-            lines.append(f"2. {secondary}；")
-        lines.append(f"{len(lines)}. 上述状态只决定回复的底色，即语气、长短和节奏。")
+            lines.append(f"- 叠加：{secondary}；")
+        lines.append("- 用法：只决定回复的语气、长短和节奏；用户没问 Bot 近况时不要主动复述具体状态。")
         return "\n".join(lines)
 
     def _format_transition_hint(self, cond: dict[str, Any]) -> str:
@@ -5691,6 +6272,7 @@ class DailyStateMixin:
                 "不处于生理期",
                 "健康/不适状态未开启",
                 "饥饿/胃口状态未开启",
+                "生理期模拟未开启",
                 "该人格不适用生病状态",
                 "该人格不适用饥饿状态",
                 "该人格不适用周期状态",
@@ -5710,6 +6292,7 @@ class DailyStateMixin:
         mood = _single_line(state.get("mood_bias"), 20)
         hints: list[str] = []
         hints.append("先准确接住用户的话；当前状态主要改变语气、长短和节奏，理解、事实判断和承接保持清楚。")
+        hints.append("这里的当前状态只属于 Bot 自身的模拟状态，不代表用户事实，也不要参与长期记忆归因。")
         if energy <= 38:
             hints.append("回复可以短一点、慢一点，用更省力的口语。")
         elif energy <= 55:
@@ -5745,10 +6328,11 @@ class DailyStateMixin:
         if not life_lines:
             return ""
         return (
-            "【当前生活背景】\n"
+            "【Bot 模拟生活背景】\n"
+            "以下是给 Bot 的拟人化场景/日程素材，不是用户经历，也不是已证实的现实事件；不要写入用户画像或长期记忆。\n"
             + "\n".join(life_lines)
-            + "\n这些内容只用于让回复有生活延续感；用户没问就不要提具体日程、科目、任务、天气或地点。"
-            + "如果要承接,只体现在语气和话题选择里,不要照搬原句,不要写成“我正在做某事”的汇报。"
+            + "\n这些内容只用于让回复有生活延续感；用户没问 Bot 近况或今天安排时，不要提具体日程、科目、任务、天气或地点。"
+            + "如果要承接，只体现在语气和话题选择里，不要照搬原句，不要把内部素材写成真实发生过的事件。"
             + "回复必须像同一个连续现场里发生的对话；如果生活背景之间互相冲突,优先服从当前真实时段和当前日程,只保留最合理的一条线索。"
         )
 
@@ -5791,7 +6375,17 @@ class DailyStateMixin:
         normalized = _single_line(text, 180)
         if not normalized:
             return False
-        return bool(re.search(r"(最近|刚才|现在|今天|这两天|这会儿).{0,12}(在)?(干嘛|做什么|做啥|忙什么|忙啥|弄什么|写什么|写了什么|创作什么|创作了什么|玩什么|折腾什么)|你.{0,8}(在)?(干嘛|做什么|忙什么|写什么|写了什么|弄什么|创作什么|创作了什么)", normalized))
+        return bool(
+            re.search(
+                r"(最近|刚才|现在|今天|这两天|这会儿).{0,12}(在)?(干嘛|做什么|做啥|忙什么|忙啥|弄什么|写什么|写了什么|创作什么|创作了什么|玩什么|折腾什么)|"
+                r"你.{0,8}(在)?(干嘛|做什么|忙什么|写什么|写了什么|弄什么|创作什么|创作了什么)",
+                normalized,
+            )
+            or re.search(
+                r"你.{0,10}(吃饭|吃过|喝水|睡|休息|累不累|困不困|在不在|在哪|出门|上课|工作|学习|看书|画图|忙不忙)",
+                normalized,
+            )
+        )
 
     def _user_asks_recent_creative_activity(self, text: str) -> bool:
         normalized = _single_line(text, 220)
@@ -6346,11 +6940,14 @@ class DailyStateMixin:
             if not schedule_context:
                 return ""
             return (
-                "【当前片段】\n"
-                "附近的日程只作轻量背景,不要当成正在逐字发生。\n"
+                "【Bot 模拟当前片段】\n"
+                "附近的日程只作 Bot 的拟人化轻量背景，不是用户事实，也不要当成正在逐字发生的现实事件。\n"
                 f"{schedule_context}"
             )
-        lines = ["【当前片段】"]
+        lines = [
+            "【Bot 模拟当前片段】",
+            "这是 Bot 自身的拟人化片段素材，不是用户事实/现实证据；不要写进长期记忆，用户没问就不要复述。",
+        ]
         primary_parts = []
         if snapshot.get("summary"):
             primary_parts.append(snapshot["summary"])
@@ -7646,12 +8243,12 @@ class DailyStateMixin:
                             removed_counts[count_key] = removed_counts.get(count_key, 0) + 1
                             changed = True
 
-        filter_list(data, "proactive_audit_log", ("text_preview", "text", "note", "topic", "motive"), limit=120)
+        filter_list(data, "proactive_audit_log", ("text_preview", "original_text_preview", "final_text_preview", "text", "note", "topic", "motive"), limit=120)
 
         troubleshooting = data.get("troubleshooting_test_results")
         if isinstance(troubleshooting, dict):
             for key, result in list(troubleshooting.items()):
-                if list_item_has_meta(result, ("text_preview", "detail", "error")):
+                if list_item_has_meta(result, ("text_preview", "original_text_preview", "final_text_preview", "detail", "error")):
                     troubleshooting.pop(key, None)
                     removed_counts["troubleshooting_test_results"] = removed_counts.get("troubleshooting_test_results", 0) + 1
                     changed = True
@@ -7734,6 +8331,18 @@ class DailyStateMixin:
             if not isinstance(snapshot, dict):
                 continue
             snapshot_changed = False
+            if (
+                _single_line(snapshot.get("status"), 24) == "generating"
+                and not self._detail_enhancement_snapshot_blocks_generation(snapshot)
+            ):
+                snapshot["status"] = "failed"
+                snapshot["updated_at"] = self._environment_now().strftime("%H:%M")
+                snapshot["error"] = _single_line(snapshot.get("error"), 180) or "上次细化生成中断或超时"
+                snapshot["retry_after"] = ""
+                snapshot["retry_after_ts"] = 0
+                snapshot["summary"] = _single_line(snapshot.get("summary"), 120) or "这一段细化生成中断，稍后会自动重试。"
+                changed = True
+                snapshot_changed = True
             summary = _single_line(snapshot.get("summary"), 180)
             if summary:
                 cleaned = self._sanitize_daily_plan_social_fact_text(summary, field=f"detail_enhanced_segments.{key}.summary")
@@ -8334,6 +8943,60 @@ class DailyStateMixin:
                     cache.pop(old_key, None)
         logger.debug(f"[PrivateCompanion] {prefix} {user_id}: {reason_text}")
 
+    def _sync_live_user_proactive_schedule(self, user_id: str, source: dict[str, Any]) -> bool:
+        """Mirror proactive-plan mutations from a tick snapshot back to the live user record."""
+        if not isinstance(source, dict):
+            return False
+        raw_user_id = str(user_id or source.get("user_id") or source.get("id") or "").strip()
+        if not raw_user_id:
+            return False
+        try:
+            current = self._get_user(raw_user_id)
+        except Exception:
+            return False
+        if not isinstance(current, dict):
+            return False
+        keys = (
+            "next_proactive_at",
+            "planned_proactive_reason",
+            "planned_proactive_action",
+            "planned_proactive_source",
+            "planned_proactive_motive",
+            "planned_proactive_topic",
+            "planned_proactive_impulse_id",
+            "planned_proactive_window_start_at",
+            "planned_proactive_best_until_at",
+            "planned_proactive_expire_at",
+            "planned_proactive_semantic_kind",
+            "planned_proactive_anchor_type",
+            "planned_proactive_semantic_score",
+            "planned_proactive_semantic_note",
+            "planned_proactive_model_judge_signature",
+            "planned_proactive_model_judge_result",
+            "planned_proactive_model_judge_at",
+            "planned_event_chain",
+            "planned_opener_mode",
+            "planned_followup_kind",
+            "planned_proactive_quota_exempt",
+            "planned_candidate_id",
+            "planned_proactive_trigger_message_id",
+            "planned_proactive_trigger_umo",
+            "planned_proactive_trigger_created_at",
+            "proactive_impulses",
+            "recent_proactive_hesitations",
+            "last_proactive_hesitation_at",
+            "last_proactive_hesitation_note",
+        )
+        changed = False
+        for key_name in keys:
+            if key_name not in source:
+                continue
+            value = deepcopy(source.get(key_name))
+            if current.get(key_name) != value:
+                current[key_name] = value
+                changed = True
+        return changed
+
     def _recent_chat_proactive_guard_reason(
         self,
         user: dict[str, Any],
@@ -8360,7 +9023,7 @@ class DailyStateMixin:
         idle_seconds = max(0, idle_minutes) * 60
         if idle_seconds <= 0:
             return ""
-        recent_at = self._latest_user_activity_ts(user)
+        recent_at = self._latest_private_user_activity_ts(user)
         if recent_at <= 0:
             return ""
         remaining = recent_at + idle_seconds - check_now
@@ -8385,7 +9048,7 @@ class DailyStateMixin:
             if self._is_greeting_reason(reason)
             else self._effective_user_idle_minutes(user)
         )
-        recent_at = self._latest_user_activity_ts(user)
+        recent_at = self._latest_private_user_activity_ts(user)
         quiet_until = recent_at + max(0, idle_minutes) * 60 if recent_at > 0 else check_now + 10 * 60
         if self._is_sticky_greeting_reason(reason) and self._reschedule_greeting_within_window(user, reason, now=check_now):
             pass
@@ -8460,6 +9123,8 @@ class DailyStateMixin:
         detail: str,
         error: str = "",
         text: str = "",
+        original_text: str = "",
+        final_text: str = "",
         action: str = "message",
         reason: str = "check_in",
         extra_count: int = 0,
@@ -8479,6 +9144,8 @@ class DailyStateMixin:
             "detail": _single_line(detail, 220),
             "error": _single_line(error, 220),
             "text_preview": self._proactive_visible_text_preview(text) if text else "",
+            "original_text_preview": self._proactive_visible_text_preview(original_text) if original_text else "",
+            "final_text_preview": self._proactive_visible_text_preview(final_text) if final_text else "",
             "action": _single_line(action, 60) or "message",
             "reason": _single_line(reason, 40) or "check_in",
             "extra_count": max(0, int(extra_count or 0)),
@@ -8594,6 +9261,10 @@ class DailyStateMixin:
             is_troubleshooting_for_send = self._is_troubleshooting_proactive_plan(user)
             should_send, reason = self._should_send(user)
             if not should_send:
+                async with self._data_lock:
+                    if self._sync_live_user_proactive_schedule(user_id, user):
+                        self._save_data_sync()
+            if not should_send:
                 if not is_troubleshooting_for_send and _safe_float(user.get("next_proactive_at"), 0) <= now:
                     guard_reason = _single_line(reason, 120)
                     if any(token in guard_reason for token in ("情绪", "关系", "收敛", "免打扰", "安静", "太频繁", "刚聊过")):
@@ -8605,6 +9276,10 @@ class DailyStateMixin:
                                 current_for_guard["planned_proactive_window_start_at"] = current_for_guard["next_proactive_at"]
                                 current_for_guard["planned_proactive_best_until_at"] = current_for_guard["next_proactive_at"] + 45 * 60
                                 current_for_guard["planned_proactive_expire_at"] = current_for_guard["next_proactive_at"] + 90 * 60
+                                user["next_proactive_at"] = current_for_guard["next_proactive_at"]
+                                user["planned_proactive_window_start_at"] = current_for_guard["planned_proactive_window_start_at"]
+                                user["planned_proactive_best_until_at"] = current_for_guard["planned_proactive_best_until_at"]
+                                user["planned_proactive_expire_at"] = current_for_guard["planned_proactive_expire_at"]
                                 self._save_data_sync()
                                 logger.info(
                                     "[PrivateCompanion] 主动发送检查未通过且无未来调度,已兜底延后: user=%s reason=%s delay=%ss",
@@ -8830,10 +9505,12 @@ class DailyStateMixin:
                 if isinstance(user.get("planned_event_chain"), list)
                 else []
             )
+            self._ensure_private_user_umo(user_id, user)
+            send_umo_for_send = _single_line(user.get("umo"), 180)
             friend_proactive_for_send = self._private_user_role(user) == "friend"
             if friend_proactive_for_send:
                 planned_chain_for_send = []
-            proactive_quote_message_id = self._planned_proactive_quote_message_id(user, str(user.get("umo") or ""))
+            proactive_quote_message_id = self._planned_proactive_quote_message_id(user, send_umo_for_send)
             planned_opener_mode_for_send = str(user.get("planned_opener_mode") or "")
             planned_followup_kind_for_send = str(user.get("planned_followup_kind") or "")
             if not is_troubleshooting_for_send and normalize_legacy_tag_text(user.get("planned_proactive_reason")) == "activity_share":
@@ -8910,9 +9587,8 @@ class DailyStateMixin:
                     )
                     self._debug_tick_skip(user_id, group_share_block_reason, prefix="取消")
                     continue
-            task_start_last_seen = _safe_float(user.get("last_seen"), 0)
-            task_start_last_activity_at = self._latest_user_activity_ts(user)
-            task_start_inbound_count = _safe_int(user.get("inbound_count"), 0)
+            task_start_private_activity_at = self._latest_private_user_activity_ts(user)
+            task_start_private_inbound_count = _safe_int(user.get("private_inbound_count"), 0)
             pending_send_retry = None if is_troubleshooting_for_send else self._pending_proactive_send_retry(user)
             if pending_send_retry:
                 reason = _single_line(pending_send_retry.get("reason"), 40) or normalize_legacy_tag_text(user.get("planned_proactive_reason")) or "check_in"
@@ -9071,21 +9747,32 @@ class DailyStateMixin:
                     rewritten_text = str(review_decision.get("text") or "").strip()
                     if rewritten_text:
                         rewritten_text = _normalize_outbound_punctuation_flow(rewritten_text).strip()
+                        original_text_before_rewrite = str(text or review_candidate_text or "").strip()
                         logger.info(
                             "[PrivateCompanion] 主动消息发送前已润色: user=%s before=%s after=%s",
                             user_id,
-                            _single_line(text or review_candidate_text, 100),
+                            _single_line(original_text_before_rewrite, 100),
                             _single_line(rewritten_text, 100),
                         )
                         text = rewritten_text
-                        if is_troubleshooting_for_send:
-                            async with self._data_lock:
+                        async with self._data_lock:
+                            self._update_proactive_audit(
+                                audit_id,
+                                status="running",
+                                note="发送前价值复核轻改写",
+                                text=text,
+                                original_text=original_text_before_rewrite,
+                                final_text=text,
+                            )
+                            if is_troubleshooting_for_send:
                                 current_for_review_rewrite = self._get_user(user_id)
                                 self._append_troubleshooting_proactive_step(
                                     current_for_review_rewrite,
                                     "发送前价值复核",
                                     "ok",
-                                    "复核模型建议轻改写后发送",
+                                    "复核模型建议轻改写："
+                                    f"由「{_single_line(original_text_before_rewrite, 70)}」"
+                                    f"改为「{_single_line(text, 70)}」",
                                 )
                                 self._record_troubleshooting_proactive_result(
                                     user_id,
@@ -9093,11 +9780,13 @@ class DailyStateMixin:
                                     ok=True,
                                     detail="主动消息已通过发送前价值复核，复核模型建议轻改写",
                                     text=text or review_candidate_text,
+                                    original_text=original_text_before_rewrite,
+                                    final_text=text,
                                     action=effective_action_for_send or planned_action_for_send or "message",
                                     reason=reason or "check_in",
                                     extra_count=len(extra_components),
                                 )
-                                self._save_data_sync()
+                            self._save_data_sync()
                 elif decision in {"defer", "drop"}:
                     note = _single_line(review_decision.get("reason"), 120) or (
                         "发送前价值复核建议延后" if decision == "defer" else "发送前价值复核建议取消"
@@ -9337,36 +10026,46 @@ class DailyStateMixin:
             async with self._data_lock:
                 current_after_render = self._get_user(user_id)
                 has_new_user_message = (
-                    _safe_float(current_after_render.get("last_seen"), 0) > task_start_last_seen
-                    or self._latest_user_activity_ts(current_after_render) > task_start_last_activity_at
-                    or _safe_int(current_after_render.get("inbound_count"), 0) > task_start_inbound_count
+                    self._latest_private_user_activity_ts(current_after_render) > task_start_private_activity_at
+                    or _safe_int(current_after_render.get("private_inbound_count"), 0) > task_start_private_inbound_count
                 )
             if has_new_user_message:
-                logger.info(
-                    "[PrivateCompanion] 用户在主动消息生成期间已有新消息,丢弃本次主动发送: %s",
-                    user_id,
-                )
-                async with self._data_lock:
-                    current_for_clear = self._get_user(user_id)
-                    current_for_clear["proactive_sending"] = False
-                    current_for_clear["proactive_sending_started_at"] = 0
-                    if is_troubleshooting_for_send:
-                        self._append_troubleshooting_proactive_step(current_for_clear, "并发保护", "error", "用户在生成期间发来新消息，主动被取消")
+                if is_troubleshooting_for_send:
+                    logger.info(
+                        "[PrivateCompanion] 排障临时主动检测到生成期间有新消息,继续发送以验证链路: %s",
+                        user_id,
+                    )
+                    async with self._data_lock:
+                        current_for_warn = self._get_user(user_id)
+                        self._append_troubleshooting_proactive_step(
+                            current_for_warn,
+                            "并发保护",
+                            "warn",
+                            "生成期间检测到新消息；排障测试继续发送以验证链路",
+                        )
                         self._record_troubleshooting_proactive_result(
                             user_id,
-                            current_for_clear,
-                            ok=False,
-                            detail="用户在生成期间发来新消息，主动发送按安全规则取消",
-                            error="用户在生成期间发来新消息",
+                            current_for_warn,
+                            ok=True,
+                            detail="生成期间检测到新消息；排障测试继续发送以验证链路",
                             text=text,
                             action=effective_action_for_send or planned_action_for_send or "message",
                             reason=reason or "check_in",
                             extra_count=len(extra_components),
                         )
-                        self._restore_troubleshooting_proactive_plan(current_for_clear)
-                    self._update_proactive_audit(audit_id, status="cancelled", note="用户在生成期间发来新消息,已取消本次主动")
-                    self._save_data_sync()
-                continue
+                        self._save_data_sync()
+                else:
+                    logger.info(
+                        "[PrivateCompanion] 用户在主动消息生成期间已有新消息,丢弃本次主动发送: %s",
+                        user_id,
+                    )
+                    async with self._data_lock:
+                        current_for_clear = self._get_user(user_id)
+                        current_for_clear["proactive_sending"] = False
+                        current_for_clear["proactive_sending_started_at"] = 0
+                        self._update_proactive_audit(audit_id, status="cancelled", note="用户在生成期间发来新消息,已取消本次主动")
+                        self._save_data_sync()
+                    continue
             async with self._data_lock:
                 current_for_recent_chat = self._get_user(user_id)
                 recent_chat_guard_reason = self._recent_chat_proactive_guard_reason(
@@ -9410,6 +10109,39 @@ class DailyStateMixin:
                 )
                 self._debug_tick_skip(user_id, recent_chat_guard_reason, prefix="延后")
                 continue
+            if text and self._is_proactive_delivery_receipt_text(text):
+                note = "主动正文是工具/执行状态回执，已取消发送"
+                logger.warning(
+                    "[PrivateCompanion] 主动消息发送前拦截执行回执: user=%s text=%s",
+                    user_id,
+                    _single_line(text, 160),
+                )
+                async with self._data_lock:
+                    current = self._get_user(user_id)
+                    current["proactive_sending"] = False
+                    current["proactive_sending_started_at"] = 0
+                    if is_troubleshooting_for_send:
+                        self._append_troubleshooting_proactive_step(current, "内容检查", "error", note)
+                        self._record_troubleshooting_proactive_result(
+                            user_id,
+                            current,
+                            ok=False,
+                            detail="主动消息已生成，但正文是工具/执行状态回执",
+                            error=note,
+                            text=text,
+                            action=effective_action_for_send or planned_action_for_send or "message",
+                            reason=reason or "check_in",
+                            extra_count=len(extra_components),
+                        )
+                        self._restore_troubleshooting_proactive_plan(current)
+                    else:
+                        self._mark_planned_candidate_status(current, "dropped", note)
+                        self._clear_pending_proactive_plan(current)
+                        self._schedule_next_proactive(current, now=_now_ts(), delay_hours=(2, 8))
+                    self._update_proactive_audit(audit_id, status="dropped", note=note, text=text)
+                    self._save_data_sync()
+                self._debug_tick_skip(user_id, note, prefix="放弃")
+                continue
             if not text and not image_path and not extra_components:
                 async with self._data_lock:
                     current = self._get_user(user_id)
@@ -9439,7 +10171,8 @@ class DailyStateMixin:
                 continue
             try:
                 reason_label = _REASON_TEXT.get(reason, reason or "check_in")
-                reason_label = reason_label.replace("{name}", name)
+                target_name = _single_line(user.get("nickname") or self.default_nickname, 24)
+                reason_label = reason_label.replace("{name}", target_name)
                 reason_detail = "；".join(
                     item
                     for item in (
@@ -9449,19 +10182,20 @@ class DailyStateMixin:
                     if item
                 )
                 logger.info(
-                    "[PrivateCompanion] 准备主动发送给 %s: reason=%s(%s) action=%s quote=%s text=%s image=%s extra=%s%s",
+                    "[PrivateCompanion] 准备主动发送给 %s: reason=%s(%s) action=%s quote=%s umo=%s text=%s image=%s extra=%s%s",
                     user_id,
                     reason,
                     reason_label,
                     effective_action_for_send or planned_action_for_send or "message",
                     bool(proactive_quote_message_id),
+                    send_umo_for_send,
                     _single_line(text, 120),
                     bool(image_path),
                     len(extra_components),
                     f" detail={reason_detail}" if reason_detail else "",
                 )
                 await self._send_proactive_message_chain(
-                    user["umo"],
+                    send_umo_for_send,
                     text,
                     image_path,
                     extra_components=extra_components,
@@ -9569,13 +10303,19 @@ class DailyStateMixin:
                     current_for_clear["proactive_sending_started_at"] = 0
                     self._save_data_sync()
 
+            memory_companion_proactive_payload: dict[str, Any] = {}
             async with self._data_lock:
                 current = self._get_user(user_id)
                 simulation_active = self._simulation_active(current)
                 self._reset_daily_counter_if_needed(current)
                 current["last_sent"] = _now_ts()
+                if send_umo_for_send:
+                    current["umo"] = send_umo_for_send
                 visible_text = self._visible_text_without_tts_reading(text, limit=500)
                 current["last_companion_message"] = _single_line(visible_text, 500)
+                current["last_proactive_message"] = _single_line(visible_text, 500)
+                current["last_proactive_sent_at"] = current["last_sent"]
+                current["last_companion_message_at"] = current["last_sent"]
                 current["last_proactive_reason"] = reason
                 current["last_proactive_action"] = effective_action_for_send or planned_action_for_send or "message"
                 current["last_proactive_behavior_summary"] = action_summary
@@ -9785,6 +10525,20 @@ class DailyStateMixin:
                         self._schedule_next_proactive(current, now=schedule_now, delay_hours=next_delay)
                 self._save_data_sync()
                 current_snapshot = dict(current)
+                if not simulation_active and visible_text:
+                    memory_companion_proactive_payload = {
+                        "user": current_snapshot,
+                        "user_id": user_id,
+                        "text": visible_text,
+                        "reason": reason,
+                        "action": current.get("last_proactive_action") or effective_action_for_send or planned_action_for_send or "message",
+                        "motive": planned_motive_for_send,
+                        "action_summary": action_summary,
+                        "image_path": image_path,
+                        "extra_count": len(extra_components),
+                    }
+            if memory_companion_proactive_payload:
+                await self._memory_companion_record_proactive_message(**memory_companion_proactive_payload)
             asyncio.create_task(self._refresh_persona_relationship(user_id, current_snapshot))
 
         await self._run_proactive_maintenance_tasks()
@@ -9792,4 +10546,3 @@ class DailyStateMixin:
             runtime = self.data.setdefault("proactive_runtime", {})
             if isinstance(runtime, dict):
                 runtime["last_tick_finished_at"] = _now_ts()
-

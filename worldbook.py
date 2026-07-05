@@ -1138,10 +1138,18 @@ class WorldbookMixin:
         after = r"(?=(你认识|认识|认得|知道|是谁|是|说|发|问|找|叫|踢|$|[\s，,。？?！!：:、]))"
         return bool(re.search(before + re.escape(token) + after, text))
 
-    def _worldbook_profile_view(self, profile: dict[str, Any], *, match_reason: str, confidence: str) -> dict[str, Any]:
+    def _worldbook_profile_view(
+        self,
+        profile: dict[str, Any],
+        *,
+        match_reason: str,
+        confidence: str,
+        scope: str = "mentioned",
+    ) -> dict[str, Any]:
         view = dict(profile)
         view["_match_reason"] = match_reason
         view["_match_confidence"] = confidence
+        view["_match_scope"] = scope
         return view
 
     def _select_worldbook_member_profiles_for_private_text(self, text: str, *, limit: int | None = None) -> list[dict[str, Any]]:
@@ -1237,6 +1245,7 @@ class WorldbookMixin:
                 profiles[sender_id],
                 match_reason="当前发言者 QQ 精确匹配",
                 confidence="confirmed",
+                scope="current_sender",
             )
         if self.worldbook_member_match_aliases and text and len(selected) < self.worldbook_member_inject_limit:
             token_hits: dict[str, list[tuple[str, dict[str, Any]]]] = {}
@@ -1259,6 +1268,7 @@ class WorldbookMixin:
                     profile,
                     match_reason=f"当前消息明确提到：{token}",
                     confidence="mentioned",
+                    scope="mentioned",
                 )
                 if len(selected) >= self.worldbook_member_inject_limit:
                     break
@@ -1272,11 +1282,17 @@ class WorldbookMixin:
                 selected[recent_id] = self._worldbook_profile_view(
                     profile,
                     match_reason="最近发言者 QQ 精确匹配",
-                    confidence="confirmed",
+                    confidence="context",
+                    scope="recent_speaker",
                 )
         ranked = sorted(
             selected.values(),
             key=lambda item: (
+                {
+                    "current_sender": 3,
+                    "mentioned": 2,
+                    "recent_speaker": 1,
+                }.get(str(item.get("_match_scope") or ""), 0),
                 1 if item.get("_match_confidence") == "confirmed" else 0,
                 _safe_int(item.get("priority"), 120, -1000),
             ),
@@ -1305,6 +1321,7 @@ class WorldbookMixin:
                     f"{_single_line(profile.get('user_id'), 40) or '-'}:"
                     f"{_single_line(profile.get('name'), 40) or '-'}"
                     f"[{_single_line(profile.get('_match_confidence'), 20) or '-'}"
+                    f"/{_single_line(profile.get('_match_scope'), 30) or '-'}"
                     f"/{_single_line(profile.get('_match_reason'), 80) or '-'}]"
                 )
             logger.info(
@@ -1317,11 +1334,17 @@ class WorldbookMixin:
             profile_uid = _single_line(profile.get("user_id"), 40)
             aliases = "、".join(token for token in self._worldbook_profile_tokens(profile)[:8] if token != profile_uid)
             reason = _single_line(profile.get("_match_reason"), 80)
-            confidence = "已确认" if profile.get("_match_confidence") == "confirmed" else "被提及"
+            scope = _single_line(profile.get("_match_scope"), 30)
+            if scope == "current_sender":
+                label = "当前发言者"
+            elif scope == "recent_speaker":
+                label = "近期参与者（不是当前发言者）"
+            else:
+                label = "当前消息提到的人"
             gender = _single_line(profile.get("gender"), 40)
             identity = _single_line(profile.get("identity_note") or profile.get("note") or profile.get("content"), 220)
             boundary = _single_line(profile.get("boundary_note"), 140)
-            memories = self._worldbook_profile_memory_lines(profile, limit=3)
+            memories = [] if scope == "recent_speaker" else self._worldbook_profile_memory_lines(profile, limit=3)
             parts = []
             if gender:
                 parts.append(f"性别：{gender}")
@@ -1334,7 +1357,7 @@ class WorldbookMixin:
             if not parts:
                 parts.append(_single_line(profile.get("content"), 360))
             lines.append(
-                f"- {confidence}：{_single_line(profile.get('name'), 40) or profile_uid or '-'}"
+                f"- {label}：{_single_line(profile.get('name'), 40) or profile_uid or '-'}"
                 f"（QQ:{profile_uid or '-'}）"
                 + (f"｜称呼线索：{aliases}" if aliases else "")
                 + (f"｜来源：{reason}" if reason else "")
@@ -1345,6 +1368,7 @@ class WorldbookMixin:
         return (
             "【群聊关系网】\n"
             "下面是按 QQ 号确认的稳定关系资料；群名片、昵称和别名只当称呼线索。\n"
+            "只有“当前发言者”可用于判断本轮对话对象；“当前消息提到的人”和“近期参与者”只用于理解上下文，不要把他们的身份、专属称呼或亲密关系套给当前发言者。\n"
             + "\n".join(lines)
         )
 

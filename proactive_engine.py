@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 ProactiveEngineMixin — 主动行为候选、决策、计划事件与动作选择
 """
@@ -249,6 +249,169 @@ class ProactiveEngineMixin:
             self.data["proactive_candidate_pool"] = raw
         return raw
 
+    def _pending_proactive_candidate_limit(self, user: dict[str, Any] | None = None) -> int:
+        if not isinstance(user, dict):
+            return 200
+        override = _safe_int(user.get("pending_proactive_candidate_limit"), -1, -1)
+        return override if override > 0 else 200
+
+    def _candidate_user_id(self, item: dict[str, Any]) -> str:
+        if not isinstance(item, dict):
+            return ""
+        return _single_line(item.get("user_id") or item.get("target_user_id") or item.get("id"), 40)
+
+    @staticmethod
+    def _pending_candidate_status(status: str) -> bool:
+        normalized = _single_line(status, 24).lower()
+        return normalized != "sent"
+
+    def _planned_candidate_ids_by_user(self) -> dict[str, str]:
+        users = self.data.get("users") if isinstance(self.data.get("users"), dict) else {}
+        planned: dict[str, str] = {}
+        for user_id, user in users.items():
+            if not isinstance(user, dict):
+                continue
+            candidate_id = _single_line(user.get("planned_candidate_id"), 40)
+            if candidate_id:
+                planned[str(user_id)] = candidate_id
+        return planned
+
+    def _trim_proactive_candidate_total(self, items: list[dict[str, Any]], *, limit: int = 2000) -> list[dict[str, Any]]:
+        if len(items) <= limit:
+            return items
+        planned_ids = set(self._planned_candidate_ids_by_user().values())
+        protected = [
+            item for item in items
+            if _single_line(item.get("id"), 40) in planned_ids
+        ]
+        protected_ids = {_single_line(item.get("id"), 40) for item in protected}
+        remaining = [
+            item for item in items
+            if _single_line(item.get("id"), 40) not in protected_ids
+        ]
+        keep_count = max(0, limit - len(protected))
+        trimmed = remaining[-keep_count:] if keep_count else []
+        result = protected + trimmed
+        result.sort(
+            key=lambda item: max(
+                _safe_float(item.get("updated_ts"), 0),
+                _safe_float(item.get("created_ts"), 0),
+                _safe_float(item.get("scheduled_ts"), 0),
+                _safe_float(item.get("last_seen_ts"), 0),
+            )
+        )
+        return result[-limit:]
+
+    def _candidate_trim_priority(self, item: dict[str, Any], *, planned_candidate_id: str = "") -> tuple[int, int, int, float]:
+        status = _single_line(item.get("status"), 24).lower()
+        note = _single_line(item.get("note"), 160)
+        item_id = _single_line(item.get("id"), 40)
+        updated = _safe_float(item.get("updated_ts"), 0)
+        created = _safe_float(item.get("created_ts"), 0)
+        scheduled = _safe_float(item.get("scheduled_ts"), 0)
+        last_seen = _safe_float(item.get("last_seen_ts"), 0)
+        repeat_count = _safe_int(item.get("repeat_count"), 1, 1)
+        protected = item_id and planned_candidate_id and item_id == planned_candidate_id
+        status_rank = {
+            "failed": 0,
+            "cancelled": 1,
+            "dropped": 2,
+            "blocked": 3,
+            "deferred": 4,
+            "accepted": 6,
+        }.get(status, 5)
+        note_penalty = 0 if note else 1
+        freshness = max(updated, scheduled, last_seen, created)
+        return (1 if protected else 0, status_rank, repeat_count + note_penalty, freshness)
+
+    def _apply_per_user_pending_candidate_cap(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        pending_cap: int | None = None,
+        target_user_id: str = "",
+    ) -> tuple[list[dict[str, Any]], int]:
+        users = self.data.get("users") if isinstance(self.data.get("users"), dict) else {}
+        planned_ids = self._planned_candidate_ids_by_user()
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        passthrough: list[dict[str, Any]] = []
+        removed = 0
+        target = str(target_user_id or "").strip()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            user_id = self._candidate_user_id(item)
+            if not user_id:
+                passthrough.append(item)
+                continue
+            if target and user_id != target:
+                passthrough.append(item)
+                continue
+            grouped.setdefault(user_id, []).append(item)
+        kept: list[dict[str, Any]] = list(passthrough)
+        for user_id, user_items in grouped.items():
+            user = users.get(user_id) if isinstance(users, dict) else None
+            limit = pending_cap if pending_cap is not None else self._pending_proactive_candidate_limit(user if isinstance(user, dict) else None)
+            if limit <= 0:
+                kept.extend(user_items)
+                continue
+            pending_items = [item for item in user_items if self._pending_candidate_status(str(item.get("status") or ""))]
+            sent_items = [item for item in user_items if not self._pending_candidate_status(str(item.get("status") or ""))]
+            if len(pending_items) > limit:
+                planned_candidate_id = planned_ids.get(user_id, "")
+                pending_items.sort(
+                    key=lambda item: self._candidate_trim_priority(item, planned_candidate_id=planned_candidate_id),
+                    reverse=True,
+                )
+                trimmed_pending = pending_items[:limit]
+                removed += max(0, len(pending_items) - len(trimmed_pending))
+                pending_items = sorted(
+                    trimmed_pending,
+                    key=lambda item: max(
+                        _safe_float(item.get("updated_ts"), 0),
+                        _safe_float(item.get("created_ts"), 0),
+                        _safe_float(item.get("scheduled_ts"), 0),
+                    ),
+                )
+            kept.extend(sent_items)
+            kept.extend(pending_items)
+        kept.sort(
+            key=lambda item: max(
+                _safe_float(item.get("updated_ts"), 0),
+                _safe_float(item.get("created_ts"), 0),
+                _safe_float(item.get("scheduled_ts"), 0),
+                _safe_float(item.get("last_seen_ts"), 0),
+            )
+        )
+        return kept, removed
+
+    def _shrink_user_proactive_candidates(
+        self,
+        user_id: str,
+        *,
+        pending_cap: int | None = None,
+        note: str = "",
+    ) -> int:
+        target_user_id = str(user_id or "").strip()
+        if not target_user_id:
+            return 0
+        current = [item for item in self._proactive_candidate_pool() if isinstance(item, dict)]
+        kept, removed = self._apply_per_user_pending_candidate_cap(
+            current,
+            pending_cap=pending_cap,
+            target_user_id=target_user_id,
+        )
+        if removed > 0:
+            self.data["proactive_candidate_pool"] = kept
+            logger.info(
+                "[PrivateCompanion] 主动候选自动收缩: user=%s removed=%s cap=%s note=%s",
+                target_user_id,
+                removed,
+                pending_cap or "default",
+                _single_line(note, 120),
+            )
+        return removed
+
     def _cleanup_proactive_candidate_pool(self, *, now: float | None = None) -> list[dict[str, Any]]:
         now = now or _now_ts()
         kept: list[dict[str, Any]] = []
@@ -262,7 +425,8 @@ class ProactiveEngineMixin:
             anchor = max(created, scheduled)
             if anchor > 0 and now - anchor <= ttl:
                 kept.append(item)
-        self.data["proactive_candidate_pool"] = kept[-120:]
+        kept, _ = self._apply_per_user_pending_candidate_cap(kept)
+        self.data["proactive_candidate_pool"] = self._trim_proactive_candidate_total(kept, limit=2000)
         return self.data["proactive_candidate_pool"]
 
     def _proactive_impulse_pool(self, user: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1132,7 +1296,12 @@ class ProactiveEngineMixin:
         if decision not in {"send", "rewrite", "defer", "drop"}:
             return None
         score = _safe_int(payload.get("score"), 0, 0, 100)
-        threshold = _safe_int(getattr(self, "proactive_persona_judge_send_threshold", 62), 62, 0, 100)
+        threshold_getter = getattr(self, "_effective_proactive_persona_judge_send_threshold", None)
+        threshold = (
+            threshold_getter()
+            if callable(threshold_getter)
+            else _safe_int(getattr(self, "proactive_persona_judge_send_threshold", 62), 62, 0, 100)
+        )
         if decision == "send" and score > 0 and score < threshold:
             decision = "defer"
         reason = self._normalize_legacy_proactive_text(payload.get("reason"), limit=140) or "模型人格判定"
@@ -1278,6 +1447,36 @@ class ProactiveEngineMixin:
             cached["cached"] = True
             return cached
         prompt = self._format_proactive_model_judge_prompt(user)
+        memory_getter = getattr(self, "_memory_companion_compose_feature_context", None)
+        if callable(memory_getter):
+            user_id = _single_line(user.get("user_id") or user.get("id"), 80)
+            query = " ".join(
+                part
+                for part in (
+                    "主动消息适合性",
+                    _single_line(user.get("planned_proactive_reason"), 80),
+                    _single_line(user.get("planned_proactive_topic"), 120),
+                    _single_line(user.get("planned_proactive_motive"), 180),
+                    "用户习惯 上次主动回应 边界 当前穿搭 当前日程 最近状态",
+                )
+                if part
+            )
+            memory_context = await memory_getter(
+                kind="proactive_review",
+                query=query,
+                user=user,
+                user_id=user_id,
+                top_k=5,
+                max_chars=800,
+            )
+            if memory_context:
+                prompt = (
+                    f"{prompt.rstrip()}\n\n"
+                    "<!-- private_companion_memory_review_context_v1 -->\n"
+                    "【我会牢牢记住你 相关记忆】\n"
+                    f"{memory_context}\n"
+                    "使用方式：只辅助判断是否适合主动、是否需要改写或延后；不要在理由里暴露检索过程。"
+                )
         started = time.perf_counter()
         raw = await self._llm_call(
             prompt,
@@ -1527,6 +1726,9 @@ class ProactiveEngineMixin:
             "topic": _single_line(selected.get("topic"), 80),
             "motive": self._motive_with_hesitation_memory(selected, _single_line(selected.get("motive"), 180)),
             "score": int(max(0.0, min(1.0, self._score_proactive_impulse(user, selected, now=check_now))) * 100),
+            "context_key": _single_line(selected.get("context_key"), 60),
+            "context": selected.get("context"),
+            "chain": selected.get("chain") if isinstance(selected.get("chain"), list) else [],
         }
         item = self._record_proactive_candidate(
             user_id,
@@ -1659,7 +1861,7 @@ class ProactiveEngineMixin:
             **(semantic_fields if semantics else {}),
         }
         pool.append(item)
-        del pool[:-120]
+        self._cleanup_proactive_candidate_pool(now=now)
         return item
 
     def _proactive_candidate_repeated(self, user: dict[str, Any], candidate: dict[str, Any]) -> bool:
@@ -2016,6 +2218,13 @@ class ProactiveEngineMixin:
             return False, "用户明确休息中"
         if not is_troubleshooting and self._is_quiet_time() and not self._can_send_insomnia_night_message(user):
             return False, "免打扰时段"
+        pre_gate_next_at = _safe_float(user.get("next_proactive_at"), 0)
+        if not is_troubleshooting and not due_timer_active:
+            if pre_gate_next_at <= 0:
+                self._schedule_next_proactive(user, now=now)
+                return False, "已安排下一次候选主动时间"
+            if now < pre_gate_next_at:
+                return False, "未到候选主动时间"
         rel_state = user.get("relationship_state")
         relationship_blocked = (
             not is_troubleshooting
@@ -2038,18 +2247,31 @@ class ProactiveEngineMixin:
                 _safe_float(rel_state.get("hurt_until"), 0),
                 _safe_float(rel_state.get("backoff_until"), 0),
             )
+            before_next_at = _safe_float(user.get("next_proactive_at"), 0)
             adjuster = getattr(self, "_defer_or_clean_emotion_blocked_plan", None)
             if callable(adjuster):
                 adjusted_reason = adjuster(user, now=now)
             else:
                 adjusted_reason = "情绪/关系状态处于收敛期"
+            after_next_at = _safe_float(user.get("next_proactive_at"), 0)
+            if after_next_at <= now and gate_until > now:
+                after_next_at = gate_until + random.uniform(15 * 60, 75 * 60)
+                user["next_proactive_at"] = after_next_at
+                user["planned_proactive_window_start_at"] = after_next_at
+                user["planned_proactive_best_until_at"] = after_next_at + 45 * 60
+                user["planned_proactive_expire_at"] = after_next_at + 90 * 60
             logger.info(
                 "[PrivateCompanion] 情绪/关系闸门拦截主动: user=%s mode=%s score=%s gate_until=%s reason=%s",
                 _single_line(user.get("user_id") or user.get("umo") or user.get("nickname"), 80),
                 _single_line(rel_state.get("mode"), 24),
                 _safe_int(rel_state.get("mood_score"), 0, -100, 100),
                 int(gate_until),
-                _single_line(rel_state.get("last_hurt_reason"), 80),
+                _single_line(
+                    rel_state.get("last_hurt_reason")
+                    or rel_state.get("last_backoff_reason")
+                    or rel_state.get("last_emotion_reason"),
+                    80,
+                ),
             )
             return False, adjusted_reason
 
@@ -2180,7 +2402,7 @@ class ProactiveEngineMixin:
                 self._schedule_next_proactive(user, now=now, delay_hours=(8, 16))
             return False, "已达每日上限"
         idle_minutes = self._effective_user_idle_minutes(user)
-        recent_activity_at = self._latest_user_activity_ts(user)
+        recent_activity_at = self._latest_private_user_activity_ts(user)
         if not is_troubleshooting and not due_timer_active and now - recent_activity_at < idle_minutes * 60:
             idle_limit = (
                 self._effective_user_greeting_idle_minutes(user) * 60
@@ -2227,6 +2449,12 @@ class ProactiveEngineMixin:
                 if _safe_float(user.get("next_proactive_at"), 0) > now + 1:
                     return False, emotion_note
         if not is_troubleshooting and self._private_user_role(user) == "friend":
+            before_friend_sanitize = (
+                planned_reason,
+                planned_action,
+                _single_line(user.get("planned_proactive_topic"), 80),
+                _single_line(user.get("planned_proactive_motive"), 180),
+            )
             sanitized = self._sanitize_friend_proactive_plan_fields(
                 user,
                 reason=planned_reason,
@@ -2240,6 +2468,22 @@ class ProactiveEngineMixin:
             user["planned_proactive_motive"] = sanitized["motive"]
             planned_reason = sanitized["reason"]
             planned_action = sanitized["action"]
+            after_friend_sanitize = (
+                planned_reason,
+                planned_action,
+                sanitized["topic"],
+                sanitized["motive"],
+            )
+            if after_friend_sanitize != before_friend_sanitize:
+                user["planned_proactive_impulse_id"] = ""
+                user["planned_proactive_semantic_kind"] = ""
+                user["planned_proactive_anchor_type"] = ""
+                user["planned_proactive_semantic_score"] = 0
+                user["planned_proactive_semantic_note"] = ""
+                user["planned_proactive_model_judge_signature"] = ""
+                user["planned_proactive_model_judge_result"] = {}
+                user["planned_proactive_model_judge_at"] = 0
+                self._mark_planned_candidate_status(user, "accepted", "朋友未回应状态下已降级为低压主动")
         if not is_troubleshooting and not self._friend_can_receive_proactive_reason(user, planned_reason, planned_action):
             self._clear_pending_proactive_plan(user)
             self._schedule_next_proactive(user, now=now, delay_hours=(2, 6))
@@ -2472,6 +2716,7 @@ class ProactiveEngineMixin:
                 except Exception as exc:
                     logger.debug("[PrivateCompanion] 主动结果余韵记录失败: %s", _single_line(exc, 120))
             candidate_id = str(user.get("planned_candidate_id") or "")
+            user_id = str(user.get("user_id") or user.get("id") or "")
             if candidate_id:
                 for item in self._cleanup_proactive_candidate_pool():
                     if str(item.get("id") or "") == candidate_id:
@@ -2503,6 +2748,11 @@ class ProactiveEngineMixin:
                 else:
                     impulse["state"] = "queued"
                 break
+            is_send_retry_deferred = status == "deferred" and (
+                "已保留待重发内容" in str(note or "") or "平台发送" in str(note or "")
+            )
+            if user_id and status in {"blocked", "cancelled", "dropped", "failed", "deferred"} and not is_send_retry_deferred:
+                self._shrink_user_proactive_candidates(user_id, note=note)
         finally:
             for key, value in restored_values.items():
                 user[key] = value
@@ -2737,7 +2987,7 @@ class ProactiveEngineMixin:
                 blocker=False,
             )
 
-        last_seen = _safe_float(user.get("last_seen"), 0)
+        last_seen = self._latest_private_user_activity_ts(user)
         idle_minutes = self._effective_user_idle_minutes(user)
         if self._is_greeting_reason(planned_reason):
             idle_minutes = self._effective_user_greeting_idle_minutes(user)
@@ -2872,7 +3122,15 @@ class ProactiveEngineMixin:
     @staticmethod
     def _proactive_audit_note_is_obsolete_fixed_error(note: Any) -> bool:
         text = str(note or "")
-        return "NameError" in text and "name 'topic' is not defined" in text
+        if "NameError" not in text:
+            return False
+        return any(
+            token in text
+            for token in (
+                "name 'topic' is not defined",
+                "name 'name' is not defined",
+            )
+        )
 
     def _compact_proactive_audit_log(self) -> None:
         log = self._proactive_audit_log()
@@ -2895,6 +3153,14 @@ class ProactiveEngineMixin:
                 _safe_float(item.get("updated_ts"), 0),
             )
             previous["duplicate_count"] = _safe_int(previous.get("duplicate_count"), 1, 1) + 1
+            for key in ("text_preview", "original_text_preview", "final_text_preview", "image_path"):
+                if item.get(key):
+                    previous[key] = item.get(key)
+            if item.get("extra_count") is not None:
+                previous["extra_count"] = max(
+                    _safe_int(previous.get("extra_count"), 0, 0),
+                    _safe_int(item.get("extra_count"), 0, 0),
+                )
         if len(compacted) != len(log):
             log[:] = compacted[-160:]
 
@@ -2908,6 +3174,8 @@ class ProactiveEngineMixin:
         reason: str = "",
         action: str = "",
         text: str = "",
+        original_text: str = "",
+        final_text: str = "",
     ) -> str:
         now = _now_ts()
         audit_id = uuid.uuid4().hex[:12]
@@ -2934,6 +3202,8 @@ class ProactiveEngineMixin:
             "candidate_id": _single_line(user.get("planned_candidate_id"), 40),
             "umo": _single_line(user.get("umo"), 180),
             "text_preview": self._proactive_visible_text_preview(text) if text else "",
+            "original_text_preview": self._proactive_visible_text_preview(original_text) if original_text else "",
+            "final_text_preview": self._proactive_visible_text_preview(final_text) if final_text else "",
         }
         log = self._proactive_audit_log()
         signature = self._proactive_audit_signature(item)
@@ -2944,6 +3214,9 @@ class ProactiveEngineMixin:
                 continue
             existing["updated_ts"] = now
             existing["duplicate_count"] = _safe_int(existing.get("duplicate_count"), 1, 1) + 1
+            for key in ("text_preview", "original_text_preview", "final_text_preview"):
+                if item.get(key):
+                    existing[key] = item.get(key)
             return _single_line(existing.get("id"), 40) or audit_id
         log.append(item)
         self._compact_proactive_audit_log()
@@ -2961,6 +3234,8 @@ class ProactiveEngineMixin:
         extra_count: int | None = None,
         action: str = "",
         reason: str = "",
+        original_text: str = "",
+        final_text: str = "",
     ) -> None:
         if not audit_id:
             return
@@ -2973,6 +3248,10 @@ class ProactiveEngineMixin:
                 item["note"] = _single_line(note, 180)
             if text:
                 item["text_preview"] = self._proactive_visible_text_preview(text)
+            if original_text:
+                item["original_text_preview"] = self._proactive_visible_text_preview(original_text)
+            if final_text:
+                item["final_text_preview"] = self._proactive_visible_text_preview(final_text)
             if image_path:
                 item["image_path"] = _single_line(image_path, 260)
             if extra_count is not None:
@@ -3036,7 +3315,7 @@ class ProactiveEngineMixin:
         suppressed_greetings = probe.get("greetings_suppressed_by_inbound")
         if not isinstance(suppressed_greetings, list):
             suppressed_greetings = []
-        last_activity_at = self._latest_user_activity_ts(probe)
+        last_activity_at = self._latest_private_user_activity_ts(probe)
         last_sent_at = _safe_float(probe.get("last_sent"), 0)
         last_seen_gap = now - last_activity_at if last_activity_at > 0 else -1
         last_sent_gap = now - last_sent_at if last_sent_at > 0 else -1
@@ -4027,7 +4306,7 @@ class ProactiveEngineMixin:
             user["greetings_suppressed_by_inbound"] = suppressed
         now_dt = self._environment_fromtimestamp(now or _now_ts())
         minute = now_dt.hour * 60 + now_dt.minute
-        recent_activity_at = self._latest_user_activity_ts(user)
+        recent_activity_at = self._latest_private_user_activity_ts(user)
         anchors = [
             ("morning_greeting", "07:45-10:20", "刚睡醒，想第一时间和用户说声早安", "早上刚醒来"),
             ("noon_greeting", "12:05-13:35", "中午有些犯困，想和用户打声招呼", "午后犯困"),
@@ -4589,13 +4868,25 @@ class ProactiveEngineMixin:
         if not cleaned:
             return ""
         compact = re.sub(r"\s+", "", cleaned)
+        # Allow a short address before the greeting, e.g. "比折，早……" or "主人早".
+        compact = re.sub(r"^[\u4e00-\u9fffA-Za-z0-9_\-]{1,12}[,，、:：]+", "", compact, count=1)
+        for marker in ("早", "午安", "中午", "晚上", "晚好"):
+            index = compact.find(marker)
+            if 0 < index <= 6:
+                compact = compact[index:]
+                break
         now_dt = self._environment_fromtimestamp(now or _now_ts())
         minute = now_dt.hour * 60 + now_dt.minute
-        if re.match(r"^(?:早呀|早啊|早安|早上好|早哇|早哦|早欸|早诶|早[，,。.!！~～])", compact):
+        if compact == "早" or (
+            compact.startswith("早")
+            and (
+                compact[1:2] in {"", ".", "。", "…", "·", "~", "～", "!", "！", ",", "，", "、", "呀", "啊", "安", "上", "哇", "哦", "欸", "诶"}
+            )
+        ):
             return "morning_greeting"
-        if re.match(r"^(?:午安|中午好|午好|中午[，,。.!！~～])", compact):
+        if compact.startswith(("午安", "中午好", "午好")) or (compact.startswith("中午") and compact[2:3] in {"，", ",", "。", ".", "!", "！", "~", "～"}):
             return "noon_greeting"
-        if re.match(r"^(?:晚上好|晚好|晚上[，,。.!！~～])", compact):
+        if compact.startswith(("晚上好", "晚好")) or (compact.startswith("晚上") and compact[2:3] in {"，", ",", "。", ".", "!", "！", "~", "～"}):
             return "evening_greeting"
         if re.search(r"(?:早晨|早上).{0,12}(?:安静|洗漱|刚醒|醒来|开机|早安|问候)", compact) and minute < 11 * 60:
             return "morning_greeting"
@@ -5050,16 +5341,58 @@ class ProactiveEngineMixin:
             and self.external_image_api_key
             and self.external_image_api_model
         )
-        if not configured:
+        if configured:
+            checker = getattr(self, "_external_image_model_misconfiguration_note", None)
+            if callable(checker):
+                try:
+                    if not checker():
+                        return True
+                except Exception:
+                    return True
+            else:
+                return True
+        return self._backup_external_photo_available()
+
+    def _backup_external_photo_available(self) -> bool:
+        if not self.enable_photo_text_action:
+            return False
+        if not bool(getattr(self, "enable_backup_external_image_api", False)):
+            return False
+        if not (
+            getattr(self, "backup_external_image_api_base_url", "")
+            and getattr(self, "backup_external_image_api_key", "")
+            and getattr(self, "backup_external_image_api_model", "")
+        ):
             return False
         checker = getattr(self, "_external_image_model_misconfiguration_note", None)
-        if callable(checker):
-            try:
-                if checker():
-                    return False
-            except Exception:
-                pass
-        return True
+        if not callable(checker):
+            return True
+        keys = (
+            "external_image_api_platform",
+            "external_image_api_base_url",
+            "external_image_api_key",
+            "external_image_api_model",
+            "external_image_api_size",
+            "external_image_api_timeout_seconds",
+        )
+        backup_values = {
+            "external_image_api_platform": getattr(self, "backup_external_image_api_platform", "auto"),
+            "external_image_api_base_url": getattr(self, "backup_external_image_api_base_url", ""),
+            "external_image_api_key": getattr(self, "backup_external_image_api_key", ""),
+            "external_image_api_model": getattr(self, "backup_external_image_api_model", ""),
+            "external_image_api_size": getattr(self, "backup_external_image_api_size", "1024x1024"),
+            "external_image_api_timeout_seconds": getattr(self, "backup_external_image_api_timeout_seconds", 180),
+        }
+        old_values = {key: getattr(self, key, None) for key in keys}
+        try:
+            for key, value in backup_values.items():
+                setattr(self, key, value)
+            return not bool(checker())
+        except Exception:
+            return True
+        finally:
+            for key, value in old_values.items():
+                setattr(self, key, value)
 
     def _sdgen_photo_available(self) -> bool:
         if not self.enable_photo_text_action:
@@ -5526,7 +5859,7 @@ class ProactiveEngineMixin:
         if reason == "activity_share":
             motives = [
                 "刚刚碰到一个小片段，想和用户说一句",
-                "刚刚看到一个小东西，想发给用户看看",
+                "刚刚看到一个小东西，想分享一下",
                 "刚刚有个小想法，想告诉用户",
                 "脑子里忽然冒出一句没头没尾的话，想和用户说一下",
                 "刚刚那点小想法放着也没什么用，想和用户说一句",

@@ -236,9 +236,10 @@ _PLATFORM_DISPLAY_NAMES = {
 }
 
 _PROMPT_MODULE_DESCRIPTIONS: dict[str, tuple[str, str]] = {
-    "state.lightweight": ("轻量状态", "短句/轻量被动回复复用当前扮演状态，只提供身体状态和表达节奏。"),
-    "state.full": ("完整状态", "注入当前扮演状态，只提供身体状态、情绪和表达节奏，不混入时间、天气或日程。"),
-    "life.context": ("生活背景", "单独注入当前/附近日程和细化生活线索，便于排查日程污染。"),
+    "state.session_update": ("模拟状态更新", "增量注入 Bot 自身模拟状态变化，并标明不是用户事实或长期记忆。"),
+    "state.lightweight": ("轻量模拟状态", "短句/轻量被动回复复用 Bot 自身模拟状态，只提供身体状态和表达节奏。"),
+    "state.full": ("完整模拟状态", "注入 Bot 自身模拟状态，只提供身体状态、情绪和表达节奏，不混入用户事实。"),
+    "life.context": ("模拟生活背景", "单独注入 Bot 拟人化日程和生活线索，便于排查日程污染。"),
     "important.dates": ("重要日期", "单独注入近期重要日期，只在用户提到相关计划或纪念时自然承接。"),
     "worldview.adaptation": ("世界观适配", "补充当前人格/世界观的表达边界，避免回复和设定脱节。"),
     "identity.anchor": ("身份锚点", "固定私聊对象身份和称呼，降低昵称变化、群名片或历史记忆导致的认错。"),
@@ -260,7 +261,7 @@ _PROMPT_MODULE_DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "skill.growth": ("能力成长", "注入角色近期能力变化，帮助回复体现可成长性。"),
     "skill.growth.match": ("本轮相关技能", "用户提到已追踪技能时，只注入命中的能力边界。"),
     "companion.planner": ("陪伴规划", "整合关系画像、互动节奏和回复策略，控制陪伴感与边界。"),
-    "proactive.reply_context": ("主动承接", "用户回复上一条主动消息时，对齐上一条主动内容和本轮承接关系。"),
+    "proactive.reply_context": ("悬着话头", "只用于明确被挂起的半句主动，不再按旧主动消息纠偏普通被动回复。"),
     "detail.injection": ("日程细节", "补充当前生活片段和可用碎片，让回复有具体落点。"),
     "timer.scheduling": ("主动预约", "允许模型在合适时隐藏预约下一次主动开口。"),
     "environment.lightweight": ("轻量环境", "短句被动回复使用的时间和平台边界，避免完全丢失当前语境。"),
@@ -278,6 +279,7 @@ _PROMPT_MODULE_DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "group.context": ("群聊上下文", "群聊回复时补充群氛围、当前发言者、最近话题和连续补充内容。"),
     "identity.non_target": ("非目标私聊防串", "私聊对象不是主陪伴用户时防止套用专属关系和记忆。"),
     "forward.message": ("合并转发上下文", "合并转发、聊天记录或引用卡片进入回复时注入的阅读内容或转述。"),
+    "reply.chain": ("引用链上下文", "用户引用的消息本身继续引用更早消息时，按层级提供原始被引用内容。"),
 }
 
 _PROMPT_MODULE_PREFIX_DESCRIPTIONS: tuple[tuple[str, tuple[str, str]], ...] = (
@@ -285,7 +287,7 @@ _PROMPT_MODULE_PREFIX_DESCRIPTIONS: tuple[tuple[str, tuple[str, str]], ...] = (
     ("image.", ("图片片段", "帮助模型理解当前图片、引用图片或识图失败时的回复边界。")),
     ("bookshelf.", ("书柜片段", "提供书柜/阅读相关上下文。")),
     ("private_reading.", ("阅读偏好片段", "提供私聊阅读偏好和阅读状态。")),
-    ("proactive.", ("主动相关片段", "处理主动消息承接、节奏和边界。")),
+    ("proactive.", ("主动相关片段", "处理主动消息节奏、边界和明确挂起的话头。")),
     ("timer.", ("预约片段", "处理模型可见的主动预约规则。")),
     ("creative.", ("创作片段", "提供创作状态或创作相关边界。")),
     ("environment.", ("环境片段", "提供当前时间、日期、平台、模型或消息媒介边界。")),
@@ -305,8 +307,8 @@ _PROMPT_SECTION_DESCRIPTIONS: dict[str, str] = {
     "对象": "收信人身份、称呼或关系背景。",
     "收信人": "主动消息目标用户和关系上下文。",
     "主动原因": "本次主动触发原因和动机。",
-    "当前状态": "当前拟人状态和情绪底色。",
-    "当前拟人状态": "当前身体状态和表达节奏。",
+    "当前状态": "Bot 自身模拟状态和情绪底色。",
+    "当前拟人状态": "Bot 自身身体状态和表达节奏。",
     "当前日程背景": "当前日程素材和时段背景。",
     "当前会话 TTS 规则": "当前会话语音/TTS 的格式和使用规则。",
     "必须满足的格式重点": "语音或特殊输出格式的硬性要求。",
@@ -1118,6 +1120,7 @@ class EventDispatchMixin:
         cache = getattr(self, "_recall_message_cache", None)
         if not isinstance(cache, dict):
             self._recall_message_cache = {}
+            self._cleanup_recall_message_image_cache()
             return
         now = _now_ts()
         ttl = max(60.0, _safe_float(getattr(self, "recall_message_cache_ttl_seconds", 600), 600))
@@ -1129,6 +1132,90 @@ class EventDispatchMixin:
             ordered = sorted(cache.items(), key=lambda kv: _safe_float(kv[1].get("ts") if isinstance(kv[1], dict) else 0, 0))
             for key, _ in ordered[: len(cache) - max_items]:
                 cache.pop(key, None)
+        self._cleanup_recall_message_image_cache()
+
+    def _cleanup_recall_message_image_cache(self, *, force: bool = False) -> bool:
+        root = Path(getattr(self, "data_dir", "") or "") / "recall_message_images"
+        try:
+            root_resolved = root.resolve()
+            data_resolved = Path(getattr(self, "data_dir", "") or "").resolve()
+        except Exception:
+            return False
+        if not root_resolved.exists() or not root_resolved.is_dir():
+            return False
+        try:
+            root_resolved.relative_to(data_resolved)
+        except ValueError:
+            return False
+        now = _now_ts()
+        if not force:
+            last_cleanup = _safe_float(getattr(self, "_last_recall_image_cache_cleanup_ts", 0), 0)
+            if now - last_cleanup < 300:
+                return False
+        self._last_recall_image_cache_cleanup_ts = now
+        ttl = max(60.0, _safe_float(getattr(self, "recall_message_cache_ttl_seconds", 600), 600))
+        max_mb = max(0.0, _safe_float(getattr(self, "recall_message_image_cache_max_mb", 256.0), 256.0, 0.0))
+        max_bytes = int(max_mb * 1024 * 1024) if max_mb > 0 else 0
+        files: list[tuple[float, int, Path]] = []
+        removed_count = 0
+        removed_bytes = 0
+
+        try:
+            iterator = list(root_resolved.rglob("*"))
+        except Exception as exc:
+            logger.debug("[PrivateCompanion] 撤回图片缓存扫描失败: %s", exc)
+            return False
+
+        for path in iterator:
+            try:
+                if not path.is_file():
+                    continue
+                stat = path.stat()
+                mtime = float(stat.st_mtime or 0)
+                size = int(stat.st_size or 0)
+                if now - mtime > ttl:
+                    try:
+                        path.unlink()
+                        removed_count += 1
+                        removed_bytes += size
+                    except Exception as exc:
+                        logger.debug("[PrivateCompanion] 撤回图片过期缓存删除失败: path=%s error=%s", path, exc)
+                    continue
+                files.append((mtime, size, path))
+            except Exception as exc:
+                logger.debug("[PrivateCompanion] 撤回图片缓存条目读取失败: path=%s error=%s", path, exc)
+
+        total_bytes = sum(size for _, size, _ in files)
+        if max_bytes and total_bytes > max_bytes:
+            for _, size, path in sorted(files, key=lambda item: item[0]):
+                if total_bytes <= max_bytes:
+                    break
+                try:
+                    path.unlink()
+                    total_bytes -= size
+                    removed_count += 1
+                    removed_bytes += size
+                except Exception as exc:
+                    logger.debug("[PrivateCompanion] 撤回图片容量缓存删除失败: path=%s error=%s", path, exc)
+
+        for directory in sorted((p for p in iterator if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+            except Exception as exc:
+                logger.debug("[PrivateCompanion] 撤回图片空目录清理失败: path=%s error=%s", directory, exc)
+
+        if removed_count:
+            logger.info(
+                "[PrivateCompanion] 已清理撤回图片缓存: files=%s size=%.1fMB ttl=%.0fs max=%.1fMB",
+                removed_count,
+                removed_bytes / 1024 / 1024,
+                ttl,
+                max_mb,
+            )
+            return True
+        return False
 
     async def _cache_message_for_recall(self, event: AstrMessageEvent) -> None:
         if not getattr(self, "enable_recall_enhancement", True):
@@ -1145,6 +1232,7 @@ class EventDispatchMixin:
         if not text:
             return
         raw_message = str(raw.get("raw_message") or raw.get("message") or "")
+        reply_message_ids = self._event_reply_message_ids(event)
         has_image = "[图片]" in text or "[CQ:image" in raw_message
         if not has_image:
             for comp in self._event_components(event):
@@ -1172,6 +1260,8 @@ class EventDispatchMixin:
             "sender_id": self._event_sender_id(event),
             "sender_name": _single_line(self._sender_display_name(event), 60),
             "text": text,
+            "raw_message": raw.get("message") if raw.get("message") is not None else raw.get("raw_message"),
+            "reply_message_ids": reply_message_ids,
             "images": image_sources,
             "image_items": image_items,
             "image_count": len(image_items),
@@ -1275,6 +1365,18 @@ class EventDispatchMixin:
                 continue
             seen.add(message_id)
             unique.append(message_id)
+        cache = getattr(self, "_recall_message_cache", None)
+        if isinstance(cache, dict):
+            for message_id in list(unique):
+                snapshot = cache.get(message_id)
+                nested_ids = snapshot.get("reply_message_ids") if isinstance(snapshot, dict) else None
+                if not isinstance(nested_ids, list):
+                    continue
+                for nested_id in nested_ids:
+                    nested = _single_line(nested_id, 120)
+                    if nested and nested not in seen:
+                        seen.add(nested)
+                        unique.append(nested)
         return unique
 
     def _event_reply_message_ids(self, event: AstrMessageEvent) -> list[str]:
@@ -2032,6 +2134,7 @@ class EventDispatchMixin:
                     texts.append(text)
         return {
             "active": True,
+            "kind": _single_line(buffer.get("kind"), 40),
             "first_ts": first_ts,
             "updated_ts": updated_ts,
             "remaining": max(0.0, target_ts - now),
@@ -2860,19 +2963,12 @@ class EventDispatchMixin:
         provider_id = self._task_provider(self.group_followup_judge_provider_id)
         if not provider_id:
             return None
-        recent = group.get("recent_messages") if isinstance(group.get("recent_messages"), list) else []
-        recent_lines = []
-        for item in recent[-8:]:
-            if not isinstance(item, dict):
-                continue
-            name = self._group_member_identity_label(
-                str(item.get("sender_id") or ""),
-                item.get("identity_name") or item.get("name"),
-                limit=20,
-            )
-            msg = _single_line(item.get("text"), 80)
-            if msg:
-                recent_lines.append(f"- {name}: {msg}")
+        flow_formatter = getattr(self, "_format_group_recent_flow_for_review", None)
+        recent_flow = (
+            flow_formatter(group, sender_id=sender_id, text=text, max_lines=10, max_chars=1200)
+            if callable(flow_formatter)
+            else ""
+        )
         prompt = f"""
 判断群聊里当前这句话是否仍然是在和 Bot 对话。
 
@@ -2881,13 +2977,14 @@ class EventDispatchMixin:
 已知：
 - 上一次明确和 Bot 对话的人：{self._group_member_identity_label(str(active.get('sender_id') or sender_id), active.get('sender_name'), limit=24)}
 - 上一次明确对 Bot 说的话：{_single_line(active.get('last_text'), 120)}
+- Bot 上一次回复：{_single_line(active.get('last_bot_reply'), 180) or "（未记录）"}
 - 当前发言者：{self._group_member_identity_label(sender_id, sender_name, limit=24)}
 - 当前发言者身份锚点：{self._group_member_identity_anchor_note(sender_id, sender_name, limit=120) or "无显示名冲突"}
 - 当前消息：{_single_line(text, 180)}
 - 规则初判：trigger={_single_line(scene.get('trigger'), 40)} talking_to={_single_line(scene.get('talking_to'), 40)}
 
-最近群聊：
-{chr(10).join(recent_lines) or "（无）"}
+真实最近群聊（按时间顺序，包含当前句；判断时必须参考整段聊天流，不要只看上一条唤醒消息）：
+{recent_flow or "（无）"}
 
 判断标准：
 - 如果当前消息是在承接 Bot 的回答、追问 Bot、纠正 Bot、继续问 Bot，回答 YES。
@@ -3316,25 +3413,49 @@ class EventDispatchMixin:
             priority += 8
         return (-priority, start_minutes)
 
+    def _chain_has_media_component(self, chain: list[Any]) -> bool:
+        media_types = {"image", "record", "video", "file", "node", "forward"}
+        for item in chain if isinstance(chain, list) else []:
+            try:
+                type_name = self._component_type_name(item)
+            except Exception:
+                type_name = str(getattr(item, "type", "") or item.__class__.__name__).strip().lower()
+            if type_name in media_types:
+                return True
+        return False
+
     def _build_result_from_chain(self, chain: list[Any]) -> Any:
         try:
             from astrbot.api.event import MessageEventResult
         except ImportError:
             from astrbot.core.message.message_event_result import MessageEventResult
+        prefer_chain_result = self._chain_has_media_component(chain)
+        if prefer_chain_result:
+            try:
+                result = MessageEventResult().chain_result(chain)
+            except Exception:
+                try:
+                    result = MessageEventResult(chain=chain)
+                except TypeError:
+                    result = MessageEventResult().chain_result(chain)
+        else:
+            try:
+                result = MessageEventResult(chain=chain)
+            except TypeError:
+                result = MessageEventResult().chain_result(chain)
+        result = self._disable_result_t2i(result)
+        return result
+
+    def _disable_result_t2i(self, result: Any) -> Any:
+        if result is None:
+            return result
         try:
-            result = MessageEventResult(chain=chain)
-        except TypeError:
-            result = MessageEventResult().chain_result(chain)
-        if hasattr(result, "use_t2i"):
-            try:
+            if hasattr(result, "use_t2i"):
                 result = result.use_t2i(False)
-            except Exception:
-                pass
-        elif hasattr(result, "use_t2i_"):
-            try:
+            elif hasattr(result, "use_t2i_"):
                 result.use_t2i_ = False
-            except Exception:
-                pass
+        except Exception:
+            pass
         return result
 
     def _is_silent_control_reply_text(self, text: str) -> bool:

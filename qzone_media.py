@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
+import ipaddress
 import mimetypes
 import re
+import socket
 import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
@@ -19,6 +22,8 @@ from .helpers import _now_ts, _safe_float, _safe_int, _single_line
 
 QZONE_IMAGE_UPLOAD_URL = "https://up.qzone.qq.com/cgi-bin/upload/cgi_upload_image"
 QZONE_PUBLISH_URL = "https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_publish_v6"
+QZONE_REMOTE_IMAGE_MAX_BYTES = 12 * 1024 * 1024
+QZONE_UNSAFE_MEDIA_HOSTS = {"localhost", "localhost.localdomain"}
 
 
 class QzoneIntegrationError(RuntimeError):
@@ -48,7 +53,6 @@ class QzoneMediaMixin:
             "skey",
             "g_tk",
             "gtk",
-            "qzonetoken",
         )
         return any(marker in text for marker in markers)
 
@@ -77,6 +81,16 @@ class QzoneMediaMixin:
         if until <= current:
             return ""
         reason = _single_line(state.get("last_auth_failure_reason") or "QQ 空间登录状态异常", 100)
+        if (
+            ("没有可用的 OneBot 连接" in reason or "未配置手动 QZONE_COOKIE" in reason)
+            and callable(getattr(self, "_qzone_find_runtime_bot", None))
+            and self._qzone_find_runtime_bot() is not None
+        ):
+            self._qzone_clear_auth_failure(state)
+            return ""
+        if "qzonetoken" in reason.lower() or "qzonetoken 未在 H5 首页中找到" in reason:
+            self._qzone_clear_auth_failure(state)
+            return ""
         until_text = self._qzone_format_block_until(until)
         return f"{reason}，自动说说已暂停到 {until_text}" if until_text else reason
 
@@ -135,9 +149,20 @@ class QzoneMediaMixin:
         if not isinstance(state, dict):
             return
         changed = False
-        for key in ("auth_block_until", "last_auth_status", "auth_failure_count", "last_auth_failure_source"):
+        for key in (
+            "auth_block_until",
+            "last_auth_status",
+            "auth_failure_count",
+            "last_auth_failure_source",
+            "last_auth_failure_reason",
+        ):
             if key in state:
                 state.pop(key, None)
+                changed = True
+        for key in ("last_life_publish_status", "last_emotional_vent_status"):
+            value = str(state.get(key) or "")
+            if value.startswith("paused:auth:"):
+                state[key] = "ready:auth_ok"
                 changed = True
         if changed:
             saver = getattr(self, "_save_data_sync", None)
@@ -163,7 +188,10 @@ class QzoneMediaMixin:
             ctx = self._qzone_context_from_cookies(cookie_header)
             token = ctx.get("qzonetoken") or await self._qzone_ensure_qzonetoken(event, cookie_header=cookie_header, ctx=ctx)
             if not str(token or "").strip():
-                raise RuntimeError("qzonetoken 未在 H5 首页中找到，可能 Cookie 已失效")
+                state["last_qzonetoken_status"] = "missing:h5_index"
+                logger.info("[PrivateCompanion] QQ 空间自动发布预检继续: qzonetoken 未找到,纯文字发布仍可使用 g_tk")
+            else:
+                state["last_qzonetoken_status"] = "ok"
         except Exception as exc:
             reason = _single_line(exc, 160)
             self._qzone_mark_auth_failure(reason, source=source, state=state, save=False)
@@ -329,7 +357,7 @@ class QzoneMediaMixin:
         size = len(image_bytes or b"")
         if size <= 0:
             raise QzoneIntegrationError("图片校验失败", "图片内容为空")
-        max_bytes = 12 * 1024 * 1024
+        max_bytes = QZONE_REMOTE_IMAGE_MAX_BYTES
         if size > max_bytes:
             raise QzoneIntegrationError("图片校验失败", f"图片过大，超过 {max_bytes // 1024 // 1024}MB")
         if not self._qzone_supported_image_header(image_bytes):
@@ -348,6 +376,51 @@ class QzoneMediaMixin:
             # PIL may be unavailable in some AstrBot environments; magic header validation still protects the upload.
             return
 
+    @staticmethod
+    def _qzone_is_unsafe_media_host(host: str) -> bool:
+        normalized = str(host or "").strip().lower().rstrip(".")
+        if not normalized or normalized in QZONE_UNSAFE_MEDIA_HOSTS or normalized.endswith(".localhost"):
+            return True
+        try:
+            address = ipaddress.ip_address(normalized.strip("[]"))
+        except ValueError:
+            return False
+        return bool(
+            address.is_private
+            or address.is_loopback
+            or address.is_link_local
+            or address.is_multicast
+            or address.is_reserved
+            or address.is_unspecified
+        )
+
+    @classmethod
+    def _qzone_remote_media_url_allowed(cls, source: str) -> bool:
+        parsed = urlparse(str(source or "").strip())
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+            return False
+        host = parsed.hostname
+        if not host or cls._qzone_is_unsafe_media_host(host):
+            return False
+        try:
+            ipaddress.ip_address(host.strip("[]"))
+            return True
+        except ValueError:
+            pass
+        try:
+            infos = socket.getaddrinfo(host.rstrip("."), None, type=socket.SOCK_STREAM)
+        except OSError:
+            return False
+        addresses = {item[4][0] for item in infos if item and item[4]}
+        return bool(addresses) and not any(cls._qzone_is_unsafe_media_host(address) for address in addresses)
+
+    @classmethod
+    def _qzone_safe_redirect_url(cls, current_url: str, location: str) -> str:
+        if not location:
+            return ""
+        target = urljoin(current_url, location)
+        return target if cls._qzone_remote_media_url_allowed(target) else ""
+
     async def _qzone_load_image_bytes(
         self,
         event: AstrMessageEvent | None,
@@ -365,6 +438,9 @@ class QzoneMediaMixin:
         if text.startswith("data:") and "," in text:
             meta, encoded = text.split(",", 1)
             content_type = meta[5:].split(";", 1)[0] or "image/jpeg"
+            estimated_size = (len(encoded) * 3) // 4
+            if estimated_size > QZONE_REMOTE_IMAGE_MAX_BYTES + 3:
+                raise QzoneIntegrationError("图片校验失败", "图片过大，已跳过上传")
             try:
                 return base64.b64decode(encoded), f"image.{content_type.rsplit('/', 1)[-1]}", content_type
             except Exception as exc:
@@ -379,6 +455,8 @@ class QzoneMediaMixin:
             image_type, content_type = self._qzone_guess_image_type(str(path), data)
             return data, path.name or f"image.{image_type}", content_type
         if re.match(r"^https?://", text, flags=re.I):
+            if not self._qzone_remote_media_url_allowed(text):
+                raise QzoneIntegrationError("图片读取失败", "图片 URL 指向本机、内网或不可安全解析的地址")
             timeout = aiohttp.ClientTimeout(total=30)
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
@@ -386,20 +464,29 @@ class QzoneMediaMixin:
                 "Referer": f"https://user.qzone.qq.com/{self._qzone_context_from_cookies(cookie_header)['uin']}",
             }
             async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-                async with session.get(text) as response:
-                    if response.status >= 400:
-                        raise QzoneIntegrationError("图片读取失败", f"图片下载失败 HTTP {response.status}")
-                    content_type = str(response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-                    length = _safe_int(response.headers.get("Content-Length"), 0, 0)
-                    max_bytes = 12 * 1024 * 1024
-                    if length and length > max_bytes:
-                        raise QzoneIntegrationError("图片校验失败", "图片过大，已跳过上传")
-                    data = await response.read()
-                    if len(data) > max_bytes:
-                        raise QzoneIntegrationError("图片校验失败", "图片过大，已跳过上传")
-                    image_type, guessed_type = self._qzone_guess_image_type(text, data, content_type)
-                    name = Path(urlparse(text).path).name or f"image.{image_type}"
-                    return data, name, content_type or guessed_type
+                current_url = text
+                for _redirect in range(4):
+                    async with session.get(current_url, allow_redirects=False) as response:
+                        if response.status in {301, 302, 303, 307, 308}:
+                            location = response.headers.get("Location") or response.headers.get("location") or ""
+                            redirected = self._qzone_safe_redirect_url(current_url, location)
+                            if not redirected:
+                                raise QzoneIntegrationError("图片读取失败", "图片重定向目标不安全，已拒绝下载")
+                            current_url = redirected
+                            continue
+                        if response.status >= 400:
+                            raise QzoneIntegrationError("图片读取失败", f"图片下载失败 HTTP {response.status}")
+                        content_type = str(response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+                        length = _safe_int(response.headers.get("Content-Length"), 0, 0)
+                        if length and length > QZONE_REMOTE_IMAGE_MAX_BYTES:
+                            raise QzoneIntegrationError("图片校验失败", "图片过大，已跳过上传")
+                        data = await response.read()
+                        if len(data) > QZONE_REMOTE_IMAGE_MAX_BYTES:
+                            raise QzoneIntegrationError("图片校验失败", "图片过大，已跳过上传")
+                        image_type, guessed_type = self._qzone_guess_image_type(current_url, data, content_type)
+                        name = Path(urlparse(current_url).path).name or f"image.{image_type}"
+                        return data, name, content_type or guessed_type
+                raise QzoneIntegrationError("图片读取失败", "图片重定向次数过多，已停止下载")
         resolved = await self._qzone_resolve_onebot_image_source(event, text)
         if resolved and resolved != text:
             return await self._qzone_load_image_bytes(event, resolved, cookie_header=cookie_header)
@@ -783,26 +870,35 @@ class QzoneMediaMixin:
         expected_text: str,
         expected_images: int,
     ) -> dict[str, Any]:
-        try:
-            feeds = await self._qzone_query_feeds(event, target_id=str(getattr(post, "uin", "") or ""), pos=0, num=5, with_detail=False)
-        except Exception as exc:
-            return {"verified": False, "message": f"反查失败：{_single_line(exc, 120)}"}
         tid = str(getattr(post, "tid", "") or "")
         expected_clean = _single_line(expected_text, 80)
-        for feed in feeds:
-            feed_tid = str(getattr(feed, "tid", "") or "")
-            feed_text = _single_line(getattr(feed, "text", "") or getattr(feed, "rt_con", ""), 120)
-            feed_images = len(list(getattr(feed, "images", []) or []))
-            tid_match = bool(tid and feed_tid and tid == feed_tid)
-            text_match = bool(expected_clean and expected_clean in feed_text)
-            image_match = expected_images <= 0 or feed_images >= expected_images
-            if tid_match or (image_match and (text_match or not expected_clean)):
-                return {
-                    "verified": True,
-                    "message": f"已反查到最近说说，图片 {feed_images} 张",
-                    "tid": feed_tid or tid,
-                    "images": feed_images,
-                }
+        last_error = ""
+        for attempt, delay in enumerate((0.0, 0.8, 1.8), start=1):
+            if delay > 0:
+                await asyncio.sleep(delay)
+            try:
+                feeds = await self._qzone_query_feeds(event, target_id=str(getattr(post, "uin", "") or ""), pos=0, num=5, with_detail=False)
+            except Exception as exc:
+                last_error = _single_line(exc, 120)
+                if attempt >= 3:
+                    return {"verified": False, "message": f"反查失败：{last_error}"}
+                continue
+            for feed in feeds:
+                feed_tid = str(getattr(feed, "tid", "") or "")
+                feed_text = _single_line(getattr(feed, "text", "") or getattr(feed, "rt_con", ""), 120)
+                feed_images = len(list(getattr(feed, "images", []) or []))
+                tid_match = bool(tid and feed_tid and tid == feed_tid)
+                text_match = bool(expected_clean and expected_clean in feed_text)
+                image_match = expected_images <= 0 or feed_images >= expected_images
+                if tid_match or (image_match and (text_match or not expected_clean)):
+                    return {
+                        "verified": True,
+                        "message": f"已反查到最近说说，图片 {feed_images} 张",
+                        "tid": feed_tid or tid,
+                        "images": feed_images,
+                    }
+        if last_error:
+            return {"verified": False, "message": f"反查失败：{last_error}"}
         return {"verified": False, "message": "发布接口已返回成功，但最近说说中暂未反查到匹配内容"}
 
     async def _publish_qzone_text(
@@ -810,36 +906,101 @@ class QzoneMediaMixin:
         text: str,
         event: AstrMessageEvent | None = None,
         images: list[str] | None = None,
+        auto_generate_image: bool = False,
+        publish_reason: str = "manual_publish",
     ) -> dict[str, Any]:
         if not self.enable_qzone_integration:
             return {"success": False, "message": "QQ 空间动态层未启用"}
         content = _single_line(text, 300)
         image_list = [str(item).strip() for item in list(images or []) if str(item or "").strip()]
+        if auto_generate_image and content and not image_list:
+            image_generator = getattr(self, "_maybe_generate_qzone_publish_image", None)
+            if callable(image_generator):
+                try:
+                    generated = await image_generator(
+                        post_text=content,
+                        reason="manual_publish",
+                        state=self._qzone_state_dict(),
+                        force=True,
+                    )
+                    image_list = [str(item).strip() for item in list(generated or []) if str(item or "").strip()]
+                except Exception as exc:
+                    logger.info(
+                        "[PrivateCompanion] QQ 空间手动发说说自动配图失败,继续纯文字发布: %s",
+                        _single_line(exc, 160),
+                    )
         if not content and not image_list:
             return {"success": False, "message": "说说内容为空"}
-        try:
-            post = await self._qzone_publish_post(event, text=content, images=image_list)
+
+        async def publish_once(candidates: list[str]) -> dict[str, Any]:
+            post = await self._qzone_publish_post(event, text=content, images=candidates)
             self._qzone_clear_auth_failure()
+            post_images = list(getattr(post, "images", []) or [])
             verification = await self._qzone_verify_published_post(
                 event,
                 post,
                 expected_text=content,
-                expected_images=len(image_list),
+                expected_images=len(post_images),
             )
-            return {
+            verified_images = _safe_int(verification.get("images"), len(post_images), 0, 99)
+            result = {
                 "success": True,
                 "text": _single_line(getattr(post, "text", content), 300) or content,
                 "tid": str(getattr(post, "tid", "") or ""),
                 "uin": str(getattr(post, "uin", "") or ""),
-                "images": list(getattr(post, "images", []) or []),
+                "images": post_images,
+                "image_count": max(len(post_images), verified_images if bool(verification.get("verified")) else 0),
                 "verified": bool(verification.get("verified")),
                 "verify_message": verification.get("message") or "",
             }
+            recorder = getattr(self, "_qzone_record_published_post", None)
+            if callable(recorder):
+                try:
+                    await recorder(
+                        result.get("text") or content,
+                        reason=publish_reason,
+                        tid=result.get("tid", ""),
+                        image_count=_safe_int(result.get("image_count"), 0, 0, 99),
+                        verified=bool(result.get("verified")),
+                        event=event,
+                    )
+                except Exception as record_exc:
+                    logger.debug("[PrivateCompanion] QQ 空间发布后自我记录失败: %s", _single_line(record_exc, 120))
+            return result
+
+        try:
+            return await publish_once(image_list)
         except Exception as exc:
             message = _single_line(exc, 180)
             if isinstance(exc, QzoneIntegrationError):
                 if exc.stage == "Cookie/g_tk" or self._qzone_auth_failure_message(message):
                     self._qzone_mark_auth_failure(message, source="publish", save=True)
+                if content and image_list and exc.stage in {"图片读取失败", "图片校验失败", "图片上传失败"}:
+                    logger.warning(
+                        "[PrivateCompanion] QQ 空间图片发布失败,尝试降级纯文字: stage=%s msg=%s",
+                        exc.stage,
+                        message,
+                    )
+                    try:
+                        fallback = await publish_once([])
+                        fallback["image_fallback"] = True
+                        fallback["image_fallback_stage"] = exc.stage
+                        fallback["image_fallback_message"] = message
+                        fallback["image_count"] = 0
+                        fallback["images"] = []
+                        return fallback
+                    except Exception as retry_exc:
+                        retry_message = _single_line(retry_exc, 180)
+                        if isinstance(retry_exc, QzoneIntegrationError) and (
+                            retry_exc.stage == "Cookie/g_tk" or self._qzone_auth_failure_message(retry_message)
+                        ):
+                            self._qzone_mark_auth_failure(retry_message, source="publish", save=True)
+                        return {
+                            "success": False,
+                            "stage": exc.stage,
+                            "message": f"{message}；降级纯文字也失败：{retry_message}",
+                            "image_fallback_failed": True,
+                        }
                 return {"success": False, "stage": exc.stage, "message": message}
             lowered = message.lower()
             if "cookie" in lowered or "p_skey" in lowered or "skey" in lowered or "g_tk" in lowered or "登录" in message:

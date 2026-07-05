@@ -1,6 +1,11 @@
 const HTTP_API = "/astrbot_plugin_private_companion/page";
 const PAGE_ENDPOINT_PREFIX = "page";
+const PAGE_PLUGIN_NAME = "astrbot_plugin_private_companion";
 const TRANSPARENT_IMAGE = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
+let cachedPageBridge = null;
+let cachedPageEndpointStyle = "";
+let pageBridgeProbePromise = null;
+let loadAllRequestSeq = 0;
 
 const state = {
   overview: null,
@@ -15,6 +20,7 @@ const state = {
   bookshelfAccessToken: "",
   selectedBook: null,
   bookshelfPage: "shelf",
+  creativeEditing: false,
   selectedBookSpreadIndex: 0,
   selectedDiaryDate: "",
   selectedBrowsingIndex: 0,
@@ -24,6 +30,7 @@ const state = {
   selectedFeatureKey: "",
   providerFilter: "",
   providerMode: "all",
+  providerConfigMode: "",
   providerDraft: {},
   proactiveCandidateFilter: "all",
   imageCacheItems: [],
@@ -50,6 +57,8 @@ const state = {
     tokenStats: false,
     configBackups: false,
   },
+  pageFontFamily: "original",
+  pageTheme: "classic",
 };
 
 const hiddenCompatibilityConfigKeys = new Set([
@@ -65,18 +74,24 @@ const featureSwitchNotes = {
 };
 
 const providerLabels = {
+  FAST_RESPONSE_PROVIDER_ID: "快速响应模型",
+  COMPLEX_REASONING_PROVIDER_ID: "复杂推理模型",
+  CREATIVE_MODEL_PROVIDER_ID: "创作模型",
   LLM_PROVIDER_ID: "主模型",
   MAI_STYLE_PROVIDER_ID: "陪伴通用模型",
   DAILY_PLAN_PROVIDER_ID: "日程生成",
   DETAIL_ENHANCEMENT_PROVIDER_ID: "日程细化",
   DREAM_DIARY_PROVIDER_ID: "日记与梦境",
   CREATIVE_PROVIDER_ID: "私下创作",
+  CREATIVE_OUTLINE_PROVIDER_ID: "创作大纲",
+  CREATIVE_REVIEW_PROVIDER_ID: "创作审校/分析",
   VOICE_PROMPT_PROVIDER_ID: "主动语音文案文本",
   tts_conversion_provider_id: "TTS 转换文本",
   PHOTO_PROMPT_PROVIDER_ID: "生图提示词",
   NARRATION_PROVIDER_ID: "工具结果转述",
   HISTORY_SUMMARY_PROVIDER_ID: "昨日对话摘要",
   RESPONSE_REVIEW_PROVIDER_ID: "回复/主动复核",
+  SMART_SILENCE_PROVIDER_ID: "智能沉默判定",
   PROACTIVE_PERSONA_JUDGE_PROVIDER_ID: "主动人格判定",
   TROUBLESHOOTING_PROVIDER_ID: "排障检查",
   SMART_MESSAGE_DEBOUNCE_PROVIDER_ID: "智能收口判断",
@@ -121,7 +136,17 @@ const noFallbackProviderKeys = new Set([
 ]);
 
 const optionalNoFallbackProviderKeys = new Set([
+  "FAST_RESPONSE_PROVIDER_ID",
+  "COMPLEX_REASONING_PROVIDER_ID",
+  "CREATIVE_MODEL_PROVIDER_ID",
   "NARRATION_PROVIDER_ID",
+]);
+
+const quickProviderKeys = new Set([
+  "FAST_RESPONSE_PROVIDER_ID",
+  "COMPLEX_REASONING_PROVIDER_ID",
+  "CREATIVE_MODEL_PROVIDER_ID",
+  "PLUGIN_VISION_PROVIDER_ID",
 ]);
 
 const providerPreferenceMeta = {
@@ -163,6 +188,78 @@ const providerPassiveImpactMeta = {
 function providerNeedsLowLatency(key) {
   const guide = providerGuides[key] || {};
   return guide.preference === "speed" || ["direct", "conditional"].includes(guide.passiveImpact || "");
+}
+
+function normalizeProviderConfigMode(value) {
+  const text = String(value || "").trim().toLowerCase();
+  const aliases = {
+    fast: "quick",
+    simple: "quick",
+    "快速": "quick",
+    "快速配置": "quick",
+    precise: "precision",
+    advanced: "precision",
+    "精准": "precision",
+    "精准配置": "precision",
+    "分流": "precision",
+  };
+  const normalized = aliases[text] || text;
+  return normalized === "precision" ? "precision" : "quick";
+}
+
+function inferProviderConfigMode(overview = state.overview || {}) {
+  const settings = overview.settings || {};
+  const explicit = String(settings.provider_config_mode || "").trim();
+  if (explicit) return normalizeProviderConfigMode(explicit);
+  const providers = {
+    ...(overview.providers || {}),
+    ...(state.providerDraft || {}),
+  };
+  const hasPrecisionProvider = Object.keys(providerLabels)
+    .some((key) => !quickProviderKeys.has(key) && visibleConfigKey(key) && Boolean(providers[key]));
+  return hasPrecisionProvider ? "precision" : "quick";
+}
+
+function currentProviderConfigMode() {
+  return normalizeProviderConfigMode(state.providerConfigMode || inferProviderConfigMode());
+}
+
+function providerAllowedInCurrentMode(key) {
+  const mode = currentProviderConfigMode();
+  return mode === "quick" ? quickProviderKeys.has(key) : !quickProviderKeys.has(key);
+}
+
+function syncProviderConfigModeControls() {
+  const mode = currentProviderConfigMode();
+  const quick = mode === "quick";
+  document.querySelectorAll("[data-provider-config-mode]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.providerConfigMode === mode);
+  });
+  const toolbar = document.querySelector(".provider-toolbar");
+  toolbar?.classList.toggle("is-quick-mode", quick);
+  const filter = document.getElementById("providerFilter");
+  if (filter && quick) filter.value = "";
+  document.querySelectorAll("[data-provider-mode]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.providerMode === (state.providerMode || "all"));
+  });
+  const hint = document.getElementById("providerConfigModeHint");
+  if (hint) {
+    hint.textContent = quick
+      ? "快速配置只显示 4 个场景模型；细分任务会按运行态自动套用这些入口。"
+      : "精准配置显示各任务单独 Provider；快速入口不会参与本模式保存。";
+  }
+}
+
+function setProviderConfigMode(mode, { render = true } = {}) {
+  state.providerConfigMode = normalizeProviderConfigMode(mode);
+  if (state.providerConfigMode === "quick") {
+    state.providerMode = "all";
+    state.providerFilter = "";
+    const filter = document.getElementById("providerFilter");
+    if (filter) filter.value = "";
+  }
+  syncProviderConfigModeControls();
+  if (render) renderProviders();
 }
 
 function isPrivateReadingAvailable() {
@@ -213,10 +310,10 @@ const pluginIntegrationAvailabilityRules = {
   enable_livingmemory_integration: () => Boolean(state.overview?.livingmemory?.available),
   enable_bilibili_integration: () => Boolean(state.overview?.bilibili?.available),
   enable_bilibili_boredom_watch: () => Boolean(state.overview?.bilibili?.available),
-  enable_qzone_integration: () => Boolean(state.overview?.qzone?.available),
-  enable_qzone_life_publish: () => Boolean(state.overview?.qzone?.available),
-  enable_qzone_generated_image_publish: () => Boolean(state.overview?.qzone?.available),
-  enable_qzone_comment_inbox: () => Boolean(state.overview?.qzone?.available),
+  enable_qzone_integration: () => true,
+  enable_qzone_life_publish: () => true,
+  enable_qzone_generated_image_publish: () => true,
+  enable_qzone_comment_inbox: () => true,
   enable_qzone_emotional_vent_publish: () => Boolean(state.overview?.qzone?.available && toBool(state.featureDraft?.enable_emotion_simulation)),
 };
 
@@ -240,6 +337,27 @@ function visibleConfigKey(key) {
 }
 
 const providerGuides = {
+  FAST_RESPONSE_PROVIDER_ID: {
+    preference: "speed",
+    passiveImpact: "direct",
+    purpose: "快速配置入口。给短判断、轻量复核、智能沉默/收口、群聊续接、语音短句、工具转述、新闻和搜索整理等低延迟任务兜底。",
+    fit: "适合便宜、响应快、短 JSON/YES-NO 稳定、中文短句自然的小到中型模型。",
+    fallback: "只作为未单独填写任务的默认值；单项模型已填写时优先使用单项配置。",
+  },
+  COMPLEX_REASONING_PROVIDER_ID: {
+    preference: "quality",
+    passiveImpact: "conditional",
+    purpose: "快速配置入口。给主模型兜底、日程生成/细化、长期记忆整理、关系分析、合并消息转述等复杂理解任务兜底。",
+    fit: "适合推理更强、长上下文理解和结构化输出更稳的模型。",
+    fallback: "只作为未单独填写任务的默认值；主模型或单项模型已填写时优先使用对应配置。",
+  },
+  CREATIVE_MODEL_PROVIDER_ID: {
+    preference: "quality",
+    passiveImpact: "async",
+    purpose: "快速配置入口。给私下创作、创作大纲/审校、日记梦境和生图提示词等表达/画面感任务兜底。",
+    fit: "适合文风稳定、画面感好、中文表达自然、能遵守角色边界的模型。",
+    fallback: "只作为未单独填写任务的默认值；创作相关单项模型已填写时优先使用单项配置。",
+  },
   LLM_PROVIDER_ID: {
     preference: "quality",
     passiveImpact: "direct",
@@ -281,6 +399,20 @@ const providerGuides = {
     purpose: "生成私下创作项目设定，以及闲暇时的小说、诗、随笔、剧本等正文片段。",
     fit: "适合文风稳定、有创作能力、能遵守角色身份边界的模型。",
     fallback: "留空时跟随陪伴通用模型。",
+  },
+  CREATIVE_OUTLINE_PROVIDER_ID: {
+    preference: "speed",
+    passiveImpact: "async",
+    purpose: "每次续写前整理本段短大纲，帮助作品沿着项目设定推进。",
+    fit: "适合便宜、低延迟、结构化短输出稳定的模型。",
+    fallback: "留空时跟随私下创作模型。",
+  },
+  CREATIVE_REVIEW_PROVIDER_ID: {
+    preference: "quality",
+    passiveImpact: "async",
+    purpose: "检查创作片段是否重复、是否推进、是否违背人工大纲/角色表，并抽取故事档案。",
+    fit: "适合 JSON 稳定、审稿判断可靠的模型。",
+    fallback: "留空时跟随私下创作模型。",
   },
   VOICE_PROMPT_PROVIDER_ID: {
     preference: "speed",
@@ -324,6 +456,13 @@ const providerGuides = {
     purpose: "用于被动回复轻量自检，以及主动消息发送前判断是否值得现在发送、是否需要轻改写/延后/取消。",
     fit: "适合便宜、短文本改写自然、边界判断稳的模型。",
     fallback: "留空时回退到陪伴通用模型，再回退到主模型。",
+  },
+  SMART_SILENCE_PROVIDER_ID: {
+    preference: "speed",
+    passiveImpact: "conditional",
+    purpose: "用户疑似表达不想继续当前话题时，判断这条待发送回复该不该直接静默取消。",
+    fit: "适合低延迟、短 JSON 稳定、边界判断保守的小模型。",
+    fallback: "留空时跟随回复/主动复核模型，再回退到智能收口或陪伴通用模型。",
   },
   PROACTIVE_PERSONA_JUDGE_PROVIDER_ID: {
     preference: "speed",
@@ -407,7 +546,7 @@ const providerGuides = {
     passiveImpact: "direct",
     purpose: "判断群里用户后续没 @ 的话是否仍在和 Bot 对话，只在规则不确定时调用。",
     fit: "适合便宜、低延迟、YES/NO 分类准确、指令遵循稳定的小模型。",
-    fallback: "留空时只使用规则判断。",
+    fallback: "留空时先跟随快速响应模型；快速响应模型也留空时只使用规则判断。",
   },
   FORWARD_MESSAGE_PROVIDER_ID: {
     preference: "balanced",
@@ -448,16 +587,22 @@ const providerGuides = {
 
 const providerGroups = [
   {
+    id: "quick",
+    title: "快速配置",
+    desc: "按使用场景配置 4 个模型；高级单项留空时会自动套用这里的配置。",
+    keys: ["FAST_RESPONSE_PROVIDER_ID", "COMPLEX_REASONING_PROVIDER_ID", "CREATIVE_MODEL_PROVIDER_ID", "PLUGIN_VISION_PROVIDER_ID"],
+  },
+  {
     id: "core",
     title: "基础与兜底",
     desc: "主模型、陪伴通用和最终回复前后的基础能力。",
-    keys: ["LLM_PROVIDER_ID", "MAI_STYLE_PROVIDER_ID", "SMART_MESSAGE_DEBOUNCE_PROVIDER_ID", "RESPONSE_REVIEW_PROVIDER_ID", "PROACTIVE_PERSONA_JUDGE_PROVIDER_ID", "REST_WAKEUP_PROVIDER_ID", "TROUBLESHOOTING_PROVIDER_ID", "NARRATION_PROVIDER_ID"],
+    keys: ["LLM_PROVIDER_ID", "MAI_STYLE_PROVIDER_ID", "SMART_MESSAGE_DEBOUNCE_PROVIDER_ID", "SMART_SILENCE_PROVIDER_ID", "RESPONSE_REVIEW_PROVIDER_ID", "PROACTIVE_PERSONA_JUDGE_PROVIDER_ID", "REST_WAKEUP_PROVIDER_ID", "TROUBLESHOOTING_PROVIDER_ID", "NARRATION_PROVIDER_ID"],
   },
   {
     id: "daily",
     title: "日程与表达",
     desc: "决定 Bot 每天做什么、怎么把生活片段和主动表达写出来。",
-    keys: ["DAILY_PLAN_PROVIDER_ID", "DETAIL_ENHANCEMENT_PROVIDER_ID", "DREAM_DIARY_PROVIDER_ID", "CREATIVE_PROVIDER_ID", "VOICE_PROMPT_PROVIDER_ID", "tts_conversion_provider_id", "PHOTO_PROMPT_PROVIDER_ID"],
+    keys: ["DAILY_PLAN_PROVIDER_ID", "DETAIL_ENHANCEMENT_PROVIDER_ID", "DREAM_DIARY_PROVIDER_ID", "CREATIVE_PROVIDER_ID", "CREATIVE_OUTLINE_PROVIDER_ID", "CREATIVE_REVIEW_PROVIDER_ID", "VOICE_PROMPT_PROVIDER_ID", "tts_conversion_provider_id", "PHOTO_PROMPT_PROVIDER_ID"],
   },
   {
     id: "memory",
@@ -475,7 +620,7 @@ const providerGroups = [
     id: "media",
     title: "视觉与外界信息",
     desc: "识图、新闻和主动搜索相关模型。",
-    keys: ["PLUGIN_VISION_PROVIDER_ID", "PRIVATE_READING_VISION_PROVIDER_ID", "NEWS_PROVIDER_ID", "WEB_EXPLORATION_PROVIDER_ID"],
+    keys: ["PRIVATE_READING_VISION_PROVIDER_ID", "NEWS_PROVIDER_ID", "WEB_EXPLORATION_PROVIDER_ID"],
   },
 ];
 
@@ -493,6 +638,7 @@ const featureMeta = {
   enable_expression_style_review: ["表达发送前审核", "发送前检查表达学习过头、异常断句、照抄样本等问题。"],
   enable_intent_emotion_analysis: ["本地意图/情绪快判", "用带置信度的本地规则识别求助、低落、玩笑、亲近和边界。"],
   enable_response_self_review: ["回复/主动复核", "被动回复做轻量自检；主动消息发送前判断是否值得现在发送、是否需要改写或延后。"],
+  enable_smart_silence: ["智能沉默", "用户明确不想继续话题时，让小模型决定本轮是否直接不回复。"],
   enable_llm_timer_scheduling: ["对话临时预约", "把聊天里自然形成的稍后提醒、叫醒、回头说等约定转写成 AstrBot 官方定时计划；插件本身不再单独调度。"],
   enable_passive_topic_suppression: ["话题抑制", "避免短时间反复主动提同一个话题。"],
   enable_relationship_state_machine: ["关系距离感", "根据亲近、冷淡、边界和回应情况调整相处分寸。"],
@@ -504,10 +650,12 @@ const featureMeta = {
   enable_humanized_states: ["拟人身体状态", "生成精力、睡眠、梦境、健康、饥饿和周期等扮演状态，影响日程、主动消息和被动语气。"],
   enable_health_state: ["健康/不适状态", "开启后视为可用，允许当前扮演状态出现生病、不舒服或恢复尾声。"],
   enable_hunger_state: ["饥饿/胃口状态", "开启后视为可用，允许当前扮演状态出现饿、胃口不好或想吃东西。"],
+  enable_qq_presence_sync: ["同步 QQ 在线状态", "让日程细化把在线/忙碌等基础状态同步到 QQ；不包含自定义短状态。"],
+  enable_qq_custom_presence_sync: ["同步 QQ 自定义短状态", "默认关闭；仅协议端明确支持时再开启，用于“专注中/休息中”等短状态。"],
   enable_segmented_proactive_reply: ["分段发送", "按作用范围把主动消息或全部 LLM 纯文本回复拆成更像聊天的短句，并合并过短片段。"],
   inject_passive_states: ["被动状态注入", "普通聊天前注入“当前扮演状态”，只影响语气、长短和节奏。"],
   enable_passive_state_delta_injection: ["被动状态增量注入", "同一会话只在状态首次出现、明显变化或用户询问近况时注入短状态摘要，减少重复动态提示词。"],
-  enable_cycle_state: ["生理期模拟", "在人格适合人类身体设定时，允许当前扮演状态偶尔加入生理期前、处于生理期或生理期后的状态。"],
+  enable_cycle_state: ["生理期模拟", "开启后即视为适用，允许当前扮演状态偶尔加入生理期前、处于生理期或生理期后的状态。"],
   enable_skill_growth_simulation: ["技能成长", "能力状态与边界；自定义技能请到观察页的技能成长卡片管理。"],
   enable_message_debounce: ["消息收口防抖", "把文本、图片、转发后的补充说明合并进同一轮；旧版语义收口等待已并入文本补话等待。"],
   enable_smart_message_debounce: ["智能文本收口", "先本地快判明确完整文本；“知道吗/问你个事/你猜”等短引子会先等补话。"],
@@ -536,7 +684,7 @@ const featureMeta = {
   enable_group_scene_awareness: ["群聊场景感知", "推断当前消息是在对 Bot、某个群友还是整个群说话，减少误以为别人都在问自己。"],
   enable_group_reality_promise_guard: ["阻止群聊现实承诺", "群聊里避免承诺自己能拉人、修网、开房间或操作现实设备；私聊扮演不受影响。"],
   enable_group_wakeup_enhancement: ["群聊唤醒强化", "通过强唤醒词、弱相关唤醒词和兴趣关键词，让 Bot 在群里被自然叫到或碰到感兴趣话题时进入回复链。"],
-  enable_group_high_intensity_mode: ["群聊高强度收口", "短时间连续被 @、引用或增强唤醒后，按配置合并后续唤醒消息，并暂停非必要群聊后台任务，减少 LLM 过载。"],
+  enable_group_high_intensity_mode: ["群聊高强度收口", "短时间连续被 @、引用或增强唤醒后，按配置合并后续唤醒消息；冷却残留只降载，不延迟单条明确消息。"],
   enable_group_conversation_followup: ["连续对话保持", "群里叫过 Bot 后，短时间内判断同一用户没继续 @ 的话是否仍在对 Bot 说。"],
   enable_group_interjection: ["群主动插话", "允许 Bot 在群聊里主动插一句。谨慎开启。"],
   enable_group_repeat_follow: ["复读处理", "同一句话连续复读达到阈值时，可跟读一次或打断一次。"],
@@ -828,7 +976,10 @@ function featureSearchText(key) {
     .filter(([childKey]) => topLevelFeatureKey(childKey) === key)
     .map(([childKey]) => `${childKey} ${featureLabel(childKey)} ${featureDescription(childKey)}`)
     .join(" ");
-  return `${key} ${featureLabel(key)} ${featureDescription(key)} ${childText}`.toLowerCase();
+  const settingText = (featureSettingGroups[key] || [])
+    .map((settingKey) => `${settingKey} ${configLabel(settingKey)} ${configDescriptions[settingKey] || ""}`)
+    .join(" ");
+  return `${key} ${featureLabel(key)} ${featureDescription(key)} ${childText} ${settingText}`.toLowerCase();
 }
 
 const safeFeatureKeys = [
@@ -854,10 +1005,12 @@ const configLabels = {
   user_count: "私聊对象总数",
   require_opt_in: "是否需要私聊确认",
   default_style: "默认语气",
+  reply_style_prompt: "回复风格提示词",
   plugin_specific_persona_id: "插件指定人格 ID",
   private_user_aliases: "私聊身份别名归并",
   private_user_delivery_aliases: "私聊主动发送目标映射",
-  schedule_persona_prompt: "角色设定补充",
+  proactive_intensity_preset: "主动强度预设",
+  schedule_persona_prompt: "角色资料补充",
   schedule_worldview_prompt: "世界观/生活背景",
   roleplay_user_profile_prompt: "用户与关系补充",
   max_daily_messages: "每日主动上限",
@@ -886,6 +1039,9 @@ const configLabels = {
   qzone_emotional_vent_probability: "心情动态触发概率",
   enable_food_menu_recommendation: "吃什么候选",
   response_review_mode: "回复/主动复核模式",
+  SMART_SILENCE_PROVIDER_ID: "智能沉默小模型",
+  smart_silence_min_confidence: "智能沉默置信度",
+  smart_silence_model_timeout_seconds: "智能沉默超时秒数",
   proactive_review_strength: "主动复核强度",
   proactive_review_hard_risk_threshold: "硬拦截风险阈值",
   proactive_review_low_score_threshold: "低价值分数阈值",
@@ -928,6 +1084,7 @@ const configLabels = {
   enable_recall_transcribe_command: "撤回转述命令",
   recall_message_cache_ttl_seconds: "撤回缓存秒数",
   recall_message_cache_max_items: "撤回缓存上限",
+  recall_message_image_cache_max_mb: "撤回图片磁盘上限",
   enable_forbidden_word_recall: "违禁词自动撤回",
   recall_forbidden_words: "撤回违禁词表",
   recall_forbidden_scope: "违禁词撤回范围",
@@ -988,7 +1145,7 @@ const configLabels = {
   forward_message_image_limit: "合并消息视觉图片上限",
   max_group_recent_messages: "群聊最近消息上限",
   max_group_slang_terms: "群黑话上限",
-  group_slang_web_search_terms: "黑话联网搜索词数",
+  group_slang_web_search_terms: "黑话联网候选扫描数",
   group_slang_web_search_results: "每词搜索摘要条数",
   daily_token_limit: "每日 Token 限额",
   enable_daily_token_soft_limit: "启用每日 Token 软限额",
@@ -997,6 +1154,8 @@ const configLabels = {
   enable_humanized_states: "拟人身体状态",
   enable_health_state: "健康/不适状态",
   enable_hunger_state: "饥饿/胃口状态",
+  enable_qq_presence_sync: "同步 QQ 在线状态",
+  enable_qq_custom_presence_sync: "同步 QQ 自定义短状态",
   inject_passive_states: "被动状态注入",
   enable_passive_state_delta_injection: "被动状态增量注入",
   passive_injection_position: "动态提示词注入位置",
@@ -1025,6 +1184,7 @@ const configLabels = {
   enable_yesterday_screen_diary_context: "昨日屏幕日记",
   screen_diary_context_max_chars: "昨日屏幕日记上下文字数",
   passive_topic_memory_hours: "话题抑制记忆小时",
+  proactive_intensity_preset: "主动强度预设",
   idle_minutes: "空闲门槛分钟",
   min_interval_minutes: "最小主动间隔分钟",
   proactive_unanswered_slowdown_start: "未回应降频起点",
@@ -1128,6 +1288,9 @@ const configLabels = {
   web_exploration_share_probability: "探索分享概率",
   web_exploration_max_results: "搜索结果数",
   web_exploration_interests: "探索兴趣倾向",
+  WEB_EXPLORATION_API_BASE_URL: "主动搜索接口地址",
+  WEB_EXPLORATION_API_KEY: "主动搜索接口 API Key",
+  WEB_EXPLORATION_API_MODEL: "主动搜索接口模型",
   enable_web_exploration_boredom_search: "空档自主搜索",
   QZONE_COOKIE: "QQ 空间手动 Cookie",
   qzone_life_publish_min_interval_hours: "说说最小间隔",
@@ -1149,16 +1312,27 @@ const configLabels = {
   daily_outfit_photo_prompt: "每日穿搭提示词",
   enable_natural_language_photo_generation: "自然语言生图/改图",
   natural_language_photo_generation_max_daily: "自然语言生图上限",
+  natural_language_photo_extra_prompt: "自然语言生图附加提示词",
   comfyui_photo_wait_seconds: "本地生图等待秒数",
   enable_local_photo_load_guard: "电脑高负荷保护",
   local_photo_cpu_busy_percent: "CPU 忙碌阈值",
   local_photo_memory_busy_percent: "内存忙碌阈值",
   local_photo_defer_minutes: "忙时延后分钟数",
+  external_image_api_platform: "在线生图平台",
   EXTERNAL_IMAGE_API_BASE_URL: "在线图片 API 地址",
   EXTERNAL_IMAGE_API_KEY: "在线图片 API Key",
   EXTERNAL_IMAGE_API_MODEL: "在线图片模型",
   external_image_api_size: "在线生图尺寸",
   external_image_api_timeout_seconds: "在线生图超时秒数",
+  external_image_api_custom_headers: "在线生图自定义请求头",
+  enable_backup_external_image_api: "启用备选在线 API",
+  backup_external_image_api_platform: "备选在线生图平台",
+  BACKUP_EXTERNAL_IMAGE_API_BASE_URL: "备选在线 API 地址",
+  BACKUP_EXTERNAL_IMAGE_API_KEY: "备选在线 API Key",
+  BACKUP_EXTERNAL_IMAGE_API_MODEL: "备选在线图片模型",
+  backup_external_image_api_size: "备选在线生图尺寸",
+  backup_external_image_api_timeout_seconds: "备选在线超时秒数",
+  backup_external_image_api_custom_headers: "备选在线生图自定义请求头",
   photo_generation_style: "主动生图风格",
   photo_generation_style_custom_prompt: "自定义风格说明",
   photo_generation_fixed_prompt: "固定附加提示词",
@@ -1193,16 +1367,19 @@ const configDescriptions = {
   proactive_persona_judge_send_threshold: "模型判定为 send 但分数低于该阈值时，会自动转为延后。越高越克制，越低越容易放行。",
   proactive_persona_judge_cache_minutes: "同一主动计划在该时间内复用模型判定，减少重复调用；计划内容、语义或触发来源变化后会自动失效。",
   default_style: "没有单独学习到用户偏好时，插件用于生成日程、状态和主动行为的基础语气参考。",
-  plugin_specific_persona_id: "填写 AstrBot 人格 ID 后，插件会优先使用该人格作为主回复人格；留空则继承 AstrBot 当前默认人格。不同于角色设定补充，它会影响私聊被动回复和关系判断。",
+  reply_style_prompt: "注入到普通被动回复和主动消息生成中的表达约束，适合写句数、简洁度、语言和社交媒体口语习惯；复杂问题或用户要求详细说明时，可在这里允许模型放宽。",
+  plugin_specific_persona_id: "填写 AstrBot 人格 ID 后，插件会优先使用该人格作为主回复人格；留空则继承 AstrBot 当前默认人格。不同于世界知识，它会影响私聊被动回复、群聊人格和关系判断。",
   private_user_aliases: "把临时会话 ID、异常 sender_id 或机器人侧误报 ID 归并到主 QQ。每行一个映射，例如：688C2CE7...=100012345。",
   private_user_delivery_aliases: "只改变主动消息/主动测试的发送出口，不改变记忆归属。每行一个映射，例如：大号QQ=小号QQ。",
-  schedule_persona_prompt: "给陪伴插件的日程、状态、主动行为、识图和创作提供角色补充；不会覆盖 AstrBot 主人格。",
+  schedule_persona_prompt: "给陪伴插件的日程、状态、主动行为、识图、生图和创作提供角色资料补充；不会覆盖 AstrBot 主人格或群聊人格。",
   schedule_worldview_prompt: "给陪伴插件判断生活背景和世界规则，适合写所在世界、日常规则、居住/学校/城市环境和与用户的生活关系。",
   roleplay_user_profile_prompt: "描述角色如何称呼用户、用户身份、彼此关系和相处方式；不会作为图片自我识别的外观线索。",
   humanized_state_intensity: "控制睡眠不佳、健康、饥饿、周期等状态出现概率和能量影响强度，范围 0-100。",
   enable_humanized_states: "总开关。关闭后不再生成拟人身体/梦境状态，只保留基础平稳状态。",
   enable_health_state: "开启后健康/不适状态视为可用，拟人状态可能出现生病、不舒服、头疼或恢复尾声；关闭后自动生成和手动增添都会跳过这类状态。",
   enable_hunger_state: "开启后饥饿/胃口状态视为可用，拟人状态可能出现饿、胃口不好、想吃东西或想吃甜的；关闭后不会生成吃什么类身体小需求，手动增添也会拦截饥饿状态。",
+  enable_qq_presence_sync: "开启后，日程细化会通过 OneBot 的 set_online_status 尝试同步在线/忙碌等基础 QQ 状态；不包含自定义短状态。离开、隐身、请勿打扰会自动降级为在线。",
+  enable_qq_custom_presence_sync: "默认关闭。开启后才会尝试同步“专注中/休息中”等 QQ 自定义短状态；这依赖协议端支持非标准 OneBot 扩展。为避免 NapCat 兼容问题，插件不会调用 set_custom_online_status。",
   inject_passive_states: "开启后普通聊天会参考“当前扮演状态”；关闭后状态主要影响日程和主动行为。",
   enable_passive_state_delta_injection: "开启后，同一会话只在状态首次出现、明显变化或用户问近况时注入短状态摘要；状态未变时不重复塞完整日程和生活背景。关闭后恢复每轮完整状态注入。",
   passive_injection_position: "选择被动状态、环境感知、TTS 本轮频控、转发/引用上下文等动态片段的注入位置。当前请求末尾会进入统一动态块并按稳定顺序排列，更利于缓存；系统提示词约束更强但更容易降低缓存命中。若同时启用长期记忆/记忆召回，推荐使用当前请求末尾，让召回内容与动态状态在尾部自然结合。",
@@ -1216,7 +1393,7 @@ const configDescriptions = {
   enable_rest_backlog_reply: "休息闸门静默拦截的目标私聊会暂存成简短摘要；下一次醒来或被叫醒回复时，Bot 会像刚补看消息一样自然接上。只记录私聊，不记录群聊。",
   rest_backlog_max_messages: "休息期间最多保留多少条未回复私聊。超过后只留最近几条，避免醒来后被旧消息淹没。",
   REST_WAKEUP_PROVIDER_ID: "可选。用于休息醒来判断的轻量模型；留空时优先使用回复审校模型，再回退主模型。",
-  enable_cycle_state: "开启后，只有人格适合人类身体设定时，才可能在“当前扮演状态”里出现生理期相关状态；它只影响语气、精力和回复节奏，不是医学记录或真实日期追踪。非适用人格会自动判定不适用。",
+  enable_cycle_state: "开启后即视为适用，可能在“当前扮演状态”里出现生理期前、处于生理期或生理期后的相关状态；它只影响语气、精力和回复节奏，不是医学记录或真实日期追踪。",
   environment_perception_timezone: "用于判断当前时段、日期语境、节假日和日程跨日。默认 Asia/Shanghai。",
   holiday_country: "节假日识别地区。目前主要用于 CN，未安装依赖时会自动退化为周末/工作日。",
   enable_holiday_perception: "开启后会把节假日、调休和工作日判断注入环境感知。",
@@ -1229,6 +1406,7 @@ const configDescriptions = {
   enable_yesterday_screen_diary_context: "读取 screen_companion 的昨日屏幕观察日记脱敏摘要，作为今日状态、日程和生活节奏背景；不会读取今天实时屏幕。",
   screen_diary_context_max_chars: "注入给状态和日程模型的昨日屏幕观察摘要最大字符数。建议较短，只保留活动类型和节奏。",
   TROUBLESHOOTING_PROVIDER_ID: "用于排障中心的模型复核。留空时先跟随回复/主动复核模型，再回退到陪伴通用/主模型。",
+  proactive_intensity_preset: "默认关闭，完全沿用手动参数。开启后只在运行态调整私聊主动、群聊唤醒和插话的有效频率，并会在排障页显示当前预设；不会绕过免打扰、休息、用户拒绝、隐私和成本闸门。",
   idle_minutes: "用户多久没有活跃后，才被视为适合主动触达或分享的空闲状态。",
   min_interval_minutes: "同一私聊对象两次主动消息之间的最小间隔，避免频繁打扰。",
   proactive_unanswered_slowdown_start: "用户连续几次不回应 Bot 主动消息后，开始自动降低主动频率。",
@@ -1277,10 +1455,11 @@ const configDescriptions = {
   smart_message_debounce_examples_limit: "每次判断时带给小模型的近期误判样本数量。0 表示不注入历史样本。",
   enable_recall_enhancement: "撤回相关能力总开关。包括撤回触发消息时取消回复、短期缓存撤回消息用于转述、违禁词自动撤回。",
   enable_recall_cancel_reply: "开启后，如果 QQ/OneBot 通知某条触发或唤醒消息已撤回，而 Bot 的回复还没真正发出，就静默取消这次回复和剩余分段。",
-  enable_recall_message_cache: "开启后短期缓存普通消息的文本摘要；收到撤回事件后可在缓存过期前通过命令转述。缓存只保存在内存中。",
+  enable_recall_message_cache: "开启后短期缓存普通消息的文本摘要；含图片消息会临时写入 recall_message_images，便于撤回后转述原图，并按缓存秒数和磁盘上限清理。",
   enable_recall_transcribe_command: "允许使用“陪伴 撤回消息”或“陪伴群 撤回消息”查看当前会话最近撤回消息。群聊需要管理权限。",
-  recall_message_cache_ttl_seconds: "撤回消息摘要和撤回记录在内存中保留多久。过期后无法转述，也不再用于取消待发送回复。",
+  recall_message_cache_ttl_seconds: "撤回消息摘要、撤回记录和临时撤回图片保留多久。过期后无法转述，也不再用于取消待发送回复。",
   recall_message_cache_max_items: "最多缓存多少条消息摘要。0 表示不按数量限制，但仍受缓存秒数限制。",
+  recall_message_image_cache_max_mb: "撤回图片临时目录的最大体积。0 表示不按体积限制，但仍受缓存秒数限制。",
   enable_forbidden_word_recall: "开启且词表非空时，Bot 自己待发送消息会先被拦截；已进入事件流的群聊消息或 Bot 自己消息会尝试调用平台撤回。",
   recall_forbidden_words: "命中任一词就触发违禁词撤回。建议一行一个词；为空时不会执行自动撤回。",
   recall_forbidden_scope: "bot_only 只检查 Bot 自己消息；group_only 检查群聊消息；bot_and_group 同时检查 Bot 自己消息和群聊消息。",
@@ -1357,11 +1536,11 @@ const configDescriptions = {
   group_wakeup_fatigue_decay_minutes: "每隔多少分钟自然恢复 1 点唤醒疲劳。数值越大，越会保留“刚被频繁叫到”的感觉。",
   group_wakeup_log_limit: "每个群最多保留多少条唤醒命中、冷却拦截和兴趣未触发记录。",
   group_wakeup_short_text_wait_seconds: "群聊里已经判定在叫 Bot、但内容只有 1-2 个字且不像完整短互动时，复用消息收口缓冲等待同一群友补充。设为 0 可关闭。",
-  enable_group_high_intensity_mode: "短时间连续被明确叫到后自动进入收口降载，按配置合并后续唤醒消息，并暂停弱相关/兴趣唤醒、群片段整理、黑话释义刷新和主动插话。",
+  enable_group_high_intensity_mode: "短时间连续被明确叫到后自动进入收口降载；只有近期仍在连续唤醒时才合并等待，冷却残留只暂停弱相关后台动作。",
   group_high_intensity_wakeup_window_seconds: "统计连续唤醒的时间窗口。默认 60 秒，即一分钟内连续被叫到才进入高强度收口。",
   group_high_intensity_wakeup_threshold: "窗口内达到多少次唤醒后进入收口。默认 3 次，用于减少连续 @、连续引用造成的多次 LLM 调用。",
-  group_high_intensity_cooldown_seconds: "进入收口降载后维持多久。期间明确 @ 或引用会被合并处理，非必要后台动作会让路。",
-  group_high_intensity_merge_seconds: "高强度期间第一条明确叫到 Bot 的消息最多等待多久。这是固定合并窗口，不会因持续补话无限延长。",
+  group_high_intensity_cooldown_seconds: "进入收口降载后维持多久。冷却期间会暂停弱相关后台动作；若近期唤醒已经断开，单条明确 @ 不再额外等待。",
+  group_high_intensity_merge_seconds: "高强度连续唤醒期间第一条明确叫到 Bot 的消息最多等待多久。这是固定合并窗口，不会因持续补话无限延长。",
   group_high_intensity_max_merge_messages: "高强度期间同一轮最多合并多少条叫 Bot 的消息。达到上限会立刻结束等待进入回复链；0 表示不限制。",
   group_high_intensity_merge_scope: "高强度期间如何合并连续叫 Bot 的消息：按全群合并，或只合并同一发送者的补话。",
   forward_message_mode: "注入：把合并消息摘要塞进主模型上下文；转述：先用专门模型读一遍再交给主模型。",
@@ -1372,7 +1551,7 @@ const configDescriptions = {
   forward_message_image_limit: "单次合并消息最多转述多少张图片，超过上限的图片仍会保留占位。",
   max_group_recent_messages: "每个群保存的最近消息数量，用于场景、话题和插话判断。",
   max_group_slang_terms: "每个群最多保留多少条黑话/简称候选。",
-  group_slang_web_search_terms: "黑话释义联网参考开启时，每次最多拿多少个候选词去搜索。建议保持较小，减少搜索调用。",
+  group_slang_web_search_terms: "黑话释义联网参考开启时，每次最多从多少个候选词里挑选待查词；实际每轮只联网搜索 1 个词，并缓存结果/失败冷却，避免短时间连发搜索。",
   group_slang_web_search_results: "黑话释义联网参考开启时，每个候选词最多保留多少条网页摘要给模型判断匹配程度。",
   memory_refresh_interval_minutes: "长期画像整理的最小间隔，越短越容易产生模型调用。",
   max_companion_memory_items: "每个私聊对象最多保留多少条长期画像条目。",
@@ -1415,8 +1594,11 @@ const configDescriptions = {
   enable_web_exploration_boredom_search: "开启后 Bot 空闲或无聊时会自己决定搜索主题并调用网页搜索。",
   web_exploration_min_interval_hours: "两次自主搜索之间的最小间隔。",
   web_exploration_share_probability: "完成探索后，主动私聊分享的概率，按百分比填写。",
-  web_exploration_max_results: "每次调用 AstrBot 网页搜索时最多读取多少条结果。",
-  QZONE_COOKIE: "可填写浏览器 QQ 空间 Cookie，作为查看、点赞、评论和发布说说的优先凭据；留空时仍使用 OneBot 自动 Cookie。",
+  web_exploration_max_results: "每次主动搜索最多读取多少条结果；AstrBot 全局网页搜索和自定义接口都会按这个数量裁剪。",
+  WEB_EXPLORATION_API_BASE_URL: "可选自定义搜索接口地址。只影响主动搜索空档探索的联网检索；留空继续使用 AstrBot 全局网页搜索。支持 POST JSON，也支持 GET 占位/尾插，例如 https://example.com/search?q={query} 或 https://example.com/search?q=。",
+  WEB_EXPLORATION_API_KEY: "自定义搜索接口鉴权 Key。填写后请求头会带 Authorization: Bearer；本地接口无需鉴权可留空。",
+  WEB_EXPLORATION_API_MODEL: "传给自定义搜索接口的模型名，不影响主动搜索的选题/整理模型。",
+  QZONE_COOKIE: "可填写浏览器 QQ 空间 Cookie，作为查看、点赞、评论和发布说说的优先凭据；留空时仍使用 OneBot 自动 Cookie。需包含 uin/p_uin 与 p_skey 或 skey，填写后可在 QQ 空间页刷新 Cookies 或到排障中心测试链路。",
   qzone_life_publish_min_interval_hours: "两次低频生活说说之间的最小间隔。",
   qzone_life_publish_probability: "满足条件时发布生活说说的概率，按百分比填写。",
   enable_qzone_generated_image_publish: "开启后，生活说说或情绪说说发布前可按概率调用主动生图能力生成一张配图。需要同时启用 QQ 空间动态和可用的主动生图后端。",
@@ -1433,18 +1615,29 @@ const configDescriptions = {
   photo_persona_reference_image_path: "png/jpg/jpeg/webp 本地文件路径或 http(s) 图片 URL；URL 会在首次自拍/人像生图前下载一次并自动回写为本地缓存路径。仅在自拍/人像类主动生图时使用。ComfyUI 会把它作为图片输入传给支持 images=1 的自拍工作流；在线图片 API 会优先尝试 OpenAI 兼容 /images/edits 参考图接口，不支持时回退纯文生图；SDGen 仍按提示词生成。",
   enable_daily_outfit_photo: "开启后，每天日程生成并保存后额外调用一次自拍/人像生图能力，根据当天日程、天气和状态生成角色当天穿搭照片，并替换拓展页左上角 Logo。失败会记录当天结果，不会因为刷新页面反复请求。",
   daily_outfit_photo_prompt: "可选。给每日穿搭补充偏好，例如校服、便服、季节感、配色或固定饰品；留空则优先根据当天日程里的上课、出门、居家、雨天、换衣和饰品线索自动组织。",
-  enable_natural_language_photo_generation: "默认关闭，避免和独立生图插件抢触发。开启后，只有私聊里明确说“帮我画一张/生成图片/来张图”等图片请求才会调用生图；普通“生成/画/改成”不会触发。随消息带图或引用图片并明确要求改图、修图、重绘，或说“改成/加上/去掉……”时才会尝试改图。该入口只对主人私聊开放。",
+  enable_natural_language_photo_generation: "默认关闭，避免和独立生图插件抢触发。开启后，只有私聊里明确说“帮我画一张/重新画张图片/生成图片/来张图/用插件能力画”等图片请求才会调用生图；普通“生成/画/改成”不会触发。随消息带图或引用图片并明确要求改图、修图、重绘，或说“改成/加上/去掉……”时才会尝试改图。该入口只对主人私聊开放。",
   natural_language_photo_generation_max_daily: "独立于主动生图额度和每日穿搭。成功生成或已实际请求后端但失败的情况会计入，避免接口异常时被反复请求。0 表示关闭自然语言生图/改图。",
+  natural_language_photo_extra_prompt: "只作用于自然语言生图/改图入口，会接在用户要求后、风格与场景预设前。留空则不追加这段；全局固定附加提示词仍在所有生图最后追加。",
   comfyui_photo_wait_seconds: "本地 ComfyUI 工作流最多等待多久。超时后不会假装已经拍照。",
   enable_local_photo_load_guard: "开启后，本地 ComfyUI/SDGen 生图前读取 CPU/内存负载；负载偏高时延后本次主动计划，或在 auto 模式下改走在线图片 API。",
   local_photo_cpu_busy_percent: "CPU 使用率达到该百分比时，暂缓本地 ComfyUI/SDGen 生图。需要 psutil 可用；不可用时会放行。",
   local_photo_memory_busy_percent: "内存使用率达到该百分比时，暂缓本地 ComfyUI/SDGen 生图。",
   local_photo_defer_minutes: "只有本地 ComfyUI/SDGen 可用且电脑忙时，保留原主动计划并延后这么久再重试。",
-  EXTERNAL_IMAGE_API_BASE_URL: "OpenAI 兼容在线生图接口地址。可填完整 /images/generations 地址，或 API 根地址。",
+  external_image_api_platform: "可填 auto、openai、bailian。auto 会根据 API 地址和模型名自动判断。",
+  EXTERNAL_IMAGE_API_BASE_URL: "在线生图接口地址。OpenAI 兼容可填完整 /images/generations 地址或 API 根地址；百炼可填 /api/v1 根地址或完整生图接口。",
   EXTERNAL_IMAGE_API_KEY: "在线图片 API 的鉴权 Key。保存后会写入插件配置；请只在可信本机环境填写。",
   EXTERNAL_IMAGE_API_MODEL: "必须填写该平台的图片模型名，不能填写 gpt-5.5、deepseek、claude、qwen 等聊天/文本模型。填写后配合 API 地址和 Key 可作为 external 或 auto 的生图后端。",
   external_image_api_size: "在线生图尺寸，例如 1024x1024、768x1344。",
   external_image_api_timeout_seconds: "等待在线图片 API 返回结果的最长时间。",
+  external_image_api_custom_headers: "可选。每行一个请求头，格式：Key: Value。会追加到在线生图 API 请求；下载同源结果图时也会安全复用。",
+  enable_backup_external_image_api: "开启后，主在线图片 API 请求失败、超时或未配置完整时，会先尝试这组备选 API，再回退本地 ComfyUI/SDGen。",
+  backup_external_image_api_platform: "可填 auto、openai、bailian。含义与主在线生图平台一致，只在备选 API 生效时使用。",
+  BACKUP_EXTERNAL_IMAGE_API_BASE_URL: "备选在线生图接口地址。主在线 API 失败后才会使用。",
+  BACKUP_EXTERNAL_IMAGE_API_KEY: "备选在线图片 API 的鉴权 Key。留空则不会启用备选后端。",
+  BACKUP_EXTERNAL_IMAGE_API_MODEL: "备选平台的图片模型名，不要填写聊天/文本模型。",
+  backup_external_image_api_size: "备选在线生图尺寸，例如 1024x1024、768x1344。",
+  backup_external_image_api_timeout_seconds: "等待备选在线图片 API 返回结果的最长时间。",
+  backup_external_image_api_custom_headers: "可选。每行一个请求头，格式：Key: Value。仅在备选在线图片 API 生效时使用。",
   photo_generation_style: "影响主动生图提示词的整体风格倾向，可填 真实、二次元 或 其他。",
   photo_generation_style_custom_prompt: "当风格为“其他”时，把这里作为额外风格要求注入生图提示词。",
   photo_generation_fixed_prompt: "所有生图提交后端前都会追加这段固定提示词，包括主动随手拍、每日穿搭、自然语言文生图和引用/携带图片改图。适合放固定画质、角色细节、安全区或负面约束；留空不追加。",
@@ -1479,16 +1672,19 @@ const configDescriptions = {
   enable_atrelay_llm_rewrite: "开启后先用模型把要转述的话改成 Bot 自然会说的短句；关闭后直接发送解析出的正文，速度更快。",
   atrelay_default_relay_style: "默认转述方式：persona 按人格改写，soft 委婉，original 原话。",
   atrelay_multi_target_limit: "一次转述最多允许几个目标，防止刷屏。",
-  response_review_mode: "控制回复/主动复核范围。主动消息发送前统一复核；full 会额外让较长被动回复参与模型改写，延迟更高。",
+  response_review_mode: "控制回复/主动复核范围。主动消息发送前统一复核；被动侧只处理严重复读、泄露内部提示等保护性问题；full 会额外让较长被动回复参与模型改写，延迟更高。",
+  SMART_SILENCE_PROVIDER_ID: "用于用户表达“不想继续这个话题 / 别问了 / 换个话题 / 不用回复”时的发送前沉默判定。留空时跟随回复/主动复核模型。",
+  smart_silence_min_confidence: "小模型判定 silent 且达到该置信度才会真正吞掉回复。值越高越保守，按百分比填写。",
+  smart_silence_model_timeout_seconds: "智能沉默判定最长等待时间。超时默认放行，避免正常回复被拖慢。",
   proactive_review_strength: "控制主动消息发送前复核的拦截力度。默认宽松，避免模型过度保守导致主动消息归零。",
   proactive_review_hard_risk_threshold: "本地语义风险达到该值时会硬拦截主动候选。值越高越少拦截，按百分比填写。",
   proactive_review_low_score_threshold: "标准/严格强度下，候选价值分低于该值且压力较高时会延后。值越低越少延后，按百分比填写。",
   proactive_review_pressure_threshold: "标准/严格强度下，打扰压力达到该值且候选分偏低时会延后。值越高越少延后，按百分比填写。",
   response_review_max_chars: "用于判断普通被动回复是否偏长。默认模式会处理短闲聊被扩写成建议清单、天气小作文的情况；full 模式会更积极复核普通偏长回复。",
-  emotional_gate_hurt_threshold: "用户消息让 Bot 伤心、短期变安静的触发阈值；应低于生气触发阈值。",
-  emotional_gate_refuse_threshold: "累计刺痛感让 Bot 生气、短暂回避的触发阈值；应高于伤心触发阈值。",
-  emotional_gate_recovery_per_hour: "情绪余波每小时自然缓和多少分。",
-  emotional_gate_max_hurt_minutes: "单次刺痛事件最长收敛/暂停主动的分钟数。",
+  emotional_gate_hurt_threshold: "用户消息明确刺到 Bot、并达到该阈值后才会短期变安静；轻度玩笑和普通边界不会直接触发。",
+  emotional_gate_refuse_threshold: "累计刺痛感达到该阈值后才会明显不满或短暂回避；建议保持较高。",
+  emotional_gate_recovery_per_hour: "情绪余波每小时自然缓和多少分；数值越高越不容易长时间低落。",
+  emotional_gate_max_hurt_minutes: "单次刺痛事件最长收敛/暂停主动的分钟数；道歉或安抚可以提前恢复。",
   enable_llm_emotion_judgement: "可选使用模型异步复核用户消息是否会改变 Bot 自身短期情绪余波；本轮被动回复仍使用缓存状态。",
   emotion_judgement_mode: "模型复核范围：可疑项更省消耗，总是复核更细但更耗；结果主要影响后续轮次。",
   EMOTION_JUDGEMENT_PROVIDER_ID: "用于异步复核用户消息是否会改变 Bot 自身短期情绪余波。建议选择便宜、低延迟、JSON 稳定、分类保守的小模型；留空会先回退到排障检查模型，再回退到关系站位/陪伴通用/主模型。",
@@ -1501,6 +1697,7 @@ const configDescriptions = {
 const featureSettingGroups = {
   enable_mai_style_integration: [
     "default_style",
+    "reply_style_prompt",
     "enable_companion_memory",
     "memory_refresh_interval_minutes",
     "max_companion_memory_items",
@@ -1527,7 +1724,7 @@ const featureSettingGroups = {
   enable_companion_memory: ["memory_refresh_interval_minutes", "max_companion_memory_items"],
   enable_expression_learning: ["expression_learning_mode", "enable_expression_manual_review", "enable_expression_style_review", "max_learned_expression_items"],
   enable_intent_emotion_analysis: [],
-  enable_response_self_review: ["response_review_mode", "proactive_review_strength", "proactive_review_hard_risk_threshold", "proactive_review_low_score_threshold", "proactive_review_pressure_threshold", "response_review_max_chars"],
+  enable_response_self_review: ["response_review_mode", "enable_smart_silence", "SMART_SILENCE_PROVIDER_ID", "smart_silence_min_confidence", "smart_silence_model_timeout_seconds", "proactive_review_strength", "proactive_review_hard_risk_threshold", "proactive_review_low_score_threshold", "proactive_review_pressure_threshold", "response_review_max_chars"],
   enable_passive_topic_suppression: ["passive_topic_memory_hours"],
   enable_relationship_state_machine: ["proactive_unanswered_slowdown_start", "proactive_unanswered_max_interval_multiplier", "friend_unanswered_max_cooldown_hours"],
   enable_emotion_simulation: ["enable_llm_emotion_judgement", "emotion_judgement_mode", "EMOTION_JUDGEMENT_PROVIDER_ID", "emotional_gate_hurt_threshold", "emotional_gate_refuse_threshold", "emotional_gate_recovery_per_hour", "emotional_gate_max_hurt_minutes", "enable_qzone_emotional_vent_publish", "qzone_emotional_vent_threshold", "qzone_emotional_vent_cooldown_hours", "qzone_emotional_vent_probability"],
@@ -1536,7 +1733,7 @@ const featureSettingGroups = {
   enable_user_habit_learning: ["user_habit_min_count", "user_habit_max_items"],
   enable_food_menu_recommendation: [],
   enable_proactive_only_mode: ["enable_llm_proactive_message", "proactive_prompt_template", "enable_llm_proactive_persona_judge", "PROACTIVE_PERSONA_JUDGE_PROVIDER_ID", "proactive_persona_judge_send_threshold", "proactive_persona_judge_cache_minutes"],
-  enable_humanized_states: ["humanized_state_intensity", "enable_health_state", "enable_hunger_state", "inject_passive_states", "enable_passive_state_delta_injection", "enable_rest_reply_simulation", "rest_reply_mode", "rest_reply_probability", "rest_reply_llm_threshold", "rest_reply_active_windows", "rest_reply_awake_grace_minutes", "enable_rest_backlog_reply", "rest_backlog_max_messages", "REST_WAKEUP_PROVIDER_ID", "enable_cycle_state"],
+  enable_humanized_states: ["humanized_state_intensity", "enable_health_state", "enable_hunger_state", "enable_qq_presence_sync", "enable_qq_custom_presence_sync", "inject_passive_states", "enable_passive_state_delta_injection", "enable_rest_reply_simulation", "rest_reply_mode", "rest_reply_probability", "rest_reply_llm_threshold", "rest_reply_active_windows", "rest_reply_awake_grace_minutes", "enable_rest_backlog_reply", "rest_backlog_max_messages", "REST_WAKEUP_PROVIDER_ID", "enable_cycle_state"],
   enable_rest_reply_simulation: ["rest_reply_mode", "rest_reply_probability", "rest_reply_llm_threshold", "rest_reply_active_windows", "rest_reply_awake_grace_minutes", "enable_rest_backlog_reply", "rest_backlog_max_messages", "REST_WAKEUP_PROVIDER_ID"],
   enable_segmented_proactive_reply: ["segmented_proactive_scope", "segmented_proactive_chat_scope", "segmented_proactive_threshold", "segmented_proactive_min_segment_chars", "segmented_proactive_max_segments", "segmented_proactive_send_as_forward", "segmented_proactive_split_mode", "segmented_proactive_regex", "segmented_proactive_split_words", "enable_segmented_proactive_content_cleanup", "segmented_proactive_content_cleanup_scope", "segmented_proactive_content_cleanup_rule", "segmented_proactive_content_cleanup_words", "segmented_proactive_interval_method", "segmented_proactive_interval_min", "segmented_proactive_interval_max", "segmented_proactive_log_base"],
   inject_passive_states: ["humanized_state_intensity", "enable_passive_state_delta_injection"],
@@ -1545,9 +1742,9 @@ const featureSettingGroups = {
   enable_cycle_state: ["humanized_state_intensity"],
   enable_skill_growth_simulation: ["skill_growth_rate", "enable_skill_growth_passive_injection", "enable_skill_growth_schedule_influence", "skill_growth_schedule_influence_strength"],
   enable_message_debounce: ["inbound_message_debounce_seconds", "text_message_debounce_seconds", "image_message_debounce_seconds", "forward_message_debounce_seconds", "text_message_debounce_max_wait_seconds", "message_debounce_max_merge_messages", "enable_smart_message_debounce", "SMART_MESSAGE_DEBOUNCE_PROVIDER_ID", "smart_message_debounce_model_timeout_seconds", "smart_message_debounce_wait_seconds", "smart_message_debounce_learning_window_seconds", "smart_message_debounce_examples_limit"],
-  enable_recall_enhancement: ["enable_recall_cancel_reply", "enable_recall_message_cache", "enable_recall_transcribe_command", "recall_message_cache_ttl_seconds", "recall_message_cache_max_items", "enable_forbidden_word_recall", "recall_forbidden_words", "recall_forbidden_scope", "recall_forbidden_word_case_sensitive"],
+  enable_recall_enhancement: ["enable_recall_cancel_reply", "enable_recall_message_cache", "enable_recall_transcribe_command", "recall_message_cache_ttl_seconds", "recall_message_cache_max_items", "recall_message_image_cache_max_mb", "enable_forbidden_word_recall", "recall_forbidden_words", "recall_forbidden_scope", "recall_forbidden_word_case_sensitive"],
   enable_recall_cancel_reply: ["recall_message_cache_ttl_seconds"],
-  enable_recall_message_cache: ["enable_recall_transcribe_command", "recall_message_cache_ttl_seconds", "recall_message_cache_max_items"],
+  enable_recall_message_cache: ["enable_recall_transcribe_command", "recall_message_cache_ttl_seconds", "recall_message_cache_max_items", "recall_message_image_cache_max_mb"],
   enable_forbidden_word_recall: ["recall_forbidden_words", "recall_forbidden_scope", "recall_forbidden_word_case_sensitive"],
   enable_proactive_quote_trigger_message: ["enable_quote_group_reply", "enable_quote_group_interjection", "enable_quote_private_proactive", "quote_skip_short_reply_chars", "quote_target_strategy"],
   enable_private_image_self_recognition: ["private_image_vision_wait_seconds", "private_image_provider_timeout_seconds", "enable_private_image_gif_enhancement", "private_image_gif_max_frames", "enable_private_image_vision_cache", "private_image_vision_cache_max_items", "private_image_self_recognition_hint"],
@@ -1638,13 +1835,14 @@ const featureSettingGroups = {
   enable_ai_daily_watch: ["ai_daily_sources", "ai_daily_prefer_text_version"],
   enable_news_boredom_read: ["news_min_interval_hours", "news_share_probability", "enable_external_event_self_link", "external_event_self_link_probability", "external_event_self_link_cooldown_hours", "news_max_items_per_source"],
   enable_external_event_self_link: ["external_event_self_link_probability", "external_event_self_link_cooldown_hours", "news_share_probability", "web_exploration_share_probability"],
-  enable_web_exploration: ["web_exploration_interests", "enable_web_exploration_boredom_search", "web_exploration_min_interval_hours", "web_exploration_share_probability", "enable_external_event_self_link", "external_event_self_link_probability", "external_event_self_link_cooldown_hours", "web_exploration_max_results"],
-  enable_web_exploration_boredom_search: ["web_exploration_interests", "web_exploration_min_interval_hours", "enable_external_event_self_link", "external_event_self_link_probability", "external_event_self_link_cooldown_hours", "web_exploration_max_results"],
+  enable_web_exploration: ["web_exploration_interests", "enable_web_exploration_boredom_search", "web_exploration_min_interval_hours", "web_exploration_share_probability", "enable_external_event_self_link", "external_event_self_link_probability", "external_event_self_link_cooldown_hours", "web_exploration_max_results", "WEB_EXPLORATION_API_BASE_URL", "WEB_EXPLORATION_API_KEY", "WEB_EXPLORATION_API_MODEL"],
+  enable_web_exploration_boredom_search: ["web_exploration_interests", "web_exploration_min_interval_hours", "enable_external_event_self_link", "external_event_self_link_probability", "external_event_self_link_cooldown_hours", "web_exploration_max_results", "WEB_EXPLORATION_API_BASE_URL", "WEB_EXPLORATION_API_KEY", "WEB_EXPLORATION_API_MODEL"],
   enable_qzone_integration: ["QZONE_COOKIE", "enable_qzone_life_publish", "qzone_life_publish_min_interval_hours", "qzone_life_publish_probability", "enable_qzone_generated_image_publish", "qzone_generated_image_probability", "enable_qzone_comment_inbox", "qzone_comment_inbox_interval_minutes", "qzone_comment_inbox_recent_posts", "qzone_comment_inbox_max_replies_per_tick"],
   enable_qzone_life_publish: ["qzone_life_publish_min_interval_hours", "qzone_life_publish_probability"],
   enable_qzone_generated_image_publish: ["qzone_generated_image_probability"],
   enable_qzone_comment_inbox: ["qzone_comment_inbox_interval_minutes", "qzone_comment_inbox_recent_posts", "qzone_comment_inbox_max_replies_per_tick"],
-  enable_photo_text_action: ["photo_action_max_daily", "proactive_photo_text_probability", "photo_generation_backend", "COMFYUI_TEXT2IMG_WORKFLOW_NAME", "COMFYUI_SELFIE_WORKFLOW_NAME", "photo_persona_reference_image_path", "enable_daily_outfit_photo", "daily_outfit_photo_prompt", "enable_natural_language_photo_generation", "natural_language_photo_generation_max_daily", "comfyui_photo_wait_seconds", "enable_local_photo_load_guard", "local_photo_cpu_busy_percent", "local_photo_memory_busy_percent", "local_photo_defer_minutes", "EXTERNAL_IMAGE_API_BASE_URL", "EXTERNAL_IMAGE_API_KEY", "EXTERNAL_IMAGE_API_MODEL", "external_image_api_size", "external_image_api_timeout_seconds", "photo_generation_style", "photo_generation_style_custom_prompt", "photo_generation_fixed_prompt", "photo_generation_scene_presets"],
+  enable_photo_text_action: ["photo_action_max_daily", "proactive_photo_text_probability", "photo_generation_backend", "COMFYUI_TEXT2IMG_WORKFLOW_NAME", "COMFYUI_SELFIE_WORKFLOW_NAME", "photo_persona_reference_image_path", "enable_daily_outfit_photo", "daily_outfit_photo_prompt", "enable_natural_language_photo_generation", "natural_language_photo_generation_max_daily", "natural_language_photo_extra_prompt", "comfyui_photo_wait_seconds", "enable_local_photo_load_guard", "local_photo_cpu_busy_percent", "local_photo_memory_busy_percent", "local_photo_defer_minutes", "external_image_api_platform", "EXTERNAL_IMAGE_API_BASE_URL", "EXTERNAL_IMAGE_API_KEY", "EXTERNAL_IMAGE_API_MODEL", "external_image_api_size", "external_image_api_timeout_seconds", "external_image_api_custom_headers", "enable_backup_external_image_api", "backup_external_image_api_platform", "BACKUP_EXTERNAL_IMAGE_API_BASE_URL", "BACKUP_EXTERNAL_IMAGE_API_KEY", "BACKUP_EXTERNAL_IMAGE_API_MODEL", "backup_external_image_api_size", "backup_external_image_api_timeout_seconds", "backup_external_image_api_custom_headers", "photo_generation_style", "photo_generation_style_custom_prompt", "photo_generation_fixed_prompt", "photo_generation_scene_presets"],
+  enable_backup_external_image_api: ["backup_external_image_api_platform", "BACKUP_EXTERNAL_IMAGE_API_BASE_URL", "BACKUP_EXTERNAL_IMAGE_API_KEY", "BACKUP_EXTERNAL_IMAGE_API_MODEL", "backup_external_image_api_size", "backup_external_image_api_timeout_seconds", "backup_external_image_api_custom_headers"],
   enable_private_reading_integration: ["enable_private_reading_boredom_read", "enable_private_reading_ask_recommendation", "private_reading_min_interval_hours", "private_reading_max_photo_count", "private_reading_ask_probability", "private_reading_default_keywords", "private_reading_blocked_tags", "enable_private_reading_preference_influence", "private_reading_preference_min_ratings", "private_reading_preference_max_terms"],
   enable_private_reading_boredom_read: ["private_reading_min_interval_hours", "private_reading_max_photo_count", "private_reading_share_probability", "private_reading_default_keywords", "private_reading_blocked_tags", "enable_private_reading_preference_influence", "private_reading_preference_min_ratings", "private_reading_preference_max_terms"],
   enable_private_reading_ask_recommendation: ["private_reading_ask_probability"],
@@ -1673,7 +1871,7 @@ const featureSettingSections = {
     {
       title: "回复基座",
       note: "控制私聊接话策略和基础语气。",
-      keys: ["default_style"],
+      keys: ["default_style", "reply_style_prompt"],
     },
     {
       title: "记忆与表达",
@@ -1683,12 +1881,34 @@ const featureSettingSections = {
     {
       title: "回复策略",
       note: "意图画像、回复/主动复核和重复话题抑制。",
-      keys: ["enable_intent_emotion_analysis", "enable_response_self_review", "response_review_mode", "proactive_review_strength", "proactive_review_hard_risk_threshold", "proactive_review_low_score_threshold", "proactive_review_pressure_threshold", "response_review_max_chars", "enable_passive_topic_suppression", "passive_topic_memory_hours"],
+      keys: ["enable_intent_emotion_analysis", "enable_response_self_review", "response_review_mode", "enable_smart_silence", "SMART_SILENCE_PROVIDER_ID", "smart_silence_min_confidence", "smart_silence_model_timeout_seconds", "proactive_review_strength", "proactive_review_hard_risk_threshold", "proactive_review_low_score_threshold", "proactive_review_pressure_threshold", "response_review_max_chars", "enable_passive_topic_suppression", "passive_topic_memory_hours"],
     },
     {
       title: "关系与习惯",
       note: "关系距离、未完话头和用户时段习惯。Bot 自身短期余波在“情绪模拟”里配置。",
       keys: ["enable_relationship_state_machine", "proactive_unanswered_slowdown_start", "proactive_unanswered_max_interval_multiplier", "friend_unanswered_max_cooldown_hours", "enable_open_loop_tracking", "enable_user_habit_learning", "user_habit_min_count", "user_habit_max_items", "enable_food_menu_recommendation"],
+    },
+  ],
+  enable_humanized_states: [
+    {
+      title: "状态生成",
+      note: "控制身体余波和强度，只作为扮演状态，不当成真实用户事实。",
+      keys: ["humanized_state_intensity", "enable_health_state", "enable_hunger_state", "enable_cycle_state"],
+    },
+    {
+      title: "QQ 状态同步",
+      note: "基础在线状态使用标准接口；自定义短状态默认关闭，避免协议端不支持时断连。",
+      keys: ["enable_qq_presence_sync", "enable_qq_custom_presence_sync"],
+    },
+    {
+      title: "被动状态注入",
+      note: "控制普通聊天是否参考当前状态，以及是否只在变化时注入。",
+      keys: ["inject_passive_states", "enable_passive_state_delta_injection"],
+    },
+    {
+      title: "休息回复闸门",
+      note: "睡眠、午休或休息段是否静默，以及醒来后如何补看消息。",
+      keys: ["enable_rest_reply_simulation", "rest_reply_mode", "rest_reply_probability", "rest_reply_llm_threshold", "rest_reply_active_windows", "rest_reply_awake_grace_minutes", "enable_rest_backlog_reply", "rest_backlog_max_messages", "REST_WAKEUP_PROVIDER_ID"],
     },
   ],
   enable_message_debounce: [
@@ -1712,7 +1932,7 @@ const featureSettingSections = {
     {
       title: "撤回处理",
       note: "控制发送前取消、短期缓存和用户主动查看撤回内容。",
-      keys: ["enable_recall_cancel_reply", "enable_recall_message_cache", "enable_recall_transcribe_command", "recall_message_cache_ttl_seconds", "recall_message_cache_max_items"],
+      keys: ["enable_recall_cancel_reply", "enable_recall_message_cache", "enable_recall_transcribe_command", "recall_message_cache_ttl_seconds", "recall_message_cache_max_items", "recall_message_image_cache_max_mb"],
     },
     {
       title: "违禁词撤回",
@@ -1822,6 +2042,11 @@ const featureSettingSections = {
       title: "搜索兴趣",
       note: "控制主动搜索的主题、频率和结果规模。",
       keys: ["web_exploration_interests", "enable_web_exploration_boredom_search", "web_exploration_min_interval_hours", "web_exploration_share_probability", "web_exploration_max_results"],
+    },
+    {
+      title: "自定义搜索接口",
+      note: "只接管主动搜索的联网检索；选题和整理仍使用上方“搜索决策/整理”模型。",
+      keys: ["WEB_EXPLORATION_API_BASE_URL", "WEB_EXPLORATION_API_KEY", "WEB_EXPLORATION_API_MODEL"],
     },
     {
       title: "外界信息自我关联",
@@ -1955,7 +2180,7 @@ const featureSettingSections = {
     {
       title: "自然语言生图/改图",
       note: "私聊明确请求时直接调用生图后端；默认关闭，避免和独立生图插件抢触发。",
-      keys: ["enable_natural_language_photo_generation", "natural_language_photo_generation_max_daily"],
+      keys: ["enable_natural_language_photo_generation", "natural_language_photo_generation_max_daily", "natural_language_photo_extra_prompt"],
     },
     {
       title: "电脑负载保护",
@@ -1965,7 +2190,12 @@ const featureSettingSections = {
     {
       title: "在线图片 API",
       note: "作为 external 后端，或 auto 模式下本地忙时的备选后端。",
-      keys: ["EXTERNAL_IMAGE_API_BASE_URL", "EXTERNAL_IMAGE_API_KEY", "EXTERNAL_IMAGE_API_MODEL", "external_image_api_size", "external_image_api_timeout_seconds"],
+      keys: ["external_image_api_platform", "EXTERNAL_IMAGE_API_BASE_URL", "EXTERNAL_IMAGE_API_KEY", "EXTERNAL_IMAGE_API_MODEL", "external_image_api_size", "external_image_api_timeout_seconds", "external_image_api_custom_headers"],
+    },
+    {
+      title: "备选在线图片 API",
+      note: "主在线 API 失败后先尝试这组配置，再回退本地后端。",
+      keys: ["enable_backup_external_image_api", "backup_external_image_api_platform", "BACKUP_EXTERNAL_IMAGE_API_BASE_URL", "BACKUP_EXTERNAL_IMAGE_API_KEY", "BACKUP_EXTERNAL_IMAGE_API_MODEL", "backup_external_image_api_size", "backup_external_image_api_timeout_seconds", "backup_external_image_api_custom_headers"],
     },
     {
       title: "画面风格",
@@ -2013,15 +2243,20 @@ const featureSettingTypes = {
   framework_session_lock_mode: { type: "select", options: [["auto", "自动（仅旧版兼容）"], ["off", "关闭（新版本推荐）"], ["always", "始终启用（旧版排障）"]] },
   expression_learning_mode: { type: "select", options: [["light", "轻量：只学节奏"], ["balanced", "标准：当前行为"], ["aggressive", "激进：参考审核样本"]] },
   response_review_mode: { type: "select", options: [["severe_only", "主动统一复核"], ["local_only", "仅本地识别并丢弃"], ["full", "含被动积极自检（延迟更高）"]] },
+  proactive_intensity_preset: { type: "select", options: [["off", "关闭：手动参数"], ["balanced", "标准偏主动"], ["high_private", "私聊高频"], ["high_group", "群聊活跃"], ["live", "在线陪伴"]] },
   proactive_review_strength: { type: "select", options: [["lenient", "宽松：减少取消"], ["balanced", "标准：保留延后"], ["strict", "严格：按模型拦截"]] },
   emotion_judgement_mode: { type: "select", options: [["suspicious", "仅复核可疑项"], ["always", "总是复核普通文本"], ["off", "关闭复核"]] },
+  smart_silence_min_confidence: { type: "number", min: 0, max: 100, step: 1 },
+  smart_silence_model_timeout_seconds: { type: "number", min: 0.2, max: 5, step: 0.1 },
   group_high_intensity_merge_scope: { type: "select", options: [["group", "全群连续叫 Bot 合并"], ["same_user", "只合并同一发送者补话"]] },
   EMOTION_JUDGEMENT_PROVIDER_ID: { type: "provider" },
+  SMART_SILENCE_PROVIDER_ID: { type: "provider" },
   PROACTIVE_PERSONA_JUDGE_PROVIDER_ID: { type: "provider" },
+  reply_style_prompt: { type: "textarea" },
   proactive_prompt_template: { type: "textarea" },
   proactive_persona_judge_send_threshold: { type: "number", min: 0, max: 100, step: 1 },
   proactive_persona_judge_cache_minutes: { type: "number", min: 5, max: 720, step: 5 },
-  natural_language_photo_generation_max_daily: { type: "number", min: 0, max: 10, step: 1 },
+  natural_language_photo_generation_max_daily: { type: "number", min: 0, max: 100, step: 1 },
   quote_target_strategy: { type: "select", options: [["current", "引用当前触发消息"], ["quoted", "引用 Bot 被回复的旧消息"], ["auto", "自动：回复 Bot 旧消息时引用旧消息"]] },
   quote_skip_short_reply_chars: { type: "number", min: 0, max: 120, step: 1 },
   rest_backlog_max_messages: { type: "number", min: 1, max: 12, step: 1 },
@@ -2036,9 +2271,14 @@ const featureSettingTypes = {
   SMART_MESSAGE_DEBOUNCE_PROVIDER_ID: { type: "provider" },
   segmented_proactive_chat_scope: { type: "select", options: [["all", "全部"], ["private", "仅私聊"], ["group", "仅群聊"]] },
   photo_generation_backend: { type: "select", options: [["auto", "auto"], ["comfyui", "ComfyUI"], ["sdgen", "SDGen"], ["external", "在线图片 API"]] },
+  external_image_api_platform: { type: "select", options: [["auto", "auto"], ["openai", "OpenAI 兼容"], ["bailian", "阿里云百炼"]] },
+  backup_external_image_api_platform: { type: "select", options: [["auto", "auto"], ["openai", "OpenAI 兼容"], ["bailian", "阿里云百炼"]] },
   EXTERNAL_IMAGE_API_KEY: { type: "password" },
+  BACKUP_EXTERNAL_IMAGE_API_KEY: { type: "password" },
+  WEB_EXPLORATION_API_KEY: { type: "password" },
   photo_generation_style: { type: "select", options: [["真实", "真实"], ["二次元", "二次元"], ["其他", "其他"]] },
   segmented_proactive_scope: { type: "select", options: [["proactive_only", "仅插件主动"], ["all_llm", "全部 LLM 纯文本回复"]] },
+  segmented_proactive_send_as_forward: { type: "checkbox" },
   segmented_proactive_split_mode: { type: "select", options: [["regex", "正则"], ["words", "分段词列表"]] },
   segmented_proactive_interval_method: { type: "select", options: [["log", "按字数对数"], ["random", "随机"]] },
   segmented_proactive_content_cleanup_scope: { type: "select", options: [["all", "全段清理"], ["trailing", "仅句尾清理"]] },
@@ -2056,6 +2296,8 @@ const featureSettingTypes = {
   news_sources: { type: "textarea" },
   news_hot_sources: { type: "textarea" },
   web_exploration_interests: { type: "textarea" },
+  external_image_api_custom_headers: { type: "textarea" },
+  backup_external_image_api_custom_headers: { type: "textarea" },
   group_wakeup_direct_words: { type: "textarea" },
   group_wakeup_context_words: { type: "textarea" },
   group_wakeup_interest_keywords: { type: "textarea" },
@@ -2065,6 +2307,7 @@ const featureSettingTypes = {
   daily_outfit_photo_prompt: { type: "textarea" },
   photo_generation_style_custom_prompt: { type: "textarea" },
   photo_generation_fixed_prompt: { type: "textarea" },
+  natural_language_photo_extra_prompt: { type: "textarea" },
   photo_generation_scene_presets: { type: "textarea" },
   segmented_proactive_regex: { type: "textarea" },
   segmented_proactive_split_words: { type: "textarea" },
@@ -2113,6 +2356,12 @@ function displaySettingValue(key, value) {
     if (numeric < 0) return String(numeric);
     const percent = numeric <= 1 ? numeric * 100 : numeric;
     return Number.isInteger(percent) ? String(percent) : String(Number(percent.toFixed(2)));
+  }
+  if (["private_user_aliases", "private_user_delivery_aliases"].includes(key) && value && typeof value === "object" && !Array.isArray(value)) {
+    return Object.entries(value)
+      .map(([alias, target]) => `${String(alias || "").trim()}=${String(target || "").trim()}`)
+      .filter((line) => line !== "=")
+      .join("\n");
   }
   return value ?? "";
 }
@@ -2202,6 +2451,8 @@ const tokenTaskLabels = {
   group_interject: "群聊插话",
   group_episode: "群聊片段",
   group_slang: "黑话释义",
+  group_slang_learning: "群黑话学习",
+  group_slang_meaning: "黑话释义",
   group_question_wakeup_reply_review: "群聊答疑复核",
   group_followup_judge: "群聊续接判断",
   worldbook_registration: "关系网自登记",
@@ -2210,7 +2461,10 @@ const tokenTaskLabels = {
   external_event_self_link: "外界信息关联",
   news_digest: "新闻整理",
   creative_project: "创作立项",
+  creative_outline: "创作大纲",
   creative_writing: "文本创作",
+  creative_review: "创作审校",
+  creative_extract: "创作抽取",
   photo_prompt: "生图提示",
   screen_narration: "识屏转述",
   forward_message: "合并转发转述",
@@ -2233,6 +2487,12 @@ const tokenTaskLabels = {
   qzone_publish: "空间说说",
   qzone_publish_test: "空间发布测试",
   qzone_publish_sanitize: "空间文案清理",
+  companion_manual_diagnosis: "陪伴答疑",
+  memory_summary: "记忆阶段总结",
+  memory_decay_summary: "记忆衰减整理",
+  memory_rerank: "记忆重排",
+  memory_embedding: "记忆向量索引",
+  memory_embedding_query: "记忆向量查询",
   astrbot_private_reply: "非插件私聊主回复",
   astrbot_group_reply: "非插件群聊主回复",
   astrbot_reply: "非插件主回复",
@@ -2312,52 +2572,19 @@ async function hydrateBookshelfImages(root = document) {
 }
 
 async function hydrateDailyOutfitLogo() {
-  const plate = document.querySelector(".folio-plate");
-  const img = $("#dailyOutfitLogo");
-  if (!plate || !img) return;
-  const outfit = state.overview?.daily_outfit || {};
-  const endpoint = String(outfit.image_data_url || "");
-  if (!outfit.available || !endpoint) {
-    plate.classList.remove("has-daily-outfit");
-    img.removeAttribute("src");
-    img.dataset.source = "";
-    img.dataset.loading = "0";
-    plate.title = "";
-    return;
-  }
-  if (img.dataset.source === endpoint && plate.classList.contains("has-daily-outfit")) return;
-  if (img.dataset.loading === "1" && img.dataset.source === endpoint) return;
-  img.dataset.source = endpoint;
-  img.dataset.loading = "1";
-  try {
-    const result = await fetchJson(endpoint);
-    if (img.dataset.source !== endpoint) return;
-    if (!result?.data_url) throw new Error("每日穿搭图片为空");
-    img.src = result.data_url;
-    img.alt = `今日穿搭照片${outfit.date ? ` · ${outfit.date}` : ""}`;
-    plate.classList.add("has-daily-outfit");
-    plate.title = [
-      outfit.date ? `每日穿搭：${outfit.date}` : "每日穿搭",
-      outfit.backend ? `后端：${outfit.backend}` : "",
-      outfit.generated_at ? `生成：${outfit.generated_at}` : "",
-    ].filter(Boolean).join(" · ");
-  } catch (error) {
-    plate.classList.remove("has-daily-outfit");
-    img.removeAttribute("src");
-    img.dataset.source = "";
-  } finally {
-    img.dataset.loading = "0";
+  if (window.PrivateCompanionDailyOutfit?.hydrateDailyOutfitLogo) {
+    await window.PrivateCompanionDailyOutfit.hydrateDailyOutfitLogo({ state, fetchJson, document });
   }
 }
 
 async function fetchJson(path, options = {}) {
-  const bridge = await waitForBridge();
+  const bridge = await getPageBridge();
   const method = (options.method || "GET").toUpperCase();
   let payload;
 
   if (bridge && typeof bridge.apiGet === "function" && typeof bridge.apiPost === "function") {
     payload = await bridgeRequest(bridge, path, method, options.body);
-  } else if (new URLSearchParams(window.location.search).get("debug_http") === "1") {
+  } else if (isDebugHttpMode()) {
     const response = await fetch(`${HTTP_API}${path}`, {
       cache: "no-store",
       headers: options.body ? { "Content-Type": "application/json" } : undefined,
@@ -2391,6 +2618,42 @@ function getBridge() {
   return null;
 }
 
+function isDebugHttpMode() {
+  return new URLSearchParams(window.location.search).get("debug_http") === "1";
+}
+
+function isUsableBridge(bridge) {
+  return Boolean(bridge && typeof bridge.apiGet === "function" && typeof bridge.apiPost === "function");
+}
+
+async function getPageBridge(timeoutMs = 2500) {
+  if (isUsableBridge(cachedPageBridge)) return cachedPageBridge;
+
+  const bridge = getBridge();
+  if (isUsableBridge(bridge)) {
+    cachedPageBridge = bridge;
+    return cachedPageBridge;
+  }
+
+  if (isDebugHttpMode()) return null;
+
+  if (!pageBridgeProbePromise) {
+    pageBridgeProbePromise = waitForBridge(timeoutMs)
+      .then((resolvedBridge) => {
+        if (isUsableBridge(resolvedBridge)) {
+          cachedPageBridge = resolvedBridge;
+          return cachedPageBridge;
+        }
+        return null;
+      })
+      .finally(() => {
+        pageBridgeProbePromise = null;
+      });
+  }
+
+  return pageBridgeProbePromise;
+}
+
 async function waitForBridge(timeoutMs = 2500) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -2405,11 +2668,30 @@ async function waitForBridge(timeoutMs = 2500) {
 
 async function bridgeRequest(bridge, path, method, body) {
   const url = new URL(path, "https://astrbot-plugin-page.local/");
-  const endpoint = `${PAGE_ENDPOINT_PREFIX}/${url.pathname.replace(/^\/+/, "")}`.replace(/\/+/g, "/");
+  const routePath = url.pathname.replace(/^\/+/, "");
+  const endpointCandidates = bridgeEndpointCandidates(routePath);
+  const errors = [];
 
   if (method === "GET") {
     const params = Object.fromEntries(url.searchParams.entries());
-    return bridge.apiGet(endpoint, Object.keys(params).length ? params : undefined);
+    for (const candidate of endpointCandidates) {
+      try {
+        const payload = await bridge.apiGet(candidate.endpoint, Object.keys(params).length ? params : undefined);
+        if (isRouteMissingPayload(payload)) {
+          errors.push(payload.message || payload.error || "未找到该路由");
+          continue;
+        }
+        cachedPageEndpointStyle = candidate.style;
+        return payload;
+      } catch (error) {
+        if (isRouteMissingError(error)) {
+          errors.push(error.message || String(error));
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw new Error(errors[0] || "未找到可用的页面 API 路由");
   }
 
   let payload = body || {};
@@ -2420,14 +2702,94 @@ async function bridgeRequest(bridge, path, method, body) {
       payload = {};
     }
   }
-  return bridge.apiPost(endpoint, payload);
+  for (const candidate of endpointCandidates) {
+    try {
+      const result = await bridge.apiPost(candidate.endpoint, payload);
+      if (isRouteMissingPayload(result)) {
+        errors.push(result.message || result.error || "未找到该路由");
+        continue;
+      }
+      cachedPageEndpointStyle = candidate.style;
+      return result;
+    } catch (error) {
+      if (isRouteMissingError(error)) {
+        errors.push(error.message || String(error));
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error(errors[0] || "未找到可用的页面 API 路由");
 }
 
 function normalizeResponse(payload) {
   if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "success")) {
     return payload;
   }
+  if (payload && typeof payload === "object") {
+    const status = String(payload.status || "").trim().toLowerCase();
+    if (["error", "fail", "failed"].includes(status) || payload.ok === false) {
+      return {
+        success: false,
+        error: payload.message || payload.error || "请求失败",
+        data: payload.data || {},
+      };
+    }
+  }
   return { success: true, data: payload };
+}
+
+function bridgeEndpointCandidates(routePath) {
+  const cleanRoute = String(routePath || "").replace(/^\/+/, "");
+  const byStyle = {
+    cached: cachedPageEndpointStyle ? endpointForStyle(cachedPageEndpointStyle, cleanRoute) : "",
+    page: `${PAGE_ENDPOINT_PREFIX}/${cleanRoute}`,
+    bare: cleanRoute,
+    slash: `/${cleanRoute}`,
+    full: `${PAGE_PLUGIN_NAME}/${PAGE_ENDPOINT_PREFIX}/${cleanRoute}`,
+    fullSlash: `/${PAGE_PLUGIN_NAME}/${PAGE_ENDPOINT_PREFIX}/${cleanRoute}`,
+  };
+  const ordered = [
+    ["cached", byStyle.cached],
+    ["page", byStyle.page],
+    ["bare", byStyle.bare],
+    ["slash", byStyle.slash],
+    ["full", byStyle.full],
+    ["fullSlash", byStyle.fullSlash],
+  ];
+  const seen = new Set();
+  return ordered
+    .map(([style, endpoint]) => ({ style: style === "cached" ? cachedPageEndpointStyle : style, endpoint: String(endpoint || "").replace(/\/+/g, "/") }))
+    .filter((item) => item.style && item.endpoint && !seen.has(item.endpoint) && seen.add(item.endpoint));
+}
+
+function endpointForStyle(style, routePath) {
+  const cleanRoute = String(routePath || "").replace(/^\/+/, "");
+  switch (style) {
+    case "page":
+      return `${PAGE_ENDPOINT_PREFIX}/${cleanRoute}`;
+    case "bare":
+      return cleanRoute;
+    case "slash":
+      return `/${cleanRoute}`;
+    case "full":
+      return `${PAGE_PLUGIN_NAME}/${PAGE_ENDPOINT_PREFIX}/${cleanRoute}`;
+    case "fullSlash":
+      return `/${PAGE_PLUGIN_NAME}/${PAGE_ENDPOINT_PREFIX}/${cleanRoute}`;
+    default:
+      return "";
+  }
+}
+
+function isRouteMissingPayload(payload) {
+  if (!payload || typeof payload !== "object") return false;
+  const text = `${payload.error || ""} ${payload.message || ""} ${payload.detail || ""}`.toLowerCase();
+  return /未找到.*路由|route.*not.*found|not.*found.*route|404/.test(text);
+}
+
+function isRouteMissingError(error) {
+  const text = String(error?.message || error || "").toLowerCase();
+  return /未找到.*路由|route.*not.*found|not.*found.*route|http\s*404|\b404\b/.test(text);
 }
 
 function postJson(path, body) {
@@ -2470,6 +2832,10 @@ function selectedConfigExportSections() {
     .map((input) => input.dataset.exportSection)
     .filter(Boolean);
   return sections.length ? sections : ["basic", "relations", "food_skills"];
+}
+
+function allowConfigChecksumMismatch() {
+  return Boolean($("#configAllowChecksumMismatch")?.checked);
 }
 
 function migrationDiffText(item) {
@@ -2578,14 +2944,18 @@ function renderConfigMigrationPreview() {
   const configDiff = preview.config_diff || {};
   const compatibility = preview.compatibility || {};
   const checksumLine = preview.checksum
-    ? (preview.checksum_ok ? "文件校验：通过" : "文件校验：失败")
+    ? (preview.checksum_ok ? "文件校验：通过" : (preview.checksum_bypassed ? "文件校验：失败，已按风险选项继续" : "文件校验：失败"))
     : "文件校验：旧备份未提供";
+  const checksumWarn = preview.checksum_bypassed
+    ? `<p class="migration-warn">这份备份的校验值与当前内容不一致。仅当你确认文件只是被手动脱敏或删改敏感字段、且 JSON 内容完整时，才继续导入。</p>`
+    : "";
   const compatibilityHtml = `
     <p class="migration-note">
       备份来自 ${escapeHtml(compatibility.backup_version || preview.version || "未知")}，当前版本 ${escapeHtml(compatibility.current_version || preview.current_version || "未知")}。
       ${escapeHtml(compatibility.message || "")}
     </p>
-    <p class="${compatibility.level === "warn" ? "migration-warn" : "migration-note"}">${escapeHtml(checksumLine)}</p>
+    <p class="${compatibility.level === "warn" || preview.checksum_bypassed ? "migration-warn" : "migration-note"}">${escapeHtml(checksumLine)}</p>
+    ${checksumWarn}
   `;
   const included = Array.isArray(preview.included_sections) && preview.included_sections.length
     ? `<p class="migration-note">备份包含：${escapeHtml(preview.included_sections.map(migrationSectionLabel).join("、"))}</p>`
@@ -2643,7 +3013,10 @@ async function previewConfigImport() {
     showToast("请先选择备份文件", "error");
     return;
   }
-  const result = await postJson("/config/import/preview", { package: state.configImportPackage });
+  const result = await postJson("/config/import/preview", {
+    package: state.configImportPackage,
+    allow_checksum_mismatch: allowConfigChecksumMismatch(),
+  });
   state.configImportPreview = result;
   renderConfigMigrationPreview();
   showToast("预览完成");
@@ -2664,15 +3037,29 @@ async function applyConfigImport() {
   const message = mode === "replace"
     ? "将覆盖可迁移资料段。已确认要继续吗？"
     : `将合并导入备份内容，字段冲突时：${conflictText}。已确认要继续吗？`;
-  if (!window.confirm(message)) return;
-  const result = await postJson("/config/import/apply", { package: state.configImportPackage, mode, conflict });
+  if (state.configImportPreview?.checksum_bypassed && !allowConfigChecksumMismatch()) {
+    showToast("这份备份校验失败，确认导入前需要保持风险选项勾选", "error");
+    return;
+  }
+  const finalMessage = state.configImportPreview?.checksum_bypassed
+    ? `${message}\n\n注意：这份备份校验失败，只建议在确认它只是被手动脱敏/删改敏感字段时继续。`
+    : message;
+  if (!window.confirm(finalMessage)) return;
+  const result = await postJson("/config/import/apply", {
+    package: state.configImportPackage,
+    mode,
+    conflict,
+    allow_checksum_mismatch: allowConfigChecksumMismatch(),
+  });
   state.configImportPreview = null;
   renderConfigMigrationPreview();
   if (result) {
+    const requestSeq = ++loadAllRequestSeq;
     state.overview = result;
     state.configBackups = result.migration_backups || state.configBackups;
     state.configLastChecks = result.post_import_checks || [];
     renderAll();
+    void loadUserGroupLists(requestSeq);
   }
   showToast("配置已导入，已自动备份导入前状态");
 }
@@ -2683,10 +3070,12 @@ async function restoreConfigBackup(id) {
   if (!window.confirm(`将从自动备份恢复：${backupId}\n恢复前也会再次备份当前状态。继续吗？`)) return;
   const result = await postJson("/config/restore", { id: backupId });
   if (result) {
+    const requestSeq = ++loadAllRequestSeq;
     state.overview = result;
     state.configBackups = result.migration_backups || state.configBackups;
     state.configLastChecks = result.post_import_checks || [];
     renderAll();
+    void loadUserGroupLists(requestSeq);
   }
   showToast("已从备份恢复");
 }
@@ -2725,25 +3114,108 @@ async function loadTroubleshooting() {
   return data;
 }
 
-async function loadAll() {
-  $("#subtitle").textContent = "读取运行态中...";
+function applyOverviewData(overview) {
+  state.overview = overview;
+  hydrateTokenStatsFromOverview(overview);
+  state.featureDraft = featureDraftFromOverview(overview);
+  state.providerConfigMode = inferProviderConfigMode(overview);
+  state.pageFontFamily = String(overview?.settings?.page_font_family || "original").trim().toLowerCase() === "cheng" ? "cheng" : "original";
+  state.pageTheme = normalizePageTheme(overview?.settings?.page_theme);
+  applyPageFontFamily();
+  applyPageTheme();
+}
+
+function applyPageFontFamily() {
+  const font = state.pageFontFamily === "cheng" ? "cheng" : "original";
+  document.documentElement.dataset.pageFont = font;
+  try { localStorage.setItem("pc_font", font); } catch (e) {}
+  const appearanceSelect = document.getElementById("appearanceFontSelect");
+  if (appearanceSelect) appearanceSelect.value = font;
+}
+
+const PAGE_THEMES = [
+  { value: "classic", label: "经典蓝", swatch: ["#eef3fb", "#1a4b8c", "#2c6cb0"] },
+  { value: "dark", label: "暗夜深空", swatch: ["#0d1117", "#58a6ff", "#1c2330"] },
+  { value: "warm", label: "暖阳书房", swatch: ["#faf5ef", "#b86b2e", "#c0793c"] },
+  { value: "forest", label: "森林绿径", swatch: ["#eef4ee", "#2d6a4f", "#40916c"] },
+  { value: "sakura", label: "樱粉日记", swatch: ["#fdf0f3", "#d4517a", "#fce8ed"] },
+  { value: "ocean", label: "深海渐变", swatch: ["#0a1929", "#00b4d8", "#0077b6"] },
+  { value: "lavender", label: "薰衣草", swatch: ["#f5f0fa", "#7c5cbf", "#a78bda"] },
+  { value: "ink", label: "水墨黑白", swatch: ["#f8f8f6", "#1a1a1a", "#4a4a4a"] },
+  { value: "sunset", label: "日落晚霞", swatch: ["#fff4e6", "#e85d3c", "#f4a261"] },
+];
+
+function normalizePageTheme(raw) {
+  const allowed = PAGE_THEMES.map((t) => t.value);
+  const text = String(raw || "classic").trim().toLowerCase();
+  return allowed.includes(text) ? text : "classic";
+}
+
+function applyPageTheme() {
+  const theme = normalizePageTheme(state.pageTheme);
+  document.documentElement.dataset.theme = theme;
+  try { localStorage.setItem("pc_theme", theme); } catch (e) {}
+}
+
+function renderAppearanceSettings() {
+  const current = normalizePageTheme(state.pageTheme);
+  const grid = document.getElementById("appearanceThemeGrid");
+  if (grid) {
+    grid.innerHTML = PAGE_THEMES.map((t) => {
+      const swatches = t.swatch.map((c) => `<span style="background:${c}"></span>`).join("");
+      return `<div class="appearance-theme-option${t.value === current ? " is-active" : ""}" data-theme-value="${t.value}" role="radio" aria-checked="${t.value === current}" tabindex="0">
+        <div class="appearance-theme-swatch">${swatches}</div>
+        <div class="appearance-theme-label"><span>${escapeHtml(t.label)}</span></div>
+      </div>`;
+    }).join("");
+  }
+}
+
+function applyUserGroupLists(users, groups) {
+  state.users = Array.isArray(users?.items) ? users.items : [];
+  state.groups = Array.isArray(groups?.items) ? groups.items : [];
+  if (!state.selectedUserId && state.users[0]) state.selectedUserId = state.users[0].user_id;
+  if (!state.selectedGroupId && state.groups[0]) state.selectedGroupId = state.groups[0].group_id;
+}
+
+async function loadUserGroupLists(requestSeq = loadAllRequestSeq, options = {}) {
+  const { showErrors = false } = options;
   try {
-    const [overview, users, groups] = await Promise.all([
-      fetchJson("/overview"),
+    const [users, groups] = await Promise.all([
       fetchJson("/users?limit=300"),
       fetchJson("/groups?limit=300"),
     ]);
-    state.overview = overview;
-    hydrateTokenStatsFromOverview(overview);
-    state.users = users.items || [];
-    state.groups = groups.items || [];
-    state.featureDraft = featureDraftFromOverview(overview);
-    if (!state.selectedUserId && state.users[0]) state.selectedUserId = state.users[0].user_id;
-    if (!state.selectedGroupId && state.groups[0]) state.selectedGroupId = state.groups[0].group_id;
+    if (requestSeq !== loadAllRequestSeq) return null;
+    applyUserGroupLists(users, groups);
+    renderAll();
+    const overview = state.overview || {};
+    $("#subtitle").textContent = `${overview.plugin?.bot_name || "Private Companion"} · ${new Date().toLocaleString()}`;
+    return { users, groups };
+  } catch (error) {
+    if (requestSeq !== loadAllRequestSeq) return null;
+    console.warn("[PrivateCompanionPage] 用户/群聊列表加载失败", error);
+    const overview = state.overview || {};
+    $("#subtitle").textContent = `${overview.plugin?.bot_name || "Private Companion"} · 总览已加载，名单加载失败`;
+    if (showErrors) showToast(`名单加载失败：${error.message}`, "error");
+    return null;
+  }
+}
+
+async function loadAll(options = {}) {
+  const requestSeq = ++loadAllRequestSeq;
+  const { waitForLists = false } = options;
+  $("#subtitle").textContent = "读取运行态中...";
+  try {
+    const overview = await fetchJson("/overview");
+    if (requestSeq !== loadAllRequestSeq) return;
+    applyOverviewData(overview);
     renderAll();
     void ensureTabData(state.activeTab, true);
-    $("#subtitle").textContent = `${overview.plugin.bot_name || "Private Companion"} · ${new Date().toLocaleString()}`;
+    $("#subtitle").textContent = `${overview.plugin?.bot_name || "Private Companion"} · 总览已加载，正在补全名单...`;
+    const listPromise = loadUserGroupLists(requestSeq, { showErrors: true });
+    if (waitForLists) await listPromise;
   } catch (error) {
+    if (requestSeq !== loadAllRequestSeq) return;
     $("#subtitle").textContent = `加载失败：${error.message}`;
   }
 }
@@ -2776,6 +3248,10 @@ function renderActiveTab(tabName = state.activeTab || "dashboard") {
     renderProactiveCandidates();
   } else if (tabName === "bookshelf") {
     renderBookshelf();
+  } else if (tabName === "qzone") {
+    if (window.PrivateCompanionQzonePanel?.render) {
+      window.PrivateCompanionQzonePanel.render({ fetchJson, postJson, showToast, escapeHtml });
+    }
   } else if (tabName === "image-cache") {
     renderImageCache();
   } else if (tabName === "troubleshooting") {
@@ -2792,15 +3268,15 @@ function renderActiveTab(tabName = state.activeTab || "dashboard") {
   }
 }
 
-async function loadDashboardDiagnostics(force = false) {
+async function loadDiagnostics(force = false) {
   if (state.lazyLoaded.diagnostics && !force) return state.diagnostics;
   const diagnostics = await fetchJson("/diagnostics");
   state.diagnostics = diagnostics.items || [];
   state.lazyLoaded.diagnostics = true;
-  if (state.activeTab === "dashboard") {
+  if (state.activeTab === "troubleshooting") {
     renderDiagnostics();
-    renderDashboardPulse();
   }
+  renderDashboardPulse();
   return state.diagnostics;
 }
 
@@ -2837,7 +3313,6 @@ async function loadConfigBackups(force = false) {
 
 async function ensureTabData(tabName, force = false) {
   if (tabName === "dashboard") {
-    loadDashboardDiagnostics(force).catch(() => {});
     return;
   }
   if (tabName === "tokens") {
@@ -2853,6 +3328,7 @@ async function ensureTabData(tabName, force = false) {
     await loadImageCache();
   } else if (tabName === "troubleshooting") {
     renderTroubleshooting();
+    loadDiagnostics(force).catch(() => {});
     await loadTroubleshooting();
   }
 }
@@ -2871,22 +3347,21 @@ function renderStats() {
   const energyNumber = daily.energy === undefined || daily.energy === "" ? "" : `${formatNumber(Number(daily.energy || 0))}/100`;
   const mood = normalizeRoleplayStateText(daily.mood_bias) || daily.note || "暂无状态";
   $("#stats").innerHTML = [
-    statCard(`私聊 ${privateInfo.enabled_user_count || 0} · 群聊 ${groupInfo.enabled_group_count || 0}`, `总数：对象 ${privateInfo.user_count || 0} · 群聊 ${groupInfo.group_count || 0}`),
-    statCard(dailyLimit > 0 ? `${formatCompactNumber(dailyUsed)} / ${formatCompactNumber(dailyLimit)}` : `${formatCompactNumber(dailyUsed)} / 不限`, "今日 Token 消耗 / 上限"),
-    statCard(energyLabel || "-", `心理能量${energyNumber ? ` ${energyNumber}` : ""} · ${mood}`),
-    statCard(`${enabledFeatures}/${featureKeys.length}`, "开启主开关 / 主开关总数"),
+    statCard(`私聊 ${privateInfo.enabled_user_count || 0} · 群聊 ${groupInfo.enabled_group_count || 0}`, `总数：对象 ${privateInfo.user_count || 0} · 群聊 ${groupInfo.group_count || 0}`, "private"),
+    statCard(dailyLimit > 0 ? `${formatCompactNumber(dailyUsed)} / ${formatCompactNumber(dailyLimit)}` : `${formatCompactNumber(dailyUsed)} / 不限`, "今日 Token 消耗 / 上限", "tokens"),
+    statCard(energyLabel || "-", `心理能量${energyNumber ? ` ${energyNumber}` : ""} · ${mood}`, "memory"),
+    statCard(`${enabledFeatures}/${featureKeys.length}`, "开启主开关 / 主开关总数", "config"),
   ].join("");
 }
 
-function statCard(value, label) {
-  return `<article class="stat"><b>${escapeHtml(value)}</b><span>${escapeHtml(label)}</span></article>`;
+function statCard(value, label, jumpTab = "") {
+  return `<article class="stat ${jumpTab ? "is-link" : ""}" ${jumpTab ? `data-jump-tab="${escapeHtml(jumpTab)}"` : ""}><b>${escapeHtml(value)}</b><span>${escapeHtml(label)}</span></article>`;
 }
 
 function renderDashboard() {
   renderDashboardPulse();
   renderStrategyOverview();
   renderHealthPanel();
-  renderDiagnostics();
   renderUxReviewPanel();
   renderRelationshipChart();
   renderGroupBubbleChart();
@@ -2943,7 +3418,7 @@ function renderDashboardPulse() {
       layout: "wide compact",
       label: "下一次主动",
       value: nextUser ? (nextUser.nickname || nextUser.user_id) : "暂无计划",
-      note: nextUser ? `${nextUser.next_proactive} · ${nextUser.planned_action || "message"}` : `${proactiveCounts.accepted || 0} 个候选已进入计划`,
+      note: nextUser ? `${nextUser.next_proactive} · ${proactiveActionLabel(nextUser.planned_action || "message")}` : `${proactiveCounts.accepted || 0} 个候选已进入计划`,
       jump: "proactive",
     },
     {
@@ -2986,7 +3461,7 @@ function renderDashboardPulse() {
       "排障中心",
       state.lazyLoaded.diagnostics
         ? `${(state.diagnostics || []).filter((item) => ["warn", "error"].includes(item.level)).length} 个诊断项`
-        : "后台轻量检查中",
+        : "去排障页查看",
     ],
     ["image-cache", "图片缓存", `${overview.cache?.private_image_vision?.items || 0}/${overview.cache?.private_image_vision?.max_items || "不限"} 条`],
     ["modules", "模块工作台", moduleShortcutNote(overview)],
@@ -3092,6 +3567,11 @@ function renderWebExplorationPanel() {
   const displayTitle = digest.topic || recentWebHistory.title || query.query || "暂无主动搜索记录";
   const displayNote = digest.note || recentWebHistory.intro || recentWebHistory.content || (enabled ? "等待下一次主动搜索留下笔记。" : "主动搜索未开启");
   const displayTime = exploration.last_explore_at || recentWebHistory.generated_at || recentWebHistory.date || "未搜索";
+  const backendLabel = exploration.search_backend === "custom"
+    ? "自定义搜索接口"
+    : exploration.search_backend === "astrbot"
+      ? "AstrBot 网页搜索"
+      : "搜索未配置";
   const historyHtml = history.length
     ? history.slice().reverse().map((item) => {
       const sourceLabel = item.source_label || (item.source === "news" ? "新闻阅读" : "主动搜索");
@@ -3121,7 +3601,7 @@ function renderWebExplorationPanel() {
     <p>${escapeHtml(displayNote)}</p>
     <div class="insight-meta">
       <span>${escapeHtml(insightStatus(exploration.last_status))}</span>
-      <span>${exploration.available ? "网页搜索可用" : "网页搜索未配置"}</span>
+      <span>${escapeHtml(backendLabel)}</span>
       <span>${exploration.boredom_search_enabled ? "空档搜索开启" : "空档搜索关闭"}</span>
       <span>历史 ${escapeHtml(exploration.history_count ?? history.length)} 条</span>
     </div>
@@ -3133,7 +3613,7 @@ function moduleShortcutNote(overview) {
   const settings = overview?.settings || {};
   const features = overview?.features || {};
   const items = [
-    ["私聊主动", Number(settings.max_daily_messages || 0) > 0],
+    ["主动触达", Number(settings.max_daily_messages || 0) > 0 || Boolean(features.enable_group_companion || settings.enable_group_companion)],
     ["状态日程", Boolean(features.enable_humanized_states || settings.enable_humanized_states)],
     ["群聊观察", Boolean(features.enable_group_companion || settings.enable_group_companion)],
     ["关系网", Boolean(features.enable_worldbook_member_recognition || settings.enable_worldbook_member_recognition)],
@@ -3277,10 +3757,10 @@ function renderUxReviewPanel() {
   const items = [
     {
       level: personaReady && worldReady && userReady ? "ok" : "warn",
-      title: "角色设定仍是最大收益点",
+      title: "世界知识仍是最大收益点",
       text: personaReady && worldReady && userReady
-        ? (roleFilled >= 6 ? `角色 ${roleFilled}/8 项、世界观和用户关系都有内容` : "旧版文案较完整；标准化字段可按需补齐")
-        : `角色 ${roleFilled}/8 项；建议补齐外貌识别点、爱好、禁忌和用户关系`,
+        ? (roleFilled >= 6 ? `角色资料 ${roleFilled}/8 项、世界观和用户关系都有内容` : "旧版文案较完整；标准化字段可按需补齐")
+        : `角色资料 ${roleFilled}/8 项；建议补齐外貌识别点、爱好、禁忌和用户关系`,
       tab: "roleplay",
     },
     {
@@ -3382,8 +3862,8 @@ function renderTroubleshooting() {
     `).join("")}
     <section class="troubleshooting-reasons">
       <header>
-        <b>${escapeHtml(selected === "all" ? "待处理原因" : `${troubleshootingLevelLabel(selected)}原因`)}</b>
-        <span>${escapeHtml(selected === "all" ? "只展示需要处理的错误和警告；普通信息可点信息查看" : "筛选同时作用于常见问题检查和最近问题")}</span>
+        <b>${escapeHtml(selected === "all" ? "近 2 小时待处理原因" : `${troubleshootingLevelLabel(selected)}原因`)}</b>
+        <span>${escapeHtml(selected === "all" ? "只展示近期需要处理的错误和警告；普通信息可点信息查看" : "筛选同时作用于常见问题检查和最近问题")}</span>
       </header>
       ${reasonItems.length ? reasonItems.map((item) => `
         <button type="button" class="${escapeHtml(item.level || "info")}" ${item.jump ? `data-jump-tab="${escapeHtml(item.jump)}"` : ""}>
@@ -3413,7 +3893,12 @@ function renderTroubleshooting() {
       </section>
     `).join("")
     : `<div class="empty small">没有检测到候选 SQLite 数据库文件</div>`;
-  chainEl.innerHTML = troubleshootingChainTestMarkup(data.chain_tests || {}, data.recent_photo_generations || []);
+  chainEl.innerHTML = troubleshootingChainTestMarkup(
+    data.chain_tests || {},
+    data.recent_photo_generations || [],
+    data.screen_companion || state.overview?.screen_companion || {},
+    data.qzone || state.overview?.qzone || {},
+  );
   injectionsEl.innerHTML = troubleshootingPromptInjectionMarkup(data.prompt_injections || {});
   if (faqEl) faqEl.innerHTML = troubleshootingFaqMarkup(data);
   if (debounceEl) {
@@ -3428,7 +3913,7 @@ function troubleshootingReasonItems(checks, events, selected) {
     if (!importantLevels.has(item.level || "info")) continue;
     rows.push({
       level: item.level || "info",
-      title: item.title || "-",
+      title: troubleshootingDisplayTitle(item.title || "-", item),
       text: item.action || item.text || "",
       jump: item.jump || "",
     });
@@ -3437,7 +3922,7 @@ function troubleshootingReasonItems(checks, events, selected) {
     if (!importantLevels.has(item.level || "info")) continue;
     rows.push({
       level: item.level || "info",
-      title: item.title || "-",
+      title: troubleshootingDisplayTitle(item.title || "-", item),
       text: item.detail || item.action || "",
       jump: item.jump || "",
     });
@@ -3445,6 +3930,23 @@ function troubleshootingReasonItems(checks, events, selected) {
   const rank = { error: 0, warn: 1, info: 2, ok: 3 };
   rows.sort((a, b) => (rank[a.level] ?? 9) - (rank[b.level] ?? 9));
   return rows.slice(0, 6);
+}
+
+function troubleshootingDisplayTitle(title, item = {}) {
+  const rawTitle = String(title || "").trim();
+  const task = String(item.task || item.key || "").trim();
+  if (task) {
+    const label = tokenTaskLabel(task);
+    if (label && label !== task) {
+      return rawTitle.includes("失败") ? `${label}失败` : label;
+    }
+  }
+  const match = rawTitle.match(/^([A-Za-z0-9_.:-]+)\s*(失败|异常|错误|调用失败)$/);
+  if (match) {
+    const label = tokenTaskLabel(match[1]);
+    if (label && label !== match[1]) return `${label}${match[2]}`;
+  }
+  return rawTitle || "-";
 }
 
 function troubleshootingSummaryText(counts) {
@@ -3527,7 +4029,7 @@ function troubleshootingFaqMarkup(data = {}) {
       meta: proactiveMeta,
       body: [
         "先确认私聊对象已启用，并且没有处在静默、休息、冷却、每日上限、未回复降频或主动人格判定拦截中。",
-        "再看上方“最近问题”和主动审计记录：如果显示 dropped/deferred，通常是时间窗、关系压力、内容重复或链路依赖不可用。",
+        "再看上方“最近问题”和主动审计记录：如果显示“已放弃/已延后”，通常是时间窗、关系压力、内容重复或链路依赖不可用。",
         "最直接的验证方式是点“测试主动消息”，它会预约一次临时主动，检查生成、复核、发送和归档是否完整。",
       ],
       actions: [
@@ -3603,7 +4105,7 @@ function troubleshootingFaqMarkup(data = {}) {
   `).join("");
 }
 
-function troubleshootingChainTestMarkup(results, recentPhotoGenerations = []) {
+function troubleshootingChainTestMarkup(results, recentPhotoGenerations = [], screenCompanion = {}, qzone = {}) {
   const tests = [
     {
       type: "image_generation_text2img",
@@ -3624,6 +4126,20 @@ function troubleshootingChainTestMarkup(results, recentPhotoGenerations = []) {
       title: "TTS 生成",
       text: "实际调用当前会话 TTS provider 并检查音频文件",
       button: "测试 TTS 生成",
+    },
+    ...(screenCompanion?.available ? [{
+      type: "screen_peek",
+      title: "窥屏",
+      text: "实际调用 screen_companion 识屏入口，确认屏幕观察链路可用",
+      button: "测试窥屏",
+    }] : []),
+    {
+      type: "qzone_integration",
+      title: "QQ 空间",
+      text: qzone?.enabled
+        ? "检查 Cookie、读取链路、发布工具空参数模拟和评论收件箱状态；不会真实发布或回复评论"
+        : "检查 QQ 空间配置状态；未启用时会显示缺失原因，不会真实发布或回复评论",
+      button: "测试 QQ 空间",
     },
     {
       type: "proactive_message",
@@ -3652,6 +4168,7 @@ function troubleshootingChainTestMarkup(results, recentPhotoGenerations = []) {
       result.image_model ? `模型 ${result.image_model}` : "",
       result.workflow_kind ? `类型 ${result.workflow_kind}` : "",
       result.used_reference ? "已带参考图" : "",
+      result.context_chars ? `摘要 ${result.context_chars} 字` : "",
       result.elapsed_ms ? `${result.elapsed_ms}ms` : "",
       result.file_size ? `${formatBytes(result.file_size)}` : "",
       result.ran_at_text || "",
@@ -3704,6 +4221,24 @@ function troubleshootingChainStepsMarkup(stepsRaw) {
 }
 
 function troubleshootingChainPreviewMarkup(type, result) {
+  if (type === "screen_peek") {
+    if (!result.text_preview) return "";
+    return `
+      <details class="chain-test-steps chain-test-preview">
+        <summary>查看识屏摘要</summary>
+        <p>${escapeHtml(result.text_preview || "")}</p>
+      </details>
+    `;
+  }
+  if (type === "qzone_integration") {
+    if (!result.text_preview) return "";
+    return `
+      <details class="chain-test-steps chain-test-preview">
+        <summary>查看 QQ 空间测试摘要</summary>
+        <p>${escapeHtml(result.text_preview || "")}</p>
+      </details>
+    `;
+  }
   if (type === "skill_similarity" || type === "model_diagnostics") {
     const sections = Array.isArray(result.sections) ? result.sections.filter(Boolean) : [];
     const suggestions = Array.isArray(result.suggestions) ? result.suggestions.filter(Boolean) : [];
@@ -3729,7 +4264,18 @@ function troubleshootingChainPreviewMarkup(type, result) {
     `;
   }
   const parts = [];
-  if (result.text_preview) parts.push(`<small class="path">文本预览：${escapeHtml(result.text_preview)}</small>`);
+  if (result.original_text_preview || result.final_text_preview) {
+    const original = result.original_text_preview || result.text_preview || "";
+    const finalText = result.final_text_preview || result.text_preview || "";
+    parts.push(`
+      <details class="chain-test-steps chain-test-preview">
+        <summary>查看主动改写对比</summary>
+        ${original ? `<p><b>原候选：</b>${escapeHtml(original)}</p>` : ""}
+        ${finalText ? `<p><b>最终发送：</b>${escapeHtml(finalText)}</p>` : ""}
+      </details>
+    `);
+  }
+  if (result.text_preview && !result.final_text_preview) parts.push(`<small class="path">文本预览：${escapeHtml(result.text_preview)}</small>`);
   if (result.prompt) parts.push(`<small class="path">提示词：${escapeHtml(result.prompt)}</small>`);
   return parts.join("");
 }
@@ -4358,7 +4904,9 @@ function renderTokens() {
   const cacheWriteTokens = Number(totals.cache_write_tokens || 0);
   const cachedRatio = Number(totals.cached_ratio || 0);
   const externalScope = externalTokenScopeData(stats, scope);
+  const memoryPluginScope = memoryPluginTokenScopeData(stats, scope);
   const externalTokens = Number(externalScope?.totals?.total_tokens || 0);
+  const memoryPluginTokens = Number(memoryPluginScope?.totals?.total_tokens || 0);
   const budget = stats.budget || {};
   const dailyLimit = Number(budget.limit || 0);
   const dailyUsed = Number(budget.used || 0);
@@ -4366,15 +4914,20 @@ function renderTokens() {
   const softRemaining = budget.soft_remaining == null ? null : Number(budget.soft_remaining || 0);
   const exemptUsed = Number(budget.exempt_used || 0);
   const dailyRemaining = budget.remaining == null ? null : Number(budget.remaining || 0);
+  const tokenLoadingNote = state.tokenStatsPartial
+    ? `<div class="empty small">已先显示总览中的 Token 摘要，正在加载完整明细...</div>`
+    : (!state.tokenStats && !state.lazyLoaded.tokenStats ? `<div class="empty small">正在加载 Token 统计...</div>` : "");
   renderTokenToolbar(stats);
   const showHourlyTrend = state.tokenView === "total";
   const hourlyPanel = $("#tokenHourlyPanel");
   if (hourlyPanel) hourlyPanel.hidden = !showHourlyTrend;
-  $("#tokenSummary").innerHTML = tokenSummaryBoard({
+  $("#tokenSummary").innerHTML = `${tokenLoadingNote}${tokenSummaryBoard({
     scope,
     externalScope,
+    memoryPluginScope,
     totalTokens,
     externalTokens,
+    memoryPluginTokens,
     totals,
     calls,
     errors,
@@ -4392,7 +4945,7 @@ function renderTokens() {
     softActive: Boolean(budget.soft_active),
     deferredCalls: Number(budget.deferred_calls || 0),
     proactiveMessages: exemptUsed,
-  });
+  })}`;
 
   renderTokenChart("#tokenProviderChart", scope.providers || [], "暂无 Provider 消耗数据", (item) => item.key || "default");
   renderTokenChart("#tokenTaskChart", scope.tasks || [], "暂无任务消耗数据", (item) => tokenTaskLabel(item.key));
@@ -4408,13 +4961,19 @@ function renderTokens() {
   renderTokenRecentTable(scope.recent || []);
   renderTokenExternalSessionTable(externalScope.sessions || []);
   renderTokenExternalRecentTable(externalScope.recent || []);
+  renderTokenMemoryPluginSummary(memoryPluginScope, stats.memory_plugin || {});
+  renderTokenMemoryPluginTaskTable(memoryPluginScope.tasks || [], memoryPluginScope.available !== false);
+  renderTokenMemoryPluginProviderTable(memoryPluginScope.providers || [], memoryPluginScope.available !== false);
+  renderTokenMemoryPluginRecentTable(memoryPluginScope.recent || [], memoryPluginScope.available !== false);
 }
 
 function tokenSummaryBoard({
   scope,
   externalScope,
+  memoryPluginScope,
   totalTokens,
   externalTokens,
+  memoryPluginTokens,
   totals,
   calls,
   errors,
@@ -4472,6 +5031,7 @@ function tokenSummaryBoard({
       </article>
       <div class="token-metric-grid">
         ${tokenMetricCard(externalScope.label, formatNumber(externalTokens))}
+        ${tokenMetricCard(memoryPluginScope.label, memoryPluginScope.available === false ? "未接入" : formatNumber(memoryPluginTokens))}
         ${tokenMetricCard("主动消息", formatCompactNumber(proactiveMessages))}
         ${hasKnownCacheStats ? tokenMetricCard("缓存命中", `${formatCompactNumber(cachedTokens || cacheReadTokens)} · ${Math.round(cachedRatio * 100)}%`) : ""}
         ${cacheReadTokens > 0 || cacheWriteTokens > 0 ? tokenMetricCard("缓存读 / 写", `${formatCompactNumber(cacheReadTokens)} / ${formatCompactNumber(cacheWriteTokens)}`) : ""}
@@ -4523,6 +5083,39 @@ function externalTokenScopeData(stats, pluginScope) {
     totals: day,
     sessions: day.sessions || [],
     recent: (external.recent || []).filter((item) => recentItemDayKey(item) === selectedDay),
+  };
+}
+
+function memoryPluginTokenScopeData(stats, pluginScope) {
+  const plugin = stats.memory_plugin || {};
+  const view = state.tokenView || "today";
+  const today = stats.budget?.day || todayKeyLocal();
+  const displayName = plugin.display_name || "我会牢牢记住你";
+  const available = plugin.available !== false;
+  if (view === "total") {
+    return {
+      mode: "total",
+      label: `${displayName}累计`,
+      displayName,
+      available,
+      totals: plugin.totals || {},
+      providers: plugin.by_provider || [],
+      tasks: plugin.by_task || [],
+      recent: plugin.recent || [],
+    };
+  }
+  const selectedDay = pluginScope?.mode === "date" ? state.tokenDate : today;
+  const dayRows = plugin.by_day_detail || plugin.by_day || [];
+  const day = dayRows.find((item) => String(item.key || "") === selectedDay) || { key: selectedDay };
+  return {
+    mode: pluginScope?.mode || "today",
+    label: selectedDay === today ? `${displayName}今日` : `${displayName}同日`,
+    displayName,
+    available,
+    totals: day,
+    providers: day.providers || [],
+    tasks: day.tasks || [],
+    recent: (plugin.recent || []).filter((item) => recentItemDayKey(item) === selectedDay),
   };
 }
 
@@ -4837,6 +5430,109 @@ function renderTokenExternalRecentTable(rows) {
   );
 }
 
+function renderTokenMemoryPluginSummary(scope, plugin) {
+  const box = $("#tokenMemoryPluginSummary");
+  if (!box) return;
+  const available = scope?.available !== false;
+  if (!available) {
+    box.innerHTML = `
+      <div class="empty small">
+        未检测到可读取的“${escapeHtml(plugin?.display_name || "我会牢牢记住你")}”Token 统计。
+        ${plugin?.reason ? `原因：${escapeHtml(plugin.reason)}` : ""}
+      </div>
+    `;
+    return;
+  }
+  const totals = scope?.totals || {};
+  const displayName = scope?.displayName || plugin?.display_name || "我会牢牢记住你";
+  const totalTokens = Number(totals.total_tokens || 0);
+  const calls = Number(totals.calls || 0);
+  const errors = Number(totals.errors || 0);
+  const avgTokens = Math.round(Number(totals.avg_tokens || 0));
+  const estimatedRatio = Math.round(Number(totals.estimated_ratio || 0) * 100);
+  const updatedAt = plugin?.updated_at ? `最近更新：${plugin.updated_at}` : "还没有统计更新时间";
+  box.innerHTML = `
+    <div class="token-plugin-note">
+      <b>${escapeHtml(displayName)}</b>
+      <span>${escapeHtml(plugin?.note || "仅展示记忆插件自身模型消耗，不计入陪伴插件每日 Token 限额。")}</span>
+    </div>
+    <div class="token-plugin-stats">
+      ${tokenMetricCard("Token", formatNumber(totalTokens))}
+      ${tokenMetricCard("调用次数", formatNumber(calls))}
+      ${tokenMetricCard("平均 Token", formatNumber(avgTokens))}
+      ${tokenMetricCard("估算 / 失败", `${estimatedRatio}% · ${formatNumber(errors)}`)}
+    </div>
+    <p class="muted small">${escapeHtml(updatedAt)}</p>
+  `;
+}
+
+function renderTokenMemoryPluginTaskTable(rows, available) {
+  const box = $("#tokenMemoryPluginTaskTable");
+  if (!box) return;
+  if (!available) {
+    box.innerHTML = `<div class="empty small">记忆插件 Token 统计未接入</div>`;
+    return;
+  }
+  box.innerHTML = tokenTable(
+    ["记忆任务", "总 Token", "输入", "输出", "调用", "失败"],
+    rows,
+    (item) => [
+      tokenTaskLabel(item.key),
+      formatNumber(item.total_tokens),
+      formatNumber(item.prompt_tokens),
+      formatNumber(item.completion_tokens),
+      formatNumber(item.calls),
+      formatNumber(item.errors),
+    ],
+    "暂无记忆插件任务明细"
+  );
+}
+
+function renderTokenMemoryPluginProviderTable(rows, available) {
+  const box = $("#tokenMemoryPluginProviderTable");
+  if (!box) return;
+  if (!available) {
+    box.innerHTML = `<div class="empty small">记忆插件 Token 统计未接入</div>`;
+    return;
+  }
+  box.innerHTML = tokenTable(
+    ["Provider", "总 Token", "缓存", "调用", "估算", "平均延迟"],
+    rows,
+    (item) => [
+      item.key || "default",
+      formatNumber(item.total_tokens),
+      tokenCacheText(item),
+      formatNumber(item.calls),
+      `${Math.round(Number(item.estimated_ratio || 0) * 100)}%`,
+      `${formatNumber(Math.round(Number(item.avg_latency_ms || 0)))} ms`,
+    ],
+    "暂无记忆插件 Provider 明细"
+  );
+}
+
+function renderTokenMemoryPluginRecentTable(rows, available) {
+  const box = $("#tokenMemoryPluginRecentTable");
+  if (!box) return;
+  if (!available) {
+    box.innerHTML = `<div class="empty small">记忆插件 Token 统计未接入</div>`;
+    return;
+  }
+  box.innerHTML = tokenTable(
+    ["时间", "记忆任务", "Provider", "Token", "缓存", "延迟", "状态"],
+    rows,
+    (item) => [
+      formatRecentTime(item.ts, item.time),
+      tokenTaskLabel(item.task),
+      item.provider || "default",
+      `${formatNumber(item.total_tokens)}${item.estimated ? " 估" : ""}`,
+      tokenCacheText(item),
+      `${formatNumber(Math.round(Number(item.elapsed_ms || item.latency_ms || 0)))} ms`,
+      item.success ? "成功" : `失败 ${item.error || ""}`.trim(),
+    ],
+    "暂无记忆插件最近调用"
+  );
+}
+
 function tokenCacheText(item) {
   const cached = Number(item?.cached_tokens || 0);
   const read = Number(item?.cache_read_tokens || 0);
@@ -4971,6 +5667,7 @@ async function renderUserDetail(forceFetch = false) {
       <button data-user-action="clear_schedule">清空主动计划</button>
       <button data-user-action="clear_emotion_state">重置情绪状态</button>
       <button data-user-action="clear_learning" class="danger">清空学习记忆</button>
+      <button data-user-action="delete" class="danger">删除私聊用户</button>
     </div>
     <form id="userEditForm" class="inline-form">
       <label>称呼 <input name="nickname" value="${escapeHtml(detail.nickname || "")}" placeholder="例如 主人 / 名字" /></label>
@@ -5269,6 +5966,15 @@ function bindUserActions(detail) {
         if (!requireSecondClick(button, `user-clear:${detail.user_id}`, "再次点击清空该用户的学习记忆", "再次点击清空")) return;
         body.clear_learning = true;
       }
+      if (action === "delete") {
+        if (!requireSecondClick(button, `user-delete:${detail.user_id}`, "再次点击删除该私聊用户、目标名单和相关映射", "再次点击删除")) return;
+        await runAction(async () => {
+          await postJson("/user/delete", body);
+          state.selectedUserId = "";
+          await loadAll();
+        }, "已删除私聊用户", button);
+        return;
+      }
       await runAction(() => postJson("/user/update", body), "已更新私聊对象", button);
       await refreshSelectedUserDetail();
     });
@@ -5343,8 +6049,8 @@ function renderGroups() {
       <button type="button" data-group-id="${escapeHtml(group.group_id)}" class="group-card ${String(group.group_id) === String(state.selectedGroupId) ? "is-selected" : ""} ${group.enabled ? "" : "is-off"} ${group.allowed_by_mode ? "" : "is-blocked"}">
         <header>
           <span class="group-card-title">
-            <b>${escapeHtml(group.name || group.group_name || `群 ${group.group_id}`)}</b>
-            <small>${escapeHtml(group.group_id)}</small>
+            <b>${escapeHtml(groupDisplayName(group))}</b>
+            <small>${escapeHtml(groupIdText(group))}</small>
           </span>
           <span class="badge ${group.enabled ? "" : "off"}">${escapeHtml(group.enabled ? "观测中" : "停用")}</span>
         </header>
@@ -5371,6 +6077,18 @@ function renderGroups() {
     });
   });
   renderGroupDetail();
+}
+
+function groupDisplayName(group) {
+  const id = String(group?.group_id || "").trim();
+  const name = String(group?.display_name || group?.name || group?.group_name || "").trim();
+  if (name && name !== id && name !== `群 ${id}`) return name;
+  return "未命名群聊";
+}
+
+function groupIdText(group) {
+  const id = String(group?.group_id || "").trim();
+  return id ? `群号 ${id}` : "群号未知";
 }
 
 function groupWakeupCardLine(group) {
@@ -5404,14 +6122,14 @@ async function renderGroupDetail(forceFetch = false) {
       return;
     }
   }
-  const groupName = detail.name || detail.group_name || `群 ${detail.group_id}`;
+  const groupName = groupDisplayName(detail);
   box.innerHTML = `
     <div class="group-detail-hero">
       <div class="group-detail-title">
         <span class="eyebrow">群聊详情</span>
         <h2>${escapeHtml(groupName)}</h2>
         <div class="group-detail-status">
-          <span>${escapeHtml(detail.group_id)}</span>
+          <span>${escapeHtml(groupIdText(detail))}</span>
           <span class="${detail.enabled ? "ok-text" : "warn-text"}">${escapeHtml(detail.enabled ? "观测中" : "已停用")}</span>
           <span class="${detail.allowed_by_mode ? "ok-text" : "warn-text"}">${escapeHtml(detail.allowed_by_mode ? "名单允许" : "名单拦截")}</span>
           <span>最近 ${escapeHtml(detail.last_seen || "暂无")}</span>
@@ -5691,8 +6409,22 @@ function groupEpisodesView(episodes) {
 function groupWakeupPanel(detail) {
   const logs = Array.isArray(detail.group_wakeup_logs) ? detail.group_wakeup_logs : [];
   const fatigue = detail.wakeup_fatigue || {};
+  const high = fatigue.high_intensity || {};
   const ratio = Math.max(0, Math.min(100, Number(fatigue.ratio || 0) * 100));
   const last = detail.last_group_wakeup || {};
+  const highTitle = high.active
+    ? high.merge_active
+      ? "合并等待中"
+      : "仅降载中"
+    : "未触发";
+  const highMeta = high.active
+    ? [
+        `近期 ${Number(high.recent_wakeups || 0)}/${Number(high.threshold || 0)}`,
+        high.merge_recent_floor ? `合并门槛 ${Number(high.merge_recent_floor)}` : "",
+        high.reason ? `原因 ${high.reason}` : "",
+        high.remaining_seconds ? `剩余 ${Number(high.remaining_seconds).toFixed(0)}s` : "",
+      ].filter(Boolean).join(" · ")
+    : "只有近期连续叫到 Bot 时才会合并等待";
   return `
     <div class="group-wakeup-overview">
       <article>
@@ -5706,6 +6438,11 @@ function groupWakeupPanel(detail) {
         <b>${escapeHtml(fatigue.label || "无")}</b>
         <div class="fatigue-meter"><i style="width:${ratio}%"></i></div>
         <small>${escapeHtml(`${fatigue.value || 0}/${fatigue.limit || "-"} · ${fatigue.updated || "暂无"}`)}</small>
+      </article>
+      <article>
+        <span>高强度状态</span>
+        <b>${escapeHtml(highTitle)}</b>
+        <small>${escapeHtml(highMeta)}</small>
       </article>
       <article>
         <span>记录数</span>
@@ -6950,6 +7687,23 @@ function renderDreamFragments(fragments) {
   }).join("");
 }
 
+function renderCreativeStatusBar(selector, chips) {
+  const el = $(selector);
+  if (!el) return;
+  if (!Array.isArray(chips) || !chips.length) {
+    el.innerHTML = "";
+    return;
+  }
+  el.innerHTML = chips.map((chip) => {
+    const tone = chip.tone || "info";
+    const isOff = tone === "off";
+    return `<span class="creative-chip ${escapeHtml(tone)}"${isOff ? ' data-off="1"' : ""}>
+      <small>${escapeHtml(chip.label || "")}</small>
+      <b>${escapeHtml(chip.value || "")}</b>
+    </span>`;
+  }).join("");
+}
+
 function renderBookshelf() {
   const creative = state.overview?.creative || {};
   const bookshelf = state.bookshelfUnlocked || state.overview?.bookshelf || {};
@@ -6967,20 +7721,49 @@ function renderBookshelf() {
     passwordHintEl.hidden = !passwordHint;
   }
   $("#bookshelfIntro").textContent = creative.enabled
-    ? "上层书架"
-    : "创作未开启";
-  const creativeSettings = {
-    "创作": creative.enabled ? "开启" : "关闭",
-    "提起方式": creative.hidden_mode ? "节点自然提起" : "普通模式",
-    "灵感触发概率": formatPercent(settings.creative_inspiration_probability),
-    "节点提起概率": formatPercent(settings.creative_share_probability),
-    "单次创作": `${settings.creative_chars_per_session || settings.creative_base_chars_per_hour || 0} 字/次`,
-  };
-  if (privateReading.available) {
-    creativeSettings["夹层阅读"] = privateReading.boredom_read_enabled ? "可触发" : "关闭";
-    creativeSettings["征求推荐"] = privateReading.ask_recommendation_enabled ? "可触发" : "关闭";
+    ? "Bot 自主推进的公开创作作品"
+    : "创作功能未开启";
+  const creativeChips = [];
+  creativeChips.push({
+    label: "创作",
+    value: creative.enabled ? "开启" : "关闭",
+    tone: creative.enabled ? "ok" : "off",
+  });
+  if (creative.enabled) {
+    creativeChips.push({
+      label: "提起方式",
+      value: creative.hidden_mode ? "节点自然提起" : "普通模式",
+      tone: "info",
+    });
+    creativeChips.push({
+      label: "灵感触发",
+      value: formatPercent(settings.creative_inspiration_probability),
+      tone: "metric",
+    });
+    creativeChips.push({
+      label: "节点提起",
+      value: formatPercent(settings.creative_share_probability),
+      tone: "metric",
+    });
+    creativeChips.push({
+      label: "单次创作",
+      value: `${settings.creative_chars_per_session || settings.creative_base_chars_per_hour || 0} 字`,
+      tone: "metric",
+    });
   }
-  renderDl("#creativeSettings", creativeSettings);
+  if (privateReading.available) {
+    creativeChips.push({
+      label: "夹层阅读",
+      value: privateReading.boredom_read_enabled ? "可触发" : "关闭",
+      tone: privateReading.boredom_read_enabled ? "ok" : "off",
+    });
+    creativeChips.push({
+      label: "征求推荐",
+      value: privateReading.ask_recommendation_enabled ? "可触发" : "关闭",
+      tone: privateReading.ask_recommendation_enabled ? "ok" : "off",
+    });
+  }
+  renderCreativeStatusBar("#creativeSettings", creativeChips);
   const publicBooks = bookshelf.public_books || [];
   $("#bookshelfPublicBooks").innerHTML = publicBooks.length
     ? renderBookCategoryShelves(publicBooks, { emptyText: "上层书架为空", reverseBooks: true })
@@ -7104,6 +7887,31 @@ function bookshelfBookId(item) {
   return `${item.kind || "book"}:${item.id || item.title || ""}`;
 }
 
+async function ensureCreativeProjectDetail(book, force = false) {
+  if (!book || book.kind !== "creative" || !book.id) return book;
+  if (book.project_detail_loaded && !force) return book;
+  if (book.project_loading && !force) return book;
+  book.project_loading = true;
+  book.project_error = "";
+  try {
+    const detail = await fetchJson(`/creative/project?id=${encodeURIComponent(book.id)}`);
+    Object.assign(book, detail || {}, { project_detail_loaded: true, project_loading: false, kind: "creative" });
+    if (state.selectedBook && state.selectedBook.id === book.id && state.selectedBook.kind === "creative") {
+      state.selectedBook = book;
+      renderBookDetailPanel();
+    }
+    return book;
+  } catch (error) {
+    book.project_loading = false;
+    book.project_error = error.message || String(error || "读取失败");
+    if (state.selectedBook && state.selectedBook.id === book.id && state.selectedBook.kind === "creative") {
+      state.selectedBook = book;
+      renderBookDetailPanel();
+    }
+    return book;
+  }
+}
+
 function renderBookCoverInner(book, kindLabel, title, progress = "") {
   const coverSrc = book.kind === "jm_album" ? String(book.cover_src || "") : "";
   const image = coverSrc ? bookshelfImageTag(coverSrc, `${title || "私密阅读"}封面`) : "";
@@ -7112,6 +7920,238 @@ function renderBookCoverInner(book, kindLabel, title, progress = "") {
     <span>${escapeHtml(kindLabel)}</span>
     <b>${escapeHtml(title || "未命名")}</b>
     ${progress ? `<small>${escapeHtml(progress)}</small>` : ""}
+  `;
+}
+
+function renderCreativeStoryBible(book) {
+  const sb = book.story_bible && typeof book.story_bible === "object" ? book.story_bible : {};
+  const list = (items) => Array.isArray(items) && items.length
+    ? `<ul>${items.map((item) => `<li>${escapeHtml(String(item || ""))}</li>`).join("")}</ul>`
+    : `<div class="empty small">暂无</div>`;
+  return `
+    <section class="creative-manager-card">
+      <h3>故事档案</h3>
+      <div class="creative-meta-grid">
+        <div><b>主线</b><span>${escapeHtml(sb.mainline_direction || "") || "未建立"}</span></div>
+        <div><b>下一步</b><span>${escapeHtml(sb.next_direction || book.next_hint || "") || "未指定"}</span></div>
+      </div>
+      <div class="creative-columns">
+        <div><b>主题</b>${list(sb.active_themes)}</div>
+        <div><b>未解决线索</b>${list(sb.unresolved_threads)}</div>
+        <div><b>已解决线索</b>${list(sb.resolved_threads)}</div>
+        <div><b>重要事实</b>${list(sb.important_facts)}</div>
+      </div>
+    </section>
+  `;
+}
+
+function renderCreativeOutlineEditor(book) {
+  const rows = Array.isArray(book.outline) ? book.outline : [];
+  return `
+    <section class="creative-manager-card">
+      <div class="creative-card-head">
+        <h3>大纲</h3>
+        <span>${rows.length} 条</span>
+      </div>
+      <form data-creative-outline-form data-project-id="${escapeHtml(book.id || "")}">
+        <textarea name="outline" rows="10" placeholder="一行一条大纲">${escapeHtml(rows.join("\n"))}</textarea>
+        <div class="creative-form-actions">
+          <button type="submit">保存大纲</button>
+        </div>
+      </form>
+    </section>
+  `;
+}
+
+function renderCreativeCharactersEditor(book) {
+  const chars = Array.isArray(book.characters) ? book.characters : [];
+  return `
+    <section class="creative-manager-card">
+      <div class="creative-card-head">
+        <h3>角色</h3>
+        <span>${chars.length} 个</span>
+      </div>
+      <form data-creative-characters-form data-project-id="${escapeHtml(book.id || "")}">
+        <textarea name="characters" rows="12" placeholder='[{"name":"角色名","role":"身份","description":"描述"}]'>${escapeHtml(JSON.stringify(chars, null, 2))}</textarea>
+        <div class="creative-form-actions">
+          <button type="submit">保存角色</button>
+        </div>
+      </form>
+    </section>
+  `;
+}
+
+function renderCreativeQualityPanel(book) {
+  const reviews = Array.isArray(book.quality_reviews) ? book.quality_reviews : [];
+  const latest = reviews[reviews.length - 1] || {};
+  const score = (name) => Number(latest?.[`${name}_score`] ?? latest?.scores?.[name] ?? 0) || 0;
+  const issues = Array.isArray(latest.issues) ? latest.issues : [];
+  return `
+    <section class="creative-manager-card">
+      <div class="creative-card-head">
+        <h3>质量分析</h3>
+        <div class="creative-inline-actions">
+          <button type="button" data-creative-reanalyze="${escapeHtml(book.id || "")}">重新分析</button>
+          <button type="button" data-creative-rebuild-memory="${escapeHtml(book.id || "")}">重建记忆</button>
+        </div>
+      </div>
+      <div class="creative-meta-grid quality">
+        <div><b>人格一致</b><span>${escapeHtml(score("persona"))}/10</span></div>
+        <div><b>推进度</b><span>${escapeHtml(score("progress"))}/10</span></div>
+        <div><b>重复度</b><span>${escapeHtml(score("repetition"))}/10</span></div>
+      </div>
+      ${issues.length ? `<ul class="creative-issues">${issues.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : `<div class="empty small">暂无分析结果</div>`}
+    </section>
+  `;
+}
+
+function renderCreativeChunkEditors(book) {
+  const chunks = Array.isArray(book.chunks) ? book.chunks : [];
+  if (!chunks.length) {
+    return `<section class="creative-manager-card"><h3>正文片段</h3><div class="empty small">暂无正文片段</div></section>`;
+  }
+  return `
+    <section class="creative-manager-card">
+      <h3>正文片段</h3>
+      <div class="creative-chunk-editor-list">
+        ${chunks.map((chunk) => `
+          <form class="creative-chunk-editor" data-creative-chunk-form data-project-id="${escapeHtml(book.id || "")}" data-chunk-index="${escapeHtml(chunk.index)}">
+            <header>
+              <b>片段 ${escapeHtml(Number(chunk.index) + 1)}</b>
+              <span>${escapeHtml(chunk.chars || String((chunk.text || "").length))} 字${chunk.manually_edited ? " · 已手改" : ""}</span>
+            </header>
+            <textarea name="text" rows="8">${escapeHtml(chunk.text || "")}</textarea>
+            <div class="creative-form-actions">
+              <button type="submit">保存本段</button>
+            </div>
+          </form>
+        `).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderCreativeManager(book, kindLabel, displayTitle, displayIntro) {
+  if (book.project_loading) {
+    return `<article class="book-preview subpage creative"><div class="empty">正在加载作品详情...</div></article>`;
+  }
+  if (book.project_error) {
+    return `<article class="book-preview subpage creative"><div class="empty">作品详情加载失败：${escapeHtml(book.project_error)}</div></article>`;
+  }
+  return `
+    <article class="book-preview subpage creative creative-manager-page">
+      <div class="book-preview-cover ${book.cover_src ? "has-cover-image" : ""}">
+        ${renderBookCoverInner(book, kindLabel, book.title || "未命名")}
+      </div>
+      <div class="book-preview-info creative-manager-info">
+        <nav class="book-breadcrumb">
+          <button type="button" data-book-close>书柜</button>
+          <span>/ ${escapeHtml(kindLabel)}</span>
+        </nav>
+        <div class="reader-toolbar">
+          <span>${escapeHtml(kindLabel)}</span>
+          <button type="button" data-book-close>收回书柜</button>
+        </div>
+        <h2>${escapeHtml(book.title || displayTitle || "未命名")}</h2>
+        <p>${escapeHtml(book.premise || displayIntro || "这本作品还没有简介。")}</p>
+        <form class="inline-form creative-project-basic-form" data-creative-project-form data-project-id="${escapeHtml(book.id || "")}">
+          <label>标题 <input name="title" value="${escapeHtml(book.title || "")}" /></label>
+          <label>类型 <input name="work_type" value="${escapeHtml(book.work_type || "")}" /></label>
+          <label>气质 <input name="tone" value="${escapeHtml(book.tone || "")}" /></label>
+          <label>视角 <input name="point_of_view" value="${escapeHtml(book.point_of_view || "")}" /></label>
+          <label>目标字数 <input name="target_chars" type="number" min="300" max="5200" value="${escapeHtml(book.target_chars || 2000)}" /></label>
+          <label class="wide">核心设定 <textarea name="premise" rows="3">${escapeHtml(book.premise || "")}</textarea></label>
+          <label class="wide">下一步提示 <textarea name="next_hint" rows="2">${escapeHtml(book.next_hint || "")}</textarea></label>
+          <div class="creative-form-actions wide">
+            <button type="submit">保存作品信息</button>
+            <button type="button" class="read-button" data-book-read>进入阅读页</button>
+          </div>
+        </form>
+        <div class="creative-form-actions">
+          <button type="button" class="danger-outline" data-creative-exit-edit>返回预览</button>
+          <button type="button" class="danger-outline" data-book-delete data-book-kind="creative" data-book-id="${escapeHtml(book.id || "")}" data-book-title="${escapeHtml(book.title || displayTitle || "")}">删除作品</button>
+        </div>
+        ${renderCreativeStoryBible(book)}
+        ${renderCreativeOutlineEditor(book)}
+        ${renderCreativeCharactersEditor(book)}
+        ${renderCreativeQualityPanel(book)}
+        ${renderCreativeChunkEditors(book)}
+      </div>
+    </article>
+  `;
+}
+
+function renderCreativeBookPreview(book, kindLabel, displayTitle, displayIntro, displayContent) {
+  if (book.project_loading) {
+    return `<article class="book-preview subpage creative"><div class="empty">正在加载作品详情...</div></article>`;
+  }
+  if (book.project_error) {
+    return `<article class="book-preview subpage creative"><div class="empty">作品详情加载失败：${escapeHtml(book.project_error)}</div></article>`;
+  }
+  const sb = book.story_bible && typeof book.story_bible === "object" ? book.story_bible : {};
+  const outline = Array.isArray(book.outline) ? book.outline : [];
+  const characters = Array.isArray(book.characters) ? book.characters : [];
+  const reviews = Array.isArray(book.quality_reviews) ? book.quality_reviews : [];
+  const latestReview = reviews[reviews.length - 1] || {};
+  const latestSnippet = Array.isArray(book.chunks) && book.chunks.length ? book.chunks[book.chunks.length - 1].text || "" : displayContent || "";
+  const score = (name) => Number(latestReview?.[`${name}_score`] ?? latestReview?.scores?.[name] ?? 0) || 0;
+  return `
+    <article class="book-preview subpage creative creative-preview-card">
+      <div class="book-preview-cover ${book.cover_src ? "has-cover-image" : ""}">
+        ${renderBookCoverInner(book, kindLabel, book.title || displayTitle || "未命名")}
+      </div>
+      <div class="book-preview-info creative-manager-info">
+        <nav class="book-breadcrumb">
+          <button type="button" data-book-close>书柜</button>
+          <span>/ ${escapeHtml(kindLabel)}</span>
+        </nav>
+        <div class="reader-toolbar">
+          <span>${escapeHtml(kindLabel)}</span>
+          <button type="button" data-book-close>收回书柜</button>
+        </div>
+        <h2>${escapeHtml(book.title || displayTitle || "未命名")}</h2>
+        <p>${escapeHtml(book.premise || displayIntro || "这本作品还没有简介。")}</p>
+        <dl>
+          ${book.status ? `<div><dt>状态</dt><dd>${escapeHtml(book.status)}</dd></div>` : ""}
+          ${book.tone ? `<div><dt>气质</dt><dd>${escapeHtml(book.tone)}</dd></div>` : ""}
+          ${book.point_of_view ? `<div><dt>视角</dt><dd>${escapeHtml(book.point_of_view)}</dd></div>` : ""}
+          ${book.progress ? `<div><dt>进度</dt><dd>${escapeHtml(book.progress)}</dd></div>` : ""}
+          ${book.created ? `<div><dt>入柜</dt><dd>${escapeHtml(book.created)}</dd></div>` : ""}
+        </dl>
+        <section class="creative-manager-card">
+          <h3>故事档案</h3>
+          <div class="creative-meta-grid">
+            <div><b>主线</b><span>${escapeHtml(sb.mainline_direction || "") || "未建立"}</span></div>
+            <div><b>下一步</b><span>${escapeHtml(sb.next_direction || book.next_hint || "") || "未指定"}</span></div>
+          </div>
+        </section>
+        <section class="creative-manager-card">
+          <h3>大纲预览</h3>
+          ${outline.length ? `<ul class="creative-issues">${outline.slice(0, 8).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : `<div class="empty small">暂无大纲</div>`}
+        </section>
+        <section class="creative-manager-card">
+          <h3>角色预览</h3>
+          ${characters.length ? `<ul class="creative-issues">${characters.slice(0, 6).map((item) => `<li><b>${escapeHtml(item.name || "未命名角色")}</b>${item.role ? ` · ${escapeHtml(item.role)}` : ""}</li>`).join("")}</ul>` : `<div class="empty small">暂无角色</div>`}
+        </section>
+        <section class="creative-manager-card">
+          <h3>最近质量分析</h3>
+          <div class="creative-meta-grid quality">
+            <div><b>人格一致</b><span>${escapeHtml(score("persona"))}/10</span></div>
+            <div><b>推进度</b><span>${escapeHtml(score("progress"))}/10</span></div>
+            <div><b>重复度</b><span>${escapeHtml(score("repetition"))}/10</span></div>
+          </div>
+        </section>
+        <section class="creative-manager-card">
+          <h3>最新片段</h3>
+          <div class="reader-content creative-content ${escapeHtml(creativeReadingMode(book))}">${formatCreativeContentByMode(latestSnippet || "这本书还没有正文。", creativeReadingMode(book))}</div>
+        </section>
+        <div class="creative-form-actions">
+          <button type="button" data-creative-enter-edit>编辑作品</button>
+          <button type="button" class="read-button" data-book-read>进入阅读页</button>
+          <button type="button" class="danger-outline" data-book-delete data-book-kind="creative" data-book-id="${escapeHtml(book.id || "")}" data-book-title="${escapeHtml(book.title || displayTitle || "")}">删除作品</button>
+        </div>
+      </div>
+    </article>
   `;
 }
 
@@ -7207,6 +8247,7 @@ function selectBookshelfBook(bookId) {
   if (!book) return;
   state.selectedBook = book;
   state.bookshelfPage = "detail";
+  state.creativeEditing = false;
   state.selectedBookSpreadIndex = 0;
   if (book.kind === "diary") {
     const entries = Array.isArray(book.entries) ? book.entries : [];
@@ -7217,6 +8258,9 @@ function selectBookshelfBook(bookId) {
     state.selectedBrowsingIndex = Math.max(0, entries.length - 1);
   }
   renderBookDetailPanel();
+  if (book.kind === "creative") {
+    void ensureCreativeProjectDetail(book);
+  }
   const panel = $("#bookDetailPanel");
   if (panel) panel.scrollIntoView({ behavior: "smooth", block: "start" });
 }
@@ -7321,6 +8365,12 @@ function renderBookDetailPanel() {
   }
   if (state.bookshelfPage === "reader" && book.kind === "creative") {
     panel.innerHTML = renderCreativeBookReader(book, kindLabel, displayTitle, displayIntro, displayContent);
+    return;
+  }
+  if (book.kind === "creative" && state.bookshelfPage === "detail") {
+    panel.innerHTML = state.creativeEditing
+      ? renderCreativeManager(book, kindLabel, displayTitle, displayIntro)
+      : renderCreativeBookPreview(book, kindLabel, displayTitle, displayIntro, displayContent);
     return;
   }
   panel.innerHTML = state.bookshelfPage === "reader"
@@ -7900,6 +8950,7 @@ function renderProactiveCandidates() {
   const runtime = taskData.runtime || {};
   $("#proactiveSummary").innerHTML = [
     proactiveSummaryCard("候选总数", total, `${items.length || 0} 条合并记录`),
+    proactiveSummaryCard("未发送候选", selectedFilter === "all" ? (data.pending_total || 0) : sumObjectValues(counts) - Number(counts.sent || 0), "按每用户上限控制"),
     proactiveSummaryCard("已进入计划", counts.accepted || 0, "当前或历史接受候选"),
     proactiveSummaryCard("已发送", counts.sent || 0, "实际发出的主动"),
     proactiveSummaryCard("被拦截", counts.blocked || 0, "同类拦截已合并计数"),
@@ -7937,7 +8988,11 @@ function renderProactiveCandidates() {
             <b>${escapeHtml(item.topic || item.reason_label || item.reason || "未命名候选")}</b>
             <span>${escapeHtml(userLabel)} · ${escapeHtml(roleLabel)} · ${escapeHtml(sourceLabel)} · ${escapeHtml(item.reason_label || item.reason || "-")} · ${escapeHtml(item.action || "message")}</span>
           </div>
-          <span class="badge">${escapeHtml(repeat > 1 ? `${status} x${repeat}` : status)}</span>
+          <div class="toolbar">
+            <span class="badge">${escapeHtml(repeat > 1 ? `${status} x${repeat}` : status)}</span>
+            <button type="button" class="danger-outline" data-proactive-candidate-delete="${escapeHtml(item.id || "")}" data-proactive-user-id="${escapeHtml(item.user_id || "")}">删除</button>
+            <button type="button" class="danger-outline" data-proactive-candidate-prune="${escapeHtml(item.user_id || "")}" data-proactive-prune-keep="160">删一点</button>
+          </div>
         </div>
         <p>${escapeHtml(item.motive || "暂无动机记录")}</p>
         <div class="proactive-meta">
@@ -8121,7 +9176,9 @@ function proactiveAuditHtml(items) {
       item.reason_label ? `原因：${item.reason_label}` : (item.reason ? `原因：${item.reason}` : ""),
       item.reason_detail ? `为什么：${item.reason_detail}` : "",
       item.note ? `结果：${item.note}` : "",
-      item.text_preview ? `消息：${item.text_preview}` : "",
+      item.original_text_preview ? `原候选：${item.original_text_preview}` : "",
+      item.final_text_preview ? `最终发送：${item.final_text_preview}` : "",
+      item.text_preview && !item.final_text_preview ? `消息：${item.text_preview}` : "",
       item.has_image ? "包含图片" : "",
       item.extra_count ? `组件 ${item.extra_count}` : "",
       Number(item.duplicate_count || 0) > 1 ? `重复 ${item.duplicate_count} 次` : "",
@@ -8154,7 +9211,7 @@ function proactiveTaskStatusLabel(status) {
     due: "已到点",
     overdue: "超时未发",
     handed_off: "已交官方",
-    failed: "登记失败",
+    failed: "执行失败",
     cancelled: "已取消",
     cancel_failed: "取消失败",
     cancel_skipped: "无可取消",
@@ -8310,8 +9367,28 @@ function proactiveStatusLabel(status) {
     accepted: "已计划",
     sent: "已发送",
     blocked: "已拦截",
+    deferred: "已延后",
+    dropped: "已放弃",
+    cancelled: "已取消",
+    failed: "失败",
+    running: "执行中",
+    scheduled: "已登记",
+    due: "已到点",
+    overdue: "超时未发",
+    obsolete: "旧记录",
     expired: "已过期",
   }[status] || status || "未知";
+}
+
+function proactiveActionLabel(action) {
+  return {
+    message: "文字消息",
+    photo_text: "拍照/生图",
+    poke: "戳一戳",
+    voice: "语音",
+    screen_peek: "识屏",
+    quote: "引用回复",
+  }[action] || action || "文字消息";
 }
 
 function renderCreativeProjectCard(item) {
@@ -8378,14 +9455,19 @@ function renderDailyTimeline() {
     const vars = (segment.state_variables || []).slice(0, 4);
     const events = (segment.today_events || []).slice(0, 3);
     const presence = segment.presence_status || {};
+    const statusText = detailSegmentStatusLabel(segment);
+    const presenceText = presenceLabel(presence);
+    const metaText = [statusText, presenceText].filter(Boolean).join(" · ");
+    const errorText = String(segment.error || "").trim();
     return `
       <section class="timeline-item">
         <div class="timeline-time">${escapeHtml(segment.window || segment.key)}</div>
         <div class="timeline-body">
           <div class="timeline-head">
             <b>${escapeHtml(segment.summary || "这一段还没有摘要")}</b>
-            <span>${escapeHtml(presenceLabel(presence))}</span>
+            <span>${escapeHtml(metaText)}</span>
           </div>
+          ${errorText ? `<p class="timeline-error">失败原因：${escapeHtml(errorText)}${segment.retry_after ? `，${escapeHtml(segment.retry_after)} 后重试` : ""}</p>` : ""}
           <div class="state-pills">
             ${vars.length ? vars.map((item) => `
               <span title="${escapeHtml(item.note || "")}">
@@ -8400,6 +9482,19 @@ function renderDailyTimeline() {
       </section>
     `;
   }).join("");
+}
+
+function detailSegmentStatusLabel(segment) {
+  const raw = segment && typeof segment === "object" ? segment : {};
+  const value = String(raw.status || "").trim();
+  const startedAt = String(raw.started_at || "").trim();
+  const label = {
+    done: "已细化",
+    generating: "生成中",
+    failed: "生成失败",
+  }[value] || (value ? value : "未生成");
+  if (value === "generating" && startedAt) return `${label}（${startedAt} 开始）`;
+  return label;
 }
 
 function renderInteractionImpact() {
@@ -8441,6 +9536,7 @@ function presenceLabel(presence) {
   const text = presence?.custom_text || presence?.wording || "";
   if (mode === "custom" && text) return `自定义状态：${text}`;
   if (mode === "sleep") return "状态：休息中";
+  if (mode === "busy") return "状态：忙碌";
   if (mode === "online") return "状态：在线";
   return "状态：不变";
 }
@@ -8505,6 +9601,8 @@ function renderConfig() {
   $("#groupAccessMode").value = group.access_mode || "whitelist";
   $("#groupWhitelist").value = (group.whitelist || []).join("\n");
   $("#groupBlacklist").value = (group.blacklist || []).join("\n");
+  renderStorageConfig();
+  renderAppearanceSettings();
   renderAccessManager(group);
   renderFeatureSwitches();
   renderConfigBackups();
@@ -8512,14 +9610,45 @@ function renderConfig() {
   renderConfigMigrationPreview();
 }
 
+function renderStorageConfig(options = {}) {
+  const overview = state.overview || {};
+  const settings = overview.settings || {};
+  const plugin = overview.plugin || {};
+  const preserveDraft = Boolean(options.preserveDraft);
+  const backendSelect = $("#storageBackendSelect");
+  const sqliteWrap = $("#storageSqlitePathWrap");
+  const sqliteInput = $("#storageSqlitePathInput");
+  const summary = $("#storageConfigSummary");
+  const selectedBackend = preserveDraft ? (backendSelect?.value || "") : "";
+  const backend = String(selectedBackend || settings.storage_backend || plugin.storage_backend || "json").trim().toLowerCase() || "json";
+  const sqlitePath = preserveDraft && sqliteInput
+    ? String(sqliteInput.value || "").trim()
+    : String(settings.storage_sqlite_path || plugin.storage_sqlite_path || "").trim();
+  if (backendSelect) backendSelect.value = backend;
+  if (sqliteInput) sqliteInput.value = sqlitePath;
+  if (sqliteWrap) sqliteWrap.hidden = backend !== "sqlite";
+  if (summary) {
+    summary.innerHTML = `
+      <span>当前后端：<b>${escapeHtml(backend)}</b></span>
+      <span>当前路径：<b>${escapeHtml(plugin.storage_sqlite_path || sqlitePath || "companions.json / 默认 companions.db")}</b></span>
+      <span>当前数据文件：<b>${escapeHtml(plugin.data_file || "-")}</b></span>
+    `;
+  }
+}
+
 function renderPrivateStrategyOverview(selector, info) {
   const total = Number(info.target_count ?? info.user_count ?? info.private_user_count ?? 0);
   const enabled = Number(info.enabled_count ?? info.enabled_user_count ?? total);
+  const adminIds = Array.isArray(info.admin_ids) ? info.admin_ids : [];
+  const targetIds = Array.isArray(info.target_user_ids) ? info.target_user_ids : [];
+  const manageIds = [...new Set([...adminIds, ...targetIds])];
+  const manageText = manageIds.length ? manageIds.join("、") : "未配置";
   const rows = [
     ["对象", total ? `${enabled}/${total} 启用` : `${enabled || 0} 个启用`],
     ["主动上限", `每日 ${Number(info.max_daily_messages || 0)} 条`],
     ["触达条件", `空闲 ${Number(info.idle_minutes || 0)} 分钟后，最小间隔 ${Number(info.min_interval_minutes || 0)} 分钟`],
-    ["私聊确认", toBool(info.require_opt_in ?? info.require_confirm ?? info.require_private_confirm) ? "需要" : "不需要"],
+    ["管理权限", manageText],
+    ["管理命令", toBool(info.require_opt_in ?? info.require_confirm ?? info.require_private_confirm) ? "仅私聊" : "私聊+群聊"],
   ];
   $(selector).innerHTML = compactOverviewList(rows, { columns: 1 });
 }
@@ -8551,9 +9680,9 @@ function renderLongTermStrategyOverview(selector, { creative = {}, bili = {}, qz
     },
     {
       title: "QQ 空间",
-      tone: qzone.enabled && qzone.available ? "ok" : qzone.enabled ? "warn" : "off",
+      tone: qzone.enabled && qzone.available ? (qzone.last_status && qzone.last_status.startsWith("paused:") ? "warn" : "ok") : qzone.enabled ? "warn" : "off",
       meta: [qzone.enabled ? (qzone.available ? "可用" : "待服务") : "关闭", qzone.life_publish_enabled ? "生活说说开启" : "生活说说关闭", qzone.comment_inbox_enabled ? "评论收件箱开启" : ""].filter(Boolean),
-      text: qzone.last_text || "暂无最近说说",
+      text: qzone.last_status && qzone.last_status.startsWith("paused:") ? `自动说说已暂停：${qzone.auth_failure_reason || qzone.last_status}` : (qzone.last_text || "暂无最近说说"),
     },
     {
       title: "私下创作",
@@ -8662,15 +9791,22 @@ function renderModuleWorkbench(settings) {
   const bookshelf = overview.bookshelf || {};
   const qzone = overview.qzone || {};
   const privateReading = overview.private_reading || {};
+  const intensity = overview.proactive_intensity || {};
+  const intensityEnabled = Boolean(intensity.enabled);
+  const intensityLabel = intensityEnabled ? (intensity.label || intensity.preset || "预设开启") : "手动参数";
+  const proactiveMaxDaily = intensityEnabled ? (intensity.effective?.max_daily_messages ?? settings.max_daily_messages) : settings.max_daily_messages;
+  const proactiveIdle = intensityEnabled ? (intensity.effective?.idle_minutes ?? settings.idle_minutes) : settings.idle_minutes;
+  const proactiveMinInterval = intensityEnabled ? (intensity.effective?.min_interval_minutes ?? settings.min_interval_minutes) : settings.min_interval_minutes;
   const moduleCards = [
     {
-      title: "私聊主动",
+      title: "主动触达",
       kicker: "主动节奏",
-      status: Number(settings.max_daily_messages || 0) > 0 ? "运行中" : "已收起",
-      tone: Number(settings.max_daily_messages || 0) > 0 ? "ok" : "off",
-      body: `${settings.max_daily_messages ?? 0} 条/天，空闲 ${settings.idle_minutes ?? 0} 分钟后进入候选。`,
+      status: Number(proactiveMaxDaily || 0) > 0 ? "运行中" : "已收起",
+      tone: intensityEnabled ? "warn" : (Number(proactiveMaxDaily || 0) > 0 ? "ok" : "off"),
+      body: `私聊 ${proactiveMaxDaily ?? 0} 条/天，空闲 ${proactiveIdle ?? 0} 分钟后进入候选；群聊唤醒和插话按群聊开关参与。`,
       meta: [
-        `最小间隔 ${settings.min_interval_minutes ?? 0} 分钟`,
+        `强度：${intensityLabel}`,
+        `最小间隔 ${proactiveMinInterval ?? 0} 分钟`,
         toBool(settings.enable_unanswered_screen_peek_followup) ? "未回应后可轻窥屏" : "未回应不窥屏",
       ],
       actions: [
@@ -8746,7 +9882,7 @@ function renderModuleWorkbench(settings) {
       tone: settings.enable_creative_writing || settings.enable_bilibili_boredom_watch || settings.enable_qzone_life_publish ? "ok" : "off",
       body: [
         creative.latest_title ? `最近创作：${creative.latest_title}` : "",
-        qzone.last_text ? `最近说说：${qzone.last_text}` : "",
+        qzone.last_status && qzone.last_status.startsWith("paused:") ? `QQ 空间自动说说已暂停：${qzone.auth_failure_reason || ""}` : (qzone.last_text ? `最近说说：${qzone.last_text}` : ""),
         privateReading.last_album?.title ? `最近阅读：${privateReading.last_album.title}` : "",
       ].filter(Boolean).join("；") || "创作、空间、新闻、夹层阅读等外部生活线还没有明显产物。",
       meta: [
@@ -8818,12 +9954,18 @@ function renderCurrentPersonaStatus(settings) {
 function renderModuleSummary(settings) {
   const features = state.overview?.features || {};
   const groups = state.overview?.group || {};
+  const intensity = state.overview?.proactive_intensity || {};
+  const intensityEnabled = Boolean(intensity.enabled);
+  const proactiveMaxDaily = intensityEnabled ? (intensity.effective?.max_daily_messages ?? settings.max_daily_messages) : settings.max_daily_messages;
+  const proactiveIdle = intensityEnabled ? (intensity.effective?.idle_minutes ?? settings.idle_minutes) : settings.idle_minutes;
   const cards = [
     {
-      label: "私聊主动",
-      value: `${settings.max_daily_messages ?? 0}/天`,
-      note: `${settings.idle_minutes ?? 0} 分钟空闲后候选`,
-      tone: Number(settings.max_daily_messages || 0) > 0 ? "ok" : "off",
+      label: "主动触达",
+      value: `${proactiveMaxDaily ?? 0}/天`,
+      note: intensityEnabled
+        ? `${intensity.label || intensity.preset || "预设"} · 私聊空闲 ${proactiveIdle ?? 0} 分钟`
+        : `私聊空闲 ${proactiveIdle ?? 0} 分钟`,
+      tone: intensityEnabled ? "warn" : (Number(proactiveMaxDaily || 0) > 0 ? "ok" : "off"),
     },
     {
       label: "群聊观察",
@@ -9267,13 +10409,13 @@ function applyRoleplayExample(kind) {
 
 async function generateRoleplayDraftFromPersona(button) {
   setActionBusy(button, true);
-  showToast("正在读取主回复人格并生成草稿...");
+  showToast("正在读取主回复人格并提取世界知识草稿...");
   try {
     const scopes = selectedRoleplayDraftScopes();
     const result = await postJson("/roleplay/draft_from_persona", { scopes });
     state.roleplayPersonaDraft = result || null;
     renderRoleplayPersonaDraftPanel();
-    showToast("草稿已生成，请先预览再填入");
+    showToast("世界知识草稿已生成，请先预览再填入");
   } catch (error) {
     showToast(`生成失败：${error.message}`, "error");
   } finally {
@@ -9295,9 +10437,9 @@ function renderRoleplayPersonaDraftPanel() {
   const draft = result.draft || {};
   const scopes = Array.isArray(result.scopes) ? result.scopes : [];
   const rows = [
-    ...roleplayDraftPartRows(draft.persona_parts, roleplayPersonaParts, "角色"),
-    ...roleplayDraftPartRows(draft.world_parts, roleplayWorldParts, "世界观"),
-    ...roleplayDraftPartRows(draft.user_parts, roleplayVisionParts, "主人/用户"),
+    ...roleplayDraftPartRows(draft.persona_parts, roleplayPersonaParts, "角色资料"),
+    ...roleplayDraftPartRows(draft.world_parts, roleplayWorldParts, "世界观资料"),
+    ...roleplayDraftPartRows(draft.user_parts, roleplayVisionParts, "用户与关系"),
     ...roleplayTranslationParts.map((label) => ["翻译", label, draft.translations?.[label] || ""]).filter(([, , value]) => String(value || "").trim()),
   ];
   const imageHint = String(draft.image_self_recognition_hint || "").trim();
@@ -9307,7 +10449,7 @@ function renderRoleplayPersonaDraftPanel() {
   panel.innerHTML = `
     <header>
       <div>
-        <b>主回复人格草稿</b>
+        <b>世界知识草稿</b>
         <span>${escapeHtml(roleplayDraftScopeLabel(scopes))} · ${escapeHtml(result.persona_id ? `指定人格：${result.persona_id}` : "继承 AstrBot 默认人格")} · ${escapeHtml(result.provider_id || "主模型")} · 来源 ${escapeHtml(result.source_chars || 0)} 字</span>
       </div>
       <div class="persona-draft-panel-actions">
@@ -9327,7 +10469,7 @@ function renderRoleplayPersonaDraftPanel() {
           </section>
         `).join("")}
       </div>
-    ` : `<div class="empty small">主模型没有抽取到足够明确的字段。可以换一个写得更具体的主回复人格后再试。</div>`}
+    ` : `<div class="empty small">主模型没有抽取到足够明确的世界知识字段。可以换一个写得更具体的主回复人格后再试。</div>`}
     ${notes.length ? `<div class="persona-draft-notes">${notes.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
   `;
   panel.querySelector("[data-roleplay-draft-close]")?.addEventListener("click", () => {
@@ -9336,7 +10478,7 @@ function renderRoleplayPersonaDraftPanel() {
   panel.querySelectorAll("[data-roleplay-draft-apply]").forEach((control) => {
     control.addEventListener("click", () => {
       const overwrite = control.dataset.roleplayDraftApply === "overwrite";
-      if (overwrite && !requireSecondClick(control, "roleplay-draft-overwrite", "再次点击会覆盖当前设定工作台里对应范围的草稿", "再次点击覆盖")) {
+      if (overwrite && !requireSecondClick(control, "roleplay-draft-overwrite", "再次点击会覆盖当前世界知识工作台里对应范围的草稿", "再次点击覆盖")) {
         return;
       }
       applyRoleplayPersonaDraft(overwrite);
@@ -9354,11 +10496,11 @@ function roleplayDraftPartRows(source, parts, group) {
 function roleplayDraftScopeLabel(scopes) {
   const selected = new Set(scopes || []);
   const labels = [
-    selected.has("persona") ? "角色设定" : "",
-    selected.has("world") ? "世界观设定" : "",
-    selected.has("user") ? "主人/用户设定" : "",
+    selected.has("persona") ? "角色资料" : "",
+    selected.has("world") ? "世界观资料" : "",
+    selected.has("user") ? "用户与关系" : "",
   ].filter(Boolean);
-  return labels.length ? `范围：${labels.join("、")}` : "范围：角色设定";
+  return labels.length ? `范围：${labels.join("、")}` : "范围：角色资料";
 }
 
 function applyRoleplayPersonaDraft(overwrite = false) {
@@ -9390,7 +10532,7 @@ function applyRoleplayPersonaDraft(overwrite = false) {
   syncRoleplayStandardFieldsToFreeform();
   const form = document.getElementById("roleplayProfileForm");
   if (changed && form) markModuleFormDirty(form);
-  showToast(changed ? `已填入 ${changed} 项，请检查后保存角色设定` : "没有可填入的新字段");
+  showToast(changed ? `已填入 ${changed} 项，请检查后保存世界知识` : "没有可填入的新字段");
 }
 
 function fillRoleplayDraftControl(selector, value, overwrite = false) {
@@ -10344,6 +11486,10 @@ function renderFeatureSwitches() {
   const groups = extraKeys.length
     ? [...featureGroups, { title: "其他", note: "来自配置但暂未归入固定分组的开关。", keys: extraKeys }]
     : featureGroups;
+  const overviewSettings = state.overview?.settings || {};
+  const intensity = state.overview?.proactive_intensity || {};
+  const intensitySearchText = "主动强度预设 主动触达 proactive_intensity_preset 私聊主动 群聊唤醒 群主动插话";
+  const intensityVisible = !filter || intensitySearchText.toLowerCase().includes(filter);
   const visibleDraftKeys = visibleTopLevelFeatureKeys(state.featureDraft || {});
   const total = visibleDraftKeys.length;
   const enabled = visibleDraftKeys.filter((key) => toBool(state.featureDraft[key])).length;
@@ -10388,17 +11534,23 @@ function renderFeatureSwitches() {
       if (!filter) return true;
       return featureSearchText(key).includes(filter);
     });
-    if (!visibleKeys.length) return "";
+    const hasIntensityCard = group.title === "通用能力" && intensityVisible;
+    if (!visibleKeys.length && !hasIntensityCard) return "";
     const groupEnabled = visibleKeys.filter((key) => toBool(state.featureDraft[key])).length;
+    const groupMeta = visibleKeys.length ? `${groupEnabled} / ${visibleKeys.length}` : "设置项";
+    const prefix = hasIntensityCard
+      ? proactiveIntensityCommonSettingCard(overviewSettings, intensity)
+      : "";
     return `
       <section class="feature-switch-group">
         <header>
           <div>
             <b>${escapeHtml(group.title)}</b>
           </div>
-          <small>${escapeHtml(groupEnabled)} / ${escapeHtml(visibleKeys.length)}</small>
+          <small>${escapeHtml(groupMeta)}</small>
         </header>
         <div class="feature-switch-list">
+          ${prefix}
           ${visibleKeys.map((key) => featureSwitchItem(key)).join("")}
         </div>
       </section>
@@ -10418,6 +11570,57 @@ function renderFeatureSwitches() {
     });
   });
   bindProactiveOnlyTempUnlockActions($("#featureFlags"));
+  bindProactiveIntensityCommonSetting();
+}
+
+function proactiveIntensityCommonSettingCard(settings = {}, intensity = {}) {
+  const current = String(settings.proactive_intensity_preset || intensity.preset || "off");
+  const enabled = Boolean(intensity?.enabled);
+  const effective = intensity?.effective || {};
+  const detail = enabled
+    ? `当前有效：私聊 ${effective.max_daily_messages ?? "-"} 条/天，空闲 ${effective.idle_minutes ?? "-"} 分钟，群唤醒冷却 ${effective.group_wakeup_cooldown_seconds ?? "-"} 秒，群插话间隔 ${effective.group_interject_min_interval_minutes ?? "-"} 分钟。`
+    : "关闭时完全沿用手动参数，不改变私聊、群聊唤醒或群主动插话频率。";
+  return `
+    <section class="feature-switch-item feature-setting-inline ${enabled ? "on" : "off"}">
+      <div class="feature-switch-body">
+        <button type="button" class="feature-switch-text" data-jump-tab="troubleshooting">
+          <b>主动强度预设</b>
+          <small>proactive_intensity_preset</small>
+        </button>
+        <div class="feature-switch-meta">
+          <span class="feature-state-text">${escapeHtml(enabled ? (intensity.label || current) : "关闭：手动参数")}</span>
+          <span class="feature-lock-note">影响私聊主动、群聊唤醒和群主动插话；排障页会显示当前覆盖项。</span>
+        </div>
+        <div class="feature-lock-related">${escapeHtml(detail)}</div>
+      </div>
+      <form class="feature-inline-setting-form" data-proactive-intensity-form>
+        <select name="proactive_intensity_preset">
+          ${[
+            ["off", "关闭：手动参数"],
+            ["balanced", "标准偏主动"],
+            ["high_private", "私聊高频"],
+            ["high_group", "群聊活跃"],
+            ["live", "在线陪伴"],
+          ].map(([value, label]) => `<option value="${escapeHtml(value)}"${current === value ? " selected" : ""}>${escapeHtml(label)}</option>`).join("")}
+        </select>
+        <button type="submit">保存</button>
+      </form>
+    </section>
+  `;
+}
+
+function bindProactiveIntensityCommonSetting() {
+  document.querySelectorAll("[data-proactive-intensity-form]").forEach((form) => {
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const value = form.querySelector('[name="proactive_intensity_preset"]')?.value || "off";
+      await runAction(
+        () => postJson("/settings/update", { settings: { proactive_intensity_preset: value } }),
+        "已保存主动强度预设",
+        form.querySelector("button[type='submit']"),
+      );
+    });
+  });
 }
 
 function syncFeatureFooterAction() {
@@ -10577,6 +11780,10 @@ function featureRelatedSettings(key) {
       message_debounce_max_merge_messages: 8,
       enable_smart_message_debounce: false,
       SMART_MESSAGE_DEBOUNCE_PROVIDER_ID: "",
+      enable_smart_silence: true,
+      SMART_SILENCE_PROVIDER_ID: "",
+      smart_silence_min_confidence: 0.66,
+      smart_silence_model_timeout_seconds: 1.2,
       smart_message_debounce_model_timeout_seconds: 0.8,
       smart_message_debounce_wait_seconds: 3,
       smart_message_debounce_learning_window_seconds: 8,
@@ -10652,6 +11859,9 @@ function featureSettingVisibleForCurrentMode(featureKey, settingKey, settings = 
   }
   if (featureKey === "enable_humanized_states") {
     const restChildren = new Set(["rest_reply_mode", "rest_reply_probability", "rest_reply_llm_threshold", "rest_reply_active_windows", "rest_reply_awake_grace_minutes", "enable_rest_backlog_reply", "rest_backlog_max_messages", "REST_WAKEUP_PROVIDER_ID"]);
+    if (settingKey === "enable_qq_custom_presence_sync") {
+      return boolSetting("enable_qq_presence_sync");
+    }
     if (restChildren.has(settingKey)) {
       const restEnabled = boolSetting("enable_rest_reply_simulation");
       if (!restEnabled) return false;
@@ -10706,7 +11916,7 @@ function featureSettingVisibleForCurrentMode(featureKey, settingKey, settings = 
   }
   if (featureKey === "enable_photo_text_action") {
     if (settingKey === "daily_outfit_photo_prompt") return boolSetting("enable_daily_outfit_photo");
-    if (settingKey === "natural_language_photo_generation_max_daily") return boolSetting("enable_natural_language_photo_generation");
+    if (["natural_language_photo_generation_max_daily", "natural_language_photo_extra_prompt"].includes(settingKey)) return boolSetting("enable_natural_language_photo_generation");
     return true;
   }
   if (featureKey === "enable_emotion_simulation") {
@@ -10798,10 +12008,11 @@ function featureSettingInput(key, value) {
   const disabled = featureLockedByProactiveOnlyMode(key);
   const disabledAttr = disabled ? " disabled" : "";
   if (spec.type === "checkbox") {
+    const checked = toBool(value);
     return `
       <label class="feature-param-check">
-        <input type="checkbox" data-feature-param="${safeKey}" ${value ? "checked" : ""}${disabledAttr}>
-        <span>${escapeHtml(disabled ? "已锁定" : value ? "开启" : "关闭")}</span>
+        <input type="checkbox" data-feature-param="${safeKey}" ${checked ? "checked" : ""}${disabledAttr}>
+        <span>${escapeHtml(disabled ? "已锁定" : checked ? "开启" : "关闭")}</span>
       </label>
     `;
   }
@@ -10921,7 +12132,7 @@ function featureDependencyLines(key) {
   if (key === "enable_proactive_only_mode") dependencies.push(["注意", "只跳过本插件的普通被动增强，不会阻止默认回复或其他插件"]);
   if (key !== "enable_group_companion" && key.startsWith("enable_group_")) dependencies.push(["依赖", "群聊总开关"]);
   if (key === "enable_group_conversation_followup") dependencies.push(["依赖", "群聊场景感知"]);
-  if (["enable_companion_memory", "enable_expression_learning", "enable_intent_emotion_analysis", "enable_response_self_review", "enable_passive_topic_suppression", "enable_relationship_state_machine", "enable_emotion_simulation", "enable_dialogue_episode_memory", "enable_open_loop_tracking", "enable_food_menu_recommendation"].includes(key)) {
+  if (["enable_companion_memory", "enable_expression_learning", "enable_intent_emotion_analysis", "enable_response_self_review", "enable_smart_silence", "enable_passive_topic_suppression", "enable_relationship_state_machine", "enable_emotion_simulation", "enable_dialogue_episode_memory", "enable_open_loop_tracking", "enable_food_menu_recommendation"].includes(key)) {
     dependencies.push(["依赖", "私聊互动策略"]);
   }
   if (["enable_bilibili_boredom_watch"].includes(key)) dependencies.push(["依赖", "B 站能力可用"]);
@@ -10990,10 +12201,16 @@ const featureDetailGuides = {
     disabled: "不再注入本轮意图策略；情绪模拟和关系距离感仍可基于自身开关使用轻量状态。",
   },
   enable_response_self_review: {
-    summary: "主动消息发送前统一做价值复核和轻量润色，重点避免主动开口写成“好呀/确实/刚看到你说”这类像在回复空气的话。",
-    trigger: "主动消息生成后、发送前；普通被动回复只保留防漏、防复读和突然换话题等本地保护，full 模式才会积极改写被动回复。",
-    enabled: "主动消息会在发送前判断原样发送、轻改写、延后或取消；默认宽松强度会减少直接取消，避免模型过度保守导致主动消息归零。",
+    summary: "主动消息发送前统一做价值复核和轻量润色；被动回复保留防漏、防复读和智能沉默等发送前保护。",
+    trigger: "主动消息生成后、发送前；普通被动回复只在严重风险、用户明确边界或 full 模式下进入额外处理。",
+    enabled: "主动消息会在发送前判断原样发送、轻改写、延后或取消；用户明确不想继续话题时，可由智能沉默小模型决定是否直接不发。",
     disabled: "不再调用模型润色主动消息；本地仍会尽量丢弃明显错误的主动消息。",
+  },
+  enable_smart_silence: {
+    summary: "用户说别聊了、别问了、换个话题或不用回复时，不再硬接一句“那就结束这个话题”，而是让小模型判断是否该安静退开。",
+    trigger: "仅在本地快判命中疑似话题边界后调用小模型；普通聊天不会额外消耗。",
+    enabled: "小模型判定 silent 且达到置信度阈值时，本轮待发送回复会被直接取消，不写入上次回复记忆。",
+    disabled: "遇到这类边界表达时仍按普通主链回复处理。",
   },
   enable_passive_topic_suppression: {
     summary: "记录最近被动回复主题，限制短时间内反复把同类话题带回聊天，避免像卡在一个话题上。",
@@ -11087,7 +12304,7 @@ const featureDetailGuides = {
   },
   enable_cycle_state: {
     summary: "作为拟人身体状态的一部分，偶尔生成生理期前、处于生理期或生理期后的状态底色。",
-    trigger: "拟人身体状态刷新时，且人格适合人类身体设定。",
+    trigger: "拟人身体状态刷新时，且生理期模拟开关已开启。",
     enabled: "当前扮演状态可能出现生理期相关描述，并轻微影响精力、语气、长短和节奏；不会当成真实日期或医学记录追踪。",
     disabled: "不会新增生理期状态；已有状态会按持续时间自然结束，之后回到“不处于生理期”。",
   },
@@ -11676,6 +12893,12 @@ function bindFeatureDetailActions() {
             state.overview.settings.enable_smart_message_debounce = input.checked;
             renderFeatureSwitches();
           }
+          if (state.selectedFeatureKey === "enable_response_self_review" && input.dataset.featureParam === "enable_smart_silence") {
+            state.featureDraft.enable_smart_silence = input.checked;
+            state.overview.settings = state.overview.settings || {};
+            state.overview.settings.enable_smart_silence = input.checked;
+            renderFeatureSwitches();
+          }
           if (
             state.selectedFeatureKey === "enable_tts_enhancement"
             && ["auto_voice_enabled", "enable_tts_local_playback", "enable_tts_live_subtitle_sync"].includes(input.dataset.featureParam)
@@ -11807,368 +13030,61 @@ function bindProactiveOnlyTempUnlockActions(root = document) {
 }
 
 function renderProviders() {
-  const providers = providerValuesForRender();
-  renderProviderSummary(providers);
-  renderProviderFlow(providers);
-  const entries = Object.entries(providerLabels)
-    .filter(([key]) => visibleConfigKey(key))
-    .filter(([key, label]) => providerMatchesFilter(key, label, providers));
-  const groups = providerGroups
-    .map((group) => {
-      const groupEntries = entries.filter(([key]) => providerGroupByKey[key]?.id === group.id);
-      if (!groupEntries.length) return "";
-      return `
-        <section class="provider-group" data-provider-group="${escapeHtml(group.id)}">
-          <div class="provider-group-head">
-            <div>
-              <h3>${escapeHtml(group.title)}</h3>
-              <p>${escapeHtml(group.desc)}</p>
-            </div>
-            <span>${groupEntries.length} 项</span>
-          </div>
-          <div class="provider-grid">
-            ${groupEntries.map(([key, label]) => providerCardMarkup(key, label, providers)).join("")}
-          </div>
-        </section>
-      `;
-    })
-    .join("");
-  $("#providerForm").innerHTML = groups || `
-    <div class="empty provider-empty">
-      <b>没有匹配的模型配置</b>
-      <span>换个关键词，或切回“全部”查看完整模型分工。</span>
-    </div>
-  `;
-  bindProviderTests();
+  if (window.PrivateCompanionProviderTree?.renderProviders) {
+    window.PrivateCompanionProviderTree.renderProviders({
+      window,
+      document,
+      state,
+      escapeHtml,
+      providerLabels,
+      providerGuides,
+      providerPreferenceMeta,
+      providerPassiveImpactMeta,
+      providerGroups,
+      providerGroupByKey,
+      noFallbackProviderKeys,
+      optionalNoFallbackProviderKeys,
+      visibleConfigKey,
+      providerAllowedInCurrentMode,
+      providerNeedsLowLatency,
+      currentProviderConfigMode,
+      syncProviderConfigModeControls,
+      setProviderConfigMode,
+      postJson,
+    });
+  }
 }
 
 function providerValuesForRender() {
+  if (window.PrivateCompanionProviderTree?.currentProviderValues) {
+    return window.PrivateCompanionProviderTree.currentProviderValues({ document, state });
+  }
   return {
     ...(state.overview?.providers || {}),
     ...(state.providerDraft || {}),
   };
 }
 
-function providerCardMarkup(key, label, providers) {
-  const selected = providers[key] || "";
-  const resolved = resolveProviderId(key, providers);
-  const configured = Boolean(selected);
-  const noFallback = noFallbackProviderKeys.has(key);
-  const optionalNoFallback = optionalNoFallbackProviderKeys.has(key);
-  const group = providerGroupByKey[key];
-  const statusLabel = configured ? "已单独配置" : (noFallback ? "未配置" : (optionalNoFallback ? "可选未启用" : "自动回退"));
-  const guide = providerGuides[key] || {};
-  const preference = providerPreferenceMeta[guide.preference || "balanced"];
-  const impact = providerPassiveImpactMeta[guide.passiveImpact || ""];
-  return `
-    <article class="provider-card ${configured ? "configured" : "inherited"}">
-      <div class="provider-card-head">
-        <div>
-          <span class="provider-card-kicker">${escapeHtml(group?.title || "模型配置")}</span>
-          <h3>${escapeHtml(label)}</h3>
-        </div>
-        <span class="provider-badge ${configured ? "configured" : "inherited"}">${escapeHtml(statusLabel)}</span>
-      </div>
-      <div class="provider-tags">
-        ${preference ? `<span class="provider-tag ${escapeHtml(preference.className)}" title="${escapeHtml(preference.text)}">${escapeHtml(preference.label)}</span>` : ""}
-        ${impact ? `<span class="provider-tag impact-${escapeHtml(impact.className)}" title="${escapeHtml(impact.text)}">${escapeHtml(impact.label)}</span>` : ""}
-      </div>
-      <label class="provider-field">
-        <span>Provider</span>
-        ${providerSelect(key, selected)}
-      </label>
-      <div class="provider-current">
-        <span>当前使用</span>
-        <b>${escapeHtml(resolved || (noFallback ? "未配置" : "AstrBot 默认模型"))}</b>
-      </div>
-      ${providerGuideMarkup(key)}
-      <div class="provider-row">
-        <span class="hint">${escapeHtml(key)}</span>
-        <button type="button" data-provider-test="${escapeHtml(key)}">测试</button>
-      </div>
-      <span class="provider-status" data-provider-status="${escapeHtml(key)}"></span>
-    </article>
-  `;
-}
-
-function providerGuideMarkup(key) {
-  const guide = providerGuides[key];
-  if (!guide) return "";
-  const preference = providerPreferenceMeta[guide.preference || ""];
-  const impact = providerPassiveImpactMeta[guide.passiveImpact || ""];
-  return `
-    <span class="provider-guide">
-      <span><b>用途</b>${escapeHtml(guide.purpose)}</span>
-      <span><b>适合</b>${escapeHtml(guide.fit)}</span>
-      ${preference ? `<span><b>取向</b>${escapeHtml(preference.text)}</span>` : ""}
-      ${impact ? `<span><b>速度</b>${escapeHtml(impact.text)}</span>` : ""}
-      ${guide.note ? `<span><b>注意</b>${escapeHtml(guide.note)}</span>` : ""}
-      <span><b>回退</b>${escapeHtml(guide.fallback)}</span>
-    </span>
-  `;
-}
-
-function providerMatchesFilter(key, label, providers) {
-  const mode = state.providerMode || "all";
-  const configured = Boolean(providers[key]);
-  const group = providerGroupByKey[key];
-  if (mode === "configured" && !configured) return false;
-  if (mode === "inherited" && configured) return false;
-  if (mode === "vision" && group?.id !== "media") return false;
-  const guide = providerGuides[key] || {};
-  if (mode === "speed" && !providerNeedsLowLatency(key)) return false;
-  if (mode === "quality" && guide.preference !== "quality") return false;
-  const query = (state.providerFilter || "").trim().toLowerCase();
-  if (!query) return true;
-  const preference = providerPreferenceMeta[guide.preference || ""];
-  const impact = providerPassiveImpactMeta[guide.passiveImpact || ""];
-  const haystack = [
-    key,
-    label,
-    group?.title || "",
-    guide.purpose || "",
-    guide.fit || "",
-    guide.note || "",
-    guide.fallback || "",
-    preference?.label || "",
-    preference?.text || "",
-    impact?.label || "",
-    impact?.text || "",
-    providers[key] || "",
-  ].join(" ").toLowerCase();
-  return haystack.includes(query);
-}
-
-function renderProviderSummary(providers) {
-  const keys = Object.keys(providerLabels).filter((key) => visibleConfigKey(key));
-  const configured = keys.filter((key) => Boolean(providers[key])).length;
-  const inherited = keys.filter((key) => !providers[key] && !noFallbackProviderKeys.has(key) && !optionalNoFallbackProviderKeys.has(key)).length;
-  const requiredMissing = keys.filter((key) => !providers[key] && noFallbackProviderKeys.has(key)).length;
-  const available = state.availableProviders.length;
-  const passiveSensitive = keys.filter((key) => providerGuides[key]?.passiveImpact === "direct").length;
-  const speedRecommended = keys.filter((key) => providerNeedsLowLatency(key)).length;
-  const qualityRecommended = keys.filter((key) => providerGuides[key]?.preference === "quality").length;
-  const vision = providers.PLUGIN_VISION_PROVIDER_ID || "跟随 AstrBot 本体/工具转述";
-  $("#providerSummary").innerHTML = `
-    <div class="provider-cost-notice">
-      <b>成本提醒</b>
-      <span>火山方舟协作计划免费额度将在 2026-06-30 结束。使用火山方舟 Provider 时，请检查每日 Token 限额和后台任务开关，注意成本控制。</span>
-    </div>
-    <div class="provider-summary-card strong">
-      <span>单独配置</span>
-      <b>${configured}/${keys.length}</b>
-      <small>已指定专用 Provider</small>
-    </div>
-    <div class="provider-summary-card">
-      <span>自动回退</span>
-      <b>${inherited}</b>
-      <small>留空项会按兜底链路执行</small>
-    </div>
-    <div class="provider-summary-card speed">
-      <span>被动速度相关</span>
-      <b>${passiveSensitive}</b>
-      <small>这些项建议优先关注延迟</small>
-    </div>
-    <div class="provider-summary-card quality">
-      <span>效果优先项</span>
-      <b>${qualityRecommended}</b>
-      <small>适合更强推理或多模态模型</small>
-    </div>
-    <div class="provider-summary-card">
-      <span>低延迟优先项</span>
-      <b>${speedRecommended}</b>
-      <small>卡顿时优先检查这些项</small>
-    </div>
-    ${requiredMissing ? `
-    <div class="provider-summary-card warn">
-      <span>未配置专用项</span>
-      <b>${requiredMissing}</b>
-      <small>这些任务留空时不会回退</small>
-    </div>
-    ` : ""}
-    <div class="provider-summary-card">
-      <span>可选 Provider</span>
-      <b>${available}</b>
-      <small>${escapeHtml(available ? "来自 AstrBot 当前配置" : "暂无可选项，可手动输入 ID")}</small>
-    </div>
-    <div class="provider-summary-card">
-      <span>视觉通道</span>
-      <b>${escapeHtml(vision)}</b>
-      <small>图片、识屏与素材理解</small>
-    </div>
-  `;
-}
-
-function providerSelect(key, value) {
-  const known = state.availableProviders.some((item) => item.id === value);
-  const customValue = value && !known ? value : "";
-  const options = [
-    `<option value="">${noFallbackProviderKeys.has(key) ? "留空不启用" : "留空自动回退"}</option>`,
-    ...state.availableProviders.map((item) => {
-      const label = `${item.name || item.id}${item.model ? ` · ${item.model}` : ""}${item.is_default ? " · 默认" : ""}`;
-      return `<option value="${escapeHtml(item.id)}" ${item.id === value ? "selected" : ""}>${escapeHtml(label)}</option>`;
-    }),
-    `<option value="__custom__" ${customValue ? "selected" : ""}>手动输入 Provider ID</option>`,
-  ].join("");
-  return `
-    <select data-provider-select="${escapeHtml(key)}">${options}</select>
-    <input data-provider-key="${escapeHtml(key)}" value="${escapeHtml(value || "")}" placeholder="自定义 Provider ID" ${customValue ? "" : "hidden"} />
-  `;
-}
-
 function currentProviderValues() {
-  const values = {
-    ...(state.overview?.providers || {}),
-    ...(state.providerDraft || {}),
-  };
-  document.querySelectorAll("[data-provider-key]").forEach((input) => {
-    values[input.dataset.providerKey] = input.value.trim();
-  });
-  return values;
-}
-
-function resolveProviderId(key, values = currentProviderValues()) {
-  if (values[key]) return values[key];
-  if (noFallbackProviderKeys.has(key)) return "";
-  if (optionalNoFallbackProviderKeys.has(key)) return "";
-  if (key === "SMART_MESSAGE_DEBOUNCE_PROVIDER_ID") {
-    return values.LLM_PROVIDER_ID || "";
-  }
-  if (key === "PROACTIVE_PERSONA_JUDGE_PROVIDER_ID") {
-    return values.RESPONSE_REVIEW_PROVIDER_ID || values.MAI_STYLE_PROVIDER_ID || values.LLM_PROVIDER_ID || "";
-  }
-  if (key === "REST_WAKEUP_PROVIDER_ID") {
-    return values.RESPONSE_REVIEW_PROVIDER_ID || values.LLM_PROVIDER_ID || "";
-  }
-  if (key === "TROUBLESHOOTING_PROVIDER_ID") {
-    return values.RESPONSE_REVIEW_PROVIDER_ID || values.MAI_STYLE_PROVIDER_ID || values.LLM_PROVIDER_ID || "";
-  }
-  if (key === "EMOTION_JUDGEMENT_PROVIDER_ID") {
-    return values.TROUBLESHOOTING_PROVIDER_ID || values.RELATIONSHIP_ANALYSIS_PROVIDER_ID || values.MAI_STYLE_PROVIDER_ID || values.LLM_PROVIDER_ID || "";
-  }
-  if (key !== "LLM_PROVIDER_ID" && values.MAI_STYLE_PROVIDER_ID) return values.MAI_STYLE_PROVIDER_ID;
-  return values.LLM_PROVIDER_ID || "";
-}
-
-function setProviderStatus(key, message, level = "info") {
-  const status = document.querySelector(`[data-provider-status="${key}"]`);
-  if (!status) return;
-  status.className = `provider-status ${level}`;
-  status.textContent = message;
-}
-
-function bindProviderTests() {
-  document.querySelectorAll("[data-provider-select]").forEach((select) => {
-    syncProviderInput(select);
-    select.addEventListener("change", () => {
-      syncProviderInput(select);
-      rememberProviderDraft(select.dataset.providerSelect);
-    });
-  });
-  document.querySelectorAll("[data-provider-key]").forEach((input) => {
-    input.addEventListener("input", () => rememberProviderDraft(input.dataset.providerKey));
-  });
-  document.querySelectorAll("[data-provider-test]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      await testProvider(button.dataset.providerTest);
-    });
-  });
+  return providerValuesForRender();
 }
 
 function bindProviderToolbar() {
-  const filter = $("#providerFilter");
-  if (filter) {
-    filter.addEventListener("input", () => {
-      state.providerFilter = filter.value;
-      renderProviders();
-    });
+  if (window.PrivateCompanionProviderTree?.bindProviderToolbar) {
+    window.PrivateCompanionProviderTree.bindProviderToolbar({ document, state, setProviderConfigMode });
   }
-  document.querySelectorAll("[data-provider-mode]").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.providerMode = button.dataset.providerMode || "all";
-      document.querySelectorAll("[data-provider-mode]").forEach((item) => {
-        item.classList.toggle("active", item === button);
-      });
-      renderProviders();
-    });
-  });
-}
-
-function syncProviderInput(select) {
-  const key = select.dataset.providerSelect;
-  const input = document.querySelector(`[data-provider-key="${key}"]`);
-  if (!input) return;
-  if (select.value === "__custom__") {
-    input.hidden = false;
-    input.focus();
-  } else {
-    input.hidden = true;
-    input.value = select.value;
-  }
-}
-
-function rememberProviderDraft(key) {
-  const input = document.querySelector(`[data-provider-key="${key}"]`);
-  if (!input) return;
-  state.providerDraft[key] = input.value.trim();
 }
 
 async function testProvider(key) {
-  const providerId = resolveProviderId(key);
-  setProviderStatus(key, "测试中...", "info");
-  if (!providerId && (noFallbackProviderKeys.has(key) || optionalNoFallbackProviderKeys.has(key))) {
-    setProviderStatus(key, optionalNoFallbackProviderKeys.has(key) ? "未单独配置：当前不会调用该模型" : "未配置，无法测试", "warn");
-    return;
+  if (window.PrivateCompanionProviderTree?.testProvider) {
+    await window.PrivateCompanionProviderTree.testProvider({
+      document,
+      state,
+      postJson,
+      noFallbackProviderKeys,
+      optionalNoFallbackProviderKeys,
+    }, key);
   }
-  try {
-    const result = await postJson("/provider/test", { key, provider_id: providerId });
-    if (result.ok) {
-      const suffix = result.sample ? ` · ${result.sample}` : "";
-      setProviderStatus(key, `正常 ${result.elapsed_ms}ms${suffix}`, "ok");
-    } else {
-      setProviderStatus(key, result.error || "未返回内容", "warn");
-    }
-  } catch (error) {
-    setProviderStatus(key, error.message, "warn");
-  }
-}
-
-function renderProviderFlow(providers) {
-  const main = providers.LLM_PROVIDER_ID || "AstrBot 默认模型";
-  const mai = providers.MAI_STYLE_PROVIDER_ID || main;
-  const pluginVision = providers.PLUGIN_VISION_PROVIDER_ID
-    || providers.NARRATION_PROVIDER_ID
-    || "跟随工具结果转述 / 主模型";
-  const tasks = Object.entries(providerLabels).filter(([key]) => (
-    key !== "LLM_PROVIDER_ID"
-    && key !== "MAI_STYLE_PROVIDER_ID"
-    && key !== "PLUGIN_VISION_PROVIDER_ID"
-    && visibleConfigKey(key)
-  ));
-  $("#providerFlow").innerHTML = `
-    <div class="flow-lane">
-      <span class="flow-node primary">主模型<br><b>${escapeHtml(main)}</b></span>
-      <span class="flow-arrow">→</span>
-      <span class="flow-node">陪伴通用<br><b>${escapeHtml(mai)}</b></span>
-    </div>
-    <div class="flow-lane">
-      <span class="flow-node primary">默认图片转述<br><b>AstrBot 本体配置</b></span>
-      <span class="flow-arrow">→</span>
-      <span class="flow-node ${providers.PLUGIN_VISION_PROVIDER_ID ? "primary" : "inherited"}">插件识图模型<br><b>${escapeHtml(pluginVision)}</b></span>
-    </div>
-    <div class="flow-tasks">
-      ${tasks.map(([key, label]) => {
-        const resolved = resolveProviderId(key, providers);
-        const value = providers[key] || (
-          noFallbackProviderKeys.has(key)
-            ? "未配置"
-            : (optionalNoFallbackProviderKeys.has(key) ? "未启用" : (resolved || "AstrBot 默认模型"))
-        );
-        const inherited = !providers[key];
-        return `<span class="flow-node ${inherited ? "inherited" : "primary"}">${escapeHtml(label)}<br><b>${escapeHtml(value)}</b></span>`;
-      }).join("")}
-    </div>
-  `;
 }
 
 function miniStat(label, value) {
@@ -12641,10 +13557,12 @@ async function runAction(action, successMessage = "", control = null) {
   try {
     const result = await action();
     if (result && typeof result === "object" && result.plugin && result.features) {
+      const requestSeq = ++loadAllRequestSeq;
       state.overview = result;
       state.featureDraft = featureDraftFromOverview(result);
       renderAll();
       $("#subtitle").textContent = `${result.plugin.bot_name || "Private Companion"} · ${new Date().toLocaleString()}`;
+      void loadUserGroupLists(requestSeq);
     } else {
       await loadAll();
     }
@@ -12662,11 +13580,27 @@ async function runAction(action, successMessage = "", control = null) {
 }
 
 function switchTab(tabName) {
-  state.activeTab = tabName || "dashboard";
+  tabName = tabName || "dashboard";
+  if (tabName === state.activeTab) return;
+  const currentPanel = document.querySelector(".panel.is-active");
+  const nextPanel = document.getElementById(`panel-${tabName}`);
+  state.activeTab = tabName;
   document.querySelectorAll(".tab").forEach((item) => item.classList.toggle("is-active", item.dataset.tab === tabName));
-  document.querySelectorAll(".panel").forEach((item) => item.classList.toggle("is-active", item.id === `panel-${tabName}`));
-  renderActiveTab(state.activeTab);
-  ensureTabData(state.activeTab).catch((error) => showToast(`页面数据加载失败：${error.message}`, "error"));
+  if (currentPanel && nextPanel && currentPanel !== nextPanel) {
+    currentPanel.classList.add("is-leaving");
+    currentPanel.classList.remove("is-active");
+    setTimeout(() => {
+      currentPanel.classList.remove("is-leaving");
+      currentPanel.style.display = "";
+      nextPanel.classList.add("is-active");
+      renderActiveTab(state.activeTab);
+      ensureTabData(state.activeTab).catch((error) => showToast(`页面数据加载失败：${error.message}`, "error"));
+    }, 140);
+  } else {
+    document.querySelectorAll(".panel").forEach((item) => item.classList.toggle("is-active", item.id === `panel-${tabName}`));
+    renderActiveTab(state.activeTab);
+    ensureTabData(state.activeTab).catch((error) => showToast(`页面数据加载失败：${error.message}`, "error"));
+  }
 }
 
 document.querySelectorAll(".tab").forEach((button) => {
@@ -12693,7 +13627,7 @@ document.addEventListener("click", async (event) => {
   if (troubleshootingRefresh) {
     setActionBusy(troubleshootingRefresh, true);
     try {
-      await loadTroubleshooting();
+      await Promise.all([loadTroubleshooting(), loadDiagnostics(true)]);
       showToast("排障信息已刷新");
     } catch (error) {
       showToast(`刷新失败：${error.message}`, "error");
@@ -12768,6 +13702,62 @@ document.addEventListener("click", async (event) => {
 
 document.addEventListener("click", async (event) => {
   const element = event.target instanceof Element ? event.target : null;
+  const proactiveDeleteButton = element?.closest("[data-proactive-candidate-delete]");
+  if (proactiveDeleteButton) {
+    const candidateId = proactiveDeleteButton.dataset.proactiveCandidateDelete || "";
+    const userId = proactiveDeleteButton.dataset.proactiveUserId || "";
+    if (!candidateId) return;
+    if (!requireSecondClick(proactiveDeleteButton, `proactive-delete:${candidateId}`, "再次点击删除这条主动候选", "再次点击删除")) return;
+    await runAction(async () => {
+      const result = await postJson("/proactive/candidate/delete", { candidate_id: candidateId, user_id: userId });
+      if (state.overview) {
+        state.overview.proactive_candidates = result.proactive_candidates || state.overview.proactive_candidates;
+        state.overview.proactive_tasks = result.proactive_tasks || state.overview.proactive_tasks;
+      }
+      return state.overview || result;
+    }, "已删除主动候选", proactiveDeleteButton);
+    return;
+  }
+  const proactivePruneButton = element?.closest("[data-proactive-candidate-prune]");
+  if (proactivePruneButton) {
+    const userId = proactivePruneButton.dataset.proactiveCandidatePrune || "";
+    const keep = Number(proactivePruneButton.dataset.proactivePruneKeep || 160) || 160;
+    if (!userId) return;
+    if (!requireSecondClick(proactivePruneButton, `proactive-prune:${userId}:${keep}`, `再次点击将该用户未发送候选压到 ${keep} 条`, "再次点击删一点")) return;
+    await runAction(async () => {
+      const result = await postJson("/proactive/candidate/prune", { user_id: userId, keep });
+      if (state.overview) {
+        state.overview.proactive_candidates = result.proactive_candidates || state.overview.proactive_candidates;
+        state.overview.proactive_tasks = result.proactive_tasks || state.overview.proactive_tasks;
+      }
+      return state.overview || result;
+    }, "已压缩该用户未发送候选", proactivePruneButton);
+    return;
+  }
+  const creativeReanalyze = element?.closest("[data-creative-reanalyze]");
+  if (creativeReanalyze) {
+    const projectId = creativeReanalyze.dataset.creativeReanalyze || "";
+    await runAction(async () => {
+      const result = await postJson("/creative/project/reanalyze", { id: projectId });
+      if (state.selectedBook?.kind === "creative" && state.selectedBook.id === projectId) {
+        await ensureCreativeProjectDetail(state.selectedBook, true);
+      }
+      return result;
+    }, "已完成质量分析", creativeReanalyze);
+    return;
+  }
+  const creativeRebuildMemory = element?.closest("[data-creative-rebuild-memory]");
+  if (creativeRebuildMemory) {
+    const projectId = creativeRebuildMemory.dataset.creativeRebuildMemory || "";
+    await runAction(async () => {
+      const result = await postJson("/creative/project/rebuild_memory", { id: projectId });
+      if (state.selectedBook?.kind === "creative" && state.selectedBook.id === projectId) {
+        await ensureCreativeProjectDetail(state.selectedBook, true);
+      }
+      return result;
+    }, "已重建创作记忆", creativeRebuildMemory);
+    return;
+  }
   const deleteButton = element?.closest("[data-book-delete]");
   if (deleteButton) {
     void deleteSelectedBookshelfItem(deleteButton);
@@ -12776,6 +13766,16 @@ document.addEventListener("click", async (event) => {
   const bookButton = element?.closest("[data-book-id]");
   if (bookButton) {
     selectBookshelfBook(bookButton.dataset.bookId);
+    return;
+  }
+  if (element?.closest("[data-creative-enter-edit]")) {
+    state.creativeEditing = true;
+    renderBookDetailPanel();
+    return;
+  }
+  if (element?.closest("[data-creative-exit-edit]")) {
+    state.creativeEditing = false;
+    renderBookDetailPanel();
     return;
   }
   if (element?.closest("[data-book-read]")) {
@@ -12829,12 +13829,14 @@ document.addEventListener("click", async (event) => {
   }
   if (element?.closest("[data-book-back]")) {
     state.bookshelfPage = "detail";
+    state.creativeEditing = false;
     renderBookDetailPanel();
     return;
   }
   if (element?.closest("[data-book-close]")) {
     state.selectedBook = null;
     state.bookshelfPage = "shelf";
+    state.creativeEditing = false;
     renderBookshelf();
   }
 });
@@ -12859,6 +13861,37 @@ async function deleteSelectedBookshelfItem(button = null) {
   }
   showToast("正在从书柜移除...");
   try {
+    if (kind === "creative") {
+      const result = await postJson("/creative/project/delete", { id: itemId });
+      if (!result.removed) {
+        showToast("没有找到要删除的创作项目，请刷新拓展页后再试。", "error");
+        if (button) {
+          button.disabled = false;
+          button.textContent = "删除作品";
+        }
+        return;
+      }
+      const removeCreative = (shelf) => {
+        if (!shelf || !Array.isArray(shelf.public_books)) return;
+        shelf.public_books = shelf.public_books.filter((item) => !(item.kind === "creative" && String(item.id || "") === String(itemId)));
+        shelf.public_count = shelf.public_books.length;
+      };
+      removeCreative(state.overview?.bookshelf);
+      removeCreative(state.bookshelfUnlocked);
+      if (state.overview?.creative) {
+        const items = Array.isArray(state.overview.creative.items) ? state.overview.creative.items : [];
+        state.overview.creative.items = items.filter((item) => String(item.id || "") !== String(itemId));
+        state.overview.creative.project_count = state.overview.creative.items.length;
+        state.overview.creative.active_projects = state.overview.creative.items.filter((item) => item.status === "drafting").length;
+      }
+      state.selectedBook = null;
+      state.bookshelfPage = "shelf";
+      state.creativeEditing = false;
+      state.selectedBookSpreadIndex = 0;
+      renderBookshelf();
+      showToast("创作项目已删除。");
+      return;
+    }
     const result = await postJson("/bookshelf/delete", {
       kind,
       id: itemId,
@@ -12996,6 +14029,91 @@ document.addEventListener("submit", (event) => {
 
 document.addEventListener("submit", async (event) => {
   const form = event.target instanceof HTMLFormElement ? event.target : null;
+  if (form?.matches("[data-creative-project-form]")) {
+    event.preventDefault();
+    const submit = form.querySelector('button[type="submit"]');
+    const formData = new FormData(form);
+    const projectId = form.dataset.projectId || "";
+    await runAction(async () => {
+      const result = await postJson("/creative/project/update", {
+        id: projectId,
+        title: formData.get("title"),
+        work_type: formData.get("work_type"),
+        tone: formData.get("tone"),
+        point_of_view: formData.get("point_of_view"),
+        target_chars: Number(formData.get("target_chars") || 0),
+        premise: formData.get("premise"),
+        next_hint: formData.get("next_hint"),
+      });
+      if (state.selectedBook?.kind === "creative" && state.selectedBook.id === projectId) {
+        await ensureCreativeProjectDetail(state.selectedBook, true);
+      }
+      return result;
+    }, "已保存作品信息", submit);
+    return;
+  }
+  if (form?.matches("[data-creative-outline-form]")) {
+    event.preventDefault();
+    const submit = form.querySelector('button[type="submit"]');
+    const projectId = form.dataset.projectId || "";
+    const formData = new FormData(form);
+    await runAction(async () => {
+      const result = await postJson("/creative/project/outline/update", {
+        id: projectId,
+        outline: formData.get("outline"),
+      });
+      if (state.selectedBook?.kind === "creative" && state.selectedBook.id === projectId) {
+        await ensureCreativeProjectDetail(state.selectedBook, true);
+      }
+      return result;
+    }, "已保存大纲", submit);
+    return;
+  }
+  if (form?.matches("[data-creative-characters-form]")) {
+    event.preventDefault();
+    const submit = form.querySelector('button[type="submit"]');
+    const projectId = form.dataset.projectId || "";
+    const formData = new FormData(form);
+    let characters = [];
+    try {
+      const raw = String(formData.get("characters") || "").trim();
+      characters = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(characters)) throw new Error("角色必须是 JSON 数组");
+    } catch (error) {
+      showToast(`角色格式错误：${error.message}`, "error");
+      return;
+    }
+    await runAction(async () => {
+      const result = await postJson("/creative/project/characters/update", {
+        id: projectId,
+        characters,
+      });
+      if (state.selectedBook?.kind === "creative" && state.selectedBook.id === projectId) {
+        await ensureCreativeProjectDetail(state.selectedBook, true);
+      }
+      return result;
+    }, "已保存角色", submit);
+    return;
+  }
+  if (form?.matches("[data-creative-chunk-form]")) {
+    event.preventDefault();
+    const submit = form.querySelector('button[type="submit"]');
+    const projectId = form.dataset.projectId || "";
+    const chunkIndex = Number(form.dataset.chunkIndex || -1);
+    const formData = new FormData(form);
+    await runAction(async () => {
+      const result = await postJson("/creative/project/chunk/update", {
+        id: projectId,
+        chunk_index: chunkIndex,
+        text: formData.get("text"),
+      });
+      if (state.selectedBook?.kind === "creative" && state.selectedBook.id === projectId) {
+        await ensureCreativeProjectDetail(state.selectedBook, true);
+      }
+      return result;
+    }, "已保存正文片段", submit);
+    return;
+  }
   if (!form || !form.matches("[data-image-cache-editor]")) return;
   event.preventDefault();
   const key = form.dataset.imageCacheEditor || "";
@@ -13027,11 +14145,61 @@ document.addEventListener("change", (event) => {
 });
 
 $("#refreshBtn").addEventListener("click", loadAll);
+
+document.getElementById("appearanceFontSelect")?.addEventListener("change", async (event) => {
+  const select = event.currentTarget;
+  const value = String(select?.value || "original").trim().toLowerCase() === "cheng" ? "cheng" : "original";
+  const previous = state.pageFontFamily;
+  state.pageFontFamily = value;
+  applyPageFontFamily();
+  try {
+    await postJson("/settings/update", { settings: { page_font_family: value } });
+    showToast("页面字体已保存");
+  } catch (error) {
+    state.pageFontFamily = previous;
+    applyPageFontFamily();
+    showToast(`字体保存失败：${error.message}`, "error");
+  }
+});
+
+async function savePageTheme(theme) {
+  const previous = state.pageTheme;
+  state.pageTheme = theme;
+  applyPageTheme();
+  renderAppearanceSettings();
+  try {
+    await postJson("/settings/update", { settings: { page_theme: theme } });
+    showToast("主题已保存");
+  } catch (error) {
+    state.pageTheme = previous;
+    applyPageTheme();
+    renderAppearanceSettings();
+    showToast(`主题保存失败：${error.message}`, "error");
+  }
+}
+
+document.getElementById("appearanceThemeGrid")?.addEventListener("click", (event) => {
+  const option = event.target.closest("[data-theme-value]");
+  if (!option) return;
+  savePageTheme(option.dataset.themeValue);
+});
+
+document.getElementById("appearanceThemeGrid")?.addEventListener("keydown", (event) => {
+  const option = event.target.closest("[data-theme-value]");
+  if (!option) return;
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    savePageTheme(option.dataset.themeValue);
+  }
+});
+
 $("#refreshImageCacheBtn")?.addEventListener("click", () => {
   loadImageCache().catch((error) => showToast(`刷新失败：${error.message}`, "error"));
 });
 $("#refreshTroubleshootingBtn")?.addEventListener("click", () => {
-  loadTroubleshooting().then(() => showToast("排障信息已刷新")).catch((error) => showToast(`刷新失败：${error.message}`, "error"));
+  Promise.all([loadTroubleshooting(), loadDiagnostics(true)])
+    .then(() => showToast("排障信息已刷新"))
+    .catch((error) => showToast(`刷新失败：${error.message}`, "error"));
 });
 $("#imageCacheFilter")?.addEventListener("input", (event) => {
   state.imageCacheFilter = event.target.value || "";
@@ -13343,6 +14511,31 @@ $("#configImportMode").addEventListener("change", () => {
   renderConfigMigrationPreview();
 });
 
+$("#configAllowChecksumMismatch").addEventListener("change", () => {
+  state.configImportPreview = null;
+  renderConfigMigrationPreview();
+});
+
+$("#storageBackendSelect").addEventListener("change", () => {
+  renderStorageConfig({ preserveDraft: true });
+});
+
+$("#storageConfigForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const backend = String($("#storageBackendSelect")?.value || "json").trim().toLowerCase() || "json";
+  const sqlitePath = String($("#storageSqlitePathInput")?.value || "").trim();
+  await runAction(
+    () => postJson("/settings/update", {
+      settings: {
+        storage_backend: backend,
+        storage_sqlite_path: sqlitePath,
+      },
+    }),
+    "已保存存储方式",
+    event.submitter || $("#saveStorageConfigBtn")
+  );
+});
+
 $("#configBackupList").addEventListener("click", async (event) => {
   const button = event.target.closest("[data-config-restore]");
   if (!button) return;
@@ -13417,6 +14610,10 @@ $("#saveFeaturesBtn").addEventListener("click", async (event) => {
       features[key] = toBool(value);
     }
   });
+  const proactiveIntensitySelect = document.querySelector('[data-proactive-intensity-form] [name="proactive_intensity_preset"]');
+  if (proactiveIntensitySelect) {
+    settings.proactive_intensity_preset = proactiveIntensitySelect.value || "off";
+  }
   await runAction(() => postJson("/settings/update", { features, settings }), "已保存功能开关", button);
 });
 
@@ -13431,17 +14628,25 @@ $("#enableSafeFeaturesBtn").addEventListener("click", () => {
 
 $("#saveProvidersBtn").addEventListener("click", async () => {
   const values = currentProviderValues();
+  const provider_config_mode = currentProviderConfigMode();
   const providers = {};
   Object.keys(providerLabels).forEach((key) => {
     if (visibleConfigKey(key)) providers[key] = values[key] || "";
   });
-  await runAction(() => postJson("/settings/update", { providers }), "已保存模型配置", $("#saveProvidersBtn"));
+  await runAction(
+    () => postJson("/settings/update", { settings: { provider_config_mode }, providers, overwrite_provider_modes: true }),
+    "已保存模型配置，并覆盖 quick / precision 两套分流",
+    $("#saveProvidersBtn")
+  );
+  state.overview = state.overview || {};
+  state.overview.settings = { ...(state.overview.settings || {}), provider_config_mode };
   state.providerDraft = { ...state.providerDraft, ...providers };
+  state.providerConfigMode = provider_config_mode;
   renderProviders();
 });
 
 $("#testAllProvidersBtn").addEventListener("click", async () => {
-  for (const key of Object.keys(providerLabels).filter(visibleConfigKey)) {
+  for (const key of Object.keys(providerLabels).filter((item) => visibleConfigKey(item) && providerAllowedInCurrentMode(item))) {
     await testProvider(key);
   }
 });

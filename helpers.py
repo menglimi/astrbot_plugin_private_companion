@@ -58,6 +58,28 @@ def _single_line(text: Any, limit: int = 80) -> str:
     return normalized[:limit]
 
 
+_OPTIONAL_MODEL_DEPENDENCIES = {
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "sentence_transformers",
+    "transformers",
+}
+
+
+def _missing_optional_model_dependency(exc: BaseException) -> str:
+    if isinstance(exc, ModuleNotFoundError):
+        name = str(getattr(exc, "name", "") or "").strip()
+        if name in _OPTIONAL_MODEL_DEPENDENCIES:
+            return name
+    text = str(exc or "")
+    match = re.search(r"No module named ['\"]([^'\"]+)['\"]", text)
+    if not match:
+        return ""
+    name = match.group(1).strip()
+    return name if name in _OPTIONAL_MODEL_DEPENDENCIES else ""
+
+
 _GARBLED_TEXT_MARKERS = ("Ã", "â", "鈥", "銆", "鏉", "锟", "Ð", "Ê", "¤", "\ufffd")
 _BINARY_TEXT_PREFIXES = ("JFIF", "EXIF", "GIF87A", "GIF89A", "%PDF-", "PK\x03\x04")
 
@@ -93,7 +115,34 @@ def _strip_internal_message_blocks(text: Any) -> str:
     normalized = re.sub(r"\[\[PCTTS:[^\]]*\]\]", "", normalized)
     normalized = re.sub(r"<timer\b[^>]*>.*?</timer>", "", normalized, flags=re.IGNORECASE | re.DOTALL)
     normalized = re.sub(r"<tts\b[^>]*>.*?</tts>", "", normalized, flags=re.IGNORECASE | re.DOTALL)
+    normalized = _strip_nonstandard_chat_control_tags(normalized)
     normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized
+
+
+_NONSTANDARD_SELF_CLOSING_TAG_PATTERN = re.compile(
+    r"<\s*(?!(?:br|image|video|audio|tts|pc[_-]?tts|timer)\b)"
+    r"[A-Za-z][A-Za-z0-9_-]{0,31}(?:\s+[^<>\r\n]{0,160})?/\s*>",
+    re.IGNORECASE,
+)
+_ESCAPED_NONSTANDARD_SELF_CLOSING_TAG_PATTERN = re.compile(
+    r"&lt;\s*(?!(?:br|image|video|audio|tts|pc[_-]?tts|timer)\b)"
+    r"[A-Za-z][A-Za-z0-9_-]{0,31}(?:\s+[^&\r\n]{0,160})?/\s*&gt;",
+    re.IGNORECASE,
+)
+
+
+def _strip_nonstandard_chat_control_tags(text: Any) -> str:
+    """Remove leaked pseudo-control tags such as <bubble/> without touching media blocks."""
+    normalized = str(text or "")
+    if not normalized:
+        return ""
+    normalized = _NONSTANDARD_SELF_CLOSING_TAG_PATTERN.sub("", normalized)
+    normalized = _ESCAPED_NONSTANDARD_SELF_CLOSING_TAG_PATTERN.sub("", normalized)
+    normalized = re.sub(r"\s+([，,。！？!?；;：:、~～…])", r"\1", normalized)
+    normalized = re.sub(r"([（(【\[])\s+", r"\1", normalized)
+    normalized = re.sub(r"\s+([）)】\]])", r"\1", normalized)
+    normalized = re.sub(r"[ \t]{2,}", " ", normalized)
     return normalized
 
 
@@ -116,6 +165,7 @@ def _strip_outbound_control_blocks(
     elif not preserve_private_tts_tokens:
         normalized = re.sub(r"\[\[PCTTS:[^\]]*\]\]", "", normalized)
     normalized = re.sub(r"<timer\b[^>]*>.*?</timer>", "", normalized, flags=re.IGNORECASE | re.DOTALL)
+    normalized = _strip_nonstandard_chat_control_tags(normalized)
     normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
     return normalized
 
@@ -296,16 +346,17 @@ def _set_into_config(config: Any, key: str, value: Any, *, allow_flat_fallback: 
         return new_value
 
     def find_and_set(target: dict[str, Any]) -> bool:
-        # Match _flat_get(): prefer schema-grouped values over legacy flat
-        # compatibility keys, otherwise the official config page can keep
-        # showing the old value after the extension page/command saves.
+        # Match _flat_get(): schema-grouped values are searched before legacy
+        # flat compatibility keys.  When a key exists in more than one place,
+        # keep every location in sync so later readers cannot see a stale copy.
+        changed = False
         for child in target.values():
-            if isinstance(child, dict) and find_and_set(child):
-                return True
+            if isinstance(child, dict):
+                changed = find_and_set(child) or changed
         if key in target:
             target[key] = convert(target.get(key), value)
-            return True
-        return False
+            changed = True
+        return changed
 
     if isinstance(config, dict) and find_and_set(config):
         return True
