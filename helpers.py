@@ -115,6 +115,8 @@ def _strip_internal_message_blocks(text: Any) -> str:
     normalized = re.sub(r"\[\[PCTTS:[^\]]*\]\]", "", normalized)
     normalized = re.sub(r"<timer\b[^>]*>.*?</timer>", "", normalized, flags=re.IGNORECASE | re.DOTALL)
     normalized = re.sub(r"<tts\b[^>]*>.*?</tts>", "", normalized, flags=re.IGNORECASE | re.DOTALL)
+    normalized = re.sub(r"<think\b[^>]*>.*?</think>", "", normalized, flags=re.IGNORECASE | re.DOTALL)
+    normalized = re.sub(r"<reasoning\b[^>]*>.*?</reasoning>", "", normalized, flags=re.IGNORECASE | re.DOTALL)
     normalized = _strip_nonstandard_chat_control_tags(normalized)
     normalized = re.sub(r"\s+", " ", normalized).strip()
     return normalized
@@ -165,6 +167,8 @@ def _strip_outbound_control_blocks(
     elif not preserve_private_tts_tokens:
         normalized = re.sub(r"\[\[PCTTS:[^\]]*\]\]", "", normalized)
     normalized = re.sub(r"<timer\b[^>]*>.*?</timer>", "", normalized, flags=re.IGNORECASE | re.DOTALL)
+    normalized = re.sub(r"<think\b[^>]*>.*?</think>", "", normalized, flags=re.IGNORECASE | re.DOTALL)
+    normalized = re.sub(r"<reasoning\b[^>]*>.*?</reasoning>", "", normalized, flags=re.IGNORECASE | re.DOTALL)
     normalized = _strip_nonstandard_chat_control_tags(normalized)
     normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
     return normalized

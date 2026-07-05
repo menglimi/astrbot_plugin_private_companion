@@ -1547,6 +1547,8 @@ class ProactiveMessageMixin:
         compact = re.sub(r"[^a-z0-9\u4e00-\u9fff_]+", "", cleaned)
         if self._is_proactive_delivery_receipt_text(text):
             return True
+        if self._is_proactive_instruction_leak_text(text):
+            return True
         if (
             ("差不多20条" in cleaned or "差不多 20 条" in cleaned or "20条不同" in cleaned)
             and any(token in cleaned for token in ("没收到回复", "发消息", "消息主要是", "工具调用"))
@@ -2192,10 +2194,28 @@ class ProactiveMessageMixin:
         cleaned = _single_line(text, 500)
         if not cleaned:
             return {"decision": "drop", "reason": "主动消息为空", "hard": True}
-        if self._is_proactive_delivery_receipt_text(cleaned):
-            return {"decision": "drop", "reason": "主动消息是工具/执行状态回执", "hard": True}
-        if self._framework_agent_meta_summary_leak(cleaned):
-            return {"decision": "drop", "reason": "主动候选疑似工具循环/内部发送摘要泄漏", "hard": True}
+        outbound_guard = self._validate_proactive_outbound_candidate(
+            cleaned,
+            reason=reason,
+            action=action,
+            source="review",
+        )
+        guard_decision = str(outbound_guard.get("decision") or "send")
+        if guard_decision == "drop":
+            return {
+                "decision": "drop",
+                "reason": _single_line(outbound_guard.get("reason"), 120) or "主动候选疑似内部泄漏",
+                "hard": bool(outbound_guard.get("hard", True)),
+            }
+        if guard_decision == "rewrite":
+            rewritten_guard_text = _single_line(outbound_guard.get("text"), 500)
+            if rewritten_guard_text:
+                return {
+                    "decision": "rewrite",
+                    "reason": _single_line(outbound_guard.get("reason"), 120) or "清理主动候选内部残留",
+                    "text": rewritten_guard_text,
+                }
+            return {"decision": "drop", "reason": _single_line(outbound_guard.get("reason"), 120) or "主动候选只剩内部残留", "hard": True}
         semantics: dict[str, Any] = {}
         semantic_getter = getattr(self, "_planned_proactive_semantics", None)
         if callable(semantic_getter):
@@ -7065,6 +7085,64 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
             and any(token in compact for token in ("已", "已经", "完成", "成功"))
         )
 
+    @staticmethod
+    def _is_proactive_instruction_leak_text(text: str) -> bool:
+        raw = _single_line(text, 360)
+        if not raw:
+            return False
+        compact = re.sub(r"[\s。.!！?？,，；;:：、~～\"'“”‘’（）()【】\[\]<>《》]+", "", raw).lower()
+        if not compact:
+            return False
+        exact_leaks = {
+            "直接在当前对话中输出这条主动消息",
+            "请直接在当前对话中输出这条主动消息",
+            "在当前对话中输出这条主动消息",
+            "直接输出这条主动消息",
+            "输出这条主动消息",
+            "发送这条主动消息",
+            "sendthisproactivemessage",
+            "outputthisproactivemessage",
+        }
+        if compact in exact_leaks:
+            return True
+        has_proactive_target = "主动消息" in raw or "proactive message" in raw.lower()
+        has_delivery_command = any(
+            token in compact
+            for token in (
+                "直接输出",
+                "请输出",
+                "输出这条",
+                "输出本条",
+                "直接发送",
+                "请发送",
+                "发送这条",
+                "发出这条",
+                "sendthis",
+                "outputthis",
+            )
+        )
+        has_instruction_context = any(
+            token in compact
+            for token in (
+                "当前对话",
+                "当前聊天",
+                "本轮对话",
+                "用户对话",
+                "聊天窗口",
+                "给用户",
+                "touser",
+                "currentchat",
+                "currentconversation",
+            )
+        )
+        if has_proactive_target and has_delivery_command and (has_instruction_context or len(compact) <= 36):
+            return True
+        if len(compact) <= 44 and has_delivery_command and has_instruction_context and any(
+            token in compact for token in ("消息", "正文", "文本", "content", "message")
+        ):
+            return True
+        return False
+
     def _strip_proactive_delivery_receipt_lines(self, text: str) -> str:
         kept: list[str] = []
         for raw_line in str(text or "").splitlines():
@@ -7075,6 +7153,54 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
                 continue
             kept.append(line)
         return "\n".join(kept).strip()
+
+    def _validate_proactive_outbound_candidate(
+        self,
+        text: str,
+        *,
+        image_path: str = "",
+        extra_components: list[Any] | None = None,
+        reason: str = "",
+        action: str = "",
+        source: str = "send",
+    ) -> dict[str, Any]:
+        raw = str(text or "").strip()
+        has_media = bool(_single_line(image_path, 260)) or bool(extra_components)
+        if not raw:
+            if has_media:
+                return {"decision": "send", "text": "", "reason": ""}
+            return {"decision": "drop", "text": "", "reason": "主动行为没有产出可发送内容", "hard": True}
+
+        kept_lines: list[str] = []
+        removed_leak = False
+        for raw_line in raw.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if (
+                self._is_proactive_delivery_receipt_text(line)
+                or self._is_proactive_instruction_leak_text(line)
+                or self._framework_agent_meta_summary_leak(line)
+            ):
+                removed_leak = True
+                continue
+            kept_lines.append(line)
+        if removed_leak:
+            cleaned = "\n".join(kept_lines).strip()
+            if cleaned:
+                return {"decision": "rewrite", "text": cleaned, "reason": "已清理主动正文中的内部提示词/执行回执残留"}
+            if has_media:
+                return {"decision": "rewrite", "text": "", "reason": "已清理主动正文中的内部提示词/执行回执残留"}
+            return {"decision": "drop", "text": "", "reason": "主动正文只剩内部提示词/执行回执残留", "hard": True}
+
+        if self._is_proactive_delivery_receipt_text(raw):
+            return {"decision": "drop", "text": "", "reason": "主动正文是工具/执行状态回执", "hard": True}
+        if self._is_proactive_instruction_leak_text(raw):
+            return {"decision": "drop", "text": "", "reason": "主动正文疑似内部提示词/发送指令泄漏", "hard": True}
+        if self._framework_agent_meta_summary_leak(raw):
+            return {"decision": "drop", "text": "", "reason": "主动正文疑似工具循环/内部发送摘要泄漏", "hard": True}
+
+        return {"decision": "send", "text": raw, "reason": ""}
 
     def _proactive_archive_context_text(self, text: str) -> bool:
         cleaned = _single_line(text, 500)
@@ -7809,6 +7935,8 @@ reason={reason or "check_in"}；action={action or "message"}；topic={_single_li
             if re.fullmatch(r"[（(].{0,40}语音消息.{0,20}[)）]", line):
                 continue
             if re.match(r"^(?:图片发过去了|希望他看到的时候|然后过了好一会儿)", line):
+                continue
+            if self._is_proactive_instruction_leak_text(line):
                 continue
             if re.match(r"^[（(].{0,80}(?:翻了个身|裹紧了些|眼睛微微眯起来).*[）)]$", line):
                 continue

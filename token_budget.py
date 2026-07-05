@@ -569,6 +569,9 @@ class TokenBudgetMixin:
         task_key = _single_line(task, 40) or "other"
         if self._is_llm_budget_exempt_task(task_key):
             return False
+        ignore_soft_limit = getattr(self, "_proactive_intensity_ignores_token_soft_limit", None)
+        if callable(ignore_soft_limit) and ignore_soft_limit(task_key):
+            return False
         low_priority_tasks = {
             "news_digest",
             "external_event_self_link",

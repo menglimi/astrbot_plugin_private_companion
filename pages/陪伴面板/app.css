@@ -5937,6 +5937,7 @@ body.daily-outfit-preview-open {
 
 .troubleshooting-head-card,
 .troubleshooting-count,
+.troubleshooting-intensity-card,
 .troubleshooting-check,
 .troubleshooting-event,
 .troubleshooting-sqlite-row {
@@ -6586,6 +6587,63 @@ body.daily-outfit-preview-open {
 
 .troubleshooting-reasons button.ok b {
   color: var(--accent-strong);
+}
+
+.troubleshooting-intensity-card {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  background: linear-gradient(135deg, rgba(26, 75, 140, 0.08), rgba(255, 255, 255, 0.84));
+}
+
+.troubleshooting-intensity-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.troubleshooting-intensity-card header span,
+.troubleshooting-intensity-card small,
+.troubleshooting-intensity-grid span {
+  color: var(--muted);
+}
+
+.troubleshooting-intensity-card header b {
+  display: block;
+  margin-top: 4px;
+  font-size: 18px;
+}
+
+.troubleshooting-intensity-card button {
+  border: 1px solid rgba(26, 75, 140, 0.22);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  background: var(--surface);
+  color: var(--accent-strong);
+}
+
+.troubleshooting-intensity-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.troubleshooting-intensity-grid p {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.troubleshooting-intensity-grid b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .troubleshooting-grid {
@@ -13832,6 +13890,7 @@ pre {
   .troubleshooting-summary,
   .troubleshooting-grid,
   .troubleshooting-reasons,
+  .troubleshooting-intensity-grid,
   .troubleshooting-chain-tests,
   .troubleshooting-faq,
   .troubleshooting-prompt-injections,

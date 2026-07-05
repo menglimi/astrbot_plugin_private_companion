@@ -238,6 +238,8 @@ _PLATFORM_DISPLAY_NAMES = {
 class ProactiveMixin:
     """主动消息调度"""
 
+    _PROACTIVE_DAILY_LIMIT_UNLIMITED = 999_999
+
     _PROACTIVE_INTENSITY_PRESETS: dict[str, dict[str, Any]] = {
         "off": {
             "label": "关闭预设",
@@ -246,78 +248,98 @@ class ProactiveMixin:
         },
         "balanced": {
             "label": "标准偏主动",
-            "description": "略微提高主动触达，仍保持低打扰边界。",
+            "description": "轻度提高主动触达，适合想比手动默认更有存在感但仍保持低打扰的场景。",
             "effects": {
-                "max_daily_messages": 8,
-                "idle_minutes": 45,
-                "min_interval_minutes": 90,
+                "max_daily_messages": 9,
+                "idle_minutes": 40,
+                "min_interval_minutes": 75,
                 "unanswered_slowdown_start": 2,
-                "unanswered_max_interval_multiplier": 1.8,
-                "friend_unanswered_max_cooldown_hours": 36,
-                "delay_factor": 0.82,
-                "proactive_persona_judge_send_threshold": 56,
+                "unanswered_max_interval_multiplier": 1.65,
+                "friend_unanswered_max_cooldown_hours": 30,
+                "delay_factor": 0.72,
+                "proactive_persona_judge_send_threshold": 54,
                 "proactive_review_strength": "lenient",
-                "group_wakeup_cooldown_seconds": 60,
-                "group_high_intensity_cooldown_seconds": 120,
-                "group_interject_min_interval_minutes": 120,
-                "group_interject_max_daily": 3,
+                "group_wakeup_cooldown_seconds": 50,
+                "group_high_intensity_cooldown_seconds": 105,
+                "group_wakeup_interest_probability": 0.24,
+                "group_wakeup_question_threshold": 60,
+                "group_wakeup_cold_group_threshold": 62,
+                "group_wakeup_topic_interest_max_boost": 0.55,
+                "group_interject_min_interval_minutes": 90,
+                "group_interject_max_daily": 4,
             },
         },
         "high_private": {
             "label": "私聊高频",
-            "description": "明显提高私聊主动频率，适合希望 Bot 经常来找的用户。",
+            "description": "显著提高主人私聊主动频率，适合希望 Bot 更常来找的用户。",
             "effects": {
-                "max_daily_messages": 12,
-                "idle_minutes": 20,
-                "min_interval_minutes": 35,
-                "unanswered_slowdown_start": 3,
-                "unanswered_max_interval_multiplier": 1.35,
-                "friend_unanswered_max_cooldown_hours": 18,
-                "delay_factor": 0.55,
-                "proactive_persona_judge_send_threshold": 48,
+                "max_daily_messages": 15,
+                "idle_minutes": 14,
+                "min_interval_minutes": 24,
+                "unanswered_slowdown_start": 4,
+                "unanswered_max_interval_multiplier": 1.25,
+                "friend_unanswered_max_cooldown_hours": 14,
+                "delay_factor": 0.42,
+                "proactive_persona_judge_send_threshold": 45,
                 "proactive_review_strength": "lenient",
-                "group_wakeup_cooldown_seconds": 60,
-                "group_high_intensity_cooldown_seconds": 120,
-                "group_interject_min_interval_minutes": 120,
-                "group_interject_max_daily": 3,
+                "group_wakeup_cooldown_seconds": 45,
+                "group_high_intensity_cooldown_seconds": 90,
+                "group_wakeup_interest_probability": 0.22,
+                "group_wakeup_question_threshold": 60,
+                "group_wakeup_cold_group_threshold": 62,
+                "group_wakeup_topic_interest_max_boost": 0.5,
+                "group_interject_min_interval_minutes": 90,
+                "group_interject_max_daily": 4,
             },
         },
         "high_group": {
             "label": "群聊活跃",
-            "description": "降低群聊唤醒和插话冷却，让 Bot 更容易参与群聊。",
+            "description": "明显提高群聊唤醒、兴趣词接话和群主动插话，私聊只轻度增强。",
             "effects": {
                 "max_daily_messages": 8,
-                "idle_minutes": 45,
-                "min_interval_minutes": 90,
+                "idle_minutes": 50,
+                "min_interval_minutes": 95,
                 "unanswered_slowdown_start": 2,
                 "unanswered_max_interval_multiplier": 1.8,
                 "friend_unanswered_max_cooldown_hours": 36,
-                "delay_factor": 0.8,
-                "proactive_persona_judge_send_threshold": 55,
+                "delay_factor": 0.75,
+                "proactive_persona_judge_send_threshold": 56,
                 "proactive_review_strength": "lenient",
-                "group_wakeup_cooldown_seconds": 35,
-                "group_high_intensity_cooldown_seconds": 75,
-                "group_interject_min_interval_minutes": 45,
-                "group_interject_max_daily": 8,
+                "group_wakeup_cooldown_seconds": 20,
+                "group_high_intensity_cooldown_seconds": 45,
+                "group_wakeup_interest_probability": 0.45,
+                "group_wakeup_question_threshold": 52,
+                "group_wakeup_cold_group_threshold": 54,
+                "group_wakeup_topic_interest_max_boost": 0.95,
+                "group_interject_min_interval_minutes": 24,
+                "group_interject_max_daily": 12,
             },
         },
         "live": {
             "label": "在线陪伴",
-            "description": "短间隔高频陪伴感；仍会尊重免打扰、休息、拒绝和隐私闸门。",
+            "description": "最高在线陪伴档，不限制每日主动次数，也不再替用户节省主动成本；仍会尊重免打扰、休息、拒绝、隐私和硬限额。",
             "effects": {
-                "max_daily_messages": 12,
-                "idle_minutes": 10,
-                "min_interval_minutes": 20,
-                "unanswered_slowdown_start": 4,
-                "unanswered_max_interval_multiplier": 1.2,
-                "friend_unanswered_max_cooldown_hours": 12,
-                "delay_factor": 0.38,
-                "proactive_persona_judge_send_threshold": 44,
+                "max_daily_messages": _PROACTIVE_DAILY_LIMIT_UNLIMITED,
+                "ignore_daily_limit": True,
+                "idle_minutes": 0,
+                "min_interval_minutes": 5,
+                "unanswered_slowdown_start": 8,
+                "unanswered_max_interval_multiplier": 1.0,
+                "friend_unanswered_max_cooldown_hours": 8,
+                "delay_factor": 0.08,
+                "ignore_token_soft_limit": True,
+                "ignore_soft_daily_target": True,
+                "proactive_persona_judge_send_threshold": 32,
                 "proactive_review_strength": "lenient",
-                "group_wakeup_cooldown_seconds": 20,
-                "group_high_intensity_cooldown_seconds": 45,
-                "group_interject_min_interval_minutes": 20,
-                "group_interject_max_daily": 12,
+                "group_wakeup_cooldown_seconds": 3,
+                "group_high_intensity_cooldown_seconds": 30,
+                "group_wakeup_interest_probability": 0.78,
+                "group_wakeup_question_threshold": 40,
+                "group_wakeup_cold_group_threshold": 42,
+                "group_wakeup_topic_interest_max_boost": 1.5,
+                "group_interject_min_interval_minutes": 6,
+                "group_interject_max_daily": _PROACTIVE_DAILY_LIMIT_UNLIMITED,
+                "ignore_group_interject_daily_limit": True,
             },
         },
     }
@@ -360,6 +382,17 @@ class ProactiveMixin:
             return default
         return runtime.get("effects", {}).get(key, default)
 
+    @classmethod
+    def _proactive_daily_limit_is_unlimited(cls, value: Any) -> bool:
+        return _safe_int(value, 0, 0) >= cls._PROACTIVE_DAILY_LIMIT_UNLIMITED
+
+    @classmethod
+    def _format_proactive_daily_limit(cls, value: Any) -> str:
+        return "不限" if cls._proactive_daily_limit_is_unlimited(value) else str(_safe_int(value, 0, 0))
+
+    def _proactive_intensity_ignores_daily_limit(self) -> bool:
+        return bool(self._proactive_intensity_effect("ignore_daily_limit", False))
+
     def _effective_proactive_int(self, key: str, configured: int, *, minimum: int = 0, maximum: int | None = None) -> int:
         value = configured
         effect = self._proactive_intensity_effect(key, None)
@@ -400,16 +433,50 @@ class ProactiveMixin:
         return self._effective_proactive_int(
             "group_interject_min_interval_minutes",
             _safe_int(getattr(self, "group_interject_min_interval_minutes", 180), 180, 10, 1440),
-            minimum=10,
+            minimum=1,
             maximum=1440,
         )
 
     def _effective_group_interject_max_daily(self) -> int:
+        if bool(self._proactive_intensity_effect("ignore_group_interject_daily_limit", False)):
+            return self._PROACTIVE_DAILY_LIMIT_UNLIMITED
         return self._effective_proactive_int(
             "group_interject_max_daily",
             _safe_int(getattr(self, "group_interject_max_daily", 2), 2, 0, 12),
             minimum=0,
-            maximum=12,
+            maximum=48,
+        )
+
+    def _effective_group_wakeup_interest_probability(self) -> float:
+        return self._effective_proactive_float(
+            "group_wakeup_interest_probability",
+            max(0.0, min(1.0, _safe_float(getattr(self, "group_wakeup_interest_probability", 0.18), 0.18, 0.0))),
+            minimum=0.0,
+            maximum=1.0,
+        )
+
+    def _effective_group_wakeup_question_threshold(self) -> int:
+        return self._effective_proactive_int(
+            "group_wakeup_question_threshold",
+            _safe_int(getattr(self, "group_wakeup_question_threshold", 65), 65, 0, 100),
+            minimum=0,
+            maximum=100,
+        )
+
+    def _effective_group_wakeup_cold_group_threshold(self) -> int:
+        return self._effective_proactive_int(
+            "group_wakeup_cold_group_threshold",
+            _safe_int(getattr(self, "group_wakeup_cold_group_threshold", 65), 65, 0, 100),
+            minimum=0,
+            maximum=100,
+        )
+
+    def _effective_group_wakeup_topic_interest_max_boost(self) -> float:
+        return self._effective_proactive_float(
+            "group_wakeup_topic_interest_max_boost",
+            max(0.0, min(1.5, _safe_float(getattr(self, "group_wakeup_topic_interest_max_boost", 0.45), 0.45, 0.0))),
+            minimum=0.0,
+            maximum=1.5,
         )
 
     def _effective_proactive_persona_judge_send_threshold(self) -> int:
@@ -426,6 +493,9 @@ class ProactiveMixin:
             return value
         configured = str(getattr(self, "proactive_review_strength", "lenient") or "lenient").strip().lower()
         return configured if configured in {"lenient", "balanced", "strict"} else "lenient"
+
+    def _proactive_intensity_ignores_token_soft_limit(self, task: str | None = None) -> bool:
+        return bool(self._proactive_intensity_effect("ignore_token_soft_limit", False))
 
     def _configured_target_ids(self) -> list[str]:
         raw = self.target_user_ids
@@ -560,6 +630,10 @@ class ProactiveMixin:
 
     def _effective_user_daily_limit(self, user: dict[str, Any]) -> int:
         override = self._user_profile_override_int(user, "proactive_daily_limit")
+        if self._proactive_intensity_ignores_daily_limit():
+            if override == 0:
+                return 0
+            return self._PROACTIVE_DAILY_LIMIT_UNLIMITED
         if override is not None:
             return override
         max_daily_messages = self._runtime_max_daily_messages()
@@ -568,9 +642,11 @@ class ProactiveMixin:
         return max(0, max_daily_messages)
 
     def _runtime_max_daily_messages(self) -> int:
+        if self._proactive_intensity_ignores_daily_limit():
+            return self._PROACTIVE_DAILY_LIMIT_UNLIMITED
         runtime_value = _safe_int(getattr(self, "max_daily_messages", 8), 8, 0, 12)
         if runtime_value > 0:
-            return self._effective_proactive_int("max_daily_messages", runtime_value, minimum=0, maximum=12)
+            return self._effective_proactive_int("max_daily_messages", runtime_value, minimum=0, maximum=60)
         config = getattr(self, "config", None)
         getter = getattr(config, "get", None)
         if callable(getter):
@@ -578,7 +654,7 @@ class ProactiveMixin:
                 configured_value = _safe_int(getter("max_daily_messages", runtime_value), runtime_value, 0, 12)
                 if configured_value > 0:
                     self.max_daily_messages = configured_value
-                    return self._effective_proactive_int("max_daily_messages", configured_value, minimum=0, maximum=12)
+                    return self._effective_proactive_int("max_daily_messages", configured_value, minimum=0, maximum=60)
             except Exception:
                 pass
         return runtime_value
@@ -1090,6 +1166,8 @@ class ProactiveMixin:
         daily_limit = self._effective_user_daily_limit(user)
         if daily_limit <= 0:
             return 0.0
+        if bool(self._proactive_intensity_effect("ignore_soft_daily_target", False)):
+            return float(daily_limit)
         state = self.data.get("daily_state", {})
         important_dates = self._get_relevant_important_dates()
         energy = _safe_int(state.get("energy") if isinstance(state, dict) else 70, 70, 0, 100)
@@ -1114,7 +1192,8 @@ class ProactiveMixin:
             return 0.0
         sent_today = _safe_int(user.get("sent_today"), 0)
         soft_target = self._soft_daily_target(user)
-        capacity_factor = min(1.35, 0.9 + daily_limit * 0.08)
+        no_cost_mode = bool(self._proactive_intensity_effect("ignore_soft_daily_target", False))
+        capacity_factor = min(2.6 if no_cost_mode else 1.35, 0.9 + daily_limit * (0.055 if no_cost_mode else 0.08))
         if soft_target <= 0:
             return max(0.35, capacity_factor)
         usage = sent_today / soft_target
@@ -1127,10 +1206,10 @@ class ProactiveMixin:
         elif usage < 1.0:
             pressure = 0.72
         else:
-            pressure = 0.5
+            pressure = 0.9 if no_cost_mode else 0.5
         readiness = self._proactive_inner_readiness(user)
         inner_factor = 0.74 + _safe_float(readiness.get("score"), 0.55) * 0.55
-        return max(0.25, min(1.5, capacity_factor * pressure * inner_factor))
+        return max(0.25, min(2.4 if no_cost_mode else 1.5, capacity_factor * pressure * inner_factor))
 
     def _fallback_proactive_delay_hours(
         self,

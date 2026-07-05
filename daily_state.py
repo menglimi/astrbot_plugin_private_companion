@@ -1683,8 +1683,27 @@ class DailyStateMixin:
         if _safe_float(payload.get("expires_at"), 0) <= current:
             self._clear_pending_proactive_send_retry(user)
             return None
-        text = _single_line(payload.get("text"), 1200)
         image_path = str(payload.get("image_path") or "").strip()
+        text = _single_line(payload.get("text"), 1200)
+        validator = getattr(self, "_validate_proactive_outbound_candidate", None)
+        if callable(validator):
+            try:
+                validation = validator(
+                    text,
+                    image_path=image_path,
+                    reason=_single_line(payload.get("reason"), 40),
+                    action=_single_line(payload.get("action"), 40),
+                    source="retry_load",
+                )
+            except Exception:
+                validation = {"decision": "send", "text": text}
+            decision = str(validation.get("decision") or "send")
+            if decision == "drop":
+                self._clear_pending_proactive_send_retry(user)
+                return None
+            if decision == "rewrite":
+                text = _single_line(validation.get("text"), 1200)
+                payload["text"] = text
         if image_path and not re.match(r"^(?:https?://|file://|data:)", image_path, flags=re.I):
             try:
                 if not Path(image_path).exists():
@@ -1746,6 +1765,45 @@ class DailyStateMixin:
             self._clear_pending_proactive_send_retry(user)
             self._schedule_next_proactive(user, now=current, delay_hours=(6, 12))
             return "发送失败，无可复用内容，已延后重新排程" + (f"；原因：{error_hint}" if error_hint else "")
+        validator = getattr(self, "_validate_proactive_outbound_candidate", None)
+        unsafe_retry_text = False
+        if callable(validator):
+            try:
+                validation = validator(
+                    clean_text,
+                    image_path=clean_image,
+                    extra_components=extra_components,
+                    reason=reason,
+                    action=action,
+                    source="retry_store",
+                )
+            except Exception:
+                validation = {"decision": "send", "text": clean_text}
+            decision = str(validation.get("decision") or "send")
+            if decision == "drop":
+                unsafe_retry_text = True
+            elif decision == "rewrite":
+                clean_text = _single_line(validation.get("text"), 1200)
+        else:
+            meta_leak_checker = getattr(self, "_framework_agent_meta_summary_leak", None)
+            instruction_leak_checker = getattr(self, "_is_proactive_instruction_leak_text", None)
+            try:
+                unsafe_retry_text = bool(clean_text) and (
+                    (callable(meta_leak_checker) and meta_leak_checker(clean_text))
+                    or (callable(instruction_leak_checker) and instruction_leak_checker(clean_text))
+                    or self._is_proactive_delivery_receipt_text(clean_text)
+                )
+            except Exception:
+                unsafe_retry_text = False
+        if unsafe_retry_text:
+            self._clear_pending_proactive_send_retry(user)
+            self._clear_pending_proactive_plan(user)
+            self._schedule_next_proactive(user, now=current, delay_hours=(2, 6))
+            return "发送失败，候选正文疑似内部提示词/执行指令泄漏，已放弃复用并重新排程" + (f"；原因：{error_hint}" if error_hint else "")
+        if not clean_text and not clean_image:
+            self._clear_pending_proactive_send_retry(user)
+            self._schedule_next_proactive(user, now=current, delay_hours=(6, 12))
+            return "发送失败，清理后无可复用内容，已延后重新排程" + (f"；原因：{error_hint}" if error_hint else "")
         delay_hours = 6.0 if retry_count <= 1 else 24.0
         user["pending_proactive_send_retry"] = {
             "active": True,
@@ -9840,15 +9898,81 @@ class DailyStateMixin:
                     )
                     self._debug_tick_skip(user_id, note, prefix="延后" if decision == "defer" else "取消")
                     continue
+            outbound_validator = getattr(self, "_validate_proactive_outbound_candidate", None)
+            if callable(outbound_validator):
+                try:
+                    outbound_validation = outbound_validator(
+                        text,
+                        image_path=image_path,
+                        extra_components=extra_components,
+                        reason=reason or normalize_legacy_tag_text(user.get("planned_proactive_reason")),
+                        action=effective_action_for_send or planned_action_for_send or "message",
+                        source="send",
+                    )
+                except Exception:
+                    outbound_validation = {"decision": "send", "text": text}
+                outbound_decision = str(outbound_validation.get("decision") or "send")
+                if outbound_decision == "drop":
+                    note = _single_line(outbound_validation.get("reason"), 120) or "主动正文未通过发送前本地校验"
+                    async with self._data_lock:
+                        current_for_outbound_guard = self._get_user(user_id)
+                        current_for_outbound_guard["proactive_sending"] = False
+                        current_for_outbound_guard["proactive_sending_started_at"] = 0
+                        if is_troubleshooting_for_send:
+                            self._append_troubleshooting_proactive_step(current_for_outbound_guard, "内容检查", "error", note)
+                            self._record_troubleshooting_proactive_result(
+                                user_id,
+                                current_for_outbound_guard,
+                                ok=False,
+                                detail="主动消息已生成，但未通过发送前本地校验",
+                                error=note,
+                                text=text,
+                                action=effective_action_for_send or planned_action_for_send or "message",
+                                reason=reason or "check_in",
+                                extra_count=len(extra_components),
+                            )
+                            self._restore_troubleshooting_proactive_plan(current_for_outbound_guard)
+                        else:
+                            self._mark_planned_candidate_status(current_for_outbound_guard, "blocked", note)
+                            self._clear_pending_proactive_plan(current_for_outbound_guard)
+                            self._schedule_next_proactive(current_for_outbound_guard, now=_now_ts(), delay_hours=(1.5, 4.0))
+                        self._update_proactive_audit(audit_id, status="cancelled", note=note, text=text)
+                        self._clear_pending_proactive_send_retry(current_for_outbound_guard)
+                        self._save_data_sync()
+                    logger.warning(
+                        "[PrivateCompanion] 主动消息发送前统一校验拦截: user=%s reason=%s text=%s",
+                        user_id,
+                        note,
+                        _single_line(text, 180),
+                    )
+                    self._debug_tick_skip(user_id, note, prefix="取消")
+                    continue
+                if outbound_decision == "rewrite":
+                    validated_text = _single_line(outbound_validation.get("text"), 1200)
+                    if validated_text != text:
+                        logger.warning(
+                            "[PrivateCompanion] 主动消息发送前统一校验改写: user=%s reason=%s before=%s after=%s",
+                            user_id,
+                            _single_line(outbound_validation.get("reason"), 120),
+                            _single_line(text, 160),
+                            _single_line(validated_text, 160),
+                        )
+                        text = validated_text
             meta_leak_checker = getattr(self, "_framework_agent_meta_summary_leak", None)
             if callable(meta_leak_checker) and text and meta_leak_checker(text):
-                note = "主动正文疑似工具循环/内部发送摘要泄漏"
+                instruction_leak_checker = getattr(self, "_is_proactive_instruction_leak_text", None)
+                note = (
+                    "主动正文疑似内部提示词/发送指令泄漏"
+                    if callable(instruction_leak_checker) and instruction_leak_checker(text)
+                    else "主动正文疑似工具循环/内部发送摘要泄漏"
+                )
                 async with self._data_lock:
                     current_for_meta_leak = self._get_user(user_id)
                     current_for_meta_leak["proactive_sending"] = False
                     current_for_meta_leak["proactive_sending_started_at"] = 0
                     self._mark_planned_candidate_status(current_for_meta_leak, "blocked", note)
                     self._update_proactive_audit(audit_id, status="cancelled", note=note, text=text)
+                    self._clear_pending_proactive_send_retry(current_for_meta_leak)
                     self._clear_pending_proactive_plan(current_for_meta_leak)
                     self._schedule_next_proactive(current_for_meta_leak, now=_now_ts(), delay_hours=(1.5, 4.0))
                     self._save_data_sync()
@@ -10136,6 +10260,7 @@ class DailyStateMixin:
                         self._restore_troubleshooting_proactive_plan(current)
                     else:
                         self._mark_planned_candidate_status(current, "dropped", note)
+                        self._clear_pending_proactive_send_retry(current)
                         self._clear_pending_proactive_plan(current)
                         self._schedule_next_proactive(current, now=_now_ts(), delay_hours=(2, 8))
                     self._update_proactive_audit(audit_id, status="dropped", note=note, text=text)

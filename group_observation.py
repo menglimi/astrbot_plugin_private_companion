@@ -2255,7 +2255,11 @@ class GroupObservationMixin:
         if group.get("interject_day") != today:
             group["interject_day"] = today
             group["interject_today"] = 0
-        if _safe_int(group.get("interject_today"), 0, 0) >= max_daily:
+        limit_unlimited = getattr(self, "_proactive_daily_limit_is_unlimited", None)
+        if (
+            not (callable(limit_unlimited) and limit_unlimited(max_daily))
+            and _safe_int(group.get("interject_today"), 0, 0) >= max_daily
+        ):
             return False, "今日群聊插话已达上限"
         if _now_ts() - _safe_float(group.get("last_interject_at"), 0) < min_interval * 60:
             return False, "群聊插话间隔太近"
@@ -2542,7 +2546,11 @@ class GroupObservationMixin:
         max_daily = max_daily_getter() if callable(max_daily_getter) else self.group_interject_max_daily
         if max_daily <= 0:
             return {}
-        if _safe_int(group.get("interject_today"), 0, 0) >= max_daily:
+        limit_unlimited = getattr(self, "_proactive_daily_limit_is_unlimited", None)
+        if (
+            not (callable(limit_unlimited) and limit_unlimited(max_daily))
+            and _safe_int(group.get("interject_today"), 0, 0) >= max_daily
+        ):
             return {}
         follow_probability = min(0.85, _safe_float(state.get("follow_probability"), self.group_repeat_follow_probability))
         interrupt_probability = min(0.85, _safe_float(state.get("interrupt_probability"), self.group_repeat_interrupt_probability))
@@ -2942,6 +2950,20 @@ class GroupObservationMixin:
         retry_key = f"{task}_retry_after"
         error_key = f"{task}_last_error"
         running_key = f"{task}_running_at"
+        error_text = _single_line(error, 180)
+        if task == "group_slang" and error_text == "invalid_json":
+            async with self._data_lock:
+                current = self._get_group(group_id)
+                current["last_slang_summary_at"] = now
+                current[retry_key] = 0
+                current[error_key] = ""
+                current[running_key] = 0
+                self._save_data_sync()
+            logger.debug(
+                "[PrivateCompanion] 群黑话释义 JSON 解析失败,已跳过本轮刷新: group=%s",
+                group_id,
+            )
+            return
         delay = 10 * 60
         if task == "group_episode":
             delay = min(max(10 * 60, _safe_int(getattr(self, "group_episode_refresh_minutes", 60), 60, 1) * 60), 30 * 60)
@@ -2950,7 +2972,7 @@ class GroupObservationMixin:
         async with self._data_lock:
             current = self._get_group(group_id)
             current[retry_key] = now + delay
-            current[error_key] = _single_line(error, 180)
+            current[error_key] = error_text
             current[running_key] = 0
             self._save_data_sync()
         logger.warning(

@@ -1406,7 +1406,7 @@ const configDescriptions = {
   enable_yesterday_screen_diary_context: "读取 screen_companion 的昨日屏幕观察日记脱敏摘要，作为今日状态、日程和生活节奏背景；不会读取今天实时屏幕。",
   screen_diary_context_max_chars: "注入给状态和日程模型的昨日屏幕观察摘要最大字符数。建议较短，只保留活动类型和节奏。",
   TROUBLESHOOTING_PROVIDER_ID: "用于排障中心的模型复核。留空时先跟随回复/主动复核模型，再回退到陪伴通用/主模型。",
-  proactive_intensity_preset: "默认关闭，完全沿用手动参数。开启后只在运行态调整私聊主动、群聊唤醒和插话的有效频率，并会在排障页显示当前预设；不会绕过免打扰、休息、用户拒绝、隐私和成本闸门。",
+  proactive_intensity_preset: "默认关闭，完全沿用手动参数。开启后只在运行态调整私聊主动、群聊唤醒和插话的有效频率，并会在排障页显示当前预设；最高档不限制每日主动次数和每日群聊插话次数，不再替用户节省主动成本，会忽略 Token 软限额降载，但不会绕过免打扰、休息、用户拒绝、隐私和每日 Token 硬限额。",
   idle_minutes: "用户多久没有活跃后，才被视为适合主动触达或分享的空闲状态。",
   min_interval_minutes: "同一私聊对象两次主动消息之间的最小间隔，避免频繁打扰。",
   proactive_unanswered_slowdown_start: "用户连续几次不回应 Bot 主动消息后，开始自动降低主动频率。",
@@ -2243,7 +2243,7 @@ const featureSettingTypes = {
   framework_session_lock_mode: { type: "select", options: [["auto", "自动（仅旧版兼容）"], ["off", "关闭（新版本推荐）"], ["always", "始终启用（旧版排障）"]] },
   expression_learning_mode: { type: "select", options: [["light", "轻量：只学节奏"], ["balanced", "标准：当前行为"], ["aggressive", "激进：参考审核样本"]] },
   response_review_mode: { type: "select", options: [["severe_only", "主动统一复核"], ["local_only", "仅本地识别并丢弃"], ["full", "含被动积极自检（延迟更高）"]] },
-  proactive_intensity_preset: { type: "select", options: [["off", "关闭：手动参数"], ["balanced", "标准偏主动"], ["high_private", "私聊高频"], ["high_group", "群聊活跃"], ["live", "在线陪伴"]] },
+  proactive_intensity_preset: { type: "select", options: [["off", "关闭：手动参数"], ["balanced", "标准偏主动"], ["high_private", "私聊高频"], ["high_group", "群聊活跃"], ["live", "在线陪伴：不省成本"]] },
   proactive_review_strength: { type: "select", options: [["lenient", "宽松：减少取消"], ["balanced", "标准：保留延后"], ["strict", "严格：按模型拦截"]] },
   emotion_judgement_mode: { type: "select", options: [["suspicious", "仅复核可疑项"], ["always", "总是复核普通文本"], ["off", "关闭复核"]] },
   smart_silence_min_confidence: { type: "number", min: 0, max: 100, step: 1 },
@@ -2364,6 +2364,34 @@ function displaySettingValue(key, value) {
       .join("\n");
   }
   return value ?? "";
+}
+
+const PROACTIVE_UNLIMITED_LIMIT = 999999;
+
+function proactiveLimitUnlimited(value, explicit = false) {
+  return Boolean(explicit) || Number(value || 0) >= PROACTIVE_UNLIMITED_LIMIT;
+}
+
+function formatProactiveLimit(value, explicit = false) {
+  if (proactiveLimitUnlimited(value, explicit)) return "不限";
+  const numeric = Number(value || 0);
+  return Number.isFinite(numeric) ? String(numeric) : "-";
+}
+
+function formatProactiveDailyQuota(value, explicit = false, presetText = "") {
+  const text = presetText || formatProactiveLimit(value, explicit);
+  return text === "不限" ? "不限" : `${text} 条/天`;
+}
+
+function formatProactiveDailyLabel(value, explicit = false, presetText = "") {
+  const text = presetText || formatProactiveLimit(value, explicit);
+  return text === "不限" ? "每日不限" : `每日 ${text} 条`;
+}
+
+function proactiveGaugeMax(used, limit, explicit = false, fallback = 8) {
+  const usedCount = Number(used || 0);
+  if (proactiveLimitUnlimited(limit, explicit)) return Math.max(8, usedCount + 1);
+  return Math.max(1, Number(limit || fallback || 8));
 }
 
 function collectSettingValue(key, input) {
@@ -3654,6 +3682,9 @@ function renderHealthPanel() {
   const imageMisses = Number(imagePrivateMetric.misses || 0) + Number(imageForwardMetric.misses || 0);
   const imageTotal = imageHits + imageMisses;
   const imageHitRate = imageTotal ? Math.round((imageHits / imageTotal) * 100) : 0;
+  const proactiveEffectiveMax = state.overview?.proactive_intensity?.effective?.max_daily_messages ?? privateInfo.max_daily_messages ?? 0;
+  const proactiveEffectiveMaxUnlimited = Boolean(state.overview?.proactive_intensity?.effective?.max_daily_messages_unlimited);
+  const proactiveEffectiveMaxText = state.overview?.proactive_intensity?.effective?.max_daily_messages_text || formatProactiveLimit(proactiveEffectiveMax, proactiveEffectiveMaxUnlimited);
   const items = [
     {
       level: providers.LLM_PROVIDER_ID ? "ok" : "warn",
@@ -3661,9 +3692,9 @@ function renderHealthPanel() {
       text: providers.LLM_PROVIDER_ID || "会回退到 AstrBot 默认模型",
     },
     {
-      level: privateInfo.max_daily_messages > 0 ? "ok" : "warn",
-      title: privateInfo.max_daily_messages > 0 ? "私聊主动可用" : "私聊主动已禁用",
-      text: `每日主动上限：${privateInfo.max_daily_messages || 0}`,
+      level: Number(proactiveEffectiveMax || 0) > 0 ? "ok" : "warn",
+      title: Number(proactiveEffectiveMax || 0) > 0 ? "私聊主动可用" : "私聊主动已禁用",
+      text: `每日主动上限：${proactiveEffectiveMaxText}`,
     },
     {
       level: group.enabled ? "ok" : "warn",
@@ -3860,6 +3891,7 @@ function renderTroubleshooting() {
         <span>${escapeHtml(troubleshootingLevelLabel(name))}</span>
       </button>
     `).join("")}
+    ${troubleshootingProactiveIntensityMarkup(data.proactive_intensity || state.overview?.proactive_intensity || {})}
     <section class="troubleshooting-reasons">
       <header>
         <b>${escapeHtml(selected === "all" ? "近 2 小时待处理原因" : `${troubleshootingLevelLabel(selected)}原因`)}</b>
@@ -3904,6 +3936,48 @@ function renderTroubleshooting() {
   if (debounceEl) {
     debounceEl.innerHTML = troubleshootingDebounceTraceMarkup(state.overview?.message_debounce || {});
   }
+}
+
+function troubleshootingProactiveIntensityMarkup(intensity = {}) {
+  if (!intensity || !intensity.enabled) return "";
+  const effective = intensity.effective || {};
+  const maxDailyText = effective.max_daily_messages_text || formatProactiveLimit(effective.max_daily_messages, effective.max_daily_messages_unlimited);
+  const interjectLimitText = effective.group_interject_max_daily_text || formatProactiveLimit(effective.group_interject_max_daily, effective.group_interject_max_daily_unlimited);
+  const interestProbability = Math.round(Number(effective.group_wakeup_interest_probability || 0) * 100);
+  const flags = [
+    effective.ignore_daily_limit ? "每日主动不限" : "",
+    effective.group_interject_max_daily_unlimited ? "群插话不限" : "",
+    effective.ignore_token_soft_limit ? "忽略 Token 软限额降载" : "",
+  ].filter(Boolean);
+  const rows = [
+    ["私聊主动", formatProactiveDailyQuota(effective.max_daily_messages, effective.max_daily_messages_unlimited, maxDailyText)],
+    ["空闲判定", `${effective.idle_minutes ?? "-"} 分钟`],
+    ["最小间隔", `${effective.min_interval_minutes ?? "-"} 分钟`],
+    ["群唤醒冷却", `${effective.group_wakeup_cooldown_seconds ?? "-"} 秒`],
+    ["群插话间隔", `${effective.group_interject_min_interval_minutes ?? "-"} 分钟`],
+    ["群插话上限", interjectLimitText],
+    ["兴趣唤醒", `${Number.isFinite(interestProbability) ? interestProbability : 0}%`],
+  ];
+  return `
+    <section class="troubleshooting-intensity-card">
+      <header>
+        <div>
+          <span>当前主动强度预设</span>
+          <b>${escapeHtml(intensity.label || intensity.preset || "预设已启用")}</b>
+        </div>
+        <button type="button" data-jump-tab="modules">修改预设</button>
+      </header>
+      <div class="troubleshooting-intensity-grid">
+        ${rows.map(([label, value]) => `
+          <p>
+            <span>${escapeHtml(label)}</span>
+            <b>${escapeHtml(value)}</b>
+          </p>
+        `).join("")}
+      </div>
+      <small>${escapeHtml(flags.length ? flags.join("；") : "仅覆盖运行态频率，不改写手动参数。")}；仍保留免打扰、休息、拒绝、隐私和硬限额。</small>
+    </section>
+  `;
 }
 
 function troubleshootingReasonItems(checks, events, selected) {
@@ -4706,16 +4780,19 @@ function renderRelationshipChart() {
 }
 
 function renderQuotaChart() {
-  const maxDaily = Number(state.overview?.private?.max_daily_messages || 0);
   const quotaUsers = state.users.filter((user) => user.is_qq_user);
   const rows = (quotaUsers.length ? quotaUsers : state.users).slice(0, 12).map((user) => {
     const used = Number(user.sent_today || 0);
-    const pct = maxDaily > 0 ? Math.min(100, Math.round((used / maxDaily) * 100)) : 0;
+    const limit = Number(user.effective_daily_limit || state.overview?.proactive_intensity?.effective?.max_daily_messages || state.overview?.private?.max_daily_messages || 0);
+    const unlimited = proactiveLimitUnlimited(limit, user.effective_daily_limit_unlimited || state.overview?.proactive_intensity?.effective?.max_daily_messages_unlimited);
+    const meterMax = unlimited ? Math.max(1, used + 1) : limit;
+    const pct = meterMax > 0 ? Math.min(100, Math.round((used / meterMax) * 100)) : 0;
+    const limitText = user.effective_daily_limit_text || formatProactiveLimit(limit, unlimited);
     return `
       <div class="meter-row">
         <span title="${escapeHtml(user.user_id || "")}">${escapeHtml(userQuotaLabel(user))}</span>
         <div class="meter"><i style="width:${pct}%"></i></div>
-        <b>${escapeHtml(used)}${maxDaily ? `/${escapeHtml(maxDaily)}` : ""}</b>
+        <b>${escapeHtml(used)}${limitText !== "0" ? `/${escapeHtml(limitText)}` : ""}</b>
       </div>
     `;
   });
@@ -5683,13 +5760,13 @@ async function renderUserDetail(forceFetch = false) {
     </form>
     <div class="visual-strip">
       ${scoreGauge("关系分", detail.relationship_score || 0, -20, 40)}
-      ${scoreGauge("今日主动", detail.sent_today || 0, 0, Math.max(1, detail.effective_daily_limit || state.overview?.private?.max_daily_messages || 8))}
+      ${scoreGauge("今日主动", detail.sent_today || 0, 0, proactiveGaugeMax(detail.sent_today, detail.effective_daily_limit, detail.effective_daily_limit_unlimited, state.overview?.private?.max_daily_messages || 8))}
       ${miniStat("片段", detail.dialogue_episode_count || (detail.dialogue_episodes || []).length)}
       ${miniStat("未完话头", Array.isArray(detail.open_loops) ? activeOpenLoopItems(detail.open_loops).length : (detail.open_loop_count || 0))}
       ${miniStat("习惯", detail.habit_count || detail.behavior_habits?.items?.length || 0)}
     </div>
     <div class="detail-grid">
-      ${detailBlock("关系和主动", detail.formatted?.relationship || "", [["角色", detail.relationship_role_label || ""], ["有效主动上限", `${detail.effective_daily_limit ?? "-"} / 天`], ["下次主动", detail.formatted?.next_proactive || detail.next_proactive], ["动作偏好", detail.formatted?.action_affinity || ""]])}
+      ${detailBlock("关系和主动", detail.formatted?.relationship || "", [["角色", detail.relationship_role_label || ""], ["有效主动上限", `${detail.effective_daily_limit_text || formatProactiveLimit(detail.effective_daily_limit, detail.effective_daily_limit_unlimited)} / 天`], ["下次主动", detail.formatted?.next_proactive || detail.next_proactive], ["动作偏好", detail.formatted?.action_affinity || ""]])}
       ${emotionGateBlock(detail)}
       ${userWorldbookBlock(detail.worldbook_member)}
       ${detailBlock("行为习惯", detail.behavior_habits?.updated_at ? `更新于 ${detail.behavior_habits.updated_at}` : "", userHabitPairs(detail.behavior_habits))}
@@ -9107,7 +9184,7 @@ function proactiveUserStateHtml(items) {
   return `
     <div class="proactive-user-state-grid">
       ${items.map((item) => {
-        const quota = `${item.sent_today ?? 0}/${item.effective_daily_limit ?? "-"}`;
+        const quota = `${item.sent_today ?? 0}/${item.effective_daily_limit_text || formatProactiveLimit(item.effective_daily_limit, item.effective_daily_limit_unlimited)}`;
         const status = item.proactive_sending ? "发送中" : item.next_proactive_ts ? "已排程" : "未排程";
         const readinessMeta = proactiveReadinessMeta(item);
         const hesitationMeta = proactiveHesitationMeta(item);
@@ -9645,7 +9722,7 @@ function renderPrivateStrategyOverview(selector, info) {
   const manageText = manageIds.length ? manageIds.join("、") : "未配置";
   const rows = [
     ["对象", total ? `${enabled}/${total} 启用` : `${enabled || 0} 个启用`],
-    ["主动上限", `每日 ${Number(info.max_daily_messages || 0)} 条`],
+    ["主动上限", formatProactiveDailyLabel(state.overview?.proactive_intensity?.effective?.max_daily_messages ?? info.max_daily_messages, state.overview?.proactive_intensity?.effective?.max_daily_messages_unlimited, state.overview?.proactive_intensity?.effective?.max_daily_messages_text)],
     ["触达条件", `空闲 ${Number(info.idle_minutes || 0)} 分钟后，最小间隔 ${Number(info.min_interval_minutes || 0)} 分钟`],
     ["管理权限", manageText],
     ["管理命令", toBool(info.require_opt_in ?? info.require_confirm ?? info.require_private_confirm) ? "仅私聊" : "私聊+群聊"],
@@ -9795,6 +9872,9 @@ function renderModuleWorkbench(settings) {
   const intensityEnabled = Boolean(intensity.enabled);
   const intensityLabel = intensityEnabled ? (intensity.label || intensity.preset || "预设开启") : "手动参数";
   const proactiveMaxDaily = intensityEnabled ? (intensity.effective?.max_daily_messages ?? settings.max_daily_messages) : settings.max_daily_messages;
+  const proactiveMaxDailyText = intensityEnabled
+    ? (intensity.effective?.max_daily_messages_text || formatProactiveLimit(proactiveMaxDaily, intensity.effective?.max_daily_messages_unlimited))
+    : formatProactiveLimit(proactiveMaxDaily);
   const proactiveIdle = intensityEnabled ? (intensity.effective?.idle_minutes ?? settings.idle_minutes) : settings.idle_minutes;
   const proactiveMinInterval = intensityEnabled ? (intensity.effective?.min_interval_minutes ?? settings.min_interval_minutes) : settings.min_interval_minutes;
   const moduleCards = [
@@ -9803,7 +9883,7 @@ function renderModuleWorkbench(settings) {
       kicker: "主动节奏",
       status: Number(proactiveMaxDaily || 0) > 0 ? "运行中" : "已收起",
       tone: intensityEnabled ? "warn" : (Number(proactiveMaxDaily || 0) > 0 ? "ok" : "off"),
-      body: `私聊 ${proactiveMaxDaily ?? 0} 条/天，空闲 ${proactiveIdle ?? 0} 分钟后进入候选；群聊唤醒和插话按群聊开关参与。`,
+      body: `私聊 ${formatProactiveDailyQuota(proactiveMaxDaily, intensity.effective?.max_daily_messages_unlimited, proactiveMaxDailyText)}，空闲 ${proactiveIdle ?? 0} 分钟后进入候选；群聊唤醒和插话按群聊开关参与。`,
       meta: [
         `强度：${intensityLabel}`,
         `最小间隔 ${proactiveMinInterval ?? 0} 分钟`,
@@ -9957,11 +10037,14 @@ function renderModuleSummary(settings) {
   const intensity = state.overview?.proactive_intensity || {};
   const intensityEnabled = Boolean(intensity.enabled);
   const proactiveMaxDaily = intensityEnabled ? (intensity.effective?.max_daily_messages ?? settings.max_daily_messages) : settings.max_daily_messages;
+  const proactiveMaxDailyText = intensityEnabled
+    ? (intensity.effective?.max_daily_messages_text || formatProactiveLimit(proactiveMaxDaily, intensity.effective?.max_daily_messages_unlimited))
+    : formatProactiveLimit(proactiveMaxDaily);
   const proactiveIdle = intensityEnabled ? (intensity.effective?.idle_minutes ?? settings.idle_minutes) : settings.idle_minutes;
   const cards = [
     {
       label: "主动触达",
-      value: `${proactiveMaxDaily ?? 0}/天`,
+      value: formatProactiveDailyQuota(proactiveMaxDaily, intensity.effective?.max_daily_messages_unlimited, proactiveMaxDailyText),
       note: intensityEnabled
         ? `${intensity.label || intensity.preset || "预设"} · 私聊空闲 ${proactiveIdle ?? 0} 分钟`
         : `私聊空闲 ${proactiveIdle ?? 0} 分钟`,
@@ -11577,8 +11660,11 @@ function proactiveIntensityCommonSettingCard(settings = {}, intensity = {}) {
   const current = String(settings.proactive_intensity_preset || intensity.preset || "off");
   const enabled = Boolean(intensity?.enabled);
   const effective = intensity?.effective || {};
+  const interestProbability = Math.round(Number(effective.group_wakeup_interest_probability || 0) * 100);
+  const maxDailyText = effective.max_daily_messages_text || formatProactiveLimit(effective.max_daily_messages, effective.max_daily_messages_unlimited);
+  const interjectLimitText = effective.group_interject_max_daily_text || formatProactiveLimit(effective.group_interject_max_daily, effective.group_interject_max_daily_unlimited);
   const detail = enabled
-    ? `当前有效：私聊 ${effective.max_daily_messages ?? "-"} 条/天，空闲 ${effective.idle_minutes ?? "-"} 分钟，群唤醒冷却 ${effective.group_wakeup_cooldown_seconds ?? "-"} 秒，群插话间隔 ${effective.group_interject_min_interval_minutes ?? "-"} 分钟。`
+    ? `当前有效：私聊 ${formatProactiveDailyQuota(effective.max_daily_messages, effective.max_daily_messages_unlimited, maxDailyText)}，空闲 ${effective.idle_minutes ?? "-"} 分钟，群唤醒冷却 ${effective.group_wakeup_cooldown_seconds ?? "-"} 秒，兴趣唤醒 ${interestProbability}%，群插话间隔 ${effective.group_interject_min_interval_minutes ?? "-"} 分钟，群插话上限 ${interjectLimitText}${effective.ignore_token_soft_limit ? "；最高档忽略 Token 软限额降载" : ""}。`
     : "关闭时完全沿用手动参数，不改变私聊、群聊唤醒或群主动插话频率。";
   return `
     <section class="feature-switch-item feature-setting-inline ${enabled ? "on" : "off"}">
@@ -11600,7 +11686,7 @@ function proactiveIntensityCommonSettingCard(settings = {}, intensity = {}) {
             ["balanced", "标准偏主动"],
             ["high_private", "私聊高频"],
             ["high_group", "群聊活跃"],
-            ["live", "在线陪伴"],
+            ["live", "在线陪伴：不省成本"],
           ].map(([value, label]) => `<option value="${escapeHtml(value)}"${current === value ? " selected" : ""}>${escapeHtml(label)}</option>`).join("")}
         </select>
         <button type="submit">保存</button>

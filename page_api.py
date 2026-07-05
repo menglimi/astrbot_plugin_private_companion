@@ -5101,6 +5101,16 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
                 if hasattr(self.plugin, "_effective_user_daily_limit")
                 else getattr(self.plugin, "max_daily_messages", 0)
             ),
+            "effective_daily_limit_text": (
+                self.plugin._format_proactive_daily_limit(self.plugin._effective_user_daily_limit(user))
+                if hasattr(self.plugin, "_format_proactive_daily_limit") and hasattr(self.plugin, "_effective_user_daily_limit")
+                else str(getattr(self.plugin, "max_daily_messages", 0))
+            ),
+            "effective_daily_limit_unlimited": (
+                self.plugin._proactive_daily_limit_is_unlimited(self.plugin._effective_user_daily_limit(user))
+                if hasattr(self.plugin, "_proactive_daily_limit_is_unlimited") and hasattr(self.plugin, "_effective_user_daily_limit")
+                else False
+            ),
             "effective_idle_minutes": (
                 self.plugin._effective_user_idle_minutes(user)
                 if hasattr(self.plugin, "_effective_user_idle_minutes")
@@ -7494,8 +7504,20 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
                     pass
             return getattr(self.plugin, attr_name, default)
 
+        effective_max_daily = call_or_attr("_runtime_max_daily_messages", "max_daily_messages", 0)
+        effective_group_interject_max_daily = call_or_attr(
+            "_effective_group_interject_max_daily",
+            "group_interject_max_daily",
+            2,
+        )
+        limit_is_unlimited = getattr(self.plugin, "_proactive_daily_limit_is_unlimited", None)
+        limit_formatter = getattr(self.plugin, "_format_proactive_daily_limit", None)
+        max_daily_unlimited = bool(limit_is_unlimited(effective_max_daily)) if callable(limit_is_unlimited) else False
+        group_interject_unlimited = bool(limit_is_unlimited(effective_group_interject_max_daily)) if callable(limit_is_unlimited) else False
         effective = {
-            "max_daily_messages": call_or_attr("_runtime_max_daily_messages", "max_daily_messages", 0),
+            "max_daily_messages": effective_max_daily,
+            "max_daily_messages_text": limit_formatter(effective_max_daily) if callable(limit_formatter) else str(effective_max_daily),
+            "max_daily_messages_unlimited": max_daily_unlimited,
             "idle_minutes": effects.get("idle_minutes", getattr(self.plugin, "idle_minutes", 0)),
             "min_interval_minutes": effects.get("min_interval_minutes", getattr(self.plugin, "min_interval_minutes", 0)),
             "proactive_persona_judge_send_threshold": call_or_attr(
@@ -7519,14 +7541,31 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
                 "group_interject_min_interval_minutes",
                 180,
             ),
-            "group_interject_max_daily": call_or_attr(
-                "_effective_group_interject_max_daily",
-                "group_interject_max_daily",
-                2,
+            "group_interject_max_daily": effective_group_interject_max_daily,
+            "group_interject_max_daily_text": limit_formatter(effective_group_interject_max_daily) if callable(limit_formatter) else str(effective_group_interject_max_daily),
+            "group_interject_max_daily_unlimited": group_interject_unlimited,
+            "group_wakeup_interest_probability": call_or_attr(
+                "_effective_group_wakeup_interest_probability",
+                "group_wakeup_interest_probability",
+                0.18,
             ),
+            "group_wakeup_question_threshold": call_or_attr(
+                "_effective_group_wakeup_question_threshold",
+                "group_wakeup_question_threshold",
+                65,
+            ),
+            "group_wakeup_cold_group_threshold": call_or_attr(
+                "_effective_group_wakeup_cold_group_threshold",
+                "group_wakeup_cold_group_threshold",
+                65,
+            ),
+            "ignore_token_soft_limit": bool(effects.get("ignore_token_soft_limit", False)),
+            "ignore_daily_limit": bool(effects.get("ignore_daily_limit", False)),
         }
         configured = {
             "max_daily_messages": getattr(self.plugin, "max_daily_messages", 0),
+            "max_daily_messages_text": str(getattr(self.plugin, "max_daily_messages", 0)),
+            "max_daily_messages_unlimited": False,
             "idle_minutes": getattr(self.plugin, "idle_minutes", 0),
             "min_interval_minutes": getattr(self.plugin, "min_interval_minutes", 0),
             "proactive_persona_judge_send_threshold": getattr(self.plugin, "proactive_persona_judge_send_threshold", 62),
@@ -7535,6 +7574,13 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             "group_high_intensity_cooldown_seconds": getattr(self.plugin, "group_high_intensity_cooldown_seconds", 150),
             "group_interject_min_interval_minutes": getattr(self.plugin, "group_interject_min_interval_minutes", 180),
             "group_interject_max_daily": getattr(self.plugin, "group_interject_max_daily", 2),
+            "group_interject_max_daily_text": str(getattr(self.plugin, "group_interject_max_daily", 2)),
+            "group_interject_max_daily_unlimited": False,
+            "group_wakeup_interest_probability": getattr(self.plugin, "group_wakeup_interest_probability", 0.18),
+            "group_wakeup_question_threshold": getattr(self.plugin, "group_wakeup_question_threshold", 65),
+            "group_wakeup_cold_group_threshold": getattr(self.plugin, "group_wakeup_cold_group_threshold", 65),
+            "ignore_token_soft_limit": False,
+            "ignore_daily_limit": False,
         }
         changed = [
             key
@@ -7549,7 +7595,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             "configured": configured,
             "effective": effective,
             "changed_keys": changed,
-            "note": "预设只覆盖运行态有效频率，不改写手动参数；免打扰、休息、用户拒绝、隐私和成本闸门仍然生效。",
+            "note": "预设只覆盖运行态有效频率，不改写手动参数；最高档不按每日主动次数封顶，并会忽略 Token 软限额降载，但免打扰、休息、用户拒绝、隐私和每日 Token 硬限额仍然生效。",
         }
 
     def _build_diagnostics(self, users: dict[str, Any], groups: dict[str, Any]) -> list[dict[str, str]]:
@@ -7583,12 +7629,15 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
                 "warn",
                 f"正在使用主动强度预设：{intensity.get('label') or intensity.get('preset')}",
                 (
-                    f"私聊有效上限 {effective.get('max_daily_messages')} 条/天，"
+                    f"私聊有效上限 {effective.get('max_daily_messages_text') or effective.get('max_daily_messages')}，"
                     f"空闲 {effective.get('idle_minutes')} 分钟，"
                     f"最小间隔 {effective.get('min_interval_minutes')} 分钟；"
                     f"群唤醒冷却 {effective.get('group_wakeup_cooldown_seconds')} 秒，"
-                    f"群插话间隔 {effective.get('group_interject_min_interval_minutes')} 分钟。"
-                    "预设只覆盖运行态有效频率，不改写手动参数，也不会绕过免打扰、休息、用户拒绝、隐私和成本闸门。"
+                    f"群插话间隔 {effective.get('group_interject_min_interval_minutes')} 分钟，"
+                    f"群插话上限 {effective.get('group_interject_max_daily_text') or effective.get('group_interject_max_daily')}，"
+                    f"兴趣唤醒概率 {round(float(effective.get('group_wakeup_interest_probability') or 0) * 100)}%。"
+                    f"{'当前最高档会忽略 Token 软限额降载；' if effective.get('ignore_token_soft_limit') else ''}"
+                    "预设只覆盖运行态有效频率，不改写手动参数，也不会绕过免打扰、休息、用户拒绝、隐私和硬限额。"
                 ),
                 "需要恢复原配置时，将“主动强度预设”改为关闭",
             )
@@ -7642,9 +7691,14 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             except Exception:
                 effective_max_daily = max_daily
         if effective_max_daily > 0:
-            detail = f"每日有效上限 {effective_max_daily} 条"
+            limit_formatter = getattr(self.plugin, "_format_proactive_daily_limit", None)
+            limit_is_unlimited = getattr(self.plugin, "_proactive_daily_limit_is_unlimited", None)
+            effective_limit_text = limit_formatter(effective_max_daily) if callable(limit_formatter) else str(effective_max_daily)
+            detail = f"每日有效上限 {effective_limit_text}"
             if effective_max_daily != max_daily:
                 detail += f"（手动配置 {max_daily} 条）"
+            if callable(limit_is_unlimited) and limit_is_unlimited(effective_max_daily):
+                detail += "，当前最高档不按每日主动次数封顶"
             add("ok", "私聊主动额度可用", detail)
         else:
             add("warn", "私聊主动已关闭", "每日主动上限为 0", "在模块配置里调高每日主动上限")
@@ -7652,12 +7706,20 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
         if getattr(self.plugin, "enable_daily_token_soft_limit", True):
             soft_limit = int(getattr(self.plugin, "daily_token_soft_limit", 0) or 0)
             today_tokens = int(getattr(self.plugin, "_today_llm_token_total", lambda: 0)() or 0)
+            ignore_soft_limit = bool(self._proactive_intensity_summary().get("effective", {}).get("ignore_token_soft_limit"))
             if soft_limit > 0 and today_tokens >= soft_limit:
-                add(
-                    "warn",
-                    "每日 Token 软限额已接管",
-                    f"今日已用约 {today_tokens} Token，低优先级后台 LLM 任务会暂缓",
-                )
+                if ignore_soft_limit:
+                    add(
+                        "warn",
+                        "Token 软限额已触发但最高档放行",
+                        f"今日已用约 {today_tokens} Token；当前主动强度最高档会忽略软限额降载，低优先级任务仍可继续运行",
+                    )
+                else:
+                    add(
+                        "warn",
+                        "每日 Token 软限额已接管",
+                        f"今日已用约 {today_tokens} Token，低优先级后台 LLM 任务会暂缓",
+                    )
             elif soft_limit > 0:
                 add("ok", "每日 Token 软限额已启用", f"软限额 {soft_limit}，当前约 {today_tokens}")
             else:
@@ -7754,7 +7816,10 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             limit_getter = getattr(self.plugin, "_effective_group_interject_max_daily", None)
             limit = int(limit_getter() if callable(limit_getter) else getattr(self.plugin, "group_interject_max_daily", 0) or 0)
             if limit > 0:
-                add("ok", "群聊插话可用", f"每群每日上限 {limit} 次")
+                limit_formatter = getattr(self.plugin, "_format_proactive_daily_limit", None)
+                limit_text = limit_formatter(limit) if callable(limit_formatter) else str(limit)
+                suffix = "" if limit_text == "不限" else " 次"
+                add("ok", "群聊插话可用", f"每群每日上限 {limit_text}{suffix}")
             else:
                 add("warn", "群聊插话开关已开但额度为 0", "功能不会真正触发", "在模块配置里调高每群每日插话上限")
         elif getattr(self.plugin, "enable_group_companion", False):
@@ -10527,6 +10592,13 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             "auth_failure_reason": state.get("last_auth_failure_reason", ""),
             "auth_failure_count": self._int(state.get("auth_failure_count")),
             "auth_status": state.get("last_auth_status", ""),
+            "cookie_fetch_status": state.get("last_cookie_fetch_status", ""),
+            "cookie_fetch_reason": state.get("last_cookie_fetch_reason", ""),
+            "cookie_fetch_has_uin": bool(state.get("last_cookie_fetch_has_uin", False)),
+            "cookie_fetch_has_skey": bool(state.get("last_cookie_fetch_has_skey", False)),
+            "cookie_fetch_has_p_skey": bool(state.get("last_cookie_fetch_has_p_skey", False)),
+            "cookie_fetch_uin": state.get("last_cookie_fetch_uin", ""),
+            "cookie_fetch_at": self.plugin._format_timestamp_elapsed(state.get("last_cookie_fetch_at", 0)),
         }
 
     def _jm_cosmos_summary(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -11428,6 +11500,16 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
                         "user_role_label": user_summary_for_state.get("relationship_role_label") or "",
                         "sent_today": self._int(user.get("sent_today")),
                         "effective_daily_limit": effective_limit,
+                        "effective_daily_limit_text": (
+                            self.plugin._format_proactive_daily_limit(effective_limit)
+                            if hasattr(self.plugin, "_format_proactive_daily_limit")
+                            else str(effective_limit)
+                        ),
+                        "effective_daily_limit_unlimited": (
+                            self.plugin._proactive_daily_limit_is_unlimited(effective_limit)
+                            if hasattr(self.plugin, "_proactive_daily_limit_is_unlimited")
+                            else False
+                        ),
                         "next_proactive_ts": next_for_state,
                         "next_proactive": self.plugin._format_timestamp_elapsed(next_for_state),
                         "proactive_sending": bool(user.get("proactive_sending")),

@@ -2397,7 +2397,11 @@ class ProactiveEngineMixin:
             self._clear_pending_proactive_plan(user)
             self._schedule_next_proactive(user, now=now, delay_hours=(2, 5))
             return False, "早安只适合作为当天第一句主动消息"
-        if not is_troubleshooting and _safe_int(user.get("sent_today"), 0) >= daily_limit:
+        if (
+            not is_troubleshooting
+            and not self._proactive_daily_limit_is_unlimited(daily_limit)
+            and _safe_int(user.get("sent_today"), 0) >= daily_limit
+        ):
             if not due_timer_active:
                 self._schedule_next_proactive(user, now=now, delay_hours=(8, 16))
             return False, "已达每日上限"
@@ -2795,7 +2799,9 @@ class ProactiveEngineMixin:
 
         daily_limit = self._effective_user_daily_limit(user)
         sent_today = _safe_int(user.get("sent_today"), 0)
-        under_limit = daily_limit > 0 and sent_today < daily_limit
+        unlimited_daily_limit = self._proactive_daily_limit_is_unlimited(daily_limit)
+        under_limit = daily_limit > 0 and (unlimited_daily_limit or sent_today < daily_limit)
+        daily_limit_text = self._format_proactive_daily_limit(daily_limit)
         if daily_limit <= 0:
             add("daily_limit", "每日上限", False, -55, "每日上限为 0", blocker=True)
         else:
@@ -2804,7 +2810,7 @@ class ProactiveEngineMixin:
                 "每日上限",
                 under_limit,
                 8 if under_limit else -40,
-                f"{sent_today}/{daily_limit}",
+                f"{sent_today}/{daily_limit_text}",
                 blocker=not under_limit,
             )
 
@@ -3327,6 +3333,9 @@ class ProactiveEngineMixin:
         min_interval = self._effective_min_interval_seconds(probe)
         if self._is_greeting_reason(planned_reason) and self._private_user_role(probe) != "friend":
             min_interval = min(min_interval, self._greeting_min_interval_seconds(planned_reason))
+        effective_daily_limit = self._effective_user_daily_limit(probe)
+        daily_limit_text = self._format_proactive_daily_limit(effective_daily_limit)
+        soft_target_text = "不限" if self._proactive_daily_limit_is_unlimited(effective_daily_limit) else f"{self._soft_daily_target(probe):.1f}"
         reason_allowed = self._is_reason_allowed_now(planned_reason)
         moment_ok = True
         if reason == "未到候选主动时间":
@@ -3348,7 +3357,7 @@ class ProactiveEngineMixin:
             + (f"｜最佳窗口到 {self._environment_fromtimestamp(planned_best_until).strftime('%H:%M:%S')}" if planned_best_until > 0 else "")
             + (f"｜来源：模型预约" if isinstance(timer_event, dict) and _safe_float(timer_event.get("scheduled_ts"), 0) == next_at else ""),
             f"潜在念头：{len(active_impulses)} 个待选",
-            f"今日已发：{sent_today}/{self._effective_user_daily_limit(probe)}｜软目标约 {self._soft_daily_target(probe):.1f}",
+            f"今日已发：{sent_today}/{daily_limit_text}｜软目标约 {soft_target_text}",
             f"今日问候：已发 {', '.join(str(item) for item in sent_greetings) or '无'}｜被用户消息跳过 {', '.join(str(item) for item in suppressed_greetings) or '无'}",
             f"免打扰：{'是' if self._is_quiet_time() else '否'}｜失眠特例：{'可用' if self._can_send_insomnia_night_message(probe) else '不可用'}",
             f"距用户上次活跃：{self._format_elapsed(max(0, last_seen_gap)) if last_seen_gap >= 0 else '从未'}｜要求至少 {self._format_elapsed(idle_limit)}",
@@ -4583,7 +4592,11 @@ class ProactiveEngineMixin:
             stats["replied"] = _safe_int(stats.get("replied"), 0, 0) + 1
 
     def _maybe_make_followup_event(self, user: dict[str, Any], reason: str, action: str) -> dict[str, Any] | None:
-        if _safe_int(user.get("sent_today"), 0) >= max(0, self._effective_user_daily_limit(user) - 1):
+        daily_limit = self._effective_user_daily_limit(user)
+        if (
+            not self._proactive_daily_limit_is_unlimited(daily_limit)
+            and _safe_int(user.get("sent_today"), 0) >= max(0, daily_limit - 1)
+        ):
             return None
         if action not in {"photo_text", "poke", "voice", "screen_peek"} and "+" not in action:
             return None
@@ -6193,7 +6206,11 @@ class ProactiveEngineMixin:
         hour = self._environment_now().hour
         if not (0 <= hour <= 5 or hour >= 23):
             return False
-        if _safe_int(user.get("sent_today"), 0) >= max(1, self._effective_user_daily_limit(user)):
+        daily_limit = self._effective_user_daily_limit(user)
+        if (
+            not self._proactive_daily_limit_is_unlimited(daily_limit)
+            and _safe_int(user.get("sent_today"), 0) >= max(1, daily_limit)
+        ):
             return False
         if _safe_float(user.get("last_sent"), 0) > 0:
             elapsed = _now_ts() - _safe_float(user.get("last_sent"), 0)

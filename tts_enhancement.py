@@ -586,7 +586,9 @@ class TtsEnhancementMixin:
 
         for token, original in protected.items():
             source = source.replace(token, original)
-        return source.strip()
+        source = source.strip()
+        compact = re.sub(r"[\s\W_]+", "", source, flags=re.UNICODE)
+        return source if compact else ""
 
     def _tts_session_key(self, event: Any) -> str:
         return _single_line(getattr(event, "unified_msg_origin", ""), 160) if event is not None else ""

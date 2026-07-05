@@ -66,7 +66,7 @@ help: |
   - 陪伴群 关闭
 
   本插件不只限于私聊。私聊陪伴默认开启；配置页 target_user_ids 里的 QQ 会自动预热主动消息。群聊陪伴支持白名单/黑名单模式,默认白名单,不会主动抢话。插件遵守每日上限、最小间隔、免打扰时间、群聊插话间隔和主动生图额度。看屏幕、生图、戳一戳、语音、QQ 状态同步、B站 AI Bot、SDGen 等联动能力都是可选项,缺失时会自动跳过或回退。
-version: 5.6.11
+version: 5.6.12
 support_platforms:
   - aiocqhttp
 astrbot_version: ">=4.22.0"

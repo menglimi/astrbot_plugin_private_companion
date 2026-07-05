@@ -734,7 +734,12 @@ class GroupWakeupMixin:
             messages = _safe_int(topic.get("message_count"), 0, 0)
             score += min(1.6, 0.55 + topic_hits * 0.22 + min(0.35, len(participants) * 0.05) + min(0.35, messages * 0.03))
             reasons.append("话题线升温")
-        max_boost = max(0.0, min(1.5, float(getattr(self, "group_wakeup_topic_interest_max_boost", 0.45) or 0.0)))
+        boost_getter = getattr(self, "_effective_group_wakeup_topic_interest_max_boost", None)
+        max_boost = (
+            boost_getter()
+            if callable(boost_getter)
+            else max(0.0, min(1.5, float(getattr(self, "group_wakeup_topic_interest_max_boost", 0.45) or 0.0)))
+        )
         multiplier = 1.0 + min(max_boost, score * 0.16)
         if context.get("buffer_active"):
             penalty = max(0.0, min(1.0, float(getattr(self, "group_wakeup_debounce_pending_penalty", 0.65) or 0.0)))
@@ -1101,7 +1106,8 @@ class GroupWakeupMixin:
                     "note": "群友提到了可能和 Bot 有关的唤醒词。",
                 }
         if question_signal:
-            threshold = max(0, min(100, _safe_int(getattr(self, "group_wakeup_question_threshold", 65), 65, 0)))
+            threshold_getter = getattr(self, "_effective_group_wakeup_question_threshold", None)
+            threshold = threshold_getter() if callable(threshold_getter) else max(0, min(100, _safe_int(getattr(self, "group_wakeup_question_threshold", 65), 65, 0)))
             score, fatigue, score_notes = self._group_wakeup_question_score_context(group, scene, question_signal)
             if score >= threshold:
                 strength = self._group_wakeup_strength("question", group, scene)
@@ -1150,7 +1156,8 @@ class GroupWakeupMixin:
                 note=f"解惑强度 {score}/{threshold} 未达阈值" + (f"（{'、'.join(score_notes[:3])}）" if score_notes else ""),
             )
         if cold_group_signal:
-            threshold = max(0, min(100, _safe_int(getattr(self, "group_wakeup_cold_group_threshold", 65), 65, 0)))
+            threshold_getter = getattr(self, "_effective_group_wakeup_cold_group_threshold", None)
+            threshold = threshold_getter() if callable(threshold_getter) else max(0, min(100, _safe_int(getattr(self, "group_wakeup_cold_group_threshold", 65), 65, 0)))
             score = max(0, min(100, _safe_int(cold_group_signal.get("score"), 0, 0)))
             fatigue = self._group_wakeup_fatigue(group)
             if score >= threshold:
@@ -1192,12 +1199,18 @@ class GroupWakeupMixin:
                 fatigue=fatigue,
                 note=f"冷群强度 {score}/{threshold} 未达阈值",
             )
-        if self.group_wakeup_interest_probability <= 0:
+        probability_getter = getattr(self, "_effective_group_wakeup_interest_probability", None)
+        base_interest_probability = (
+            probability_getter()
+            if callable(probability_getter)
+            else max(0.0, min(1.0, float(getattr(self, "group_wakeup_interest_probability", 0.0) or 0.0)))
+        )
+        if base_interest_probability <= 0:
             return {}
         for word in self._group_wakeup_interest_words(group):
             if not self._text_contains_wakeup_word(cleaned, word):
                 continue
-            probability, fatigue = self._group_wakeup_probability_context(group, scene, self.group_wakeup_interest_probability, "interest")
+            probability, fatigue = self._group_wakeup_probability_context(group, scene, base_interest_probability, "interest")
             topic_weight = self._group_wakeup_topic_interest_weight(
                 group,
                 word,

@@ -25,6 +25,45 @@ class QzoneMixin(QzoneMediaMixin):
     """QQ Zone integration helpers."""
 
     _QZONE_COOKIE_DOMAIN = "user.qzone.qq.com"
+    _QZONE_COOKIE_ACTIONS = ("get_cookies", "get_credentials")
+    _QZONE_LOGIN_INFO_ACTIONS = ("get_login_info",)
+    _QZONE_ACTION_CALLER_ATTRS = ("call_action", "call_api", "call", "api_call", "send_action")
+    _QZONE_ACTION_OWNER_ATTRS = (
+        "api",
+        "bot",
+        "client",
+        "adapter",
+        "connection",
+        "onebot",
+        "platform",
+        "platform_impl",
+        "impl",
+        "instance",
+    )
+    _QZONE_COOKIE_VALUE_KEYS = (
+        "cookies",
+        "cookie",
+        "cookie_text",
+        "cookie_str",
+        "cookies_str",
+        "data",
+        "result",
+        "retdata",
+        "ret_data",
+        "payload",
+        "response",
+    )
+    _QZONE_COOKIE_SECRET_KEYS = ("p_skey", "skey", "pskey", "skey2")
+    _QZONE_COOKIE_DOMAIN_FALLBACKS = (
+        "user.qzone.qq.com",
+        "qzone.qq.com",
+        "h5.qzone.qq.com",
+        "mobile.qzone.qq.com",
+        "taotao.qzone.qq.com",
+        "qun.qzone.qq.com",
+        "ti.qq.com",
+        "qq.com",
+    )
 
     def _qzone_plugin_dir(self) -> Path:
         candidates = [
@@ -71,10 +110,10 @@ class QzoneMixin(QzoneMediaMixin):
             return False
         if any(callable(getattr(candidate, name, None)) for name in ("get_cookies", "get_credentials", "get_login_info")):
             return True
-        if callable(getattr(candidate, "call_action", None)):
+        if any(callable(getattr(candidate, name, None)) for name in QzoneMixin._QZONE_ACTION_CALLER_ATTRS):
             return True
         api = getattr(candidate, "api", None)
-        return callable(getattr(api, "call_action", None))
+        return any(callable(getattr(api, name, None)) for name in QzoneMixin._QZONE_ACTION_CALLER_ATTRS)
 
     def _qzone_runtime_bot_candidates(self, source: Any) -> list[Any]:
         """Return likely OneBot client objects from an AstrBot platform wrapper."""
@@ -110,6 +149,127 @@ class QzoneMixin(QzoneMediaMixin):
             seen.add(marker)
             deduped.append(item)
         return deduped
+
+    @staticmethod
+    def _qzone_unique_texts(items: list[str]) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
+        for item in items:
+            text = str(item or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            result.append(text)
+        return result
+
+    def _qzone_cookie_domain_candidates(self, configured_domain: str = "") -> list[str]:
+        domain = str(configured_domain or self._QZONE_COOKIE_DOMAIN or "").strip()
+        candidates: list[str] = []
+        if domain:
+            candidates.append(domain)
+            if "://" in domain:
+                parsed = urlparse(domain)
+                host = parsed.netloc or parsed.path
+                if host:
+                    candidates.extend([host, f"https://{host}", f"https://{host}/"])
+            else:
+                candidates.extend([f"https://{domain}", f"https://{domain}/"])
+        for fallback in self._QZONE_COOKIE_DOMAIN_FALLBACKS:
+            candidates.extend([fallback, f"https://{fallback}", f"https://{fallback}/"])
+        return self._qzone_unique_texts(candidates)
+
+    def _qzone_iter_action_callers(self, bot: Any) -> list[Any]:
+        callers: list[Any] = []
+        seen_owners: set[int] = set()
+        seen_callers: set[int] = set()
+        owners: list[Any] = [bot]
+        index = 0
+        while index < len(owners):
+            owner = owners[index]
+            index += 1
+            if owner is None:
+                continue
+            marker = id(owner)
+            if marker in seen_owners:
+                continue
+            seen_owners.add(marker)
+            for attr in self._QZONE_ACTION_CALLER_ATTRS:
+                try:
+                    caller = getattr(owner, attr, None)
+                except Exception:
+                    caller = None
+                if callable(caller) and id(caller) not in seen_callers:
+                    seen_callers.add(id(caller))
+                    callers.append(caller)
+            for attr in self._QZONE_ACTION_OWNER_ATTRS:
+                try:
+                    nested = getattr(owner, attr, None)
+                except Exception:
+                    nested = None
+                if nested is not None and id(nested) not in seen_owners:
+                    owners.append(nested)
+        return callers
+
+    @staticmethod
+    def _qzone_invoke_action_callable(callable_obj: Any, action: str, params: dict[str, Any]) -> Any:
+        attempts: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        if action:
+            envelope = dict(params)
+            attempts.extend(
+                [
+                    ((action,), dict(params)),
+                    ((), {"action": action, **params}),
+                    ((action, params), {}),
+                    ((action,), {"params": params}),
+                    ((), {"action": action, "params": params}),
+                    (({"action": action, "params": envelope},), {}),
+                    (({"action": action, "data": envelope},), {}),
+                    (({"action": action, "payload": envelope},), {}),
+                    (({"api": action, "params": envelope},), {}),
+                    (({"api": action, "data": envelope},), {}),
+                    ((action,), {"data": params}),
+                    ((), {"action": action, "data": params}),
+                    ((action,), {"payload": params}),
+                    ((), {"action": action, "payload": params}),
+                ]
+            )
+        else:
+            attempts.extend(
+                [
+                    ((), dict(params)),
+                    ((params,), {}),
+                    ((), {"params": params}),
+                    ((), {"data": params}),
+                    ((), {"payload": params}),
+                ]
+            )
+        last_error: TypeError | None = None
+        for args, kwargs in attempts:
+            try:
+                return callable_obj(*args, **kwargs)
+            except TypeError as exc:
+                last_error = exc
+                continue
+        if last_error is not None:
+            raise last_error
+        return callable_obj(action, **params) if action else callable_obj(**params)
+
+    async def _qzone_call_onebot_action(self, bot: Any, action: str, **params: Any) -> Any:
+        direct = getattr(bot, action, None)
+        if callable(direct):
+            result = self._qzone_invoke_action_callable(direct, "", params)
+            return await result if hasattr(result, "__await__") else result
+        last_error: Exception | None = None
+        for caller in self._qzone_iter_action_callers(bot):
+            try:
+                result = self._qzone_invoke_action_callable(caller, action, params)
+                return await result if hasattr(result, "__await__") else result
+            except Exception as exc:
+                last_error = exc
+                continue
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("OneBot client does not expose get_cookies/get_credentials")
 
     def _qzone_find_runtime_bot(self) -> Any | None:
         bot = getattr(self, "_qzone_last_bot", None)
@@ -156,33 +316,26 @@ class QzoneMixin(QzoneMediaMixin):
         return None
 
     async def _qzone_try_direct_cookie_fetch(self, bot: Any, domain: str) -> dict[str, str]:
-        direct = getattr(bot, "get_cookies", None)
-        result = None
-        if callable(direct):
-            try:
-                maybe = direct(domain=domain)
-                result = await maybe if hasattr(maybe, "__await__") else maybe
-            except TypeError:
-                try:
-                    maybe = direct()
-                    result = await maybe if hasattr(maybe, "__await__") else maybe
-                except Exception:
-                    result = None
-            except Exception:
-                result = None
-        if result is None:
-            api = getattr(bot, "api", None)
-            call_action = getattr(api, "call_action", None)
-            if not callable(call_action):
-                call_action = getattr(bot, "call_action", None)
-            if callable(call_action):
-                try:
-                    maybe = call_action("get_cookies", domain=domain)
-                    result = await maybe if hasattr(maybe, "__await__") else maybe
-                except Exception:
-                    result = None
-        cookie_text = self._qzone_extract_cookie_text(result)
-        return self._qzone_parse_cookie_text(cookie_text) if cookie_text else {}
+        merged: dict[str, str] = {}
+        login_uin = await self._qzone_fetch_login_uin(bot)
+        for action in self._QZONE_COOKIE_ACTIONS:
+            for candidate_domain in self._qzone_cookie_domain_candidates(domain):
+                for params in ({"domain": candidate_domain}, {}):
+                    try:
+                        result = await asyncio.wait_for(self._qzone_call_onebot_action(bot, action, **params), timeout=8.0)
+                    except Exception:
+                        continue
+                    cookie_text = self._qzone_extract_cookie_text(result)
+                    if not cookie_text:
+                        continue
+                    cookies = self._qzone_parse_cookie_text(cookie_text)
+                    if login_uin and not self._qzone_normalize_uin(cookies):
+                        cookies["uin"] = f"o{login_uin}"
+                        cookies["p_uin"] = f"o{login_uin}"
+                    merged.update(cookies)
+                    if self._qzone_cookie_has_identity_and_secret(merged):
+                        return merged
+        return merged
 
     @staticmethod
     def _qzone_gtk(p_skey: str) -> str:
@@ -196,9 +349,13 @@ class QzoneMixin(QzoneMediaMixin):
         aliases = {
             "pskey": "p_skey",
             "p-skey": "p_skey",
+            "p_skey": "p_skey",
             "p_uin": "p_uin",
             "ptui_loginuin": "ptui_loginuin",
             "csrf-token": "csrf_token",
+            "csrf_token": "csrf_token",
+            "bkn": "g_tk",
+            "gtk": "g_tk",
         }
         normalized: dict[str, str] = {}
         for key, value in (cookies or {}).items():
@@ -210,7 +367,8 @@ class QzoneMixin(QzoneMediaMixin):
             text = str(value).strip().strip('"')
             if not text:
                 continue
-            canonical = aliases.get(original.lower(), original)
+            alias_key = original.lower().replace("-", "_")
+            canonical = aliases.get(alias_key, aliases.get(original.lower(), original))
             normalized.setdefault(original, text)
             normalized.setdefault(canonical, text)
         if "uin" in normalized and "p_uin" not in normalized:
@@ -263,6 +421,11 @@ class QzoneMixin(QzoneMediaMixin):
                 return ""
         if isinstance(payload, str):
             text = payload.strip()
+            if text.startswith(("{", "[")):
+                try:
+                    return self._qzone_extract_cookie_text(json.loads(text), _depth=_depth + 1, _seen=_seen)
+                except Exception:
+                    pass
             return text if "=" in text and re.search(r"\b(?:uin|p_uin|skey|p_skey|pskey|g_tk|gtk|bkn)\s*=", text, re.I) else ""
         if isinstance(payload, (list, tuple)):
             parts = [self._qzone_extract_cookie_text(item, _depth=_depth + 1, _seen=_seen) for item in payload]
@@ -280,19 +443,7 @@ class QzoneMixin(QzoneMediaMixin):
         value = payload.get("value")
         if name and value not in (None, ""):
             return f"{name}={value}"
-        cookie_keys = {
-            "cookies",
-            "cookie",
-            "cookie_text",
-            "cookie_str",
-            "cookies_str",
-            "data",
-            "result",
-            "retdata",
-            "ret_data",
-            "payload",
-            "response",
-        }
+        cookie_keys = set(self._QZONE_COOKIE_VALUE_KEYS)
         allow = {
             "uin",
             "p_uin",
@@ -351,6 +502,75 @@ class QzoneMixin(QzoneMediaMixin):
                 return int(raw)
         return 0
 
+    def _qzone_cookie_has_identity_and_secret(self, cookies: dict[str, Any]) -> bool:
+        normalized = self._qzone_normalize_cookie_fields(cookies or {})
+        return bool(
+            self._qzone_normalize_uin(normalized)
+            and any(str(normalized.get(key) or "").strip() for key in self._QZONE_COOKIE_SECRET_KEYS)
+        )
+
+    def _qzone_note_cookie_fetch_status(
+        self,
+        status: str,
+        *,
+        cookies: dict[str, Any] | None = None,
+        ctx: dict[str, Any] | None = None,
+        reason: str = "",
+    ) -> None:
+        try:
+            state = self.data.setdefault("qzone_integration", {})
+            if not isinstance(state, dict):
+                self.data["qzone_integration"] = {}
+                state = self.data["qzone_integration"]
+            source = ctx.get("cookies") if isinstance(ctx, dict) else cookies
+            normalized = self._qzone_normalize_cookie_fields(source or {})
+            state["last_cookie_fetch_status"] = _single_line(status, 40)
+            state["last_cookie_fetch_at"] = _now_ts()
+            state["last_cookie_fetch_has_uin"] = bool(self._qzone_normalize_uin(normalized))
+            state["last_cookie_fetch_has_skey"] = bool(normalized.get("skey"))
+            state["last_cookie_fetch_has_p_skey"] = bool(normalized.get("p_skey") or normalized.get("pskey"))
+            if isinstance(ctx, dict) and ctx.get("uin"):
+                state["last_cookie_fetch_uin"] = str(ctx.get("uin"))
+            if reason:
+                state["last_cookie_fetch_reason"] = _single_line(reason, 160)
+            elif status == "ok":
+                state.pop("last_cookie_fetch_reason", None)
+            if callable(getattr(self, "_save_data_sync", None)):
+                self._save_data_sync()
+        except Exception:
+            logger.debug("[PrivateCompanion] QQ 空间 Cookie 状态记录失败", exc_info=True)
+
+    async def _qzone_fetch_login_uin(self, bot: Any) -> int:
+        for action in self._QZONE_LOGIN_INFO_ACTIONS:
+            try:
+                payload = await asyncio.wait_for(self._qzone_call_onebot_action(bot, action), timeout=5.0)
+            except Exception:
+                continue
+            if isinstance(payload, str) and payload.strip().startswith(("{", "[")):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    pass
+            candidates: list[Any] = []
+            if isinstance(payload, dict):
+                candidates.extend(
+                    [
+                        payload.get("user_id"),
+                        payload.get("uin"),
+                        payload.get("qq"),
+                        payload.get("self_id"),
+                    ]
+                )
+                for key in ("data", "result", "retdata", "payload", "response"):
+                    nested = payload.get(key)
+                    if isinstance(nested, dict):
+                        candidates.extend([nested.get("user_id"), nested.get("uin"), nested.get("qq"), nested.get("self_id")])
+            for value in candidates:
+                cleaned = str(value or "").strip().lstrip("oO")
+                if cleaned.isdigit():
+                    return int(cleaned)
+        return 0
+
     def _qzone_context_from_cookies(self, cookies_str: str) -> dict[str, Any]:
         parsed = self._qzone_parse_cookie_text(cookies_str)
         uin = self._qzone_normalize_uin(parsed)
@@ -384,12 +604,14 @@ class QzoneMixin(QzoneMediaMixin):
             try:
                 ctx = self._qzone_context_from_cookies(manual_cookie)
             except Exception as exc:
+                self._qzone_note_cookie_fetch_status("manual_failed", cookies=self._qzone_parse_cookie_text(manual_cookie), reason=str(exc))
                 raise RuntimeError(
                     "手动 QZONE_COOKIE 不可用："
                     f"{_single_line(exc, 120)}；"
                     "需包含 uin/p_uin 与 p_skey 或 skey，可从已登录 QQ 空间的浏览器请求头 Cookie 复制"
                 ) from exc
             logger.debug("[PrivateCompanion] QQ 空间使用手动 QZONE_COOKIE: uin=%s", ctx.get("uin"))
+            self._qzone_note_cookie_fetch_status("manual_ok", ctx=ctx)
             return ctx["cookie_header"]
         bot = getattr(event, "bot", None) if event is not None else None
         if bot is not None:
@@ -404,81 +626,19 @@ class QzoneMixin(QzoneMediaMixin):
         if bot is not None:
             self._qzone_last_bot = bot
         if bot is None:
+            self._qzone_note_cookie_fetch_status("failed", reason="没有可用的 OneBot 连接，且未配置手动 QZONE_COOKIE")
             raise RuntimeError(
                 "没有可用的 OneBot 连接，且未配置手动 QZONE_COOKIE；"
                 "请在配置页填写浏览器 QQ 空间 Cookie，或确认 OneBot 已连接并支持 get_cookies/get_credentials"
             )
-        direct_cookies = await self._qzone_try_direct_cookie_fetch(bot, self._QZONE_COOKIE_DOMAIN)
-        if self._qzone_normalize_uin(direct_cookies) and (direct_cookies.get("p_skey") or direct_cookies.get("pskey") or direct_cookies.get("skey")):
-            cookie_text = self._qzone_cookie_header(direct_cookies)
+        merged = await self._qzone_try_direct_cookie_fetch(bot, self._QZONE_COOKIE_DOMAIN)
+        if self._qzone_cookie_has_identity_and_secret(merged):
+            cookie_text = self._qzone_cookie_header(self._qzone_normalize_cookie_fields(merged))
             ctx = self._qzone_context_from_cookies(cookie_text)
-            logger.debug("[PrivateCompanion] QQ 空间直接获取 Cookie 成功: uin=%s domain=%s", ctx.get("uin"), self._QZONE_COOKIE_DOMAIN)
+            logger.debug("[PrivateCompanion] QQ 空间自动获取 Cookie 成功: uin=%s", ctx.get("uin"))
+            self._qzone_note_cookie_fetch_status("ok", ctx=ctx)
             return ctx["cookie_header"]
-        merged: dict[str, str] = {}
-        domains = [
-            self._QZONE_COOKIE_DOMAIN,
-            "qzone.qq.com",
-            "h5.qzone.qq.com",
-            "mobile.qzone.qq.com",
-            "taotao.qzone.qq.com",
-        ]
-        actions = ("get_cookies", "get_credentials")
-        api = getattr(bot, "api", None)
-        call_action = getattr(api, "call_action", None)
-        if not callable(call_action):
-            call_action = getattr(bot, "call_action", None)
-        for action in actions:
-            direct = getattr(bot, action, None)
-            for domain in domains:
-                for kwargs in ({"domain": domain}, {}):
-                    result = None
-                    if callable(direct):
-                        try:
-                            maybe = direct(**kwargs)
-                            result = await maybe if hasattr(maybe, "__await__") else maybe
-                        except Exception:
-                            result = None
-                    if result is None and callable(call_action):
-                        try:
-                            maybe = call_action(action, **kwargs)
-                            result = await maybe if hasattr(maybe, "__await__") else maybe
-                        except Exception:
-                            result = None
-                    cookie_text = self._qzone_extract_cookie_text(result)
-                    if cookie_text:
-                        merged.update(self._qzone_parse_cookie_text(cookie_text))
-                if self._qzone_normalize_uin(merged) and (merged.get("p_skey") or merged.get("pskey") or merged.get("skey")):
-                    break
-            if self._qzone_normalize_uin(merged) and (merged.get("p_skey") or merged.get("pskey") or merged.get("skey")):
-                break
-        if not self._qzone_normalize_uin(merged):
-            login_uin = 0
-            direct_login = getattr(bot, "get_login_info", None)
-            try:
-                result = None
-                if callable(direct_login):
-                    maybe = direct_login()
-                    result = await maybe if hasattr(maybe, "__await__") else maybe
-                if result is None and callable(call_action):
-                    maybe = call_action("get_login_info")
-                    result = await maybe if hasattr(maybe, "__await__") else maybe
-                if isinstance(result, dict):
-                    login_uin = _safe_int(result.get("user_id") or result.get("uin") or result.get("qq"), 0, 0)
-            except Exception:
-                login_uin = 0
-            if login_uin:
-                merged["uin"] = f"o{login_uin}"
-                merged["p_uin"] = f"o{login_uin}"
-        if merged:
-            cookie_text = self._qzone_cookie_header(merged)
-            try:
-                ctx = self._qzone_context_from_cookies(cookie_text)
-                if ctx.get("uin") and ctx.get("gtk"):
-                    return cookie_text
-            except Exception:
-                pass
-            if self._qzone_normalize_uin(merged):
-                return cookie_text
+        self._qzone_note_cookie_fetch_status("failed", cookies=merged)
         raise RuntimeError(
             "获取 QQ 空间 Cookie 失败"
             f"（uin={'有' if self._qzone_normalize_uin(merged) else '无'}"
