@@ -8628,8 +8628,19 @@ class DailyStateMixin:
             try:
                 return json.loads(candidate)
             except json.JSONDecodeError:
-                continue
+                repaired = self._repair_json_payload(candidate)
+                if repaired != candidate:
+                    try:
+                        return json.loads(repaired)
+                    except json.JSONDecodeError:
+                        pass
         return None
+
+    def _repair_json_payload(self, text: str) -> str:
+        text = text.strip().replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+        text = re.sub(r",\s*([}\]])", r"\1", text)
+        text = re.sub(r"(?m)^\s*//.*$", "", text)
+        return text
 
     def _get_current_plan_item(self, plan: dict[str, Any]) -> dict[str, str] | None:
         if not self._is_plan_date_active(plan.get("date")):
