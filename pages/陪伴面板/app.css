@@ -19378,6 +19378,7 @@ textarea {
 .photo-reference-persona label,
 .photo-reference-add-form label,
 .photo-reference-item label,
+.photo-reference-item .photo-reference-field,
 .photo-reference-toolbar label {
   display: grid;
   gap: 5px;
@@ -19390,6 +19391,7 @@ textarea {
 .photo-reference-add-form input,
 .photo-reference-item input,
 .photo-reference-item textarea,
+.photo-reference-item select,
 .photo-reference-toolbar input {
   width: 100%;
   min-width: 0;
@@ -19399,6 +19401,14 @@ textarea {
   background: #fff;
   color: var(--ink);
   font: inherit;
+}
+
+.photo-reference-item label > small,
+.photo-reference-item .photo-reference-field > small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .photo-reference-add-form {
@@ -19550,6 +19560,116 @@ textarea {
   background: color-mix(in srgb, var(--surface) 86%, var(--ink) 4%);
   color: var(--muted);
   font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.photo-reference-metadata-editor {
+  min-width: 0;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 8px;
+}
+
+.photo-reference-metadata-editor[open] {
+  display: grid;
+  gap: 10px;
+}
+
+.photo-reference-metadata-editor > summary {
+  min-width: 0;
+  cursor: pointer;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.photo-reference-metadata-editor > summary > span {
+  margin-left: 3px;
+}
+
+.photo-reference-metadata-editor > summary > small {
+  display: block;
+  margin: 4px 0 0 18px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.photo-reference-multi-select {
+  min-width: 0;
+}
+
+.photo-reference-multi-select > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #fff;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 12px;
+  list-style: none;
+}
+
+.photo-reference-multi-select > summary::-webkit-details-marker {
+  display: none;
+}
+
+.photo-reference-multi-select > summary::after {
+  content: "⌄";
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.photo-reference-multi-select[open] > summary::after {
+  transform: rotate(180deg);
+}
+
+.photo-reference-multi-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px;
+  max-height: 210px;
+  margin-top: 4px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 5px;
+  background: color-mix(in srgb, var(--surface) 92%, #fff 8%);
+}
+
+.photo-reference-item .photo-reference-multi-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  border-radius: 5px;
+  padding: 7px 8px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.photo-reference-item .photo-reference-multi-option:hover {
+  background: color-mix(in srgb, var(--blue-soft) 58%, #fff 42%);
+}
+
+.photo-reference-item .photo-reference-multi-option input {
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+}
+
+.photo-reference-item .photo-reference-multi-option span {
+  min-width: 0;
   overflow-wrap: anywhere;
 }
 

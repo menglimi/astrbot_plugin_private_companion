@@ -22274,6 +22274,154 @@ function photoReferenceStatusFor(kind, source) {
   ) || null;
 }
 
+function photoReferenceFallbackFieldOptions(field) {
+  const fallbacks = {
+    reference_roles: [
+      { value: "identity", label: "身份" },
+      { value: "outfit", label: "服装" },
+      { value: "pose", label: "姿势" },
+      { value: "scene", label: "场景" },
+      { value: "style", label: "画风" },
+      { value: "continuity", label: "连续性" },
+      { value: "source", label: "原图" },
+    ],
+    outfit_categories: [
+      { value: "cosplay", label: "COS" },
+      { value: "school_uniform", label: "校服" },
+      { value: "sleepwear", label: "睡衣" },
+      { value: "swimwear", label: "泳装" },
+      { value: "sportswear", label: "运动服" },
+      { value: "formalwear", label: "礼服/正装" },
+      { value: "homewear", label: "居家服" },
+      { value: "daily_outfit", label: "日常穿搭" },
+    ],
+    scene_categories: [
+      { value: "home", label: "居家" },
+      { value: "bedroom", label: "卧室" },
+      { value: "school", label: "校园" },
+      { value: "office", label: "办公室" },
+      { value: "outdoor", label: "户外" },
+      { value: "formal_event", label: "正式场合" },
+      { value: "sport", label: "运动" },
+      { value: "beach", label: "海边/泳池" },
+    ],
+    time_categories: [
+      { value: "morning", label: "早晨" },
+      { value: "daytime", label: "白天" },
+      { value: "afternoon", label: "下午" },
+      { value: "evening", label: "傍晚" },
+      { value: "night", label: "夜晚" },
+      { value: "bedtime", label: "睡前" },
+    ],
+    presets: [],
+  };
+  return fallbacks[field] || [];
+}
+
+function photoReferenceFieldOptions(field) {
+  const configured = Array.isArray(state.photoReferenceLibraryStatus?.options?.[field])
+    ? state.photoReferenceLibraryStatus.options[field]
+    : [];
+  const fallback = photoReferenceFallbackFieldOptions(field);
+  const mergeStandardOptions = ["reference_roles", "scene_categories", "time_categories"].includes(field);
+  const rawOptions = configured.length
+    ? (mergeStandardOptions ? [...configured, ...fallback] : configured)
+    : fallback;
+  const seen = new Set();
+  return rawOptions
+    .map((item) => {
+      const value = typeof item === "string" ? item : item?.value;
+      const label = typeof item === "string" ? item : item?.label;
+      return {
+        value: String(value || "").trim(),
+        label: String(label || value || "").trim(),
+      };
+    })
+    .filter((item) => {
+      if (!item.value || !item.label || seen.has(item.value)) return false;
+      seen.add(item.value);
+      return true;
+    });
+}
+
+function photoReferenceUnknownOptionLabel(value) {
+  const text = String(value || "").trim();
+  if (text.toLowerCase().startsWith("custom:")) {
+    return `自定义：${text.slice(text.indexOf(":") + 1).trim() || text}`;
+  }
+  return `当前值：${text}`;
+}
+
+function photoReferenceFieldOptionLabel(field, value) {
+  const text = String(value || "").trim();
+  const matched = photoReferenceFieldOptions(field).find((item) => item.value === text);
+  return matched?.label || photoReferenceUnknownOptionLabel(text);
+}
+
+function photoReferenceSingleSelectOptions(field, selectedValue, emptyLabel) {
+  const selected = String(selectedValue || "").trim();
+  const options = photoReferenceFieldOptions(field);
+  if (selected && !options.some((item) => item.value === selected)) {
+    options.push({
+      value: selected,
+      label: field === "presets" ? `已失效预设：${selected}` : photoReferenceUnknownOptionLabel(selected),
+    });
+  }
+  return [
+    `<option value="" ${selected ? "" : "selected"}>${escapeHtml(emptyLabel)}</option>`,
+    ...options.map((item) => `<option value="${escapeHtml(item.value)}" ${item.value === selected ? "selected" : ""}>${escapeHtml(item.label)}</option>`),
+  ].join("");
+}
+
+function photoReferenceMultiSelectHtml(field, selectedValues, index, emptyLabel, ariaLabel) {
+  const selected = new Set(normalizePhotoReferenceMetadataList(selectedValues));
+  const options = photoReferenceFieldOptions(field);
+  selected.forEach((value) => {
+    if (!options.some((item) => item.value === value)) {
+      options.push({ value, label: photoReferenceUnknownOptionLabel(value) });
+    }
+  });
+  const selectedLabels = options
+    .filter((item) => selected.has(item.value))
+    .map((item) => item.label);
+  return `
+    <details
+      class="photo-reference-multi-select"
+      data-photo-reference-multi-select="${escapeHtml(field)}"
+      data-empty-label="${escapeHtml(emptyLabel)}"
+    >
+      <summary aria-label="${escapeHtml(ariaLabel)}">
+        <span data-photo-reference-multi-summary>${escapeHtml(selectedLabels.join("、") || emptyLabel)}</span>
+      </summary>
+      <div class="photo-reference-multi-options" role="group" aria-label="${escapeHtml(ariaLabel)}">
+        ${options.map((item) => `
+          <label class="photo-reference-multi-option">
+            <input
+              type="checkbox"
+              data-photo-reference-multi-option="${escapeHtml(field)}"
+              data-photo-reference-option-label="${escapeHtml(item.label)}"
+              data-index="${index}"
+              value="${escapeHtml(item.value)}"
+              ${selected.has(item.value) ? "checked" : ""}
+            />
+            <span>${escapeHtml(item.label)}</span>
+          </label>
+        `).join("")}
+      </div>
+    </details>
+  `;
+}
+
+function syncPhotoReferenceMultiSelectSummary(input) {
+  const details = input?.closest?.("[data-photo-reference-multi-select]");
+  const summary = details?.querySelector?.("[data-photo-reference-multi-summary]");
+  if (!details || !summary) return;
+  const labels = Array.from(details.querySelectorAll("[data-photo-reference-multi-option]:checked"))
+    .map((option) => String(option.dataset.photoReferenceOptionLabel || "").trim())
+    .filter(Boolean);
+  summary.textContent = labels.join("、") || String(details.dataset.emptyLabel || "未选择");
+}
+
 function photoReferenceRoleShortcuts() {
   const status = state.photoReferenceLibraryStatus;
   const configured = Array.isArray(status?.options?.role_shortcuts)
@@ -22341,9 +22489,9 @@ function photoReferenceManagerCard(item, index) {
     : undefined;
   const configuredLockMode = configuredLock === true ? "true" : configuredLock === false ? "false" : "";
   const responsibilityTags = [
-    ...roles.map((role) => `职责 ${role}`),
-    ...configuredTimes.map((category) => `时间 ${category}`),
-    outfitCategory ? `服装 ${outfitCategory}` : "",
+    ...roles.map((role) => `职责 ${photoReferenceFieldOptionLabel("reference_roles", role)}`),
+    ...configuredTimes.map((category) => `时间 ${photoReferenceFieldOptionLabel("time_categories", category)}`),
+    outfitCategory ? `服装 ${photoReferenceFieldOptionLabel("outfit_categories", outfitCategory)}` : "",
     outfitLocked ? "默认锁定服装" : "",
     preferredPreset ? `预设 ${preferredPreset}` : "",
   ].filter(Boolean);
@@ -22370,11 +22518,15 @@ function photoReferenceManagerCard(item, index) {
           <textarea data-photo-reference-note data-index="${index}" maxlength="500" rows="3" placeholder="服装、地点和适用场景">${escapeHtml(note)}</textarea>
         </label>
         <details class="photo-reference-metadata-editor">
-          <summary>参考职责与服装裁决</summary>
-          <label>
+          <summary>
+            <span>参考职责与服装裁决</span>
+            <small>展开后可指定这张图在生图时负责保留哪些信息。留空表示不限制或由系统决定。</small>
+          </summary>
+          <div class="photo-reference-field">
             <span>参考职责</span>
-            <input type="text" data-photo-reference-roles data-index="${index}" value="${escapeHtml(configuredRoles.join(", "))}" maxlength="160" placeholder="identity, outfit, scene, continuity" />
-          </label>
+            ${photoReferenceMultiSelectHtml("reference_roles", configuredRoles, index, "未选择参考职责", "选择参考职责")}
+            <small>决定生成时从这张图保留哪些内容，可多选；“原图”用于改图底图。</small>
+          </div>
           <div class="photo-reference-role-shortcuts" role="group" aria-label="参考职责快捷设置">
             ${roleShortcuts.map((shortcut) => {
               const selected = shortcut.value.length === configuredRoles.length
@@ -22384,27 +22536,35 @@ function photoReferenceManagerCard(item, index) {
           </div>
           <label>
             <span>服装类别</span>
-            <input type="text" data-photo-reference-outfit-category data-index="${index}" value="${escapeHtml(configuredCategory)}" maxlength="40" placeholder="sleepwear / daily_outfit / formal" />
+            <select data-photo-reference-outfit-category data-index="${index}">
+              ${photoReferenceSingleSelectOptions("outfit_categories", configuredCategory, "不指定服装类别")}
+            </select>
+            <small>标记图片中的服装类型，用于匹配换装要求；只有参考职责包含“服装”时才参与裁决。</small>
           </label>
           <label>
             <span>默认服装锁</span>
             <select data-photo-reference-outfit-lock data-index="${index}">
-              <option value="" ${configuredLockMode === "" ? "selected" : ""}>自动推断</option>
               <option value="true" ${configuredLockMode === "true" ? "selected" : ""}>锁定参考图服装</option>
-              <option value="false" ${configuredLockMode === "false" ? "selected" : ""}>不锁定参考图服装</option>
+              <option value="false" ${configuredLockMode !== "true" ? "selected" : ""}>不锁定参考图服装</option>
             </select>
+            <small>控制是否优先沿用参考图中的服装；用户明确要求换装时，仍以用户要求为准。</small>
           </label>
-          <label>
+          <div class="photo-reference-field">
             <span>适用场景</span>
-            <input type="text" data-photo-reference-scenes data-index="${index}" value="${escapeHtml(configuredScenes.join(", "))}" maxlength="200" placeholder="home, bedroom, outdoor" />
-          </label>
-          <label>
+            ${photoReferenceMultiSelectHtml("scene_categories", configuredScenes, index, "通用场景（不限制）", "选择适用场景")}
+            <small>选择这张图适合使用的通用场景，可多选；匹配时会提高选用优先级，留空表示不限场景。</small>
+          </div>
+          <div class="photo-reference-field">
             <span>适用时间</span>
-            <input type="text" data-photo-reference-times data-index="${index}" value="${escapeHtml(configuredTimes.join(", "))}" maxlength="160" placeholder="morning, evening, bedtime" />
-          </label>
+            ${photoReferenceMultiSelectHtml("time_categories", configuredTimes, index, "不限时间", "选择适用时间")}
+            <small>选择这张图适合使用的时间段，可多选；匹配拍摄时间时会提高选用优先级，留空表示不限时间。</small>
+          </div>
           <label>
             <span>首选预设</span>
-            <input type="text" data-photo-reference-preferred-preset data-index="${index}" value="${escapeHtml(configuredPreset)}" maxlength="60" placeholder="居家睡衣" />
+            <select data-photo-reference-preferred-preset data-index="${index}">
+              ${photoReferenceSingleSelectOptions("presets", configuredPreset, "不指定预设")}
+            </select>
+            <small>选择使用这张图时优先套用的生图场景预设；用户明确要求优先，冲突或失效预设不会静默替代用户要求。</small>
           </label>
         </details>
       </div>
@@ -22638,7 +22798,7 @@ function bindFeatureDetailActions() {
   const detailPage = document.querySelector(".feature-detail-page");
   const trackFeatureDetailChange = (event) => {
     if (
-      event.target?.matches?.("[data-photo-reference-filter], [data-photo-reference-source], [data-photo-reference-note], [data-photo-reference-roles], [data-photo-reference-outfit-category], [data-photo-reference-outfit-lock], [data-photo-reference-scenes], [data-photo-reference-preferred-preset], [data-photo-reference-persona-source]")
+      event.target?.matches?.("[data-photo-reference-filter], [data-photo-reference-source], [data-photo-reference-note], [data-photo-reference-roles], [data-photo-reference-multi-option], [data-photo-reference-outfit-category], [data-photo-reference-outfit-lock], [data-photo-reference-scenes], [data-photo-reference-times], [data-photo-reference-preferred-preset], [data-photo-reference-persona-source]")
       || event.target?.closest?.("[data-photo-reference-add-form]")
     ) return;
     rememberFeatureParamDraft(event.target);
@@ -22977,8 +23137,9 @@ function bindPhotoReferenceManagerActions() {
     void refreshPhotoReferenceLibraryStatus(event.currentTarget);
   });
   manager.querySelector("[data-photo-reference-persona-source]")?.addEventListener("input", syncPhotoReferenceManagerDraft);
-  manager.querySelectorAll("[data-photo-reference-source], [data-photo-reference-note], [data-photo-reference-roles], [data-photo-reference-role-shortcut], [data-photo-reference-outfit-category], [data-photo-reference-outfit-lock], [data-photo-reference-scenes], [data-photo-reference-times], [data-photo-reference-preferred-preset]").forEach((input) => {
-    input.addEventListener(input.matches("button") ? "click" : input.matches("select") ? "change" : "input", () => {
+  manager.querySelectorAll("[data-photo-reference-source], [data-photo-reference-note], [data-photo-reference-roles], [data-photo-reference-role-shortcut], [data-photo-reference-multi-option], [data-photo-reference-outfit-category], [data-photo-reference-outfit-lock], [data-photo-reference-scenes], [data-photo-reference-times], [data-photo-reference-preferred-preset]").forEach((input) => {
+    const eventName = input.matches("button") ? "click" : input.matches("select, input[type='checkbox']") ? "change" : "input";
+    input.addEventListener(eventName, () => {
       const index = Number(input.dataset.index);
       const item = photoReferenceManagerItems()[index];
       if (!item) return;
@@ -22995,7 +23156,21 @@ function bindPhotoReferenceManagerActions() {
       else if (input.matches("[data-photo-reference-note]")) item.note = input.value;
       else {
         item.metadata = item.metadata && typeof item.metadata === "object" ? item.metadata : {};
-        if (input.matches("[data-photo-reference-roles]")) {
+        if (input.matches("[data-photo-reference-multi-option]")) {
+          const field = String(input.dataset.photoReferenceMultiOption || "");
+          const card = input.closest("[data-photo-reference-card]");
+          const values = Array.from(card?.querySelectorAll(`[data-photo-reference-multi-option="${field}"]:checked`) || [])
+            .map((option) => String(option.value || "").trim())
+            .filter(Boolean);
+          const metadataKey = {
+            reference_roles: "reference_roles",
+            scene_categories: "scene_categories",
+            time_categories: "time_categories",
+          }[field];
+          if (metadataKey && values.length) item.metadata[metadataKey] = values;
+          else if (metadataKey) delete item.metadata[metadataKey];
+          syncPhotoReferenceMultiSelectSummary(input);
+        } else if (input.matches("[data-photo-reference-roles]")) {
           const value = normalizePhotoReferenceMetadataList(input.value);
           if (value.length) item.metadata.reference_roles = value;
           else delete item.metadata.reference_roles;
