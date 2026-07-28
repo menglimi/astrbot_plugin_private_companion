@@ -185,7 +185,7 @@ def analyze_reference_intent(
         requested.extend(role for role in indexed_roles if role not in requested)
 
     negative_role_patterns = (
-        ("identity", r"(?:不要|别|不再|无需|无须)(?:再)?(?:用|参考|照着|沿用|保持)?(?:这个|这张|图中)?(?:人物|人脸|脸|身份|发型)"),
+        ("identity", r"(?:不要|别|不再|无需|无须)(?:再)?(?:用|使用|参考|照着|沿用|保持)?(?:这个|这张|图中)?(?:人物|人脸|脸|身份|发型)"),
         ("outfit", r"(?:不要|别|不再|无需|无须)(?:再)?(?:用|参考|照着|沿用|保持)?(?:这个|这张|这套|图中)?(?:衣服|服装|穿搭|衣着|造型)"),
         ("pose", r"(?:不要|别|不再|无需|无须)(?:再)?(?:用|参考|照着|沿用|保持)?(?:这个|这张|图中)?(?:姿势|动作|姿态)"),
         ("scene", r"(?:不要|别|不再|无需|无须)(?:再)?(?:用|参考|照着|沿用|保持)?(?:这个|这张|图中)?(?:场景|背景|地点|环境)"),
@@ -223,7 +223,7 @@ def analyze_reference_intent(
 
     excluded = list(dict.fromkeys(excluded))
     requested = [role for role in dict.fromkeys(requested) if role not in excluded]
-    if not requested and excluded and (
+    if not requested and excluded and "identity" not in excluded and (
         has_explicit_reference or workflow in {"selfie", "portrait", "自拍", "人像"}
     ):
         requested.append("identity")

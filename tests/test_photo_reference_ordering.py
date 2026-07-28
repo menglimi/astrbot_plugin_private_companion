@@ -112,10 +112,17 @@ def _candidate(
 
 
 class _SelectionHarness(ProactiveMessageMixin):
-    def __init__(self, candidates: list[dict[str, object]], llm_reply: str):
+    def __init__(
+        self,
+        candidates: list[dict[str, object]],
+        llm_reply: str,
+        *,
+        persona_path: str = "",
+    ):
         self.enable_photo_reference_image = True
         self._candidates = candidates
         self._llm_reply = llm_reply
+        self._persona_path = persona_path
         self.llm_prompts: list[str] = []
 
     async def _photo_reference_candidates_async(self, *, allow_daily_outfit: bool = True):
@@ -128,6 +135,9 @@ class _SelectionHarness(ProactiveMessageMixin):
     async def _llm_call(self, prompt: str, **_kwargs):
         self.llm_prompts.append(prompt)
         return self._llm_reply
+
+    async def _photo_persona_reference_image_path_async(self) -> str:
+        return self._persona_path
 
 
 class _ContinuityHarness(ProactiveMessageMixin):
@@ -259,6 +269,65 @@ class PhotoReferenceOrderingTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(plan.bindings, ())
         self.assertEqual(plan.primary_reference_id, "")
+
+    async def test_rejected_sleepwear_reference_falls_back_to_persona_identity(self) -> None:
+        sleepwear = _candidate(
+            "lace-sleepwear",
+            outfit_category="sleepwear",
+            scene_categories=("home", "bedroom"),
+            note="蕾丝吊带睡衣",
+        )
+        harness = _SelectionHarness(
+            [sleepwear],
+            llm_reply="0",
+            persona_path="C:/images/persona.png",
+        )
+        request = "穿保守长袖睡衣拍一张自拍"
+
+        plan = await harness._select_photo_reference_plan_async(
+            "selfie",
+            reference_intent=analyze_reference_intent(
+                request,
+                workflow_kind="selfie",
+            ),
+            wardrobe_intent=analyze_photo_wardrobe(request),
+            request_text=request,
+        )
+
+        self.assertEqual(plan.primary_reference_id, "persona")
+        self.assertEqual(len(plan.bindings), 1)
+        self.assertEqual(plan.bindings[0].path, "C:/images/persona.png")
+        self.assertEqual(plan.bindings[0].roles, ("identity",))
+        self.assertNotIn("outfit", plan.bindings[0].roles)
+
+    async def test_explicit_daily_outfit_request_keeps_daily_outfit_over_persona(self) -> None:
+        daily_outfit = _candidate(
+            "daily-outfit",
+            outfit_category="daily_outfit",
+            scene_categories=("outdoor",),
+            note="今日穿搭，适合户外",
+        )
+        daily_outfit["kind"] = "daily_outfit"
+        harness = _SelectionHarness(
+            [daily_outfit],
+            llm_reply="1",
+            persona_path="C:/images/persona.png",
+        )
+        request = "在室外自拍，使用今日穿搭"
+
+        plan = await harness._select_photo_reference_plan_async(
+            "selfie",
+            reference_intent=analyze_reference_intent(
+                request,
+                workflow_kind="selfie",
+            ),
+            wardrobe_intent=analyze_photo_wardrobe(request),
+            request_text=request,
+        )
+
+        self.assertEqual(plan.primary_reference_id, "daily-outfit")
+        self.assertEqual(plan.bindings[0].path, "C:/images/daily-outfit.png")
+        self.assertNotEqual(plan.bindings[0].reference_id, "persona")
 
     async def test_low_confidence_model_intent_stays_identity_only(self) -> None:
         harness = _SelectionHarness([], llm_reply=(

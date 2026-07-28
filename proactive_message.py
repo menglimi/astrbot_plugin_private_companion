@@ -144,6 +144,7 @@ from .photo_reference_catalog import (
 )
 from .photo_prompt_context import (
     PhotoPromptSection,
+    _clip as _clip_photo_prompt_text,
     resolve_photo_prompt_context,
 )
 from .photo_reference_feedback import analyze_photo_reference_feedback
@@ -9241,6 +9242,21 @@ Output:
             pass
         return os.path.normcase(left_text) == os.path.normcase(right_text)
 
+    @staticmethod
+    def _photo_persona_fallback_allowed(
+        workflow_kind: str,
+        reference_intent: ReferenceIntent,
+    ) -> bool:
+        requested_roles = set(reference_intent.requested_roles or ())
+        excluded_roles = set(reference_intent.excluded_roles or ())
+        return (
+            str(workflow_kind or "").strip().lower()
+            in {"selfie", "portrait", "自拍", "人像"}
+            and reference_intent.continuity_mode != "new_topic"
+            and "identity" in requested_roles
+            and "identity" not in excluded_roles
+        )
+
     def _photo_generation_recent_continuity_constraint(
         self,
         workflow_kind: str,
@@ -9274,18 +9290,7 @@ Output:
 
     @staticmethod
     def _photo_prompt_clip(value: Any, limit: int, *, preserve_tail: bool = False) -> str:
-        text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-        text = re.sub(r"[ \t]+", " ", text)
-        text = re.sub(r"\n{3,}", "\n\n", text)
-        if limit <= 0 or len(text) <= limit:
-            return text
-        marker = " ... [section compacted] ... "
-        if not preserve_tail or limit <= len(marker) + 40:
-            return text[:limit].rstrip()
-        available = limit - len(marker)
-        head_size = max(20, int(available * 0.62))
-        tail_size = max(20, available - head_size)
-        return f"{text[:head_size].rstrip()}{marker}{text[-tail_size:].lstrip()}"
+        return _clip_photo_prompt_text(value, limit, preserve_tail=preserve_tail)
 
     @staticmethod
     def _photo_prompt_split_formatted(prompt_text: str) -> tuple[str, str]:
@@ -9849,6 +9854,41 @@ Output:
         if submitted_reference_entries:
             reference_candidate = submitted_reference_entries[0][1]
             reference_image_path = submitted_reference_entries[0][2]
+        if (
+            not reference_candidate
+            and self._photo_persona_fallback_allowed(
+                workflow_kind,
+                reference_intent,
+            )
+        ):
+            fallback_path = await self._photo_persona_reference_image_path_async()
+            if fallback_path:
+                fallback_candidate = {
+                    "id": "persona",
+                    "kind": "persona",
+                    "path": fallback_path,
+                    "source": fallback_path,
+                    "reference_roles": ["identity"],
+                    "outfit_lock_default": False,
+                }
+                fallback_plan = build_photo_reference_plan(
+                    reference_intent,
+                    (fallback_candidate,),
+                )
+                fallback_bindings, fallback_text = project_reference_plan_for_backend(
+                    fallback_plan,
+                    max_images=backend_reference_capacity,
+                )
+                if fallback_bindings:
+                    reference_plan = fallback_plan
+                    submitted_bindings = fallback_bindings
+                    plan_text_fallback = fallback_text
+                    reference_candidate = fallback_candidate
+                    reference_image_path = fallback_path
+                    submitted_reference_entries = [
+                        (fallback_bindings[0], fallback_candidate, fallback_path)
+                    ]
+                    reference_image_paths = [fallback_path]
         if len(submitted_reference_entries) > 1:
             responsibilities = "; ".join(
                 f"reference image {index}: {', '.join(binding.roles)}"
@@ -9894,7 +9934,11 @@ Output:
         )
         initial_sections = list(prompt_sections or ())
         if not initial_sections:
-            user_positive, user_negative = self._photo_prompt_split_formatted(base_prompt)
+            user_positive, user_negative = self._photo_generation_semantic_prompt_parts(
+                original_prompt_text
+            )
+            if not user_positive and not user_negative:
+                user_positive, user_negative = self._photo_prompt_split_formatted(base_prompt)
             initial_sections.append(
                 PhotoPromptSection(
                     name="user_request",
@@ -10743,11 +10787,11 @@ Output:
         patterns = (
             ("cosplay", r"(?<![a-z0-9])cos(?:play)?(?![a-z0-9])|角色扮演|扮成|女仆装|巫女服|魔法少女|表演服"),
             ("school_uniform", r"校服|学院制服|学生制服|school[\s_-]*uniform"),
-            ("sleepwear", r"睡衣|睡裙|睡袍|睡眠服|nightgown|nightdress|pajama|pyjama|sleepwear|bedtime outfit"),
+            ("sleepwear", r"睡衣|睡裙|睡袍|睡眠服|nightgown|nightdress|pajama|pyjama|sleepwear|loungewear|bedtime outfit"),
             ("swimwear", r"泳装|泳衣|比基尼|swimsuit|swimwear|bikini"),
             ("sportswear", r"运动服|健身服|瑜伽服|球衣|sportswear|activewear|gym wear|jersey"),
             ("formalwear", r"礼服|晚礼服|正装|燕尾服|西装|tuxedo|formalwear|formal attire|evening gown|\bsuit\b"),
-            ("homewear", r"居家服|家居服|家常服|宅家服|homewear|loungewear"),
+            ("homewear", r"居家服|家居服|家常服|宅家服|homewear"),
             ("daily_outfit", r"今日穿搭|当天穿搭|日常穿搭|today'?s outfit|daily outfit"),
         )
         matches: list[tuple[str, int, int, str]] = []
@@ -11573,7 +11617,30 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
                 selected = {}
             if selected:
                 candidates.append(selected)
-        return build_photo_reference_plan(reference_intent, candidates)
+        plan = build_photo_reference_plan(reference_intent, candidates)
+        if (
+            not plan.bindings
+            and self._photo_persona_fallback_allowed(
+                workflow_kind,
+                reference_intent,
+            )
+        ):
+            persona_path = await self._photo_persona_reference_image_path_async()
+            if persona_path:
+                fallback_plan = build_photo_reference_plan(
+                    reference_intent,
+                    (
+                        {
+                            "id": "persona",
+                            "kind": "persona",
+                            "path": persona_path,
+                            "reference_roles": ["identity"],
+                        },
+                    ),
+                )
+                if fallback_plan.bindings:
+                    plan = fallback_plan
+        return plan
 
     async def _photo_reference_candidate_from_plan_binding_async(
         self,

@@ -9,7 +9,7 @@ from typing import Any
 from . import photo_wardrobe_decision as _wardrobe_rules
 
 
-_SANITIZER_VERSION = 1
+_SANITIZER_VERSION = 2
 _SECTION_SOURCES = frozenset(
     {
         "user_request",
@@ -44,6 +44,16 @@ _SPECIFIC_OUTFIT_ITEM_PATTERN = re.compile(
     r"连衣裙|裙子|短裙|长裙|吊带|衬衫|外套|夹克|西装|制服|汉服|旗袍|和服|洛丽塔|"
     r"裤子|裤|毛衣|卫衣|T恤|背心|上衣|套装|袜子|袜|鞋子|鞋|"
     r"\b(?:dress|skirt|shirt|blouse|coat|jacket|suit|uniform|hoodie|sweater|pants|trousers|shorts|top)\b",
+    flags=re.I,
+)
+_EMBEDDED_NEGATION_PATTERN = re.compile(
+    r"\b(?:do\s+not|don't|not|avoid|without|no|exclude|skip|remove)\s+"
+    r"|(?:不要|避免|禁止|不许|不得|别(?:再)?)(?:穿|用|使用|选)?\s*",
+    flags=re.I,
+)
+_NEGATIVE_TO_POSITIVE_TRANSITION_PATTERN = re.compile(
+    r"\b(?:but|instead|however)\b\s*"
+    r"|(?:但|不过|可是|而是)?(?:改穿|换成|换上|换为|改为|要穿|穿上)\s*",
     flags=re.I,
 )
 
@@ -85,6 +95,31 @@ def _value(subject: Any, name: str, default: Any = None) -> Any:
     return getattr(subject, name, default)
 
 
+_CLIP_BOUNDARY_CHARS = frozenset(" \t\r\n,.;:!?，。；：！？")
+_CLIP_BOUNDARY_PATTERN = re.compile(r"[\s,.;:!?，。；：！？]+")
+
+
+def _clip_prefix_at_boundary(text: str, limit: int) -> str:
+    if limit <= 0:
+        return ""
+    candidate = text[:limit]
+    if len(text) <= limit or text[limit] in _CLIP_BOUNDARY_CHARS:
+        return candidate.rstrip()
+    matches = list(_CLIP_BOUNDARY_PATTERN.finditer(candidate))
+    return candidate[: matches[-1].end()].rstrip() if matches else ""
+
+
+def _clip_tail_at_boundary(text: str, limit: int) -> str:
+    if limit <= 0:
+        return ""
+    start = max(0, len(text) - limit)
+    candidate = text[start:]
+    if start == 0 or text[start - 1] in _CLIP_BOUNDARY_CHARS:
+        return candidate.lstrip()
+    match = _CLIP_BOUNDARY_PATTERN.search(candidate)
+    return candidate[match.end():].lstrip() if match else ""
+
+
 def _clip(value: Any, limit: int, *, preserve_tail: bool = False) -> str:
     text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     text = re.sub(r"[ \t]+", " ", text)
@@ -93,11 +128,15 @@ def _clip(value: Any, limit: int, *, preserve_tail: bool = False) -> str:
         return text
     marker = " ... [section compacted] ... "
     if not preserve_tail or limit <= len(marker) + 40:
-        return text[:limit].rstrip()
+        return _clip_prefix_at_boundary(text, limit)
     available = limit - len(marker)
     head_size = max(20, int(available * 0.62))
     tail_size = max(20, available - head_size)
-    return f"{text[:head_size].rstrip()}{marker}{text[-tail_size:].lstrip()}"
+    head = _clip_prefix_at_boundary(text, head_size)
+    tail = _clip_tail_at_boundary(text, tail_size)
+    if head and tail:
+        return f"{head}{marker}{tail}"
+    return head or tail
 
 
 def _categories(value: Any) -> tuple[str, ...]:
@@ -111,6 +150,44 @@ def _categories(value: Any) -> tuple[str, ...]:
 
 def _compatible(category: str, active_category: str) -> bool:
     return category == active_category
+
+
+def _split_embedded_polarity(text: str) -> tuple[str, str]:
+    raw = str(text or "").strip()
+    if not raw or not _EMBEDDED_NEGATION_PATTERN.search(raw):
+        return raw, ""
+
+    positive_parts: list[str] = []
+    negative_parts: list[str] = []
+    sentences = re.split(r"[;；.!?。！？]+", raw)
+    for sentence in sentences:
+        polarity = "positive"
+        for comma_part in re.split(r"[,，]+", sentence):
+            remaining = comma_part.strip()
+            while remaining:
+                if polarity == "positive":
+                    marker = _EMBEDDED_NEGATION_PATTERN.search(remaining)
+                    if marker is None:
+                        positive_parts.append(remaining)
+                        break
+                    before = remaining[:marker.start()].strip()
+                    if before:
+                        positive_parts.append(before)
+                    remaining = remaining[marker.end():].strip()
+                    polarity = "negative"
+                    continue
+
+                transition = _NEGATIVE_TO_POSITIVE_TRANSITION_PATTERN.search(remaining)
+                if transition is None:
+                    negative_parts.append(remaining)
+                    break
+                before = remaining[:transition.start()].strip()
+                if before:
+                    negative_parts.append(before)
+                remaining = remaining[transition.end():].strip()
+                polarity = "positive"
+
+    return ", ".join(positive_parts), ", ".join(negative_parts)
 
 
 def _excluded_outfit_terms(wardrobe: Any) -> tuple[str, ...]:
@@ -375,6 +452,18 @@ def _sanitize_sections(
         if section.protected or section.source in {"user_request", "wardrobe_decision"}:
             sanitized.append(section)
             continue
+        if section.name != "global_fixed_prompt":
+            positive_text, embedded_negative = _split_embedded_polarity(section.positive)
+            if embedded_negative:
+                section = replace(
+                    section,
+                    positive=positive_text,
+                    negative=", ".join(
+                        part
+                        for part in (section.negative.strip(), embedded_negative)
+                        if part
+                    ),
+                )
         if section.source == "recent_continuity" and "outfit" not in effective_roles:
             match = _RECENT_OUTFIT_CONTINUITY_PATTERN.search(section.positive)
             if match:
@@ -509,9 +598,12 @@ def _apply_budget(
 ) -> None:
     remaining = budget
     for index in indexes:
-        current = getattr(sections[index], field)
+        section = sections[index]
+        if section.protected or section.name == "global_fixed_prompt":
+            continue
+        current = getattr(section, field)
         clipped = _clip(current, remaining, preserve_tail=True) if remaining > 0 else ""
-        sections[index] = replace(sections[index], **{field: clipped})
+        sections[index] = replace(section, **{field: clipped})
         remaining -= len(clipped)
         if clipped and remaining > 0:
             remaining -= 1
@@ -530,6 +622,8 @@ def _budget_sections(sections: list[PhotoPromptSection]) -> list[PhotoPromptSect
 
     for index in indexes("recent_continuity"):
         section = result[index]
+        if section.protected:
+            continue
         limit = 460 if section.positive.startswith("Recent-photo continuity:") else 280
         result[index] = replace(
             section,
@@ -542,7 +636,11 @@ def _budget_sections(sections: list[PhotoPromptSection]) -> list[PhotoPromptSect
     )
     _apply_budget(
         result,
-        [index for index, section in enumerate(result) if section.source != "user_request"],
+        [
+            index
+            for index, section in enumerate(result)
+            if section.source not in {"user_request", "composition"}
+        ],
         230,
         field="negative",
     )

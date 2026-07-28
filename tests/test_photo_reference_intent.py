@@ -83,6 +83,19 @@ class PhotoReferenceIntentTests(unittest.TestCase):
         self.assertEqual(intent.requested_roles, ("identity",))
         self.assertEqual(intent.excluded_roles, ("outfit",))
 
+    def test_explicitly_rejecting_character_reference_disables_selfie_identity_default(self) -> None:
+        for request in ("不要使用人物参考", "不要人物参考"):
+            with self.subTest(request=request):
+                intent = analyze_reference_intent(
+                    request,
+                    workflow_kind="selfie",
+                )
+
+                self.assertEqual(intent.requested_roles, ())
+                self.assertEqual(intent.excluded_roles, ("identity",))
+                self.assertEqual(intent.continuity_mode, "ambiguous")
+                self.assertEqual(intent.source, "rule")
+
     def test_fresh_image_phrases_exclude_every_reference_role(self) -> None:
         for request in ("不要参考图", "重新开始画", "生成全新画面"):
             with self.subTest(request=request):

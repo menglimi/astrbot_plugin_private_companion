@@ -101,6 +101,10 @@ if PACKAGE_NAME not in sys.modules:
 
 with mock.patch.dict(sys.modules, _astrbot_stubs()):
     from astrbot_plugin_private_companion.photo_prompt_context import PhotoPromptSection
+    from astrbot_plugin_private_companion.photo_reference_plan import (
+        PhotoReferencePlan,
+        ReferenceBinding,
+    )
     from astrbot_plugin_private_companion.proactive_message import ProactiveMessageMixin
 
 
@@ -114,7 +118,11 @@ class _PhotoGenerationHarness(ProactiveMessageMixin):
         self.comfyui_selfie_workflow_name = "selfie-workflow"
         self.comfyui_text2img_workflow_name = ""
         self.output_path = output_path
+        self.persona_path = ""
         self.backend_calls: list[dict[str, str]] = []
+
+    async def _photo_persona_reference_image_path_async(self) -> str:
+        return self.persona_path
 
     @staticmethod
     def _photo_generation_selfie_schedule_scene_hint() -> str:
@@ -277,6 +285,66 @@ class PhotoPromptContextGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recorded["prompt_sections"]["duplicate_context#2"], "second neutral detail")
         self.assertNotIn("recent_continuity", recorded["prompt_sections"])
 
+    async def test_protected_fixed_rules_reach_backend_without_compaction(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "generated.png"
+            output.write_bytes(b"generated")
+            harness = _PhotoGenerationHarness(str(output))
+            fixed_prompt = (
+                "Overall Physique: preserve complete body proportions and stable facial structure; "
+                "Lip Color: preserve the exact natural lip color without simplification or substitution."
+            )
+            harness.photo_generation_fixed_prompt = fixed_prompt
+            _composition_positive, composition_negative = (
+                harness._photo_generation_composition_sections(
+                    "selfie",
+                    "拍一张自然自拍",
+                )
+            )
+
+            backend, image_path, _note = await harness._generate_photo_image(
+                workflow_kind="selfie",
+                prompt_text="拍一张自然自拍",
+                session_key="protected-fixed-rules",
+            )
+
+        self.assertEqual(backend, "ComfyUI")
+        self.assertEqual(image_path, str(output))
+        submitted_prompt = harness.backend_calls[0]["prompt"]
+        self.assertIn(
+            "Overall Physique: preserve complete body proportions and stable facial structure",
+            submitted_prompt,
+        )
+        self.assertIn(
+            "Lip Color: preserve the exact natural lip color without simplification or substitution.",
+            submitted_prompt,
+        )
+        self.assertIn(composition_negative, submitted_prompt)
+        self.assertNotIn("[section compacted]", submitted_prompt)
+
+    def test_prompt_clip_never_returns_a_partial_word(self) -> None:
+        self.assertEqual(
+            _PhotoGenerationHarness._photo_prompt_clip("duplicate character", 3),
+            "",
+        )
+
+    async def test_long_protected_user_request_reaches_backend_in_full(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "generated.png"
+            output.write_bytes(b"generated")
+            harness = _PhotoGenerationHarness(str(output))
+            user_request = " ".join(f"detail{index:04d}" for index in range(320))
+
+            backend, image_path, _note = await harness._generate_photo_image(
+                workflow_kind="selfie",
+                prompt_text=user_request,
+                session_key="long-protected-user-request",
+            )
+
+        self.assertEqual(backend, "ComfyUI")
+        self.assertEqual(image_path, str(output))
+        self.assertIn(user_request, harness.backend_calls[0]["prompt"])
+
     async def test_fresh_image_request_never_submits_an_explicit_reference(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -298,6 +366,31 @@ class PhotoPromptContextGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(harness.backend_calls[0]["reference"], "")
         recorded = harness.data["recent_photo_generations"][0]
         self.assertEqual(recorded["reference_intent"]["continuity_mode"], "new_topic")
+        self.assertEqual(recorded["reference_plan"]["bindings"], [])
+
+    async def test_explicit_character_reference_rejection_stays_text_only_with_persona_available(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            persona = root / "persona.png"
+            output = root / "generated.png"
+            persona.write_bytes(b"persona")
+            output.write_bytes(b"generated")
+            harness = _PhotoGenerationHarness(str(output))
+            harness.persona_path = str(persona)
+
+            backend, image_path, _note = await harness._generate_photo_image(
+                workflow_kind="selfie",
+                prompt_text="不要使用人物参考，按文字生成自然自拍",
+                session_key="no-character-reference",
+            )
+
+        self.assertEqual(backend, "ComfyUI")
+        self.assertEqual(image_path, str(output))
+        self.assertEqual(harness.backend_calls[0]["reference"], "")
+        self.assertEqual(harness.backend_calls[0]["references"], [])
+        recorded = harness.data["recent_photo_generations"][0]
+        self.assertEqual(recorded["reference_intent"]["requested_roles"], [])
+        self.assertEqual(recorded["reference_intent"]["excluded_roles"], ["identity"])
         self.assertEqual(recorded["reference_plan"]["bindings"], [])
 
     async def test_edit_without_source_stops_before_backend_submission(self) -> None:
@@ -510,6 +603,59 @@ class PhotoPromptContextGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recorded["reference_plan"]["primary_reference_id"], "explicit_reference_2")
         self.assertEqual(recorded["reference_fallback"]["fulfilled_roles"], ["outfit"])
         self.assertEqual(recorded["reference_fallback"]["missing_roles"], ["identity"])
+
+    async def test_failed_binding_resolution_submits_persona_as_final_identity_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            missing = root / "missing-reference.png"
+            persona = root / "persona.png"
+            output = root / "generated.png"
+            persona.write_bytes(b"persona")
+            output.write_bytes(b"generated")
+            harness = _PhotoGenerationHarness(str(output))
+            harness.persona_path = str(persona)
+            broken_plan = PhotoReferencePlan(
+                bindings=(
+                    ReferenceBinding(
+                        reference_id="broken-reference",
+                        path=str(missing),
+                        roles=("identity",),
+                        priority=500,
+                        preserve=("identity",),
+                        ignore=(),
+                    ),
+                ),
+                primary_reference_id="broken-reference",
+                selection_reason="highest_priority_role_match",
+                fallback_reason="",
+            )
+
+            async def select_plan(*_args, **_kwargs):
+                return broken_plan
+
+            async def reject_binding(*_args, **_kwargs):
+                return {}
+
+            harness._select_photo_reference_plan_async = select_plan
+            harness._photo_reference_candidate_from_plan_binding_async = reject_binding
+
+            backend, image_path, _note = await harness._generate_photo_image(
+                workflow_kind="selfie",
+                prompt_text="拍一张自然自拍",
+                session_key="persona-final-fallback",
+            )
+
+        self.assertEqual(backend, "ComfyUI")
+        self.assertEqual(image_path, str(output))
+        self.assertEqual(harness.backend_calls[0]["reference"], str(persona))
+        self.assertEqual(harness.backend_calls[0]["references"], [str(persona)])
+        recorded = harness.data["recent_photo_generations"][0]
+        self.assertEqual(recorded["reference_plan"]["primary_reference_id"], "persona")
+        self.assertEqual(
+            recorded["reference_plan"]["submitted_reference_ids"],
+            ["persona"],
+        )
+        self.assertEqual(recorded["reference_fallback"]["missing_roles"], [])
 
     async def test_reference_is_textually_downgraded_for_sdgen_backend(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

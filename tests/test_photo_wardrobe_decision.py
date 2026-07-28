@@ -110,6 +110,22 @@ class PhotoWardrobeDecisionTests(unittest.TestCase):
         self.assertTrue(decision.remove_daily_outfit_context)
         self.assertNotIn("今日穿搭", decision.scene_context)
 
+    def test_loungewear_is_classified_as_sleepwear(self) -> None:
+        prompt = "wear loungewear for a bedtime portrait"
+        intent = analyze_photo_wardrobe(prompt)
+
+        decision = resolve_photo_wardrobe_decision(
+            workflow_kind="selfie",
+            prompt_text=prompt,
+            intent=intent,
+            reference=None,
+            available_presets={"居家睡衣", "居家服", "角色自拍"},
+        )
+
+        self.assertEqual(intent.target_category, "sleepwear")
+        self.assertEqual(decision.category, "sleepwear")
+        self.assertEqual(decision.selected_presets, ("居家睡衣",))
+
     def test_custom_outfit_is_recognized_without_forcing_a_known_category(self) -> None:
         intent = analyze_photo_wardrobe("换成红色吊带长裙，别穿校服")
 

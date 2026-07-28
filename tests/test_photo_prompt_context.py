@@ -556,6 +556,72 @@ class PhotoPromptContextTests(unittest.TestCase):
             230,
         )
 
+    def test_protected_sections_bypass_all_prompt_budgets(self) -> None:
+        fixed_prompt = (
+            "Overall Physique: preserve the complete body proportions, facial structure, "
+            "natural lip color, and stable identity without simplifying any rule."
+        )
+        composition_negative = (
+            "duplicate character, twins, multiple people, multiple outfits, outfit comparison, "
+            "before and after, split screen, side-by-side panels, diptych, collage, character sheet"
+        )
+        user_request = "用户明确要求：" + "保留这段完整需求；" * 80
+        resolved = resolve_photo_prompt_context(
+            wardrobe=PhotoWardrobeDecision(rule_id="none"),
+            sections=(
+                PhotoPromptSection(
+                    "request",
+                    "user_request",
+                    user_request,
+                    protected=True,
+                ),
+                PhotoPromptSection(
+                    "decision",
+                    "wardrobe_decision",
+                    negative="generic exclusion " * 30,
+                ),
+                PhotoPromptSection(
+                    "global_fixed_prompt",
+                    "fixed_prompt",
+                    fixed_prompt,
+                    protected=True,
+                ),
+                PhotoPromptSection(
+                    "composition",
+                    "composition",
+                    negative=composition_negative,
+                    protected=True,
+                ),
+            ),
+            prompt_format="traditional",
+            workflow_kind="selfie",
+        )
+        by_name = {section.name: section for section in resolved.prompt_sections}
+
+        self.assertEqual(by_name["request"].positive, user_request)
+        self.assertEqual(by_name["global_fixed_prompt"].positive, fixed_prompt)
+        self.assertEqual(by_name["composition"].negative, composition_negative)
+
+    def test_budget_compaction_keeps_complete_words(self) -> None:
+        tokens = ["x" * 60, *(f"token{index:03d}" for index in range(40))]
+        resolved = resolve_photo_prompt_context(
+            wardrobe=PhotoWardrobeDecision(rule_id="none"),
+            sections=(
+                PhotoPromptSection(
+                    "fixed",
+                    "fixed_prompt",
+                    " ".join(tokens),
+                ),
+            ),
+            prompt_format="traditional",
+            workflow_kind="selfie",
+        )
+        fixed = resolved.prompt_sections[0].positive
+        fragments = fixed.replace("... [section compacted] ...", "").split()
+
+        self.assertTrue(fragments)
+        self.assertTrue(all(fragment in tokens for fragment in fragments))
+
     def test_custom_outfit_keeps_the_authoritative_decision_section(self) -> None:
         wardrobe = PhotoWardrobeDecision(
             rule_id="explicit_prompt",
@@ -623,6 +689,72 @@ class PhotoPromptContextTests(unittest.TestCase):
         self.assertEqual(
             by_name["composition"].positive,
             "exactly one character wearing one coherent outfit in one continuous scene",
+        )
+
+    def test_sleepwear_preset_keeps_loungewear_and_moves_embedded_exclusions_negative(self) -> None:
+        wardrobe = PhotoWardrobeDecision(
+            rule_id="explicit_prompt",
+            category="sleepwear",
+            lock_outfit=True,
+        )
+        preset_text = (
+            "sleepwear or bedtime loungewear portrait matching the explicit clothing request and selected reference, "
+            "exactly one coherent sleepwear outfit, preserve the character identity, natural home or bedtime context, "
+            "do not restore a daytime outfit, coat, school uniform, or commuter layers unless explicitly requested"
+        )
+
+        resolved = resolve_photo_prompt_context(
+            wardrobe=wardrobe,
+            sections=(
+                PhotoPromptSection("request", "user_request", "wear conservative sleepwear"),
+                PhotoPromptSection("sleepwear_preset", "preset", preset_text),
+            ),
+            prompt_format="traditional",
+            workflow_kind="selfie",
+        )
+        preset = next(
+            section
+            for section in resolved.prompt_sections
+            if section.name == "sleepwear_preset"
+        )
+
+        self.assertIn("sleepwear or bedtime loungewear portrait", preset.positive)
+        self.assertIn("natural home or bedtime context", preset.positive)
+        self.assertNotIn("do not restore", preset.positive.lower())
+        self.assertIn("daytime outfit", preset.negative)
+        self.assertIn("coat", preset.negative)
+        self.assertIn("school uniform", preset.negative)
+        self.assertEqual(resolved.residual_conflicts, ())
+
+    def test_embedded_negative_cannot_negate_authoritative_sleepwear(self) -> None:
+        wardrobe = PhotoWardrobeDecision(
+            rule_id="explicit_prompt",
+            category="sleepwear",
+            lock_outfit=True,
+        )
+
+        resolved = resolve_photo_prompt_context(
+            wardrobe=wardrobe,
+            sections=(
+                PhotoPromptSection("request", "user_request", "wear sleepwear"),
+                PhotoPromptSection(
+                    "preset",
+                    "preset",
+                    "soft bedroom light, avoid sleepwear",
+                ),
+            ),
+            prompt_format="traditional",
+            workflow_kind="selfie",
+        )
+        preset = next(section for section in resolved.prompt_sections if section.name == "preset")
+
+        self.assertEqual(preset.positive, "soft bedroom light")
+        self.assertEqual(preset.negative, "")
+        self.assertTrue(
+            any(
+                item["rule"] == "authoritative_wardrobe_negated"
+                for item in resolved.detected_conflicts
+            )
         )
 
 

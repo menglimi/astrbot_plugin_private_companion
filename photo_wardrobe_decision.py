@@ -17,11 +17,11 @@ _DAILY_OUTFIT_PATTERN = re.compile(
 _OUTFIT_PATTERNS = (
     ("cosplay", r"(?<![a-z0-9])cos(?:play)?(?![a-z0-9])|角色扮演|扮成|女仆装|巫女服|魔法少女|表演服"),
     ("school_uniform", r"校服|学院制服|学生制服|school[\s_-]*uniform"),
-    ("sleepwear", r"睡衣|睡裙|睡袍|睡眠服|nightgown|nightdress|pajama|pyjama|sleepwear|bedtime outfit"),
+    ("sleepwear", r"睡衣|睡裙|睡袍|睡眠服|nightgown|nightdress|pajama|pyjama|sleepwear|loungewear|bedtime outfit"),
     ("swimwear", r"泳装|泳衣|比基尼|swimsuit|swimwear|bikini"),
     ("sportswear", r"运动服|健身服|瑜伽服|球衣|sportswear|activewear|gym wear|jersey"),
     ("formalwear", r"礼服|晚礼服|正装|燕尾服|西装|tuxedo|formalwear|formal attire|evening gown|\bsuit\b"),
-    ("homewear", r"居家服|家居服|家常服|宅家服|homewear|loungewear"),
+    ("homewear", r"居家服|家居服|家常服|宅家服|homewear"),
     ("daily_outfit", r"今日穿搭|当天穿搭|日常穿搭|today'?s outfit|daily outfit"),
 )
 _CATEGORY_PRESETS = {
