@@ -22134,6 +22134,9 @@ function photoReferenceMetadataFromObject(rawItem) {
   if (Object.prototype.hasOwnProperty.call(metadata, "scene_categories")) {
     metadata.scene_categories = normalizePhotoReferenceMetadataList(metadata.scene_categories);
   }
+  if (Object.prototype.hasOwnProperty.call(metadata, "time_categories")) {
+    metadata.time_categories = normalizePhotoReferenceMetadataList(metadata.time_categories);
+  }
   if (Object.prototype.hasOwnProperty.call(metadata, "outfit_lock_default")) {
     const normalizedLock = normalizePhotoReferenceMetadataBoolean(metadata.outfit_lock_default);
     if (normalizedLock !== undefined) metadata.outfit_lock_default = normalizedLock;
@@ -22179,6 +22182,7 @@ function parsePhotoReferenceCatalog(value) {
         outfit_category: String(item.outfit_category || ""),
         outfit_lock_default: item.outfit_lock_default === true,
         scene_categories: Array.isArray(item.scene_categories) ? [...item.scene_categories] : [],
+        time_categories: Array.isArray(item.time_categories) ? [...item.time_categories] : [],
         preferred_preset: String(item.preferred_preset || ""),
         metadata_source: String(item.metadata_source || "configured"),
       },
@@ -22218,6 +22222,7 @@ function canonicalPhotoReference(item, kind) {
     outfit_category: String(metadata.outfit_category || "").trim(),
     outfit_lock_default: metadata.outfit_lock_default === true,
     scene_categories: normalizePhotoReferenceMetadataList(metadata.scene_categories),
+    time_categories: normalizePhotoReferenceMetadataList(metadata.time_categories),
     preferred_preset: String(metadata.preferred_preset || "").trim(),
     metadata_source: String(metadata.metadata_source || "configured"),
   };
@@ -22269,6 +22274,26 @@ function photoReferenceStatusFor(kind, source) {
   ) || null;
 }
 
+function photoReferenceRoleShortcuts() {
+  const status = state.photoReferenceLibraryStatus;
+  const configured = Array.isArray(status?.options?.role_shortcuts)
+    ? status.options.role_shortcuts
+    : [];
+  const fallback = [
+    { value: ["identity"], label: "仅身份" },
+    { value: ["outfit"], label: "仅服装" },
+    { value: ["pose"], label: "仅姿势" },
+    { value: ["scene"], label: "仅场景" },
+    { value: ["style"], label: "仅画风" },
+  ];
+  return (configured.length ? configured : fallback)
+    .map((item) => ({
+      value: normalizePhotoReferenceMetadataList(item?.value),
+      label: String(item?.label || "").trim(),
+    }))
+    .filter((item) => item.value.length && item.label);
+}
+
 function photoReferenceSourceKind(source) {
   const text = String(source || "").trim();
   if (/^https?:\/\//i.test(text)) return "远程 URL";
@@ -22308,6 +22333,7 @@ function photoReferenceManagerCard(item, index) {
   const outfitLocked = status ? Boolean(status.outfit_lock_default) : Boolean(configuredMetadata.outfit_lock_default);
   const configuredRoles = normalizePhotoReferenceMetadataList(configuredMetadata.reference_roles);
   const configuredScenes = normalizePhotoReferenceMetadataList(configuredMetadata.scene_categories);
+  const configuredTimes = normalizePhotoReferenceMetadataList(configuredMetadata.time_categories);
   const configuredCategory = String(configuredMetadata.outfit_category || "");
   const configuredPreset = String(configuredMetadata.preferred_preset || "");
   const configuredLock = Object.prototype.hasOwnProperty.call(configuredMetadata, "outfit_lock_default")
@@ -22316,10 +22342,12 @@ function photoReferenceManagerCard(item, index) {
   const configuredLockMode = configuredLock === true ? "true" : configuredLock === false ? "false" : "";
   const responsibilityTags = [
     ...roles.map((role) => `职责 ${role}`),
+    ...configuredTimes.map((category) => `时间 ${category}`),
     outfitCategory ? `服装 ${outfitCategory}` : "",
     outfitLocked ? "默认锁定服装" : "",
     preferredPreset ? `预设 ${preferredPreset}` : "",
   ].filter(Boolean);
+  const roleShortcuts = photoReferenceRoleShortcuts();
   return `
     <article class="photo-reference-item ${status?.available === false ? "is-unavailable" : ""}" data-photo-reference-card data-index="${index}">
       ${photoReferencePreviewHtml("library", source, `参考图 ${index + 1}`)}
@@ -22347,6 +22375,13 @@ function photoReferenceManagerCard(item, index) {
             <span>参考职责</span>
             <input type="text" data-photo-reference-roles data-index="${index}" value="${escapeHtml(configuredRoles.join(", "))}" maxlength="160" placeholder="identity, outfit, scene, continuity" />
           </label>
+          <div class="photo-reference-role-shortcuts" role="group" aria-label="参考职责快捷设置">
+            ${roleShortcuts.map((shortcut) => {
+              const selected = shortcut.value.length === configuredRoles.length
+                && shortcut.value.every((role) => configuredRoles.includes(role));
+              return `<button type="button" data-photo-reference-role-shortcut="${escapeHtml(shortcut.value.join(","))}" data-index="${index}" aria-pressed="${selected ? "true" : "false"}" class="${selected ? "is-active" : ""}">${escapeHtml(shortcut.label)}</button>`;
+            }).join("")}
+          </div>
           <label>
             <span>服装类别</span>
             <input type="text" data-photo-reference-outfit-category data-index="${index}" value="${escapeHtml(configuredCategory)}" maxlength="40" placeholder="sleepwear / daily_outfit / formal" />
@@ -22362,6 +22397,10 @@ function photoReferenceManagerCard(item, index) {
           <label>
             <span>适用场景</span>
             <input type="text" data-photo-reference-scenes data-index="${index}" value="${escapeHtml(configuredScenes.join(", "))}" maxlength="200" placeholder="home, bedroom, outdoor" />
+          </label>
+          <label>
+            <span>适用时间</span>
+            <input type="text" data-photo-reference-times data-index="${index}" value="${escapeHtml(configuredTimes.join(", "))}" maxlength="160" placeholder="morning, evening, bedtime" />
           </label>
           <label>
             <span>首选预设</span>
@@ -22938,11 +22977,20 @@ function bindPhotoReferenceManagerActions() {
     void refreshPhotoReferenceLibraryStatus(event.currentTarget);
   });
   manager.querySelector("[data-photo-reference-persona-source]")?.addEventListener("input", syncPhotoReferenceManagerDraft);
-  manager.querySelectorAll("[data-photo-reference-source], [data-photo-reference-note], [data-photo-reference-roles], [data-photo-reference-outfit-category], [data-photo-reference-outfit-lock], [data-photo-reference-scenes], [data-photo-reference-preferred-preset]").forEach((input) => {
-    input.addEventListener(input.matches("select") ? "change" : "input", () => {
+  manager.querySelectorAll("[data-photo-reference-source], [data-photo-reference-note], [data-photo-reference-roles], [data-photo-reference-role-shortcut], [data-photo-reference-outfit-category], [data-photo-reference-outfit-lock], [data-photo-reference-scenes], [data-photo-reference-times], [data-photo-reference-preferred-preset]").forEach((input) => {
+    input.addEventListener(input.matches("button") ? "click" : input.matches("select") ? "change" : "input", () => {
       const index = Number(input.dataset.index);
       const item = photoReferenceManagerItems()[index];
       if (!item) return;
+      if (input.dataset.photoReferenceRoleShortcut) {
+        item.metadata = item.metadata && typeof item.metadata === "object" ? item.metadata : {};
+        item.metadata.reference_roles = normalizePhotoReferenceMetadataList(
+          input.dataset.photoReferenceRoleShortcut,
+        );
+        syncPhotoReferenceManagerDraft();
+        renderFeatureSwitches();
+        return;
+      }
       if (input.matches("[data-photo-reference-source]")) item.source = input.value;
       else if (input.matches("[data-photo-reference-note]")) item.note = input.value;
       else {
@@ -22962,6 +23010,10 @@ function bindPhotoReferenceManagerActions() {
           const value = normalizePhotoReferenceMetadataList(input.value);
           if (value.length) item.metadata.scene_categories = value;
           else delete item.metadata.scene_categories;
+        } else if (input.matches("[data-photo-reference-times]")) {
+          const value = normalizePhotoReferenceMetadataList(input.value);
+          if (value.length) item.metadata.time_categories = value;
+          else delete item.metadata.time_categories;
         } else if (input.matches("[data-photo-reference-preferred-preset]")) {
           const value = String(input.value || "").trim();
           if (value) item.metadata.preferred_preset = value;
@@ -22996,6 +23048,7 @@ function bindPhotoReferenceManagerActions() {
         outfit_category: "",
         outfit_lock_default: false,
         scene_categories: [],
+        time_categories: [],
         preferred_preset: "",
         metadata_source: "configured",
       },

@@ -82,6 +82,7 @@ with mock.patch.dict(sys.modules, _astrbot_stubs()):
         PhotoWardrobeDecision,
         analyze_photo_wardrobe,
     )
+    from astrbot_plugin_private_companion.photo_reference_intent import analyze_reference_intent
     from astrbot_plugin_private_companion.llm_tool_actions import LlmToolActionsMixin
     from astrbot_plugin_private_companion.proactive_message import ProactiveMessageMixin
 
@@ -92,6 +93,7 @@ def _candidate(
     outfit_category: str,
     scene_categories: tuple[str, ...],
     note: str,
+    time_categories: tuple[str, ...] = (),
 ) -> dict[str, object]:
     return {
         "id": reference_id,
@@ -103,6 +105,7 @@ def _candidate(
         "outfit_category": outfit_category,
         "outfit_lock_default": True,
         "scene_categories": list(scene_categories),
+        "time_categories": list(time_categories),
         "preferred_preset": "",
         "metadata_source": "test",
     }
@@ -143,6 +146,9 @@ class _ToolPhotoHarness(LlmToolActionsMixin):
     def __init__(self, image_path: str):
         self.image_path = image_path
         self.generation_kwargs: dict[str, object] = {}
+        self.reference_fallback_message = ""
+        self.delivered_caption = ""
+        self.context_reference_images: list[tuple[str, str]] = []
 
     @staticmethod
     def _photo_text_available() -> bool:
@@ -162,8 +168,16 @@ class _ToolPhotoHarness(LlmToolActionsMixin):
             preset_hint="",
             preset_source="workflow_default",
             suggestion_status="not_provided",
+            reference_fallback_message=self.reference_fallback_message,
             as_legacy_tuple=lambda: ("test", self.image_path, ""),
         )
+
+    async def _deliver_generated_image_to_event(self, _event, *, image_path: str, caption: str):
+        self.delivered_caption = caption
+        return {"sent": True, "destination": "test"}
+
+    async def _photo_reference_images_from_command_context(self, _event, _user_id, *, limit=12):
+        return self.context_reference_images[:limit], bool(self.context_reference_images)
 
 
 class _ToolEvent:
@@ -233,6 +247,129 @@ class PhotoReferenceOrderingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(selected, {})
 
+        plan = await harness._select_photo_reference_plan_async(
+            "selfie",
+            reference_intent=analyze_reference_intent(
+                "随手拍一张",
+                has_explicit_reference=True,
+            ),
+            wardrobe_intent=analyze_photo_wardrobe("随手拍一张"),
+            request_text="随手拍一张",
+            ambient_context="正在学校教室",
+        )
+        self.assertEqual(plan.bindings, ())
+        self.assertEqual(plan.primary_reference_id, "")
+
+    async def test_low_confidence_model_intent_stays_identity_only(self) -> None:
+        harness = _SelectionHarness([], llm_reply=(
+            '{"requested_roles":["identity","outfit","scene"],'
+            '"excluded_roles":[],"continuity_mode":"continuation","confidence":0.42}'
+        ))
+
+        intent = await harness._analyze_photo_reference_intent_async(
+            "参考一下",
+            workflow_kind="selfie",
+            has_explicit_reference=True,
+        )
+
+        self.assertEqual(intent.requested_roles, ("identity",))
+        self.assertEqual(intent.excluded_roles, ())
+        self.assertEqual(intent.continuity_mode, "ambiguous")
+        self.assertLess(intent.confidence, 0.7)
+        self.assertEqual(intent.source, "model_conservative")
+
+    async def test_continuation_plan_prefers_recent_photo_and_drops_changed_outfit_role(self) -> None:
+        persona = _candidate(
+            "persona",
+            outfit_category="",
+            scene_categories=(),
+            note="基础身份图",
+        )
+        harness = _SelectionHarness([persona], llm_reply="1")
+        recent = {
+            "id": "recent_sent_photo",
+            "kind": "recent_sent_photo",
+            "path": "C:/images/recent.png",
+            "source": "C:/images/recent.png",
+            "reference_roles": ["identity", "outfit", "scene", "continuity"],
+            "outfit_category": "school_uniform",
+            "outfit_lock_default": True,
+        }
+        harness._recent_sent_photo_continuity_candidate = lambda _key: dict(recent)
+        intent = analyze_reference_intent("接着上一张但换成睡衣")
+
+        plan = await harness._select_photo_reference_plan_async(
+            "selfie",
+            reference_intent=intent,
+            wardrobe_intent=analyze_photo_wardrobe("接着上一张但换成睡衣"),
+            request_text="接着上一张但换成睡衣",
+            continuity_key="session",
+        )
+
+        self.assertEqual(plan.primary_reference_id, "recent_sent_photo")
+        self.assertEqual(
+            plan.bindings[0].roles,
+            ("identity", "scene", "continuity"),
+        )
+        self.assertEqual(plan.bindings[0].ignore, ("outfit",))
+
+    async def test_explicit_image_has_priority_over_automatic_continuity_image(self) -> None:
+        explicit = _candidate(
+            "explicit",
+            outfit_category="",
+            scene_categories=(),
+            note="用户本轮图片",
+        )
+        explicit["reference_roles"] = ["identity"]
+        harness = _SelectionHarness([explicit], llm_reply="1")
+        harness._recent_sent_photo_continuity_candidate = lambda _key: {
+            "id": "recent_sent_photo",
+            "kind": "recent_sent_photo",
+            "path": "C:/images/recent.png",
+            "source": "C:/images/recent.png",
+            "reference_roles": ["identity", "outfit", "scene", "continuity"],
+            "outfit_lock_default": True,
+        }
+
+        plan = await harness._select_photo_reference_plan_async(
+            "selfie",
+            reference_intent=analyze_reference_intent("接着上一张", has_explicit_reference=True),
+            wardrobe_intent=analyze_photo_wardrobe("接着上一张"),
+            request_text="接着上一张",
+            continuity_key="session",
+            explicit_reference_paths=[explicit["path"]],
+        )
+
+        self.assertEqual(plan.primary_reference_id, "explicit_reference")
+        self.assertEqual(len(plan.bindings), 1)
+        self.assertNotEqual(plan.bindings[0].path, "C:/images/recent.png")
+
+    async def test_user_assigned_role_overrides_explicit_image_default_metadata(self) -> None:
+        candidate = _candidate(
+            "explicit",
+            outfit_category="",
+            scene_categories=(),
+            note="默认身份图",
+        )
+        candidate["reference_roles"] = ["identity"]
+        harness = _SelectionHarness([candidate], llm_reply="1")
+        intent = analyze_reference_intent(
+            "只参考这套衣服",
+            has_explicit_reference=True,
+        )
+
+        plan = await harness._select_photo_reference_plan_async(
+            "selfie",
+            reference_intent=intent,
+            wardrobe_intent=analyze_photo_wardrobe("只参考这套衣服"),
+            request_text="只参考这套衣服",
+            explicit_reference_paths=[candidate["path"]],
+        )
+
+        self.assertEqual(plan.bindings[0].roles, ("outfit",))
+        self.assertEqual(plan.bindings[0].ignore, ("identity",))
+        self.assertEqual(plan.primary_reference_id, "explicit_reference")
+
     async def test_identity_only_candidate_is_not_filtered_by_outfit_label(self) -> None:
         identity = _candidate(
             "identity-only",
@@ -276,6 +413,131 @@ class PhotoReferenceOrderingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["suggestion_status"], "not_provided")
         self.assertEqual(result["final_presets"], ["表情包场景"])
 
+    async def test_tool_passes_multiple_reference_paths_to_generation_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "output.png"
+            first = root / "face.png"
+            second = root / "outfit.png"
+            for path in (output, first, second):
+                path.write_bytes(b"png")
+            harness = _ToolPhotoHarness(str(output))
+
+            await harness._pc_generate_photo_impl(
+                _ToolEvent(),
+                prompt="用第一张的脸，第二张的衣服",
+                kind="selfie",
+                reference_image_paths=[str(first), str(second)],
+                send=False,
+            )
+
+        self.assertEqual(harness.generation_kwargs["reference_image_path"], str(first))
+        self.assertEqual(
+            harness.generation_kwargs["reference_image_paths"],
+            [str(first), str(second)],
+        )
+
+    async def test_tool_does_not_reject_all_references_when_one_path_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "output.png"
+            missing = root / "missing-face.png"
+            outfit = root / "outfit.png"
+            output.write_bytes(b"png")
+            outfit.write_bytes(b"png")
+            harness = _ToolPhotoHarness(str(output))
+
+            payload = await harness._pc_generate_photo_impl(
+                _ToolEvent(),
+                prompt="用第一张的脸，第二张的衣服",
+                kind="selfie",
+                reference_image_paths=[str(missing), str(outfit)],
+                send=False,
+            )
+
+        result = __import__("json").loads(payload)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(
+            harness.generation_kwargs["reference_image_paths"],
+            [str(missing), str(outfit)],
+        )
+
+    async def test_tool_continues_after_one_reference_resolver_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "output.png"
+            broken = root / "broken-face.png"
+            outfit = root / "outfit.png"
+            output.write_bytes(b"png")
+            outfit.write_bytes(b"png")
+            harness = _ToolPhotoHarness(str(output))
+
+            async def resolve(source, **_kwargs):
+                if source == str(broken):
+                    raise OSError("unreadable reference")
+                return source
+
+            harness._photo_reference_source_to_stable_path = resolve
+            payload = await harness._pc_generate_photo_impl(
+                _ToolEvent(),
+                prompt="用第一张的脸，第二张的衣服",
+                kind="selfie",
+                reference_image_paths=[str(broken), str(outfit)],
+                send=False,
+            )
+
+        result = __import__("json").loads(payload)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(
+            harness.generation_kwargs["reference_image_paths"],
+            [str(broken), str(outfit)],
+        )
+
+    async def test_tool_collects_multiple_context_images_for_indexed_roles(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "output.png"
+            face = root / "face.png"
+            outfit = root / "outfit.png"
+            for path in (output, face, outfit):
+                path.write_bytes(b"png")
+            harness = _ToolPhotoHarness(str(output))
+            harness.context_reference_images = [
+                (str(face), "随消息发送的图片"),
+                (str(outfit), "随消息发送的图片"),
+            ]
+
+            await harness._pc_generate_photo_impl(
+                _ToolEvent(),
+                prompt="用第一张的脸，第二张的衣服",
+                kind="selfie",
+                send=False,
+            )
+
+        self.assertEqual(
+            harness.generation_kwargs["reference_image_paths"],
+            [str(face), str(outfit)],
+        )
+
+    async def test_reference_fallback_is_visible_in_delivered_caption(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "output.png"
+            output.write_bytes(b"png")
+            harness = _ToolPhotoHarness(str(output))
+            harness.reference_fallback_message = (
+                "已保持人物身份，但没有找到匹配的服装参考图，本次服装按文字要求生成。"
+            )
+
+            await harness._pc_generate_photo_impl(
+                _ToolEvent(),
+                prompt="换成冬装",
+                kind="selfie",
+                send=True,
+            )
+
+        self.assertIn("已保持人物身份", harness.delivered_caption)
+        self.assertIn("服装按文字要求生成", harness.delivered_caption)
+
     def test_user_scene_match_scores_above_ambient_scene_match(self) -> None:
         request_text = "在卧室拍一张照片"
         ambient_context = "日程显示正在学校教室"
@@ -308,6 +570,39 @@ class PhotoReferenceOrderingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertGreater(bedroom_score, school_score)
 
+    def test_explicit_time_category_affects_reference_score(self) -> None:
+        request_text = "夜晚在街头拍照"
+        wardrobe_intent = analyze_photo_wardrobe(request_text)
+        night = _candidate(
+            "night-street",
+            outfit_category="",
+            scene_categories=("outdoor",),
+            time_categories=("night",),
+            note="街头",
+        )
+        daytime = _candidate(
+            "day-street",
+            outfit_category="",
+            scene_categories=("outdoor",),
+            time_categories=("daytime",),
+            note="街头",
+        )
+
+        night_score = ProactiveMessageMixin._photo_reference_candidate_score(
+            night,
+            request_text,
+            "",
+            wardrobe_intent=wardrobe_intent,
+        )
+        daytime_score = ProactiveMessageMixin._photo_reference_candidate_score(
+            daytime,
+            request_text,
+            "",
+            wardrobe_intent=wardrobe_intent,
+        )
+
+        self.assertGreater(night_score, daytime_score)
+
     def test_recent_generation_records_only_final_preset_and_keeps_hint_separate(self) -> None:
         harness = _ContinuityHarness()
         decision = PhotoWardrobeDecision(
@@ -337,6 +632,37 @@ class PhotoReferenceOrderingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(item["scene_preset"], "校服人像")
         self.assertEqual(item["preset_hint"], "居家睡衣")
         self.assertEqual(item["suggestion_status"], "rejected_user_conflict")
+
+    def test_user_feedback_is_linked_to_recent_reference_plan_and_prompt(self) -> None:
+        harness = _ContinuityHarness()
+        harness._record_recent_photo_generation(
+            trace_id="trace-feedback",
+            session_key="session-feedback",
+            continuity_key="conversation::user",
+            workflow_kind="selfie",
+            backend="test-backend",
+            ok=True,
+            prompt_text="final prompt text",
+            prompt_hash="prompt-hash",
+        )
+
+        linked = harness._record_photo_reference_feedback(
+            "脸不像，场景没换，请重新生成",
+            continuity_key="conversation::user",
+        )
+
+        self.assertEqual(linked["generation_trace"], "trace-feedback")
+        self.assertEqual(linked["backend"], "test-backend")
+        self.assertEqual(linked["prompt_hash"], "prompt-hash")
+        self.assertEqual(linked["final_prompt"], "final prompt text")
+        self.assertEqual(linked["issues"], ["face_mismatch", "scene_not_changed"])
+        self.assertTrue(linked["regenerate_requested"])
+        generation = harness.data["recent_photo_generations"][0]
+        self.assertTrue(generation["regeneration_requested"])
+        self.assertEqual(
+            generation["reference_feedback_issues"],
+            ["face_mismatch", "scene_not_changed"],
+        )
 
     def test_prompt_adapter_applies_at_most_one_scene_preset(self) -> None:
         harness = _ContinuityHarness()

@@ -3868,6 +3868,7 @@ class CommandHandlersMixin:
                     f"服装={_single_line(item.get('outfit_category'), 50) or '-'}",
                     f"锁定={'是' if item.get('outfit_lock_default') else '否'}",
                     f"场景={','.join(item.get('scene_categories') or []) or '-'}",
+                    f"时间={','.join(item.get('time_categories') or []) or '-'}",
                     f"预设={_single_line(item.get('preferred_preset'), 60) or '-'}",
                 ]
                 lines.append(
@@ -3893,6 +3894,7 @@ class CommandHandlersMixin:
                 f"服装={_single_line(item.get('outfit_category'), 50) or '-'}",
                 f"锁定={'是' if item.get('outfit_lock_default') else '否'}",
                 f"场景={','.join(item.get('scene_categories') or []) or '-'}",
+                f"时间={','.join(item.get('time_categories') or []) or '-'}",
                 f"预设={_single_line(item.get('preferred_preset'), 60) or '-'}",
             ]
             return (
@@ -3900,6 +3902,52 @@ class CommandHandlersMixin:
                 f"ID={_single_line(item.get('id'), 80)}｜{'｜'.join(summary)}",
                 path,
             )
+        role_match = re.match(
+            r"^(?:设置|设为|职责)\s+([0-9A-Za-z_-]{1,80})\s+(仅身份|仅服装|仅姿势|仅场景|仅画风|身份|服装|姿势|场景|画风)$",
+            action,
+            flags=re.I,
+        )
+        if role_match:
+            identifier, shortcut = role_match.groups()
+            if identifier.isdigit():
+                index = int(identifier) - 1
+                if not 0 <= index < len(entries):
+                    return "没有这个编号的参考图。", ""
+                selected = entries[index]
+            else:
+                selected = next((item for item in entries if item.get("id") == identifier), None)
+                if selected is None:
+                    return "没有这个 ID 的参考图。", ""
+                index = entries.index(selected)
+            role = {
+                "仅身份": "identity",
+                "身份": "identity",
+                "仅服装": "outfit",
+                "服装": "outfit",
+                "仅姿势": "pose",
+                "姿势": "pose",
+                "仅场景": "scene",
+                "场景": "scene",
+                "仅画风": "style",
+                "画风": "style",
+            }[shortcut]
+            updated: list[PhotoReference] = []
+            for reference in tuple(getattr(self, "photo_reference_catalog", ()) or ()):
+                if not isinstance(reference, PhotoReference):
+                    continue
+                if reference.id == selected.get("id"):
+                    reference = replace(
+                        reference,
+                        reference_roles=(role,),
+                        outfit_lock_default=role == "outfit",
+                        metadata_source="configured",
+                    )
+                updated.append(reference)
+            saved = await self._set_photo_reference_catalog_config(tuple(updated))
+            return (
+                f"已将参考图 {index + 1} 设置为仅承担 {role} 职责。"
+                + ("" if saved else "\n但配置保存可能失败，请到面板确认。")
+            ), ""
         delete_match = re.match(r"^(?:删除|移除|delete|remove)\s+([0-9A-Za-z_-]{1,80})$", action, flags=re.I)
         if delete_match:
             identifier = delete_match.group(1)
@@ -3970,6 +4018,7 @@ class CommandHandlersMixin:
             "陪伴 参考图库 添加 <用途注释>（可同时携带多张图）\n"
             "陪伴 参考图库 列表\n"
             "陪伴 参考图库 预览 <编号>\n"
+            "陪伴 参考图库 设置 <编号> <仅身份|仅服装|仅姿势|仅场景|仅画风>\n"
             "陪伴 参考图库 删除 <编号>\n"
             "陪伴 参考图库 清空"
         ), ""
@@ -4902,6 +4951,23 @@ class CommandHandlersMixin:
             kind=intent_kind,
             reference_label=reference_label,
         )
+        metadata_getter = getattr(self, "_photo_generation_result_metadata", None)
+        generation_metadata = (
+            metadata_getter(image_path=image_path, session_key=generation_session_key)
+            if callable(metadata_getter)
+            else {}
+        )
+        fallback_payload = (
+            generation_metadata.get("reference_fallback")
+            if isinstance(generation_metadata, dict)
+            else {}
+        )
+        fallback_message = _single_line(
+            fallback_payload.get("message") if isinstance(fallback_payload, dict) else "",
+            260,
+        )
+        if fallback_message:
+            caption = f"{caption}\n{fallback_message}".strip()
         delivery = await self._deliver_generated_image_to_event(
             event,
             image_path=image_path,
@@ -5142,6 +5208,23 @@ class CommandHandlersMixin:
             kind=forced_kind,
             reference_label=reference_label,
         )
+        metadata_getter = getattr(self, "_photo_generation_result_metadata", None)
+        generation_metadata = (
+            metadata_getter(image_path=image_path, session_key=generation_session_key)
+            if callable(metadata_getter)
+            else {}
+        )
+        fallback_payload = (
+            generation_metadata.get("reference_fallback")
+            if isinstance(generation_metadata, dict)
+            else {}
+        )
+        fallback_message = _single_line(
+            fallback_payload.get("message") if isinstance(fallback_payload, dict) else "",
+            260,
+        )
+        if fallback_message:
+            caption = f"{caption}\n{fallback_message}".strip()
         delivery = await self._deliver_generated_image_to_event(
             event,
             image_path=image_path,

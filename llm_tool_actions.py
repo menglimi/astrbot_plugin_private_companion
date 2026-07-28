@@ -244,7 +244,7 @@ class LlmToolActionsMixin:
                     '- 角色本人以任何形式出镜，包括自拍、背影、侧脸、环境人像、头像、穿搭或 COS：传 `{"prompt":"画面要求","kind":"selfie"}`，可用 `scene_preset` 建议“角色自拍/COS自拍/日常穿搭/居家睡衣/镜前穿搭/头像特写”；明确睡衣、睡裙、睡袍或睡前卧室自拍时优先建议“居家睡衣”，普通穿搭才建议“日常穿搭”，只有明确“镜前/对镜/镜子”时才建议镜前穿搭；最终只采用一个兼容预设。只有开启参考图一致性时，未传参考图才会自动使用配置的人设参考图或今日穿搭参考图。',
                     '- 用户在刚发出的角色照片后要求“比个心、看镜头、换个动作/表情/角度、再来一张”等自然续拍时，仍使用 `kind="selfie"`，并在 prompt 中说明只改变这次要求的部分、其余人物穿搭与场景继续保持；不必猜测或手填上一张图片路径，插件会在同一会话内交给选图模型判断是否复用。明确换装、换地点、换人物或另起主题时按新要求生成。',
                     '- 角色表情包/贴纸：传 `{"prompt":"表情和画面要求","kind":"sticker"}`；默认走自拍/人像链路并使用“表情包场景”预设，让角色仍可识别。',
-                    '- 改图/重绘：传 `{"prompt":"修改要求","kind":"edit","reference_image_path":"本地图片路径或图片URL"}`；没有参考图时不要调用改图。',
+                    '- 改图/重绘：传 `{"prompt":"修改要求","kind":"edit","reference_image_path":"本地图片路径或图片URL"}`；没有参考图时不要调用改图。多图职责组合可传 `reference_image_paths` 数组，并在 prompt 中说明每张图承担的脸、衣服、姿势等职责。',
                 ]
             )
         lines.extend(
@@ -949,6 +949,7 @@ class LlmToolActionsMixin:
             "prompt",
             "kind",
             "reference_image_path",
+            "reference_image_paths",
             "image_size",
             "caption",
             "scene_preset",
@@ -1656,6 +1657,7 @@ class LlmToolActionsMixin:
         prompt: str = "",
         kind: str = "text2img",
         reference_image_path: str = "",
+        reference_image_paths: Any = None,
         image_size: str = "",
         send: bool = True,
         caption: str = "",
@@ -1776,26 +1778,51 @@ class LlmToolActionsMixin:
         send_image = bool_arg(send, True)
         if send_image:
             self._mark_smart_imagechat_skip_proactive_emoji(event)
-        reference_path = _path_text(
+        reference_sources: list[str] = []
+
+        def add_reference_source(value: Any) -> None:
+            if isinstance(value, dict):
+                value = value.get("path") or value.get("source") or value.get("url")
+            path = _path_text(value, 1000)
+            if path and path not in reference_sources:
+                reference_sources.append(path)
+
+        add_reference_source(
             reference_image_path
             or kwargs.get("reference")
             or kwargs.get("image")
             or kwargs.get("image_path")
-            or kwargs.get("image_url"),
-            1000,
+            or kwargs.get("image_url")
         )
-        if reference_path:
-            resolver = getattr(self, "_photo_reference_source_to_stable_path", None)
+        raw_multi_references = (
+            reference_image_paths
+            if reference_image_paths is not None
+            else kwargs.get("reference_images", kwargs.get("images"))
+        )
+        if isinstance(raw_multi_references, (list, tuple, set)):
+            for raw_reference in raw_multi_references:
+                add_reference_source(raw_reference)
+        elif raw_multi_references:
+            add_reference_source(raw_multi_references)
+
+        resolver = getattr(self, "_photo_reference_source_to_stable_path", None)
+        resolved_reference_paths: list[str] = []
+        for index, source in enumerate(reference_sources):
+            resolved = source
             if callable(resolver):
                 try:
-                    stable = await resolver(reference_path, stem="tool", event=event)
+                    stable = await resolver(source, stem=f"tool_{index + 1}", event=event)
                     if stable:
-                        reference_path = stable
+                        resolved = stable
                 except Exception as exc:
-                    return json.dumps(
-                        {"status": "error", "message": f"参考图解析失败：{_single_line(exc, 160)}"},
-                        ensure_ascii=False,
+                    logger.info(
+                        "[PrivateCompanion] 第 %s 张工具参考图解析失败，交由参考计划记录缺失职责: %s",
+                        index + 1,
+                        _single_line(exc, 160),
                     )
+            if resolved and resolved not in resolved_reference_paths:
+                resolved_reference_paths.append(resolved)
+        reference_path = resolved_reference_paths[0] if resolved_reference_paths else ""
         if intent_kind == "edit" and not reference_path:
             context_resolver = getattr(self, "_photo_reference_image_from_command_context", None)
             if callable(context_resolver):
@@ -1807,6 +1834,7 @@ class LlmToolActionsMixin:
                     resolved_path, resolved_label, saw_image = await context_resolver(event, user_id)
                     if resolved_path:
                         reference_path = resolved_path
+                        resolved_reference_paths = [resolved_path]
                     elif saw_image:
                         return json.dumps(
                             {
@@ -1838,55 +1866,84 @@ class LlmToolActionsMixin:
                     ensure_ascii=False,
                 )
         if not reference_path and intent_kind in {"selfie", "sticker"}:
-            wants_context_reference = any(
+            wants_indexed_references = bool(
+                re.search(
+                    r"(?:第(?:[一二三四五六七八九十\d]+)张|"
+                    r"(?:first|second|third|fourth|fifth|sixth|seventh|eighth)\s+"
+                    r"(?:image|photo|picture))",
+                    compact_prompt,
+                    flags=re.I,
+                )
+            )
+            wants_context_reference = wants_indexed_references or any(
                 token in compact_prompt
                 for token in ("这张", "这图", "这幅", "这份", "参考图", "用图", "按图", "照着", "根据图", "根据这张", "用这张")
             )
             if wants_context_reference:
-                context_resolver = getattr(self, "_photo_reference_image_from_command_context", None)
-                if callable(context_resolver):
+                try:
                     try:
-                        try:
-                            user_id = str(event.get_sender_id())
-                        except Exception:
-                            user_id = ""
-                        resolved_path, resolved_label, saw_image = await context_resolver(event, user_id)
-                        if resolved_path:
-                            reference_path = resolved_path
-                        elif saw_image:
-                            return json.dumps(
-                                {
-                                    "status": "need_reference",
-                                    "message": "看到了图片，但没能保存成可用参考图；请让用户重新发送图片，或用“陪伴 参考图 查看”检查平台是否能取到原图。",
-                                },
-                                ensure_ascii=False,
-                            )
-                    except Exception as exc:
-                        missing = _missing_optional_model_dependency(exc)
-                        if missing:
-                            return json.dumps(
-                                {
-                                    "status": "need_reference",
-                                    "message": f"参考图解析缺少可选依赖 {missing}；如已开启参考图一致性，会改用已配置的人设参考图或今日穿搭图。",
-                                },
-                                ensure_ascii=False,
-                            )
+                        user_id = str(event.get_sender_id())
+                    except Exception:
+                        user_id = ""
+                    saw_image = False
+                    if wants_indexed_references:
+                        multi_resolver = getattr(
+                            self,
+                            "_photo_reference_images_from_command_context",
+                            None,
+                        )
+                    else:
+                        multi_resolver = None
+                    if callable(multi_resolver):
+                        images, saw_image = await multi_resolver(event, user_id, limit=8)
+                        resolved_reference_paths = [
+                            _path_text(item[0], 1000)
+                            for item in images
+                            if isinstance(item, (list, tuple))
+                            and item
+                            and _path_text(item[0], 1000)
+                        ]
+                        if resolved_reference_paths:
+                            reference_path = resolved_reference_paths[0]
+                    else:
+                        context_resolver = getattr(
+                            self,
+                            "_photo_reference_image_from_command_context",
+                            None,
+                        )
+                        if callable(context_resolver):
+                            resolved_path, resolved_label, saw_image = await context_resolver(event, user_id)
+                            if resolved_path:
+                                reference_path = resolved_path
+                                resolved_reference_paths = [resolved_path]
+                    if saw_image and not resolved_reference_paths:
                         return json.dumps(
-                            {"status": "error", "message": f"参考图解析失败：{_single_line(exc, 160)}"},
+                            {
+                                "status": "need_reference",
+                                "message": "看到了图片，但没能保存成可用参考图；请让用户重新发送图片，或用“陪伴 参考图 查看”检查平台是否能取到原图。",
+                            },
                             ensure_ascii=False,
                         )
-        if reference_path and not os.path.exists(reference_path):
-            return json.dumps(
-                {"status": "error", "message": f"参考图路径不可用：{_single_line(reference_path, 180)}"},
-                ensure_ascii=False,
-            )
-
+                except Exception as exc:
+                    missing = _missing_optional_model_dependency(exc)
+                    if missing:
+                        return json.dumps(
+                            {
+                                "status": "need_reference",
+                                "message": f"参考图解析缺少可选依赖 {missing}；如已开启参考图一致性，会改用已配置的人设参考图或今日穿搭图。",
+                            },
+                            ensure_ascii=False,
+                        )
+                    return json.dumps(
+                        {"status": "error", "message": f"参考图解析失败：{_single_line(exc, 160)}"},
+                        ensure_ascii=False,
+                    )
         prompt_builder = getattr(self, "_build_natural_language_photo_prompt", None)
         if callable(prompt_builder):
             prompt_sections = prompt_builder(
                 prompt=content,
                 kind="selfie" if intent_kind == "sticker" else intent_kind,
-                has_reference=bool(reference_path),
+                has_reference=bool(resolved_reference_paths),
                 memory_context="",
                 structured=True,
             )
@@ -1918,8 +1975,10 @@ class LlmToolActionsMixin:
             "session_key": generation_session_key,
             "continuity_key": continuity_key,
             "reference_image_path": reference_path,
+            "reference_image_paths": list(resolved_reference_paths),
             "image_size": _single_line(image_size or kwargs.get("size"), 40),
             "requested_scene_preset": preset_text,
+            "suggested_scene_preset": preset_text,
             "workflow_default_scene_preset": workflow_default_preset,
             "prompt_sections": prompt_sections,
         }
@@ -1975,6 +2034,14 @@ class LlmToolActionsMixin:
                 "suggestion_status": _single_line(getattr(generation_output, "suggestion_status", ""), 60),
                 "prompt_hash": _single_line(getattr(generation_output, "prompt_hash", ""), 80),
                 "prompt_path": _single_line(getattr(generation_output, "prompt_path", ""), 1000),
+                "reference_requested_roles": list(getattr(generation_output, "reference_requested_roles", ()) or ()),
+                "reference_excluded_roles": list(getattr(generation_output, "reference_excluded_roles", ()) or ()),
+                "continuity_mode": _single_line(getattr(generation_output, "continuity_mode", ""), 30),
+                "reference_confidence": getattr(generation_output, "reference_confidence", 0.0),
+                "reference_plan": list(getattr(generation_output, "reference_plan", ()) or ()),
+                "reference_fulfilled_roles": list(getattr(generation_output, "reference_fulfilled_roles", ()) or ()),
+                "reference_missing_roles": list(getattr(generation_output, "reference_missing_roles", ()) or ()),
+                "reference_fallback_message": _single_line(getattr(generation_output, "reference_fallback_message", ""), 260),
             }
         else:
             backend_name, image_path, note = generation_output
@@ -2028,6 +2095,12 @@ class LlmToolActionsMixin:
         delivery: dict[str, Any] = {}
         if ok and send_image:
             message = visible_caption or ("" if intent_kind == "sticker" else "生成好了。")
+            fallback_message = _single_line(
+                generation_metadata.get("reference_fallback_message"),
+                260,
+            )
+            if fallback_message:
+                message = f"{message}\n{fallback_message}".strip()
             try:
                 delivery = await self._deliver_generated_image_to_event(
                     event,
@@ -2100,6 +2173,16 @@ class LlmToolActionsMixin:
             "reference_id": _single_line(generation_metadata.get("reference_id"), 60),
             "reference_kind": _single_line(generation_metadata.get("reference_kind"), 40),
             "reference_roles": list(generation_metadata.get("reference_roles") or [])[:8],
+            "reference_intent": {
+                "requested_roles": list(generation_metadata.get("reference_requested_roles") or [])[:8],
+                "excluded_roles": list(generation_metadata.get("reference_excluded_roles") or [])[:8],
+                "continuity_mode": _single_line(generation_metadata.get("continuity_mode"), 30),
+                "confidence": generation_metadata.get("reference_confidence", 0.0),
+            },
+            "reference_plan": list(generation_metadata.get("reference_plan") or [])[:8],
+            "reference_fulfilled_roles": list(generation_metadata.get("reference_fulfilled_roles") or [])[:8],
+            "reference_missing_roles": list(generation_metadata.get("reference_missing_roles") or [])[:8],
+            "reference_fallback_message": _single_line(generation_metadata.get("reference_fallback_message"), 260),
             "wardrobe_mode": _single_line(generation_metadata.get("wardrobe_mode"), 40),
             "wardrobe_category": _single_line(generation_metadata.get("wardrobe_category"), 40),
             "outfit_locked": bool(generation_metadata.get("outfit_locked")),

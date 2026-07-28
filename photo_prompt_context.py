@@ -19,6 +19,7 @@ _SECTION_SOURCES = frozenset(
         "fixed_prompt",
         "recent_continuity",
         "wardrobe_decision",
+        "reference_fallback",
         "composition",
         "edit_contract",
     }
@@ -522,6 +523,7 @@ def _budget_sections(sections: list[PhotoPromptSection]) -> list[PhotoPromptSect
         index for index, section in enumerate(result) if section.source in sources
     ]
     _apply_budget(result, indexes("wardrobe_decision"), 420)
+    _apply_budget(result, indexes("reference_fallback"), 320)
     _apply_budget(result, indexes("scene_context", "visual_memory"), 700)
     _apply_budget(result, indexes("preset"), 140)
     _apply_budget(result, indexes("fixed_prompt"), 100)
@@ -569,7 +571,7 @@ def _assemble(sections: Sequence[PhotoPromptSection], prompt_format: str) -> str
         ),
         (
             "Reference and wardrobe ruling",
-            _join_field(sections, frozenset({"wardrobe_decision"})),
+            _join_field(sections, frozenset({"wardrobe_decision", "reference_fallback"})),
         ),
         (
             "Scene, style and final preset",
@@ -623,7 +625,17 @@ def _sanitize_reference(reference: Any, wardrobe: Any, workflow_kind: str) -> tu
     if workflow in _EDIT_WORKFLOWS or workflow not in _SELFIE_WORKFLOWS:
         return reference, None
     roles = _reference_roles(reference, wardrobe)
-    if "outfit" not in roles:
+    ignored_roles = frozenset(
+        str(item or "").strip().lower()
+        for item in (_value(reference, "ignored_reference_roles", ()) or ())
+        if str(item or "").strip()
+    )
+    if "outfit" not in roles and "outfit" not in ignored_roles:
+        return reference, None
+    if (
+        str(_value(reference, "kind", "") or "").strip().lower() == "recent_sent_photo"
+        and "outfit" in ignored_roles
+    ):
         return reference, None
     active_category = str(_value(wardrobe, "category", "") or "").strip().lower()
     authoritative = bool(_value(wardrobe, "lock_outfit", False) and active_category)

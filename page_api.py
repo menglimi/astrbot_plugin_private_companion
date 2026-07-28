@@ -1264,7 +1264,19 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
                 for reference in (catalog or ())
                 if isinstance(reference, PhotoReference) and reference.kind in {"persona", "library"}
             ]
-        else:
+        elif _safe_int(
+            self._config_get_raw(
+                "photo_reference_catalog_version",
+                getattr(self.plugin, "photo_reference_catalog_version", 0),
+            ),
+            0,
+            0,
+        ) < CATALOG_VERSION and not self._normalize_bool_value(
+            self._config_get_raw(
+                "photo_reference_catalog_user_cleared",
+                getattr(self.plugin, "photo_reference_catalog_user_cleared", False),
+            )
+        ):
             entries: list[dict[str, Any]] = []
             persona_source = _path_text(getattr(self.plugin, "photo_persona_reference_image_path", ""), 1000)
             if persona_source:
@@ -1277,6 +1289,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
                     "outfit_category": "",
                     "outfit_lock_default": False,
                     "scene_categories": [],
+                    "time_categories": [],
                     "preferred_preset": "",
                     "metadata_source": "legacy",
                 })
@@ -1300,9 +1313,12 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
                     "outfit_category": self._single_line(item.get("outfit_category"), 40),
                     "outfit_lock_default": bool(item.get("outfit_lock_default")),
                     "scene_categories": list(item.get("scene_categories") or []),
+                    "time_categories": list(item.get("time_categories") or []),
                     "preferred_preset": self._single_line(item.get("preferred_preset"), 60),
                     "metadata_source": self._single_line(item.get("metadata_source"), 30) or "legacy",
                 })
+        else:
+            entries = []
 
         resolver = getattr(self.plugin, "_photo_reference_local_path", None)
         result: list[dict[str, Any]] = []
@@ -1331,6 +1347,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
                 "outfit_category": self._single_line(entry.get("outfit_category"), 40),
                 "outfit_lock_default": bool(entry.get("outfit_lock_default")),
                 "scene_categories": list(entry.get("scene_categories") or []),
+                "time_categories": list(entry.get("time_categories") or []),
                 "preferred_preset": self._single_line(entry.get("preferred_preset"), 60),
                 "metadata_source": self._single_line(entry.get("metadata_source"), 30),
                 "available": available,
@@ -1396,6 +1413,21 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
                         {"value": "formal_event", "label": "正式场合"},
                         {"value": "sport", "label": "运动"},
                         {"value": "beach", "label": "海边/泳池"},
+                    ],
+                    "time_categories": [
+                        {"value": "morning", "label": "早晨"},
+                        {"value": "daytime", "label": "白天"},
+                        {"value": "afternoon", "label": "下午"},
+                        {"value": "evening", "label": "傍晚"},
+                        {"value": "night", "label": "夜晚"},
+                        {"value": "bedtime", "label": "睡前"},
+                    ],
+                    "role_shortcuts": [
+                        {"value": ["identity"], "label": "仅身份"},
+                        {"value": ["outfit"], "label": "仅服装"},
+                        {"value": ["pose"], "label": "仅姿势"},
+                        {"value": ["scene"], "label": "仅场景"},
+                        {"value": ["style"], "label": "仅画风"},
                     ],
                     "presets": presets,
                 },
@@ -2985,6 +3017,14 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
                 "final_presets": list(getattr(generation_output, "preset_names", ()) or ())[:1],
                 "prompt_hash": self._single_line(getattr(generation_output, "prompt_hash", ""), 80),
                 "prompt_path": _path_text(getattr(generation_output, "prompt_path", ""), 1000),
+                "reference_requested_roles": list(getattr(generation_output, "reference_requested_roles", ()) or ()),
+                "reference_excluded_roles": list(getattr(generation_output, "reference_excluded_roles", ()) or ()),
+                "continuity_mode": self._single_line(getattr(generation_output, "continuity_mode", ""), 30),
+                "reference_confidence": getattr(generation_output, "reference_confidence", 0.0),
+                "reference_plan": list(getattr(generation_output, "reference_plan", ()) or ()),
+                "reference_fulfilled_roles": list(getattr(generation_output, "reference_fulfilled_roles", ()) or ()),
+                "reference_missing_roles": list(getattr(generation_output, "reference_missing_roles", ()) or ()),
+                "reference_fallback_message": self._single_line(getattr(generation_output, "reference_fallback_message", ""), 260),
             }
         else:
             backend_name, image_path, note = generation_output
@@ -3031,6 +3071,16 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             "reference_id": self._single_line(generation_metadata.get("reference_id"), 60),
             "reference_kind": self._single_line(generation_metadata.get("reference_kind"), 40),
             "reference_roles": list(generation_metadata.get("reference_roles") or [])[:8],
+            "reference_intent": {
+                "requested_roles": list(generation_metadata.get("reference_requested_roles") or [])[:8],
+                "excluded_roles": list(generation_metadata.get("reference_excluded_roles") or [])[:8],
+                "continuity_mode": self._single_line(generation_metadata.get("continuity_mode"), 30),
+                "confidence": generation_metadata.get("reference_confidence", 0.0),
+            },
+            "reference_plan": list(generation_metadata.get("reference_plan") or [])[:8],
+            "reference_fulfilled_roles": list(generation_metadata.get("reference_fulfilled_roles") or [])[:8],
+            "reference_missing_roles": list(generation_metadata.get("reference_missing_roles") or [])[:8],
+            "reference_fallback_message": self._single_line(generation_metadata.get("reference_fallback_message"), 260),
             "wardrobe_mode": self._single_line(generation_metadata.get("wardrobe_mode"), 40),
             "wardrobe_category": self._single_line(generation_metadata.get("wardrobe_category"), 40),
             "outfit_locked": bool(generation_metadata.get("outfit_locked")),
@@ -17340,7 +17390,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
                 note = note.replace("\r\n", "\n").replace("\r", "\n").strip()[:500]
                 item["path"] = source
                 item["note"] = note
-                for field in ("reference_roles", "scene_categories"):
+                for field in ("reference_roles", "scene_categories", "time_categories"):
                     if field in item and not isinstance(item.get(field), list):
                         item[field] = [
                             part

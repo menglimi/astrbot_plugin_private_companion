@@ -3014,7 +3014,7 @@
     "invisible": true
   },
   "photo_reference_catalog": {
-    "description": "Canonical photo reference catalog",
+    "description": "Canonical photo reference catalog with roles, outfit, scene, time, preset, and lock metadata",
     "type": "list",
     "default": [],
     "invisible": true
@@ -9141,7 +9141,7 @@
       "photo_reference_catalog": {
         "description": "规范参考图目录",
         "type": "list",
-        "hint": "由陪伴面板参考图库管理器维护的规范元数据目录。",
+        "hint": "由陪伴面板参考图库管理器维护的规范元数据目录，包含稳定 ID、参考职责、服装类别、适用场景、时间类别、首选预设和默认服装锁。",
         "default": [],
         "invisible": true
       },
@@ -9160,7 +9160,7 @@
       "photo_persona_reference_image_path": {
         "description": "人设参考图路径或图片 URL",
         "type": "string",
-        "hint": "可选。仅在人设/穿搭参考图一致性开启时使用。可填 png/jpg/jpeg/webp 本地文件路径，也可填 http(s) 图片 URL；URL 会在首次自拍/人像生图前下载一次并自动回写为本地缓存路径。ComfyUI 会把它作为图片输入传给支持 images=1 的自拍工作流；在线图片 API 会优先尝试 OpenAI 兼容 /images/edits 参考图接口；SDGen 不支持参考图。",
+        "hint": "可选。仅在人设/穿搭参考图一致性开启时使用。可填 png/jpg/jpeg/webp 本地文件路径，也可填 http(s) 图片 URL；URL 会在首次自拍/人像生图前下载一次并自动回写为本地缓存路径。ComfyUI 会按参考计划把图片传给匹配 images=N 的自拍/改图工作流；只有 images=1 时会选择主参考并把其余职责转为文字提示。在线图片 API 会优先尝试 OpenAI 兼容 /images/edits 参考图接口；SDGen 按文字降级。",
         "default": "",
         "invisible": true,
         "condition": {

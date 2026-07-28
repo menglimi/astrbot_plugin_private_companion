@@ -9193,6 +9193,15 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
 
         if not self.enabled:
             return
+        feedback_recorder = getattr(self, "_record_photo_reference_feedback_from_event", None)
+        if callable(feedback_recorder):
+            try:
+                feedback_recorder(event)
+            except Exception as exc:
+                logger.debug(
+                    "[PrivateCompanion] 记录参考图效果反馈失败: %s",
+                    _single_line(exc, 120),
+                )
         if self._stop_group_llm_reply_if_blocked(event, source="llm_request"):
             return
         if not hasattr(req, "system_prompt"):

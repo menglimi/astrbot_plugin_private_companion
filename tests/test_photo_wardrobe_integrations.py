@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import ast
 import re
+import sys
+import types
 import unittest
 from pathlib import Path
 from typing import Any
 
-from astrbot_plugin_private_companion.photo_wardrobe_decision import PhotoWardrobeIntent
-
-
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+PACKAGE_NAME = "astrbot_plugin_private_companion"
+package = sys.modules.setdefault(PACKAGE_NAME, types.ModuleType(PACKAGE_NAME))
+package.__path__ = [str(PLUGIN_ROOT)]
+package.__package__ = PACKAGE_NAME
+
+from astrbot_plugin_private_companion.photo_wardrobe_decision import PhotoWardrobeIntent
 
 
 def _module_tree(name: str) -> ast.Module:
@@ -32,13 +37,13 @@ def _call_name(call: ast.Call) -> str:
 
 
 class PhotoWardrobeIntegrationTests(unittest.TestCase):
-    def test_generation_chain_reuses_one_intent_for_selection_and_resolution(self) -> None:
+    def test_generation_chain_reuses_one_intent_for_plan_selection_and_resolution(self) -> None:
         generate = _function(_module_tree("proactive_message.py"), "_generate_photo_image")
         calls = [node for node in ast.walk(generate) if isinstance(node, ast.Call)]
 
         analyze_calls = [call for call in calls if _call_name(call) == "analyze_photo_wardrobe"]
         select_call = next(
-            call for call in calls if _call_name(call) == "_select_photo_reference_candidate_async"
+            call for call in calls if _call_name(call) == "_select_photo_reference_plan_async"
         )
         resolve_call = next(
             call for call in calls if _call_name(call) == "resolve_photo_wardrobe_decision"

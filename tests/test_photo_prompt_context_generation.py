@@ -184,6 +184,7 @@ class _PhotoGenerationHarness(ProactiveMessageMixin):
         *,
         session_key: str,
         reference_image_path: str = "",
+        reference_image_paths=(),
     ) -> tuple[str, str]:
         self.backend_calls.append(
             {
@@ -191,6 +192,7 @@ class _PhotoGenerationHarness(ProactiveMessageMixin):
                 "prompt": prompt_text,
                 "session": session_key,
                 "reference": reference_image_path,
+                "references": list(reference_image_paths),
             }
         )
         return self.output_path, "generated"
@@ -274,6 +276,299 @@ class PhotoPromptContextGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recorded["prompt_sections"]["duplicate_context"], "first neutral detail")
         self.assertEqual(recorded["prompt_sections"]["duplicate_context#2"], "second neutral detail")
         self.assertNotIn("recent_continuity", recorded["prompt_sections"])
+
+    async def test_fresh_image_request_never_submits_an_explicit_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "old.png"
+            output = root / "generated.png"
+            reference.write_bytes(b"reference")
+            output.write_bytes(b"generated")
+            harness = _PhotoGenerationHarness(str(output))
+
+            backend, image_path, _note = await harness._generate_photo_image(
+                workflow_kind="selfie",
+                prompt_text="不要参考图，生成全新画面",
+                session_key="fresh-session",
+                reference_image_path=str(reference),
+            )
+
+        self.assertEqual(backend, "ComfyUI")
+        self.assertEqual(image_path, str(output))
+        self.assertEqual(harness.backend_calls[0]["reference"], "")
+        recorded = harness.data["recent_photo_generations"][0]
+        self.assertEqual(recorded["reference_intent"]["continuity_mode"], "new_topic")
+        self.assertEqual(recorded["reference_plan"]["bindings"], [])
+
+    async def test_edit_without_source_stops_before_backend_submission(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "generated.png"
+            output.write_bytes(b"generated")
+            harness = _PhotoGenerationHarness(str(output))
+
+            backend, image_path, note = await harness._generate_photo_image(
+                workflow_kind="edit",
+                prompt_text="把这张改成动漫风",
+                session_key="edit-session",
+            )
+
+        self.assertEqual(backend, "参考图")
+        self.assertEqual(image_path, "")
+        self.assertIn("停止改图", note)
+        self.assertEqual(harness.backend_calls, [])
+        recorded = harness.data["recent_photo_generations"][0]
+        self.assertEqual(recorded["reference_fallback"]["missing_roles"], ["source"])
+
+    async def test_multi_image_roles_are_planned_and_single_backend_uses_primary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            references = [root / name for name in ("face.png", "clothes.png", "pose.png")]
+            for reference in references:
+                reference.write_bytes(b"reference")
+            output = root / "generated.png"
+            output.write_bytes(b"generated")
+            harness = _PhotoGenerationHarness(str(output))
+
+            backend, image_path, _note = await harness._generate_photo_image(
+                workflow_kind="selfie",
+                prompt_text="用第一张的脸，第二张的衣服，第三张的姿势",
+                session_key="multi-reference-session",
+                reference_image_paths=[str(path) for path in references],
+            )
+
+        self.assertEqual(backend, "ComfyUI")
+        self.assertEqual(image_path, str(output))
+        self.assertEqual(harness.backend_calls[0]["reference"], str(references[0]))
+        self.assertIn("outfit", harness.backend_calls[0]["prompt"])
+        self.assertIn("pose", harness.backend_calls[0]["prompt"])
+        recorded = harness.data["recent_photo_generations"][0]
+        self.assertEqual(len(recorded["reference_plan"]["bindings"]), 3)
+        self.assertEqual(
+            recorded["reference_plan"]["submitted_reference_ids"],
+            ["explicit_reference_1"],
+        )
+        self.assertEqual(
+            recorded["reference_fallback"]["missing_roles"],
+            ["outfit", "pose"],
+        )
+
+    async def test_multi_image_backend_receives_every_planned_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            references = [root / name for name in ("face.png", "clothes.png", "pose.png")]
+            for reference in references:
+                reference.write_bytes(b"reference")
+            output = root / "generated.png"
+            output.write_bytes(b"generated")
+            harness = _PhotoGenerationHarness(str(output))
+            harness._photo_reference_backend_max_images = lambda _kind, **_kwargs: 3
+
+            async def run_comfyui(
+                workflow_name,
+                prompt_text,
+                *,
+                session_key,
+                reference_image_path="",
+                reference_image_paths=(),
+            ):
+                harness.backend_calls.append(
+                    {
+                        "workflow": workflow_name,
+                        "prompt": prompt_text,
+                        "session": session_key,
+                        "reference": reference_image_path,
+                        "references": list(reference_image_paths),
+                    }
+                )
+                return str(output), "generated"
+
+            harness._run_comfyui_photo_workflow = run_comfyui
+            backend, image_path, _note = await harness._generate_photo_image(
+                workflow_kind="selfie",
+                prompt_text="用第一张的脸，第二张的衣服，第三张的姿势",
+                session_key="multi-capable-backend",
+                reference_image_paths=[str(path) for path in references],
+            )
+
+        self.assertEqual(backend, "ComfyUI")
+        self.assertEqual(image_path, str(output))
+        self.assertEqual(harness.backend_calls[0]["references"], [str(path) for path in references])
+        self.assertIn("reference image 1: identity", harness.backend_calls[0]["prompt"])
+        self.assertIn("reference image 2: outfit", harness.backend_calls[0]["prompt"])
+        self.assertIn("reference image 3: pose", harness.backend_calls[0]["prompt"])
+        recorded = harness.data["recent_photo_generations"][0]
+        self.assertEqual(
+            recorded["reference_plan"]["submitted_reference_ids"],
+            ["explicit_reference_1", "explicit_reference_2", "explicit_reference_3"],
+        )
+        self.assertTrue(
+            all(binding["submitted"] for binding in recorded["reference_plan"]["bindings"])
+        )
+        self.assertEqual(recorded["reference_fallback"]["missing_roles"], [])
+
+    async def test_comfyui_adapter_submits_all_images_to_exact_workflow(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            references = [root / name for name in ("face.png", "clothes.png", "pose.png")]
+            for reference in references:
+                reference.write_bytes(b"reference")
+            workflow_file = root / "selfie-three-images.json"
+            workflow_file.write_text("{}", encoding="utf-8")
+            output = root / "generated.png"
+            output.write_bytes(b"generated")
+            submitted: dict[str, object] = {}
+
+            class FakeWorkflow:
+                def __init__(self, server_ip, client_id) -> None:
+                    submitted["connection"] = (server_ip, client_id)
+
+                def load_workflow_api(self, path) -> None:
+                    submitted["workflow_file"] = path
+
+                async def submit_only(self, images, texts, videos, *, debug=False):
+                    submitted["images"] = list(images)
+                    submitted["texts"] = list(texts)
+                    submitted["videos"] = list(videos)
+                    submitted["debug"] = debug
+                    return "prompt-1"
+
+            def find_workflow_file(name, texts, images, videos, workflow_dir):
+                if (name, texts, images, videos, str(workflow_dir)) == (
+                    "selfie-workflow",
+                    1,
+                    3,
+                    0,
+                    str(root),
+                ):
+                    return str(workflow_file)
+                return ""
+
+            async def get_result(_server_ip, _prompt_id):
+                return "https://example.invalid/generated.png", "image", []
+
+            async def download_image(_url):
+                return str(output)
+
+            async def save_image(path, _session_key):
+                return path
+
+            module = types.SimpleNamespace(
+                _plugin_config={"debug_mode": False},
+                _get_server_config=lambda _config: ("http://comfyui", "client-1"),
+                _get_workflow_dir=lambda: str(root),
+                find_workflow_file=find_workflow_file,
+                ComfyUIWorkflow=FakeWorkflow,
+                _get_result_for_prompt=get_result,
+                _download_image_to_temp=download_image,
+                _save_image_to_persistent_path=save_image,
+            )
+            harness = _PhotoGenerationHarness(str(output))
+            harness.comfyui_photo_wait_seconds = 1
+            harness._get_comfyui_module = lambda: module
+
+            capacity = harness._photo_reference_backend_max_images(
+                "selfie",
+                requested_images=3,
+            )
+            image_path, note = await ProactiveMessageMixin._run_comfyui_photo_workflow(
+                harness,
+                "selfie-workflow",
+                "portrait",
+                session_key="adapter-multi-image",
+                reference_image_path=str(references[0]),
+                reference_image_paths=[str(path) for path in references],
+            )
+
+        self.assertEqual(capacity, 3)
+        self.assertEqual(image_path, str(output))
+        self.assertIn("3 张本地参考图", note)
+        self.assertEqual(submitted["workflow_file"], str(workflow_file))
+        self.assertEqual(submitted["images"], [str(path) for path in references])
+        self.assertEqual(submitted["texts"], ["portrait"])
+
+    async def test_invalid_multi_image_binding_is_skipped_with_missing_role_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            missing_face = root / "missing-face.png"
+            outfit = root / "outfit.png"
+            output = root / "generated.png"
+            outfit.write_bytes(b"reference")
+            output.write_bytes(b"generated")
+            harness = _PhotoGenerationHarness(str(output))
+
+            backend, image_path, _note = await harness._generate_photo_image(
+                workflow_kind="selfie",
+                prompt_text="用第一张的脸，第二张的衣服",
+                session_key="invalid-multi-reference-session",
+                reference_image_paths=[str(missing_face), str(outfit)],
+            )
+
+        self.assertEqual(backend, "ComfyUI")
+        self.assertEqual(image_path, str(output))
+        self.assertEqual(harness.backend_calls[0]["reference"], str(outfit))
+        recorded = harness.data["recent_photo_generations"][0]
+        self.assertEqual(recorded["reference_plan"]["primary_reference_id"], "explicit_reference_2")
+        self.assertEqual(recorded["reference_fallback"]["fulfilled_roles"], ["outfit"])
+        self.assertEqual(recorded["reference_fallback"]["missing_roles"], ["identity"])
+
+    async def test_reference_is_textually_downgraded_for_sdgen_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "face.png"
+            output = root / "generated.png"
+            reference.write_bytes(b"reference")
+            output.write_bytes(b"generated")
+            harness = _PhotoGenerationHarness(str(output))
+            harness.photo_generation_backend = "sdgen"
+            harness._sdgen_photo_available = lambda: True
+
+            async def run_sdgen(prompt_text, *, session_key):
+                harness.backend_calls.append(
+                    {
+                        "workflow": "sdgen",
+                        "prompt": prompt_text,
+                        "session": session_key,
+                        "reference": "",
+                    }
+                )
+                return str(output), "generated"
+
+            harness._run_sdgen_photo_generation = run_sdgen
+
+            backend, image_path, note = await harness._generate_photo_image(
+                workflow_kind="selfie",
+                prompt_text="只参考脸",
+                session_key="sdgen-reference-fallback",
+                reference_image_path=str(reference),
+            )
+
+        self.assertEqual(backend, "SDGen")
+        self.assertEqual(image_path, str(output))
+        self.assertEqual(harness.backend_calls[0]["reference"], "")
+        self.assertIn("人物身份", note)
+        recorded = harness.data["recent_photo_generations"][0]
+        self.assertEqual(recorded["reference_plan"]["submitted_reference_ids"], [])
+        self.assertEqual(recorded["reference_fallback"]["missing_roles"], ["identity"])
+
+    async def test_optional_selfie_identity_does_not_emit_missing_reference_feedback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "generated.png"
+            output.write_bytes(b"generated")
+            harness = _PhotoGenerationHarness(str(output))
+
+            backend, image_path, note = await harness._generate_photo_image(
+                workflow_kind="selfie",
+                prompt_text="随手拍一张",
+                session_key="optional-identity",
+            )
+
+        self.assertEqual(backend, "ComfyUI")
+        self.assertEqual(image_path, str(output))
+        self.assertEqual(note, "generated")
+        recorded = harness.data["recent_photo_generations"][0]
+        self.assertEqual(recorded["reference_intent"]["source"], "workflow_default")
+        self.assertEqual(recorded["reference_fallback"]["missing_roles"], [])
+        self.assertEqual(recorded["reference_fallback"]["message"], "")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 import tempfile
 import types
@@ -132,6 +133,7 @@ class PhotoReferenceCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     "outfit_category": "custom:舞台服",
                     "outfit_lock_default": True,
                     "scene_categories": ["custom:舞台"],
+                    "time_categories": ["night"],
                     "preferred_preset": "舞台人像",
                     "metadata_source": "configured",
                 }
@@ -149,6 +151,7 @@ class PhotoReferenceCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("服装=custom:舞台服", text)
             self.assertIn("锁定=是", text)
             self.assertIn("场景=custom:舞台", text)
+            self.assertIn("时间=night", text)
             self.assertIn("预设=舞台人像", text)
         self.assertEqual(path, "C:/images/summary.png")
 
@@ -201,6 +204,40 @@ class PhotoReferenceCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(added.outfit_category, "sleepwear")
         self.assertEqual(added.reference_roles, ("identity", "outfit"))
         self.assertTrue(added.outfit_lock_default)
+
+    async def test_command_role_shortcut_updates_only_selected_reference(self) -> None:
+        loaded = load_catalog(
+            [
+                {
+                    "id": "library-change",
+                    "kind": "library",
+                    "source": "C:/images/change.png",
+                    "reference_roles": ["identity", "outfit"],
+                    "outfit_category": "sleepwear",
+                    "outfit_lock_default": True,
+                },
+                {
+                    "id": "library-keep",
+                    "kind": "library",
+                    "source": "C:/images/keep.png",
+                    "reference_roles": ["identity", "style"],
+                    "outfit_lock_default": False,
+                },
+            ],
+            catalog_version=CATALOG_VERSION,
+        )
+        harness = _CommandHarness(loaded.references)
+
+        message, _ = await harness._photo_reference_library_command_payload(
+            None,
+            "user",
+            "设置 1 仅姿势",
+        )
+
+        self.assertIn("pose", message)
+        self.assertEqual(harness.photo_reference_catalog[0].reference_roles, ("pose",))
+        self.assertFalse(harness.photo_reference_catalog[0].outfit_lock_default)
+        self.assertEqual(harness.photo_reference_catalog[1], loaded.references[1])
 
 
 class _PagePlugin:
@@ -306,6 +343,24 @@ class PhotoReferencePageIntegrationTests(unittest.TestCase):
         self.assertEqual(
             raised.exception.errors,
             {"items.1.preferred_preset": ["场景预设不存在：已删除预设"]},
+        )
+
+    def test_current_empty_catalog_does_not_restore_legacy_page_items(self) -> None:
+        plugin = _PagePlugin(())
+        plugin.photo_persona_reference_image_path = "C:/images/legacy-persona.png"
+        plugin.photo_reference_library = ["C:/images/legacy-library.png"]
+        plugin.photo_reference_catalog_user_cleared = False
+        api = PrivateCompanionPageApi(plugin)
+
+        self.assertEqual(api._photo_reference_page_items(), [])
+
+    def test_page_lists_complete_role_shortcuts(self) -> None:
+        payload = asyncio.run(self.api.list_photo_references())
+        shortcuts = payload["data"]["options"]["role_shortcuts"]
+
+        self.assertEqual(
+            [item["value"] for item in shortcuts],
+            [["identity"], ["outfit"], ["pose"], ["scene"], ["style"]],
         )
 
 

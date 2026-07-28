@@ -145,6 +145,34 @@ _SCENE_ALIASES = {
     "沙滩": "beach",
 }
 
+_TIME_ALIASES = {
+    "morning": "morning",
+    "早晨": "morning",
+    "早上": "morning",
+    "daytime": "daytime",
+    "day": "daytime",
+    "白天": "daytime",
+    "afternoon": "afternoon",
+    "下午": "afternoon",
+    "evening": "evening",
+    "傍晚": "evening",
+    "黄昏": "evening",
+    "night": "night",
+    "夜晚": "night",
+    "晚上": "night",
+    "bedtime": "bedtime",
+    "睡前": "bedtime",
+}
+
+_TIME_TOKENS = (
+    ("morning", ("清晨", "早晨", "早上", "晨间", "morning", "sunrise")),
+    ("daytime", ("白天", "日间", "daytime", "daylight")),
+    ("afternoon", ("下午", "午后", "afternoon")),
+    ("evening", ("傍晚", "黄昏", "日落", "evening", "sunset")),
+    ("night", ("夜晚", "晚上", "深夜", "夜景", "night")),
+    ("bedtime", ("睡前", "临睡", "bedtime")),
+)
+
 
 @dataclass(frozen=True)
 class PhotoReference:
@@ -158,6 +186,7 @@ class PhotoReference:
     scene_categories: tuple[str, ...]
     preferred_preset: str
     metadata_source: str
+    time_categories: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -262,6 +291,18 @@ def _normalize_scene_categories(value: Any) -> tuple[str, ...]:
     return tuple(scenes)
 
 
+def _normalize_time_categories(value: Any) -> tuple[str, ...]:
+    categories: list[str] = []
+    for raw in _as_values(value):
+        clean = _clean_text(raw, 80)
+        if not clean:
+            continue
+        category = _TIME_ALIASES.get(clean.lower(), _custom_value(clean))
+        if category and category not in categories:
+            categories.append(category)
+    return tuple(categories)
+
+
 def _append_error(errors: dict[str, list[str]], field: str, message: str) -> None:
     errors.setdefault(field, []).append(message)
 
@@ -306,6 +347,15 @@ def _strict_scenes(value: Any, field: str, errors: dict[str, list[str]]) -> tupl
     return tuple(scenes)
 
 
+def _strict_times(value: Any, field: str, errors: dict[str, list[str]]) -> tuple[str, ...]:
+    categories: list[str] = []
+    for raw in _as_values(value):
+        category = _strict_custom_value(raw, _TIME_ALIASES, field, "时间类别", errors)
+        if category and category not in categories:
+            categories.append(category)
+    return tuple(categories)
+
+
 def _strict_reference(
     raw: Any,
     index: int,
@@ -346,6 +396,7 @@ def _strict_reference(
     if lock_default and "outfit" not in roles:
         roles = (*roles, "outfit")
     scenes = _strict_scenes(item.get("scene_categories"), f"{prefix}.scene_categories", errors)
+    times = _strict_times(item.get("time_categories"), f"{prefix}.time_categories", errors)
     preferred_preset = _clean_text(item.get("preferred_preset"), 80)
     if preferred_preset and preferred_preset not in preset_names:
         _append_error(errors, f"{prefix}.preferred_preset", f"场景预设不存在：{preferred_preset}")
@@ -363,6 +414,7 @@ def _strict_reference(
         scene_categories=scenes,
         preferred_preset=preferred_preset,
         metadata_source=metadata_source,
+        time_categories=times,
     )
 
 
@@ -376,6 +428,7 @@ def _serialize_reference(reference: PhotoReference) -> dict[str, Any]:
         "outfit_category": reference.outfit_category,
         "outfit_lock_default": reference.outfit_lock_default,
         "scene_categories": list(reference.scene_categories),
+        "time_categories": list(reference.time_categories),
         "preferred_preset": reference.preferred_preset,
         "metadata_source": reference.metadata_source,
     }
@@ -440,6 +493,7 @@ def add_reference(
     outfit_category: Any = None,
     outfit_lock_default: Any = None,
     scene_categories: Any = None,
+    time_categories: Any = None,
     preferred_preset: Any = None,
     metadata_source: Any = "",
     preset_names: Iterable[str] = (),
@@ -454,6 +508,7 @@ def add_reference(
     if roles is None:
         roles = _infer_reference_roles(clean_note, outfit_category=_normalize_outfit_category(category))
     scenes = scene_categories if scene_categories is not None else _infer_scene_categories(clean_note)
+    times = time_categories if time_categories is not None else _infer_time_categories(clean_note)
     lock_default = outfit_lock_default
     if lock_default is None:
         lock_default = bool(inferred_category and normalized_kind == "library")
@@ -467,6 +522,7 @@ def add_reference(
         and outfit_category is None
         and outfit_lock_default is None
         and scene_categories is None
+        and time_categories is None
         and preferred_preset is None
     )
     raw_reference = {
@@ -478,6 +534,7 @@ def add_reference(
         "outfit_category": category,
         "outfit_lock_default": lock_default,
         "scene_categories": scenes,
+        "time_categories": times,
         "preferred_preset": preset,
         "metadata_source": _clean_text(metadata_source, 30) or ("inferred_note" if inferred_metadata else "configured"),
     }
@@ -502,6 +559,7 @@ def build_daily_outfit_reference(
     *,
     note: Any = "今天生成的穿搭参考图；优先保持当天服装连续性，但不要覆盖用户明确提出的新服装",
     scene_categories: Any = ("school", "office", "outdoor"),
+    time_categories: Any = (),
     preferred_preset: Any = "日常穿搭",
     preset_names: Iterable[str] = (),
 ) -> PhotoReference:
@@ -517,6 +575,7 @@ def build_daily_outfit_reference(
             "outfit_category": "daily_outfit",
             "outfit_lock_default": True,
             "scene_categories": scene_categories,
+            "time_categories": time_categories,
             "preferred_preset": preferred_preset,
             "metadata_source": "runtime",
         },
@@ -545,6 +604,7 @@ def project_reference_candidate(
         "outfit_category": reference.outfit_category,
         "outfit_lock_default": reference.outfit_lock_default,
         "scene_categories": list(reference.scene_categories),
+        "time_categories": list(reference.time_categories),
         "preferred_preset": reference.preferred_preset,
         "metadata_source": reference.metadata_source,
     }
@@ -562,6 +622,11 @@ def _infer_outfit_category(text: Any) -> str:
 def _infer_scene_categories(text: Any) -> tuple[str, ...]:
     normalized = re.sub(r"\s+", "", str(text or "")).lower()
     return tuple(category for category, tokens in _SCENE_TOKENS if any(token in normalized for token in tokens))
+
+
+def _infer_time_categories(text: Any) -> tuple[str, ...]:
+    normalized = re.sub(r"\s+", "", str(text or "")).lower()
+    return tuple(category for category, tokens in _TIME_TOKENS if any(token in normalized for token in tokens))
 
 
 def _infer_reference_roles(
@@ -651,6 +716,8 @@ def _migrate_library_reference(
         roles = _infer_reference_roles(note, outfit_category=category)
     raw_scenes = metadata.get("scene_categories") or metadata.get("scene_tags")
     scenes = _normalize_scene_categories(raw_scenes) if raw_scenes else _infer_scene_categories(note)
+    raw_times = metadata.get("time_categories") or metadata.get("time_tags")
+    times = _normalize_time_categories(raw_times) if raw_times else _infer_time_categories(note)
     lock_default = _migration_bool(
         metadata.get("outfit_lock_default"),
         default=bool(category and "outfit" in roles),
@@ -677,6 +744,7 @@ def _migrate_library_reference(
         scene_categories=scenes,
         preferred_preset=preferred_preset,
         metadata_source="migration",
+        time_categories=times,
     )
 
 
@@ -736,6 +804,7 @@ def _tolerant_catalog_reference(
             label=f"items.{index}.outfit_lock_default",
         ),
         "scene_categories": _normalize_scene_categories(item.get("scene_categories")),
+        "time_categories": _normalize_time_categories(item.get("time_categories")),
         "preferred_preset": preferred_preset,
     }
     item_errors: dict[str, list[str]] = {}
@@ -891,15 +960,6 @@ def load_catalog(
     warnings: list[str] = []
     canonical_references = _load_canonical_references(raw_catalog, presets, warnings)
     if version >= CATALOG_VERSION:
-        if (
-            not user_cleared
-            and canonical_references == ()
-            and _canonical_catalog_is_strictly_persistable(raw_catalog, presets)
-        ):
-            legacy_references = _migrate_legacy_catalog(legacy_persona, legacy_library, presets, warnings)
-            if legacy_references:
-                warnings.append("规范参考图目录异常为空，已从残留旧配置恢复并等待重新保存")
-                return CatalogLoadResult(legacy_references, True, tuple(warnings))
         if canonical_references is None:
             warnings.append("规范参考图目录不是数组，已按空目录加载")
             canonical_references = ()
