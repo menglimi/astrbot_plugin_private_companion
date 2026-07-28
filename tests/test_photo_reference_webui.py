@@ -4,6 +4,7 @@ import unittest
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 APP_JS = (PLUGIN_ROOT / "pages" / "陪伴面板" / "app.js").read_text(encoding="utf-8")
+INDEX_HTML = (PLUGIN_ROOT / "pages" / "陪伴面板" / "index.html").read_text(encoding="utf-8")
 
 
 class PhotoReferenceWebUiTests(unittest.TestCase):
@@ -47,6 +48,11 @@ class PhotoReferenceWebUiTests(unittest.TestCase):
         for help_text in expected_help:
             with self.subTest(help_text=help_text):
                 self.assertIn(help_text, APP_JS)
+
+    def test_metadata_editor_assets_have_a_matching_cache_version(self) -> None:
+        version = "20260728-reference-metadata-options"
+        self.assertIn(f'app.css?v={version}', INDEX_HTML)
+        self.assertIn(f'app.js?v={version}', INDEX_HTML)
 
 
 if __name__ == "__main__":
