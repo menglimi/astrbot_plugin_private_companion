@@ -2429,7 +2429,7 @@ const configDescriptions = {
   proactive_photo_text_probability: "在主动生图可用、额度未用完，且本轮主动有生活画面或视觉切口时，把普通文字主动升级成带图的概率，按百分比填写。",
   photo_generation_backend: "auto 会在在线图片 API 配置完整时优先尝试在线 API，失败后回退本地 ComfyUI/SDGen；未配置在线 API 时使用本地后端。comfyui/sdgen/external 可指定单一后端。tool_call 会调用其他插件注册的函数工具（需在下方填写工具名）。",
   COMFYUI_TEXT2IMG_WORKFLOW_NAME: "用于普通随手拍、风景、桌面小物等 photo_text 的 ComfyUI 工作流名。",
-  COMFYUI_SELFIE_WORKFLOW_NAME: "用于自拍或人像类 photo_text 的 ComfyUI 工作流名。开启参考图一致性并配置参考图后，会优先寻找 images=1 的自拍工作流。",
+  COMFYUI_SELFIE_WORKFLOW_NAME: "用于自拍或人像类 photo_text 的 ComfyUI 工作流名。开启参考图一致性后，会按实际提交数量寻找匹配的 images=N 自拍/改图工作流；单图工作流只提交主参考，其余职责转为文字提示。",
   enable_photo_reference_image: "可选。开启后，自拍、人像、头像和角色表情包会自动使用今日穿搭图或下方人设参考图来保持外观一致；关闭后不自动读取固定参考图，只按提示词生成。用户显式发送或引用图片要求改图时不受影响。",
   photo_reference_catalog: "统一保存基础人设图与图库参考图的稳定 ID、职责、服装锁、场景和首选预设；请使用参考图库管理器编辑。",
   enable_daily_outfit_photo: "开启后，每天日程生成并保存后额外调用一次自拍/人像生图能力，根据当天日程、天气和状态生成角色当天穿搭照片，并替换拓展页左上角 Logo。失败会记录当天结果，不会因为刷新页面反复请求。",

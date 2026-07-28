@@ -18,6 +18,10 @@ class PhotoReferenceWebUiTests(unittest.TestCase):
         self.assertIn('data-photo-reference-role-shortcut', APP_JS)
         self.assertIn('input.dataset.photoReferenceRoleShortcut', APP_JS)
 
+    def test_selfie_workflow_help_describes_dynamic_image_count(self) -> None:
+        self.assertIn("images=N 自拍/改图工作流", APP_JS)
+        self.assertNotIn("优先寻找 images=1 的自拍工作流", APP_JS)
+
 
 if __name__ == "__main__":
     unittest.main()
