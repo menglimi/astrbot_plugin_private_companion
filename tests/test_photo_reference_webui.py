@@ -50,7 +50,7 @@ class PhotoReferenceWebUiTests(unittest.TestCase):
                 self.assertIn(help_text, APP_JS)
 
     def test_metadata_editor_assets_have_a_matching_cache_version(self) -> None:
-        version = "20260728-reference-metadata-options"
+        version = "20260729-photo-trace-default-10240"
         self.assertIn(f'app.css?v={version}', INDEX_HTML)
         self.assertIn(f'app.js?v={version}', INDEX_HTML)
 

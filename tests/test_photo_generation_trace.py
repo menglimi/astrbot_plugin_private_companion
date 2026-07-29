@@ -165,6 +165,23 @@ class PhotoGenerationTraceTests(unittest.TestCase):
             self.assertTrue((root / "photo_generation_trace.2.txt").is_file())
             self.assertFalse((root / "photo_generation_trace.3.txt").exists())
 
+    def test_oversized_single_event_is_replaced_with_bounded_record(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            harness = _Harness(temp_dir, max_size_kb=1, backups=2)
+            harness._append_photo_generation_trace_event(
+                "trace-large",
+                "reference_candidates",
+                context={f"context-{index}": "x" * 1200 for index in range(48)},
+                data={f"candidate-{index}": "x" * 1200 for index in range(48)},
+            )
+
+            path = Path(temp_dir) / "photo_generation_trace.txt"
+            self.assertLessEqual(path.stat().st_size, 1024)
+            event = self._read_lines(path)[0]
+            self.assertTrue(event["context"]["truncated"])
+            self.assertTrue(event["data"]["truncated"])
+            self.assertGreater(event["data"]["original_bytes"], 1024)
+
     def test_zero_size_disables_file_logging(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             harness = _Harness(temp_dir, max_size_kb=0)

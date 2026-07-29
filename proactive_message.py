@@ -8515,6 +8515,18 @@ Output:
             }
             line = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
             encoded_size = len(line.encode("utf-8"))
+            if encoded_size > max_bytes:
+                payload["context"] = {
+                    "truncated": True,
+                    "reason": "event_exceeds_max_size",
+                }
+                payload["data"] = {
+                    "truncated": True,
+                    "reason": "event_exceeds_max_size",
+                    "original_bytes": encoded_size,
+                }
+                line = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+                encoded_size = len(line.encode("utf-8"))
             path = self._photo_generation_trace_file_path()
             with _PHOTO_GENERATION_TRACE_FILE_LOCK:
                 path.parent.mkdir(parents=True, exist_ok=True)

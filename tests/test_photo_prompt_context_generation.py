@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import types
@@ -120,6 +121,9 @@ class _PhotoGenerationHarness(ProactiveMessageMixin):
         self.output_path = output_path
         self.persona_path = ""
         self.backend_calls: list[dict[str, str]] = []
+        self.data_dir = str(Path(output_path).parent)
+        self.photo_generation_trace_max_size_kb = 2048
+        self.photo_generation_trace_backup_count = 2
 
     async def _photo_persona_reference_image_path_async(self) -> str:
         return self.persona_path
@@ -210,6 +214,50 @@ class _PhotoGenerationHarness(ProactiveMessageMixin):
 
 
 class PhotoPromptContextGenerationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_successful_generation_writes_complete_trace_chain(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "generated.png"
+            output.write_bytes(b"generated")
+            harness = _PhotoGenerationHarness(str(output))
+
+            backend, image_path, _note = await harness._generate_photo_image(
+                workflow_kind="selfie",
+                prompt_text="Take a natural selfie by the window.",
+                session_key="trace-chain-session",
+                continuity_key="trace-chain-continuity",
+            )
+
+            trace_path = Path(directory) / "photo_generation_trace.txt"
+            events = [
+                json.loads(line)
+                for line in trace_path.read_text(encoding="utf-8").splitlines()
+            ]
+            expected_stages = [
+                "request_received",
+                "reference_intent_analyzed",
+                "reference_plan_built",
+                "reference_plan_projected",
+                "wardrobe_resolved",
+                "prompt_composed",
+                "backend_selected",
+                "output_validated",
+                "completed",
+            ]
+            stages = [event["stage"] for event in events]
+            stage_positions = [stages.index(stage) for stage in expected_stages]
+
+            self.assertEqual(backend, "ComfyUI")
+            self.assertEqual(image_path, str(output))
+            self.assertEqual(stage_positions, sorted(stage_positions))
+            self.assertEqual([event["seq"] for event in events], list(range(1, len(events) + 1)))
+            self.assertEqual(len({event["trace"] for event in events}), 1)
+            self.assertTrue(all(event["context"]["session"] == "trace-chain-session" for event in events))
+            self.assertTrue(all(event["context"]["workflow_kind"] == "selfie" for event in events))
+            self.assertEqual(events[-1]["stage"], "completed")
+            self.assertEqual(events[-1]["status"], "ok")
+            self.assertEqual(events[-1]["context"]["backend"], "ComfyUI")
+            self.assertEqual(events[-1]["data"]["image_path"], str(output))
+
     async def test_backend_receives_physically_sanitized_context_and_reference(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
