@@ -667,6 +667,108 @@ class PhotoReferenceOrderingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertGreater(bedroom_score, school_score)
 
+    def test_schedule_history_weakly_affects_reference_score(self) -> None:
+        request_text = "随手拍一张自拍"
+        wardrobe_intent = analyze_photo_wardrobe(request_text)
+        school = _candidate(
+            "school",
+            outfit_category="",
+            scene_categories=("school",),
+            note="学校教室",
+        )
+        bedroom = _candidate(
+            "bedroom",
+            outfit_category="",
+            scene_categories=("bedroom",),
+            note="卧室",
+        )
+
+        school_score = ProactiveMessageMixin._photo_reference_candidate_score(
+            school,
+            request_text,
+            "",
+            schedule_history_context="08:00-09:00｜已完成｜在学校教室上课",
+            wardrobe_intent=wardrobe_intent,
+        )
+        bedroom_score = ProactiveMessageMixin._photo_reference_candidate_score(
+            bedroom,
+            request_text,
+            "",
+            schedule_history_context="08:00-09:00｜已完成｜在学校教室上课",
+            wardrobe_intent=wardrobe_intent,
+        )
+
+        self.assertGreater(school_score, bedroom_score)
+
+    def test_user_and_current_scene_each_outweigh_conflicting_history(self) -> None:
+        bedroom = _candidate(
+            "bedroom",
+            outfit_category="",
+            scene_categories=("bedroom",),
+            note="卧室",
+        )
+        school = _candidate(
+            "school",
+            outfit_category="",
+            scene_categories=("school",),
+            note="学校教室",
+        )
+        history = "08:00-12:00｜已完成｜在学校教室上课"
+
+        user_bedroom = ProactiveMessageMixin._photo_reference_candidate_score(
+            bedroom,
+            "请在卧室自拍",
+            "",
+            schedule_history_context=history,
+            wardrobe_intent=analyze_photo_wardrobe("请在卧室自拍"),
+        )
+        user_school = ProactiveMessageMixin._photo_reference_candidate_score(
+            school,
+            "请在卧室自拍",
+            "",
+            schedule_history_context=history,
+            wardrobe_intent=analyze_photo_wardrobe("请在卧室自拍"),
+        )
+        current_bedroom = ProactiveMessageMixin._photo_reference_candidate_score(
+            bedroom,
+            "随手自拍",
+            "当前位置：卧室",
+            schedule_history_context=history,
+            wardrobe_intent=analyze_photo_wardrobe("随手自拍"),
+        )
+        current_school = ProactiveMessageMixin._photo_reference_candidate_score(
+            school,
+            "随手自拍",
+            "当前位置：卧室",
+            schedule_history_context=history,
+            wardrobe_intent=analyze_photo_wardrobe("随手自拍"),
+        )
+
+        self.assertGreater(user_bedroom, user_school)
+        self.assertGreater(current_bedroom, current_school)
+
+    async def test_model_prompt_marks_history_as_non_current_context(self) -> None:
+        harness = _SelectionHarness(
+            [
+                _candidate("school", outfit_category="", scene_categories=("school",), note="学校教室"),
+                _candidate("bedroom", outfit_category="", scene_categories=("bedroom",), note="卧室"),
+            ],
+            llm_reply="1",
+        )
+
+        await harness._select_photo_reference_candidate_async(
+            "selfie",
+            request_text="随手自拍",
+            ambient_context="当前位置：卧室",
+            schedule_history_context="08:00-09:00｜已完成｜在学校上课",
+        )
+
+        prompt = harness.llm_prompts[0]
+        self.assertIn("【当天已发生日程】", prompt)
+        self.assertIn("在学校上课", prompt)
+        self.assertIn("不代表当前位置或当前活动", prompt)
+        self.assertIn("当前环境始终优先于历史日程", prompt)
+
     def test_explicit_time_category_affects_reference_score(self) -> None:
         request_text = "夜晚在街头拍照"
         wardrobe_intent = analyze_photo_wardrobe(request_text)

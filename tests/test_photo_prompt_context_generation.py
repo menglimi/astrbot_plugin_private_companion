@@ -214,6 +214,31 @@ class _PhotoGenerationHarness(ProactiveMessageMixin):
 
 
 class PhotoPromptContextGenerationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_schedule_history_reaches_selection_but_not_final_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "generated.png"
+            output.write_bytes(b"generated")
+            harness = _PhotoGenerationHarness(str(output))
+            captured: dict[str, object] = {}
+            history = "08:00-09:00｜已完成｜在学校上课｜情绪：专注"
+            harness._photo_reference_schedule_history_context = lambda: history
+
+            async def select_plan(*_args, **kwargs):
+                captured.update(kwargs)
+                return PhotoReferencePlan((), "", "no_usable_reference", "")
+
+            harness._select_photo_reference_plan_async = select_plan
+
+            await harness._generate_photo_image(
+                workflow_kind="selfie",
+                prompt_text="晚上在卧室随手自拍",
+                session_key="history-selection-only",
+            )
+
+        self.assertEqual(captured["schedule_history_context"], history)
+        self.assertNotIn(history, captured["ambient_context"])
+        self.assertNotIn("在学校上课", harness.backend_calls[0]["prompt"])
+
     async def test_successful_generation_writes_complete_trace_chain(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "generated.png"

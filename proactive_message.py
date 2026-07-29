@@ -9404,6 +9404,53 @@ Output:
             parts.append(f"当前场景：{scene_category_label}")
         return _single_line("；".join(parts), 460)
 
+    def _photo_reference_schedule_history_context(self) -> str:
+        """Format today's started schedule items for reference selection only."""
+
+        snapshot_builder = getattr(self, "_build_companion_scene_snapshot", None)
+        if not callable(snapshot_builder):
+            return ""
+        try:
+            snapshot = snapshot_builder()
+        except Exception:
+            return ""
+        schedule = snapshot.get("schedule") if isinstance(snapshot, dict) else {}
+        history = schedule.get("history") if isinstance(schedule, dict) else []
+        if not isinstance(history, list):
+            return ""
+        labels = {
+            "active": "进行中",
+            "completed": "已完成",
+            "changed": "已变更",
+        }
+        lines: list[str] = []
+        for item in history[:24]:
+            if not isinstance(item, dict):
+                continue
+            status = _single_line(item.get("status"), 20).lower()
+            if status not in labels:
+                continue
+            start = _single_line(item.get("time"), 12)
+            end = _single_line(item.get("end"), 12)
+            activity = _single_line(item.get("activity"), 160)
+            mood = _single_line(item.get("mood"), 32)
+            if not activity:
+                continue
+            window = "-".join(part for part in (start, end) if part)
+            lines.append(
+                "｜".join(
+                    part
+                    for part in (
+                        window,
+                        labels[status],
+                        activity,
+                        f"情绪：{mood}" if mood else "",
+                    )
+                    if part
+                )
+            )
+        return self._photo_prompt_clip("\n".join(lines), 2400)
+
     @staticmethod
     def _photo_reference_paths_equal(left: str, right: str) -> bool:
         left_text = str(left or "").strip()
@@ -10004,8 +10051,11 @@ Output:
         current_user_exclusions = wardrobe_intent.exclusion_text
         normalized_kind = str(workflow_kind or "").strip().lower()
         scene_context_before = ""
-        if normalized_kind in {"selfie", "portrait", "自拍", "人像"} and allow_daily_outfit_reference:
-            scene_context_before = self._photo_generation_selfie_schedule_scene_hint()
+        schedule_history_context = ""
+        if normalized_kind in {"selfie", "portrait", "自拍", "人像"}:
+            schedule_history_context = self._photo_reference_schedule_history_context()
+            if allow_daily_outfit_reference:
+                scene_context_before = self._photo_generation_selfie_schedule_scene_hint()
         selection_request = self._photo_prompt_clip(
             "\n\n".join(
                 part
@@ -10025,6 +10075,7 @@ Output:
             allow_daily_outfit=allow_daily_outfit_reference,
             request_text=selection_request,
             ambient_context=scene_context_before,
+            schedule_history_context=schedule_history_context,
             continuity_key=continuity_key,
             explicit_reference_paths=explicit_reference_paths,
             require_existing_paths=True,
@@ -11457,11 +11508,13 @@ Output:
         request_text: str,
         ambient_context: str,
         *,
+        schedule_history_context: str = "",
         wardrobe_intent: PhotoWardrobeIntent,
         requested_outfit_category: str = "",
     ) -> float:
         request_context = re.sub(r"\s+", "", str(request_text or "")).lower()
         ambient = re.sub(r"\s+", "", str(ambient_context or "")).lower()
+        schedule_history = re.sub(r"\s+", "", str(schedule_history_context or "")).lower()
         note = re.sub(r"\s+", "", str(candidate.get("note") or "")).lower()
         kind = candidate.get("kind")
         score = 2.0 if kind == "persona" else (0.5 if kind == "recent_sent_photo" else 1.0)
@@ -11476,6 +11529,7 @@ Output:
         for name, words in categories:
             request_hit = any(word in request_context for word in words)
             ambient_hit = any(word in ambient for word in words)
+            history_hit = any(word in schedule_history for word in words)
             note_hit = any(word in note for word in words)
             if (request_hit or ambient_hit) and candidate.get("kind") == "daily_outfit" and name in {"home", "sleep"}:
                 score -= 20.0
@@ -11484,6 +11538,8 @@ Output:
                     score += 12.0
                 if ambient_hit:
                     score += 6.0
+                if history_hit:
+                    score += 2.0
         candidate_category = str(candidate.get("outfit_category") or "").strip().lower()
         outfit_bearing = "outfit" in set(candidate.get("reference_roles") or ())
         if not outfit_bearing:
@@ -11522,6 +11578,8 @@ Output:
             score += 10.0
         if structured_scenes & scene_categories(ambient):
             score += 4.0
+        if structured_scenes & scene_categories(schedule_history):
+            score += 2.0
         structured_times = {
             str(value or "").strip().lower()
             for value in (candidate.get("time_categories") or [])
@@ -11547,11 +11605,15 @@ Output:
             score += 8.0
         if structured_times & time_categories(ambient):
             score += 3.0
+        if structured_times & time_categories(schedule_history):
+            score += 1.0
         for token in re.split(r"[，,。；;、/|：:\s]+", note):
             if len(token) >= 2 and token in request_context:
                 score += min(6.0, float(len(token)))
             elif len(token) >= 2 and token in ambient:
                 score += min(3.0, float(len(token)) / 2.0)
+            elif len(token) >= 2 and token in schedule_history:
+                score += min(1.0, float(len(token)) / 4.0)
         return score
 
     async def _select_photo_reference_candidate_async(
@@ -11561,6 +11623,7 @@ Output:
         allow_daily_outfit: bool = True,
         request_text: str = "",
         ambient_context: str = "",
+        schedule_history_context: str = "",
         selection_context: str = "",
         continuity_key: str = "",
         wardrobe_intent: PhotoWardrobeIntent | None = None,
@@ -11609,6 +11672,7 @@ Output:
                     item,
                     request_text,
                     ambient_context,
+                    schedule_history_context=schedule_history_context,
                     wardrobe_intent=wardrobe_intent,
                     requested_outfit_category=requested_category,
                 ),
@@ -11655,7 +11719,7 @@ Output:
             for item in candidates
         )
         needs_model_choice = len(candidates) > 1 or bool(recent_candidate) or specialized_candidate
-        if (request_text or ambient_context) and needs_model_choice and callable(llm_call):
+        if (request_text or ambient_context or schedule_history_context) and needs_model_choice and callable(llm_call):
             selection_reason = "model_invalid_response"
             options = "\n".join(
                 f"{index}. id={item['id']}；职责={','.join(item.get('reference_roles') or []) or 'identity'}；"
@@ -11672,6 +11736,7 @@ Output:
 明确处于家里、卧室、睡前或刚起床时，优先在适用的居家服/睡衣参考中选择；只有明确外出、通勤、上学、逛街或展示今日穿搭时才选今日穿搭。
 当前要求明确否定某类服装时，不得选择以该服装为职责的参考图；即使它是唯一候选，也应输出 0。普通换装或自定义衣服没有匹配参考时，可选身份图或输出 0，不要让旧衣服反向覆盖新要求。
 用户原始要求高于环境上下文；两者冲突时必须按用户原始要求选图，不能让日程或位置覆盖用户明确要求。
+当天已发生日程只可作为较弱的经历、服装和连续性线索，不代表当前位置或当前活动。不得用历史中的旧地点覆盖当前环境；用户原始要求和当前环境始终优先于历史日程。
 不要仅凭疲惫、揉眼睛、电脑桌等间接描述猜测地点或服装；场景不明确时保持保守，不要虚构居家或外出状态。
 候选 id=recent_sent_photo 是同一会话刚刚已发送的上一张成图。若用户是在自然续拍，主要只要求改变动作、表情、视线、拍摄角度或近似构图，应优先选择它来保持人物、服装和环境连续；若用户明确换人物、换装、换地点、换时间、换整体场景或另起主题，则选择更合适的其他参考图。只有所有候选都不适合新画面时才输出 0。
 只输出候选编号，不要解释。
@@ -11681,6 +11746,9 @@ Output:
 
 【环境上下文】
 {_single_line(ambient_context, 800) or "无"}
+
+【当天已发生日程】
+{_single_line(schedule_history_context, 1200) or "无"}
 
 【候选参考图】
 {options}{none_option}
@@ -11738,7 +11806,7 @@ Output:
         elif len(candidates) == 1 and not recent_candidate and not specialized_candidate:
             selection_source = "single_candidate"
             selection_reason = "only_one_candidate"
-        elif not (request_text or ambient_context):
+        elif not (request_text or ambient_context or schedule_history_context):
             selection_reason = "empty_selection_context"
         elif not callable(llm_call):
             selection_reason = "model_unavailable"
@@ -11791,6 +11859,8 @@ Output:
                 "model_reply": model_reply,
                 "selection_source": selection_source,
                 "selection_reason": selection_reason,
+                "schedule_history_context": _single_line(schedule_history_context, 800),
+                "schedule_history_used": bool(str(schedule_history_context or "").strip()),
             },
         )
         return self._normalize_photo_reference_candidate_metadata(selected) if isinstance(selected, dict) else {}
@@ -11872,6 +11942,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         allow_daily_outfit: bool = True,
         request_text: str = "",
         ambient_context: str = "",
+        schedule_history_context: str = "",
         continuity_key: str = "",
         explicit_reference_paths: Any = (),
         require_existing_paths: bool = False,
@@ -11939,6 +12010,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
                     allow_daily_outfit=allow_daily_outfit,
                     request_text=request_text,
                     ambient_context=ambient_context,
+                    schedule_history_context=schedule_history_context,
                     continuity_key=continuity_key,
                     wardrobe_intent=wardrobe_intent,
                     trace_id=trace_id,

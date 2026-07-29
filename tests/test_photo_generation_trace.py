@@ -222,6 +222,7 @@ class PhotoGenerationTraceTests(unittest.TestCase):
                     "selfie",
                     request_text="take a selfie after shower in bedroom sleepwear",
                     ambient_context="home bedroom at night after shower",
+                    schedule_history_context="08:00-09:00｜已完成｜在学校上课",
                     trace_id="trace-selection",
                 )
             )
@@ -233,6 +234,8 @@ class PhotoGenerationTraceTests(unittest.TestCase):
             self.assertEqual(event["stage"], "reference_candidates")
             self.assertEqual(event["data"]["selection_source"], "model")
             self.assertEqual(event["data"]["selection_reason"], "valid_candidate_number")
+            self.assertTrue(event["data"]["schedule_history_used"])
+            self.assertIn("在学校上课", event["data"]["schedule_history_context"])
             self.assertEqual(candidates[0]["outfit_category"], "sleepwear")
             self.assertEqual(candidates[0]["scene_categories"], ["home", "bedroom"])
             self.assertEqual(candidates[0]["time_categories"], ["night", "bedtime"])

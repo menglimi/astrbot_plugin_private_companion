@@ -125,6 +125,75 @@ class SceneContextMixin:
                 runtime_status = ""
         return current_item, schedule_text, runtime_status
 
+    def _scene_context_schedule_history(
+        self,
+        plan: dict[str, Any],
+        *,
+        captured: datetime,
+    ) -> list[dict[str, str]]:
+        """Return today's started schedule items without treating cancelled plans as facts."""
+
+        today = captured.strftime("%Y-%m-%d")
+        if _single_line(plan.get("date"), 20) != today:
+            return []
+        items = plan.get("items")
+        if not isinstance(items, list):
+            return []
+        starts_getter = getattr(self, "_normalized_plan_item_starts", None)
+        end_getter = getattr(self, "_plan_item_end_minutes", None)
+        status_getter = getattr(self, "_plan_item_runtime_status", None)
+        lifecycle_normalizer = getattr(self, "_normalize_schedule_lifecycle_status", None)
+        time_formatter = getattr(self, "_minutes_to_hhmm", None)
+        if not all(callable(item) for item in (starts_getter, end_getter, status_getter, lifecycle_normalizer, time_formatter)):
+            return []
+
+        try:
+            starts = starts_getter(items)
+        except Exception:
+            return []
+        now_minutes = captured.hour * 60 + captured.minute
+        started_items: list[tuple[int, int, dict[str, Any]]] = []
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            start = starts[index] if index < len(starts) else None
+            if start is None or int(start) > now_minutes:
+                continue
+            started_items.append((int(start), index, item))
+
+        history: list[dict[str, str]] = []
+        for start, index, item in sorted(started_items, key=lambda value: (value[0], value[1])):
+            explicit_status = lifecycle_normalizer(item.get("lifecycle_status"))
+            if explicit_status == "cancelled":
+                continue
+            try:
+                runtime_status = status_getter(plan, item, index)
+            except Exception:
+                runtime_status = ""
+            status = "changed" if explicit_status == "changed" else runtime_status
+            if status not in {"active", "completed", "changed"}:
+                continue
+            next_start = next(
+                (value for value in starts[index + 1 :] if value is not None),
+                None,
+            )
+            try:
+                end = end_getter(start, item, next_start=next_start)
+            except Exception:
+                end = start
+            history.append(
+                {
+                    "time": _single_line(time_formatter(start), 12),
+                    "end": _single_line(time_formatter(int(end)), 12),
+                    "status": status,
+                    "activity": _single_line(item.get("activity"), 160),
+                    "mood": _single_line(item.get("mood"), 32),
+                }
+            )
+            if len(history) >= 24:
+                break
+        return history
+
     def _scene_context_weather_alert_snapshot(self, data: dict[str, Any]) -> dict[str, Any]:
         """Read the already-fetched alert cache without doing network I/O."""
 
@@ -253,6 +322,7 @@ class SceneContextMixin:
         plan = data.get("daily_plan")
         plan = plan if isinstance(plan, dict) else {}
         current_item, schedule_text, runtime_status = self._scene_context_current_schedule(plan)
+        schedule_history = self._scene_context_schedule_history(plan, captured=captured)
 
         location = ""
         location_getter = getattr(self, "_current_location_state_text", None)
@@ -391,6 +461,7 @@ class SceneContextMixin:
                 "mood": _single_line(current_item.get("mood"), 32),
                 "message_seed": _single_line(current_item.get("message_seed"), 160),
                 "text": schedule_text,
+                "history": schedule_history,
             },
             "location": {
                 "raw": location,
