@@ -199,6 +199,34 @@ class _ToolEvent:
 
 
 class PhotoReferenceOrderingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_llm_selfie_request_completes_generation_and_delivery(self) -> None:
+        user_message = "来张自拍"
+        llm_tool_call = {
+            "prompt": "拍一张自拍",
+            "kind": "selfie",
+            "caption": "给你，刚拍的。",
+            "send": True,
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "generated.png"
+            image_path.write_bytes(b"simulated-png")
+            harness = _ToolPhotoHarness(str(image_path))
+
+            payload = await harness._pc_generate_photo_impl(
+                _ToolEvent(),
+                **llm_tool_call,
+            )
+
+        result = __import__("json").loads(payload)
+        self.assertEqual(user_message, "来张自拍")
+        self.assertEqual(harness.generation_kwargs["request_text"], "拍一张自拍")
+        self.assertEqual(harness.generation_kwargs["workflow_kind"], "selfie")
+        self.assertEqual(harness.delivered_caption, "给你，刚拍的。")
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(result["generated"])
+        self.assertTrue(result["sent"])
+        self.assertEqual(result["delivery"], "test")
+
     async def test_user_request_outweighs_conflicting_ambient_context(self) -> None:
         sleepwear = _candidate(
             "sleepwear-bedroom",

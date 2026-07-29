@@ -18,6 +18,7 @@ import random
 import re
 import shutil
 import sys
+import threading
 import time
 import unicodedata
 import uuid
@@ -32,6 +33,8 @@ from types import SimpleNamespace
 from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 from xml.etree import ElementTree as ET
+
+_PHOTO_GENERATION_TRACE_FILE_LOCK = threading.Lock()
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
@@ -8396,6 +8399,138 @@ Output:
             f"tool_name={_single_line(getattr(self, 'custom_photo_tool_name', ''), 80) or '-'}"
         )
 
+    def _photo_generation_trace_max_bytes(self) -> int:
+        max_kb = _safe_int(
+            getattr(self, "photo_generation_trace_max_size_kb", 2048),
+            2048,
+        )
+        return max(0, min(102400, max_kb)) * 1024
+
+    def _photo_generation_trace_backup_count(self) -> int:
+        return max(
+            0,
+            min(
+                20,
+                _safe_int(getattr(self, "photo_generation_trace_backup_count", 5), 5),
+            ),
+        )
+
+    def _photo_generation_trace_file_path(self) -> Path:
+        return Path(self.data_dir) / "photo_generation_trace.txt"
+
+    def _rotate_photo_generation_trace_files(self, path: Path) -> None:
+        backup_count = self._photo_generation_trace_backup_count()
+        if backup_count <= 0:
+            path.unlink(missing_ok=True)
+            return
+        for index in range(backup_count, 0, -1):
+            source = path if index == 1 else path.with_name(
+                f"{path.stem}.{index - 1}{path.suffix}"
+            )
+            target = path.with_name(f"{path.stem}.{index}{path.suffix}")
+            if source.exists():
+                os.replace(source, target)
+
+    def _sanitize_photo_generation_trace_value(
+        self,
+        value: Any,
+        *,
+        key: str = "",
+        depth: int = 0,
+    ) -> Any:
+        if depth > 5:
+            return "[truncated]"
+        normalized_key = str(key or "").strip().lower()
+        if any(
+            token in normalized_key
+            for token in ("api_key", "apikey", "authorization", "access_token", "secret", "password")
+        ):
+            return "***"
+        if isinstance(value, dict):
+            return {
+                _single_line(item_key, 80): self._sanitize_photo_generation_trace_value(
+                    item_value,
+                    key=str(item_key),
+                    depth=depth + 1,
+                )
+                for item_key, item_value in list(value.items())[:48]
+                if _single_line(item_key, 80)
+            }
+        if isinstance(value, (list, tuple, set)):
+            return [
+                self._sanitize_photo_generation_trace_value(item, depth=depth + 1)
+                for item in list(value)[:48]
+            ]
+        if isinstance(value, str):
+            redacted = _redact_outbound_secrets(value, self)
+            if normalized_key.endswith("path") or normalized_key.endswith("_path"):
+                return _path_text(redacted, 1000)
+            return _single_line(redacted, 1200)
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        return _single_line(value, 500)
+
+    def _append_photo_generation_trace_event(
+        self,
+        trace_id: str,
+        stage: str,
+        *,
+        status: str = "ok",
+        data: dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> None:
+        try:
+            max_bytes = self._photo_generation_trace_max_bytes()
+            if max_bytes <= 0:
+                return
+            normalized_trace = _single_line(trace_id, 80)
+            normalized_stage = _single_line(stage, 80)
+            if not normalized_trace or not normalized_stage:
+                return
+            now = _now_ts()
+            states = getattr(self, "_photo_generation_trace_states", None)
+            if not isinstance(states, dict):
+                states = {}
+                self._photo_generation_trace_states = states
+            if normalized_trace not in states and len(states) >= 128:
+                states.pop(next(iter(states)), None)
+            state = states.setdefault(
+                normalized_trace,
+                {"started_at": now, "seq": 0, "context": {}},
+            )
+            state["seq"] = _safe_int(state.get("seq"), 0, 0) + 1
+            if context:
+                state["context"].update(self._sanitize_photo_generation_trace_value(context))
+            payload = {
+                "schema_version": 1,
+                "ts": now,
+                "time": datetime.fromtimestamp(now).astimezone().isoformat(timespec="milliseconds"),
+                "trace": normalized_trace,
+                "seq": state["seq"],
+                "stage": normalized_stage,
+                "status": _single_line(status, 30) or "ok",
+                "elapsed_ms": max(0, int((now - _safe_float(state.get("started_at"), now, 0.0)) * 1000)),
+                "context": dict(state["context"]),
+                "data": self._sanitize_photo_generation_trace_value(data or {}),
+            }
+            line = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+            encoded_size = len(line.encode("utf-8"))
+            path = self._photo_generation_trace_file_path()
+            with _PHOTO_GENERATION_TRACE_FILE_LOCK:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                current_size = path.stat().st_size if path.exists() else 0
+                if current_size and current_size + encoded_size > max_bytes:
+                    self._rotate_photo_generation_trace_files(path)
+                with path.open("a", encoding="utf-8", newline="\n") as handle:
+                    handle.write(line)
+            if normalized_stage in {"delivery_completed", "delivery_failed", "failed"}:
+                states.pop(normalized_trace, None)
+        except Exception as exc:
+            logger.debug(
+                "[PrivateCompanion] 记录生图可观测 trace 失败: %s",
+                _single_line(exc, 120),
+            )
+
     def _record_recent_photo_generation(
         self,
         *,
@@ -9776,6 +9911,21 @@ Output:
         trace_id = self._photo_generation_trace_id(session_key, workflow_kind)
         original_prompt_text = str(prompt_text or "").strip()
         request_text = str(request_text or original_prompt_text).strip()
+        self._append_photo_generation_trace_event(
+            trace_id,
+            "request_received",
+            data={
+                "request_text": request_text,
+                "prompt_text": original_prompt_text,
+                "image_size": image_size,
+            },
+            context={
+                "session": session_key,
+                "continuity_key": continuity_key,
+                "workflow_kind": workflow_kind,
+                "request_text": request_text,
+            },
+        )
         reference_image_path = _path_text(reference_image_path, 1000)
         explicit_reference_paths: list[str] = []
         raw_reference_paths = reference_image_paths
@@ -9797,6 +9947,17 @@ Output:
             request_text,
             has_explicit_reference=bool(explicit_reference_paths),
             workflow_kind=workflow_kind,
+        )
+        self._append_photo_generation_trace_event(
+            trace_id,
+            "reference_intent_analyzed",
+            data={
+                "requested_roles": list(reference_intent.requested_roles),
+                "excluded_roles": list(reference_intent.excluded_roles),
+                "continuity_mode": reference_intent.continuity_mode,
+                "confidence": reference_intent.confidence,
+                "source": reference_intent.source,
+            },
         )
         base_prompt = self._apply_photo_generation_prompt_format(original_prompt_text)
         current_user_request = wardrobe_intent.positive_text
@@ -9827,6 +9988,27 @@ Output:
             continuity_key=continuity_key,
             explicit_reference_paths=explicit_reference_paths,
             require_existing_paths=True,
+            trace_id=trace_id,
+        )
+        self._append_photo_generation_trace_event(
+            trace_id,
+            "reference_plan_built",
+            data={
+                "primary_reference_id": reference_plan.primary_reference_id,
+                "selection_reason": reference_plan.selection_reason,
+                "fallback_reason": reference_plan.fallback_reason,
+                "bindings": [
+                    {
+                        "reference_id": binding.reference_id,
+                        "path": binding.path,
+                        "roles": list(binding.roles),
+                        "priority": binding.priority,
+                        "preserve": list(binding.preserve),
+                        "ignore": list(binding.ignore),
+                    }
+                    for binding in reference_plan.bindings
+                ],
+            },
         )
         backend_reference_capacity = self._photo_reference_backend_max_images(
             workflow_kind,
@@ -9835,6 +10017,15 @@ Output:
         submitted_bindings, plan_text_fallback = project_reference_plan_for_backend(
             reference_plan,
             max_images=backend_reference_capacity,
+        )
+        self._append_photo_generation_trace_event(
+            trace_id,
+            "reference_plan_projected",
+            data={
+                "backend_capacity": backend_reference_capacity,
+                "submitted_reference_ids": [binding.reference_id for binding in submitted_bindings],
+                "text_fallback": plan_text_fallback,
+            },
         )
         reference_candidate: dict[str, Any] = {}
         reference_image_path = ""
@@ -9916,6 +10107,11 @@ Output:
             workflow_default_scene_preset=workflow_default_scene_preset,
             base_prompt=base_prompt,
             available_presets=self._photo_generation_scene_presets().keys(),
+        )
+        self._append_photo_generation_trace_event(
+            trace_id,
+            "wardrobe_resolved",
+            data=wardrobe.as_dict(),
         )
         base_prompt = wardrobe.base_prompt
         scene_context_after = wardrobe.scene_context
@@ -10131,6 +10327,20 @@ Output:
             sanitizer_version=resolved_context.sanitizer_version,
             suggested_scene_preset=suggested_scene_preset,
         )
+        self._append_photo_generation_trace_event(
+            trace_id,
+            "prompt_composed",
+            data={
+                "prompt": prompt_text,
+                "prompt_hash": prompt_hash,
+                "prompt_path": prompt_path,
+                "sections": prompt_sections_for_log,
+                "conflicts": conflicts,
+                "removed_conflicts": removed_conflicts,
+                "residual_conflicts": residual_conflicts,
+                "sanitizer_version": resolved_context.sanitizer_version,
+            },
+        )
         if scene_context_after:
             logger.info(
                 "[PrivateCompanion] 自拍生图已加入当前日程地点约束: trace=%s session=%s hint=%s reference=%s",
@@ -10140,6 +10350,15 @@ Output:
                 bool(reference_image_path),
             )
         preferred = self.photo_generation_backend
+        self._append_photo_generation_trace_event(
+            trace_id,
+            "backend_selected",
+            data={
+                "preferred": preferred,
+                "reference_count": len(reference_image_paths),
+                "image_size": image_size,
+            },
+        )
         logger.info(
             "[PrivateCompanion] 生图开始: trace=%s session=%s kind=%s presets=%s prompt_chars=%s prompt_hash=%s prompt_debug=%s "
             "reference=%s reference_exists=%s reference_id=%s reference_kind=%s reference_roles=%s "
@@ -10216,6 +10435,19 @@ Output:
                 and reference_exists
                 and reference_submitted
             )
+            self._append_photo_generation_trace_event(
+                trace_id,
+                "output_validated",
+                status="ok" if ok else "error",
+                data={
+                    "backend": backend,
+                    "image_path": image_path,
+                    "note": note,
+                    "output_exists": output_exists,
+                    "reference_submitted": reference_submitted,
+                    "reference_used": reference_used,
+                },
+            )
             self._record_recent_photo_generation(
                 trace_id=trace_id,
                 session_key=session_key,
@@ -10249,6 +10481,20 @@ Output:
                 removed_conflict_details=removed_conflict_details,
                 residual_conflict_details=residual_conflict_details,
                 suggested_scene_preset=suggested_scene_preset,
+            )
+            self._append_photo_generation_trace_event(
+                trace_id,
+                "completed" if ok else "failed",
+                status="ok" if ok else "error",
+                data={
+                    "backend": backend,
+                    "image_path": image_path,
+                    "note": note,
+                    "elapsed_ms": elapsed_ms,
+                    "reference_used": reference_used,
+                    "output_exists": output_exists,
+                },
+                context={"backend": backend},
             )
             logger.info(
                 "[PrivateCompanion] 生图结束: trace=%s ok=%s backend=%s elapsed=%sms reference_used=%s note=%s %s",
@@ -11260,6 +11506,7 @@ Output:
         selection_context: str = "",
         continuity_key: str = "",
         wardrobe_intent: PhotoWardrobeIntent | None = None,
+        trace_id: str = "",
     ) -> dict[str, Any]:
         if not bool(getattr(self, "enable_photo_reference_image", False)):
             return {}
@@ -11462,6 +11709,32 @@ Output:
             _single_line(selected.get("note"), 160) if isinstance(selected, dict) else "-",
             len(candidates),
         )
+        self._append_photo_generation_trace_event(
+            trace_id,
+            "reference_candidates",
+            data={
+                "candidates": [
+                    {
+                        "id": item.get("id"),
+                        "kind": item.get("kind"),
+                        "path": item.get("path"),
+                        "roles": list(item.get("reference_roles") or ()),
+                        "outfit_category": item.get("outfit_category"),
+                        "outfit_lock_default": bool(item.get("outfit_lock_default")),
+                        "scene_categories": list(item.get("scene_categories") or ()),
+                        "time_categories": list(item.get("time_categories") or ()),
+                        "metadata_source": item.get("metadata_source"),
+                        "score": score,
+                    }
+                    for item, score in scored_candidates
+                ],
+                "rule_fallback_id": fallback.get("id") if isinstance(fallback, dict) else "",
+                "selected_id": selected.get("id") if isinstance(selected, dict) else "",
+                "model_reply": model_reply,
+                "selection_source": selection_source,
+                "selection_reason": selection_reason,
+            },
+        )
         return self._normalize_photo_reference_candidate_metadata(selected) if isinstance(selected, dict) else {}
 
     async def _analyze_photo_reference_intent_async(
@@ -11544,6 +11817,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         continuity_key: str = "",
         explicit_reference_paths: Any = (),
         require_existing_paths: bool = False,
+        trace_id: str = "",
     ) -> PhotoReferencePlan:
         if reference_intent.continuity_mode == "new_topic":
             return build_photo_reference_plan(reference_intent, ())
@@ -11609,6 +11883,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
                     ambient_context=ambient_context,
                     continuity_key=continuity_key,
                     wardrobe_intent=wardrobe_intent,
+                    trace_id=trace_id,
                 )
             if (
                 selected.get("kind") == "recent_sent_photo"

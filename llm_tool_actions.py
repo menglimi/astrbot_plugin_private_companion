@@ -2019,6 +2019,7 @@ class LlmToolActionsMixin:
         if hasattr(generation_output, "as_legacy_tuple"):
             backend_name, image_path, note = generation_output.as_legacy_tuple()
             generation_metadata = {
+                "trace_id": _single_line(getattr(generation_output, "trace_id", ""), 80),
                 "reference_used": bool(getattr(generation_output, "reference_used", False)),
                 "reference_path": _path_text(getattr(generation_output, "reference_selected_path", ""), 1000),
                 "reference_id": _single_line(getattr(generation_output, "reference_id", ""), 60),
@@ -2093,6 +2094,7 @@ class LlmToolActionsMixin:
                         self._save_data_sync()
         sent = False
         delivery: dict[str, Any] = {}
+        generation_trace_id = _single_line(generation_metadata.get("trace_id"), 80)
         if ok and send_image:
             message = visible_caption or ("" if intent_kind == "sticker" else "生成好了。")
             fallback_message = _single_line(
@@ -2101,6 +2103,13 @@ class LlmToolActionsMixin:
             )
             if fallback_message:
                 message = f"{message}\n{fallback_message}".strip()
+            trace_writer = getattr(self, "_append_photo_generation_trace_event", None)
+            if callable(trace_writer):
+                trace_writer(
+                    generation_trace_id,
+                    "delivery_started",
+                    data={"caption": message, "image_path": image_path},
+                )
             try:
                 delivery = await self._deliver_generated_image_to_event(
                     event,
@@ -2119,6 +2128,18 @@ class LlmToolActionsMixin:
                     _single_line(exc, 180),
                 )
             sent = bool(delivery.get("sent"))
+            if callable(trace_writer):
+                trace_writer(
+                    generation_trace_id,
+                    "delivery_completed" if sent else "delivery_failed",
+                    status="ok" if sent else "error",
+                    data={
+                        "sent": sent,
+                        "destination": delivery.get("destination"),
+                        "message": delivery.get("message"),
+                        "review_label": delivery.get("review_label"),
+                    },
+                )
             if sent:
                 try:
                     setattr(event, "_private_companion_photo_tool_sent", True)

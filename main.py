@@ -1886,6 +1886,20 @@ class PrivateCompanionPlugin(
         if self.natural_language_photo_generation_mode not in {"tool_first", "rule_fast", "off"}:
             self.natural_language_photo_generation_mode = "tool_first"
         self.command_photo_generation_max_daily = self._cfg_int(c, "command_photo_generation_max_daily", 0, 0, 100)
+        self.photo_generation_trace_max_size_kb = self._cfg_int(
+            c,
+            "photo_generation_trace_max_size_kb",
+            2048,
+            0,
+            102400,
+        )
+        self.photo_generation_trace_backup_count = self._cfg_int(
+            c,
+            "photo_generation_trace_backup_count",
+            5,
+            0,
+            20,
+        )
         self.natural_language_photo_generation_max_daily = self._cfg_int(c, "natural_language_photo_generation_max_daily", 2, 0, 100)
         raw_natural_photo_extra = _flat_get(c, "natural_language_photo_extra_prompt", None)
         self.natural_language_photo_extra_prompt = (

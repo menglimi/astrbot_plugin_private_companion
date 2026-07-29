@@ -9259,6 +9259,34 @@
           "enable_photo_text_action": true
         }
       },
+      "photo_generation_trace_max_size_kb": {
+        "description": "生图日志单文件大小（KB）",
+        "type": "int",
+        "hint": "完整生图事件以逐行 JSON 写入插件持久化目录的 photo_generation_trace.txt；达到该大小后自动轮转。0 表示关闭日志。",
+        "slider": {
+          "min": 0,
+          "max": 102400,
+          "step": 512
+        },
+        "default": 2048,
+        "condition": {
+          "enable_photo_text_action": true
+        }
+      },
+      "photo_generation_trace_backup_count": {
+        "description": "生图日志轮转备份数",
+        "type": "int",
+        "hint": "保留 photo_generation_trace.1.txt 等历史日志的数量；0 表示轮转时不保留旧文件。",
+        "slider": {
+          "min": 0,
+          "max": 20,
+          "step": 1
+        },
+        "default": 5,
+        "condition": {
+          "enable_photo_text_action": true
+        }
+      },
       "natural_language_photo_generation_max_daily": {
         "description": "规则快判生图/改图每日上限",
         "type": "int",
