@@ -9268,7 +9268,7 @@
           "max": 102400,
           "step": 512
         },
-        "default": 2048,
+        "default": 10240,
         "condition": {
           "enable_photo_text_action": true
         }

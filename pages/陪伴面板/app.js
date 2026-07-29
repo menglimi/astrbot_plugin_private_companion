@@ -1483,6 +1483,8 @@ const safeFeatureKeys = [
 ];
 
 const configLabels = {
+  photo_generation_trace_max_size_kb: "生图日志单文件大小（KB）",
+  photo_generation_trace_backup_count: "生图日志轮转备份数",
   enabled_user_count: "启用私聊对象",
   user_count: "私聊对象总数",
   require_opt_in: "是否需要私聊确认",
@@ -2692,7 +2694,7 @@ const featureSettingGroups = {
   enable_qzone_life_publish: ["qzone_life_publish_min_interval_hours", "qzone_life_publish_probability", "qzone_publish_style_prompt"],
   enable_qzone_generated_image_publish: ["qzone_generated_image_probability", "qzone_publish_image_style_prompt"],
   enable_qzone_comment_inbox: ["qzone_comment_inbox_interval_minutes", "qzone_comment_inbox_recent_posts", "qzone_comment_inbox_max_replies_per_tick"],
-  enable_photo_text_action: ["photo_generation_backend", "photo_action_max_daily", "proactive_photo_text_probability", "custom_photo_tool_name", "custom_photo_tool_prompt_param", "custom_photo_tool_kind_param", "custom_photo_tool_reference_param", "custom_photo_tool_extra_params", "COMFYUI_TEXT2IMG_WORKFLOW_NAME", "COMFYUI_SELFIE_WORKFLOW_NAME", "external_image_download_proxy", "external_image_download_use_environment_proxy", "enable_photo_reference_image", "photo_reference_catalog", "enable_group_nsfw_private_fallback", "group_nsfw_image_review_timeout_seconds", "enable_daily_outfit_photo", "enable_creative_cover_generation", "daily_outfit_photo_prompt", "daily_outfit_rotation_days", "natural_language_photo_generation_mode", "command_photo_generation_max_daily", "enable_natural_language_photo_generation", "natural_language_photo_generation_max_daily", "natural_language_photo_extra_prompt", "comfyui_photo_wait_seconds", "enable_local_photo_load_guard", "local_photo_cpu_busy_percent", "local_photo_memory_busy_percent", "local_photo_defer_minutes", "photo_generation_prompt_format", "photo_generation_style", "photo_generation_style_custom_prompt", "photo_generation_fixed_prompt", "photo_generation_scene_presets"],
+  enable_photo_text_action: ["photo_generation_backend", "photo_action_max_daily", "proactive_photo_text_probability", "custom_photo_tool_name", "custom_photo_tool_prompt_param", "custom_photo_tool_kind_param", "custom_photo_tool_reference_param", "custom_photo_tool_extra_params", "COMFYUI_TEXT2IMG_WORKFLOW_NAME", "COMFYUI_SELFIE_WORKFLOW_NAME", "external_image_download_proxy", "external_image_download_use_environment_proxy", "enable_photo_reference_image", "photo_reference_catalog", "enable_group_nsfw_private_fallback", "group_nsfw_image_review_timeout_seconds", "enable_daily_outfit_photo", "enable_creative_cover_generation", "daily_outfit_photo_prompt", "daily_outfit_rotation_days", "natural_language_photo_generation_mode", "command_photo_generation_max_daily", "photo_generation_trace_max_size_kb", "photo_generation_trace_backup_count", "enable_natural_language_photo_generation", "natural_language_photo_generation_max_daily", "natural_language_photo_extra_prompt", "comfyui_photo_wait_seconds", "enable_local_photo_load_guard", "local_photo_cpu_busy_percent", "local_photo_memory_busy_percent", "local_photo_defer_minutes", "photo_generation_prompt_format", "photo_generation_style", "photo_generation_style_custom_prompt", "photo_generation_fixed_prompt", "photo_generation_scene_presets"],
   enable_screen_glance_action: ["screen_peek_max_daily", "screen_peek_cooldown_minutes", "enable_goodnight_screen_check", "goodnight_screen_check_delay_minutes", "enable_unanswered_screen_peek_followup", "unanswered_screen_peek_after_minutes", "unanswered_screen_peek_cooldown_minutes"],
   enable_poke_action: ["poke_action_max_times", "poke_action_cooldown_minutes"],
   enable_voice_action: ["voice_action_max_chars"],
@@ -3264,6 +3266,11 @@ const featureSettingSections = {
       keys: ["command_photo_generation_max_daily"],
     },
     {
+      title: "生图可观测日志",
+      note: "控制生图事件日志文件大小与轮转备份数量；单文件大小设为 0 可关闭日志。",
+      keys: ["photo_generation_trace_max_size_kb", "photo_generation_trace_backup_count"],
+    },
+    {
       title: "主动发送频率",
       note: "只控制插件主动消息升级为带图的频率，不限制用户明确要求的生图。",
       keys: ["proactive_photo_text_probability", "photo_action_max_daily"],
@@ -3520,6 +3527,8 @@ const featureSettingTypes = {
   memory_companion_context_max_chars: { type: "number", min: 240, max: 1800, step: 60 },
   natural_language_photo_generation_max_daily: { type: "number", min: 0, max: 100, step: 1 },
   command_photo_generation_max_daily: { type: "number", min: 0, max: 100, step: 1 },
+  photo_generation_trace_max_size_kb: { type: "number", min: 0, max: 102400, step: 512 },
+  photo_generation_trace_backup_count: { type: "number", min: 0, max: 20, step: 1 },
   private_image_vision_provider_priority: { type: "select", options: [["astrbot_first", "AstrBot 图片转文字优先"], ["plugin_first", "插件识图模型优先"], ["recent_success_first", "近期成功模型优先"]] },
   private_image_vision_custom_prompt: { type: "textarea", rows: 8, maxLength: 12000 },
   private_image_vision_max_chars: { type: "number", min: 300, max: 12000, step: 100 },
@@ -6081,7 +6090,7 @@ const setupGuideAdvancedItems = {
         { key: "photo_generation_backend", type: "select", label: "生图后端", options: [["auto", "自动：在线 API → ComfyUI → SDGen"], ["external", "只用在线图片 API"], ["comfyui", "只用 ComfyUI"], ["sdgen", "只用 SDGen"], ["tool_call", "函数工具（调用其他插件的生图工具）"]], description: "这里仅选择后端；在线 API 凭据和队列统一在“模型配置 → 生图模型”维护。" },
         { key: "natural_language_photo_generation_mode", type: "select", label: "非指令生图处理方式", options: [["tool_first", "工具优先：主链调用 pc_generate_photo"], ["rule_fast", "规则快判：插件前置接管"], ["off", "关闭：不做前置接管"]], description: "注册生图工具后建议用工具优先；只有工具调用不稳定时再用规则快判。" },
         { key: "command_photo_generation_max_daily", type: "number", label: "用户请求每日上限", placeholder: "0（不限量）", min: 0, max: 100, description: "显式陪伴生图指令与主链 pc_generate_photo 工具共用；0 表示不限量。" },
-        { key: "photo_generation_trace_max_size_kb", type: "number", label: "生图日志单文件大小（KB）", placeholder: "2048", min: 0, max: 102400, description: "完整生图事件逐行写入 photo_generation_trace.txt；达到该大小后自动轮转。0 表示关闭日志。" },
+        { key: "photo_generation_trace_max_size_kb", type: "number", label: "生图日志单文件大小（KB）", placeholder: "10240", min: 0, max: 102400, description: "完整生图事件逐行写入 photo_generation_trace.txt；达到该大小后自动轮转。0 表示关闭日志。" },
         { key: "photo_generation_trace_backup_count", type: "number", label: "生图日志轮转备份数", placeholder: "5", min: 0, max: 20, description: "轮转时保留 photo_generation_trace.1.txt 等历史日志的数量。0 表示不保留旧文件。" },
         { key: "enable_natural_language_photo_generation", type: "bool", kind: "setting", label: "允许规则快判生图/改图", description: "开启后，插件会在主链前直接接管高置信图片请求。", showWhen: (draft) => photoSettingVisibleForValues("enable_natural_language_photo_generation", draft) },
         { key: "natural_language_photo_generation_max_daily", type: "number", label: "规则快判每日上限", placeholder: "3", min: 0, showWhen: (draft) => photoSettingVisibleForValues("natural_language_photo_generation_max_daily", draft) },

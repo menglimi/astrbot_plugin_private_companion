@@ -1889,7 +1889,7 @@ class PrivateCompanionPlugin(
         self.photo_generation_trace_max_size_kb = self._cfg_int(
             c,
             "photo_generation_trace_max_size_kb",
-            2048,
+            10240,
             0,
             102400,
         )
