@@ -19574,6 +19574,19 @@ textarea {
   gap: 10px;
 }
 
+.photo-reference-metadata-editor[open] > label,
+.photo-reference-metadata-editor[open] > .photo-reference-field {
+  margin-top: 6px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 14px;
+}
+
+.photo-reference-metadata-editor[open] > summary + .photo-reference-field {
+  margin-top: 0;
+  border-top: 0;
+  padding-top: 0;
+}
+
 .photo-reference-metadata-editor > summary {
   min-width: 0;
   cursor: pointer;

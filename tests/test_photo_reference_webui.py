@@ -4,6 +4,7 @@ import unittest
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 APP_JS = (PLUGIN_ROOT / "pages" / "陪伴面板" / "app.js").read_text(encoding="utf-8")
+APP_CSS = (PLUGIN_ROOT / "pages" / "陪伴面板" / "app.css").read_text(encoding="utf-8")
 INDEX_HTML = (PLUGIN_ROOT / "pages" / "陪伴面板" / "index.html").read_text(encoding="utf-8")
 
 
@@ -49,8 +50,14 @@ class PhotoReferenceWebUiTests(unittest.TestCase):
             with self.subTest(help_text=help_text):
                 self.assertIn(help_text, APP_JS)
 
+    def test_metadata_editor_visually_separates_help_from_the_next_field(self) -> None:
+        self.assertIn('.photo-reference-metadata-editor[open] > label', APP_CSS)
+        self.assertIn('.photo-reference-metadata-editor[open] > .photo-reference-field', APP_CSS)
+        self.assertIn('border-top: 1px solid var(--line-soft)', APP_CSS)
+        self.assertIn('padding-top: 14px', APP_CSS)
+
     def test_metadata_editor_assets_have_a_matching_cache_version(self) -> None:
-        version = "20260729-photo-trace-default-10240"
+        version = "20260729-photo-reference-field-separators"
         self.assertIn(f'app.css?v={version}', INDEX_HTML)
         self.assertIn(f'app.js?v={version}', INDEX_HTML)
 
