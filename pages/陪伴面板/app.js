@@ -1966,6 +1966,8 @@ const configLabels = {
   photo_generation_style_custom_prompt: "自定义风格说明",
   photo_generation_fixed_prompt: "固定附加提示词",
   photo_generation_scene_presets: "生图场景预设",
+  enable_bot_relationship_network: "Bot 关系网",
+  bot_relationship_cards: "关系网角色卡",
   private_reading_min_interval_hours: "阅读最小间隔",
   private_reading_max_photo_count: "页数上限",
   private_reading_share_probability: "主动提起概率",
@@ -2468,11 +2470,13 @@ const configDescriptions = {
   backup_external_image_api_size: "备选在线生图尺寸，例如 1024x1024、768x1344。",
   backup_external_image_api_timeout_seconds: "等待备选在线图片 API 返回结果的最长时间。",
   backup_external_image_api_custom_headers: "可选。每行一个请求头，格式：Key: Value。仅在备选在线图片 API 生效时使用。",
-  photo_generation_prompt_format: "控制所有生图最终提交给后端的提示词形式。传统文生图提示词使用 Positive/Negative prompt 和逗号分隔短语；自然语言描述使用连贯英文句子。只改变提示词组织，不改变后端、参考图或画面风格。",
+  photo_generation_prompt_format: "控制所有生图最终提交给后端的提示词形式。传统文生图提示词使用 Positive/Negative prompt 和逗号分隔短语；自然语言描述使用连贯英文句子；NAI 联动模式按 NovelAI 4/4.5 标签语法（{}/[] 加降权、权重::标签::、负向权重、多角色块、Text: 文字）书写并原样提交给在线 API。若 NAI 联动模式生图效果不理想，请切换回自然语言描述模式。只改变提示词组织，不改变后端、参考图或画面风格。",
   photo_generation_style: "影响主动生图提示词的整体风格倾向，可填 真实、二次元 或 其他。",
   photo_generation_style_custom_prompt: "当风格为“其他”时，把这里作为额外风格要求注入生图提示词。",
   photo_generation_fixed_prompt: "所有生图提交后端前都会追加这段固定提示词，包括主动随手拍、每日穿搭、自然语言文生图和引用/携带图片改图。适合放固定画质、角色细节、安全区或负面约束；留空不追加。",
   photo_generation_scene_presets: "格式参考通用生图插件，一行一个：预设名:提示词。内置已有角色自拍、COS自拍、日常穿搭、镜前穿搭、头像特写、房间日常、可拍画面、表情包场景；普通穿搭默认走日常穿搭，只有明确镜前/对镜/镜子时才走镜前穿搭；自定义同名会覆盖内置。",
+  enable_bot_relationship_network: "开启后可配置 Bot 熟悉的角色卡；主动拍照/生图时会把关系网与人格、收信人、统一情境快照、画面钩子、生图风格、提示词表达方式和内容选择菜单一起注入提示词，由模型自行决定是否让某位角色自然入镜。",
+  bot_relationship_cards: "一行一张角色卡，格式：角色名 || 与Bot的关系 || 角色外貌描述。例如：小林 || 高中同学兼死党 || 齐肩短发，戴黑框眼镜，常穿灰色连帽卫衣。最多保存 16 张；角色入镜时外貌描述会严格写入生图提示词。",
   private_reading_min_interval_hours: "两次私下阅读之间的最小间隔。",
   private_reading_max_photo_count: "只阅读页数不超过该值的素材，避免视觉理解成本过高。",
   private_reading_share_probability: "读完后主动提起阅读体验的概率，按百分比填写。",
@@ -2694,7 +2698,7 @@ const featureSettingGroups = {
   enable_qzone_life_publish: ["qzone_life_publish_min_interval_hours", "qzone_life_publish_probability", "qzone_publish_style_prompt"],
   enable_qzone_generated_image_publish: ["qzone_generated_image_probability", "qzone_publish_image_style_prompt"],
   enable_qzone_comment_inbox: ["qzone_comment_inbox_interval_minutes", "qzone_comment_inbox_recent_posts", "qzone_comment_inbox_max_replies_per_tick"],
-  enable_photo_text_action: ["photo_generation_backend", "photo_action_max_daily", "proactive_photo_text_probability", "custom_photo_tool_name", "custom_photo_tool_prompt_param", "custom_photo_tool_kind_param", "custom_photo_tool_reference_param", "custom_photo_tool_extra_params", "COMFYUI_TEXT2IMG_WORKFLOW_NAME", "COMFYUI_SELFIE_WORKFLOW_NAME", "external_image_download_proxy", "external_image_download_use_environment_proxy", "enable_photo_reference_image", "photo_reference_catalog", "enable_group_nsfw_private_fallback", "group_nsfw_image_review_timeout_seconds", "enable_daily_outfit_photo", "enable_creative_cover_generation", "daily_outfit_photo_prompt", "daily_outfit_rotation_days", "natural_language_photo_generation_mode", "command_photo_generation_max_daily", "photo_generation_trace_max_size_kb", "photo_generation_trace_backup_count", "enable_natural_language_photo_generation", "natural_language_photo_generation_max_daily", "natural_language_photo_extra_prompt", "comfyui_photo_wait_seconds", "enable_local_photo_load_guard", "local_photo_cpu_busy_percent", "local_photo_memory_busy_percent", "local_photo_defer_minutes", "photo_generation_prompt_format", "photo_generation_style", "photo_generation_style_custom_prompt", "photo_generation_fixed_prompt", "photo_generation_scene_presets"],
+  enable_photo_text_action: ["photo_generation_backend", "photo_action_max_daily", "proactive_photo_text_probability", "custom_photo_tool_name", "custom_photo_tool_prompt_param", "custom_photo_tool_kind_param", "custom_photo_tool_reference_param", "custom_photo_tool_extra_params", "COMFYUI_TEXT2IMG_WORKFLOW_NAME", "COMFYUI_SELFIE_WORKFLOW_NAME", "external_image_download_proxy", "external_image_download_use_environment_proxy", "enable_photo_reference_image", "photo_reference_catalog", "enable_group_nsfw_private_fallback", "group_nsfw_image_review_timeout_seconds", "enable_daily_outfit_photo", "enable_creative_cover_generation", "daily_outfit_photo_prompt", "daily_outfit_rotation_days", "natural_language_photo_generation_mode", "command_photo_generation_max_daily", "photo_generation_trace_max_size_kb", "photo_generation_trace_backup_count", "enable_natural_language_photo_generation", "natural_language_photo_generation_max_daily", "natural_language_photo_extra_prompt", "comfyui_photo_wait_seconds", "enable_local_photo_load_guard", "local_photo_cpu_busy_percent", "local_photo_memory_busy_percent", "local_photo_defer_minutes", "photo_generation_prompt_format", "photo_generation_style", "photo_generation_style_custom_prompt", "photo_generation_fixed_prompt", "photo_generation_scene_presets", "enable_bot_relationship_network", "bot_relationship_cards"],
   enable_screen_glance_action: ["screen_peek_max_daily", "screen_peek_cooldown_minutes", "enable_goodnight_screen_check", "goodnight_screen_check_delay_minutes", "enable_unanswered_screen_peek_followup", "unanswered_screen_peek_after_minutes", "unanswered_screen_peek_cooldown_minutes"],
   enable_poke_action: ["poke_action_max_times", "poke_action_cooldown_minutes"],
   enable_voice_action: ["voice_action_max_chars"],
@@ -3315,6 +3319,11 @@ const featureSettingSections = {
       note: "只影响提示词组织，不改变后端配置。",
       keys: ["photo_generation_prompt_format", "photo_generation_style", "photo_generation_style_custom_prompt", "photo_generation_fixed_prompt", "photo_generation_scene_presets"],
     },
+    {
+      title: "Bot 关系网",
+      note: "勾选后可配置角色卡；主动拍照/生图会把角色卡与人格、情境快照、画面钩子一起注入提示词，由模型选择是否让角色入镜。",
+      keys: ["enable_bot_relationship_network", "bot_relationship_cards"],
+    },
   ],
   enable_screen_glance_action: [
     {
@@ -3555,7 +3564,7 @@ const featureSettingTypes = {
   WEB_EXPLORATION_API_KEY: { type: "password" },
   balance_api_key: { type: "password" },
   balance_api_custom_headers: { type: "textarea" },
-  photo_generation_prompt_format: { type: "select", options: [["traditional", "传统文生图提示词（标签/短语）"], ["natural_language", "自然语言描述"]] },
+  photo_generation_prompt_format: { type: "select", options: [["traditional", "传统文生图提示词（标签/短语）"], ["natural_language", "自然语言描述"], ["nai", "NAI 联动模式（NovelAI 标签语法）"]] },
   photo_generation_style: { type: "select", options: [["真实", "真实"], ["二次元", "二次元"], ["其他", "其他"]] },
   segmented_proactive_scope: { type: "select", options: [["proactive_only", "仅插件主动"], ["all_llm", "全部 LLM 纯文本回复"]] },
   segmented_proactive_send_as_forward: { type: "checkbox" },
@@ -3594,6 +3603,8 @@ const featureSettingTypes = {
   photo_generation_fixed_prompt: { type: "textarea" },
   natural_language_photo_extra_prompt: { type: "textarea" },
   photo_generation_scene_presets: { type: "textarea" },
+  enable_bot_relationship_network: { type: "checkbox" },
+  bot_relationship_cards: { type: "textarea" },
   photo_reference_catalog: { type: "textarea" },
   segmented_proactive_regex: { type: "textarea" },
   segmented_proactive_split_words: { type: "textarea" },
@@ -3979,6 +3990,129 @@ function collectPhotoApiEndpointEditor(root = document) {
   const hidden = editor.querySelector('[data-feature-param="external_image_api_endpoints"]');
   if (hidden) hidden.value = photoApiEndpointEditorHiddenValue(endpoints);
   return endpoints;
+}
+
+const RELATIONSHIP_CARD_MAX = 16;
+
+function parseRelationshipCards(raw) {
+  const lines = Array.isArray(raw)
+    ? raw.map((item) => String(item ?? "").trim()).filter(Boolean)
+    : String(raw ?? "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  return lines.slice(0, RELATIONSHIP_CARD_MAX).map((line) => {
+    const parts = line.split(/\s*(?:\|\||｜｜)\s*/);
+    return {
+      name: String(parts[0] || "").trim(),
+      relation: String(parts[1] || "").trim(),
+      appearance: parts.slice(2).join(" || ").trim(),
+    };
+  });
+}
+
+function relationshipCardsToText(cards) {
+  return (cards || [])
+    .filter((card) => card && (card.name || card.relation || card.appearance))
+    .slice(0, RELATIONSHIP_CARD_MAX)
+    .map((card) => `${String(card.name || "").trim()} || ${String(card.relation || "").trim()} || ${String(card.appearance || "").trim()}`)
+    .join("\n");
+}
+
+function relationshipCardItemHtml(card, index) {
+  return `
+    <article class="relationship-card" data-relationship-card>
+      <header>
+        <b>角色卡 ${index + 1}</b>
+        <button type="button" data-relationship-card-action="delete" data-index="${index}">删除</button>
+      </header>
+      <div class="relationship-card-grid">
+        <label>
+          <span>角色名</span>
+          <input type="text" data-relationship-card-field="name" value="${escapeHtml(card.name)}" placeholder="例如 小林">
+        </label>
+        <label>
+          <span>与 Bot 的关系</span>
+          <input type="text" data-relationship-card-field="relation" value="${escapeHtml(card.relation)}" placeholder="例如 高中同学兼死党">
+        </label>
+        <label class="wide">
+          <span>角色外貌描述</span>
+          <textarea rows="2" data-relationship-card-field="appearance" placeholder="例如 齐肩短发，戴黑框眼镜，常穿灰色连帽卫衣">${escapeHtml(card.appearance)}</textarea>
+        </label>
+      </div>
+    </article>
+  `;
+}
+
+function relationshipCardEmptyHtml() {
+  return '<p class="relationship-card-empty">还没有角色卡，点击下方“新建角色卡”添加。</p>';
+}
+
+function relationshipCardEditorHtml(value) {
+  const cards = parseRelationshipCards(value);
+  return `
+    <section class="relationship-card-editor" data-relationship-card-editor>
+      <textarea data-feature-param="bot_relationship_cards" hidden>${escapeHtml(relationshipCardsToText(cards))}</textarea>
+      <div class="relationship-card-list" data-relationship-card-list>
+        ${cards.length ? cards.map((card, index) => relationshipCardItemHtml(card, index)).join("") : relationshipCardEmptyHtml()}
+      </div>
+      <div class="relationship-card-actions">
+        <button type="button" class="soft" data-relationship-card-action="add">新建角色卡</button>
+        <small data-relationship-card-count>${cards.length} / ${RELATIONSHIP_CARD_MAX} 张角色卡</small>
+      </div>
+    </section>
+  `;
+}
+
+function collectRelationshipCardsFromDom(editor) {
+  return Array.from(editor.querySelectorAll("[data-relationship-card]")).map((card) => ({
+    name: String(card.querySelector('[data-relationship-card-field="name"]')?.value || "").trim(),
+    relation: String(card.querySelector('[data-relationship-card-field="relation"]')?.value || "").trim(),
+    appearance: String(card.querySelector('[data-relationship-card-field="appearance"]')?.value || "").trim(),
+  }));
+}
+
+function syncRelationshipCardEditor(editor) {
+  const cards = collectRelationshipCardsFromDom(editor);
+  const hidden = editor.querySelector('[data-feature-param="bot_relationship_cards"]');
+  if (hidden) {
+    hidden.value = relationshipCardsToText(cards);
+    rememberFeatureParamDraft(hidden);
+  }
+  const count = editor.querySelector("[data-relationship-card-count]");
+  if (count) count.textContent = `${cards.length} / ${RELATIONSHIP_CARD_MAX} 张角色卡`;
+}
+
+function bindRelationshipCardEditor(root = document) {
+  const editor = root.querySelector?.("[data-relationship-card-editor]");
+  if (!editor) return;
+  editor.addEventListener("input", (event) => {
+    if (event.target?.matches?.("[data-relationship-card-field]")) syncRelationshipCardEditor(editor);
+  });
+  editor.addEventListener("click", (event) => {
+    const button = event.target?.closest?.("[data-relationship-card-action]");
+    if (!button) return;
+    const action = button.dataset.relationshipCardAction;
+    const cards = collectRelationshipCardsFromDom(editor);
+    if (action === "add") {
+      if (cards.length >= RELATIONSHIP_CARD_MAX) {
+        showToast(`最多保存 ${RELATIONSHIP_CARD_MAX} 张角色卡`, "error");
+        return;
+      }
+      cards.push({ name: "", relation: "", appearance: "" });
+    } else if (action === "delete") {
+      const index = Number(button.dataset.index);
+      if (!Number.isInteger(index) || index < 0 || index >= cards.length) return;
+      cards.splice(index, 1);
+    } else {
+      return;
+    }
+    const list = editor.querySelector("[data-relationship-card-list]");
+    if (list) {
+      list.innerHTML = cards.length
+        ? cards.map((card, index) => relationshipCardItemHtml(card, index)).join("")
+        : relationshipCardEmptyHtml();
+    }
+    syncRelationshipCardEditor(editor);
+    markFeatureDetailDirty();
+  });
 }
 
 const percentSettingKeys = new Set([
@@ -6118,7 +6252,7 @@ const setupGuideAdvancedItems = {
         { key: "enable_creative_cover_generation", type: "bool", kind: "setting", label: "为创作内容生成封面", description: "可选。作品已有正文后自动生成一次封面，并按内容自动匹配画风；失败最多重试 3 次。" },
         { key: "daily_outfit_photo_prompt", type: "textarea", label: "每日穿搭提示词", placeholder: "可选：季节、配色、固定饰品", showWhen: (draft) => photoSettingVisibleForValues("daily_outfit_photo_prompt", draft) },
         { key: "daily_outfit_rotation_days", type: "number", label: "穿搭轮换冷却天数", placeholder: "10", min: 1, max: 30, showWhen: (draft) => photoSettingVisibleForValues("daily_outfit_rotation_days", draft) },
-        { key: "photo_generation_prompt_format", type: "select", label: "提示词表达方式", options: [["traditional", "传统文生图提示词（标签/短语）"], ["natural_language", "自然语言描述"]], description: "全局作用于主动拍照、每日穿搭、创作封面、自然语言生图及函数工具生图。" },
+        { key: "photo_generation_prompt_format", type: "select", label: "提示词表达方式", options: [["traditional", "传统文生图提示词（标签/短语）"], ["natural_language", "自然语言描述"], ["nai", "NAI 联动模式（NovelAI 标签语法）"]], description: "全局作用于主动拍照、每日穿搭、创作封面、自然语言生图及函数工具生图。" },
         { key: "photo_generation_style", type: "select", label: "生图风格", options: [["真实", "真实"], ["二次元", "二次元"], ["其他", "其他"]] },
         { key: "photo_generation_style_custom_prompt", type: "textarea", label: "自定义风格说明", placeholder: "例如：胶片感、浅景深、室内自然光", description: "只有风格选“其他”时重点使用。", showWhen: (draft) => photoSettingVisibleForValues("photo_generation_style_custom_prompt", draft) },
         { key: "photo_generation_fixed_prompt", type: "textarea", label: "固定附加提示词", placeholder: "每次生图都要保留的画面约束，例如角色发色、服装禁忌、不要水印。", description: "会追加到主动生图提示词里，适合写稳定外观和禁忌。" },
@@ -10180,7 +10314,7 @@ function troubleshootingRecentPhotoGenerationMarkup(itemsRaw) {
               item.ok ? "成功" : "失败",
               item.backend || "",
               item.kind ? `类型 ${item.kind}` : "",
-              item.prompt_format === "natural_language" ? "自然语言提示词" : (item.prompt_format === "traditional" ? "传统提示词" : ""),
+              item.prompt_format === "natural_language" ? "自然语言提示词" : (item.prompt_format === "nai" ? "NAI 提示词" : (item.prompt_format === "traditional" ? "传统提示词" : "")),
               item.intent_kind ? `意图 ${item.intent_kind}` : "",
               item.trigger ? `来源 ${item.trigger}` : "",
               item.sent ? "已发送" : "",
@@ -20889,6 +21023,9 @@ function photoSettingVisibleForValues(settingKey, values = {}) {
   if (settingKey === "photo_generation_style_custom_prompt") {
     return String(values.photo_generation_style || "") === "其他";
   }
+  if (settingKey === "bot_relationship_cards") {
+    return enabled("enable_bot_relationship_network");
+  }
   return true;
 }
 
@@ -22679,7 +22816,7 @@ function featureDetailPage(key) {
           <p>${escapeHtml(description)}</p>
         </div>
         <div class="feature-param-control">
-          ${name === "photo_reference_catalog" ? photoReferenceManagerLaunchControl(value) : featureSettingInput(name, value)}
+          ${name === "photo_reference_catalog" ? photoReferenceManagerLaunchControl(value) : name === "bot_relationship_cards" ? relationshipCardEditorHtml(value) : featureSettingInput(name, value)}
         </div>
       </section>
       ${key === "enable_environment_perception" && name === "weather_api_host" && weatherSource === "qweather" ? qweatherConsoleLinksHtml() : ""}
@@ -22900,6 +23037,9 @@ function bindFeatureDetailActions() {
           if (state.selectedFeatureKey === "enable_emotion_simulation" && input.dataset.featureParam === "enable_llm_emotion_judgement") {
             syncSettingBackedFeatureParam("enable_llm_emotion_judgement", { rerender: true });
           }
+          if (state.selectedFeatureKey === "enable_photo_text_action" && input.dataset.featureParam === "enable_bot_relationship_network") {
+            syncSettingBackedFeatureParam("enable_bot_relationship_network", { rerender: true });
+          }
           if (
             state.selectedFeatureKey === "enable_environment_perception"
             && ["enable_weather_context", "enable_weather_alerts", "enable_environment_change_proactive"].includes(input.dataset.featureParam)
@@ -23040,6 +23180,7 @@ function bindFeatureDetailActions() {
   }
   if (state.selectedFeatureKey === "enable_photo_text_action") {
     bindPhotoReferenceManagerActions();
+    bindRelationshipCardEditor();
   }
   bindProactiveOnlyTempUnlockActions();
 }

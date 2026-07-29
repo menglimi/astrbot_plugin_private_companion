@@ -14115,6 +14115,8 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             "photo_generation_style_custom_prompt",
             "photo_generation_fixed_prompt",
             "photo_generation_scene_presets",
+            "enable_bot_relationship_network",
+            "bot_relationship_cards",
             "private_image_vision_wait_seconds",
             "private_image_provider_timeout_seconds",
             "private_image_provider_failure_cooldown_seconds",
@@ -16130,6 +16132,9 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
         reference_enabled = self._config_get("enable_photo_reference_image")
         if reference_enabled not in ("", None):
             self.plugin.enable_photo_reference_image = self._normalize_bool_value(reference_enabled)
+        relationship_enabled = self._config_get("enable_bot_relationship_network")
+        if relationship_enabled not in ("", None):
+            self.plugin.enable_bot_relationship_network = self._normalize_bool_value(relationship_enabled)
         enabled_backup = self._config_get("enable_backup_external_image_api")
         if enabled_backup not in ("", None):
             self.plugin.enable_backup_external_image_api = self._normalize_bool_value(enabled_backup)
@@ -16169,9 +16174,10 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             "photo_generation_style_custom_prompt": "photo_generation_style_custom_prompt",
             "photo_generation_fixed_prompt": "photo_generation_fixed_prompt",
             "photo_generation_scene_presets": "photo_generation_scene_presets",
+            "bot_relationship_cards": "bot_relationship_cards",
         }
         for key, attr in mapping.items():
-            value = self._config_get_raw(key) if key in {"external_image_api_endpoints", "photo_reference_catalog", "photo_reference_library"} else self._config_get(key)
+            value = self._config_get_raw(key) if key in {"external_image_api_endpoints", "photo_reference_catalog", "photo_reference_library", "bot_relationship_cards"} else self._config_get(key)
             if key == "external_image_api_endpoints":
                 normalizer = getattr(self.plugin, "_normalize_external_image_api_endpoints", None)
                 endpoints = normalizer(value) if callable(normalizer) else (value if isinstance(value, list) else [])
@@ -16195,6 +16201,10 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
                 normalized_library = self._normalize_setting_value(key, value)
                 setattr(self.plugin, attr, normalized_library if isinstance(normalized_library, list) else [])
                 continue
+            if key == "bot_relationship_cards":
+                normalized_cards = self._normalize_setting_value(key, value)
+                setattr(self.plugin, attr, normalized_cards if isinstance(normalized_cards, list) else [])
+                continue
             if key == "photo_persona_reference_image_path":
                 setattr(self.plugin, attr, str(value or "").strip())
                 continue
@@ -16207,7 +16217,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
                 elif key == "photo_generation_prompt_format":
                     normalizer = getattr(self.plugin, "_normalize_photo_generation_prompt_format", None)
                     text = normalizer(text) if callable(normalizer) else text.lower()
-                    if text not in {"traditional", "natural_language"}:
+                    if text not in {"traditional", "natural_language", "nai"}:
                         text = "traditional"
                 elif key in {"external_image_api_platform", "backup_external_image_api_platform"}:
                     normalizer = getattr(self.plugin, "_normalize_external_image_api_platform", None)
@@ -16779,6 +16789,8 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             "photo_generation_style_custom_prompt",
             "photo_generation_fixed_prompt",
             "photo_generation_scene_presets",
+            "enable_bot_relationship_network",
+            "bot_relationship_cards",
             "private_image_vision_wait_seconds",
             "private_image_provider_timeout_seconds",
             "private_image_provider_failure_cooldown_seconds",
@@ -17270,6 +17282,8 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             if callable(normalizer):
                 return normalizer(value)
             mode = str(value or "traditional").strip().lower().replace("-", "_")
+            if mode in {"nai", "novelai", "nai4", "nai_4", "nai45", "nai_diffusion", "naidiffusion"}:
+                return "nai"
             return "natural_language" if mode in {"natural", "natural_language", "description", "prose", "自然语言", "自然语言描述"} else "traditional"
         if key == "natural_language_photo_generation_mode":
             mode = str(value or "tool_first").strip().lower()
@@ -17322,6 +17336,22 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
                 raw_items,
                 preset_names=self._photo_reference_preset_names(),
             )
+        if key == "bot_relationship_cards":
+            if isinstance(value, list):
+                raw_lines = [str(item or "") for item in value]
+            else:
+                raw_lines = str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+            cards: list[str] = []
+            seen_cards: set[str] = set()
+            for raw_line in raw_lines:
+                text = str(raw_line or "").strip()[:600]
+                if not text or text in seen_cards:
+                    continue
+                seen_cards.add(text)
+                cards.append(text)
+                if len(cards) >= 16:
+                    break
+            return cards
         if key == "photo_reference_library":
             if isinstance(value, list):
                 raw_items = value

@@ -1827,6 +1827,12 @@ class PrivateCompanionPlugin(
         self.photo_generation_style_custom_prompt = self._cfg_str(c, "photo_generation_style_custom_prompt", "")
         self.photo_generation_fixed_prompt = self._cfg_str(c, "photo_generation_fixed_prompt", "")
         self.photo_generation_scene_presets = self._cfg_raw(c, "photo_generation_scene_presets", "")
+        self.enable_bot_relationship_network = self._cfg_bool(c, "enable_bot_relationship_network", False)
+        raw_relationship_cards = self._cfg_raw(c, "bot_relationship_cards", [])
+        if isinstance(raw_relationship_cards, list):
+            self.bot_relationship_cards = [str(item).strip() for item in raw_relationship_cards if str(item or "").strip()][:16]
+        else:
+            self.bot_relationship_cards = [line.strip() for line in str(raw_relationship_cards or "").splitlines() if line.strip()][:16]
         raw_reference_catalog = self._cfg_raw(c, "photo_reference_catalog", [])
         raw_reference_catalog_version = self._cfg_raw(c, "photo_reference_catalog_version", 0)
         raw_reference_catalog_user_cleared = self._cfg_bool(

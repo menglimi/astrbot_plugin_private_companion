@@ -1567,7 +1567,7 @@ class CreativeMixin:
         else:
             raw_format = str(getattr(self, "photo_generation_prompt_format", "traditional") or "traditional").strip().lower()
             prompt_format = "natural_language" if raw_format in {"natural", "natural_language", "自然语言", "自然语言描述"} else "traditional"
-        if prompt_format == "traditional":
+        if prompt_format != "natural_language":
             positive_parts = [
                 "polished book cover illustration",
                 "vertical 2:3 composition",

@@ -2868,7 +2868,7 @@ class CommandHandlersMixin:
                     "多参考图库：发送一张或多张图片并使用“陪伴 参考图库 添加 <用途注释>”；支持列表、预览、删除和清空。用途注释写清服装、地点和适用场景，生图时会结合最终画面自动选一张，今日穿搭图不会无条件优先。",
                     "规则快判上限：natural_language_photo_generation_max_daily，只作用于 rule_fast。",
                     "规则快判补充提示词：natural_language_photo_extra_prompt，只作用于 rule_fast；全局固定提示词仍看 photo_generation_fixed_prompt。",
-                    "提示词表达方式：photo_generation_prompt_format，可选 traditional（传统标签/短语）或 natural_language（自然语言描述），全局作用于实际生图提示词。",
+                    "提示词表达方式：photo_generation_prompt_format，可选 traditional（传统标签/短语）、natural_language（自然语言描述）或 nai（NAI 联动模式，按 NovelAI 4/4.5 标签语法书写并原样提交），全局作用于实际生图提示词。",
                     "Agnes Image 可选 platform=agnes，推荐 agnes-image-2.1-flash；参考图走 generations + extra_body.image，队列项可配置 1K-4K 与 ratio。",
                     "排障页可看最近生图提示词、参考图数量、后端错误和任务状态。",
                 ],

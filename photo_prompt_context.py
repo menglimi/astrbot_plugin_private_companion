@@ -695,6 +695,10 @@ def _assemble(sections: Sequence[PhotoPromptSection], prompt_format: str) -> str
     )
     negative = ", ".join(value for value in (decision_negative, user_negative) if value)
     mode = str(prompt_format or "traditional").strip().lower().replace("-", "_")
+    if mode in {"nai", "novelai", "nai4", "nai_4", "nai45", "nai_diffusion", "naidiffusion"}:
+        # NAI mode: avoid [] section labels (down-weight syntax) and express negatives via negative weight.
+        prompt = "\n\n".join(f"{label}:\n{text}" for label, text in groups if text)
+        return f"{prompt}\n\n-1.5::{negative}::".strip() if negative else prompt.strip()
     if mode in {"natural", "natural_language", "description", "prose", "自然语言", "自然语言描述"}:
         prompt = "\n\n".join(positive_blocks)
         return f"{prompt}\n\nAvoid {negative}.".strip() if negative else prompt.strip()

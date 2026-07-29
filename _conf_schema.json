@@ -3225,7 +3225,7 @@
   "photo_generation_prompt_format": {
     "description": "Legacy flat config: 生图提示词表达方式",
     "type": "string",
-    "options": ["traditional", "natural_language"],
+    "options": ["traditional", "natural_language", "nai"],
     "default": "traditional",
     "invisible": true
   },
@@ -9564,13 +9564,15 @@
         "type": "string",
         "options": [
           "traditional",
-          "natural_language"
+          "natural_language",
+          "nai"
         ],
         "option_labels": [
           "传统文生图提示词（标签/短语）",
-          "自然语言描述"
+          "自然语言描述",
+          "NAI 联动模式（NovelAI 标签语法）"
         ],
-        "hint": "控制所有图片生成最终提交给后端的提示词组织方式。传统模式使用 Positive/Negative prompt 与逗号分隔短语，适合 Stable Diffusion、ComfyUI 等标签式工作流；自然语言模式使用连贯英文场景描述，适合理解长描述的多模态图片模型。不会改变生图后端或参考图设置。",
+        "hint": "控制所有图片生成最终提交给后端的提示词组织方式。传统模式使用 Positive/Negative prompt 与逗号分隔短语，适合 Stable Diffusion、ComfyUI 等标签式工作流；自然语言模式使用连贯英文场景描述，适合理解长描述的多模态图片模型；NAI 联动模式让模型按 NovelAI 4/4.5 语法（{}/[] 加降权、权重::标签::、负向权重、{人物 [tags] 人物} 多角色块、Text: 画面文字）书写提示词并原样提交给在线 API。若 NAI 联动模式生图效果不理想，请切换回自然语言描述模式。不会改变生图后端或参考图设置。",
         "default": "traditional",
         "condition": {
           "enable_photo_text_action": true
@@ -9601,6 +9603,25 @@
         "default": "",
         "condition": {
           "enable_photo_text_action": true
+        }
+      },
+      "enable_bot_relationship_network": {
+        "description": "Bot 关系网",
+        "type": "bool",
+        "hint": "默认关闭。开启后可在下方配置 Bot 熟悉的角色卡（朋友、家人、同事等）。主动拍照/生图时，关系网会连同人格、收信人、统一情境快照、画面钩子、生图风格、提示词表达方式和内容选择菜单一起注入提示词，由模型自行判断是否让某位角色自然入镜。",
+        "default": false,
+        "condition": {
+          "enable_photo_text_action": true
+        }
+      },
+      "bot_relationship_cards": {
+        "description": "关系网角色卡",
+        "type": "list",
+        "hint": "一行一张角色卡，格式：角色名 || 与Bot的关系 || 角色外貌描述。例如：小林 || 高中同学兼死党 || 齐肩短发，戴黑框眼镜，常穿灰色连帽卫衣。最多保存 16 张；角色入镜时外貌描述会严格写入生图提示词。",
+        "default": [],
+        "condition": {
+          "enable_photo_text_action": true,
+          "enable_bot_relationship_network": true
         }
       },
       "photo_generation_scene_presets": {

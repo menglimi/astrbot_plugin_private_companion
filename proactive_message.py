@@ -9190,6 +9190,8 @@ Output:
     @staticmethod
     def _normalize_photo_generation_prompt_format(value: Any) -> str:
         text = str(value or "traditional").strip().lower().replace("-", "_")
+        if text in {"nai", "novelai", "nai4", "nai_4", "nai45", "nai_diffusion", "naidiffusion", "nai联动", "nai插件联动"}:
+            return "nai"
         if text in {"natural", "natural_language", "description", "prose", "自然语言", "自然语言描述"}:
             return "natural_language"
         return "traditional"
@@ -9200,7 +9202,20 @@ Output:
         )
 
     def _photo_generation_prompt_format_instruction(self) -> str:
-        if self._photo_generation_prompt_format_mode() == "natural_language":
+        mode = self._photo_generation_prompt_format_mode()
+        if mode == "nai":
+            return (
+                "使用 NAI（NovelAI 4/4.5）联动写法：以英文 danbooru 风格标签为主、逗号分隔，精简到能讲清构图即可，不堆砌重复或无意义 tag。"
+                "加权用花括号 {tag} 提升、方括号 [tag] 降低，可叠层；也可用 权重::标签:: 对一个或多个标签整体加权（示例 1.5::red dress, long dress::），"
+                "可以使用较高权重值（2、5 甚至 10 以上）强调关键元素。移除物体或翻转概念用负向权重（示例 -1::unwanted object::）；"
+                "混合 3 个以上画师风格时可加 -2::artist collaboration:: 降低鬼图概率。已知二次元角色用 角色名 (作品名) 形式（示例 texas the omertosa (arknights)），"
+                "特征不全时多补几个描述词；情绪词有效，可加入增强表情。多角色（最多 6 名）时每个角色分别用 {人物 [该角色的画风/动作/神态/外貌 tags] 人物} 包裹，"
+                "块内两个占位符“人物”不能删除，可用 {位置中} {位置左} {位置右上} 等位置标签（5x5 共 25 种）指定站位，角色专属负面词条写 ntags = [tags]；"
+                "角色互动动作用 source#/target#/mutual# 前缀（示例 source#hug 发起拥抱, target#hug 被拥抱, mutual#hug 互相拥抱）。"
+                "需要画面英文文字用 Text: 内容, ；不需要文字加 no text, 。直接输出可投喂生图后端的提示词字符串，"
+                "不要输出 Positive prompt/Negative prompt 标题，也不要写解释性段落。"
+            )
+        if mode == "natural_language":
             return (
                 "使用自然语言描述：用连贯、具体的英文句子描述主体、外观、动作、场景、光线、镜头、构图和风格；"
                 "不要输出标签堆、权重语法或 Positive prompt/Negative prompt 标题。需要避免的内容可在末句用 Avoid ... 自然表达。"
@@ -9301,6 +9316,19 @@ Output:
         if not prompt:
             return ""
         mode = self._photo_generation_prompt_format_mode()
+        if mode == "nai":
+            # Preserve NovelAI inline syntax ({}/[], weight::tags::, multi-character blocks) as authored.
+            positive_match = re.search(
+                r"positive\s+prompt\s*:\s*(.*?)(?=negative\s+prompt\s*:|$)",
+                prompt,
+                flags=re.I | re.S,
+            )
+            if positive_match:
+                positive_raw = positive_match.group(1).strip()
+                negative_match = re.search(r"negative\s+prompt\s*:\s*(.*)$", prompt, flags=re.I | re.S)
+                negative_raw = negative_match.group(1).strip() if negative_match else ""
+                prompt = positive_raw + (f", -1.5::{negative_raw}::" if negative_raw else "")
+            return self._photo_prompt_clip(prompt, 2400, preserve_tail=True)
         positive, negative = self._photo_generation_semantic_prompt_parts(prompt)
         positive = positive or "the requested image"
         if mode == "natural_language":
@@ -10811,6 +10839,24 @@ Output:
                 ),
                 1200,
             )
+        relationship_block = ""
+        if getattr(self, "enable_bot_relationship_network", False):
+            card_lines: list[str] = []
+            for raw_card in (getattr(self, "bot_relationship_cards", []) or [])[:16]:
+                parts = [_single_line(part, 200) for part in re.split(r"\s*(?:\|\||｜｜)\s*", str(raw_card or ""), maxsplit=2)]
+                if not parts or not parts[0]:
+                    continue
+                relation = parts[1] if len(parts) > 1 else ""
+                appearance = parts[2] if len(parts) > 2 else ""
+                card_lines.append(f"- 角色：{parts[0]}；与Bot的关系：{relation or '（未填写）'}；外貌描述：{appearance or '（未填写）'}")
+            if card_lines:
+                relationship_block = (
+                    "【Bot 关系网】\n"
+                    + "\n".join(card_lines)
+                    + "\n使用方式：这些是 Bot 熟悉的人物角色卡，属于可选画面素材。只有当话题、动机或内容锚点自然涉及和别人相处、约见、同行时，"
+                    "才最多挑选一位入镜或作为画面线索；入镜角色的外貌必须严格按角色卡外貌描述写进 prompt，不要改写身份或关系，"
+                    "也不要把多位角色拼进同一张图。大多数画面仍应是 Bot 独自视角，不合适时忽略本节。\n\n"
+                )
         prompt = f"""
 请根据 AstrBot 默认人格和主动原因,生成一张要通过生图后端制作的“社交媒体随手拍/自拍/生活碎片图”提示词。
 
@@ -10828,7 +10874,7 @@ Output:
 话题：{topic_hint or '（未指定）'}
 那一刻的小动机：{motive_hint or '（未指定）'}
 
-【生日卡特殊规则】
+{relationship_block}【生日卡特殊规则】
 {"如果主动原因是 birthday_celebration：制作一张没有文字、没有姓名、没有日期的温柔生日小卡。只选一个与人格和用户偏好相称的具体意象，不画蛋糕上文字、不出现年龄、不要节庆海报或营销风。" if reason == "birthday_celebration" else "（非生日卡）"}
 
 【内容选择菜单】
