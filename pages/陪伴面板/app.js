@@ -21433,6 +21433,7 @@ function syncFeatureProviderInput(select) {
 
 function collectFeatureDetailPayload(featureKey, root = document) {
   const overviewSettings = state.overview?.settings || {};
+  const parameterDraft = state.featureDetailParamDraft || {};
   const features = {};
   const settings = {};
   const providers = {};
@@ -21461,9 +21462,10 @@ function collectFeatureDetailPayload(featureKey, root = document) {
   root.querySelectorAll("[data-feature-param]").forEach((input) => {
     const key = input.dataset.featureParam;
     if (!key) return;
+    if (key === "photo_reference_catalog" && !Object.prototype.hasOwnProperty.call(parameterDraft, key)) return;
     assignParam(key, collectSettingValue(key, input));
   });
-  Object.entries(state.featureDetailParamDraft || {}).forEach(([key, value]) => assignParam(key, value));
+  Object.entries(parameterDraft).forEach(([key, value]) => assignParam(key, value));
   return { features, settings, providers };
 }
 
@@ -22361,6 +22363,12 @@ function hydratePhotoReferenceDraftFromStatus(status) {
 
 function canonicalPhotoReference(item, kind) {
   const metadata = photoReferenceMetadataFromObject(item?.metadata);
+  const preferredPreset = String(metadata.preferred_preset || "").trim();
+  const availablePresets = Array.isArray(state.photoReferenceLibraryStatus?.options?.presets)
+    ? state.photoReferenceLibraryStatus.options.presets
+      .map((option) => String(typeof option === "string" ? option : option?.value || "").trim())
+      .filter(Boolean)
+    : null;
   return {
     id: kind === "persona" ? "persona" : String(item?.id || newPhotoReferenceId()),
     kind,
@@ -22371,7 +22379,7 @@ function canonicalPhotoReference(item, kind) {
     outfit_lock_default: metadata.outfit_lock_default === true,
     scene_categories: normalizePhotoReferenceMetadataList(metadata.scene_categories),
     time_categories: normalizePhotoReferenceMetadataList(metadata.time_categories),
-    preferred_preset: String(metadata.preferred_preset || "").trim(),
+    preferred_preset: availablePresets && !availablePresets.includes(preferredPreset) ? "" : preferredPreset,
     metadata_source: String(metadata.metadata_source || "configured"),
   };
 }

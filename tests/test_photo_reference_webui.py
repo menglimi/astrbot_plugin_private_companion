@@ -9,6 +9,19 @@ INDEX_HTML = (PLUGIN_ROOT / "pages" / "陪伴面板" / "index.html").read_text(e
 
 
 class PhotoReferenceWebUiTests(unittest.TestCase):
+    def test_unedited_catalog_is_not_submitted_with_other_photo_settings(self) -> None:
+        self.assertIn(
+            'key === "photo_reference_catalog" && !Object.prototype.hasOwnProperty.call(parameterDraft, key)',
+            APP_JS,
+        )
+
+    def test_manager_drops_a_preferred_preset_removed_from_server_options(self) -> None:
+        self.assertIn('state.photoReferenceLibraryStatus?.options?.presets', APP_JS)
+        self.assertIn(
+            'availablePresets && !availablePresets.includes(preferredPreset) ? "" : preferredPreset',
+            APP_JS,
+        )
+
     def test_time_categories_round_trip_through_manager_draft(self) -> None:
         self.assertIn('metadata.time_categories = normalizePhotoReferenceMetadataList', APP_JS)
         self.assertIn('time_categories: Array.isArray(item.time_categories)', APP_JS)
@@ -57,7 +70,7 @@ class PhotoReferenceWebUiTests(unittest.TestCase):
         self.assertIn('padding-top: 14px', APP_CSS)
 
     def test_metadata_editor_assets_have_a_matching_cache_version(self) -> None:
-        version = "20260729-photo-reference-field-separators"
+        version = "20260730-photo-reference-save-fix"
         self.assertIn(f'app.css?v={version}', INDEX_HTML)
         self.assertIn(f'app.js?v={version}', INDEX_HTML)
 
