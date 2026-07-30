@@ -396,6 +396,11 @@ class CoreStoreMixin:
             "personal_goal_state": {},
             "personal_goals": [],
             "food_menu": {},
+            "daily_review_reports": [],
+            "daily_review_active_guidance": {},
+            "daily_review_last_attempt": {},
+            "daily_review_completed_day": "",
+            "daily_review_case_audit": [],
         }
 
     @staticmethod
@@ -465,6 +470,11 @@ class CoreStoreMixin:
         data.setdefault("personal_goal_state", {})
         data.setdefault("personal_goals", [])
         data.setdefault("food_menu", {})
+        data.setdefault("daily_review_reports", [])
+        data.setdefault("daily_review_active_guidance", {})
+        data.setdefault("daily_review_last_attempt", {})
+        data.setdefault("daily_review_completed_day", "")
+        data.setdefault("daily_review_case_audit", [])
         return data
 
     @staticmethod

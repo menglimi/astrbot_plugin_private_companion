@@ -1,0 +1,142 @@
+@media (max-width: 860px) {
+  #panel-qzone .section-head {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  #panel-qzone .section-head .actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    width: 100%;
+  }
+
+  #panel-qzone .section-head .actions button,
+  .qzone-scope-switch button,
+  .qzone-post-card footer button,
+  .qzone-detail-actions button,
+  .qzone-comment-form button,
+  #qzoneTargetForm button,
+  #qzonePublishForm button {
+    min-height: 42px;
+    border-radius: 9px;
+    font-weight: 800;
+  }
+
+  .qzone-shell {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .qzone-rail,
+  .qzone-detail-pane {
+    position: static;
+  }
+
+  .qzone-rail {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .qzone-mini-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .qzone-scope-switch {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 3px;
+  }
+
+  #qzoneTargetForm,
+  #qzonePublishForm,
+  .qzone-comment-form {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  #qzoneTargetForm input,
+  #qzonePublishForm textarea,
+  .qzone-comment-form textarea,
+  #qzoneTargetForm button,
+  #qzonePublishForm button,
+  .qzone-comment-form button {
+    width: 100%;
+  }
+
+  .qzone-feed-head,
+  .qzone-post-card header,
+  .qzone-detail-head,
+  .qzone-comment-head {
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .qzone-post-card footer {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+    width: 100%;
+  }
+
+  .qzone-detail-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    width: 100%;
+  }
+
+  .qzone-detail-actions .danger-outline {
+    grid-column: 1 / -1;
+  }
+
+  .qzone-post-text,
+  .qzone-detail-text,
+  .qzone-comment-item p,
+  .qzone-comment-item b {
+    overflow-wrap: anywhere;
+  }
+
+  .qzone-post-media,
+  .qzone-detail-media {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .qzone-post-media img,
+  .qzone-detail-media img {
+    width: 100%;
+    max-width: 100%;
+    object-fit: cover;
+  }
+
+  .qzone-detail-pane {
+    min-width: 0;
+  }
+}
+
+@media (max-width: 480px) {
+  #panel-qzone .section-head .actions,
+  .qzone-post-card footer,
+  .qzone-detail-actions,
+  .qzone-mini-summary,
+  .qzone-scope-switch,
+  .qzone-post-media,
+  .qzone-detail-media {
+    grid-template-columns: 1fr;
+  }
+
+  .qzone-card,
+  .qzone-post-card,
+  .qzone-detail-card,
+  .qzone-comment-block,
+  .qzone-empty {
+    padding: 12px;
+  }
+
+  .qzone-post-badge {
+    justify-self: flex-start;
+  }
+}

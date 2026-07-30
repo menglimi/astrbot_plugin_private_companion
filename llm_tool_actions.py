@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
+import html
 import json
 import os
+import random
 import re
 import time
 import uuid
@@ -24,6 +25,7 @@ from .helpers import (
     _missing_optional_model_dependency,
     _now_ts,
     _path_text,
+    _photo_group_request_matches,
     _redact_outbound_secrets,
     _safe_float,
     _safe_int,
@@ -32,6 +34,25 @@ from .helpers import (
 )
 from .memo_notes import apply_memo_note_action, memo_note_sort_key, normalize_memo_note
 from .qzone_selection import parse_qzone_post_selection
+from .reaction_expression import (
+    append_reaction_expression_outcome,
+    classify_reaction_expression_feedback,
+    ensure_reaction_expression_state,
+    evaluate_reaction_expression_gate,
+    normalize_reaction_expression_intent,
+    reaction_expression_effective_probability,
+    reaction_expression_image_key,
+    reaction_expression_image_keys,
+    reaction_expression_reservation_owned,
+    reaction_expression_scope_state,
+    record_reaction_expression_feedback,
+    record_reaction_expression_sent,
+    release_reaction_expression_image,
+    release_reaction_expression_reservation,
+    reserve_reaction_expression_image,
+    reserve_reaction_expression_intent,
+)
+from .reaction_asset_library import get_reaction_asset_library
 
 
 PHOTO_TOOL_SILENT_SENTINEL = "[[PC_PHOTO_SENT_NO_FOLLOWUP]]"
@@ -130,33 +151,50 @@ class LlmToolActionsMixin:
         if not getattr(self, "enabled", False):
             return ""
         photo_enabled = bool(getattr(self, "enable_photo_text_action", False))
-        if not photo_enabled and self._smart_imagechat_api() is None:
+        if not photo_enabled and not self._reaction_image_provider_available():
             return ""
         return (
             "【媒体真实性硬规则】只有本轮消息链实际包含图片，或媒体工具明确返回 `sent=true`，"
             "才能说“已经发了/给你看了/图片在上面”。其他情况必须承认未发送；人格和角色扮演不能覆盖真实发送状态。"
         )
 
-    @staticmethod
-    def _mark_smart_imagechat_skip_proactive_emoji(event: Any) -> None:
-        setter = getattr(event, "set_extra", None)
-        if not callable(setter):
+    def _reaction_asset_library(self):
+        return get_reaction_asset_library(self)
+
+    def _reaction_image_provider_available(self) -> bool:
+        library = self._reaction_asset_library()
+        return bool(library and library.has_enabled_assets())
+
+    def _mark_reaction_asset_used(self, image_id: Any) -> None:
+        normalized = _single_line(image_id, 160)
+        if not normalized.startswith("pc-local:"):
+            return
+        library = self._reaction_asset_library()
+        if library is None:
             return
         try:
-            setter("smart_imagesender_skip_proactive_emoji", True)
-        except Exception:
-            pass
+            library.mark_used(normalized)
+        except Exception as exc:
+            logger.debug(
+                "[PrivateCompanion] 更新表情包使用统计失败: %s",
+                _single_line(exc, 160),
+            )
 
     @staticmethod
-    def _smart_imagechat_api() -> Any | None:
+    def _mark_private_companion_skip_reaction_expression(event: Any) -> None:
+        """Mark this event after a real image delivery to avoid a second reaction image."""
+        if event is None:
+            return
         try:
-            bridge_module = importlib.import_module(
-                "astrbot_plugin_smart_imagechat_hub.main"
-            )
-            api_getter = getattr(bridge_module, "get_smart_imagechat_api", None)
-            return api_getter() if callable(api_getter) else None
+            setattr(event, "_private_companion_skip_reaction_expression", True)
         except Exception:
-            return None
+            pass
+        setter = getattr(event, "set_extra", None)
+        if callable(setter):
+            try:
+                setter("private_companion_skip_reaction_expression", True)
+            except Exception:
+                pass
 
     def _photo_tool_call_timeout_seconds(self) -> float:
         context = getattr(self, "context", None)
@@ -215,23 +253,53 @@ class LlmToolActionsMixin:
         recent_context = context_getter() if callable(context_getter) else ""
         return f"{instruction}\n\n{recent_context}".strip() if recent_context else instruction
 
-    def _photo_generation_tool_instruction(self) -> str:
+    def _photo_generation_tool_instruction(
+        self,
+        *,
+        include_spontaneous: bool | None = None,
+        spontaneous_only: bool = False,
+    ) -> str:
         if not getattr(self, "enabled", False):
             return ""
-        reaction_enabled = self._smart_imagechat_api() is not None
+        reaction_enabled = self._reaction_image_provider_available()
         photo_enabled = bool(getattr(self, "enable_photo_text_action", False))
         mode = _single_line(getattr(self, "natural_language_photo_generation_mode", "tool_first"), 40).lower()
-        photo_enabled = photo_enabled and mode != "off"
+        photo_enabled = photo_enabled and mode != "off" and not spontaneous_only
         if not reaction_enabled and not photo_enabled:
             return ""
-        lines = ["【图库表情与生图工具】"]
+        if spontaneous_only:
+            return """
+【实验性表情表达】
+- 先完成一条正常、完整、可以独立发送的文字回复。表情图片只能作为文字后的补充，绝对不能替代文字回复。
+- 只有表情图明显能补充当前语气、且比单纯文字更自然时，才在完整回复末尾追加一个内部标签；不适合时只输出原本的文字回复。
+- 标签格式必须是 `<pc_reaction_expression>{"purpose":"轻吐槽","emotion":"无语","intensity":2,"candidate_queries":["无语摊手","看傻了"]}</pc_reaction_expression>`。
+- `purpose` 写沟通用途，`emotion` 写希望传达的情绪，`intensity` 为 0-5，`candidate_queries` 提供 1-3 个简短的图库检索说法；不要填写图片路径。
+- 每轮最多写一个标签，必须放在全部可见文字和 TTS 标签之后；不要使用 Markdown 代码块，不要解释标签，也不要调用图片或生图工具。
+- 即使图库最终没有匹配、图片重复或发送失败，前面的完整文字也必须仍然自然成立。
+""".strip()
+        lines = ["【实验性表情表达工具】" if spontaneous_only else "【图库表情与生图工具】"]
         if reaction_enabled:
-            lines.extend(
-                [
-                    "- 用户要“找/发/来一张已有表情包”、要用现成反应图回应当前语境时，优先使用 `pc_find_reaction_image`，把需求和当前语境写进 `query/context`。",
-                    "- 图库未匹配时可以自然改用文字回应，不要擅自声称已发图。",
-                ]
+            if not spontaneous_only:
+                lines.extend(
+                    [
+                        "- 用户要“找/发/来一张已有表情包”、要用现成反应图回应当前语境时，优先使用 `pc_find_reaction_image`，把需求和当前语境写进 `query/context`。",
+                        "- 图库未匹配时可以自然改用文字回应，不要擅自声称已发图。",
+                    ]
+                )
+            experiment_enabled = bool(
+                getattr(self, "enable_reaction_expression_experiment", False)
             )
+            spontaneous_enabled = experiment_enabled and (
+                include_spontaneous is not False
+            )
+            if spontaneous_enabled:
+                lines.extend(
+                    [
+                        "- 普通闲聊中，只有表情图明显比继续写文字更自然、更贴合本轮关系边界时，才可把 `spontaneous=true` 调用 `pc_find_reaction_image`；不要每轮调用，不确定时直接保留自然文字回复。",
+                        "- 自发表情调用应填写 `purpose`（沟通用途）、`emotion`（想传达的情绪）、`intensity`（0-5）与 `candidate_queries`（少量候选检索说法）；这些是本轮结构化表达意图，不要另行解释给用户。",
+                        "- 自发表情允许因概率、冷却、重复或图库不匹配而返回 `decision=skip`。遇到跳过时不要解释内部原因，继续按原语境自然文字回复即可。",
+                    ]
+                )
         if photo_enabled:
             if reaction_enabled:
                 lines.append(
@@ -243,6 +311,9 @@ class LlmToolActionsMixin:
                     '- 普通场景/物件/风景：仅当画面中不出现角色本人时，传 `{"prompt":"画面描述","kind":"text2img"}`，可用 `scene_preset` 建议“可拍画面/房间日常”；该字段只是建议，不会覆盖用户原话或参考图约束。把它写成角色镜头看到的画面，不要擅自加入拍摄者、陌生女孩或人物背影。纯梗图或无角色贴纸才用 `text2img + scene_preset="表情包场景"`。',
                     '- 角色本人以任何形式出镜，包括自拍、背影、侧脸、环境人像、头像、穿搭或 COS：传 `{"prompt":"画面要求","kind":"selfie"}`，可用 `scene_preset` 建议“角色自拍/COS自拍/日常穿搭/居家睡衣/镜前穿搭/头像特写”；明确睡衣、睡裙、睡袍或睡前卧室自拍时优先建议“居家睡衣”，普通穿搭才建议“日常穿搭”，只有明确“镜前/对镜/镜子”时才建议镜前穿搭；最终只采用一个兼容预设。只有开启参考图一致性时，未传参考图才会自动使用配置的人设参考图或今日穿搭参考图。',
                     '- 用户在刚发出的角色照片后要求“比个心、看镜头、换个动作/表情/角度、再来一张”等自然续拍时，仍使用 `kind="selfie"`，并在 prompt 中说明只改变这次要求的部分、其余人物穿搭与场景继续保持；不必猜测或手填上一张图片路径，插件会在同一会话内交给选图模型判断是否复用。明确换装、换地点、换人物或另起主题时按新要求生成。',
+                    '- 合影、合照、双人或多人同框必须有本轮携带或引用的其他人物参考图；Bot 单人人设图和今日穿搭图都不算，纯文字关系卡都不算其他人物参考，模型自行填写的本地路径/URL 也不能单独授权合影。没有本轮参考图时不要调用生图，也不要凭文字捏造另一张脸；可以说明需要先发或引用参考图。',
+                    '- 如果前几轮文字剧情已经明确让角色换装，而本轮只说“继续、再拍一张、保持刚才的穿搭”等，不要把它理解成恢复今日穿搭。必须把仍有效的具体服装展开写进 prompt，例如“角色当前仍穿 JK 校服，保持本轮地点和人物连续性”；当前对话已发生的换装高于日程、人格默认衣着、每日穿搭参考图和旧图片。',
+                    '- “JK”在服装语境下请规范写成“JK 校服/JK 制服”；只有用户明确改变服装时才替换连续状态，提问、假设或用户自己换衣不算角色已换装。',
                     '- 角色表情包/贴纸：传 `{"prompt":"表情和画面要求","kind":"sticker"}`；默认走自拍/人像链路并使用“表情包场景”预设，让角色仍可识别。',
                     '- 改图/重绘：传 `{"prompt":"修改要求","kind":"edit","reference_image_path":"本地图片路径或图片URL"}`；没有参考图时不要调用改图。多图职责组合可传 `reference_image_paths` 数组，并在 prompt 中说明每张图承担的脸、衣服、姿势等职责。',
                 ]
@@ -282,6 +353,95 @@ class LlmToolActionsMixin:
         if callable(cue_cleaner):
             cleaned = cue_cleaner(cleaned)
         return _single_line(cleaned, max(1, int(limit or 120)))
+
+    @staticmethod
+    def _reaction_expression_has_visible_text(value: Any) -> bool:
+        """Require actual reply text before an experimental image may be attached."""
+        text = _strip_internal_message_blocks(str(value or ""))
+        text = re.sub(r"<[^>]{1,240}>", "", text, flags=re.DOTALL)
+        return bool(re.search(r"\w", text, flags=re.UNICODE))
+
+    def _extract_reaction_expression_hidden_intent(
+        self,
+        value: Any,
+    ) -> tuple[str, dict[str, Any]]:
+        """Remove the internal expression tag and parse at most one valid intent."""
+        source = str(value or "")
+        if not source:
+            return "", {}
+
+        literal_open = r"(?:<|\\<)\s*pc_reaction_expression\s*(?:>|\\>)"
+        literal_close = r"(?:<|\\<)\s*/\s*pc_reaction_expression\s*(?:>|\\>)"
+        escaped_open = r"&lt;\s*pc_reaction_expression\s*&gt;"
+        escaped_close = r"&lt;\s*/\s*pc_reaction_expression\s*&gt;"
+        complete_pattern = re.compile(
+            rf"(?:{literal_open}(.*?){literal_close}|{escaped_open}(.*?){escaped_close})",
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        parsed_intent: dict[str, Any] = {}
+
+        def parse_payload(payload: str) -> dict[str, Any]:
+            candidates = [str(payload or "").strip()]
+            unescaped = html.unescape(candidates[0]).strip()
+            if unescaped and unescaped not in candidates:
+                candidates.append(unescaped)
+            for candidate in list(candidates):
+                if "\\\"" in candidate:
+                    candidates.append(candidate.replace("\\\"", '"'))
+            for candidate in candidates:
+                if not candidate:
+                    continue
+                try:
+                    payload_obj: Any = json.loads(candidate)
+                    if isinstance(payload_obj, str):
+                        payload_obj = json.loads(payload_obj)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if not isinstance(payload_obj, dict):
+                    continue
+                raw_queries = payload_obj.get("candidate_queries")
+                normalized = normalize_reaction_expression_intent(
+                    query=payload_obj.get("query", ""),
+                    context=payload_obj.get("context", ""),
+                    purpose=payload_obj.get("purpose", ""),
+                    emotion=payload_obj.get("emotion", ""),
+                    intensity=payload_obj.get("intensity", 0),
+                    candidate_queries=raw_queries,
+                    candidate_limit=_safe_int(
+                        getattr(self, "reaction_expression_candidate_limit", 6),
+                        6,
+                        1,
+                        16,
+                    ),
+                )
+                meaningful = any(
+                    str(payload_obj.get(key) or "").strip()
+                    for key in ("query", "purpose", "emotion")
+                ) or bool(normalized.get("candidate_queries"))
+                if not meaningful:
+                    continue
+                return normalized
+            return {}
+
+        def remove_complete(match: re.Match[str]) -> str:
+            nonlocal parsed_intent
+            if not parsed_intent:
+                parsed_intent = parse_payload(match.group(1) or match.group(2) or "")
+            return ""
+
+        cleaned = complete_pattern.sub(remove_complete, source)
+        # A malformed or truncated internal tag must never become visible chat text.
+        cleaned = re.sub(literal_close, "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(escaped_close, "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(
+            r"(?:<|\\<|&lt;)\s*/?\s*pc[_-]?reaction.*$",
+            "",
+            cleaned,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        cleaned = re.sub(r"[ \t]+(?=\r?$)", "", cleaned, flags=re.MULTILINE)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        return cleaned, parsed_intent
 
     def _creative_work_tool_instruction(self) -> str:
         if not self.enabled:
@@ -1041,6 +1201,61 @@ class LlmToolActionsMixin:
         return True
 
     @staticmethod
+    def _scope_reaction_media_tools_for_request(
+        req: Any,
+        *,
+        explicit_media_request: bool,
+        reaction_authorized: bool,
+        reaction_evaluated: bool,
+    ) -> list[str]:
+        """Keep ordinary experimental replies on the single-pass intent path."""
+        if explicit_media_request or not reaction_evaluated:
+            return []
+        # The authorization now enables an internal response tag, not a tool call.
+        # Removing both tools prevents AstrBot from entering a second model turn.
+        blocked = {"pc_generate_photo", "pc_find_reaction_image"}
+        tool_set = getattr(req, "func_tool", None)
+        if tool_set is None:
+            return []
+        tools = getattr(tool_set, "tools", None)
+        names = {
+            _single_line(getattr(tool, "name", ""), 120)
+            for tool in tools
+        } if isinstance(tools, list) else set()
+        get_tool = getattr(tool_set, "get_tool", None)
+        if callable(get_tool):
+            for name in blocked:
+                try:
+                    if get_tool(name) is not None:
+                        names.add(name)
+                except Exception:
+                    pass
+        remove_tool = getattr(tool_set, "remove_tool", None)
+        removed: list[str] = []
+        for name in sorted(blocked):
+            if name not in names and isinstance(tools, list):
+                continue
+            try:
+                if callable(remove_tool):
+                    remove_tool(name)
+                elif isinstance(tools, list):
+                    tool_set.tools = [
+                        tool
+                        for tool in tool_set.tools
+                        if _single_line(getattr(tool, "name", ""), 120) != name
+                    ]
+                else:
+                    continue
+                removed.append(name)
+            except Exception as exc:
+                logger.debug(
+                    "[PrivateCompanion] 裁剪实验性表情工具失败: tool=%s error=%s",
+                    name,
+                    _single_line(exc, 160),
+                )
+        return removed
+
+    @staticmethod
     def _mark_memo_request_tool_boundary(event: AstrMessageEvent, req: Any) -> None:
         try:
             setattr(event, "private_companion_explicit_memo_request", True)
@@ -1701,6 +1916,7 @@ class LlmToolActionsMixin:
                 ensure_ascii=False,
             )
         compact_prompt = re.sub(r"\s+", "", content)
+        group_photo_requested = _photo_group_request_matches(content)
         bot_name = re.sub(r"\s+", "", _single_line(getattr(self, "bot_name", ""), 80))
         assistant_in_frame = bool(
             (bot_name and bot_name in compact_prompt)
@@ -1727,6 +1943,7 @@ class LlmToolActionsMixin:
             intent_kind = "sticker"
         elif intent_kind == "text2img" and (
             self._character_photo_request_matches(content)
+            or group_photo_requested
             or assistant_in_frame
             or any(
                 token in compact_prompt
@@ -1831,7 +2048,9 @@ class LlmToolActionsMixin:
 
         send_image = bool_arg(send, True)
         if send_image:
-            self._mark_smart_imagechat_skip_proactive_emoji(event)
+            marker = getattr(self, "_mark_smart_imagechat_skip_proactive_emoji", None)
+            if callable(marker):
+                marker(event)
         reference_sources: list[str] = []
 
         def add_reference_source(value: Any) -> None:
@@ -1858,6 +2077,55 @@ class LlmToolActionsMixin:
                 add_reference_source(raw_reference)
         elif raw_multi_references:
             add_reference_source(raw_multi_references)
+
+        if group_photo_requested:
+            # 合影只能由本轮用户携带或引用的图片授权。工具参数可能来自模型，
+            # 不能让配置的人设图、今日穿搭图或臆造路径绕过这一能力边界。
+            reference_sources.clear()
+            reference_path = ""
+            context_resolver = getattr(self, "_photo_reference_image_from_command_context", None)
+            saw_image = False
+            if callable(context_resolver):
+                try:
+                    resolved_path, _resolved_label, saw_image = await context_resolver(event, requester_id)
+                    reference_path = _path_text(resolved_path, 1000)
+                except Exception as exc:
+                    missing = _missing_optional_model_dependency(exc)
+                    message = (
+                        f"合影参考图解析缺少可选依赖 {missing}，请让用户重新发送或引用人物图片。"
+                        if missing
+                        else f"合影参考图解析失败：{_single_line(exc, 160)}"
+                    )
+                    return json.dumps(
+                        {
+                            "status": "need_reference",
+                            "success": False,
+                            "generated": False,
+                            "sent": False,
+                            "message": message,
+                            "must_not_claim_sent": True,
+                            "retryable": False,
+                        },
+                        ensure_ascii=False,
+                    )
+            if not reference_path:
+                return json.dumps(
+                    {
+                        "status": "need_reference",
+                        "success": False,
+                        "generated": False,
+                        "sent": False,
+                        "message": (
+                            "看到了本轮图片，但没能保存成可用的其他人物参考图；请让用户重新发送或引用人物图片。"
+                            if saw_image
+                            else "合影需要本轮随消息发送或引用的其他人物参考图。Bot 单人人设图、今日穿搭图、纯文字描述或单独传入的路径都不算，已停止生成。"
+                        ),
+                        "must_not_claim_sent": True,
+                        "retryable": False,
+                    },
+                    ensure_ascii=False,
+                )
+            add_reference_source(reference_path)
 
         resolver = getattr(self, "_photo_reference_source_to_stable_path", None)
         resolved_reference_paths: list[str] = []
@@ -1932,7 +2200,7 @@ class LlmToolActionsMixin:
             wants_context_reference = wants_indexed_references or any(
                 token in compact_prompt
                 for token in ("这张", "这图", "这幅", "这份", "参考图", "用图", "按图", "照着", "根据图", "根据这张", "用这张")
-            )
+            ) or group_photo_requested
             if wants_context_reference:
                 try:
                     try:
@@ -2028,6 +2296,10 @@ class LlmToolActionsMixin:
             "request_text": content,
             "session_key": generation_session_key,
             "continuity_key": continuity_key,
+            "requester_user_id": requester_id,
+            "requester_is_private": bool(
+                (getattr(event, "is_private_chat", lambda: False)() if callable(getattr(event, "is_private_chat", None)) else getattr(event, "is_private_chat", False))
+            ),
             "reference_image_path": reference_path,
             "reference_image_paths": list(resolved_reference_paths),
             "image_size": _single_line(image_size or kwargs.get("size"), 40),
@@ -2228,9 +2500,18 @@ class LlmToolActionsMixin:
                     reference_image_path=actual_reference_path,
                     reference_used=used_reference if reference_usage_known else None,
                 )
+        delivery_uncertain = bool(delivery.get("uncertain"))
         overall_success = bool(ok and (not send_image or sent))
         result_payload = {
-            "status": "success" if overall_success else ("delivery_failed" if ok else "error"),
+            "status": (
+                "success"
+                if overall_success
+                else "delivery_uncertain"
+                if ok and send_image and delivery_uncertain
+                else "delivery_failed"
+                if ok
+                else "error"
+            ),
             "success": overall_success,
             "generated": ok,
             "send_requested": send_image,
@@ -2269,6 +2550,7 @@ class LlmToolActionsMixin:
             "prompt_hash": _single_line(generation_metadata.get("prompt_hash"), 80),
             "prompt_path": _single_line(generation_metadata.get("prompt_path"), 1000),
             "sent": sent,
+            "delivery_uncertain": delivery_uncertain,
             "delivery": _single_line(delivery.get("destination"), 30),
             "safety_review": _single_line(delivery.get("review_label"), 30),
             "note": _single_line(note, 220),
@@ -2286,8 +2568,13 @@ class LlmToolActionsMixin:
                     "failure_stage": "delivery",
                     "delivery_error": delivery_error,
                     "actual_error": delivery_error,
-                    "actionable_hint": "图片文件已经生成，但用户没有收到图片。请明确说发送失败，绝对不能说已经发出。",
-                    "retryable": True,
+                    "actionable_hint": (
+                        "图片已经提交给平台，但发送回执未确认。不要断言用户已收到，也不要断言发送失败；"
+                        "如需回复，只能简短说明回执未确认并请用户查看，绝对不要立即再次发送。"
+                        if delivery_uncertain
+                        else "图片文件已经生成，但用户没有收到图片。请明确说发送失败，绝对不能说已经发出。"
+                    ),
+                    "retryable": not delivery_uncertain,
                 }
             )
         elif not ok:
@@ -2311,6 +2598,1047 @@ class LlmToolActionsMixin:
             )
         return json.dumps(result_payload, ensure_ascii=False)
 
+    @staticmethod
+    def _reaction_expression_bool_arg(value: Any, default: bool) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        normalized = str(value).strip().lower()
+        if normalized in {"1", "true", "yes", "on", "是", "发送"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "否", "不发送"}:
+            return False
+        return default
+
+    @staticmethod
+    def _reaction_expression_scope(event: Any) -> str:
+        checker = getattr(event, "is_private_chat", None)
+        if callable(checker):
+            try:
+                if bool(checker()):
+                    return "private"
+            except Exception:
+                pass
+        origin = str(getattr(event, "unified_msg_origin", "") or "")
+        if ":FriendMessage:" in origin:
+            return "private"
+        if ":GroupMessage:" in origin:
+            return "group"
+        return "group" if callable(checker) else "unknown"
+
+    @classmethod
+    def _reaction_expression_scope_key(cls, event: Any, user_id: str = "") -> str:
+        origin = _single_line(getattr(event, "unified_msg_origin", ""), 240)
+        if origin:
+            return origin
+        scope = cls._reaction_expression_scope(event)
+        return f"{scope}:{_single_line(user_id, 160) or 'unknown'}"
+
+    @staticmethod
+    def _reaction_expression_authorization(event: Any) -> dict[str, Any]:
+        raw = getattr(
+            event,
+            "_private_companion_reaction_expression_authorization",
+            None,
+        )
+        if isinstance(raw, dict):
+            return raw
+        getter = getattr(event, "get_extra", None)
+        if callable(getter):
+            try:
+                raw = getter("private_companion_reaction_expression_authorization")
+            except Exception:
+                raw = None
+        if not isinstance(raw, dict):
+            extras = getattr(event, "extras", None)
+            raw = (
+                extras.get("private_companion_reaction_expression_authorization")
+                if isinstance(extras, dict)
+                else None
+            )
+        return raw if isinstance(raw, dict) else {}
+
+    @staticmethod
+    def _set_reaction_expression_authorization(
+        event: Any, authorization: dict[str, Any]
+    ) -> None:
+        try:
+            setattr(
+                event,
+                "_private_companion_reaction_expression_authorization",
+                authorization,
+            )
+        except Exception:
+            pass
+        setter = getattr(event, "set_extra", None)
+        if callable(setter):
+            try:
+                setter(
+                    "private_companion_reaction_expression_authorization",
+                    authorization,
+                )
+            except Exception:
+                pass
+
+    async def _preauthorize_reaction_expression_prompt(
+        self, event: Any
+    ) -> bool:
+        now = _now_ts()
+        existing = self._reaction_expression_authorization(event)
+        if existing:
+            if now > _safe_float(existing.get("expires_at"), 0.0):
+                return False
+            return bool(existing.get("authorized") and not existing.get("consumed"))
+        authorization: dict[str, Any] = {
+            "authorized": False,
+            "reason": "experiment_disabled",
+            "authorized_at": now,
+            "expires_at": now + 600.0,
+            "consumed": False,
+        }
+        if not bool(getattr(self, "enable_reaction_expression_experiment", False)):
+            self._set_reaction_expression_authorization(event, authorization)
+            return False
+        if not self._reaction_image_provider_available():
+            authorization["reason"] = "provider_unavailable"
+            self._set_reaction_expression_authorization(event, authorization)
+            return False
+
+        scope = self._reaction_expression_scope(event)
+        allowed = (
+            bool(getattr(self, "reaction_expression_private_enabled", True))
+            if scope == "private"
+            else bool(getattr(self, "reaction_expression_group_enabled", False))
+            if scope == "group"
+            else False
+        )
+        if not allowed:
+            authorization["reason"] = f"{scope}_disabled"
+            self._set_reaction_expression_authorization(event, authorization)
+            return False
+        try:
+            user_id = _single_line(event.get_sender_id(), 160)
+        except Exception:
+            user_id = ""
+        if not user_id:
+            authorization["reason"] = "missing_user"
+            self._set_reaction_expression_authorization(event, authorization)
+            return False
+
+        scope_key = self._reaction_expression_scope_key(event, user_id)
+        configured_probability = _safe_float(
+            getattr(self, "reaction_expression_trigger_probability", 0.2),
+            0.2,
+            0.0,
+            1.0,
+        )
+        cooldown = _safe_float(
+            getattr(self, "reaction_expression_cooldown_seconds", 180),
+            180.0,
+            0.0,
+            86400.0,
+        )
+        async with self._data_lock:
+            user = self._get_user(user_id)
+            state = ensure_reaction_expression_state(user)
+            scoped_state = reaction_expression_scope_state(state, scope_key)
+            probability = reaction_expression_effective_probability(
+                state, configured_probability
+            )
+            gate = evaluate_reaction_expression_gate(
+                scoped_state,
+                {"signature": ""},
+                now=now,
+                probability=probability,
+                cooldown_seconds=cooldown,
+                random_value=random.random(),
+            )
+        authorization.update(
+            {
+                "authorized": bool(gate.get("allowed")),
+                "reason": _single_line(gate.get("reason"), 80) or "gate",
+                "user_id": user_id,
+                "scope": scope,
+                "scope_key": scope_key,
+                "nonce": uuid.uuid4().hex,
+                "configured_probability": configured_probability,
+                "effective_probability": probability,
+            }
+        )
+        self._set_reaction_expression_authorization(event, authorization)
+        if authorization["authorized"]:
+            self._note_reaction_expression_runtime(offers=1, last_reason="offered")
+        return bool(authorization["authorized"])
+
+    def _consume_reaction_expression_authorization(
+        self,
+        event: Any,
+        *,
+        user_id: str,
+        scope_key: str,
+    ) -> tuple[bool, str]:
+        authorization = self._reaction_expression_authorization(event)
+        if not authorization:
+            return False, "not_preauthorized"
+        reason = _single_line(authorization.get("reason"), 80) or "not_preauthorized"
+        if not authorization.get("authorized"):
+            return False, reason
+        if authorization.get("consumed"):
+            return False, "authorization_consumed"
+        if _now_ts() > _safe_float(authorization.get("expires_at"), 0.0):
+            return False, "authorization_expired"
+        if _single_line(authorization.get("user_id"), 160) != user_id:
+            return False, "authorization_user_mismatch"
+        if _single_line(authorization.get("scope_key"), 240) != scope_key:
+            return False, "authorization_scope_mismatch"
+        authorization["consumed"] = True
+        self._set_reaction_expression_authorization(event, authorization)
+        return True, "authorized"
+
+    def _reaction_expression_skip_result(
+        self,
+        reason: str,
+        *,
+        message: str = "本轮不使用表情表达，继续自然文字回复即可",
+        **extra: Any,
+    ) -> dict[str, Any]:
+        self._note_reaction_expression_runtime(skipped=1, last_reason=reason)
+        payload: dict[str, Any] = {
+            "status": "skipped",
+            "success": True,
+            "found": False,
+            "sent": False,
+            "experimental": True,
+            "decision": "skip",
+            "skip_reason": _single_line(reason, 80),
+            "message": _single_line(message, 240),
+            "must_not_claim_sent": True,
+            "final_response_instruction": "无需向用户解释跳过原因，按原语境继续自然文字回复。",
+        }
+        payload.update(extra)
+        return payload
+
+    def _note_reaction_expression_runtime(
+        self,
+        *,
+        attempts: int = 0,
+        offers: int = 0,
+        lookups: int = 0,
+        cache_hits: int = 0,
+        sent: int = 0,
+        skipped: int = 0,
+        last_reason: str = "",
+        latency_ms: float | None = None,
+        lookup_elapsed_ms: float = 0.0,
+    ) -> None:
+        runtime = getattr(self, "_reaction_expression_runtime", None)
+        if not isinstance(runtime, dict):
+            runtime = {}
+            setattr(self, "_reaction_expression_runtime", runtime)
+        for key, increment in (
+            ("attempts", attempts),
+            ("offers", offers),
+            ("lookups", lookups),
+            ("cache_hits", cache_hits),
+            ("sent", sent),
+            ("skipped", skipped),
+        ):
+            if increment:
+                runtime[key] = max(0, _safe_int(runtime.get(key), 0)) + max(
+                    0, _safe_int(increment, 0)
+                )
+        if lookup_elapsed_ms > 0:
+            runtime["total_lookup_ms"] = round(
+                max(0.0, _safe_float(runtime.get("total_lookup_ms"), 0.0))
+                + max(0.0, _safe_float(lookup_elapsed_ms, 0.0)),
+                2,
+            )
+        if latency_ms is not None:
+            runtime["last_latency_ms"] = round(
+                max(0.0, _safe_float(latency_ms, 0.0)), 2
+            )
+        if last_reason:
+            runtime["last_reason"] = _single_line(last_reason, 120)
+        runtime["last_at"] = _now_ts()
+
+    def _persist_reaction_expression_state(self) -> None:
+        scheduler = getattr(self, "_schedule_data_save", None)
+        if callable(scheduler):
+            try:
+                scheduler()
+                return
+            except Exception:
+                pass
+        saver = getattr(self, "_save_data_sync", None)
+        if callable(saver):
+            saver()
+
+    @staticmethod
+    def _reaction_expression_lookup_cache_key(
+        provider: Any,
+        query: str,
+        context: str,
+        meme_only: bool,
+    ) -> tuple[int, str, str, bool]:
+        def normalize(value: Any) -> str:
+            return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+
+        return id(provider), normalize(query), normalize(context), bool(meme_only)
+
+    def _reaction_expression_lookup_cache_get(
+        self,
+        key: tuple[int, str, str, bool],
+    ) -> dict[str, Any] | None:
+        cache = getattr(self, "_reaction_expression_lookup_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            setattr(self, "_reaction_expression_lookup_cache", cache)
+        now = time.monotonic()
+        for cached_key, entry in list(cache.items()):
+            if not isinstance(entry, dict) or now > _safe_float(entry.get("expires_at"), 0.0):
+                cache.pop(cached_key, None)
+        entry = cache.get(key)
+        if not isinstance(entry, dict):
+            return None
+        lookup = entry.get("lookup")
+        if not isinstance(lookup, dict):
+            cache.pop(key, None)
+            return None
+        if lookup.get("success"):
+            cached_path = _path_text(lookup.get("path"), 1000)
+            if not cached_path or not os.path.isfile(cached_path):
+                cache.pop(key, None)
+                return None
+        return dict(lookup)
+
+    def _reaction_expression_lookup_cache_put(
+        self,
+        key: tuple[int, str, str, bool],
+        lookup: dict[str, Any],
+    ) -> None:
+        if not isinstance(lookup, dict):
+            return
+        status = _single_line(lookup.get("status"), 40).lower()
+        success = bool(lookup.get("success"))
+        if success:
+            image_path = _path_text(lookup.get("path"), 1000)
+            if not image_path or not os.path.isfile(image_path):
+                return
+            ttl_seconds = 120.0
+        elif status in {"not_found", "empty_library"}:
+            ttl_seconds = 30.0
+        else:
+            return
+        cache = getattr(self, "_reaction_expression_lookup_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            setattr(self, "_reaction_expression_lookup_cache", cache)
+        now = time.monotonic()
+        cache[key] = {
+            "lookup": dict(lookup),
+            "created_at": now,
+            "expires_at": now + ttl_seconds,
+        }
+        if len(cache) > 48:
+            oldest = sorted(
+                cache.items(),
+                key=lambda item: _safe_float(item[1].get("created_at"), 0.0)
+                if isinstance(item[1], dict)
+                else 0.0,
+            )
+            for cached_key, _entry in oldest[: len(cache) - 48]:
+                cache.pop(cached_key, None)
+
+    def _reaction_expression_lookup_context(
+        self,
+        user: dict[str, Any],
+        intent: dict[str, Any],
+    ) -> str:
+        parts = [
+            "实验性表情表达：仅在候选自然贴合时选择，不合适时允许不返回图片。",
+            f"沟通用途：{_single_line(intent.get('purpose'), 120)}"
+            if intent.get("purpose")
+            else "",
+            f"表达情绪：{_single_line(intent.get('emotion'), 80)}"
+            if intent.get("emotion")
+            else "",
+            f"表达强度：{_safe_int(intent.get('intensity'), 0, 0, 5)}/5",
+            f"当前语境：{_single_line(intent.get('context'), 500)}"
+            if intent.get("context")
+            else "",
+        ]
+        candidates = intent.get("candidate_queries")
+        if isinstance(candidates, list) and candidates:
+            parts.append(f"候选检索表达：{'；'.join(_single_line(item, 100) for item in candidates)}")
+        intent_profile = user.get("intent_profile")
+        if isinstance(intent_profile, dict) and intent_profile:
+            parts.append(
+                "近期用户意图："
+                + _single_line(json.dumps(intent_profile, ensure_ascii=False), 260)
+            )
+        relationship_state = user.get("relationship_state")
+        if isinstance(relationship_state, dict) and relationship_state:
+            parts.append(
+                "当前关系状态："
+                + _single_line(json.dumps(relationship_state, ensure_ascii=False), 260)
+            )
+        residue_formatter = getattr(self, "_format_emotion_residue_hint", None)
+        if callable(residue_formatter):
+            try:
+                residue = _single_line(residue_formatter(user), 220)
+                if residue:
+                    parts.append(f"情绪余波：{residue}")
+            except Exception:
+                pass
+        preference = ensure_reaction_expression_state(user).get("preference")
+        if isinstance(preference, dict):
+            score = _safe_int(preference.get("score"), 0, -20, 20)
+            if score:
+                parts.append(f"用户对近期表情表达的轻量偏好分：{score}")
+        return _single_line("；".join(part for part in parts if part), 1000)
+
+    def _record_reaction_expression_feedback(
+        self,
+        user: dict[str, Any],
+        signal: str,
+        text: str,
+        *,
+        scope_key: str = "",
+    ) -> dict[str, Any]:
+        state = ensure_reaction_expression_state(user)
+        return record_reaction_expression_feedback(
+            state,
+            signal,
+            text,
+            now=_now_ts(),
+            event_limit=max(8, _safe_int(getattr(self, "reaction_expression_candidate_limit", 6), 6, 1, 16) * 2),
+            scope_key=scope_key,
+        )
+
+    def _apply_reaction_expression_feedback(
+        self,
+        user: dict[str, Any],
+        text: str,
+        *,
+        scope_key: str = "",
+    ) -> dict[str, Any]:
+        state = ensure_reaction_expression_state(user)
+        now = _now_ts()
+        signal = classify_reaction_expression_feedback(
+            state,
+            text,
+            now=now,
+            scope_key=scope_key,
+        )
+        if not signal:
+            return {}
+        return record_reaction_expression_feedback(
+            state,
+            signal,
+            text,
+            now=now,
+            event_limit=max(8, _safe_int(getattr(self, "reaction_expression_candidate_limit", 6), 6, 1, 16) * 2),
+            scope_key=scope_key,
+        )
+
+    async def _pc_reaction_expression_impl(
+        self,
+        event: AstrMessageEvent,
+        *,
+        query: str = "",
+        context: str = "",
+        meme_only: bool = True,
+        send: bool = True,
+        caption: str = "",
+        purpose: str = "",
+        emotion: str = "",
+        intensity: int = 0,
+        candidate_queries: Any = "",
+        attach_only: bool = False,
+    ) -> str:
+        self._note_reaction_expression_runtime(attempts=1)
+        if not bool(getattr(self, "enable_reaction_expression_experiment", False)):
+            return json.dumps(
+                self._reaction_expression_skip_result("experiment_disabled"),
+                ensure_ascii=False,
+            )
+        if not attach_only and not self._reaction_expression_bool_arg(send, True):
+            return json.dumps(
+                self._reaction_expression_skip_result("send_disabled"),
+                ensure_ascii=False,
+            )
+
+        scope = self._reaction_expression_scope(event)
+        scope_enabled = (
+            bool(getattr(self, "reaction_expression_private_enabled", True))
+            if scope == "private"
+            else bool(getattr(self, "reaction_expression_group_enabled", False))
+            if scope == "group"
+            else False
+        )
+        if not scope_enabled:
+            return json.dumps(
+                self._reaction_expression_skip_result(f"{scope}_disabled"),
+                ensure_ascii=False,
+            )
+
+        try:
+            user_id = _single_line(event.get_sender_id(), 160)
+        except Exception:
+            user_id = ""
+        if not user_id:
+            return json.dumps(
+                self._reaction_expression_skip_result("missing_user"),
+                ensure_ascii=False,
+            )
+        scope_key = self._reaction_expression_scope_key(event, user_id)
+        authorized, authorization_reason = self._consume_reaction_expression_authorization(
+            event,
+            user_id=user_id,
+            scope_key=scope_key,
+        )
+        if not authorized:
+            return json.dumps(
+                self._reaction_expression_skip_result(authorization_reason),
+                ensure_ascii=False,
+            )
+
+        candidate_limit = _safe_int(
+            getattr(self, "reaction_expression_candidate_limit", 6), 6, 1, 16
+        )
+        intent = normalize_reaction_expression_intent(
+            query=query,
+            context=context,
+            purpose=purpose,
+            emotion=emotion,
+            intensity=intensity,
+            candidate_queries=candidate_queries,
+            candidate_limit=candidate_limit,
+        )
+        signature = _single_line(intent.get("signature"), 40)
+        reservation_token = uuid.uuid4().hex
+        now = _now_ts()
+        async with self._data_lock:
+            user = self._get_user(user_id)
+            state = ensure_reaction_expression_state(user)
+            scoped_state = reaction_expression_scope_state(state, scope_key)
+            gate = evaluate_reaction_expression_gate(
+                scoped_state,
+                intent,
+                now=now,
+                probability=1.0,
+                cooldown_seconds=_safe_float(
+                    getattr(self, "reaction_expression_cooldown_seconds", 180),
+                    180.0,
+                    0.0,
+                    86400.0,
+                ),
+                random_value=0.0,
+            )
+            if not gate.get("allowed"):
+                reason = _single_line(gate.get("reason"), 80) or "gate"
+                append_reaction_expression_outcome(
+                    state,
+                    status="skipped",
+                    reason=reason,
+                    intent_signature=signature,
+                    now=now,
+                    candidate_limit=candidate_limit,
+                )
+                self._persist_reaction_expression_state()
+                return json.dumps(
+                    self._reaction_expression_skip_result(reason, intent=intent),
+                    ensure_ascii=False,
+                )
+            reserve_reaction_expression_intent(
+                scoped_state,
+                intent,
+                now=now,
+                reservation_token=reservation_token,
+            )
+            lookup_context = self._reaction_expression_lookup_context(user, intent)
+
+        low_latency = bool(getattr(self, "reaction_expression_low_latency_mode", True))
+        raw_lookup = await self._pc_find_reaction_image_impl(
+            event,
+            query=_single_line(intent.get("provider_query"), 500),
+            context=lookup_context,
+            meme_only=meme_only,
+            send=False,
+            caption="",
+            low_latency=low_latency,
+        )
+        try:
+            lookup = json.loads(raw_lookup)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            lookup = {}
+        lookup_cache_hit = bool(lookup.get("cache_hit")) if isinstance(lookup, dict) else False
+        lookup_latency_ms = (
+            _safe_float(lookup.get("lookup_latency_ms"), 0.0, 0.0, 3_600_000.0)
+            if isinstance(lookup, dict)
+            else 0.0
+        )
+        if not isinstance(lookup, dict) or not lookup.get("success") or not lookup.get("found"):
+            reason = _single_line(lookup.get("status") if isinstance(lookup, dict) else "", 80) or "not_found"
+            async with self._data_lock:
+                state = ensure_reaction_expression_state(self._get_user(user_id))
+                scoped_state = reaction_expression_scope_state(state, scope_key)
+                release_reaction_expression_reservation(
+                    scoped_state,
+                    intent_signature=signature,
+                    reservation_token=reservation_token,
+                )
+                append_reaction_expression_outcome(
+                    state,
+                    status="skipped",
+                    reason=reason,
+                    intent_signature=signature,
+                    now=_now_ts(),
+                    candidate_limit=candidate_limit,
+                    cache_hit=lookup_cache_hit,
+                    latency_ms=lookup_latency_ms,
+                )
+                self._persist_reaction_expression_state()
+            return json.dumps(
+                self._reaction_expression_skip_result(
+                    reason,
+                    intent=intent,
+                    provider_status=reason,
+                ),
+                ensure_ascii=False,
+            )
+
+        image_path = _path_text(lookup.get("path"), 1000)
+        image_id = _single_line(lookup.get("image_id"), 160)
+        image_key = reaction_expression_image_key(image_id, image_path)
+        image_keys = reaction_expression_image_keys(image_id, image_path)
+        duplicate_window = max(
+            600.0,
+            _safe_float(
+                getattr(self, "reaction_expression_cooldown_seconds", 180),
+                180.0,
+                0.0,
+                86400.0,
+            )
+            * 3,
+        )
+        async with self._data_lock:
+            state = ensure_reaction_expression_state(self._get_user(user_id))
+            scoped_state = reaction_expression_scope_state(state, scope_key)
+            final_reason = ""
+            if not reaction_expression_reservation_owned(
+                scoped_state,
+                reservation_token,
+            ):
+                final_reason = "reservation_lost"
+            else:
+                last_sent_at = _safe_float(scoped_state.get("last_sent_at"), 0.0)
+                cooldown_seconds = _safe_float(
+                    getattr(self, "reaction_expression_cooldown_seconds", 180),
+                    180.0,
+                    0.0,
+                    86400.0,
+                )
+                current_time = _now_ts()
+                if (
+                    last_sent_at > 0
+                    and cooldown_seconds > 0
+                    and current_time - last_sent_at < cooldown_seconds
+                ):
+                    final_reason = "cooldown"
+                else:
+                    scoped_state["reservation"]["at"] = current_time
+            if final_reason:
+                release_reaction_expression_reservation(
+                    scoped_state,
+                    intent_signature=signature,
+                    reservation_token=reservation_token,
+                )
+                append_reaction_expression_outcome(
+                    state,
+                    status="skipped",
+                    reason=final_reason,
+                    intent_signature=signature,
+                    now=_now_ts(),
+                    candidate_limit=candidate_limit,
+                    image_key=image_key,
+                    cache_hit=lookup_cache_hit,
+                    latency_ms=lookup_latency_ms,
+                )
+                self._persist_reaction_expression_state()
+                return json.dumps(
+                    self._reaction_expression_skip_result(
+                        final_reason,
+                        intent=intent,
+                        found=True,
+                        image_id=image_id,
+                    ),
+                    ensure_ascii=False,
+                )
+            image_reserved = reserve_reaction_expression_image(
+                state,
+                image_key=image_key,
+                image_keys=image_keys,
+                now=_now_ts(),
+                duplicate_window_seconds=duplicate_window,
+                reservation_token=reservation_token,
+            )
+            if not image_reserved:
+                release_reaction_expression_reservation(
+                    scoped_state,
+                    intent_signature=signature,
+                    reservation_token=reservation_token,
+                )
+                append_reaction_expression_outcome(
+                    state,
+                    status="skipped",
+                    reason="duplicate_image",
+                    intent_signature=signature,
+                    now=_now_ts(),
+                    candidate_limit=candidate_limit,
+                    image_key=image_key,
+                    cache_hit=lookup_cache_hit,
+                    latency_ms=lookup_latency_ms,
+                )
+                self._persist_reaction_expression_state()
+                return json.dumps(
+                    self._reaction_expression_skip_result(
+                        "duplicate_image",
+                        intent=intent,
+                        found=True,
+                        image_id=image_id,
+                    ),
+                    ensure_ascii=False,
+                )
+
+        tags = [
+            _single_line(item, 60)
+            for item in lookup.get("tags", [])
+            if _single_line(item, 60)
+        ]
+        need = _single_line(lookup.get("need"), 220) or _single_line(
+            intent.get("provider_query"), 220
+        )
+        match_reason = _single_line(lookup.get("reason"), 220)
+        snapshot_caption = "；".join(
+            part
+            for part in (
+                f"图库标签：{'、'.join(tags[:8])}" if tags else "",
+                f"表达需求：{need}" if need else "",
+                f"选图依据：{match_reason}" if match_reason else "",
+            )
+            if part
+        )
+        if attach_only:
+            pending_attachment = {
+                "user_id": user_id,
+                "scope_key": scope_key,
+                "intent": intent,
+                "intent_signature": signature,
+                "reservation_token": reservation_token,
+                "candidate_limit": candidate_limit,
+                "duplicate_window_seconds": duplicate_window,
+                "image_path": image_path,
+                "image_id": image_id,
+                "image_key": image_key,
+                "image_keys": image_keys,
+                "tags": tags,
+                "need": need,
+                "match_reason": match_reason,
+                "snapshot_caption": snapshot_caption,
+                "cache_hit": lookup_cache_hit,
+                "lookup_latency_ms": lookup_latency_ms,
+                "attached": False,
+                "settled": False,
+            }
+            try:
+                setattr(
+                    event,
+                    "_private_companion_reaction_expression_pending_attachment",
+                    pending_attachment,
+                )
+            except Exception:
+                await self._settle_reaction_expression_attachment_data(
+                    pending_attachment,
+                    sent=False,
+                    reason="attachment_state_failed",
+                )
+                return json.dumps(
+                    {
+                        "status": "skipped",
+                        "success": True,
+                        "found": True,
+                        "sent": False,
+                        "experimental": True,
+                        "decision": "skip",
+                        "skip_reason": "attachment_state_failed",
+                        "intent": intent,
+                        "image_id": image_id,
+                        "must_not_claim_sent": True,
+                    },
+                    ensure_ascii=False,
+                )
+            return json.dumps(
+                {
+                    "status": "prepared",
+                    "success": True,
+                    "found": True,
+                    "sent": False,
+                    "experimental": True,
+                    "decision": "attach",
+                    "path": image_path,
+                    "image_id": image_id,
+                    "tags": tags,
+                    "need": need,
+                    "reason": match_reason,
+                    "confidence": _safe_float(
+                        lookup.get("confidence"), 0.0, 0.0, 1.0
+                    ),
+                    "cache_hit": lookup_cache_hit,
+                    "lookup_latency_ms": lookup_latency_ms,
+                    "intent": intent,
+                    "must_not_claim_sent": True,
+                },
+                ensure_ascii=False,
+            )
+
+        visible_caption = self._sanitize_photo_tool_caption(caption, limit=120)
+        try:
+            delivery = await self._deliver_generated_image_to_event(
+                event,
+                image_path=image_path,
+                caption=visible_caption,
+            )
+        except Exception as exc:
+            delivery = {
+                "sent": False,
+                "destination": "error",
+                "message": f"图片发送失败：{_single_line(exc, 180) or '未知错误'}",
+            }
+        if not isinstance(delivery, dict):
+            delivery = {"sent": False, "destination": "error", "message": "图片发送失败"}
+        sent = bool(delivery.get("sent"))
+        if not sent:
+            delivery_reason = (
+                "delivery_uncertain"
+                if bool(delivery.get("uncertain"))
+                else "delivery_failed"
+            )
+            async with self._data_lock:
+                state = ensure_reaction_expression_state(self._get_user(user_id))
+                scoped_state = reaction_expression_scope_state(state, scope_key)
+                release_reaction_expression_image(
+                    state,
+                    image_key,
+                    image_keys=image_keys,
+                    reservation_token=reservation_token,
+                )
+                release_reaction_expression_reservation(
+                    scoped_state,
+                    intent_signature=signature,
+                    reservation_token=reservation_token,
+                )
+                append_reaction_expression_outcome(
+                    state,
+                    status="skipped",
+                    reason=delivery_reason,
+                    intent_signature=signature,
+                    now=_now_ts(),
+                    candidate_limit=candidate_limit,
+                    image_key=image_key,
+                    cache_hit=lookup_cache_hit,
+                    latency_ms=lookup_latency_ms,
+                )
+                self._persist_reaction_expression_state()
+            return json.dumps(
+                self._reaction_expression_skip_result(
+                    delivery_reason,
+                    intent=intent,
+                    found=True,
+                    image_id=image_id,
+                ),
+                ensure_ascii=False,
+            )
+
+        try:
+            setattr(event, "_private_companion_photo_tool_sent", True)
+            setattr(event, "_private_companion_photo_tool_sent_caption", visible_caption)
+        except Exception:
+            pass
+        settled_at = _now_ts()
+        async with self._data_lock:
+            user = self._get_user(user_id)
+            state = ensure_reaction_expression_state(user)
+            record_reaction_expression_sent(
+                state,
+                intent,
+                image_id=image_id,
+                image_path=image_path,
+                image_key=image_key,
+                image_keys=image_keys,
+                now=settled_at,
+                candidate_limit=candidate_limit,
+                duplicate_window_seconds=duplicate_window,
+                scope_key=scope_key,
+                reservation_token=reservation_token,
+                cache_hit=lookup_cache_hit,
+                latency_ms=lookup_latency_ms,
+            )
+            if snapshot_caption:
+                self._remember_recent_photo_share_snapshot(
+                    user,
+                    caption=snapshot_caption,
+                    topic=need,
+                    motive=match_reason,
+                    reason="reaction_expression_experiment",
+                    subject_owner="unknown",
+                )
+            self._persist_reaction_expression_state()
+
+        self._note_reaction_expression_runtime(sent=1, last_reason="delivered")
+        self._mark_reaction_asset_used(image_id)
+
+        return json.dumps(
+            {
+                "status": "success",
+                "success": True,
+                "found": True,
+                "sent": True,
+                "experimental": True,
+                "decision": "send",
+                "message": _single_line(delivery.get("message"), 220),
+                "path": image_path,
+                "image_id": image_id,
+                "tags": tags,
+                "need": need,
+                "reason": match_reason,
+                "confidence": _safe_float(lookup.get("confidence"), 0.0, 0.0, 1.0),
+                "delivery": _single_line(delivery.get("destination"), 40),
+                "cache_hit": lookup_cache_hit,
+                "lookup_latency_ms": lookup_latency_ms,
+                "intent": intent,
+                "must_not_claim_sent": False,
+                "final_response_instruction": (
+                    "图片和文字 caption 已作为本轮组合回复发送。"
+                    f"最终回复不要留空，只输出 {PHOTO_TOOL_SILENT_SENTINEL}。"
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    async def _settle_reaction_expression_attachment_data(
+        self,
+        pending: dict[str, Any],
+        *,
+        sent: bool,
+        reason: str,
+    ) -> bool:
+        """Commit an attached image only after the platform send phase."""
+        if not isinstance(pending, dict) or pending.get("settled"):
+            return False
+        pending["settled"] = True
+        pending["sent"] = bool(sent)
+        pending["settled_reason"] = _single_line(reason, 80)
+
+        user_id = _single_line(pending.get("user_id"), 160)
+        scope_key = _single_line(pending.get("scope_key"), 240)
+        intent = pending.get("intent") if isinstance(pending.get("intent"), dict) else {}
+        signature = _single_line(pending.get("intent_signature"), 40)
+        reservation_token = _single_line(pending.get("reservation_token"), 80)
+        candidate_limit = _safe_int(pending.get("candidate_limit"), 6, 1, 16)
+        image_path = _path_text(pending.get("image_path"), 1000)
+        image_id = _single_line(pending.get("image_id"), 160)
+        image_key = _single_line(pending.get("image_key"), 1000)
+        image_keys = pending.get("image_keys")
+        cache_hit = bool(pending.get("cache_hit"))
+        latency_ms = _safe_float(
+            pending.get("lookup_latency_ms"), 0.0, 0.0, 3_600_000.0
+        )
+        settled_at = _now_ts()
+
+        if not user_id:
+            self._note_reaction_expression_runtime(
+                skipped=1,
+                last_reason=reason or "missing_user",
+            )
+            return False
+
+        async with self._data_lock:
+            user = self._get_user(user_id)
+            state = ensure_reaction_expression_state(user)
+            scoped_state = reaction_expression_scope_state(state, scope_key)
+            if sent:
+                record_reaction_expression_sent(
+                    state,
+                    intent,
+                    image_id=image_id,
+                    image_path=image_path,
+                    image_key=image_key,
+                    image_keys=image_keys,
+                    now=settled_at,
+                    candidate_limit=candidate_limit,
+                    duplicate_window_seconds=_safe_float(
+                        pending.get("duplicate_window_seconds"),
+                        600.0,
+                        60.0,
+                        86400.0 * 7,
+                    ),
+                    scope_key=scope_key,
+                    reservation_token=reservation_token,
+                    cache_hit=cache_hit,
+                    latency_ms=latency_ms,
+                )
+                snapshot_caption = _single_line(
+                    pending.get("snapshot_caption"), 700
+                )
+                remember_snapshot = getattr(
+                    self, "_remember_recent_photo_share_snapshot", None
+                )
+                if snapshot_caption and callable(remember_snapshot):
+                    remember_snapshot(
+                        user,
+                        caption=snapshot_caption,
+                        topic=_single_line(pending.get("need"), 220),
+                        motive=_single_line(pending.get("match_reason"), 220),
+                        reason="reaction_expression_experiment",
+                        subject_owner="unknown",
+                    )
+            else:
+                release_reaction_expression_image(
+                    state,
+                    image_key,
+                    image_keys=image_keys,
+                    reservation_token=reservation_token,
+                )
+                release_reaction_expression_reservation(
+                    scoped_state,
+                    intent_signature=signature,
+                    reservation_token=reservation_token,
+                )
+                append_reaction_expression_outcome(
+                    state,
+                    status="skipped",
+                    reason=_single_line(reason, 80) or "not_sent",
+                    intent_signature=signature,
+                    now=settled_at,
+                    candidate_limit=candidate_limit,
+                    image_key=image_key,
+                    cache_hit=cache_hit,
+                    latency_ms=latency_ms,
+                )
+            self._persist_reaction_expression_state()
+
+        if sent:
+            self._note_reaction_expression_runtime(sent=1, last_reason="delivered")
+            self._mark_reaction_asset_used(image_id)
+        else:
+            self._note_reaction_expression_runtime(
+                skipped=1,
+                last_reason=_single_line(reason, 80) or "not_sent",
+            )
+        return True
+
     async def _pc_find_reaction_image_impl(
         self,
         event: AstrMessageEvent,
@@ -2319,6 +3647,7 @@ class LlmToolActionsMixin:
         meme_only: bool = True,
         send: bool = True,
         caption: str = "",
+        low_latency: bool = False,
     ) -> str:
         query_text = _single_line(query, 500)
         if not query_text:
@@ -2354,9 +3683,6 @@ class LlmToolActionsMixin:
 
         send_image = bool_arg(send, True)
         meme_filter = bool_arg(meme_only, True)
-        if send_image:
-            self._mark_smart_imagechat_skip_proactive_emoji(event)
-
         lookup_context = _single_line(context, 1000)
         snapshot_builder = getattr(self, "_build_companion_scene_snapshot", None)
         snapshot_formatter = getattr(self, "_format_companion_scene_snapshot", None)
@@ -2388,38 +3714,73 @@ class LlmToolActionsMixin:
                     _single_line(exc, 160),
                 )
 
-        api = self._smart_imagechat_api()
-        if api is None or not callable(getattr(api, "find_image", None)):
+        library = self._reaction_asset_library()
+        if library is None or not library.has_enabled_assets():
             return json.dumps(
                 {
                     "status": "unavailable",
                     "success": False,
                     "found": False,
                     "sent": False,
-                    "message": "智能图片对话插件未加载，暂时无法检索本地图库",
+                    "message": "Private Companion 表情包素材库为空，请先在实验功能页导入并启用素材",
                     "must_not_claim_sent": True,
                 },
                 ensure_ascii=False,
             )
 
-        try:
-            lookup = await api.find_image(
-                event,
-                query_text,
-                context=lookup_context,
-                meme_only=meme_filter,
+        lookup_started = time.perf_counter()
+        cache_hit = False
+        cache_key = self._reaction_expression_lookup_cache_key(
+            library,
+            query_text,
+            lookup_context,
+            meme_filter,
+        )
+        lookup = (
+            self._reaction_expression_lookup_cache_get(cache_key)
+            if low_latency
+            else None
+        )
+        if isinstance(lookup, dict):
+            cache_hit = True
+        else:
+            try:
+                lookup = await asyncio.to_thread(
+                    library.find,
+                    query_text,
+                    context=lookup_context,
+                    scope=self._reaction_expression_scope(event),
+                )
+                if lookup is None:
+                    lookup = {
+                        "success": False,
+                        "status": "not_found",
+                        "message": "素材库中没有足够贴合当前语境的表情包",
+                    }
+            except Exception as exc:
+                logger.warning(
+                    "[PrivateCompanion] 自有表情包素材库检索失败: %s",
+                    _single_line(exc, 180),
+                    exc_info=True,
+                )
+                lookup = {
+                    "success": False,
+                    "status": "error",
+                    "message": f"图库检索失败：{_single_line(exc, 160)}",
+                }
+            if low_latency and isinstance(lookup, dict):
+                self._reaction_expression_lookup_cache_put(cache_key, lookup)
+        lookup_latency_ms = round(
+            max(0.0, (time.perf_counter() - lookup_started) * 1000.0), 2
+        )
+        if low_latency:
+            self._note_reaction_expression_runtime(
+                lookups=0 if cache_hit else 1,
+                cache_hits=1 if cache_hit else 0,
+                last_reason="cache_hit" if cache_hit else "lookup",
+                latency_ms=lookup_latency_ms,
+                lookup_elapsed_ms=0.0 if cache_hit else lookup_latency_ms,
             )
-        except Exception as exc:
-            logger.warning(
-                "[PrivateCompanion] 智能图片对话图库检索失败: %s",
-                _single_line(exc, 180),
-                exc_info=True,
-            )
-            lookup = {
-                "success": False,
-                "status": "error",
-                "message": f"图库检索失败：{_single_line(exc, 160)}",
-            }
         if not isinstance(lookup, dict) or not lookup.get("success"):
             lookup = lookup if isinstance(lookup, dict) else {}
             return json.dumps(
@@ -2431,6 +3792,8 @@ class LlmToolActionsMixin:
                     "message": _single_line(lookup.get("message"), 220) or "图库中没有找到合适的表情包",
                     "need": _single_line(lookup.get("need"), 220),
                     "reason": _single_line(lookup.get("reason"), 220),
+                    "cache_hit": cache_hit,
+                    "lookup_latency_ms": lookup_latency_ms,
                     "must_not_claim_sent": True,
                 },
                 ensure_ascii=False,
@@ -2445,6 +3808,8 @@ class LlmToolActionsMixin:
                     "found": False,
                     "sent": False,
                     "message": "匹配到的图库图片文件不可用",
+                    "cache_hit": cache_hit,
+                    "lookup_latency_ms": lookup_latency_ms,
                     "must_not_claim_sent": True,
                 },
                 ensure_ascii=False,
@@ -2503,19 +3868,29 @@ class LlmToolActionsMixin:
                         caption=snapshot_caption,
                         topic=need,
                         motive=match_reason,
-                        reason="smart_reaction_image",
+                        reason="reaction_library_image",
                         subject_owner="unknown",
                     )
                     self._save_data_sync()
 
+        if sent:
+            self._mark_reaction_asset_used(lookup.get("image_id"))
+        delivery_uncertain = bool(delivery.get("uncertain"))
         success = bool(image_path and (not send_image or sent))
         return json.dumps(
             {
-                "status": "success" if success else "delivery_failed",
+                "status": (
+                    "success"
+                    if success
+                    else "delivery_uncertain"
+                    if delivery_uncertain
+                    else "delivery_failed"
+                ),
                 "success": success,
                 "found": True,
                 "send_requested": send_image,
                 "sent": sent,
+                "delivery_uncertain": delivery_uncertain,
                 "message": (
                     _single_line(delivery.get("message"), 220)
                     if send_image
@@ -2528,6 +3903,8 @@ class LlmToolActionsMixin:
                 "reason": match_reason,
                 "confidence": _safe_float(lookup.get("confidence"), 0.0, 0.0, 1.0),
                 "delivery": _single_line(delivery.get("destination"), 40),
+                "cache_hit": cache_hit,
+                "lookup_latency_ms": lookup_latency_ms,
                 "must_not_claim_sent": not sent,
                 "final_response_instruction": (
                     f"图片和 caption 已作为本轮唯一可见回复发送。最终回复不要留空，只输出 {PHOTO_TOOL_SILENT_SENTINEL}。"

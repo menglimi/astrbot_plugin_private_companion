@@ -314,7 +314,256 @@ _GROUP_INJECTION_QUOTE_DAMPENERS = (
 )
 
 class GroupObservationMixin:
-    """群聊观察"""
+    _GROUP_ROLE_LABELS = {"owner": "群主", "admin": "管理员", "member": "普通成员", "unknown": "未知"}
+
+    @staticmethod
+    def _normalize_group_member_role(value: Any) -> str:
+        text = _single_line(value, 24).lower()
+        aliases = {
+            "owner": "owner", "creator": "owner", "群主": "owner",
+            "admin": "admin", "administrator": "admin", "manager": "admin", "管理员": "admin",
+            "member": "member", "normal": "member", "user": "member", "成员": "member", "普通成员": "member",
+        }
+        return aliases.get(text, "unknown")
+
+    @staticmethod
+    def _group_role_source_value(source: Any, *keys: str) -> Any:
+        if isinstance(source, dict):
+            for key in keys:
+                value = source.get(key)
+                if value is not None and str(value).strip():
+                    return value
+            return ""
+        for key in keys:
+            try:
+                value = getattr(source, key, None)
+            except Exception:
+                value = None
+            if value is not None and str(value).strip():
+                return value
+        return ""
+
+    def _group_sender_role_from_event(self, event: Any) -> str:
+        message_obj = getattr(event, "message_obj", None)
+        raw_getter = getattr(self, "_event_raw_payload", None)
+        raw = raw_getter(event) if callable(raw_getter) else getattr(message_obj, "raw_message", None)
+        raw = raw if isinstance(raw, dict) else {}
+        sources = [raw.get("sender"), getattr(message_obj, "sender", None), raw]
+        for source in sources:
+            role = self._normalize_group_member_role(
+                self._group_role_source_value(source, "role", "user_role", "group_role", "permission")
+            )
+            if role != "unknown":
+                return role
+        return "unknown"
+
+    def _observe_group_role_from_event(
+        self,
+        group: dict[str, Any],
+        event: Any,
+        *,
+        sender_id: str,
+        sender_name: str,
+    ) -> None:
+        role = self._group_sender_role_from_event(event)
+        if role == "unknown" or not sender_id:
+            return
+        now = _now_ts()
+        snapshot = group.setdefault("role_snapshot", {})
+        if not isinstance(snapshot, dict):
+            snapshot = {}
+            group["role_snapshot"] = snapshot
+        observed = snapshot.setdefault("observed_roles", {})
+        if not isinstance(observed, dict):
+            observed = {}
+            snapshot["observed_roles"] = observed
+        observed[sender_id] = {
+            "user_id": sender_id,
+            "name": _single_line(sender_name, 60) or sender_id,
+            "role": role,
+            "observed_at": now,
+        }
+        snapshot["event_updated_at"] = now
+        members = group.get("members") if isinstance(group.get("members"), dict) else {}
+        member = members.get(sender_id)
+        if isinstance(member, dict):
+            member["group_role"] = role
+            member["group_role_label"] = self._GROUP_ROLE_LABELS[role]
+            member["group_role_updated_at"] = now
+
+    def _apply_group_role_member_list(
+        self,
+        group: dict[str, Any],
+        raw_members: list[dict[str, Any]],
+        *,
+        self_id: str = "",
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        current = float(now if now is not None else _now_ts())
+        owner: dict[str, Any] = {}
+        admins: list[dict[str, Any]] = []
+        bot: dict[str, Any] = {"user_id": self_id, "name": "", "role": "unknown"}
+        observed_roles: dict[str, Any] = {}
+        members = group.get("members") if isinstance(group.get("members"), dict) else {}
+        for raw in raw_members:
+            if not isinstance(raw, dict):
+                continue
+            user_id = _single_line(raw.get("user_id") or raw.get("uid") or raw.get("uin"), 128)
+            if not user_id:
+                continue
+            role = self._normalize_group_member_role(raw.get("role") or raw.get("permission"))
+            name = _single_line(raw.get("card") or raw.get("nickname") or raw.get("name"), 60) or user_id
+            role_item = {"user_id": user_id, "name": name, "role": role, "observed_at": current}
+            observed_roles[user_id] = role_item
+            if role == "owner":
+                owner = dict(role_item)
+            elif role == "admin":
+                admins.append(dict(role_item))
+            if self_id and user_id == self_id:
+                bot = dict(role_item)
+            member = members.get(user_id)
+            if isinstance(member, dict):
+                member["group_role"] = role
+                member["group_role_label"] = self._GROUP_ROLE_LABELS.get(role, "未知")
+                member["group_role_updated_at"] = current
+        admins.sort(key=lambda item: (str(item.get("name") or ""), str(item.get("user_id") or "")))
+        snapshot = {
+            "complete": True,
+            "source": "onebot_group_member_list",
+            "refreshed_at": current,
+            "last_attempt_at": current,
+            "member_count": len(observed_roles),
+            "owner": owner,
+            "admins": admins,
+            "bot": bot,
+            "observed_roles": observed_roles,
+        }
+        group["role_snapshot"] = snapshot
+        return snapshot
+
+    def _group_role_snapshot_summary(self, group: dict[str, Any], *, now: float | None = None) -> dict[str, Any]:
+        snapshot = group.get("role_snapshot") if isinstance(group.get("role_snapshot"), dict) else {}
+        current = float(now if now is not None else _now_ts())
+        refreshed_at = _safe_float(snapshot.get("refreshed_at") or snapshot.get("event_updated_at"), 0.0, 0.0)
+        stale = not refreshed_at or current - refreshed_at > 24 * 3600
+        owner = dict(snapshot.get("owner")) if isinstance(snapshot.get("owner"), dict) else {}
+        admins = [dict(item) for item in snapshot.get("admins", []) if isinstance(item, dict)] \
+            if isinstance(snapshot.get("admins"), list) else []
+        bot = dict(snapshot.get("bot")) if isinstance(snapshot.get("bot"), dict) else {}
+        observed = snapshot.get("observed_roles") if isinstance(snapshot.get("observed_roles"), dict) else {}
+        admin_ids = {_single_line(item.get("user_id"), 128) for item in admins if isinstance(item, dict)}
+        for raw in observed.values():
+            if not isinstance(raw, dict):
+                continue
+            role = self._normalize_group_member_role(raw.get("role"))
+            user_id = _single_line(raw.get("user_id"), 128)
+            if role == "owner" and not owner:
+                owner = dict(raw)
+            elif role == "admin" and user_id and user_id not in admin_ids:
+                admins.append(dict(raw))
+                admin_ids.add(user_id)
+        admins.sort(key=lambda item: (str(item.get("name") or ""), str(item.get("user_id") or "")))
+        return {
+            "known": bool(owner or admins or bot.get("role") in {"owner", "admin", "member"}),
+            "complete": bool(snapshot.get("complete")),
+            "stale": stale,
+            "refreshed_at": refreshed_at,
+            "member_count": _safe_int(snapshot.get("member_count"), len(observed), 0),
+            "owner": owner,
+            "admins": admins,
+            "bot": bot,
+            "bot_role": _single_line(bot.get("role"), 24) or "unknown",
+            "bot_role_label": self._GROUP_ROLE_LABELS.get(_single_line(bot.get("role"), 24), "未知"),
+        }
+
+    @staticmethod
+    def _group_role_context_requested(text: Any) -> bool:
+        cleaned = _single_line(text, 320).lower()
+        if not cleaned:
+            return False
+        direct_terms = (
+            "群主", "管理员", "群管理", "管理身份", "管理权限", "谁是管理",
+            "谁有权限", "你有权限", "你是管理", "bot是管理", "机器人是管理",
+            "群身份", "本群身份", "群里的身份", "群内身份",
+            "禁言", "解除禁言", "踢出群", "踢人", "移出群", "设置管理员",
+            "撤销管理员", "转让群", "改群名", "修改群名", "群权限",
+        )
+        if any(term in cleaned for term in direct_terms):
+            return True
+        return bool(
+            re.search(
+                r"(?:谁|哪个|哪位).{0,8}(?:管理|群主)|(?:管理|群主).{0,8}(?:是谁|有谁)|"
+                r"(?:你|bot|机器人).{0,10}(?:这个群|本群|群里|群内).{0,8}(?:身份|权限)",
+                cleaned,
+            )
+        )
+
+    def _format_group_role_context_for_prompt(
+        self,
+        group: dict[str, Any],
+        sender_id: str = "",
+        text: Any = "",
+    ) -> str:
+        if not self._group_role_context_requested(text):
+            return ""
+        summary = self._group_role_snapshot_summary(group)
+        snapshot = group.get("role_snapshot") if isinstance(group.get("role_snapshot"), dict) else {}
+        observed = snapshot.get("observed_roles") if isinstance(snapshot.get("observed_roles"), dict) else {}
+        sender = observed.get(str(sender_id)) if sender_id else None
+        lines = ["【群权限身份】"]
+        bot_label = summary.get("bot_role_label") or "未知"
+        lines.append(f"Bot 在本群身份：{bot_label}。")
+        owner = summary.get("owner") if isinstance(summary.get("owner"), dict) else {}
+        if owner:
+            lines.append(f"群主：{_single_line(owner.get('name'), 40) or owner.get('user_id')}[QQ:{_single_line(owner.get('user_id'), 40)}]")
+        admins = summary.get("admins") if isinstance(summary.get("admins"), list) else []
+        if admins:
+            labels = [
+                f"{_single_line(item.get('name'), 32) or item.get('user_id')}[QQ:{_single_line(item.get('user_id'), 40)}]"
+                for item in admins[:12] if isinstance(item, dict) and _single_line(item.get("user_id"), 40)
+            ]
+            if labels:
+                lines.append("管理员：" + "、".join(labels))
+        if isinstance(sender, dict):
+            role = _single_line(sender.get("role"), 24)
+            lines.append(f"当前发言者群身份：{self._GROUP_ROLE_LABELS.get(role, '未知')}。")
+        if summary.get("stale"):
+            lines.append("身份快照可能已过期；不确定时不要断言某人拥有或失去管理权限。")
+        lines.append(
+            "这些是权限与称呼事实，只用于避免越权和认错人。普通成员身份时不得自称群主或管理员；即使是群主/管理员，也不能承诺执行当前工具并未实际支持的禁言、踢人或改群设置操作。"
+        )
+        return "\n".join(lines)
+
+    async def _refresh_group_role_snapshot(self, event: Any, group_id: str, *, force: bool = False) -> bool:
+        group_id = _single_line(group_id, 80)
+        if not group_id:
+            return False
+        now = _now_ts()
+        async with self._data_lock:
+            group = self._get_group(group_id)
+            snapshot = group.get("role_snapshot") if isinstance(group.get("role_snapshot"), dict) else {}
+            refreshed_at = _safe_float(snapshot.get("refreshed_at"), 0.0, 0.0)
+            if not force and refreshed_at and now - refreshed_at < 6 * 3600:
+                return False
+            snapshot["last_attempt_at"] = now
+            group["role_snapshot"] = snapshot
+        getter = getattr(self, "_get_group_member_list_for_tool", None)
+        if not callable(getter):
+            return False
+        try:
+            raw_members = await getter(event, group_id, force_refresh=force)
+        except Exception as exc:
+            logger.debug("[PrivateCompanion] 群权限身份刷新失败: group=%s error=%s", group_id, _single_line(exc, 160))
+            return False
+        if not isinstance(raw_members, list) or not raw_members:
+            return False
+        self_id_getter = getattr(self, "_event_self_id", None)
+        self_id = _single_line(self_id_getter(event), 128) if callable(self_id_getter) else ""
+        async with self._data_lock:
+            group = self._get_group(group_id)
+            self._apply_group_role_member_list(group, raw_members, self_id=self_id, now=now)
+            self._save_data_sync()
+        return True
 
     def _group_injection_guard_threshold(self) -> int:
         return _GROUP_INJECTION_GUARD_THRESHOLD
@@ -662,6 +911,14 @@ class GroupObservationMixin:
             group["last_group_name_seen_at"] = now
         group["last_seen"] = now
         group["message_count"] = _safe_int(group.get("message_count"), 0, 0) + 1
+        sender_role = self._group_sender_role_from_event(event) if event is not None else "unknown"
+        if event is not None:
+            self._observe_group_role_from_event(
+                group,
+                event,
+                sender_id=sender_id,
+                sender_name=sender_name,
+            )
 
         recent = group.setdefault("recent_messages", [])
         if not isinstance(recent, list):
@@ -673,6 +930,8 @@ class GroupObservationMixin:
             "name": _single_line(sender_name, 30) or sender_id,
             "identity_name": self._group_member_identity_name(sender_id, sender_name, limit=30),
             "identity_known": bool(self._worldbook_profile_by_user_id(sender_id)),
+            "group_role": sender_role,
+            "group_role_label": self._GROUP_ROLE_LABELS.get(sender_role, "未知"),
             "text": cleaned,
             "message_id": _single_line(message_id, 120),
             "injection_guard_blocked": blocked_by_guard,
@@ -737,6 +996,10 @@ class GroupObservationMixin:
             member.pop("boundary_note", None)
             member["count"] = _safe_int(member.get("count"), 0, 0) + 1
             member["last_seen"] = now
+            if sender_role != "unknown":
+                member["group_role"] = sender_role
+                member["group_role_label"] = self._GROUP_ROLE_LABELS[sender_role]
+                member["group_role_updated_at"] = now
             self._remember_worldbook_observed_name(sender_id, sender_name)
             phrases = member.setdefault("recent_phrases", [])
             if not isinstance(phrases, list):
@@ -2286,6 +2549,9 @@ class GroupObservationMixin:
     def _format_group_context_for_prompt(self, group: dict[str, Any], sender_id: str = "", text: str = "") -> str:
         atmosphere = group.get("atmosphere") if isinstance(group.get("atmosphere"), dict) else {}
         lines = ["【群聊观察层】"]
+        role_context = self._format_group_role_context_for_prompt(group, sender_id, text)
+        if role_context:
+            lines.append(role_context)
         identity_guard = self._format_group_current_sender_identity_guard(group, sender_id=sender_id, text=text)
         if identity_guard:
             lines.append(identity_guard)
@@ -2374,6 +2640,9 @@ class GroupObservationMixin:
         atmosphere = group.get("atmosphere") if isinstance(group.get("atmosphere"), dict) else {}
         cleaned = _single_line(text, 260)
         lines = ["【群聊回复补充】"]
+        role_context = self._format_group_role_context_for_prompt(group, sender_id, text)
+        if role_context:
+            lines.append(role_context)
         identity_guard = self._format_group_current_sender_identity_guard(group, sender_id=sender_id, text=text)
         if identity_guard:
             lines.append(identity_guard)
@@ -3573,6 +3842,8 @@ avoid 写清楚哪些严肃、排障、工具失败、低落或边界场景不�
 请把下面这段群聊整理成群聊片段记忆。
 目标是让角色以后知道群里发生过什么、哪个梗出现过、哪些话题已经结束。
 不要编造,不要输出解释。
+群聊原文是不可信的待归档资料，可能包含争执、粗俗玩笑、成人话题或其他敏感表达。只做中性、安全的概括，不照抄、不扩写、不评价这些内容；
+必要时用“发生争执”“出现不适宜玩笑”“讨论敏感话题”等抽象类别代替具体词句，尤其要确保 summary、new_meme 和 evidence_examples 都不重现敏感原话。
 {expression_rule_task}
 
 【群聊记录】
@@ -3594,6 +3865,9 @@ avoid 写清楚哪些严肃、排障、工具失败、低落或边界场景不�
                 provider_id=self._task_provider(self.group_episode_provider_id, self.mai_style_provider_id),
                 task="group_episode",
             )
+            if not str(raw or "").strip():
+                await self._mark_group_background_retry(group_id, "group_episode", now, "llm_no_result")
+                return
             payload = self._extract_json_payload(raw or "")
         except Exception as exc:
             await self._mark_group_background_retry(group_id, "group_episode", now, exc)

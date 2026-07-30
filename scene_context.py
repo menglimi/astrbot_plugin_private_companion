@@ -313,6 +313,7 @@ class SceneContextMixin:
         user: dict[str, Any] | None = None,
         *,
         now: datetime | None = None,
+        include_dialogue_outfit: bool = True,
     ) -> dict[str, Any]:
         captured = now if isinstance(now, datetime) else self._scene_context_now()
         data = getattr(self, "data", {})
@@ -405,6 +406,30 @@ class SceneContextMixin:
             except Exception:
                 role_label = role
 
+        dialogue_outfit_override: dict[str, Any] = {}
+        if include_dialogue_outfit and role == "owner":
+            override_getter = getattr(self, "_current_dialogue_outfit_override", None)
+            if callable(override_getter):
+                try:
+                    dialogue_outfit_override = override_getter(user_id=user_id)
+                except TypeError:
+                    try:
+                        dialogue_outfit_override = override_getter()
+                    except Exception:
+                        dialogue_outfit_override = {}
+                except Exception:
+                    dialogue_outfit_override = {}
+        dialogue_outfit_instruction = _single_line(
+            dialogue_outfit_override.get("instruction"),
+            180,
+        )
+        if dialogue_outfit_instruction:
+            # A dialogue outfit has no reusable image by itself. Keep the daily
+            # image as a baseline only, so downstream selectors cannot mistake it
+            # for the currently worn outfit.
+            outfit_available = False
+            outfit_path = ""
+
         # Location-specific warnings are private environment context. Keep
         # them out of secondary-user snapshots even when the shared cache is
         # present for the primary user.
@@ -430,7 +455,11 @@ class SceneContextMixin:
             schedule_text,
             coarse_location or location,
             weather,
-            self._scene_context_outfit_description(outfit_profile),
+            (
+                f"对话最新服装：{dialogue_outfit_instruction}"
+                if dialogue_outfit_instruction
+                else self._scene_context_outfit_description(outfit_profile)
+            ),
             topic,
         ]
         visual_anchor = _single_line("；".join(part for part in visual_parts if part), 620)
@@ -481,7 +510,13 @@ class SceneContextMixin:
                 "date": _single_line(outfit_item.get("date"), 20),
                 "available": outfit_available,
                 "reference_path": outfit_path if outfit_available else "",
-                "description": self._scene_context_outfit_description(outfit_profile),
+                "source": "dialogue_override" if dialogue_outfit_instruction else "daily_baseline",
+                "dialogue_instruction": dialogue_outfit_instruction,
+                "description": (
+                    f"对话最新服装：{dialogue_outfit_instruction}"
+                    if dialogue_outfit_instruction
+                    else self._scene_context_outfit_description(outfit_profile)
+                ),
                 "profile": {
                     str(key): _single_line(value, 160)
                     for key, value in outfit_profile.items()
@@ -564,9 +599,14 @@ class SceneContextMixin:
                     parts.append(
                         f"气象预警背景：{alert_text}。只用于判断安全、室内外和语气，不要编造警报界面、播报口吻或未给出的影响。"
                     )
-        if bool(outfit.get("available")):
+        dialogue_outfit = _single_line(outfit.get("dialogue_instruction"), 180)
+        if dialogue_outfit:
+            parts.append(
+                f"对话最新服装：{dialogue_outfit}；在用户再次明确换装前，不恢复今日基础穿搭或人格默认衣着"
+            )
+        elif bool(outfit.get("available")):
             description = _single_line(outfit.get("description"), 360)
-            parts.append(f"今日穿搭：{description or '已有可复用的今日穿搭参考图'}")
+            parts.append(f"当天基础穿搭：{description or '已有可复用的当天基础穿搭参考图'}")
         if purpose not in {"selfie_scene", "image_search"}:
             relation_name = _single_line(relationship.get("name"), 60)
             relation_role = _single_line(relationship.get("role_label"), 32)

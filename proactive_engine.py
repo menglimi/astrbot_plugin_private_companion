@@ -986,6 +986,10 @@ class ProactiveEngineMixin:
         reason = self._normalize_legacy_proactive_text(impulse.get("reason"), limit=40)
         priorities = {
             "timer": 100,
+            "weather_alert": 98,
+            "body_monitor": 96,
+            "memo_note": 94,
+            "environment_change": 90,
             "pending_followup": 92,
             "followup": 88,
             "birthday_celebration": 86,
@@ -2310,7 +2314,12 @@ class ProactiveEngineMixin:
         normalized_reason = self._normalize_legacy_proactive_text(reason, limit=40)
         normalized_source = self._normalize_legacy_proactive_text(source, limit=40)
         normalized_kind = self._normalize_legacy_proactive_text(semantic_kind, limit=40)
-        if normalized_reason in {"environment_change", "weather_alert"} or normalized_source in {"environment_change", "weather_alert"}:
+        if normalized_reason in {"environment_change", "weather_alert", "health_alert", "memo_note_reminder"} or normalized_source in {
+            "environment_change",
+            "weather_alert",
+            "body_monitor",
+            "memo_note",
+        }:
             return "immediate"
         if normalized_source == "timer" or normalized_reason in {
             "birthday_eve_hint",
@@ -2336,6 +2345,40 @@ class ProactiveEngineMixin:
         }:
             return "immediate"
         return "contextual"
+
+    def _proactive_timeliness_level(
+        self,
+        *,
+        reason: Any = "",
+        source: Any = "",
+    ) -> str:
+        """Classify only events whose value materially decays within minutes."""
+
+        normalized_reason = self._normalize_legacy_proactive_text(reason, limit=40)
+        normalized_source = self._normalize_legacy_proactive_text(source, limit=40)
+        if normalized_reason in {"weather_alert", "health_alert"} or normalized_source in {
+            "weather_alert",
+            "body_monitor",
+        }:
+            return "urgent"
+        if normalized_reason in {"environment_change", "memo_note_reminder"} or normalized_source in {
+            "environment_change",
+            "memo_note",
+        }:
+            return "timely"
+        return "routine"
+
+    @staticmethod
+    def _proactive_timeliness_rank(level: Any) -> int:
+        return {"routine": 0, "timely": 1, "urgent": 2}.get(str(level or "routine"), 0)
+
+    def _planned_proactive_timeliness_level(self, user: dict[str, Any]) -> str:
+        if not isinstance(user, dict):
+            return "routine"
+        return self._proactive_timeliness_level(
+            reason=user.get("planned_proactive_reason"),
+            source=user.get("planned_proactive_source"),
+        )
 
     def _planned_proactive_delivery_key(self, user: dict[str, Any]) -> str:
         if not isinstance(user, dict):
@@ -2984,6 +3027,10 @@ class ProactiveEngineMixin:
             return False
         candidate = prepared
         scheduled = _safe_float(candidate.get("scheduled_ts"), now)
+        incoming_timeliness = self._proactive_timeliness_level(
+            reason=candidate.get("reason"),
+            source=source,
+        )
         social_relay_note = self._unverified_social_relay_plan_reason(
             candidate,
             source=source,
@@ -3001,9 +3048,24 @@ class ProactiveEngineMixin:
         if rest_until > now and scheduled < rest_until:
             self._record_proactive_candidate(user_id, candidate, status="blocked", note="用户明确休息中", user=user)
             return False
-        busy_gate = getattr(self, "_busy_reply_proactive_block_until", None)
         busy_until = 0.0
-        if callable(busy_gate):
+        busy_block_kind = ""
+        busy_context_getter = getattr(self, "_busy_reply_proactive_block_context", None)
+        busy_gate = getattr(self, "_busy_reply_proactive_block_until", None)
+        if callable(busy_context_getter):
+            try:
+                busy_context = busy_context_getter(
+                    user,
+                    now=now,
+                    reason=candidate.get("reason"),
+                    source=source,
+                )
+                if isinstance(busy_context, dict):
+                    busy_until = _safe_float(busy_context.get("until"), 0.0)
+                    busy_block_kind = _single_line(busy_context.get("kind"), 40)
+            except Exception:
+                busy_until = 0.0
+        elif callable(busy_gate):
             try:
                 busy_until = _safe_float(
                     busy_gate(
@@ -3016,19 +3078,27 @@ class ProactiveEngineMixin:
                 )
             except Exception:
                 busy_until = 0.0
-        if busy_until > now and scheduled < busy_until:
-            if source == "body_monitor" and busy_until >= _safe_float(candidate.get("expire_at"), 0):
-                self._record_proactive_candidate(user_id, candidate, status="blocked", note="身体状态事件有效期内无法投递", user=user)
+        if busy_until > now and scheduled < busy_until and (
+            incoming_timeliness == "routine" or busy_block_kind == "external_realtime"
+        ):
+            expire_at = _safe_float(candidate.get("expire_at"), 0)
+            preserve_event_expiry = incoming_timeliness != "routine"
+            if preserve_event_expiry and expire_at > 0 and busy_until >= expire_at:
+                self._record_proactive_candidate(user_id, candidate, status="blocked", note="实时共处覆盖事件有效期", user=user)
                 return False
             shift = busy_until - scheduled
             candidate = dict(candidate)
-            shift_keys = ("scheduled_ts", "window_start_at", "preferred_ts", "best_until_at") if source == "body_monitor" else ("scheduled_ts", "window_start_at", "preferred_ts", "best_until_at", "expire_at")
+            shift_keys = (
+                ("scheduled_ts", "window_start_at", "preferred_ts", "best_until_at")
+                if preserve_event_expiry
+                else ("scheduled_ts", "window_start_at", "preferred_ts", "best_until_at", "expire_at")
+            )
             for key in shift_keys:
                 value = _safe_float(candidate.get(key), 0.0)
                 if value > 0:
                     candidate[key] = value + shift
-            if source == "body_monitor":
-                candidate["best_until_at"] = min(_safe_float(candidate.get("best_until_at"), 0), _safe_float(candidate.get("expire_at"), 0))
+            if preserve_event_expiry:
+                candidate["best_until_at"] = min(_safe_float(candidate.get("best_until_at"), 0), expire_at)
             scheduled = _safe_float(candidate.get("scheduled_ts"), busy_until)
         if not self._user_enabled_for_proactive(str(user_id), user):
             self._clear_pending_proactive_plan(user)
@@ -3053,9 +3123,13 @@ class ProactiveEngineMixin:
                 return False
             self._clear_llm_timer_internal_plan_fields(user)
         current_next = _safe_float(user.get("next_proactive_at"), 0)
+        preempted_for_timeliness = False
         if current_next > 0 and current_next <= scheduled:
-            self._record_proactive_candidate(user_id, candidate, status="blocked", note="已有更早主动候选", user=user)
-            return False
+            current_timeliness = self._planned_proactive_timeliness_level(user)
+            if self._proactive_timeliness_rank(incoming_timeliness) <= self._proactive_timeliness_rank(current_timeliness):
+                self._record_proactive_candidate(user_id, candidate, status="blocked", note="已有更早主动候选", user=user)
+                return False
+            preempted_for_timeliness = True
         action = _single_line(candidate.get("action"), 40) or "message"
         if self._private_user_role(user, str(user_id)) == "friend" and self._action_has_photo_text(action):
             action = self._fallback_action_for_unavailable(action, user)
@@ -3078,7 +3152,7 @@ class ProactiveEngineMixin:
         if not self._action_is_available(action, user):
             self._record_proactive_candidate(user_id, candidate, status="blocked", note="动作不可用或媒体额度不足", user=user)
             return False
-        if source not in {"environment_change", "weather_alert"} and self._proactive_candidate_repeated(user, candidate):
+        if incoming_timeliness == "routine" and self._proactive_candidate_repeated(user, candidate):
             self._record_proactive_candidate(user_id, candidate, status="blocked", note="近期主题过于相似", user=user)
             return False
         impulse = self._candidate_to_impulse(user, candidate, source=source, now=now)
@@ -3088,6 +3162,8 @@ class ProactiveEngineMixin:
         if not isinstance(queued_impulse, dict) or not queued_impulse:
             return False
         impulse = queued_impulse
+        if preempted_for_timeliness:
+            self._mark_planned_candidate_status(user, "deferred", "更高时效主动已优先进入当前发送窗口")
         item = self._record_proactive_candidate(user_id, candidate, status="accepted", note="进入主动计划", user=user)
         self._reset_planned_proactive_delivery_state(user)
         user["next_proactive_at"] = scheduled
@@ -3366,6 +3442,7 @@ class ProactiveEngineMixin:
             return self._should_send_simulation(user)
         now = _now_ts()
         due_timer_active = self._has_due_llm_timer(user, now=now)
+        timeliness = self._planned_proactive_timeliness_level(user)
         if (
             not is_troubleshooting
             and not due_timer_active
@@ -3457,7 +3534,7 @@ class ProactiveEngineMixin:
                 )
             except Exception:
                 busy_until = 0.0
-        if busy_until > now:
+        if busy_until > now and (timeliness == "routine" or busy_block_kind == "external_realtime"):
             defer_busy = getattr(self, "_defer_proactive_for_busy", None)
             changed = bool(defer_busy(user, now=now, until=busy_until)) if callable(defer_busy) else False
             if changed:
@@ -3565,6 +3642,7 @@ class ProactiveEngineMixin:
             and window_phase == "tail"
             and impulse_value < 0.58
             and not due_timer_active
+            and timeliness == "routine"
         ):
             replaced = self._defer_or_replace_planned_impulse(
                 user,
@@ -3623,6 +3701,7 @@ class ProactiveEngineMixin:
             and planned_source != "timer"
             and inner_score < 0.36
             and impulse_value < 0.72
+            and timeliness == "routine"
         ):
             delay_low = 90 if self._private_user_role(user) != "friend" else 240
             self._defer_or_replace_planned_impulse(
@@ -3695,7 +3774,12 @@ class ProactiveEngineMixin:
                 if self._is_greeting_reason(planned_reason)
                 else idle_minutes * 60
             )
-            if now - recent_activity_at < idle_limit:
+            timely_idle_floor = 0.0
+            if timeliness == "urgent":
+                timely_idle_floor = 2 * 60.0
+            elif timeliness == "timely":
+                timely_idle_floor = 5 * 60.0
+            if now - recent_activity_at < (min(idle_limit, timely_idle_floor) if timely_idle_floor > 0 else idle_limit):
                 if self._is_sticky_greeting_reason(planned_reason):
                     self._reschedule_greeting_within_window(user, planned_reason, now=now)
                 else:
@@ -3712,6 +3796,10 @@ class ProactiveEngineMixin:
         min_interval = self._effective_min_interval_seconds(user)
         if self._is_greeting_reason(planned_reason) and self._private_user_role(user) != "friend":
             min_interval = min(min_interval, self._greeting_min_interval_seconds(planned_reason))
+        if timeliness == "urgent":
+            min_interval = min(min_interval, 2 * 60.0)
+        elif timeliness == "timely":
+            min_interval = min(min_interval, 10 * 60.0)
         if not is_troubleshooting and not due_timer_active and now - _safe_float(user.get("last_sent"), 0) < min_interval:
             if self._is_sticky_greeting_reason(planned_reason):
                 self._reschedule_greeting_within_window(user, planned_reason, now=now)
@@ -3825,6 +3913,7 @@ class ProactiveEngineMixin:
             not is_troubleshooting
             and ignored_streak >= 2
             and impulse_value < (0.72 if self._private_user_role(user) == "friend" else 0.66)
+            and timeliness == "routine"
         ):
             replaced = self._defer_or_replace_planned_impulse(
                 user,
@@ -3870,7 +3959,7 @@ class ProactiveEngineMixin:
             if not replaced and _safe_float(user.get("next_proactive_at"), 0) <= 0:
                 self._schedule_next_proactive(user, now=now, delay_hours=(2, 6))
             return False, "动作不可用或媒体额度不足"
-        if not is_troubleshooting and self._planned_proactive_recently_repeated(user):
+        if not is_troubleshooting and timeliness == "routine" and self._planned_proactive_recently_repeated(user):
             replaced = self._defer_or_replace_planned_impulse(
                 user,
                 now=now,
@@ -3881,7 +3970,7 @@ class ProactiveEngineMixin:
             if not replaced and _safe_float(user.get("next_proactive_at"), 0) <= 0:
                 self._schedule_next_proactive(user, now=now, delay_hours=(2, 6))
             return False, "近期主动主题过于相似"
-        if not is_troubleshooting and self._planned_event_exceeds_daypart_cap(user, planned_reason, next_at):
+        if not is_troubleshooting and timeliness == "routine" and self._planned_event_exceeds_daypart_cap(user, planned_reason, next_at):
             delay = self._friend_proactive_spread_delay_hours(user, now=now)
             if delay is None:
                 delay = (7.5, 10.5) if self._proactive_daypart_bucket_for_timestamp(next_at) == "late_night" else (2.5, 5.0)
@@ -4112,6 +4201,16 @@ class ProactiveEngineMixin:
 
         due_timer_active = self._has_due_llm_timer(user, now=now)
         source = self._normalize_legacy_proactive_text(user.get("planned_proactive_source"), limit=40)
+        timeliness = self._planned_proactive_timeliness_level(user)
+        if timeliness != "routine":
+            add(
+                "timeliness",
+                "消息时效",
+                True,
+                8 if timeliness == "urgent" else 5,
+                "紧急事件：放宽普通频率闸门" if timeliness == "urgent" else "短时效事件：适度放宽普通频率闸门",
+                blocker=False,
+            )
         rest_until = self._proactive_rest_block_until(
             user,
             now=now,
@@ -4129,8 +4228,23 @@ class ProactiveEngineMixin:
         )
 
         busy_until = 0.0
+        busy_block_kind = ""
+        busy_context_getter = getattr(self, "_busy_reply_proactive_block_context", None)
         busy_gate = getattr(self, "_busy_reply_proactive_block_until", None)
-        if callable(busy_gate):
+        if callable(busy_context_getter):
+            try:
+                busy_context = busy_context_getter(
+                    user,
+                    now=now,
+                    reason=user.get("planned_proactive_reason"),
+                    source=source,
+                )
+                if isinstance(busy_context, dict):
+                    busy_until = _safe_float(busy_context.get("until"), 0.0)
+                    busy_block_kind = _single_line(busy_context.get("kind"), 40)
+            except Exception:
+                busy_until = 0.0
+        elif callable(busy_gate):
             try:
                 busy_until = _safe_float(
                     busy_gate(
@@ -4143,14 +4257,20 @@ class ProactiveEngineMixin:
                 )
             except Exception:
                 busy_until = 0.0
-        busy_blocked = busy_until > now and not due_timer_active
+        busy_blocked = (
+            busy_until > now
+            and not due_timer_active
+            and (timeliness == "routine" or busy_block_kind == "external_realtime")
+        )
         add(
             "bot_busy",
             "Bot 忙碌日程",
             not busy_blocked,
             4 if not busy_blocked else -35,
             (
-                "当前不忙"
+                "短时效事件不受普通日程忙碌顺延"
+                if busy_until > now and not busy_blocked
+                else "当前不忙"
                 if not busy_blocked
                 else f"顺延到 {self._environment_fromtimestamp(busy_until).strftime('%H:%M')} 后"
             ),
@@ -4248,10 +4368,10 @@ class ProactiveEngineMixin:
         add(
             "bot_drive",
             "Bot 开口欲",
-            inner_score >= 0.36,
+            inner_score >= 0.36 or timeliness != "routine",
             7 if inner_score >= 0.72 else 3 if inner_score >= 0.5 else -14,
             f"{inner_score:.2f}｜{_single_line(inner_readiness.get('label'), 40)}｜{_single_line(drive.get('detail'), 70)}",
-            blocker=inner_score < 0.28,
+            blocker=inner_score < 0.28 and timeliness == "routine",
         )
         motivation = inner_readiness.get("motivation") if isinstance(inner_readiness.get("motivation"), dict) else {}
         if motivation:
@@ -4343,6 +4463,10 @@ class ProactiveEngineMixin:
         if self._is_greeting_reason(planned_reason):
             idle_minutes = self._effective_user_greeting_idle_minutes(user)
         idle_seconds = max(0, idle_minutes) * 60
+        if timeliness == "urgent":
+            idle_seconds = min(idle_seconds, 2 * 60.0)
+        elif timeliness == "timely":
+            idle_seconds = min(idle_seconds, 5 * 60.0)
         idle_elapsed = now - last_seen if last_seen > 0 else 999999999.0
         idle_passed = due_timer_active or idle_elapsed >= idle_seconds
         add(
@@ -4362,6 +4486,10 @@ class ProactiveEngineMixin:
         min_interval = self._effective_min_interval_seconds(user)
         if self._is_greeting_reason(planned_reason) and self._private_user_role(user) != "friend":
             min_interval = min(min_interval, self._greeting_min_interval_seconds(planned_reason))
+        if timeliness == "urgent":
+            min_interval = min(min_interval, 2 * 60.0)
+        elif timeliness == "timely":
+            min_interval = min(min_interval, 10 * 60.0)
         send_elapsed = now - last_sent if last_sent > 0 else 999999999.0
         interval_passed = due_timer_active or send_elapsed >= min_interval
         add(
@@ -4400,13 +4528,20 @@ class ProactiveEngineMixin:
         )
 
         repeated = self._planned_proactive_recently_repeated(user)
+        dedupe_passed = not repeated or timeliness != "routine"
         add(
             "dedupe",
             "主题去重",
-            not repeated,
-            6 if not repeated else -20,
-            "近期无重复" if not repeated else "近期主动主题过于相似",
-            blocker=repeated,
+            dedupe_passed,
+            6 if dedupe_passed else -20,
+            (
+                "同一事件仍由事件指纹去重，普通话题重复不阻断"
+                if repeated and timeliness != "routine"
+                else "近期无重复"
+                if not repeated
+                else "近期主动主题过于相似"
+            ),
+            blocker=not dedupe_passed,
         )
 
         total_score = 50 + sum(int(item.get("score") or 0) for item in factors)
@@ -6794,7 +6929,7 @@ class ProactiveEngineMixin:
         if not cleaned:
             return ""
         compact = re.sub(r"\s+", "", cleaned)
-        # Allow a short address before the greeting, e.g. "比折，早……" or "主人早".
+        # Allow a short address before the greeting, e.g. "小林，早……" or "主人早".
         compact = re.sub(r"^[\u4e00-\u9fffA-Za-z0-9_\-]{1,12}[,，、:：]+", "", compact, count=1)
         for marker in ("早", "午安", "中午", "晚上", "晚好"):
             index = compact.find(marker)
@@ -7129,6 +7264,15 @@ class ProactiveEngineMixin:
         cleaned = re.sub(r"^(?:关于|有关|一种|一些|那个|这段|这一段)", "", cleaned).strip()
         return cleaned
 
+    def _ordinary_weather_topic_available(self, user: dict[str, Any]) -> bool:
+        repeated = getattr(self, "_recent_proactive_topic_repeated", None)
+        if not callable(repeated):
+            return True
+        try:
+            return not bool(repeated(user, "ordinary_weather_topic"))
+        except Exception:
+            return True
+
     def _choose_proactive_topic(self, reason: str, user: dict[str, Any]) -> str:
         if reason == "birthday_eve_hint":
             return "明天给自己留一点空白"
@@ -7158,6 +7302,7 @@ class ProactiveEngineMixin:
         current_item = self._get_current_plan_item(self.data.get("daily_plan", {}))
         snapshot = self._current_story_plan_snapshot()
         weather = self._weather_summary_text(self.data.get("daily_weather", {}))
+        weather_topic_available = self._ordinary_weather_topic_available(user)
         last_user_message = _single_line(user.get("last_user_message"), 24)
         snapshot_topic = self._soften_topic_hook(snapshot.get("topic")) if isinstance(snapshot, dict) else ""
         if snapshot_topic:
@@ -7173,7 +7318,7 @@ class ProactiveEngineMixin:
                 if activity:
                     return self._soften_topic_hook(activity)
         if reason in {"activity_share", "diary_share"}:
-            if random.random() < 0.72:
+            if random.random() < 0.88 or not weather_topic_available:
                 return self._pick_life_thought_topic(reason)
             if any(token in weather for token in ("雨", "小雨", "阵雨")):
                 return "外面那阵雨声"
@@ -7807,6 +7952,7 @@ class ProactiveEngineMixin:
     ) -> str:
         state = self.data.get("daily_state", {})
         weather = self._weather_summary_text(self.data.get("daily_weather", {}))
+        weather_topic_available = self._ordinary_weather_topic_available(user)
         current_item = self._get_current_plan_item(self.data.get("daily_plan", {}))
         snapshot = self._current_story_plan_snapshot()
         last_user_message = _single_line(user.get("last_user_message"), 48)
@@ -7943,9 +8089,9 @@ class ProactiveEngineMixin:
             ]
             if topic:
                 motives.append(f"刚碰到“{topic}”时")
-            if any(token in weather for token in ("雨", "小雨", "阵雨")):
+            if weather_topic_available and any(token in weather for token in ("雨", "小雨", "阵雨")):
                 motives.append("外面在下雨")
-            if any(token in weather for token in ("晴", "阳光", "晚霞")):
+            if weather_topic_available and any(token in weather for token in ("晴", "阳光", "晚霞")):
                 motives.append("外面光线不错")
             return random.choice(motives)
         if reason == "diary_share":
@@ -8225,6 +8371,7 @@ class ProactiveEngineMixin:
             "web_exploration_share": [(9 * 60, 23 * 60)],
             "environment_change": [(6 * 60, 23 * 60 + 30)],
             "weather_alert": [(0, 24 * 60)],
+            "health_alert": [(0, 24 * 60)],
             "jm_cosmos_recommendation_request": [(10 * 60, 23 * 60)],
             "creative_share": [(10 * 60, 23 * 60)],
             "personal_goal_progress": [(8 * 60, 22 * 60)],

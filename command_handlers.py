@@ -16,7 +16,7 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
 from .constants import DEFAULT_NATURAL_LANGUAGE_PHOTO_EXTRA_PROMPT
-from .helpers import _flat_get, _missing_optional_model_dependency, _now_ts, _path_text, _safe_float, _safe_int, _set_into_config, _single_line, _today_key
+from .helpers import _flat_get, _missing_optional_model_dependency, _now_ts, _path_text, _photo_group_request_matches, _safe_float, _safe_int, _set_into_config, _single_line, _today_key
 from .photo_reference_catalog import (
     CATALOG_VERSION,
     CatalogValidationError,
@@ -4405,6 +4405,7 @@ class CommandHandlersMixin:
         visual_memory = self._visual_photo_memory_context(memory_context)
         explicit_people_request = self._natural_photo_prompt_has_explicit_people_request(prompt)
         explicit_back_view_request = self._natural_photo_prompt_has_explicit_back_view_request(prompt)
+        referenced_group_request = bool(has_reference and _photo_group_request_matches(prompt))
         if kind not in {"edit", "selfie"} and style_name == "二次元" and not explicit_people_request:
             style_prompt = (
                 "2D anime illustration style, detailed environment and object art, "
@@ -4433,12 +4434,26 @@ class CommandHandlersMixin:
             ]
         elif kind == "selfie":
             user_request = _single_line(prompt, 420) or "take a selfie"
-            identity_continuity = (
-                "preserve character identity and stable appearance from the selected reference image"
-                if has_reference
-                else "preserve character identity and stable appearance from available visual continuity"
-            )
-            if explicit_back_view_request:
+            if referenced_group_request:
+                identity_continuity = (
+                    "preserve every referenced person's identity, count, relative placement, and stable appearance from the explicitly supplied source image"
+                )
+                positive = [
+                    "multi-person photo based only on the explicitly supplied source reference",
+                    "preserve every referenced person and do not invent anyone else",
+                    "one continuous scene",
+                    "natural expressions and interaction",
+                    "clear faces when visible in the source",
+                    "natural snapshot composition",
+                    "soft natural light",
+                    style_prompt,
+                ]
+            elif explicit_back_view_request:
+                identity_continuity = (
+                    "preserve character identity and stable appearance from the selected reference image"
+                    if has_reference
+                    else "preserve character identity and stable appearance from available visual continuity"
+                )
                 positive = [
                     "single character environmental portrait",
                     "solo",
@@ -4451,6 +4466,11 @@ class CommandHandlersMixin:
                     style_prompt,
                 ]
             else:
+                identity_continuity = (
+                    "preserve character identity and stable appearance from the selected reference image"
+                    if has_reference
+                    else "preserve character identity and stable appearance from available visual continuity"
+                )
                 positive = [
                     "single character selfie",
                     "solo",
@@ -4474,10 +4494,10 @@ class CommandHandlersMixin:
                 "text",
                 "watermark",
                 "logo",
-                "other people",
+                "unreferenced extra people" if referenced_group_request else "other people",
                 "nsfw",
             ]
-            if not explicit_back_view_request:
+            if not explicit_back_view_request and not referenced_group_request:
                 negative.extend(["faceless", "face hidden", "back view"])
         else:
             user_request = _single_line(prompt, 520)
@@ -4795,6 +4815,11 @@ class CommandHandlersMixin:
                     _single_line(text, 180),
                 )
             return False
+        group_photo_requested = _photo_group_request_matches(
+            intent.get("prompt") or text
+        )
+        if group_photo_requested and intent.get("kind") != "edit":
+            intent["kind"] = "selfie"
         logger.info(
             "[PrivateCompanion] 自然语言生图命中: user=%s kind=%s has_reference=%s prompt=%s raw=%s",
             _single_line(user_id, 40),
@@ -4832,7 +4857,7 @@ class CommandHandlersMixin:
             return True
         reference_path = ""
         reference_label = ""
-        if intent.get("kind") == "edit":
+        if intent.get("kind") == "edit" or group_photo_requested:
             try:
                 reference_path, reference_label, saw_image = await self._photo_reference_image_from_command_context(event, user_id)
             except Exception as exc:
@@ -4844,7 +4869,10 @@ class CommandHandlersMixin:
                     missing,
                     _single_line(exc, 160),
                 )
-                await self._reply(event, f"改图参考图解析缺少可选依赖 {missing}，这次先不改图。")
+                await self._reply(
+                    event,
+                    f"{'合影' if group_photo_requested else '改图'}参考图解析缺少可选依赖 {missing}，这次先不生成。",
+                )
                 event.stop_event()
                 return True
             logger.info(
@@ -4858,9 +4886,13 @@ class CommandHandlersMixin:
             if not reference_path:
                 await self._reply(
                     event,
-                    "我没拿到要改的图。可以把图片和要求一起发，或者引用一张近期图片再说“改成……”。"
+                    (
+                        "合影需要人物参考图。请把合影原图或包含相关人物的参考图和要求一起发，或引用图片后再说合影要求。"
+                        if group_photo_requested
+                        else "我没拿到要改的图。可以把图片和要求一起发，或者引用一张近期图片再说“改成……”。"
+                    )
                     if not saw_image
-                    else "看到了图片，但没能保存成可用参考图，暂时改不了。",
+                    else "看到了图片，但没能保存成可用参考图，暂时无法生成。",
                 )
                 event.stop_event()
                 return True
@@ -4913,6 +4945,10 @@ class CommandHandlersMixin:
                 request_text=str(intent.get("prompt") or ""),
                 session_key=generation_session_key,
                 continuity_key=continuity_key,
+                requester_user_id=user_id,
+                requester_is_private=bool(
+                    (getattr(event, "is_private_chat", lambda: False)() if callable(getattr(event, "is_private_chat", None)) else getattr(event, "is_private_chat", False))
+                ),
                 reference_image_path=reference_path,
                 prompt_sections=prompt_sections,
             )
@@ -5046,8 +5082,9 @@ class CommandHandlersMixin:
             has_reference = False
 
         compact = re.sub(r"\s+", "", prompt)
+        group_photo_requested = _photo_group_request_matches(prompt)
         if forced_kind == "text2img":
-            if any(marker in compact for marker in ("自拍", "拍照", "拍张照", "拍一张照", "来张自拍", "发张自拍")):
+            if group_photo_requested or any(marker in compact for marker in ("自拍", "拍照", "拍张照", "拍一张照", "来张自拍", "发张自拍")):
                 forced_kind = "selfie"
             elif has_reference and any(marker in compact for marker in ("改图", "修图", "重绘", "p图", "P图", "改成", "改为", "换成", "变成", "加上", "去掉", "去除")):
                 forced_kind = "edit"
@@ -5084,7 +5121,7 @@ class CommandHandlersMixin:
 
         reference_path = ""
         reference_label = ""
-        if forced_kind == "edit":
+        if forced_kind == "edit" or group_photo_requested:
             try:
                 reference_path, reference_label, saw_image = await self._photo_reference_image_from_command_context(event, user_id)
             except Exception as exc:
@@ -5096,7 +5133,10 @@ class CommandHandlersMixin:
                     missing,
                     _single_line(exc, 160),
                 )
-                await self._reply(event, f"改图参考图解析缺少可选依赖 {missing}，这次先不改图。")
+                await self._reply(
+                    event,
+                    f"{'合影' if group_photo_requested else '改图'}参考图解析缺少可选依赖 {missing}，这次先不生成。",
+                )
                 event.stop_event()
                 return True
             logger.info(
@@ -5110,9 +5150,13 @@ class CommandHandlersMixin:
             if not reference_path:
                 await self._reply(
                     event,
-                    "我没拿到要改的图。可以把图片和“陪伴 改图 <要求>”一起发，或者引用近期图片再用这个指令。"
+                    (
+                        "合影需要人物参考图。请把合影原图或包含相关人物的参考图和指令一起发，或引用图片后再试。"
+                        if group_photo_requested
+                        else "我没拿到要改的图。可以把图片和“陪伴 改图 <要求>”一起发，或者引用近期图片再用这个指令。"
+                    )
                     if not saw_image
-                    else "看到了图片，但没能保存成可用参考图，暂时改不了。",
+                    else "看到了图片，但没能保存成可用参考图，暂时无法生成。",
                 )
                 event.stop_event()
                 return True
@@ -5169,6 +5213,10 @@ class CommandHandlersMixin:
                 request_text=prompt,
                 session_key=generation_session_key,
                 continuity_key=continuity_key,
+                requester_user_id=user_id,
+                requester_is_private=bool(
+                    (getattr(event, "is_private_chat", lambda: False)() if callable(getattr(event, "is_private_chat", None)) else getattr(event, "is_private_chat", False))
+                ),
                 reference_image_path=reference_path,
                 prompt_sections=prompt_sections,
             )

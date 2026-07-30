@@ -10,10 +10,10 @@
 | --- | --- |
 | 插件名 | <code>astrbot_plugin_private_companion</code> |
 | 显示名 | 我会永远陪着你 |
-| 版本 | <code>5.10.8</code> |
+| 版本 | <code>5.10.9</code> |
 | AstrBot | <code>>= 4.22.0</code> |
 | 官方声明平台 | <code>aiocqhttp</code>、<code>qq_official</code> |
-| 管理入口 | AstrBot 插件拓展页中的“陪伴面板” |
+| 管理入口 | AstrBot 插件拓展页中的“陪伴面板”（含纯英文路径兜底入口） |
 | 数据存储 | JSON，或可选 SQLite |
 
 > 这不是一个只会定时说早安、晚安的主动私聊插件。它更像 AstrBot 之上的“陪伴编排层”：Bot 先在自己的状态、日程、关系和见闻中形成想法，再判断此刻是否适合说、应该对谁说、用什么方式说。
@@ -423,10 +423,12 @@ TTS 标签会在发送前清理，模型内部判断、控制标签和工具回�
 | --- | --- | --- |
 | <code>astrbot_plugin_proactive_chat</code> | 复用其即时主动调度 | 联动开关默认开启；深度桥接会在生成前共享关系与状态并防撞，生成后统一复核和发送结算，不修改对方源码，也不创建第二套定时任务 |
 | [Bilibili AI Bot](https://github.com/chenluQwQ/astrbot_plugin_bilibili_ai_bot) | 观看日志、视频记忆和无聊时刷视频 | 读取正式插件公开的日志/API；是否触发观看、分享以及最低间隔由“B 站联动”配置控制 |
-| [智能图片对话](https://github.com/QingchenWait/astrbot_plugin_smart_imagechat_hub) | 已有表情包和反应图检索 | 可向模型提供 <code>pc_find_reaction_image</code>；不会把本插件生成的私密图片自动导入图库 |
+| 表情包素材库（本插件内置） | 图片/文件夹/ZIP 导入、标签检索和反应图发送 | 在“实验功能 → 表情表达实验 → 表情包素材库”管理；用户明确找图时可使用 <code>pc_find_reaction_image</code>，实验模式默认关闭；素材只保存在本插件数据目录 |
 | [PokePro](https://github.com/Zhalslar/astrbot_plugin_pokepro) | OneBot 主动戳一戳 | 需要开启主动戳一戳并由当前协议端提供能力；QQ 官方机器人会跳过 |
 | [LivingMemory](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory) | 长期记忆工具召回 | 保留兼容；工具名默认是 <code>recall_long_term_memory</code>。若同时检测到“我会牢牢记住你”，优先使用系列插件桥接 |
 | [JM-Cosmos II](https://github.com/GEMILUXVII/astrbot_plugin_jm_cosmos) | 私密阅读素材和书柜夹层 | 仅主要用户可用，默认关闭；没有可读素材时不会虚构阅读行为 |
+
+表情表达实验开启后，会先按当前会话、冷却和配置概率做本地预判；只有命中的轮次才给同一次主回复加入一段简短提示。主模型照常生成可独立成立的文字，并可附带一条仅供插件读取的表情意图；该意图会在发送前清除，不会显示在聊天中，也不会触发第二轮主模型续写。只有待发送消息链中仍有可见正文，插件才会查询自有素材库并把图片排在文字之后；发送历史要等平台实际执行发送后才结算。正文为空、发送失败、意图无效或图库没有合适结果时都不会单独发图。低延迟模式使用本地标签评分和短时结果缓存；关闭后会进行更完整的本地候选评估，但回复等待可能增加。用户明确要求找表情包或生成图片时继续走原有工具入口，不受实验概率和冷却限制。
 
 ### 生图后端
 

@@ -118,6 +118,7 @@ from .helpers import (
     _normalize_photo_subject_owner,
     _now_ts,
     _path_text,
+    _photo_group_request_matches,
     _photo_subject_owner_prompt_label,
     _redact_outbound_secrets,
     _safe_float,
@@ -125,6 +126,7 @@ from .helpers import (
     _single_line,
     _strip_internal_message_blocks,
     _today_key,
+    normalize_bot_relationship_cards,
 )
 from .planning import (
     build_daily_plan_prompt,
@@ -169,6 +171,7 @@ from .photo_wardrobe_decision import (
     PhotoWardrobeDecision,
     PhotoWardrobeIntent,
     analyze_photo_wardrobe,
+    merge_photo_wardrobe_continuity,
     resolve_photo_wardrobe_decision,
 )
 
@@ -1756,7 +1759,11 @@ class ProactiveMessageMixin:
             parts.append(f"语气底色偏{mood},让它自然露出来,不要直接汇报情绪。")
         if "photo_text" in action or reason in {"activity_share", "diary_share", "evening_greeting", "morning_greeting"}:
             if weather and weather not in {"暂无天气信息"}:
-                parts.append(f"天气只作为画面感参考：{weather}。不要像播报天气一样说出来。")
+                parts.append(
+                    f"天气只作为内部的光线/画面感参考：{weather}。"
+                    "不要在正文或语音里提天气、气温、下雨或天色，也不要追问对方那边的天气；"
+                    "真正的环境突变和官方预警会由独立主动原因提供明确事实。"
+                )
         parts.append(
             "状态只影响语气、用词、句子长短、是否开口和话题选择；不要为了表现状态而写动作小剧场。"
         )
@@ -2143,6 +2150,7 @@ class ProactiveMessageMixin:
 
 【先判断，再开口】
 - 从线索中只选一个此刻最真实、最具体、最值得说的切口；无关线索直接忽略。
+- 天气通常只是环境底色，不是默认话题。只有“话题方向/开口动机”明确来自刚发生的环境突变或当前官方预警时，才把天气写进正文；其他主动不要顺手聊天气、报温度、问对方那边天气如何。
 - 开口动机是内部决策依据，不是你要说出口的话；不要照抄动机里的措辞，用你自己的方式开口。
 - 有明确的人、事、画面或感受时，就贴着它说；不要把多个来源拼成一段“近况播报”。
 - 日程、状态和记忆只能帮助确定语气与话题，不可单独证明某个动作已经完成；只有本轮真实动作结果可以支撑具体的已发生陈述。
@@ -2595,6 +2603,8 @@ class ProactiveMessageMixin:
             lines.append("这次由头不算很硬或打扰压力偏高：正文要更短、更轻，最好像把一句话放下，不追问、不求回应。")
         elif semantic_score >= 0.68:
             lines.append("这次有明确由头：正文可以贴着那个由头说一个具体点，但仍然不要解释调度原因。")
+        if reason not in {"environment_change", "weather_alert"}:
+            lines.append("天气和气温只作环境底色，本轮不要把它们改写成正文话题，也不要顺手追问对方那边的天气；改用本轮明确动机、生活片段或最近真实话题。")
         if reason == "health_alert":
             body_health_hint_getter = getattr(self, "_format_body_monitor_health_prompt", None)
             body_health_hint = body_health_hint_getter(user, reason=reason) if callable(body_health_hint_getter) else ""
@@ -7367,6 +7377,7 @@ Output:
             request_text=scene["prompt"],
             session_key=session_key,
             continuity_key=continuity_key,
+            requester_user_id=str(user.get("user_id") or ""),
             reference_image_path=reference_image_path,
         )
         if not image_path:
@@ -9196,6 +9207,10 @@ Output:
             return "natural_language"
         return "traditional"
 
+    @staticmethod
+    def _normalize_bot_relationship_cards(value: Any) -> list[str]:
+        return normalize_bot_relationship_cards(value)
+
     def _photo_generation_prompt_format_mode(self) -> str:
         return self._normalize_photo_generation_prompt_format(
             getattr(self, "photo_generation_prompt_format", "traditional")
@@ -9323,11 +9338,17 @@ Output:
                 prompt,
                 flags=re.I | re.S,
             )
-            if positive_match:
-                positive_raw = positive_match.group(1).strip()
-                negative_match = re.search(r"negative\s+prompt\s*:\s*(.*)$", prompt, flags=re.I | re.S)
-                negative_raw = negative_match.group(1).strip() if negative_match else ""
-                prompt = positive_raw + (f", -1.5::{negative_raw}::" if negative_raw else "")
+            negative_match = re.search(r"negative\s+prompt\s*:\s*(.*)$", prompt, flags=re.I | re.S)
+            if positive_match or negative_match:
+                if positive_match:
+                    positive_raw = positive_match.group(1).strip()
+                elif negative_match:
+                    positive_raw = prompt[:negative_match.start()].strip(" \t\r\n,;。；")
+                else:
+                    positive_raw = prompt
+                negative_raw = negative_match.group(1).strip(" \t\r\n.,;!?。；！") if negative_match else ""
+                separator = ", " if positive_raw and negative_raw else ""
+                prompt = positive_raw + (f"{separator}-1.5::{negative_raw}::" if negative_raw else "")
             return self._photo_prompt_clip(prompt, 2400, preserve_tail=True)
         positive, negative = self._photo_generation_semantic_prompt_parts(prompt)
         positive = positive or "the requested image"
@@ -9341,16 +9362,37 @@ Output:
             formatted += f" Negative prompt: {negative}."
         return self._photo_prompt_clip(formatted, 2400, preserve_tail=True)
 
-    def _photo_generation_selfie_schedule_scene_hint(self) -> str:
+    def _photo_generation_selfie_schedule_scene_hint(
+        self,
+        user_id: str = "",
+        *,
+        include_dialogue_outfit: bool = True,
+    ) -> str:
         snapshot_builder = getattr(self, "_build_companion_scene_snapshot", None)
         snapshot_formatter = getattr(self, "_format_companion_scene_snapshot", None)
         if callable(snapshot_builder) and callable(snapshot_formatter):
             try:
+                scene_user: dict[str, Any] | None = None
+                normalized_user_id = _single_line(user_id, 80)
+                if normalized_user_id:
+                    user_getter = getattr(self, "_get_user", None)
+                    if callable(user_getter):
+                        try:
+                            candidate = user_getter(normalized_user_id)
+                            if isinstance(candidate, dict):
+                                scene_user = dict(candidate)
+                                scene_user.setdefault("user_id", normalized_user_id)
+                        except Exception:
+                            scene_user = {"user_id": normalized_user_id, "relationship_role": "owner"}
+                try:
+                    snapshot = snapshot_builder(
+                        scene_user,
+                        include_dialogue_outfit=include_dialogue_outfit,
+                    )
+                except TypeError:
+                    snapshot = snapshot_builder(scene_user)
                 snapshot_text = _single_line(
-                    snapshot_formatter(
-                        snapshot_builder(),
-                        purpose="selfie_scene",
-                    ),
+                    snapshot_formatter(snapshot, purpose="selfie_scene"),
                     700,
                 )
                 if snapshot_text:
@@ -9573,7 +9615,7 @@ Output:
             (r"^(?:当前场景|场景)[：:]", 60),
             (r"^(?:时间|当前时间)[：:]", 60),
             (r"^(?:当前日程|日程)[：:]", 130),
-            (r"^(?:今日穿搭|当天穿搭|日常穿搭|today'?s outfit|daily outfit)[：:]", 120),
+            (r"^(?:今日穿搭|当天基础穿搭|当天穿搭|日常穿搭|today'?s outfit|daily outfit)[：:]", 120),
             (r"^(?:天气背景|天气|当前天气)[：:]", 90),
             (r"^(?:状态|状态余波|情绪)[：:]", 80),
             (r"^(?:视觉话题|背景)[：:]", 80),
@@ -9625,13 +9667,21 @@ Output:
         self,
         workflow_kind: str,
         prompt_text: str,
+        *,
+        allow_group_photo: bool = False,
     ) -> tuple[str, str]:
         normalized = str(workflow_kind or "").strip().lower()
         if normalized not in {"selfie", "portrait", "自拍", "人像"}:
             return "", ""
         explicit_mirror = self._photo_generation_explicit_mirror_request(prompt_text)
         explicit_back_view = self._photo_generation_explicit_back_view_request(prompt_text)
-        if explicit_back_view:
+        if allow_group_photo and _photo_group_request_matches(prompt_text):
+            positive = (
+                "Referenced multi-person composition: preserve every person already present in the explicit source reference, "
+                "their count, identity, and relative placement in one continuous scene; do not invent anyone else."
+            )
+            negative = "unreferenced extra people, invented faces, duplicated people, comparison panels, split screen, collage"
+        elif explicit_back_view:
             positive = (
                 "Back-view character composition: exactly one recognizable character wearing one coherent outfit in one continuous scene; "
                 "the requested back view or facing-away pose is intentional, preserve the reference hairstyle silhouette and stable appearance, "
@@ -9654,6 +9704,33 @@ Output:
                 "side-by-side panels, diptych, collage, character sheet, mirror selfie, full-length mirror selfie, dressing-room mirror, phone covering face"
             )
         return positive, negative
+
+    @staticmethod
+    def _photo_generation_subject_count_contract(
+        workflow_kind: str,
+        request_text: str,
+        *,
+        explicit_reference_supplied: bool,
+    ) -> tuple[str, str]:
+        normalized = str(workflow_kind or "").strip().lower()
+        if normalized in {"edit", "改图", "修图", "重绘", "p图"}:
+            return "", ""
+        group_photo_requested = _photo_group_request_matches(request_text)
+        if explicit_reference_supplied and group_photo_requested:
+            return (
+                "Multi-person composition is permitted only because the current request supplied an explicit source reference; "
+                "preserve the referenced people's identities and do not invent additional people.",
+                "unreferenced extra people, invented faces, duplicated people",
+            )
+        if normalized not in {"selfie", "portrait", "自拍", "人像"} and not group_photo_requested:
+            return "", ""
+        return (
+            "Subject-count boundary: show at most one recognizable human character in one continuous scene. "
+            "Other people may be implied only by non-human traces such as a second cup, gift, note, or off-camera context; "
+            "do not show another face, body, silhouette, reflection, or portrait.",
+            "group photo, group portrait, couple photo, two people, multiple people, extra person, second person, "
+            "companion in frame, crowd, invented face",
+        )
 
     @staticmethod
     def _photo_generation_explicit_back_view_request(text: str) -> bool:
@@ -9985,6 +10062,8 @@ Output:
         request_text: str = "",
         session_key: str,
         continuity_key: str = "",
+        requester_user_id: str = "",
+        requester_is_private: bool | None = None,
         reference_image_path: str = "",
         reference_image_paths: Any = (),
         image_size: str = "",
@@ -9998,6 +10077,11 @@ Output:
         trace_id = self._photo_generation_trace_id(session_key, workflow_kind)
         original_prompt_text = str(prompt_text or "").strip()
         request_text = str(request_text or original_prompt_text).strip()
+        requester_user_id = _single_line(requester_user_id, 80)
+        if requester_is_private is None:
+            requester_is_private = bool(
+                re.search(r"(?:friendmessage|privatemessage|private)", str(session_key or ""), flags=re.I)
+            )
         self._append_photo_generation_trace_event(
             trace_id,
             "request_received",
@@ -10022,6 +10106,7 @@ Output:
             path = _path_text(raw_path, 1000)
             if path and path not in explicit_reference_paths:
                 explicit_reference_paths.append(path)
+        explicit_reference_supplied = bool(explicit_reference_paths)
         # requested_scene_preset is the documented tool/generator contract.
         # Keep the short-lived suggested_scene_preset name as a compatibility alias.
         suggested_scene_preset = _single_line(
@@ -10055,7 +10140,50 @@ Output:
         if normalized_kind in {"selfie", "portrait", "自拍", "人像"}:
             schedule_history_context = self._photo_reference_schedule_history_context()
             if allow_daily_outfit_reference:
-                scene_context_before = self._photo_generation_selfie_schedule_scene_hint()
+                if not requester_user_id:
+                    try:
+                        scene_context_before = self._photo_generation_selfie_schedule_scene_hint(
+                            "",
+                            include_dialogue_outfit=bool(requester_is_private),
+                        )
+                    except TypeError:
+                        scene_context_before = self._photo_generation_selfie_schedule_scene_hint()
+                else:
+                    try:
+                        scene_context_before = self._photo_generation_selfie_schedule_scene_hint(
+                            requester_user_id,
+                            include_dialogue_outfit=bool(requester_is_private),
+                        )
+                    except TypeError:
+                        scene_context_before = self._photo_generation_selfie_schedule_scene_hint()
+        dialogue_outfit_match = re.search(
+            r"对话最新服装\s*[：:]\s*(.+?)(?=；|;|$)",
+            scene_context_before,
+        )
+        dialogue_outfit_instruction = _single_line(
+            dialogue_outfit_match.group(1) if dialogue_outfit_match else "",
+            180,
+        )
+        if (
+            dialogue_outfit_instruction
+            and normalized_kind in {"selfie", "portrait", "自拍", "人像"}
+            and not wardrobe_intent.target_category
+            and not wardrobe_intent.excluded_categories
+        ):
+            # Expand a short “continue/take another one” request with the
+            # latest dialogue outfit before wardrobe/reference selection. This
+            # keeps the user-facing prompt intact while preventing a daily
+            # outfit image from silently restoring an older costume.
+            continuity_request = (
+                f"{request_text}\n角色当前仍穿着：{dialogue_outfit_instruction}；"
+                "除本轮明确要求外保持最近对话中的人物与场景连续。"
+            ).strip()
+            wardrobe_intent = merge_photo_wardrobe_continuity(
+                wardrobe_intent,
+                continuity_request,
+            )
+        current_user_request = wardrobe_intent.positive_text
+        current_user_exclusions = wardrobe_intent.exclusion_text
         selection_request = self._photo_prompt_clip(
             "\n\n".join(
                 part
@@ -10248,6 +10376,12 @@ Output:
         composition_positive, composition_negative = self._photo_generation_composition_sections(
             workflow_kind,
             request_text,
+            allow_group_photo=explicit_reference_supplied,
+        )
+        subject_count_positive, subject_count_negative = self._photo_generation_subject_count_contract(
+            workflow_kind,
+            request_text,
+            explicit_reference_supplied=explicit_reference_supplied,
         )
         edit_positive, edit_negative = self._photo_generation_edit_contract(workflow_kind)
         fixed_prompt = str(getattr(self, "photo_generation_fixed_prompt", "") or "").strip()
@@ -10289,6 +10423,12 @@ Output:
                 source="composition",
                 positive=composition_positive,
                 negative=composition_negative,
+            ),
+            PhotoPromptSection(
+                name="subject_count",
+                source="composition",
+                positive=subject_count_positive,
+                negative=subject_count_negative,
             ),
             PhotoPromptSection(
                 name="recent_continuity",
@@ -10893,10 +11033,10 @@ Output:
         relationship_block = ""
         if getattr(self, "enable_bot_relationship_network", False):
             card_lines: list[str] = []
-            for raw_card in (getattr(self, "bot_relationship_cards", []) or [])[:16]:
-                parts = [_single_line(part, 200) for part in re.split(r"\s*(?:\|\||｜｜)\s*", str(raw_card or ""), maxsplit=2)]
-                if not parts or not parts[0]:
-                    continue
+            for raw_card in self._normalize_bot_relationship_cards(
+                getattr(self, "bot_relationship_cards", [])
+            ):
+                parts = [_single_line(part, 200) for part in raw_card.split(" || ", 2)]
                 relation = parts[1] if len(parts) > 1 else ""
                 appearance = parts[2] if len(parts) > 2 else ""
                 card_lines.append(f"- 角色：{parts[0]}；与Bot的关系：{relation or '（未填写）'}；外貌描述：{appearance or '（未填写）'}")
@@ -10904,9 +11044,9 @@ Output:
                 relationship_block = (
                     "【Bot 关系网】\n"
                     + "\n".join(card_lines)
-                    + "\n使用方式：这些是 Bot 熟悉的人物角色卡，属于可选画面素材。只有当话题、动机或内容锚点自然涉及和别人相处、约见、同行时，"
-                    "才最多挑选一位入镜或作为画面线索；入镜角色的外貌必须严格按角色卡外貌描述写进 prompt，不要改写身份或关系，"
-                    "也不要把多位角色拼进同一张图。大多数画面仍应是 Bot 独自视角，不合适时忽略本节。\n\n"
+                    + "\n使用方式：这些角色卡只用于理解关系情境，不能替代人物参考图，也不授权模型凭文字生成角色外貌。当前没有与角色卡绑定的合影参考能力，"
+                    "因此不得让关系卡人物本人、脸、身体、背影、剪影、倒影或肖像入镜；话题自然涉及对方时，只能用第二只杯子、礼物、便签、空座位等非人物线索间接表达。"
+                    "画面保持 Bot 单人或纯场景，不合适时忽略本节。\n\n"
                 )
         prompt = f"""
 请根据 AstrBot 默认人格和主动原因,生成一张要通过生图后端制作的“社交媒体随手拍/自拍/生活碎片图”提示词。
@@ -10959,6 +11099,7 @@ Output:
 8. 不要默认生成全身镜/对镜自拍/手机挡脸自拍；只有话题、动机或当前日程明确出现“镜前/对镜/镜子/全身镜/mirror”时才允许。普通穿搭图用当前地点里的手持自拍、半身或四分之三身环境人像。
 9. `use_persona_reference` 仅表示画面中是否出现 Bot 本人：自拍、人物生活照、人物穿搭图填 true；纯风景、食物、桌面物品、动物、手机屏幕或生日卡填 false。
 10. 服装语义优先级为：本次明确服装需求优先；具体场景服装参考用于落实该需求；今日穿搭仅在没有新服装意图时作为连续性补充。不要同时写入彼此冲突的两套服装。
+11. 当前主动生图没有其他人物的可验证参考：禁止合影、合照、双人/多人同框，也不要画另一人的脸、身体、背影、剪影、倒影或肖像。关系卡只可影响情境，并用非人物生活线索间接表达关系。
 """.strip()
         text = await self._llm_call(
             prompt,
@@ -11146,13 +11287,18 @@ Output:
             ("swimwear", r"泳装|泳衣|比基尼|swimsuit|swimwear|bikini"),
             ("sportswear", r"运动服|健身服|瑜伽服|球衣|sportswear|activewear|gym wear|jersey"),
             ("formalwear", r"礼服|晚礼服|正装|燕尾服|西装|tuxedo|formalwear|formal attire|evening gown|\bsuit\b"),
-            ("homewear", r"居家服|家居服|家常服|宅家服|homewear"),
-            ("daily_outfit", r"今日穿搭|当天穿搭|日常穿搭|today'?s outfit|daily outfit"),
+            ("homewear", r"居家服|家居服|家常服|宅家服|homewear|loungewear"),
+            ("daily_outfit", r"今日穿搭|当天基础穿搭|当天穿搭|日常穿搭|today'?s outfit|daily outfit"),
         )
         matches: list[tuple[str, int, int, str]] = []
         for category, pattern in patterns:
             for match in re.finditer(pattern, text, flags=re.I):
-                matches.append((category, match.start(), match.end(), match.group(0)))
+                resolved_category = category
+                if category == "homewear" and match.group(0).lower() == "loungewear":
+                    context = text[max(0, match.start() - 40) : match.end() + 40]
+                    if "bedtime" in context:
+                        resolved_category = "sleepwear"
+                matches.append((resolved_category, match.start(), match.end(), match.group(0)))
         matches.sort(key=lambda item: (item[1], item[2]))
         return matches
 
@@ -11650,7 +11796,7 @@ Output:
             looks_like_ambient_context = bool(
                 re.search(
                     r"(?:^|[；;，,])\s*(?:时间|状态|当前日程|日程|情绪|可分享碎片|"
-                    r"当前位置|当前场景|天气背景|今日穿搭|当天穿搭|日常穿搭)\s*[：:]",
+                    r"当前位置|当前场景|天气背景|今日穿搭|当天基础穿搭|当天穿搭|日常穿搭)\s*[：:]",
                     legacy_context,
                     flags=re.I,
                 )
@@ -13534,6 +13680,116 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         session_part = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(session_key or "private_companion"))[:60] or "private_companion"
         return out_dir / f"{session_part}_{self._environment_now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}{safe_ext}"
 
+    def _cleanup_generated_photo_files(self, *, protected_path: str | Path = "") -> dict[str, int]:
+        result = {
+            "scanned_files": 0,
+            "removed_files": 0,
+            "removed_bytes": 0,
+            "removed_by_age": 0,
+            "removed_by_size": 0,
+            "removed_partial": 0,
+            "remaining_bytes": 0,
+        }
+        if not bool(getattr(self, "enable_generated_photo_cleanup", True)):
+            return result
+
+        retention_days = _safe_int(getattr(self, "generated_photo_retention_days", 30), 30, 0, 3650)
+        max_megabytes = _safe_int(getattr(self, "generated_photo_max_mb", 512), 512, 0, 10240)
+
+        root = Path(self.data_dir) / "generated_photos"
+        if not root.exists():
+            return result
+        try:
+            protected = Path(protected_path).resolve(strict=False) if str(protected_path or "").strip() else None
+        except (OSError, ValueError):
+            protected = None
+
+        now = time.time()
+        age_cutoff = now - retention_days * 86400 if retention_days > 0 else 0.0
+        partial_cutoff = now - 3600
+        candidates: list[tuple[Path, float, int, bool]] = []
+
+        def remove_file(path: Path, size: int, reason: str) -> bool:
+            try:
+                path.unlink()
+            except OSError:
+                return False
+            result["removed_files"] += 1
+            result["removed_bytes"] += max(0, size)
+            result[reason] += 1
+            return True
+
+        try:
+            entries = list(root.iterdir())
+        except OSError:
+            return result
+        for path in entries:
+            try:
+                if not path.is_file():
+                    continue
+                stat = path.stat()
+                resolved = path.resolve(strict=False)
+            except OSError:
+                continue
+            is_protected = protected is not None and resolved == protected
+            if path.suffix.lower() == ".part":
+                if not is_protected and stat.st_mtime < partial_cutoff:
+                    remove_file(path, stat.st_size, "removed_partial")
+                continue
+            if path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
+                continue
+            result["scanned_files"] += 1
+            if not is_protected and age_cutoff and stat.st_mtime < age_cutoff:
+                if remove_file(path, stat.st_size, "removed_by_age"):
+                    continue
+            candidates.append((path, stat.st_mtime, max(0, stat.st_size), is_protected))
+
+        total_bytes = sum(item[2] for item in candidates)
+        max_bytes = max_megabytes * 1024 * 1024
+        if max_bytes > 0 and total_bytes > max_bytes:
+            for path, _mtime, size, is_protected in sorted(candidates, key=lambda item: item[1]):
+                if total_bytes <= max_bytes:
+                    break
+                if is_protected:
+                    continue
+                if remove_file(path, size, "removed_by_size"):
+                    total_bytes -= size
+        result["remaining_bytes"] = max(0, total_bytes)
+        if result["removed_files"]:
+            logger.info(
+                "[PrivateCompanion] 已清理生图归档: files=%s size=%.1fMB age=%s capacity=%s partial=%s retention=%sd max=%sMB",
+                result["removed_files"],
+                result["removed_bytes"] / (1024 * 1024),
+                result["removed_by_age"],
+                result["removed_by_size"],
+                result["removed_partial"],
+                retention_days,
+                max_megabytes,
+            )
+        return result
+
+    async def _maybe_cleanup_generated_photos(
+        self,
+        *,
+        force: bool = False,
+        protected_path: str | Path = "",
+    ) -> dict[str, int]:
+        if not bool(getattr(self, "enable_generated_photo_cleanup", True)):
+            return {}
+        now = time.time()
+        last_cleanup = float(getattr(self, "_last_generated_photo_cleanup_ts", 0.0) or 0.0)
+        if not force and now - last_cleanup < 600:
+            return {}
+        self._last_generated_photo_cleanup_ts = now
+        try:
+            return await asyncio.to_thread(
+                self._cleanup_generated_photo_files,
+                protected_path=protected_path,
+            )
+        except Exception as exc:
+            logger.warning("[PrivateCompanion] 清理生图归档失败: %s", _single_line(exc, 180))
+            return {}
+
     async def _save_external_generated_image(
         self,
         image_bytes: bytes,
@@ -13551,6 +13807,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
             _single_line(str(file_path), 180),
             len(image_bytes),
         )
+        await self._maybe_cleanup_generated_photos(protected_path=file_path)
         return str(file_path)
 
     def _external_image_download_proxy_url(self) -> str:
@@ -13689,6 +13946,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
                 _single_line(str(output_path), 180),
                 received_size,
             )
+            await self._maybe_cleanup_generated_photos(protected_path=output_path)
             return str(output_path), "ok"
         except asyncio.TimeoutError:
             note = f"下载在线图片结果超时（{download_timeout} 秒内未完成），请检查运行 Bot 的服务器是否能直连该图片 URL"

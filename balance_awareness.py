@@ -595,7 +595,8 @@ class BalanceAwarenessMixin:
                     or safe_error.startswith("没有可用于自动查询余额的 AstrBot Provider")
                 )
                 if auto_unsupported:
-                    retry = max(interval, 12 * 3600.0)
+                    unsupported_hours = min(168.0, 12.0 * (2 ** min(max(failures - 1, 0), 4)))
+                    retry = max(interval, unsupported_hours * 3600.0)
                 else:
                     retry = min(interval, max(5 * 60.0, 5 * 60.0 * (2 ** min(failures - 1, 4))))
                 state.update(
@@ -613,7 +614,7 @@ class BalanceAwarenessMixin:
                 if auto_unsupported:
                     logger.warning(
                         "[PrivateCompanion] 当前 Provider 不支持余额查询,已延长探测间隔: "
-                        "failures=%s retry_hours=%.1f error=%s",
+                        "failures=%s retry_hours=%.1f max_retry_hours=168 error=%s",
                         failures,
                         retry / 3600.0,
                         safe_error,

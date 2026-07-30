@@ -117,6 +117,106 @@ def _single_line(text: Any, limit: int = 80) -> str:
     return normalized[:limit]
 
 
+def normalize_bot_relationship_cards(value: Any, *, limit: int = 16) -> list[str]:
+    """Normalize relationship cards shared by config, page API, and prompt injection."""
+    if isinstance(value, (list, tuple)):
+        raw_lines = [str(item or "") for item in value]
+    else:
+        raw_lines = str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+
+    cards: list[str] = []
+    seen_names: set[str] = set()
+    max_cards = max(0, int(limit))
+    if max_cards == 0:
+        return cards
+    for raw_line in raw_lines:
+        parts = [
+            _single_line(part, 200)
+            for part in re.split(r"\s*(?:\|\||｜｜)\s*", raw_line, maxsplit=2)
+        ]
+        name = parts[0] if parts else ""
+        if not name:
+            continue
+        name_key = name.casefold()
+        if name_key in seen_names:
+            continue
+        seen_names.add(name_key)
+        relation = parts[1] if len(parts) > 1 else ""
+        appearance = parts[2] if len(parts) > 2 else ""
+        cards.append(f"{name} || {relation} || {appearance}")
+        if len(cards) >= max_cards:
+            break
+    return cards
+
+
+def _photo_group_request_matches(text: Any) -> bool:
+    """Return whether a photo request explicitly asks multiple people to share the frame."""
+    source = _single_line(text, 1600)
+    if not source:
+        return False
+    compact = re.sub(r"\s+", "", source).lower()
+    compact = re.sub(
+        r"(?:不要|不想要?|不需要|无需|避免|禁止|拒绝|别|不是|并非)(?:生成|画|拍|做|来)?"
+        r"(?:任何)?(?:合影|合照|双人照|双人自拍|多人照|多人自拍|大合照|一起入镜|一同入镜|"
+        r"两人同框|二人同框|多人同框|同框照|情侣照|情侣写真)",
+        "",
+        compact,
+    )
+    compact = re.sub(
+        r"(?:不要|不想要?|不需要|无需|避免|禁止|拒绝|别|不是|并非)"
+        r"(?:(?:我(?:们|俩)?|咱(?:们|俩)?)(?:和|跟|与)[^，。！？]{1,18}|两个人|两位|三个人|大家|朋友们|一家人)"
+        r".{0,18}(?:一起)?(?:拍照|自拍|拍张照片|拍一张照片|照片|相片|写真|同框|入镜)",
+        "",
+        compact,
+    )
+    english_source = re.sub(
+        r"\b(?:no|not|avoid|without|do\s+not\s+(?:make|generate|draw|show)?)\s+"
+        r"(?:a\s+)?(?:group|couple|two[-\s]+person|multi[-\s]+person)\s+"
+        r"(?:photo|portrait|selfie)\b",
+        " ",
+        source,
+        flags=re.I,
+    )
+    if any(
+        marker in compact
+        for marker in (
+            "合影",
+            "合照",
+            "双人照",
+            "双人自拍",
+            "多人照",
+            "多人自拍",
+            "大合照",
+            "一起入镜",
+            "一同入镜",
+            "两人同框",
+            "二人同框",
+            "多人同框",
+            "同框照",
+            "情侣照",
+            "情侣写真",
+        )
+    ):
+        return True
+    if re.search(
+        r"(?:(?:我(?:们|俩)?|咱(?:们|俩)?)(?:和|跟|与)[^，。！？]{1,18}|两个人|两位|三个人|大家|朋友们|一家人)"
+        r".{0,18}(?:一起)?(?:拍照|自拍|拍张照片|拍一张照片|照片|相片|写真|同框|入镜)",
+        compact,
+    ):
+        return True
+    return bool(
+        re.search(
+            r"\b(?:group\s+(?:photo|portrait|selfie)|two[-\s]+person\s+(?:photo|portrait|selfie)|"
+            r"couple\s+(?:photo|portrait|selfie)|(?:photo|portrait|selfie)\s+of\s+us\s+together|"
+            r"(?:both|two\s+people)\s+in\s+(?:the\s+)?(?:same\s+)?(?:frame|photo)|"
+            r"(?:photo|portrait|selfie)\s+(?:with|of)\s+(?:my\s+)?(?:friend|partner|family)|"
+            r"(?:me|us)\s+(?:and|with)\s+[^,.!?]{1,40}\s+(?:photo|portrait|selfie))\b",
+            english_source,
+            flags=re.I,
+        )
+    )
+
+
 def _path_text(value: Any, limit: int = 1000) -> str:
     """Normalize a configured path without changing legal internal whitespace."""
     normalized = str(value or "").replace("\r", "").replace("\n", "").strip()

@@ -1714,8 +1714,7 @@ class ForwardMessageMixin:
                 lowered = text.lower()
                 if re.search(r"\.(?:png|jpe?g|gif|webp|bmp)(?:[?#].*)?$", text, re.I) or "/bfs/" in text or "image" in lowered:
                     return True
-                # QQ 图床(NTQQ multimedia / qpic)的下载直链不带扩展名, 只能按域名识别;
-                # 同一域名也会下发语音等非图片文件, 按 format 参数排除。
+                # QQ 图床下载直链不带扩展名；同域名也承载音频，需要按格式排除。
                 hostname = (urlparse(text).hostname or "").lower().rstrip(".")
                 if hostname in {"multimedia.nt.qq.com", "multimedia.nt.qq.com.cn", "qpic.cn"} or hostname.endswith(".qpic.cn"):
                     return not re.search(r"[?&]format=(?:amr|silk|mp3|m4a|wav|ogg|mp4)\b", lowered)

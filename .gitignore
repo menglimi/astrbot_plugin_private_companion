@@ -1,0 +1,14 @@
+# Python and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local tooling artifacts
+*.orig
+*.rej
+*.patch
+*.tmp
+*.bak
+
+# AstrBot host runtime data must never be packaged with this plugin.
+/data/

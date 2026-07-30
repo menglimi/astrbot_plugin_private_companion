@@ -2378,18 +2378,19 @@ class DailyStateMixin:
         food_markers = ("食堂", "午饭", "中午", "菜", "咸", "吃")
         if sum(1 for token in food_markers if token in text) >= 2:
             return "noon_food_share"
+        weather_markers = (
+            "外面下雨", "外面下雪", "天气", "天晴", "晴吗", "晴天", "下雨", "没下雨",
+            "雨声", "雨停", "雨雪停", "小雨", "中雨", "大雨", "阵雨", "雷雨", "雷暴", "降雨",
+            "阴天", "天阴", "阴阴", "多云", "放晴", "太阳", "阳光", "晚霞", "天色", "气温",
+            "降温", "升温", "起风", "风声", "下雪", "雪天", "雾霾",
+        )
+        if any(token in text for token in weather_markers):
+            # 普通天气换一种说法仍是同一个主动话题。结构化预警和实时
+            # 环境变化在候选层按事件指纹去重，不依赖这里放行。
+            return "ordinary_weather_topic"
         image_markers = ("图", "图片", "照片", "拍", "自拍", "画面")
         if sum(1 for token in image_markers if token in text) >= 2:
             return "photo_share"
-        weather_markers = (
-            "窗外", "外面", "天气", "天晴", "晴吗", "晴天", "下雨", "没下雨",
-            "雨声", "小雨", "大雨", "阴天", "多云", "太阳", "云",
-        )
-        morning_markers = ("早上", "早安", "刚醒", "醒了", "刚醒来", "起床", "洗漱")
-        if any(token in text for token in weather_markers) and (
-            any(token in text for token in morning_markers) or "你那边" in text or "你那里" in text
-        ):
-            return "morning_weather_check"
         tokens = re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z0-9_]{3,}", text)
         stopwords = {
             "刚才", "现在", "今天", "这个", "那个", "一下", "一点", "有点", "还是",
@@ -2431,7 +2432,14 @@ class DailyStateMixin:
         for item in raw:
             if not isinstance(item, dict):
                 continue
-            if now - _safe_float(item.get("ts"), 0) > 6 * 3600:
+            signature = str(item.get("signature") or "")
+            visible_text = _single_line(item.get("text"), 240)
+            derived_signature = self._proactive_topic_signature(visible_text) if visible_text else ""
+            if signature == "morning_weather_check" or derived_signature == "ordinary_weather_topic":
+                signature = "ordinary_weather_topic"
+                item["signature"] = signature
+            retention = 18 * 3600 if signature == "ordinary_weather_topic" else 6 * 3600
+            if now - _safe_float(item.get("ts"), 0) > retention:
                 continue
             if callable(meta_leak_checker) and (
                 meta_leak_checker(str(item.get("text") or ""))
@@ -2457,8 +2465,13 @@ class DailyStateMixin:
     def _recent_proactive_topic_repeated(self, user: dict[str, Any], signature: str, *, now: float | None = None) -> bool:
         if not signature:
             return False
-        for item in self._cleanup_recent_proactive_topics(user, now=now):
-            if self._topic_signature_similar(signature, str(item.get("signature") or "")):
+        check_now = now or _now_ts()
+        for item in self._cleanup_recent_proactive_topics(user, now=check_now):
+            item_signature = str(item.get("signature") or "")
+            max_age = 18 * 3600 if signature == "ordinary_weather_topic" or item_signature == "ordinary_weather_topic" else 6 * 3600
+            if check_now - _safe_float(item.get("ts"), 0) > max_age:
+                continue
+            if self._topic_signature_similar(signature, item_signature):
                 return True
         return False
 
@@ -2500,11 +2513,12 @@ class DailyStateMixin:
             if not self._topic_signature_similar(signature, old_signature):
                 continue
             age = check_now - _safe_float(item.get("ts"), 0)
-            if age > 4 * 3600:
+            duplicate_window = 18 * 3600 if signature == "ordinary_weather_topic" else 4 * 3600
+            if age > duplicate_window:
                 continue
             old_text = _single_line(item.get("text"), 80)
-            if signature == "morning_weather_check":
-                return f"早晨天气问候刚刚发过" + (f"：{old_text}" if old_text else "")
+            if signature == "ordinary_weather_topic":
+                return f"近期已经主动聊过天气" + (f"：{old_text}" if old_text else "")
             return f"近 {max(1, int(age // 60))} 分钟已发送相似主动" + (f"：{old_text}" if old_text else "")
         last_message = _single_line(_strip_internal_message_blocks(user.get("last_companion_message")), 500)
         # last_reply_at is inbound user activity, so it must never make an old
@@ -2878,6 +2892,8 @@ class DailyStateMixin:
                 continue
             when = self._format_timestamp_elapsed(item.get("ts"))
             lines.append(f"- {when}说过：{text}")
+        if any(str(item.get("signature") or "") == "ordinary_weather_topic" for item in recent):
+            lines.append("- 最近已经用天气开过话题；除非本轮原因是刚发生的环境突变或官方预警，否则这次不要再写天气、气温、下雨、天色，也不要追问对方那边的天气。")
         return "\n".join(lines)
 
     def _normalize_story_items(self, raw_items: Any, text_key: str) -> list[dict[str, Any]]:
@@ -4129,6 +4145,7 @@ class DailyStateMixin:
         offered = 0
         for user_id, user in self._environment_change_owner_users():
             scheduled = now + random.uniform(1.0, 3.0) * 60.0
+            change_fingerprint = _single_line(change.get("fingerprint"), 160)
             candidate = {
                 "source": "environment_change",
                 "reason": "environment_change",
@@ -4141,6 +4158,11 @@ class DailyStateMixin:
                 "topic": _single_line(change.get("topic"), 80),
                 "motive": "刚注意到外界环境发生了明显变化，想趁变化还新鲜时自然提一句",
                 "score": _safe_int(change.get("score"), 82, 0, 100),
+                "origin_event_id": (
+                    "environment:" + hashlib.sha1(change_fingerprint.encode("utf-8", errors="ignore")).hexdigest()[:24]
+                    if change_fingerprint
+                    else ""
+                ),
                 "context_key": "planned_environment_change_context",
                 "context": deepcopy(change),
             }
@@ -5982,6 +6004,7 @@ class DailyStateMixin:
                     f"{level}{event.get('event') or '天气'}{event.get('status') or '有变化'}",
                     90,
                 )
+                alert_event_key = _single_line(event.get("event_key"), 260)
                 candidate = {
                     "source": "weather_alert",
                     "reason": "weather_alert",
@@ -5994,6 +6017,11 @@ class DailyStateMixin:
                     "topic": topic,
                     "motive": "刚收到一条与当前位置有关的官方气象预警，想把最重要的一点及时告诉主要用户",
                     "score": max(72, min(100, 70 + _qweather_alert_rank(alert.get("color_code") or alert.get("severity")) * 10)),
+                    "origin_event_id": (
+                        "weather:" + hashlib.sha1(alert_event_key.encode("utf-8", errors="ignore")).hexdigest()[:24]
+                        if alert_event_key
+                        else ""
+                    ),
                     "context_key": "planned_weather_alert_context",
                     "context": deepcopy(event),
                 }
@@ -9494,6 +9522,123 @@ class DailyStateMixin:
         return "\n".join(lines) if lines else "（暂未设置）"
 
     @staticmethod
+    def _detect_dialogue_outfit_change(text: Any) -> str:
+        normalized = _single_line(text, 180)
+        if not normalized:
+            return ""
+        outfit = (
+            r"(?:JK(?:制服|服)?|jk(?:制服|服)?|校服|制服|衣服|衣裳|服装|穿搭|套装|"
+            r"睡衣|睡裙|睡袍|居家服|礼服|正装|西装|汉服|和服|旗袍|洛丽塔|lo裙|"
+            r"女仆装|巫女服|泳装|泳衣|运动服|球衣|外套|风衣|大衣|夹克|衬衫|"
+            r"T恤|毛衣|卫衣|上衣|背心|连衣裙|短裙|长裙|裙子|裤子|短裤|袜子|鞋子|帽子|围巾)"
+        )
+        action = r"(?:换(?:装|衣|上|成|为|掉|下|回|一套|一身|一件|一条|身)?|改穿|穿(?:上|着|了)?|套上|脱下|脱掉)"
+        has_outfit_change = bool(
+            re.search(rf"{action}.{{0,24}}{outfit}|{outfit}.{{0,12}}{action}", normalized, re.IGNORECASE)
+        )
+        if not has_outfit_change:
+            return ""
+
+        question_or_hypothesis = bool(
+            re.search(r"要不要|能不能|可不可以|是否|是不是|想不想|会不会|如果|假如|[？?]", normalized)
+        )
+        positive_after_boundary = bool(
+            re.search(rf"(?:^|[，,。；;！!]\s*)(?:那|现在|然后|再|先|快|去|把|给|来)?\s*(?:你|她)?\s*{action}.{{0,24}}{outfit}", normalized, re.IGNORECASE)
+            or re.search(rf"(?:^|[，,。；;！!]\s*)把.{{0,10}}{outfit}.{{0,8}}{action}", normalized, re.IGNORECASE)
+        )
+        if question_or_hypothesis and not positive_after_boundary:
+            return ""
+
+        negated_change = bool(re.search(rf"(?:不要|别|不用|不必|不许|禁止).{{0,8}}{action}", normalized))
+        if negated_change and not re.search(rf"[，,。；;！!].{{0,12}}{action}.{{0,24}}{outfit}", normalized, re.IGNORECASE):
+            return ""
+
+        direct_target = bool(
+            re.search(rf"(?:让|叫|给|帮)?(?:你|她|角色|星缘|bot|机器人).{{0,16}}{action}", normalized, re.IGNORECASE)
+        )
+        shared_target = bool(re.search(rf"(?:我们|咱们|咱俩).{{0,8}}{action}", normalized))
+        imperative = positive_after_boundary
+        if not (direct_target or shared_target or imperative):
+            return ""
+
+        meta_feedback = bool(
+            re.search(r"掉状态|对不上|文本里|文本里面|旧衣服|原本|之前|怎么又|为什么|bug|BUG|问题", normalized)
+        )
+        if meta_feedback and not imperative:
+            return ""
+        return normalized
+
+    def _current_dialogue_outfit_override(
+        self,
+        *,
+        user_id: str = "",
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        data = getattr(self, "data", None)
+        if not isinstance(data, dict):
+            return {}
+        snapshot = data.get("dialogue_outfit_override")
+        if not isinstance(snapshot, dict):
+            return {}
+        check_now = _now_ts() if now is None else now
+        if _single_line(snapshot.get("date"), 16) != _today_key():
+            return {}
+        if _safe_float(snapshot.get("expires_at"), 0) <= check_now:
+            return {}
+        source_user_id = _single_line(snapshot.get("source_user_id"), 80)
+        requested_user_id = _single_line(user_id, 80)
+        if requested_user_id and source_user_id != requested_user_id:
+            return {}
+        instruction = _single_line(snapshot.get("instruction"), 180)
+        return dict(snapshot) if instruction else {}
+
+    def _format_dialogue_outfit_continuity_for_prompt(self, user: dict[str, Any] | None = None) -> str:
+        user_id = _single_line((user or {}).get("user_id"), 80) if isinstance(user, dict) else ""
+        snapshot = self._current_dialogue_outfit_override(user_id=user_id)
+        instruction = _single_line(snapshot.get("instruction"), 180)
+        if not instruction:
+            return ""
+        return (
+            "【当前会话服装连续性】\n"
+            f"最近一次明确换装：用户说“{instruction}”。\n"
+            "把它理解为当前剧情中已经发生、需要继续承接的服装变化，不要逐字复述。"
+            "它高于人格默认服装、今日穿搭参考、旧日程、旧摘要和旧图片中的衣服。"
+            "在用户再次明确换装、明确换回，或剧情自然写出新的换衣过程前，不得自行恢复旧服装。"
+        )
+
+    def _record_dialogue_outfit_override_from_interaction(
+        self,
+        text: str,
+        user: dict[str, Any] | None = None,
+    ) -> bool:
+        instruction = self._detect_dialogue_outfit_change(text)
+        if not instruction:
+            return False
+        now = _now_ts()
+        source_user_id = _single_line((user or {}).get("user_id"), 80) if isinstance(user, dict) else ""
+        self.data["dialogue_outfit_override"] = {
+            "date": _today_key(),
+            "instruction": instruction,
+            "source": "user_dialogue",
+            "source_user_id": source_user_id,
+            "created_at": now,
+            "expires_at": now + 12 * 3600,
+        }
+        self._record_detail_interaction_update(
+            {
+                "source": "用户换装",
+                "user_text": instruction,
+                "intensity": "强",
+                "scope": "直到再次换装或当日结束",
+                "immediate_reaction": "她已经按用户这次要求换好衣服，后续动作和场景继续沿用这套服装。",
+                "state_updates": [f"当前服装：按用户换装要求“{instruction}”继续"],
+                "source_role": "owner",
+                "source_user_id": source_user_id,
+            }
+        )
+        return True
+
+    @staticmethod
     def _normalize_schedule_adjustment_scope(scope: Any) -> str:
         text = _single_line(scope, 60)
         if any(token in text for token in ("主动策略", "主动消息", "主动频率")):
@@ -9519,6 +9664,15 @@ class DailyStateMixin:
             until_text = _single_line(override.get("until_text"), 24)
             override_lines.append(f"- 临时延后休息｜强｜今晚：到 {until_text} 前按用户临时陪聊约定处理,不要把当前睡眠段当成必须沉默。")
             override_lines.append("  承接要求：只影响今晚；到点后自然收声或回到休息,不要写成长期熬夜习惯。")
+        outfit_override = self._current_dialogue_outfit_override(now=now)
+        outfit_instruction = _single_line(outfit_override.get("instruction"), 180)
+        if outfit_instruction:
+            override_lines.append(
+                f"- 用户换装｜强｜直到再次换装：用户已明确改变角色服装：“{outfit_instruction}”。"
+            )
+            override_lines.append(
+                "  承接要求：把最新换装写入当前服装状态并延续到后续片段；日程或旧摘要里的默认穿搭只能补空白，不能把服装复原。"
+            )
         if isinstance(raw, list) and raw:
             for item in raw:
                 if not isinstance(item, dict):
@@ -10160,9 +10314,10 @@ class DailyStateMixin:
     def _record_schedule_adjustment_from_interaction(self, text: str, user: dict[str, Any] | None = None) -> bool:
         if self._private_user_role(user) != "owner":
             return False
+        outfit_updated = self._record_dialogue_outfit_override_from_interaction(text, user)
         adjustment = self._detect_schedule_adjustment_from_interaction(text)
         if not adjustment:
-            return False
+            return outfit_updated
         raw = self.data.setdefault("schedule_adjustments", [])
         if not isinstance(raw, list):
             raw = []
@@ -10307,10 +10462,17 @@ class DailyStateMixin:
         if not isinstance(updates, list):
             updates = []
             snapshot["interaction_updates"] = updates
+        source = _single_line(item.get("source"), 24)
+        if source == "用户换装":
+            updates[:] = [
+                update
+                for update in updates
+                if not (isinstance(update, dict) and _single_line(update.get("source"), 24) == source)
+            ]
         updates.append(
             {
                 "at": self._environment_now().strftime("%H:%M"),
-                "source": _single_line(item.get("source"), 24),
+                "source": source,
                 "user_text": _single_line(item.get("user_text"), 80),
                 "intensity": _single_line(item.get("intensity"), 16),
                 "scope": _single_line(item.get("scope"), 40),
@@ -10989,7 +11151,9 @@ class DailyStateMixin:
             + "\n".join(life_lines)
             + "\n这些内容只用于让回复有生活延续感；用户没问 Bot 近况或今天安排时，不要提具体日程、科目、任务、天气或地点。"
             + "如果要承接，只体现在语气和话题选择里，不要照搬原句，不要把内部素材写成真实发生过的事件。"
-            + "回复必须像同一个连续现场里发生的对话；如果生活背景之间互相冲突,优先服从当前真实时段和当前日程,只保留最合理的一条线索。"
+            + "回复必须像同一个连续现场里发生的对话。优先级是：当前会话中已经明确发生且尚未撤销的换装、地点、携带物和动作"
+            + " > 用户有效介入状态 > 当前真实时段 > 日程与预设素材。真实时段只负责锚定时间；日程和每日穿搭只补足空白，"
+            + "绝不能把对话里已发生的服装、地点、携带物或动作复原成旧值。生活背景之间互相冲突时，才在未被当前会话确认的部分保留最合理的一条线索。"
         )
 
     def _format_important_dates_injection(self) -> str:
@@ -12110,11 +12274,15 @@ class DailyStateMixin:
             return (
                 "【Bot 模拟当前片段】\n"
                 "附近的日程只作 Bot 的拟人化轻量背景，不是用户事实，也不要当成正在逐字发生的现实事件。\n"
+                "当前会话中已经明确发生且尚未撤销的换装、地点、携带物和动作优先于本段日程；"
+                "日程只能补足空白，不能把这些已发生的状态恢复成旧值。\n"
                 f"{schedule_context}"
             )
         lines = [
             "【Bot 模拟当前片段】",
             "这是 Bot 自身的拟人化片段素材，不是用户事实/现实证据；不要写进长期记忆，用户没问就不要复述。",
+            "优先级：当前会话中已明确发生且尚未撤销的换装、地点、携带物和动作 > 用户有效介入 > 当前真实时段 > 本段日程及预设素材。"
+            "日程、旧摘要和 state_variables 只能补足未指定信息，不能把已经发生的服装、地点、携带物或动作复原成旧值。",
         ]
         primary_parts = []
         if snapshot.get("summary"):
@@ -16924,13 +17092,21 @@ class DailyStateMixin:
             if not is_troubleshooting_for_send and (effective_action_for_send or planned_action_for_send or "message") == "message":
                 async with self._data_lock:
                     current_for_similarity_guard = self._get_user(user_id)
-                    similar_note = self._recent_proactive_text_duplicate_reason(
-                        current_for_similarity_guard,
-                        text=text,
-                        topic=current_for_similarity_guard.get("planned_proactive_topic"),
-                        motive=planned_motive_for_send,
-                        now=_now_ts(),
+                    timeliness_getter = getattr(self, "_planned_proactive_timeliness_level", None)
+                    timeliness = (
+                        timeliness_getter(current_for_similarity_guard)
+                        if callable(timeliness_getter)
+                        else "routine"
                     )
+                    similar_note = ""
+                    if timeliness == "routine":
+                        similar_note = self._recent_proactive_text_duplicate_reason(
+                            current_for_similarity_guard,
+                            text=text,
+                            topic=current_for_similarity_guard.get("planned_proactive_topic"),
+                            motive=planned_motive_for_send,
+                            now=_now_ts(),
+                        )
                     if similar_note:
                         current_for_similarity_guard["proactive_sending"] = False
                         current_for_similarity_guard["proactive_sending_started_at"] = 0

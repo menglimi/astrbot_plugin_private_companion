@@ -1080,6 +1080,7 @@ small {
     align-self: flex-start;
   }
 }
+
 /* Diagnostic command center: alert-first investigation flow. */
 .troubleshooting-command-center { --diag-ink: #102a43; --diag-alert: #b5473a; --diag-signal: #1a6b5f; }
 .troubleshooting-command-center .troubleshooting-page { gap: 16px; }
@@ -1595,6 +1596,188 @@ small {
 
 .life-memory-list button:last-child {
   border-bottom: 0;
+}
+/* Compact utility header. The outfit preview appears only when a real image is available. */
+.folio {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-rows: auto;
+  align-items: stretch;
+  min-height: 0;
+}
+
+.folio-meta {
+  grid-column: 1;
+  grid-row: 1;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px 18px;
+}
+
+.folio-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+}
+
+.folio-heading > div {
+  min-width: 0;
+}
+
+.folio-eyebrow {
+  font-size: 10px;
+  letter-spacing: 0;
+}
+
+.folio-title,
+.folio-title i {
+  margin: 3px 0 0;
+  color: var(--ink);
+  font-size: 28px;
+  line-height: 1.15;
+  font-style: normal;
+  letter-spacing: 0;
+}
+
+#subtitle {
+  max-width: min(46%, 560px);
+  text-align: right;
+}
+
+.folio-stats {
+  grid-template-columns: repeat(4, minmax(100px, 1fr));
+}
+
+.folio-plate {
+  grid-column: 2;
+  grid-row: 1;
+  display: none;
+  width: 116px;
+  min-height: 0;
+  padding: 12px;
+  box-sizing: border-box;
+  border-right: 0;
+  border-left: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+}
+
+.folio-plate.has-daily-outfit {
+  display: grid;
+}
+
+.folio-plate.has-daily-outfit .daily-outfit-logo {
+  width: 88px;
+  height: 88px;
+  display: block;
+  box-shadow: none;
+}
+
+.folio-tools {
+  grid-column: 3;
+  grid-row: 1;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+}
+
+.folio-tools .seal {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  border-radius: 7px;
+}
+
+.folio-tools .seal small {
+  display: none;
+}
+
+.folio-tools .setup-guide-entry {
+  width: 72px;
+  min-height: 42px;
+}
+
+@media (max-width: 860px) {
+  .folio {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+  }
+
+  .folio-meta {
+    grid-column: 1;
+    grid-row: 1;
+    padding: 16px;
+  }
+
+  .folio-plate,
+  .folio-plate.has-daily-outfit {
+    grid-column: 2;
+    grid-row: 1;
+    width: 104px;
+    min-height: 0;
+    border-bottom: 0;
+  }
+
+  .folio-plate.has-daily-outfit .daily-outfit-logo {
+    width: 76px;
+    height: 76px;
+  }
+
+  .folio-tools {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-content: flex-end;
+    padding: 10px 12px;
+  }
+}
+
+@media (max-width: 560px) {
+  .folio {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto auto;
+  }
+
+  .folio-heading {
+    display: grid;
+    align-items: start;
+    gap: 6px;
+  }
+
+  .folio-title,
+  .folio-title i {
+    font-size: 25px;
+  }
+
+  #subtitle {
+    max-width: none;
+    text-align: left;
+  }
+
+  .folio-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .folio-plate,
+  .folio-plate.has-daily-outfit {
+    grid-column: 1;
+    grid-row: 2;
+    width: auto;
+    padding: 10px 16px;
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+
+  .folio-plate.has-daily-outfit .daily-outfit-logo {
+    width: 72px;
+    height: 72px;
+  }
+
+  .folio-tools {
+    grid-row: 3;
+  }
 }
 
 .life-timeline-head-actions {
@@ -3086,4 +3269,3 @@ small {
 .life-memory-list button:last-child {
   border-bottom: 0;
 }
-

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Collection, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 
@@ -11,18 +11,23 @@ DECISION_VERSION = 1
 _SELFIE_WORKFLOWS = {"selfie", "portrait", "自拍", "人像"}
 _EDIT_WORKFLOWS = {"edit", "改图", "修图", "重绘", "p图"}
 _DAILY_OUTFIT_PATTERN = re.compile(
-    r"(?:今日穿搭|当天穿搭|日常穿搭|today'?s outfit|daily outfit)\s*[：:]",
+    r"(?:今日穿搭|当天基础穿搭|当天穿搭|日常穿搭|today'?s outfit|daily outfit)\s*[：:]",
     flags=re.I,
 )
 _OUTFIT_PATTERNS = (
     ("cosplay", r"(?<![a-z0-9])cos(?:play)?(?![a-z0-9])|角色扮演|扮成|女仆装|巫女服|魔法少女|表演服"),
-    ("school_uniform", r"校服|学院制服|学生制服|school[\s_-]*uniform"),
-    ("sleepwear", r"睡衣|睡裙|睡袍|睡眠服|nightgown|nightdress|pajama|pyjama|sleepwear|loungewear|bedtime outfit"),
+    (
+        "school_uniform",
+        r"(?<![a-z0-9])jk\s*(?:制服|校服)"
+        r"|(?:换(?:成|上|装)?|改穿|穿(?:着|上)?|身着|仍穿(?:着)?)\s*(?:一套|一身)?\s*(?<![a-z0-9])jk(?![a-z0-9])"
+        r"|校服|学院制服|学生制服|school[\s_-]*uniform",
+    ),
+    ("sleepwear", r"睡衣|睡裙|睡袍|睡眠服|nightgown|nightdress|pajama|pyjama|sleepwear|bedtime outfit"),
     ("swimwear", r"泳装|泳衣|比基尼|swimsuit|swimwear|bikini"),
     ("sportswear", r"运动服|健身服|瑜伽服|球衣|sportswear|activewear|gym wear|jersey"),
     ("formalwear", r"礼服|晚礼服|正装|燕尾服|西装|tuxedo|formalwear|formal attire|evening gown|\bsuit\b"),
-    ("homewear", r"居家服|家居服|家常服|宅家服|homewear"),
-    ("daily_outfit", r"今日穿搭|当天穿搭|日常穿搭|today'?s outfit|daily outfit"),
+    ("homewear", r"居家服|家居服|家常服|宅家服|homewear|loungewear"),
+    ("daily_outfit", r"今日穿搭|当天基础穿搭|当天穿搭|日常穿搭|today'?s outfit|daily outfit"),
 )
 _CATEGORY_PRESETS = {
     "sleepwear": "居家睡衣",
@@ -62,6 +67,7 @@ __all__ = [
     "PhotoWardrobeIntent",
     "PhotoWardrobeDecision",
     "analyze_photo_wardrobe",
+    "merge_photo_wardrobe_continuity",
     "resolve_photo_wardrobe_decision",
 ]
 
@@ -76,7 +82,12 @@ def _outfit_category_matches(value: Any) -> list[tuple[str, int, int, str]]:
     matches: list[tuple[str, int, int, str]] = []
     for category, pattern in _OUTFIT_PATTERNS:
         for match in re.finditer(pattern, text, flags=re.I):
-            matches.append((category, match.start(), match.end(), match.group(0)))
+            resolved_category = category
+            if category == "homewear" and match.group(0).lower() == "loungewear":
+                context = text[max(0, match.start() - 40) : match.end() + 40]
+                if "bedtime" in context:
+                    resolved_category = "sleepwear"
+            matches.append((resolved_category, match.start(), match.end(), match.group(0)))
     matches.sort(key=lambda item: (item[1], item[2]))
     return matches
 
@@ -397,9 +408,26 @@ def analyze_photo_wardrobe(prompt_text: str) -> PhotoWardrobeIntent:
     )
 
 
+def merge_photo_wardrobe_continuity(
+    intent: PhotoWardrobeIntent,
+    continuity_request: str,
+) -> PhotoWardrobeIntent:
+    """Fill an otherwise empty outfit intent from an established dialogue outfit."""
+    if intent.target_category or intent.excluded_categories:
+        return intent
+    continuity = analyze_photo_wardrobe(continuity_request)
+    if not continuity.target_category:
+        return intent
+    return replace(
+        continuity,
+        excluded_categories=intent.excluded_categories,
+        exclusion_text=intent.exclusion_text,
+    )
+
+
 def _scene_without_daily_outfit_details(scene_context: str) -> str:
     text = _clean_text(scene_context, 2400)
-    outfit_label = r"(?:今日穿搭|当天穿搭|日常穿搭|today'?s outfit|daily outfit)"
+    outfit_label = r"(?:今日穿搭|当天基础穿搭|当天穿搭|日常穿搭|today'?s outfit|daily outfit)"
     if not text or not re.search(rf"{outfit_label}\s*[：:]", text, flags=re.I):
         return text
     cleaned = re.sub(
@@ -415,7 +443,7 @@ def _scene_without_daily_outfit_details(scene_context: str) -> str:
 def _daily_outfit_categories(scene_context: str) -> set[str]:
     text = _clean_text(scene_context, 2400)
     match = re.search(
-        r"(?:今日穿搭|当天穿搭|日常穿搭|today'?s outfit|daily outfit)\s*[：:]\s*(.*?)"
+        r"(?:今日穿搭|当天基础穿搭|当天穿搭|日常穿搭|today'?s outfit|daily outfit)\s*[：:]\s*(.*?)"
         r"(?=[；;,，]\s*(?:视觉话题|时间|状态|当前日程|日程|情绪|可分享碎片|当前位置|地点|位置|当前场景|场景|天气背景|天气|背景|最近自拍|发型|发色|瞳色|表情|风格)\s*[：:]|$)",
         text,
         flags=re.I | re.S,
@@ -465,7 +493,7 @@ def _ambient_location_categories(scene_context: str) -> set[str]:
     text = _clean_text(scene_context, 2400)
     labels = (
         "视觉话题|时间|状态|当前日程|日程|情绪|可分享碎片|当前位置|地点|位置|"
-        "当前场景|场景|天气背景|天气|背景|最近自拍|今日穿搭|当天穿搭|日常穿搭|"
+        "当前场景|场景|天气背景|天气|背景|最近自拍|今日穿搭|当天基础穿搭|当天穿搭|日常穿搭|"
         "发型|发色|瞳色|表情|风格"
     )
     parts = re.split(rf"[；;,，]\s*(?=(?:{labels})\s*[：:])", text, flags=re.I)
@@ -497,7 +525,7 @@ def _scene_without_ambient_location_fields(scene_context: str) -> str:
         return ""
     labels = (
         "视觉话题|时间|状态|当前日程|日程|情绪|可分享碎片|当前位置|地点|位置|"
-        "当前场景|场景|天气背景|天气|背景|最近自拍|今日穿搭|当天穿搭|日常穿搭|"
+        "当前场景|场景|天气背景|天气|背景|最近自拍|今日穿搭|当天基础穿搭|当天穿搭|日常穿搭|"
         "发型|发色|瞳色|表情|风格"
     )
     parts = re.split(rf"[；;,，]\s*(?=(?:{labels})\s*[：:])", text, flags=re.I)

@@ -20,6 +20,24 @@ from astrbot_plugin_private_companion.photo_wardrobe_decision import (
 
 
 class PhotoWardrobeDecisionTests(unittest.TestCase):
+    def test_legacy_preset_name_is_projected_to_the_single_selected_preset(self) -> None:
+        decision = PhotoWardrobeDecision(
+            rule_id="legacy_single_preset",
+            preset_name="居家睡衣",
+        )
+
+        self.assertEqual(decision.preset_name, "居家睡衣")
+        self.assertEqual(decision.selected_presets, ("居家睡衣",))
+
+    def test_selected_preset_is_projected_back_to_the_legacy_name(self) -> None:
+        decision = PhotoWardrobeDecision(
+            rule_id="canonical_single_preset",
+            selected_presets=("校服人像",),
+        )
+
+        self.assertEqual(decision.preset_name, "校服人像")
+        self.assertEqual(decision.selected_presets, ("校服人像",))
+
     def test_decision_rejects_more_than_one_selected_preset(self) -> None:
         with self.assertRaisesRegex(ValueError, "at most one"):
             PhotoWardrobeDecision(
@@ -132,6 +150,11 @@ class PhotoWardrobeDecisionTests(unittest.TestCase):
         self.assertEqual(intent.target_category, "custom_outfit")
         self.assertTrue(intent.custom_outfit)
         self.assertEqual(intent.excluded_categories, ("school_uniform",))
+
+    def test_contextual_jk_is_treated_as_a_school_uniform_without_matching_a_name(self) -> None:
+        self.assertEqual("school_uniform", analyze_photo_wardrobe("穿着JK继续拍一张").target_category)
+        self.assertEqual("school_uniform", analyze_photo_wardrobe("换一套JK出门拍照").target_category)
+        self.assertEqual("", analyze_photo_wardrobe("JK 说再拍一张").target_category)
 
     def test_explicit_wear_phrase_overrides_a_locked_reference_outfit(self) -> None:
         for prompt in (

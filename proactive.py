@@ -2893,7 +2893,7 @@ class ProactiveMixin:
         self._clear_planned_proactive_trigger(user)
 
     def _maintenance_failure_cooldown_seconds(self, label: str) -> float:
-        if label in {"日常状态", "今日日程", "当前细化", "日记", "创作推进"}:
+        if label in {"日常状态", "今日日程", "当前细化", "日记", "每日巡视", "创作推进"}:
             return 30 * 60
         return 5 * 60
 
@@ -2936,6 +2936,7 @@ class ProactiveMixin:
             ("当前细化", self._ensure_detail_enhancement),
             ("当前在线感", self._ensure_current_detail_presence_status),
             ("日记", self._ensure_daily_diary),
+            ("每日巡视", self._ensure_daily_review),
             ("每日穿搭", self._ensure_daily_outfit_photo),
             ("创作推进", self._maybe_advance_creative_projects),
             ("个人目标", self._maybe_settle_personal_goals),
@@ -2954,6 +2955,7 @@ class ProactiveMixin:
             "当前细化",
             "当前在线感",
             "日记",
+            "每日巡视",
             "天气预警",
             "晚安识屏",
             "被动注入缓存",
@@ -3038,6 +3040,11 @@ class ProactiveMixin:
         diary_due_in = diary_due_getter(now) if callable(diary_due_getter) else None
         if diary_due_in is not None and (nearest_due_in is None or diary_due_in < nearest_due_in):
             nearest_due_in = diary_due_in
+
+        review_due_getter = getattr(self, "_next_daily_review_due_in_seconds", None)
+        review_due_in = review_due_getter(now) if callable(review_due_getter) else None
+        if review_due_in is not None and (nearest_due_in is None or review_due_in < nearest_due_in):
+            nearest_due_in = review_due_in
 
         if nearest_due_in is None:
             return max(35.0, min(base, random.uniform(base * 0.55, base * 0.95)))

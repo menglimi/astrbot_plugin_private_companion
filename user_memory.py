@@ -5833,8 +5833,7 @@ Local classifier result:
         creative_context: str = "",
         review_event: Any | None = None,
     ) -> str:
-        # 带 TTS 保护占位符的回复不参与自检改写：本函数所有分支都会整段替换正文，
-        # 占位符一旦丢失，_restore_protected_tts_blocks 就无法还原语音块，只会发出纯文字。
+        # Any rewrite can break the protected voice/text correspondence for this turn.
         if "[[PCTTS:" in str(response_text or ""):
             return response_text
         relay_claim_checker = getattr(self, "_unexecuted_relay_claim_reason", None)
@@ -6266,7 +6265,7 @@ Local classifier result:
         if "false_no_reply_claim" in active_flags and self._compact_repeat_text(inbound_text) in {"", "？", "?", "啥", "什么", "shenme"}:
             return "啊，我刚才那句是顺口接你问的“有意思的什么”，不是说你没回。"
         cleaned = re.sub(
-            r"[，,。！？!?；;、\s]*(?:比折，?)?(?:快|差不多|都|已经)?\s*(?:晚上)?(?:十一|11|23)\s*[点點][了啦]?[，,、\s]*(?:困不困|该睡了?|睡觉吧?|晚安)?[？?。！!~～]*",
+            r"[，,。！？!?；;、\s]*(?:(?:[\u4e00-\u9fffA-Za-z0-9_\-]{1,12})[，,、:：]|(?:主人|宝贝|亲爱的|宝宝|老师))?\s*(?:快|差不多|都|已经)?\s*(?:晚上)?(?:十一|11|23)\s*[点點][了啦]?[，,、\s]*(?:困不困|该睡了?|睡觉吧?|晚安)?[？?。！!~～]*",
             "",
             cleaned,
         ).strip()
@@ -7178,7 +7177,6 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
         return False, ""
 
     def _response_review_flags(self, text: str, user: dict[str, Any], *, inbound_text: str = "") -> list[str]:
-        # TTS 保护占位符不是可见正文，若参与长度/句数/段落统计会把带语音的短回复误判成过度解释。
         cleaned = re.sub(r"\[\[PCTTS:[^\]]*\]\]", "", str(text or "")).strip()
         flags: list[str] = []
         if not cleaned:

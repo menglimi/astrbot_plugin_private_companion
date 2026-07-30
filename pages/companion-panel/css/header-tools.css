@@ -1,0 +1,157 @@
+:root[data-page-font="original"] {
+  --page-font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+}
+
+:root[data-page-font="yahei"] {
+  --page-font-family: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+}
+
+:root[data-page-font="dengxian"] {
+  --page-font-family: "DengXian", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+}
+
+:root[data-page-font="source_han"] {
+  --page-font-family: "Noto Sans CJK SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+:root[data-page-font="simsun"] {
+  --page-font-family: "SimSun", "Songti SC", "Noto Serif CJK SC", serif;
+}
+
+:root[data-page-font="kaiti"] {
+  --page-font-family: "KaiTi", "STKaiti", "Kaiti SC", "Microsoft YaHei", serif;
+}
+
+:root[data-page-font="fangsong"] {
+  --page-font-family: "FangSong", "STFangsong", "Fangsong SC", "Microsoft YaHei", serif;
+}
+
+:root[data-page-font="cheng"] {
+  --page-font-family: "CustomPanelFont", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+}
+
+:root,
+body,
+button,
+input,
+select,
+textarea {
+  font-family: var(--page-font-family, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif);
+}
+
+.folio-tools {
+  grid-column: 3;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 18px 0 0;
+  border-left: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(26,75,140,0.06), transparent);
+}
+
+.seal {
+  width: 64px;
+  height: 64px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border: 1.5px solid var(--red);
+  border-radius: 50%;
+  background: #fff;
+  color: var(--red);
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(200, 54, 47, 0.18);
+  transition: transform .18s var(--ease), background .18s var(--ease), color .18s var(--ease);
+}
+
+.seal-mark {
+  font-size: 22px;
+  line-height: 1;
+  font-weight: 900;
+}
+
+.seal small {
+  font-size: 7px;
+  letter-spacing: 0.22em;
+  font-weight: 900;
+}
+
+.seal:hover {
+  transform: rotate(-90deg);
+  background: var(--red);
+  color: #fff;
+}
+
+.setup-guide-entry {
+  width: 72px;
+  min-height: 38px;
+  padding: 7px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--accent-strong);
+  font-size: 12px;
+  line-height: 1.18;
+  font-weight: 900;
+  text-align: center;
+  cursor: pointer;
+  box-shadow: 0 8px 20px rgba(26, 75, 140, 0.12);
+  transition: transform .18s var(--ease), border-color .18s var(--ease), background .18s var(--ease), color .18s var(--ease);
+}
+
+.setup-guide-entry:hover {
+  transform: translateY(-1px);
+  border-color: var(--red);
+  background: var(--accent);
+  color: #fff;
+}
+
+@media (max-width: 860px) {
+  .folio-tools {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 12px;
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+
+  .seal,
+  .setup-guide-entry {
+    width: 96px;
+  }
+
+  .seal {
+    height: 42px;
+    border-radius: 8px;
+  }
+
+  .seal:hover {
+    transform: translateY(-1px);
+  }
+
+  .setup-guide-entry {
+    min-height: 42px;
+  }
+}
+
+@media (max-width: 420px) {
+  .folio-tools {
+    justify-content: stretch;
+  }
+
+  .seal,
+  .setup-guide-entry {
+    flex: 1 1 92px;
+    width: auto;
+  }
+}

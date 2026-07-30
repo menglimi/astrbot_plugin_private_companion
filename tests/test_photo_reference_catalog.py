@@ -205,6 +205,33 @@ class PhotoReferenceCatalogTests(unittest.TestCase):
         self.assertTrue(loaded.needs_persist)
         self.assertEqual(loaded.references, ())
 
+    def test_versioned_empty_catalog_recovers_residual_legacy_references(self) -> None:
+        loaded = load_catalog(
+            [],
+            catalog_version=1,
+            legacy_persona="C:/images/legacy-persona.png",
+            legacy_library=["C:/images/legacy-library.png || 旧图库"],
+        )
+
+        self.assertTrue(loaded.needs_persist)
+        self.assertEqual(
+            [item.source for item in loaded.references],
+            ["C:/images/legacy-persona.png", "C:/images/legacy-library.png"],
+        )
+        self.assertTrue(any("异常为空" in warning for warning in loaded.warnings))
+
+    def test_explicitly_cleared_versioned_catalog_does_not_restore_legacy_references(self) -> None:
+        loaded = load_catalog(
+            [],
+            catalog_version=1,
+            legacy_persona="C:/images/legacy-persona.png",
+            legacy_library=["C:/images/legacy-library.png || 旧图库"],
+            user_cleared=True,
+        )
+
+        self.assertFalse(loaded.needs_persist)
+        self.assertEqual(loaded.references, ())
+
     def test_note_inference_covers_all_reference_responsibilities(self) -> None:
         loaded = load_catalog(
             raw_catalog=[],
@@ -269,6 +296,38 @@ class PhotoReferenceCatalogTests(unittest.TestCase):
         self.assertEqual(serialized[0]["outfit_category"], "custom:礼裙")
         self.assertEqual(serialized[0]["scene_categories"], ["beach", "custom:舞台"])
         self.assertEqual(serialized[0]["preferred_preset"], "舞台人像")
+
+    def test_unicode_url_is_valid_and_duplicate_library_entry_merges_into_persona(self) -> None:
+        source = "https://图片.example.com/角色资料/基础 人设.png?名称=星缘&版本=一"
+
+        serialized = validate_and_serialize(
+            [
+                {
+                    "id": "persona",
+                    "kind": "persona",
+                    "source": source,
+                    "note": "基础身份",
+                    "reference_roles": ["identity"],
+                },
+                {
+                    "id": "library-same-source",
+                    "kind": "library",
+                    "source": source,
+                    "note": "居家服参考",
+                    "reference_roles": ["outfit"],
+                    "outfit_category": "homewear",
+                    "scene_categories": ["home"],
+                },
+            ]
+        )
+
+        self.assertEqual(len(serialized), 1)
+        self.assertEqual(serialized[0]["kind"], "persona")
+        self.assertEqual(serialized[0]["source"], source)
+        self.assertEqual(serialized[0]["reference_roles"], ["identity", "outfit"])
+        self.assertEqual(serialized[0]["outfit_category"], "homewear")
+        self.assertEqual(serialized[0]["scene_categories"], ["home"])
+        self.assertIn("居家服参考", serialized[0]["note"])
 
     def test_strict_save_reports_all_field_errors(self) -> None:
         with self.assertRaises(CatalogValidationError) as raised:
@@ -363,6 +422,7 @@ class PhotoReferenceCatalogTests(unittest.TestCase):
             catalog_version=1,
             legacy_persona="C:/images/legacy-persona.png",
             legacy_library=["C:/images/legacy-library.png || 旧图库"],
+            user_cleared=True,
         )
         self.assertEqual(empty.references, ())
         self.assertFalse(empty.needs_persist)
@@ -446,7 +506,7 @@ class PhotoReferenceCatalogTests(unittest.TestCase):
                 "source": "C:/images/shared.png" if index == 0 else f"C:/images/{index}.png",
                 "reference_roles": ["identity"],
             }
-            for index in range(25)
+            for index in range(26)
         )
 
         with self.assertRaises(CatalogValidationError) as raised:
@@ -454,8 +514,8 @@ class PhotoReferenceCatalogTests(unittest.TestCase):
 
         fields = set(raised.exception.errors)
         self.assertIn("items.1.kind", fields)
-        self.assertIn("items.2.source", fields)
-        self.assertIn("items.26.kind", fields)
+        self.assertNotIn("items.2.source", fields)
+        self.assertIn("items.27.kind", fields)
         self.assertIn("items.26.id", fields)
 
     def test_add_and_delete_use_stable_ids_without_losing_other_metadata(self) -> None:

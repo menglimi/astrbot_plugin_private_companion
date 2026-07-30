@@ -242,7 +242,13 @@ _PLATFORM_DISPLAY_NAMES = {
 class AtRelayMixin:
     """跨群/私聊转发工具的目标解析、边界和队列"""
 
-    async def _get_group_member_list_for_tool(self, event: AstrMessageEvent, group_id: str) -> list[dict[str, Any]]:
+    async def _get_group_member_list_for_tool(
+        self,
+        event: AstrMessageEvent,
+        group_id: str,
+        *,
+        force_refresh: bool = False,
+    ) -> list[dict[str, Any]]:
         group_id = str(group_id or "").strip()
         if not group_id:
             return []
@@ -252,7 +258,11 @@ class AtRelayMixin:
             cache = {}
             self._atrelay_member_cache = cache
         cached = cache.get(group_id)
-        if isinstance(cached, dict) and now - _safe_float(cached.get("ts"), 0) < self.atrelay_member_cache_minutes * 60:
+        if (
+            not force_refresh
+            and isinstance(cached, dict)
+            and now - _safe_float(cached.get("ts"), 0) < self.atrelay_member_cache_minutes * 60
+        ):
             members = cached.get("items")
             if isinstance(members, list):
                 return [dict(item) for item in members if isinstance(item, dict)]

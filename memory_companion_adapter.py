@@ -1344,7 +1344,8 @@ class MemoryCompanionAdapterMixin:
             schedule_hint = ""
         content = (
             f"{date_text or '今天'}的 Bot 每日穿搭图已生成。"
-            f"这条记忆用于回答当前穿搭、衣服颜色、今天穿什么等问题。"
+            f"这条记忆只记录生成当天的基础/默认穿搭，可用于回答当天穿什么等问题；它不是后续剧情中的永久当前状态。"
+            f"如果近期对话已经明确换装，应优先承接那次换装，而不是恢复这张图里的衣服。"
         )
         if schedule_hint:
             content += f" 穿搭依据：{schedule_hint}。"
@@ -1363,12 +1364,12 @@ class MemoryCompanionAdapterMixin:
                     "backend": _single_line(item.get("backend"), 80),
                     "note": note,
                     "prompt_preview": prompt,
-                    "query_anchors": ["今日穿搭", "每日穿搭", "衣服颜色", "穿什么", "穿了什么", "当前穿着"],
+                    "query_anchors": ["今日穿搭", "当天基础穿搭", "每日穿搭", "衣服颜色", "当天穿什么"],
                 },
                 source_plugin="private_companion",
                 confidence=0.76,
                 importance=0.62,
-                tags=["daily_outfit", "outfit", "clothing", "current_state", "persona_life", "衣服颜色", "今日穿搭"],
+                tags=["daily_outfit", "outfit", "clothing", "daily_baseline", "persona_life", "衣服颜色", "今日穿搭"],
                 occurred_at=self._memory_companion_now_iso(),
             )
         except Exception as exc:

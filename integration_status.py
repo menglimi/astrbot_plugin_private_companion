@@ -242,6 +242,73 @@ _PLATFORM_DISPLAY_NAMES = {
 class IntegrationStatusMixin:
     """外部插件状态、世界观适配与运行环境描述"""
 
+    def _patch_astrbot_plugin_page_asset_token_compat(self) -> None:
+        """Give AstrBot plugin Pages a wider refresh window for this panel.
+
+        AstrBot 4.26.x signs plugin Page static assets with a very short-lived
+        asset_token. Some desktop/webview builds keep an iframe src around
+        longer than that, so users see the raw JSON error before our page JS can
+        refresh itself. The page assets are scoped static files; extending the
+        window is a compatibility shim, not a permission bypass.
+        """
+        target_ttl_seconds = 6 * 60 * 60
+        changed: list[str] = []
+        try:
+            from astrbot.dashboard.services import plugin_page_service as service_mod
+
+            current = int(getattr(service_mod, "PLUGIN_PAGE_ASSET_TOKEN_TTL_SECONDS", 0) or 0)
+            if 0 < current < target_ttl_seconds:
+                setattr(service_mod, "PLUGIN_PAGE_ASSET_TOKEN_TTL_SECONDS", target_ttl_seconds)
+                changed.append(f"service_ttl={current}->{target_ttl_seconds}")
+        except Exception as exc:
+            logger.debug("[PrivateCompanion] AstrBot 插件页 token TTL 兼容补丁跳过: %s", _single_line(exc, 120))
+
+        try:
+            from astrbot.dashboard.routes import plugin as legacy_route_mod
+
+            current = int(getattr(legacy_route_mod, "_PLUGIN_PAGE_ASSET_TOKEN_TTL_SECONDS", 0) or 0)
+            if 0 < current < target_ttl_seconds:
+                setattr(legacy_route_mod, "_PLUGIN_PAGE_ASSET_TOKEN_TTL_SECONDS", target_ttl_seconds)
+                changed.append(f"legacy_ttl={current}->{target_ttl_seconds}")
+        except Exception as exc:
+            logger.debug("[PrivateCompanion] AstrBot 旧插件页 token TTL 兼容补丁跳过: %s", _single_line(exc, 120))
+
+        try:
+            from astrbot.dashboard.plugin_page_auth import PluginPageAuth
+
+            original = getattr(PluginPageAuth, "_private_companion_original_is_scope_valid", None)
+            if original is None:
+                original = PluginPageAuth.is_scope_valid
+                setattr(PluginPageAuth, "_private_companion_original_is_scope_valid", original)
+
+                def _is_scope_valid(cls, payload: dict, path: str) -> bool:
+                    try:
+                        if original(payload, path):
+                            return True
+                    except Exception:
+                        return False
+                    if not cls.is_protected_path(path) or path.startswith("/api/plugin/page/bridge-sdk.js"):
+                        return False
+                    token_plugin_name = payload.get("plugin_name")
+                    token_page_name = payload.get("page_name")
+                    request_plugin_name = cls.extract_plugin_name_from_path(path)
+                    request_page_name = cls.extract_page_name_from_path(path)
+                    page_aliases = {"陪伴面板", "companion-panel"}
+                    return (
+                        token_plugin_name == "astrbot_plugin_private_companion"
+                        and request_plugin_name == "astrbot_plugin_private_companion"
+                        and token_page_name in page_aliases
+                        and request_page_name in page_aliases
+                    )
+
+                PluginPageAuth.is_scope_valid = classmethod(_is_scope_valid)
+                changed.append("private_companion_page_alias_scope")
+        except Exception as exc:
+            logger.debug("[PrivateCompanion] AstrBot 插件页别名鉴权兼容补丁跳过: %s", _single_line(exc, 120))
+
+        if changed:
+            logger.info("[PrivateCompanion] AstrBot 插件页入口兼容已应用: %s", ", ".join(changed))
+
     def _register_page_api_if_available(self) -> None:
         if not hasattr(self.context, "register_web_api"):
             logger.debug("[PrivateCompanion] 当前 AstrBot 版本未提供 register_web_api,跳过插件拓展页面 API 注册")

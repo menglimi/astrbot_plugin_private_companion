@@ -22,6 +22,7 @@ from typing import Any
 from urllib.parse import quote, urlparse
 
 from astrbot.api import logger
+from astrbot.api.event import MessageChain
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 from quart import request, send_file
 
@@ -34,7 +35,7 @@ from .constants import (
     _REASON_TEXT,
 )
 from .config_migration import _ensure_config_parent_dir
-from .helpers import _flat_get, _normalize_timezone_name, _normalize_timezone_setting, _path_text, _redact_outbound_secrets, _safe_int, _set_into_config, _set_today_key_timezone, _strip_internal_message_blocks, _text_looks_garbled, _text_similarity, _today_key
+from .helpers import _flat_get, _normalize_timezone_name, _normalize_timezone_setting, _path_text, _redact_outbound_secrets, _safe_int, _set_into_config, _set_today_key_timezone, _strip_internal_message_blocks, _text_looks_garbled, _text_similarity, _today_key, normalize_bot_relationship_cards
 from .page_api_qzone import PrivateCompanionPageApiQzoneMixin
 from .page_api_users_groups import PrivateCompanionPageApiUsersGroupsMixin
 from .planning import evaluate_daily_plan_quality, generate_daily_plan, generate_detail_enhancement
@@ -52,6 +53,7 @@ from .photo_reference_catalog import (
     project_reference_candidate,
     validate_and_serialize,
 )
+from .reaction_asset_library import get_reaction_asset_library
 
 PLUGIN_NAME = "astrbot_plugin_private_companion"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
@@ -124,6 +126,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
         "main_user_voice_probability",
     }
     FRACTIONAL_PERCENT_SETTING_KEYS = {
+        "reaction_expression_trigger_probability",
         "bilibili_share_probability",
         "news_share_probability",
         "external_event_self_link_probability",
@@ -261,6 +264,9 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             ("/proactive/candidate/prune", self.prune_proactive_candidates, ["POST"], "Private Companion Page prune proactive candidates"),
             ("/diagnostics", self.get_diagnostics, ["GET"], "Private Companion Page diagnostics"),
             ("/troubleshooting", self.get_troubleshooting, ["GET"], "Private Companion Page troubleshooting"),
+            ("/daily-review", self.get_daily_review, ["GET"], "Private Companion Page daily review"),
+            ("/daily-review/run", self.run_daily_review, ["POST"], "Private Companion Page run daily review"),
+            ("/daily-review/guidance", self.update_daily_review_guidance, ["POST"], "Private Companion Page update daily review guidance"),
             ("/troubleshooting/warnings/update", self.update_troubleshooting_warning_suppression, ["POST"], "Private Companion Page update troubleshooting warning suppression"),
             ("/troubleshooting/test", self.run_troubleshooting_test, ["POST"], "Private Companion Page troubleshooting test"),
             ("/token/stats", self.get_token_stats, ["GET"], "Private Companion Page token stats"),
@@ -272,6 +278,12 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             ("/image_cache/update", self.update_image_cache_item, ["POST"], "Private Companion Page update image cache item"),
             ("/image_cache/delete", self.delete_image_cache_item, ["POST"], "Private Companion Page delete image cache item"),
             ("/image_cache/bulk_delete", self.bulk_delete_image_cache_items, ["POST"], "Private Companion Page bulk delete image cache items"),
+            ("/reaction_library/list", self.list_reaction_library, ["GET"], "Private Companion Page reaction library list"),
+            ("/reaction_library/image_data", self.get_reaction_library_image_data, ["GET"], "Private Companion Page reaction library image data"),
+            ("/reaction_library/import", self.import_reaction_library, ["POST"], "Private Companion Page reaction library import"),
+            ("/reaction_library/update", self.update_reaction_library, ["POST"], "Private Companion Page reaction library update"),
+            ("/reaction_library/delete", self.delete_reaction_library, ["POST"], "Private Companion Page reaction library delete"),
+            ("/reaction_library/rescan", self.rescan_reaction_library, ["POST"], "Private Companion Page reaction library rescan"),
             ("/photo_reference/list", self.list_photo_references, ["GET"], "Private Companion Page photo reference list"),
             ("/photo_reference/image_data", self.get_photo_reference_image_data, ["GET"], "Private Companion Page photo reference image data"),
             ("/daily_outfit/image", self.get_daily_outfit_image, ["GET"], "Private Companion Page daily outfit image"),
@@ -381,6 +393,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
                 if schedule_content_changed:
                     self.plugin._save_data_sync()
                 data = self._overview_data_snapshot_locked(self.plugin.data)
+                reaction_expression = self._reaction_expression_runtime_summary(self.plugin.data)
                 token_stats = self._token_overview_payload(
                     self.plugin.data.get("token_usage", {}),
                     self.plugin.data.get("balance_awareness", {}),
@@ -451,6 +464,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
                 if hasattr(self.plugin, "_platform_adaptation_overview")
                 else {},
                 "features": self._feature_flags(),
+                "reaction_expression": reaction_expression,
                 "proactive_intensity": self._proactive_intensity_summary(),
                 "proactive_only": self._proactive_only_mode_snapshot(),
                 "proactive_chat": self._proactive_chat_summary(data),
@@ -773,6 +787,86 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
 
         return data
 
+    def _reaction_expression_runtime_summary(self, raw_data: Any) -> dict[str, Any]:
+        """Aggregate experiment metrics without exposing user or image details."""
+        raw_runtime = getattr(self.plugin, "_reaction_expression_runtime", None)
+        runtime = raw_runtime if isinstance(raw_runtime, dict) else {}
+        runtime_payload: dict[str, Any] = {}
+        for key in ("attempts", "offers", "lookups", "cache_hits", "sent", "skipped"):
+            if key in runtime:
+                runtime_payload[key] = self._int(runtime.get(key), 0, 0)
+        for key in ("last_latency_ms", "total_lookup_ms"):
+            if key in runtime:
+                runtime_payload[key] = round(self._float(runtime.get(key), 0.0, 0.0), 2)
+        if "last_reason" in runtime:
+            runtime_payload["last_reason"] = self._single_line(runtime.get("last_reason"), 120)
+
+        users = raw_data.get("users") if isinstance(raw_data, dict) else {}
+        if not isinstance(users, dict):
+            users = {}
+        tracked_user_count = 0
+        recent_attempt_count = 0
+        recent_sent_count = 0
+        recent_skipped_count = 0
+        positive_feedback_count = 0
+        negative_feedback_count = 0
+        last_activity_at = 0.0
+        skip_reason_counts: dict[str, int] = {}
+        for user in users.values():
+            if not isinstance(user, dict):
+                continue
+            state = user.get("reaction_expression")
+            if not isinstance(state, dict):
+                continue
+            tracked_user_count += 1
+            outcomes = state.get("recent_outcomes")
+            if isinstance(outcomes, list):
+                for outcome in outcomes:
+                    if not isinstance(outcome, dict):
+                        continue
+                    recent_attempt_count += 1
+                    status = self._single_line(outcome.get("status"), 32).lower()
+                    if status == "sent":
+                        recent_sent_count += 1
+                    elif status == "skipped":
+                        recent_skipped_count += 1
+                        reason = self._single_line(outcome.get("reason"), 120) or "unknown"
+                        skip_reason_counts[reason] = skip_reason_counts.get(reason, 0) + 1
+                    last_activity_at = max(
+                        last_activity_at,
+                        self._float(outcome.get("at"), 0.0, 0.0),
+                    )
+            preference = state.get("preference")
+            if isinstance(preference, dict):
+                positive_feedback_count += self._int(preference.get("positive_count"), 0, 0)
+                negative_feedback_count += self._int(preference.get("negative_count"), 0, 0)
+
+        ordered_reasons = sorted(
+            skip_reason_counts.items(),
+            key=lambda item: (-item[1], item[0]),
+        )[:12]
+        try:
+            library = get_reaction_asset_library(self.plugin)
+            library_summary = library.summary() if library is not None else {}
+        except Exception:
+            library_summary = {}
+        return {
+            "enabled": bool(getattr(self.plugin, "enable_reaction_expression_experiment", False)),
+            "library": library_summary,
+            "runtime": runtime_payload,
+            "recent": {
+                "tracked_user_count": tracked_user_count,
+                "attempt_count": recent_attempt_count,
+                "sent_count": recent_sent_count,
+                "skipped_count": recent_skipped_count,
+                "skip_reasons": {reason: count for reason, count in ordered_reasons},
+                "last_activity_at": last_activity_at,
+                "positive_feedback_count": positive_feedback_count,
+                "negative_feedback_count": negative_feedback_count,
+                "partial": True,
+            },
+        }
+
     def _daily_outfit_summary(self, data: dict[str, Any]) -> dict[str, Any]:
         item = data.get("daily_outfit_photo") if isinstance(data.get("daily_outfit_photo"), dict) else {}
         path = self._single_line(item.get("path"), 300)
@@ -971,6 +1065,93 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
                 "alerts_attributions": alert_attributions,
             },
         }
+
+    def _reaction_library(self):
+        library = get_reaction_asset_library(self.plugin)
+        if library is None:
+            raise RuntimeError("插件数据目录尚未初始化")
+        return library
+
+    async def list_reaction_library(self) -> dict[str, Any]:
+        try:
+            data = await asyncio.to_thread(
+                self._reaction_library().list_items,
+                query=self._single_line(request.args.get("q"), 160),
+                status=self._single_line(request.args.get("status"), 20) or "all",
+                scope=self._single_line(request.args.get("scope"), 20) or "all",
+                page=_safe_int(request.args.get("page"), 1, 1),
+                page_size=_safe_int(request.args.get("page_size"), 48, 1, 120),
+            )
+            return self._ok(data)
+        except Exception as exc:
+            logger.error("[PrivateCompanionPage] 读取表情包素材库失败: %s", exc, exc_info=True)
+            return self._error(str(exc))
+
+    async def get_reaction_library_image_data(self) -> dict[str, Any]:
+        item_id = self._single_line(request.args.get("id"), 64)
+        if not item_id:
+            return self._error("缺少表情包 id")
+        try:
+            result = await asyncio.to_thread(self._reaction_library().get_image_data, item_id)
+            return self._ok(result) if result else self._error("表情包不存在或图片文件已丢失")
+        except Exception as exc:
+            logger.error("[PrivateCompanionPage] 读取表情包图片失败: %s", exc, exc_info=True)
+            return self._error(str(exc))
+
+    async def import_reaction_library(self) -> dict[str, Any]:
+        payload = await request.get_json(silent=True) or {}
+        files = payload.get("files") if isinstance(payload, dict) else None
+        if not isinstance(files, list) or not files:
+            return self._error("请选择图片或 ZIP 文件")
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        try:
+            result = await asyncio.to_thread(
+                self._reaction_library().import_base64_payloads,
+                files,
+                metadata=metadata,
+            )
+            result["message"] = (
+                f"已导入 {result.get('imported', 0)} 张，跳过 {len(result.get('duplicates', []))} 张重复素材"
+            )
+            return self._ok(result)
+        except Exception as exc:
+            logger.error("[PrivateCompanionPage] 导入表情包失败: %s", exc, exc_info=True)
+            return self._error(str(exc))
+
+    async def update_reaction_library(self) -> dict[str, Any]:
+        payload = await request.get_json(silent=True) or {}
+        ids = payload.get("ids") if isinstance(payload.get("ids"), list) else []
+        changes = payload.get("changes") if isinstance(payload.get("changes"), dict) else {}
+        if not ids:
+            return self._error("没有选择表情包")
+        if not changes:
+            return self._error("没有可保存的修改")
+        try:
+            result = await asyncio.to_thread(self._reaction_library().update_items, ids, changes)
+            return self._ok(result)
+        except Exception as exc:
+            logger.error("[PrivateCompanionPage] 更新表情包失败: %s", exc, exc_info=True)
+            return self._error(str(exc))
+
+    async def delete_reaction_library(self) -> dict[str, Any]:
+        payload = await request.get_json(silent=True) or {}
+        ids = payload.get("ids") if isinstance(payload.get("ids"), list) else []
+        if not ids:
+            return self._error("没有选择表情包")
+        if payload.get("confirm") is not True:
+            return self._error("删除需要 confirm=true")
+        try:
+            return self._ok(await asyncio.to_thread(self._reaction_library().delete_items, ids))
+        except Exception as exc:
+            logger.error("[PrivateCompanionPage] 删除表情包失败: %s", exc, exc_info=True)
+            return self._error(str(exc))
+
+    async def rescan_reaction_library(self) -> dict[str, Any]:
+        try:
+            return self._ok(await asyncio.to_thread(self._reaction_library().rescan))
+        except Exception as exc:
+            logger.error("[PrivateCompanionPage] 重建表情包索引失败: %s", exc, exc_info=True)
+            return self._error(str(exc))
 
     async def list_image_cache(self) -> dict[str, Any]:
         try:
@@ -1780,10 +1961,18 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
                         settings[key] = value
             return overview
         except CatalogValidationError as exc:
-            logger.info("[PrivateCompanionPage] 参考图目录字段校验失败: %s", self._single_line(exc, 240))
+            detail = next(
+                (
+                    f"{field}：{message}"
+                    for field, messages in exc.errors.items()
+                    for message in messages
+                ),
+                "",
+            )
+            logger.warning("[PrivateCompanionPage] 参考图目录字段校验失败: %s", self._single_line(exc, 240))
             return {
                 "success": False,
-                "error": "参考图目录存在无效字段",
+                "error": f"参考图目录存在无效字段：{detail}" if detail else "参考图目录存在无效字段",
                 "field_errors": exc.errors,
                 "ts": int(time.time()),
             }
@@ -2427,6 +2616,56 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             )
         except Exception as exc:
             logger.error(f"[PrivateCompanionPage] 获取排障信息失败: {exc}", exc_info=True)
+            return self._error(str(exc))
+
+    async def get_daily_review(self) -> dict[str, Any]:
+        try:
+            payload_getter = getattr(self.plugin, "_daily_review_status_payload", None)
+            if not callable(payload_getter):
+                return self._error("当前插件版本未加载每日终盘巡视模块")
+            async with self.plugin._data_lock:
+                payload = payload_getter()
+            return self._ok(payload)
+        except Exception as exc:
+            logger.error("[PrivateCompanionPage] 获取每日巡视报告失败: %s", self._single_line(exc, 180), exc_info=True)
+            return self._error(str(exc))
+
+    async def run_daily_review(self) -> dict[str, Any]:
+        payload = await request.get_json(silent=True) or {}
+        target_date = self._single_line(payload.get("date"), 16)
+        if target_date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", target_date):
+            return self._error("巡视日期格式必须为 YYYY-MM-DD")
+        runner = getattr(self.plugin, "_ensure_daily_review", None)
+        if not callable(runner):
+            return self._error("当前插件版本未加载每日终盘巡视模块")
+        try:
+            report = await runner(force=True, target_date=target_date)
+            if not isinstance(report, dict):
+                return self._error("巡视未生成有效报告")
+            async with self.plugin._data_lock:
+                status = self.plugin._daily_review_status_payload()
+            return self._ok({"report": report, **status})
+        except Exception as exc:
+            logger.warning("[PrivateCompanionPage] 手动执行每日巡视失败: %s", self._single_line(exc, 180))
+            return self._error(str(exc))
+
+    async def update_daily_review_guidance(self) -> dict[str, Any]:
+        payload = await request.get_json(silent=True) or {}
+        active = bool(payload.get("active", False))
+        try:
+            async with self.plugin._data_lock:
+                guidance = self.plugin.data.get("daily_review_active_guidance")
+                if not isinstance(guidance, dict) or not isinstance(guidance.get("items"), list) or not guidance.get("items"):
+                    return self._error("当前没有可启用的低风险巡视指导")
+                if active and self._float(guidance.get("active_until")) <= time.time():
+                    return self._error("这份巡视指导已经过期，请重新执行巡视")
+                guidance["active"] = active
+                guidance["manual_paused"] = not active
+                self.plugin._save_data_sync()
+                status = self.plugin._daily_review_status_payload()
+            return self._ok(status)
+        except Exception as exc:
+            logger.error("[PrivateCompanionPage] 更新每日巡视指导失败: %s", self._single_line(exc, 180), exc_info=True)
             return self._error(str(exc))
 
     async def _recover_stale_troubleshooting_proactive_test(self, *, max_age_seconds: int = 120) -> int:
@@ -3501,14 +3740,41 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
     async def _run_tts_generation_chain_test(self, payload: dict[str, Any]) -> dict[str, Any]:
         context = getattr(self.plugin, "context", None)
         if context is None:
+            error = "AstrBot context 不可用"
             return {
                 "ok": False,
-                "title": "TTS 生成链路测试",
-                "error": "AstrBot context 不可用",
+                "title": "TTS 生成与投递测试",
+                "generated": False,
+                "delivered": False,
+                "delivery_umo": "",
+                "delivery_error": error,
+                "error": error,
             }
         async with self.plugin._data_lock:
             users = deepcopy(self.plugin.data.get("users") if isinstance(self.plugin.data.get("users"), dict) else {})
-        umo = self._single_line(payload.get("umo"), 180) or self._preferred_tts_test_umo(users)
+        umo = self._preferred_tts_test_umo(
+            users,
+            owner_only=True,
+            resolve_delivery_route=True,
+        )
+        if not umo:
+            error = "没有找到主要用户的有效私聊会话；请先设置主要用户并让 Bot 收到一条该用户的私聊消息"
+            return {
+                "ok": False,
+                "title": "TTS 生成与投递测试",
+                "generated": False,
+                "delivered": False,
+                "delivery_umo": "",
+                "delivery_error": error,
+                "error": error,
+            }
+        requested_umo = self._single_line(payload.get("umo"), 180)
+        if requested_umo and requested_umo != umo:
+            logger.info(
+                "[PrivateCompanionPage] TTS 排障测试忽略非主要用户目标: requested=%s owner=%s",
+                requested_umo,
+                umo,
+            )
         config: dict[str, Any] = {}
         getter = getattr(context, "get_config", None)
         if callable(getter):
@@ -3532,11 +3798,16 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             except Exception:
                 pass
         if tts_provider is None:
+            error = "当前没有可用的 AstrBot TTS Provider 或 MiMo Voice Clone 联动"
             return {
                 "ok": False,
-                "title": "TTS 生成链路测试",
+                "title": "TTS 生成与投递测试",
                 "umo": umo,
-                "error": "当前没有可用的 AstrBot TTS Provider 或 MiMo Voice Clone 联动",
+                "generated": False,
+                "delivered": False,
+                "delivery_umo": umo,
+                "delivery_error": error,
+                "error": error,
             }
         provider_settings = dict((config or {}).get("provider_tts_settings", {}) or {})
         spoken = self._single_line(payload.get("text"), 240) or "这是一条排障测试语音，用来确认 TTS 生成链路可以跑通。"
@@ -3556,7 +3827,6 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             audio_path = await tts_provider.get_audio(spoken)
             component = None
             refs = [str(audio_path)] if audio_path else []
-        elapsed_ms = int((time.time() - started) * 1000)
         audio_ref = self._single_line(refs[0] if refs else "", 260)
         exists = False
         file_size = 0
@@ -3569,20 +3839,88 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
                 exists = False
         else:
             exists = bool(audio_ref)
+        generated = bool(component is not None and audio_ref and exists)
+        delivered = False
+        delivery_error = ""
+        steps = [
+            {
+                "name": "生成音频",
+                "status": "ok" if generated else "error",
+                "detail": "TTS Provider 已返回有效语音组件" if generated else "TTS Provider 未返回可投递的有效语音组件",
+            }
+        ]
+        if generated:
+            delivered, delivery_error = await self._deliver_tts_test_component(umo, component)
+            steps.append(
+                {
+                    "name": "投递语音",
+                    "status": "ok" if delivered else "error",
+                    "detail": "测试语音已发送到主要用户私聊" if delivered else (delivery_error or "发送链路未返回成功回执"),
+                }
+            )
+            if delivered:
+                logger.info(
+                    "[PrivateCompanionPage] TTS 排障测试语音投递成功: umo=%s",
+                    self._single_line(umo, 140),
+                )
+            else:
+                logger.warning(
+                    "[PrivateCompanionPage] TTS 排障测试语音投递失败: umo=%s error=%s",
+                    self._single_line(umo, 140),
+                    self._single_line(delivery_error, 180),
+                )
+        elapsed_ms = int((time.time() - started) * 1000)
         provider_id = self._provider_id(tts_provider)
         provider_label = self._provider_name(tts_provider, provider_id) if provider_id else getattr(tts_provider, "__class__", type(tts_provider)).__name__
+        error = ""
+        if not generated:
+            error = "TTS provider 未返回可投递的有效语音组件"
+        elif not delivered:
+            error = delivery_error or "测试语音投递失败"
         return {
-            "ok": bool(audio_ref and exists),
-            "title": "TTS 生成链路测试",
+            "ok": bool(generated and delivered),
+            "title": "TTS 生成与投递测试",
             "umo": umo,
             "provider": self._single_line(provider_label, 100),
             "path": audio_ref,
             "file_size": file_size,
-            "detail": "已生成语音组件" if component is not None else "已调用 TTS provider 生成音频",
+            "generated": generated,
+            "delivered": delivered,
+            "delivery_umo": umo,
+            "delivery_error": self._single_line(delivery_error, 220),
+            "steps": steps,
+            "detail": "已生成语音组件并发送到主要用户私聊" if delivered else "语音组件已生成，但未能发送到主要用户私聊" if generated else "未生成可投递的语音组件",
             "text": spoken,
             "elapsed_ms": elapsed_ms,
-            "error": "" if audio_ref and exists else "TTS provider 未返回有效音频文件",
+            "error": self._single_line(error, 220),
         }
+
+    async def _deliver_tts_test_component(self, umo: str, component: Any) -> tuple[bool, str]:
+        sender = getattr(self.plugin, "_send_chain_components", None)
+        if callable(sender):
+            try:
+                sent = await sender(
+                    umo,
+                    [component],
+                    apply_decorating_hooks=False,
+                )
+            except Exception as exc:
+                return False, self._single_line(_redact_outbound_secrets(str(exc)), 220) or exc.__class__.__name__
+            if sent is True:
+                return True, ""
+            return False, "插件发送链路返回 False，平台未确认接收测试语音"
+
+        context = getattr(self.plugin, "context", None)
+        fallback = getattr(context, "send_message", None) if context is not None else None
+        if not callable(fallback):
+            return False, "插件发送链路和 AstrBot context.send_message 均不可用"
+        try:
+            sent = await fallback(umo, MessageChain([component]))
+        except Exception as exc:
+            return False, self._single_line(_redact_outbound_secrets(str(exc)), 220) or exc.__class__.__name__
+        if sent is False:
+            return False, "AstrBot 核心发送返回 False，平台未确认接收测试语音"
+        return True, ""
 
     async def _run_proactive_message_chain_test(self, payload: dict[str, Any]) -> dict[str, Any]:
         steps: list[dict[str, str]] = []
@@ -3816,17 +4154,54 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
         add_step("临时任务", "ok", f"已预约 {delay_seconds} 秒后由主动循环执行")
         return result
 
-    def _preferred_tts_test_umo(self, users: dict[str, Any]) -> str:
+    @staticmethod
+    def _is_private_test_umo(umo: Any) -> bool:
+        text = str(umo or "").strip()
+        return bool(
+            text
+            and not re.search(r"(?:^|:)GroupMessage(?=:|$)", text, flags=re.IGNORECASE)
+            and re.search(r"(?:^|:)FriendMessage(?=:|$)", text, flags=re.IGNORECASE)
+        )
+
+    def _preferred_tts_test_umo(
+        self,
+        users: dict[str, Any],
+        *,
+        owner_only: bool = False,
+        resolve_delivery_route: bool = False,
+    ) -> str:
         fallback = ""
         for user_id, item in users.items():
-            if not isinstance(item, dict) or not item.get("enabled", True) or not item.get("umo"):
+            if not isinstance(item, dict) or not item.get("enabled", True):
                 continue
-            umo = self._single_line(item.get("umo"), 180)
-            if not fallback:
-                fallback = umo
-            if self.plugin._private_user_role(item, str(item.get("user_id") or user_id)) == "owner":
-                return umo
-        return fallback
+            resolved_user_id = str(item.get("user_id") or user_id)
+            stored_umo = self._single_line(item.get("umo"), 180)
+            if not stored_umo and not resolve_delivery_route:
+                continue
+            role = self.plugin._private_user_role(item, resolved_user_id)
+            if role != "owner":
+                if not owner_only and not fallback:
+                    fallback = stored_umo
+                continue
+            candidates: list[str] = []
+            if resolve_delivery_route:
+                route_resolver = getattr(self.plugin, "_private_delivery_umo_for_user_id", None)
+                if callable(route_resolver):
+                    try:
+                        candidates.append(self._single_line(route_resolver(resolved_user_id), 180))
+                    except Exception as exc:
+                        logger.warning(
+                            "[PrivateCompanionPage] TTS 排障测试解析主要用户投递会话失败: user=%s error=%s",
+                            self._single_line(resolved_user_id, 80),
+                            self._single_line(exc, 160),
+                        )
+            candidates.append(stored_umo)
+            for candidate in candidates:
+                if not owner_only or self._is_private_test_umo(candidate):
+                    return candidate
+            if not owner_only and not fallback:
+                fallback = stored_umo
+        return "" if owner_only else fallback
 
     def _preferred_proactive_test_user(
         self,
@@ -4907,6 +5282,10 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             "umo": self._single_line(result.get("umo"), 180),
             "path": self._single_line(result.get("path"), 1000),
             "file_size": self._int(result.get("file_size")),
+            "generated": bool(result.get("generated")),
+            "delivered": bool(result.get("delivered")),
+            "delivery_umo": self._single_line(result.get("delivery_umo"), 180),
+            "delivery_error": self._single_line(result.get("delivery_error"), 220),
             "detail": self._single_line(result.get("detail"), 220),
             "error": self._single_line(result.get("error"), 220),
             "diagnostic_detail": self._single_line(result.get("diagnostic_detail"), 2400),
@@ -4978,7 +5357,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             "image_generation_text2img": "文生图链路测试",
             "image_generation_selfie": "自拍参考图链路测试",
             "image_api_endpoint": "在线图片 API 单独测试",
-            "tts_generation": "TTS 生成链路测试",
+            "tts_generation": "TTS 生成与投递测试",
             "screen_peek": "窥屏链路测试",
             "qzone_integration": "QQ 空间链路测试",
             "proactive_message": "主动消息链路测试",
@@ -11983,9 +12362,11 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             "enable_smart_silence",
             "enable_llm_proactive_message",
             "enable_llm_proactive_persona_judge",
+            "enable_reaction_expression_experiment",
             "enable_maslow_motivation_experiment",
             "enable_experimental_motivation_model",
             "enable_personality_iteration_experiment",
+            "enable_daily_case_review_experiment",
             "enable_passive_topic_suppression",
             "enable_relationship_analysis",
             "enable_relationship_state_machine",
@@ -12187,6 +12568,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             "SMART_SILENCE_PROVIDER_ID",
             "PROACTIVE_PERSONA_JUDGE_PROVIDER_ID",
             "TROUBLESHOOTING_PROVIDER_ID",
+            "DAILY_REVIEW_PROVIDER_ID",
             "SMART_MESSAGE_DEBOUNCE_PROVIDER_ID",
             "REST_WAKEUP_PROVIDER_ID",
             "RELATIONSHIP_ANALYSIS_PROVIDER_ID",
@@ -12270,6 +12652,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             "RESPONSE_REVIEW_PROVIDER_ID": fast or complex_model,
             "SMART_SILENCE_PROVIDER_ID": fast or complex_model,
             "TROUBLESHOOTING_PROVIDER_ID": complex_model,
+            "DAILY_REVIEW_PROVIDER_ID": complex_model,
             "EMOTION_JUDGEMENT_PROVIDER_ID": fast or complex_model,
             "SMART_MESSAGE_DEBOUNCE_PROVIDER_ID": fast or complex_model,
             "REST_WAKEUP_PROVIDER_ID": fast or complex_model,
@@ -14067,6 +14450,9 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             "enable_photo_text_action",
             "enable_photo_reference_image",
             "photo_action_max_daily",
+            "enable_generated_photo_cleanup",
+            "generated_photo_retention_days",
+            "generated_photo_max_mb",
             "photo_generation_backend",
             "custom_photo_tool_name",
             "custom_photo_tool_prompt_param",
@@ -15491,13 +15877,11 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
         return suggestions[:5]
 
     def _tts_runtime_summary(self, users: dict[str, Any]) -> dict[str, Any]:
-        enabled_user = None
-        for item in users.values():
-            if isinstance(item, dict) and item.get("enabled", True) and item.get("umo"):
-                enabled_user = item
-                if self.plugin._private_user_role(item, str(item.get("user_id") or "")) == "owner":
-                    break
-        umo = self._single_line((enabled_user or {}).get("umo"), 180) if isinstance(enabled_user, dict) else ""
+        umo = self._preferred_tts_test_umo(
+            users,
+            owner_only=True,
+            resolve_delivery_route=True,
+        )
         config: dict[str, Any] = {}
         provider_settings: dict[str, Any] = {}
         provider = None
@@ -15843,6 +16227,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             "SMART_SILENCE_PROVIDER_ID": "smart_silence_provider_id",
             "PROACTIVE_PERSONA_JUDGE_PROVIDER_ID": "proactive_persona_judge_provider_id",
             "TROUBLESHOOTING_PROVIDER_ID": "troubleshooting_provider_id",
+            "DAILY_REVIEW_PROVIDER_ID": "daily_review_provider_id",
             "RELATIONSHIP_ANALYSIS_PROVIDER_ID": "relationship_analysis_provider_id",
             "EMOTION_JUDGEMENT_PROVIDER_ID": "emotion_judgement_provider_id",
             "COMPANION_MEMORY_PROVIDER_ID": "companion_memory_provider_id",
@@ -16027,7 +16412,15 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             self.plugin.response_review_mode = normalized
             return
         if key in self._allowed_feature_keys():
-            setattr(self.plugin, key, self._normalize_bool_value(value))
+            normalized = self._normalize_bool_value(value)
+            setattr(self.plugin, key, normalized)
+            if key == "enable_daily_case_review_experiment" and not normalized:
+                data = getattr(self.plugin, "data", None)
+                if isinstance(data, dict):
+                    data["daily_review_case_audit"] = []
+                    scheduler = getattr(self.plugin, "_schedule_data_save", None)
+                    if callable(scheduler):
+                        scheduler()
             return
         if key in self._allowed_setting_keys():
             setattr(self.plugin, key, value)
@@ -16425,9 +16818,11 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             "enable_smart_silence",
             "enable_llm_proactive_message",
             "enable_llm_proactive_persona_judge",
+            "enable_reaction_expression_experiment",
             "enable_maslow_motivation_experiment",
             "enable_experimental_motivation_model",
             "enable_personality_iteration_experiment",
+            "enable_daily_case_review_experiment",
             "enable_passive_topic_suppression",
             "enable_relationship_analysis",
             "enable_relationship_state_machine",
@@ -16555,6 +16950,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             "SMART_SILENCE_PROVIDER_ID",
             "PROACTIVE_PERSONA_JUDGE_PROVIDER_ID",
             "TROUBLESHOOTING_PROVIDER_ID",
+            "DAILY_REVIEW_PROVIDER_ID",
             "SMART_MESSAGE_DEBOUNCE_PROVIDER_ID",
             "REST_WAKEUP_PROVIDER_ID",
             "RELATIONSHIP_ANALYSIS_PROVIDER_ID",
@@ -16753,6 +17149,9 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             "quote_skip_short_reply_chars",
             "quote_target_strategy",
             "photo_action_max_daily",
+            "enable_generated_photo_cleanup",
+            "generated_photo_retention_days",
+            "generated_photo_max_mb",
             "photo_generation_backend",
             "custom_photo_tool_name",
             "custom_photo_tool_prompt_param",
@@ -17352,21 +17751,10 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
                 preset_names=self._photo_reference_preset_names(),
             )
         if key == "bot_relationship_cards":
-            if isinstance(value, list):
-                raw_lines = [str(item or "") for item in value]
-            else:
-                raw_lines = str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
-            cards: list[str] = []
-            seen_cards: set[str] = set()
-            for raw_line in raw_lines:
-                text = str(raw_line or "").strip()[:600]
-                if not text or text in seen_cards:
-                    continue
-                seen_cards.add(text)
-                cards.append(text)
-                if len(cards) >= 16:
-                    break
-            return cards
+            normalizer = getattr(self.plugin, "_normalize_bot_relationship_cards", None)
+            if callable(normalizer):
+                return normalizer(value)
+            return normalize_bot_relationship_cards(value)
         if key == "photo_reference_library":
             if isinstance(value, list):
                 raw_items = value
@@ -18061,6 +18449,7 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             "enable_quote_group_interjection",
             "enable_quote_private_proactive",
             "enable_local_photo_load_guard",
+            "enable_generated_photo_cleanup",
             "enable_private_image_self_recognition",
             "enable_context_image_captioning",
             "enable_private_image_gif_enhancement",

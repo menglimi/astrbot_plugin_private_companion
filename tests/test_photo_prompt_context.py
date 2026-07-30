@@ -514,6 +514,27 @@ class PhotoPromptContextTests(unittest.TestCase):
         self.assertIn("soft morning light", natural.final_prompt)
         self.assertEqual(traditional.prompt_sections, natural.prompt_sections)
 
+    def test_nai_format_avoids_square_bracket_section_labels_and_keeps_negative_weight(self) -> None:
+        resolved = resolve_photo_prompt_context(
+            wardrobe=PhotoWardrobeDecision(rule_id="none"),
+            sections=(
+                PhotoPromptSection(
+                    "request",
+                    "user_request",
+                    positive="{solo girl}, rainy window",
+                    negative="text, watermark",
+                ),
+                PhotoPromptSection("scene", "scene_context", "soft morning light"),
+            ),
+            prompt_format="nai",
+            workflow_kind="portrait",
+        )
+
+        self.assertNotIn("[User image request]", resolved.final_prompt)
+        self.assertIn("User image request:", resolved.final_prompt)
+        self.assertIn("{solo girl}, rainy window", resolved.final_prompt)
+        self.assertIn("-1.5::text, watermark::", resolved.final_prompt)
+
     def test_prompt_sections_preserve_user_text_and_budget_lower_priority_groups(self) -> None:
         resolved = resolve_photo_prompt_context(
             wardrobe=PhotoWardrobeDecision(rule_id="none"),

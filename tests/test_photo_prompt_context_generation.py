@@ -124,13 +124,13 @@ class _PhotoGenerationHarness(ProactiveMessageMixin):
         self.data_dir = str(Path(output_path).parent)
         self.photo_generation_trace_max_size_kb = 2048
         self.photo_generation_trace_backup_count = 2
+        self.dialogue_scene_hint = "Identity: Alice; Today's outfit: blue pajamas; Current location: classroom"
 
     async def _photo_persona_reference_image_path_async(self) -> str:
         return self.persona_path
 
-    @staticmethod
-    def _photo_generation_selfie_schedule_scene_hint() -> str:
-        return "Identity: Alice; Today's outfit: blue pajamas; Current location: classroom"
+    def _photo_generation_selfie_schedule_scene_hint(self, _user_id: str = "") -> str:
+        return self.dialogue_scene_hint
 
     @staticmethod
     async def _photo_reference_candidate_for_path_async(
@@ -788,6 +788,35 @@ class PhotoPromptContextGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recorded["reference_intent"]["source"], "workflow_default")
         self.assertEqual(recorded["reference_fallback"]["missing_roles"], [])
         self.assertEqual(recorded["reference_fallback"]["message"], "")
+
+    async def test_textual_dialogue_outfit_beats_daily_outfit_on_continue_request(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "daily-outfit.png"
+            output = root / "generated.png"
+            reference.write_bytes(b"reference")
+            output.write_bytes(b"generated")
+            harness = _PhotoGenerationHarness(str(output))
+            harness.dialogue_scene_hint = "时间：下午；对话最新服装：换一套JK校服；当天基础穿搭：白衬衫"
+
+            backend, image_path, _note = await harness._generate_photo_image(
+                workflow_kind="selfie",
+                prompt_text="继续拍一张",
+                request_text="继续拍一张",
+                requester_user_id="10001",
+                requester_is_private=True,
+                session_key="dialogue-outfit",
+                reference_image_path=str(reference),
+            )
+
+        self.assertEqual("ComfyUI", backend)
+        self.assertEqual(str(output), image_path)
+        submitted_prompt = harness.backend_calls[0]["prompt"].lower()
+        self.assertIn("school uniform", submitted_prompt)
+        self.assertNotIn("pajama", submitted_prompt)
+        self.assertEqual("", harness.backend_calls[0]["reference"])
+        record = harness.data["recent_photo_generations"][0]
+        self.assertTrue(record["daily_outfit_removed"])
 
 
 if __name__ == "__main__":

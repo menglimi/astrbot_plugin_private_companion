@@ -1053,6 +1053,48 @@
     "default": 12,
     "invisible": true
   },
+  "enable_reaction_expression_experiment": {
+    "description": "Legacy flat config: 表情表达实验",
+    "type": "bool",
+    "default": false,
+    "invisible": true
+  },
+  "reaction_expression_private_enabled": {
+    "description": "Legacy flat config: 私聊表情表达",
+    "type": "bool",
+    "default": true,
+    "invisible": true
+  },
+  "reaction_expression_group_enabled": {
+    "description": "Legacy flat config: 群聊表情表达",
+    "type": "bool",
+    "default": false,
+    "invisible": true
+  },
+  "reaction_expression_trigger_probability": {
+    "description": "Legacy flat config: 表情表达触发概率",
+    "type": "float",
+    "default": 0.2,
+    "invisible": true
+  },
+  "reaction_expression_cooldown_seconds": {
+    "description": "Legacy flat config: 表情表达冷却秒数",
+    "type": "int",
+    "default": 180,
+    "invisible": true
+  },
+  "reaction_expression_low_latency_mode": {
+    "description": "Legacy flat config: 表情表达低延迟模式",
+    "type": "bool",
+    "default": true,
+    "invisible": true
+  },
+  "reaction_expression_candidate_limit": {
+    "description": "Legacy flat config: 表情检索说法上限",
+    "type": "int",
+    "default": 6,
+    "invisible": true
+  },
   "enable_maslow_motivation_experiment": {
     "description": "Legacy flat config: 需求强化功能",
     "type": "bool",
@@ -2929,6 +2971,24 @@
     "default": 1,
     "invisible": true
   },
+  "enable_generated_photo_cleanup": {
+    "description": "Legacy flat config: 自动清理生图归档",
+    "type": "bool",
+    "default": true,
+    "invisible": true
+  },
+  "generated_photo_retention_days": {
+    "description": "Legacy flat config: 生图归档保留天数",
+    "type": "int",
+    "default": 30,
+    "invisible": true
+  },
+  "generated_photo_max_mb": {
+    "description": "Legacy flat config: 生图归档磁盘上限 MB",
+    "type": "int",
+    "default": 512,
+    "invisible": true
+  },
   "proactive_photo_text_probability": {
     "description": "Legacy flat config: 主动带图触发概率",
     "type": "int",
@@ -4275,6 +4335,16 @@
         },
         "_special": "select_provider"
       },
+      "DAILY_REVIEW_PROVIDER_ID": {
+        "description": "每日终盘巡视模型（留空优先使用复杂推理模型）",
+        "type": "string",
+        "hint": "用于在每日结束时审阅脱敏运行摘要，发现重复回复、漏回、主动消息、TTS、群成员风控和模型任务异常，并生成次日柔性纠偏。建议选择结构化 JSON 稳定、能理解运行证据的模型。",
+        "default": "",
+        "condition": {
+          "provider_config_mode": "precision"
+        },
+        "_special": "select_provider"
+      },
       "RELATIONSHIP_ANALYSIS_PROVIDER_ID": {
         "description": "关系站位分析模型（留空跟随陪伴通用模型）",
         "type": "string",
@@ -4358,7 +4428,7 @@
       "GROUP_MEMBER_SAFETY_PROVIDER_ID": {
         "description": "群成员风控判定模型",
         "type": "string",
-        "hint": "用于保守判断明确针对 Bot 的持续骚扰、威胁或重复攻击。建议选择指令遵循稳定、JSON 输出可靠的小模型；留空会依次回退到群聊续接、回复复核和陪伴通用模型。",
+        "hint": "用于保守判断明确针对 Bot 或群成员的持续骚扰、性骚扰、威胁或重复攻击。建议选择指令遵循稳定、JSON 输出可靠的小模型；留空会依次回退到群聊续接、回复复核和陪伴通用模型。",
         "default": "",
         "condition": {
           "provider_config_mode": "precision"
@@ -4571,7 +4641,7 @@
           "max": 1440,
           "step": 5
         },
-        "hint": "成功后按此间隔再次检查；临时失败会从 5 分钟起指数退避。自动模式确认当前 Provider 不支持余额查询时，至少暂停 12 小时；余额配置变化后会立即重新探测。",
+        "hint": "成功后按此间隔再次检查；临时失败会从 5 分钟起指数退避。自动模式确认当前 Provider 不支持余额查询时，会从 12 小时逐步退避到最长 7 天，避免持续无效探测；余额配置变化后会立即重新探测。",
         "condition": "enable_balance_awareness"
       },
       "balance_request_timeout_seconds": {
@@ -7081,7 +7151,7 @@
       "enable_group_member_safety": {
         "description": "启用群成员风控",
         "type": "bool",
-        "hint": "由模型保守判断明确针对 Bot 的持续骚扰、威胁或重复攻击；达到次数后只静默该成员，不影响群内其他人。普通批评、玩笑、争论和偶发脏话不应累计。",
+        "hint": "由模型保守判断明确针对 Bot 或群成员的持续骚扰、性骚扰、威胁或重复攻击；达到次数后只停止响应该成员，不影响群内其他人。普通批评、玩笑、争论、引用转述和偶发脏话不应累计。此功能不会调用平台禁言或撤回群消息。",
         "default": true,
         "condition": {
           "enable_group_companion": true
@@ -7090,14 +7160,14 @@
       "group_member_safety_review_mode": {
         "description": "成员风控审核范围",
         "type": "string",
-        "hint": "建议使用“只审核对 Bot 的消息”。扩大范围会增加模型调用量，仍由提示词进行语义判断，不使用关键词直接封禁。",
+        "hint": "建议使用“只审核明确指向对象的消息”，覆盖指向 Bot、@群成员、回复群成员和可确认的连续对话。扩大到续接或全群会增加模型调用量，仍由提示词进行语义判断，不使用关键词直接封禁。",
         "options": [
           "directed",
           "suspicious",
           "all"
         ],
         "labels": [
-          "只审核明确对 Bot 的消息",
+          "只审核明确指向 Bot / 群成员的消息",
           "包含 Bot 对话续接窗口",
           "审核群内所有消息"
         ],
@@ -7211,7 +7281,7 @@
       "enable_group_image_understanding": {
         "description": "群聊图片理解增强",
         "type": "bool",
-        "hint": "开启后，只在允许观察的群中后台理解群成员发送的图片，并把摘要写入插件图片缓存和群聊观察。相同图片会复用缓存；普通群消息不等待，只有真正触发回复时才有限等待。建议同时关闭 AstrBot 官方“自动理解图片”，避免同一张图重复识别。",
+        "hint": "控制是否为群聊图片发起新的后台视觉识别。关闭后不会调用视觉模型，但当前消息命中已有图片缓存或群聊观察摘要时，仍会把缓存语义注入回复上下文。开启后只在允许观察的群中识别新图片，并把摘要写入插件图片缓存和群聊观察；普通群消息不等待，只有真正触发回复时才有限等待。建议同时关闭 AstrBot 官方“自动理解图片”，避免同一张图重复识别。",
         "default": false,
         "condition": {
           "enable_group_companion": true
@@ -8477,6 +8547,53 @@
           "enable_daily_diary": true
         }
       },
+      "enable_daily_review": {
+        "description": "启用每日终盘巡视",
+        "type": "bool",
+        "hint": "每天结束时用独立模型审阅当天脱敏运行摘要，生成问题、证据、次日纠偏和需人工确认的配置建议。错过设定时间会在次日启动后补跑。",
+        "default": true
+      },
+      "daily_review_time": {
+        "description": "每日巡视时间",
+        "type": "string",
+        "hint": "格式：HH:MM，例如 04:00。到点巡视前一完整自然日；插件未在线时会在下次启动后补巡视。",
+        "default": "04:00",
+        "condition": {
+          "enable_daily_review": true
+        }
+      },
+      "daily_review_auto_apply_guidance": {
+        "description": "自动应用低风险次日纠偏",
+        "type": "bool",
+        "hint": "只把模型明确标记为低风险的表达和判断建议作为次日柔性提示词注入。Provider、阈值、名单、权限、开关和屏蔽策略不会自动修改。",
+        "default": true,
+        "condition": {
+          "enable_daily_review": true
+        }
+      },
+      "enable_daily_case_review_experiment": {
+        "description": "实验性：启用每日逐案复盘",
+        "type": "bool",
+        "hint": "默认关闭。开启后短期保存最多 4 天、160 条脱敏匿名工作案例，供 04:00 巡视逐案检查回复相关性、完整性、TTS 链路、主动消息和成员风控误伤；不保存用户 ID、群号、会话 ID、消息 ID、音频路径，也不会自动修改名单、权限或阈值。",
+        "default": false,
+        "condition": {
+          "enable_daily_review": true
+        }
+      },
+      "daily_review_retention_days": {
+        "description": "巡视报告保留天数",
+        "type": "int",
+        "hint": "报告只保留结构化结论和脱敏证据计数，不保存原始聊天内容。",
+        "slider": {
+          "min": 3,
+          "max": 180,
+          "step": 1
+        },
+        "default": 30,
+        "condition": {
+          "enable_daily_review": true
+        }
+      },
       "important_date_lookahead_days": {
         "description": "重要日期默认提前提醒天数",
         "type": "int",
@@ -9017,6 +9134,40 @@
         "default": 1,
         "condition": {
           "enable_photo_text_action": true
+        }
+      },
+      "enable_generated_photo_cleanup": {
+        "description": "自动清理生图归档",
+        "type": "bool",
+        "hint": "默认开启。只清理 generated_photos 中插件生成的图片和超过 1 小时的残留下载临时文件，不会清理人设参考图、参考图库、撤回图片缓存或视觉摘要缓存。插件启动及生图后会在后台低频检查。",
+        "default": true
+      },
+      "generated_photo_retention_days": {
+        "description": "生图归档保留天数",
+        "type": "int",
+        "hint": "删除超过该天数的生图归档，并始终从最旧文件开始。设为 0 表示不按时间清理，但仍受磁盘上限约束。",
+        "slider": {
+          "min": 0,
+          "max": 365,
+          "step": 1
+        },
+        "default": 30,
+        "condition": {
+          "enable_generated_photo_cleanup": true
+        }
+      },
+      "generated_photo_max_mb": {
+        "description": "生图归档磁盘上限 MB",
+        "type": "int",
+        "hint": "目录超过上限时从最旧图片开始清理。设为 0 表示不按容量清理，但仍受保留天数约束；两项都设为 0 时不会删除正式生图。",
+        "slider": {
+          "min": 0,
+          "max": 4096,
+          "step": 64
+        },
+        "default": 512,
+        "condition": {
+          "enable_generated_photo_cleanup": true
         }
       },
       "proactive_photo_text_probability": {
@@ -9608,7 +9759,7 @@
       "enable_bot_relationship_network": {
         "description": "Bot 关系网",
         "type": "bool",
-        "hint": "默认关闭。开启后可在下方配置 Bot 熟悉的角色卡（朋友、家人、同事等）。主动拍照/生图时，关系网会连同人格、收信人、统一情境快照、画面钩子、生图风格、提示词表达方式和内容选择菜单一起注入提示词，由模型自行判断是否让某位角色自然入镜。",
+        "hint": "默认关闭。开启后可在下方配置 Bot 熟悉的角色卡（朋友、家人、同事等）。主动拍照/生图时，关系网只用于理解关系情境，可通过第二只杯子、礼物、便签等非人物线索自然表达；角色卡文字不等于人物参考图，当前不会让关系卡人物直接入镜或生成合影。",
         "default": false,
         "condition": {
           "enable_photo_text_action": true
@@ -9617,7 +9768,7 @@
       "bot_relationship_cards": {
         "description": "关系网角色卡",
         "type": "list",
-        "hint": "一行一张角色卡，格式：角色名 || 与Bot的关系 || 角色外貌描述。例如：小林 || 高中同学兼死党 || 齐肩短发，戴黑框眼镜，常穿灰色连帽卫衣。最多保存 16 张；角色入镜时外貌描述会严格写入生图提示词。",
+        "hint": "一行一张角色卡，格式：角色名 || 与Bot的关系 || 角色外貌描述。例如：小林 || 高中同学兼死党 || 齐肩短发，戴黑框眼镜，常穿灰色连帽卫衣。最多保存 16 张。外貌描述用于理解角色和为未来的明确参考绑定保留信息；没有其他人物参考图时禁止合影，不会仅凭文字生成该角色。",
         "default": [],
         "condition": {
           "enable_photo_text_action": true,
@@ -10567,8 +10718,83 @@
   "experimental_motivation_config": {
     "description": "实验性功能",
     "type": "object",
-    "hint": "心理机制、动机调度、角色贴合校准和情绪余波等探索性功能。除已存在的情绪模拟会保留原默认值外，其它实验项默认关闭；建议逐项开启观察，不把理论标签写进实际回复正文。",
+    "hint": "表情表达、心理机制、动机调度、角色贴合校准和情绪余波等探索性功能。除已存在的情绪模拟会保留原默认值外，其它实验项默认关闭；建议逐项开启观察，不把理论标签写进实际回复正文。",
     "items": {
+      "enable_reaction_expression_experiment": {
+        "description": "启用表情表达实验",
+        "type": "bool",
+        "hint": "默认关闭。开启后，主模型仍只生成一次可独立成立的完整文字，并可留下隐藏表情意图；插件清除意图后只把合适图片追加在文字后，绝不会用图片替代正文。",
+        "default": false
+      },
+      "reaction_expression_private_enabled": {
+        "description": "允许私聊表情表达",
+        "type": "bool",
+        "hint": "允许在私聊回复中使用实验性表情表达。仍会经过触发概率、冷却、重复控制和关系边界判断。",
+        "default": true,
+        "condition": {
+          "enable_reaction_expression_experiment": true
+        }
+      },
+      "reaction_expression_group_enabled": {
+        "description": "允许群聊表情表达",
+        "type": "bool",
+        "hint": "默认关闭。群聊公开语境更容易误伤或显得刷屏；开启后仍会降低公开风险较高、关系不明确或缺少上下文的候选优先级。",
+        "default": false,
+        "condition": {
+          "enable_reaction_expression_experiment": true
+        }
+      },
+      "reaction_expression_trigger_probability": {
+        "description": "表情表达触发概率",
+        "type": "float",
+        "hint": "通过语境、关系边界和冷却检查后，实际尝试选择表情的概率。建议从 15% 到 25% 开始，避免每轮都发送。",
+        "slider": {
+          "min": 0,
+          "max": 1,
+          "step": 0.01
+        },
+        "default": 0.2,
+        "condition": {
+          "enable_reaction_expression_experiment": true
+        }
+      },
+      "reaction_expression_cooldown_seconds": {
+        "description": "表情表达冷却秒数",
+        "type": "int",
+        "hint": "同一会话两次实验性表情表达之间的最短间隔。冷却只限制自动表达，不影响用户明确要求查找或发送图片。",
+        "slider": {
+          "min": 0,
+          "max": 3600,
+          "step": 10
+        },
+        "default": 180,
+        "condition": {
+          "enable_reaction_expression_experiment": true
+        }
+      },
+      "reaction_expression_low_latency_mode": {
+        "description": "低延迟选择模式",
+        "type": "bool",
+        "hint": "默认开启。复用本插件素材评分的短时缓存；关闭后每次都重新按标签、情绪和沟通用途评分，始终不会增加模型调用。",
+        "default": true,
+        "condition": {
+          "enable_reaction_expression_experiment": true
+        }
+      },
+      "reaction_expression_candidate_limit": {
+        "description": "表情检索说法上限",
+        "type": "int",
+        "hint": "主模型一次最多提供多少条不同的检索说法，用于补充情绪和沟通意图；插件仍只执行一次图库检索。建议保持 4 到 8 条。",
+        "slider": {
+          "min": 1,
+          "max": 16,
+          "step": 1
+        },
+        "default": 6,
+        "condition": {
+          "enable_reaction_expression_experiment": true
+        }
+      },
       "enable_maslow_motivation_experiment": {
         "description": "启用需求强化功能",
         "type": "bool",
@@ -10980,7 +11206,7 @@
       "segmented_proactive_content_replacements": {
         "description": "主动分段内容替换规则",
         "type": "list",
-        "hint": "每行一条，格式为 原内容 => 新内容，按从上到下的顺序全量替换。例如：主人 => 比折大人。可用 <space>、<newline>、<tab>，替换结果写 <empty> 可删除匹配内容。",
+        "hint": "每行一条，格式为 原内容 => 新内容，按从上到下的顺序全量替换。例如：你好 => 嗨。可用 <space>、<newline>、<tab>，替换结果写 <empty> 可删除匹配内容。",
         "default": [],
         "condition": {
           "enable_segmented_proactive_reply": true,

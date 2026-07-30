@@ -15,7 +15,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlparse, urlsplit, urlunparse, urlunsplit
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
@@ -249,10 +249,14 @@ class PrivateImageMixin:
         if not re.match(r"^https?://", text, flags=re.I):
             return ""
 
+        request_url = self._private_image_request_url(text)
+        if not request_url:
+            return ""
+
         def download() -> str:
             try:
                 request = urllib.request.Request(
-                    text,
+                    request_url,
                     headers={
                         "User-Agent": "Mozilla/5.0 AstrBot PrivateCompanion/5.0.0",
                         "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
@@ -297,10 +301,41 @@ class PrivateImageMixin:
                 target.write_bytes(data)
                 return str(target)
             except Exception as exc:
-                logger.info("[PrivateCompanion] 私聊远程图片下载失败: %s url=%s", _single_line(exc, 120), _single_line(text, 120))
+                logger.warning("[PrivateCompanion] 私聊远程图片下载失败: %s url=%s", _single_line(exc, 120), _single_line(text, 120))
                 return ""
 
         return await asyncio.to_thread(download)
+
+    @staticmethod
+    def _private_image_request_url(source: str) -> str:
+        text = str(source or "").strip()
+        if not re.match(r"^https?://", text, flags=re.I):
+            return ""
+        try:
+            parsed = urlsplit(text)
+            hostname = str(parsed.hostname or "")
+            if not hostname:
+                return ""
+            ascii_hostname = hostname.encode("idna").decode("ascii")
+            host = f"[{ascii_hostname}]" if ":" in ascii_hostname and not ascii_hostname.startswith("[") else ascii_hostname
+            if parsed.port is not None:
+                host = f"{host}:{parsed.port}"
+            userinfo = ""
+            if parsed.username is not None:
+                userinfo = quote(parsed.username, safe="%")
+                if parsed.password is not None:
+                    userinfo += f":{quote(parsed.password, safe='%')}"
+                userinfo += "@"
+            netloc = f"{userinfo}{host}"
+            return urlunsplit((
+                parsed.scheme.lower(),
+                netloc,
+                quote(parsed.path, safe="/%:@!$&'()*+,;=-._~"),
+                quote(parsed.query, safe="=&%:@/?+;,!$'()*-._~"),
+                quote(parsed.fragment, safe="=&%:@/?+;,!$'()*-._~"),
+            ))
+        except (UnicodeError, ValueError):
+            return ""
 
     async def _prepare_private_image_sources_for_model(self, image_sources: list[str], *, namespace: str = "vision") -> list[str]:
         target_dir = Path(self.data_dir) / "private_inbound_images" / re.sub(r"[^0-9A-Za-z_.-]+", "_", str(namespace or "vision"))
@@ -1401,7 +1436,7 @@ class PrivateImageMixin:
         image_path: str,
         caption: str = "",
     ) -> dict[str, Any]:
-        marker = getattr(self, "_mark_smart_imagechat_skip_proactive_emoji", None)
+        marker = getattr(self, "_mark_private_companion_skip_reaction_expression", None)
         if callable(marker):
             marker(event)
         caption_sanitizer = getattr(self, "_sanitize_photo_tool_caption", None)
@@ -1412,27 +1447,71 @@ class PrivateImageMixin:
         )
         chain = self._build_outbound_chain(visible_caption, image_path)
 
-        async def send_to_current_event() -> tuple[bool, str]:
+        def send_error_is_ambiguous(error: BaseException) -> bool:
+            if isinstance(error, (asyncio.TimeoutError, TimeoutError, ConnectionError)):
+                return True
+            detail = _single_line(error, 240).casefold()
+            return any(
+                token in detail
+                for token in (
+                    "timeout",
+                    "timed out",
+                    "acknowledgement",
+                    "ack timeout",
+                    "connection reset",
+                    "connection closed",
+                    "connection lost",
+                    "disconnected",
+                    "eof",
+                    "回执超时",
+                    "连接中断",
+                    "连接断开",
+                )
+            )
+
+        async def send_to_current_event() -> tuple[bool, str, bool]:
             try:
-                await event.send(self._build_result_from_chain(chain))
-                return True, ""
-            except Exception as first_error:
+                result = self._build_result_from_chain(chain)
+            except Exception as build_error:
                 try:
-                    await event.send(event.chain_result(chain))
-                    return True, ""
-                except Exception as second_error:
-                    return False, _single_line(second_error or first_error, 180)
+                    result = event.chain_result(chain)
+                except Exception as fallback_error:
+                    return False, _single_line(fallback_error or build_error, 180), False
+            try:
+                await event.send(result)
+                return True, "", False
+            except Exception as send_error:
+                # A transport timeout can happen after the platform accepted the
+                # message. Retrying here would send the same image twice.
+                logger.warning(
+                    "[PrivateCompanion] 图片发送返回异常，为避免平台已接收后重复发送，本轮不再重试: session=%s image=%s error=%s",
+                    _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
+                    _single_line(image_path, 180),
+                    _single_line(send_error, 180),
+                )
+                return (
+                    False,
+                    _single_line(send_error, 180),
+                    send_error_is_ambiguous(send_error),
+                )
 
         try:
             group_id = self._extract_group_id_from_event(event)
         except Exception:
             group_id = ""
         if not group_id or not bool(getattr(self, "enable_group_nsfw_private_fallback", False)):
-            sent, error = await send_to_current_event()
+            sent, error, uncertain = await send_to_current_event()
             return {
                 "sent": sent,
+                "uncertain": uncertain,
                 "destination": "current",
-                "message": "图片已发送" if sent else f"图片发送失败：{error or '未知错误'}",
+                "message": (
+                    "图片已发送"
+                    if sent
+                    else f"图片发送回执未确认，平台可能已经接收；为避免重复图片，本轮不再重试：{error or '未知错误'}"
+                    if uncertain
+                    else f"图片发送失败：{error or '未知错误'}"
+                ),
             }
 
         review = await self._review_group_generated_image_for_delivery(event, image_path)
@@ -1444,12 +1523,19 @@ class PrivateImageMixin:
             _single_line(review.get("provider_id"), 120) or "-",
         )
         if label == "safe":
-            sent, error = await send_to_current_event()
+            sent, error, uncertain = await send_to_current_event()
             return {
                 "sent": sent,
+                "uncertain": uncertain,
                 "destination": "group",
                 "review_label": label,
-                "message": "图片已发送" if sent else f"图片发送失败：{error or '未知错误'}",
+                "message": (
+                    "图片已发送"
+                    if sent
+                    else f"图片发送回执未确认，平台可能已经接收；为避免重复图片，本轮不再重试：{error or '未知错误'}"
+                    if uncertain
+                    else f"图片发送失败：{error or '未知错误'}"
+                ),
             }
         try:
             target_user = _single_line(event.get_sender_id(), 128)
@@ -2645,12 +2731,10 @@ class PrivateImageMixin:
                 continue
         if group_mode:
             self._cleanup_prepared_image_sources(sources, namespace=clean_namespace)
-        logger.info("[PrivateCompanion] %s视觉转述失败: 所有候选 provider 均不可用或失败 attempts=%s", clean_log_subject, attempts)
+        logger.warning("[PrivateCompanion] %s视觉转述失败: 所有候选 provider 均不可用或失败 attempts=%s", clean_log_subject, attempts)
         return ""
 
     def _group_image_sources_from_event(self, event: AstrMessageEvent) -> list[str]:
-        if not bool(getattr(self, "enable_group_image_understanding", False)):
-            return []
         sources: list[str] = []
 
         def add(value: Any) -> None:
@@ -2817,7 +2901,7 @@ class PrivateImageMixin:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.info(
+            logger.warning(
                 "[PrivateCompanion] 群聊图片后台理解失败: group=%s message=%s error=%s",
                 _single_line(group_id, 80),
                 _single_line(message_id, 120) or "-",
@@ -2934,9 +3018,61 @@ class PrivateImageMixin:
             return _single_line(item.get("image_vision"), self._private_image_vision_text_limit(1))
         return ""
 
-    async def _await_group_image_understanding_for_request(self, event: AstrMessageEvent) -> str:
-        if not bool(getattr(self, "enable_group_image_understanding", False)):
+    def _group_image_cached_summary_from_sources(self, sources: list[str]) -> str:
+        if not bool(getattr(self, "enable_private_image_vision_cache", True)):
             return ""
+        clean_sources = [str(item or "").strip() for item in (sources or []) if str(item or "").strip()][:5]
+        if not clean_sources:
+            return ""
+        image_keys = self._private_image_cache_image_keys(clean_sources)
+        aliases_by_source = [
+            set(self._private_image_source_cache_aliases(source))
+            for source in clean_sources
+        ]
+        image_aliases = list(dict.fromkeys(
+            alias
+            for aliases in aliases_by_source
+            for alias in aliases
+            if alias
+        ))
+        cached = self._get_private_image_vision_cache(
+            "",
+            image_keys=image_keys,
+            image_aliases=image_aliases,
+            image_count=len(clean_sources),
+            scope="group_image",
+            allow_image_key_fallback=True,
+        )
+        if cached or len(clean_sources) <= 1:
+            return cached
+
+        # Older multi-image cache entries only stored a flat alias set. Reuse them
+        # when every current source has a matching stable alias and the image count agrees.
+        cache = self._private_image_vision_cache_store()
+        for item in cache.values():
+            if not isinstance(item, dict) or _single_line(item.get("scope"), 40) != "group_image":
+                continue
+            cached_count = _safe_int(item.get("image_count"), 0, 0)
+            if cached_count != len(clean_sources):
+                continue
+            cached_aliases = {
+                str(value).strip()
+                for value in item.get("image_aliases", [])
+                if str(value or "").strip()
+            }
+            if not cached_aliases or not all(aliases & cached_aliases for aliases in aliases_by_source):
+                continue
+            text = _single_line(item.get("text"), self._private_image_vision_text_limit(len(clean_sources)))
+            if not text:
+                continue
+            item["hits"] = _safe_int(item.get("hits"), 0, 0) + 1
+            item["last_hit_ts"] = _now_ts()
+            self._record_cache_metric("image_vision:group_image", hit=True, detail="multi_alias_fallback")
+            return text
+        return ""
+
+    async def _await_group_image_understanding_for_request(self, event: AstrMessageEvent) -> str:
+        understanding_enabled = bool(getattr(self, "enable_group_image_understanding", False))
         group_id_getter = getattr(self, "_extract_group_id_from_event", None)
         group_id = _single_line(group_id_getter(event), 80) if callable(group_id_getter) else ""
         allowed = getattr(self, "_group_enabled_for_event", None)
@@ -2950,6 +3086,32 @@ class PrivateImageMixin:
         text = _single_line(text_getter(event) if callable(text_getter) else getattr(event, "message_str", ""), 260)
         message_id_getter = getattr(self, "_event_message_id", None)
         message_id = _single_line(message_id_getter(event), 120) if callable(message_id_getter) else ""
+        observed_summary = self._group_image_summary_from_observation(
+            group_id=group_id,
+            sender_id=sender_id,
+            text=text,
+            message_id=message_id,
+        )
+        if observed_summary:
+            return observed_summary
+        if not understanding_enabled:
+            sources = self._group_image_sources_from_event(event)
+            cached_summary = self._group_image_cached_summary_from_sources(sources)
+            if cached_summary:
+                await self._update_group_observation_image_vision(
+                    group_id=group_id,
+                    sender_id=sender_id,
+                    text=text,
+                    message_id=message_id,
+                    summary=cached_summary,
+                )
+                logger.info(
+                    "[PrivateCompanion] 群聊图片理解已关闭，复用缓存语义: group=%s message=%s images=%s",
+                    group_id,
+                    message_id or "-",
+                    len(sources),
+                )
+            return cached_summary
         task_key = _single_line(getattr(event, "private_companion_group_image_task_key", ""), 240)
         if not task_key:
             task = self._start_group_image_understanding(
@@ -2992,7 +3154,7 @@ class PrivateImageMixin:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.info("[PrivateCompanion] 群聊回复读取图片理解结果失败: %s", _single_line(exc, 160))
+            logger.warning("[PrivateCompanion] 群聊回复读取图片理解结果失败: %s", _single_line(exc, 160))
             return ""
 
     async def _append_group_image_understanding_to_request(
@@ -3300,10 +3462,10 @@ class PrivateImageMixin:
                 return _single_line(await asyncio.wait_for(task, timeout=wait_seconds), self._private_image_vision_text_limit(len(clean_sources)))
             return _single_line(await task, self._private_image_vision_text_limit(len(clean_sources)))
         except asyncio.TimeoutError:
-            logger.info("[PrivateCompanion] 上下文图片补全等待超时: images=%s timeout=%.1fs", len(clean_sources), wait_seconds)
+            logger.warning("[PrivateCompanion] 上下文图片补全等待超时: images=%s timeout=%.1fs", len(clean_sources), wait_seconds)
             return ""
         except Exception as exc:
-            logger.info("[PrivateCompanion] 上下文图片补全失败: images=%s error=%s", len(clean_sources), _single_line(exc, 120))
+            logger.warning("[PrivateCompanion] 上下文图片补全失败: images=%s error=%s", len(clean_sources), _single_line(exc, 120))
             return ""
 
     async def _enrich_request_context_image_placeholders(self, event: AstrMessageEvent, req: ProviderRequest) -> dict[str, int]:
@@ -3589,7 +3751,7 @@ class PrivateImageMixin:
         try:
             return _single_line(vision_task.result(), 1400)
         except Exception as exc:
-            logger.info("[PrivateCompanion] 私聊单图后台视觉任务结果读取失败: %s", _single_line(exc, 120))
+            logger.warning("[PrivateCompanion] 私聊单图后台视觉任务结果读取失败: %s", _single_line(exc, 120))
             return ""
 
     def _private_image_vision_handoff_ttl_seconds(self) -> float:
@@ -4090,10 +4252,18 @@ class PrivateImageMixin:
         if not chain:
             return
         try:
-            await event.send(event.chain_result(chain))
-            return
+            result = event.chain_result(chain)
         except Exception:
-            await event.send(self._build_result_from_chain(chain))
+            result = self._build_result_from_chain(chain)
+        try:
+            await event.send(result)
+        except Exception as exc:
+            logger.warning(
+                "[PrivateCompanion] 图片回复发送返回异常，为避免平台已接收后重复发送，本轮不再重试: session=%s error=%s",
+                _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
+                _single_line(exc, 180),
+            )
+            raise
 
     async def _send_private_image_reply_remainder_chains(
         self,
@@ -4630,7 +4800,7 @@ class PrivateImageMixin:
                 vision_wait_timed_out = True
                 logger.info("[PrivateCompanion] 私聊单图延迟处理时视觉转述仍未完成: user=%s timeout=%.1fs", user_id, timeout)
             except Exception as exc:
-                logger.info("[PrivateCompanion] 私聊单图延迟视觉转述失败: user=%s error=%s", user_id, _single_line(exc, 120))
+                logger.warning("[PrivateCompanion] 私聊单图延迟视觉转述失败: user=%s error=%s", user_id, _single_line(exc, 120))
         ownership_line = self._private_image_ownership_line(vision_text)
         intent_line = self._private_image_intent_line(vision_text)
         reply_objective = self._private_image_reply_objective(ownership_line, vision_text=vision_text)

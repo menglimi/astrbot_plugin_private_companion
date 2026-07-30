@@ -206,16 +206,31 @@ class InteractionUtilsMixin:
         return permission_id in self._configured_admin_ids()
 
     def _is_group_admin_event(self, event: AstrMessageEvent) -> bool:
-        message_obj = getattr(event, "message_obj", None)
-        sender = getattr(message_obj, "sender", None) if message_obj is not None else None
-        raw_role = ""
-        for attr in ("role", "user_role", "group_role"):
-            value = getattr(sender, attr, None) if sender is not None else None
-            if value:
-                raw_role = str(value)
-                break
-        raw_role = _single_line(raw_role, 20).lower()
-        return raw_role in {"owner", "admin", "群主", "管理员"}
+        role_getter = getattr(self, "_group_sender_role_from_event", None)
+        raw_role = role_getter(event) if callable(role_getter) else "unknown"
+        if raw_role in {"owner", "admin"}:
+            return True
+        group_id_getter = getattr(self, "_extract_group_id_from_event", None)
+        summary_getter = getattr(self, "_group_role_snapshot_summary", None)
+        try:
+            group_id = _single_line(group_id_getter(event), 80) if callable(group_id_getter) else ""
+            sender_id = _single_line(event.get_sender_id(), 128)
+        except Exception:
+            return False
+        groups = self.data.get("groups") if isinstance(getattr(self, "data", None), dict) else {}
+        group = groups.get(group_id) if isinstance(groups, dict) else None
+        if not isinstance(group, dict) or not callable(summary_getter):
+            return False
+        summary = summary_getter(group)
+        if not isinstance(summary, dict) or bool(summary.get("stale")):
+            return False
+        owner = summary.get("owner") if isinstance(summary.get("owner"), dict) else {}
+        if sender_id and _single_line(owner.get("user_id"), 128) == sender_id:
+            return True
+        return any(
+            isinstance(item, dict) and _single_line(item.get("user_id"), 128) == sender_id
+            for item in (summary.get("admins") if isinstance(summary.get("admins"), list) else [])
+        )
 
     def _can_manage_private_companion(self, event: AstrMessageEvent) -> bool:
         try:
@@ -281,7 +296,7 @@ class InteractionUtilsMixin:
             return
         if (image_path and os.path.exists(image_path)) or extra_components:
             if image_path and os.path.exists(image_path):
-                marker = getattr(self, "_mark_smart_imagechat_skip_proactive_emoji", None)
+                marker = getattr(self, "_mark_private_companion_skip_reaction_expression", None)
                 if callable(marker):
                     marker(event)
             await event.send(

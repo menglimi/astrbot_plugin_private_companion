@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Collection, Iterable, Literal, cast
 
 
@@ -434,6 +434,59 @@ def _serialize_reference(reference: PhotoReference) -> dict[str, Any]:
     }
 
 
+def _merge_persona_source_duplicates(
+    normalized: list[tuple[int, PhotoReference]],
+) -> list[tuple[int, PhotoReference]]:
+    persona_row = next(
+        ((index, reference) for index, reference in normalized if reference.kind == "persona"),
+        None,
+    )
+    if persona_row is None:
+        return normalized
+    persona_index, persona = persona_row
+    duplicates = [
+        reference
+        for _, reference in normalized
+        if reference.kind == "library" and reference.source == persona.source
+    ]
+    if not duplicates:
+        return normalized
+
+    roles = list(persona.reference_roles)
+    scenes = list(persona.scene_categories)
+    notes = [persona.note] if persona.note else []
+    outfit_category = persona.outfit_category
+    preferred_preset = persona.preferred_preset
+    outfit_lock_default = persona.outfit_lock_default
+    for duplicate in duplicates:
+        for role in duplicate.reference_roles:
+            if role not in roles:
+                roles.append(role)
+        for scene in duplicate.scene_categories:
+            if scene not in scenes:
+                scenes.append(scene)
+        if duplicate.note and duplicate.note not in notes:
+            notes.append(duplicate.note)
+        outfit_category = outfit_category or duplicate.outfit_category
+        preferred_preset = preferred_preset or duplicate.preferred_preset
+        outfit_lock_default = outfit_lock_default or duplicate.outfit_lock_default
+
+    merged_persona = replace(
+        persona,
+        note="；".join(notes),
+        reference_roles=tuple(roles),
+        outfit_category=outfit_category,
+        outfit_lock_default=outfit_lock_default,
+        scene_categories=tuple(scenes),
+        preferred_preset=preferred_preset,
+    )
+    return [
+        (index, merged_persona if index == persona_index and reference.kind == "persona" else reference)
+        for index, reference in normalized
+        if not (reference.kind == "library" and reference.source == persona.source)
+    ]
+
+
 def validate_and_serialize(
     references: Iterable[PhotoReference | dict[str, Any]],
     *,
@@ -446,6 +499,7 @@ def validate_and_serialize(
         reference = _strict_reference(raw, index, presets, errors)
         if reference is not None and reference.kind != "daily_outfit":
             normalized.append((index, reference))
+    normalized = _merge_persona_source_duplicates(normalized)
 
     persona_index: int | None = None
     library_count = 0

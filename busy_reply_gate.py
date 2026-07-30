@@ -340,17 +340,17 @@ class BusyReplyGateMixin:
     ) -> dict[str, Any]:
         normalized_reason = _single_line(reason, 48).lower()
         normalized_source = _single_line(source, 48).lower()
-        if normalized_source in self._BUSY_PROACTIVE_EXEMPT_SOURCES:
-            return {"until": 0.0, "kind": "exempt", "note": normalized_source}
-        if normalized_reason in self._BUSY_PROACTIVE_EXEMPT_REASONS:
-            return {"until": 0.0, "kind": "exempt", "note": normalized_reason}
         external_until = self._external_realtime_activity_block_until(user, now=now)
         if external_until > now:
             return {
                 "until": external_until,
                 "kind": "external_realtime",
-                "note": "正在实时通话或共同观看，普通主动消息暂缓",
+                "note": "正在实时通话或共同观看，主动消息暂缓",
             }
+        if normalized_source in self._BUSY_PROACTIVE_EXEMPT_SOURCES:
+            return {"until": 0.0, "kind": "exempt", "note": normalized_source}
+        if normalized_reason in self._BUSY_PROACTIVE_EXEMPT_REASONS:
+            return {"until": 0.0, "kind": "exempt", "note": normalized_reason}
         if not bool(getattr(self, "enable_busy_reply_gate", False)):
             return {"until": 0.0, "kind": "disabled", "note": "繁忙回复闸门未开启"}
         context = self._busy_reply_context()
@@ -411,11 +411,17 @@ class BusyReplyGateMixin:
             return False
         base = current if current > 0 else now
         shift = max(0.0, until - base)
-        hard_expire_at = _safe_float(user.get("planned_proactive_expire_at"), 0.0) if _single_line(user.get("planned_proactive_source"), 40) == "body_monitor" else 0.0
+        timeliness_getter = getattr(self, "_planned_proactive_timeliness_level", None)
+        timeliness = timeliness_getter(user) if callable(timeliness_getter) else "routine"
+        hard_expire_at = (
+            _safe_float(user.get("planned_proactive_expire_at"), 0.0)
+            if _single_line(user.get("planned_proactive_source"), 40) == "body_monitor" or timeliness != "routine"
+            else 0.0
+        )
         if hard_expire_at > 0 and until >= hard_expire_at:
             marker = getattr(self, "_mark_planned_candidate_status", None)
             if callable(marker):
-                marker(user, "blocked", "身体状态事件有效期内无法投递")
+                marker(user, "blocked", "短时效事件有效期内无法投递")
             clearer = getattr(self, "_clear_pending_proactive_plan", None)
             if callable(clearer):
                 clearer(user)

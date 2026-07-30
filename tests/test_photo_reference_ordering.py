@@ -253,14 +253,14 @@ class PhotoReferenceOrderingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("场景类别=bedroom,home", harness.llm_prompts[0])
         self.assertNotIn("preferred_preset", harness.llm_prompts[0])
 
-    def test_selection_interface_has_no_scene_preset_parameter(self) -> None:
+    def test_selection_interface_accepts_only_the_normalized_scene_suggestion(self) -> None:
         parameters = inspect.signature(
             ProactiveMessageMixin._select_photo_reference_candidate_async
         ).parameters
 
         self.assertNotIn("scene_preset", parameters)
         self.assertNotIn("requested_scene_preset", parameters)
-        self.assertNotIn("suggested_scene_preset", parameters)
+        self.assertIn("suggested_scene_preset", parameters)
 
     async def test_model_choice_zero_returns_no_reference(self) -> None:
         sleepwear = _candidate(
@@ -500,7 +500,7 @@ class PhotoReferenceOrderingTests(unittest.IsolatedAsyncioTestCase):
             )
 
         result = __import__("json").loads(payload)
-        self.assertEqual(harness.generation_kwargs["suggested_scene_preset"], "")
+        self.assertEqual(harness.generation_kwargs["requested_scene_preset"], "")
         self.assertEqual(
             harness.generation_kwargs["workflow_default_scene_preset"],
             "表情包场景",
@@ -830,6 +830,7 @@ class PhotoReferenceOrderingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(item["presets"], ["校服人像"])
         self.assertEqual(item["scene_preset"], "校服人像")
         self.assertEqual(item["preset_hint"], "居家睡衣")
+        self.assertEqual(item["requested_scene_preset"], "居家睡衣")
         self.assertEqual(item["suggestion_status"], "rejected_user_conflict")
 
     def test_user_feedback_is_linked_to_recent_reference_plan_and_prompt(self) -> None:

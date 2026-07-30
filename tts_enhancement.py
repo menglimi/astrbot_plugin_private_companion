@@ -24,6 +24,7 @@ except ImportError:
     from astrbot.api.message_components import Plain
     from astrbot.core.message.components import Record
 from astrbot.core import file_token_service
+from astrbot.core.message.message_event_result import ResultContentType
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from .helpers import _normalize_outbound_punctuation_flow, _safe_int, _single_line, _strip_nonstandard_chat_control_tags
@@ -568,10 +569,8 @@ class TtsEnhancementMixin:
                 pass
         return ""
 
-    def _language_tts_provider(self) -> Any:
-        language = self._normalize_tts_voice_language_value(
-            getattr(self, "tts_voice_language", "ja")
-        ) or "ja"
+    def _language_tts_provider(self, event: Any = None) -> Any:
+        language = self._tts_voice_language_for_event(event)
         attr = TTS_LANGUAGE_PROVIDER_ATTRS.get(language, "")
         provider_id = _single_line(getattr(self, attr, ""), 160) if attr else ""
         if not provider_id:
@@ -601,7 +600,7 @@ class TtsEnhancementMixin:
     def _resolve_tts_synthesis_provider(self, event: Any, astrbot_provider: Any = None) -> Any:
         mode = str(getattr(self, "tts_synthesis_backend", "auto") or "auto").lower()
         if mode != "mimo_voice_clone":
-            language_provider = self._language_tts_provider()
+            language_provider = self._language_tts_provider(event)
             if language_provider is not None:
                 return language_provider
         if mode == "astrbot_provider":
@@ -648,10 +647,12 @@ class TtsEnhancementMixin:
         self,
         tts_provider: Any = None,
         provider_settings: dict[str, Any] | None = None,
+        *,
+        voice_language: str = "",
     ) -> str:
         configured = str(getattr(self, "tts_fishaudio_model", "auto") or "auto").strip().lower()
         language = self._normalize_tts_voice_language_value(
-            getattr(self, "tts_voice_language", "ja")
+            voice_language or getattr(self, "tts_voice_language", "ja")
         ) or "ja"
         language_attr = TTS_LANGUAGE_PROVIDER_ATTRS.get(language, "")
         language_provider_id = _single_line(getattr(self, language_attr, ""), 160) if language_attr else ""
@@ -688,7 +689,13 @@ class TtsEnhancementMixin:
             return "s2.1-pro-free"
         return ""
 
-    def _tts_provider_kind(self, tts_provider: Any = None, provider_settings: dict[str, Any] | None = None) -> str:
+    def _tts_provider_kind(
+        self,
+        tts_provider: Any = None,
+        provider_settings: dict[str, Any] | None = None,
+        *,
+        voice_language: str = "",
+    ) -> str:
         pieces: list[str] = []
         if tts_provider is not None:
             pieces.extend([
@@ -701,7 +708,11 @@ class TtsEnhancementMixin:
                 pieces.append(str(provider_settings.get(key, "") or ""))
         text = " ".join(pieces).lower()
         if "fish" in text:
-            model = self._tts_fishaudio_model_for_provider(tts_provider, provider_settings)
+            model = self._tts_fishaudio_model_for_provider(
+                tts_provider,
+                provider_settings,
+                voice_language=voice_language,
+            )
             return "fishaudio_s1" if model == "s1" else "fishaudio_s2"
         if "gsv" in text or "gptsovits" in text or "so-vits" in text:
             return "gsv"
@@ -738,27 +749,47 @@ class TtsEnhancementMixin:
         except Exception:
             tts_provider = None
         tts_provider = self._resolve_tts_synthesis_provider(event, tts_provider)
-        return self._tts_provider_kind(tts_provider, provider_settings)
+        return self._tts_provider_kind(
+            tts_provider,
+            provider_settings,
+            voice_language=self._tts_voice_language_for_event(event),
+        )
 
     def _tts_provider_allows_emotion_tags(self, kind: str) -> bool:
         return kind.startswith("fishaudio") or kind == "gsv"
 
-    def _tts_emotion_tag_examples(self, provider_kind: str = "generic") -> tuple[str, str]:
+    def _tts_emotion_tag_examples(
+        self,
+        provider_kind: str = "generic",
+        *,
+        voice_language: str = "",
+    ) -> tuple[str, str]:
         if not self._tts_provider_allows_emotion_tags(provider_kind):
             return "", ""
         if provider_kind == "fishaudio_s1":
             return "(joyful)", "(sad)"
         if provider_kind.startswith("fishaudio"):
             return "[happy]", "[sad]"
-        voice_lang = getattr(self, "tts_voice_language", "ja")
+        voice_lang = self._normalize_tts_voice_language_value(
+            voice_language or getattr(self, "tts_voice_language", "ja")
+        ) or "ja"
         if voice_lang == "zh":
             return "[开心]", "[难过]"
         if voice_lang == "en":
             return "[happy]", "[sad]"
         return "[嬉しい]", "[悲しい]"
 
-    def _tts_emotion_tag_rule(self, provider_kind: str = "generic", *, subject: str = "语音块内") -> str:
-        positive, negative = self._tts_emotion_tag_examples(provider_kind)
+    def _tts_emotion_tag_rule(
+        self,
+        provider_kind: str = "generic",
+        *,
+        subject: str = "语音块内",
+        voice_language: str = "",
+    ) -> str:
+        positive, negative = self._tts_emotion_tag_examples(
+            provider_kind,
+            voice_language=voice_language,
+        )
         if not positive or not negative:
             return ""
         emotion_mode = str(getattr(self, "tts_fishaudio_emotion_mode", "balanced") or "balanced").lower()
@@ -787,8 +818,11 @@ class TtsEnhancementMixin:
             return base + "本模式仅在情绪明确时使用控制；一条短回复通常只需 1 个，中性短句不要硬加标签。"
         return f"可以在{subject}插入方括号情绪标签，如 {positive}、{negative}。"
 
-    def _tts_language_label(self) -> str:
-        return {"ja": "日语", "zh": "中文", "en": "英语"}.get(getattr(self, "tts_voice_language", "ja"), "日语")
+    def _tts_language_label(self, event: Any = None, *, voice_language: str = "") -> str:
+        language = self._normalize_tts_voice_language_value(voice_language)
+        if not language:
+            language = self._tts_voice_language_for_event(event)
+        return {"ja": "日语", "zh": "中文", "en": "英语"}.get(language, "日语")
 
     def _normalize_tts_voice_language_value(self, value: Any) -> str:
         text = str(value or "").strip().lower()
@@ -798,6 +832,7 @@ class TtsEnhancementMixin:
             "jp": "ja",
             "japanese": "ja",
             "日语": "ja",
+            "日語": "ja",
             "日文": "ja",
             "日本语": "ja",
             "日本語": "ja",
@@ -806,16 +841,110 @@ class TtsEnhancementMixin:
             "chinese": "zh",
             "中文": "zh",
             "汉语": "zh",
+            "漢語": "zh",
             "汉文": "zh",
             "普通话": "zh",
             "国语": "zh",
+            "國語": "zh",
+            "中国语": "zh",
+            "中国語": "zh",
             "en": "en",
             "eng": "en",
             "english": "en",
             "英语": "en",
+            "英語": "en",
             "英文": "en",
         }
         return aliases.get(compact, "")
+
+    def _tts_voice_language_for_event(self, event: Any = None) -> str:
+        turn_language = self._normalize_tts_voice_language_value(
+            getattr(event, "_private_companion_tts_voice_language", "")
+            if event is not None
+            else ""
+        )
+        if turn_language:
+            return turn_language
+        return self._normalize_tts_voice_language_value(
+            getattr(self, "tts_voice_language", "ja")
+        ) or "ja"
+
+    def _detect_turn_tts_voice_language(self, event: Any) -> tuple[str, str]:
+        """Recognize an explicit reply-language request without changing saved settings."""
+        raw_text = str(getattr(event, "message_str", "") or "").strip()
+        if not raw_text or re.search(r"(?:陪伴\s*)?TTS\s*语种", raw_text, flags=re.IGNORECASE):
+            return "", ""
+        text = re.sub(r"^(?:\s*\[At:\d+\]\s*)+", "", raw_text, flags=re.IGNORECASE)
+        text = re.sub(r"^@\S+\s+", "", text).strip().lower()
+        compact = re.sub(r"[\s，,。！？!?、；;：:~～]+", "", text)
+        if not compact:
+            return "", ""
+        if re.search(r"(?:不要|别|不用|不必|禁止|取消|停止).{0,6}(?:用|说|讲|回复|回答|朗读|念|读)", compact):
+            return "", ""
+        if re.search(r"(?:怎么|如何).{0,4}(?:说|表达|翻译)|(?:翻译|译).{0,3}(?:成|为)", compact):
+            return "", ""
+
+        language_tokens = {
+            "ja": r"(?:日语|日語|日文|日本语|日本語|japanese)",
+            "zh": r"(?:中文|汉语|漢語|普通话|国语|國語|中国语|中国語|chinese)",
+            "en": r"(?:英语|英語|英文|english)",
+        }
+        request_before = r"(?:这次|这回|本次|这一条|这一句|接下来)?(?:请|麻烦|可以|能不能|能否|改成|换成|改用|切成|来|直接)?(?:用|说|讲|回复|回答|回我|朗读|念|读)"
+        request_after = r"(?:说|讲|回复|回答|回我|朗读|念|读|来一句|来一段|语音回复|语音回答)"
+        for language, token in language_tokens.items():
+            patterns = (
+                rf"{request_before}.{{0,5}}{token}",
+                rf"{token}.{{0,5}}{request_after}",
+                rf"(?:来|说|讲|回|回复|回答|念|读)(?:一句|一段|一下)?{token}",
+            )
+            for pattern in patterns:
+                match = re.search(pattern, compact, flags=re.IGNORECASE)
+                if match:
+                    return language, _single_line(match.group(0), 80)
+
+        english_patterns = {
+            "ja": r"(?:speak|reply|answer|say|read)(?:it)?(?:in)?(?:japanese)|in(?:japanese)(?:please)?",
+            "zh": r"(?:speak|reply|answer|say|read)(?:it)?(?:in)?(?:chinese)|in(?:chinese)(?:please)?",
+            "en": r"(?:speak|reply|answer|say|read)(?:it)?(?:in)?(?:english)|in(?:english)(?:please)?",
+        }
+        for language, pattern in english_patterns.items():
+            match = re.search(pattern, compact, flags=re.IGNORECASE)
+            if match:
+                return language, _single_line(match.group(0), 80)
+        japanese_patterns = {
+            "ja": r"(?:日本語|日語)で(?:話して|答えて|返事して|読んで|お願い)",
+            "zh": r"(?:中国語|中文)で(?:話して|答えて|返事して|読んで|お願い)",
+            "en": r"英語で(?:話して|答えて|返事して|読んで|お願い)",
+        }
+        for language, pattern in japanese_patterns.items():
+            match = re.search(pattern, compact, flags=re.IGNORECASE)
+            if match:
+                return language, _single_line(match.group(0), 80)
+        return "", ""
+
+    def _ensure_turn_tts_voice_language(self, event: Any) -> str:
+        existing = self._normalize_tts_voice_language_value(
+            getattr(event, "_private_companion_tts_voice_language", "")
+            if event is not None
+            else ""
+        )
+        if existing or event is None:
+            return existing
+        language, matched = self._detect_turn_tts_voice_language(event)
+        if not language:
+            return ""
+        try:
+            setattr(event, "_private_companion_tts_voice_language", language)
+            setattr(event, "_private_companion_tts_voice_language_match", matched)
+        except Exception:
+            return ""
+        logger.info(
+            "[PrivateCompanion] 已识别本轮 TTS 语种要求: session=%s language=%s match=%s",
+            _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
+            language,
+            matched,
+        )
+        return language
 
     def _apply_tts_runtime_overrides(self) -> None:
         settings = self.data.get("runtime_settings") if isinstance(getattr(self, "data", None), dict) else None
@@ -1426,6 +1555,8 @@ class TtsEnhancementMixin:
             return True
         policy_markers = (
             "您的请求包含低俗色情内容",
+            "你的描述包含低俗色情",
+            "您的描述包含低俗色情",
             "不符合公序良俗",
             "违反内容安全策略",
             "违反内容政策",
@@ -1440,6 +1571,10 @@ class TtsEnhancementMixin:
             "无法生成",
             "无法提供",
             "不能处理该请求",
+            "不能按照你的要求进行处理",
+            "不能按照您的要求进行处理",
+            "无法按照你的要求进行处理",
+            "无法按照您的要求进行处理",
             "不能生成",
             "不能提供",
             "requestrejected",
@@ -1851,7 +1986,7 @@ TTS 朗读文本：
     async def _ensure_tts_blocks_have_visible_chinese(self, text: str, event: Any, *, provider_kind: str) -> str:
         normalized = self._normalize_tts_tags(text)
         if (
-            getattr(self, "tts_voice_language", "ja") == "zh"
+            self._tts_voice_language_for_event(event) == "zh"
             or getattr(self, "tts_delivery_mode", "voice_and_text") == "voice_only"
             or getattr(self, "tts_foreign_text_mode", "translation") == "original"
         ):
@@ -1888,19 +2023,28 @@ TTS 朗读文本：
         pieces.append(normalized[pos:])
         return "".join(pieces) if changed else normalized
 
-    def _tts_text_needs_language_conversion(self, text: str, *, provider_kind: str) -> bool:
+    def _tts_text_needs_language_conversion(
+        self,
+        text: str,
+        *,
+        provider_kind: str,
+        event: Any = None,
+    ) -> bool:
         spoken = self._normalize_tts_spoken_text(text, provider_kind=provider_kind)
         if not spoken:
             return False
-        lang = getattr(self, "tts_voice_language", "ja")
-        if lang == "zh":
-            return False
+        lang = self._tts_voice_language_for_event(event)
+        kana_count = len(re.findall(r"[\u3040-\u30ff\u31f0-\u31ff]", spoken))
         cjk_count = len(re.findall(r"[\u4e00-\u9fff]", spoken))
+        latin_count = len(re.findall(r"[A-Za-z]", spoken))
+        if lang == "zh":
+            return kana_count > 0 or (cjk_count == 0 and latin_count >= 12)
         if lang == "en":
-            return cjk_count > 0
+            return cjk_count > 0 or kana_count > 0
         if lang != "ja":
             return False
-        kana_count = len(re.findall(r"[\u3040-\u30ff\u31f0-\u31ff]", spoken))
+        if not kana_count and cjk_count == 0 and latin_count >= 12:
+            return True
         chinese_markers = (
             "的", "了", "吗", "呢", "吧", "呀", "哦", "啊", "嘛",
             "就是", "有点", "很", "超", "画风", "氛围", "标签", "喜欢",
@@ -1912,11 +2056,11 @@ TTS 朗读文本：
             return True
         return bool(cjk_count >= 6 and kana_count < max(2, int(cjk_count * 0.35)))
 
-    def _build_tts_rule_prompt(self, provider_kind: str = "generic") -> str:
-        lang = self._tts_language_label()
+    def _build_tts_rule_prompt(self, provider_kind: str = "generic", *, event: Any = None) -> str:
+        voice_lang = self._tts_voice_language_for_event(event)
+        lang = self._tts_language_label(voice_language=voice_lang)
         mode = getattr(self, "tts_generation_mode", "fast_tag")
         frequency_mode = getattr(self, "tts_frequency_control_mode", "global")
-        voice_lang = getattr(self, "tts_voice_language", "ja")
         delivery_mode = getattr(self, "tts_delivery_mode", "voice_and_text")
         foreign_text_mode = getattr(self, "tts_foreign_text_mode", "translation")
         conversion_scope = getattr(self, "tts_conversion_scope", "partial")
@@ -1932,8 +2076,15 @@ TTS 朗读文本：
                 usage_rule = "不要刻意使用语音；只有在当前回复更适合被听见、情绪更贴近或用户明显期待语音时才写 <pc_tts>。"
         else:
             usage_rule = "本轮主模型可以正常回复，不需要主动写 <pc_tts> 或 <tts>；后处理会生成语音格式。"
-        positive_emotion, negative_emotion = self._tts_emotion_tag_examples(provider_kind)
-        emotion_rule = f"3.{self._tts_emotion_tag_rule(provider_kind)}" if supports_emotion else ""
+        positive_emotion, negative_emotion = self._tts_emotion_tag_examples(
+            provider_kind,
+            voice_language=voice_lang,
+        )
+        emotion_rule = (
+            f"3.{self._tts_emotion_tag_rule(provider_kind, voice_language=voice_lang)}"
+            if supports_emotion
+            else ""
+        )
         language_rule = ""
         if delivery_mode == "voice_only":
             language_rule = "语音合成成功后只发送语音，不需要在语音块后重复对应文字；生成失败时插件会自动保留文字兜底。"
@@ -2001,6 +2152,16 @@ TTS 朗读文本：
         )
         rules = [
             "【语音消息规则】",
+            (
+                f"用户本轮明确要求使用{lang}回复；本轮语音正文必须服从这个临时语种，"
+                "不要沿用长期 TTS 语种。该要求只作用于当前回复。"
+                if self._normalize_tts_voice_language_value(
+                    getattr(event, "_private_companion_tts_voice_language", "")
+                    if event is not None
+                    else ""
+                )
+                else ""
+            ),
             first_rule,
             scope_rule,
             "自动语音概率命中只表示本轮可以考虑语音，不表示必须使用语音。功能性回复默认保持纯文字，包括指令执行结果、帮助或菜单、配置或状态、查询结果、报错或权限说明、清单、教程、代码以及主要由卡片或图片承载的结果；只有用户明确要求语音或朗读，或回复本身主要是适合听见的自然角色表达时，才考虑语音。",
@@ -2088,6 +2249,7 @@ TTS 朗读文本：
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             )
             return
+        turn_voice_language = self._ensure_turn_tts_voice_language(event)
         try:
             config = self.context.get_config(str(getattr(event, "unified_msg_origin", "") or "")) or {}
         except Exception:
@@ -2122,7 +2284,8 @@ TTS 朗读文本：
                     mode=mode or str(getattr(self, "tts_generation_mode", "fast_tag") or ""),
                     priority=20,
                     metadata={
-                        "语种": self._tts_language_label(),
+                        "语种": self._tts_language_label(event),
+                        "本轮临时语种": bool(turn_voice_language),
                         "模式": getattr(self, "tts_generation_mode", "fast_tag"),
                         "频控": getattr(self, "tts_frequency_control_mode", "global"),
                         "范围": getattr(self, "tts_conversion_scope", "partial"),
@@ -2150,7 +2313,8 @@ TTS 朗读文本：
                     }
                 ],
                 metadata={
-                    "语种": self._tts_language_label(),
+                    "语种": self._tts_language_label(event),
+                    "本轮临时语种": bool(turn_voice_language),
                     "模式": getattr(self, "tts_generation_mode", "fast_tag"),
                     "频控": getattr(self, "tts_frequency_control_mode", "global"),
                     "范围": getattr(self, "tts_conversion_scope", "partial"),
@@ -2163,7 +2327,7 @@ TTS 朗读文本：
             setattr(event, "_private_companion_tts_request_applied", True)
         except Exception:
             pass
-        user_requested_tts = self._event_explicitly_requests_tts(event)
+        user_requested_tts = self._event_explicitly_requests_tts(event) or bool(turn_voice_language)
         functional_command_reason = self._tts_functional_command_reason(event)
         if functional_command_reason and not user_requested_tts:
             functional_prompt = (
@@ -2209,15 +2373,22 @@ TTS 朗读文本：
             if strong_block_reason:
                 self._set_tts_hard_block(event, strong_block_reason)
         if marker not in prompt and mode == "fast_tag" and not strong_block_reason:
-            rule_prompt = self._build_tts_rule_prompt(provider_kind)
+            rule_prompt = self._build_tts_rule_prompt(provider_kind, event=event)
             req.system_prompt = f"{prompt}\n\n{marker}\n{rule_prompt}".strip()
             await record_tts_fragment("TTS 基础规则注入", "tts.rule", rule_prompt)
         elif marker not in prompt and mode == "postprocess" and not strong_block_reason:
             scope_text = "是否将整条回复转成语音" if full_scope else "是否把其中一小段转成语音"
+            language_text = self._tts_language_label(event)
+            temporary_language_rule = (
+                f"用户本轮明确要求使用{language_text}回复；后处理语音必须使用{language_text}，该临时要求只作用于当前回复。"
+                if turn_voice_language
+                else ""
+            )
             postprocess_prompt = (
                 "【TTS 后处理模式】\n"
                 "本轮主回复请只输出普通聊天文字，不要主动写 <pc_tts>、<tts>、语音、朗读、音频或任何等价语音标签。"
                 f"当前是{'全量' if full_scope else '局部'}转换；{scope_text}，将由插件发送前的 TTS 后处理模型统一判断。"
+                f"{temporary_language_rule}"
             )
             req.system_prompt = f"{prompt}\n\n{marker}\n{postprocess_prompt}".strip()
             await record_tts_fragment("TTS 后处理模式注入", "tts.rule", postprocess_prompt, mode="postprocess")
@@ -2259,6 +2430,7 @@ TTS 朗读文本：
             await record_tts_fragment("用户语音请求注入", "tts.user_request", user_request_prompt, mode="user_request", placement=placement)
 
     async def protect_tts_enhancement_response_blocks(self, event: Any, resp: Any) -> None:
+        self._ensure_turn_tts_voice_language(event)
         feature_enabled = getattr(self, "_feature_enabled_or_temp_unlocked", None)
         tts_enabled = feature_enabled("enable_tts_enhancement") if callable(feature_enabled) else getattr(self, "enable_tts_enhancement", False)
         if not bool(getattr(event, "_private_companion_tts_request_applied", False)):
@@ -2292,7 +2464,10 @@ TTS 朗读文本：
                     # In postprocess mode every model-authored tag is input noise, including
                     # the private <pc_tts> form. Only the postprocessor may create a voice block.
                     cleaned = self._strip_any_tts_markup(text)
-                    cleaned = self._sanitize_tts_visible_text(cleaned) or self._tts_visible_fallback_text(text)
+                    cleaned = self._sanitize_tts_visible_text(cleaned) or self._tts_visible_fallback_text(
+                        text,
+                        event=event,
+                    )
                     resp.completion_text = _normalize_outbound_punctuation_flow(cleaned)
                     logger.info(
                         "[PrivateCompanion] TTS后处理模式已移除主模型自写语音标签,改由发送前后处理判断: session=%s preview=%s",
@@ -2305,13 +2480,13 @@ TTS 朗读文本：
                         config = self.context.get_config(str(getattr(event, "unified_msg_origin", "") or "")) or {}
                     except Exception:
                         config = getattr(self, "config", {}) or {}
-                    provider_settings = dict((config or {}).get("provider_tts_settings", {}) or {})
-                    provider_kind = self._tts_provider_kind(provider_settings=provider_settings)
+                    provider_kind = self._tts_provider_kind_for_event(event, config=config)
                     text = await self._ensure_tts_blocks_have_visible_chinese(text, event, provider_kind=provider_kind)
                 text = self._protect_tts_blocks_for_framework(text, event)
             resp.completion_text = _normalize_outbound_punctuation_flow(text)
 
     async def apply_tts_enhancement_before_send(self, event: Any) -> None:
+        self._ensure_turn_tts_voice_language(event)
         feature_enabled = getattr(self, "_feature_enabled_or_temp_unlocked", None)
         tts_enabled = feature_enabled("enable_tts_enhancement") if callable(feature_enabled) else getattr(self, "enable_tts_enhancement", False)
         if not getattr(self, "enabled", False) or not tts_enabled:
@@ -2398,7 +2573,10 @@ TTS 朗读文本：
             normalized = self._sanitize_tts_visible_text(self._strip_any_tts_markup(normalized))
             new_chain = await self._maybe_convert_plain_reply_to_tts(normalized, event) if normalized else []
         elif "<tts>" in normalized.lower() and "</tts>" in normalized.lower():
-            normalized, full_scope_fallback = self._enforce_full_tts_scope_markup(normalized)
+            normalized, full_scope_fallback = self._enforce_full_tts_scope_markup(
+                normalized,
+                event=event,
+            )
             if full_scope_fallback:
                 logger.info(
                     "[PrivateCompanion] TTS全量转换已在发送前覆盖整条回复: session=%s chars=%s preview=%s",
@@ -2419,7 +2597,8 @@ TTS 朗读文本：
                 return
             if PRIVATE_TTS_BLOCK_TOKEN_PATTERN.search("".join(plain_parts)):
                 fallback_text = self._tts_visible_fallback_text(
-                    normalized
+                    normalized,
+                    event=event,
                 ) or self._tts_plain_markup_fallback_text(normalized)
                 event.set_result(self._build_result_from_chain([Plain(fallback_text)] if fallback_text else []))
             return
@@ -2447,6 +2626,16 @@ TTS 朗读文本：
                 else:
                     remainder_started_at = time.time()
             event.set_result(self._build_result_from_chain(ordered_chunks[0]))
+            recorder = getattr(self, "_record_daily_review_outbound_case", None)
+            if callable(recorder):
+                case_id = recorder(event, ordered_chunks[0])
+                updater = getattr(self, "_update_daily_review_case", None)
+                if case_id and callable(updater):
+                    updater(
+                        case_id,
+                        outcome="delivery_pending",
+                        signals={"segments_expected": len(ordered_chunks), "segments_sent": 1},
+                    )
             remainder = self._send_tts_chain_chunks_after_first(
                 event,
                 ordered_chunks[1:],
@@ -2460,6 +2649,80 @@ TTS 朗读文本：
             return
         event.set_result(self._build_result_from_chain(ordered_chunks[0] if ordered_chunks else new_chain))
 
+    async def _should_defer_segmenting_to_astrbot_tts(
+        self,
+        event: Any,
+        result: Any,
+        chain: list[Any],
+    ) -> bool:
+        """Keep the original LLM result intact when AstrBot still owns this turn's TTS."""
+        if bool(getattr(event, "_private_companion_tts_request_applied", False)):
+            return False
+        if not chain or any(isinstance(component, Record) for component in chain):
+            return False
+        try:
+            if result is None or not bool(result.is_llm_result()):
+                return False
+        except Exception:
+            return False
+
+        context = getattr(self, "context", None)
+        if context is None:
+            return False
+        umo = str(getattr(event, "unified_msg_origin", "") or "")
+        config_getter = getattr(context, "get_config", None)
+        try:
+            config = config_getter(umo) if callable(config_getter) else {}
+        except Exception:
+            return False
+        if not isinstance(config, dict):
+            return False
+        settings = config.get("provider_tts_settings")
+        if not isinstance(settings, dict):
+            return False
+        enabled_value = settings.get("enable", False)
+        if isinstance(enabled_value, str):
+            enabled = enabled_value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+        else:
+            enabled = bool(enabled_value)
+        if not enabled:
+            return False
+        try:
+            trigger_probability = max(
+                0.0,
+                min(1.0, float(settings.get("trigger_probability", 1))),
+            )
+        except (TypeError, ValueError):
+            trigger_probability = 1.0
+        if trigger_probability <= 0:
+            return False
+        provider_getter = getattr(context, "get_using_tts_provider", None)
+        try:
+            provider = provider_getter(umo) if callable(provider_getter) else None
+        except Exception:
+            provider = None
+        if provider is None:
+            return False
+
+        try:
+            from astrbot.core.star.session_llm_manager import SessionServiceManager
+
+            allowed = SessionServiceManager.should_process_tts_request(event)
+            if inspect.isawaitable(allowed):
+                allowed = await allowed
+            if not bool(allowed):
+                return False
+        except ImportError:
+            pass
+        except Exception as exc:
+            logger.debug(
+                "[PrivateCompanion] 查询 AstrBot 官方 TTS 会话状态失败，保留插件分段: session=%s error=%s",
+                _single_line(umo, 120) or "unknown",
+                _single_line(exc, 120),
+            )
+            return False
+        return True
+
     async def finalize_outbound_tts_markup_guard(self, event: Any) -> None:
         """Last-resort guard so raw <tts> tags never reach the chat surface."""
         if not getattr(self, "enabled", False):
@@ -2467,6 +2730,15 @@ TTS 朗读文本：
         if not bool(getattr(event, "_private_companion_tts_request_applied", False)):
             return
         result = event.get_result()
+        try:
+            if result is not None and bool(result.is_llm_result()):
+                result.set_result_content_type(ResultContentType.GENERAL_RESULT)
+                logger.debug(
+                    "[PrivateCompanion] 插件已接管本轮 TTS，阻止 AstrBot 官方 TTS 二次处理: session=%s",
+                    _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
+                )
+        except Exception:
+            pass
         chain = list(getattr(result, "chain", []) or []) if result is not None else []
         if not chain:
             return
@@ -2514,7 +2786,10 @@ TTS 朗读文本：
             and getattr(self, "tts_generation_mode", "fast_tag") != "postprocess"
             and re.search(r"<tts\b[^>]*>.*?</tts>", normalized, flags=re.IGNORECASE | re.DOTALL)
         ):
-            normalized, full_scope_fallback = self._enforce_full_tts_scope_markup(normalized)
+            normalized, full_scope_fallback = self._enforce_full_tts_scope_markup(
+                normalized,
+                event=event,
+            )
             new_chain = await self._process_tts_tags(
                 normalized,
                 event,
@@ -2522,7 +2797,8 @@ TTS 朗读文本：
             )
         if not new_chain:
             fallback_text = self._tts_visible_fallback_text(
-                normalized
+                normalized,
+                event=event,
             ) or self._tts_plain_markup_fallback_text(normalized)
             new_chain = [Plain(fallback_text)] if fallback_text else []
         if len(plain_parts) != len(chain):
@@ -2720,8 +2996,14 @@ TTS 朗读文本：
         is_tts_visible_text = any(bool(getattr(comp, "_private_companion_tts_visible_text", False)) for comp in chunk)
         if is_tts_visible_text:
             cleaned_visible = self._sanitize_tts_visible_text(text)
-            return [[Plain(cleaned_visible)]] if cleaned_visible else []
-        if getattr(self, "tts_voice_language", "ja") != "zh" and not self._tts_visible_text_is_allowed_after_voice(text):
+            if not cleaned_visible:
+                return []
+            text = cleaned_visible
+        if (
+            not is_tts_visible_text
+            and self._tts_voice_language_for_event(event) != "zh"
+            and not self._tts_visible_text_is_allowed_after_voice(text)
+        ):
             chinese_text = self._tts_chinese_visible_fallback_from_mixed(text)
             if chinese_text:
                 logger.warning(
@@ -2739,7 +3021,8 @@ TTS 朗读文本：
                 return []
         splitter = getattr(self, "_split_proactive_text", None)
         if not callable(splitter):
-            return [[Plain(text)]]
+            visible_part = self._mark_tts_visible_plain(text) if is_tts_visible_text else Plain(text)
+            return [[visible_part]] if visible_part is not None else []
         try:
             segments = [item for item in splitter(text) if str(item or "").strip()]
         except Exception as exc:
@@ -2747,13 +3030,25 @@ TTS 朗读文本：
             return [chunk]
         if len(segments) <= 1:
             cleaned = segments[0] if segments else text
-            return [[Plain(cleaned)]] if cleaned and (cleaned != text or text != original_text) else [chunk]
+            if not cleaned:
+                return []
+            if is_tts_visible_text:
+                visible_part = self._mark_tts_visible_plain(cleaned)
+                return [[visible_part]] if visible_part is not None else []
+            return [[Plain(cleaned)]] if cleaned != text or text != original_text else [chunk]
         logger.info(
             "[PrivateCompanion] TTS 后置文本按分段规则拆分: session=%s segments=%s first=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             len(segments),
             _single_line(segments[0], 100),
         )
+        if is_tts_visible_text:
+            visible_chunks: list[list[Any]] = []
+            for segment in segments:
+                visible_part = self._mark_tts_visible_plain(segment)
+                if visible_part is not None:
+                    visible_chunks.append([visible_part])
+            return visible_chunks
         return [[Plain(segment)] for segment in segments]
 
     async def _send_tts_chain_chunks_after_first(
@@ -2768,6 +3063,10 @@ TTS 朗读文本：
         expanded_chunks: list[list[Any]] = []
         for chunk in chunks:
             expanded_chunks.extend(self._tts_segment_plain_chunk_for_ordered_send(event, chunk))
+        case_id = _single_line(getattr(event, "_private_companion_daily_review_case_id", ""), 20)
+        case_updater = getattr(self, "_update_daily_review_case", None)
+        total_chunks = len(expanded_chunks) + 1
+        sent_chunks = 1
         scope_getter = getattr(self, "_event_scope_key", None)
         scope = ""
         if callable(scope_getter):
@@ -2781,10 +3080,15 @@ TTS 朗读文本：
         lock = lock_getter(scope) if callable(lock_getter) else asyncio.Lock()
         started_at = float(started_at or time.time())
         previous_text = ""
+        transcript_activity_logged = False
         async with lock:
             for chunk in expanded_chunks:
                 if not chunk:
                     continue
+                is_tts_transcript = any(
+                    bool(getattr(comp, "_private_companion_tts_visible_text", False))
+                    for comp in chunk
+                )
                 stop_after_send = False
                 delay = 0.45
                 if previous_text and len(expanded_chunks) > 1:
@@ -2799,14 +3103,32 @@ TTS 朗读文本：
                 if callable(activity_checker):
                     try:
                         if activity_checker(scope, started_at, ignore_self=True):
-                            if scope.startswith("group:"):
+                            if is_tts_transcript:
+                                if not transcript_activity_logged:
+                                    transcript_activity_logged = True
+                                    logger.info(
+                                        "[PrivateCompanion] 会话已有新消息，TTS 对应文本仍继续完整补齐: session=%s",
+                                        scope,
+                                    )
+                            elif scope.startswith("group:"):
                                 if not previous_text:
                                     stop_after_send = True
                                     logger.info(
-                                        "[PrivateCompanion] 群聊已有新消息，但仍补齐 TTS 对应完整正文: session=%s",
+                                        "[PrivateCompanion] 群聊已有新消息，但仍补发当前首段文本: session=%s",
                                         scope,
                                     )
                                 else:
+                                    if case_id and callable(case_updater):
+                                        case_updater(
+                                            case_id,
+                                            outcome="incomplete",
+                                            signals={
+                                                "interrupted_by_new_message": True,
+                                                "segments_expected": total_chunks,
+                                                "segments_sent": sent_chunks,
+                                                "visible_text_complete": False,
+                                            },
+                                        )
                                     logger.info(
                                         "[PrivateCompanion] 群聊已有新消息，停止发送 TTS 后续分块: session=%s sent_preview=%s",
                                         scope,
@@ -2820,6 +3142,17 @@ TTS 朗读文本：
                                     scope,
                                 )
                             else:
+                                if case_id and callable(case_updater):
+                                    case_updater(
+                                        case_id,
+                                        outcome="incomplete",
+                                        signals={
+                                            "interrupted_by_new_message": True,
+                                            "segments_expected": total_chunks,
+                                            "segments_sent": sent_chunks,
+                                            "visible_text_complete": False,
+                                        },
+                                    )
                                 logger.info(
                                     "[PrivateCompanion] 会话已有新消息，停止发送 TTS 后续分块: session=%s sent_preview=%s",
                                     scope,
@@ -2847,8 +3180,26 @@ TTS 朗读文本：
                         _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                         self._tts_chain_log_text(chunk),
                     )
+                    sent_chunks += 1
+                    if case_id and callable(case_updater):
+                        case_updater(
+                            case_id,
+                            append_output=self._tts_chain_log_text(chunk),
+                            outcome="delivered" if sent_chunks >= total_chunks else "delivery_pending",
+                            signals={
+                                "segments_expected": total_chunks,
+                                "segments_sent": sent_chunks,
+                                "visible_text_complete": sent_chunks >= total_chunks,
+                            },
+                        )
                 except Exception as exc:
                     if proactive_umo:
+                        if case_id and callable(case_updater):
+                            case_updater(
+                                case_id,
+                                outcome="delivery_failed",
+                                signals={"segments_expected": total_chunks, "segments_sent": sent_chunks},
+                            )
                         logger.warning(
                             "[PrivateCompanion] TTS 主动消息中文正文补发失败: session=%s error=%s %s",
                             proactive_umo,
@@ -2863,7 +3214,29 @@ TTS 朗读文本：
                             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                             self._tts_chain_log_text(chunk),
                         )
+                        sent_chunks += 1
+                        if case_id and callable(case_updater):
+                            case_updater(
+                                case_id,
+                                append_output=self._tts_chain_log_text(chunk),
+                                outcome="delivered" if sent_chunks >= total_chunks else "delivery_pending",
+                                signals={
+                                    "segments_expected": total_chunks,
+                                    "segments_sent": sent_chunks,
+                                    "visible_text_complete": sent_chunks >= total_chunks,
+                                },
+                            )
                     except Exception:
+                        if case_id and callable(case_updater):
+                            case_updater(
+                                case_id,
+                                outcome="delivery_failed",
+                                signals={
+                                    "segments_expected": total_chunks,
+                                    "segments_sent": sent_chunks,
+                                    "visible_text_complete": False,
+                                },
+                            )
                         logger.warning("[PrivateCompanion] TTS 分块后台补发失败: %s", _single_line(exc, 120))
                         return
                 previous_text = " ".join(
@@ -2872,8 +3245,19 @@ TTS 朗读文本：
                     if isinstance(comp, Plain)
                 ).strip() or previous_text
                 if stop_after_send:
+                    if case_id and callable(case_updater):
+                        case_updater(
+                            case_id,
+                            outcome="incomplete",
+                            signals={
+                                "interrupted_by_new_message": True,
+                                "segments_expected": total_chunks,
+                                "segments_sent": sent_chunks,
+                                "visible_text_complete": False,
+                            },
+                        )
                     logger.info(
-                        "[PrivateCompanion] TTS 语音对应首段文本已补发，停止发送剩余分块: session=%s sent_preview=%s",
+                        "[PrivateCompanion] 当前首段文本已补发，停止发送普通回复剩余分块: session=%s sent_preview=%s",
                         scope,
                         _single_line(previous_text, 120) or "0",
                     )
@@ -2945,6 +3329,7 @@ TTS 朗读文本：
         converted, full_scope_fallback = self._enforce_full_tts_scope_markup(
             converted,
             source_text=source_text,
+            event=event,
         )
         if visible_override or suppress_visible:
             try:
@@ -3084,14 +3469,18 @@ TTS 朗读文本：
             return ""
         provider = await self._get_tts_conversion_provider(event)
         provider_kind = self._tts_provider_kind_for_event(event)
-        lang = self._tts_language_label()
-        voice_lang = getattr(self, "tts_voice_language", "ja")
+        voice_lang = self._tts_voice_language_for_event(event)
+        lang = self._tts_language_label(voice_language=voice_lang)
         mode = getattr(self, "tts_generation_mode", "fast_tag")
         if mode == "postprocess":
             return await self._postprocess_text_to_tts_markup(source, event, provider_kind=provider_kind, full=full)
         extra = _single_line(getattr(self, "main_user_mention_voice_prompt", ""), 500) if self._event_mentions_main_user_with_keyword(event) else ""
         persona_context = await self._format_tts_persona_voice_context(event)
-        emotion_rule = self._tts_emotion_tag_rule(provider_kind, subject="<pc_tts> 内")
+        emotion_rule = self._tts_emotion_tag_rule(
+            provider_kind,
+            subject="<pc_tts> 内",
+            voice_language=voice_lang,
+        )
         if not emotion_rule:
             emotion_rule = "不要加入方括号情绪标签。"
         if voice_lang == "zh":
@@ -3152,8 +3541,8 @@ Provider 规则：{emotion_rule}
         provider = await self._get_tts_conversion_provider(event)
         if provider is None:
             return ""
-        lang = self._tts_language_label()
-        voice_lang = getattr(self, "tts_voice_language", "ja")
+        voice_lang = self._tts_voice_language_for_event(event)
+        lang = self._tts_language_label(voice_language=voice_lang)
         tts_signal, tts_signal_match, user_text = self._event_tts_request_signal(event)
         extra = _single_line(getattr(self, "tts_extra_prompt", ""), 800)
         if not extra:
@@ -3168,7 +3557,11 @@ Provider 规则：{emotion_rule}
         else:
             language_rule = "voice_text 必须是自然日语，不要夹中文说明；除极短语气词外必须包含假名。"
             visible_rule = "visible_text 必须保留完整自然中文句子，让用户能看懂这段语音对应什么，但不要写“中文含义：”“对应文本：”这类标题。"
-        emotion_rule = self._tts_emotion_tag_rule(provider_kind, subject="voice_text 中")
+        emotion_rule = self._tts_emotion_tag_rule(
+            provider_kind,
+            subject="voice_text 中",
+            voice_language=voice_lang,
+        )
         if not emotion_rule:
             emotion_rule = "voice_text 不要使用方括号情绪标签。"
         probability_allowed = getattr(event, "_private_companion_tts_postprocess_probability_allowed", None)
@@ -3246,7 +3639,7 @@ Provider 规则：{emotion_rule}
                     reason or "no_voice",
                 )
                 return ""
-            if getattr(self, "tts_voice_language", "ja") != "zh" and not self._tts_visible_text_is_allowed_after_voice(visible):
+            if self._tts_voice_language_for_event(event) != "zh" and not self._tts_visible_text_is_allowed_after_voice(visible):
                 visible = source
             logger.info(
                 "[PrivateCompanion] TTS 后处理判定使用语音: session=%s reason=%s voice=%s",
@@ -3254,7 +3647,7 @@ Provider 规则：{emotion_rule}
                 reason or "use_voice",
                 _single_line(voice, 80),
             )
-            if getattr(self, "tts_voice_language", "ja") == "zh":
+            if self._tts_voice_language_for_event(event) == "zh":
                 return f"<tts>{voice}</tts>\n{visible}" if visible and visible != voice else f"<tts>{voice}</tts>"
             return f"<tts>{voice}</tts>\n{visible}"
         except Exception as exc:
@@ -3347,6 +3740,11 @@ Provider 规则：{emotion_rule}
                 len(str(prompt or "")),
                 len(completion),
             )
+            safety_refusal = bool(
+                task == "tts_spoken_conversion"
+                and completion.strip()
+                and self._tts_text_is_provider_safety_refusal(completion)
+            )
             if callable(record_usage):
                 record_usage(
                     provider_id=provider_id,
@@ -3354,10 +3752,17 @@ Provider 规则：{emotion_rule}
                     prompt=prompt,
                     completion=completion,
                     elapsed_ms=elapsed_ms,
-                    success=bool(completion.strip()),
+                    success=bool(completion.strip()) and not safety_refusal,
+                    error="provider_safety_refusal" if safety_refusal else "",
                     resp=resp,
                 )
-            if not completion.strip() and allow_fallback:
+            if safety_refusal:
+                logger.warning(
+                    "[PrivateCompanion] TTS语种转换模型返回安全拒绝话术,不作为朗读文本: provider=%s preview=%s",
+                    _single_line(provider_id, 80) or "default",
+                    _single_line(completion, 160),
+                )
+            if (not completion.strip() or safety_refusal) and allow_fallback:
                 fallback_getter = getattr(self, "_model_fallback_provider_id", None)
                 fallback_id = (
                     fallback_getter("tts_conversion_provider_id", provider_id)
@@ -3368,7 +3773,8 @@ Provider 规则：{emotion_rule}
                 fallback_provider = provider_getter(fallback_id) if fallback_id and callable(provider_getter) else None
                 if fallback_provider is not None:
                     logger.warning(
-                        "[PrivateCompanion] TTS文本主模型返回空结果,尝试卡片备用模型: primary=%s fallback=%s",
+                        "[PrivateCompanion] TTS文本主模型%s,尝试卡片备用模型: primary=%s fallback=%s",
+                        "返回安全拒绝话术" if safety_refusal else "返回空结果",
                         _single_line(provider_id, 80) or "default",
                         _single_line(fallback_id, 80),
                     )
@@ -3655,7 +4061,13 @@ Provider 规则：{emotion_rule}
         if subtitle_task is not None:
             await subtitle_task
 
-    def _tts_visible_fallback_text(self, text: str, fallback_plain: str = "") -> str:
+    def _tts_visible_fallback_text(
+        self,
+        text: str,
+        fallback_plain: str = "",
+        *,
+        event: Any = None,
+    ) -> str:
         normalized = self._normalize_tts_tags(str(text or ""))
         visible = re.sub(r"<tts\b[^>]*>.*?</tts>", "", normalized, flags=re.IGNORECASE | re.DOTALL)
         visible = re.sub(TTS_TAG_PATTERN, "", visible).strip()
@@ -3670,7 +4082,7 @@ Provider 规则：{emotion_rule}
                 fallback,
                 max_chars=self._tts_complete_text_limit(fallback, 800),
             )
-        if getattr(self, "tts_voice_language", "ja") == "zh":
+        if self._tts_voice_language_for_event(event) == "zh":
             visible_zh = re.sub(TTS_TAG_PATTERN, "", normalized).strip()
             return self._sanitize_tts_visible_text(
                 visible_zh,
@@ -3687,7 +4099,13 @@ Provider 规则：{emotion_rule}
             max_chars=self._tts_complete_text_limit(plain, 800),
         )
 
-    def _enforce_full_tts_scope_markup(self, text: str, *, source_text: str = "") -> tuple[str, str]:
+    def _enforce_full_tts_scope_markup(
+        self,
+        text: str,
+        *,
+        source_text: str = "",
+        event: Any = None,
+    ) -> tuple[str, str]:
         """Turn any tagged full-scope reply into one structurally complete voice block."""
         normalized = self._normalize_tts_tags(str(text or ""))
         if getattr(self, "tts_conversion_scope", "partial") != "full":
@@ -3695,7 +4113,7 @@ Provider 规则：{emotion_rule}
         if not re.search(r"<tts\b[^>]*>.*?</tts>", normalized, flags=re.IGNORECASE | re.DOTALL):
             return normalized, ""
 
-        voice_lang = getattr(self, "tts_voice_language", "ja")
+        voice_lang = self._tts_voice_language_for_event(event)
         delivery_mode = getattr(self, "tts_delivery_mode", "voice_and_text")
         foreign_text_mode = getattr(self, "tts_foreign_text_mode", "translation")
         complete_limit = self._tts_complete_text_limit(
@@ -3762,7 +4180,7 @@ Provider 规则：{emotion_rule}
             if isinstance(comp, Plain) and str(getattr(comp, "text", "") or "").strip()
         ).strip()
         spoken_text = "\n".join(item for item in successful_spoken if item).strip()
-        voice_lang = getattr(self, "tts_voice_language", "ja")
+        voice_lang = self._tts_voice_language_for_event(event)
         if voice_lang == "zh":
             visible_source = fallback_plain or plain_text or spoken_text
             visible_text = self._sanitize_tts_visible_text(
@@ -3818,6 +4236,7 @@ Provider 规则：{emotion_rule}
             fallback_text = self._tts_visible_fallback_text(
                 normalized,
                 fallback_plain,
+                event=event,
             ) or self._tts_plain_markup_fallback_text(normalized)
             logger.info(
                 "[PrivateCompanion] TTS强约束已阻止语音生成: session=%s reason=%s text=%s",
@@ -3828,7 +4247,11 @@ Provider 规则：{emotion_rule}
             fallback_text = self._sanitize_tts_visible_text(fallback_text)
             return [Plain(fallback_text)] if fallback_text else []
         if not tts_provider:
-            fallback_text = self._tts_visible_fallback_text(text, fallback_plain)
+            fallback_text = self._tts_visible_fallback_text(
+                text,
+                fallback_plain,
+                event=event,
+            )
             fallback_text = self._sanitize_tts_visible_text(fallback_text)
             if not fallback_text:
                 fallback_text = "我这边暂时没有可用的语音通道，先用文字陪你说。"
@@ -3839,7 +4262,12 @@ Provider 规则：{emotion_rule}
                     _single_line(fallback_text, 160),
                 )
                 return [Plain(fallback_text)]
-        provider_kind = self._tts_provider_kind(tts_provider, provider_settings)
+        voice_language = self._tts_voice_language_for_event(event)
+        provider_kind = self._tts_provider_kind(
+            tts_provider,
+            provider_settings,
+            voice_language=voice_language,
+        )
         output: list[Any] = []
         successful_spoken: list[str] = []
         record_failed = False
@@ -3875,7 +4303,11 @@ Provider 规则：{emotion_rule}
                 )
                 pos = match.end()
                 continue
-            if self._tts_text_needs_language_conversion(spoken, provider_kind=provider_kind):
+            if self._tts_text_needs_language_conversion(
+                spoken,
+                provider_kind=provider_kind,
+                event=event,
+            ):
                 before_convert = spoken
                 spoken = await self._convert_text_to_spoken_language(spoken, event, provider_kind=provider_kind)
                 if spoken != before_convert:
@@ -3891,13 +4323,14 @@ Provider 规则：{emotion_rule}
                 config or {},
                 source_text=fallback_plain or source_spoken,
                 source=self._tts_audio_source_for_event(event),
+                voice_language=voice_language,
             )
             if record is not None:
                 output.append(record)
                 successful_spoken.append(spoken)
                 self._mark_tts_session_sent(event)
                 if (
-                    getattr(self, "tts_voice_language", "ja") != "zh"
+                    voice_language != "zh"
                     and getattr(self, "tts_delivery_mode", "voice_and_text") != "voice_only"
                     and getattr(self, "tts_foreign_text_mode", "translation") in {"translation", "bilingual"}
                 ):
@@ -3930,7 +4363,7 @@ Provider 规则：{emotion_rule}
                         "[PrivateCompanion] TTS语音组件生成失败,已隐藏朗读文本并保留可见中文: %s",
                         _single_line(spoken, 120),
                     )
-                elif getattr(self, "tts_voice_language", "ja") != "zh":
+                elif voice_language != "zh":
                     next_start = matches[index + 1].start() if index + 1 < len(matches) else len(normalized)
                     visible_after_this_block = normalized[match.end():next_start]
                     if self._tts_visible_text_is_allowed_after_voice(visible_after_this_block):
@@ -3970,7 +4403,7 @@ Provider 规则：{emotion_rule}
             after = ""
         elif visible_override:
             after = visible_override
-        if after and getattr(self, "tts_voice_language", "ja") != "zh" and not self._tts_visible_text_is_allowed_after_voice(after):
+        if after and voice_language != "zh" and not self._tts_visible_text_is_allowed_after_voice(after):
             chinese_after = self._tts_chinese_visible_fallback_from_mixed(after)
             if chinese_after:
                 logger.warning(
@@ -4006,7 +4439,7 @@ Provider 规则：{emotion_rule}
                 plain_after_last_record = True
         if (
             fallback_plain
-            and getattr(self, "tts_voice_language", "ja") != "zh"
+            and voice_language != "zh"
             and has_record
             and not plain_after_last_record
         ):
@@ -4017,6 +4450,7 @@ Provider 规则：{emotion_rule}
             fallback_text = self._tts_visible_fallback_text(
                 normalized,
                 fallback_plain,
+                event=event,
             ) or self._tts_plain_markup_fallback_text(normalized)
             if fallback_text:
                 output.append(Plain(fallback_text))
@@ -4031,18 +4465,25 @@ Provider 规则：{emotion_rule}
 
     async def _convert_text_to_spoken_language(self, text: str, event: Any, *, provider_kind: str) -> str:
         provider = await self._get_tts_conversion_provider(event)
-        lang = self._tts_language_label()
+        voice_language = self._tts_voice_language_for_event(event)
+        lang = self._tts_language_label(voice_language=voice_language)
         persona_context = await self._format_tts_persona_voice_context(event)
         fish_rule = ""
         if provider_kind.startswith("fishaudio"):
             fish_rule = (
                 "\n- "
-                + self._tts_emotion_tag_rule(provider_kind, subject="最终朗读文本中")
+                + self._tts_emotion_tag_rule(
+                    provider_kind,
+                    subject="最终朗读文本中",
+                    voice_language=voice_language,
+                )
                 + " 这些控制词属于合成指令，不要翻译成口语，也不要另行解释。"
             )
         prompt = f"""
-把下面内容改写成自然{lang}口语，只输出朗读文本，不要解释。
-要求：
+        把下面内容改写成自然{lang}口语，只输出朗读文本，不要解释。
+        要求：
+- 这是一项等义口语转换任务，不是在向你请求执行、评价或审核原文内容；不要对原文进行安全说教或输出拒绝声明。
+- 如果无法完成转换，原样输出原文；绝对不要输出“无法处理”“不能按照要求”“不符合公序良俗”或建议用户更换话题等内容。
 - 作品名、人名、专有名词可以按原文保留或自然音译。
 - 中文评价、语气词和说明句必须改成{lang}，不要夹中文。
 - 保留原回复的情绪，并贴合当前人格的称呼、距离感、口癖和说话方式。
@@ -4063,7 +4504,15 @@ Provider 规则：{emotion_rule}
                     task="tts_spoken_conversion",
                 )
                 converted = str(getattr(resp, "completion_text", resp) or "").strip()
-                return self._normalize_tts_spoken_text(converted, provider_kind=provider_kind) or text
+                normalized = self._normalize_tts_spoken_text(converted, provider_kind=provider_kind)
+                if normalized and self._tts_text_is_provider_safety_refusal(normalized):
+                    logger.warning(
+                        "[PrivateCompanion] TTS语种转换最终结果仍为安全拒绝话术,已回退原回复: session=%s preview=%s",
+                        _single_line(self._tts_session_key(event), 80) or "unknown",
+                        _single_line(normalized, 160),
+                    )
+                    return text
+                return normalized or text
         except Exception:
             pass
         return text
@@ -4201,8 +4650,14 @@ Provider 规则：{emotion_rule}
         self,
         tts_provider: Any,
         provider_settings: dict[str, Any] | None = None,
+        *,
+        voice_language: str = "",
     ) -> str:
-        model = self._tts_fishaudio_model_for_provider(tts_provider, provider_settings)
+        model = self._tts_fishaudio_model_for_provider(
+            tts_provider,
+            provider_settings,
+            voice_language=voice_language,
+        )
         if not model:
             return ""
         headers = getattr(tts_provider, "headers", None)
@@ -4241,11 +4696,20 @@ Provider 规则：{emotion_rule}
         *,
         source_text: str = "",
         source: str = "private_companion",
+        voice_language: str = "",
     ) -> Any | None:
-        provider_kind = self._tts_provider_kind(tts_provider, provider_settings)
+        provider_kind = self._tts_provider_kind(
+            tts_provider,
+            provider_settings,
+            voice_language=voice_language,
+        )
         fish_model = ""
         if provider_kind.startswith("fishaudio"):
-            fish_model = self._prepare_fishaudio_provider_model(tts_provider, provider_settings)
+            fish_model = self._prepare_fishaudio_provider_model(
+                tts_provider,
+                provider_settings,
+                voice_language=voice_language,
+            )
         sanitized = self._sanitize_tts_spoken_text(spoken, provider_kind=provider_kind)
         if not sanitized:
             return None
@@ -4312,13 +4776,14 @@ Provider 规则：{emotion_rule}
                     final_ref = f"{callback_api_base}/api/file/{token}"
                 except Exception as exc:
                     logger.warning("[PrivateCompanion] TTS强化注册语音文件失败: %s", _single_line(exc, 120))
+        record_text = source_text or sanitized
         try:
-            component = Record(file=final_ref, url=final_ref)
+            component = Record(file=final_ref, url=final_ref, text=record_text)
         except TypeError:
             try:
-                component = Record(file=final_ref)
+                component = Record(file=final_ref, text=record_text)
             except TypeError:
-                component = Record.fromFileSystem(str(audio_path))
+                component = Record.fromFileSystem(str(audio_path), text=record_text)
         self._annotate_tts_record_component(component, sanitized, source_text=source_text or spoken)
         logger.info("[PrivateCompanion] TTS语音组件已生成: %s", self._tts_component_log_note(component))
         return component
