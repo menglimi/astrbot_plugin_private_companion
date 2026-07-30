@@ -1740,15 +1740,69 @@ class LlmToolActionsMixin:
             requester_id = str(event.get_sender_id())
         except Exception:
             requester_id = ""
+        requester = None
+        user_getter = getattr(self, "_get_user", None)
+        target_checker = getattr(self, "_is_target_private_user", None)
+        if callable(user_getter) and callable(target_checker):
+            if not requester_id:
+                return json.dumps(
+                    {
+                        "status": "unauthorized",
+                        "success": False,
+                        "generated": False,
+                        "sent": False,
+                        "message": "这个生图工具只对已启用的陪伴对象开放。",
+                        "must_not_claim_sent": True,
+                        "retryable": False,
+                    },
+                    ensure_ascii=False,
+                )
+            data_lock = getattr(self, "_data_lock", None)
+            if data_lock is not None:
+                async with data_lock:
+                    requester = user_getter(requester_id)
+                    requester_authorized = bool(
+                        isinstance(requester, dict)
+                        and target_checker(requester_id, requester)
+                        and requester.get("enabled", True)
+                    )
+            else:
+                requester = user_getter(requester_id)
+                requester_authorized = bool(
+                    isinstance(requester, dict)
+                    and target_checker(requester_id, requester)
+                    and requester.get("enabled", True)
+                )
+            if not requester_authorized:
+                return json.dumps(
+                    {
+                        "status": "unauthorized",
+                        "success": False,
+                        "generated": False,
+                        "sent": False,
+                        "message": "这个生图工具只对已启用的陪伴对象开放。",
+                        "must_not_claim_sent": True,
+                        "retryable": False,
+                    },
+                    ensure_ascii=False,
+                )
         quota_getter = getattr(self, "_command_photo_quota_left", None)
         if requester_id and callable(quota_getter):
-            async with self._data_lock:
-                requester = self._get_user(requester_id)
+            if requester is None:
+                data_lock = getattr(self, "_data_lock", None)
+                if data_lock is not None:
+                    async with data_lock:
+                        requester = self._get_user(requester_id)
+                else:
+                    requester = self._get_user(requester_id)
+            if isinstance(requester, dict):
                 quota_left = (
                     quota_getter(requester)
-                    if self._is_target_private_user(requester_id, requester) and bool(requester.get("enabled", True))
+                    if bool(requester.get("enabled", True))
                     else None
                 )
+            else:
+                quota_left = None
             if quota_left is not None and quota_left <= 0:
                 return json.dumps(
                     {
