@@ -44,6 +44,29 @@ def _normalize_timezone_name(timezone_name: Any, default: str = "Asia/Shanghai")
         return default
 
 
+def _normalize_timezone_setting(timezone_name: Any) -> str:
+    candidate = str(timezone_name or "").strip()
+    if candidate.lower() in {"", "global", "astrbot", "auto", "follow_global"}:
+        return "global"
+    return _normalize_timezone_name(candidate)
+
+
+def _resolve_timezone_setting(
+    timezone_name: Any,
+    *,
+    global_timezone: Any = "",
+    system_timezone: Any = "",
+) -> str:
+    configured = _normalize_timezone_setting(timezone_name)
+    if configured != "global":
+        return configured
+    for candidate in (global_timezone, system_timezone):
+        normalized = _normalize_timezone_name(candidate, "")
+        if normalized:
+            return normalized
+    return "Asia/Shanghai"
+
+
 def _set_today_key_timezone(timezone_name: Any) -> None:
     global _today_key_timezone
     _today_key_timezone = _normalize_timezone_name(timezone_name)

@@ -107,8 +107,8 @@
       "environment_perception_timezone": {
         "description": "环境感知时区",
         "type": "string",
-        "hint": "默认 Asia/Shanghai。用于发送时间、时段和日期语境判断。",
-        "default": "Asia/Shanghai",
+        "hint": "填写 global 跟随 AstrBot 全局时区，也可填写 Asia/Shanghai 等 IANA 时区。旧配置中已明确保存的时区继续按自定义值生效。",
+        "default": "global",
         "condition": "enable_environment_perception"
       },
       "enable_holiday_perception": {
@@ -330,7 +330,7 @@
   "environment_perception_timezone": {
     "description": "Legacy flat config: 环境感知时区",
     "type": "string",
-    "default": "Asia/Shanghai",
+    "default": "global",
     "invisible": true
   },
   "enable_holiday_perception": {
@@ -2362,7 +2362,7 @@
   "group_member_safety_hidden_marker_mode": {
     "description": "Legacy flat config: 群成员风控隐性标签模式",
     "type": "string",
-    "default": "supplement",
+    "default": "reply_only",
     "invisible": true
   },
   "group_member_safety_strike_threshold": {
@@ -7109,18 +7109,18 @@
       "group_member_safety_hidden_marker_mode": {
         "description": "回复模型隐性风控标签",
         "type": "string",
-        "hint": "补充审核会保留独立审核模型，并允许正常回复模型在高置信恶性行为时附加发送前即被移除的内部标签；仅回复标签可节省独立审核调用，但未触发回复的消息不会被新增计数。标签不会发送到群聊。",
+        "hint": "默认仅复用正常回复模型的内部标签，不额外调用风控模型；未触发回复的消息不会新增计数。补充独立审核会额外调用模型，只适合确实需要覆盖未回复消息的场景。标签不会发送到群聊。",
         "options": [
           "supplement",
           "reply_only",
           "disabled"
         ],
         "labels": [
-          "补充独立审核（推荐）",
-          "仅使用回复模型标签",
+          "补充独立审核（额外模型调用）",
+          "仅使用回复模型标签（推荐）",
           "关闭隐性标签"
         ],
-        "default": "supplement",
+        "default": "reply_only",
         "condition": {
           "enable_group_member_safety": true
         }

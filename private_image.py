@@ -278,6 +278,7 @@ class PrivateImageMixin:
                         chunks.append(chunk)
                 data = b"".join(chunks)
                 if not data:
+                    logger.info("[PrivateCompanion] 私聊远程图片响应为空,跳过: url=%s", _single_line(text, 120))
                     return ""
                 prefix = data[:16]
                 suffix = ".jpg"
@@ -315,7 +316,14 @@ class PrivateImageMixin:
                 if persisted and persisted not in prepared:
                     prepared.append(persisted)
                 continue
-            if self._private_image_source_to_model_url(source) and source not in prepared:
+            if not self._private_image_source_to_model_url(source):
+                logger.info(
+                    "[PrivateCompanion] 本地图片源不可读,已跳过: namespace=%s source=%s",
+                    namespace,
+                    _single_line(source, 160),
+                )
+                continue
+            if source not in prepared:
                 prepared.append(source)
         return prepared
 

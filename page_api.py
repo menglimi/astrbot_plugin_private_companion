@@ -34,7 +34,7 @@ from .constants import (
     _REASON_TEXT,
 )
 from .config_migration import _ensure_config_parent_dir
-from .helpers import _flat_get, _normalize_timezone_name, _path_text, _redact_outbound_secrets, _safe_int, _set_into_config, _set_today_key_timezone, _strip_internal_message_blocks, _text_looks_garbled, _text_similarity, _today_key
+from .helpers import _flat_get, _normalize_timezone_name, _normalize_timezone_setting, _path_text, _redact_outbound_secrets, _safe_int, _set_into_config, _set_today_key_timezone, _strip_internal_message_blocks, _text_looks_garbled, _text_similarity, _today_key
 from .page_api_qzone import PrivateCompanionPageApiQzoneMixin
 from .page_api_users_groups import PrivateCompanionPageApiUsersGroupsMixin
 from .planning import evaluate_daily_plan_quality, generate_daily_plan, generate_detail_enhancement
@@ -14348,6 +14348,16 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             if key not in keys and key not in provider_keys:
                 keys.append(key)
         values = {key: getattr(self.plugin, key, self._config_get(key)) for key in keys}
+        values["environment_perception_timezone"] = getattr(
+            self.plugin,
+            "environment_perception_timezone_setting",
+            self._config_get("environment_perception_timezone") or "global",
+        )
+        values["environment_perception_timezone_effective"] = getattr(
+            self.plugin,
+            "environment_perception_timezone",
+            "Asia/Shanghai",
+        )
         if "photo_reference_catalog" in values:
             try:
                 values["photo_reference_catalog"] = validate_and_serialize(
@@ -15762,7 +15772,10 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
             self.plugin.model_fallback_overrides = normalizer(value) if callable(normalizer) else {}
             return
         if key == "environment_perception_timezone":
-            timezone_name = _normalize_timezone_name(value)
+            timezone_setting = _normalize_timezone_setting(value)
+            resolver = getattr(self.plugin, "_resolve_environment_perception_timezone", None)
+            timezone_name = resolver(timezone_setting) if callable(resolver) else _normalize_timezone_name(timezone_setting)
+            self.plugin.environment_perception_timezone_setting = timezone_setting
             self.plugin.environment_perception_timezone = timezone_name
             _set_today_key_timezone(timezone_name)
             return
@@ -17043,7 +17056,9 @@ class PrivateCompanionPageApi(PrivateCompanionPageApiQzoneMixin, PrivateCompanio
                             normalized_ids.append(item)
                     ids = normalized_ids
             return list(dict.fromkeys(item for item in ids if item))[:500]
-        if key in {"environment_perception_timezone", "deepseek_peak_timezone"}:
+        if key == "environment_perception_timezone":
+            return _normalize_timezone_setting(value)
+        if key == "deepseek_peak_timezone":
             return _normalize_timezone_name(value)
         if key == "target_user_ids":
             return self._normalize_private_target_id_list(value)

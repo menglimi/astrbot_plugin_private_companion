@@ -70,7 +70,7 @@ class PhotoReferenceWebUiTests(unittest.TestCase):
         self.assertIn('padding-top: 14px', APP_CSS)
 
     def test_metadata_editor_assets_have_a_matching_cache_version(self) -> None:
-        version = "20260730-photo-reference-save-fix"
+        version = "20260730-merge-v5108"
         self.assertIn(f'app.css?v={version}', INDEX_HTML)
         self.assertIn(f'app.js?v={version}', INDEX_HTML)
 

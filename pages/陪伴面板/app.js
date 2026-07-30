@@ -2144,7 +2144,7 @@ const configDescriptions = {
   advanced_cycle_pms_prompt: "作为 Bot 当前 PMS 模拟状态的柔性描述，可稍微收住语气，但不要变得刻薄或反复提及。",
   advanced_cycle_pms_mood: "PMS 期可轻度参考的情绪底色，不覆盖用户当下需求。",
   advanced_cycle_pms_energy: "未开启强度联动时使用的精力增减值，负数表示精力稍低。",
-  environment_perception_timezone: "用于判断当前时段、日期语境、节假日和日程跨日。默认 Asia/Shanghai。",
+  environment_perception_timezone: "用于判断当前时段、日期语境、节假日和日程跨日。填写 global 跟随 AstrBot 全局时区，也可填写自定义 IANA 时区。",
   holiday_country: "节假日识别地区。目前主要用于 CN，未安装依赖时会自动退化为周末/工作日。",
   enable_weather_context: "开启后默认使用和风天气；未完成独立配置时，会尝试复用 screen_companion。天气只作为日程、日记和主动契机的背景。",
   weather_source: "默认使用和风天气；OpenWeatherMap、Open-Meteo 和高德地图仅保留给兼容配置。",
@@ -2307,7 +2307,7 @@ const configDescriptions = {
   group_conversation_followup_max_turns: "一次群聊连续对话最多自动续接几轮，防止 Bot 一直卷进对话。",
   enable_group_member_safety: "开启后，模型会保守审核配置范围内明确针对 Bot 的持续骚扰、威胁和重复攻击；达到次数后只静默当前群里的该成员。普通批评、玩笑、争论、偶发脏话和不确定内容应放行。",
   group_member_safety_review_mode: "directed 只审核明确对 Bot 的消息；suspicious 还包含同一成员的 Bot 对话续接窗口；all 会审核全部群消息并显著增加模型调用量。",
-  group_member_safety_hidden_marker_mode: "supplement 会让独立审核与回复模型标签互相补充且同一消息最多计数一次；reply_only 可节省独立审核调用，但没有生成回复的消息不会新增风险次数；disabled 只使用原独立审核。内部标签会在 TTS、分段和发送前移除。",
+  group_member_safety_hidden_marker_mode: "reply_only 默认复用正常回复模型的内部标签，不额外调用风控模型；没有生成回复的消息不会新增风险次数。supplement 会再运行独立审核模型；disabled 只使用独立审核。内部标签会在 TTS、分段和发送前移除。",
   group_member_safety_strike_threshold: "同一成员在统计窗口内累计到该次数后自动静默。每条消息最多累计一次，建议至少 3 次。",
   group_member_safety_strike_window_days: "只统计最近这段时间内、且晚于最近一次解除或豁免的风险记录。",
   group_member_safety_block_hours: "自动静默持续小时数；0 表示直到人工解除。三级管理页中的手动静默始终需要人工解除。",
@@ -2928,7 +2928,7 @@ const featureSettingSections = {
   enable_environment_perception: [
     {
       title: "基础环境",
-      note: "时间、平台、模型和消息媒介感知。",
+      note: "时间、平台、模型和消息媒介感知。时区填写 global 时会显示当前继承的 AstrBot 全局时区。",
       keys: ["environment_perception_timezone", "enable_platform_perception", "enable_model_perception", "enable_worldview_perception"],
     },
     {
@@ -5661,7 +5661,7 @@ const setupGuideAdvancedItems = {
       caution: "这不是联网获取现实环境，只是把当前会话和时间信息整理给模型。信息越多，提示词也会略长。",
       kind: "feature",
       settings: [
-        { key: "environment_perception_timezone", type: "text", label: "时区", placeholder: "Asia/Shanghai" },
+        { key: "environment_perception_timezone", type: "text", label: "时区", placeholder: "global 或 Asia/Shanghai" },
         { key: "enable_holiday_perception", type: "bool", label: "感知节假日/工作日", description: "需要相关依赖时更准确，缺依赖会退化。" },
         { key: "enable_platform_perception", type: "bool", label: "感知平台和私聊/群聊", description: "通常建议开启。" },
         { key: "enable_model_perception", type: "bool", label: "感知当前模型能力", description: "让 Bot 知道自己是否能读图、发图或语音。" },
@@ -5997,7 +5997,7 @@ const setupGuideAdvancedItems = {
       kind: "feature",
       settings: [
         { key: "group_member_safety_review_mode", type: "select", label: "审核范围", options: [["directed", "只审核对 Bot 的消息"], ["suspicious", "包含对话续接窗口"], ["all", "全部群消息"]] },
-        { key: "group_member_safety_hidden_marker_mode", type: "select", label: "隐性标签模式", options: [["supplement", "补充独立审核（推荐）"], ["reply_only", "仅使用回复模型标签"], ["disabled", "关闭隐性标签"]] },
+        { key: "group_member_safety_hidden_marker_mode", type: "select", label: "隐性标签模式", options: [["reply_only", "仅使用回复模型标签（推荐）"], ["supplement", "补充独立审核（额外模型调用）"], ["disabled", "关闭隐性标签"]] },
         { key: "group_member_safety_strike_threshold", type: "number", label: "自动静默次数", placeholder: "3", min: 1, max: 20 },
         { key: "group_member_safety_strike_window_days", type: "number", label: "统计窗口天数", placeholder: "30", min: 1, max: 365 },
         { key: "group_member_safety_block_hours", type: "number", label: "静默小时数", placeholder: "168", min: 0 },
@@ -21343,6 +21343,20 @@ function featureSettingInput(key, value) {
   const safeKey = escapeHtml(key);
   const disabled = featureLockedByProactiveOnlyMode(key);
   const disabledAttr = disabled ? " disabled" : "";
+  if (key === "environment_perception_timezone") {
+    const effective = String(state.overview?.settings?.environment_perception_timezone_effective || "Asia/Shanghai");
+    return `
+      <input type="text" list="environment-timezone-options" data-feature-param="${safeKey}" value="${escapeHtml(value ?? "global")}" placeholder="global 或 Asia/Shanghai"${disabledAttr}>
+      <datalist id="environment-timezone-options">
+        <option value="global">跟随 AstrBot 全局</option>
+        <option value="Asia/Shanghai"></option>
+        <option value="Asia/Tokyo"></option>
+        <option value="Europe/London"></option>
+        <option value="America/New_York"></option>
+      </datalist>
+      <small>当前实际生效：${escapeHtml(effective)}</small>
+    `;
+  }
   if (spec.type === "checkbox") {
     const checked = toBool(value);
     return `

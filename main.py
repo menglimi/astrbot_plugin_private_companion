@@ -112,6 +112,7 @@ from .helpers import (
     _normalize_outbound_punctuation_flow,
     _now_ts,
     _normalize_timezone_name,
+    _normalize_timezone_setting,
     _path_text,
     _redact_outbound_secrets,
     _safe_float,
@@ -122,6 +123,7 @@ from .helpers import (
     _strip_internal_message_blocks,
     _strip_outbound_control_blocks,
     _today_key,
+    _resolve_timezone_setting,
 )
 from .config_migration import migrate_flat_config_into_schema_groups
 from .photo_reference_catalog import CATALOG_VERSION, load_catalog, validate_and_serialize
@@ -1282,6 +1284,22 @@ class PrivateCompanionPlugin(
         normalized = aliases.get(normalized, normalized)
         return normalized if normalized in {"blue", "yellow", "orange", "red", "all"} else "blue"
 
+    def _resolve_environment_perception_timezone(self, configured_timezone: Any) -> str:
+        global_timezone = ""
+        try:
+            global_config = self.context.get_config()
+            if callable(getattr(global_config, "get", None)):
+                global_timezone = str(global_config.get("timezone") or "").strip()
+        except Exception:
+            global_timezone = ""
+        local_tzinfo = datetime.now().astimezone().tzinfo
+        system_timezone = str(getattr(local_tzinfo, "key", "") or local_tzinfo or "").strip()
+        return _resolve_timezone_setting(
+            configured_timezone,
+            global_timezone=global_timezone,
+            system_timezone=system_timezone,
+        )
+
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         global _private_companion_plugin
@@ -1470,14 +1488,12 @@ class PrivateCompanionPlugin(
         self.target_platform = self._cfg_str(c, "target_platform", "aiocqhttp", "aiocqhttp")
         self.default_enable_configured_targets = self._cfg_bool(c, "default_enable_configured_targets", True)
         self.enable_environment_perception = self._cfg_bool(c, "enable_environment_perception", True)
-        timezone_default = self._cfg_str(c, "timezone", "Asia/Shanghai", "Asia/Shanghai")
-        self.environment_perception_timezone = _normalize_timezone_name(
-            self._cfg_str(
-                c,
-                "environment_perception_timezone",
-                timezone_default,
-                "Asia/Shanghai",
-            )
+        configured_timezone = _flat_get(c, "environment_perception_timezone", None)
+        if configured_timezone in (None, ""):
+            configured_timezone = _flat_get(c, "timezone", None) or "global"
+        self.environment_perception_timezone_setting = _normalize_timezone_setting(configured_timezone)
+        self.environment_perception_timezone = self._resolve_environment_perception_timezone(
+            self.environment_perception_timezone_setting
         )
         _set_today_key_timezone(self.environment_perception_timezone)
         self.enable_holiday_perception = self._cfg_bool(c, "enable_holiday_perception", True)
@@ -2173,10 +2189,10 @@ class PrivateCompanionPlugin(
         if self.group_member_safety_review_mode not in {"directed", "suspicious", "all"}:
             self.group_member_safety_review_mode = "directed"
         self.group_member_safety_hidden_marker_mode = self._cfg_str(
-            c, "group_member_safety_hidden_marker_mode", "supplement", "supplement"
+            c, "group_member_safety_hidden_marker_mode", "reply_only", "reply_only"
         ).lower()
         if self.group_member_safety_hidden_marker_mode not in {"supplement", "reply_only", "disabled"}:
-            self.group_member_safety_hidden_marker_mode = "supplement"
+            self.group_member_safety_hidden_marker_mode = "reply_only"
         self.group_member_safety_strike_threshold = self._cfg_int(
             c, "group_member_safety_strike_threshold", 3, 1, 20
         )

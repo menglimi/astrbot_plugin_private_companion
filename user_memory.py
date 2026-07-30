@@ -5833,6 +5833,10 @@ Local classifier result:
         creative_context: str = "",
         review_event: Any | None = None,
     ) -> str:
+        # 带 TTS 保护占位符的回复不参与自检改写：本函数所有分支都会整段替换正文，
+        # 占位符一旦丢失，_restore_protected_tts_blocks 就无法还原语音块，只会发出纯文字。
+        if "[[PCTTS:" in str(response_text or ""):
+            return response_text
         relay_claim_checker = getattr(self, "_unexecuted_relay_claim_reason", None)
         if callable(relay_claim_checker):
             relay_claim_note = relay_claim_checker(response_text)
@@ -7174,7 +7178,8 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
         return False, ""
 
     def _response_review_flags(self, text: str, user: dict[str, Any], *, inbound_text: str = "") -> list[str]:
-        cleaned = str(text or "").strip()
+        # TTS 保护占位符不是可见正文，若参与长度/句数/段落统计会把带语音的短回复误判成过度解释。
+        cleaned = re.sub(r"\[\[PCTTS:[^\]]*\]\]", "", str(text or "")).strip()
         flags: list[str] = []
         if not cleaned:
             return flags

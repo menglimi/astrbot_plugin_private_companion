@@ -185,7 +185,7 @@ class GroupMemberSafetyMixin:
 
     def _group_member_safety_hidden_marker_mode(self) -> str:
         mode = str(
-            getattr(self, "group_member_safety_hidden_marker_mode", "supplement") or "supplement"
+            getattr(self, "group_member_safety_hidden_marker_mode", "reply_only") or "reply_only"
         ).strip().lower()
         aliases = {
             "on": "supplement",
@@ -196,7 +196,7 @@ class GroupMemberSafetyMixin:
             "false": "disabled",
         }
         mode = aliases.get(mode, mode)
-        return mode if mode in {"supplement", "reply_only", "disabled"} else "supplement"
+        return mode if mode in {"supplement", "reply_only", "disabled"} else "reply_only"
 
     def _extract_group_member_safety_hidden_markers(
         self,
