@@ -1644,6 +1644,11 @@ class PrivateCompanionPlugin(
         )
         self.inject_passive_states = self._cfg_bool(c, "inject_passive_states", True)
         self.enable_passive_state_delta_injection = self._cfg_bool(c, "enable_passive_state_delta_injection", True)
+        self.enable_passive_state_continuity_anchor = self._cfg_bool(
+            c,
+            "enable_passive_state_continuity_anchor",
+            False,
+        )
         self.passive_injection_position = self._normalize_passive_injection_position(
             self._cfg_str(c, "passive_injection_position", "prompt")
         )
@@ -8500,6 +8505,100 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             ]
         )
 
+    def _format_private_passive_state_continuity_anchor(
+        self,
+        state: dict[str, Any],
+        current_user: dict[str, Any] | None,
+    ) -> str:
+        now = self._environment_now()
+        time_label, _ = self._current_time_period_label(now)
+        pieces = [f"时段={time_label}"]
+
+        raw_energy = state.get("energy") if isinstance(state, dict) else None
+        if isinstance(raw_energy, (int, float)) and not isinstance(raw_energy, bool):
+            energy = _safe_int(raw_energy, 70, 0, 100)
+            energy_floor = min(90, (energy // 10) * 10)
+            energy_ceiling = 100 if energy_floor == 90 else energy_floor + 9
+            pieces.append(f"精力={energy_floor}-{energy_ceiling}/100")
+
+        mood = (
+            _single_line(state.get("mood_bias"), 18) if isinstance(state, dict) else ""
+        )
+        if mood:
+            pieces.append(f"情绪底色={mood}")
+
+        current_item = self._get_current_plan_item(self.data.get("daily_plan", {}))
+        activity = ""
+        scene_text = ""
+        if isinstance(current_item, dict):
+            scene_text = self._sanitize_schedule_model_artifacts(
+                current_item.get("activity"), limit=72
+            )
+            future_marker = re.search(
+                r"稍后|之后|随后|然后|接着|待会儿?|等会儿?|过(?:一)?会儿|一会儿后|"
+                r"晚点|晚些时候|接下来|下一段|再(?:去|到|回|前往|开始|继续|做|处理|整理|收拾)|"
+                r"(?:做|整理|收拾|写|看|读|处理)?完(?:后)?(?:再)?(?:去|到|回|前往)",
+                scene_text,
+            )
+            if future_marker:
+                scene_text = scene_text[: future_marker.start()].rstrip(" ，,；;。")
+            if scene_text and self._daily_plan_clause_has_unsafe_social_fact(
+                scene_text
+            ):
+                scene_text = ""
+            if scene_text and re.search(
+                r"用户|主要用户|当前用户|主人|对方|给你|和你|跟你|你在|你的|明天|后天|下周|未来|日程|计划|打算|将要",
+                scene_text,
+            ):
+                scene_text = ""
+            scene_text = self._sanitize_schedule_context_for_private_user(
+                scene_text, current_user or {}
+            )
+            if scene_text and re.search(
+                r"(?:^|[，,；;。])(?:准备|正要|要去|想去|去往|前往|出发|赶往|回到?)",
+                scene_text,
+            ):
+                scene_text = ""
+            action_match = re.search(
+                r"(?:整理|收拾|看书|阅读|读书|写作|写字|写笔记|听歌|听音乐|休息|发呆|学习|"
+                r"上课|自习|工作|处理|做饭|吃饭|用餐|洗漱|洗澡|睡觉|散步|运动|锻炼|画画|"
+                r"练习|聊天|看电影|看视频|玩游戏|刷手机|喝咖啡|喝茶|做手工|晒太阳|通勤|买东西|买菜)"
+                r"[^，,；;。]{0,52}",
+                scene_text,
+            )
+            if action_match:
+                activity = action_match.group(0).strip()
+                if re.search(
+                    r"(?:在|到|去|回|靠近|路过|位于|身处)[^，,；;。]{1,24}|"
+                    r"[^，,；;。]{2,24}(?:省|市|区|县|镇|村|路|街|巷|号|小区|校区|商场|广场|"
+                    r"大厦|园区|车站|机场|酒店|咖啡店|餐厅|公园|图书馆)",
+                    activity,
+                ):
+                    activity = ""
+        if activity:
+            pieces.append(f"当前活动={_single_line(activity, 56)}")
+        if scene_text:
+            inferred_location = self._coarse_roleplay_location_text(
+                self._infer_location_from_text(scene_text)
+            )
+            safe_location = self._sanitize_schedule_context_for_private_user(
+                f"当前位置：{inferred_location}" if inferred_location else "",
+                current_user or {},
+            )
+            if safe_location:
+                pieces.append(f"粗略位置={inferred_location}")
+
+        text = "\n".join(
+            [
+                "【Bot 当下连续性】",
+                "这是 Bot 的拟人化模拟状态，不是用户事实、现实证据或长期记忆。",
+                "优先回应用户当前消息；语境自然时，可以分享最多一处简短的 Bot 自身细节，不要逐项汇报状态，也不要把内部素材描述成已经证实的现实事件。"
+                "不要为了延续对话强行追问；整次回复最多提出一个问题，也可以不提问。",
+                "当下素材（仅供隐性承接）：" + "；".join(pieces) + "。",
+            ]
+        )
+        return text[:300]
+
     def _private_passive_state_update_for_prompt(
         self,
         *,
@@ -8537,6 +8636,14 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             return self._format_private_passive_state_snapshot(state, current_user, direct=True), changed, "direct"
         if changed:
             return self._format_private_passive_state_snapshot(state, current_user, direct=False), True, "changed"
+        if bool(getattr(self, "enable_passive_state_continuity_anchor", False)):
+            return (
+                self._format_private_passive_state_continuity_anchor(
+                    state, current_user
+                ),
+                False,
+                "continuity_anchor",
+            )
         return "", False, "unchanged_light" if lightweight else "unchanged"
 
     async def _append_group_active_period_boundary_to_request(

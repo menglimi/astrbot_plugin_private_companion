@@ -33,10 +33,31 @@ class ConfigGroupAuthorityTests(unittest.TestCase):
             "MAI_STYLE_PROVIDER_ID": "model_assignment_config",
             "weather_api_host": "weather_config",
             "weather_token": "weather_config",
+            "enable_passive_state_continuity_anchor": "humanized_state_config",
         }
         for key, expected_group in expected_groups.items():
             self.assertEqual(api._schema_group_for_key(key), expected_group, key)
             self.assertFalse(api._schema_item_for_key(key).get("invisible", False), key)
+
+    def test_passive_continuity_anchor_is_default_off_with_dual_dependency(self):
+        schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+        legacy = schema["enable_passive_state_continuity_anchor"]
+        grouped = schema["humanized_state_config"]["items"][
+            "enable_passive_state_continuity_anchor"
+        ]
+
+        self.assertFalse(legacy["default"])
+        self.assertTrue(legacy["invisible"])
+        self.assertFalse(grouped["default"])
+        self.assertEqual(
+            grouped["condition"],
+            {
+                "inject_passive_states": True,
+                "enable_passive_state_delta_injection": True,
+            },
+        )
+        self.assertIn("不超过 300 字", grouped["hint"])
+        self.assertIn("缓存开销", grouped["hint"])
 
     def test_group_is_created_when_only_hidden_flat_compatibility_copy_existed(self):
         plugin = SimpleNamespace(config={})

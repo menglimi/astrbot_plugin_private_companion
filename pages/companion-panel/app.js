@@ -1133,6 +1133,7 @@ const featureMeta = {
   enable_segmented_proactive_reply: ["分段发送", "按作用范围把主动消息或全部 LLM 纯文本回复拆成更像聊天的短句，并合并过短片段。"],
   inject_passive_states: ["被动状态注入", "普通聊天前注入“当前扮演状态”，只影响语气、长短和节奏。"],
   enable_passive_state_delta_injection: ["被动状态增量注入", "同一会话只在状态首次出现、明显变化或用户询问近况时注入短状态摘要，减少重复动态提示词。"],
+  enable_passive_state_continuity_anchor: ["被动状态连续性锚点", "默认关闭；仅在私聊被动增量注入的状态未变化轮次，注入不超过 300 字的 Bot 当下连续性提示。"],
   enable_cycle_state: ["生理期模拟", "开启后允许周期状态轻度影响 Bot 的精力、语气和节奏；可选启用连续六阶段模拟。"],
   enable_skill_growth_simulation: ["技能成长", "能力状态与边界；自定义技能请到学习页的技能成长区域管理。"],
   enable_personal_goals: ["个人目标", "明确创建非创作型长期目标，并按真实完成的日程推进。"],
@@ -1358,6 +1359,7 @@ const featureGroups = [
 const embeddedFeatureParentByKey = {
   inject_passive_states: "enable_humanized_states",
   enable_passive_state_delta_injection: "inject_passive_states",
+  enable_passive_state_continuity_anchor: "enable_passive_state_delta_injection",
   enable_health_state: "enable_humanized_states",
   enable_hunger_state: "enable_humanized_states",
   enable_cycle_state: "enable_humanized_states",
@@ -1769,6 +1771,7 @@ const configLabels = {
   enable_qq_custom_presence_sync: "同步 QQ 自定义短状态",
   inject_passive_states: "被动状态注入",
   enable_passive_state_delta_injection: "被动状态增量注入",
+  enable_passive_state_continuity_anchor: "被动状态连续性锚点",
   passive_injection_position: "动态提示词注入位置",
   enable_rest_reply_simulation: "休息回复闸门",
   rest_reply_mode: "休息回复判定模式",
@@ -2195,6 +2198,7 @@ const configDescriptions = {
   enable_qq_custom_presence_sync: "默认关闭。开启后才会尝试同步“专注中/休息中”等 QQ 自定义短状态；这依赖协议端支持非标准 OneBot 扩展。为避免 NapCat 兼容问题，插件不会调用 set_custom_online_status。",
   inject_passive_states: "开启后普通聊天会参考“当前扮演状态”；关闭后状态主要影响日程和主动行为。",
   enable_passive_state_delta_injection: "开启后，同一会话只在状态首次出现、明显变化或用户问近况时注入短状态摘要；状态未变时不重复塞完整日程和生活背景。关闭后恢复每轮完整状态注入。",
+  enable_passive_state_continuity_anchor: "默认关闭。仅当被动状态注入和被动状态增量注入都开启时生效；私聊被动回复遇到状态未变化时，注入一段不超过 300 字的 Bot 当下连续性提示。开启后会增加少量动态提示词和缓存成本，不影响主动消息或群聊。",
   passive_injection_position: "选择被动状态、环境感知、TTS 本轮频控、转发/引用上下文等动态片段的注入位置。当前请求末尾会进入统一动态块并按稳定顺序排列，更利于缓存；系统提示词约束更强但更容易降低缓存命中。若同时启用长期记忆/记忆召回，推荐使用当前请求末尾，让召回内容与动态状态在尾部自然结合。",
   memory_companion_context_timeout_seconds: "插件主动、日程、QQ 空间、创作等链路读取外部长期记忆上下文的单项等待上限。超时会跳过该项，不阻塞主链；建议 0.8-1.5 秒。",
   livingmemory_tool_name: "LivingMemory 默认注册的 Agent 工具名是 recall_long_term_memory。如插件更改了工具名，可在这里同步。“我会牢牢记住你”通过桥接接口协同，通常不需要修改此项。",
@@ -2737,14 +2741,15 @@ const featureSettingGroups = {
   enable_reaction_expression_experiment: ["reaction_expression_private_enabled", "reaction_expression_proactive_enabled", "reaction_expression_group_enabled", "reaction_expression_delivery_mode", "reaction_expression_trigger_probability", "reaction_expression_cooldown_seconds", "reaction_expression_semantic_trigger_enabled", "reaction_expression_low_latency_mode", "reaction_expression_candidate_limit"],
   enable_maslow_motivation_experiment: ["enable_maslow_schedule_influence", "maslow_motivation_strength"],
   enable_personality_iteration_experiment: ["enable_personality_iteration_auto_tune"],
-  enable_humanized_states: ["enable_daily_plan", "daily_plan_time", "daily_plan_item_count", "include_schedule_in_messages", "enable_detail_enhancement", "detail_enhancement_lead_minutes", "enable_daily_diary", "daily_diary_time", "daily_diary_form", "daily_diary_length", "daily_diary_creativity", "daily_diary_custom_direction", "daily_diary_generate_share_seed", "max_diary_entries", "important_date_lookahead_days", "daily_plan_prompt", "enable_daily_greetings", "greeting_idle_minutes", "allow_insomnia_night_message", "humanized_state_intensity", "enable_health_state", "enable_hunger_state", "enable_qq_presence_sync", "enable_qq_custom_presence_sync", "inject_passive_states", "enable_passive_state_delta_injection", "enable_rest_reply_simulation", "rest_reply_mode", "rest_reply_probability", "rest_reply_llm_threshold", "rest_reply_active_windows", "rest_reply_awake_grace_minutes", "enable_rest_backlog_reply", "rest_backlog_max_messages", "REST_WAKEUP_PROVIDER_ID", "enable_busy_reply_gate", "busy_reply_min_delay_seconds", "busy_reply_max_delay_seconds", "busy_reply_proactive_resume_buffer_minutes", "enable_cycle_state", ...advancedCycleSettingKeys, "enable_enhanced_dreams", "dream_afterglow_mode", "enable_mixed_dream_themes", "enable_intimate_dream_theme", "dream_theme_candidates"],
+  enable_humanized_states: ["enable_daily_plan", "daily_plan_time", "daily_plan_item_count", "include_schedule_in_messages", "enable_detail_enhancement", "detail_enhancement_lead_minutes", "enable_daily_diary", "daily_diary_time", "daily_diary_form", "daily_diary_length", "daily_diary_creativity", "daily_diary_custom_direction", "daily_diary_generate_share_seed", "max_diary_entries", "important_date_lookahead_days", "daily_plan_prompt", "enable_daily_greetings", "greeting_idle_minutes", "allow_insomnia_night_message", "humanized_state_intensity", "enable_health_state", "enable_hunger_state", "enable_qq_presence_sync", "enable_qq_custom_presence_sync", "inject_passive_states", "enable_passive_state_delta_injection", "enable_passive_state_continuity_anchor", "enable_rest_reply_simulation", "rest_reply_mode", "rest_reply_probability", "rest_reply_llm_threshold", "rest_reply_active_windows", "rest_reply_awake_grace_minutes", "enable_rest_backlog_reply", "rest_backlog_max_messages", "REST_WAKEUP_PROVIDER_ID", "enable_busy_reply_gate", "busy_reply_min_delay_seconds", "busy_reply_max_delay_seconds", "busy_reply_proactive_resume_buffer_minutes", "enable_cycle_state", ...advancedCycleSettingKeys, "enable_enhanced_dreams", "dream_afterglow_mode", "enable_mixed_dream_themes", "enable_intimate_dream_theme", "dream_theme_candidates"],
   enable_daily_plan: ["daily_plan_time", "daily_plan_item_count", "include_schedule_in_messages", "enable_detail_enhancement", "detail_enhancement_lead_minutes", "daily_plan_prompt"],
   enable_detail_enhancement: ["detail_enhancement_lead_minutes"],
   enable_daily_diary: ["daily_diary_time", "daily_diary_form", "daily_diary_length", "daily_diary_creativity", "daily_diary_custom_direction", "daily_diary_generate_share_seed", "max_diary_entries"],
   enable_rest_reply_simulation: ["rest_reply_mode", "rest_reply_probability", "rest_reply_llm_threshold", "rest_reply_active_windows", "rest_reply_awake_grace_minutes", "enable_rest_backlog_reply", "rest_backlog_max_messages", "REST_WAKEUP_PROVIDER_ID"],
   enable_busy_reply_gate: ["busy_reply_min_delay_seconds", "busy_reply_max_delay_seconds", "busy_reply_proactive_resume_buffer_minutes"],
   enable_segmented_proactive_reply: ["segmented_proactive_scope", "segmented_proactive_chat_scope", "segmented_proactive_threshold", "segmented_proactive_min_segment_chars", "segmented_proactive_max_segments", "segmented_proactive_send_as_forward", "segmented_proactive_split_mode", "segmented_proactive_regex", "segmented_proactive_split_words", "enable_segmented_proactive_content_cleanup", "segmented_proactive_content_cleanup_scope", "segmented_proactive_content_cleanup_rule", "segmented_proactive_content_cleanup_words", "enable_segmented_proactive_content_replacement", "segmented_proactive_content_replacements", "segmented_proactive_interval_method", "segmented_proactive_interval_min", "segmented_proactive_interval_max", "segmented_proactive_log_base"],
-  inject_passive_states: ["humanized_state_intensity", "enable_passive_state_delta_injection"],
+  inject_passive_states: ["humanized_state_intensity", "enable_passive_state_delta_injection", "enable_passive_state_continuity_anchor"],
+  enable_passive_state_delta_injection: ["enable_passive_state_continuity_anchor"],
   enable_health_state: ["humanized_state_intensity"],
   enable_hunger_state: ["humanized_state_intensity"],
   enable_cycle_state: ["humanized_state_intensity", ...advancedCycleSettingKeys],
@@ -2979,8 +2984,8 @@ const featureSettingSections = {
     },
     {
       title: "被动状态注入",
-      note: "控制普通聊天是否参考当前状态，以及是否只在变化时注入。",
-      keys: ["inject_passive_states", "enable_passive_state_delta_injection"],
+      note: "控制私聊被动回复是否参考当前状态、是否按变化增量注入，以及状态未变时是否保留紧凑锚点。",
+      keys: ["inject_passive_states", "enable_passive_state_delta_injection", "enable_passive_state_continuity_anchor"],
     },
     {
       title: "休息回复闸门",
@@ -22247,6 +22252,9 @@ function featureSettingVisibleForCurrentMode(featureKey, settingKey, settings = 
     if (settingKey === "greeting_idle_minutes" && !boolSetting("enable_daily_greetings")) return false;
     const dreamChildren = new Set(["dream_afterglow_mode", "enable_mixed_dream_themes", "enable_intimate_dream_theme", "dream_theme_candidates"]);
     if (dreamChildren.has(settingKey) && !boolSetting("enable_enhanced_dreams")) return false;
+    if (settingKey === "enable_passive_state_continuity_anchor") {
+      return boolSetting("inject_passive_states") && boolSetting("enable_passive_state_delta_injection");
+    }
     const restChildren = new Set(["rest_reply_mode", "rest_reply_probability", "rest_reply_llm_threshold", "rest_reply_active_windows", "rest_reply_awake_grace_minutes", "enable_rest_backlog_reply", "rest_backlog_max_messages", "REST_WAKEUP_PROVIDER_ID"]);
     const busyChildren = new Set(["busy_reply_min_delay_seconds", "busy_reply_max_delay_seconds", "busy_reply_proactive_resume_buffer_minutes"]);
     const advancedCycleChildren = new Set(advancedCycleSettingKeys.filter((key) => key !== "enable_advanced_cycle_strategy"));
@@ -22972,6 +22980,12 @@ const featureDetailGuides = {
     trigger: "私聊被动回复准备提示词时。",
     enabled: "首次、状态明显变化或用户问近况时注入短状态摘要；状态未变时不重复塞日程和生活背景，更利于缓存命中。",
     disabled: "恢复旧逻辑：每轮按轻量/完整模式注入当前状态和相关生活背景。",
+  },
+  enable_passive_state_continuity_anchor: {
+    summary: "在增量状态未变化时，为私聊被动回复保留一段紧凑的 Bot 当下连续性素材。",
+    trigger: "仅当被动状态注入、被动状态增量注入和本开关都开启，且私聊被动轮次状态未变化时。",
+    enabled: "注入稳定且不超过 300 字的当前时段、精力/情绪、当前场景或粗粒度位置提示，供模型在自然时最多分享一处 Bot 自身细节；会增加少量动态提示词和缓存成本。",
+    disabled: "状态未变化时继续不注入 Bot 状态素材，保持现有缓存开销；主动消息和群聊始终不受影响。",
   },
   passive_injection_position: {
     summary: "选择动态提示词注入到当前请求末尾还是系统提示词。",
@@ -24294,6 +24308,8 @@ function bindFeatureDetailActions() {
               "enable_daily_diary",
               "enable_daily_greetings",
               "enable_enhanced_dreams",
+              "inject_passive_states",
+              "enable_passive_state_delta_injection",
               "enable_cycle_state",
               "enable_advanced_cycle_strategy",
               "advanced_cycle_link_intensity",

@@ -4,7 +4,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from astrbot_plugin_private_companion.main import PrivateCompanionPlugin
 from astrbot_plugin_private_companion.prompt_surface import PromptSurface
@@ -231,7 +231,7 @@ class CycleReplyContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(period_fingerprint["body_cycle_phase"], "menstrual")
         self.assertIn("周期状态：Bot 当前处于月经期阶段", snapshot)
 
-    def test_private_period_boundary_survives_unchanged_delta_second_turn(self) -> None:
+    def test_private_period_boundary_survives_unchanged_delta_and_anchor(self) -> None:
         plugin = _state_harness()
         plugin._passive_state_session_cache = {}
         state = _period_state()
@@ -255,13 +255,277 @@ class CycleReplyContextTests(unittest.IsolatedAsyncioTestCase):
         plugin._add_private_active_period_boundary_to_surface(first_surface, state)
         plugin._add_private_active_period_boundary_to_surface(second_surface, state)
 
+        plugin.enable_passive_state_continuity_anchor = True
+        anchored_update = plugin._private_passive_state_update_for_prompt(
+            session="default:FriendMessage:10001",
+            state=state,
+            current_user={},
+            inbound_text="我接着说",
+            lightweight=True,
+        )
+        anchored_surface = PromptSurface()
+        plugin._add_private_active_period_boundary_to_surface(anchored_surface, state)
+
         self.assertTrue(first_update[0])
-        self.assertEqual(second_update[0], "")
+        self.assertEqual(second_update, ("", False, "unchanged_light"))
         self.assertIn("明确地拒绝或推迟", first_surface.render())
         self.assertIn("明确地拒绝或推迟", second_surface.render())
         second_fragment = second_surface.rendered_fragments()[0]
         self.assertEqual(second_fragment["key"], "state.period_boundary")
         self.assertEqual(second_fragment["priority"], 89)
+        self.assertEqual(anchored_update[1:], (False, "continuity_anchor"))
+        self.assertIn("【Bot 当下连续性】", anchored_update[0])
+        self.assertIn("明确地拒绝或推迟", anchored_surface.render())
+
+    def test_unchanged_private_state_gets_bounded_continuity_anchor_when_opted_in(
+        self,
+    ) -> None:
+        plugin = _state_harness()
+        plugin.enable_passive_state_continuity_anchor = True
+        plugin._passive_state_session_cache = {}
+        plugin._get_current_plan_item = lambda _plan: {
+            "activity": "在卧室书桌整理手边的笔记，稍后去超市准备明天的采购",
+            "message_seed": "明天再把完整生活计划告诉用户",
+        }
+        plugin._current_detail_segment_for_update = lambda: {
+            "key": "future-detail",
+            "summary": "稍后去教室参加完整课程安排",
+        }
+        state = {"energy": 42, "mood_bias": "疲惫", "weather": "暴雨"}
+
+        first_update = plugin._private_passive_state_update_for_prompt(
+            session="default:FriendMessage:10001",
+            state=state,
+            current_user={},
+            inbound_text="晚上好",
+            lightweight=True,
+        )
+        anchor, state_changed, reason = plugin._private_passive_state_update_for_prompt(
+            session="default:FriendMessage:10001",
+            state=state,
+            current_user={},
+            inbound_text="我今天有点累",
+            lightweight=True,
+        )
+
+        self.assertEqual(first_update[2], "changed")
+        self.assertTrue(anchor)
+        self.assertFalse(state_changed)
+        self.assertEqual(reason, "continuity_anchor")
+        self.assertLessEqual(len(anchor), 300)
+        self.assertIn("Bot 的拟人化模拟状态", anchor)
+        self.assertIn("优先回应用户当前消息", anchor)
+        self.assertIn("整次回复最多提出一个问题，也可以不提问", anchor)
+        self.assertIn("晚上", anchor)
+        self.assertIn("40-49/100", anchor)
+        self.assertIn("疲惫", anchor)
+        self.assertIn("整理手边的笔记", anchor)
+        self.assertIn("家里", anchor)
+        for excluded in ("稍后", "明天", "课程安排", "暴雨"):
+            self.assertNotIn(excluded, anchor)
+
+    def test_continuity_anchor_redacts_precise_places_and_later_actions(self) -> None:
+        plugin = _state_harness()
+        state = {"energy": 42, "mood_bias": "平稳"}
+        cases = (
+            (
+                "先在三里屯太古里整理笔记，再去国贸商场买菜",
+                ("三里屯", "太古里", "国贸", "商场", "买菜"),
+            ),
+            ("整理笔记，过会儿去望京写字楼", ("过会儿", "望京", "写字楼")),
+            ("收拾完后前往学校", ("前往学校",)),
+        )
+
+        for scene, excluded_values in cases:
+            with self.subTest(scene=scene):
+                plugin._get_current_plan_item = lambda _plan, value=scene: {
+                    "activity": value,
+                }
+                anchor = plugin._format_private_passive_state_continuity_anchor(
+                    state,
+                    {},
+                )
+
+                self.assertLessEqual(len(anchor), 300)
+                for excluded in excluded_values:
+                    self.assertNotIn(excluded, anchor)
+
+    def test_direct_and_changed_private_states_keep_detailed_snapshots(self) -> None:
+        plugin = _state_harness()
+        plugin.enable_passive_state_continuity_anchor = True
+        plugin._passive_state_session_cache = {}
+        state = {"energy": 62, "mood_bias": "平稳"}
+
+        first_update = plugin._private_passive_state_update_for_prompt(
+            session="default:FriendMessage:10001",
+            state=state,
+            current_user={},
+            inbound_text="晚上好",
+            lightweight=True,
+        )
+        direct_update = plugin._private_passive_state_update_for_prompt(
+            session="default:FriendMessage:10001",
+            state=state,
+            current_user={},
+            inbound_text="你现在状态怎么样",
+            lightweight=True,
+        )
+        changed_update = plugin._private_passive_state_update_for_prompt(
+            session="default:FriendMessage:10001",
+            state={**state, "mood_bias": "轻松"},
+            current_user={},
+            inbound_text="接着刚才的话说",
+            lightweight=True,
+        )
+
+        self.assertEqual(first_update[2], "changed")
+        self.assertEqual(direct_update[1:], (False, "direct"))
+        self.assertIn("【Bot 自身模拟状态更新】", direct_update[0])
+        self.assertNotIn("【Bot 当下连续性】", direct_update[0])
+        self.assertEqual(changed_update[1:], (True, "changed"))
+        self.assertIn("【Bot 自身模拟状态更新】", changed_update[0])
+        self.assertNotIn("【Bot 当下连续性】", changed_update[0])
+
+    def test_continuity_anchor_omits_missing_optional_state_fields(self) -> None:
+        plugin = _state_harness()
+        plugin.enable_passive_state_continuity_anchor = True
+        plugin._passive_state_session_cache = {}
+        plugin._get_current_plan_item = lambda _plan: None
+
+        plugin._private_passive_state_update_for_prompt(
+            session="default:FriendMessage:10001",
+            state={},
+            current_user={},
+            inbound_text="晚上好",
+            lightweight=True,
+        )
+        anchor, state_changed, reason = plugin._private_passive_state_update_for_prompt(
+            session="default:FriendMessage:10001",
+            state={},
+            current_user={},
+            inbound_text="我接着说",
+            lightweight=True,
+        )
+
+        self.assertTrue(anchor)
+        self.assertFalse(state_changed)
+        self.assertEqual(reason, "continuity_anchor")
+        self.assertLessEqual(len(anchor), 300)
+        self.assertIn("时段=晚上", anchor)
+        for omitted in ("精力=", "情绪底色=", "当前活动=", "粗略位置="):
+            self.assertNotIn(omitted, anchor)
+
+    def test_continuity_anchor_omits_user_facts_and_future_plan_activity(
+        self,
+    ) -> None:
+        plugin = _state_harness()
+        plugin.enable_passive_state_continuity_anchor = True
+        plugin._passive_state_session_cache = {}
+        plugin._get_current_plan_item = lambda _plan: {
+            "activity": "在卧室给用户整理明天的行程计划",
+        }
+        state = {"energy": 42, "mood_bias": "疲惫"}
+
+        plugin._private_passive_state_update_for_prompt(
+            session="default:FriendMessage:10001",
+            state=state,
+            current_user={},
+            inbound_text="晚上好",
+            lightweight=True,
+        )
+        anchor, state_changed, reason = plugin._private_passive_state_update_for_prompt(
+            session="default:FriendMessage:10001",
+            state=state,
+            current_user={},
+            inbound_text="我接着说",
+            lightweight=True,
+        )
+
+        self.assertFalse(state_changed)
+        self.assertEqual(reason, "continuity_anchor")
+        self.assertNotIn("当前活动=", anchor)
+        self.assertNotIn("粗略位置=", anchor)
+        self.assertNotIn("整理明天的行程计划", anchor)
+
+    async def test_disabled_delta_injection_keeps_legacy_state_path(self) -> None:
+        plugin = _state_harness()
+        plugin.enabled = True
+        plugin.enable_passive_state_delta_injection = False
+        plugin.enable_passive_state_continuity_anchor = True
+        plugin.default_nickname = "你"
+        plugin.data = {
+            "daily_plan": {},
+            "users": {"10001": {"user_id": "10001", "enabled": True}},
+        }
+        plugin._record_photo_reference_feedback_from_event = lambda _event: None
+        plugin._stop_group_llm_reply_if_blocked = lambda *_args, **_kwargs: False
+        plugin._sanitize_request_context_new_conversation_boundary = (
+            lambda *_args, **_kwargs: None
+        )
+        plugin._repair_incomplete_tool_context_groups = lambda *_args, **_kwargs: None
+        plugin._sanitize_private_companion_prompt_artifacts_in_request = (
+            lambda *_args, **_kwargs: None
+        )
+        plugin._append_deepseek_tool_protocol_guard = lambda *_args, **_kwargs: None
+        plugin._remember_external_llm_request_for_token_stats = (
+            lambda *_args, **_kwargs: None
+        )
+        plugin._proactive_only_limited_passive_event = lambda *_args, **_kwargs: False
+        plugin._proactive_only_blocks_passive_event = lambda *_args, **_kwargs: False
+        plugin._canonical_private_user_id = lambda user_id: user_id
+        plugin._is_target_private_user = lambda *_args, **_kwargs: True
+        plugin._should_reply_during_rest = AsyncMock(return_value=(True, "disabled"))
+        plugin._apply_busy_reply_gate_delay = AsyncMock(return_value=(0.0, "disabled"))
+        plugin._trim_passive_request_context_if_needed = lambda *_args, **_kwargs: None
+        plugin._enrich_request_context_image_placeholders = AsyncMock()
+        plugin.apply_tts_enhancement_request = AsyncMock()
+        plugin._append_forward_message_context_to_request = AsyncMock()
+        plugin._append_non_target_private_identity_guard_to_request = AsyncMock()
+        plugin._append_daily_review_guidance_to_request = AsyncMock()
+        plugin._feature_enabled_or_temp_unlocked = (
+            lambda feature, _default=False: feature == "inject_passive_states"
+        )
+        plugin._ensure_daily_state = AsyncMock(
+            return_value={"energy": 42, "mood_bias": "疲惫"}
+        )
+        plugin._append_private_active_period_boundary_to_request = AsyncMock()
+        plugin._is_lightweight_private_passive_inbound = lambda _text: True
+        plugin._memo_management_instruction_matches = lambda _text: []
+        plugin._bookshelf_secret_signal_info = lambda _text: {}
+        plugin._format_reply_style_prompt = lambda: ""
+        plugin._format_dialogue_outfit_continuity_for_prompt = lambda _user: ""
+        plugin._format_private_routine_check_boundary = lambda _text: ""
+        plugin._record_recent_private_fact_correction = lambda *_args, **_kwargs: False
+        plugin._format_private_fact_attribution_guard = lambda *_args, **_kwargs: ""
+        plugin._private_passive_state_update_for_prompt = Mock(
+            side_effect=AssertionError("delta state update must stay disabled")
+        )
+        plugin._prepared_lightweight_state_injection = Mock(return_value="legacy lightweight state")
+        plugin._sanitize_schedule_context_for_private_user = lambda value, _user: value
+
+        class _StopAfterStateBranch(Exception):
+            pass
+
+        plugin._format_private_identity_anchor_for_prompt = Mock(side_effect=_StopAfterStateBranch)
+        event = SimpleNamespace(
+            unified_msg_origin="default:FriendMessage:10001",
+            message_str="嗯",
+            private_companion_skip_passive_input_status=True,
+            get_sender_id=lambda: "10001",
+            is_private_chat=lambda: True,
+        )
+        request = SimpleNamespace(
+            system_prompt="私聊人格",
+            prompt="嗯",
+            contexts=[],
+            extra_user_content_parts=[],
+        )
+
+        with self.assertRaises(_StopAfterStateBranch):
+            await plugin.inject_humanized_state(event, request)
+
+        plugin._private_passive_state_update_for_prompt.assert_not_called()
+        plugin._prepared_lightweight_state_injection.assert_called_once()
 
 
 if __name__ == "__main__":

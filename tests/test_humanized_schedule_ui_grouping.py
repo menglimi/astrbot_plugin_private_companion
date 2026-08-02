@@ -40,6 +40,36 @@ class HumanizedScheduleUiGroupingTests(unittest.TestCase):
         for key in ("enable_daily_plan", "enable_detail_enhancement", "enable_daily_diary", "enable_daily_greetings", "enable_enhanced_dreams"):
             self.assertIn(f'"{key}",', self.script)
 
+    def test_passive_continuity_anchor_is_grouped_after_delta_and_has_dual_visibility(
+        self,
+    ) -> None:
+        self.assertIn(
+            'enable_passive_state_continuity_anchor: ["被动状态连续性锚点"',
+            self.script,
+        )
+        self.assertIn(
+            'enable_passive_state_continuity_anchor: "enable_passive_state_delta_injection"',
+            self.script,
+        )
+        self.assertIn(
+            'enable_passive_state_delta_injection: ["enable_passive_state_continuity_anchor"]',
+            self.script,
+        )
+        self.assertIn(
+            'settingKey === "enable_passive_state_continuity_anchor"',
+            self.script,
+        )
+        self.assertIn(
+            'return boolSetting("inject_passive_states") && boolSetting("enable_passive_state_delta_injection");',
+            self.script,
+        )
+        self.assertIn('title: "被动状态注入"', self.script)
+        self.assertIn(
+            'keys: ["inject_passive_states", "enable_passive_state_delta_injection", "enable_passive_state_continuity_anchor"]',
+            self.script,
+        )
+        self.assertIn("enable_passive_state_continuity_anchor: {", self.script)
+
     def test_advanced_cycle_settings_are_grouped_and_conditionally_visible(self) -> None:
         for title in ("周期策略", "月经期", "卵泡期早", "排卵前期", "排卵期", "黄体期早", "PMS 期"):
             self.assertIn(f'title: "{title}"', self.script)

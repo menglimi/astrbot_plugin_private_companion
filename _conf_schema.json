@@ -2905,6 +2905,12 @@
     "default": true,
     "invisible": true
   },
+  "enable_passive_state_continuity_anchor": {
+    "description": "Legacy flat config: 私聊被动状态连续性锚点",
+    "type": "bool",
+    "default": false,
+    "invisible": true
+  },
   "passive_injection_position": {
     "description": "Legacy flat config: 动态提示词注入位置",
     "type": "string",
@@ -8819,6 +8825,16 @@
         "default": true,
         "condition": {
           "inject_passive_states": true
+        }
+      },
+      "enable_passive_state_continuity_anchor": {
+        "description": "私聊被动状态连续性锚点",
+        "type": "bool",
+        "hint": "这是可选功能，默认关闭，仅在被动状态注入与增量状态注入均开启时生效。开启后，只在私聊被动回复且状态未变化时注入一段不超过 300 字的 Bot 当下连续性提示，不影响主动消息；会增加少量动态提示词，并可能降低缓存复用率、增加缓存开销。",
+        "default": false,
+        "condition": {
+          "inject_passive_states": true,
+          "enable_passive_state_delta_injection": true
         }
       },
       "passive_injection_position": {
