@@ -22,6 +22,7 @@ __all__ = [
     "ReferenceIntent",
     "analyze_indexed_reference_roles",
     "analyze_reference_intent",
+    "explicitly_excludes_reference_outfit",
 ]
 
 
@@ -36,6 +37,76 @@ class ReferenceIntent:
 
 def _text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip().lower()
+
+
+_REFERENCED_IMAGE_PATTERN = (
+    r"(?:(?:(?:这|那)(?:张|个)?|该)?(?:图片|图)(?:中|里|里的|的)?)"
+)
+_ROLE_SPECIFIC_REFERENCE_NEGATIVES = (
+    (
+        "identity",
+        rf"(?:不要|别|不再|无需|无须|不用)(?:再)?参考{_REFERENCED_IMAGE_PATTERN}(?:人物|人脸|脸|身份|发型)",
+    ),
+    (
+        "outfit",
+        rf"(?:不要|别|不再|无需|无须|不用)(?:再)?参考{_REFERENCED_IMAGE_PATTERN}(?:衣服|服装|穿搭|衣着|造型)",
+    ),
+    (
+        "pose",
+        rf"(?:不要|别|不再|无需|无须|不用)(?:再)?参考{_REFERENCED_IMAGE_PATTERN}(?:姿势|动作|姿态)",
+    ),
+    (
+        "scene",
+        rf"(?:不要|别|不再|无需|无须|不用)(?:再)?参考{_REFERENCED_IMAGE_PATTERN}(?:场景|背景|地点|环境)",
+    ),
+    (
+        "style",
+        rf"(?:不要|别|不再|无需|无须|不用)(?:再)?参考{_REFERENCED_IMAGE_PATTERN}(?:画风|风格|美术风格)",
+    ),
+)
+_NEGATIVE_ROLE_PATTERNS = (
+    (
+        "identity",
+        r"(?:不要|别|不再|无需|无须)(?:再)?(?:用|使用|参考|照着|沿用|保持)?(?:这个|这张|图中)?(?:人物|人脸|脸|身份|发型)",
+    ),
+    (
+        "outfit",
+        r"(?:不要|别|不再|无需|无须)(?:再)?(?:用|参考|照着|沿用|保持)?(?:这个|这张|这套|图中)?(?:衣服|服装|穿搭|衣着|造型)",
+    ),
+    (
+        "pose",
+        r"(?:不要|别|不再|无需|无须)(?:再)?(?:用|参考|照着|沿用|保持)?(?:这个|这张|图中)?(?:姿势|动作|姿态)",
+    ),
+    (
+        "scene",
+        r"(?:不要|别|不再|无需|无须)(?:再)?(?:用|参考|照着|沿用|保持)?(?:这个|这张|图中)?(?:场景|背景|地点|环境)",
+    ),
+    (
+        "style",
+        r"(?:不要|别|不再|无需|无须)(?:再)?(?:用|参考|照着|沿用|保持)?(?:这个|这张|图中)?(?:画风|风格|美术风格)",
+    ),
+)
+
+
+def explicitly_excludes_reference_outfit(request_text: Any) -> bool:
+    text = _text(request_text)
+    outfit_patterns = (
+        pattern
+        for role, pattern in (
+            *_ROLE_SPECIFIC_REFERENCE_NEGATIVES,
+            *_NEGATIVE_ROLE_PATTERNS,
+        )
+        if role == "outfit"
+    )
+    if any(re.search(pattern, text) for pattern in outfit_patterns):
+        return True
+    return bool(
+        re.search(
+            r"explicit wardrobe exclusions?\s*:\s*[^\n]*(?:参考|沿用|照着)[^\n]*(?:图片|图)[^\n]*(?:衣服|服装|穿搭|衣着|造型)",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def analyze_indexed_reference_roles(
@@ -208,26 +279,11 @@ def analyze_reference_intent(
     for indexed_roles in analyze_indexed_reference_roles(text, image_count=16):
         requested.extend(role for role in indexed_roles if role not in requested)
 
-    referenced_image = r"(?:(?:(?:这|那)(?:张|个)?|该)?(?:图片|图)(?:中|里|里的|的)?)"
-    role_specific_reference_negatives = (
-        ("identity", rf"(?:不要|别|不再|无需|无须|不用)(?:再)?参考{referenced_image}(?:人物|人脸|脸|身份|发型)"),
-        ("outfit", rf"(?:不要|别|不再|无需|无须|不用)(?:再)?参考{referenced_image}(?:衣服|服装|穿搭|衣着|造型)"),
-        ("pose", rf"(?:不要|别|不再|无需|无须|不用)(?:再)?参考{referenced_image}(?:姿势|动作|姿态)"),
-        ("scene", rf"(?:不要|别|不再|无需|无须|不用)(?:再)?参考{referenced_image}(?:场景|背景|地点|环境)"),
-        ("style", rf"(?:不要|别|不再|无需|无须|不用)(?:再)?参考{referenced_image}(?:画风|风格|美术风格)"),
-    )
-    for role, pattern in role_specific_reference_negatives:
+    for role, pattern in _ROLE_SPECIFIC_REFERENCE_NEGATIVES:
         if re.search(pattern, text):
             excluded.append(role)
 
-    negative_role_patterns = (
-        ("identity", r"(?:不要|别|不再|无需|无须)(?:再)?(?:用|使用|参考|照着|沿用|保持)?(?:这个|这张|图中)?(?:人物|人脸|脸|身份|发型)"),
-        ("outfit", r"(?:不要|别|不再|无需|无须)(?:再)?(?:用|参考|照着|沿用|保持)?(?:这个|这张|这套|图中)?(?:衣服|服装|穿搭|衣着|造型)"),
-        ("pose", r"(?:不要|别|不再|无需|无须)(?:再)?(?:用|参考|照着|沿用|保持)?(?:这个|这张|图中)?(?:姿势|动作|姿态)"),
-        ("scene", r"(?:不要|别|不再|无需|无须)(?:再)?(?:用|参考|照着|沿用|保持)?(?:这个|这张|图中)?(?:场景|背景|地点|环境)"),
-        ("style", r"(?:不要|别|不再|无需|无须)(?:再)?(?:用|参考|照着|沿用|保持)?(?:这个|这张|图中)?(?:画风|风格|美术风格)"),
-    )
-    for role, pattern in negative_role_patterns:
+    for role, pattern in _NEGATIVE_ROLE_PATTERNS:
         if re.search(pattern, text):
             excluded.append(role)
 

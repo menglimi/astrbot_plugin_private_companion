@@ -160,6 +160,7 @@ from .photo_reference_intent import (
     ReferenceIntent,
     analyze_indexed_reference_roles,
     analyze_reference_intent,
+    explicitly_excludes_reference_outfit,
 )
 from .photo_reference_plan import (
     PhotoReferencePlan,
@@ -10340,6 +10341,9 @@ Output:
         )
         workflow_default_scene_preset = _single_line(workflow_default_scene_preset, 80)
         wardrobe_intent = analyze_photo_wardrobe(request_text)
+        user_requested_outfit_category = (
+            str(wardrobe_intent.target_category or "").strip().lower()
+        )
         reference_intent = await self._analyze_photo_reference_intent_async(
             request_text,
             has_explicit_reference=bool(explicit_reference_paths),
@@ -10434,6 +10438,7 @@ Output:
             explicit_reference_paths=explicit_reference_paths,
             require_existing_paths=True,
             trace_id=trace_id,
+            requested_outfit_category=user_requested_outfit_category,
         )
         self._append_photo_generation_trace_event(
             trace_id,
@@ -10637,7 +10642,10 @@ Output:
             PhotoPromptSection(
                 name="global_fixed_prompt",
                 source="fixed_prompt",
-                positive=f"Additional fixed prompt: {fixed_prompt}" if fixed_prompt else "",
+                positive=f"Additional fixed prompt: {fixed_prompt}"
+                if fixed_prompt
+                else "",
+                protected=True,
             ),
             PhotoPromptSection(
                 name="edit_contract",
@@ -12365,6 +12373,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         *,
         reference_intent: ReferenceIntent,
         wardrobe_intent: PhotoWardrobeIntent | None = None,
+        requested_outfit_category: str | None = None,
         allow_daily_outfit: bool = True,
         request_text: str = "",
         ambient_context: str = "",
@@ -12468,6 +12477,15 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
                 reference_intent.confidence,
                 reference_intent.source,
             )
+        if requested_outfit_category is None:
+            requested_outfit_category = (
+                str(getattr(wardrobe_intent, "target_category", "") or "")
+                .strip()
+                .lower()
+            )
+        else:
+            requested_outfit_category = str(requested_outfit_category).strip().lower()
+        reference_outfit_excluded = explicitly_excludes_reference_outfit(request_text)
         if reference_intent.source == "workflow_default" and candidates and not paths:
             requested_roles = set(reference_intent.requested_roles)
             for candidate in candidates:
@@ -12475,10 +12493,21 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
                     str(role or "").strip().lower()
                     for role in (candidate.get("reference_roles") or ())
                 }
+                candidate_category = (
+                    str(candidate.get("outfit_category") or "").strip().lower()
+                )
                 if (
                     bool(candidate.get("outfit_lock_default"))
                     and "outfit" in candidate_roles
                     and "outfit" not in reference_intent.excluded_roles
+                    and not reference_outfit_excluded
+                    and (
+                        not requested_outfit_category
+                        or (
+                            requested_outfit_category != "custom_outfit"
+                            and candidate_category == requested_outfit_category
+                        )
+                    )
                 ):
                     requested_roles.add("outfit")
             if requested_roles != set(reference_intent.requested_roles):
@@ -12489,6 +12518,64 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
                     reference_intent.confidence,
                     reference_intent.source,
                 )
+        matching_outfit_candidates: list[tuple[dict[str, Any], bool]] = []
+        for candidate in candidates:
+            candidate_roles = {
+                str(role or "").strip().lower()
+                for role in (candidate.get("reference_roles") or ())
+            }
+            uses_available_outfit_role = (
+                "outfit" not in candidate_roles
+                and candidate.get("kind") == "explicit"
+                and not has_indexed_roles
+                and reference_intent.continuity_mode != "edit"
+                and "outfit"
+                in {
+                    str(role or "").strip().lower()
+                    for role in (candidate.get("available_reference_roles") or ())
+                }
+            )
+            declared_roles = candidate_roles | (
+                {"outfit"} if uses_available_outfit_role else set()
+            )
+            if (
+                "outfit" in declared_roles
+                and str(candidate.get("outfit_category") or "").strip().lower()
+                == requested_outfit_category
+            ):
+                matching_outfit_candidates.append(
+                    (candidate, uses_available_outfit_role)
+                )
+        matching_outfit_reference = bool(matching_outfit_candidates)
+        if (
+            requested_outfit_category
+            and requested_outfit_category != "custom_outfit"
+            and matching_outfit_reference
+            and not reference_outfit_excluded
+        ):
+            for candidate, uses_available_outfit_role in matching_outfit_candidates:
+                if uses_available_outfit_role:
+                    candidate_roles = {
+                        str(role or "").strip().lower()
+                        for role in (candidate.get("reference_roles") or ())
+                    }
+                    candidate_roles.add("outfit")
+                    candidate["reference_roles"] = [
+                        role for role in REFERENCE_ROLES if role in candidate_roles
+                    ]
+            requested_roles = set(plan_intent.requested_roles)
+            excluded_roles = set(plan_intent.excluded_roles)
+            requested_roles.add("outfit")
+            excluded_roles.discard("outfit")
+            plan_intent = replace(
+                plan_intent,
+                requested_roles=tuple(
+                    role for role in REFERENCE_ROLES if role in requested_roles
+                ),
+                excluded_roles=tuple(
+                    role for role in REFERENCE_ROLES if role in excluded_roles
+                ),
+            )
         plan = build_photo_reference_plan(plan_intent, candidates)
         if (
             not plan.bindings
