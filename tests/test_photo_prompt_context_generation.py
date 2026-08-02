@@ -115,7 +115,7 @@ class _PhotoGenerationHarness(ProactiveMessageMixin):
         self.data: dict = {}
         self.photo_generation_backend = "comfyui"
         self.photo_generation_prompt_format = "traditional"
-        self.photo_generation_fixed_prompt = "pajamas; fine film grain"
+        self.photo_generation_fixed_prompt = "fine film grain"
         self.photo_generation_scene_presets = ""
         self.comfyui_selfie_workflow_name = "selfie-workflow"
         self.comfyui_text2img_workflow_name = ""
@@ -336,7 +336,66 @@ class PhotoPromptContextGenerationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(events[-1]["context"]["backend"], "ComfyUI")
             self.assertEqual(events[-1]["data"]["image_path"], str(output))
 
-    async def test_backend_receives_physically_sanitized_context_and_reference(self) -> None:
+    async def test_matching_outfit_reference_reaches_debug_trace_responsibility(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "sleepwear.png"
+            output = root / "generated.png"
+            reference.write_bytes(b"reference")
+            output.write_bytes(b"generated")
+            harness = _PhotoGenerationHarness(str(output))
+            harness.enable_photo_reference_image = True
+            candidate = {
+                "id": "sleepwear-reference",
+                "kind": "library",
+                "path": str(reference),
+                "source": str(reference),
+                "reference_roles": ["identity", "outfit"],
+                "outfit_category": "sleepwear",
+                "outfit_lock_default": True,
+            }
+
+            async def candidates(*, allow_daily_outfit: bool = True):
+                return [dict(candidate)]
+
+            harness._photo_reference_candidates_async = candidates
+            await harness._generate_photo_image(
+                workflow_kind="selfie",
+                prompt_text="换上睡衣",
+                session_key="matching-outfit-debug-trace",
+            )
+
+            events = [
+                json.loads(line)
+                for line in (root / "photo_generation_trace.txt")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ]
+
+        expected = (
+            "Reference responsibility: effective roles=identity, outfit; "
+            "outfit category=sleepwear."
+        )
+        intent_event = next(
+            event for event in events if event["stage"] == "reference_intent_analyzed"
+        )
+        plan_event = next(
+            event for event in events if event["stage"] == "reference_plan_built"
+        )
+        prompt_event = next(
+            event for event in events if event["stage"] == "prompt_composed"
+        )
+        self.assertEqual(intent_event["data"]["excluded_roles"], ["outfit"])
+        self.assertEqual(
+            plan_event["data"]["bindings"][0]["roles"], ["identity", "outfit"]
+        )
+        self.assertIn(expected, prompt_event["data"]["prompt"])
+
+    async def test_backend_receives_physically_sanitized_context_and_reference(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             reference = root / "sleepwear-selfie.png"
@@ -447,6 +506,50 @@ class PhotoPromptContextGenerationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn(composition_negative, submitted_prompt)
         self.assertNotIn("[section compacted]", submitted_prompt)
+
+    async def test_locked_sleepwear_keeps_complete_global_fixed_prompt_at_backend(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "sleepwear.png"
+            output = root / "generated.png"
+            reference.write_bytes(b"reference")
+            output.write_bytes(b"generated")
+            harness = _PhotoGenerationHarness(str(output))
+            fixed_prompt = (
+                "Preserve the established attire, complete body proportions, and exact natural lip color "
+                "without simplification or substitution."
+            )
+            harness.photo_generation_fixed_prompt = fixed_prompt
+
+            backend, image_path, _note = await harness._generate_photo_image(
+                workflow_kind="selfie",
+                prompt_text="change into sleepwear, take a selfie in the bedroom",
+                session_key="locked-sleepwear-fixed-prompt",
+                reference_image_path=str(reference),
+            )
+
+        self.assertEqual(backend, "ComfyUI")
+        self.assertEqual(image_path, str(output))
+        submitted_prompt = harness.backend_calls[0]["prompt"]
+        self.assertIn(f"Additional fixed prompt: {fixed_prompt}", submitted_prompt)
+        record = harness.data["recent_photo_generations"][0]
+        self.assertTrue(record["outfit_locked"])
+        self.assertEqual(record["wardrobe_category"], "sleepwear")
+        self.assertFalse(
+            any(
+                item.get("source") == "fixed_prompt"
+                and item.get("rule") == "unverified_wardrobe"
+                for item in record["removed_conflict_details"]
+            )
+        )
+        self.assertFalse(
+            any(
+                value.startswith("fixed_prompt:unverified_wardrobe")
+                for value in record["removed_conflicts"]
+            )
+        )
 
     def test_prompt_clip_never_returns_a_partial_word(self) -> None:
         self.assertEqual(

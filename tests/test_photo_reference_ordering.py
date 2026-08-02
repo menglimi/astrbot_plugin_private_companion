@@ -335,7 +335,227 @@ class PhotoReferenceOrderingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan.bindings[0].roles, ("identity",))
         self.assertNotIn("outfit", plan.bindings[0].roles)
 
-    async def test_explicit_daily_outfit_request_keeps_daily_outfit_over_persona(self) -> None:
+    async def test_matching_outfit_change_reference_restores_outfit_role(self) -> None:
+        sleepwear = _candidate(
+            "sleepwear-bedroom",
+            outfit_category="sleepwear",
+            scene_categories=("home", "bedroom"),
+            note="卧室睡衣",
+        )
+        harness = _SelectionHarness([sleepwear], llm_reply="1")
+        request = "换上睡衣"
+        intent = analyze_reference_intent(request, workflow_kind="selfie")
+
+        self.assertEqual(intent.requested_roles, ("identity",))
+        self.assertEqual(intent.excluded_roles, ("outfit",))
+
+        plan = await harness._select_photo_reference_plan_async(
+            "selfie",
+            reference_intent=intent,
+            wardrobe_intent=analyze_photo_wardrobe(request),
+            request_text=request,
+        )
+
+        self.assertEqual(plan.primary_reference_id, "sleepwear-bedroom")
+        self.assertEqual(plan.bindings[0].roles, ("identity", "outfit"))
+        self.assertEqual(plan.bindings[0].ignore, ("scene",))
+
+    async def test_mismatched_outfit_change_keeps_selected_reference_identity_only(
+        self,
+    ) -> None:
+        sleepwear = _candidate(
+            "sleepwear-bedroom",
+            outfit_category="sleepwear",
+            scene_categories=("home", "bedroom"),
+            note="卧室睡衣",
+        )
+        harness = _SelectionHarness([sleepwear], llm_reply="1")
+        harness._select_photo_reference_candidate_async = mock.AsyncMock(
+            return_value=dict(sleepwear)
+        )
+        request = "换上校服"
+
+        plan = await harness._select_photo_reference_plan_async(
+            "selfie",
+            reference_intent=analyze_reference_intent(
+                request,
+                workflow_kind="selfie",
+            ),
+            wardrobe_intent=analyze_photo_wardrobe(request),
+            request_text=request,
+        )
+
+        self.assertEqual(plan.primary_reference_id, "sleepwear-bedroom")
+        self.assertEqual(plan.bindings[0].roles, ("identity",))
+        self.assertIn("outfit", plan.bindings[0].ignore)
+        self.assertEqual(plan.fallback_reason, "")
+
+    async def test_explicit_reference_outfit_opt_out_wins_over_matching_category(
+        self,
+    ) -> None:
+        sleepwear = _candidate(
+            "sleepwear-bedroom",
+            outfit_category="sleepwear",
+            scene_categories=("home", "bedroom"),
+            note="卧室睡衣",
+        )
+        harness = _SelectionHarness([sleepwear], llm_reply="1")
+        request = "换上睡衣，但不要参考图里的衣服"
+        wardrobe_intent = analyze_photo_wardrobe(request)
+
+        plan = await harness._select_photo_reference_plan_async(
+            "selfie",
+            reference_intent=analyze_reference_intent(
+                request,
+                workflow_kind="selfie",
+            ),
+            wardrobe_intent=wardrobe_intent,
+            request_text=request,
+        )
+
+        self.assertEqual(wardrobe_intent.target_category, "sleepwear")
+        self.assertEqual(plan.primary_reference_id, "sleepwear-bedroom")
+        self.assertEqual(plan.bindings[0].roles, ("identity",))
+        self.assertIn("outfit", plan.bindings[0].ignore)
+
+    async def test_matching_outfit_reference_does_not_require_default_lock(
+        self,
+    ) -> None:
+        sleepwear = _candidate(
+            "sleepwear-bedroom",
+            outfit_category="sleepwear",
+            scene_categories=("home", "bedroom"),
+            note="卧室睡衣",
+        )
+        sleepwear["outfit_lock_default"] = False
+        harness = _SelectionHarness([sleepwear], llm_reply="1")
+        request = "换上睡衣"
+
+        plan = await harness._select_photo_reference_plan_async(
+            "selfie",
+            reference_intent=analyze_reference_intent(
+                request,
+                workflow_kind="selfie",
+            ),
+            wardrobe_intent=analyze_photo_wardrobe(request),
+            request_text=request,
+        )
+
+        self.assertEqual(plan.bindings[0].roles, ("identity", "outfit"))
+
+    async def test_custom_outfit_does_not_restore_reference_outfit_role(self) -> None:
+        custom = _candidate(
+            "custom-outfit",
+            outfit_category="custom_outfit",
+            scene_categories=(),
+            note="特殊定制服装",
+        )
+        harness = _SelectionHarness([custom], llm_reply="1")
+        harness._select_photo_reference_candidate_async = mock.AsyncMock(
+            return_value=dict(custom)
+        )
+        request = "换成红色吊带长裙"
+
+        plan = await harness._select_photo_reference_plan_async(
+            "selfie",
+            reference_intent=analyze_reference_intent(
+                request,
+                workflow_kind="selfie",
+            ),
+            wardrobe_intent=analyze_photo_wardrobe(request),
+            request_text=request,
+        )
+
+        self.assertEqual(plan.bindings[0].roles, ("identity",))
+        self.assertIn("outfit", plan.bindings[0].ignore)
+
+    async def test_matching_category_without_outfit_responsibility_stays_identity_only(
+        self,
+    ) -> None:
+        identity = _candidate(
+            "identity-only",
+            outfit_category="sleepwear",
+            scene_categories=(),
+            note="只用于身份",
+        )
+        identity["reference_roles"] = ["identity"]
+        harness = _SelectionHarness([identity], llm_reply="1")
+        harness._select_photo_reference_candidate_async = mock.AsyncMock(
+            return_value=dict(identity)
+        )
+        request = "换上睡衣"
+
+        plan = await harness._select_photo_reference_plan_async(
+            "selfie",
+            reference_intent=analyze_reference_intent(
+                request,
+                workflow_kind="selfie",
+            ),
+            wardrobe_intent=analyze_photo_wardrobe(request),
+            request_text=request,
+        )
+
+        self.assertEqual(plan.bindings[0].roles, ("identity",))
+        self.assertNotIn("outfit", plan.bindings[0].roles)
+
+    async def test_context_filled_outfit_category_does_not_restore_role(self) -> None:
+        sleepwear = _candidate(
+            "sleepwear-bedroom",
+            outfit_category="sleepwear",
+            scene_categories=("home", "bedroom"),
+            note="卧室睡衣",
+        )
+        sleepwear["outfit_lock_default"] = False
+        harness = _SelectionHarness([sleepwear], llm_reply="1")
+        harness._select_photo_reference_candidate_async = mock.AsyncMock(
+            return_value=dict(sleepwear)
+        )
+
+        plan = await harness._select_photo_reference_plan_async(
+            "selfie",
+            reference_intent=analyze_reference_intent(
+                "随手拍一张",
+                workflow_kind="selfie",
+            ),
+            wardrobe_intent=analyze_photo_wardrobe("换上睡衣"),
+            requested_outfit_category="",
+            request_text="随手拍一张",
+        )
+
+        self.assertEqual(plan.bindings[0].roles, ("identity",))
+        self.assertIn("outfit", plan.bindings[0].ignore)
+
+    async def test_workflow_default_does_not_lock_mismatched_outfit_category(
+        self,
+    ) -> None:
+        sleepwear = _candidate(
+            "sleepwear-bedroom",
+            outfit_category="sleepwear",
+            scene_categories=("home", "bedroom"),
+            note="卧室睡衣",
+        )
+        harness = _SelectionHarness([sleepwear], llm_reply="1")
+        harness._select_photo_reference_candidate_async = mock.AsyncMock(
+            return_value=dict(sleepwear)
+        )
+        request = "穿上校服"
+
+        plan = await harness._select_photo_reference_plan_async(
+            "selfie",
+            reference_intent=analyze_reference_intent(
+                "随手拍一张",
+                workflow_kind="selfie",
+            ),
+            wardrobe_intent=analyze_photo_wardrobe(request),
+            request_text=request,
+        )
+
+        self.assertEqual(plan.bindings[0].roles, ("identity",))
+        self.assertIn("outfit", plan.bindings[0].ignore)
+
+    async def test_explicit_daily_outfit_request_keeps_daily_outfit_over_persona(
+        self,
+    ) -> None:
         daily_outfit = _candidate(
             "daily-outfit",
             outfit_category="daily_outfit",
@@ -464,7 +684,33 @@ class PhotoReferenceOrderingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(plan.bindings), 1)
         self.assertNotEqual(plan.bindings[0].path, "C:/images/recent.png")
 
-    async def test_user_assigned_role_overrides_explicit_image_default_metadata(self) -> None:
+    async def test_explicit_matching_outfit_metadata_restores_outfit_role(self) -> None:
+        explicit = _candidate(
+            "explicit-sleepwear",
+            outfit_category="sleepwear",
+            scene_categories=("home",),
+            note="睡衣参考图",
+        )
+        harness = _SelectionHarness([explicit], llm_reply="1")
+        request = "换上睡衣"
+
+        plan = await harness._select_photo_reference_plan_async(
+            "selfie",
+            reference_intent=analyze_reference_intent(
+                request,
+                has_explicit_reference=True,
+            ),
+            wardrobe_intent=analyze_photo_wardrobe(request),
+            request_text=request,
+            explicit_reference_paths=[explicit["path"]],
+        )
+
+        self.assertEqual(plan.primary_reference_id, "explicit_reference")
+        self.assertEqual(plan.bindings[0].roles, ("identity", "outfit"))
+
+    async def test_user_assigned_role_overrides_explicit_image_default_metadata(
+        self,
+    ) -> None:
         candidate = _candidate(
             "explicit",
             outfit_category="",
