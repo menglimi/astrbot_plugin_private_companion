@@ -176,6 +176,7 @@ from .photo_reference_intent import (
     analyze_reference_intent,
     explicitly_excludes_reference_outfit,
 )
+from .photo_reference_selection import CandidateMatch, SelectionResult
 from .photo_reference_plan import (
     PhotoReferencePlan,
     ReferenceFallback,
@@ -13004,6 +13005,31 @@ Output:
             _single_line(selected.get("note"), 160) if isinstance(selected, dict) else "-",
             len(candidates),
         )
+        structured_matches = tuple(
+            CandidateMatch(
+                candidate_id=str(item.get("id") or ""),
+                score=float(score),
+                rank=index,
+                matched=tuple(),
+                excluded=(
+                    ("outfit",)
+                    if responsible_outfit_category(item) in excluded_categories
+                    else tuple()
+                ),
+                reason="formal_model_selection" if selection_source == "model" else selection_reason,
+            )
+            for index, (item, score) in enumerate(
+                sorted(scored_candidates, key=lambda pair: (-pair[1], str(pair[0].get("id") or ""))),
+                start=1,
+            )
+        )
+        structured_selection = SelectionResult(
+            selected=selected if isinstance(selected, dict) else None,
+            candidates=structured_matches,
+            selection_source=selection_source,
+            selection_reason=selection_reason,
+            fallback_id=str(fallback.get("id") or "") if isinstance(fallback, dict) else "",
+        )
         self._append_photo_generation_trace_event(
             trace_id,
             "reference_candidates",
@@ -13028,6 +13054,7 @@ Output:
                 "model_reply": model_reply,
                 "selection_source": selection_source,
                 "selection_reason": selection_reason,
+                "selection_result": structured_selection.to_dict(),
                 "schedule_history_context": _single_line(schedule_history_context, 800),
                 "schedule_history_used": bool(str(schedule_history_context or "").strip()),
             },

@@ -93,6 +93,8 @@ from .photo_reference_catalog import (
     project_reference_candidate,
     validate_and_serialize,
 )
+from .photo_reference_metadata import compile_reference_metadata
+from .photo_reference_selection import run_photo_selection_trial
 from .reference_assets import (
     REFERENCE_ASSET_MAX_BYTES,
     REFERENCE_ASSET_MAX_PER_OWNER,
@@ -460,6 +462,8 @@ class PrivateCompanionPageApi(
             ("/reaction_library/rescan", self.rescan_reaction_library, ["POST"], "Private Companion Page reaction library rescan"),
             ("/photo_reference/list", self.list_photo_references, ["GET"], "Private Companion Page photo reference list"),
             ("/photo_reference/image_data", self.get_photo_reference_image_data, ["GET"], "Private Companion Page photo reference image data"),
+            ("/photo_reference/metadata/compile", self.compile_photo_reference_metadata, ["POST"], "Compile guided photo reference metadata"),
+            ("/photo_reference/selection_trial", self.run_photo_reference_selection_trial, ["POST"], "Run side-effect-free photo reference selection trial"),
             ("/reference_asset/list", self.list_reference_assets, ["GET"], "Private Companion Page scoped visual reference assets"),
             ("/reference_asset/image_data", self.get_reference_asset_image_data, ["GET"], "Private Companion Page scoped visual reference image data"),
             ("/reference_asset/upload", self.upload_reference_asset, ["POST"], "Private Companion Page upload scoped visual reference"),
@@ -2055,6 +2059,10 @@ class PrivateCompanionPageApi(
                 "time_categories": list(entry.get("time_categories") or []),
                 "preferred_preset": self._single_line(entry.get("preferred_preset"), 60),
                 "metadata_source": self._single_line(entry.get("metadata_source"), 30),
+                "editor_intent": entry.get("editor_intent") if isinstance(entry.get("editor_intent"), dict) else None,
+                "excluded_scene_categories": list(entry.get("excluded_scene_categories") or []),
+                "excluded_time_categories": list(entry.get("excluded_time_categories") or []),
+                "selection_eligibility": self._single_line(entry.get("selection_eligibility"), 40) or "matching_only",
                 "available": available,
                 "remote": remote,
                 "filename": Path(urlparse(source).path).name if remote else (path.name if path else Path(source).name),
@@ -2180,6 +2188,51 @@ class PrivateCompanionPageApi(
             )
         except Exception as exc:
             logger.error(f"[PrivateCompanionPage] 获取参考图预览失败: {exc}", exc_info=True)
+            return self._error(str(exc))
+
+    async def compile_photo_reference_metadata(self) -> dict[str, Any]:
+        """Compile editor answers without changing persisted configuration."""
+        payload = await request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return self._error("请求体必须是对象")
+        intent = payload.get("intent") or payload.get("answers") or payload
+        presets = payload.get("available_presets") or self._photo_reference_preset_names()
+        saved = payload.get("saved")
+        try:
+            result = compile_reference_metadata(intent, presets, saved=saved)
+            return self._ok(result.to_dict())
+        except Exception as exc:
+            logger.error(f"[PrivateCompanionPage] 编译参考图元数据失败: {exc}", exc_info=True)
+            return self._error(str(exc))
+
+    async def run_photo_reference_selection_trial(self) -> dict[str, Any]:
+        """Run a bounded selection trial; never invoke the production photo tool."""
+        payload = await request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return self._error("请求体必须是对象")
+        request_text = str(payload.get("request_text") or payload.get("text") or "").strip()
+        if not request_text:
+            return self._error("必须提供真实对话用户原话 request_text")
+        candidates = payload.get("candidates")
+        if not isinstance(candidates, list):
+            candidates = [
+                item
+                for item in self._photo_reference_page_items()
+                if item.get("available")
+            ]
+        request_payload = dict(payload)
+        request_payload["request_text"] = request_text
+        runner = getattr(self.plugin, "photo_selection_trial_runner", None)
+        try:
+            report = await run_photo_selection_trial(
+                request_payload,
+                candidates=candidates,
+                tool_runner=runner if callable(runner) else None,
+                runs=max(1, min(3, _safe_int(payload.get("runs"), 1, 1))),
+            )
+            return self._ok(report.to_dict())
+        except Exception as exc:
+            logger.error(f"[PrivateCompanionPage] 参考图选图试跑失败: {exc}", exc_info=True)
             return self._error(str(exc))
 
     def _reference_asset_records(self) -> list[dict[str, Any]]:

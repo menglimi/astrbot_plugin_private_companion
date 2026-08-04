@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Collection, Iterable, Literal, cast
 
 
-CATALOG_VERSION = 1
+CATALOG_VERSION = 2
 MAX_LIBRARY_REFERENCES = 24
 PhotoReferenceKind = Literal["persona", "library", "daily_outfit"]
 
@@ -187,6 +187,10 @@ class PhotoReference:
     preferred_preset: str
     metadata_source: str
     time_categories: tuple[str, ...] = ()
+    editor_intent: dict[str, Any] | None = None
+    excluded_scene_categories: tuple[str, ...] = ()
+    excluded_time_categories: tuple[str, ...] = ()
+    selection_eligibility: str = "matching_only"
 
 
 @dataclass(frozen=True)
@@ -397,6 +401,22 @@ def _strict_reference(
         roles = (*roles, "outfit")
     scenes = _strict_scenes(item.get("scene_categories"), f"{prefix}.scene_categories", errors)
     times = _strict_times(item.get("time_categories"), f"{prefix}.time_categories", errors)
+    excluded_scenes = _strict_scenes(
+        item.get("excluded_scene_categories"),
+        f"{prefix}.excluded_scene_categories",
+        errors,
+    )
+    excluded_times = _strict_times(
+        item.get("excluded_time_categories"),
+        f"{prefix}.excluded_time_categories",
+        errors,
+    )
+    eligibility = _clean_text(item.get("selection_eligibility"), 40).lower() or "matching_only"
+    if eligibility not in {"matching_only", "fallback_allowed", "disabled"}:
+        _append_error(errors, f"{prefix}.selection_eligibility", "必须是 matching_only、fallback_allowed 或 disabled")
+        eligibility = "matching_only"
+    raw_intent = item.get("editor_intent")
+    editor_intent = dict(raw_intent) if isinstance(raw_intent, dict) else None
     preferred_preset = _clean_text(item.get("preferred_preset"), 80)
     if preferred_preset and preferred_preset not in preset_names:
         _append_error(errors, f"{prefix}.preferred_preset", f"场景预设不存在：{preferred_preset}")
@@ -415,6 +435,10 @@ def _strict_reference(
         preferred_preset=preferred_preset,
         metadata_source=metadata_source,
         time_categories=times,
+        editor_intent=editor_intent,
+        excluded_scene_categories=excluded_scenes,
+        excluded_time_categories=excluded_times,
+        selection_eligibility=eligibility,
     )
 
 
@@ -431,6 +455,10 @@ def _serialize_reference(reference: PhotoReference) -> dict[str, Any]:
         "time_categories": list(reference.time_categories),
         "preferred_preset": reference.preferred_preset,
         "metadata_source": reference.metadata_source,
+        "editor_intent": reference.editor_intent,
+        "excluded_scene_categories": list(reference.excluded_scene_categories),
+        "excluded_time_categories": list(reference.excluded_time_categories),
+        "selection_eligibility": reference.selection_eligibility,
     }
 
 
@@ -661,6 +689,10 @@ def project_reference_candidate(
         "time_categories": list(reference.time_categories),
         "preferred_preset": reference.preferred_preset,
         "metadata_source": reference.metadata_source,
+        "editor_intent": reference.editor_intent,
+        "excluded_scene_categories": list(reference.excluded_scene_categories),
+        "excluded_time_categories": list(reference.excluded_time_categories),
+        "selection_eligibility": reference.selection_eligibility,
     }
 
 
@@ -1013,7 +1045,10 @@ def load_catalog(
         version = 0
     warnings: list[str] = []
     canonical_references = _load_canonical_references(raw_catalog, presets, warnings)
-    if version >= CATALOG_VERSION:
+    # Canonical v1 entries remain read-compatible with v2.  Do not rewrite them
+    # during startup: migration is deliberately lazy and is performed by the
+    # guided editor/save path.
+    if version >= 1:
         if (
             not user_cleared
             and canonical_references == ()
