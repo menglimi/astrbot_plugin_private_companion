@@ -845,7 +845,7 @@ class LlmToolActionsMixin:
             )
             prompt_format_instruction = getattr(self, "_photo_generation_prompt_format_instruction", None)
             if callable(prompt_format_instruction):
-                format_text = re.sub(r"\s+", " ", str(prompt_format_instruction() or "")).strip()
+                format_text = str(prompt_format_instruction() or "").strip()
                 if format_text:
                     lines.append(
                         f"- `prompt` 参数必须按“提示词表达方式”书写（与主动拍照一致）：{format_text}"
