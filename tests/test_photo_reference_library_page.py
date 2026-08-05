@@ -99,7 +99,49 @@ class PhotoReferenceLibraryPageApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured["provider_id"], "webui-main-provider")
         self.assertEqual(captured["task"], "photo_reference_metadata_review")
         self.assertIs(captured["strict_provider"], True)
+        self.assertEqual(captured["timeout_key"], "LLM_PROVIDER_ID")
         self.assertNotIn("自拍", str(captured["prompt"]))
+
+    async def test_metadata_review_times_out_and_returns_local_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            plugin = _PhotoReferencePagePlugin(Path(temp_dir))
+            plugin.llm_provider_id = "webui-main-provider"
+
+            async def hanging_llm_call(*_args: object, **_kwargs: object) -> str:
+                await asyncio.sleep(3600)
+                return ""
+
+            plugin._llm_call = hanging_llm_call
+            api = PrivateCompanionPageApi(plugin)
+            payload = {
+                "questionnaire": {
+                    "version": 2,
+                    "answers": [
+                        {
+                            "id": "core_anchor",
+                            "question": "这张图最不能丢的特点是什么？",
+                            "selections": [
+                                {
+                                    "field": "core_anchor",
+                                    "value": "identity",
+                                    "label": "人物长相",
+                                }
+                            ],
+                        }
+                    ],
+                },
+            }
+
+            with patch(
+                "astrbot_plugin_private_companion.page_api.PHOTO_REFERENCE_METADATA_REVIEW_TIMEOUT_SECONDS",
+                0.01,
+            ):
+                async with self.app.test_request_context("/", method="POST", json=payload):
+                    result = await api.review_photo_reference_metadata()
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["data"]["review"]["status"], "local_fallback")
+        self.assertIn("超时", result["data"]["review"]["warning"])
 
     async def test_selection_trial_captures_native_main_model_tool_call(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

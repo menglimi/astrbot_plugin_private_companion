@@ -120,6 +120,9 @@ PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 IMAGE_CACHE_THUMBNAIL_MAX_EDGE = 160
 IMAGE_CACHE_THUMBNAIL_QUALITY = 78
 PHOTO_REFERENCE_PREVIEW_MAX_BYTES = 20 * 1024 * 1024
+# The guided editor must never leave a WebUI request waiting forever when the
+# configured main model or its upstream connection stops responding.
+PHOTO_REFERENCE_METADATA_REVIEW_TIMEOUT_SECONDS = 60.0
 # Reference assets are an independent store for member/role/knowledge images. Keep
 # the limits generous enough for a small visual knowledge base while preventing
 # an accidental page upload from exhausting the plugin data directory.
@@ -444,6 +447,24 @@ class PrivateCompanionPageApi(
             )
             return ()
         return tuple(str(name) for name in presets.keys()) if isinstance(presets, dict) else ()
+
+    def _photo_reference_metadata_review_timeout(self, provider_id: str) -> float:
+        """Resolve a bounded timeout for the guided metadata approval call."""
+        resolver = getattr(self.plugin, "_model_timeout_seconds_for_call", None)
+        if callable(resolver):
+            try:
+                configured = resolver(
+                    task="photo_reference_metadata_review",
+                    provider_id=provider_id,
+                    timeout_key="LLM_PROVIDER_ID",
+                )
+                if configured is not None:
+                    value = float(configured)
+                    if math.isfinite(value) and value >= 5.0:
+                        return min(600.0, value)
+            except Exception:
+                pass
+        return PHOTO_REFERENCE_METADATA_REVIEW_TIMEOUT_SECONDS
 
     def _create_page_background_task(self, operation: Any, *, label: str) -> asyncio.Task | None:
         creator = getattr(self.plugin, "_create_lifecycle_background_task", None)
@@ -2743,16 +2764,21 @@ class PrivateCompanionPageApi(
                 local_suggestion,
                 available_presets=presets,
             )
+            review_timeout = self._photo_reference_metadata_review_timeout(provider_id)
             try:
                 # 维护约束：这里审批的 LLM 必须是 WebUI“模型配置”中的主模型
                 # （plugin.llm_provider_id）。不要改用 _task_provider，也不要允许高峰替换或备用模型接管。
-                raw = await caller(
-                    user_prompt,
-                    max_tokens=1400,
-                    provider_id=provider_id,
-                    task="photo_reference_metadata_review",
-                    system_prompt=system_prompt,
-                    strict_provider=True,
+                raw = await asyncio.wait_for(
+                    caller(
+                        user_prompt,
+                        max_tokens=1400,
+                        provider_id=provider_id,
+                        task="photo_reference_metadata_review",
+                        system_prompt=system_prompt,
+                        timeout_key="LLM_PROVIDER_ID",
+                        strict_provider=True,
+                    ),
+                    timeout=review_timeout,
                 )
                 if raw is None:
                     raise ValueError("模型调用未返回结果")
@@ -2788,6 +2814,15 @@ class PrivateCompanionPageApi(
                         for item in raw_conflicts[:12]
                         if self._single_line(item, 240)
                     ]
+            except asyncio.TimeoutError:
+                review_warning = (
+                    f"模型审批超时（超过 {review_timeout:.0f} 秒未返回），已使用本地证据合并。"
+                )
+                logger.warning(
+                    "[PrivateCompanionPage] 参考图问答模型审批超时: provider=%s timeout=%.1fs",
+                    self._single_line(provider_id, 160),
+                    review_timeout,
+                )
             except Exception as exc:
                 review_warning = f"模型审批失败，已使用本地证据合并：{self._single_line(exc, 180)}"
                 logger.warning("[PrivateCompanionPage] 参考图问答模型审批失败: %s", exc, exc_info=True)
