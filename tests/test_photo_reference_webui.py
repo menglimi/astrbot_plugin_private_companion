@@ -275,6 +275,29 @@ class PhotoReferenceWebUiTests(unittest.TestCase):
         self.assertIn('必须是 WebUI“模型配置”中的主模型', review_endpoint)
         self.assertNotIn("._task_provider(", review_endpoint)
 
+    def test_guided_async_actions_capture_controls_before_await(self) -> None:
+        compile_start = APP_JS.index('host.querySelector("[data-photo-guided-compile]")')
+        compile_end = APP_JS.index('host.querySelector("[data-photo-guided-trial]")', compile_start)
+        compile_handler = APP_JS[compile_start:compile_end]
+        self.assertIn("const button = event.currentTarget;", compile_handler)
+        self.assertIn("setActionBusy(button, true);", compile_handler)
+        self.assertIn("setActionBusy(button, false);", compile_handler)
+        self.assertNotIn("setActionBusy(event.currentTarget, false);", compile_handler)
+
+        trial_end = APP_JS.index("updateGuidedPhotoReferenceQuestionVisibility(root);", compile_end)
+        trial_handler = APP_JS[compile_end:trial_end]
+        self.assertIn("const button = event.currentTarget;", trial_handler)
+        self.assertIn("setActionBusy(button, false);", trial_handler)
+        self.assertNotIn("setActionBusy(event.currentTarget, false);", trial_handler)
+
+        add_start = APP_JS.index('manager.querySelector("[data-photo-reference-add-form]")')
+        add_end = APP_JS.index('manager.querySelectorAll("[data-photo-reference-move]")', add_start)
+        add_handler = APP_JS[add_start:add_end]
+        self.assertIn("const submitter = event.submitter;", add_handler)
+        self.assertIn("setActionBusy(submitter, true);", add_handler)
+        self.assertIn("setActionBusy(submitter, false);", add_handler)
+        self.assertNotIn("setActionBusy(event.submitter, false);", add_handler)
+
     def test_selection_trial_uses_the_configured_main_model_without_executing_tools(self) -> None:
         trial_start = PAGE_API.index("async def _photo_reference_selection_trial_model_runner")
         trial_end = PAGE_API.index("async def review_photo_reference_metadata", trial_start)
@@ -336,7 +359,7 @@ class PhotoReferenceWebUiTests(unittest.TestCase):
         self.assertIn('app.css?v=20260804-reference-guided-dialog-v6', INDEX_HTML)
         self.assertIn('css/polish.css?v=20260804-expression-batch-review-v1', INDEX_HTML)
         self.assertIn(
-            'app.js?v=20260805-reference-guided-approval-cache-v2',
+            'app.js?v=20260805-reference-guided-approval-current-target-v3',
             INDEX_HTML,
         )
 
