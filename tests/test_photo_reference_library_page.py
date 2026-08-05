@@ -143,6 +143,56 @@ class PhotoReferenceLibraryPageApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["data"]["review"]["status"], "local_fallback")
         self.assertIn("超时", result["data"]["review"]["warning"])
 
+    async def test_metadata_review_does_not_wait_for_non_cooperative_model_cancel(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            plugin = _PhotoReferencePagePlugin(Path(temp_dir))
+            plugin.llm_provider_id = "webui-main-provider"
+            release = asyncio.Event()
+
+            async def non_cooperative_llm_call(*_args: object, **_kwargs: object) -> str:
+                try:
+                    await asyncio.sleep(3600)
+                except asyncio.CancelledError:
+                    await release.wait()
+                return ""
+
+            plugin._llm_call = non_cooperative_llm_call
+            api = PrivateCompanionPageApi(plugin)
+            payload = {
+                "questionnaire": {
+                    "version": 2,
+                    "answers": [
+                        {
+                            "id": "core_anchor",
+                            "question": "这张图最不能丢的特点是什么？",
+                            "selections": [
+                                {
+                                    "field": "core_anchor",
+                                    "value": "identity",
+                                    "label": "人物长相",
+                                }
+                            ],
+                        }
+                    ],
+                },
+            }
+
+            with patch(
+                "astrbot_plugin_private_companion.page_api.PHOTO_REFERENCE_METADATA_REVIEW_TIMEOUT_SECONDS",
+                0.01,
+            ):
+                async with self.app.test_request_context("/", method="POST", json=payload):
+                    result = await asyncio.wait_for(
+                        api.review_photo_reference_metadata(),
+                        timeout=0.2,
+                    )
+            release.set()
+            await asyncio.sleep(0)
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["data"]["review"]["status"], "local_fallback")
+        self.assertIn("超时", result["data"]["review"]["warning"])
+
     async def test_selection_trial_captures_native_main_model_tool_call(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             plugin = _PhotoReferencePagePlugin(Path(temp_dir))

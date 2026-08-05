@@ -466,6 +466,44 @@ class PrivateCompanionPageApi(
                 pass
         return PHOTO_REFERENCE_METADATA_REVIEW_TIMEOUT_SECONDS
 
+    async def _photo_reference_metadata_review_call(
+        self,
+        caller: Any,
+        user_prompt: str,
+        *,
+        system_prompt: str,
+        provider_id: str,
+        timeout: float,
+    ) -> Any:
+        """Run the approval call without waiting for a non-cooperative cancellation."""
+        task = asyncio.create_task(
+            caller(
+                user_prompt,
+                max_tokens=1400,
+                provider_id=provider_id,
+                task="photo_reference_metadata_review",
+                system_prompt=system_prompt,
+                timeout_key="LLM_PROVIDER_ID",
+                strict_provider=True,
+            )
+        )
+        done, pending = await asyncio.wait({task}, timeout=timeout)
+        if task in done:
+            return task.result()
+        task.cancel()
+        # AstrBot providers may finish cancellation asynchronously after their
+        # response has already been logged. Do not await that cleanup here.
+        def consume_late_failure(completed: asyncio.Task[Any]) -> None:
+            if completed.cancelled():
+                return
+            try:
+                completed.exception()
+            except Exception:
+                pass
+
+        task.add_done_callback(consume_late_failure)
+        raise asyncio.TimeoutError
+
     def _create_page_background_task(self, operation: Any, *, label: str) -> asyncio.Task | None:
         creator = getattr(self.plugin, "_create_lifecycle_background_task", None)
         if callable(creator):
@@ -2768,16 +2806,12 @@ class PrivateCompanionPageApi(
             try:
                 # 维护约束：这里审批的 LLM 必须是 WebUI“模型配置”中的主模型
                 # （plugin.llm_provider_id）。不要改用 _task_provider，也不要允许高峰替换或备用模型接管。
-                raw = await asyncio.wait_for(
-                    caller(
-                        user_prompt,
-                        max_tokens=1400,
-                        provider_id=provider_id,
-                        task="photo_reference_metadata_review",
-                        system_prompt=system_prompt,
-                        timeout_key="LLM_PROVIDER_ID",
-                        strict_provider=True,
-                    ),
+                # 审批任务标识：task="photo_reference_metadata_review"；固定主模型：strict_provider=True。
+                raw = await self._photo_reference_metadata_review_call(
+                    caller,
+                    user_prompt,
+                    system_prompt=system_prompt,
+                    provider_id=provider_id,
                     timeout=review_timeout,
                 )
                 if raw is None:
