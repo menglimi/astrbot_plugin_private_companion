@@ -843,6 +843,13 @@ class LlmToolActionsMixin:
                     '- 改图/重绘：传 `{"prompt":"修改要求","kind":"edit","reference_image_path":"本地图片路径或图片URL"}`；没有参考图时不要调用改图。多图职责组合可传 `reference_image_paths` 数组，并在 prompt 中说明每张图承担的脸、衣服、姿势等职责。',
                 ]
             )
+            prompt_format_instruction = getattr(self, "_photo_generation_prompt_format_instruction", None)
+            if callable(prompt_format_instruction):
+                format_text = re.sub(r"\s+", " ", str(prompt_format_instruction() or "")).strip()
+                if format_text:
+                    lines.append(
+                        f"- `prompt` 参数必须按“提示词表达方式”书写（与主动拍照一致）：{format_text}"
+                    )
         lines.extend(
             [
                 "- 默认 `send=true`；如果只想拿路径再决定，可传 `send=false`。",
