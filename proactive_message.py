@@ -8015,7 +8015,6 @@ Output:
                 "selfie",
                 allow_daily_outfit=True,
                 request_text=scene["prompt"],
-                continuity_key=continuity_key,
             )
         backend_name, image_path, workflow_note = await self._generate_photo_image(
             workflow_kind=workflow_kind,
@@ -12932,7 +12931,7 @@ Output:
         schedule_history = re.sub(r"\s+", "", str(schedule_history_context or "")).lower()
         note = re.sub(r"\s+", "", str(candidate.get("note") or "")).lower()
         kind = candidate.get("kind")
-        score = 2.0 if kind == "persona" else (0.5 if kind == "recent_sent_photo" else 1.0)
+        score = 2.0 if kind == "persona" else 1.0
         if kind == "relation_role":
             # A named role is a stronger signal than an unrelated persona or
             # library image; group intent is still a softer, contextual signal.
@@ -13104,15 +13103,6 @@ Output:
                 candidates = await self._photo_reference_candidates_async(
                     allow_daily_outfit=allow_daily_outfit,
                 )
-        recent_candidate = {} if using_candidate_overrides else self._recent_sent_photo_continuity_candidate(continuity_key)
-        if recent_candidate:
-            if all(
-                not self._photo_reference_paths_equal(item.get("path", ""), recent_candidate.get("path", ""))
-                for item in candidates
-            ):
-                candidates.insert(0, recent_candidate)
-            else:
-                recent_candidate = {}
         if not candidates:
             return empty_selection("no_candidates")
         legacy_context = str(selection_context or "").strip()
@@ -13230,8 +13220,7 @@ Output:
         normal_scored = [
             pair
             for pair in scored_candidates
-            if pair[0].get("kind") != "recent_sent_photo"
-            and not candidate_policy_exclusions.get(str(pair[0].get("id") or ""))
+            if not candidate_policy_exclusions.get(str(pair[0].get("id") or ""))
             and responsible_outfit_category(pair[0]) not in excluded_categories
             and (
                 not requested_category
@@ -13262,7 +13251,7 @@ Output:
             or any(role in {"outfit", "scene", "continuity"} for role in (item.get("reference_roles") or []))
             for item in eligible_candidates
         )
-        needs_model_choice = len(eligible_candidates) > 1 or bool(recent_candidate) or specialized_candidate
+        needs_model_choice = len(eligible_candidates) > 1 or specialized_candidate
         model_attempted = False
         model_selected_id = ""
         if (request_text or ambient_context or schedule_history_context) and needs_model_choice and callable(llm_call):
@@ -13291,7 +13280,6 @@ Output:
 若用户没有明确服装要求，但结构化场景预设给出了服装类别，且候选中存在同类别服装参考，优先选择该服装参考，不要改选基础身份图。结构化预设只用于补足空白，不得覆盖用户明确要求。
 当天已发生日程只可作为较弱的经历、服装和连续性线索，不代表当前位置或当前活动。不得用历史中的旧地点覆盖当前环境；用户原始要求和当前环境始终优先于历史日程。
 不要仅凭疲惫、揉眼睛、电脑桌等间接描述猜测地点或服装；场景不明确时保持保守，不要虚构居家或外出状态。
-候选 id=recent_sent_photo 是同一会话刚刚已发送的上一张成图。若用户是在自然续拍，主要只要求改变动作、表情、视线、拍摄角度或近似构图，应优先选择它来保持人物、服装和环境连续；若用户明确换人物、换装、换地点、换时间、换整体场景或另起主题，则选择更合适的其他参考图。只有所有候选都不适合新画面时才输出 0。
 若候选带有“角色”和“关系”，且用户在本轮明确点名该角色或关系，优先选择对应的关系角色参考图；它只代表该角色本人，不要把该身份转移给 Bot。没有明确点名角色时，不要因为关系卡文字而选择关系角色参考图。
 只输出候选编号，不要解释。
 
@@ -13368,7 +13356,7 @@ Output:
                     "[PrivateCompanion] 参考图库模型选图失败，使用规则兜底: error=%s",
                     _single_line(exc, 120),
                 )
-        elif len(candidates) == 1 and not recent_candidate and not specialized_candidate:
+        elif len(candidates) == 1 and not specialized_candidate:
             selection_source = "single_candidate"
             selection_reason = "only_one_candidate"
         elif not (request_text or ambient_context or schedule_history_context):
@@ -13630,27 +13618,17 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
             and not paths
             and "source" not in reference_intent.requested_roles
         ):
-            selected: dict[str, Any] = {}
-            if reference_intent.continuity_mode == "continuation":
-                selected = self._recent_sent_photo_continuity_candidate(continuity_key)
-            if not selected:
-                selected = await self._select_photo_reference_candidate_async(
-                    workflow_kind,
-                    allow_daily_outfit=allow_daily_outfit,
-                    requester_user_id=requester_user_id,
-                    request_text=request_text,
-                    ambient_context=ambient_context,
-                    schedule_history_context=schedule_history_context,
-                    suggested_scene_preset=suggested_scene_preset,
-                    continuity_key=continuity_key,
-                    wardrobe_intent=wardrobe_intent,
-                    trace_id=trace_id,
-                )
-            if (
-                selected.get("kind") == "recent_sent_photo"
-                and reference_intent.continuity_mode != "continuation"
-            ):
-                selected = {}
+            selected = await self._select_photo_reference_candidate_async(
+                workflow_kind,
+                allow_daily_outfit=allow_daily_outfit,
+                requester_user_id=requester_user_id,
+                request_text=request_text,
+                ambient_context=ambient_context,
+                schedule_history_context=schedule_history_context,
+                suggested_scene_preset=suggested_scene_preset,
+                wardrobe_intent=wardrobe_intent,
+                trace_id=trace_id,
+            )
             if selected:
                 selected_candidates: list[dict[str, Any]] = []
                 resolved_role_candidates = self._photo_reference_role_asset_candidates(

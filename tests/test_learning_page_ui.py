@@ -177,7 +177,7 @@ class LearningPageUiTests(unittest.TestCase):
         self.assertIn('./app.css?v=20260804-reference-guided-dialog-v6', self.html)
         self.assertIn('./css/polish.css?v=20260804-expression-batch-review-v1', self.html)
         self.assertIn(
-            './app.js?v=20260805-reference-guided-approval-cache-v2',
+            './app.js?v=20260806-reference-guided-busy-release-v2',
             self.html,
         )
         self.assertIn(

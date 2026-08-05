@@ -795,7 +795,33 @@ class PhotoReferenceOrderingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(intent.source, "conservative")
         self.assertEqual(harness.llm_prompts, [])
 
-    async def test_continuation_plan_prefers_recent_photo_and_drops_changed_outfit_role(self) -> None:
+    async def test_reference_selection_ignores_recent_sent_photo_state(self) -> None:
+        persona = _candidate(
+            "persona",
+            outfit_category="",
+            scene_categories=(),
+            note="基础身份图",
+        )
+        harness = _SelectionHarness([persona], llm_reply="1")
+        harness._recent_sent_photo_continuity_candidate = lambda _key: {
+            "id": "recent_sent_photo",
+            "kind": "recent_sent_photo",
+            "path": "C:/images/recent.png",
+            "source": "C:/images/recent.png",
+            "reference_roles": ["identity", "outfit", "scene", "continuity"],
+            "outfit_lock_default": True,
+        }
+
+        selected = await harness._select_photo_reference_candidate_async(
+            "selfie",
+            request_text="重新拍一张",
+            continuity_key="legacy-session-key",
+        )
+
+        self.assertEqual(selected["id"], "persona")
+        self.assertNotIn("recent_sent_photo", "\n".join(harness.llm_prompts))
+
+    async def test_continuation_plan_uses_normal_selection_without_explicit_reference(self) -> None:
         persona = _candidate(
             "persona",
             outfit_category="",
@@ -823,14 +849,14 @@ class PhotoReferenceOrderingTests(unittest.IsolatedAsyncioTestCase):
             continuity_key="session",
         )
 
-        self.assertEqual(plan.primary_reference_id, "recent_sent_photo")
+        self.assertEqual(plan.primary_reference_id, "persona")
         self.assertEqual(
             plan.bindings[0].roles,
-            ("identity", "scene", "continuity"),
+            ("identity", "scene"),
         )
         self.assertEqual(plan.bindings[0].ignore, ("outfit",))
 
-    async def test_explicit_image_has_priority_over_automatic_continuity_image(self) -> None:
+    async def test_explicit_image_keeps_priority_over_stored_continuity_state(self) -> None:
         explicit = _candidate(
             "explicit",
             outfit_category="",

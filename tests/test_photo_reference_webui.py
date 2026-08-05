@@ -229,6 +229,32 @@ class PhotoReferenceWebUiTests(unittest.TestCase):
         self.assertIn("root._photoReferenceApprovalResult = result", APP_JS)
         self.assertGreaterEqual(APP_JS.count("await reviewGuidedPhotoReference(root)"), 2)
 
+    def test_async_guided_actions_keep_button_reference_after_await(self) -> None:
+        compile_start = APP_JS.index('data-photo-guided-compile]')
+        trial_start = APP_JS.index('data-photo-guided-trial]')
+        compile_handler = APP_JS[compile_start:trial_start]
+        self.assertIn("const actionButton = event.currentTarget;", compile_handler)
+        self.assertIn("setActionBusy(actionButton, true);", compile_handler)
+        self.assertIn("setActionBusy(actionButton, false);", compile_handler)
+        self.assertNotIn("setActionBusy(event.currentTarget, false);", compile_handler)
+
+        trial_end = APP_JS.index("updateGuidedPhotoReferenceQuestionVisibility", trial_start)
+        trial_handler = APP_JS[trial_start:trial_end]
+        self.assertIn("const actionButton = event.currentTarget;", trial_handler)
+        self.assertIn("setActionBusy(actionButton, true);", trial_handler)
+        self.assertIn("setActionBusy(actionButton, false);", trial_handler)
+        self.assertNotIn("setActionBusy(event.currentTarget, false);", trial_handler)
+
+        add_start = APP_JS.index('data-photo-reference-add-form]')
+        add_end = APP_JS.index('data-photo-reference-move]', add_start)
+        add_handler = APP_JS[add_start:add_end]
+        self.assertIn(
+            'const submitButton = event.submitter || form.querySelector(\'button[type="submit"]\');',
+            add_handler,
+        )
+        self.assertIn("setActionBusy(submitButton, true);", add_handler)
+        self.assertIn("setActionBusy(submitButton, false);", add_handler)
+
     def test_quick_templates_clear_previous_scene_time_and_exclusion_choices(self) -> None:
         template_start = APP_JS.index('root.querySelectorAll("[data-photo-guided-template]")')
         template_end = APP_JS.index("const bindNoneChoice", template_start)
@@ -336,7 +362,7 @@ class PhotoReferenceWebUiTests(unittest.TestCase):
         self.assertIn('app.css?v=20260804-reference-guided-dialog-v6', INDEX_HTML)
         self.assertIn('css/polish.css?v=20260804-expression-batch-review-v1', INDEX_HTML)
         self.assertIn(
-            'app.js?v=20260805-reference-guided-approval-cache-v2',
+            'app.js?v=20260806-reference-guided-busy-release-v2',
             INDEX_HTML,
         )
 

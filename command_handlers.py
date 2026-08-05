@@ -4946,7 +4946,9 @@ class CommandHandlersMixin:
             return True
         reference_path = ""
         reference_label = ""
-        if intent.get("kind") == "edit" or group_photo_requested:
+        reference_kind = str(intent.get("kind") or "")
+        reference_required = reference_kind == "edit" or group_photo_requested
+        if reference_required or reference_kind == "selfie":
             try:
                 reference_path, reference_label, saw_image = await self._photo_reference_image_from_command_context(event, user_id)
             except Exception as exc:
@@ -4954,25 +4956,31 @@ class CommandHandlersMixin:
                 if not missing:
                     raise
                 logger.warning(
-                    "[PrivateCompanion] 自然语言改图参考图解析缺少可选模型依赖: module=%s err=%s",
+                    "[PrivateCompanion] 自然语言生图引用来源解析缺少可选模型依赖: module=%s err=%s",
                     missing,
                     _single_line(exc, 160),
                 )
+                reference_usage = (
+                    "合影"
+                    if group_photo_requested
+                    else ("改图" if reference_kind == "edit" else "自拍")
+                )
                 await self._reply(
                     event,
-                    f"{'合影' if group_photo_requested else '改图'}参考图解析缺少可选依赖 {missing}，这次先不生成。",
+                    f"{reference_usage}参考图解析缺少可选依赖 {missing}，这次先不生成。",
                 )
                 event.stop_event()
                 return True
             logger.info(
-                "[PrivateCompanion] 自然语言改图参考图解析: user=%s saw_image=%s label=%s path=%s exists=%s",
+                "[PrivateCompanion] 自然语言生图引用来源解析: user=%s kind=%s saw_image=%s label=%s path=%s exists=%s",
                 _single_line(user_id, 40),
+                _single_line(reference_kind, 30),
                 saw_image,
                 _single_line(reference_label, 40),
                 _single_line(reference_path, 180),
                 bool(reference_path and Path(reference_path).exists()),
             )
-            if not reference_path:
+            if not reference_path and (reference_required or saw_image):
                 await self._reply(
                     event,
                     (
@@ -5210,7 +5218,8 @@ class CommandHandlersMixin:
 
         reference_path = ""
         reference_label = ""
-        if forced_kind == "edit" or group_photo_requested:
+        reference_required = forced_kind == "edit" or group_photo_requested
+        if reference_required or forced_kind == "selfie":
             try:
                 reference_path, reference_label, saw_image = await self._photo_reference_image_from_command_context(event, user_id)
             except Exception as exc:
@@ -5218,25 +5227,31 @@ class CommandHandlersMixin:
                 if not missing:
                     raise
                 logger.warning(
-                    "[PrivateCompanion] 指令改图参考图解析缺少可选模型依赖: module=%s err=%s",
+                    "[PrivateCompanion] 指令生图引用来源解析缺少可选模型依赖: module=%s err=%s",
                     missing,
                     _single_line(exc, 160),
                 )
+                reference_usage = (
+                    "合影"
+                    if group_photo_requested
+                    else ("改图" if forced_kind == "edit" else "自拍")
+                )
                 await self._reply(
                     event,
-                    f"{'合影' if group_photo_requested else '改图'}参考图解析缺少可选依赖 {missing}，这次先不生成。",
+                    f"{reference_usage}参考图解析缺少可选依赖 {missing}，这次先不生成。",
                 )
                 event.stop_event()
                 return True
             logger.info(
-                "[PrivateCompanion] 指令改图参考图解析: user=%s saw_image=%s label=%s path=%s exists=%s",
+                "[PrivateCompanion] 指令生图引用来源解析: user=%s kind=%s saw_image=%s label=%s path=%s exists=%s",
                 _single_line(user_id, 40),
+                _single_line(forced_kind, 30),
                 saw_image,
                 _single_line(reference_label, 40),
                 _single_line(reference_path, 180),
                 bool(reference_path and Path(reference_path).exists()),
             )
-            if not reference_path:
+            if not reference_path and (reference_required or saw_image):
                 await self._reply(
                     event,
                     (

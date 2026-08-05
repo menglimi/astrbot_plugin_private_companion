@@ -6,7 +6,7 @@ import time
 import unittest
 from copy import deepcopy
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from astrbot_plugin_private_companion.proactive_message import ProactiveMessageMixin
 from astrbot_plugin_private_companion.photo_wardrobe_decision import (
@@ -76,9 +76,8 @@ class PhotoGenerationContinuityTests(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-    async def test_pose_followup_can_select_last_sent_photo(self) -> None:
+    async def test_recent_photo_state_is_not_injected_into_reference_selection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            recent_path = self._write_image(directory, "recent.png")
             persona_path = self._write_image(directory, "persona.png")
             harness = _ContinuityHarness(
                 candidates=[
@@ -92,99 +91,18 @@ class PhotoGenerationContinuityTests(unittest.IsolatedAsyncioTestCase):
                 ],
                 model_reply="1",
             )
-            key = harness._compose_photo_continuity_key(
-                "default:GroupMessage:12345",
-                "10001",
+            harness._recent_sent_photo_continuity_candidate = Mock(
+                side_effect=AssertionError("reference selector must not read recent-photo state")
             )
-            self._remember(harness, key=key, path=recent_path)
 
             selected = await harness._select_photo_reference_image_async(
                 "selfie",
                 selection_context="user request: 给镜头比个心，只换动作",
-                continuity_key=key,
-            )
-
-            self.assertEqual(selected, recent_path)
-            self.assertIn("recent_sent_photo", harness.selection_prompt)
-            self.assertIn("自然续拍", harness.selection_prompt)
-
-    async def test_explicit_new_outfit_can_keep_normal_reference_selection(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            recent_path = self._write_image(directory, "recent.png")
-            persona_path = self._write_image(directory, "persona.png")
-            harness = _ContinuityHarness(
-                candidates=[
-                    {
-                        "id": "persona_default",
-                        "path": persona_path,
-                        "source": persona_path,
-                        "kind": "persona",
-                        "note": "基础人物身份参考",
-                    }
-                ],
-                model_reply="2",
-            )
-            key = harness._compose_photo_continuity_key(
-                "default:FriendMessage:10001",
-                "10001",
-            )
-            self._remember(harness, key=key, path=recent_path)
-
-            selected = await harness._select_photo_reference_image_async(
-                "selfie",
-                selection_context="user request: 换上新的红色礼服，在宴会厅重新拍一张",
-                continuity_key=key,
             )
 
             self.assertEqual(selected, persona_path)
-
-    async def test_model_can_decline_only_recent_candidate(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            recent_path = self._write_image(directory, "recent.png")
-            harness = _ContinuityHarness(model_reply="0")
-            key = harness._compose_photo_continuity_key(
-                "default:FriendMessage:10001",
-                "10001",
-            )
-            self._remember(harness, key=key, path=recent_path)
-
-            selected = await harness._select_photo_reference_image_async(
-                "selfie",
-                selection_context="user request: 去海边拍一张完全不同的照片",
-                continuity_key=key,
-            )
-
-            self.assertEqual(selected, "")
-
-    async def test_invalid_model_reply_never_rule_forces_recent_photo(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            recent_path = self._write_image(directory, "recent.png")
-            persona_path = self._write_image(directory, "persona.png")
-            harness = _ContinuityHarness(
-                candidates=[
-                    {
-                        "id": "persona_default",
-                        "path": persona_path,
-                        "source": persona_path,
-                        "kind": "persona",
-                        "note": "基础人物身份参考",
-                    }
-                ],
-                model_reply="reuse",
-            )
-            key = harness._compose_photo_continuity_key(
-                "default:FriendMessage:10001",
-                "10001",
-            )
-            self._remember(harness, key=key, path=recent_path)
-
-            selected = await harness._select_photo_reference_image_async(
-                "selfie",
-                selection_context="user request: 给镜头比个心",
-                continuity_key=key,
-            )
-
-            self.assertEqual(selected, persona_path)
+            harness._recent_sent_photo_continuity_candidate.assert_not_called()
+            self.assertNotIn("recent_sent_photo", harness.selection_prompt)
 
     def test_continuity_candidate_isolated_by_group_sender_and_file_lifetime(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

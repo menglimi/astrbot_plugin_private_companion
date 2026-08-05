@@ -22,9 +22,13 @@ class _FakeEvent:
 
     def __init__(self, reference_path: str = "") -> None:
         self.reference_path = reference_path
+        self.stopped = False
 
     def get_sender_id(self) -> str:
         return "10001"
+
+    def stop_event(self) -> None:
+        self.stopped = True
 
 
 class _PhotoToolHarness(LlmToolActionsMixin):
@@ -160,6 +164,85 @@ class _PromptAwarePhotoToolHarness(_PhotoToolHarness, CommandHandlersMixin):
     async def _photo_reference_image_from_command_context(event, _user_id: str):
         path = str(getattr(event, "reference_path", "") or "")
         return path, "随消息发送的图片" if path else "", bool(path)
+
+
+class _CommandEntryPhotoHarness(_PromptAwarePhotoToolHarness):
+    enable_natural_language_photo_generation = True
+    natural_language_photo_generation_mode = "rule_fast"
+
+    def __init__(self) -> None:
+        super().__init__()
+        del self._command_photo_quota_left
+        self.natural_language_photo_generation_mode = "rule_fast"
+        self._data_lock = asyncio.Lock()
+        self.user = {"user_id": "10001", "enabled": True}
+        self.replies: list[str] = []
+
+    @staticmethod
+    def _private_event_has_image_safe(event, **_kwargs) -> bool:
+        return bool(getattr(event, "reference_path", ""))
+
+    @staticmethod
+    def _photo_reference_sources_from_reply_cache(_event) -> list[str]:
+        return []
+
+    @staticmethod
+    async def _photo_reference_sources_from_reply_event(_event) -> list[str]:
+        return []
+
+    @staticmethod
+    def _natural_language_photo_intent(_text: str, **_kwargs):
+        return {"kind": "selfie", "prompt": "重新拍一张", "needs_prompt": False}
+
+    def _get_user(self, _user_id: str):
+        return self.user
+
+    @staticmethod
+    def _is_target_private_user(_user_id: str, _user) -> bool:
+        return True
+
+    @staticmethod
+    def _private_user_role(_user, _user_id: str = "") -> str:
+        return "primary"
+
+    @staticmethod
+    def _natural_language_photo_quota_left(_user) -> int:
+        return 1
+
+    @staticmethod
+    def _command_photo_quota_left(_user) -> int:
+        return 1
+
+    @staticmethod
+    def _photo_generation_workflow_kind(kind: str) -> str:
+        return kind
+
+    @staticmethod
+    def _compose_photo_continuity_key(_session: str, _user_id: str) -> str:
+        return "default:FriendMessage:10001|sender=10001"
+
+    async def _reply(self, _event, text: str, **_kwargs) -> None:
+        self.replies.append(text)
+
+    @staticmethod
+    async def _natural_language_photo_ack_reply_text(*_args, **_kwargs) -> str:
+        return "等我一下。"
+
+    @staticmethod
+    async def _natural_language_photo_done_reply_text(*_args, **_kwargs) -> str:
+        return "好了，你看。"
+
+    @staticmethod
+    def _note_natural_language_photo_generation_attempt(_user, *, image_path: str = "") -> None:
+        return None
+
+    @staticmethod
+    def _note_command_photo_generation_attempt(_user, *, image_path: str = "") -> None:
+        return None
+
+    @staticmethod
+    def _save_data_sync() -> None:
+        return None
 
 
 class PhotoToolDeliveryContractTests(unittest.IsolatedAsyncioTestCase):
@@ -338,6 +421,83 @@ class PhotoToolDeliveryContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(payload["generated"])
         self.assertTrue(payload["must_not_claim_sent"])
         self.assertEqual(harness.generation_kwargs, {})
+
+    async def test_quoted_image_is_used_for_plain_selfie_retake(self) -> None:
+        harness = _PromptAwarePhotoToolHarness()
+        harness.image_path = self.image_path
+
+        payload = json.loads(
+            await harness._pc_generate_photo_impl(
+                _FakeEvent(reference_path=self.image_path),
+                prompt="重新拍一张",
+                kind="selfie",
+                send=False,
+            )
+        )
+
+        self.assertEqual(payload["status"], "success")
+        self.assertEqual(
+            harness.generation_kwargs["reference_image_path"],
+            self.image_path,
+        )
+        self.assertEqual(
+            harness.generation_kwargs["reference_image_paths"],
+            [self.image_path],
+        )
+
+    async def test_rule_fast_selfie_uses_context_image_as_explicit_reference(self) -> None:
+        harness = _CommandEntryPhotoHarness()
+        harness.image_path = self.image_path
+        event = _FakeEvent(reference_path=self.image_path)
+
+        handled = await harness._maybe_handle_natural_language_photo_request(
+            event,
+            "10001",
+            "重新拍一张",
+            directed=True,
+        )
+
+        self.assertTrue(handled)
+        self.assertTrue(event.stopped)
+        self.assertEqual(
+            harness.generation_kwargs["reference_image_path"],
+            self.image_path,
+        )
+
+    async def test_companion_selfie_command_uses_context_image_as_explicit_reference(self) -> None:
+        harness = _CommandEntryPhotoHarness()
+        harness.image_path = self.image_path
+        event = _FakeEvent(reference_path=self.image_path)
+
+        handled = await harness._handle_companion_photo_command(
+            event,
+            "10001",
+            "自拍",
+            "重新拍一张",
+        )
+
+        self.assertTrue(handled)
+        self.assertTrue(event.stopped)
+        self.assertEqual(
+            harness.generation_kwargs["reference_image_path"],
+            self.image_path,
+        )
+
+    async def test_companion_selfie_command_without_context_image_keeps_normal_selection(self) -> None:
+        harness = _CommandEntryPhotoHarness()
+        harness.image_path = self.image_path
+        event = _FakeEvent()
+
+        handled = await harness._handle_companion_photo_command(
+            event,
+            "10001",
+            "自拍",
+            "重新拍一张",
+        )
+
+        self.assertTrue(handled)
+        self.assertTrue(event.stopped)
+        self.assertEqual(harness.generation_kwargs["reference_image_path"], "")
 
     async def test_leg_request_is_classified_as_character_selfie(self) -> None:
         harness = _PhotoToolHarness()
