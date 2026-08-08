@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import asyncio
 import re
 import unittest
+from datetime import datetime
+from unittest.mock import patch
 
 from astrbot_plugin_private_companion.planning import (
     build_daily_plan_prompt,
@@ -11,9 +14,11 @@ from astrbot_plugin_private_companion.planning import (
     detail_target_event_count,
     detail_payload_quality_issues,
     evaluate_daily_plan_quality,
+    generate_daily_plan,
     normalize_detail_location,
 )
 from astrbot_plugin_private_companion.daily_state import DailyStateMixin
+from astrbot_plugin_private_companion.helpers import _today_key
 
 
 class PlanningPromptHarness(DailyStateMixin):
@@ -139,6 +144,101 @@ class PlanningPromptHarness(DailyStateMixin):
         return source[:limit]
 
 
+class DailyPlanGenerationHarness:
+    daily_plan_provider_id = "daily-provider"
+    mai_style_provider_id = ""
+    llm_provider_id = "default-provider"
+    daily_plan_item_count = 8
+
+    def __init__(self, responses, parsed, *, calendar_conflict=False, previous_plan=None):
+        self.responses = list(responses)
+        self.parsed = dict(parsed)
+        self.calendar_conflict = calendar_conflict
+        self.calls = []
+        self.data = {"daily_plan": dict(previous_plan or {})}
+
+    async def _ensure_weather_context(self):
+        return None
+
+    def _build_daily_plan_prompt(self, _now, *, memory_companion_context=""):
+        return "DAILY_PLAN_PROMPT"
+
+    def _task_provider(self, *provider_ids):
+        return next((item for item in provider_ids if item), "")
+
+    async def _llm_call(self, prompt, **kwargs):
+        self.calls.append((prompt, kwargs))
+        return self.responses.pop(0)
+
+    def _parse_plan_items(self, raw):
+        return [dict(item) for item in self.parsed.get(raw, [])]
+
+    def _plan_has_excess_micro_segments(self, _items):
+        return False
+
+    def _plan_has_excess_abstract_segments(self, _items):
+        return False
+
+    def _plan_conflicts_with_calendar(self, _items):
+        return self.calendar_conflict
+
+    def _plan_is_too_repetitive(self, _items):
+        return False
+
+    def _normalize_plan_item_intervals(self, _items):
+        return None
+
+    def _remember_daily_plan_history(self, plan):
+        self.remembered_plan = plan
+
+
+class DailyPlanRetryHarness(DailyStateMixin):
+    enable_daily_plan = True
+    daily_plan_time = "00:00"
+
+    def __init__(self, retry_after):
+        self.generated_count = 0
+        self._data_lock = asyncio.Lock()
+        self.data = {
+            "users": {"10001": {"umo": "default:FriendMessage:10001"}},
+            "daily_plan": {
+                "date": _today_key(),
+                "source": "fallback_previous_plan",
+                "retry_after": retry_after,
+                "items": [{"time": "09:00", "end": "10:00", "activity": "旧的个性化日程"}],
+            },
+        }
+
+    async def _ensure_daily_state(self, **_kwargs):
+        return {}
+
+    def _environment_now(self):
+        return datetime.now()
+
+    def _sync_detail_enhancement_day_locked(self, _date, reset=False):
+        return False
+
+    def _sanitize_daily_plan_inplace(self, _plan):
+        return False
+
+    def _refresh_daily_state_location_from_plan(self, **_kwargs):
+        return None
+
+    def _save_data_sync(self):
+        return None
+
+    async def _generate_daily_plan(self):
+        self.generated_count += 1
+        return {
+            "date": _today_key(),
+            "source": "llm",
+            "items": [{"time": "10:00", "end": "11:00", "activity": "重新生成的日程"}],
+        }
+
+    async def _ensure_daily_news_reading(self, **_kwargs):
+        return None
+
+
 class PlanningReferenceSourceTests(unittest.TestCase):
     def setUp(self):
         self.plugin = PlanningPromptHarness()
@@ -158,6 +258,26 @@ class PlanningReferenceSourceTests(unittest.TestCase):
 
         self.assertIn("超过 12 段", prompt)
         self.assertIn("完整、可解析的 JSON", prompt)
+
+    def test_schedule_prompts_do_not_override_configured_gender_or_pronoun(self):
+        prompt = build_daily_plan_prompt(self.plugin, "2026-07-11 09:00")
+        detail_prompt = build_detail_enhancement_prompt(
+            self.plugin,
+            {
+                "start": 15 * 60,
+                "end": 16 * 60,
+                "item": {"time": "15:00", "activity": "整理桌面"},
+            },
+            {"items": [{"time": "15:00", "activity": "整理桌面"}]},
+            self.plugin.data["daily_state"],
+        )
+
+        for generated_prompt in (prompt, detail_prompt):
+            self.assertIn("严格服从", generated_prompt)
+            self.assertIn("中性、无性别", generated_prompt)
+            self.assertIn("它/TA", generated_prompt)
+            self.assertNotIn("她没有点开", generated_prompt)
+
 
     def test_daily_prompt_orders_sources_by_authority(self):
         prompt = build_daily_plan_prompt(self.plugin, "2026-07-11 09:00", memory_companion_context="MEMORY_CONTEXT")
@@ -389,6 +509,77 @@ class PlanningReferenceSourceTests(unittest.TestCase):
         quality = evaluate_daily_plan_quality(self.plugin, items)
 
         self.assertTrue(any("晚间节点不足" in issue for issue in quality["issues"]))
+
+
+class DailyPlanGenerationFallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unparseable_first_response_retries_before_fallback(self):
+        items = [{"time": "09:00", "end": "10:00", "activity": "按世界观整理藏书"}]
+        plugin = DailyPlanGenerationHarness(
+            ["invalid", "valid"],
+            {"valid": items},
+        )
+
+        with patch(
+            "astrbot_plugin_private_companion.planning.evaluate_daily_plan_quality",
+            return_value={"score": 100, "level": "good", "issues": []},
+        ):
+            plan = await generate_daily_plan(plugin)
+
+        self.assertEqual(len(plugin.calls), 2)
+        self.assertIn("输出格式纠偏", plugin.calls[1][0])
+        self.assertEqual(plan["source"], "llm")
+        self.assertEqual(plan["items"], items)
+
+    async def test_calendar_warning_keeps_parsed_worldview_plan(self):
+        items = [{"time": "09:00", "end": "10:00", "activity": "按世界观巡视领地"}]
+        plugin = DailyPlanGenerationHarness(
+            ["first", "calendar_retry"],
+            {"first": items, "calendar_retry": items},
+            calendar_conflict=True,
+        )
+
+        with patch(
+            "astrbot_plugin_private_companion.planning.evaluate_daily_plan_quality",
+            return_value={"score": 70, "level": "fair", "issues": ["日程与日期性质冲突"]},
+        ):
+            plan = await generate_daily_plan(plugin)
+
+        self.assertEqual(plan["source"], "llm_calendar_warning")
+        self.assertEqual(plan["items"], items)
+        self.assertNotEqual(plan["raw"], "fallback")
+
+    async def test_double_parse_failure_reuses_recent_personalized_plan(self):
+        previous_items = [
+            {"time": "10:00", "end": "11:00", "activity": "在树屋里整理收藏的地图"}
+        ]
+        for previous_source in ("llm", "fallback_previous_plan"):
+            with self.subTest(previous_source=previous_source):
+                plugin = DailyPlanGenerationHarness(
+                    ["invalid", "still-invalid"],
+                    {},
+                    previous_plan={"source": previous_source, "items": previous_items},
+                )
+
+                with patch(
+                    "astrbot_plugin_private_companion.planning.evaluate_daily_plan_quality",
+                    return_value={"score": 80, "level": "fair", "issues": []},
+                ):
+                    plan = await generate_daily_plan(plugin)
+
+                self.assertEqual(plan["source"], "fallback_previous_plan")
+                self.assertEqual(plan["items"], previous_items)
+                self.assertGreater(plan["retry_after"], 0)
+
+    async def test_saved_fallback_retries_only_after_retry_time(self):
+        future = DailyPlanRetryHarness(retry_after=10**12)
+        cached = await future._ensure_daily_plan(force=False)
+        self.assertEqual(future.generated_count, 0)
+        self.assertEqual(cached["source"], "fallback_previous_plan")
+
+        due = DailyPlanRetryHarness(retry_after=1)
+        regenerated = await due._ensure_daily_plan(force=False)
+        self.assertEqual(due.generated_count, 1)
+        self.assertEqual(regenerated["source"], "llm")
 
 
 if __name__ == "__main__":

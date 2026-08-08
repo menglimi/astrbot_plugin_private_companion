@@ -184,6 +184,43 @@ class TokenBudgetMixin:
         return 0
 
     @classmethod
+    def _usage_candidates(cls, value: Any, *, _depth: int = 0) -> list[Any]:
+        """Flatten SDK response usage containers without importing provider SDKs."""
+        if value is None or _depth > 3:
+            return []
+        candidates = [value]
+        if isinstance(value, dict):
+            for key in ("usage", "token_usage", "raw_usage", "usage_metadata", "model_extra"):
+                nested = value.get(key)
+                if nested is not None and nested is not value:
+                    candidates.extend(cls._usage_candidates(nested, _depth=_depth + 1))
+            return candidates
+        for attr in ("usage", "token_usage", "raw_usage", "usage_metadata", "model_extra"):
+            try:
+                nested = getattr(value, attr, None)
+            except Exception:
+                nested = None
+            if nested is not None and nested is not value:
+                candidates.extend(cls._usage_candidates(nested, _depth=_depth + 1))
+        dumper = getattr(value, "model_dump", None)
+        if callable(dumper):
+            try:
+                dumped = dumper()
+            except Exception:
+                dumped = None
+            if dumped is not None and dumped is not value:
+                candidates.extend(cls._usage_candidates(dumped, _depth=_depth + 1))
+        return candidates
+
+    @classmethod
+    def _usage_value_from_candidates(cls, candidates: list[Any], *keys: str) -> int:
+        for candidate in candidates:
+            value = cls._usage_value(candidate, *keys)
+            if value > 0:
+                return value
+        return 0
+
+    @classmethod
     def _llm_text_from_content(cls, value: Any, *, limit: int = 8000) -> str:
         """Extract printable text from AstrBot/OpenAI-style message content."""
         if value is None:
@@ -283,26 +320,40 @@ class TokenBudgetMixin:
         return cls._llm_text_from_content(result_chain)
 
     def _extract_llm_usage(self, resp: Any, prompt: str, completion: str) -> dict[str, Any]:
-        candidates = [
-            getattr(resp, "usage", None),
-            getattr(resp, "token_usage", None),
-            getattr(resp, "raw_usage", None),
-        ]
+        candidates = self._usage_candidates(resp)
         raw_completion = getattr(resp, "raw_completion", None)
         if raw_completion is not None:
-            candidates.append(getattr(raw_completion, "usage", None))
+            candidates.extend(self._usage_candidates(raw_completion))
         raw_response = getattr(resp, "raw_response", None)
-        if isinstance(raw_response, dict):
-            candidates.extend([
-                raw_response.get("usage"),
-                raw_response.get("token_usage"),
-            ])
-        usage = next((item for item in candidates if item), None)
-        prompt_tokens = self._usage_value(usage, "prompt_tokens", "input_tokens", "prompt", "input")
-        completion_tokens = self._usage_value(usage, "completion_tokens", "output_tokens", "completion", "output")
-        total_tokens = self._usage_value(usage, "total_tokens", "total")
-        cache_read_tokens = self._usage_value(
-            usage,
+        if raw_response is not None:
+            candidates.extend(self._usage_candidates(raw_response))
+        prompt_tokens = self._usage_value_from_candidates(
+            candidates,
+            "prompt_tokens", "input_tokens", "prompt", "input",
+            "prompt_token_count", "input_token_count",
+        )
+        standard_completion_tokens = self._usage_value_from_candidates(
+            candidates,
+            "completion_tokens", "output_tokens", "completion", "output",
+            "output_token_count", "generated_tokens",
+        )
+        candidate_completion_tokens = self._usage_value_from_candidates(
+            candidates, "candidates_token_count"
+        )
+        reasoning_tokens = self._usage_value_from_candidates(
+            candidates,
+            "reasoning_tokens", "reasoning_token_count", "thoughts_token_count",
+            "completion_tokens_details.reasoning_tokens",
+            "output_tokens_details.reasoning_tokens",
+        )
+        # OpenAI-style completion/output counts already include reasoning.
+        # Gemini candidate counts exclude thoughts, so only that form is additive.
+        completion_tokens = standard_completion_tokens or (candidate_completion_tokens + reasoning_tokens)
+        total_tokens = self._usage_value_from_candidates(
+            candidates, "total_tokens", "total", "total_token_count"
+        )
+        cache_read_tokens = self._usage_value_from_candidates(
+            candidates,
             "input_cached",
             "prompt_tokens_details.cached_tokens",
             "input_tokens_details.cached_tokens",
@@ -311,17 +362,18 @@ class TokenBudgetMixin:
             "cache_read_input_tokens",
             "cache_read_tokens",
             "prompt_cache_hit_tokens",
+            "cached_content_token_count",
         )
-        cache_write_tokens = self._usage_value(
-            usage,
+        cache_write_tokens = self._usage_value_from_candidates(
+            candidates,
             "cache_creation_input_tokens",
             "cache_creation_tokens",
             "cache_write_input_tokens",
             "cache_write_tokens",
             "prompt_cache_creation_tokens",
         )
-        cached_tokens = self._usage_value(
-            usage,
+        cached_tokens = self._usage_value_from_candidates(
+            candidates,
             "input_cached",
             "cached_tokens",
             "prompt_cached_tokens",
@@ -329,10 +381,24 @@ class TokenBudgetMixin:
             "prompt_tokens_details.cached_tokens",
             "input_tokens_details.cached_tokens",
             "input_token_details.cached_tokens",
+            "cached_content_token_count",
         )
         if cached_tokens <= 0:
             cached_tokens = cache_read_tokens
-        input_other_tokens = self._usage_value(usage, "input_other")
+        input_other_tokens = self._usage_value_from_candidates(candidates, "input_other")
+        usage_present = any(
+            (
+                prompt_tokens,
+                standard_completion_tokens,
+                candidate_completion_tokens,
+                reasoning_tokens,
+                total_tokens,
+                cache_read_tokens,
+                cache_write_tokens,
+                cached_tokens,
+                input_other_tokens,
+            )
+        )
         if prompt_tokens <= 0 and (input_other_tokens > 0 or cached_tokens > 0):
             prompt_tokens = input_other_tokens + cached_tokens
         estimated = False
@@ -344,18 +410,32 @@ class TokenBudgetMixin:
             if completion_estimated:
                 completion_tokens = self._estimate_token_count(completion)
             total_tokens = prompt_tokens + completion_tokens
-            estimated = (not usage) or prompt_estimated or completion_estimated
+            estimated = (not usage_present) or prompt_estimated or completion_estimated
         elif prompt_tokens <= 0 and completion_tokens <= 0:
-            prompt_tokens = self._estimate_token_count(prompt)
+            prompt_tokens = min(total_tokens, self._estimate_token_count(prompt))
             completion_tokens = max(0, total_tokens - prompt_tokens)
+            estimated = True
+        elif prompt_tokens <= 0:
+            prompt_tokens = max(0, total_tokens - completion_tokens)
+            estimated = True
+        elif completion_tokens <= 0:
+            completion_tokens = max(0, total_tokens - prompt_tokens)
+            estimated = True
+        # Provider totals may include reasoning/thoughts or another output bucket.
+        # Keep the displayed invariant stable instead of silently undercounting.
+        if total_tokens < prompt_tokens + completion_tokens:
+            total_tokens = prompt_tokens + completion_tokens
+        elif total_tokens > prompt_tokens + completion_tokens:
+            completion_tokens += total_tokens - (prompt_tokens + completion_tokens)
         return {
             "prompt_tokens": max(0, prompt_tokens),
             "completion_tokens": max(0, completion_tokens),
+            "reasoning_tokens": max(0, reasoning_tokens),
             "total_tokens": max(0, total_tokens),
             "cached_tokens": max(0, cached_tokens),
             "cache_read_tokens": max(0, cache_read_tokens),
             "cache_write_tokens": max(0, cache_write_tokens),
-            "estimated": estimated or not usage,
+            "estimated": estimated or not usage_present,
         }
 
     @staticmethod
@@ -438,6 +518,7 @@ class TokenBudgetMixin:
             bucket["errors"] = _safe_int(bucket.get("errors"), 0) + (0 if success else 1)
             bucket["prompt_tokens"] = _safe_int(bucket.get("prompt_tokens"), 0) + usage["prompt_tokens"]
             bucket["completion_tokens"] = _safe_int(bucket.get("completion_tokens"), 0) + usage["completion_tokens"]
+            bucket["reasoning_tokens"] = _safe_int(bucket.get("reasoning_tokens"), 0) + usage["reasoning_tokens"]
             bucket["total_tokens"] = _safe_int(bucket.get("total_tokens"), 0) + usage["total_tokens"]
             bucket["cached_tokens"] = _safe_int(bucket.get("cached_tokens"), 0) + usage["cached_tokens"]
             bucket["cache_read_tokens"] = _safe_int(bucket.get("cache_read_tokens"), 0) + usage["cache_read_tokens"]
@@ -476,6 +557,7 @@ class TokenBudgetMixin:
                 "success": success,
                 "prompt_tokens": usage["prompt_tokens"],
                 "completion_tokens": usage["completion_tokens"],
+                "reasoning_tokens": usage["reasoning_tokens"],
                 "total_tokens": usage["total_tokens"],
                 "cached_tokens": usage["cached_tokens"],
                 "cache_read_tokens": usage["cache_read_tokens"],
@@ -551,6 +633,7 @@ class TokenBudgetMixin:
             bucket["errors"] = _safe_int(bucket.get("errors"), 0) + (0 if success else 1)
             bucket["prompt_tokens"] = _safe_int(bucket.get("prompt_tokens"), 0) + usage["prompt_tokens"]
             bucket["completion_tokens"] = _safe_int(bucket.get("completion_tokens"), 0) + usage["completion_tokens"]
+            bucket["reasoning_tokens"] = _safe_int(bucket.get("reasoning_tokens"), 0) + usage["reasoning_tokens"]
             bucket["total_tokens"] = _safe_int(bucket.get("total_tokens"), 0) + usage["total_tokens"]
             bucket["cached_tokens"] = _safe_int(bucket.get("cached_tokens"), 0) + usage["cached_tokens"]
             bucket["cache_read_tokens"] = _safe_int(bucket.get("cache_read_tokens"), 0) + usage["cache_read_tokens"]
@@ -584,6 +667,7 @@ class TokenBudgetMixin:
                 "success": success,
                 "prompt_tokens": usage["prompt_tokens"],
                 "completion_tokens": usage["completion_tokens"],
+                "reasoning_tokens": usage["reasoning_tokens"],
                 "total_tokens": usage["total_tokens"],
                 "cached_tokens": usage["cached_tokens"],
                 "cache_read_tokens": usage["cache_read_tokens"],

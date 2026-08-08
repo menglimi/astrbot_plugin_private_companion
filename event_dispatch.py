@@ -176,6 +176,7 @@ _SEGMENTED_PROTECTED_LITERAL_PATTERN = re.compile(
     r"|(?i:(?<=[\w\u3400-\u9fff\u3040-\u30ff])\."
     + _SEGMENTED_COMMON_FILE_SUFFIXES
     + r"(?![\w]))"
+    r"|(?<![\d.])\d+(?:\.\d+)+(?!\d|\.\d)"
 )
 
 

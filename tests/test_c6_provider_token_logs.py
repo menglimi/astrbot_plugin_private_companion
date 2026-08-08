@@ -132,6 +132,89 @@ class ProviderFallbackTests(unittest.TestCase):
 
 
 class TokenLogBoundaryTests(unittest.TestCase):
+    def test_usage_merges_partial_sources_and_provider_aliases(self):
+        host = _Host()
+
+        class Response:
+            usage = types.SimpleNamespace(prompt_tokens=120)
+            usage_metadata = {
+                "candidates_token_count": 30,
+                "thoughts_token_count": 10,
+                "total_token_count": 160,
+                "cached_content_token_count": 40,
+            }
+
+        usage = host._extract_llm_usage(Response(), "prompt", "completion")
+        self.assertEqual(120, usage["prompt_tokens"])
+        self.assertEqual(40, usage["completion_tokens"])
+        self.assertEqual(10, usage["reasoning_tokens"])
+        self.assertEqual(160, usage["total_tokens"])
+        self.assertEqual(40, usage["cached_tokens"])
+        self.assertFalse(usage["estimated"])
+
+    def test_usage_reads_anthropic_and_cache_aliases(self):
+        host = _Host()
+        response = types.SimpleNamespace(
+            raw_response={
+                "usage": {
+                    "input_tokens": 80,
+                    "output_tokens": 20,
+                    "cache_read_input_tokens": 12,
+                    "cache_creation_input_tokens": 5,
+                }
+            }
+        )
+        usage = host._extract_llm_usage(response, "prompt", "completion")
+        self.assertEqual(80, usage["prompt_tokens"])
+        self.assertEqual(20, usage["completion_tokens"])
+        self.assertEqual(100, usage["total_tokens"])
+        self.assertEqual(12, usage["cache_read_tokens"])
+        self.assertEqual(5, usage["cache_write_tokens"])
+
+    def test_openai_reasoning_is_not_counted_twice(self):
+        host = _Host()
+        response = types.SimpleNamespace(
+            usage={
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "total_tokens": 150,
+                "completion_tokens_details": {"reasoning_tokens": 20},
+            }
+        )
+        usage = host._extract_llm_usage(response, "prompt", "completion")
+        self.assertEqual(100, usage["prompt_tokens"])
+        self.assertEqual(50, usage["completion_tokens"])
+        self.assertEqual(20, usage["reasoning_tokens"])
+        self.assertEqual(150, usage["total_tokens"])
+
+    def test_total_only_usage_does_not_expand_provider_total(self):
+        host = _Host()
+        response = types.SimpleNamespace(usage={"total_tokens": 3})
+        usage = host._extract_llm_usage(response, "a very long prompt body", "")
+        self.assertEqual(3, usage["prompt_tokens"])
+        self.assertEqual(0, usage["completion_tokens"])
+        self.assertEqual(3, usage["total_tokens"])
+        self.assertTrue(usage["estimated"])
+
+    def test_usage_metadata_from_model_dump_is_supported(self):
+        host = _Host()
+
+        class Response:
+            def model_dump(self):
+                return {
+                    "usage_metadata": {
+                        "prompt_token_count": 12,
+                        "candidates_token_count": 4,
+                        "total_token_count": 16,
+                    }
+                }
+
+        usage = host._extract_llm_usage(Response(), "prompt", "completion")
+        self.assertEqual((12, 4, 16), (
+            usage["prompt_tokens"], usage["completion_tokens"], usage["total_tokens"]
+        ))
+        self.assertFalse(usage["estimated"])
+
     def test_internal_usage_keeps_only_lengths_and_bounded_error(self):
         prompt = "PROMPT_BODY_" + ("p" * 5000)
         completion = "COMPLETION_BODY_" + ("c" * 5000)

@@ -25,6 +25,7 @@ from .constants import (
     CREATIVE_SIMILARITY_THRESHOLD,
     CREATIVE_STORY_BIBLE_TEMPLATE,
     CREATIVE_FALLBACK_CHUNKS,
+    CREATIVE_LEGACY_FALLBACK_CHUNKS,
 )
 from .helpers import _now_ts, _path_text, _safe_float, _safe_int, _single_line, _text_similarity
 
@@ -248,7 +249,7 @@ class CreativeMixin:
             return False
         return signature in {
             cls._creative_fallback_signature(item)
-            for item in CREATIVE_FALLBACK_CHUNKS
+            for item in (*CREATIVE_FALLBACK_CHUNKS, *CREATIVE_LEGACY_FALLBACK_CHUNKS)
         }
 
     def _cleanup_legacy_creative_fallback_chunks(self) -> bool:
@@ -326,6 +327,7 @@ class CreativeMixin:
                 f"默认对话风格：{style}" if style else "",
                 creative_voice,
                 "创作要求：作品类型、题材、叙事声音、比喻密度、说话习惯、关注点和节奏都要像这个人格会写出来的东西。",
+                "性别与代词边界：只有人格资料明确指定性别或代词时才使用；未指定时不要默认女性或男性，可用角色名、Bot、角色或省略代词。温柔、细腻、理性、锋利等表达气质不绑定任何性别。",
                 "身份边界：如果人格没有学生、职场、异世界、职业、年龄、身体特征等设定,不要凭空添加；如果人格明确不是人类,不要写成人类日常生理经验。",
                 "文风边界：不要套用通用网文腔、营销文案腔或过度华丽散文腔；不要为了梦境感牺牲可读性。",
             )
@@ -623,7 +625,7 @@ class CreativeMixin:
             except Exception as exc:
                 logger.debug("[PrivateCompanion] 创作立项 我会牢牢记住你 上下文读取失败: %s", _single_line(exc, 120))
         prompt = f"""
-你是一个拟人化 Bot 的私人创作状态生成器。她因为一个生活小事、日记碎片或梦境灵感,突然想开一个自己的创作项目。
+ 你是一个拟人化 Bot 的私人创作状态生成器。这个 Bot/角色会因为一个生活小事、日记碎片或梦境灵感,突然想开一个自己的创作项目。
 
 【人格与身份】
 {persona_context}
@@ -638,7 +640,7 @@ class CreativeMixin:
 要求：
 1. 只设计“正在做的创作计划”,不要写正文。
 2. 作品类型可以是短篇小说、诗/歌词、随笔/散文、短剧/对白、分镜脚本、角色设定、世界观片段、怪谈、图鉴条目或其他符合人格的文本作品；不要固定为小说。
-3. 风格必须贴合上面的人格、身份和默认说话气质；标题、设定和 tone 都要像她自己会想到的。
+ 3. 风格必须贴合上面的人格、身份和默认说话气质；标题、设定和 tone 都要像这个人格自然会想到的。
 4. 灵感来源：{source_label}｜{source_text}
 5. 目标 300-5200 字。诗/歌词/短设定可以较短,小说/剧本/世界观可以较长；不能一次写完。
 6. 题材可以日常、轻奇幻、悬疑、校园、都市、梦境感、观察、角色小传、世界碎片等,但不要色情、血腥或攻击性。

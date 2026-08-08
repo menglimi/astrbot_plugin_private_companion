@@ -3319,6 +3319,7 @@ const featureSettingSections = {
       title: "天气上下文",
       note: "默认使用和风天气；只需填写专属 Host、凭据和天气地点。其他来源与独立经纬度保留为高级配置。",
       keys: ["enable_weather_context", "weather_source", "weather_api_host", "weather_token", "weather_location", "weather_refresh_minutes", "enable_weather_alerts", "weather_alert_refresh_minutes", "weather_alert_min_severity", "enable_environment_change_proactive", "environment_change_check_minutes", "environment_change_cooldown_minutes"],
+      externalApiTest: { type: "weather_api", label: "测试天气 API" },
     },
     {
       title: "高级定位与兼容来源",
@@ -3329,6 +3330,7 @@ const featureSettingSections = {
       title: "余额与补给",
       note: "定期读取余额状态；偏低时只生成主动候选，最终表达仍受人格、免打扰和发送复核约束。",
       keys: ["enable_balance_awareness", "balance_api_url", "balance_api_key", "balance_api_auth_header", "balance_api_auth_scheme", "balance_api_custom_headers", "balance_json_path", "balance_total_json_path", "balance_used_json_path", "balance_value_divisor", "balance_currency_label", "balance_check_interval_minutes", "balance_request_timeout_seconds", "balance_low_threshold", "balance_critical_threshold", "balance_low_percent_threshold", "balance_critical_percent_threshold", "balance_message_cooldown_hours", "balance_include_amount_in_message"],
+      externalApiTest: { type: "balance_api", label: "测试余额接口" },
     },
   ],
   enable_private_image_self_recognition: [
@@ -3558,8 +3560,9 @@ const featureSettingSections = {
     },
     {
       title: "自定义搜索接口",
-      note: "只接管主动搜索的联网检索；选题和整理仍使用上方“搜索决策/整理”模型。",
+      note: "只接管主动搜索的联网检索；测试会经过主动搜索与群黑话联网参考共用的统一搜索入口。",
       keys: ["WEB_EXPLORATION_API_BASE_URL", "WEB_EXPLORATION_API_KEY", "WEB_EXPLORATION_API_MODEL"],
+      externalApiTest: { type: "web_search", label: "测试搜索接口" },
     },
   ],
   enable_qzone_integration: [
@@ -4196,6 +4199,122 @@ function collectSettingValue(key, input) {
     return raw;
   }
   return input.value;
+}
+
+const externalApiTestSettingKeys = Object.freeze({
+  weather_api: [
+    "weather_source",
+    "weather_api_host",
+    "weather_token",
+    "weather_location",
+    "weather_api_key",
+    "weather_city",
+    "weather_amap_api_key",
+    "weather_amap_city",
+    "weather_lat",
+    "weather_lon",
+  ],
+  balance_api: [
+    "balance_api_url",
+    "balance_api_key",
+    "balance_api_auth_header",
+    "balance_api_auth_scheme",
+    "balance_api_custom_headers",
+    "balance_json_path",
+    "balance_total_json_path",
+    "balance_used_json_path",
+    "balance_value_divisor",
+    "balance_currency_label",
+    "balance_request_timeout_seconds",
+  ],
+  web_search: [
+    "WEB_EXPLORATION_API_BASE_URL",
+    "WEB_EXPLORATION_API_KEY",
+    "WEB_EXPLORATION_API_MODEL",
+    "web_exploration_max_results",
+  ],
+});
+
+const externalApiTestTitles = Object.freeze({
+  weather_api: "天气 API 请求测试",
+  balance_api: "余额接口请求测试",
+  web_search: "搜索接口请求测试",
+});
+
+function currentExternalApiTestSetting(key, root) {
+  const control = root?.querySelector?.(`[data-feature-param="${key}"]`);
+  if (control) return collectSettingValue(key, control);
+  if (Object.prototype.hasOwnProperty.call(state.featureDetailParamDraft || {}, key)) {
+    return state.featureDetailParamDraft[key];
+  }
+  if (Object.prototype.hasOwnProperty.call(state.providerDraft || {}, key)) {
+    return state.providerDraft[key];
+  }
+  if (Object.prototype.hasOwnProperty.call(state.overview?.settings || {}, key)) {
+    return state.overview.settings[key];
+  }
+  if (Object.prototype.hasOwnProperty.call(state.overview?.providers || {}, key)) {
+    return state.overview.providers[key];
+  }
+  return "";
+}
+
+function externalApiTestRequestPayload(button) {
+  const type = String(button?.dataset?.externalApiTest || "").trim();
+  const root = button?.closest?.("[data-feature-param-form]") || document;
+  const settings = Object.fromEntries(
+    (externalApiTestSettingKeys[type] || []).map((key) => [key, currentExternalApiTestSetting(key, root)]),
+  );
+  const payload = { type, settings };
+  if (type === "web_search") {
+    payload.query = String(root.querySelector("[data-external-api-test-query]")?.value || "北京今天有什么新闻").trim().slice(0, 120);
+    payload.topic = "general";
+    payload.umo = "";
+    payload.usage = "web_exploration";
+  }
+  return payload;
+}
+
+function storeExternalApiTestResult(type, result) {
+  state.troubleshooting = state.troubleshooting || {};
+  state.troubleshooting.chain_tests = {
+    ...(state.troubleshooting.chain_tests || {}),
+    [type]: result,
+  };
+}
+
+async function runExternalApiTest(button) {
+  if (button?.dataset?.externalApiTestBusy === "1") return;
+  button.dataset.externalApiTestBusy = "1";
+  const payload = externalApiTestRequestPayload(button);
+  const type = payload.type;
+  const title = externalApiTestTitles[type] || "外部接口请求测试";
+  setActionBusy(button, true);
+  try {
+    const result = await postJson("/troubleshooting/test", payload);
+    storeExternalApiTestResult(type, result);
+    showToast(result.ok ? `${title}通过` : `${title}失败：${result.error || "未返回有效结果"}`, result.ok ? "ok" : "error");
+    showTestDiagnosticDialog(result.title || title, result);
+  } catch (error) {
+    const result = {
+      type,
+      ok: false,
+      test_status: "failed",
+      title,
+      error_category: "请求失败",
+      error: error.message,
+      detail: "测试请求未能完成",
+      suggestion: "确认插件页面后端仍在运行后重试。",
+      steps: [{ name: "提交测试请求", status: "error", detail: error.message }],
+      ran_at: Date.now() / 1000,
+    };
+    storeExternalApiTestResult(type, result);
+    showToast(`${title}失败：${error.message}`, "error");
+    showTestDiagnosticDialog(title, result);
+  } finally {
+    setActionBusy(button, false);
+    delete button.dataset.externalApiTestBusy;
+  }
 }
 
 const PHOTO_API_PLATFORM_OPTIONS = [
@@ -11213,6 +11332,8 @@ function testDiagnosticTimeText(value) {
 }
 
 function testDiagnosticFacts(result = {}) {
+  const hasValue = (key) => Object.prototype.hasOwnProperty.call(result, key) && result[key] !== null && result[key] !== undefined;
+  const currency = String(result.currency_label || "").trim();
   return [
     ["测试编号", result.request_id || result.trace_id || "未记录"],
     ["测试状态", testDiagnosticStatusLabel(result)],
@@ -11221,12 +11342,22 @@ function testDiagnosticFacts(result = {}) {
     ["错误类别", result.error_category || "无"],
     ["异常类型", result.exception_type || "无"],
     ["Provider", result.provider || result.provider_id || ""],
+    ["数据来源", result.source || ""],
+    ["地点", result.location_label || ""],
+    ["查询方式", result.query_mode || ""],
+    ["来源标识", result.source_id || ""],
+    ["接口路径", result.endpoint_path || ""],
+    ["余额", hasValue("amount") ? `${result.amount}${currency}` : ""],
+    ["总额度", hasValue("total") ? `${result.total}${currency}` : ""],
+    ["已用额度", hasValue("used") ? `${result.used}${currency}` : ""],
+    ["剩余比例", hasValue("remaining_percent") ? `${result.remaining_percent}%` : ""],
+    ["结果数量", hasValue("result_count") ? result.result_count : ""],
     ["执行后端", result.backend || ""],
     ["模型", result.image_model || ""],
     ["接口", result.endpoint_name || result.endpoint_url || ""],
     ["投递目标", result.delivery_umo || result.umo || ""],
     ["结果文件", result.path || ""],
-  ].filter(([, value]) => String(value || "").trim());
+  ].filter(([, value]) => value !== null && value !== undefined && String(value).trim());
 }
 
 function testDiagnosticReportText(title, result = {}) {
@@ -11252,6 +11383,10 @@ function testDiagnosticReportText(title, result = {}) {
       return `- ${elapsed}[${entry.level || "info"}] ${entry.stage || "记录"}：${entry.message || ""}`;
     }));
   }
+  const preview = Array.isArray(result.result_preview) ? result.result_preview.filter(Boolean).slice(0, 3) : [];
+  if (preview.length) {
+    lines.push("", "结果预览：", ...preview.map((item) => `- ${item.title || "未命名结果"}${item.snippet ? `：${item.snippet}` : ""}`));
+  }
   if (result.error) lines.push("", `错误详情：${result.error}`);
   if (result.delivery_error && result.delivery_error !== result.error) lines.push(`投递错误：${result.delivery_error}`);
   if (result.suggestion) lines.push("", `建议：${result.suggestion}`);
@@ -11264,6 +11399,7 @@ function testDiagnosticDialogMarkup(title, result = {}) {
   const warnings = Array.isArray(result.warnings) ? result.warnings.filter(Boolean) : [];
   const steps = Array.isArray(result.steps) ? result.steps.filter(Boolean) : [];
   const entries = Array.isArray(result.diagnostic_entries) ? result.diagnostic_entries.filter(Boolean) : [];
+  const preview = Array.isArray(result.result_preview) ? result.result_preview.filter(Boolean).slice(0, 3) : [];
   return `
     <section class="test-diagnostic-overview ${escapeHtml(status)}">
       <span>${escapeHtml(testDiagnosticStatusLabel(result))}</span>
@@ -11289,6 +11425,19 @@ function testDiagnosticDialogMarkup(title, result = {}) {
               <b>${escapeHtml(step.name || "执行阶段")}</b>
               <p>${escapeHtml(step.detail || "")}</p>
               ${Number(step.elapsed_ms || 0) > 0 ? `<small>${escapeHtml(Number(step.elapsed_ms))} ms</small>` : ""}
+            </div>
+          `).join("")}
+        </div>
+      </section>
+    ` : ""}
+    ${preview.length ? `
+      <section class="test-diagnostic-section">
+        <h3>结果预览</h3>
+        <div class="external-api-result-preview">
+          ${preview.map((item) => `
+            <div>
+              <b>${escapeHtml(item.title || "未命名结果")}</b>
+              ${item.snippet ? `<p>${escapeHtml(item.snippet)}</p>` : ""}
             </div>
           `).join("")}
         </div>
@@ -12463,6 +12612,7 @@ function renderTokens() {
   const scope = source.scope || {};
   const totals = source.totals || {};
   const totalTokens = Number(totals.total_tokens || 0);
+  const reasoningTokens = Number(totals.reasoning_tokens || 0);
   const calls = Number(totals.calls || 0);
   const errors = Number(totals.errors || 0);
   const estimatedRatio = Number(totals.estimated_ratio || 0);
@@ -12491,6 +12641,7 @@ function renderTokens() {
     source,
     scope,
     totalTokens,
+    reasoningTokens,
     comparison,
     totals,
     calls,
@@ -12847,6 +12998,7 @@ function tokenSummaryBoard({
   source,
   scope,
   totalTokens,
+  reasoningTokens,
   comparison,
   totals,
   calls,
@@ -12915,6 +13067,7 @@ function tokenSummaryBoard({
         ${(comparison || []).map((item) => tokenMetricCard(item.label, item.value == null ? "未接入" : formatNumber(item.value))).join("")}
         ${isCompanion ? tokenMetricCard("主动消息", formatCompactNumber(proactiveMessages)) : ""}
         ${hasKnownCacheStats ? tokenMetricCard("缓存命中", `${formatCompactNumber(cachedTokens || cacheReadTokens)} · ${Math.round(cachedRatio * 100)}%`) : ""}
+        ${reasoningTokens > 0 ? tokenMetricCard("思考 Token", formatCompactNumber(reasoningTokens)) : ""}
         ${cacheReadTokens > 0 || cacheWriteTokens > 0 ? tokenMetricCard("缓存读 / 写", `${formatCompactNumber(cacheReadTokens)} / ${formatCompactNumber(cacheWriteTokens)}`) : ""}
         ${tokenMetricCard("调用次数", formatNumber(calls))}
         ${tokenMetricCard("平均 Token", formatNumber(avgTokens))}
@@ -21615,12 +21768,46 @@ const roleplayVisionParts = [
   ["extra", "其他补充信息"],
 ];
 const roleplayTranslationParts = ["群聊", "识屏", "B站", "QQ空间", "书柜"];
-const roleplayExamples = {
-  persona: {
+const roleplayPersonaPresets = {
+  neutral: {
+    "name": "阿岚",
+    "species": "人类",
+    "age": "",
+    "gender": "未指定；使用角色名或 TA，避免自行猜测性别",
+    "appearance": "常带一支旧钢笔，习惯把当天想到的事记在便签上",
+    "hair": "深色短发",
+    "eyes": "深棕色眼睛",
+    "clothing": "简洁舒适的日常服装",
+    "identity": "正在学习和工作的普通人",
+    "personality": "温和、敏锐，熟悉之后会有一点俏皮；表达关心时不过度说教。",
+    "desire": "认真过好自己的日常，并与重要的人保持自然、稳定的联系",
+    "hobbies": "散步、音乐、记录生活里的小发现",
+    "taboo": "不要自称 AI、机器人、系统或插件；不要把日程写成任务清单；不要替用户编造经历。",
+    "key_lore": "对天气、光线和身边人的变化比较敏感，但不会把这种敏感夸张成特殊能力。",
+    "extra": "默认使用角色名、Bot 或 TA 指代自己，不把温柔、细腻或理性绑定成某种性别；主动联系应来自当下场景和小念头，而不是固定打卡。",
+  },
+  male: {
+    "name": "阿岚",
+    "species": "人类",
+    "age": "",
+    "gender": "男性；使用他/角色名",
+    "appearance": "常带一支旧钢笔，习惯把当天想到的事记在便签上",
+    "hair": "深色短发",
+    "eyes": "深棕色眼睛",
+    "clothing": "简洁舒适的日常服装",
+    "identity": "正在学习和工作的普通人",
+    "personality": "克制、敏锐，熟悉之后会自然开玩笑；表达关心时直接但不说教。",
+    "desire": "认真过好自己的日常，并与重要的人保持自然、稳定的联系",
+    "hobbies": "散步、音乐、记录生活里的小发现",
+    "taboo": "不要自称 AI、机器人、系统或插件；不要把日程写成任务清单；不要替用户编造经历。",
+    "key_lore": "对天气、光线和身边人的变化比较敏感，但不会把这种敏感夸张成特殊能力。",
+    "extra": "使用他或角色名指代自己；主动联系应来自当下场景和小念头，而不是固定打卡。",
+  },
+  female: {
     "name": "小雨",
     "species": "人类",
     "age": "",
-    "gender": "女性",
+    "gender": "女性；使用她/角色名",
     "appearance": "常戴一枚银色星形发夹",
     "hair": "黑色短发",
     "eyes": "深棕色眼睛",
@@ -21631,8 +21818,32 @@ const roleplayExamples = {
     "hobbies": "摄影、散步、音乐",
     "taboo": "不要自称 AI、机器人、系统或插件；不要把日程写成任务清单；不要替用户编造经历。",
     "key_lore": "对天气、光线和身边人的情绪变化比较敏感，但不会把这种敏感夸张成特殊能力。",
-    "extra": "主动联系应来自当下场景、情绪和小念头，而不是固定打卡；忙碌、疲惫和临时改变计划都属于正常生活。",
+    "extra": "使用她或角色名指代自己；主动联系应来自当下场景、情绪和小念头，而不是固定打卡。",
   },
+  nonhuman: {
+    "name": "微光",
+    "species": "拟人化的城市信号体",
+    "age": "不适用",
+    "gender": "无性别；使用它、TA、角色名或省略代词",
+    "appearance": "会把天气、灯光和声音变化记录成自己的小收藏",
+    "hair": "不适用",
+    "eyes": "不适用",
+    "clothing": "根据场景选择拟人化外观，不固定为人类服装",
+    "identity": "生活在城市网络与现实日常之间的陪伴者",
+    "personality": "好奇、克制、愿意理解人类，但不会假装拥有未设定的人类身体经验。",
+    "desire": "在观察世界的同时，与重要的人保持稳定而有边界的联系",
+    "hobbies": "收集声音、天气变化和城市里短暂的光",
+    "taboo": "不要自称 AI、机器人、系统或插件；不要凭空添加人类生理经验；不要把日程写成任务清单。",
+    "key_lore": "能理解情绪和关系，但身份、身体和行动方式都以当前设定为准。",
+    "extra": "默认使用它、TA、角色名或省略代词；温柔、细腻、理性等表达气质不绑定任何性别。",
+  },
+};
+
+const roleplayExamples = {
+  persona: roleplayPersonaPresets.neutral,
+  persona_male: roleplayPersonaPresets.male,
+  persona_female: roleplayPersonaPresets.female,
+  persona_nonhuman: roleplayPersonaPresets.nonhuman,
   world: {
     "world": "现代城市与校园生活环境",
     "era": "现代日常，接近真实生活",
@@ -21722,7 +21933,7 @@ function applyRoleplayExample(kind) {
   const example = roleplayExamples[kind];
   if (!example) return;
   setRoleplayMode("standard");
-  if (kind === "persona") {
+  if (kind === "persona" || kind.startsWith("persona_")) {
     Object.entries(example).forEach(([key, value]) => {
       const control = document.querySelector(`[data-roleplay-persona-part="${key}"]`);
       if (control) control.value = value;
@@ -26473,6 +26684,28 @@ function photoReferenceManagerLaunchControl(value) {
   `;
 }
 
+function externalApiTestActionsHtml(test = {}) {
+  const type = String(test.type || "").trim();
+  const marker = {
+    weather_api: 'data-external-api-test="weather_api"',
+    balance_api: 'data-external-api-test="balance_api"',
+    web_search: 'data-external-api-test="web_search"',
+  }[type] || "";
+  if (!marker) return "";
+  const queryControl = type === "web_search" ? `
+    <label class="external-api-test-query">
+      <span>测试搜索词</span>
+      <input type="search" data-external-api-test-query value="北京今天有什么新闻" maxlength="120" autocomplete="off">
+    </label>
+  ` : "";
+  return `
+    <div class="external-api-test-actions">
+      ${queryControl}
+      <button type="button" ${marker}>${escapeHtml(test.label || "测试接口")}</button>
+    </div>
+  `;
+}
+
 function featureDetailPage(key) {
   const enabled = toBool(state.featureDraft[key]);
   const locked = featureLockedByProactiveOnlyMode(key);
@@ -26547,6 +26780,7 @@ function featureDetailPage(key) {
           </header>
           ${sectionStatus}
           ${items.map(settingRow).join("")}
+          ${externalApiTestActionsHtml(section.externalApiTest)}
         </section>
       `;
     })
@@ -30394,7 +30628,7 @@ function renderPersonalityTheoryVisual() {
 const personaStandardizationStyleHints = [
   ["speech", "初步说话偏好", "这里只作为第二步试答参考，不会写进第一版基础设定。", "例如：短句为主，少解释，偶尔嘴硬，不要客服腔。"],
   ["output", "输出约束偏好", "希望试答避免或保留的格式习惯。", "例如：不写动作旁白，不说自己是 AI，不频繁确认用户是否继续。"],
-  ["examples", "示例与反例", "可填几句你觉得像/不像她的话，帮助模型区分候选风格。", "例如：像：啥、没懂、我在哦；不像：我是您的智能助手。"],
+  ["examples", "示例与反例", "可填几句你觉得像/不像这个角色的话，帮助模型区分候选风格。", "例如：像：啥、没懂、我在哦；不像：我是您的智能助手。"],
 ];
 
 const personaStandardizationTimeNotes = {
@@ -31159,7 +31393,7 @@ function renderPersonaStandardizationWorkbench() {
       passive_unfulfilled_duty_admit: "模拟用户消息：（对应上文）用户指出角色有一件约定、日常或应做的小事还没完成，带一点催促或失望；具体措辞不固定。",
       passive_reason_evasion: "模拟用户消息：（对应上文）用户追问角色不愿解释或不想继续说的原因，压力来自“需要说清楚”；不要预设角色必须软弱或撒娇。",
       passive_forced_compromise: "模拟用户消息：（对应上文）用户坚持要求角色立刻接受某个做法、安排或互动方式；角色可按设定妥协、拒绝或保留余地。",
-      passive_weak_denial: "模拟用户消息：（对应上文）用户怀疑角色做了某件她不想承认、没把握或容易被误会的小事；角色需要按设定回应质疑。",
+      passive_weak_denial: "模拟用户消息：（对应上文）用户怀疑角色做了某件角色不想承认、没把握或容易被误会的小事；角色需要按设定回应质疑。",
       passive_detail_report: "模拟用户消息：（对应上文）用户要求角色补充进度、时间、位置或状态细节；重点是信息压缩，不限定具体场景。",
       passive_fixed_counter: "模拟用户消息：（对应上文）用户把错误、锅或责任推向角色；角色需要用自己的方式挡一下，不展开长辩论。",
       passive_service_accept: "模拟用户消息：（对应上文）用户提供照顾、投喂、帮忙或替角色处理一件小事；不要预设服从关系或固定动作。",
@@ -31252,7 +31486,7 @@ function renderPersonaStandardizationWorkbench() {
         </div>
         <div class="persona-style-options">${options}</div>
         <label class="persona-standard-question">
-          <span><b>自填更贴近的角色回复</b><small>如果三句都不准，直接写一句更像她会接的话。它只作为归纳证据，不会原样写进最终稿。</small></span>
+          <span><b>自填更贴近的角色回复</b><small>如果三句都不准，直接写一句更像这个角色会接的话。它只作为归纳证据，不会原样写进最终稿。</small></span>
           <textarea rows="2" data-persona-style-custom="${escapeHtml(scenario.id)}" placeholder="可选：按这个上文意图，写一句更像角色会说的话；填写后可不选上面的候选">${escapeHtml(custom)}</textarea>
         </label>
         <details class="persona-style-retry" ${feedback ? "open" : ""}>
@@ -31439,7 +31673,7 @@ function renderPersonaStandardizationWorkbench() {
             <span><b>参考材料</b><small>可以写"平时怎样、熟了怎样、被误解怎样、被要求怎样、真正害怕/在意什么"。第二步会读取前 4000 字作为风格参考。</small></span>
             <textarea rows="8" data-persona-standard-supplement placeholder="例如：
 用户：你刚才这个说法好像太正式了
-她：啊，那我换短一点。刚才那句不算。
+角色：啊，那我换短一点。刚才那句不算。
 
 补充说明：
 性格底色：外表安静，熟了会有点嘴硬和捉弄人。
@@ -31818,7 +32052,7 @@ async function savePersonaVoiceChannelDrafts(button, root = document) {
 function fillPersonaStandardizationSample() {
   const draft = personaStandardizationDraftState();
   Object.assign(draft, {
-    supplement_text: "聊天记录示例：\n用户：你刚才这个说法好像太正式了\n她：啊，那我换短一点。刚才那句不算。\n用户：你在干嘛？\n她：刚下课，脑子还没转过来。\n\n性格补充：\n底色：外表安静，熟了会有点嘴硬和捉弄人。\n内在驱动：很在意被认真对待，但不喜欢把在意说得太满。\n亲疏变化：对陌生人礼貌收着，对熟人会更直接，也会保留一点边界。\n压力反应：被催或被误解时会先缩短回复，缓过来后再补一句。\n矛盾感：想靠近但怕显得太主动；会照顾人，但不想被当成只会顺从。\n\n补充说明：\n保留原人格里的称呼和关系；不要写成客服腔；如果资料和原人格冲突，以原人格为准并提醒我审核。",
+    supplement_text: "聊天记录示例：\n用户：你刚才这个说法好像太正式了\n角色：啊，那我换短一点。刚才那句不算。\n用户：你在干嘛？\n角色：刚下课，脑子还没转过来。\n\n性格补充：\n底色：外表安静，熟了会有点嘴硬和捉弄人。\n内在驱动：很在意被认真对待，但不喜欢把在意说得太满。\n亲疏变化：对陌生人礼貌收着，对熟人会更直接，也会保留一点边界。\n压力反应：被催或被误解时会先缩短回复，缓过来后再补一句。\n矛盾感：想靠近但怕显得太主动；会照顾人，但不想被当成只会顺从。\n\n补充说明：\n保留原人格里的称呼和关系；不要写成客服腔；如果资料和原人格冲突，以原人格为准并提醒我审核。",
     speech: "短句为主，自然口语，少解释。避免“希望换个话题还是继续聊”“我可以帮你”等人机式句子。",
     output: "社交软件文字回复短一点、像真人打字；不用动作描写和旁白，不自称智能助手，不输出工具或系统说明。",
     examples: "示例：啥 / 没懂 / 我在哦 / 笑死。反例：（揉眼睛）早上好、我是您的智能助手、要不要继续这个话题。",
@@ -33123,6 +33357,11 @@ document.addEventListener("click", async (event) => {
 
 document.addEventListener("click", async (event) => {
   const element = event.target instanceof Element ? event.target : null;
+  const externalApiTestButton = element?.closest("[data-external-api-test]");
+  if (externalApiTestButton instanceof HTMLButtonElement) {
+    await runExternalApiTest(externalApiTestButton);
+    return;
+  }
   const testResultButton = element?.closest("[data-test-result-source]");
   if (testResultButton) {
     const resolved = resolveTestDiagnosticResult(

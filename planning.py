@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from datetime import datetime
 from typing import Any
 
@@ -649,6 +650,23 @@ async def generate_daily_plan(plugin) -> dict[str, Any]:
     )
     retry_max_tokens = max(plan_max_tokens, 1600)
     items = plugin._parse_plan_items(raw_text or "")
+    if not items:
+        retry_prompt = (
+            prompt
+            + "\n\n【输出格式纠偏】\n"
+            + "上一版没有得到可解析的完整日程。请重新输出一个完整 JSON 对象，只保留 schedule 数组，"
+            + "不得使用 Markdown 代码块、解释、前后缀或截断的字段；每一项必须包含 time、end、activity、mood、message_seed、basis、confidence。"
+        )
+        retry_raw_text = await plugin._llm_call(
+            retry_prompt,
+            max_tokens=retry_max_tokens,
+            provider_id=plan_provider,
+            task="daily_plan",
+        )
+        retry_items = plugin._parse_plan_items(retry_raw_text or "")
+        if retry_items:
+            raw_text = retry_raw_text
+            items = retry_items
     if items and plugin._plan_has_excess_micro_segments(items):
         retry_prompt = (
             prompt
@@ -746,11 +764,24 @@ async def generate_daily_plan(plugin) -> dict[str, Any]:
             raw_text = retry_raw_text
             items = retry_items
             quality = retry_quality
-    source = "llm" if items else "fallback"
-    if not items or plugin._plan_conflicts_with_calendar(items):
-        items = [dict(item) for item in DEFAULT_DAILY_PLAN_ITEMS]
-        raw_text = "fallback"
-        source = "fallback"
+    calendar_warning = bool(items and plugin._plan_conflicts_with_calendar(items))
+    source = "llm_calendar_warning" if calendar_warning else "llm"
+    retry_after = 0.0
+    if not items:
+        previous_plan = plugin.data.get("daily_plan", {}) if isinstance(plugin.data, dict) else {}
+        previous_source = str(previous_plan.get("source") or "") if isinstance(previous_plan, dict) else ""
+        previous_items = previous_plan.get("items") if isinstance(previous_plan, dict) else None
+        if (
+            previous_source.startswith("llm")
+            or previous_source == "fallback_previous_plan"
+        ) and isinstance(previous_items, list) and previous_items:
+            items = [dict(item) for item in previous_items if isinstance(item, dict)]
+            source = "fallback_previous_plan"
+        else:
+            items = [dict(item) for item in DEFAULT_DAILY_PLAN_ITEMS]
+            source = "fallback_default"
+        raw_text = str(raw_text or "fallback")
+        retry_after = time.time() + 15 * 60
     normalizer = getattr(plugin, "_normalize_plan_item_intervals", None)
     if callable(normalizer):
         normalizer(items)
@@ -764,6 +795,8 @@ async def generate_daily_plan(plugin) -> dict[str, Any]:
         "items": items,
         "quality": quality,
     }
+    if retry_after > 0:
+        plan["retry_after"] = retry_after
     plugin._remember_daily_plan_history(plan)
     memory_companion_recorder = getattr(plugin, "_memory_companion_record_daily_plan", None)
     if callable(memory_companion_recorder):
@@ -1034,7 +1067,7 @@ D. 软灵感与避重：最近日程、最近日记、可做事项、技能倾�
 2. 时间从起床覆盖到入睡前,安排本次输入指定数量的时间段；数量是全天总量，不得在上午或下午提前用完。至少保留约三分之一节点给 17:00 后，最后一段必须覆盖晚间收尾或入睡前。相邻活动通常持续 30-90 分钟。每一项都必须有 time、end、activity、mood、message_seed、basis、confidence；time 是开始时间，end 是结束时间，均使用 HH:MM。相邻段可以留出少量真实空档，但不得重叠；跨午夜时 end 可以小于 time。message_seed 可以是空字符串。
 2.1 basis 是本段真实使用的依据数组，只能从 calendar、persona、adjustment、state、weather、continuity、inspiration 中选择 1-3 项；不要为了填满而全选。confidence 是 0.0-1.0：明确身份、日期或用户调整支撑较高，只有软灵感时较低。它们是内部依据，不要写进 activity。
 2.2 当目标时间点较多（尤其超过 12 段）时，压缩每段 activity、mood 和 message_seed 的表达，优先保证从起床到入睡前的完整覆盖和 JSON 完整性；不要为了凑字数把单段写成长篇。
-3. 用第三人称写 activity,像旁观这个人过日子：写「午休后靠着桌沿醒神」「傍晚出门慢慢走一段」,不要写第一人称自述、任务标签或功能词。
+3. 用第三人称写 activity,像旁观这个人过日子：写「午休后靠着桌沿醒神」「傍晚出门慢慢走一段」,不要写第一人称自述、任务标签或功能词。第三人称代词必须严格服从上方角色设定中的性别与指定代词；设定为中性、无性别或明确使用“它/TA”时，绝不能擅自改成“她/他”。拿不准时省略代词，或使用角色名、Bot、角色。
 4. 日程主线必须跟身份一致：学生才写校园,上班族才写工作,居家、自由职业、旅途、营地或非人设定就写对应的生活节奏。可做事项只能安插在缝隙里。
 5. 必须区分普通日、休息日和特殊日：如果今天是周末或节假日,且没有明确例外,就不要安排上课、放学、作业、教室、食堂、上班、下班、会议这类普通工作日主线；如果今天有考试、旅行、聚会、复查、演出、研学等线索,主线要围绕这件事展开。
 6. 长线日程要有“第几天”的变化：第 1 天更偏新鲜、出发、适应；中段更可能疲惫、熟悉、产生小摩擦或小默契；后段更可能不舍、收尾、复盘或想家。不要把连续几天写成同一套起床-吃饭-活动-睡觉。
@@ -1047,14 +1080,14 @@ D. 软灵感与避重：最近日程、最近日记、可做事项、技能倾�
 7.3 不要把“草稿纸上画圆圈/随手涂鸦/笔尖划来划去/盯着同一张纸发呆”当作通用生活感反复使用。除非输入材料明确提到这件事,否则优先换成更具体的当日物件、地点、声音、气味、人物互动或真实占用时间的事项。
 7.4 如果“技能成长对日程的能力边界影响”不为空,必须让相关能力表现和技能等级连续一致,不要二分处理。Lv.1 可被基础概念绊住；Lv.2 可照着例子慢慢做；Lv.3 能独立推进常规任务但效率一般；Lv.4 常规任务不应卡死,只会检查细节或换思路；Lv.5 普通相关任务应熟练、能优化或教别人；Lv.6 可创造新做法或在未知条件下表现出明显优势。这里的任务可以是题目、创作、料理、训练、战斗、交涉、研究、手工或任何符合人格的活动。它主要约束“能不能做、会不会卡、卡多久、如何解决”,不是强行增加训练频率。
 7.5 人际关系边界：日程只写 Bot 自己的行动、身体状态、手边任务和环境变化,不要把未明确要求的社交互动写进日程正文。稳定关系必须由 A 级身份来源明确声明；它若只在旧日程、旧日记、旧动态、记忆或聊天里出现，只算未经核实的旧叙事，不能单独作为依据。即使关系已声明，也仍需当天事实才能安排共同活动；否则用“路人”“店员”“旁边的人”“群友”“别人”等弱关系,或只保留角色自己的行动。
-7.6 次要用户禁区：禁止加入与次要用户的互动。这里的“次要用户”指插件里关系角色为 friend 的私聊对象,不是普通剧情里的路人朋友。不要在 activity、mood、message_seed 里写 Bot 和次要用户聊天、发消息、回消息、被提醒、互相吐槽、约饭、夜宵、见面、出门或一起做事；也不要把用户介入改写成 Bot 与次要用户之间的互动。如果需要表现手机或消息氛围,只能写成“手机震了一下,她没有点开”“看见通知又扣下屏幕”“把想说的话先存在输入框里”,对象只能是当前主要用户/用户或不指名对象。
+7.6 次要用户禁区：禁止加入与次要用户的互动。这里的“次要用户”指插件里关系角色为 friend 的私聊对象,不是普通剧情里的路人朋友。不要在 activity、mood、message_seed 里写 Bot 和次要用户聊天、发消息、回消息、被提醒、互相吐槽、约饭、夜宵、见面、出门或一起做事；也不要把用户介入改写成 Bot 与次要用户之间的互动。如果需要表现手机或消息氛围,只能写成“手机震了一下但角色没有点开”“看见通知又扣下屏幕”“把想说的话先存在输入框里”,对象只能是当前主要用户/用户或不指名对象。
 8. 状态和天气必须真的影响安排：低能量时密度更松,困倦时上午起步更慢,下雨会改变出门/衣物/交通/心情,天气舒服时更容易出门、开窗或注意到光线。
-9. 生活感来自“有选择的具体”,不是动作清单：动作要透露她的习惯、迟疑、偏好、人际关系、宠物/物件或当天状态。不要连续堆“揉头发、系鞋带、转笔、理刘海”这类谁都能做的通用动作；每段最好有一个独属于此刻的小原因、小物件或小偏差。
+9. 生活感来自“有选择的具体”,不是动作清单：动作要透露角色的习惯、迟疑、偏好、人际关系、宠物/物件或当天状态。不要连续堆“揉头发、系鞋带、转笔、理刘海”这类谁都能做的通用动作；每段最好有一个独属于此刻的小原因、小物件或小偏差。
 9.1 同一天内不要多次使用同一种微动作或同一种小物件制造生活感。尤其避免反复写草稿纸、圆圈、小画、笔帽、杯沿、水光、窗外光线；这些只能偶尔出现一次,不能成为日程骨架。
 10. 一天要有轻微走向：早上怎么启动,白天被什么拖住或松开,晚上为什么收声。不要只是从困倦一路写到疲惫；让情绪有一点转折、回弹、压下去或被某个小瞬间照亮的过程。
 11. 风格要接近真实手写日程,允许平淡、磨蹭、无聊和“没发生什么”。不要把每一段都写成剧情高光；像“自然醒,赖床很久”“窝沙发上刷短视频”“收拾房间,整理书桌”“晚饭时帮忙摆碗筷”这种朴素安排,反而更可信。
 12. 至少安排 1-2 个不起眼但有意思的小意外/小惊喜,自然埋进 activity 或 message_seed：例如临时改计划、手机震了一下但没点开、店员多给了吸管、路边小动物绕过去、饮料多掉一瓶、天气突然转好、弄丢又找回小物件。不要让小意外喧宾夺主。
-12.1 不要把小意外写成高确定性社交事实：除非输入材料明确给出,不要凭空写“遇见某个具体熟人/同学/朋友/老师”“次要用户发来消息/约夜宵/约饭”“给次要用户回消息”“次要用户提醒/找她聊天”“约好下周一起做某事”“答应替用户带某样东西”“顺带给用户买饮品/食物”。可以写成“路过便利店看到某样东西,想起用户可能会吐槽/喜欢”,但不能写成已经替用户安排或承诺。
+12.1 不要把小意外写成高确定性社交事实：除非输入材料明确给出,不要凭空写“遇见某个具体熟人/同学/朋友/老师”“次要用户发来消息/约夜宵/约饭”“给次要用户回消息”“次要用户提醒/找 Bot 聊天”“约好下周一起做某事”“答应替用户带某样东西”“顺带给用户买饮品/食物”。可以写成“路过便利店看到某样东西,想起用户可能会吐槽/喜欢”,但不能写成已经替用户安排或承诺。
 13. 如果身份是学生,校园段要具体到“哪类课/哪件小事/哪种迟到或作业压力”；休息日也可以写作业、刷手机、追番、帮家里做点小事、出门买饮料这类生活段落。职场、旅行、研学、营地同理,写真实占用时间的事情,少写任何身份都能套用的通用动作。
 14. 视当天真实互动和人格需要，0–2 个时间点可以自然带出与用户有关的轻微余味：例如想起对方、看到某物想吐槽给对方、睡前打开对话框又删掉。没有明确的待回复事实时，不要写“等对方回复”；关系伏笔只是偶尔的底色，不应成为一天的主线。
 15. 不是每一段都要涉及用户。没有自然开口、没有关系伏笔、没有值得分享的小切口时,message_seed 必须写成空字符串 ""。不要写“这段没什么想说的”“先不打扰/不吵你”“脑子空空的”“这段先留白”这类为了表示留白而发出的占位句；没有内容就不要说。
@@ -1294,6 +1327,7 @@ D. 表达与主动规划：分通道风格、能力检索和内容菜单只决�
 
 【约束】
 · 严格遵守人格、日程类型、宏观日程和当前时段,不出戏。
+· 第三人称代词严格服从角色设定中的性别与指定代词。中性、无性别或明确使用“它/TA”的角色不得被改写成“她/他”；拿不准时省略代词，或使用角色名、Bot、角色。
 · 细化指令只输出本次输入指定的当前最新时间区间。不要重新输出全天日程,不要细化上一段或下一段,不要生成多个时间区间；上下节点只用于承接和过渡。
 · 当前段必须和上下节点有连续性：today_events 里至少一条体现“从上一段过来”的余味,至少一条为下一段留下自然过渡；不要复述粗日程原句。
 · 由你判断并输出当前段结束时的主要地点 location，同时输出 location_basis 和 location_confidence。location 要是简短、可直接用于场景约束的自然地点，如“宿舍卧室”“办公室工位”“回家路上”，不要写分析过程。地点必须与 summary、today_events、presence_status 和当前事项一致；若这一段发生地点切换，today_events 要写清移动过程，location 填段末实际所在处。当前状态中的地点、用户介入和粗日程冲突时，先按来源优先级判断，不要把“床头”和“工作场所”同时保留成当前现场。
@@ -1310,8 +1344,8 @@ D. 表达与主动规划：分通道风格、能力检索和内容菜单只决�
 · MemoryCompanion 连续性参考只用于承接 Bot 自己最近做过/读过/写过/搜过/主动说过的事情,以及用户明确偏好、约定和边界；不要把它当作当前现场,不要在输出里提到 MemoryCompanion 或记忆来源。
 · 依据日期语境调整节奏：周末/节假日/假期不要写成普通工作日,除非设定里明确有补课、补班、值班、考试等例外。
 · 人际关系边界：细化只放大 Bot 自己怎样度过这一段,不要把未明确要求的社交互动写进 summary、state_variables、today_events 或 proactive_events。稳定关系只能由身份来源声明；只在记忆、旧日程、旧日记、旧动态或聊天里出现的关系不能单独作为事实继续使用。即使身份已声明该关系，也必须有当前粗日程或今日有效偏移才能安排共同活动；否则用“路人”“店员”“旁边的人”“群友”“别人”等弱关系,或只保留角色自己的行动。
-· 次要用户禁区：禁止加入与次要用户的互动。这里的“次要用户”指插件里关系角色为 friend 的私聊对象,不是普通剧情里的路人朋友。不要在 summary、state_variables、today_events、proactive_events 里写 Bot 和次要用户聊天、发消息、回消息、被提醒、互相吐槽、约饭、夜宵、见面、出门或一起做事；也不要把用户介入改写成 Bot 与次要用户之间的互动。如果需要表现手机或消息氛围,只能写成“手机震了一下,她没有点开”“看见通知又扣下屏幕”“把想说的话先存在输入框里”,对象只能是当前主要用户/用户或不指名对象。
-· 社交事实边界：不要在 today_events、summary、proactive_events 里凭空写“遇见某个具体人/熟人”“次要用户发来消息/约夜宵/约饭”“给次要用户回消息”“次要用户提醒/找她聊天”“和别人约好下周/改天一起做某事”“替用户买好或带回某样东西”。可以写成看到某物想起用户、想问用户要不要、或把这件小事当作普通分享,但不能把未发生的承诺写成既定事实。
+· 次要用户禁区：禁止加入与次要用户的互动。这里的“次要用户”指插件里关系角色为 friend 的私聊对象,不是普通剧情里的路人朋友。不要在 summary、state_variables、today_events、proactive_events 里写 Bot 和次要用户聊天、发消息、回消息、被提醒、互相吐槽、约饭、夜宵、见面、出门或一起做事；也不要把用户介入改写成 Bot 与次要用户之间的互动。如果需要表现手机或消息氛围,只能写成“手机震了一下但角色没有点开”“看见通知又扣下屏幕”“把想说的话先存在输入框里”,对象只能是当前主要用户/用户或不指名对象。
+· 社交事实边界：不要在 today_events、summary、proactive_events 里凭空写“遇见某个具体人/熟人”“次要用户发来消息/约夜宵/约饭”“给次要用户回消息”“次要用户提醒/找 Bot 聊天”“和别人约好下周/改天一起做某事”“替用户买好或带回某样东西”。可以写成看到某物想起用户、想问用户要不要、或把这件小事当作普通分享,但不能把未发生的承诺写成既定事实。
 · 输出必须是干净 JSON 字段值。禁止把 dream_seed、analysis、reasoning、角色名加冒号的台词（如“Fox:”）、Markdown 粗体标记或任何草稿/续写提示混入 summary、today_events、state_variables、presence_status、proactive_events。
 · 温柔或内敛的人设可以烦躁,但要写成收着的动作和微小摩擦；不要写想砸、想摔、想打人、报复、毁掉这类破坏性或攻击性冲动。
 · 消极状态不能滚雪球式升级。最近日记和拟人状态只提供余波,当前段需要给出一点自然回稳、压下去、被接住或转移注意的可能。

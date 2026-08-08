@@ -12268,6 +12268,21 @@ body.daily-outfit-preview-open {
   background: #fff;
 }
 
+.roleplay-example-presets {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+
+.roleplay-example-presets > span {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .persona-card,
 .world-blueprint,
 .roleplay-user-card {
@@ -15209,6 +15224,30 @@ html[data-bookshelf-direction="backward"]::view-transition-new(bookshelf-view) {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.6;
+}
+
+.external-api-result-preview {
+  display: grid;
+  gap: 8px;
+}
+
+.external-api-result-preview > div {
+  border-left: 3px solid var(--accent);
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--surface) 92%, var(--accent) 4%);
+}
+
+.external-api-result-preview b,
+.external-api-result-preview p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.external-api-result-preview p {
+  margin-top: 3px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .test-diagnostic-steps,
@@ -21517,6 +21556,55 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.external-api-test-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  border-top: 1px dashed var(--line-soft);
+  padding-top: 12px;
+}
+
+.external-api-test-actions > button {
+  grid-column: 2;
+  min-width: 148px;
+  min-height: 38px;
+}
+
+.external-api-test-query {
+  display: grid;
+  grid-column: 1;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.external-api-test-query input {
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+@media (max-width: 680px) {
+  .external-api-test-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .external-api-test-actions > button,
+  .external-api-test-query {
+    grid-column: 1;
+    width: 100%;
+  }
+}
+
 .tts-config-layout {
   gap: 0;
 }
@@ -26722,6 +26810,10 @@ pre {
 }
 
 .persona-card-head .roleplay-example-btn {
+  align-self: start;
+}
+
+.persona-card-head .roleplay-example-presets {
   align-self: start;
 }
 

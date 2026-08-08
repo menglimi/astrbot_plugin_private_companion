@@ -62,3 +62,14 @@ def test_global_click_handler_uses_the_normalized_event_target() -> None:
         '"[data-setup-guide-refresh-bindings]");'
     ) in SCRIPT
     assert 'const refreshBindingsButton = target.closest(' not in SCRIPT
+
+
+def test_roleplay_has_multiple_gender_neutral_persona_presets() -> None:
+    start = HTML.index('<section class="persona-card is-active"')
+    end = HTML.index("</section>", start)
+    markup = HTML[start:end]
+    for preset in ("persona", "persona_male", "persona_female", "persona_nonhuman"):
+        assert f'data-roleplay-example="{preset}"' in markup
+    assert "const roleplayPersonaPresets" in SCRIPT
+    assert '"gender": "未指定；使用角色名或 TA，避免自行猜测性别"' in SCRIPT
+    assert 'kind === "persona" || kind.startsWith("persona_")' in SCRIPT

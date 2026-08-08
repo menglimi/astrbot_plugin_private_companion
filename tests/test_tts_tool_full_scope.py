@@ -245,6 +245,41 @@ class TtsToolFullScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(final_resp.completion_text, "真正只发这一句。")
         self.assertTrue(event._private_companion_same_session_tool_finalized)
 
+    async def test_reaction_tool_intermediate_text_is_hidden_until_tool_result(self):
+        harness = _ResponseHarness()
+        event = SimpleNamespace(unified_msg_origin="default:GroupMessage:10001")
+        tool_resp = LLMResponse(
+            role="assistant",
+            completion_text="这句不能在表情工具执行前先发送。（发送了一张表情包）",
+            tools_call_name=["pc_find_reaction_image"],
+            tools_call_args=[
+                {
+                    "query": "温柔回应",
+                    "caption": "这句只能作为图片正文或最终纯文字回复。",
+                    "send": True,
+                }
+            ],
+        )
+
+        await harness.normalize_tts_enhancement_response(event, tool_resp)
+
+        self.assertEqual(tool_resp.completion_text, "")
+        self.assertIsNone(tool_resp.result_chain)
+
+    async def test_unrelated_tool_intermediate_text_keeps_existing_behavior(self):
+        harness = _ResponseHarness()
+        event = SimpleNamespace(unified_msg_origin="default:GroupMessage:10001")
+        tool_resp = LLMResponse(
+            role="assistant",
+            completion_text="普通工具的已有中间说明。",
+            tools_call_name=["pc_manage_memo"],
+            tools_call_args=[{"action": "list"}],
+        )
+
+        await harness.normalize_tts_enhancement_response(event, tool_resp)
+
+        self.assertEqual(tool_resp.completion_text, "普通工具的已有中间说明。")
+
     async def test_cross_session_tool_send_is_not_deferred(self):
         harness = _ToolHarness()
         event = SimpleNamespace(unified_msg_origin="default:GroupMessage:10001")

@@ -96,7 +96,7 @@
       to { opacity: 1; transform: scaleX(1); transform-origin: left; }
     }
   </style>
-  <link rel="stylesheet" href="./app.css?v=20260808-world-users-overview-v6" />
+  <link rel="stylesheet" href="./app.css?v=20260808-external-api-tests-v1" />
   <!-- Keep the structured roleplay form readable while a WebUI asset is being refreshed. -->
   <style id="roleplay-layout-fallback">
     .roleplay-form,
@@ -474,7 +474,13 @@
                   <h3>角色资料</h3>
                   <p>外观、身份、日常习惯和关键细节；供日程、状态、识图、生图和主动行为参考，不是聊天人格全文。</p>
                 </div>
-                <button type="button" class="roleplay-example-btn" data-roleplay-example="persona">填入示例</button>
+                <div class="roleplay-example-presets" aria-label="角色预设">
+                  <span>角色预设</span>
+                  <button type="button" class="roleplay-example-btn" data-roleplay-example="persona">中性</button>
+                  <button type="button" class="roleplay-example-btn" data-roleplay-example="persona_male">男性</button>
+                  <button type="button" class="roleplay-example-btn" data-roleplay-example="persona_female">女性</button>
+                  <button type="button" class="roleplay-example-btn" data-roleplay-example="persona_nonhuman">非人/拟人</button>
+                </div>
               </div>
               <input name="bot_name" type="hidden" />
               <input name="default_style" type="hidden" />
@@ -1808,6 +1814,6 @@ QQ空间 = 公开札记
   <script src="./js/ui/appearance.js?v=20260713-font-options"></script>
   <script src="./js/panels/provider-tree.js?v=20260804-private-reading-capability-v1"></script>
   <script src="./js/panels/qzone-panel.js?v=20260731-qzone-platform-support-v1"></script>
-  <script src="./app.js?v=20260808-feature-group-order-v1-world-autogrow-v3"></script>
+  <script src="./app.js?v=20260809-persona-presets-v1"></script>
 </body>
 </html>

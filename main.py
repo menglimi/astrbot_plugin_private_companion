@@ -12657,6 +12657,34 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 pass
             resp.completion_text = ""
             original_text = ""
+        tool_names = getattr(resp, "tools_call_name", None)
+        if isinstance(tool_names, str):
+            normalized_tool_names = {tool_names.strip()}
+        elif isinstance(tool_names, (list, tuple, set)):
+            normalized_tool_names = {
+                str(item or "").strip() for item in tool_names if str(item or "").strip()
+            }
+        else:
+            normalized_tool_names = set()
+        media_delivery_tool_call = bool(
+            normalized_tool_names & {"pc_find_reaction_image", "pc_generate_photo"}
+        )
+        if media_delivery_tool_call:
+            # These tools own their visible caption/media delivery. AstrBot also
+            # yields assistant content attached to a tool call as an llm_result;
+            # exposing that intermediate text produces a duplicate before the
+            # tool result is known and can falsely claim that an image was sent.
+            try:
+                resp.result_chain = None
+            except Exception:
+                pass
+            resp.completion_text = ""
+            original_text = ""
+            logger.info(
+                "[PrivateCompanion] 已隐藏媒体工具调用前的中间正文: tools=%s session=%s",
+                ",".join(sorted(normalized_tool_names)),
+                _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
+            )
         recovered_text, _ = await self._recover_plaintext_photo_tool_call(event, resp, original_text)
         if recovered_text != original_text:
             resp.completion_text = recovered_text
@@ -12925,6 +12953,13 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         prompt = str(getattr(event, "private_companion_external_token_prompt", "") or "")
         started = _safe_float(getattr(event, "private_companion_external_token_start", 0), 0)
         completion = self._completion_text_for_token_stats(resp)
+        response_tool_names = getattr(resp, "tools_call_name", None) if resp is not None else None
+        if isinstance(response_tool_names, str):
+            has_tool_call = bool(response_tool_names.strip())
+        elif isinstance(response_tool_names, (list, tuple, set)):
+            has_tool_call = any(str(item or "").strip() for item in response_tool_names)
+        else:
+            has_tool_call = False
         if not prompt and not completion and resp is None:
             return
         umo = str(getattr(event, "unified_msg_origin", "") or "")
@@ -12974,8 +13009,8 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             prompt=prompt,
             completion=completion,
             elapsed_ms=int(max(0.0, time.time() - started) * 1000) if started > 0 else 0,
-            success=bool(completion),
-            error="" if completion else "empty_response",
+            success=bool(completion or has_tool_call),
+            error="" if completion or has_tool_call else "empty_response",
             resp=resp,
             session_id=umo,
             sender_id=sender_id,

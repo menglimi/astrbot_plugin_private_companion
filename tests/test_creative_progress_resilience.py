@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from astrbot_plugin_private_companion.constants import (
     CREATIVE_FALLBACK_CHUNKS,
+    CREATIVE_LEGACY_FALLBACK_CHUNKS,
     CREATIVE_SIMILARITY_RETRIES,
 )
 from astrbot_plugin_private_companion.creative import CreativeMixin
@@ -56,6 +57,17 @@ class _CreativeGenerationHarness(CreativeMixin):
 
     @staticmethod
     def _task_provider(*_args) -> str:
+        return ""
+
+
+class _CreativePersonaContextHarness(CreativeMixin):
+    def __init__(self) -> None:
+        self.schedule_persona_prompt = ""
+        self.default_style = ""
+        self.bot_name = ""
+
+    @staticmethod
+    def _get_default_persona_prompt() -> str:
         return ""
 
 
@@ -290,6 +302,19 @@ class CreativeProgressResilienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(project["current_chars"], len(real_text))
         self.assertEqual([item["content"] for item in project["creative_memory_pool"]], [real_text])
         self.assertEqual(project["status"], "finished")
+
+    def test_legacy_female_fallbacks_remain_cleanup_only_compatibility_data(self) -> None:
+        harness = CreativeMixin()
+        for old_text in CREATIVE_LEGACY_FALLBACK_CHUNKS:
+            self.assertTrue(harness._is_legacy_creative_fallback_chunk(old_text))
+        self.assertFalse(any(old_text in CREATIVE_FALLBACK_CHUNKS for old_text in CREATIVE_LEGACY_FALLBACK_CHUNKS))
+
+    def test_creative_persona_context_does_not_bind_soft_traits_to_gender(self) -> None:
+        context = _CreativePersonaContextHarness()._creative_persona_style_context()
+
+        self.assertIn("性别与代词边界", context)
+        self.assertIn("未指定时不要默认女性或男性", context)
+        self.assertIn("温柔、细腻、理性、锋利等表达气质不绑定任何性别", context)
 
 
 if __name__ == "__main__":

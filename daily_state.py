@@ -526,8 +526,18 @@ class DailyStateMixin(DailyStateTickMixin):
                     self._refresh_daily_state_location_from_plan(plan=current_plan)
                 if plan_changed or detail_day_changed:
                     self._save_data_sync()
-                return current_plan
-            if not force and self._is_plan_date_active(current_plan.get("date")):
+                source = _single_line(current_plan.get("source"), 40).lower()
+                retry_after = _safe_float(current_plan.get("retry_after"), 0.0)
+                fallback_retry_due = source.startswith("fallback") and (
+                    retry_after <= 0 or _now_ts() >= retry_after
+                )
+                if not fallback_retry_due:
+                    return current_plan
+            if (
+                not force
+                and current_plan.get("date") != today
+                and self._is_plan_date_active(current_plan.get("date"))
+            ):
                 plan_changed = self._sanitize_daily_plan_inplace(current_plan)
                 if plan_changed:
                     self._refresh_daily_state_location_from_plan(plan=current_plan)
@@ -535,7 +545,7 @@ class DailyStateMixin(DailyStateTickMixin):
                     self._save_data_sync()
                 return current_plan
             if not force and not known_users:
-                return None
+                return current_plan if current_plan.get("date") == today else None
             if not force and not self._is_daily_plan_due():
                 if self._is_plan_date_active(current_plan.get("date")):
                     plan_changed = self._sanitize_daily_plan_inplace(current_plan)
@@ -10037,7 +10047,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 "user_text": instruction,
                 "intensity": "强",
                 "scope": "直到再次换装或当日结束",
-                "immediate_reaction": "她已经按用户这次要求换好衣服，后续动作和场景继续沿用这套服装。",
+                "immediate_reaction": "Bot 已经按用户这次要求换好衣服，后续动作和场景继续沿用这套服装。",
                 "state_updates": [f"当前服装：按用户换装要求“{instruction}”继续"],
                 "source_role": "owner",
                 "source_user_id": source_user_id,
@@ -10508,7 +10518,7 @@ class DailyStateMixin(DailyStateTickMixin):
             return payload(
                 source="临时延后休息",
                 note=f"用户今晚希望晚点休息或陪聊；到 {until_text} 前暂时不要把睡眠段当成必须沉默,但这只是今晚的临时约定。",
-                immediate_reaction="她会把今晚的节奏稍微放慢并留出陪聊余地,但不会把这当成长期作息改变。",
+                immediate_reaction="Bot 会把今晚的节奏稍微放慢并留出陪聊余地,但不会把这当成长期作息改变。",
                 state_updates=[f"休息安排：今晚临时延后到 {until_text}", "清醒程度：陪聊但低负担", "后续安排：到点后自然收声或睡回去"],
                 intensity="强",
                 scope=f"今晚到 {until_text}",
@@ -10540,7 +10550,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 return payload(
                     source="睡眠中被用户唤醒",
                     note="当前日程处于休息/睡眠段,这条消息已经在休息闸门放行时登记为唤醒；不要重复计数,语气只保留刚醒的慢一点和轻一点。",
-                    immediate_reaction="她刚被这条消息轻轻叫醒,会慢一点看清内容再回应。",
+                    immediate_reaction="Bot 刚被这条消息轻轻叫醒,会慢一点看清内容再回应。",
                     state_updates=["清醒程度：刚被唤醒/迷糊", "语气：轻、短、带睡意", "后续安排：用户不继续打扰就继续睡"],
                     intensity="强",
                     scope="当前休息段和后续短时间",
@@ -10556,7 +10566,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 return payload(
                     source="睡眠中醒后续聊",
                     note="当前日程仍是休息/睡眠段,但 Bot 已在醒后缓冲期内；这是被叫醒后的连续对话,不再按再次唤醒处理。",
-                    immediate_reaction="她还没完全精神起来,但已经在接着聊天,不会每句话都像重新被吵醒。",
+                    immediate_reaction="Bot 还没完全精神起来,但已经在接着聊天,不会每句话都像重新被吵醒。",
                     state_updates=["清醒程度：醒后续聊/慢慢清醒", "语气：仍轻一点,但不重复表演被叫醒", "后续安排：停聊后再自然睡回去"],
                     intensity="中",
                     scope="醒后缓冲期",
@@ -10578,17 +10588,17 @@ class DailyStateMixin(DailyStateTickMixin):
             if prior_wakes > 0:
                 return payload(
                     source="睡眠中再次被唤醒",
-                    note="当前日程处于休息/睡眠段,用户又发来消息；回复语气应带一点被重新叫醒的迟钝感,但必须清楚理解用户的话,不要埋怨用户。若用户继续聊,可以慢慢醒一点；若用户停下,她会很快继续睡回去。",
-                    immediate_reaction="她又被消息轻轻拽醒一下,语气会慢半拍,但会看清用户说了什么再回应。",
+                    note="当前日程处于休息/睡眠段,用户又发来消息；回复语气应带一点被重新叫醒的迟钝感,但必须清楚理解用户的话,不要埋怨用户。若用户继续聊,可以慢慢醒一点；若用户停下,Bot 会很快继续睡回去。",
+                    immediate_reaction="Bot 又被消息轻轻拽醒一下,语气会慢半拍,但会看清用户说了什么再回应。",
                     state_updates=["清醒程度：再次被唤起/半梦半醒", "语气：慢半拍、短一点", "后续安排：用户不继续打扰就继续睡"],
                     intensity="中",
                     scope="当前休息段",
-                    carry_rule="当前段回复必须有刚被重新唤起的语气感觉,但不得降低理解和回答质量；如果后续没有用户消息,下一段细化应让她继续休息或睡回去。",
+                    carry_rule="当前段回复必须有刚被重新唤起的语气感觉,但不得降低理解和回答质量；如果后续没有用户消息,下一段细化应让 Bot 继续休息或睡回去。",
                 )
             return payload(
                 source="睡眠中被用户唤醒",
-                note="当前日程处于休息/睡眠段,用户发来消息把她轻轻叫醒；回复语气应像刚醒或半梦半醒,不要立刻精神饱满,但必须看懂并正面回应用户。若用户没有继续打扰,后续应自然睡回去或继续休息。",
-                immediate_reaction="她会先带着睡意看一眼消息,语气慢一点,但不会乱接或漏掉用户真正的问题。",
+                note="当前日程处于休息/睡眠段,用户发来消息把 Bot 轻轻叫醒；回复语气应像刚醒或半梦半醒,不要立刻精神饱满,但必须看懂并正面回应用户。若用户没有继续打扰,后续应自然睡回去或继续休息。",
+                immediate_reaction="Bot 会先带着睡意看一眼消息,语气慢一点,但不会乱接或漏掉用户真正的问题。",
                 state_updates=["清醒程度：刚被唤醒/迷糊", "语气：轻、短、带睡意", "后续安排：用户不继续打扰就继续睡"],
                 intensity="强",
                 scope="当前休息段和后续短时间",
@@ -10602,7 +10612,7 @@ class DailyStateMixin(DailyStateTickMixin):
             return payload(
                 source="用户帮助",
                 note="用户刚刚提供了和当前任务相关的帮助；当前任务不再按原本卡住状态推进,后续时间段要继承“被帮助后松动/推进”的结果。",
-                immediate_reaction="看到用户给的思路后,她先照着试了一下；如果确实对上当前任务,心里会明显松一口气。",
+                immediate_reaction="看到用户给的思路后,Bot 先照着试了一下；如果确实对上当前任务,心里会明显松一口气。",
                 state_updates=updates,
                 intensity="强",
                 scope="当前段、下一段、今日后续",
@@ -10615,7 +10625,7 @@ class DailyStateMixin(DailyStateTickMixin):
             return payload(
                 source="饮食反馈",
                 note=f"用户刚刚给了关于{meal}或吃什么的反馈；后续日程要把这当成一个已经影响生活安排的小事实,可以调整饭点、胃口、准备食物或晚餐选择。",
-                immediate_reaction="她会把这句当成一个可执行的小主意,刚才悬着的“吃什么”落下来一点。",
+                immediate_reaction="Bot 会把这句当成一个可执行的小主意,刚才悬着的“吃什么”落下来一点。",
                 state_updates=[f"{meal}选择：受用户反馈影响", "饥饿感：开始回落", "后续安排：可能按反馈调整吃饭/点餐/做饭"],
                 intensity="中",
                 scope="当前段和今日后续饭点",
@@ -10631,7 +10641,7 @@ class DailyStateMixin(DailyStateTickMixin):
             return payload(
                 source="用户照顾",
                 note="用户刚刚给了休息或照顾指令；后续节奏应明显调慢,更可能提前收尾、补充休息、喝水吃饭或把任务延后。",
-                immediate_reaction="她看到这句会停一下手里的事,嘴上可能不立刻答应,但动作会慢下来一点。",
+                immediate_reaction="Bot 看到这句会停一下手里的事,嘴上可能不立刻答应,但动作会慢下来一点。",
                 state_updates=["体力：消耗放缓/略微回稳", "情绪：被照顾后的柔和", "后续安排：更倾向提前收尾或补充休息"],
                 intensity="强",
                 scope="当前段和今日后续",
@@ -10644,7 +10654,7 @@ class DailyStateMixin(DailyStateTickMixin):
             return payload(
                 source="用户带出/同行",
                 note="用户刚刚带角色出门或一起外出；当前位置应从家里切换到外面,后续细化要承接外出场景,不要把角色写回家里。",
-                immediate_reaction="她会赶紧收拾一下东西,跟着用户往外走,可能边走边看手机或整理衣服。",
+                immediate_reaction="Bot 会赶紧收拾一下东西,跟着用户往外走,可能边走边看手机或整理衣服。",
                 state_updates=["位置：家里->外面", "活动：跟随用户外出", "情绪：略兴奋或期待"],
                 intensity="强",
                 scope="当前段和今日后续直到回家线索出现",
@@ -10657,7 +10667,7 @@ class DailyStateMixin(DailyStateTickMixin):
             return payload(
                 source="用户带回/回家",
                 note="用户和角色刚刚回到家；当前位置应从外面切换回家里,后续细化要承接回家后场景。",
-                immediate_reaction="她会松一口气,可能踢掉鞋子或把东西放下,瘫到沙发上。",
+                immediate_reaction="Bot 会松一口气,可能踢掉鞋子或把东西放下,瘫到沙发上。",
                 state_updates=["位置：外面->家里", "活动：回到居家", "情绪：放松"],
                 intensity="中",
                 scope="当前段和下一段",
@@ -10671,7 +10681,7 @@ class DailyStateMixin(DailyStateTickMixin):
             return payload(
                 source="用户约定",
                 note="用户刚刚给出陪伴、等待、稍后一起做事或约定线索；后续日程应保留期待/等待/预留空档,不要像没有约定一样推进。",
-                immediate_reaction="她会把这句话在心里放一下,后续做事时更容易分神看时间或看消息。",
+                immediate_reaction="Bot 会把这句话在心里放一下,后续做事时更容易分神看时间或看消息。",
                 state_updates=["等待/期待：上升", "后续安排：可能预留空档", "主动话题：围绕约定轻轻回勾"],
                 intensity="强",
                 scope="今日后续",
@@ -10682,7 +10692,7 @@ class DailyStateMixin(DailyStateTickMixin):
             return payload(
                 source="用户关心",
                 note="用户刚刚给了关心或照顾提醒；后续日程需要从低落/烦躁向被安抚后的柔和、慢慢回稳偏移,不要升级破坏性冲动。",
-                immediate_reaction="她看到关心会先顿一下,语气和动作都比刚才软一点。",
+                immediate_reaction="Bot 看到关心会先顿一下,语气和动作都比刚才软一点。",
                 state_updates=["情绪：低落/烦躁->被接住一点", "体力：主观疲惫感略降"],
                 intensity="中",
                 scope="当前段、下一段、情绪底色",
@@ -10691,7 +10701,7 @@ class DailyStateMixin(DailyStateTickMixin):
             return payload(
                 source="安慰互动",
                 note="用户刚刚在安慰或亲近；后续日程应保留一点被接住的余温,表达更软一些,不要继续单向累积负面情绪。",
-                immediate_reaction="她会把刚才绷着的劲松下来一点,可能短暂地想贴近用户。",
+                immediate_reaction="Bot 会把刚才绷着的劲松下来一点,可能短暂地想贴近用户。",
                 state_updates=["情绪：紧绷->柔和", "亲近感：上升"],
                 intensity="中",
                 scope="当前段和情绪底色",
@@ -10700,7 +10710,7 @@ class DailyStateMixin(DailyStateTickMixin):
             return payload(
                 source="边界提醒",
                 note="用户提醒降低攻击性或破坏性表达；后续日程必须把烦躁写成收着的动作,避免砸、摔、扔、打这类冲动。",
-                immediate_reaction="她会把那点冲劲压回去,改成少说两句或把东西放远一点。",
+                immediate_reaction="Bot 会把那点冲劲压回去,改成少说两句或把东西放远一点。",
                 state_updates=["情绪：冲动->收住", "行为边界：避免破坏性动作"],
                 intensity="强",
                 scope="今日后续",
@@ -10710,7 +10720,7 @@ class DailyStateMixin(DailyStateTickMixin):
             return payload(
                 source="用户边界",
                 note="用户刚刚表达边界或忙碌；后续主动应明显收敛,减少追问和贴近,让日程转向自我消化。",
-                immediate_reaction="她会把原本想继续靠近的动作收住,把消息窗口放到一边。",
+                immediate_reaction="Bot 会把原本想继续靠近的动作收住,把消息窗口放到一边。",
                 state_updates=["主动欲：下降", "关系状态：后退一点", "后续安排：转向自我消化"],
                 intensity="强",
                 scope="今日后续主动策略",
@@ -12712,7 +12722,7 @@ class DailyStateMixin(DailyStateTickMixin):
         lines = [
             "【技能成长对日程的能力边界影响】",
             f"影响强度：{strength_text}。这些技能主要用于保持能力边界一致,优先级低于日期语境、身份主线、状态、天气和用户介入；不要把今天写成训练清单。",
-            "安排方式：能力状态会改变她面对相关任务的表现。这里的任务可以是题目、创作、料理、训练、战斗、交涉、研究、手工或任何符合人格的活动。基本熟练以后不要再写她被常规任务难住、完全不会或长期卡死；很熟练/很有心得时,面对普通任务应表现为自然、快速、能检查/讲清楚或优化做法。只有高阶、陌生、超纲、状态极差或复杂综合场景,才可以短暂停顿。",
+            "安排方式：能力状态会改变 Bot/角色面对相关任务的表现。这里的任务可以是题目、创作、料理、训练、战斗、交涉、研究、手工或任何符合人格的活动。基本熟练以后不要再写 Bot/角色被常规任务难住、完全不会或长期卡死；很熟练/很有心得时,面对普通任务应表现为自然、快速、能检查/讲清楚或优化做法。只有高阶、陌生、超纲、状态极差或复杂综合场景,才可以短暂停顿。",
             "低等级技能仍可以被基础任务卡住；中等级技能可以偶尔卡在细节上,但应能通过复习、查资料、请教、试错或换思路推进。",
         ]
         for _, skill in ranked[:limit]:
