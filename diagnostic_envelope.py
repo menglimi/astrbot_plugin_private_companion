@@ -7,6 +7,7 @@ text must never define the public payload.
 """
 from __future__ import annotations
 
+import math
 import re
 import secrets
 from typing import Any
@@ -40,6 +41,9 @@ _ISSUED_TEST_KINDS = frozenset({
     "proactive_message",
     "model_diagnostics",
     "skill_similarity",
+    "weather_api",
+    "balance_api",
+    "web_search",
 })
 _PUBLIC_TITLES = {
     "provider": "Provider diagnostic",
@@ -53,6 +57,9 @@ _PUBLIC_TITLES = {
     "proactive_message": "Proactive message diagnostic",
     "model_diagnostics": "Model data diagnostic",
     "skill_similarity": "Skill similarity diagnostic",
+    "weather_api": "Weather API diagnostic",
+    "balance_api": "Balance API diagnostic",
+    "web_search": "Web search diagnostic",
     "check": "Diagnostic test",
 }
 _PUBLIC_ERROR_LABELS = {
@@ -114,6 +121,18 @@ def _as_int(value: Any, default: int = 0, *, ceiling: int = 86_400_000) -> int:
     return min(max(0, parsed), ceiling)
 
 
+def _as_number(value: Any, *, ceiling: float = 1_000_000_000_000_000.0) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed):
+        return None
+    return min(max(-ceiling, parsed), ceiling)
+
+
 def _safe_identifier(value: Any, limit: int = 80) -> str:
     text = str(value or "").strip().lower()
     if not _VALID_IDENTIFIER.fullmatch(text):
@@ -144,6 +163,34 @@ def _safe_url(value: Any) -> str:
         return _safe_label(f"{parsed.scheme}://{parsed.hostname}{port}{parsed.path or ''}", 180)
     except ValueError:
         return ""
+
+
+def _safe_path(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlparse(raw)
+        path = parsed.path if parsed.scheme or parsed.netloc else raw.split("?", 1)[0].split("#", 1)[0]
+    except ValueError:
+        return ""
+    if not path.startswith("/"):
+        path = f"/{path.lstrip('/')}"
+    return _safe_label(path, 180)
+
+
+def _safe_result_preview(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    preview: list[dict[str, str]] = []
+    for raw in value[:3]:
+        if not isinstance(raw, dict):
+            continue
+        title = _safe_label(raw.get("title"), 140)
+        snippet = _safe_label(raw.get("snippet") or raw.get("summary"), 240)
+        if title or snippet:
+            preview.append({"title": title, "snippet": snippet})
+    return preview
 
 
 def _safe_steps(value: Any) -> list[dict[str, str]]:
@@ -246,6 +293,18 @@ def normalize_diagnostic_result(
         "final_presets": [_safe_identifier(item, 60) for item in (source.get("final_presets") if isinstance(source.get("final_presets"), list) else [])[:6] if _safe_identifier(item, 60)],
         "prompt_hash": _safe_identifier(source.get("prompt_hash"), 80),
         "provider": _safe_label(source.get("provider"), 100),
+        "source": _safe_label(source.get("source"), 100),
+        "location_label": _safe_label(source.get("location_label"), 120),
+        "query_mode": _safe_identifier(source.get("query_mode"), 20),
+        "source_id": _safe_label(source.get("source_id"), 100),
+        "endpoint_path": _safe_path(source.get("endpoint_path")),
+        "amount": _as_number(source.get("amount")),
+        "total": _as_number(source.get("total")),
+        "used": _as_number(source.get("used")),
+        "remaining_percent": _as_number(source.get("remaining_percent"), ceiling=1_000_000.0),
+        "currency_label": _safe_label(source.get("currency_label"), 20),
+        "result_count": _as_int(source.get("result_count"), ceiling=10_000),
+        "result_preview": _safe_result_preview(source.get("result_preview")),
         "file_size": _as_int(source.get("file_size")),
         "detail": detail,
         "error": "" if (ok or pending) else _PUBLIC_ERROR_LABELS[category],

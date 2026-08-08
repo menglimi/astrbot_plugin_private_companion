@@ -3311,6 +3311,7 @@ const featureSettingSections = {
       title: "天气上下文",
       note: "默认使用和风天气；只需填写专属 Host、凭据和天气地点。其他来源与独立经纬度保留为高级配置。",
       keys: ["enable_weather_context", "weather_source", "weather_api_host", "weather_token", "weather_location", "weather_refresh_minutes", "enable_weather_alerts", "weather_alert_refresh_minutes", "weather_alert_min_severity", "enable_environment_change_proactive", "environment_change_check_minutes", "environment_change_cooldown_minutes"],
+      externalApiTest: { type: "weather_api", label: "测试天气 API" },
     },
     {
       title: "高级定位与兼容来源",
@@ -3321,6 +3322,7 @@ const featureSettingSections = {
       title: "余额与补给",
       note: "定期读取余额状态；偏低时只生成主动候选，最终表达仍受人格、免打扰和发送复核约束。",
       keys: ["enable_balance_awareness", "balance_api_url", "balance_api_key", "balance_api_auth_header", "balance_api_auth_scheme", "balance_api_custom_headers", "balance_json_path", "balance_total_json_path", "balance_used_json_path", "balance_value_divisor", "balance_currency_label", "balance_check_interval_minutes", "balance_request_timeout_seconds", "balance_low_threshold", "balance_critical_threshold", "balance_low_percent_threshold", "balance_critical_percent_threshold", "balance_message_cooldown_hours", "balance_include_amount_in_message"],
+      externalApiTest: { type: "balance_api", label: "测试余额接口" },
     },
   ],
   enable_private_image_self_recognition: [
@@ -3550,8 +3552,9 @@ const featureSettingSections = {
     },
     {
       title: "自定义搜索接口",
-      note: "只接管主动搜索的联网检索；选题和整理仍使用上方“搜索决策/整理”模型。",
+      note: "只接管主动搜索的联网检索；测试会经过主动搜索与群黑话联网参考共用的统一搜索入口。",
       keys: ["WEB_EXPLORATION_API_BASE_URL", "WEB_EXPLORATION_API_KEY", "WEB_EXPLORATION_API_MODEL"],
+      externalApiTest: { type: "web_search", label: "测试搜索接口" },
     },
   ],
   enable_qzone_integration: [
@@ -4184,6 +4187,122 @@ function collectSettingValue(key, input) {
     return raw;
   }
   return input.value;
+}
+
+const externalApiTestSettingKeys = Object.freeze({
+  weather_api: [
+    "weather_source",
+    "weather_api_host",
+    "weather_token",
+    "weather_location",
+    "weather_api_key",
+    "weather_city",
+    "weather_amap_api_key",
+    "weather_amap_city",
+    "weather_lat",
+    "weather_lon",
+  ],
+  balance_api: [
+    "balance_api_url",
+    "balance_api_key",
+    "balance_api_auth_header",
+    "balance_api_auth_scheme",
+    "balance_api_custom_headers",
+    "balance_json_path",
+    "balance_total_json_path",
+    "balance_used_json_path",
+    "balance_value_divisor",
+    "balance_currency_label",
+    "balance_request_timeout_seconds",
+  ],
+  web_search: [
+    "WEB_EXPLORATION_API_BASE_URL",
+    "WEB_EXPLORATION_API_KEY",
+    "WEB_EXPLORATION_API_MODEL",
+    "web_exploration_max_results",
+  ],
+});
+
+const externalApiTestTitles = Object.freeze({
+  weather_api: "天气 API 请求测试",
+  balance_api: "余额接口请求测试",
+  web_search: "搜索接口请求测试",
+});
+
+function currentExternalApiTestSetting(key, root) {
+  const control = root?.querySelector?.(`[data-feature-param="${key}"]`);
+  if (control) return collectSettingValue(key, control);
+  if (Object.prototype.hasOwnProperty.call(state.featureDetailParamDraft || {}, key)) {
+    return state.featureDetailParamDraft[key];
+  }
+  if (Object.prototype.hasOwnProperty.call(state.providerDraft || {}, key)) {
+    return state.providerDraft[key];
+  }
+  if (Object.prototype.hasOwnProperty.call(state.overview?.settings || {}, key)) {
+    return state.overview.settings[key];
+  }
+  if (Object.prototype.hasOwnProperty.call(state.overview?.providers || {}, key)) {
+    return state.overview.providers[key];
+  }
+  return "";
+}
+
+function externalApiTestRequestPayload(button) {
+  const type = String(button?.dataset?.externalApiTest || "").trim();
+  const root = button?.closest?.("[data-feature-param-form]") || document;
+  const settings = Object.fromEntries(
+    (externalApiTestSettingKeys[type] || []).map((key) => [key, currentExternalApiTestSetting(key, root)]),
+  );
+  const payload = { type, settings };
+  if (type === "web_search") {
+    payload.query = String(root.querySelector("[data-external-api-test-query]")?.value || "北京今天有什么新闻").trim().slice(0, 120);
+    payload.topic = "general";
+    payload.umo = "";
+    payload.usage = "web_exploration";
+  }
+  return payload;
+}
+
+function storeExternalApiTestResult(type, result) {
+  state.troubleshooting = state.troubleshooting || {};
+  state.troubleshooting.chain_tests = {
+    ...(state.troubleshooting.chain_tests || {}),
+    [type]: result,
+  };
+}
+
+async function runExternalApiTest(button) {
+  if (button?.dataset?.externalApiTestBusy === "1") return;
+  button.dataset.externalApiTestBusy = "1";
+  const payload = externalApiTestRequestPayload(button);
+  const type = payload.type;
+  const title = externalApiTestTitles[type] || "外部接口请求测试";
+  setActionBusy(button, true);
+  try {
+    const result = await postJson("/troubleshooting/test", payload);
+    storeExternalApiTestResult(type, result);
+    showToast(result.ok ? `${title}通过` : `${title}失败：${result.error || "未返回有效结果"}`, result.ok ? "ok" : "error");
+    showTestDiagnosticDialog(result.title || title, result);
+  } catch (error) {
+    const result = {
+      type,
+      ok: false,
+      test_status: "failed",
+      title,
+      error_category: "请求失败",
+      error: error.message,
+      detail: "测试请求未能完成",
+      suggestion: "确认插件页面后端仍在运行后重试。",
+      steps: [{ name: "提交测试请求", status: "error", detail: error.message }],
+      ran_at: Date.now() / 1000,
+    };
+    storeExternalApiTestResult(type, result);
+    showToast(`${title}失败：${error.message}`, "error");
+    showTestDiagnosticDialog(title, result);
+  } finally {
+    setActionBusy(button, false);
+    delete button.dataset.externalApiTestBusy;
+  }
 }
 
 const PHOTO_API_PLATFORM_OPTIONS = [
@@ -11201,6 +11320,8 @@ function testDiagnosticTimeText(value) {
 }
 
 function testDiagnosticFacts(result = {}) {
+  const hasValue = (key) => Object.prototype.hasOwnProperty.call(result, key) && result[key] !== null && result[key] !== undefined;
+  const currency = String(result.currency_label || "").trim();
   return [
     ["测试编号", result.request_id || result.trace_id || "未记录"],
     ["测试状态", testDiagnosticStatusLabel(result)],
@@ -11209,12 +11330,22 @@ function testDiagnosticFacts(result = {}) {
     ["错误类别", result.error_category || "无"],
     ["异常类型", result.exception_type || "无"],
     ["Provider", result.provider || result.provider_id || ""],
+    ["数据来源", result.source || ""],
+    ["地点", result.location_label || ""],
+    ["查询方式", result.query_mode || ""],
+    ["来源标识", result.source_id || ""],
+    ["接口路径", result.endpoint_path || ""],
+    ["余额", hasValue("amount") ? `${result.amount}${currency}` : ""],
+    ["总额度", hasValue("total") ? `${result.total}${currency}` : ""],
+    ["已用额度", hasValue("used") ? `${result.used}${currency}` : ""],
+    ["剩余比例", hasValue("remaining_percent") ? `${result.remaining_percent}%` : ""],
+    ["结果数量", hasValue("result_count") ? result.result_count : ""],
     ["执行后端", result.backend || ""],
     ["模型", result.image_model || ""],
     ["接口", result.endpoint_name || result.endpoint_url || ""],
     ["投递目标", result.delivery_umo || result.umo || ""],
     ["结果文件", result.path || ""],
-  ].filter(([, value]) => String(value || "").trim());
+  ].filter(([, value]) => value !== null && value !== undefined && String(value).trim());
 }
 
 function testDiagnosticReportText(title, result = {}) {
@@ -11240,6 +11371,10 @@ function testDiagnosticReportText(title, result = {}) {
       return `- ${elapsed}[${entry.level || "info"}] ${entry.stage || "记录"}：${entry.message || ""}`;
     }));
   }
+  const preview = Array.isArray(result.result_preview) ? result.result_preview.filter(Boolean).slice(0, 3) : [];
+  if (preview.length) {
+    lines.push("", "结果预览：", ...preview.map((item) => `- ${item.title || "未命名结果"}${item.snippet ? `：${item.snippet}` : ""}`));
+  }
   if (result.error) lines.push("", `错误详情：${result.error}`);
   if (result.delivery_error && result.delivery_error !== result.error) lines.push(`投递错误：${result.delivery_error}`);
   if (result.suggestion) lines.push("", `建议：${result.suggestion}`);
@@ -11252,6 +11387,7 @@ function testDiagnosticDialogMarkup(title, result = {}) {
   const warnings = Array.isArray(result.warnings) ? result.warnings.filter(Boolean) : [];
   const steps = Array.isArray(result.steps) ? result.steps.filter(Boolean) : [];
   const entries = Array.isArray(result.diagnostic_entries) ? result.diagnostic_entries.filter(Boolean) : [];
+  const preview = Array.isArray(result.result_preview) ? result.result_preview.filter(Boolean).slice(0, 3) : [];
   return `
     <section class="test-diagnostic-overview ${escapeHtml(status)}">
       <span>${escapeHtml(testDiagnosticStatusLabel(result))}</span>
@@ -11277,6 +11413,19 @@ function testDiagnosticDialogMarkup(title, result = {}) {
               <b>${escapeHtml(step.name || "执行阶段")}</b>
               <p>${escapeHtml(step.detail || "")}</p>
               ${Number(step.elapsed_ms || 0) > 0 ? `<small>${escapeHtml(Number(step.elapsed_ms))} ms</small>` : ""}
+            </div>
+          `).join("")}
+        </div>
+      </section>
+    ` : ""}
+    ${preview.length ? `
+      <section class="test-diagnostic-section">
+        <h3>结果预览</h3>
+        <div class="external-api-result-preview">
+          ${preview.map((item) => `
+            <div>
+              <b>${escapeHtml(item.title || "未命名结果")}</b>
+              ${item.snippet ? `<p>${escapeHtml(item.snippet)}</p>` : ""}
             </div>
           `).join("")}
         </div>
@@ -26456,6 +26605,28 @@ function photoReferenceManagerLaunchControl(value) {
   `;
 }
 
+function externalApiTestActionsHtml(test = {}) {
+  const type = String(test.type || "").trim();
+  const marker = {
+    weather_api: 'data-external-api-test="weather_api"',
+    balance_api: 'data-external-api-test="balance_api"',
+    web_search: 'data-external-api-test="web_search"',
+  }[type] || "";
+  if (!marker) return "";
+  const queryControl = type === "web_search" ? `
+    <label class="external-api-test-query">
+      <span>测试搜索词</span>
+      <input type="search" data-external-api-test-query value="北京今天有什么新闻" maxlength="120" autocomplete="off">
+    </label>
+  ` : "";
+  return `
+    <div class="external-api-test-actions">
+      ${queryControl}
+      <button type="button" ${marker}>${escapeHtml(test.label || "测试接口")}</button>
+    </div>
+  `;
+}
+
 function featureDetailPage(key) {
   const enabled = toBool(state.featureDraft[key]);
   const locked = featureLockedByProactiveOnlyMode(key);
@@ -26530,6 +26701,7 @@ function featureDetailPage(key) {
           </header>
           ${sectionStatus}
           ${items.map(settingRow).join("")}
+          ${externalApiTestActionsHtml(section.externalApiTest)}
         </section>
       `;
     })
@@ -33106,6 +33278,11 @@ document.addEventListener("click", async (event) => {
 
 document.addEventListener("click", async (event) => {
   const element = event.target instanceof Element ? event.target : null;
+  const externalApiTestButton = element?.closest("[data-external-api-test]");
+  if (externalApiTestButton instanceof HTMLButtonElement) {
+    await runExternalApiTest(externalApiTestButton);
+    return;
+  }
   const testResultButton = element?.closest("[data-test-result-source]");
   if (testResultButton) {
     const resolved = resolveTestDiagnosticResult(
