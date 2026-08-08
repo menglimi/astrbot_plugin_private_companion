@@ -348,13 +348,19 @@ class PrivateCompanionPageApiUsersGroupsMixin:
                 if relationship_score is not None:
                     previous_score = _safe_int(user.get("relationship_score"), 0, -1200, 1200)
                     effective_score = relationship_score
-                    if effective_score > 0 and not is_owner_exclusive(user):
-                        effective_score = min(
-                            effective_score,
-                            relationship_positive_score_cap(
-                                getattr(self.plugin, "relationship_positive_stage_cap_key", "deeply_bonded")
-                            ),
+                    # The stage ceiling is an ordinary-user limit; the primary
+                    # user (owner) is exempt unless the frozen exclusive mode
+                    # is active.  An over-cap manual score for ordinary users
+                    # is rejected explicitly instead of being silently clamped.
+                    if effective_score > 0 and not is_owner_exclusive(user) and role != "owner":
+                        positive_cap = relationship_positive_score_cap(
+                            getattr(self.plugin, "relationship_positive_stage_cap_key", "deeply_bonded")
                         )
+                        if effective_score > positive_cap:
+                            return self._error(
+                                f"普通用户亲密度上限为 {positive_cap}（当前配置的阶段上限），"
+                                "请先调整「普通用户正向亲密度阶段上限」或将该用户设为主要用户"
+                            )
                     user["relationship_score"] = effective_score
                     record_manual_relationship_change(
                         user,

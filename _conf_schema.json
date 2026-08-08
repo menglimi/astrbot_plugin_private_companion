@@ -298,7 +298,7 @@
         "type": "string",
         "options": ["familiar", "close", "intimate", "deeply_bonded"],
         "labels": ["熟悉", "亲近", "亲密", "深度联结"],
-        "hint": "普通用户的正向亲密度不会超过所选阶段。下调时既有正分按旧上限与新上限比例只压缩一次；主要用户专属关系和负分不受影响。",
+        "hint": "普通用户（非主要用户）的正向亲密度不会超过所选阶段，面板手动调分同样受限并会明确报错。下调时既有正分按旧上限与新上限比例只压缩一次；主要用户（owner）不受此上限及下调影响（专属联结模式下分数固定冻结）；负分不受影响。",
         "default": "deeply_bonded"
       },
       "normal_interaction_band_cap": {
@@ -337,9 +337,37 @@
       "enable_adult_content_tier": {
         "description": "允许成人私密档",
         "type": "bool",
-        "hint": "高风险总开关。还必须满足主要用户、专属关系、爱意互动、私聊、成年确认、当轮明确同意和指定 Provider 精确匹配。",
+        "hint": "高风险总开关。默认要求主要用户、专属关系、爱意互动、私聊、成年确认、当轮明确同意和指定 Provider 精确匹配全部成立；下方各边界开关可独立放宽，建议保持默认。",
         "default": false,
         "condition": "enable_relationship_content_tiers"
+      },
+      "adult_content_require_owner": {
+        "description": "要求主要用户",
+        "type": "bool",
+        "hint": "关闭后非主要用户也可申请成人私密档；建议保持开启。",
+        "default": true,
+        "condition": "enable_adult_content_tier"
+      },
+      "adult_content_require_exclusive": {
+        "description": "要求专属关系",
+        "type": "bool",
+        "hint": "关闭后普通恋爱关系也可申请成人私密档；建议保持开启。",
+        "default": true,
+        "condition": "enable_adult_content_tier"
+      },
+      "adult_content_require_affectionate": {
+        "description": "要求爱意互动",
+        "type": "bool",
+        "hint": "关闭后当前互动不是爱意时也可申请成人私密档；建议保持开启。",
+        "default": true,
+        "condition": "enable_adult_content_tier"
+      },
+      "adult_content_require_private_chat": {
+        "description": "要求私聊",
+        "type": "bool",
+        "hint": "关闭后群聊也可申请成人私密档；建议保持开启。",
+        "default": true,
+        "condition": "enable_adult_content_tier"
       },
       "adult_content_owner_confirmed": {
         "description": "确认主要用户已成年",

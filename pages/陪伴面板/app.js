@@ -1618,6 +1618,10 @@ const configLabels = {
   enable_adult_content_tier: "允许成人私密档",
   adult_content_owner_confirmed: "确认主要用户已成年",
   adult_content_require_turn_consent: "每轮要求明确同意",
+  adult_content_require_owner: "要求主要用户",
+  adult_content_require_exclusive: "要求专属关系",
+  adult_content_require_affectionate: "要求爱意互动",
+  adult_content_require_private_chat: "要求私聊",
   ADULT_CONTENT_PROVIDER_ID: "成人私密档指定 Provider",
   owner_exclusive_label: "主要用户专属关系名称",
   owner_exclusive_tone: "主要用户专属基础表达",
@@ -2238,14 +2242,18 @@ const configLabels = {
 const configDescriptions = {
   default_interaction_band: "只影响之后建立的档案；亲近和爱意只能由主要用户账户使用。",
   relationship_stage_policy: "固定八阶段键与阈值，只编辑显示、语气、称呼尺度和软行为，不能授予权限。",
-  relationship_positive_stage_cap_key: "普通用户的自动与管理员手动调整均不能超过该阶段；主要用户专属关系不受影响。",
+  relationship_positive_stage_cap_key: "普通用户（非主要用户）的自动加分与面板手动调分均不能超过该阶段，手动调分超限会明确报错；主要用户（owner）不受此上限及下调影响（专属联结模式下分数固定冻结）。",
   normal_interaction_band_cap: "普通用户自动或手动可达到的最高互动状态；亲近和爱意始终只属于主要用户。",
   owner_group_relationship_projection: "开启后，主要用户在群聊中的长期关系表达降级为普通用户阶段；真实账本和私聊关系不变。",
   owner_group_interaction_projection: "开启后，主要用户在群聊中的当前互动表达不超过普通用户温度上限；真实状态和私聊表达不变。",
   enable_flirt_content_tier: "只允许亲密及以上、私聊且当前互动不是回避或受伤时使用非露骨暧昧表达。",
-  enable_adult_content_tier: "只打开成人档资格检查；主要用户、专属关系、爱意、私聊、成年确认、当轮同意和指定 Provider 必须同时成立。",
+  enable_adult_content_tier: "只打开成人档资格检查；默认要求主要用户、专属关系、爱意、私聊、成年确认、当轮同意和指定 Provider 同时成立，下方各边界开关可独立放宽。",
   adult_content_owner_confirmed: "仅由管理员在后台确认主要用户已成年；插件不会从亲密度、聊天内容或模型结果推断年龄。",
   adult_content_require_turn_consent: "开启后每轮都必须在用户当轮消息中识别到明确请求和同意；建议保持开启。",
+  adult_content_require_owner: "关闭后非主要用户也能申请成人私密档；建议保持开启。",
+  adult_content_require_exclusive: "关闭后普通恋爱关系也能申请成人私密档；建议保持开启。",
+  adult_content_require_affectionate: "关闭后当前互动不是爱意时也能申请成人私密档；建议保持开启。",
+  adult_content_require_private_chat: "关闭后群聊也能申请成人私密档；建议保持开启。",
   ADULT_CONTENT_PROVIDER_ID: "当前会话必须已经使用此 Provider 才能进入成人档；未配置或不匹配时直接降级。插件二次复核固定使用它，主回复链回退仍由 AstrBot 配置决定。",
   owner_exclusive_label: "只修改主要用户专属关系的显示名称，不增加管理或安全权限。",
   owner_exclusive_tone: "专属关系的长期表达基线；当前互动状态仍可使本轮收敛。",
@@ -3823,6 +3831,10 @@ const featureSettingTypes = {
   enable_adult_content_tier: { type: "checkbox" },
   adult_content_owner_confirmed: { type: "checkbox" },
   adult_content_require_turn_consent: { type: "checkbox" },
+  adult_content_require_owner: { type: "checkbox" },
+  adult_content_require_exclusive: { type: "checkbox" },
+  adult_content_require_affectionate: { type: "checkbox" },
+  adult_content_require_private_chat: { type: "checkbox" },
   ADULT_CONTENT_PROVIDER_ID: { type: "provider" },
   owner_exclusive_proactive_limit: { type: "number", min: 0, max: 30, step: 1 },
   relationship_event_window_minutes: { type: "number", min: 1, max: 1440, step: 1 },
@@ -14078,6 +14090,7 @@ function renderRelationshipStatus(detail) {
         <span>称呼尺度：${escapeHtml(exclusive ? (ownerProjection.address_level || "沿用已确认专属称呼") : (phase.address_level || "沿用已确认称呼"))}</span>
         <span>${escapeHtml(trend)}</span>
       </div>
+      <p class="companion-intimacy-note">${isOwner ? "主要用户默认不受「普通用户正向亲密度阶段上限」限制；选择专属联结后分数固定冻结。" : "普通用户好感度受「普通用户正向亲密度阶段上限」限制，手动调分超限会提示错误。"}</p>
       <form id="relationshipStageForm" class="inline-form companion-intimacy-form">
         <label>关系阶段
           <select name="relationship_stage_key">
@@ -23609,6 +23622,10 @@ function featureRelatedSettings(key) {
       enable_adult_content_tier: false,
       adult_content_owner_confirmed: false,
       adult_content_require_turn_consent: true,
+      adult_content_require_owner: true,
+      adult_content_require_exclusive: true,
+      adult_content_require_affectionate: true,
+      adult_content_require_private_chat: true,
       ADULT_CONTENT_PROVIDER_ID: "",
       owner_exclusive_label: "专属联结",
       owner_exclusive_tone: "温暖、亲近、稳定",

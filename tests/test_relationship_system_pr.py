@@ -469,9 +469,17 @@ class _RelationshipLedgerHost:
         return None
 
 
-def _update_user(user: dict[str, Any], payload: dict[str, Any], *, interaction_cap: str = "warm") -> tuple[dict[str, Any], _ApiHost]:
+def _update_user(
+    user: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    interaction_cap: str = "warm",
+    positive_cap: str | None = None,
+) -> tuple[dict[str, Any], _ApiHost]:
     host = _ApiHost(copy.deepcopy(user))
     host.plugin.normal_interaction_band_cap = interaction_cap
+    if positive_cap is not None:
+        host.plugin.relationship_positive_stage_cap_key = positive_cap
     REQUEST.payload = {"user_id": "10001", **payload}
     return asyncio.run(host.update_user()), host
 
@@ -612,6 +620,76 @@ def test_lowering_relationship_cap_migrates_once_proportionally() -> None:
     assert 0 < after <= 899
     assert second["code"] == "positive_stage_cap_already_migrated"
     assert user["relationship_score"] == after
+
+
+def test_owner_normal_mode_ignores_positive_stage_cap() -> None:
+    owner = {
+        "relationship_role": "owner",
+        "relationship_mode": "normal",
+        "relationship_score": 899,
+        "relationship_positive_stage_cap_key": "close",
+    }
+    result = apply_relationship_event(owner, 10, reason_code="inbound", event_id="owner-1", now=1_700_000_000)
+    assert result["changed"] is True
+    assert owner["relationship_score"] == 902
+    friend = {
+        "relationship_role": "friend",
+        "relationship_mode": "normal",
+        "relationship_score": 899,
+        "relationship_positive_stage_cap_key": "close",
+    }
+    blocked = apply_relationship_event(friend, 10, reason_code="inbound", event_id="friend-1", now=1_700_000_000)
+    assert blocked["changed"] is False
+    assert blocked["code"] == "positive_stage_cap"
+    assert friend["relationship_score"] == 899
+
+
+def test_owner_normal_mode_not_clamped() -> None:
+    owner = {
+        "relationship_role": "owner",
+        "relationship_mode": "normal",
+        "relationship_score": 1200,
+    }
+    result = clamp_relationship_positive_stage_cap(owner, cap_key="close", now=1_700_000_000)
+    assert result["changed"] is False
+    assert result["code"] == "owner_role_exempt"
+    assert owner["relationship_score"] == 1200
+    assert owner["relationship_positive_stage_cap_key"] == "close"
+
+
+def test_owner_normal_mode_not_migrated_down() -> None:
+    owner = {
+        "relationship_role": "owner",
+        "relationship_mode": "normal",
+        "relationship_score": 1200,
+        "relationship_positive_stage_cap_key": "deeply_bonded",
+    }
+    result = migrate_relationship_positive_stage_cap(
+        owner,
+        old_cap_key="deeply_bonded",
+        new_cap_key="close",
+        now=1_700_000_000,
+    )
+    assert result["changed"] is False
+    assert result["code"] == "owner_role_exempt"
+    assert owner["relationship_score"] == 1200
+    assert owner["relationship_positive_stage_cap_key"] == "close"
+    assert "relationship_positive_stage_cap_migration" not in owner
+
+
+def test_update_user_owner_manual_score_is_not_capped() -> None:
+    owner = {"relationship_role": "owner", "relationship_mode": "normal", "relationship_score": 899}
+    result, host = _update_user(owner, {"relationship_score": 1200}, positive_cap="close")
+    assert result["ok"] is True
+    assert host.plugin.data["users"]["10001"]["relationship_score"] == 1200
+
+
+def test_update_user_friend_manual_score_over_cap_is_rejected() -> None:
+    friend = {"relationship_role": "friend", "relationship_mode": "normal", "relationship_score": 400}
+    result, host = _update_user(friend, {"relationship_score": 1200}, positive_cap="close")
+    assert result["ok"] is False
+    assert "普通用户亲密度上限" in result["error"]
+    assert host.plugin.data["users"]["10001"]["relationship_score"] == 400
 
 
 def test_settings_batch_persists_both_cap_migrations_once() -> None:
@@ -1309,4 +1387,8 @@ def test_active_panel_exposes_relationship_cards() -> None:
     assert items["enable_adult_content_tier"]["default"] is False
     assert items["adult_content_owner_confirmed"]["default"] is False
     assert items["adult_content_require_turn_consent"]["default"] is True
+    assert items["adult_content_require_owner"]["default"] is True
+    assert items["adult_content_require_exclusive"]["default"] is True
+    assert items["adult_content_require_affectionate"]["default"] is True
+    assert items["adult_content_require_private_chat"]["default"] is True
     assert items["ADULT_CONTENT_PROVIDER_ID"]["_special"] == "select_provider"

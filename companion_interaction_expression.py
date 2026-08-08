@@ -384,9 +384,13 @@ def _resolve_content_tier(
     if requested == "adult":
         adult_checks = {
             "adult_disabled": _flag(policy.get("adult_enabled")),
-            "adult_owner_required": owner_account and owner_exclusive,
-            "adult_affectionate_required": band == ExpressionBand.AFFECTIONATE,
-            "adult_private_required": private_chat,
+            # Each boundary is an ordinary-user gate that can be relaxed
+            # individually; when a switch is absent it stays checked so the
+            # adult tier always fails closed by default.
+            "adult_owner_required": (not _flag(policy.get("require_owner", True))) or owner_account,
+            "adult_exclusive_required": (not _flag(policy.get("require_exclusive", True))) or owner_exclusive,
+            "adult_affectionate_required": (not _flag(policy.get("require_affectionate", True))) or band == ExpressionBand.AFFECTIONATE,
+            "adult_private_required": (not _flag(policy.get("require_private_chat", True))) or private_chat,
             "adult_age_confirmation_required": _flag(policy.get("adult_owner_confirmed")),
             "adult_turn_consent_required": (
                 not _flag(policy.get("require_turn_consent")) or _flag(intent.get("turn_consent"))

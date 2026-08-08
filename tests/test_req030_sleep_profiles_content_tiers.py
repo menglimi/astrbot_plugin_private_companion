@@ -142,6 +142,10 @@ def _content_payload(**overrides: Any) -> dict[str, Any]:
             "adult_enabled": True,
             "adult_owner_confirmed": True,
             "require_turn_consent": True,
+            "require_owner": True,
+            "require_exclusive": True,
+            "require_affectionate": True,
+            "require_private_chat": True,
             "private_chat": True,
             "local_provider_configured": True,
             "local_provider_match": True,
@@ -199,6 +203,37 @@ def test_adult_tier_fails_closed_when_any_required_condition_is_missing() -> Non
         assert decision.content_tier != "adult", label
         expected_policy = "unmanaged" if label == "total switch" else "current_provider"
         assert decision.content_provider_policy == expected_policy, label
+
+
+def test_adult_tier_boundary_switches_can_relax_individual_checks() -> None:
+    relaxed = {
+        "affectionate": build_expression_decision(
+            _content_payload(current_interaction="warm", policy_require_affectionate=False)
+        ),
+        "exclusive": build_expression_decision(
+            _content_payload(relationship_mode="normal", policy_require_exclusive=False)
+        ),
+        "owner": build_expression_decision(
+            _content_payload(
+                relationship_role="friend",
+                policy_require_owner=False,
+                policy_require_exclusive=False,
+                # friend cannot reach the owner-only affectionate band, so the
+                # affection gate must be relaxed together with the role gates.
+                policy_require_affectionate=False,
+            )
+        ),
+        "private chat": build_expression_decision(
+            _content_payload(policy_private_chat=False, policy_require_private_chat=False)
+        ),
+    }
+    for label, decision in relaxed.items():
+        assert decision.content_tier == "adult", label
+        assert decision.content_provider_policy == "configured_local_only", label
+
+    # Missing switches stay fail-closed: every condition is still checked.
+    strict = build_expression_decision(_content_payload(current_interaction="warm"))
+    assert strict.content_tier != "adult"
 
 
 def test_group_proactive_and_unconfigured_paths_remain_normal() -> None:
@@ -293,6 +328,10 @@ def test_schema_and_settings_page_expose_fail_closed_content_controls() -> None:
     assert items["enable_adult_content_tier"]["default"] is False
     assert items["adult_content_owner_confirmed"]["default"] is False
     assert items["adult_content_require_turn_consent"]["default"] is True
+    assert items["adult_content_require_owner"]["default"] is True
+    assert items["adult_content_require_exclusive"]["default"] is True
+    assert items["adult_content_require_affectionate"]["default"] is True
+    assert items["adult_content_require_private_chat"]["default"] is True
     assert items["ADULT_CONTENT_PROVIDER_ID"]["_special"] == "select_provider"
 
     source = (ROOT / "pages" / "陪伴面板" / "app.js").read_text(encoding="utf-8")
