@@ -76,6 +76,27 @@ def test_nai_image_selected_follows_configured_backend() -> None:
     assert harness._nai_image_selected() is False
 
 
+def test_active_unified_nai_route_can_claim_selection_without_double_call() -> None:
+    harness = _BridgeHarness()
+    harness._image_companion_api = lambda: SimpleNamespace(
+        claims_model_profile=lambda profile, **kwargs: (
+            profile == "nai" and kwargs.get("operation", "selfie") == "selfie"
+        )
+    )
+
+    assert harness._nai_image_selected("selfie") is False
+    assert harness._nai_image_selected("text2img") is True
+
+
+def test_failed_unified_route_ownership_check_keeps_official_direct_nai() -> None:
+    harness = _BridgeHarness()
+    harness._image_companion_api = lambda: SimpleNamespace(
+        claims_model_profile=lambda _profile: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+
+    assert harness._nai_image_selected() is True
+
+
 @pytest.mark.asyncio
 async def test_nai_image_status_and_maintenance_delegate_to_external_api() -> None:
     calls: list[object] = []

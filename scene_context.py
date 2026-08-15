@@ -3,12 +3,47 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import re
 from typing import Any
 
 from .helpers import _now_ts, _path_text, _safe_int, _single_line
 
 
-SCENE_CONTEXT_VERSION = 2
+SCENE_CONTEXT_VERSION = 3
+
+
+def _temperature_number(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _scene_temperature_facts(weather_data: dict[str, Any], weather_text: str) -> dict[str, Any]:
+    temperature = next(
+        (_temperature_number(weather_data.get(key)) for key in ("temperature_c", "temperature", "temp", "temp_c", "now_temp") if _temperature_number(weather_data.get(key)) is not None),
+        None,
+    )
+    feels_like = next(
+        (_temperature_number(weather_data.get(key)) for key in ("feels_like_c", "feels_like", "feelsLike", "feelslike", "apparent_temperature") if _temperature_number(weather_data.get(key)) is not None),
+        None,
+    )
+    text = str(weather_text or "")
+    if feels_like is None:
+        match = re.search(r"(?:体感(?:温度)?|feels[\s_-]*like)\s*[：:=]?\s*(-?\d+(?:\.\d+)?)", text, flags=re.I)
+        feels_like = _temperature_number(match.group(1)) if match else None
+    if temperature is None:
+        match = re.search(r"(?:当前(?:温度)?|实时(?:温度)?|气温|温度|temperature|temp)\s*[：:=]?\s*(-?\d+(?:\.\d+)?)", text, flags=re.I)
+        if not match:
+            match = re.search(r"(-?\d+(?:\.\d+)?)\s*(?:°\s*[cC]|℃|摄氏度)", text, flags=re.I)
+        temperature = _temperature_number(match.group(1)) if match else None
+    effective = feels_like if feels_like is not None else temperature
+    thermal = "unknown"
+    if effective is not None:
+        thermal = "hot" if effective >= 28 else "warm" if effective >= 24 else "mild" if effective >= 13 else "cool" if effective >= 5 else "cold"
+    return {"temperature_c": temperature, "feels_like_c": feels_like, "effective_c": effective, "thermal_level": thermal}
 
 
 def infer_companion_scene_category(schedule_text: Any = "", location_text: Any = "") -> tuple[str, str]:
@@ -400,7 +435,20 @@ class SceneContextMixin:
             )
         if weather == "暂无天气信息":
             weather = ""
+        temperature_facts = _scene_temperature_facts(weather_data, weather)
         weather_alerts = self._scene_context_weather_alert_snapshot(data)
+
+        sleep_runtime = state.get("sleep_runtime") if isinstance(state.get("sleep_runtime"), dict) else {}
+        sleep_phase = _single_line(sleep_runtime.get("phase"), 40)
+        sleep_label = _single_line(sleep_runtime.get("label"), 40)
+        if not sleep_phase:
+            sleep_text = f"{schedule_text} {coarse_location or location}".lower()
+            if re.search(r"准备睡|睡前|入睡|睡觉|bedtime|going to bed", sleep_text, flags=re.I):
+                sleep_phase, sleep_label = "falling_asleep", "准备入睡"
+            elif scene_category == "home" and (captured.hour >= 22 or captured.hour < 5):
+                sleep_phase, sleep_label = "preparing_for_sleep", "夜间居家"
+            else:
+                sleep_phase, sleep_label = "awake", "清醒"
 
         today = captured.strftime("%Y-%m-%d")
         outfit_item = data.get("daily_outfit_photo")
@@ -559,6 +607,13 @@ class SceneContextMixin:
             "weather": {
                 "text": weather,
                 "source": _single_line(weather_data.get("source"), 60),
+                **temperature_facts,
+            },
+            "sleep": {
+                "phase": sleep_phase,
+                "label": sleep_label,
+                "source": _single_line(sleep_runtime.get("source"), 40) or ("runtime" if sleep_runtime else "scene_inference"),
+                "last_event": _single_line(sleep_runtime.get("last_event"), 120),
             },
             "weather_alerts": weather_alerts,
             "outfit": {
@@ -611,6 +666,7 @@ class SceneContextMixin:
         schedule = scene.get("schedule") if isinstance(scene.get("schedule"), dict) else {}
         location = scene.get("location") if isinstance(scene.get("location"), dict) else {}
         weather = scene.get("weather") if isinstance(scene.get("weather"), dict) else {}
+        sleep = scene.get("sleep") if isinstance(scene.get("sleep"), dict) else {}
         weather_alerts = scene.get("weather_alerts") if isinstance(scene.get("weather_alerts"), dict) else {}
         outfit = scene.get("outfit") if isinstance(scene.get("outfit"), dict) else {}
         relationship = scene.get("relationship") if isinstance(scene.get("relationship"), dict) else {}
@@ -676,6 +732,19 @@ class SceneContextMixin:
                 )
         if _single_line(weather.get("text"), 220):
             parts.append(f"天气背景：{_single_line(weather.get('text'), 220)}")
+        temperature = weather.get("temperature_c")
+        feels_like = weather.get("feels_like_c")
+        temperature_parts = []
+        if isinstance(temperature, (int, float)):
+            temperature_parts.append(f"当前温度 {temperature:g}°C")
+        if isinstance(feels_like, (int, float)):
+            temperature_parts.append(f"体感温度 {feels_like:g}°C")
+        if temperature_parts:
+            parts.append("天气温度：" + "，".join(temperature_parts))
+        if _single_line(sleep.get("phase"), 40) not in {"", "awake"}:
+            parts.append(
+                f"睡眠阶段：{_single_line(sleep.get('label'), 40) or _single_line(sleep.get('phase'), 40)}"
+            )
         alert_items = weather_alerts.get("alerts") if isinstance(weather_alerts.get("alerts"), list) else []
         if alert_items:
             alert_text = "；".join(

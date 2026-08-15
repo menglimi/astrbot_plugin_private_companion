@@ -74,6 +74,23 @@ class _SceneHarness(SceneContextMixin):
         return "completed" if now >= end else "active"
 
     @staticmethod
+    def _get_current_plan_item(plan):
+        items = plan.get("items") if isinstance(plan, dict) else None
+        return items[0] if isinstance(items, list) and items else {}
+
+    @staticmethod
+    def _format_plan_item_for_prompt(item):
+        return f"{item.get('time', '')}-{item.get('end', '')} {item.get('activity', '')}".strip()
+
+    @staticmethod
+    def _current_location_state_text(state):
+        return str(state.get("location") or "")
+
+    @staticmethod
+    def _weather_summary_text(weather):
+        return str(weather.get("prompt") or "")
+
+    @staticmethod
     def _minutes_to_hhmm(minutes):
         minutes %= 24 * 60
         return f"{minutes // 60:02d}:{minutes % 60:02d}"
@@ -106,6 +123,31 @@ class SceneContextScheduleHistoryTests(unittest.TestCase):
         self.harness.data["daily_plan"] = plan
         snapshot = self.harness._build_companion_scene_snapshot(now=self.captured)
         self.assertEqual(snapshot["schedule"]["history"], history)
+
+    def test_snapshot_exposes_numeric_weather_and_sleep_phase(self) -> None:
+        self.harness.data = {
+            "daily_state": {
+                "location": "卧室",
+                "sleep_runtime": {"phase": "falling_asleep", "label": "准备入睡", "source": "schedule"},
+            },
+            "daily_plan": {
+                "date": "2026-08-15",
+                "items": [{"time": "00:00", "end": "01:00", "activity": "洗漱后准备睡觉"}],
+            },
+            "daily_weather": {
+                "prompt": "山东淄博晴，当前 33°C，体感温度 36°C",
+                "source": "qweather",
+            },
+        }
+        captured = datetime(2026, 8, 15, 0, 8)
+        snapshot = self.harness._build_companion_scene_snapshot(now=captured)
+        self.assertEqual(33, snapshot["weather"]["temperature_c"])
+        self.assertEqual(36, snapshot["weather"]["feels_like_c"])
+        self.assertEqual("hot", snapshot["weather"]["thermal_level"])
+        self.assertEqual("falling_asleep", snapshot["sleep"]["phase"])
+        formatted = self.harness._format_companion_scene_snapshot(snapshot, purpose="selfie_scene")
+        self.assertIn("体感温度 36°C", formatted)
+        self.assertIn("睡眠阶段：准备入睡", formatted)
 
     def test_history_requires_today_and_limits_valid_items_to_24(self) -> None:
         yesterday = {"date": "2026-07-28", "items": [{"time": "08:00", "activity": "昨天"}]}

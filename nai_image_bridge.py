@@ -48,12 +48,32 @@ class NAIImageBridgeMixin:
                 pass
         return None
 
-    def _nai_image_selected(self) -> bool:
+    def _nai_image_selected(self, operation: str = "") -> bool:
         """Return whether the configured photo backend is the NAI direct link."""
-        return (
+        selected = (
             str(getattr(self, "photo_generation_backend", "") or "").strip().lower()
             == "nai"
         )
+        if not selected:
+            return False
+        image_api_getter = getattr(self, "_image_companion_api", None)
+        try:
+            image_api = image_api_getter() if callable(image_api_getter) else None
+            claims = getattr(image_api, "claims_model_profile", None)
+            if callable(claims):
+                claimed = (
+                    claims("nai", operation=str(operation or "").strip().lower())
+                    if str(operation or "").strip()
+                    else claims("nai")
+                )
+                if claimed:
+                    return False
+        except Exception as exc:
+            logger.warning(
+                "[PrivateCompanion] 查询统一 NAI 路线所有权失败，保留官方直连: error=%s",
+                _single_line(exc, 120),
+            )
+        return True
 
     def _nai_image_status(self) -> dict[str, Any]:
         api = self._nai_image_api()

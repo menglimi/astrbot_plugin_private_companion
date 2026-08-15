@@ -11557,7 +11557,7 @@ Output:
     ) -> tuple[str, str, str]:
         """Run image generation through the selected backend service."""
         nai_selected = getattr(self, "_nai_image_selected", None)
-        if callable(nai_selected) and nai_selected():
+        if callable(nai_selected) and nai_selected(kwargs.get("workflow_kind", "")):
             nai_bridge = getattr(self, "_nai_image_generate", None)
             if callable(nai_bridge):
                 return await nai_bridge(**kwargs)
