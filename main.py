@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 from contextlib import asynccontextmanager
 import contextvars
 import functools
@@ -199,6 +200,9 @@ from .relationship_policy import normalize_relationship_stage_policy
 
 
 _ACTIVE_PERSONA_ID = contextvars.ContextVar("private_companion_active_persona_id", default="")
+# 幂等标记：写入 pc_generate_photo 工具描述的“提示词表达方式”块，
+# 用于在工具 schema 里直接携带书写格式要求，不依赖条件注入。
+_PHOTO_TOOL_PROMPT_FORMAT_MARKER = "<!-- private_companion_prompt_format_req_v1 -->"
 _PERSONA_PROFILE_FORBIDDEN_FILENAME_CHARS = frozenset('<>:"/\\|?*%')
 _WINDOWS_RESERVED_FILENAME_STEMS = frozenset(
     {
@@ -15228,6 +15232,78 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 replaced,
                 dropped,
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
+            )
+
+    @filter.on_llm_request(priority=-251000)
+    @_multi_persona_event_context
+    async def annotate_photo_tool_prompt_format(self, event: AstrMessageEvent, req: ProviderRequest, *args, **kwargs):
+        """按当前配置的“提示词表达方式”标注 pc_generate_photo 工具描述。
+
+        工具一旦出现在 schema 里，模型就能看到 prompt 参数的书写格式要求
+        （nai / natural_language / traditional 各自不同的规范），不再依赖
+        关键词命中后的条件注入。标注块用幂等标记包裹：重复执行或切换
+        模式时先剥掉旧块再追加，不会叠加残留。
+        """
+        if self is None or req is None or not bool(getattr(self, "enabled", False)):
+            return
+        tool_set = getattr(req, "func_tool", None)
+        get_tool = getattr(tool_set, "get_tool", None) if tool_set is not None else None
+        if not callable(get_tool):
+            return
+        try:
+            tool = get_tool("pc_generate_photo")
+        except Exception:
+            return
+        if tool is None or not bool(getattr(tool, "active", True)):
+            return
+        instruction_getter = getattr(self, "_photo_generation_prompt_format_instruction", None)
+        if not callable(instruction_getter):
+            return
+        instruction = re.sub(r"\s+", " ", str(instruction_getter() or "")).strip()
+        if not instruction:
+            return
+        marker = _PHOTO_TOOL_PROMPT_FORMAT_MARKER
+        description = str(getattr(tool, "description", "") or "")
+        description = re.sub(
+            rf"\n*\s*{re.escape(marker)}.*?{re.escape(marker)}\s*",
+            "",
+            description,
+            flags=re.DOTALL,
+        ).strip()
+        suffix = (
+            f"\n\n{marker}"
+            f"【提示词表达方式】prompt 参数必须按下述格式书写：{instruction}"
+            f"{marker}"
+        )
+        annotated = f"{description}{suffix}"
+        if getattr(tool, "handler", None) is None:
+            # 默认路径：ToolSet 里是每请求新建的 _PermissionGuardedTool 包装
+            # （handler 恒为 None），description 独立于全局注册表，直接改写即可。
+            try:
+                tool.description = annotated
+            except Exception as exc:
+                logger.debug(
+                    "[PrivateCompanion] pc_generate_photo 工具描述标注失败: %s",
+                    _single_line(exc, 120),
+                )
+            return
+        # 人格自定义工具列表路径直接引用全局注册对象（handler 非空）：
+        # 复制一份后按原下标替换，既不污染全局工具描述，也保持工具在
+        # schema 中的顺序，且不存在“先移除后添加失败”的窗口。
+        tools_list = getattr(tool_set, "tools", None)
+        if not isinstance(tools_list, list):
+            return
+        try:
+            for index, existing in enumerate(tools_list):
+                if existing is tool:
+                    replace_tool = copy.copy(tool)
+                    replace_tool.description = annotated
+                    tools_list[index] = replace_tool
+                    break
+        except Exception as exc:
+            logger.debug(
+                "[PrivateCompanion] pc_generate_photo 共享工具描述标注失败: %s",
+                _single_line(exc, 120),
             )
 
     @filter.on_llm_request()
