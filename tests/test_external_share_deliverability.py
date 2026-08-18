@@ -1,15 +1,18 @@
 import asyncio
+import json
 
 from astrbot_plugin_private_companion.proactive_message import ProactiveMessageMixin
 from astrbot_plugin_private_companion.news_exploration import NewsExplorationMixin
 
 
-class _ShareHarness(ProactiveMessageMixin):
+class _ShareHarness(NewsExplorationMixin, ProactiveMessageMixin):
     pass
 
 
 class _NewsHarness(NewsExplorationMixin, ProactiveMessageMixin):
-    pass
+    @staticmethod
+    def _parse_json_object(raw):
+        return json.loads(raw)
 
 
 # --- external_share_require_source_link ---
@@ -123,6 +126,7 @@ def test_override_flips_should_share_when_thresholds_met(monkeypatch):
     monkeypatch.setattr(harness, "_external_event_self_link_provider_id", lambda *a, **k: "deepseek/test")
     monkeypatch.setattr(harness, "_format_external_event_stable_self_context", lambda *a, **k: "")
     monkeypatch.setattr(harness, "_format_external_event_current_self_context", lambda *a, **k: "")
+    monkeypatch.setattr(harness, "_external_event_life_opportunity_wish", lambda *a, **k: None)
 
     async def fake_llm_call(*args, **kwargs):
         return (
@@ -130,7 +134,7 @@ def test_override_flips_should_share_when_thresholds_met(monkeypatch):
             '"self_link":"和自己相关","motive":"想说说","tone":"自然","boundary":"别像通知"}'
         )
 
-    monkeypatch.setattr(harness, "_llm_call", fake_llm_call)
+    monkeypatch.setattr(harness, "_llm_call", fake_llm_call, raising=False)
     payload = {"headline": "某条普通科技新闻", "impression": "普通内容，不含生活福利词"}
     result = asyncio.run(harness._build_external_event_wish(payload, source_type="news"))
     assert result["should_share"] is True
@@ -146,6 +150,7 @@ def test_override_not_applied_when_thresholds_zero(monkeypatch):
     monkeypatch.setattr(harness, "_external_event_self_link_provider_id", lambda *a, **k: "deepseek/test")
     monkeypatch.setattr(harness, "_format_external_event_stable_self_context", lambda *a, **k: "")
     monkeypatch.setattr(harness, "_format_external_event_current_self_context", lambda *a, **k: "")
+    monkeypatch.setattr(harness, "_external_event_life_opportunity_wish", lambda *a, **k: None)
 
     async def fake_llm_call(*args, **kwargs):
         return (
@@ -153,7 +158,7 @@ def test_override_not_applied_when_thresholds_zero(monkeypatch):
             '"self_link":"和自己相关","motive":"想说说","tone":"自然","boundary":"别像通知"}'
         )
 
-    monkeypatch.setattr(harness, "_llm_call", fake_llm_call)
+    monkeypatch.setattr(harness, "_llm_call", fake_llm_call, raising=False)
     payload = {"headline": "另一条普通科技新闻", "impression": "普通内容"}
     result = asyncio.run(harness._build_external_event_wish(payload, source_type="news"))
     assert result["should_share"] is False
