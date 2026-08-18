@@ -48,7 +48,14 @@ def _lifecycle_active(api: Any) -> bool:
 
 
 def _identity_segments(value: Any) -> set[str]:
-    text = str(value or "").strip().casefold().replace("\\", "/")
+    # If the object belongs to the `torch` namespace, skip it directly to prevent triggering a C++ dynamic class instantiation assertion.
+    val_type = type(value)
+    if getattr(val_type, "__module__", "").startswith("torch") or "_ClassNamespace" in str(val_type):
+        return set()
+    try:
+        text = str(value or "").strip().casefold().replace("\\", "/")
+    except Exception:
+        return set()
     if not text:
         return set()
     for separator in ("/", ":"):

@@ -439,7 +439,14 @@ class MemoryCompanionAdapterMixin:
 
     @classmethod
     def _memory_companion_identity_matches(cls, value: Any) -> bool:
-        text = str(value or "").strip().lower()
+        # If the object belongs to the `torch` namespace, skip it directly to prevent triggering a C++ dynamic class instantiation assertion.
+        val_type = type(value)
+        if getattr(val_type, "__module__", "").startswith("torch") or "_ClassNamespace" in str(val_type):
+            return False
+        try:
+            text = str(value or "").strip().lower()
+        except Exception:
+            return False
         if not text:
             return False
         if text in cls._MEMORY_COMPANION_PLUGIN_ALIASES:

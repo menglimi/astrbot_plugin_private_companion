@@ -13,8 +13,14 @@ _IDENTITY_SEPARATORS = re.compile(r"[.:/\\]+")
 
 
 def _identity_text(value: Any, *, limit: int = 240) -> str:
-    return " ".join(str(value or "").split())[:limit]
-
+    # If the object belongs to the `torch` namespace, skip it directly to prevent triggering a C++ dynamic class instantiation assertion.
+    val_type = type(value)
+    if getattr(val_type, "__module__", "").startswith("torch") or "_ClassNamespace" in str(val_type):
+        return ""
+    try:
+        return " ".join(str(value or "").split())[:limit]
+    except Exception:
+        return ""
 
 def _identity_segments(value: Any) -> tuple[str, ...]:
     text = _identity_text(value)
