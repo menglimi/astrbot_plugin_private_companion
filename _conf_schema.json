@@ -251,6 +251,12 @@
         "hint": "默认持续学习与使用。管理员可在单个用户档案中选择跟随全局或显式覆盖；未安装或未兼容 MemoryCompanion 时会自动关闭且不可开启。画像不能授予私聊或主动联系权限。",
         "default": "learn_and_use"
       },
+      "enable_group_third_party_portrait_guard": {
+        "description": "群聊第三方画像保护",
+        "type": "bool",
+        "hint": "默认开启。被明确 @ 或引用 Bot 时，拦截询问其他群成员偏好、兴趣、习惯、口味或画像的消息，避免整理第三方资料；没有明确对象的省略主语问句不会触发该保护。关闭后这类消息交给 AstrBot 常规回复链路处理。",
+        "default": true
+      },
       "auto_profile_platforms": {
         "description": "自动建档平台",
         "type": "list",

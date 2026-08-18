@@ -282,7 +282,29 @@ class CoreStoreMixin:
         backend = str(getattr(self, "storage_backend", "json") or "json").strip().lower() or "json"
         if backend not in {"json", "sqlite"}:
             backend = "json"
-        sqlite_path = str(getattr(self, "storage_sqlite_path", "") or "").strip() or os.path.join(self.data_dir, "companions.db")
+        default_sqlite_path = os.path.join(self.data_dir, "companions.db")
+        configured_sqlite_path = str(getattr(self, "storage_sqlite_path", "") or "").strip()
+        sqlite_path = configured_sqlite_path or default_sqlite_path
+        if backend == "sqlite" and configured_sqlite_path:
+            configured_path = Path(configured_sqlite_path)
+            invalid_reason = ""
+            try:
+                if configured_path.exists() and configured_path.is_dir():
+                    invalid_reason = "配置路径是目录，不是 SQLite 数据文件"
+                elif configured_path.parent.exists() and not configured_path.parent.is_dir():
+                    invalid_reason = "配置路径的父级不是目录"
+                elif not configured_path.parent.exists():
+                    configured_path.parent.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                invalid_reason = f"配置路径父级不可创建: {_single_line(exc, 160)}"
+            if invalid_reason:
+                sqlite_path = default_sqlite_path
+                logger.warning(
+                    "[PrivateCompanion] SQLite 数据文件路径无效，已回退默认路径: configured=%s reason=%s fallback=%s",
+                    configured_sqlite_path,
+                    invalid_reason,
+                    default_sqlite_path,
+                )
         self.storage_backend = backend
         self.storage_sqlite_effective_path = sqlite_path
         self.store_manager = StoreManager(

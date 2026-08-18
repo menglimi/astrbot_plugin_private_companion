@@ -3812,6 +3812,17 @@ class PrivateCompanionPlugin(
         )
         if re.search(direct_bot_query, value) or re.search(reflective_bot_query, value):
             return "bot_self"
+        # An omitted subject is ambiguous in natural group speech. Let the
+        # normal reply chain decide whether the user means the Bot, instead of
+        # treating a prompt such as "喜欢什么发型" as a third-party probe.
+        subjectless_query = (
+            r"^(?:@[^\s]+\s*)?(?:(?:你觉得|你认为|请问|我想(?:知道|问|看看|了解))(?:一下)?\s*)?"
+            r"(?:喜欢|爱)(?:吃|喝|玩|看|听)?什么"
+            r"|^(?:@[^\s]+\s*)?(?:(?:你觉得|你认为|请问|我想(?:知道|问|看看|了解))(?:一下)?\s*)?"
+            r"(?:什么|啥|哪些).{0,8}(?:爱好|兴趣|偏好|习惯|口味|画像)"
+        )
+        if re.search(subjectless_query, value):
+            return ""
         return "third_party"
 
     def _req036_group_portrait_query_is_directed(self, event: Any) -> bool:
@@ -17382,6 +17393,8 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         """Reject third-party portrait probing before any retrieval or LLM hook."""
         if self is None or bool(getattr(event, "_private_companion_member_safety_blocked", False)):
             return
+        if not bool(getattr(self, "enable_group_third_party_portrait_guard", True)):
+            return
         group_id = self._extract_group_id_from_event(event)
         if not group_id:
             return
@@ -17394,6 +17407,11 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         if kind == "bot_self":
             return
         if kind == "third_party":
+            logger.info(
+                "[PrivateCompanion] 群聊第三方画像查询已拦截: group=%s text=%s",
+                group_id,
+                _single_line(text, 120),
+            )
             event.stop_event()
             await self._reply(event, "这个我不方便替别人整理啦。")
             return

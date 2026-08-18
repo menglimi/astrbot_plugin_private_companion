@@ -1720,6 +1720,9 @@ def _initialize_group_and_provider_config(self: Any, c: Any) -> None:
     self.group_slang_web_search_results = self._cfg_int(c, "group_slang_web_search_results", 2, 1, 5)
     self.enable_group_relationship_graph = self._cfg_bool(c, "enable_group_relationship_graph", True)
     self.enable_group_privacy_guard = self._cfg_bool(c, "enable_group_privacy_guard", True)
+    self.enable_group_third_party_portrait_guard = self._cfg_bool(
+        c, "enable_group_third_party_portrait_guard", True
+    )
     self.enable_worldbook_member_recognition = self._cfg_bool(c, "enable_worldbook_member_recognition", True)
     self.enable_atrelay_tools = self._cfg_bool(c, "enable_atrelay_tools", True)
     self.enable_cross_user_memory_bridge = self._cfg_bool(c, "enable_cross_user_memory_bridge", False)

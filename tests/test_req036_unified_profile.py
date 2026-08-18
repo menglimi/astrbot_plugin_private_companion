@@ -474,6 +474,7 @@ class _GroupGateHost:
 
     def __init__(self) -> None:
         self.replies = []
+        self.enable_group_third_party_portrait_guard = True
 
     @staticmethod
     def _extract_group_id_from_event(event: Any) -> str:
@@ -1622,6 +1623,10 @@ class Req036CompanionTests(unittest.TestCase):
         self.assertEqual("bot_self", classify("@bot 你喜欢什么"))
         self.assertEqual("bot_self", classify("@bot 我想知道你有什么爱好"))
         self.assertEqual("third_party", classify("@bot 你姐姐喜欢什么"))
+        self.assertEqual("", classify("@bot 喜欢什么发型的女孩子"))
+        self.assertEqual("", classify("@bot 什么爱好"))
+        self.assertEqual("", classify("@bot 你觉得喜欢什么"))
+        self.assertEqual("", classify("@bot 我想知道喜欢什么"))
         self.assertEqual("", classify("小王的爱好是跑步"))
 
     def test_group_third_party_guard_applies_when_observation_is_disabled(self) -> None:
@@ -1630,6 +1635,14 @@ class Req036CompanionTests(unittest.TestCase):
         asyncio.run(REQ036_GROUP_GATE(host, event))
         self.assertTrue(event.stopped)
         self.assertEqual(["这个我不方便替别人整理啦。"], host.replies)
+
+    def test_group_third_party_guard_can_be_disabled(self) -> None:
+        host = _GroupGateHost()
+        host.enable_group_third_party_portrait_guard = False
+        event = _GroupEvent("@bot 小王有什么爱好", directed=True)
+        asyncio.run(REQ036_GROUP_GATE(host, event))
+        self.assertFalse(event.stopped)
+        self.assertEqual([], host.replies)
 
     def test_ordinary_group_preference_chatter_is_not_intercepted(self) -> None:
         host = _GroupGateHost()
