@@ -474,6 +474,7 @@ class CoreStoreMixin:
             "group_llm_reply_blocks": {},
             "reaction_expression_group_states": {},
             "cache_metrics": {},
+            "_req041_memory_scope_state": {},
             "persona_lifecycle": {
                 "generation": 1,
                 "reset_at": 0,
@@ -569,6 +570,7 @@ class CoreStoreMixin:
         data.setdefault("group_llm_reply_blocks", {})
         data.setdefault("reaction_expression_group_states", {})
         data.setdefault("cache_metrics", {})
+        data.setdefault("_req041_memory_scope_state", {})
         lifecycle = data.setdefault("persona_lifecycle", {})
         if not isinstance(lifecycle, dict):
             lifecycle = {}

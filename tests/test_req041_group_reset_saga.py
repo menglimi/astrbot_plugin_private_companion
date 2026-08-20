@@ -47,6 +47,10 @@ def _load_methods(*names: str) -> dict[str, Any]:
         "_now_ts": lambda: 100.0,
         "_set_into_config": set_config,
         "_single_line": lambda value, limit=240: " ".join(str(value or "").split())[:limit],
+        "logger": types.SimpleNamespace(
+            warning=lambda *_args, **_kwargs: None,
+            info=lambda *_args, **_kwargs: None,
+        ),
     }
     exec(compile(module, str(ROOT / "main.py"), "exec"), namespace)
     return {name: namespace[name] for name in names}
@@ -57,6 +61,8 @@ METHODS = _load_methods(
     "_req041_group_reset_sagas_locked",
     "_req041_finalize_group_reset_locked",
     "_req041_persist_archive_saga_locked",
+    "_req041_memory_scope_was_bound",
+    "_req041_group_remote_cleanup_required",
     "reset_group_scoped_data",
     "_req041_resume_confirmed_group_resets",
 )
@@ -122,6 +128,8 @@ class _Host:
     _req041_group_reset_sagas_locked = METHODS["_req041_group_reset_sagas_locked"]
     _req041_finalize_group_reset_locked = METHODS["_req041_finalize_group_reset_locked"]
     _req041_persist_archive_saga_locked = METHODS["_req041_persist_archive_saga_locked"]
+    _req041_memory_scope_was_bound = METHODS["_req041_memory_scope_was_bound"]
+    _req041_group_remote_cleanup_required = METHODS["_req041_group_remote_cleanup_required"]
     reset_group_scoped_data = METHODS["reset_group_scoped_data"]
     _req041_resume_confirmed_group_resets = METHODS["_req041_resume_confirmed_group_resets"]
 
@@ -212,6 +220,63 @@ class GroupResetSagaTests(unittest.TestCase):
         result = asyncio.run(host.reset_group_scoped_data("group-a"))
         self.assertTrue(result["ok"])
         self.assertEqual("not_required", result["state"])
+        self.assertIn("group-a", host.data["groups"])
+
+    def test_fresh_runtime_without_memory_bridge_allows_local_group_delete(self) -> None:
+        host = _Host()
+        host.req041_scoped_projection_sync = None
+        host.req041_migration_status = {
+            "required": False,
+            "scoped_required": True,
+            "state": "degraded",
+            "code": "memory_bridge_unavailable",
+        }
+        host.req041_migration_coordinator = types.SimpleNamespace(
+            status=lambda: {"source_schema_version": "req041-fresh-v1"}
+        )
+
+        result = asyncio.run(host.reset_group_scoped_data("group-a"))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("not_required", result["state"])
+        self.assertIn("group-a", host.data["groups"])
+
+    def test_existing_runtime_without_memory_bridge_allows_local_group_delete(self) -> None:
+        host = _Host()
+        host.req041_scoped_projection_sync = None
+        host.req041_migration_status = {
+            "required": True,
+            "state": "degraded",
+            "code": "memory_bridge_unavailable",
+        }
+        host.req041_migration_coordinator = types.SimpleNamespace(
+            status=lambda: {"source_schema_version": "companion-v6", "memory_version": "not-detected"}
+        )
+
+        result = asyncio.run(host.reset_group_scoped_data("group-a"))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("not_required", result["state"])
+        self.assertIn("group-a", host.data["groups"])
+
+    def test_fresh_runtime_that_had_memory_bound_still_fails_closed(self) -> None:
+        host = _Host()
+        host.req041_scoped_projection_sync = None
+        host.req041_migration_status = {
+            "required": False,
+            "scoped_required": True,
+            "state": "degraded",
+            "code": "memory_bridge_unavailable",
+        }
+        host.req041_migration_coordinator = types.SimpleNamespace(
+            status=lambda: {"source_schema_version": "req041-fresh-v1"}
+        )
+        host.data["_req041_memory_scope_state"] = {"ever_bound": True}
+
+        result = asyncio.run(host.reset_group_scoped_data("group-a"))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("scoped_group_erase_unavailable", result["code"])
         self.assertIn("group-a", host.data["groups"])
 
     def test_group_reset_waits_for_scoped_startup_binding(self) -> None:

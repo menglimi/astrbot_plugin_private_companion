@@ -89,6 +89,7 @@ METHODS = _load_methods(
     "_req041_scoped_group_read_view",
     "_req041_replay_finished",
     "_req041_run_replay_batch",
+    "_req041_mark_memory_scope_bound",
     "_req041_initialize_fresh_scoped_runtime",
     "_req041_initialize_automatic_migration",
 )
@@ -109,6 +110,7 @@ class Harness:
     _req041_scoped_group_read_view = METHODS["_req041_scoped_group_read_view"]
     _req041_replay_finished = METHODS["_req041_replay_finished"]
     _req041_run_replay_batch = METHODS["_req041_run_replay_batch"]
+    _req041_mark_memory_scope_bound = METHODS["_req041_mark_memory_scope_bound"]
     _req041_initialize_fresh_scoped_runtime = METHODS["_req041_initialize_fresh_scoped_runtime"]
     _req041_initialize_automatic_migration = METHODS["_req041_initialize_automatic_migration"]
 
@@ -217,6 +219,7 @@ class MigrationStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("memory_bridge_unavailable", host.req041_migration_status["code"])
         self.assertTrue(host.req041_migration_status["scoped_required"])
         self.assertIsNone(getattr(host, "req041_scoped_projection_sync", None))
+        self.assertFalse((host.data.get("_req041_memory_scope_state") or {}).get("ever_bound", False))
         self.assertFalse((self.data_dir / "req041_backups").exists())
 
     async def test_new_install_first_exact_identity_reaches_new_read_through_outbox(self) -> None:
@@ -265,6 +268,7 @@ class MigrationStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(host.req041_migration_coordinator.verify_backup())
         self.assertEqual("active", host.req041_migration_status["state"])
         self.assertTrue(host.req041_migration_status["memory_bound"])
+        self.assertTrue(host.data["_req041_memory_scope_state"]["ever_bound"])
         self.assertEqual(1, len(host.bind_calls))
         self.assertEqual(status["migration_epoch"], host.bind_calls[0]["migration_epoch"])
         self.assertEqual(status["policy_version"], host.bind_calls[0]["policy_version"])

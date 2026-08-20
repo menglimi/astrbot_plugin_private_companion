@@ -4846,8 +4846,7 @@ class PrivateCompanionPlugin(
     ) -> dict[str, Any]:
         synchronizer = getattr(self, "req041_scoped_projection_sync", None)
         if synchronizer is None:
-            status = getattr(self, "req041_migration_status", None)
-            if isinstance(status, dict) and (status.get("required") or status.get("scoped_required")):
+            if self._req041_group_remote_cleanup_required():
                 return {"ok": False, "state": "degraded", "code": "scoped_group_erase_unavailable"}
             return {"ok": True, "state": "not_required", "code": "scoped_group_erase_not_required", "count": 0}
         raw_group = _single_line(group_id, 160)
@@ -4865,6 +4864,75 @@ class PrivateCompanionPlugin(
         return synchronizer.erase_group_scopes(
             context, operation_id=clean_operation, reason_code="group_reset",
         )
+
+    def _req041_memory_scope_was_bound(self) -> bool:
+        """Return whether this persona has ever had a remote scoped bridge bound."""
+        data = getattr(self, "data", None)
+        state = data.get("_req041_memory_scope_state") if isinstance(data, dict) else None
+        return isinstance(state, dict) and bool(state.get("ever_bound"))
+
+    def _req041_mark_memory_scope_bound(self) -> None:
+        """Persist remote-binding history so a later outage remains fail-closed."""
+        data = getattr(self, "data", None)
+        if not isinstance(data, dict):
+            return
+        state = data.get("_req041_memory_scope_state")
+        if not isinstance(state, dict):
+            state = {}
+            data["_req041_memory_scope_state"] = state
+        if state.get("ever_bound"):
+            return
+        state["ever_bound"] = True
+        state["bound_at"] = _now_ts()
+        scheduler = getattr(self, "_schedule_data_save", None)
+        if callable(scheduler):
+            try:
+                scheduler(delay=0.35)
+            except Exception:
+                pass
+
+    def _req041_group_remote_cleanup_required(self) -> bool:
+        """Decide whether deleting a group must wait for remote scope erasure.
+
+        A fresh runtime with no remote bridge has never published scoped records,
+        so local group cleanup is safe. Once a bridge was bound, an outage must
+        continue to fail closed because the remote side may retain group data.
+        Legacy migrations also remain fail-closed until their remote cleanup is
+        available.
+        """
+        status = getattr(self, "req041_migration_status", None)
+        if not isinstance(status, dict):
+            return False
+        if status.get("required"):
+            if (
+                str(status.get("code") or "").strip() == "memory_bridge_unavailable"
+                and not status.get("memory_bound")
+                and not self._req041_memory_scope_was_bound()
+            ):
+                coordinator = getattr(self, "req041_migration_coordinator", None)
+                status_getter = getattr(coordinator, "status", None)
+                if callable(status_getter):
+                    try:
+                        control = status_getter()
+                    except Exception:
+                        control = {}
+                    if isinstance(control, dict) and control.get("memory_version") == "not-detected":
+                        return False
+            return True
+        if not status.get("scoped_required"):
+            return False
+        if status.get("memory_bound") or self._req041_memory_scope_was_bound():
+            return True
+        coordinator = getattr(self, "req041_migration_coordinator", None)
+        status_getter = getattr(coordinator, "status", None)
+        if callable(status_getter):
+            try:
+                control = status_getter()
+            except Exception:
+                control = {}
+            if isinstance(control, dict) and control.get("source_schema_version") == "req041-fresh-v1":
+                return False
+        return True
 
     def _req041_erase_scoped_persona_data(
         self,
@@ -4990,8 +5058,20 @@ class PrivateCompanionPlugin(
                     synchronizer = getattr(self, "req041_scoped_projection_sync", None)
         if synchronizer is None:
             status = getattr(self, "req041_migration_status", None)
-            if isinstance(status, dict) and (status.get("required") or status.get("scoped_required")):
+            if self._req041_group_remote_cleanup_required():
+                logger.warning(
+                    "[PrivateCompanion] 群聊删除因远端分域不可用而保留: group=%s state=%s code=%s memory_bound=%s scoped_required=%s",
+                    clean_group,
+                    _single_line((status or {}).get("state"), 32),
+                    _single_line((status or {}).get("code"), 96),
+                    bool((status or {}).get("memory_bound")),
+                    bool((status or {}).get("scoped_required")),
+                )
                 return {"ok": False, "state": "degraded", "code": "scoped_group_erase_unavailable"}
+            logger.info(
+                "[PrivateCompanion] MemoryCompanion 从未绑定，群聊删除仅清理本地分域: group=%s",
+                clean_group,
+            )
             return {"ok": True, "state": "not_required", "code": "scoped_group_erase_not_required"}
 
         async with self._data_lock:
@@ -6056,6 +6136,7 @@ class PrivateCompanionPlugin(
                 "pending": 0, "completed": 0, "error_codes": [],
             }
             if remote.get("ok") and bridge is not None:
+                self._req041_mark_memory_scope_bound()
                 self.req041_scoped_projection_sync = ScopedProjectionSynchronizer(
                     read=lambda namespace, **kwargs: self._memory_companion_read_scoped_record(
                         bridge, namespace, **kwargs
@@ -6230,6 +6311,7 @@ class PrivateCompanionPlugin(
             "ok": False, "code": "namespace_scoped_api_not_bound", "scopes": []
         }
         if remote.get("ok") and bridge is not None:
+            self._req041_mark_memory_scope_bound()
             self.req041_scoped_projection_sync = ScopedProjectionSynchronizer(
                 read=lambda namespace, **kwargs: self._memory_companion_read_scoped_record(
                     bridge, namespace, **kwargs
