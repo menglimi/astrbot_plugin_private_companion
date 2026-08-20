@@ -729,6 +729,7 @@ class PrivateCompanionPageApi(
             ("/reality-touch/update", self.update_reality_touch, ["POST"], "Private Companion Page update reality touch alarm"),
             ("/settings/swap_image_api", self.swap_image_api_settings, ["POST"], "Private Companion Page swap image API settings"),
             ("/extensions/image/status", self.get_image_extension_status, ["GET"], "Private Companion Page image extension status"),
+            ("/image/debug", self.get_image_debug, ["GET"], "Private Companion Page image generation debug trace"),
             ("/image_api/status", self.get_image_api_status, ["GET"], "Private Companion Page image API status"),
             ("/image_api/test", self.test_image_api_endpoint, ["POST"], "Private Companion Page test one image API endpoint"),
             ("/config/export", self.export_migration_config, ["GET"], "Private Companion Page export migration config"),
@@ -6561,6 +6562,447 @@ class PrivateCompanionPageApi(
             "timeout_seconds": self._int(endpoint.get("timeout_seconds"), 180, 20, 600),
         }
 
+    def _legacy_recent_photo_generation_debug(self, *, event_limit: int = 240) -> dict[str, Any]:
+        """读取生图 trace 的最近事件，供生图父面板按需展开查看。
+
+        文件内容已经由生图运行时统一按 JSONL 写入并执行默认脱敏。页面只返回最近
+        的一段事件，避免把历史日志或无界请求体一次性送到浏览器。
+        """
+        data_dir = str(getattr(self.plugin, "data_dir", "") or "").strip()
+        root = Path(data_dir) if data_dir else None
+        if root is None:
+            return {
+                "enabled": False,
+                "available": False,
+                "path": "",
+                "latest": {},
+                "traces": [],
+                "events": [],
+            }
+        candidates = [root / "photo_generation_trace.txt"]
+        candidates.extend(sorted(root.glob("photo_generation_trace.*.txt")))
+        debug_root = root / "photo_debug"
+        candidates.append(debug_root / "generation.jsonl")
+        candidates.extend(sorted(debug_root.glob("generation.*.jsonl")))
+        paths = [item for item in candidates if item.is_file()]
+        if not paths:
+            return {
+                "enabled": False,
+                "available": False,
+                "path": str(root / "photo_generation_trace.txt"),
+                "latest": {},
+                "traces": [],
+                "events": [],
+            }
+        events: list[dict[str, Any]] = []
+        try:
+            per_file_limit = max(1, min(1000, int(event_limit) * 4))
+            for path in paths:
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+                for line in lines[-per_file_limit:]:
+                    try:
+                        value = json.loads(line)
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        continue
+                    if isinstance(value, dict) and (value.get("trace") or value.get("trace_id")):
+                        if not value.get("trace"):
+                            value["trace"] = value.get("trace_id")
+                        value["source_file"] = path.name
+                        events.append(value)
+        except (OSError, UnicodeError):
+            return {
+                "enabled": True,
+                "available": False,
+                "path": str(paths[0]),
+                "latest": {},
+                "traces": [],
+                "events": [],
+            }
+        events.sort(key=lambda item: (
+            self._photo_debug_event_timestamp(item),
+            self._photo_debug_event_sequence(item),
+        ))
+        events = events[-max(1, min(240, int(event_limit))):]
+        trace_rows: dict[str, dict[str, Any]] = {}
+        for event in events:
+            trace_id = self._single_line(event.get("trace"), 80)
+            if not trace_id:
+                continue
+            row = trace_rows.pop(trace_id, None)
+            if row is None:
+                row = {
+                    "trace": trace_id,
+                    "started_at": event.get("time") or event.get("ts"),
+                    "last_at": event.get("time") or event.get("ts"),
+                    "stage": "",
+                    "status": "",
+                    "event_count": 0,
+                }
+            row["last_at"] = event.get("time") or event.get("ts")
+            row["stage"] = self._single_line(event.get("stage"), 80)
+            row["status"] = self._single_line(event.get("status"), 30)
+            row["event_count"] = self._int(row.get("event_count"), 0) + 1
+            trace_rows[trace_id] = row
+        traces = list(trace_rows.values())[-24:]
+        latest_trace = events[-1].get("trace") if events else ""
+        latest = next((row for row in reversed(events) if row.get("trace") == latest_trace), {}) if latest_trace else {}
+        return {
+            "enabled": True,
+            "available": bool(events),
+            "path": str(paths[0]),
+            "sources": [str(item) for item in paths],
+            "latest": latest,
+            "traces": traces,
+            "events": events,
+        }
+
+    def _image_debug_data_roots(self) -> list[Path]:
+        """Resolve the image extension's actual debug roots for this owner."""
+        roots: list[str] = []
+        getter = getattr(self.plugin, "_image_companion_api", None)
+        try:
+            api = getter() if callable(getter) else None
+            resolver = getattr(api, "debug_data_dirs", None)
+            if callable(resolver):
+                values = resolver(self.plugin)
+                if isinstance(values, (list, tuple)):
+                    roots.extend(str(item or "").strip() for item in values)
+        except Exception:
+            pass
+        fallback = str(getattr(self.plugin, "data_dir", "") or "").strip()
+        if fallback:
+            roots.append(fallback)
+        result: list[Path] = []
+        seen: set[str] = set()
+        for raw in roots:
+            if not raw:
+                continue
+            try:
+                root = Path(raw).expanduser().resolve(strict=False)
+            except (OSError, RuntimeError, ValueError):
+                continue
+            key = str(root).casefold()
+            if key not in seen:
+                seen.add(key)
+                result.append(root)
+        return result
+
+    @staticmethod
+    def _read_debug_lines(path: Path, *, tail_lines: int | None = None) -> list[str]:
+        """Read a bounded tail for collapsed status requests."""
+        if tail_lines is None:
+            return path.read_text(encoding="utf-8", errors="replace").splitlines()
+        limit = max(1, min(4096, int(tail_lines)))
+        with path.open("rb") as handle:
+            handle.seek(0, 2)
+            end = handle.tell()
+            maximum = min(end, 1024 * 1024)
+            size = min(maximum, max(64 * 1024, limit * 2048))
+            offset = end - size
+            starts_on_boundary = offset == 0
+            while offset > 0 and not starts_on_boundary and size < maximum:
+                handle.seek(offset - 1)
+                starts_on_boundary = handle.read(1) == b"\n"
+                if starts_on_boundary:
+                    break
+                size = min(maximum, size * 2)
+                offset = end - size
+                if offset == 0:
+                    starts_on_boundary = True
+                    break
+            if offset > 0 and not starts_on_boundary:
+                handle.seek(offset - 1)
+                starts_on_boundary = handle.read(1) == b"\n"
+            handle.seek(offset)
+            content = handle.read(size)
+        if not starts_on_boundary:
+            # The hard cap cut through an oversized line. Do not hand a
+            # malformed partial record to the JSON parser; later full lines
+            # are still returned when present.
+            newline = content.find(b"\n")
+            content = content[newline + 1:] if newline >= 0 else b""
+        return content.decode("utf-8", "replace").splitlines()[-limit:]
+
+    @staticmethod
+    def _attach_debug_payload_contents(
+        events: list[dict[str, Any]],
+        roots: list[Path],
+        *,
+        max_total_bytes: int = 2 * 1024 * 1024,
+        max_payload_bytes: int = 512 * 1024,
+    ) -> None:
+        """Attach captured sidecar bodies for the explicitly expanded view.
+
+        Payload paths are recorder-generated relative paths. Resolve them only
+        below each known ``photo_debug`` directory and reject symlinks so a
+        forged log line cannot turn the page API into an arbitrary file reader.
+        """
+        remaining = max(0, int(max_total_bytes))
+        if remaining <= 0:
+            return
+        for event in events:
+            if remaining <= 0 or not isinstance(event, dict):
+                break
+            data = event.get("data")
+            payloads = data.get("payloads") if isinstance(data, dict) else None
+            if not isinstance(payloads, dict):
+                continue
+            for metadata in payloads.values():
+                if remaining <= 0 or not isinstance(metadata, dict):
+                    continue
+                relative = str(metadata.get("path") or "").strip()
+                if not relative or not bool(metadata.get("captured")):
+                    continue
+                for root in roots:
+                    debug_root = root / "photo_debug"
+                    candidate = debug_root / relative
+                    try:
+                        if candidate.is_symlink():
+                            continue
+                        resolved_root = debug_root.resolve(strict=False)
+                        resolved = candidate.resolve(strict=True)
+                        if resolved == resolved_root or resolved_root not in resolved.parents:
+                            continue
+                        if not resolved.is_file():
+                            continue
+                        size = resolved.stat().st_size
+                        if size > min(max_payload_bytes, remaining):
+                            metadata["content_truncated"] = True
+                            metadata["content_limit"] = min(max_payload_bytes, remaining)
+                            break
+                        raw = resolved.read_bytes()
+                    except (OSError, RuntimeError, ValueError):
+                        continue
+                    remaining -= len(raw)
+                    encoding = str(metadata.get("encoding") or "utf-8").lower()
+                    if encoding in {"base64", "binary"} or str(metadata.get("mime_type") or "").startswith("image/"):
+                        metadata["content_base64"] = base64.b64encode(raw).decode("ascii")
+                    else:
+                        metadata["content"] = raw.decode("utf-8", "replace")
+                    break
+
+    @staticmethod
+    def _photo_debug_event_timestamp(value: Mapping[str, Any]) -> float:
+        try:
+            timestamp = float(value.get("ts") or 0)
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+        return timestamp if math.isfinite(timestamp) and timestamp > 0 else 0.0
+
+    @staticmethod
+    def _photo_debug_event_sequence(value: Mapping[str, Any]) -> int:
+        """Parse an event sequence without letting malformed logs abort reads."""
+        try:
+            raw = value.get("seq")
+            if raw in (None, ""):
+                return 0
+            return int(raw)
+        except (TypeError, ValueError, OverflowError):
+            return 0
+
+    @staticmethod
+    def _photo_debug_event_fingerprint(value: Mapping[str, Any]) -> str:
+        """Return the source-independent portion of a generation event.
+
+        Legacy TXT and unified JSONL records deliberately differ in envelope
+        fields such as sequence, timestamp and severity. The bridge writes
+        both records for one operation, so use only the shared semantic fields
+        to find those pairs. Optional route metadata remains included when it
+        is present, preventing unrelated engine events from being coalesced.
+        """
+        fingerprint: dict[str, Any] = {
+            "stage": str(value.get("stage") or ""),
+            "status": str(value.get("status") or ""),
+            "context": value.get("context"),
+            "data": value.get("data"),
+        }
+        for key in (
+            "operation",
+            "workflow",
+            "backend",
+            "route",
+            "attempt",
+            "error_code",
+            "failure_stage",
+        ):
+            item = value.get(key)
+            if item not in (None, ""):
+                fingerprint[key] = item
+        return hashlib.sha256(
+            json.dumps(
+                fingerprint,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
+    def _recent_photo_generation_debug(
+        self,
+        *,
+        event_limit: int = 240,
+        trace_id: str = "",
+        summary_only: bool = False,
+    ) -> dict[str, Any]:
+        """Read generation events from the resolved data roots.
+
+        The collapsed status endpoint reads only file tails and returns a
+        summary. Full events are read only after the user opens the detail.
+        """
+        roots = self._image_debug_data_roots()
+        if not roots:
+            return {"enabled": False, "available": False, "path": "", "latest": {}, "traces": [], "events": []}
+        candidates: list[tuple[Path, str, int]] = []
+        for root in roots:
+            paths = [root / "photo_generation_trace.txt"]
+            paths.extend(sorted(root.glob("photo_generation_trace.*.txt")))
+            debug_root = root / "photo_debug"
+            paths.append(debug_root / "generation.jsonl")
+            paths.extend(sorted(debug_root.glob("generation.*.jsonl")))
+            for path in paths:
+                try:
+                    resolved = path.resolve(strict=True)
+                    if path.is_symlink() or not resolved.is_file():
+                        continue
+                    if root not in resolved.parents:
+                        continue
+                    logical = str(resolved.relative_to(root)).replace("\\", "/")
+                    candidates.append((resolved, logical, 2 if logical.startswith("photo_debug/generation") else 1))
+                except (OSError, RuntimeError, ValueError):
+                    continue
+        unique: dict[str, tuple[Path, str, int]] = {
+            str(path).casefold(): (path, logical, rank)
+            for path, logical, rank in candidates
+        }
+        paths = list(unique.values())
+        if not paths:
+            return {"enabled": False, "available": False, "path": "", "latest": {}, "traces": [], "events": []}
+        requested_trace = self._single_line(trace_id, 80)
+        # Preserve same-source repetitions: retries and fallbacks can visit
+        # the same stage more than once. Only combine the paired records that
+        # the migration bridge writes to the legacy and unified log formats.
+        records: list[tuple[int, dict[str, Any]]] = []
+        records_by_event_id: dict[tuple[str, str], int] = {}
+        records_by_fingerprint: dict[tuple[str, str], list[int]] = {}
+        try:
+            for path, logical, rank in paths:
+                for line in self._read_debug_lines(path, tail_lines=256 if summary_only else None):
+                    try:
+                        value = json.loads(line)
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        continue
+                    if not isinstance(value, dict):
+                        continue
+                    trace = self._single_line(value.get("trace") or value.get("trace_id"), 80)
+                    if not trace or (requested_trace and trace != requested_trace):
+                        continue
+                    value["trace"] = trace
+                    value["source_file"] = logical
+                    event_id = self._single_line(value.get("event_id"), 120)
+                    seq = self._photo_debug_event_sequence(value)
+                    if event_id:
+                        event_key = (trace, event_id)
+                        existing_index = records_by_event_id.get(event_key)
+                        if existing_index is not None:
+                            existing_rank, _existing = records[existing_index]
+                            if rank >= existing_rank:
+                                records[existing_index] = (rank, value)
+                            continue
+
+                    fingerprint = self._photo_debug_event_fingerprint(value)
+                    pair_key = (trace, fingerprint)
+                    timestamp = self._photo_debug_event_timestamp(value)
+                    bridge_index: int | None = None
+                    bridge_distance: tuple[int, float] | None = None
+                    for candidate_index in records_by_fingerprint.get(pair_key, []):
+                        candidate_rank, candidate = records[candidate_index]
+                        if candidate_rank == rank:
+                            continue
+                        candidate_seq = self._photo_debug_event_sequence(candidate)
+                        candidate_timestamp = self._photo_debug_event_timestamp(candidate)
+                        # A bridge normally keeps the sequence aligned. A
+                        # short timestamp window covers migration paths with
+                        # independent counters while preserving older repeats.
+                        same_seq = bool(seq and candidate_seq and seq == candidate_seq)
+                        close_in_time = bool(
+                            timestamp
+                            and candidate_timestamp
+                            and abs(timestamp - candidate_timestamp) <= 1.0
+                        )
+                        if not same_seq and not close_in_time:
+                            continue
+                        distance = (0 if same_seq else 1, abs(timestamp - candidate_timestamp))
+                        if bridge_distance is None or distance < bridge_distance:
+                            bridge_index = candidate_index
+                            bridge_distance = distance
+                    if bridge_index is not None:
+                        existing_rank, _existing = records[bridge_index]
+                        if rank >= existing_rank:
+                            records[bridge_index] = (rank, value)
+                        if event_id:
+                            records_by_event_id[(trace, event_id)] = bridge_index
+                        continue
+
+                    record_index = len(records)
+                    records.append((rank, value))
+                    if event_id:
+                        records_by_event_id[(trace, event_id)] = record_index
+                    records_by_fingerprint.setdefault(pair_key, []).append(record_index)
+        except (OSError, UnicodeError):
+            return {"enabled": True, "available": False, "path": paths[0][1], "latest": {}, "traces": [], "events": []}
+        # New JSONL events win when the same legacy event was dual-written,
+        # while older unique legacy events remain available for a complete
+        # trace across a migration boundary.
+        events = [value for _rank, value in records]
+        events.sort(key=lambda item: (
+            self._photo_debug_event_timestamp(item),
+            self._photo_debug_event_sequence(item),
+        ))
+        limit = max(1, min(1000, int(event_limit)))
+        events = events[-limit:]
+        trace_rows: dict[str, dict[str, Any]] = {}
+        for event in events:
+            trace = self._single_line(event.get("trace"), 80)
+            row = trace_rows.pop(trace, None)
+            if row is None:
+                row = {
+                    "trace": trace,
+                    "started_at": event.get("time") or event.get("ts"),
+                    "last_at": event.get("time") or event.get("ts"),
+                    "stage": "",
+                    "status": "",
+                    "event_count": 0,
+                }
+            row["last_at"] = event.get("time") or event.get("ts")
+            row["stage"] = self._single_line(event.get("stage"), 80)
+            row["status"] = self._single_line(event.get("status"), 30)
+            row["event_count"] = self._int(row.get("event_count"), 0) + 1
+            # Reinsert on every event so insertion order reflects each Trace's
+            # most recent event rather than its first appearance.
+            trace_rows[trace] = row
+        traces = list(trace_rows.values())[-24:]
+        latest = events[-1] if events else {}
+        if summary_only:
+            latest = {
+                key: latest.get(key)
+                for key in (
+                    "trace", "trace_id", "request_id", "seq", "time", "ts", "elapsed_ms",
+                    "stage", "status", "severity", "backend", "workflow", "route", "attempt",
+                    "error_code", "failure_stage",
+                )
+                if key in latest
+            }
+        return {
+            "enabled": True,
+            "available": bool(events),
+            "path": paths[0][1],
+            "sources": [logical for _path, logical, _rank in paths],
+            "latest": latest,
+            "traces": traces,
+            "events": [] if summary_only else events,
+        }
+
     async def get_image_extension_status(self) -> dict[str, Any]:
         """Expose the split image runtime through the companion-owned page."""
         getter = getattr(self.plugin, "_image_companion_api", None)
@@ -6615,7 +7057,45 @@ class PrivateCompanionPageApi(
         status.setdefault("installed", True)
         status.setdefault("available", bool(status.get("enabled")))
         status.setdefault("state", "managed")
+        debug_summary = self._recent_photo_generation_debug(
+            event_limit=240,
+            summary_only=True,
+        )
+        status["photo_debug"] = debug_summary
         return self._ok(status)
+
+    async def get_image_debug(self) -> dict[str, Any]:
+        """Return full recent image debug events only when the panel expands them."""
+        try:
+            limit = self._int(request.args.get("limit"), 240, 1, 1000)
+            trace_id = self._single_line(request.args.get("trace"), 80)
+            payload = self._recent_photo_generation_debug(
+                event_limit=limit,
+                trace_id=trace_id,
+            )
+            if trace_id:
+                summary = self._recent_photo_generation_debug(
+                    event_limit=240,
+                    summary_only=True,
+                )
+                # Keep the recent trace chooser intact after loading one
+                # selected trace; only the event body is trace-scoped.
+                payload["traces"] = summary.get("traces", [])
+                payload["latest"] = payload["events"][-1] if payload["events"] else {}
+            if isinstance(payload.get("events"), list):
+                self._attach_debug_payload_contents(
+                    payload["events"],
+                    self._image_debug_data_roots(),
+                )
+            payload["requested_trace"] = trace_id
+            return self._ok(payload)
+        except Exception as exc:
+            logger.warning(
+                "[PrivateCompanionPage] 读取生图 debug 失败: %s",
+                self._single_line(exc, 180),
+                exc_info=True,
+            )
+            return self._exception_error("读取生图 debug 失败")
 
     async def get_image_api_status(self) -> dict[str, Any]:
         try:

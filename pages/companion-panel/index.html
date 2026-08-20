@@ -1825,6 +1825,26 @@ QQ空间 = 公开札记
             <dl id="imageRuntimeEngine" class="image-runtime-list"></dl>
           </section>
         </div>
+        <section class="image-runtime-debug" aria-labelledby="imageRuntimeDebugTitle">
+          <div class="section-head compact">
+            <div>
+              <h3 id="imageRuntimeDebugTitle">最近生图调试</h3>
+              <span id="imageRuntimeDebugHint" class="muted">默认只显示最近一次结果</span>
+            </div>
+            <span id="imageRuntimeDebugBadge" class="module-badge">未启用</span>
+          </div>
+          <div id="imageRuntimeDebugLatest" class="image-runtime-debug-latest">
+            <span class="muted">暂无生图调试记录</span>
+          </div>
+          <details id="imageRuntimeDebugDetails" class="image-runtime-debug-details">
+            <summary>打开下拉菜单查看完整 debug 日志</summary>
+            <div class="image-runtime-debug-controls">
+              <label for="imageRuntimeDebugTraceSelect">Trace</label>
+              <select id="imageRuntimeDebugTraceSelect" aria-label="选择生图调试 Trace"></select>
+            </div>
+            <pre id="imageRuntimeDebugLog" class="image-runtime-debug-log" aria-live="polite">展开后加载完整事件</pre>
+          </details>
+        </section>
       </section>
 
       <section class="panel" id="panel-models">

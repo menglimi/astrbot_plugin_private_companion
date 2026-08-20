@@ -460,6 +460,92 @@
   .reaction-asset-card { transition: none; }
 }
 
+.image-runtime-debug {
+  margin-top: 18px;
+  border-top: 1px solid var(--line, rgba(120, 130, 150, .2));
+  padding-top: 16px;
+}
+
+.image-runtime-debug-latest {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 10px 0;
+}
+
+.image-runtime-debug-latest > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line, rgba(120, 130, 150, .2));
+  border-radius: 6px;
+}
+
+.image-runtime-debug-latest span {
+  color: var(--muted, #78808d);
+  font-size: .78rem;
+}
+
+.image-runtime-debug-latest b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.image-runtime-debug-details {
+  margin-top: 10px;
+  border: 1px solid var(--line, rgba(120, 130, 150, .2));
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.image-runtime-debug-details summary {
+  cursor: pointer;
+  color: var(--accent, #5b6ee1);
+  font-weight: 600;
+}
+
+.image-runtime-debug-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.image-runtime-debug-controls select {
+  min-width: 240px;
+  max-width: 100%;
+}
+
+.image-runtime-debug-log {
+  max-height: 520px;
+  overflow: auto;
+  margin: 12px 0 0;
+  padding: 12px;
+  background: rgba(20, 24, 32, .06);
+  border-radius: 4px;
+  font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (max-width: 760px) {
+  .image-runtime-debug-latest {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .image-runtime-debug-controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .image-runtime-debug-controls select {
+    min-width: 0;
+    width: 100%;
+  }
+}
+
 /* Reaction library v2: image-first catalog with visible analysis state. */
 .reaction-library-workspace {
   gap: 12px;

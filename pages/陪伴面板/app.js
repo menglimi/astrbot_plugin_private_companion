@@ -159,6 +159,8 @@ const state = {
   imageApiStatus: null,
   imageExtensionStatus: null,
   imageExtensionError: "",
+  imageDebugTrace: "",
+  imageDebugExpanded: false,
   imageApiEndpointTestResults: {},
   proactiveCandidateFilter: "all",
   imageCacheItems: [],
@@ -6991,6 +6993,7 @@ function renderImageRuntimeStatus() {
   setText("imageRuntimeBackend", latest.backend || "-");
   setText("imageRuntimeResult", latest.success === true ? "成功" : latest.success === false ? "失败" : "-");
   setText("imageRuntimeNote", latest.note || "-");
+  renderImageRuntimeDebug(value);
 
   const engine = document.getElementById("imageRuntimeEngine");
   if (!engine) return;
@@ -7012,6 +7015,77 @@ function renderImageRuntimeStatus() {
   engine.innerHTML = entries.length
     ? entries.map(([key, item]) => `<div><dt>${escapeHtml(labelMap[key] || key)}</dt><dd>${escapeHtml(String(item))}</dd></div>`).join("")
     : '<div><dt>诊断</dt><dd>暂无统一引擎摘要</dd></div>';
+}
+
+function renderImageRuntimeDebug(value = state.imageExtensionStatus || {}) {
+  const debug = value?.photo_debug && typeof value.photo_debug === "object"
+    ? value.photo_debug
+    : {};
+  const badge = document.getElementById("imageRuntimeDebugBadge");
+  const hint = document.getElementById("imageRuntimeDebugHint");
+  const latestTarget = document.getElementById("imageRuntimeDebugLatest");
+  const details = document.getElementById("imageRuntimeDebugDetails");
+  const select = document.getElementById("imageRuntimeDebugTraceSelect");
+  const log = document.getElementById("imageRuntimeDebugLog");
+  const events = Array.isArray(debug.events) ? debug.events : [];
+  const traces = Array.isArray(debug.traces) ? debug.traces : [];
+  const latest = debug.latest && typeof debug.latest === "object" ? debug.latest : {};
+  const debugConfig = value?.debug && typeof value.debug === "object" ? value.debug : {};
+  if (badge) {
+    badge.textContent = debugConfig.sensitive
+      ? "含敏感信息"
+      : debug.available ? "已记录" : debug.enabled ? "暂无记录" : "未启用";
+    badge.dataset.tone = debugConfig.sensitive ? "error" : debug.available ? "ready" : debug.enabled ? "warn" : "idle";
+  }
+  if (hint) {
+    hint.textContent = debugConfig.sensitive
+      ? "当前为 full_with_secrets，展开日志前请确认访问环境安全"
+      : debug.available
+      ? `最近一次摘要已就绪（${traces.length} 个 Trace），展开后按 Trace 查看完整链路`
+      : debug.enabled ? "调试文件已启用，等待下一次生图" : "调试日志未启用";
+  }
+  if (latestTarget) {
+    if (!debug.available) {
+      latestTarget.innerHTML = '<span class="muted">暂无生图调试记录</span>';
+    } else {
+      const trace = String(latest.trace || "");
+      const stage = String(latest.stage || "-");
+      const status = String(latest.status || "-");
+      const time = String(latest.time || latest.ts || "-");
+      latestTarget.innerHTML = `
+        <div><span>Trace</span><b>${escapeHtml(trace || "-")}</b></div>
+        <div><span>最后阶段</span><b>${escapeHtml(stage)}</b></div>
+        <div><span>状态</span><b>${escapeHtml(status)}</b></div>
+        <div><span>时间</span><b>${escapeHtml(time)}</b></div>`;
+    }
+  }
+  if (!select || !log || !details) return;
+  const selected = state.imageDebugTrace || String(latest.trace || traces.at(-1)?.trace || "");
+  if (select.dataset.optionsKey !== traces.map((item) => item.trace).join("|")) {
+    select.innerHTML = traces.length
+      ? traces.slice().reverse().map((item) => {
+        const trace = String(item.trace || "");
+        const label = `${trace} · ${item.stage || "-"} · ${item.status || "-"}`;
+        return `<option value="${escapeHtml(trace)}">${escapeHtml(label)}</option>`;
+      }).join("")
+      : '<option value="">暂无 Trace</option>';
+    select.dataset.optionsKey = traces.map((item) => item.trace).join("|");
+  }
+  if (selected && traces.some((item) => String(item.trace) === selected)) {
+    state.imageDebugTrace = selected;
+    select.value = selected;
+  } else if (select.options.length) {
+    state.imageDebugTrace = select.value;
+  }
+  if (!details.open) {
+    log.textContent = "展开后加载完整事件";
+    return;
+  }
+  state.imageDebugExpanded = true;
+  const selectedEvents = events.filter((event) => String(event.trace || "") === state.imageDebugTrace);
+  log.textContent = selectedEvents.length
+    ? selectedEvents.map((event) => JSON.stringify(event, null, 2)).join("\n\n")
+    : "该 Trace 暂无事件";
 }
 
 function renderQzonePanel() {
@@ -7195,6 +7269,27 @@ async function loadImageExtensionStatus(force = false) {
     if (state.activeTab === "image") renderImageRuntimeStatus();
   }
   return state.imageExtensionStatus;
+}
+
+async function loadImageDebug(trace = "") {
+  const params = new URLSearchParams({ limit: "240" });
+  if (trace) params.set("trace", trace);
+  const payload = await fetchJson(`/image/debug?${params.toString()}`);
+  if (state.imageExtensionStatus && payload && typeof payload === "object") {
+    const summary = state.imageExtensionStatus.photo_debug && typeof state.imageExtensionStatus.photo_debug === "object"
+      ? state.imageExtensionStatus.photo_debug
+      : {};
+    // Keep the collapsed card anchored to the latest generation. The expanded
+    // endpoint may be scoped to an older Trace and only owns its event body.
+    state.imageExtensionStatus.photo_debug = {
+      ...summary,
+      ...payload,
+      latest: summary.latest && typeof summary.latest === "object" ? summary.latest : payload.latest,
+      traces: Array.isArray(payload.traces) ? payload.traces : summary.traces,
+    };
+  }
+  renderImageRuntimeDebug(state.imageExtensionStatus || {});
+  return payload;
 }
 
 async function loadRoleplayPersonas(force = false) {
@@ -36381,6 +36476,28 @@ document.getElementById("imageRuntimeRefreshBtn")?.addEventListener("click", asy
 
 document.getElementById("imageRuntimeConfigBtn")?.addEventListener("click", () => {
   openModelConfigSection("image");
+});
+
+document.getElementById("imageRuntimeDebugDetails")?.addEventListener("toggle", (event) => {
+  state.imageDebugExpanded = Boolean(event.currentTarget.open);
+  if (state.imageDebugExpanded) {
+    const trace = state.imageDebugTrace || state.imageExtensionStatus?.photo_debug?.latest?.trace || "";
+    loadImageDebug(trace).catch((error) => {
+      const log = document.getElementById("imageRuntimeDebugLog");
+      if (log) log.textContent = `读取 debug 失败：${error?.message || "未知错误"}`;
+    });
+  } else {
+    renderImageRuntimeDebug(state.imageExtensionStatus || {});
+  }
+});
+
+document.getElementById("imageRuntimeDebugTraceSelect")?.addEventListener("change", (event) => {
+  state.imageDebugTrace = String(event.currentTarget.value || "");
+  if (state.imageDebugExpanded) {
+    loadImageDebug(state.imageDebugTrace).catch(() => {});
+  } else {
+    renderImageRuntimeDebug(state.imageExtensionStatus || {});
+  }
 });
 
 document.addEventListener("click", (event) => {
