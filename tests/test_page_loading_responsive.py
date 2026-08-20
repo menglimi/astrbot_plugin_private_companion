@@ -29,9 +29,42 @@ def test_page_waits_for_bridge_and_keeps_debug_http_fallback() -> None:
 
     assert "async function getReadyPageBridge" in script
     assert "bridge.ready()" in script
-    assert "if (isDebugHttpMode()) return null;" in script
+    assert "if (isHttpApiMode()) return null;" in script
     assert "const bridge = await getReadyPageBridge();" in script
     assert "void bootstrapPage();" in script
+
+
+def test_page_supports_standalone_http_api_without_replacing_bridge() -> None:
+    script = _text("app.js")
+
+    assert 'const HTTP_API = "/astrbot_plugin_private_companion/page";' in script
+    assert 'const STANDALONE_HTTP_API = "/api/v1";' in script
+    assert "window.__PRIVATE_COMPANION_STANDALONE__" in script
+    assert 'String(candidate.mode || "").toLowerCase() === "standalone"' in script
+    assert 'meta[name="${STANDALONE_MODE_META}"]' in script
+    assert "if (standaloneHttpModeDetected !== undefined)" in script
+    assert "payload = await bridgeRequest(bridge, path, method, options.body);" in script
+    assert "fetch(httpApiRequestUrl(path)" in script
+    assert "function pageApiAssetUrl(value)" in script
+    assert "pageApiAssetUrl(asset.preview_endpoint)" in script
+    assert 'credentials: "same-origin"' in script
+    assert 'get("api_token")' not in script
+    assert 'get("token")' not in script
+
+
+def test_standalone_login_uses_cookie_session_without_persisting_token() -> None:
+    script = _text("standalone.js")
+
+    assert "if (!markedStandalone) return;" in script
+    assert 'authRequest("/auth/status")' in script
+    assert 'authRequest("/auth/login"' in script
+    assert 'authRequest("/auth/logout"' in script
+    assert "JSON.stringify({ token })" in script
+    assert 'credentials: "same-origin"' in script
+    assert "localStorage" not in script
+    assert "sessionStorage" not in script
+    assert "URLSearchParams" not in script
+    assert "scheduleExpiryCheck(status.expires_at)" in script
 
 
 def test_get_requests_are_deduplicated_only_while_in_flight() -> None:
@@ -98,5 +131,5 @@ def test_world_workspace_collapses_after_polish_overrides() -> None:
 def test_ascii_and_utf8_page_mirrors_match_after_optimization() -> None:
     ascii_root = ROOT / "pages" / "companion-panel"
     utf8_root = ROOT / "pages" / "陪伴面板"
-    for relative in ("index.html", "app.js", "css/polish.css"):
+    for relative in ("index.html", "app.js", "standalone.js", "css/polish.css"):
         assert (ascii_root / relative).read_bytes() == (utf8_root / relative).read_bytes()

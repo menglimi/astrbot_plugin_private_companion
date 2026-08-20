@@ -201,6 +201,11 @@ EXTERNAL_API_TEST_SECRET_FIELDS = frozenset(
     }
 )
 
+# These values configure the page/API trust boundary itself. They must remain
+# available to AstrBot's native config editor, but must never be projected back
+# through the companion panel or accepted by its migration importer.
+PAGE_PRIVATE_CONFIG_KEYS = frozenset({"standalone_webui_access_token"})
+
 
 class _PageApiError(dict[str, Any]):
     """Dictionary-compatible API error with HTTP-only status metadata."""
@@ -696,8 +701,18 @@ class PrivateCompanionPageApi(
 
         return wrapper
 
-    def register_routes(self) -> None:
-        register = self.plugin.context.register_web_api
+    @staticmethod
+    def _page_asset_prefix() -> str:
+        """Keep generated asset URLs on the transport serving this request."""
+        try:
+            if str(request.path or "").startswith("/api/v1/"):
+                return "/api/v1"
+        except RuntimeError:
+            pass
+        return PAGE_API_PREFIX
+
+    def route_bindings(self) -> list[tuple[str, Any, list[str], str]]:
+        """Return the wrapped page handlers used by every transport."""
         routes = [
             ("/overview", self.get_overview, ["GET"], "Private Companion Page overview"),
             ("/extension-migration-notice", self.get_extension_migration_notice, ["GET"], "Private Companion Page extension migration notice preference"),
@@ -881,6 +896,7 @@ class PrivateCompanionPageApi(
             "/persona/migrate",
             "/persona/reset-current",
         }
+        bindings: list[tuple[str, Any, list[str], str]] = []
         for path, handler, methods, desc in routes:
             scoped_handler = (
                 handler
@@ -888,7 +904,13 @@ class PrivateCompanionPageApi(
                 else self._persona_scoped_route_handler(handler)
             )
             registered_handler = self._http_status_route_handler(scoped_handler)
-            register(f"{PAGE_API_PREFIX}{path}", registered_handler, methods, desc)
+            bindings.append((path, registered_handler, methods, desc))
+        return bindings
+
+    def register_routes(self) -> None:
+        register = self.plugin.context.register_web_api
+        for path, handler, methods, desc in self.route_bindings():
+            register(f"{PAGE_API_PREFIX}{path}", handler, methods, desc)
 
     async def get_extension_migration_notice(self) -> dict[str, Any]:
         """Read the persisted dismissal state for the extension migration notice."""
@@ -4641,7 +4663,7 @@ class PrivateCompanionPageApi(
             "image_keys_text": " ".join(image_keys[:8]),
             "image_aliases_text": " ".join(image_aliases[:12]),
             "image_count": _safe_int(raw.get("image_count"), len(image_keys), 0),
-            "preview_url": f"{PAGE_API_PREFIX}/image_cache/preview?key={quote(key, safe='')}" if preview_exists else "",
+            "preview_url": f"{self._page_asset_prefix()}/image_cache/preview?key={quote(key, safe='')}" if preview_exists else "",
             "preview_endpoint": f"/image_cache/preview_data?key={quote(key, safe='')}" if preview_exists else "",
             "thumbnail_endpoint": f"/image_cache/thumbnail_data?key={quote(key, safe='')}" if preview_exists else "",
             "preview_size": _safe_int(raw.get("preview_size"), 0, 0),
@@ -21077,7 +21099,7 @@ class PrivateCompanionPageApi(
             if key not in keys:
                 keys.append(key)
         provider_keys = self._schema_provider_keys(public_only=True)
-        for key in sorted(self._schema_setting_keys(public_only=True)):
+        for key in sorted(self._schema_setting_keys(public_only=True) - PAGE_PRIVATE_CONFIG_KEYS):
             if key not in keys and key not in provider_keys:
                 keys.append(key)
         values = {key: getattr(self.plugin, key, self._config_get(key)) for key in keys}
@@ -21226,6 +21248,8 @@ class PrivateCompanionPageApi(
         for key in self._schema_bool_keys():
             if key in values:
                 values[key] = self._normalize_bool_value(values[key])
+        for key in PAGE_PRIVATE_CONFIG_KEYS:
+            values.pop(key, None)
         return values
 
     def _proactive_intensity_summary(self) -> dict[str, Any]:
@@ -24230,8 +24254,9 @@ class PrivateCompanionPageApi(
             "atrelay_default_relay_style",
             "atrelay_multi_target_limit",
         }
-        keys.update(self._schema_setting_keys(public_only=True))
+        keys.update(self._schema_setting_keys(public_only=True) - PAGE_PRIVATE_CONFIG_KEYS)
         keys.update(CYCLE_SETTING_KEYS)
+        keys.difference_update(PAGE_PRIVATE_CONFIG_KEYS)
         return keys
 
 
@@ -25446,7 +25471,7 @@ class PrivateCompanionPageApi(
     ) -> str:
         if not album_id or (page_index < 1 and not cover):
             return ""
-        url = f"{PAGE_API_PREFIX}/bookshelf/image?album_id={quote(str(album_id), safe='')}"
+        url = f"{self._page_asset_prefix()}/bookshelf/image?album_id={quote(str(album_id), safe='')}"
         if cover:
             url += "&cover=1"
         elif page_index > 0:
@@ -26864,7 +26889,7 @@ class PrivateCompanionPageApi(
             version = f"{int(stat.st_mtime)}-{stat.st_size}"
         except OSError:
             version = self._single_line(project.get("cover_generated_at"), 40)
-        return f"{PAGE_API_PREFIX}/creative/project/cover?id={quote(project_id, safe='')}&v={quote(version, safe='')}"
+        return f"{self._page_asset_prefix()}/creative/project/cover?id={quote(project_id, safe='')}&v={quote(version, safe='')}"
 
     def _creative_project_payload(self, project: dict[str, Any]) -> dict[str, Any]:
         chunks = project.get("draft_chunks") if isinstance(project.get("draft_chunks"), list) else []

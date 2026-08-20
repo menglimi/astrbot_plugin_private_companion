@@ -206,6 +206,17 @@ def _initialize_core_and_relationship_config(self: Any, c: Any) -> None:
     if self.storage_backend not in {"json", "sqlite"}:
         self.storage_backend = "json"
     self.storage_sqlite_path = self._cfg_str(c, "storage_sqlite_path", "", "")
+    self.enable_standalone_webui = self._cfg_bool(c, "enable_standalone_webui", False)
+    self.standalone_webui_host = self._cfg_str(
+        c, "standalone_webui_host", "127.0.0.1", "127.0.0.1"
+    )
+    self.standalone_webui_port = self._cfg_int(c, "standalone_webui_port", 6190, 1, 65535)
+    self.standalone_webui_access_token = self._cfg_str(
+        c, "standalone_webui_access_token", "", ""
+    )
+    self.standalone_webui_session_ttl_hours = self._cfg_int(
+        c, "standalone_webui_session_ttl_hours", 24, 1, 168
+    )
     self.enable_store_control_tag_sanitization = self._cfg_bool(
         c, "enable_store_control_tag_sanitization", True
     )
@@ -2016,6 +2027,7 @@ def initialize_plugin_runtime(self: Any) -> None:
         logger.warning("[PrivateCompanion] 启动读取数据耗时较高: elapsed=%sms", load_elapsed_ms)
     self._proactive_chat_runtime_bridge = ProactiveChatRuntimeBridge(self)
     self.page_api = None
+    self.standalone_webui = None
     self._patch_astrbot_plugin_page_asset_token_compat()
     self._register_page_api_if_available()
 

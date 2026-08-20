@@ -13,7 +13,7 @@
 | 版本 | <code>6.3.1</code> |
 | AstrBot | <code>>= 4.22.0</code> |
 | 官方声明平台 | <code>aiocqhttp</code>、<code>qq_official</code> |
-| 管理入口 | AstrBot 插件扩展页中的“陪伴面板” |
+| 管理入口 | AstrBot 插件扩展页中的“陪伴面板”，或可选的独立 WebUI |
 | 数据存储 | JSON，或可选 SQLite |
 
 ## 产品定位
@@ -144,6 +144,26 @@ C:\Users\你的用户名\.astrbot\data\plugins\astrbot_plugin_private_companion
 ~~~
 
 插件启停由 AstrBot 官方插件开关负责。旧版配置中的 <code>enabled</code> 字段已经废弃。
+
+### 独立 WebUI
+
+独立 WebUI 与 AstrBot 插件扩展页共存，默认关闭。需要使用时，在“基础配置”中开启 `enable_standalone_webui`，设置至少 16 个字符的 `standalone_webui_access_token`，然后重载插件。默认地址为：
+
+~~~text
+http://127.0.0.1:6190/
+~~~
+
+浏览器首次打开会要求输入访问令牌，并换取仅保存在 HttpOnly Cookie 中的短期会话；令牌不会写入 URL、localStorage 或 sessionStorage。默认监听 `127.0.0.1`，不会对局域网开放。确需从其他设备访问时，可将 `standalone_webui_host` 改为 `0.0.0.0`，并同时配置系统防火墙、可信网络和强令牌；不要把未配置 HTTPS 的独立端口直接暴露到公网。
+
+独立 API 的固定基址是 `/api/v1`，路径与原面板 API 保持一致。脚本或其他受控客户端可以直接使用配置中的长期令牌：
+
+~~~bash
+curl -H "Authorization: Bearer <访问令牌>" http://127.0.0.1:6190/api/v1/overview
+~~~
+
+服务不接受 URL 查询参数中的访问令牌，避免令牌进入浏览历史、代理日志或分享链接。
+
+独立入口复用原陪伴面板的业务处理函数和数据锁，不会复制数据或启动额外轮询。关闭时没有运行时开销；开启后，空闲状态只有一个本地监听任务，接口耗时主要仍由原业务逻辑决定。
 
 ### 从拆分前版本升级
 

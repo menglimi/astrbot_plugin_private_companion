@@ -6295,6 +6295,16 @@ class PrivateCompanionPlugin(
             self._refresh_passive_injection_cache,
         )
         await self._proactive_chat_runtime_bridge.start()
+        standalone_webui = getattr(self, "standalone_webui", None)
+        if standalone_webui is not None:
+            try:
+                await standalone_webui.start()
+            except Exception as exc:
+                logger.warning(
+                    "[PrivateCompanion] 独立陪伴 WebUI 启动失败: %s",
+                    _single_line(exc, 160),
+                    exc_info=True,
+                )
 
     def _create_startup_background_task(self, label: str, operation: Any) -> asyncio.Task:
         previous = self._startup_background_tasks.get(label)
@@ -6565,6 +6575,15 @@ class PrivateCompanionPlugin(
     async def terminate(self):
         global _private_companion_plugin
         self._stop_event.set()
+        standalone_webui = getattr(self, "standalone_webui", None)
+        if standalone_webui is not None:
+            try:
+                await standalone_webui.stop()
+            except Exception as exc:
+                logger.warning(
+                    "[PrivateCompanion] 独立陪伴 WebUI 停止失败: %s",
+                    _single_line(exc, 160),
+                )
         cleanup_delivery_caches = getattr(self, "_cleanup_framework_delivery_caches", None)
         if callable(cleanup_delivery_caches):
             cleanup_delivery_caches(force=True)

@@ -1,4 +1,7 @@
 const HTTP_API = "/astrbot_plugin_private_companion/page";
+const STANDALONE_HTTP_API = "/api/v1";
+const STANDALONE_MODE_META = "private-companion-mode";
+const STANDALONE_API_BASE_META = "private-companion-api-base";
 const BOOKSHELF_ACCESS_STORAGE_KEY = "pc_bookshelf_access_v1";
 const EXTENSION_MIGRATION_NOTICE_STORAGE_KEY = "pc_extension_migration_notice_6_2_2_dismissed";
 const EXTENSION_MIGRATION_NOTICE_VERSION = "6.2.2";
@@ -10,6 +13,7 @@ let cachedPageBridge = null;
 let cachedPageEndpointStyle = "";
 let pageBridgeProbePromise = null;
 let pageBridgeReadyPromise = null;
+let standaloneHttpModeDetected;
 let loadAllRequestSeq = 0;
 let extensionMigrationNoticeChecked = false;
 let featureDetailDirtyRefreshScheduled = false;
@@ -5985,9 +5989,10 @@ async function performJsonRequest(path, options, method) {
 
   if (bridge && typeof bridge.apiGet === "function" && typeof bridge.apiPost === "function") {
     payload = await bridgeRequest(bridge, path, method, options.body);
-  } else if (isDebugHttpMode()) {
-    const response = await fetch(`${HTTP_API}${path}`, {
+  } else if (isHttpApiMode()) {
+    const response = await fetch(httpApiRequestUrl(path), {
       cache: "no-store",
+      credentials: "same-origin",
       headers: options.body ? { "Content-Type": "application/json" } : undefined,
       ...options,
     });
@@ -6023,6 +6028,59 @@ function isDebugHttpMode() {
   return new URLSearchParams(window.location.search).get("debug_http") === "1";
 }
 
+function standaloneRuntimeConfig() {
+  const standalone = window.__PRIVATE_COMPANION_STANDALONE__;
+  if (standalone === true) return {};
+  if (standalone && typeof standalone === "object") return standalone;
+
+  const candidates = [
+    window.__PRIVATE_COMPANION_WEBUI__,
+    window.__PRIVATE_COMPANION_WEBUI_CONFIG__,
+  ];
+  return candidates.find((candidate) => {
+    if (!candidate || typeof candidate !== "object") return false;
+    return candidate.standalone === true || String(candidate.mode || "").toLowerCase() === "standalone";
+  }) || null;
+}
+
+function isStandaloneHttpMode() {
+  if (standaloneHttpModeDetected !== undefined) return standaloneHttpModeDetected;
+  if (standaloneRuntimeConfig()) {
+    standaloneHttpModeDetected = true;
+    return standaloneHttpModeDetected;
+  }
+  const mode = document.querySelector(`meta[name="${STANDALONE_MODE_META}"]`)?.content;
+  standaloneHttpModeDetected = String(mode || "").trim().toLowerCase() === "standalone";
+  return standaloneHttpModeDetected;
+}
+
+function isHttpApiMode() {
+  return isStandaloneHttpMode() || isDebugHttpMode();
+}
+
+function standaloneHttpApiBase() {
+  const config = standaloneRuntimeConfig() || {};
+  const configured = config.apiBase || config.api_base;
+  const metaBase = document.querySelector(`meta[name="${STANDALONE_API_BASE_META}"]`)?.content;
+  return String(configured || metaBase || STANDALONE_HTTP_API).trim() || STANDALONE_HTTP_API;
+}
+
+function httpApiRequestUrl(path) {
+  const base = isStandaloneHttpMode() ? standaloneHttpApiBase() : HTTP_API;
+  return `${String(base).replace(/\/+$/, "")}/${String(path || "").replace(/^\/+/, "")}`;
+}
+
+function pageApiAssetUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw || !isStandaloneHttpMode() || /^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(raw)) return raw;
+  const base = standaloneHttpApiBase().replace(/\/+$/, "");
+  if (raw === base || raw.startsWith(`${base}/`)) return raw;
+  if (raw === HTTP_API || raw.startsWith(`${HTTP_API}/`)) {
+    return `${base}${raw.slice(HTTP_API.length)}`;
+  }
+  return `${base}/${raw.replace(/^\/+/, "")}`;
+}
+
 function isUsableBridge(bridge) {
   return Boolean(bridge && typeof bridge.apiGet === "function" && typeof bridge.apiPost === "function");
 }
@@ -6036,7 +6094,7 @@ async function getPageBridge(timeoutMs = 2500) {
     return cachedPageBridge;
   }
 
-  if (isDebugHttpMode()) return null;
+  if (isHttpApiMode()) return null;
 
   if (!pageBridgeProbePromise) {
     pageBridgeProbePromise = waitForBridge(timeoutMs)
@@ -6056,7 +6114,7 @@ async function getPageBridge(timeoutMs = 2500) {
 }
 
 async function getReadyPageBridge(timeoutMs = 2500) {
-  if (isDebugHttpMode()) return null;
+  if (isHttpApiMode()) return null;
   const bridge = await getPageBridge(timeoutMs);
   if (!bridge || typeof bridge.ready !== "function") return bridge;
   if (!pageBridgeReadyPromise) {
@@ -18529,7 +18587,7 @@ function worldbookReferenceAssetsHtml(item) {
         <div class="worldbook-reference-grid">
           ${assets.map((asset) => `
             <article class="worldbook-reference-tile ${asset.enabled === false ? "off" : ""}">
-              ${asset.preview_endpoint ? `<img src="${escapeHtml(asset.preview_endpoint)}" alt="${escapeHtml(asset.title || "成员参考图")}" loading="lazy" />` : `<div class="worldbook-reference-missing">不可用</div>`}
+              ${asset.preview_endpoint ? `<img src="${escapeHtml(pageApiAssetUrl(asset.preview_endpoint))}" alt="${escapeHtml(asset.title || "成员参考图")}" loading="lazy" />` : `<div class="worldbook-reference-missing">不可用</div>`}
               <div><b>${escapeHtml(asset.title || "成员参考图")}</b><small>${escapeHtml((asset.tags || []).join(" · ") || asset.note || "身份参考")}</small></div>
               <button type="button" class="danger-outline" data-worldbook-reference-delete="${escapeHtml(asset.id || "")}" data-worldbook-reference-owner-id="${escapeHtml(userId)}" title="删除参考图" aria-label="删除参考图">×</button>
             </article>
@@ -23312,7 +23370,7 @@ function roleplayKnowledgeReferenceHtml(ownerId, assets = roleplayKnowledgeRefer
       ${assets.length ? `<div class="roleplay-knowledge-reference-grid">
         ${assets.map((asset) => `
           <article class="roleplay-knowledge-reference-tile">
-            ${asset.preview_endpoint ? `<img src="${escapeHtml(asset.preview_endpoint)}" alt="${escapeHtml(asset.title || "知识参考图")}" loading="lazy" />` : `<div class="worldbook-reference-missing">不可用</div>`}
+            ${asset.preview_endpoint ? `<img src="${escapeHtml(pageApiAssetUrl(asset.preview_endpoint))}" alt="${escapeHtml(asset.title || "知识参考图")}" loading="lazy" />` : `<div class="worldbook-reference-missing">不可用</div>`}
             <span>${escapeHtml(asset.title || asset.note || "知识参考图")}</span>
             <button type="button" class="danger-outline" data-knowledge-reference-delete="${escapeHtml(asset.id || "")}" title="删除知识参考图" aria-label="删除知识参考图">×</button>
           </article>
@@ -38246,7 +38304,7 @@ window.dispatchEvent(new Event("pc-panel-app-ready"));
 async function bootstrapPage() {
   try {
     const bridge = await getReadyPageBridge();
-    if (!bridge && !isDebugHttpMode()) {
+    if (!bridge && !isHttpApiMode()) {
       throw new Error("未检测到 AstrBot 官方插件 Page 桥接，请从 AstrBot 后台的插件拓展页打开");
     }
     await loadAll();

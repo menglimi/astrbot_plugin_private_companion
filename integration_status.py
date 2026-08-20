@@ -320,17 +320,30 @@ class IntegrationStatusMixin:
             logger.info("[PrivateCompanion] AstrBot 插件页入口兼容已应用: %s", ", ".join(changed))
 
     def _register_page_api_if_available(self) -> None:
-        if not hasattr(self.context, "register_web_api"):
-            logger.debug("[PrivateCompanion] 当前 AstrBot 版本未提供 register_web_api,跳过插件拓展页面 API 注册")
-            return
         try:
             from .page_api import PrivateCompanionPageApi
 
             self.page_api = PrivateCompanionPageApi(self)
-            self.page_api.register_routes()
-            logger.info("[PrivateCompanion] 插件拓展页面 API 已注册")
         except Exception as e:
-            logger.warning(f"[PrivateCompanion] 插件拓展页面 API 注册失败: {e}", exc_info=True)
+            logger.warning(f"[PrivateCompanion] 插件拓展页面 API 初始化失败: {e}", exc_info=True)
+            return
+
+        if hasattr(self.context, "register_web_api"):
+            try:
+                self.page_api.register_routes()
+                logger.info("[PrivateCompanion] 插件拓展页面 API 已注册")
+            except Exception as e:
+                logger.warning(f"[PrivateCompanion] 插件拓展页面 API 注册失败: {e}", exc_info=True)
+        else:
+            logger.debug("[PrivateCompanion] 当前 AstrBot 版本未提供 register_web_api,跳过插件拓展页面 API 注册")
+
+        try:
+            from .standalone_webui import StandaloneWebUIServer
+
+            self.standalone_webui = StandaloneWebUIServer(self, self.page_api)
+        except Exception as e:
+            self.standalone_webui = None
+            logger.warning(f"[PrivateCompanion] 独立陪伴 WebUI 初始化失败: {e}", exc_info=True)
 
     def _patch_livingmemory_processor_compat(self) -> None:
         """Work around LivingMemory versions whose MemoryProcessor lacks config."""

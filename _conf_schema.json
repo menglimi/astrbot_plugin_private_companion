@@ -113,6 +113,50 @@
           "storage_backend": "sqlite"
         }
       },
+      "enable_standalone_webui": {
+        "description": "启用独立陪伴 WebUI",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭。开启后，插件会在独立端口提供不依赖 AstrBot 插件页 Bridge 的陪伴面板；原 AstrBot 页面仍然保留。必须同时设置访问令牌。"
+      },
+      "standalone_webui_host": {
+        "description": "独立 WebUI 监听地址",
+        "type": "string",
+        "default": "127.0.0.1",
+        "condition": {
+          "enable_standalone_webui": true
+        },
+        "hint": "默认仅允许本机访问。局域网访问需明确填写 0.0.0.0，并配合系统防火墙和强访问令牌。"
+      },
+      "standalone_webui_port": {
+        "description": "独立 WebUI 端口",
+        "type": "int",
+        "default": 6190,
+        "condition": {
+          "enable_standalone_webui": true
+        },
+        "hint": "独立陪伴面板的监听端口，修改后需重载插件。"
+      },
+      "standalone_webui_access_token": {
+        "description": "独立 WebUI 访问令牌",
+        "type": "string",
+        "password": true,
+        "default": "",
+        "condition": {
+          "enable_standalone_webui": true
+        },
+        "obvious_hint": true,
+        "hint": "至少 16 个字符。只用于登录交换短期会话，不会写入浏览器存储或通过 URL 传递。请勿复用其他服务密码。"
+      },
+      "standalone_webui_session_ttl_hours": {
+        "description": "独立 WebUI 会话有效期（小时）",
+        "type": "int",
+        "default": 24,
+        "condition": {
+          "enable_standalone_webui": true
+        },
+        "hint": "登录成功后的浏览器会话有效期，范围 1 至 168 小时。"
+      },
       "enable_store_control_tag_sanitization": {
         "description": "保存时清理非标准控制标签",
         "type": "bool",
