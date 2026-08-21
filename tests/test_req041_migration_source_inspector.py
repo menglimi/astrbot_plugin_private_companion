@@ -171,6 +171,20 @@ class MigrationSourceInspectorTests(unittest.TestCase):
         ):
             self.assertEqual(baseline[key], with_tombstone[key])
 
+    def test_accepts_established_internal_underscore_section(self) -> None:
+        sqlite_source = self._sqlite_from_fixture()
+        connection = sqlite3.connect(sqlite_source)
+        try:
+            connection.execute(
+                "INSERT INTO store_sections VALUES(?,?,0,'',1)",
+                ("_req041_memory_scope_state", json.dumps({})),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        inventory = inspect_migration_sources(self.data_dir, [sqlite_source])
+        self.assertEqual(6, inventory["section_count_min"])
+
     def test_rejects_invalid_json_root_missing_sections_and_unsupported_version(
         self,
     ) -> None:

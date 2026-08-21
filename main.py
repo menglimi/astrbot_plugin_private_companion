@@ -5601,8 +5601,7 @@ class PrivateCompanionPlugin(
             return False
         if status.get("required"):
             if (
-                str(status.get("code") or "").strip() == "memory_bridge_unavailable"
-                and not status.get("memory_bound")
+                not status.get("memory_bound")
                 and not self._req041_memory_scope_was_bound()
             ):
                 coordinator = getattr(self, "req041_migration_coordinator", None)

@@ -318,6 +318,24 @@ class GroupResetSagaTests(unittest.TestCase):
         self.assertEqual("not_required", result["state"])
         self.assertIn("group-a", host.data["groups"])
 
+    def test_paused_legacy_migration_without_remote_binding_allows_local_group_delete(self) -> None:
+        host = _Host()
+        host.req041_scoped_projection_sync = None
+        host.req041_migration_status = {
+            "required": True,
+            "state": "paused",
+            "code": "relationship_legacy_event_invalid",
+            "memory_bound": False,
+        }
+        host.req041_migration_coordinator = types.SimpleNamespace(
+            status=lambda: {"source_schema_version": "companion-v1", "memory_version": "not-detected"}
+        )
+
+        result = asyncio.run(host.reset_group_scoped_data("group-a"))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("not_required", result["state"])
+
     def test_fresh_runtime_that_had_memory_bound_still_fails_closed(self) -> None:
         host = _Host()
         host.req041_scoped_projection_sync = None

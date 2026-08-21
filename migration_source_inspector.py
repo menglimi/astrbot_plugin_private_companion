@@ -57,7 +57,10 @@ _SQLITE_INTEGER_MAX = (1 << 63) - 1
 _MAX_SECTION_REVISION = _SQLITE_INTEGER_MAX - 1
 _MAX_ACTIVE_SECTIONS = 512
 _MAX_PHYSICAL_SECTION_ROWS = 512
-_SAFE_SECTION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+# Store sections are schema keys, including internal/runtime sections prefixed
+# with an underscore (for example ``_req041_memory_scope_state``).  Keep the
+# character set and length bounded while allowing that established prefix.
+_SAFE_SECTION_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}\Z")
 
 
 class MigrationSourceInspectionError(ValueError):
