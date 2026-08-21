@@ -1,0 +1,255 @@
+from __future__ import annotations
+
+import copy
+import json
+import unittest
+from pathlib import Path
+
+from astrbot_plugin_private_companion.persona_config import (
+    PERSONA_SETTINGS_SCHEMA_VERSION,
+    build_scope_manifest,
+    copy_persona_settings,
+    create_persona_settings,
+    default_persona_settings,
+    detach_persona_settings,
+    discover_grouped_schema_leaves,
+    load_schema,
+    migrate_persona_profile,
+    resolve_effective_settings,
+    resolve_persona_setting,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class PersonaConfigTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.schema = load_schema(ROOT / "_conf_schema.json")
+        cls.manifest = build_scope_manifest(cls.schema)
+
+    def test_manifest_covers_canonical_grouped_927_leaves(self) -> None:
+        leaves = discover_grouped_schema_leaves(self.schema)
+        self.assertEqual(len(leaves), 927)
+        self.assertEqual(set(leaves), set(self.manifest))
+        required_fields = {
+            "scope",
+            "cloneable",
+            "inherit_primary",
+            "identity",
+            "required",
+            "new_key_default",
+            "sensitive",
+            "hot_apply",
+            "restart_required",
+            "side_effect",
+            "ui_location",
+        }
+        for key, entry in self.manifest.items():
+            self.assertEqual(key, entry["key"])
+            self.assertTrue(required_fields.issubset(entry), key)
+        self.assertEqual(self.manifest["bot_name"]["scope"], "persona")
+        self.assertTrue(self.manifest["bot_name"]["identity"])
+        self.assertFalse(self.manifest["bot_name"]["inherit_primary"])
+        self.assertEqual(self.manifest["storage_backend"]["scope"], "common")
+        self.assertEqual(self.manifest["quiet_hours"]["scope"], "persona")
+
+    def test_missing_setting_follows_primary_but_falsy_values_are_explicit(self) -> None:
+        primary = {
+            "quiet_hours": "23:00-08:30",
+            "enable_proactive_burst": True,
+            "max_daily_messages": 8,
+            "target_user_ids": ["primary"],
+        }
+        self.assertEqual(
+            resolve_persona_setting("quiet_hours", {}, primary, manifest=self.manifest),
+            "23:00-08:30",
+        )
+        own = {
+            "quiet_hours": "",
+            "enable_proactive_burst": False,
+            "max_daily_messages": 0,
+        }
+        for key, expected in own.items():
+            self.assertEqual(
+                resolve_persona_setting(key, own, primary, manifest=self.manifest),
+                expected,
+            )
+        # Common keys never become persona overrides, even when an old profile
+        # contains one accidentally.
+        self.assertEqual(
+            resolve_persona_setting(
+                "storage_backend",
+                {"storage_backend": "sqlite"},
+                {"storage_backend": "json"},
+                manifest=self.manifest,
+            ),
+            "json",
+        )
+        self.assertIsNone(
+            resolve_persona_setting(
+                "unknown_legacy_key",
+                {"unknown_legacy_key": "persona"},
+                {"unknown_legacy_key": "primary"},
+                manifest=self.manifest,
+            )
+        )
+
+    def test_grouped_primary_value_precedes_legacy_flat_alias(self) -> None:
+        primary = {
+            "basic_config": {"quiet_hours": "grouped"},
+            "quiet_hours": "legacy",
+        }
+        self.assertEqual(
+            resolve_persona_setting("quiet_hours", {}, primary, manifest=self.manifest),
+            "grouped",
+        )
+
+    def test_persona_safety_values_can_only_tighten_primary_policy(self) -> None:
+        primary = {
+            "enable_adult_content_tier": False,
+            "adult_content_require_turn_consent": True,
+        }
+        attempted_relaxation = {
+            "enable_adult_content_tier": True,
+            "adult_content_require_turn_consent": False,
+        }
+        self.assertFalse(
+            resolve_persona_setting(
+                "enable_adult_content_tier",
+                attempted_relaxation,
+                primary,
+                manifest=self.manifest,
+            )
+        )
+        self.assertTrue(
+            resolve_persona_setting(
+                "adult_content_require_turn_consent",
+                attempted_relaxation,
+                primary,
+                manifest=self.manifest,
+            )
+        )
+        stricter = {
+            "enable_adult_content_tier": False,
+            "adult_content_require_turn_consent": True,
+        }
+        permissive_primary = {
+            "enable_adult_content_tier": True,
+            "adult_content_require_turn_consent": False,
+        }
+        self.assertFalse(
+            resolve_persona_setting(
+                "enable_adult_content_tier",
+                stricter,
+                permissive_primary,
+                manifest=self.manifest,
+            )
+        )
+        self.assertTrue(
+            resolve_persona_setting(
+                "adult_content_require_turn_consent",
+                stricter,
+                permissive_primary,
+                manifest=self.manifest,
+            )
+        )
+
+    def test_raw_copy_filters_common_and_identity_without_resolving(self) -> None:
+        source = {
+            "bot_name": "来源人格",
+            "quiet_hours": "",
+            "enable_proactive_burst": False,
+            "storage_backend": "sqlite",
+            "plugin_specific_persona_id": "source-astrbot-id",
+            "unknown_legacy_key": 123,
+        }
+        copied = copy_persona_settings(source, bot_name="新人格", manifest=self.manifest)
+        self.assertEqual(copied["bot_name"], "新人格")
+        self.assertEqual(copied["quiet_hours"], "")
+        self.assertFalse(copied["enable_proactive_burst"])
+        self.assertNotIn("storage_backend", copied)
+        self.assertNotIn("plugin_specific_persona_id", copied)
+        self.assertNotIn("unknown_legacy_key", copied)
+
+    def test_default_creation_only_contains_persona_scope(self) -> None:
+        settings = default_persona_settings(manifest=self.manifest)
+        self.assertGreater(len(settings), 500)
+        self.assertNotIn("storage_backend", settings)
+        self.assertNotIn("multi_persona_ids", settings)
+        self.assertIn("bot_name", settings)
+        self.assertEqual(settings["bot_name"], "小星")
+        created = create_persona_settings(
+            "defaults",
+            bot_name="默认人格",
+            manifest=self.manifest,
+        )
+        self.assertEqual(created["bot_name"], "默认人格")
+
+    def test_detach_materializes_effective_values_and_preserves_identity(self) -> None:
+        primary = {
+            "quiet_hours": "23:00-08:30",
+            "enable_proactive_burst": True,
+            "max_daily_messages": 8,
+        }
+        own = {"bot_name": "独立人格", "quiet_hours": "01:00-09:00"}
+        detached = detach_persona_settings(own, primary, manifest=self.manifest)
+        self.assertEqual(detached["bot_name"], "独立人格")
+        self.assertEqual(detached["quiet_hours"], "01:00-09:00")
+        self.assertEqual(detached["enable_proactive_burst"], True)
+        self.assertEqual(detached["max_daily_messages"], 8)
+        self.assertNotIn("storage_backend", detached)
+
+    def test_legacy_sparse_migration_does_not_fill_historical_keys(self) -> None:
+        legacy = {
+            "users": {"u1": {"name": "用户"}},
+            "persona_settings": None,
+        }
+        migrated = migrate_persona_profile(
+            legacy,
+            manifest=self.manifest,
+            legacy_bot_name="旧人格",
+        )
+        self.assertEqual(migrated["users"], legacy["users"])
+        self.assertEqual(migrated["persona_settings"], {"bot_name": "旧人格"})
+        self.assertEqual(
+            migrated["persona_settings_schema_version"], PERSONA_SETTINGS_SCHEMA_VERSION
+        )
+        self.assertEqual(migrated["persona_settings_revision"], 0)
+        # A future version explicitly lists new keys; only those keys are
+        # materialized, while old missing keys retain follow-primary semantics.
+        migrated_v2 = migrate_persona_profile(
+            migrated,
+            manifest=self.manifest,
+            target_version=2,
+            new_keys_by_version={2: ["quiet_hours"]},
+        )
+        self.assertEqual(
+            migrated_v2["persona_settings"]["quiet_hours"],
+            self.manifest["quiet_hours"]["new_key_default"],
+        )
+        self.assertNotIn("max_daily_messages", migrated_v2["persona_settings"])
+
+    def test_existing_empty_persona_settings_gets_identity_only(self) -> None:
+        migrated = migrate_persona_profile(
+            {"users": {}, "persona_settings": {}},
+            manifest=self.manifest,
+            persona_id="existing-alt",
+        )
+        self.assertEqual(migrated["persona_settings"], {"bot_name": "existing-alt"})
+        self.assertEqual(
+            migrated["persona_settings_schema_version"],
+            PERSONA_SETTINGS_SCHEMA_VERSION,
+        )
+
+    def test_migration_rejects_invalid_settings_without_mutating_input(self) -> None:
+        legacy = {"users": {"u1": {}}, "persona_settings": ["invalid"]}
+        snapshot = copy.deepcopy(legacy)
+        with self.assertRaises(ValueError):
+            migrate_persona_profile(legacy, manifest=self.manifest)
+        self.assertEqual(legacy, snapshot)
+
+
+if __name__ == "__main__":
+    unittest.main()

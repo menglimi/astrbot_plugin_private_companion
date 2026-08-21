@@ -2092,7 +2092,9 @@ class EventDispatchMixin:
         snapshot_sender_id = self._event_self_id(event) if is_message_sent_event else self._event_sender_id(event)
         snapshot_sender_name = _single_line(self._sender_display_name(event), 60)
         if is_message_sent_event:
-            snapshot_sender_name = _single_line(getattr(self, "bot_name", ""), 60) or snapshot_sender_name
+            setting_getter = getattr(self, "persona_setting", None)
+            bot_name = setting_getter("bot_name", "") if callable(setting_getter) else getattr(self, "bot_name", "")
+            snapshot_sender_name = _single_line(bot_name, 60) or snapshot_sender_name
         tts_spoken_text = ""
         tts_source_text = ""
         is_self_message = bool(
@@ -3866,7 +3868,8 @@ class EventDispatchMixin:
             return ""
         compact = re.sub(r"\s+", "", cleaned)
         compact = re.sub(r"[?？。.!！~～…]+$", "", compact)
-        bot_name = re.sub(r"\s+", "", str(getattr(self, "bot_name", "") or ""))
+        setting_getter = getattr(self, "persona_setting", None)
+        bot_name = re.sub(r"\s+", "", str(setting_getter("bot_name", "") if callable(setting_getter) else getattr(self, "bot_name", "") or ""))
         if bot_name and compact.startswith(bot_name) and len(compact) > len(bot_name):
             addressed_tail = compact[len(bot_name):].lstrip("，,、:： ")
             if re.fullmatch(r"(你)?知道(吗|嘛|么|不|吧)?", addressed_tail):
@@ -4876,7 +4879,8 @@ Bot 近期回复：
             return ""
 
         def _is_bot_at(user_id: str, name: str) -> bool:
-            bot_name = str(getattr(self, "bot_name", "") or "").strip()
+            setting_getter = getattr(self, "persona_setting", None)
+            bot_name = str(setting_getter("bot_name", "") if callable(setting_getter) else getattr(self, "bot_name", "") or "").strip()
             clean_name = str(name or "").strip().lstrip("@")
             if self_id and user_id and user_id == self_id:
                 return True

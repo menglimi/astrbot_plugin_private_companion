@@ -255,7 +255,9 @@ class GroupWakeupMixin:
         if any(isinstance(item, dict) and str(item.get("user_id") or "").strip() and not item.get("is_bot") for item in at_targets):
             return False
         cleaned = str(text or "")
-        if self.bot_name and self.bot_name in cleaned:
+        setting_getter = getattr(self, "persona_setting", None)
+        bot_name = str(setting_getter("bot_name", "") if callable(setting_getter) else getattr(self, "bot_name", "") or "")
+        if bot_name and bot_name in cleaned:
             return True
         return False
 
@@ -1414,7 +1416,9 @@ class GroupWakeupMixin:
                 "reason": "reply_to_other",
             })
             return scene
-        if self.bot_name and self.bot_name in cleaned:
+        setting_getter = getattr(self, "persona_setting", None)
+        bot_name = str(setting_getter("bot_name", "") if callable(setting_getter) else getattr(self, "bot_name", "") or "")
+        if bot_name and bot_name in cleaned:
             scene.update({"trigger": "mention_bot_name", "talking_to": "bot", "talking_to_name": "你", "reason": "bot_name_mentioned"})
             return scene
         recent = group.get("recent_messages") if isinstance(group.get("recent_messages"), list) else []

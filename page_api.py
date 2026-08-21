@@ -884,6 +884,13 @@ class PrivateCompanionPageApi(
             ("/persona/unbind", self.unbind_persona, ["POST"], "Private Companion Page unbind persona window"),
             ("/persona/migrate", self.migrate_persona_profile, ["POST"], "Private Companion Page migrate persona profile"),
             ("/persona/reset-current", self.reset_current_persona, ["POST"], "Private Companion Page reset current persona"),
+            ("/persona/config-state", self.get_persona_config_state, ["GET"], "Private Companion Page persona config state"),
+            ("/persona/config/create", self.create_persona_config, ["POST"], "Private Companion Page create persona config"),
+            ("/persona/settings/update", self.update_persona_settings, ["POST"], "Private Companion Page update persona settings"),
+            ("/persona/config/detach-preview", self.preview_persona_config_detach, ["POST"], "Private Companion Page preview persona config detach"),
+            ("/persona/config/detach-apply", self.apply_persona_config_detach, ["POST"], "Private Companion Page apply persona config detach"),
+            ("/persona/window-bindings", self.persona_window_bindings, ["GET", "POST"], "Private Companion Page persona window bindings"),
+            ("/persona/window-bindings/delete", self.delete_persona_window_binding, ["POST"], "Private Companion Page delete persona window binding"),
             ("/roleplay/draft_from_persona", self.generate_roleplay_draft_from_persona, ["POST"], "Private Companion Page roleplay draft from persona"),
             ("/roleplay/standardize_persona", self.standardize_persona_from_questionnaire, ["POST"], "Private Companion Page roleplay persona standardization"),
             ("/roleplay/persona_style_scenarios", self.generate_persona_style_scenarios, ["POST"], "Private Companion Page roleplay persona style scenarios"),
@@ -906,6 +913,13 @@ class PrivateCompanionPageApi(
             "/persona/unbind",
             "/persona/migrate",
             "/persona/reset-current",
+            "/persona/config-state",
+            "/persona/config/create",
+            "/persona/settings/update",
+            "/persona/config/detach-preview",
+            "/persona/config/detach-apply",
+            "/persona/window-bindings",
+            "/persona/window-bindings/delete",
         }
         bindings: list[tuple[str, Any, list[str], str]] = []
         for path, handler, methods, desc in routes:
@@ -4753,6 +4767,75 @@ class PrivateCompanionPageApi(
     async def update_settings(self) -> dict[str, Any]:
         payload = await request.get_json(silent=True) or {}
         try:
+            active_getter = getattr(self.plugin, "_active_persona_scope", None)
+            active_persona = str(active_getter() if callable(active_getter) else "").strip()
+            primary_persona = str(getattr(self.plugin, "multi_persona_primary_id", "") or "").strip()
+            if (
+                active_persona
+                and bool(getattr(self.plugin, "enable_multi_persona_mode", False))
+                and active_persona != primary_persona
+            ):
+                # Secondary persona edits must never write AstrBot's shared
+                # config.  Reuse the dedicated sparse settings transaction.
+                changes: dict[str, Any] = {}
+                if "group_access_mode" in payload:
+                    mode = str(payload.get("group_access_mode") or "").strip().lower()
+                    if mode not in {"whitelist", "blacklist"}:
+                        return self._error("group_access_mode 只能是 whitelist 或 blacklist")
+                    changes["group_access_mode"] = mode
+                if "group_whitelist_ids" in payload:
+                    changes["group_whitelist_ids"] = self._normalize_id_list(payload.get("group_whitelist_ids"))
+                if "group_blacklist_ids" in payload:
+                    changes["group_blacklist_ids"] = self._normalize_id_list(payload.get("group_blacklist_ids"))
+                for key, value in (payload.get("features") or {}).items():
+                    changes[key] = self._normalize_bool_value(value)
+                for key, value in (payload.get("providers") or {}).items():
+                    changes[key] = self._single_line(value, 160)
+                for key, value in (payload.get("settings") or {}).items():
+                    changes[key] = self._normalize_setting_value(key, value)
+                manifest_getter = getattr(self.plugin, "_persona_scope_manifest", None)
+                manifest = manifest_getter() if callable(manifest_getter) else {}
+                persona_changes = {
+                    key: value
+                    for key, value in changes.items()
+                    if isinstance(manifest.get(key), dict) and manifest[key].get("scope") == "persona"
+                }
+                common_changes = {
+                    key: value
+                    for key, value in changes.items()
+                    if key not in persona_changes
+                }
+                updater = getattr(self.plugin, "_update_persona_settings_async", None)
+                if not callable(updater):
+                    return self._error("当前版本不支持人格独立配置", status_code=503)
+                persona_result = {"ok": True, "changed": []}
+                if persona_changes or payload.get("follow_primary_keys"):
+                    persona_result = await updater(
+                        active_persona,
+                        changes=persona_changes,
+                        follow_primary_keys=payload.get("follow_primary_keys") or [],
+                        expected_revision=payload.get("expected_revision"),
+                    )
+                    if not persona_result.get("ok"):
+                        return self._error(
+                            persona_result.get("message") or "人格配置更新失败",
+                            status_code=int(persona_result.get("status_code") or 400),
+                        )
+                if not common_changes:
+                    overview = await self.get_overview()
+                    if overview.get("success"):
+                        overview["data"]["changed"] = persona_result.get("changed", [])
+                        overview["data"]["config_saved"] = True
+                    return overview
+                # Continue through the established shared-config transaction
+                # for common keys while preserving the persona update above.
+                payload = {
+                    **payload,
+                    "features": {key: value for key, value in (payload.get("features") or {}).items() if key in common_changes},
+                    "providers": {key: value for key, value in (payload.get("providers") or {}).items() if key in common_changes},
+                    "settings": {key: value for key, value in (payload.get("settings") or {}).items() if key in common_changes},
+                    "follow_primary_keys": [],
+                }
             changed: dict[str, Any] = {}
             if "group_access_mode" in payload:
                 mode = str(payload.get("group_access_mode") or "").strip().lower()
@@ -13037,6 +13120,97 @@ class PrivateCompanionPageApi(
         if result.get("window_key") and result.get("config_saved") is not True:
             return self._error("窗口绑定配置未确认落盘，本次切换已取消")
         return self._ok(result)
+
+    async def get_persona_config_state(self) -> dict[str, Any]:
+        persona_id = self._single_line(request.args.get("persona_id"), 96)
+        getter = getattr(self.plugin, "_persona_config_state", None)
+        if not callable(getter):
+            return self._error("当前版本不支持人格独立配置", status_code=503)
+        try:
+            return self._ok(getter(persona_id))
+        except Exception as exc:
+            return self._error(str(exc))
+
+    async def create_persona_config(self) -> dict[str, Any]:
+        payload = await request.get_json(silent=True) or {}
+        creator = getattr(self.plugin, "_create_persona_config_async", None)
+        if not callable(creator):
+            return self._error("当前版本不支持创建人格配置", status_code=503)
+        result = await creator(
+            payload.get("persona_id"),
+            bot_name=payload.get("bot_name"),
+            mode=payload.get("mode") or "follow_primary",
+            source_persona_id=payload.get("source_persona_id"),
+            recovery=bool(payload.get("recovery")),
+        )
+        return self._ok(result) if result.get("ok") else self._error(result.get("message") or "创建人格配置失败", status_code=int(result.get("status_code") or 400))
+
+    async def update_persona_settings(self) -> dict[str, Any]:
+        payload = await request.get_json(silent=True) or {}
+        updater = getattr(self.plugin, "_update_persona_settings_async", None)
+        if not callable(updater):
+            return self._error("当前版本不支持人格配置更新", status_code=503)
+        result = await updater(
+            payload.get("persona_id"),
+            changes=payload.get("changes") or {},
+            follow_primary_keys=payload.get("follow_primary_keys") or [],
+            expected_revision=payload.get("expected_revision"),
+        )
+        return self._ok(result) if result.get("ok") else self._error(result.get("message") or "人格配置更新失败", status_code=int(result.get("status_code") or 400))
+
+    async def preview_persona_config_detach(self) -> dict[str, Any]:
+        payload = await request.get_json(silent=True) or {}
+        previewer = getattr(self.plugin, "_persona_detach_preview", None)
+        if not callable(previewer):
+            return self._error("当前版本不支持脱离主人格", status_code=503)
+        result = previewer(payload.get("persona_id"))
+        return self._ok(result) if result.get("ok") else self._error(result.get("message") or "脱离预览失败")
+
+    async def apply_persona_config_detach(self) -> dict[str, Any]:
+        payload = await request.get_json(silent=True) or {}
+        apply_detach = getattr(self.plugin, "_detach_persona_settings_async", None)
+        if not callable(apply_detach):
+            return self._error("当前版本不支持脱离主人格", status_code=503)
+        result = await apply_detach(
+            payload.get("persona_id"),
+            expected_revision=payload.get("expected_revision"),
+            preview_hash=payload.get("preview_hash"),
+        )
+        return self._ok(result) if result.get("ok") else self._error(result.get("message") or "脱离主人格失败", status_code=int(result.get("status_code") or 400))
+
+    async def persona_window_bindings(self) -> dict[str, Any]:
+        if request.method == "GET":
+            bindings = getattr(self.plugin, "_persona_window_bindings", lambda: {})()
+            return self._ok(
+                {
+                    "revision": int(getattr(self.plugin, "_persona_window_bindings_revision", 0) or 0),
+                    "bindings": bindings,
+                }
+            )
+        payload = await request.get_json(silent=True) or {}
+        mutator = getattr(self.plugin, "_mutate_persona_window_binding_async", None)
+        if not callable(mutator):
+            return self._error("当前版本不支持窗口绑定管理", status_code=503)
+        result = await mutator(
+            action="upsert",
+            window_key=payload.get("window_key") or payload.get("umo"),
+            persona_id=payload.get("persona_id"),
+            previous_window_key=payload.get("previous_window_key"),
+            expected_revision=payload.get("expected_revision"),
+        )
+        return self._ok(result) if result.get("ok") else self._error(result.get("message") or "窗口绑定保存失败", status_code=int(result.get("status_code") or 400))
+
+    async def delete_persona_window_binding(self) -> dict[str, Any]:
+        payload = await request.get_json(silent=True) or {}
+        mutator = getattr(self.plugin, "_mutate_persona_window_binding_async", None)
+        if not callable(mutator):
+            return self._error("当前版本不支持窗口绑定管理", status_code=503)
+        result = await mutator(
+            action="delete",
+            window_key=payload.get("window_key") or payload.get("umo"),
+            expected_revision=payload.get("expected_revision"),
+        )
+        return self._ok(result) if result.get("ok") else self._error(result.get("message") or "窗口绑定删除失败", status_code=int(result.get("status_code") or 400))
 
     async def migrate_persona_profile(self) -> dict[str, Any]:
         payload = await request.get_json(silent=True) or {}
@@ -21885,6 +22059,20 @@ class PrivateCompanionPageApi(
                 values[key] = self._normalize_bool_value(values[key])
         for key in PAGE_PRIVATE_CONFIG_KEYS:
             values.pop(key, None)
+        active_getter = getattr(self.plugin, "_active_persona_scope", None)
+        active_persona = str(active_getter() if callable(active_getter) else "").strip()
+        primary_persona = str(getattr(self.plugin, "multi_persona_primary_id", "") or "").strip()
+        manifest_getter = getattr(self.plugin, "_persona_scope_manifest", None)
+        setting_getter = getattr(self.plugin, "get_persona_setting", None)
+        if active_persona and active_persona != primary_persona and callable(manifest_getter) and callable(setting_getter):
+            manifest = manifest_getter()
+            for key in tuple(values):
+                entry = manifest.get(key) if isinstance(manifest, dict) else None
+                if isinstance(entry, dict) and entry.get("scope") == "persona":
+                    try:
+                        values[key] = setting_getter(key, active_persona, values[key])
+                    except Exception:
+                        pass
         return values
 
     def _proactive_intensity_summary(self) -> dict[str, Any]:
@@ -23425,6 +23613,9 @@ class PrivateCompanionPageApi(
             return
         if key == "enable_multi_persona_mode":
             enabled = self._normalize_bool_value(value)
+            transition = getattr(self.plugin, "_prepare_multi_persona_transition", None)
+            if callable(transition):
+                transition(enabled)
             self.plugin.enable_multi_persona_mode = enabled
             if enabled and not self.plugin.multi_persona_primary_id:
                 fallback_id = self.plugin._sanitize_persona_id(

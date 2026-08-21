@@ -9,6 +9,371 @@
   --panel-sticky-shadow: 0 8px 22px rgba(15, 42, 74, 0.10);
 }
 
+/* Multi-persona configuration order: common management, selector, context,
+   then the selected persona's behavior settings. */
+#panel-config .config-persona-context,
+#panel-config .config-persona-settings {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 16px;
+  min-width: 0;
+}
+
+#panel-config .config-persona-selector {
+  display: grid;
+  grid-template-columns: minmax(220px, 360px) minmax(0, 1fr);
+  align-items: end;
+  gap: 16px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 14px 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow-ring);
+}
+
+#panel-config .config-persona-selector[hidden] {
+  display: none;
+}
+
+#panel-config .config-persona-selector label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+#panel-config .config-persona-selector select {
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 0 10px;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+#panel-config .config-persona-selector-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+#panel-config .config-persona-selector-meta b {
+  color: var(--ink);
+}
+
+#panel-config .config-persona-selector-meta span {
+  color: var(--muted);
+}
+
+#panel-config .config-persona-stats {
+  min-width: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 14px 16px 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow-ring);
+}
+
+#panel-config .config-persona-stats > header,
+#panel-config .persona-management-head {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+
+#panel-config .config-persona-stats h2,
+#panel-config .persona-management-head h2 {
+  margin: 3px 0 0;
+  font-size: 18px;
+}
+
+#panel-config .config-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  padding: 0;
+}
+
+#panel-config .config-stats .stat {
+  min-height: 76px;
+}
+
+#panel-config .persona-management-card {
+  min-width: 0;
+}
+
+#panel-config .persona-management-head p {
+  max-width: 780px;
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+#panel-config .persona-management-status,
+#panel-config .persona-management-mode-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+#panel-config .persona-management-mode-control .feature-detail-toggle {
+  min-height: 36px;
+}
+
+#panel-config .persona-management-mode-control button {
+  min-height: 34px;
+}
+
+#panel-config .persona-management-note {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+#panel-config .persona-config-degraded {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+  border: 1px solid color-mix(in srgb, #b15d28 38%, var(--line));
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, #fff0df 72%, var(--panel));
+  color: #75401f;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+#panel-config .persona-topology-form {
+  display: grid;
+  grid-template-columns: minmax(180px, 260px) minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+  margin-bottom: 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 11px;
+  background: color-mix(in srgb, var(--surface) 92%, var(--panel));
+}
+
+#panel-config .persona-topology-form > label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+#panel-config .persona-topology-form select {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 0 9px;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+}
+
+#panel-config .persona-topology-form fieldset {
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+
+#panel-config .persona-topology-form legend {
+  margin-bottom: 5px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+#panel-config .persona-topology-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+}
+
+#panel-config .persona-topology-checks label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--ink);
+  font-size: 11px;
+}
+
+#panel-config .persona-management-body {
+  min-width: 0;
+}
+
+#panel-config .persona-config-admin-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+#panel-config .persona-config-create-form,
+#panel-config .persona-config-detach-form {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-width: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 13px;
+  background: color-mix(in srgb, var(--panel) 94%, var(--surface));
+}
+
+#panel-config .persona-config-create-form header,
+#panel-config .persona-config-detach-form header {
+  display: grid;
+  gap: 3px;
+}
+
+#panel-config .persona-config-create-form header span,
+#panel-config .persona-config-detach-form header span,
+#panel-config .persona-config-detach-preview {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+#panel-config .persona-config-admin-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+#panel-config .persona-config-admin-fields label,
+#panel-config .persona-config-detach-form > label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+#panel-config .persona-config-admin-fields input,
+#panel-config .persona-config-admin-fields select,
+#panel-config .persona-config-detach-form select {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 0 9px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+
+#panel-config .persona-config-detach-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+#panel-config .persona-config-detach-preview {
+  display: grid;
+  gap: 3px;
+  min-height: 48px;
+  border: 1px dashed var(--line);
+  border-radius: 7px;
+  padding: 9px;
+  overflow-wrap: anywhere;
+}
+
+#panel-config .persona-config-detach-preview b {
+  color: var(--ink);
+}
+
+#panel-config .persona-management-empty {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+#panel-config .persona-management-empty b {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+#panel-config .multi-persona-binding-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  min-width: 0;
+  border-top: 1px solid var(--line-soft);
+  padding: 9px 0;
+}
+
+#panel-config .multi-persona-binding-route {
+  display: flex;
+  flex: 1 1 220px;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+#panel-config .multi-persona-binding-route code {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 11px;
+}
+
+#panel-config .multi-persona-binding-route em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+#panel-config .multi-persona-binding-actions,
+#panel-config .multi-persona-binding-form-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+#panel-config .multi-persona-binding-actions button,
+#panel-config .multi-persona-binding-form-actions button {
+  min-height: 30px;
+  padding-inline: 9px;
+  font-size: 11px;
+}
+
+@media (max-width: 760px) {
+  #panel-config .config-persona-selector,
+  #panel-config .config-stats,
+  #panel-config .persona-config-admin-grid,
+  #panel-config .persona-config-admin-fields {
+    grid-template-columns: 1fr;
+  }
+
+  #panel-config .config-persona-stats > header,
+  #panel-config .persona-management-head,
+  #panel-config .persona-topology-form {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  #panel-config .persona-topology-form {
+    grid-template-columns: 1fr;
+  }
+}
+
 html {
   scroll-padding-top: 72px;
 }

@@ -139,6 +139,27 @@ from .helpers import (
     _resolve_timezone_setting,
 )
 from .config_migration import migrate_flat_config_into_schema_groups
+from .persona_config import (
+    PERSONA_SETTINGS_KEY,
+    PERSONA_SETTINGS_REVISION_KEY,
+    PERSONA_SETTINGS_SCHEMA_VERSION,
+    PERSONA_SETTINGS_VERSION_KEY,
+    PersonaConfigError,
+    PersonaSettingsTypeError,
+    create_persona_settings,
+    copy_from_primary_config,
+    detach_persona_settings,
+    load_scope_manifest,
+    migrate_persona_profile,
+    normalize_persona_settings,
+    normalize_setting_value,
+    resolve_effective_settings,
+    resolve_persona_setting,
+)
+from .persona_window_bindings import (
+    BindingRevisionConflict,
+    PersonaWindowBindingStore,
+)
 from .model_routing import contains_sensitive_refusal, scope_allows
 from .person_context_contract import (
     CONTRACT_NAME as PERSON_CONTRACT_NAME,
@@ -201,6 +222,7 @@ from .relationship_policy import normalize_relationship_stage_policy
 
 
 _ACTIVE_PERSONA_ID = contextvars.ContextVar("private_companion_active_persona_id", default="")
+_PERSONA_SETTING_MANIFEST = load_scope_manifest()
 _PHOTO_TOOL_PROMPT_FORMAT_MARKER = "<!-- private_companion_prompt_format_req_v1 -->"
 _PERSONA_PROFILE_FORBIDDEN_FILENAME_CHARS = frozenset('<>:"/\\|?*%')
 _WINDOWS_RESERVED_FILENAME_STEMS = frozenset(
@@ -1924,6 +1946,155 @@ class PrivateCompanionPlugin(
             return profile
         return getattr(self, "_data_default", {})
 
+    def _persona_scope_manifest(self) -> dict[str, dict[str, Any]]:
+        return _PERSONA_SETTING_MANIFEST
+
+    def _primary_persona_config(self) -> Any:
+        return getattr(self, "config", {})
+
+    def _persona_settings_for_id(self, persona_id: Any = "") -> dict[str, Any]:
+        pid = self._sanitize_persona_id(persona_id or _ACTIVE_PERSONA_ID.get())
+        if not pid:
+            return {}
+        primary = self._sanitize_persona_id(
+            object.__getattribute__(self, "multi_persona_primary_id")
+            if hasattr(self, "multi_persona_primary_id")
+            else ""
+        )
+        if pid == primary:
+            return {}
+        profile = self._ensure_persona_profile(pid)
+        settings = profile.get(PERSONA_SETTINGS_KEY)
+        return dict(settings) if isinstance(settings, dict) else {}
+
+    def get_persona_setting(self, key: str, persona_id: Any = "", default: Any = None) -> Any:
+        """Return one effective setting for the active or requested persona."""
+        key = str(key or "").strip()
+        if not key:
+            return default
+        active = self._sanitize_persona_id(persona_id or _ACTIVE_PERSONA_ID.get())
+        enabled = bool(object.__getattribute__(self, "enable_multi_persona_mode")) if hasattr(self, "enable_multi_persona_mode") else False
+        if not enabled or not active:
+            try:
+                return object.__getattribute__(self, key)
+            except AttributeError:
+                return default
+        if key == "plugin_specific_persona_id":
+            return active
+        primary = self._sanitize_persona_id(
+            object.__getattribute__(self, "multi_persona_primary_id")
+        )
+        if active == primary:
+            try:
+                return object.__getattribute__(self, key)
+            except AttributeError:
+                pass
+        settings = self._persona_settings_for_id(active)
+        try:
+            primary_value = object.__getattribute__(self, key)
+            primary_source: Any = {key: deepcopy(primary_value)}
+        except AttributeError:
+            primary_source = self._primary_persona_config()
+        value = resolve_persona_setting(
+            key,
+            settings,
+            primary_source,
+            manifest=self._persona_scope_manifest(),
+            default=default,
+        )
+        # The resolver intentionally returns a copy. This keeps mutable list/
+        # object settings from being modified through a runtime read.
+        return value
+
+    def persona_setting(self, key: str, default: Any = None, persona_id: Any = "") -> Any:
+        """Short explicit accessor for persona-aware runtime code."""
+        return self.get_persona_setting(key, persona_id=persona_id, default=default)
+
+    def effective_persona_settings(self, persona_id: Any = "", *, include_common: bool = False) -> dict[str, Any]:
+        active = self._sanitize_persona_id(persona_id or _ACTIVE_PERSONA_ID.get())
+        if not active:
+            active = self._sanitize_persona_id(
+                object.__getattribute__(self, "multi_persona_primary_id")
+                if hasattr(self, "multi_persona_primary_id")
+                else ""
+            )
+        settings = self._persona_settings_for_id(active)
+        primary = self._sanitize_persona_id(
+            object.__getattribute__(self, "multi_persona_primary_id")
+        ) if hasattr(self, "multi_persona_primary_id") else ""
+        if active == primary:
+            result: dict[str, Any] = {}
+            for key, entry in self._persona_scope_manifest().items():
+                if not include_common and entry.get("scope") == "common":
+                    continue
+                try:
+                    result[key] = deepcopy(object.__getattribute__(self, key))
+                except AttributeError:
+                    result[key] = resolve_persona_setting(
+                        key,
+                        {},
+                        self._primary_persona_config(),
+                        manifest=self._persona_scope_manifest(),
+                    )
+            return result
+        return resolve_effective_settings(
+            settings,
+            self._primary_persona_config(),
+            manifest=self._persona_scope_manifest(),
+            include_common=include_common,
+            include_identity=True,
+        )
+
+    def _migrate_persona_profiles_sync(self) -> dict[str, Any]:
+        """Upgrade existing profile settings without materializing old gaps."""
+        result = {"ok": True, "migrated": [], "degraded": [], "skipped": []}
+        profiles_dir = Path(str(getattr(self, "_persona_profiles_dir", "") or ""))
+        if not profiles_dir.exists():
+            return result
+        primary = self._sanitize_persona_id(getattr(self, "multi_persona_primary_id", ""))
+        errors = getattr(self, "_persona_profile_errors", None)
+        if not isinstance(errors, dict):
+            errors = {}
+            self._persona_profile_errors = errors
+        for path in sorted(profiles_dir.glob("*.json")):
+            pid = self._persona_id_from_profile_path(path)
+            if not pid or pid == primary:
+                result["skipped"].append(pid or path.name)
+                continue
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(raw, dict):
+                    raise PersonaConfigError("persona profile root must be an object")
+                settings = raw.get(PERSONA_SETTINGS_KEY)
+                if settings is not None and not isinstance(settings, dict):
+                    raise PersonaSettingsTypeError("persona_settings must be an object")
+                # Legacy profiles did not have a persona bot name. It is an
+                # identity repair, not inheritance from the primary bot name.
+                legacy_bot_name = ""
+                if not isinstance(settings, dict) or not str(settings.get("bot_name") or "").strip():
+                    legacy_bot_name = pid
+                migrated = migrate_persona_profile(
+                    raw,
+                    manifest=self._persona_scope_manifest(),
+                    target_version=PERSONA_SETTINGS_SCHEMA_VERSION,
+                    persona_id=pid,
+                    legacy_bot_name=legacy_bot_name,
+                )
+                changed = migrated != raw
+                if changed:
+                    self._save_persona_profile_sync(pid, migrated)
+                    result["migrated"].append(pid)
+            except Exception as exc:
+                errors[pid] = str(exc)
+                result["degraded"].append(pid)
+                result["ok"] = False
+                logger.warning(
+                    "[PrivateCompanion] 人格配置迁移降级: persona=%s error=%s",
+                    pid,
+                    _single_line(exc, 180),
+                )
+        return result
+
     @data.setter
     def data(self, value: dict[str, Any]) -> None:
         active = _ACTIVE_PERSONA_ID.get()
@@ -2030,10 +2201,37 @@ class PrivateCompanionPlugin(
     def _persona_profile_path(self, persona_id: str) -> Path:
         return Path(self._persona_profiles_dir) / self._persona_profile_filename(persona_id)
 
+    def _backup_corrupt_persona_profile_sync(self, path: Path, *, reason: str) -> Path | None:
+        if not path.exists():
+            return None
+        backup = path.with_name(
+            f"{path.name}.corrupt-{int(time.time())}-{uuid.uuid4().hex[:8]}.bak"
+        )
+        try:
+            shutil.copy2(path, backup)
+            logger.error(
+                "[PrivateCompanion] 已隔离损坏人格 profile: source=%s backup=%s reason=%s",
+                path,
+                backup,
+                _single_line(reason, 160),
+            )
+            return backup
+        except Exception as exc:
+            logger.error(
+                "[PrivateCompanion] 人格 profile 备份失败: source=%s error=%s",
+                path,
+                _single_line(exc, 160),
+            )
+            return None
+
     def _ensure_persona_profile(self, persona_id: str) -> dict[str, Any]:
         pid = self._sanitize_persona_id(persona_id) or self._sanitize_persona_id(getattr(self, "multi_persona_primary_id", ""))
         if not pid:
             return self._data_default
+        profile_errors = getattr(self, "_persona_profile_errors", None)
+        if not isinstance(profile_errors, dict):
+            profile_errors = {}
+            self._persona_profile_errors = profile_errors
         profiles = getattr(self, "_persona_data_profiles", None)
         if profiles is None:
             profiles = {}
@@ -2048,7 +2246,11 @@ class PrivateCompanionPlugin(
                 raw = json.loads(path.read_text(encoding="utf-8"))
                 if isinstance(raw, dict):
                     loaded = raw
+                else:
+                    self._backup_corrupt_persona_profile_sync(path, reason="profile root is not an object")
         except Exception as exc:
+            self._backup_corrupt_persona_profile_sync(path, reason=str(exc))
+            profile_errors[pid] = str(exc)
             logger.warning("[PrivateCompanion] 人格资料读取失败 persona=%s error=%s", pid, _single_line(exc, 160))
         primary = self._sanitize_persona_id(getattr(self, "multi_persona_primary_id", ""))
         if loaded is not None:
@@ -2062,8 +2264,29 @@ class PrivateCompanionPlugin(
         ensure_defaults = getattr(self, "_ensure_store_defaults", None)
         if callable(ensure_defaults):
             profile = ensure_defaults(profile)
-        if not isinstance(profile.get("persona_settings"), dict):
+        if PERSONA_SETTINGS_KEY not in profile:
             profile["persona_settings"] = {}
+        elif not isinstance(profile.get(PERSONA_SETTINGS_KEY), dict):
+            reason = "persona_settings must be an object"
+            self._backup_corrupt_persona_profile_sync(path, reason=reason)
+            profile_errors[pid] = reason
+            profile[PERSONA_SETTINGS_KEY] = {}
+        if pid != primary and not str(profile[PERSONA_SETTINGS_KEY].get("bot_name") or "").strip():
+            # Pre-settings secondary profiles need an identity to be editable;
+            # ordinary missing keys remain sparse and continue following the
+            # primary configuration.
+            profile[PERSONA_SETTINGS_KEY]["bot_name"] = pid
+            profile[PERSONA_SETTINGS_VERSION_KEY] = PERSONA_SETTINGS_SCHEMA_VERSION
+            profile.setdefault(PERSONA_SETTINGS_REVISION_KEY, 0)
+            if not path.exists():
+                try:
+                    self._save_persona_profile_sync(pid, profile)
+                except Exception as exc:
+                    logger.warning(
+                        "[PrivateCompanion] 旧人格身份配置初始化落盘失败: persona=%s error=%s",
+                        pid,
+                        _single_line(exc, 160),
+                    )
         profiles[pid] = profile
         return profile
 
@@ -2232,6 +2455,15 @@ class PrivateCompanionPlugin(
                 ensure_defaults = getattr(self, "_ensure_store_defaults", None)
                 if callable(ensure_defaults):
                     replacement = ensure_defaults(replacement)
+                # Reset life data without resetting the persona's independent
+                # configuration or its optimistic-concurrency metadata.
+                for settings_key in (
+                    "persona_settings",
+                    "persona_settings_schema_version",
+                    "persona_settings_revision",
+                ):
+                    if settings_key in previous:
+                        replacement[settings_key] = deepcopy(previous[settings_key])
                 replacement["persona_lifecycle"] = {
                     "generation": generation,
                     "reset_at": _now_ts(),
@@ -2355,15 +2587,11 @@ class PrivateCompanionPlugin(
                 result[window_key] = pid
         return result
 
-    def _persona_window_binding_suppressions(self) -> set[str]:
-        raw = getattr(self, "_persona_window_bindings_suppressed", set())
-        if not isinstance(raw, (set, list, tuple)):
-            return set()
-        return {
-            window
-            for value in raw
-            if (window := _single_line(value, 240))
-        }
+    def _persona_window_binding_store(self) -> PersonaWindowBindingStore:
+        return PersonaWindowBindingStore(
+            self._persona_window_bindings_store_path(),
+            persona_normalizer=self._sanitize_persona_id,
+        )
 
     def _persona_window_bindings_store_path(self) -> Path:
         configured = str(getattr(self, "_persona_window_bindings_file", "") or "").strip()
@@ -2377,62 +2605,36 @@ class PrivateCompanionPlugin(
 
     def _load_persona_window_bindings_store_sync(self) -> dict[str, str]:
         path = self._persona_window_bindings_store_path()
-        if not path.exists():
-            self._persona_window_bindings_suppressed = set()
-            return {}
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            suppressed_raw = payload.get("suppressed_windows", []) if isinstance(payload, dict) else []
-            self._persona_window_bindings_suppressed = {
-                window
-                for value in (suppressed_raw if isinstance(suppressed_raw, list) else [])
-                if (window := _single_line(value, 240))
-            }
-            raw = payload.get("bindings") if isinstance(payload, dict) and "bindings" in payload else payload
-            if not isinstance(raw, dict):
-                return {}
-            result: dict[str, str] = {}
-            for window, persona in raw.items():
-                window_key = _single_line(window, 240)
-                pid = self._sanitize_persona_id(persona)
-                if window_key and pid:
-                    result[window_key] = pid
-            return result
+            state = self._persona_window_binding_store().load(migrate=True)
+            self._persona_window_bindings_revision = state.revision
+            self._persona_window_bindings_updated_at = state.updated_at
+            return state.bindings
         except Exception as exc:
-            self._persona_window_bindings_suppressed = set()
+            if path.exists():
+                backup = path.with_name(
+                    f"{path.name}.corrupt-{int(time.time())}-{uuid.uuid4().hex[:8]}.bak"
+                )
+                try:
+                    shutil.copy2(path, backup)
+                except Exception:
+                    backup = None
             logger.warning(
-                "[PrivateCompanion] 多人格窗口绑定持久化文件读取失败，回退到插件配置: %s",
+                "[PrivateCompanion] 多人格窗口绑定持久化文件读取失败，回退到插件配置: error=%s backup=%s",
                 _single_line(exc, 160),
+                backup or "failed",
             )
             return {}
 
     def _save_persona_window_bindings_store_sync(self, bindings: dict[str, str] | None = None) -> bool:
         source = bindings if isinstance(bindings, dict) else self._persona_window_bindings()
-        normalized: dict[str, str] = {}
-        for window, persona in source.items():
-            window_key = _single_line(window, 240)
-            pid = self._sanitize_persona_id(persona)
-            if window_key and pid:
-                normalized[window_key] = pid
-        path = self._persona_window_bindings_store_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-        payload = {
-            "version": 2,
-            "updated_at": _now_ts(),
-            "bindings": normalized,
-            "suppressed_windows": sorted(self._persona_window_binding_suppressions()),
-        }
-        try:
-            temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            os.replace(temp, path)
-            self._persona_window_bindings_persisted = dict(normalized)
-            return True
-        finally:
-            try:
-                temp.unlink(missing_ok=True)
-            except Exception:
-                pass
+        store = self._persona_window_binding_store()
+        current_revision = getattr(self, "_persona_window_bindings_revision", None)
+        state = store.save(source, expected_revision=current_revision)
+        self._persona_window_bindings_persisted = dict(state.bindings)
+        self._persona_window_bindings_revision = state.revision
+        self._persona_window_bindings_updated_at = state.updated_at
+        return True
 
     def _persona_id_for_event(self, event: Any) -> tuple[str, str]:
         umo = str(getattr(event, "unified_msg_origin", "") or "").strip()
@@ -2440,12 +2642,13 @@ class PrivateCompanionPlugin(
         enabled_ids = self._configured_multi_persona_ids()
         enabled = set(enabled_ids)
         configured = bindings.get(umo, "")
-        if configured not in enabled:
+        profile_errors = getattr(self, "_persona_profile_errors", {})
+        if configured not in enabled or (isinstance(profile_errors, dict) and configured in profile_errors):
             configured = ""
         event_persona = self._sanitize_persona_id(
             getattr(event, "private_companion_persona_id", "")
         )
-        if event_persona not in enabled:
+        if event_persona not in enabled or (isinstance(profile_errors, dict) and event_persona in profile_errors):
             event_persona = ""
         primary = self._sanitize_persona_id(getattr(self, "multi_persona_primary_id", ""))
         pid = configured or event_persona or (primary if primary in enabled else "") or (enabled_ids or [""])[0]
@@ -2484,35 +2687,35 @@ class PrivateCompanionPlugin(
         bindings = self._persona_window_bindings()
         binding_suppressed = umo in self._persona_window_binding_suppressions()
         configured = set(self._configured_multi_persona_ids())
+        profile_errors = getattr(self, "_persona_profile_errors", {})
         event_persona = self._sanitize_persona_id(
             getattr(event, "private_companion_persona_id", "")
         )
         bound_persona = bindings.get(umo, "")
-        pid = bound_persona if bound_persona in configured else ""
-        if not pid and event_persona in configured:
+        pid = bound_persona if bound_persona in configured and not (isinstance(profile_errors, dict) and bound_persona in profile_errors) else ""
+        if not pid and event_persona in configured and not (isinstance(profile_errors, dict) and event_persona in profile_errors):
             pid = event_persona
         if not pid and not binding_suppressed:
             conversation_persona = await self._conversation_persona_id_for_event(event)
-            if conversation_persona and conversation_persona in configured:
+            if conversation_persona and conversation_persona in configured and not (isinstance(profile_errors, dict) and conversation_persona in profile_errors):
                 pid = conversation_persona
                 if umo:
-                    bindings[umo] = pid
-                    _set_into_config(self.config, "multi_persona_window_bindings", bindings)
-                    self._persona_window_bindings_persisted = dict(bindings)
-                    self._persona_window_claims[umo] = pid
-                    try:
-                        self._save_persona_window_bindings_store_sync(bindings)
-                    except Exception as exc:
-                        logger.warning(
-                            "[PrivateCompanion] 自动会话人格绑定独立落盘失败: %s",
-                            _single_line(exc, 120),
+                    binder = getattr(self, "_mutate_persona_window_binding_async", None)
+                    if callable(binder):
+                        bound = await binder(
+                            action="upsert",
+                            window_key=umo,
+                            persona_id=pid,
                         )
-                    saver = getattr(self, "_save_config_if_possible", None)
-                    if callable(saver):
-                        try:
-                            await saver()
-                        except Exception:
-                            pass
+                        if not bound.get("ok"):
+                            logger.warning(
+                                "[PrivateCompanion] 自动会话人格绑定未能完整落盘: session=%s error=%s",
+                                _single_line(umo, 120),
+                                _single_line(bound.get("message"), 160),
+                            )
+                    else:
+                        bindings[umo] = pid
+                        _set_into_config(self.config, "multi_persona_window_bindings", bindings)
         if not pid:
             pid, _ = self._persona_id_for_event(event)
         if not pid:
@@ -2550,6 +2753,9 @@ class PrivateCompanionPlugin(
     def _activate_persona_id(self, persona_id: Any, *, allow_inactive: bool = False) -> Any:
         pid = self._sanitize_persona_id(persona_id)
         if not pid or not bool(getattr(self, "enable_multi_persona_mode", False)):
+            return None
+        profile_errors = getattr(self, "_persona_profile_errors", {})
+        if isinstance(profile_errors, dict) and pid in profile_errors and not allow_inactive:
             return None
         if not allow_inactive and pid not in set(self._configured_multi_persona_ids()):
             return None
@@ -3129,7 +3335,336 @@ class PrivateCompanionPlugin(
             "profiles": self._persona_profile_ids() if enabled else [],
             "window_bindings": self._persona_window_bindings() if enabled else {},
             "window_conflicts": deepcopy(getattr(self, "_persona_window_conflicts", {})) if enabled else {},
+            "window_bindings_revision": int(getattr(self, "_persona_window_bindings_revision", 0) or 0),
+            "profile_errors": deepcopy(getattr(self, "_persona_profile_errors", {})) if enabled else {},
+            "settings_migration": deepcopy(getattr(self, "_persona_settings_migration_status", {})) if enabled else {},
         }
+
+    def _persona_config_state(self, persona_id: Any) -> dict[str, Any]:
+        pid = self._sanitize_persona_id(persona_id)
+        primary = self._sanitize_persona_id(getattr(self, "multi_persona_primary_id", ""))
+        if not pid:
+            pid = primary
+        if not pid:
+            raise PersonaConfigError("人格 ID 不能为空")
+        is_primary = pid == primary
+        profile = self._ensure_persona_profile(pid)
+        raw = {} if is_primary else deepcopy(profile.get(PERSONA_SETTINGS_KEY) or {})
+        effective = self.effective_persona_settings(pid, include_common=False)
+        manifest = self._persona_scope_manifest()
+        sources = {
+            key: (
+                "primary"
+                if is_primary
+                else "persona"
+                if key in raw
+                else "primary"
+            )
+            for key, entry in manifest.items()
+            if entry.get("scope") == "persona"
+        }
+        sensitive = {key for key, entry in manifest.items() if entry.get("sensitive")}
+        redacted_effective = {
+            key: ("***" if key in sensitive and value not in (None, "", [], {}) else value)
+            for key, value in effective.items()
+        }
+        redacted_raw = {
+            key: ("***" if key in sensitive and value not in (None, "", [], {}) else value)
+            for key, value in raw.items()
+            if key in manifest and manifest[key].get("scope") == "persona"
+        }
+        return {
+            "persona_id": pid,
+            "is_primary": is_primary,
+            "enabled": pid in set(self._configured_multi_persona_ids()),
+            "degraded": pid in set(getattr(self, "_persona_profile_errors", {})),
+            "degraded_reason": str(getattr(self, "_persona_profile_errors", {}).get(pid, "")),
+            "schema_version": int(profile.get(PERSONA_SETTINGS_VERSION_KEY) or PERSONA_SETTINGS_SCHEMA_VERSION),
+            "revision": int(profile.get(PERSONA_SETTINGS_REVISION_KEY) or 0),
+            "settings": redacted_effective,
+            "raw_settings": redacted_raw,
+            "sources": sources,
+        }
+
+    def _prepare_multi_persona_transition(self, enabled: bool) -> None:
+        """Keep legacy companions.json and the primary profile coherent."""
+        current = bool(getattr(self, "enable_multi_persona_mode", False))
+        if current == bool(enabled):
+            return
+        if enabled:
+            primary = self._sanitize_persona_id(getattr(self, "multi_persona_primary_id", ""))
+            if not primary:
+                primary = self._sanitize_persona_id(
+                    getattr(self, "_single_mode_plugin_specific_persona_id", "")
+                    or getattr(self, "plugin_specific_persona_id", "")
+                )
+            if not primary:
+                configured = self._configured_multi_persona_ids()
+                primary = configured[0] if configured else ""
+            if not primary:
+                raise PersonaConfigError("开启多人格前必须先指定主人格 ID")
+            self.multi_persona_primary_id = primary
+            ids = self._configured_multi_persona_ids()
+            if primary not in ids:
+                ids.insert(0, primary)
+            self.multi_persona_ids = ids
+            path = self._persona_profile_path(primary)
+            if not path.exists():
+                self._save_persona_profile_sync(primary, deepcopy(self._data_default))
+        else:
+            primary = self._sanitize_persona_id(getattr(self, "multi_persona_primary_id", ""))
+            if primary:
+                profile = deepcopy(self._ensure_persona_profile(primary))
+                self._data_default = profile
+                self._save_data_sync()
+                self._save_persona_profile_sync(primary, profile)
+
+    async def _create_persona_config_async(
+        self,
+        persona_id: Any,
+        *,
+        bot_name: Any,
+        mode: Any,
+        source_persona_id: Any = "",
+        recovery: bool = False,
+    ) -> dict[str, Any]:
+        pid = self._sanitize_persona_id(persona_id)
+        name = _single_line(bot_name, 80)
+        primary = self._sanitize_persona_id(getattr(self, "multi_persona_primary_id", ""))
+        if not pid or pid == primary:
+            return {"ok": False, "code": "persona_config_target_invalid", "message": "请选择非主人格作为新配置目标"}
+        if not name:
+            return {"ok": False, "code": "persona_bot_name_required", "message": "Bot 名字不能为空"}
+        await self._flush_scheduled_data_save()
+        async with self._data_lock:
+            path = self._persona_profile_path(pid)
+            existed = path.exists() or pid in getattr(self, "_persona_data_profiles", {})
+            profile = deepcopy(self._ensure_persona_profile(pid))
+            current_settings = profile.get(PERSONA_SETTINGS_KEY)
+            profile_degraded = pid in set(getattr(self, "_persona_profile_errors", {}))
+            if existed and isinstance(current_settings, dict) and current_settings and not (recovery and profile_degraded):
+                return {"ok": False, "code": "persona_config_exists", "message": "该人格配置已存在，请直接编辑或恢复使用"}
+            source_id = self._sanitize_persona_id(source_persona_id)
+            try:
+                if str(mode or "").strip().lower() == "copy":
+                    if not source_id or source_id == pid:
+                        raise PersonaConfigError("请选择不同的来源人格")
+                    if source_id == primary:
+                        settings = copy_from_primary_config(
+                            self._primary_persona_config(),
+                            bot_name=name,
+                            manifest=self._persona_scope_manifest(),
+                        )
+                    else:
+                        source_profile = self._ensure_persona_profile(source_id)
+                        settings = create_persona_settings(
+                            "copy",
+                            bot_name=name,
+                            source_settings=source_profile.get(PERSONA_SETTINGS_KEY) or {},
+                            manifest=self._persona_scope_manifest(),
+                        )
+                else:
+                    settings = create_persona_settings(
+                        str(mode or "follow_primary"),
+                        bot_name=name,
+                        primary_config=self._primary_persona_config(),
+                        manifest=self._persona_scope_manifest(),
+                        normalizer=normalize_setting_value,
+                    )
+            except PersonaConfigError as exc:
+                return {"ok": False, "code": "persona_config_invalid", "message": str(exc)}
+            before_config = deepcopy(self._cfg_raw(self.config, "multi_persona_ids", []))
+            before_profile = deepcopy(profile)
+            next_profile = deepcopy(profile)
+            next_profile[PERSONA_SETTINGS_KEY] = settings
+            next_profile[PERSONA_SETTINGS_VERSION_KEY] = PERSONA_SETTINGS_SCHEMA_VERSION
+            next_profile[PERSONA_SETTINGS_REVISION_KEY] = max(1, int(profile.get(PERSONA_SETTINGS_REVISION_KEY) or 0) + 1)
+            ids = self._configured_multi_persona_ids()
+            if pid not in ids:
+                ids.append(pid)
+            try:
+                self._save_persona_profile_sync(pid, next_profile)
+                _set_into_config(self.config, "multi_persona_ids", ids)
+                config_saved = bool(await self._save_config_if_possible())
+                if not config_saved:
+                    raise RuntimeError("AstrBot 配置未能持久化")
+            except Exception as exc:
+                _set_into_config(self.config, "multi_persona_ids", before_config)
+                try:
+                    if existed:
+                        self._save_persona_profile_sync(pid, before_profile)
+                    else:
+                        path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                return {"ok": False, "code": "persona_config_persistence_failed", "message": f"人格配置保存失败，已回滚: {_single_line(exc, 120)}"}
+            live = self._ensure_persona_profile(pid)
+            live.clear()
+            live.update(next_profile)
+            self.multi_persona_ids = ids
+            self._reset_persona_prompt_caches(pid)
+            return {"ok": True, "created": True, **self._persona_config_state(pid)}
+
+    async def _update_persona_settings_async(
+        self,
+        persona_id: Any,
+        *,
+        changes: Any,
+        follow_primary_keys: Any,
+        expected_revision: Any,
+    ) -> dict[str, Any]:
+        pid = self._sanitize_persona_id(persona_id)
+        primary = self._sanitize_persona_id(getattr(self, "multi_persona_primary_id", ""))
+        if not pid or pid == primary:
+            return {"ok": False, "code": "persona_settings_target_invalid", "message": "主人格请使用现有通用配置保存接口"}
+        if not isinstance(changes, dict) or not isinstance(follow_primary_keys, list):
+            return {"ok": False, "code": "persona_settings_payload_invalid", "message": "人格配置更新格式无效"}
+        manifest = self._persona_scope_manifest()
+        overlap = set(changes) & {str(key) for key in follow_primary_keys}
+        if overlap:
+            return {"ok": False, "code": "persona_settings_overlap", "message": "同一配置项不能同时覆盖和恢复跟随"}
+        await self._flush_scheduled_data_save()
+        async with self._data_lock:
+            profile = self._ensure_persona_profile(pid)
+            revision = int(profile.get(PERSONA_SETTINGS_REVISION_KEY) or 0)
+            try:
+                expected = int(expected_revision)
+            except (TypeError, ValueError):
+                expected = revision
+            if expected != revision:
+                return {"ok": False, "status_code": 409, "code": "persona_settings_revision_conflict", "message": "人格配置已被其他页面修改", "revision": revision}
+            next_profile = deepcopy(profile)
+            raw = deepcopy(next_profile.get(PERSONA_SETTINGS_KEY) or {})
+            for key, value in changes.items():
+                entry = manifest.get(str(key))
+                if not entry or entry.get("scope") != "persona":
+                    return {"ok": False, "code": "persona_setting_not_allowed", "message": f"配置项不允许按人格覆盖: {key}"}
+                raw[str(key)] = normalize_setting_value(str(key), value, entry)
+            for raw_key in follow_primary_keys:
+                key = str(raw_key)
+                entry = manifest.get(key)
+                if not entry or entry.get("scope") != "persona":
+                    return {"ok": False, "code": "persona_setting_not_allowed", "message": f"配置项不允许按人格跟随: {key}"}
+                if entry.get("identity"):
+                    return {"ok": False, "code": "persona_identity_cannot_follow", "message": f"身份配置不能跟随主人格: {key}"}
+                raw.pop(key, None)
+            if not str(raw.get("bot_name") or "").strip():
+                return {"ok": False, "code": "persona_bot_name_required", "message": "Bot 名字不能为空"}
+            next_profile[PERSONA_SETTINGS_KEY] = normalize_persona_settings(raw, manifest=manifest, preserve_unknown=True)
+            next_profile[PERSONA_SETTINGS_VERSION_KEY] = PERSONA_SETTINGS_SCHEMA_VERSION
+            next_profile[PERSONA_SETTINGS_REVISION_KEY] = revision + 1
+            try:
+                self._save_persona_profile_sync(pid, next_profile)
+            except Exception as exc:
+                return {"ok": False, "code": "persona_settings_persistence_failed", "message": f"人格配置保存失败: {_single_line(exc, 120)}"}
+            profile.clear()
+            profile.update(next_profile)
+            self._reset_persona_prompt_caches(pid)
+            return {"ok": True, "changed": sorted(set(changes) | set(map(str, follow_primary_keys))), **self._persona_config_state(pid)}
+
+    def _persona_detach_preview(self, persona_id: Any) -> dict[str, Any]:
+        pid = self._sanitize_persona_id(persona_id)
+        primary = self._sanitize_persona_id(getattr(self, "multi_persona_primary_id", ""))
+        if not pid or pid == primary:
+            return {"ok": False, "code": "persona_detach_target_invalid", "message": "主人格不需要脱离跟随"}
+        profile = self._ensure_persona_profile(pid)
+        revision = int(profile.get(PERSONA_SETTINGS_REVISION_KEY) or 0)
+        settings = profile.get(PERSONA_SETTINGS_KEY) or {}
+        detached = detach_persona_settings(settings, self._primary_persona_config(), manifest=self._persona_scope_manifest())
+        missing = sorted(set(detached) - set(settings))
+        digest = hashlib.sha256(
+            json.dumps({"persona_id": pid, "revision": revision, "settings": detached}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return {"ok": True, "persona_id": pid, "revision": revision, "missing_keys": missing, "materialized_count": len(detached), "preview_hash": digest}
+
+    async def _detach_persona_settings_async(self, persona_id: Any, *, expected_revision: Any, preview_hash: Any) -> dict[str, Any]:
+        preview = self._persona_detach_preview(persona_id)
+        if not preview.get("ok"):
+            return preview
+        if str(preview_hash or "") != preview["preview_hash"]:
+            return {"ok": False, "status_code": 409, "code": "persona_detach_preview_stale", "message": "脱离预览已过期，请重新预览"}
+        return await self._update_persona_settings_async(
+            preview["persona_id"],
+            changes=detach_persona_settings(
+                self._ensure_persona_profile(preview["persona_id"]).get(PERSONA_SETTINGS_KEY) or {},
+                self._primary_persona_config(),
+                manifest=self._persona_scope_manifest(),
+            ),
+            follow_primary_keys=[],
+            expected_revision=expected_revision,
+        )
+
+    async def _mutate_persona_window_binding_async(
+        self,
+        *,
+        action: str,
+        window_key: Any,
+        persona_id: Any = "",
+        previous_window_key: Any = "",
+        expected_revision: Any = None,
+    ) -> dict[str, Any]:
+        await self._flush_scheduled_data_save()
+        async with self._data_lock:
+            store = self._persona_window_binding_store()
+            state = store.load(migrate=True)
+            config_bindings = self._cfg_raw(self.config, "multi_persona_window_bindings", {})
+            snapshot = store.capture_runtime(
+                config_bindings,
+                claims=getattr(self, "_persona_window_claims", {}),
+                conflicts=getattr(self, "_persona_window_conflicts", {}),
+                passive_cache=getattr(self, "_passive_state_session_cache", {}),
+            )
+            snapshot.persisted_bindings = deepcopy(state.bindings)
+            snapshot.revision = state.revision
+            snapshot.updated_at = state.updated_at
+            try:
+                expected = state.revision if expected_revision in (None, "") else int(expected_revision)
+                if action == "delete":
+                    plan = store.plan_delete(snapshot, window_key, expected_revision=expected)
+                else:
+                    pid = self._sanitize_persona_id(persona_id)
+                    if pid not in set(self._configured_multi_persona_ids()):
+                        return {"ok": False, "code": "persona_binding_target_invalid", "message": "绑定目标人格未启用"}
+                    old_window = _single_line(previous_window_key, 240)
+                    working = snapshot
+                    if old_window and old_window != _single_line(window_key, 240):
+                        delete_plan = store.plan_delete(working, old_window, expected_revision=expected)
+                        working = delete_plan.after
+                        working.revision = state.revision
+                    plan = store.plan_upsert(working, window_key, pid, expected_revision=state.revision)
+            except BindingRevisionConflict:
+                return {"ok": False, "status_code": 409, "code": "persona_window_bindings_revision_conflict", "message": "窗口绑定已被其他页面修改", "revision": state.revision}
+            except Exception as exc:
+                return {"ok": False, "code": "persona_window_binding_invalid", "message": str(exc)}
+            if not plan.changed:
+                return {"ok": True, "changed": False, "revision": state.revision, "bindings": snapshot.effective_bindings}
+            before = snapshot.clone()
+            try:
+                store.persist_plan(plan)
+                _set_into_config(self.config, "multi_persona_window_bindings", deepcopy(plan.after.config_bindings))
+                self._persona_window_bindings_persisted = deepcopy(plan.after.persisted_bindings)
+                self._persona_window_claims = deepcopy(plan.after.claims)
+                self._persona_window_conflicts = deepcopy(plan.after.conflicts)
+                self._passive_state_session_cache = deepcopy(plan.after.passive_cache)
+                self._persona_window_bindings_revision = plan.after.revision
+                self._persona_window_bindings_updated_at = plan.after.updated_at
+                if not bool(await self._save_config_if_possible()):
+                    raise RuntimeError("AstrBot 配置未能持久化")
+            except Exception as exc:
+                _set_into_config(self.config, "multi_persona_window_bindings", deepcopy(before.config_bindings))
+                self._persona_window_bindings_persisted = deepcopy(before.persisted_bindings)
+                self._persona_window_claims = deepcopy(before.claims)
+                self._persona_window_conflicts = deepcopy(before.conflicts)
+                self._passive_state_session_cache = deepcopy(before.passive_cache)
+                self._persona_window_bindings_revision = before.revision
+                self._persona_window_bindings_updated_at = before.updated_at
+                try:
+                    store.save_snapshot(state)
+                    await self._save_config_if_possible()
+                except Exception:
+                    pass
+                return {"ok": False, "code": "persona_window_binding_persistence_failed", "message": f"窗口绑定保存失败，已回滚: {_single_line(exc, 120)}"}
+            return {"ok": True, "changed": True, "revision": plan.after.revision, "bindings": plan.after.effective_bindings, "window_key": plan.window_key, "persona_id": plan.persona_id, "auto_recognition_restored": action == "delete"}
 
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)

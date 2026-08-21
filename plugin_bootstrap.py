@@ -185,6 +185,7 @@ def _initialize_core_and_relationship_config(self: Any, c: Any) -> None:
     self.multi_persona_ids = self._configured_multi_persona_ids()
     self._persona_profiles_dir = os.path.join(self.data_dir, "persona_profiles")
     self._persona_data_profiles: dict[str, dict[str, Any]] = {}
+    self._persona_profile_errors: dict[str, str] = {}
     self._persona_window_claims: dict[str, str] = {}
     self._persona_window_conflicts: dict[str, dict[str, str]] = {}
     self._persona_window_bindings_file = os.path.join(self.data_dir, "persona_window_bindings.json")
@@ -2051,6 +2052,22 @@ def initialize_plugin_runtime(self: Any) -> None:
             )
         except Exception:
             pass
+    migrate_profiles = getattr(self, "_migrate_persona_profiles_sync", None)
+    if callable(migrate_profiles):
+        try:
+            self._persona_settings_migration_status = migrate_profiles()
+        except Exception as exc:
+            self._persona_settings_migration_status = {
+                "ok": False,
+                "migrated": [],
+                "degraded": ["startup"],
+                "skipped": [],
+                "error": _single_line(exc, 180),
+            }
+            logger.warning(
+                "[PrivateCompanion] 启动人格配置迁移失败: %s",
+                _single_line(exc, 180),
+            )
     self._body_monitor_integration = BodyMonitorIntegration(self)
     self._apply_tts_runtime_overrides()
     load_elapsed_ms = int((time.perf_counter() - startup_load_started) * 1000)

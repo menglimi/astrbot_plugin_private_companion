@@ -1441,9 +1441,9 @@ QQ空间 = 公开札记
             <p>基础维护、运行节奏与功能生命周期集中管理。</p>
           </div>
           <nav class="config-section-nav" aria-label="配置区域">
-            <button type="button" data-config-section-target="config-common-settings">基础与维护</button>
-            <button type="button" data-config-section-target="config-runtime-settings">运行节奏</button>
-            <button type="button" data-config-section-target="config-feature-settings">功能开关</button>
+            <button type="button" data-config-section-target="config-common-settings">通用设置</button>
+            <button type="button" data-config-section-target="config-runtime-settings">人格运行</button>
+            <button type="button" data-config-section-target="config-feature-settings">人格开关</button>
           </nav>
         </header>
         <div class="config-grid">
@@ -1451,12 +1451,12 @@ QQ空间 = 公开札记
             <summary class="config-fold-summary">
               <div class="config-fold-heading">
                 <span class="config-fold-kicker">配置工作台</span>
-                <h2>常用配置</h2>
-                <p>主动能力、动态注入、群聊范围、数据维护与页面外观。</p>
+                <h2>通用设置</h2>
+                <p>多人格拓扑、窗口绑定、群聊范围、数据维护与页面外观。</p>
                 <span class="config-fold-preview" aria-label="包含的配置范围">
-                  <span>日常能力</span>
+                  <span>人格管理</span>
+                  <span>窗口绑定</span>
                   <span>群聊范围</span>
-                  <span>数据维护</span>
                   <span>页面外观</span>
                 </span>
               </div>
@@ -1683,8 +1683,36 @@ QQ空间 = 公开札记
                   </div>
                 </div>
               </details>
+              <article class="config-card wide persona-management-card" id="config-persona-management">
+                <div id="personaConfigManagement" class="persona-config-management">
+                  <div class="empty small">开启多人格支持后，这里会显示人格配置管理和窗口绑定。</div>
+                </div>
+              </article>
             </div>
           </details>
+
+          <section class="config-persona-context" aria-label="当前人格配置范围">
+            <div class="config-persona-selector" id="configPersonaSelector" hidden>
+              <label for="configPersonaSelect">
+                <span>人格配置</span>
+                <select id="configPersonaSelect" aria-label="选择要查看和编辑的人格"></select>
+              </label>
+              <div class="config-persona-selector-meta" id="configPersonaSelectorMeta" aria-live="polite"></div>
+            </div>
+            <div id="proactiveOnlyModeCard"></div>
+            <section class="config-persona-stats" id="configPersonaStats" aria-labelledby="configPersonaStatsTitle">
+              <header>
+                <div>
+                  <span class="config-fold-kicker">当前人格</span>
+                  <h2 id="configPersonaStatsTitle">统计面板</h2>
+                </div>
+                <span id="configPersonaStatsSource" class="muted">统计随人格选择更新</span>
+              </header>
+              <div class="folio-stats config-stats" id="configStats"></div>
+            </section>
+          </section>
+
+          <section class="config-persona-settings" id="config-persona-settings" aria-label="人格配置">
 
           <details class="config-fold-panel config-runtime-details" id="config-runtime-settings">
             <summary class="config-fold-summary">
@@ -1755,7 +1783,6 @@ QQ空间 = 公开札记
               </div>
               <div id="featureFilterResult" class="feature-filter-result" aria-live="polite"></div>
             </header>
-            <div id="proactiveOnlyModeCard"></div>
             <div id="featureSwitchSummary" class="feature-switch-summary"></div>
             <div class="feature-filter-workspace" id="featureFilterWorkspace">
               <div class="feature-filter-topline">
@@ -1789,6 +1816,7 @@ QQ空间 = 公开札记
             </div>
             <div class="feature-switch-board" id="featureFlags"></div>
           </article>
+          </section>
         </div>
       </section>
 
