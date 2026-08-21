@@ -2072,7 +2072,7 @@ class PrivateCompanionPlugin(
                 # identity repair, not inheritance from the primary bot name.
                 legacy_bot_name = ""
                 if not isinstance(settings, dict) or not str(settings.get("bot_name") or "").strip():
-                    legacy_bot_name = pid
+                    legacy_bot_name = self._persona_display_name_for_id(pid)
                 migrated = migrate_persona_profile(
                     raw,
                     manifest=self._persona_scope_manifest(),
@@ -2085,9 +2085,12 @@ class PrivateCompanionPlugin(
                     self._save_persona_profile_sync(pid, migrated)
                     result["migrated"].append(pid)
             except Exception as exc:
+                backup = self._backup_corrupt_persona_profile_sync(path, reason=str(exc))
                 errors[pid] = str(exc)
                 result["degraded"].append(pid)
                 result["ok"] = False
+                if backup is not None:
+                    result.setdefault("backups", {})[pid] = str(backup)
                 logger.warning(
                     "[PrivateCompanion] 人格配置迁移降级: persona=%s error=%s",
                     pid,
@@ -2224,6 +2227,21 @@ class PrivateCompanionPlugin(
             )
             return None
 
+    def _persona_display_name_for_id(self, persona_id: Any) -> str:
+        """Return an AstrBot persona label without requiring async I/O."""
+        pid = self._sanitize_persona_id(persona_id)
+        manager = getattr(getattr(self, "context", None), "persona_manager", None)
+        for item in list(getattr(manager, "personas", None) or []):
+            if isinstance(item, dict):
+                item_id = item.get("persona_id") or item.get("id") or item.get("name")
+                label = item.get("name") or item.get("label") or item_id
+            else:
+                item_id = getattr(item, "persona_id", None) or getattr(item, "id", None) or getattr(item, "name", None)
+                label = getattr(item, "name", None) or getattr(item, "label", None) or item_id
+            if self._sanitize_persona_id(item_id) == pid:
+                return _single_line(label, 80) or pid
+        return pid
+
     def _ensure_persona_profile(self, persona_id: str) -> dict[str, Any]:
         pid = self._sanitize_persona_id(persona_id) or self._sanitize_persona_id(getattr(self, "multi_persona_primary_id", ""))
         if not pid:
@@ -2275,7 +2293,7 @@ class PrivateCompanionPlugin(
             # Pre-settings secondary profiles need an identity to be editable;
             # ordinary missing keys remain sparse and continue following the
             # primary configuration.
-            profile[PERSONA_SETTINGS_KEY]["bot_name"] = pid
+            profile[PERSONA_SETTINGS_KEY]["bot_name"] = self._persona_display_name_for_id(pid)
             profile[PERSONA_SETTINGS_VERSION_KEY] = PERSONA_SETTINGS_SCHEMA_VERSION
             profile.setdefault(PERSONA_SETTINGS_REVISION_KEY, 0)
             if not path.exists():
@@ -3414,10 +3432,21 @@ class PrivateCompanionPlugin(
         else:
             primary = self._sanitize_persona_id(getattr(self, "multi_persona_primary_id", ""))
             if primary:
+                previous_default = deepcopy(self._data_default)
                 profile = deepcopy(self._ensure_persona_profile(primary))
-                self._data_default = profile
-                self._save_data_sync()
-                self._save_persona_profile_sync(primary, profile)
+                try:
+                    self._data_default = profile
+                    self._write_data_snapshot_sync(deepcopy(profile))
+                except Exception:
+                    self._data_default = previous_default
+                    try:
+                        self._write_data_snapshot_sync(deepcopy(previous_default))
+                    except Exception as rollback_exc:
+                        logger.error(
+                            "[PrivateCompanion] 关闭多人格失败后的单人格数据回滚失败: %s",
+                            _single_line(rollback_exc, 160),
+                        )
+                    raise
 
     async def _create_persona_config_async(
         self,
@@ -3631,7 +3660,7 @@ class PrivateCompanionPlugin(
                         delete_plan = store.plan_delete(working, old_window, expected_revision=expected)
                         working = delete_plan.after
                         working.revision = state.revision
-                    plan = store.plan_upsert(working, window_key, pid, expected_revision=state.revision)
+                    plan = store.plan_upsert(working, window_key, pid, expected_revision=expected)
             except BindingRevisionConflict:
                 return {"ok": False, "status_code": 409, "code": "persona_window_bindings_revision_conflict", "message": "窗口绑定已被其他页面修改", "revision": state.revision}
             except Exception as exc:

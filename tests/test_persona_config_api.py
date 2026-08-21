@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 from quart import Quart
 
@@ -149,3 +151,76 @@ def test_runtime_resolver_reads_sparse_and_explicit_falsy_values():
         assert plugin.get_persona_setting("quiet_hours", "alt") == "01:00-09:00"
         assert plugin.get_persona_setting("enable_proactive_burst", "alt") is False
         assert plugin.get_persona_setting("max_daily_messages", "alt") == plugin.max_daily_messages
+
+
+def test_stale_window_upsert_is_rejected():
+    async def run():
+        with tempfile.TemporaryDirectory() as root:
+            plugin = _harness(root)
+            first = await plugin._mutate_persona_window_binding_async(
+                action="upsert", window_key="QBot:GroupMessage:one", persona_id="alt"
+            )
+            assert first["ok"] and first["revision"] == 1
+            stale = await plugin._mutate_persona_window_binding_async(
+                action="upsert",
+                window_key="QBot:GroupMessage:one",
+                persona_id="main",
+                expected_revision=0,
+            )
+            assert stale["ok"] is False
+            assert stale["status_code"] == 409
+            assert plugin._persona_window_bindings()["QBot:GroupMessage:one"] == "alt"
+
+    asyncio.run(run())
+
+
+def test_startup_migration_backs_up_invalid_profile_and_uses_persona_label():
+    with tempfile.TemporaryDirectory() as root:
+        plugin = _harness(root)
+        plugin.context = SimpleNamespace(
+            persona_manager=SimpleNamespace(
+                personas=[SimpleNamespace(persona_id="alt", name="次人格显示名")]
+            )
+        )
+        profiles = Path(root) / "persona_profiles"
+        profiles.mkdir(parents=True, exist_ok=True)
+        (profiles / "alt.json").write_text(
+            json.dumps({"users": {"u": {}}, "persona_settings": {}}), encoding="utf-8"
+        )
+        (profiles / "broken.json").write_text(
+            json.dumps({"users": {"u": {}}, "persona_settings": []}), encoding="utf-8"
+        )
+        status = plugin._migrate_persona_profiles_sync()
+        assert status["ok"] is False
+        assert Path(status["backups"]["broken"]).is_file()
+        migrated = json.loads((profiles / "alt.json").read_text(encoding="utf-8"))
+        assert migrated["persona_settings"]["bot_name"] == "次人格显示名"
+
+
+def test_disabling_multi_persona_rolls_back_default_store_on_write_failure():
+    with tempfile.TemporaryDirectory() as root:
+        plugin = _harness(root)
+        plugin.data_dir = root
+        plugin.data_file = str(Path(root) / "companions.json")
+        previous = {"users": {"legacy": {"name": "旧数据"}}}
+        primary = {"users": {"primary": {"name": "主人格数据"}}}
+        plugin._data_default = previous
+        plugin._persona_data_profiles["main"] = primary
+        writes = 0
+
+        def writer(snapshot):
+            nonlocal writes
+            writes += 1
+            if writes == 1:
+                raise OSError("simulated_write_failure")
+            Path(plugin.data_file).write_text(json.dumps(snapshot), encoding="utf-8")
+
+        plugin._write_data_snapshot_sync = writer
+        try:
+            plugin._prepare_multi_persona_transition(False)
+        except OSError as exc:
+            assert "simulated_write_failure" in str(exc)
+        else:
+            raise AssertionError("expected transition failure")
+        assert plugin._data_default == previous
+        assert json.loads(Path(plugin.data_file).read_text(encoding="utf-8")) == previous

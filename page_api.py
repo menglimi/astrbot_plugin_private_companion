@@ -4863,11 +4863,15 @@ class PrivateCompanionPageApi(
                     mode_value = changed.get("provider_config_mode") or self._config_get("provider_config_mode") or getattr(self.plugin, "provider_config_mode", "quick")
                     provider_payload = self._expand_provider_overwrite_bundle(str(mode_value), provider_payload)
                 changed.update(provider_payload)
+            mode_transition_changed = "enable_multi_persona_mode" in changed and (
+                bool(changed.get("enable_multi_persona_mode"))
+                != bool(getattr(self.plugin, "enable_multi_persona_mode", False))
+            )
             storage_changed = bool({"storage_backend", "storage_sqlite_path"} & set(changed))
             req041_config_snapshot = self._req041_config_runtime_snapshot(changed)
             apply_overrides = dict(changed)
             apply_overrides["__defer_relationship_data_save"] = True
-            if storage_changed:
+            if storage_changed or mode_transition_changed:
                 apply_overrides["__defer_storage_rebuild"] = True
                 flush_save = getattr(self.plugin, "_flush_scheduled_data_save", None)
                 if callable(flush_save):
