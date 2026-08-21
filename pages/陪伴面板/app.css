@@ -460,6 +460,50 @@
   .reaction-asset-card { transition: none; }
 }
 
+.persona-setting-source {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  margin-left: 6px;
+  padding: 2px 6px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.persona-setting-source.primary {
+  color: var(--muted, #687589);
+  background: color-mix(in srgb, currentColor 7%, transparent);
+}
+
+.persona-setting-source.persona {
+  color: var(--accent, #2c6cb0);
+  background: color-mix(in srgb, currentColor 9%, transparent);
+}
+
+.persona-follow-button {
+  margin-left: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--line, #d7dee8);
+  border-radius: 5px;
+  color: var(--accent, #2c6cb0);
+  background: var(--surface, #fff);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.persona-follow-button:hover {
+  border-color: var(--accent, #2c6cb0);
+  background: color-mix(in srgb, var(--accent, #2c6cb0) 8%, var(--surface, #fff));
+}
+
+.feature-param-control .persona-follow-button {
+  align-self: flex-start;
+}
+
 .image-runtime-debug {
   margin-top: 18px;
   border-top: 1px solid var(--line, rgba(120, 130, 150, .2));

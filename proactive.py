@@ -152,6 +152,22 @@ LEGACY_DEFAULT_NEWS_SOURCES = "\n".join(
     ]
 )
 
+
+def _proactive_setting_value(obj: Any, key: str, default: Any = None) -> Any:
+    """Resolve an active-persona setting, with a plain-attribute fallback."""
+    getter = getattr(obj, "persona_setting", None)
+    if callable(getter):
+        try:
+            return getter(key, default)
+        except TypeError:
+            try:
+                return getter(key, default=default)
+            except Exception:
+                pass
+        except Exception:
+            pass
+    return getattr(obj, key, default)
+
 PREVIOUS_TECH_DEFAULT_NEWS_SOURCES = "\n".join(
     [
         "BBC中文|https://feeds.bbci.co.uk/zhongwen/simp/rss.xml",
@@ -250,6 +266,10 @@ _PLATFORM_DISPLAY_NAMES = {
 
 class ProactiveMixin(UserRestGateMixin):
     """主动消息调度"""
+
+    def _proactive_setting(self, key: str, default: Any = None) -> Any:
+        """Read an active-persona setting without mutating shared attrs."""
+        return _proactive_setting_value(self, key, default)
 
     _PROACTIVE_DAILY_LIMIT_UNLIMITED = 999_999
     _PROACTIVE_DAILY_QUOTA_MAX = 25
@@ -513,7 +533,7 @@ class ProactiveMixin(UserRestGateMixin):
 
     def _proactive_intensity_runtime(self) -> dict[str, Any]:
         preset = self._normalize_proactive_intensity_preset(
-            getattr(self, "proactive_intensity_preset", "off")
+            _proactive_setting_value(self, "proactive_intensity_preset", "off")
         )
         spec = self._PROACTIVE_INTENSITY_PRESETS.get(preset) or self._PROACTIVE_INTENSITY_PRESETS["off"]
         effects = dict(spec.get("effects") or {})
@@ -769,7 +789,7 @@ class ProactiveMixin(UserRestGateMixin):
     def _effective_group_wakeup_cooldown_seconds(self) -> int:
         return self._effective_proactive_int(
             "group_wakeup_cooldown_seconds",
-            _safe_int(getattr(self, "group_wakeup_cooldown_seconds", 90), 90, 0, 3600),
+            _safe_int(_proactive_setting_value(self, "group_wakeup_cooldown_seconds", 90), 90, 0, 3600),
             minimum=0,
             maximum=3600,
         )
@@ -777,7 +797,7 @@ class ProactiveMixin(UserRestGateMixin):
     def _effective_group_high_intensity_cooldown_seconds(self) -> int:
         return self._effective_proactive_int(
             "group_high_intensity_cooldown_seconds",
-            _safe_int(getattr(self, "group_high_intensity_cooldown_seconds", 150), 150, 30, 1800),
+            _safe_int(_proactive_setting_value(self, "group_high_intensity_cooldown_seconds", 150), 150, 30, 1800),
             minimum=30,
             maximum=1800,
         )
@@ -785,7 +805,7 @@ class ProactiveMixin(UserRestGateMixin):
     def _effective_group_interject_min_interval_minutes(self) -> int:
         base_interval = self._effective_proactive_int(
             "group_interject_min_interval_minutes",
-            _safe_int(getattr(self, "group_interject_min_interval_minutes", 180), 180, 10, 1440),
+            _safe_int(_proactive_setting_value(self, "group_interject_min_interval_minutes", 180), 180, 10, 1440),
             minimum=1,
             maximum=1440,
         )
@@ -799,7 +819,7 @@ class ProactiveMixin(UserRestGateMixin):
             "group_interval_multiplier": 1.0,
             "group_probability_multiplier": 1.0,
         }
-        if not bool(getattr(self, "enable_cycle_state", True)):
+        if not bool(_proactive_setting_value(self, "enable_cycle_state", True)):
             return neutral
         data = getattr(self, "data", {})
         state = data.get("daily_state") if isinstance(data, dict) else {}
@@ -873,7 +893,7 @@ class ProactiveMixin(UserRestGateMixin):
             return self._PROACTIVE_DAILY_LIMIT_UNLIMITED
         return self._effective_proactive_int(
             "group_interject_max_daily",
-            _safe_int(getattr(self, "group_interject_max_daily", 2), 2, 0, 12),
+            _safe_int(_proactive_setting_value(self, "group_interject_max_daily", 2), 2, 0, 12),
             minimum=0,
             maximum=48,
         )
@@ -881,7 +901,7 @@ class ProactiveMixin(UserRestGateMixin):
     def _effective_group_wakeup_interest_probability(self) -> float:
         return self._effective_proactive_float(
             "group_wakeup_interest_probability",
-            max(0.0, min(1.0, _safe_float(getattr(self, "group_wakeup_interest_probability", 0.18), 0.18, 0.0))),
+            max(0.0, min(1.0, _safe_float(_proactive_setting_value(self, "group_wakeup_interest_probability", 0.18), 0.18, 0.0))),
             minimum=0.0,
             maximum=1.0,
         )
@@ -889,7 +909,7 @@ class ProactiveMixin(UserRestGateMixin):
     def _effective_group_wakeup_question_threshold(self) -> int:
         return self._effective_proactive_int(
             "group_wakeup_question_threshold",
-            _safe_int(getattr(self, "group_wakeup_question_threshold", 65), 65, 0, 100),
+            _safe_int(_proactive_setting_value(self, "group_wakeup_question_threshold", 65), 65, 0, 100),
             minimum=0,
             maximum=100,
         )
@@ -897,7 +917,7 @@ class ProactiveMixin(UserRestGateMixin):
     def _effective_group_wakeup_cold_group_threshold(self) -> int:
         return self._effective_proactive_int(
             "group_wakeup_cold_group_threshold",
-            _safe_int(getattr(self, "group_wakeup_cold_group_threshold", 65), 65, 0, 100),
+            _safe_int(_proactive_setting_value(self, "group_wakeup_cold_group_threshold", 65), 65, 0, 100),
             minimum=0,
             maximum=100,
         )
@@ -905,7 +925,7 @@ class ProactiveMixin(UserRestGateMixin):
     def _effective_group_wakeup_topic_interest_max_boost(self) -> float:
         return self._effective_proactive_float(
             "group_wakeup_topic_interest_max_boost",
-            max(0.0, min(1.5, _safe_float(getattr(self, "group_wakeup_topic_interest_max_boost", 0.45), 0.45, 0.0))),
+            max(0.0, min(1.5, _safe_float(_proactive_setting_value(self, "group_wakeup_topic_interest_max_boost", 0.45), 0.45, 0.0))),
             minimum=0.0,
             maximum=1.5,
         )
@@ -913,7 +933,7 @@ class ProactiveMixin(UserRestGateMixin):
     def _effective_proactive_persona_judge_send_threshold(self) -> int:
         return self._effective_proactive_int(
             "proactive_persona_judge_send_threshold",
-            _safe_int(getattr(self, "proactive_persona_judge_send_threshold", 62), 62, 0, 100),
+            _safe_int(_proactive_setting_value(self, "proactive_persona_judge_send_threshold", 62), 62, 0, 100),
             minimum=0,
             maximum=100,
         )
@@ -922,7 +942,7 @@ class ProactiveMixin(UserRestGateMixin):
         value = str(self._proactive_intensity_effect("proactive_review_strength", "") or "").strip().lower()
         if value in {"lenient", "balanced", "strict"}:
             return value
-        configured = str(getattr(self, "proactive_review_strength", "lenient") or "lenient").strip().lower()
+        configured = str(_proactive_setting_value(self, "proactive_review_strength", "lenient") or "lenient").strip().lower()
         return configured if configured in {"lenient", "balanced", "strict"} else "lenient"
 
     def _proactive_intensity_ignores_token_soft_limit(self, task: str | None = None) -> bool:
@@ -1452,7 +1472,7 @@ class ProactiveMixin(UserRestGateMixin):
             if override is None
             else min(self._PROACTIVE_USER_DAILY_QUOTA_MAX, max(0, override))
         )
-        if not bool(getattr(self, "enable_custom_relationship_stage_policy", False)):
+        if not bool(_proactive_setting_value(self, "enable_custom_relationship_stage_policy", False)):
             return max(0, user_limit)
         view_getter = getattr(self, "_req041_relationship_snapshot_view", None)
         relationship_user = (
@@ -1470,8 +1490,8 @@ class ProactiveMixin(UserRestGateMixin):
         relationship_is_distant = False
         if not (role == "owner" and mode == "owner_exclusive"):
             policy = (
-                getattr(self, "relationship_stage_policy", None)
-                if bool(getattr(self, "enable_custom_relationship_stage_policy", False))
+                _proactive_setting_value(self, "relationship_stage_policy", None)
+                if bool(_proactive_setting_value(self, "enable_custom_relationship_stage_policy", False))
                 else None
             )
             stage = relationship_stage_for_score(relationship_user.get("relationship_score", 0), policy).get("phase", {})
@@ -1485,7 +1505,7 @@ class ProactiveMixin(UserRestGateMixin):
             relationship_role=role,
             relationship_mode=mode,
             relationship_score=relationship_user.get("relationship_score"),
-            normal_interaction_band_cap=getattr(self, "normal_interaction_band_cap", "warm"),
+            normal_interaction_band_cap=_proactive_setting_value(self, "normal_interaction_band_cap", "warm"),
             now=_now_ts(),
         )
         if str(interaction.get("expression_band") or "relaxed") in {"avoidant", "hurt"}:
@@ -1496,8 +1516,8 @@ class ProactiveMixin(UserRestGateMixin):
         return max(0, min(user_limit, dynamic_limit))
 
     def _relationship_proactive_soft_target(self, user: dict[str, Any]) -> int:
-        if not bool(getattr(self, "enable_custom_relationship_stage_policy", False)):
-            return max(1, _safe_int(getattr(self, "max_daily_messages", 1), 1, 0, 30))
+        if not bool(_proactive_setting_value(self, "enable_custom_relationship_stage_policy", False)):
+            return max(1, _safe_int(_proactive_setting_value(self, "max_daily_messages", 1), 1, 0, 30))
         view_getter = getattr(self, "_req041_relationship_snapshot_view", None)
         relationship_user = (
             view_getter(user, source="proactive_soft_target") if callable(view_getter) else user
@@ -1505,7 +1525,7 @@ class ProactiveMixin(UserRestGateMixin):
         role = self._private_user_role(relationship_user)
         mode = str(relationship_user.get("relationship_mode") or "normal")
         if role == "owner" and mode == "owner_exclusive":
-            return max(1, _safe_int(getattr(self, "owner_exclusive_proactive_limit", 6), 6, 0, 30))
+            return max(1, _safe_int(_proactive_setting_value(self, "owner_exclusive_proactive_limit", 6), 6, 0, 30))
         violation = user.get("relationship_violation")
         recovery_settler = getattr(self, "_settle_relationship_violation_recovery", None)
         if isinstance(violation, dict) and callable(recovery_settler):
@@ -1514,8 +1534,8 @@ class ProactiveMixin(UserRestGateMixin):
         if isinstance(violation, dict) and _safe_int(violation.get("unrecovered_points"), 0, 0, 12) > 0:
             return 0
         policy = (
-            getattr(self, "relationship_stage_policy", None)
-            if bool(getattr(self, "enable_custom_relationship_stage_policy", False))
+            _proactive_setting_value(self, "relationship_stage_policy", None)
+            if bool(_proactive_setting_value(self, "enable_custom_relationship_stage_policy", False))
             else None
         )
         stage = relationship_stage_for_score(relationship_user.get("relationship_score", 0), policy).get("phase", {})
@@ -1529,26 +1549,27 @@ class ProactiveMixin(UserRestGateMixin):
 
     def _runtime_max_daily_messages(self) -> int:
         runtime_value = _safe_int(
-            getattr(self, "max_daily_messages", 8),
+            _proactive_setting_value(self, "max_daily_messages", 8),
             8,
             0,
             self._PROACTIVE_DAILY_QUOTA_MAX,
         )
-        config = getattr(self, "config", None)
-        getter = getattr(config, "get", None)
-        if callable(getter):
-            try:
-                configured_value = _safe_int(
-                    getter("max_daily_messages", runtime_value),
-                    runtime_value,
-                    0,
-                    self._PROACTIVE_DAILY_QUOTA_MAX,
-                )
-                if configured_value != runtime_value:
-                    self.max_daily_messages = configured_value
-                    runtime_value = configured_value
-            except Exception:
-                pass
+        # Legacy lightweight integrations may update only ``config``.  Keep
+        # that live read when no persona resolver exists, without writing back
+        # to the shared runtime attribute.
+        if not callable(getattr(self, "persona_setting", None)):
+            config = getattr(self, "config", None)
+            getter = getattr(config, "get", None)
+            if callable(getter):
+                try:
+                    runtime_value = _safe_int(
+                        getter("max_daily_messages", runtime_value),
+                        runtime_value,
+                        0,
+                        self._PROACTIVE_DAILY_QUOTA_MAX,
+                    )
+                except Exception:
+                    pass
         if runtime_value <= 0:
             return 0
         effective_value = self._effective_proactive_int(
@@ -1609,24 +1630,20 @@ class ProactiveMixin(UserRestGateMixin):
     def _format_daily_limit_disabled_reason(self, user: dict[str, Any]) -> str:
         override = user.get("proactive_daily_limit", -1) if isinstance(user, dict) else -1
         runtime_value = _safe_int(
-            getattr(self, "max_daily_messages", 0),
+            _proactive_setting_value(self, "max_daily_messages", 0),
             0,
             0,
             self._PROACTIVE_DAILY_QUOTA_MAX,
         )
         config_value = runtime_value
-        config = getattr(self, "config", None)
-        getter = getattr(config, "get", None)
-        if callable(getter):
-            try:
-                config_value = _safe_int(
-                    getter("max_daily_messages", runtime_value),
-                    runtime_value,
-                    0,
-                    self._PROACTIVE_DAILY_QUOTA_MAX,
-                )
-            except Exception:
-                config_value = runtime_value
+        if not callable(getattr(self, "persona_setting", None)):
+            config = getattr(self, "config", None)
+            getter = getattr(config, "get", None)
+            if callable(getter):
+                try:
+                    config_value = _safe_int(getter("max_daily_messages", runtime_value), runtime_value, 0, self._PROACTIVE_DAILY_QUOTA_MAX)
+                except Exception:
+                    config_value = runtime_value
         return f"每日上限为 0（用户覆盖={override}，运行中全局={runtime_value}，配置全局={config_value}）"
 
     def _effective_user_idle_minutes(self, user: dict[str, Any]) -> int:
@@ -1635,7 +1652,7 @@ class ProactiveMixin(UserRestGateMixin):
             return override
         base_idle = self._effective_proactive_int(
             "idle_minutes",
-            _safe_int(getattr(self, "idle_minutes", 60), 60, 0, 1440),
+            _safe_int(_proactive_setting_value(self, "idle_minutes", 60), 60, 0, 1440),
             minimum=0,
             maximum=1440,
         )
@@ -1651,6 +1668,12 @@ class ProactiveMixin(UserRestGateMixin):
         return max(0, min(base_idle, tier_cap)) if tier_cap > 0 else max(0, base_idle)
 
     def _effective_user_greeting_idle_minutes(self, user: dict[str, Any]) -> int:
+        greeting_idle = _safe_int(
+            _proactive_setting_value(self, "greeting_idle_minutes", 30),
+            30,
+            0,
+            240,
+        )
         if self._private_user_role(user) == "friend":
             friend_floor = self._effective_proactive_int(
                 "friend_idle_floor_minutes",
@@ -1658,8 +1681,8 @@ class ProactiveMixin(UserRestGateMixin):
                 minimum=0,
                 maximum=1440,
             )
-            return max(self.greeting_idle_minutes, min(60, friend_floor))
-        return max(0, self.greeting_idle_minutes)
+            return max(greeting_idle, min(60, friend_floor))
+        return max(0, greeting_idle)
 
     def _effective_user_min_interval_minutes(self, user: dict[str, Any]) -> int:
         override = self._user_profile_override_int(user, "proactive_min_interval_minutes")
@@ -1667,7 +1690,7 @@ class ProactiveMixin(UserRestGateMixin):
             return override
         base_interval = self._effective_proactive_int(
             "min_interval_minutes",
-            _safe_int(getattr(self, "min_interval_minutes", 120), 120, 0, 2880),
+            _safe_int(_proactive_setting_value(self, "min_interval_minutes", 120), 120, 0, 2880),
             minimum=0,
             maximum=2880,
         )
@@ -1694,7 +1717,7 @@ class ProactiveMixin(UserRestGateMixin):
             override = self._user_profile_override_int(user, "photo_daily_limit")
             if override is not None:
                 return override
-        return max(0, self.photo_action_max_daily)
+        return max(0, _safe_int(_proactive_setting_value(self, "photo_action_max_daily", 0), 0, 0))
 
     def _effective_user_screen_peek_daily_limit(self, user: dict[str, Any] | None = None) -> int:
         if isinstance(user, dict):
@@ -1703,7 +1726,7 @@ class ProactiveMixin(UserRestGateMixin):
             override = self._user_profile_override_int(user, "screen_peek_daily_limit")
             if override is not None:
                 return override
-        return max(0, self.screen_peek_max_daily)
+        return max(0, _safe_int(_proactive_setting_value(self, "screen_peek_max_daily", 0), 0, 0))
 
     def _effective_user_poke_daily_limit(self, user: dict[str, Any] | None = None) -> int:
         if isinstance(user, dict):
@@ -1712,7 +1735,7 @@ class ProactiveMixin(UserRestGateMixin):
                 return override
             if self._private_user_role(user) == "friend":
                 return 0
-        return max(0, self.poke_action_max_times)
+        return max(0, _safe_int(_proactive_setting_value(self, "poke_action_max_times", 0), 0, 0))
 
     def _format_private_user_boundary_hint(self, user: dict[str, Any]) -> str:
         role = self._private_user_role(user)
@@ -2034,7 +2057,7 @@ class ProactiveMixin(UserRestGateMixin):
             capability = req036_capability_summary(user)
             user["enabled"] = True
             user["target_user"] = True
-            user.setdefault("nickname", self.default_nickname)
+            user.setdefault("nickname", _proactive_setting_value(self, "default_nickname", "小星"))
             if needs_initial_route or migrated or capability.get("proactive_private_enabled"):
                 self._ensure_private_user_umo(user_id, user)
             if self._user_enabled_for_proactive(user_id, user) and _safe_float(user.get("next_proactive_at"), 0) <= 0:
@@ -2068,7 +2091,8 @@ class ProactiveMixin(UserRestGateMixin):
         return changed
 
     def _quiet_hours_end_timestamp(self, at_ts: float | None = None) -> float:
-        match = re.fullmatch(r"\s*(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})\s*", self.quiet_hours)
+        quiet_hours = _proactive_setting_value(self, "quiet_hours", "23:00-08:30")
+        match = re.fullmatch(r"\s*(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})\s*", str(quiet_hours or ""))
         if not match:
             return 0.0
         sh, sm, eh, em = [int(part) for part in match.groups()]
@@ -2134,7 +2158,7 @@ class ProactiveMixin(UserRestGateMixin):
         ignored_streak = _safe_int(user.get("ignored_streak"), 0)
         start = self._effective_proactive_int(
             "unanswered_slowdown_start",
-            _safe_int(getattr(self, "proactive_unanswered_slowdown_start", 1), 1, 1, 10),
+            _safe_int(_proactive_setting_value(self, "proactive_unanswered_slowdown_start", 1), 1, 1, 10),
             minimum=1,
             maximum=10,
         )
@@ -2144,7 +2168,7 @@ class ProactiveMixin(UserRestGateMixin):
         active_count = self._unanswered_slowdown_count(user)
         max_multiplier = self._effective_proactive_float(
             "unanswered_max_interval_multiplier",
-            max(1.0, _safe_float(getattr(self, "proactive_unanswered_max_interval_multiplier", 2.2), 2.2, 1.0)),
+            max(1.0, _safe_float(_proactive_setting_value(self, "proactive_unanswered_max_interval_multiplier", 2.2), 2.2, 1.0)),
             minimum=1.0,
             maximum=8.0,
         )
@@ -2312,7 +2336,7 @@ class ProactiveMixin(UserRestGateMixin):
         if expression_decision and _safe_int(expression_decision.get("proactive_budget"), 0, 0) <= 0:
             score = min(score, 0.2)
         motivation: dict[str, Any] = {}
-        if bool(getattr(self, "enable_experimental_motivation_model", False)):
+        if bool(_proactive_setting_value(self, "enable_experimental_motivation_model", False)):
             motivation = self._experimental_proactive_motivation(user, now=now, drive=drive, temperature=temperature)
             modifier = (_safe_float(motivation.get("score"), 0.5) - 0.5) * 0.16
             score += modifier
@@ -2584,7 +2608,7 @@ class ProactiveMixin(UserRestGateMixin):
         return tune((0.9, 2.4))
 
     def _proactive_hour_activity_weights(self) -> list[float]:
-        raw = getattr(self, "proactive_hour_activity_curve", "")
+        raw = _proactive_setting_value(self, "proactive_hour_activity_curve", "")
         values = list(raw) if isinstance(raw, (list, tuple)) else str(raw or "").replace("，", ",").split(",")
         parsed: list[float] = []
         for value in values[:24]:
@@ -2635,7 +2659,7 @@ class ProactiveMixin(UserRestGateMixin):
         motive: str,
         topic: str,
     ) -> bool:
-        if not bool(getattr(self, "enable_proactive_burst", False)) or bool(user.get("planned_proactive_burst")):
+        if not bool(_proactive_setting_value(self, "enable_proactive_burst", False)) or bool(user.get("planned_proactive_burst")):
             return False
         if source in {"timer", "troubleshooting", "simulation", "weather_alert", "body_monitor", "environment_change"}:
             return False
@@ -2648,13 +2672,13 @@ class ProactiveMixin(UserRestGateMixin):
         max_messages = (
             max_messages_getter()
             if callable(max_messages_getter)
-            else _safe_int(getattr(self, "proactive_burst_max_messages", 2), 2, 2, 3)
+            else _safe_int(_proactive_setting_value(self, "proactive_burst_max_messages", 2), 2, 2, 3)
         )
         current_index = _safe_int(user.get("proactive_burst_index"), 0, 0, max_messages)
         if current_index + 1 >= max_messages:
             return False
-        low = max(10, _safe_int(getattr(self, "proactive_burst_gap_min_seconds", 45), 45, 10, 600))
-        high = max(low, _safe_int(getattr(self, "proactive_burst_gap_max_seconds", 180), 180, low, 900))
+        low = max(10, _safe_int(_proactive_setting_value(self, "proactive_burst_gap_min_seconds", 45), 45, 10, 600))
+        high = max(low, _safe_int(_proactive_setting_value(self, "proactive_burst_gap_max_seconds", 180), 180, low, 900))
         scheduled = now + random.uniform(low, high)
         user["next_proactive_at"] = scheduled
         user["planned_proactive_burst"] = True
@@ -2676,7 +2700,7 @@ class ProactiveMixin(UserRestGateMixin):
         return True
 
     def _proactive_burst_max_messages(self) -> int:
-        return _safe_int(getattr(self, "proactive_burst_max_messages", 2), 2, 2, 3)
+        return _safe_int(_proactive_setting_value(self, "proactive_burst_max_messages", 2), 2, 2, 3)
 
     def _friend_proactive_spread_delay_hours(
         self,
@@ -2693,7 +2717,7 @@ class ProactiveMixin(UserRestGateMixin):
         ignored_slowdown = self._unanswered_slowdown_count(user)
         max_cooldown = self._effective_proactive_float(
             "friend_unanswered_max_cooldown_hours",
-            max(1.0, _safe_float(getattr(self, "friend_unanswered_max_cooldown_hours", 60.0), 60.0, 1.0)),
+            max(1.0, _safe_float(_proactive_setting_value(self, "friend_unanswered_max_cooldown_hours", 60.0), 60.0, 1.0)),
             minimum=1.0,
             maximum=168.0,
         )
@@ -2835,7 +2859,7 @@ class ProactiveMixin(UserRestGateMixin):
                 result["motive"] = motive or "刚刚有个轻轻的小想法,想自然分享一下"
                 result["topic"] = topic or "轻分享"
                 result["note"] = "情绪 attached: 提高轻分享倾向"
-            photo_probability = max(0.0, min(1.0, float(getattr(self, "proactive_photo_text_probability", 0.18))))
+            photo_probability = max(0.0, min(1.0, float(_proactive_setting_value(self, "proactive_photo_text_probability", 0.18))))
             if action == "message" and reason in {"activity_share", "diary_share", "background_schedule"} and self._photo_text_available(user) and random.random() < photo_probability:
                 result["action"] = self._fallback_action_for_unavailable("photo_text", user)
                 result["note"] = (result["note"] + "；" if result["note"] else "") + "情绪 attached: 轻分享可带图"
@@ -3425,9 +3449,9 @@ class ProactiveMixin(UserRestGateMixin):
             return False
         now = now or _now_ts()
         events = []
-        if self.enable_daily_greetings:
+        if bool(_proactive_setting_value(self, "enable_daily_greetings", True)):
             events.append(self._pick_daily_greeting_event(user, now))
-        if bool(getattr(self, "enable_meal_care_proactive", True)):
+        if bool(_proactive_setting_value(self, "enable_meal_care_proactive", True)):
             events.append(self._pick_meal_care_event(user, now=now))
         events.extend(
             (
@@ -3510,7 +3534,12 @@ class ProactiveMixin(UserRestGateMixin):
         if next_at <= 0:
             return False
         check_now = _now_ts() if now is None else now
-        return check_now - next_at > self.max_proactive_plan_lag_minutes * 60
+        return check_now - next_at > _safe_int(
+            _proactive_setting_value(self, "max_proactive_plan_lag_minutes", 180),
+            180,
+            5,
+            1440,
+        ) * 60
 
     def _reset_planned_proactive_delivery_state(self, user: dict[str, Any]) -> None:
         user["planned_proactive_origin_at"] = 0
@@ -4096,10 +4125,11 @@ class ProactiveMixin(UserRestGateMixin):
             finally:
                 if token is not None and callable(deactivator):
                     deactivator(token)
-        return min(timeouts) if timeouts else max(30.0, float(self.check_interval_seconds))
+        interval = _safe_float(_proactive_setting_value(self, "check_interval_seconds", 60), 60, 1.0)
+        return min(timeouts) if timeouts else max(30.0, interval)
 
     def _next_scheduler_timeout_for_active_persona(self) -> float:
-        base = max(30.0, float(self.check_interval_seconds))
+        base = max(30.0, _safe_float(_proactive_setting_value(self, "check_interval_seconds", 60), 60, 1.0))
         now = _now_ts()
         nearest_due_in: float | None = None
         users = self.data.get("users", {})
@@ -4111,7 +4141,7 @@ class ProactiveMixin(UserRestGateMixin):
                     continue
                 next_at = _safe_float(raw_user.get("next_proactive_at"), 0)
                 due_times = [next_at]
-                if bool(getattr(self, "enable_goodnight_screen_check", False)):
+                if bool(_proactive_setting_value(self, "enable_goodnight_screen_check", False)):
                     due_times.append(_safe_float(raw_user.get("goodnight_screen_check_due_at"), 0))
                 for due_at in due_times:
                     if due_at <= 0:
@@ -4129,7 +4159,7 @@ class ProactiveMixin(UserRestGateMixin):
         memo_due_in = memo_due_getter(now) if callable(memo_due_getter) else None
         if memo_due_in is not None and (nearest_due_in is None or memo_due_in < nearest_due_in):
             nearest_due_in = memo_due_in
-        elif self.enable_detail_enhancement:
+        elif bool(_proactive_setting_value(self, "enable_detail_enhancement", True)):
             detail_due_in = self._next_detail_due_in_seconds(now)
             if detail_due_in is not None and detail_due_in < nearest_due_in:
                 nearest_due_in = detail_due_in

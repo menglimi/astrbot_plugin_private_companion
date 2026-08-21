@@ -35,6 +35,21 @@ class DailyReviewMixin:
     }
     _DAILY_REVIEW_GUIDANCE_SCOPES = {"reply", "proactive", "group", "tts"}
 
+    def _daily_review_setting(self, key: str, default: Any = None) -> Any:
+        """Read daily-review settings through the active persona when available."""
+        getter = getattr(self, "persona_setting", None)
+        if callable(getter):
+            try:
+                return getter(key, default)
+            except TypeError:
+                try:
+                    return getter(key, default=default)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        return getattr(self, key, default)
+
     def _daily_review_config_schema_index(self) -> dict[str, dict[str, str]]:
         cached = getattr(self, "_daily_review_schema_index_cache", None)
         if isinstance(cached, dict):
@@ -162,7 +177,7 @@ class DailyReviewMixin:
 
     def _daily_review_target_date(self, *, now: datetime | None = None) -> str:
         current = now or self._daily_review_now()
-        configured = self._daily_review_minutes(getattr(self, "daily_review_time", "04:00"))
+        configured = self._daily_review_minutes(self._daily_review_setting("daily_review_time", "04:00"))
         current_minutes = current.hour * 60 + current.minute
         due_date = current.date() if current_minutes >= configured else current.date() - timedelta(days=1)
         target = due_date - timedelta(days=1)
@@ -1240,7 +1255,7 @@ class DailyReviewMixin:
             "source_date": date_key,
             "generated_at": _safe_float(report.get("generated_at"), time.time()),
             "active_until": max((_safe_float(item.get("active_until"), expiry) for item in items), default=expiry),
-            "active": bool(items) and bool(getattr(self, "daily_review_auto_apply_guidance", True)) and not manual_paused,
+            "active": bool(items) and bool(self._daily_review_setting("daily_review_auto_apply_guidance", True)) and not manual_paused,
             "manual_paused": manual_paused,
             "items": items,
             "retired_items": retired[-16:],
@@ -1267,7 +1282,7 @@ class DailyReviewMixin:
         target_date: str = "",
         now: datetime | None = None,
     ) -> dict[str, Any] | None:
-        if not bool(getattr(self, "enable_daily_review", True)) and not force:
+        if not bool(self._daily_review_setting("enable_daily_review", True)) and not force:
             return None
         date_key = _single_line(target_date, 16) or self._daily_review_target_date(now=now)
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_key):
@@ -1277,11 +1292,11 @@ class DailyReviewMixin:
             if isinstance(existing, dict) and not force:
                 return existing
             provider_id = self._task_provider(
-                getattr(self, "daily_review_provider_id", ""),
-                getattr(self, "troubleshooting_provider_id", ""),
-                getattr(self, "complex_reasoning_provider_id", ""),
-                getattr(self, "mai_style_provider_id", ""),
-                getattr(self, "llm_provider_id", ""),
+                self._daily_review_setting("daily_review_provider_id", ""),
+                self._daily_review_setting("troubleshooting_provider_id", ""),
+                self._daily_review_setting("complex_reasoning_provider_id", ""),
+                self._daily_review_setting("mai_style_provider_id", ""),
+                self._daily_review_setting("llm_provider_id", ""),
             )
             if not provider_id:
                 resolver = getattr(self, "_resolve_chat_provider_id", None)
@@ -1358,7 +1373,7 @@ class DailyReviewMixin:
                 ]
                 reports.append(report)
                 reports.sort(key=lambda item: _single_line(item.get("date"), 16) if isinstance(item, dict) else "")
-                retention = max(3, _safe_int(getattr(self, "daily_review_retention_days", 30), 30, 3, 180))
+                retention = max(3, _safe_int(self._daily_review_setting("daily_review_retention_days", 30), 30, 3, 180))
                 del reports[:-retention]
                 self._activate_daily_review_guidance(report)
                 self.data["daily_review_completed_day"] = date_key
@@ -1418,17 +1433,37 @@ class DailyReviewMixin:
         return dates[-max(1, min(7, max_days)):]
 
     async def _daily_review_loop(self) -> None:
-        while bool(getattr(self, "enable_daily_review", True)):
+        while not bool(getattr(getattr(self, "_stop_event", None), "is_set", lambda: False)()):
             try:
-                pending = self._daily_review_pending_dates(now=self._daily_review_now())
-                for date_key in pending:
-                    if not bool(getattr(self, "enable_daily_review", True)):
-                        return
-                    result = await self._ensure_daily_review(target_date=date_key)
-                    if not isinstance(result, dict):
-                        break
-                delay = self._next_daily_review_due_in_seconds()
-                await asyncio.sleep(max(1.0, float(delay if delay is not None else 3600.0)))
+                active_getter = getattr(self, "_active_persona_scope", None)
+                current = str(active_getter() if callable(active_getter) else "").strip()
+                persona_getter = getattr(self, "_scheduler_persona_ids", None)
+                if not callable(persona_getter) and not bool(self._daily_review_setting("enable_daily_review", True)):
+                    return
+                persona_ids = list(persona_getter() if callable(persona_getter) else [""])
+                activator = getattr(self, "_activate_persona_id", None)
+                deactivator = getattr(self, "_deactivate_persona_for_event", None)
+                due_in: list[float] = []
+                for persona_id in persona_ids or [""]:
+                    token = None
+                    if persona_id and persona_id != current and callable(activator):
+                        token = activator(persona_id)
+                    try:
+                        if not bool(self._daily_review_setting("enable_daily_review", True)):
+                            continue
+                        pending = self._daily_review_pending_dates(now=self._daily_review_now())
+                        for date_key in pending:
+                            result = await self._ensure_daily_review(target_date=date_key)
+                            if not isinstance(result, dict):
+                                break
+                        delay = self._next_daily_review_due_in_seconds()
+                        if delay is not None:
+                            due_in.append(float(delay))
+                    finally:
+                        if token is not None and callable(deactivator):
+                            deactivator(token)
+                delay = min(due_in) if due_in else 3600.0
+                await asyncio.sleep(max(1.0, delay))
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -1439,7 +1474,7 @@ class DailyReviewMixin:
                 await asyncio.sleep(30 * 60)
 
     def _next_daily_review_due_in_seconds(self, now: float | None = None) -> float | None:
-        if not bool(getattr(self, "enable_daily_review", True)):
+        if not bool(self._daily_review_setting("enable_daily_review", True)):
             return None
         current = self._daily_review_now(now)
         target_date = self._daily_review_target_date(now=current)
@@ -1450,14 +1485,14 @@ class DailyReviewMixin:
                 if _single_line(last_attempt.get("status"), 16) == "failed" and attempted_at > 0:
                     return max(0.0, 30 * 60 - (current.timestamp() - attempted_at))
             return 0.0
-        review_minutes = self._daily_review_minutes(getattr(self, "daily_review_time", "04:00"))
+        review_minutes = self._daily_review_minutes(self._daily_review_setting("daily_review_time", "04:00"))
         next_due = current.replace(hour=review_minutes // 60, minute=review_minutes % 60, second=0, microsecond=0)
         if next_due <= current:
             next_due += timedelta(days=1)
         return max(0.0, next_due.timestamp() - current.timestamp())
 
     async def _append_daily_review_guidance_to_request(self, event: Any, req: Any) -> None:
-        if not bool(getattr(self, "daily_review_auto_apply_guidance", True)):
+        if not bool(self._daily_review_setting("daily_review_auto_apply_guidance", True)):
             return
         guidance = self.data.get("daily_review_active_guidance")
         if not isinstance(guidance, dict) or not bool(guidance.get("active")):
@@ -1556,10 +1591,10 @@ class DailyReviewMixin:
         latest_date = _single_line(reports[0].get("date"), 16) if reports else self._daily_review_target_date()
         latest_case_review = self._daily_review_case_samples(latest_date)
         return {
-            "enabled": bool(getattr(self, "enable_daily_review", True)),
-            "review_time": _single_line(getattr(self, "daily_review_time", "04:00"), 8),
-            "auto_apply_guidance": bool(getattr(self, "daily_review_auto_apply_guidance", True)),
-            "provider_id": _single_line(getattr(self, "daily_review_provider_id", ""), 160),
+            "enabled": bool(self._daily_review_setting("enable_daily_review", True)),
+            "review_time": _single_line(self._daily_review_setting("daily_review_time", "04:00"), 8),
+            "auto_apply_guidance": bool(self._daily_review_setting("daily_review_auto_apply_guidance", True)),
+            "provider_id": _single_line(self._daily_review_setting("daily_review_provider_id", ""), 160),
             "target_date": self._daily_review_target_date(),
             "last_attempt": deepcopy(self.data.get("daily_review_last_attempt")) if isinstance(self.data.get("daily_review_last_attempt"), dict) else {},
             "active_guidance": active,

@@ -679,6 +679,26 @@ def resolve_effective_settings(
     return result
 
 
+def runtime_persona_setting(owner: Any, key: str, default: Any = None) -> Any:
+    """Read one setting through the active persona accessor when available.
+
+    Args:
+        owner: Plugin or mixin host that owns the setting.
+        key: Canonical configuration key.
+        default: Fallback used when the host has no attribute.
+
+    Returns:
+        The effective setting value for the current runtime persona.
+    """
+    getter = getattr(owner, "persona_setting", None)
+    if callable(getter):
+        try:
+            return getter(key, default)
+        except Exception:
+            pass
+    return getattr(owner, key, default)
+
+
 def normalize_setting_value(key: str, value: Any, entry: Mapping[str, Any]) -> Any:
     """Apply conservative schema type/option normalization to one value."""
 
@@ -1023,6 +1043,7 @@ __all__ = [
     "normalize_setting_value",
     "resolve_effective_settings",
     "resolve_persona_setting",
+    "runtime_persona_setting",
     "schema_defaults",
     "scope_manifest_document",
     "validate_scope_manifest",

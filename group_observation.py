@@ -409,6 +409,17 @@ _GROUP_INJECTION_QUOTE_DAMPENERS = (
     "假设",
 )
 
+def _persona_value(owner: Any, key: str, default: Any = None) -> Any:
+    """Read an active-persona setting, retaining compatibility with harnesses."""
+    getter = getattr(owner, "persona_setting", None)
+    if callable(getter):
+        try:
+            return getter(key, default)
+        except Exception:
+            pass
+    return getattr(owner, key, default)
+
+
 class GroupObservationMixin:
     _GROUP_ROLE_LABELS = {"owner": "群主", "admin": "管理员", "member": "普通成员", "unknown": "未知"}
 
@@ -667,7 +678,7 @@ class GroupObservationMixin:
     def _analyze_group_injection_guard(self, text: str, *, sender_id: str = "") -> dict[str, Any]:
         cleaned = _single_line(text, 260)
         result = {"blocked": False, "score": 0, "reasons": [], "categories": []}
-        if not cleaned or not bool(getattr(self, "enable_group_injection_guard", True)):
+        if not cleaned or not bool(_persona_value(self, "enable_group_injection_guard", True)):
             return result
         lowered = cleaned.lower()
         score = 0
@@ -1059,12 +1070,12 @@ class GroupObservationMixin:
                 "at_targets": scene.get("at_targets") if isinstance(scene.get("at_targets"), list) else [],
             })
         recent.append(record)
-        del recent[:-self.max_group_recent_messages]
+        del recent[:-_safe_int(_persona_value(self, "max_group_recent_messages", 80), 80, 1)]
         # Group transcripts are useful for the live context window, but they
         # should be flushed in batches instead of causing a full store write
         # for every inbound message.
         setattr(self, "_group_observation_dirty", True)
-        if self.enable_group_relationship_graph:
+        if _persona_value(self, "enable_group_relationship_graph", False):
             members = group.setdefault("members", {})
             if not isinstance(members, dict):
                 members = {}
@@ -1123,14 +1134,14 @@ class GroupObservationMixin:
         if not blocked_by_guard and self._expression_group_learning_source_enabled(group.get("group_id") or group_id):
             self._update_group_expression_profile_from_message(group, cleaned)
             self._refresh_expression_voice_profile()
-        if self.enable_group_slang_learning and not blocked_by_guard:
+        if _persona_value(self, "enable_group_slang_learning", False) and not blocked_by_guard:
             self._learn_group_nickname_correction(group, cleaned)
             self._learn_group_slang(group, cleaned)
-        if self.enable_group_topic_threads and not blocked_by_guard:
+        if _persona_value(self, "enable_group_topic_threads", False) and not blocked_by_guard:
             self._update_group_topic_threads(group, sender_id=sender_id, sender_name=sender_name, text=cleaned)
-        if self.enable_group_relationship_graph and not blocked_by_guard:
+        if _persona_value(self, "enable_group_relationship_graph", False) and not blocked_by_guard:
             self._update_group_relationship_graph(group, sender_id=sender_id, sender_name=sender_name, text=cleaned)
-        if self.enable_group_interjection_feedback and not blocked_by_guard:
+        if _persona_value(self, "enable_group_interjection_feedback", False) and not blocked_by_guard:
             self._update_group_interjection_feedback(group, sender_id=sender_id, text=cleaned)
         self._update_group_atmosphere(group)
 
@@ -1441,7 +1452,7 @@ class GroupObservationMixin:
             return False
         text = _single_line(item.get("text"), 140)
         folded = text.casefold()
-        markers = [self.bot_name, "bot", "机器人", "小星"]
+        markers = [_persona_value(self, "bot_name", ""), "bot", "机器人", "小星"]
         return any(str(marker or "").strip().casefold() in folded for marker in markers if str(marker or "").strip())
 
     def _group_bot_harassment_candidate(
@@ -1527,7 +1538,7 @@ class GroupObservationMixin:
         }
 
     def _maybe_schedule_group_private_share(self, group_id: str, group: dict[str, Any], *, trigger_sender_id: str = "") -> bool:
-        if not self.enable_group_companion:
+        if not _persona_value(self, "enable_group_companion", False):
             return False
         candidate = self._group_private_share_candidate(group_id, group, trigger_sender_id=trigger_sender_id)
         if not isinstance(candidate, dict):
@@ -1630,7 +1641,7 @@ class GroupObservationMixin:
         text: str = "",
         now: float | None = None,
     ) -> bool:
-        if not sender_id or not self.enable_group_companion:
+        if not sender_id or not _persona_value(self, "enable_group_companion", False):
             return False
         users = self.data.get("users")
         if not isinstance(users, dict):
@@ -1708,7 +1719,7 @@ class GroupObservationMixin:
         now: float | None = None,
     ) -> bool:
         """Sometimes react when the owner keeps chatting after both sides said goodnight."""
-        if not sender_id or not self.enable_group_companion:
+        if not sender_id or not _persona_value(self, "enable_group_companion", False):
             return False
         users = self.data.get("users")
         if not isinstance(users, dict):
@@ -1970,7 +1981,7 @@ class GroupObservationMixin:
             item["count"] = min(999, _safe_int(item.get("count"), 0, 0) + 1)
             item["last_seen"] = _now_ts()
         terms.sort(key=lambda item: (_safe_int(item.get("count"), 0, 0), _safe_float(item.get("last_seen"), 0)), reverse=True)
-        del terms[self.max_group_slang_terms:]
+        del terms[_safe_int(_persona_value(self, "max_group_slang_terms", 80), 80, 1):]
 
     def _learn_group_nickname_correction(self, group: dict[str, Any], text: str) -> None:
         cleaned = _single_line(text, 180)
@@ -2356,7 +2367,7 @@ class GroupObservationMixin:
         )
         del examples[:-6]
         active_threads.sort(key=lambda item: _safe_float(item.get("last_ts"), 0), reverse=True)
-        group["topic_threads"] = active_threads[: self.max_group_topic_threads]
+        group["topic_threads"] = active_threads[: _safe_int(_persona_value(self, "max_group_topic_threads", 20), 20, 1)]
 
     def _update_group_interjection_feedback(self, group: dict[str, Any], *, sender_id: str, text: str) -> None:
         last = group.get("last_bot_interjection")
@@ -2427,13 +2438,14 @@ class GroupObservationMixin:
                     if re.search(r"(吵|骂|别|烦|急)", text):
                         tone_key = "紧绷"
                     tone[tone_key] = _safe_int(tone.get(tone_key), 0, 0) + 1
-                if len(edges) > self.max_group_relationship_edges:
+                max_edges = _safe_int(_persona_value(self, "max_group_relationship_edges", 80), 80, 1)
+                if len(edges) > max_edges:
                     ranked = sorted(
                         edges.items(),
                         key=lambda item: (_safe_int((item[1] or {}).get("count"), 0, 0), _safe_float((item[1] or {}).get("last_ts"), 0)),
                         reverse=True,
                     )
-                    group["relationship_edges"] = dict(ranked[: self.max_group_relationship_edges])
+                    group["relationship_edges"] = dict(ranked[: max_edges])
         group["last_speaker"] = {
             "sender_id": sender_id,
             "name": _single_line(sender_name, 30) or sender_id,
@@ -2523,7 +2535,7 @@ class GroupObservationMixin:
 
     async def _group_slang_embedding_context(self, group: dict[str, Any], text: Any) -> str:
         """Soft-retrieve confirmed group slang meanings for an unfamiliar short expression."""
-        if not bool(getattr(self, "enable_group_slang_meanings", False)):
+        if not bool(_persona_value(self, "enable_group_slang_meanings", False)):
             return ""
         cleaned = _single_line(text, 160)
         meanings = group.get("slang_meanings") if isinstance(group, dict) else None
@@ -2817,7 +2829,7 @@ class GroupObservationMixin:
         meaning_text = self._format_group_slang_meanings_for_prompt(group)
         if meaning_text:
             lines.append("群内词义参考：\n" + meaning_text)
-        if self.enable_group_privacy_guard:
+        if _persona_value(self, "enable_group_privacy_guard", False):
             lines.append(
                 "群聊边界：私聊记忆、用户私聊偏好和内部记录只作避错背景,不要说到群里。"
             )
@@ -2907,7 +2919,7 @@ class GroupObservationMixin:
             group,
             sender_id=sender_id,
             text=text,
-            max_lines=max(4, self.group_scene_recent_limit + 2),
+            max_lines=max(4, _safe_int(_persona_value(self, "group_scene_recent_limit", 12), 12, 1) + 2),
             max_chars=900,
         )
         if recent_flow:
@@ -2985,7 +2997,7 @@ class GroupObservationMixin:
         )
 
     def _format_group_injection_guard_prompt(self, event: AstrMessageEvent | None = None) -> str:
-        if not bool(getattr(self, "enable_group_injection_guard", True)):
+        if not bool(_persona_value(self, "enable_group_injection_guard", True)):
             return ""
         lines = [
             "【群聊防注入】",
@@ -3031,9 +3043,9 @@ class GroupObservationMixin:
         return "\n".join(lines)
 
     async def _append_group_injection_guard_to_request(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
-        if not bool(getattr(self, "enable_group_companion", True)):
+        if not bool(_persona_value(self, "enable_group_companion", True)):
             return
-        if not bool(getattr(self, "enable_group_injection_guard", True)):
+        if not bool(_persona_value(self, "enable_group_injection_guard", True)):
             return
         group_id = self._extract_group_id_from_event(event)
         if not group_id or not self._group_enabled_for_event(group_id):
@@ -3068,7 +3080,7 @@ class GroupObservationMixin:
             )
 
     def _format_group_scene_awareness_for_prompt(self, group: dict[str, Any], sender_id: str = "", text: str = "") -> str:
-        if not self.enable_group_scene_awareness:
+        if not _persona_value(self, "enable_group_scene_awareness", False):
             return ""
         recent = self._filtered_group_recent_messages(group)
         current = self._resolve_group_current_message_for_prompt(group, sender_id=sender_id, text=text)
@@ -3142,7 +3154,7 @@ class GroupObservationMixin:
             context_lines.append("  </interest_context>")
             lines.extend(context_lines)
         flow_lines: list[str] = []
-        for item in recent[-max(2, self.group_scene_recent_limit):]:
+        for item in recent[-max(2, _safe_int(_persona_value(self, "group_scene_recent_limit", 12), 12, 1)):]:
             if not isinstance(item, dict):
                 continue
             item_sender_id = _single_line(item.get("sender_id"), 40)
@@ -3193,7 +3205,7 @@ class GroupObservationMixin:
         )
         group_id = _single_line(group.get("group_id"), 80)
         llm_blocked = bool(group_id and self._group_llm_reply_blocked(group_id))
-        global_enabled = bool(getattr(self, "enable_group_companion", False))
+        global_enabled = bool(_persona_value(self, "enable_group_companion", False))
         group_enabled = bool(group.get("enabled", True))
         allowed_by_mode = bool(group_id and self._group_allowed_by_access_mode(group_id))
         effective_enabled = global_enabled and group_enabled and allowed_by_mode
@@ -3212,7 +3224,7 @@ class GroupObservationMixin:
             f"名单放行：{'是' if allowed_by_mode else '否'}\n"
             f"状态说明：{effective_reason}\n"
             f"本群 LLM 回复：{'关闭' if llm_blocked else '开启'}\n"
-            f"访问模式：{'黑名单' if self.group_access_mode == 'blacklist' else '白名单'}\n"
+            f"访问模式：{'黑名单' if _persona_value(self, 'group_access_mode', 'whitelist') == 'blacklist' else '白名单'}\n"
             f"群号：{group_id}\n"
             f"累计观察：{group.get('message_count', 0)} 条\n"
             f"气氛：{atmosphere.get('pace', '未知')}｜{atmosphere.get('mood', '平稳')}\n"
@@ -3309,15 +3321,15 @@ class GroupObservationMixin:
         return (bool(should_reply and reply), reply if should_reply else "", _single_line(payload.get("reason"), 80))
 
     def _group_interjection_allowed(self, group: dict[str, Any], text: str) -> tuple[bool, str]:
-        if not self.enable_group_interjection:
+        if not _persona_value(self, "enable_group_interjection", False):
             return False, "群聊主动插话未开启"
         _, has_link_payload = _group_link_message_context(text)
         if has_link_payload:
             return False, "链接或分享内容不触发主动插话"
         max_daily_getter = getattr(self, "_effective_group_interject_max_daily", None)
-        max_daily = max_daily_getter() if callable(max_daily_getter) else self.group_interject_max_daily
+        max_daily = max_daily_getter() if callable(max_daily_getter) else _safe_int(_persona_value(self, "group_interject_max_daily", 0), 0, 0)
         min_interval_getter = getattr(self, "_effective_group_interject_min_interval_minutes", None)
-        min_interval = min_interval_getter() if callable(min_interval_getter) else self.group_interject_min_interval_minutes
+        min_interval = min_interval_getter() if callable(min_interval_getter) else _safe_float(_persona_value(self, "group_interject_min_interval_minutes", 0), 0, 0)
         if max_daily <= 0:
             return False, "群聊主动插话上限为 0"
         today = _today_key()
@@ -3707,7 +3719,7 @@ class GroupObservationMixin:
         return False
 
     def _update_group_repeat_follow_state(self, group: dict[str, Any], text: str, sender_id: str = "") -> dict[str, str]:
-        if not self.enable_group_repeat_follow:
+        if not _persona_value(self, "enable_group_repeat_follow", False):
             return {}
         cleaned = _single_line(text, 80)
         signature = self._group_repeat_signature(cleaned)
@@ -3716,7 +3728,7 @@ class GroupObservationMixin:
             return {}
         now = _now_ts()
         sender_key = _single_line(sender_id, 64) or "unknown"
-        count_distinct_users = bool(getattr(self, "group_repeat_count_distinct_users_only", False))
+        count_distinct_users = bool(_persona_value(self, "group_repeat_count_distinct_users_only", False))
         state = group.get("repeat_follow_state")
         if not isinstance(state, dict):
             state = {}
@@ -3742,13 +3754,13 @@ class GroupObservationMixin:
                 "first_ts": now,
                 "last_ts": now,
                 "acted": False,
-                "follow_probability": max(0.0, self.group_repeat_follow_probability),
-                "interrupt_probability": max(0.0, self.group_repeat_interrupt_probability),
+                "follow_probability": max(0.0, _safe_float(_persona_value(self, "group_repeat_follow_probability", 0.0), 0.0, 0.0)),
+                "interrupt_probability": max(0.0, _safe_float(_persona_value(self, "group_repeat_interrupt_probability", 0.0), 0.0, 0.0)),
             }
             sender_is_new = True
         group["repeat_follow_state"] = state
         count = _safe_int(state.get("distinct_count" if count_distinct_users else "count"), 1, 1)
-        trigger_threshold = max(3, _safe_int(getattr(self, "group_repeat_trigger_threshold", 4), 4, 3))
+        trigger_threshold = max(3, _safe_int(_persona_value(self, "group_repeat_trigger_threshold", 4), 4, 3))
         if count < trigger_threshold or bool(state.get("acted")) or bool(state.get("followed")):
             return {}
         today = _today_key()
@@ -3756,7 +3768,7 @@ class GroupObservationMixin:
             group["interject_day"] = today
             group["interject_today"] = 0
         max_daily_getter = getattr(self, "_effective_group_interject_max_daily", None)
-        max_daily = max_daily_getter() if callable(max_daily_getter) else self.group_interject_max_daily
+        max_daily = max_daily_getter() if callable(max_daily_getter) else _safe_int(_persona_value(self, "group_interject_max_daily", 0), 0, 0)
         if max_daily <= 0:
             return {}
         limit_unlimited = getattr(self, "_proactive_daily_limit_is_unlimited", None)
@@ -3765,14 +3777,16 @@ class GroupObservationMixin:
             and _safe_int(group.get("interject_today"), 0, 0) >= max_daily
         ):
             return {}
-        follow_probability = min(0.85, _safe_float(state.get("follow_probability"), self.group_repeat_follow_probability))
-        interrupt_probability = min(0.85, _safe_float(state.get("interrupt_probability"), self.group_repeat_interrupt_probability))
+        follow_default = _safe_float(_persona_value(self, "group_repeat_follow_probability", 0.0), 0.0, 0.0)
+        interrupt_default = _safe_float(_persona_value(self, "group_repeat_interrupt_probability", 0.0), 0.0, 0.0)
+        follow_probability = min(0.85, _safe_float(state.get("follow_probability"), follow_default))
+        interrupt_probability = min(0.85, _safe_float(state.get("interrupt_probability"), interrupt_default))
         total_probability = min(0.95, follow_probability + interrupt_probability)
         roll = random.random()
         if roll >= total_probability:
             if count_distinct_users and not sender_is_new:
                 return {}
-            step = max(0.0, self.group_repeat_interrupt_probability_step)
+            step = max(0.0, _safe_float(_persona_value(self, "group_repeat_interrupt_probability_step", 0.0), 0.0, 0.0))
             state["follow_probability"] = min(0.85, follow_probability + step)
             state["interrupt_probability"] = min(0.85, interrupt_probability + step)
             return {}
@@ -3780,10 +3794,10 @@ class GroupObservationMixin:
         state["acted_ts"] = now
         action = "interrupt" if roll < interrupt_probability else "follow"
         if action == "interrupt":
-            image_path = str(self.group_repeat_interrupt_image_path or "").strip()
+            image_path = str(_persona_value(self, "group_repeat_interrupt_image_path", "") or "").strip()
             if image_path and not os.path.exists(image_path):
                 image_path = ""
-            text_reply = _single_line(self.group_repeat_interrupt_text, 80) or "禁止复读"
+            text_reply = _single_line(_persona_value(self, "group_repeat_interrupt_text", ""), 80) or "禁止复读"
             return {"action": "interrupt", "text": "" if image_path else text_reply, "image_path": image_path}
         return {"action": "follow", "text": cleaned, "image_path": ""}
 
@@ -3912,7 +3926,10 @@ class GroupObservationMixin:
         generated = await self._llm_call(
             prompt,
             max_tokens=140,
-            provider_id=self._task_provider(self.group_interject_provider_id, self.mai_style_provider_id),
+            provider_id=self._task_provider(
+                _persona_value(self, "group_interject_provider_id", ""),
+                _persona_value(self, "mai_style_provider_id", ""),
+            ),
             task="group_interject",
         )
         should_reply, reply, skip_reason = self._parse_group_interjection_decision(generated)
@@ -4008,12 +4025,13 @@ class GroupObservationMixin:
         return True
 
     async def _maybe_refresh_group_episode(self, group_id: str, group: dict[str, Any]) -> None:
-        if not self.enable_group_episode_memory:
+        if not _persona_value(self, "enable_group_episode_memory", False):
             return
         now = _now_ts()
         async with self._data_lock:
             group = deepcopy(self._get_group(group_id))
-        if now - _safe_float(group.get("last_episode_refresh_at"), 0) < self.group_episode_refresh_minutes * 60:
+        episode_refresh_minutes = _safe_float(_persona_value(self, "group_episode_refresh_minutes", 60), 60, 0)
+        if now - _safe_float(group.get("last_episode_refresh_at"), 0) < episode_refresh_minutes * 60:
             return
         if now < _safe_float(group.get("group_episode_retry_after"), 0):
             return
@@ -4056,7 +4074,7 @@ class GroupObservationMixin:
             "group_episode",
             now,
             refresh_key="last_episode_refresh_at",
-            refresh_seconds=self.group_episode_refresh_minutes * 60,
+            refresh_seconds=episode_refresh_minutes * 60,
         )
         if not acquired:
             return
@@ -4085,7 +4103,10 @@ class GroupObservationMixin:
             raw = await self._llm_call(
                 prompt,
                 max_tokens=760 if learn_expression_rules else 420,
-                provider_id=self._task_provider(self.group_episode_provider_id, self.mai_style_provider_id),
+                provider_id=self._task_provider(
+                    _persona_value(self, "group_episode_provider_id", ""),
+                    _persona_value(self, "mai_style_provider_id", ""),
+                ),
                 task="group_episode",
                 system_prompt=system_prompt,
             )
@@ -4127,7 +4148,7 @@ class GroupObservationMixin:
                 or _single_line(episodes[-1].get("summary") if isinstance(episodes[-1], dict) else "", 140) != episode["summary"]
             ):
                 episodes.append(episode)
-            del episodes[:-self.max_group_episodes]
+            del episodes[:-_safe_int(_persona_value(self, "max_group_episodes", 40), 40, 1)]
             if expression_rules:
                 expression_profile = current.setdefault("expression_profile", {})
                 if not isinstance(expression_profile, dict):
@@ -4155,12 +4176,13 @@ class GroupObservationMixin:
             self._save_data_sync(sections=save_sections)
 
     async def _maybe_refresh_group_slang_meanings(self, group_id: str, group: dict[str, Any]) -> None:
-        if not self.enable_group_slang_meanings:
+        if not _persona_value(self, "enable_group_slang_meanings", False):
             return
         now = _now_ts()
         async with self._data_lock:
             group = deepcopy(self._get_group(group_id))
-        if now - _safe_float(group.get("last_slang_summary_at"), 0) < self.group_slang_summary_minutes * 60:
+        slang_summary_minutes = _safe_float(_persona_value(self, "group_slang_summary_minutes", 360), 360, 0)
+        if now - _safe_float(group.get("last_slang_summary_at"), 0) < slang_summary_minutes * 60:
             return
         if now < _safe_float(group.get("group_slang_retry_after"), 0):
             return
@@ -4194,7 +4216,7 @@ class GroupObservationMixin:
             "group_slang",
             now,
             refresh_key="last_slang_summary_at",
-            refresh_seconds=self.group_slang_summary_minutes * 60,
+            refresh_seconds=slang_summary_minutes * 60,
         )
         if not acquired:
             return
@@ -4241,7 +4263,10 @@ class GroupObservationMixin:
             raw = await self._llm_call(
                 prompt,
                 max_tokens=560,
-                provider_id=self._task_provider(self.group_slang_provider_id, self.mai_style_provider_id),
+                provider_id=self._task_provider(
+                    _persona_value(self, "group_slang_provider_id", ""),
+                    _persona_value(self, "mai_style_provider_id", ""),
+                ),
                 task="group_slang",
             )
             payload = self._extract_json_payload(raw or "")
@@ -4349,9 +4374,9 @@ class GroupObservationMixin:
             return
         delay = 10 * 60
         if task == "group_episode":
-            delay = min(max(10 * 60, _safe_int(getattr(self, "group_episode_refresh_minutes", 60), 60, 1) * 60), 30 * 60)
+            delay = min(max(10 * 60, _safe_int(_persona_value(self, "group_episode_refresh_minutes", 60), 60, 1) * 60), 30 * 60)
         elif task == "group_slang":
-            delay = min(max(10 * 60, _safe_int(getattr(self, "group_slang_summary_minutes", 360), 360, 1) * 60), 30 * 60)
+            delay = min(max(10 * 60, _safe_int(_persona_value(self, "group_slang_summary_minutes", 360), 360, 1) * 60), 30 * 60)
         async with self._data_lock:
             current = self._get_group(group_id)
             current[retry_key] = now + delay
@@ -4367,7 +4392,7 @@ class GroupObservationMixin:
         )
 
     async def _collect_group_slang_web_evidence(self, group_id: str, terms: list[str], examples: list[str]) -> str:
-        if not bool(getattr(self, "enable_group_slang_web_search", False)):
+        if not bool(_persona_value(self, "enable_group_slang_web_search", False)):
             return ""
         picker = getattr(self, "_pick_available_web_search_umo", None)
         searcher = getattr(self, "_run_astrbot_web_search", None)
@@ -4376,8 +4401,8 @@ class GroupObservationMixin:
         search_umo = picker()
         if not search_umo:
             return ""
-        term_limit = max(1, min(12, _safe_int(getattr(self, "group_slang_web_search_terms", 4), 4, 1, 12)))
-        result_limit = max(1, min(5, _safe_int(getattr(self, "group_slang_web_search_results", 2), 2, 1, 5)))
+        term_limit = max(1, min(12, _safe_int(_persona_value(self, "group_slang_web_search_terms", 4), 4, 1, 12)))
+        result_limit = max(1, min(5, _safe_int(_persona_value(self, "group_slang_web_search_results", 2), 2, 1, 5)))
         picked_terms: list[str] = []
         for term in terms:
             clean = _single_line(term, 20)

@@ -406,6 +406,35 @@ _PROMPT_SECTION_DESCRIPTIONS: dict[str, str] = {
     "生图风格": "图片生成或图片分享相关风格要求。",
 }
 
+def _persona_value(owner: Any, key: str, default: Any = None) -> Any:
+    """Read an active-persona setting without changing shared plugin state."""
+    getter = getattr(owner, "persona_setting", None)
+    if callable(getter):
+        try:
+            return getter(key, default)
+        except Exception:
+            pass
+    return getattr(owner, key, default)
+
+
+def _persona_feature_enabled(owner: Any, key: str, default: bool = False) -> bool:
+    if not hasattr(owner, "enable_multi_persona_mode"):
+        checker = getattr(owner, "_feature_enabled_or_temp_unlocked", None)
+        if callable(checker):
+            try:
+                return bool(checker(key, default))
+            except Exception:
+                pass
+    if bool(_persona_value(owner, key, default)):
+        return True
+    unlocker = getattr(owner, "_proactive_only_temp_unlock_allows", None)
+    return bool(
+        _persona_value(owner, "enable_proactive_only_mode", False)
+        and callable(unlocker)
+        and unlocker(key)
+    )
+
+
 class EventDispatchMixin:
     """事件分发"""
 
@@ -2754,7 +2783,7 @@ class EventDispatchMixin:
         return ""
 
     def _quote_group_reply_continuity_window_seconds(self) -> int:
-        followup_seconds = _safe_int(getattr(self, "group_conversation_followup_seconds", 120), 120, 0)
+        followup_seconds = _safe_int(_persona_value(self, "group_conversation_followup_seconds", 120), 120, 0)
         return max(300, followup_seconds)
 
     def _quote_group_reply_should_skip_same_target(
@@ -2838,8 +2867,7 @@ class EventDispatchMixin:
                 return ""
             return fixed
         if scene_name in {"group_reply", "group_interjection"}:
-            checker = getattr(self, "_feature_enabled_or_temp_unlocked", None)
-            group_enabled = checker("enable_group_companion") if callable(checker) else self.enable_group_companion
+            group_enabled = _persona_feature_enabled(self, "enable_group_companion")
             if not group_enabled:
                 return ""
             if not self._extract_group_id_from_event(event):
@@ -3073,13 +3101,13 @@ class EventDispatchMixin:
         return scope, sender_id
 
     def _group_high_intensity_buffer_key(self, group_id: str, sender_id: str = "") -> str:
-        scope = str(getattr(self, "group_high_intensity_merge_scope", "group") or "group").lower()
+        scope = str(_persona_value(self, "group_high_intensity_merge_scope", "group") or "group").lower()
         if scope == "same_user" and sender_id:
             return self._semantic_buffer_key(f"group:{group_id}:__high_intensity_sender__", str(sender_id))
         return self._semantic_buffer_key(f"group:{group_id}", "__high_intensity__")
 
     def _group_high_intensity_merge_wait_seconds(self) -> float:
-        return max(1.0, min(30.0, float(getattr(self, "group_high_intensity_merge_seconds", 8) or 8)))
+        return max(1.0, min(30.0, float(_persona_value(self, "group_high_intensity_merge_seconds", 8) or 8)))
 
     def _message_debounce_max_wait_seconds(self, kind: str = "text") -> float:
         if kind not in {"text", "group_text"}:
@@ -3088,7 +3116,7 @@ class EventDispatchMixin:
 
     def _message_debounce_max_merge_messages(self, kind: str = "text") -> int:
         if kind == "group_high_intensity":
-            return max(0, _safe_int(getattr(self, "group_high_intensity_max_merge_messages", 8), 8, 0))
+            return max(0, _safe_int(_persona_value(self, "group_high_intensity_max_merge_messages", 8), 8, 0))
         return max(0, _safe_int(getattr(self, "message_debounce_max_merge_messages", 8), 8, 0))
 
     def _semantic_buffer_active_snapshot(self, key: str, *, wait_seconds: float | None = None, force: bool = False) -> dict[str, Any]:
@@ -3919,9 +3947,9 @@ class EventDispatchMixin:
         *,
         smart_result: dict[str, Any] | None = None,
     ) -> float:
-        if not bool(getattr(self, "enable_group_wakeup_enhancement", True)):
+        if not bool(_persona_value(self, "enable_group_wakeup_enhancement", True)):
             return 0.0
-        wait = max(0.0, min(30.0, _safe_float(getattr(self, "group_wakeup_short_text_wait_seconds", 0.0), 0.0, 0.0)))
+        wait = max(0.0, min(30.0, _safe_float(_persona_value(self, "group_wakeup_short_text_wait_seconds", 0.0), 0.0, 0.0)))
         if wait <= 0:
             return 0.0
         cleaned = _single_line(text, 80)
@@ -4340,7 +4368,7 @@ class EventDispatchMixin:
 
     def _group_air_guard_trim_bot_replies(self, group: dict[str, Any], *, now: float | None = None) -> list[dict[str, Any]]:
         current = _now_ts() if now is None else float(now)
-        window = max(30, _safe_int(getattr(self, "group_air_guard_window_seconds", 180), 180, 30, 1800))
+        window = max(30, _safe_int(_persona_value(self, "group_air_guard_window_seconds", 180), 180, 30, 1800))
         raw = group.get("recent_bot_replies") if isinstance(group.get("recent_bot_replies"), list) else []
         kept = [
             item for item in raw[-40:]
@@ -4385,20 +4413,20 @@ class EventDispatchMixin:
         text: str,
         scene: dict[str, Any],
     ) -> dict[str, Any]:
-        if not bool(getattr(self, "enable_group_air_reply_guard", True)):
+        if not bool(_persona_value(self, "enable_group_air_reply_guard", True)):
             return {"block": False, "reason": "disabled"}
         if str(scene.get("talking_to") or "") != "bot":
             return {"block": False, "reason": "not_to_bot"}
         now = _now_ts()
         recent_bot = self._group_air_guard_trim_bot_replies(group, now=now)
-        max_replies = max(1, _safe_int(getattr(self, "group_air_guard_max_bot_replies", 3), 3, 1, 20))
+        max_replies = max(1, _safe_int(_persona_value(self, "group_air_guard_max_bot_replies", 3), 3, 1, 20))
         has_new_work = self._group_air_guard_has_new_work_signal(text)
         if len(recent_bot) >= max_replies and not has_new_work:
             return {"block": True, "reason": "hard_limit", "recent_bot_replies": len(recent_bot)}
 
         current_polite = self._group_air_guard_is_polite_terminal(text)
         if current_polite:
-            polite_limit = max(1, _safe_int(getattr(self, "group_air_guard_polite_loop_limit", 2), 2, 1, 10))
+            polite_limit = max(1, _safe_int(_persona_value(self, "group_air_guard_polite_loop_limit", 2), 2, 1, 10))
             polite_replies = [item for item in recent_bot if self._group_air_guard_is_polite_terminal(item.get("text"))]
             if len(polite_replies) >= polite_limit:
                 return {"block": True, "reason": "polite_loop", "recent_polite_replies": len(polite_replies)}
@@ -4406,7 +4434,11 @@ class EventDispatchMixin:
         should_judge = current_polite or len(recent_bot) >= max(1, max_replies - 1)
         if not should_judge:
             return {"block": False, "reason": "low_risk"}
-        provider_id = self._task_provider(getattr(self, "group_followup_judge_provider_id", ""), getattr(self, "response_review_provider_id", ""), getattr(self, "mai_style_provider_id", ""))
+        provider_id = self._task_provider(
+            _persona_value(self, "group_followup_judge_provider_id", ""),
+            _persona_value(self, "response_review_provider_id", ""),
+            _persona_value(self, "mai_style_provider_id", ""),
+        )
         if not provider_id:
             return {"block": False, "reason": "no_provider"}
         flow_formatter = getattr(self, "_format_group_recent_flow_for_review", None)
@@ -4456,7 +4488,7 @@ Bot 近期回复：
         active: dict[str, Any],
         scene: dict[str, Any],
     ) -> bool | None:
-        provider_id = self._task_provider(self.group_followup_judge_provider_id)
+        provider_id = self._task_provider(_persona_value(self, "group_followup_judge_provider_id", ""))
         if not provider_id:
             return None
         flow_formatter = getattr(self, "_format_group_recent_flow_for_review", None)
@@ -4513,10 +4545,10 @@ Bot 近期回复：
         allow_llm: bool = True,
     ) -> bool | None:
         if (
-            not self.enable_group_scene_awareness
-            or not self.enable_group_conversation_followup
-            or self.group_conversation_followup_seconds <= 0
-            or self.group_conversation_followup_max_turns <= 0
+            not _persona_value(self, "enable_group_scene_awareness", False)
+            or not _persona_value(self, "enable_group_conversation_followup", False)
+            or _safe_int(_persona_value(self, "group_conversation_followup_seconds", 120), 120, 0) <= 0
+            or _safe_int(_persona_value(self, "group_conversation_followup_max_turns", 3), 3, 0) <= 0
         ):
             return False
         active = self._group_active_conversation(group)
@@ -4532,7 +4564,9 @@ Bot 近期回复：
         cleaned = _single_line(text, 260)
         if not cleaned:
             return False
-        if _safe_int(active.get("contextual_followups"), 0, 0) >= self.group_conversation_followup_max_turns:
+        max_followups = _safe_int(_persona_value(self, "group_conversation_followup_max_turns", 3), 3, 0)
+        followup_seconds = _safe_int(_persona_value(self, "group_conversation_followup_seconds", 120), 120, 0)
+        if _safe_int(active.get("contextual_followups"), 0, 0) >= max_followups:
             return False
 
         recent = group.get("recent_messages") if isinstance(group.get("recent_messages"), list) else []
@@ -4549,7 +4583,7 @@ Bot 近期回复：
         ]
         seconds_since = now - active_ts if active_ts > 0 else 9999
         direct_markers = (
-            "你", "妳", self.bot_name, "bot", "Bot", "刚才你", "你刚才", "你说", "你觉得", "你看",
+            "你", "妳", _persona_value(self, "bot_name", ""), "bot", "Bot", "刚才你", "你刚才", "你说", "你觉得", "你看",
             "那你", "问你", "回你", "跟你说", "不是说你", "不是问你", "你来", "按你说",
         )
         continuation_markers = (
@@ -4586,7 +4620,7 @@ Bot 近期回复：
             return False
         if seconds_since <= 25 and has_continuation_cue:
             return True
-        if seconds_since <= max(45, self.group_conversation_followup_seconds) and has_continuation_cue:
+        if seconds_since <= max(45, followup_seconds) and has_continuation_cue:
             if not allow_llm:
                 return None
             judged = await self._group_followup_llm_judge(
@@ -4611,14 +4645,17 @@ Bot 近期回复：
         contextual_followup: bool = False,
     ) -> None:
         store = self._group_active_conversation(group)
-        if not active or not self.enable_group_conversation_followup or self.group_conversation_followup_seconds <= 0:
+        followup_enabled = bool(_persona_value(self, "enable_group_conversation_followup", False))
+        followup_seconds = _safe_int(_persona_value(self, "group_conversation_followup_seconds", 120), 120, 0)
+        max_followups = _safe_int(_persona_value(self, "group_conversation_followup_max_turns", 3), 3, 0)
+        if not active or not followup_enabled or followup_seconds <= 0:
             if str(store.get("sender_id") or "") == str(sender_id or ""):
                 store.clear()
             return
         now = _now_ts()
         previous_turns = _safe_int(store.get("contextual_followups"), 0, 0) if str(store.get("sender_id") or "") == str(sender_id or "") else 0
         contextual_turns = previous_turns + 1 if contextual_followup else 0
-        if contextual_followup and contextual_turns >= self.group_conversation_followup_max_turns:
+        if contextual_followup and contextual_turns >= max_followups:
             store.clear()
             return
         store.update(
@@ -4629,7 +4666,7 @@ Bot 近期回复：
                 "last_text": _single_line(text, 120),
                 "contextual_followups": contextual_turns,
                 "message_count": _safe_int(group.get("message_count"), 0, 0),
-                "expires_at": now + max(5, self.group_conversation_followup_seconds),
+                "expires_at": now + max(5, followup_seconds),
             }
         )
 
@@ -4642,9 +4679,9 @@ Bot 近期回复：
     ) -> bool:
         """Start the follow-up window from the confirmed Bot reply time."""
         if (
-            not self.enable_group_conversation_followup
-            or self.group_conversation_followup_seconds <= 0
-            or self.group_conversation_followup_max_turns <= 0
+            not _persona_value(self, "enable_group_conversation_followup", False)
+            or _safe_int(_persona_value(self, "group_conversation_followup_seconds", 120), 120, 0) <= 0
+            or _safe_int(_persona_value(self, "group_conversation_followup_max_turns", 3), 3, 0) <= 0
         ):
             return False
         store = self._group_active_conversation(group)
@@ -4653,7 +4690,7 @@ Bot 近期回复：
         reply_ts = _now_ts() if now is None else float(now)
         store["last_ts"] = reply_ts
         store["last_bot_reply_ts"] = reply_ts
-        store["expires_at"] = reply_ts + max(5, self.group_conversation_followup_seconds)
+        store["expires_at"] = reply_ts + max(5, _safe_int(_persona_value(self, "group_conversation_followup_seconds", 120), 120, 0))
         store["message_count"] = _safe_int(group.get("message_count"), 0, 0)
         return True
 
@@ -4690,8 +4727,7 @@ Bot 近期回复：
             )
 
     async def _mark_group_conversation_from_llm_request(self, event: AstrMessageEvent) -> None:
-        checker = getattr(self, "_feature_enabled_or_temp_unlocked", None)
-        group_enabled = checker("enable_group_companion") if callable(checker) else self.enable_group_companion
+        group_enabled = _persona_feature_enabled(self, "enable_group_companion")
         if not group_enabled:
             return
         if bool(getattr(event, "is_private_chat", lambda: False)()):

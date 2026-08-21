@@ -235,6 +235,21 @@ _PLATFORM_DISPLAY_NAMES = {
     "discord": "Discord",
 }
 
+
+def _persona_value(owner: Any, key: str, default: Any = None) -> Any:
+    """Read a runtime setting for the active persona without mutating shared state.
+
+    The fallback keeps the mixin usable in the small test harnesses and older
+    plugin instances that do not expose the persona resolver yet.
+    """
+    getter = getattr(owner, "persona_setting", None)
+    if callable(getter):
+        try:
+            return getter(key, default)
+        except Exception:
+            pass
+    return getattr(owner, key, default)
+
 class GroupWakeupMixin:
     """群聊唤醒"""
 
@@ -288,20 +303,20 @@ class GroupWakeupMixin:
         return token in cleaned
 
     def _configured_group_direct_wakeup_words(self) -> list[str]:
-        words = list(getattr(self, "group_wakeup_direct_words", []) or [])
-        bot_name = _single_line(getattr(self, "bot_name", ""), 40)
+        words = list(_persona_value(self, "group_wakeup_direct_words", []) or [])
+        bot_name = _single_line(_persona_value(self, "bot_name", ""), 40)
         if bot_name and bot_name not in words:
             words.insert(0, bot_name)
         return list(dict.fromkeys(word for word in words if _single_line(word, 60)))
 
     def _configured_group_owner_direct_wakeup_words(self) -> list[str]:
-        words = list(getattr(self, "group_wakeup_owner_direct_words", []) or [])
+        words = list(_persona_value(self, "group_wakeup_owner_direct_words", []) or [])
         return list(dict.fromkeys(word for word in words if _single_line(word, 60)))
 
     def _group_wakeup_from_image_vision_summary(self, summary: Any, *, sender_id: str = "") -> dict[str, Any]:
-        if not bool(getattr(self, "enable_group_wakeup_enhancement", False)):
+        if not bool(_persona_value(self, "enable_group_wakeup_enhancement", False)):
             return {}
-        if not bool(getattr(self, "enable_group_image_wakeup", False)):
+        if not bool(_persona_value(self, "enable_group_image_wakeup", False)):
             return {}
         cleaned = _single_line(summary, 1000)
         if not cleaned:
@@ -372,7 +387,7 @@ class GroupWakeupMixin:
                 return
             words.append(text)
 
-        for item in self._parse_text_list_config(self.web_exploration_interests, limit=40):
+        for item in self._parse_text_list_config(_persona_value(self, "web_exploration_interests", []), limit=40):
             add(item)
         skill_state = self.data.get("skill_growth") if isinstance(getattr(self, "data", None), dict) else {}
         skills = skill_state.get("skills") if isinstance(skill_state, dict) and isinstance(skill_state.get("skills"), dict) else {}
@@ -396,12 +411,12 @@ class GroupWakeupMixin:
                 continue
             seen.add(key)
             cleaned.append(word)
-            if len(cleaned) >= self.group_wakeup_generated_keyword_limit:
+            if len(cleaned) >= _safe_int(_persona_value(self, "group_wakeup_generated_keyword_limit", 12), 12, 1):
                 break
         return cleaned
 
     def _group_wakeup_interest_words(self, group: dict[str, Any] | None = None) -> list[str]:
-        manual = list(self.group_wakeup_interest_keywords or [])
+        manual = list(_persona_value(self, "group_wakeup_interest_keywords", []) or [])
         generated = self._generated_group_interest_keywords(group)
         values: list[str] = []
         seen: set[str] = set()
@@ -412,7 +427,8 @@ class GroupWakeupMixin:
                 continue
             seen.add(key)
             values.append(word)
-        return values[: max(1, self.group_wakeup_generated_keyword_limit + len(manual))]
+        generated_limit = _safe_int(_persona_value(self, "group_wakeup_generated_keyword_limit", 12), 12, 1)
+        return values[: max(1, generated_limit + len(manual))]
 
     def _group_scene_short_interjection(self, text: Any) -> bool:
         cleaned = _single_line(text, 80)
@@ -490,10 +506,10 @@ class GroupWakeupMixin:
         now = _now_ts()
         value = _safe_float(raw.get("value"), 0.0, 0.0)
         last_ts = _safe_float(raw.get("updated_ts"), 0.0, 0.0)
-        decay_minutes = max(5, _safe_int(getattr(self, "group_wakeup_fatigue_decay_minutes", 90), 90, 5))
+        decay_minutes = max(5, _safe_int(_persona_value(self, "group_wakeup_fatigue_decay_minutes", 90), 90, 5))
         if last_ts > 0 and now > last_ts:
             value = max(0.0, value - ((now - last_ts) / max(1.0, decay_minutes * 60.0)))
-        limit = max(1.0, float(getattr(self, "group_wakeup_fatigue_limit", 5) or 5))
+        limit = max(1.0, float(_persona_value(self, "group_wakeup_fatigue_limit", 5) or 5))
         ratio = value / limit
         if ratio >= 1.0:
             level = "high"
@@ -519,7 +535,7 @@ class GroupWakeupMixin:
     def _bump_group_wakeup_fatigue(self, group: dict[str, Any], wakeup_type: str) -> dict[str, Any]:
         fatigue = self._group_wakeup_fatigue(group)
         weight = 0.6 if wakeup_type == "interest" else (1.2 if wakeup_type == "direct_word" else 1.0)
-        limit = max(1.0, float(fatigue.get("limit") or getattr(self, "group_wakeup_fatigue_limit", 5) or 5))
+        limit = max(1.0, float(fatigue.get("limit") or _persona_value(self, "group_wakeup_fatigue_limit", 5) or 5))
         value = min(limit + 2.0, _safe_float(fatigue.get("value"), 0.0, 0.0) + weight)
         group["group_wakeup_fatigue"] = {
             "value": round(value, 2),
@@ -659,12 +675,12 @@ class GroupWakeupMixin:
                 "fatigue_label": _single_line(fatigue.get("label"), 20),
             }
         )
-        limit = max(10, _safe_int(getattr(self, "group_wakeup_log_limit", 80), 80, 10))
+        limit = max(10, _safe_int(_persona_value(self, "group_wakeup_log_limit", 80), 80, 10))
         del logs[:-limit]
 
     def _group_recent_wakeup_count(self, group: dict[str, Any], *, now: float | None = None, window_seconds: int | None = None) -> int:
         now = now or _now_ts()
-        window = max(15, int(window_seconds or getattr(self, "group_high_intensity_wakeup_window_seconds", 60) or 60))
+        window = max(15, int(window_seconds or _persona_value(self, "group_high_intensity_wakeup_window_seconds", 60) or 60))
         logs = group.get("group_wakeup_logs") if isinstance(group.get("group_wakeup_logs"), list) else []
         count = 0
         for item in reversed(logs):
@@ -681,12 +697,12 @@ class GroupWakeupMixin:
 
     def _group_high_intensity_state(self, group: dict[str, Any], *, now: float | None = None, mutate: bool = True) -> dict[str, Any]:
         now = now or _now_ts()
-        if not getattr(self, "enable_group_high_intensity_mode", True):
+        if not _persona_value(self, "enable_group_high_intensity_mode", True):
             return {"active": False, "reason": "disabled", "recent_wakeups": 0, "threshold": 0, "until_ts": 0.0}
-        window = max(15, _safe_int(getattr(self, "group_high_intensity_wakeup_window_seconds", 60), 60, 15, 600))
-        threshold = max(2, _safe_int(getattr(self, "group_high_intensity_wakeup_threshold", 3), 3, 2, 20))
+        window = max(15, _safe_int(_persona_value(self, "group_high_intensity_wakeup_window_seconds", 60), 60, 15, 600))
+        threshold = max(2, _safe_int(_persona_value(self, "group_high_intensity_wakeup_threshold", 3), 3, 2, 20))
         cooldown_getter = getattr(self, "_effective_group_high_intensity_cooldown_seconds", None)
-        cooldown = cooldown_getter() if callable(cooldown_getter) else max(30, _safe_int(getattr(self, "group_high_intensity_cooldown_seconds", 150), 150, 30, 1800))
+        cooldown = cooldown_getter() if callable(cooldown_getter) else max(30, _safe_int(_persona_value(self, "group_high_intensity_cooldown_seconds", 150), 150, 30, 1800))
         recent_wakeups = self._group_recent_wakeup_count(group, now=now, window_seconds=window)
         fatigue = self._group_wakeup_fatigue(group)
         until_ts = _safe_float(group.get("group_high_intensity_until"), 0.0, 0.0)
@@ -817,11 +833,11 @@ class GroupWakeupMixin:
         max_boost = (
             boost_getter()
             if callable(boost_getter)
-            else max(0.0, min(1.5, float(getattr(self, "group_wakeup_topic_interest_max_boost", 0.45) or 0.0)))
+            else max(0.0, min(1.5, float(_persona_value(self, "group_wakeup_topic_interest_max_boost", 0.45) or 0.0)))
         )
         multiplier = 1.0 + min(max_boost, score * 0.16)
         if context.get("buffer_active"):
-            penalty = max(0.0, min(1.0, float(getattr(self, "group_wakeup_debounce_pending_penalty", 0.65) or 0.0)))
+            penalty = max(0.0, min(1.0, float(_persona_value(self, "group_wakeup_debounce_pending_penalty", 0.65) or 0.0)))
             multiplier *= max(0.05, 1.0 - penalty)
             reasons.append("同轮收口降权")
         return {
@@ -1063,9 +1079,9 @@ class GroupWakeupMixin:
         return max(0, min(100, score)), fatigue, notes
 
     def _group_wakeup_cold_group_signal(self, group: dict[str, Any], text: str, now: float) -> dict[str, Any]:
-        if not bool(getattr(self, "enable_group_wakeup_cold_group", False)):
+        if not bool(_persona_value(self, "enable_group_wakeup_cold_group", False)):
             return {}
-        idle_minutes = max(3, _safe_int(getattr(self, "group_wakeup_cold_group_idle_minutes", 25), 25, 3))
+        idle_minutes = max(3, _safe_int(_persona_value(self, "group_wakeup_cold_group_idle_minutes", 25), 25, 3))
         last_seen = _safe_float(group.get("last_seen"), 0)
         if last_seen <= 0 or now - last_seen < idle_minutes * 60:
             return {}
@@ -1108,7 +1124,7 @@ class GroupWakeupMixin:
         text: str,
         group_id: str = "",
     ) -> dict[str, Any]:
-        if not self.enable_group_wakeup_enhancement:
+        if not _persona_value(self, "enable_group_wakeup_enhancement", False):
             return {}
         original = _single_line(text, 1000)
         cleaned, has_link_payload = _group_link_message_context(original)
@@ -1144,12 +1160,12 @@ class GroupWakeupMixin:
                 }
         if has_link_payload or bool(scene.get("quoted_link_payload")):
             return {}
-        question_signal = self._group_wakeup_question_signal(original) if bool(getattr(self, "enable_group_wakeup_question", True)) else {}
+        question_signal = self._group_wakeup_question_signal(original) if bool(_persona_value(self, "enable_group_wakeup_question", True)) else {}
         cold_group_signal = self._group_wakeup_cold_group_signal(group, cleaned, now)
         soft_signal_hit = bool(
             question_signal
             or cold_group_signal
-            or any(self._text_contains_wakeup_word(cleaned, word) for word in list(self.group_wakeup_context_words or []) + self._group_wakeup_interest_words(group))
+            or any(self._text_contains_wakeup_word(cleaned, word) for word in list(_persona_value(self, "group_wakeup_context_words", []) or []) + self._group_wakeup_interest_words(group))
         )
         high_intensity = self._group_high_intensity_state(group)
         if high_intensity.get("active"):
@@ -1167,7 +1183,7 @@ class GroupWakeupMixin:
                 )
             return {}
         cooldown_getter = getattr(self, "_effective_group_wakeup_cooldown_seconds", None)
-        group_wakeup_cooldown = cooldown_getter() if callable(cooldown_getter) else self.group_wakeup_cooldown_seconds
+        group_wakeup_cooldown = cooldown_getter() if callable(cooldown_getter) else _safe_int(_persona_value(self, "group_wakeup_cooldown_seconds", 0), 0, 0)
         if group_wakeup_cooldown > 0 and now - _safe_float(group.get("last_group_wakeup_at"), 0) < group_wakeup_cooldown:
             if soft_signal_hit:
                 self._record_group_wakeup_log(
@@ -1182,7 +1198,7 @@ class GroupWakeupMixin:
                     note="命中了可唤醒线索,但仍在冷却时间内,所以没有接入回复链。",
                 )
             return {}
-        for word in self.group_wakeup_context_words:
+        for word in _persona_value(self, "group_wakeup_context_words", []) or []:
             if not self._text_contains_wakeup_word(cleaned, word):
                 continue
             if self._group_wakeup_context_should_reply(
@@ -1203,7 +1219,7 @@ class GroupWakeupMixin:
                 }
         if question_signal:
             threshold_getter = getattr(self, "_effective_group_wakeup_question_threshold", None)
-            threshold = threshold_getter() if callable(threshold_getter) else max(0, min(100, _safe_int(getattr(self, "group_wakeup_question_threshold", 65), 65, 0)))
+            threshold = threshold_getter() if callable(threshold_getter) else max(0, min(100, _safe_int(_persona_value(self, "group_wakeup_question_threshold", 65), 65, 0)))
             score, fatigue, score_notes = self._group_wakeup_question_score_context(group, scene, question_signal)
             if score >= threshold:
                 strength = self._group_wakeup_strength("question", group, scene)
@@ -1253,7 +1269,7 @@ class GroupWakeupMixin:
             )
         if cold_group_signal:
             threshold_getter = getattr(self, "_effective_group_wakeup_cold_group_threshold", None)
-            threshold = threshold_getter() if callable(threshold_getter) else max(0, min(100, _safe_int(getattr(self, "group_wakeup_cold_group_threshold", 65), 65, 0)))
+            threshold = threshold_getter() if callable(threshold_getter) else max(0, min(100, _safe_int(_persona_value(self, "group_wakeup_cold_group_threshold", 65), 65, 0)))
             score = max(0, min(100, _safe_int(cold_group_signal.get("score"), 0, 0)))
             fatigue = self._group_wakeup_fatigue(group)
             if score >= threshold:
@@ -1299,7 +1315,7 @@ class GroupWakeupMixin:
         base_interest_probability = (
             probability_getter()
             if callable(probability_getter)
-            else max(0.0, min(1.0, float(getattr(self, "group_wakeup_interest_probability", 0.0) or 0.0)))
+            else max(0.0, min(1.0, float(_persona_value(self, "group_wakeup_interest_probability", 0.0) or 0.0)))
         )
         if base_interest_probability <= 0:
             return {}

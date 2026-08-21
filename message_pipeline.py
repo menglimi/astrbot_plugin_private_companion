@@ -71,6 +71,36 @@ def event_data_save_boundary(handler: Any = None, *, flush: bool = False) -> Any
     return wrapped
 
 
+def _persona_value(owner: Any, key: str, default: Any = None) -> Any:
+    """Read the active persona setting, with a legacy harness fallback."""
+    getter = getattr(owner, "persona_setting", None)
+    if callable(getter):
+        try:
+            return getter(key, default)
+        except Exception:
+            pass
+    return getattr(owner, key, default)
+
+
+def _persona_feature_enabled(owner: Any, key: str, default: bool = False) -> bool:
+    """Apply a persona-scoped feature flag and retain proactive-only unlocks."""
+    if not hasattr(owner, "enable_multi_persona_mode"):
+        checker = getattr(owner, "_feature_enabled_or_temp_unlocked", None)
+        if callable(checker):
+            try:
+                return bool(checker(key, default))
+            except Exception:
+                pass
+    if bool(_persona_value(owner, key, default)):
+        return True
+    unlocker = getattr(owner, "_proactive_only_temp_unlock_allows", None)
+    return bool(
+        _persona_value(owner, "enable_proactive_only_mode", False)
+        and callable(unlocker)
+        and unlocker(key)
+    )
+
+
 @_coalesce_event_data_saves
 async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: Any) -> Any:
     """记录私聊互动、图片防抖、用户画像和主动陪伴反馈。"""
@@ -1175,7 +1205,7 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
         logger.debug("[PrivateCompanion] 群聊戳一戳 notice 已放行给专用插件")
         return
     self._qzone_note_event_bot(event)
-    if not self._feature_enabled_or_temp_unlocked("enable_group_companion"):
+    if not _persona_feature_enabled(self, "enable_group_companion"):
         return
     group_id = self._extract_group_id_from_event(event)
     if not group_id or not self._group_enabled_for_event(group_id):
@@ -1521,7 +1551,7 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
             setattr(event, "is_at_or_wake_command", True)
             setattr(event, "is_wake", True)
             scene.update({"trigger": "bot_conversation_followup", "talking_to": "bot", "talking_to_name": "你", "reason": "contextual_followup_after_bot_wake"})
-        elif self.enable_group_wakeup_enhancement and str(scene.get("trigger") or "") == "mention_bot_name":
+        elif _persona_value(self, "enable_group_wakeup_enhancement", False) and str(scene.get("trigger") or "") == "mention_bot_name":
             setattr(event, "is_at_or_wake_command", True)
             setattr(event, "is_wake", True)
             strength = self._group_wakeup_strength("direct_word", group, scene)
@@ -1532,7 +1562,7 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
                     "talking_to": "bot",
                     "talking_to_name": "你",
                     "reason": "direct_wakeup_word",
-                    "wakeup_word": _single_line(self.bot_name, 60),
+                    "wakeup_word": _single_line(_persona_value(self, "bot_name", ""), 60),
                     "wakeup_strength": strength,
                     "wakeup_strength_label": self._group_wakeup_strength_label(strength),
                     "wakeup_fatigue": dict(fatigue),
@@ -1543,7 +1573,7 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
             group["last_group_wakeup"] = {
                 "ts": _now_ts(),
                 "type": "direct_word",
-                "word": _single_line(self.bot_name, 60),
+                "word": _single_line(_persona_value(self, "bot_name", ""), 60),
                 "strength": strength,
                 "strength_label": self._group_wakeup_strength_label(strength),
                 "reason": "direct_wakeup_word",
@@ -1808,7 +1838,7 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
                     "[PrivateCompanion] 群聊高强度消息已合并等待: group=%s sender=%s scope=%s recent_wakeups=%s floor=%s reason=%s wait=%ss text=%s",
                     group_id,
                     sender_id,
-                    getattr(self, "group_high_intensity_merge_scope", "group"),
+                    _persona_value(self, "group_high_intensity_merge_scope", "group"),
                     high_intensity_state.get("recent_wakeups"),
                     high_intensity_state.get("merge_recent_floor"),
                     high_intensity_state.get("reason"),
@@ -2004,7 +2034,7 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
             group_snapshot_high_intensity.get("merge_active"),
             group_snapshot_high_intensity.get("merge_recent_floor"),
             group_snapshot_high_intensity.get("reason"),
-            getattr(self, "group_high_intensity_merge_scope", "group"),
+            _persona_value(self, "group_high_intensity_merge_scope", "group"),
             self._group_high_intensity_merge_wait_seconds(),
         )
     await self._maybe_group_interject(
