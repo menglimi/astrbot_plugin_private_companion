@@ -7257,7 +7257,9 @@ class PrivateCompanionPlugin(
             self._reset_stale_qq_presence_if_needed,
         )
         self._create_startup_background_task("prepare_today", self._startup_prepare_today)
-        if self.enable_daily_review:
+        # Keep one orchestrator alive in multi-persona mode so each persona's
+        # own enable/time/provider settings are evaluated inside its ContextVar.
+        if self.enable_daily_review or bool(getattr(self, "enable_multi_persona_mode", False)):
             self._create_startup_background_task("daily_review", self._daily_review_loop)
         if self.enable_balance_awareness:
             self._create_startup_background_task(

@@ -36,6 +36,7 @@ from .helpers import (
     _strip_history_media_markers,
     _strip_nonstandard_chat_control_tags,
 )
+from .persona_config import runtime_persona_setting
 from .segmented_message import (
     component_kind,
     component_order_from_owner,
@@ -349,6 +350,10 @@ class TtsEnhancementMixin:
     behavior surface but maps identity and prompts to private_companion concepts.
     """
 
+    def _tts_setting(self, key: str, default: Any = None) -> Any:
+        """Read TTS configuration for the active persona without shared mutation."""
+        return runtime_persona_setting(self, key, default)
+
     def _create_tts_background_task(self, operation: Any, *, label: str) -> asyncio.Task | None:
         creator = getattr(self, "_create_lifecycle_background_task", None)
         if callable(creator):
@@ -572,7 +577,7 @@ class TtsEnhancementMixin:
 
     def _find_mimo_voice_clone_tts_adapter(self, event: Any) -> Any | None:
         tool_name = _single_line(
-            getattr(self, "tts_mimo_tool_name", DEFAULT_MIMO_VOICE_CLONE_TOOL_NAME),
+            self._tts_setting("tts_mimo_tool_name", DEFAULT_MIMO_VOICE_CLONE_TOOL_NAME),
             120,
         ) or DEFAULT_MIMO_VOICE_CLONE_TOOL_NAME
         try:
@@ -622,8 +627,8 @@ class TtsEnhancementMixin:
         return _MimoVoiceCloneTtsAdapter(
             plugin,
             event,
-            voice_name=getattr(self, "tts_mimo_voice_name", ""),
-            style=getattr(self, "tts_mimo_style_prompt", ""),
+            voice_name=self._tts_setting("tts_mimo_voice_name", ""),
+            style=self._tts_setting("tts_mimo_style_prompt", ""),
             tool_name=tool_name,
         )
 
@@ -681,7 +686,7 @@ class TtsEnhancementMixin:
 
     def _resolve_tts_synthesis_provider(self, event: Any, astrbot_provider: Any = None) -> Any:
         mode = str(
-            getattr(self, "tts_synthesis_backend", "astrbot_provider")
+            self._tts_setting("tts_synthesis_backend", "astrbot_provider")
             or "astrbot_provider"
         ).lower()
         if mode != "mimo_voice_clone":
@@ -719,7 +724,7 @@ class TtsEnhancementMixin:
                     )
             return mimo_adapter
         if mode == "mimo_voice_clone" and astrbot_provider is not None:
-            fallback_key = _single_line(getattr(self, "tts_mimo_tool_name", ""), 120) or DEFAULT_MIMO_VOICE_CLONE_TOOL_NAME
+            fallback_key = _single_line(self._tts_setting("tts_mimo_tool_name", ""), 120) or DEFAULT_MIMO_VOICE_CLONE_TOOL_NAME
             if getattr(self, "_tts_mimo_bridge_fallback_warning_key", "") != fallback_key:
                 self._tts_mimo_bridge_fallback_warning_key = fallback_key
                 logger.warning(
@@ -735,12 +740,12 @@ class TtsEnhancementMixin:
         *,
         voice_language: str = "",
     ) -> str:
-        configured = str(getattr(self, "tts_fishaudio_model", "auto") or "auto").strip().lower()
+        configured = str(self._tts_setting("tts_fishaudio_model", "auto") or "auto").strip().lower()
         language = self._normalize_tts_voice_language_value(
-            voice_language or getattr(self, "tts_voice_language", "zh")
+            voice_language or self._tts_setting("tts_voice_language", "zh")
         ) or "zh"
         language_attr = TTS_LANGUAGE_PROVIDER_ATTRS.get(language, "")
-        language_provider_id = _single_line(getattr(self, language_attr, ""), 160) if language_attr else ""
+        language_provider_id = _single_line(self._tts_setting(language_attr, getattr(self, language_attr, "")), 160) if language_attr else ""
         active_provider_id = self._tts_synthesis_provider_id(tts_provider)
         has_dedicated_language_provider = bool(
             language_provider_id
@@ -856,7 +861,7 @@ class TtsEnhancementMixin:
         if provider_kind.startswith("fishaudio"):
             return "[happy]", "[sad]"
         voice_lang = self._normalize_tts_voice_language_value(
-            voice_language or getattr(self, "tts_voice_language", "zh")
+            voice_language or self._tts_setting("tts_voice_language", "zh")
         ) or "zh"
         if voice_lang == "zh":
             return "[开心]", "[难过]"
@@ -877,7 +882,7 @@ class TtsEnhancementMixin:
         )
         if not positive or not negative:
             return ""
-        emotion_mode = str(getattr(self, "tts_fishaudio_emotion_mode", "balanced") or "balanced").lower()
+        emotion_mode = str(self._tts_setting("tts_fishaudio_emotion_mode", "balanced") or "balanced").lower()
         if provider_kind.startswith("fishaudio") and emotion_mode == "manual":
             syntax = "英文圆括号" if provider_kind == "fishaudio_s1" else "方括号"
             return f"Fish Audio 手动模式：{subject}只保留输入中已有的合法{syntax}控制词，不要自动新增情绪或语气控制。"
@@ -950,8 +955,13 @@ class TtsEnhancementMixin:
         )
         if turn_language:
             return turn_language
+        runtime_settings = self.data.get("runtime_settings") if isinstance(getattr(self, "data", None), dict) else None
+        if isinstance(runtime_settings, dict):
+            runtime_language = self._normalize_tts_voice_language_value(runtime_settings.get("tts_voice_language"))
+            if runtime_language:
+                return runtime_language
         return self._normalize_tts_voice_language_value(
-            getattr(self, "tts_voice_language", "zh")
+            self._tts_setting("tts_voice_language", "zh")
         ) or "zh"
 
     def _detect_turn_tts_voice_language(self, event: Any) -> tuple[str, str]:
@@ -1037,9 +1047,9 @@ class TtsEnhancementMixin:
             return
         lang = self._normalize_tts_voice_language_value(settings.get("tts_voice_language"))
         if not lang:
-            lang = self._normalize_tts_voice_language_value(getattr(self, "tts_voice_language", "zh"))
-        if lang:
-            self.tts_voice_language = lang
+            lang = self._normalize_tts_voice_language_value(self._tts_setting("tts_voice_language", "zh"))
+        # Runtime overrides are stored in the active persona data document and
+        # read by _tts_voice_language_for_event; do not mutate shared attrs.
 
     def _format_tts_voice_language_status(self) -> str:
         settings = self.data.get("runtime_settings") if isinstance(getattr(self, "data", None), dict) else None
@@ -1059,14 +1069,11 @@ class TtsEnhancementMixin:
             self.data["runtime_settings"] = settings
         if text.lower() in {"default", "config", "reset", "clear"} or text in {"默认", "配置", "配置页", "重置", "清除", "跟随配置"}:
             settings.pop("tts_voice_language", None)
-            configured = self._normalize_tts_voice_language_value(getattr(self, "config", {}).get("tts_voice_language", "zh") if getattr(self, "config", None) is not None else "zh")
-            self.tts_voice_language = configured or "zh"
             self._save_data_sync(sections={"runtime_settings"})
             return f"已恢复 TTS 语音语种为配置页设置：{self._tts_language_label()}。"
         lang = self._normalize_tts_voice_language_value(text)
         if not lang:
             return "没认出这个 TTS 语种。可用：日语 / 中文 / 英语；例如：陪伴 TTS语种 日语。"
-        self.tts_voice_language = lang
         settings["tts_voice_language"] = lang
         self._save_data_sync(sections={"runtime_settings"})
         return f"已切换 TTS 语音语种：{self._tts_language_label()}。之后 <tts> 和自动语音转换会按这个语种处理。"
@@ -1200,7 +1207,7 @@ class TtsEnhancementMixin:
             # Automatic TTS is decided once for the whole proactive message.
             # Later segments must remain text in both partial and full modes.
             return "", False, "", True
-        if getattr(self, "tts_conversion_scope", "partial") == "full":
+        if self._tts_setting("tts_conversion_scope", "partial") == "full":
             first_visible = ""
             for comp in chain:
                 if isinstance(comp, Plain):
@@ -1499,7 +1506,7 @@ class TtsEnhancementMixin:
         return source
 
     def _fishaudio_emotion_mode(self) -> str:
-        mode = str(getattr(self, "tts_fishaudio_emotion_mode", "balanced") or "balanced").strip().lower()
+        mode = str(self._tts_setting("tts_fishaudio_emotion_mode", "balanced") or "balanced").strip().lower()
         return mode if mode in FISH_AUDIO_EMOTION_MODES else "balanced"
 
     @staticmethod
@@ -1771,13 +1778,13 @@ class TtsEnhancementMixin:
         return ""
 
     def _tts_effective_min_interval_seconds(self, event: Any) -> float:
-        interval = float(getattr(self, "tts_session_min_interval_seconds", 0.0) or 0.0)
+        interval = float(self._tts_setting("tts_session_min_interval_seconds", 0.0) or 0.0)
         scope = self._tts_event_scope_kind(event)
         override = None
         if scope == "private":
-            override = getattr(self, "tts_private_min_interval_seconds", -1.0)
+            override = self._tts_setting("tts_private_min_interval_seconds", -1.0)
         elif scope == "group":
-            override = getattr(self, "tts_group_min_interval_seconds", -1.0)
+            override = self._tts_setting("tts_group_min_interval_seconds", -1.0)
         try:
             override_value = float(override)
         except (TypeError, ValueError):
@@ -1785,13 +1792,13 @@ class TtsEnhancementMixin:
         return max(0.0, override_value if override_value >= 0 else interval)
 
     def _tts_effective_trigger_probability(self, event: Any) -> float:
-        probability = float(getattr(self, "tts_trigger_probability", 1.0) or 0.0)
+        probability = float(self._tts_setting("tts_trigger_probability", 1.0) or 0.0)
         scope = self._tts_event_scope_kind(event)
         override = None
         if scope == "private":
-            override = getattr(self, "tts_private_trigger_probability", -0.01)
+            override = self._tts_setting("tts_private_trigger_probability", -0.01)
         elif scope == "group":
-            override = getattr(self, "tts_group_trigger_probability", -0.01)
+            override = self._tts_setting("tts_group_trigger_probability", -0.01)
         try:
             override_value = float(override)
         except (TypeError, ValueError):
@@ -1799,7 +1806,7 @@ class TtsEnhancementMixin:
         return max(0.0, min(1.0, override_value if override_value >= 0 else probability))
 
     def _tts_session_interval_remaining(self, event: Any) -> float:
-        if getattr(self, "tts_frequency_control_mode", "global") == "legacy":
+        if self._tts_setting("tts_frequency_control_mode", "global") == "legacy":
             return 0.0
         session = self._tts_session_key(event)
         interval = self._tts_effective_min_interval_seconds(event)
@@ -1820,9 +1827,9 @@ class TtsEnhancementMixin:
 
     def _tts_strong_constraint_enabled(self) -> bool:
         return (
-            getattr(self, "tts_frequency_control_mode", "global") != "legacy"
-            and getattr(self, "tts_generation_mode", "fast_tag") == "fast_tag"
-            and getattr(self, "tts_constraint_mode", "weak") == "strong"
+            self._tts_setting("tts_frequency_control_mode", "global") != "legacy"
+            and self._tts_setting("tts_generation_mode", "fast_tag") == "fast_tag"
+            and self._tts_setting("tts_constraint_mode", "weak") == "strong"
         )
 
     def _set_tts_hard_block(self, event: Any, reason: str) -> None:
@@ -1971,7 +1978,7 @@ class TtsEnhancementMixin:
         return any(re.search(pattern, compact, flags=re.IGNORECASE) for pattern in patterns)
 
     def _tts_trigger_probability_allows(self, event: Any, *, reason: str) -> bool:
-        if getattr(self, "tts_frequency_control_mode", "global") == "legacy":
+        if self._tts_setting("tts_frequency_control_mode", "global") == "legacy":
             return True
         cached = getattr(event, "_private_companion_tts_trigger_probability_allowed", None)
         if isinstance(cached, bool):
@@ -2063,7 +2070,7 @@ class TtsEnhancementMixin:
         """Identify an obvious foreign-language leak from postprocess fallback."""
         if self._tts_voice_language_for_event(event) == "zh":
             return False
-        if getattr(self, "tts_foreign_text_mode", "translation") == "original":
+        if self._tts_setting("tts_foreign_text_mode", "translation") == "original":
             return False
         if self._event_explicitly_requests_foreign_visible_text(event):
             return False
@@ -2122,11 +2129,11 @@ class TtsEnhancementMixin:
         that exact shape so ordinary Chinese replies with a foreign word, and
         user-requested foreign text, remain untouched.
         """
-        if getattr(self, "tts_generation_mode", "fast_tag") != "fast_tag":
+        if self._tts_setting("tts_generation_mode", "fast_tag") != "fast_tag":
             return ""
         if self._tts_voice_language_for_event(event) == "zh":
             return ""
-        if getattr(self, "tts_foreign_text_mode", "translation") != "translation":
+        if self._tts_setting("tts_foreign_text_mode", "translation") != "translation":
             return ""
         if self._event_explicitly_requests_foreign_visible_text(event):
             return ""
@@ -2191,8 +2198,8 @@ TTS 朗读文本：
         normalized = self._normalize_tts_tags(text)
         if (
             self._tts_voice_language_for_event(event) == "zh"
-            or getattr(self, "tts_delivery_mode", "voice_and_text") == "voice_only"
-            or getattr(self, "tts_foreign_text_mode", "translation") == "original"
+            or self._tts_setting("tts_delivery_mode", "voice_and_text") == "voice_only"
+            or self._tts_setting("tts_foreign_text_mode", "translation") == "original"
             or self._event_explicitly_requests_foreign_visible_text(event)
         ):
             return normalized
@@ -2290,11 +2297,11 @@ TTS 朗读文本：
     def _build_tts_rule_prompt(self, provider_kind: str = "generic", *, event: Any = None) -> str:
         voice_lang = self._tts_voice_language_for_event(event)
         lang = self._tts_language_label(voice_language=voice_lang)
-        mode = getattr(self, "tts_generation_mode", "fast_tag")
-        frequency_mode = getattr(self, "tts_frequency_control_mode", "global")
-        delivery_mode = getattr(self, "tts_delivery_mode", "voice_and_text")
-        foreign_text_mode = getattr(self, "tts_foreign_text_mode", "translation")
-        conversion_scope = getattr(self, "tts_conversion_scope", "partial")
+        mode = self._tts_setting("tts_generation_mode", "fast_tag")
+        frequency_mode = self._tts_setting("tts_frequency_control_mode", "global")
+        delivery_mode = self._tts_setting("tts_delivery_mode", "voice_and_text")
+        foreign_text_mode = self._tts_setting("tts_foreign_text_mode", "translation")
+        conversion_scope = self._tts_setting("tts_conversion_scope", "partial")
         full_scope = conversion_scope == "full"
         supports_emotion = self._tts_provider_allows_emotion_tags(provider_kind)
         auto_emotion = supports_emotion and not (
@@ -2357,7 +2364,7 @@ TTS 朗读文本：
                 examples = "示例：先别急，<pc_tts>Let me stay with you for a moment.</pc_tts>我先在你旁边待一会儿。"
             else:
                 examples = "示例：先别急，<pc_tts>少しだけ、そばにいるね。</pc_tts>我先在你旁边待一会儿。"
-        extra = _single_line(getattr(self, "tts_extra_prompt", ""), 800)
+        extra = _single_line(self._tts_setting("tts_extra_prompt", ""), 800)
         if not extra:
             extra = self._legacy_nondefault_tts_prompt()
         if full_scope and delivery_mode == "voice_only":
@@ -2515,7 +2522,7 @@ TTS 朗读文本：
         if event is None or bool(getattr(event, "_private_companion_tts_streaming_disabled", False)):
             return bool(getattr(event, "_private_companion_tts_streaming_disabled", False))
         feature_enabled = getattr(self, "_feature_enabled_or_temp_unlocked", None)
-        tts_enabled = feature_enabled("enable_tts_enhancement") if callable(feature_enabled) else getattr(self, "enable_tts_enhancement", False)
+        tts_enabled = feature_enabled("enable_tts_enhancement") if callable(feature_enabled) else self._tts_setting("enable_tts_enhancement", False)
         if not getattr(self, "enabled", False) or not tts_enabled:
             return False
         proactive_blocker = getattr(self, "_proactive_only_blocks_passive_event", None)
@@ -2529,12 +2536,12 @@ TTS 朗读文本：
         user_requested_tts = self._event_explicitly_requests_tts(event) or bool(turn_voice_language)
         if self._tts_functional_command_reason(event) and not user_requested_tts:
             return False
-        mode = getattr(self, "tts_generation_mode", "fast_tag")
+        mode = self._tts_setting("tts_generation_mode", "fast_tag")
         if mode not in {"fast_tag", "postprocess"}:
             return False
         if (
             not user_requested_tts
-            and getattr(self, "tts_frequency_control_mode", "global") != "legacy"
+            and self._tts_setting("tts_frequency_control_mode", "global") != "legacy"
             and not self._tts_trigger_probability_allows(event, reason="streaming_preflight")
         ):
             return False
@@ -2554,7 +2561,7 @@ TTS 朗读文本：
         if bool(getattr(event, "_private_companion_tts_request_applied", False)):
             return
         feature_enabled = getattr(self, "_feature_enabled_or_temp_unlocked", None)
-        tts_enabled = feature_enabled("enable_tts_enhancement") if callable(feature_enabled) else getattr(self, "enable_tts_enhancement", False)
+        tts_enabled = feature_enabled("enable_tts_enhancement") if callable(feature_enabled) else self._tts_setting("enable_tts_enhancement", False)
         if not getattr(self, "enabled", False) or not tts_enabled:
             return
         if not hasattr(req, "system_prompt"):
@@ -2595,14 +2602,14 @@ TTS 朗读文本：
                     key=key,
                     text=text,
                     source="tts_enhancement",
-                    mode=mode or str(getattr(self, "tts_generation_mode", "fast_tag") or ""),
+                    mode=mode or str(self._tts_setting("tts_generation_mode", "fast_tag") or ""),
                     priority=20,
                     metadata={
                         "语种": self._tts_language_label(event),
                         "本轮临时语种": bool(turn_voice_language),
-                        "模式": getattr(self, "tts_generation_mode", "fast_tag"),
-                        "频控": getattr(self, "tts_frequency_control_mode", "global"),
-                        "范围": getattr(self, "tts_conversion_scope", "partial"),
+                        "模式": self._tts_setting("tts_generation_mode", "fast_tag"),
+                        "频控": self._tts_setting("tts_frequency_control_mode", "global"),
+                        "范围": self._tts_setting("tts_conversion_scope", "partial"),
                         "provider": provider_kind,
                         "注入位置": placement,
                     },
@@ -2616,7 +2623,7 @@ TTS 朗读文本：
                 session=_single_line(getattr(event, "unified_msg_origin", ""), 160) or "unknown",
                 title=title,
                 text=text,
-                mode=mode or str(getattr(self, "tts_generation_mode", "fast_tag") or ""),
+                mode=mode or str(self._tts_setting("tts_generation_mode", "fast_tag") or ""),
                 modules=[
                     {
                         "key": key,
@@ -2629,9 +2636,9 @@ TTS 朗读文本：
                 metadata={
                     "语种": self._tts_language_label(event),
                     "本轮临时语种": bool(turn_voice_language),
-                    "模式": getattr(self, "tts_generation_mode", "fast_tag"),
-                    "频控": getattr(self, "tts_frequency_control_mode", "global"),
-                    "范围": getattr(self, "tts_conversion_scope", "partial"),
+                    "模式": self._tts_setting("tts_generation_mode", "fast_tag"),
+                    "频控": self._tts_setting("tts_frequency_control_mode", "global"),
+                    "范围": self._tts_setting("tts_conversion_scope", "partial"),
                     "provider": provider_kind,
                     "注入位置": placement,
                 },
@@ -2688,13 +2695,13 @@ TTS 朗读文本：
             )
             return
         strong_block_reason = ""
-        mode = getattr(self, "tts_generation_mode", "fast_tag")
-        full_scope = getattr(self, "tts_conversion_scope", "partial") == "full"
+        mode = self._tts_setting("tts_generation_mode", "fast_tag")
+        full_scope = self._tts_setting("tts_conversion_scope", "partial") == "full"
         probability_allowed = True
         if (
             mode in {"fast_tag", "postprocess"}
             and not user_requested_tts
-            and getattr(self, "tts_frequency_control_mode", "global") != "legacy"
+            and self._tts_setting("tts_frequency_control_mode", "global") != "legacy"
         ):
             probability_allowed = self._tts_trigger_probability_allows(event, reason="llm_tts_prompt")
             if not probability_allowed:
@@ -2754,7 +2761,7 @@ TTS 朗读文本：
             placement = append_dynamic_tts_fragment("<!-- private_companion_tts_block_v1 -->", reverse_prompt, priority=22)
             await record_tts_fragment("TTS 强约束禁用注入", "tts.block", reverse_prompt, mode="strong_block", placement=placement)
         if mode == "fast_tag" and self._should_force_tts_for_main_user_event(event) and not strong_block_reason:
-            frequency_mode = getattr(self, "tts_frequency_control_mode", "global")
+            frequency_mode = self._tts_setting("tts_frequency_control_mode", "global")
             if full_scope:
                 force_rule = (
                     "这轮消息来自主用户或明确 @ 到主用户。如果当前回复适合语音表达，可以使用 <pc_tts>；"
@@ -2785,7 +2792,7 @@ TTS 朗读文本：
     async def protect_tts_enhancement_response_blocks(self, event: Any, resp: Any) -> None:
         self._ensure_turn_tts_voice_language(event)
         feature_enabled = getattr(self, "_feature_enabled_or_temp_unlocked", None)
-        tts_enabled = feature_enabled("enable_tts_enhancement") if callable(feature_enabled) else getattr(self, "enable_tts_enhancement", False)
+        tts_enabled = feature_enabled("enable_tts_enhancement") if callable(feature_enabled) else self._tts_setting("enable_tts_enhancement", False)
         if not bool(getattr(event, "_private_companion_tts_request_applied", False)):
             return
         if not tts_enabled:
@@ -2813,7 +2820,7 @@ TTS 朗读文本：
         if text:
             has_tts_markup = bool(re.search(r"</?(?:pc[_-]?tts|t{2,}s)\b", text, flags=re.IGNORECASE))
             if has_tts_markup:
-                if getattr(self, "tts_generation_mode", "fast_tag") == "postprocess":
+                if self._tts_setting("tts_generation_mode", "fast_tag") == "postprocess":
                     # In postprocess mode every model-authored tag is input noise, including
                     # the private <pc_tts> form. Only the postprocessor may create a voice block.
                     cleaned = self._strip_any_tts_markup(text)
@@ -2851,7 +2858,7 @@ TTS 朗读文本：
     async def apply_tts_enhancement_before_send(self, event: Any) -> None:
         turn_voice_language = self._ensure_turn_tts_voice_language(event)
         feature_enabled = getattr(self, "_feature_enabled_or_temp_unlocked", None)
-        tts_enabled = feature_enabled("enable_tts_enhancement") if callable(feature_enabled) else getattr(self, "enable_tts_enhancement", False)
+        tts_enabled = feature_enabled("enable_tts_enhancement") if callable(feature_enabled) else self._tts_setting("enable_tts_enhancement", False)
         if not getattr(self, "enabled", False) or not tts_enabled:
             return
         if not bool(getattr(event, "_private_companion_tts_request_applied", False)):
@@ -2987,7 +2994,7 @@ TTS 朗读文本：
                     len(visible_text),
                 )
                 return
-        if getattr(self, "tts_generation_mode", "fast_tag") == "postprocess":
+        if self._tts_setting("tts_generation_mode", "fast_tag") == "postprocess":
             # A tag can also arrive from a tool or an extension that bypasses the LLM response hook.
             # Treat it as plain source text so it cannot re-enter the fast-tag path.
             normalized = self._sanitize_tts_visible_text(self._strip_any_tts_markup(normalized))
@@ -3012,7 +3019,7 @@ TTS 朗读文本：
         else:
             new_chain = await self._maybe_convert_plain_reply_to_tts(normalized, event)
         if not new_chain:
-            if getattr(self, "tts_generation_mode", "fast_tag") == "postprocess" and normalized:
+            if self._tts_setting("tts_generation_mode", "fast_tag") == "postprocess" and normalized:
                 translated = await self._translate_unwrapped_foreign_postprocess_text(normalized, event)
                 if translated:
                     normalized = translated
@@ -3029,7 +3036,7 @@ TTS 朗读文本：
                 ) or self._tts_plain_markup_fallback_text(normalized)
                 event.set_result(self._build_result_from_chain([Plain(fallback_text)] if fallback_text else []))
             return
-        if getattr(self, "tts_generation_mode", "fast_tag") == "postprocess":
+        if self._tts_setting("tts_generation_mode", "fast_tag") == "postprocess":
             visible_text = "\n".join(
                 str(getattr(component, "text", "") or "").strip()
                 for component in new_chain
@@ -3242,11 +3249,11 @@ TTS 朗读文本：
             )
             return
         feature_enabled = getattr(self, "_feature_enabled_or_temp_unlocked", None)
-        tts_enabled = feature_enabled("enable_tts_enhancement") if callable(feature_enabled) else getattr(self, "enable_tts_enhancement", False)
+        tts_enabled = feature_enabled("enable_tts_enhancement") if callable(feature_enabled) else self._tts_setting("enable_tts_enhancement", False)
         new_chain: list[Any] = []
         if (
             tts_enabled
-            and getattr(self, "tts_generation_mode", "fast_tag") != "postprocess"
+            and self._tts_setting("tts_generation_mode", "fast_tag") != "postprocess"
             and re.search(r"<tts\b[^>]*>.*?</tts>", normalized, flags=re.IGNORECASE | re.DOTALL)
         ):
             normalized, full_scope_fallback = self._enforce_full_tts_scope_markup(
@@ -3491,10 +3498,10 @@ TTS 朗读文本：
         segmented_scope = (
             scope_getter("scope", event=event, default="proactive_only")
             if callable(scope_getter)
-            else getattr(self, "segmented_proactive_scope", "proactive_only")
+            else self._tts_setting("segmented_proactive_scope", "proactive_only")
         )
         if not (
-            bool(getattr(self, "enable_segmented_proactive_reply", False))
+            bool(self._tts_setting("enable_segmented_proactive_reply", False))
             and str(segmented_scope or "") == "all_llm"
         ):
             return [chunk]
@@ -3820,7 +3827,7 @@ TTS 朗读文本：
 
         setattr(event, "_private_companion_deferred_reaction_tts_active", True)
         try:
-            if getattr(self, "tts_generation_mode", "fast_tag") == "postprocess":
+            if self._tts_setting("tts_generation_mode", "fast_tag") == "postprocess":
                 source_text = self._sanitize_tts_visible_text(
                     self._strip_any_tts_markup(normalized),
                     max_chars=1600,
@@ -3902,7 +3909,7 @@ TTS 朗读文本：
         )
 
     async def _maybe_convert_plain_reply_to_tts(self, text: str, event: Any) -> list[Any]:
-        mode = getattr(self, "tts_generation_mode", "fast_tag")
+        mode = self._tts_setting("tts_generation_mode", "fast_tag")
         if self._tts_text_is_provider_safety_refusal(text):
             logger.info(
                 "[PrivateCompanion] 提供商安全回执保持纯文字,不进入 TTS: session=%s preview=%s",
@@ -3952,7 +3959,7 @@ TTS 朗读文本：
                 self._set_tts_hard_block(event, "probability_miss")
             return []
         source_text = conversion_source or text
-        full_scope = getattr(self, "tts_conversion_scope", "partial") == "full"
+        full_scope = self._tts_setting("tts_conversion_scope", "partial") == "full"
         if mode == "fast_tag" and full_scope:
             # Full fast-tag conversion has one authoritative source: the complete
             # visible reply. Let the spoken-language pass translate it once instead
@@ -4024,34 +4031,35 @@ TTS 朗读文本：
         )
 
     def _auto_voice_trigger_reason(self, text: str, event: Any) -> tuple[bool, str]:
-        use_legacy_frequency = getattr(self, "tts_frequency_control_mode", "global") == "legacy"
+        use_legacy_frequency = self._tts_setting("tts_frequency_control_mode", "global") == "legacy"
         probability_forces_conversion = (
             not use_legacy_frequency
             and self._tts_effective_trigger_probability(event) >= 1.0
         )
-        if not getattr(self, "auto_voice_enabled", False) and not probability_forces_conversion:
+        if not self._tts_setting("auto_voice_enabled", False) and not probability_forces_conversion:
             return False, ""
         session = str(getattr(event, "unified_msg_origin", "") or "")
         is_main = self._event_targets_main_user(event)
-        if use_legacy_frequency and is_main and self.main_user_voice_probability >= 0:
-            probability = self.main_user_voice_probability
+        main_user_voice_probability = float(self._tts_setting("main_user_voice_probability", 0.0) or 0.0)
+        if use_legacy_frequency and is_main and main_user_voice_probability >= 0:
+            probability = main_user_voice_probability
             bypass_limits = True
             reason = "main_user"
         else:
-            probability = getattr(self, "auto_voice_probability", 0.0) if use_legacy_frequency else 1.0
+            probability = self._tts_setting("auto_voice_probability", 0.0) if use_legacy_frequency else 1.0
             bypass_limits = False
             reason = "probability_100" if probability_forces_conversion else "auto"
         if use_legacy_frequency and self._event_mentions_main_user_with_keyword(event):
-            probability = max(probability, getattr(self, "main_user_mention_voice_probability", 0.0))
+            probability = max(probability, self._tts_setting("main_user_mention_voice_probability", 0.0))
             bypass_limits = True
             reason = "main_user_keyword"
         if probability <= 0 or random.random() > probability:
             return False, ""
         cleaned = _single_line(self._normalize_tts_spoken_text(text, provider_kind="generic"), 10000)
-        max_chars = 0 if probability_forces_conversion else int(getattr(self, "auto_voice_max_chars", 0) or 0)
+        max_chars = 0 if probability_forces_conversion else int(self._tts_setting("auto_voice_max_chars", 0) or 0)
         if max_chars > 0 and not bypass_limits and len(cleaned) > max_chars:
             return False, ""
-        cooldown = int(getattr(self, "auto_voice_cooldown_seconds", 0) or 0) if use_legacy_frequency else 0
+        cooldown = int(self._tts_setting("auto_voice_cooldown_seconds", 0) or 0) if use_legacy_frequency else 0
         if cooldown > 0 and not bypass_limits and session:
             last = float(getattr(self, "_tts_auto_voice_last_at", {}).get(session, 0) or 0)
             if time.time() - last < cooldown:
@@ -4067,9 +4075,9 @@ TTS 朗读文本：
             if text:
                 ids.add(text)
 
-        for value in getattr(self, "target_user_ids", []) or []:
+        for value in self._tts_setting("target_user_ids", []) or []:
             add(value)
-        aliases = getattr(self, "private_user_aliases", {}) or {}
+        aliases = self._tts_setting("private_user_aliases", {}) or {}
         if isinstance(aliases, dict):
             for key, value in aliases.items():
                 for raw in (key, value):
@@ -4139,21 +4147,23 @@ TTS 朗读文本：
     def _event_mentions_main_user_with_keyword(self, event: Any) -> bool:
         if not self._event_targets_main_user(event):
             return False
-        keywords = [item for item in getattr(self, "main_user_mention_voice_keywords", []) or [] if item]
+        keywords = [item for item in self._tts_setting("main_user_mention_voice_keywords", []) or [] if item]
         if not keywords:
             return False
         text = str(getattr(event, "message_str", "") or "")
         return any(keyword in text for keyword in keywords)
 
     def _should_force_tts_for_main_user_event(self, event: Any) -> bool:
-        if not getattr(self, "auto_voice_enabled", False):
+        if not self._tts_setting("auto_voice_enabled", False):
             return False
-        if getattr(self, "tts_frequency_control_mode", "global") != "legacy":
+        if self._tts_setting("tts_frequency_control_mode", "global") != "legacy":
             return False
-        if self._event_mentions_main_user_with_keyword(event) and self.main_user_mention_voice_probability > 0:
-            return random.random() <= self.main_user_mention_voice_probability
-        if self._event_targets_main_user(event) and self.main_user_voice_probability >= 0:
-            return random.random() <= self.main_user_voice_probability
+        mention_probability = float(self._tts_setting("main_user_mention_voice_probability", 0.0) or 0.0)
+        main_probability = float(self._tts_setting("main_user_voice_probability", 0.0) or 0.0)
+        if self._event_mentions_main_user_with_keyword(event) and mention_probability > 0:
+            return random.random() <= mention_probability
+        if self._event_targets_main_user(event) and main_probability >= 0:
+            return random.random() <= main_probability
         return False
 
     def _event_at_qq_ids(self, event: Any) -> set[str]:
@@ -4181,10 +4191,10 @@ TTS 朗读文本：
         provider_kind = self._tts_provider_kind_for_event(event)
         voice_lang = self._tts_voice_language_for_event(event)
         lang = self._tts_language_label(voice_language=voice_lang)
-        mode = getattr(self, "tts_generation_mode", "fast_tag")
+        mode = self._tts_setting("tts_generation_mode", "fast_tag")
         if mode == "postprocess":
             return await self._postprocess_text_to_tts_markup(source, event, provider_kind=provider_kind, full=full)
-        extra = _single_line(getattr(self, "main_user_mention_voice_prompt", ""), 500) if self._event_mentions_main_user_with_keyword(event) else ""
+        extra = _single_line(self._tts_setting("main_user_mention_voice_prompt", ""), 500) if self._event_mentions_main_user_with_keyword(event) else ""
         persona_context = await self._format_tts_persona_voice_context(event)
         expression_context = self._tts_expression_style_context(event)
         emotion_rule = self._tts_emotion_tag_rule(
@@ -4260,7 +4270,7 @@ Provider 规则：{emotion_rule}
             event,
             voice_language=voice_lang,
         )
-        extra = _single_line(getattr(self, "tts_extra_prompt", ""), 800)
+        extra = _single_line(self._tts_setting("tts_extra_prompt", ""), 800)
         if not extra:
             extra = self._legacy_nondefault_tts_prompt()
         persona_context = await self._format_tts_persona_voice_context(event)
@@ -4404,7 +4414,7 @@ Provider 规则：{emotion_rule}
             return ""
 
     async def _get_tts_conversion_provider(self, event: Any) -> Any:
-        provider_id = str(getattr(self, "tts_conversion_provider_id", "") or "").strip()
+        provider_id = str(self._tts_setting("tts_conversion_provider_id", "") or "").strip()
         if provider_id:
             getter = getattr(self.context, "get_provider_by_id", None)
             if callable(getter):
@@ -4654,7 +4664,7 @@ Provider 规则：{emotion_rule}
             min(
                 100,
                 _safe_int(
-                    getattr(self, "tts_local_playback_volume", 35) if volume is None else volume,
+                    self._tts_setting("tts_local_playback_volume", 35) if volume is None else volume,
                     35,
                 ),
             ),
@@ -4815,12 +4825,12 @@ Provider 规则：{emotion_rule}
         return False
 
     async def _post_tts_live_subtitle(self, text: str) -> None:
-        if not bool(getattr(self, "enable_tts_live_subtitle_sync", False)):
+        if not bool(self._tts_setting("enable_tts_live_subtitle_sync", False)):
             return
         cleaned = _single_line(text, 500)
         if not cleaned:
             return
-        url = str(getattr(self, "tts_live_subtitle_url", "") or "").strip() or "http://127.0.0.1:18081/show"
+        url = str(self._tts_setting("tts_live_subtitle_url", "") or "").strip() or "http://127.0.0.1:18081/show"
 
         def _post() -> None:
             payload = json.dumps({"text": cleaned}, ensure_ascii=False).encode("utf-8")
@@ -4858,15 +4868,15 @@ Provider 规则：{emotion_rule}
             if is_live_reply
             else None
         )
-        local_playback_enabled = bool(getattr(self, "enable_tts_local_playback", False))
-        live_only = bool(getattr(self, "enable_tts_local_playback_live_only", False))
+        local_playback_enabled = bool(self._tts_setting("enable_tts_local_playback", False))
+        live_only = bool(self._tts_setting("enable_tts_local_playback_live_only", False))
         should_play_local = (
             allow_local_playback
             and local_playback_enabled
             and (is_live_reply or not live_only)
         )
         if should_play_local:
-            interval = max(0.0, float(getattr(self, "tts_local_playback_min_interval_seconds", 0.0) or 0.0))
+            interval = max(0.0, float(self._tts_setting("tts_local_playback_min_interval_seconds", 0.0) or 0.0))
             now = time.time()
             retry_after = float(getattr(self, "_tts_local_playback_retry_after", 0.0) or 0.0)
             if retry_after > now:
@@ -4951,14 +4961,14 @@ Provider 规则：{emotion_rule}
     ) -> tuple[str, str]:
         """Turn any tagged full-scope reply into one structurally complete voice block."""
         normalized = self._normalize_tts_tags(str(text or ""))
-        if getattr(self, "tts_conversion_scope", "partial") != "full":
+        if self._tts_setting("tts_conversion_scope", "partial") != "full":
             return normalized, ""
         if not re.search(r"<tts\b[^>]*>.*?</tts>", normalized, flags=re.IGNORECASE | re.DOTALL):
             return normalized, ""
 
         voice_lang = self._tts_voice_language_for_event(event)
-        delivery_mode = getattr(self, "tts_delivery_mode", "voice_and_text")
-        foreign_text_mode = getattr(self, "tts_foreign_text_mode", "translation")
+        delivery_mode = self._tts_setting("tts_delivery_mode", "voice_and_text")
+        foreign_text_mode = self._tts_setting("tts_foreign_text_mode", "translation")
         complete_limit = self._tts_complete_text_limit(
             source_text or normalized,
             1600,
@@ -5054,8 +5064,8 @@ Provider 规则：{emotion_rule}
             return output
         if suppress_visible:
             return records
-        if getattr(self, "tts_delivery_mode", "voice_and_text") == "voice_only":
-            if getattr(self, "tts_conversion_scope", "partial") == "full":
+        if self._tts_setting("tts_delivery_mode", "voice_and_text") == "voice_only":
+            if self._tts_setting("tts_conversion_scope", "partial") == "full":
                 return records
             remaining_text = "\n".join(
                 str(getattr(comp, "text", "") or "").strip()
@@ -5078,7 +5088,7 @@ Provider 规则：{emotion_rule}
                 max_chars=self._tts_complete_text_limit(visible_source, 1200),
             )
         else:
-            foreign_mode = getattr(self, "tts_foreign_text_mode", "translation")
+            foreign_mode = self._tts_setting("tts_foreign_text_mode", "translation")
             foreign_visible_requested = self._event_explicitly_requests_foreign_visible_text(
                 event,
                 voice_language=voice_lang,
@@ -5152,7 +5162,7 @@ Provider 规则：{emotion_rule}
             if fallback_text:
                 logger.warning(
                     "[PrivateCompanion] TTS强化检测到标签但当前没有可用合成后端,已隐藏朗读文本并按普通文本发送: backend=%s text=%s",
-                    _single_line(getattr(self, "tts_synthesis_backend", "astrbot_provider"), 40),
+                    _single_line(self._tts_setting("tts_synthesis_backend", "astrbot_provider"), 40),
                     _single_line(fallback_text, 160),
                 )
                 return [Plain(fallback_text)]
@@ -5242,8 +5252,8 @@ Provider 规则：{emotion_rule}
                     self._mark_tts_session_sent(event)
                 if (
                     voice_language != "zh"
-                    and getattr(self, "tts_delivery_mode", "voice_and_text") != "voice_only"
-                    and getattr(self, "tts_foreign_text_mode", "translation") in {"translation", "bilingual"}
+                    and self._tts_setting("tts_delivery_mode", "voice_and_text") != "voice_only"
+                    and self._tts_setting("tts_foreign_text_mode", "translation") in {"translation", "bilingual"}
                 ):
                     next_start = matches[index + 1].start() if index + 1 < len(matches) else len(normalized)
                     visible_after_this_block = normalized[match.end():next_start]
@@ -5429,7 +5439,7 @@ Provider 规则：{emotion_rule}
 
     def _realtime_voice_config(self) -> dict[str, Any]:
         voice_language = self._normalize_tts_voice_language_value(
-            getattr(self, "tts_voice_language", "zh")
+            self._tts_setting("tts_voice_language", "zh")
         ) or "zh"
         return {
             "available": True,

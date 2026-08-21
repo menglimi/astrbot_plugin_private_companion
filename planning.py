@@ -9,6 +9,7 @@ from typing import Any
 
 from .constants import DEFAULT_DAILY_PLAN_ITEMS
 from .helpers import _safe_float, _safe_int, _single_line, _today_key
+from .persona_config import runtime_persona_setting
 
 
 def split_detail_prompt_cache_sections(prompt: str) -> tuple[str, str]:
@@ -27,7 +28,7 @@ def pick_detail_segment(plugin, plan: dict[str, Any], enhanced: dict[str, Any]) 
     now_minutes = plugin._effective_plan_now_minutes(str(plan.get("date") or ""))
     if now_minutes is None:
         return parsed_segments[0] if parsed_segments else None
-    lead = plugin.detail_enhancement_lead_minutes
+    lead = _safe_int(runtime_persona_setting(plugin, "detail_enhancement_lead_minutes", 3), 3, 0)
     for segment in parsed_segments:
         start = _safe_int(segment.get("start"), 0)
         next_start = _safe_int(segment.get("end"), plugin._segment_end_minutes(start, segment.get("item")))
@@ -395,12 +396,12 @@ def normalize_story_plan(plugin, payload: dict[str, Any]) -> dict[str, Any]:
         action = str(item.get("action") or "message").strip()
         if action not in {"message", "screen_peek", "photo_text", "voice"}:
             action = "message"
-        if action == "screen_peek" and not plugin.allow_screen_peek_action:
+        if action == "screen_peek" and not runtime_persona_setting(plugin, "allow_screen_peek_action", False):
             action = "message"
         photo_planning_available = getattr(plugin, "_photo_text_planning_available", lambda *_args, **_kwargs: False)
         if action == "photo_text" and not bool(photo_planning_available()):
             action = "message"
-        if action == "voice" and not plugin.allow_voice_action:
+        if action == "voice" and not runtime_persona_setting(plugin, "allow_voice_action", False):
             action = "message"
         item["action"] = action
         item["why"] = _single_line(item.get("why"), 100)
@@ -840,7 +841,7 @@ async def generate_daily_plan(plugin) -> dict[str, Any]:
 
 def daily_plan_completion_budget(plugin, *, retry: bool = False) -> int:
     """Scale the completion budget with the configured number of daily segments."""
-    item_count = _safe_int(getattr(plugin, "daily_plan_item_count", 10), 10, 5, 24)
+    item_count = _safe_int(runtime_persona_setting(plugin, "daily_plan_item_count", 10), 10, 5, 24)
     # Keep the existing 1,500-token default while giving the 24-segment setting
     # enough room for complete JSON instead of relying on a provider-side cutoff.
     budget = max(1500, min(5000, 300 + item_count * 120))
@@ -856,8 +857,8 @@ def _build_schedule_reference_sections(
     knowledge_max_chunks: int = 20,
 ) -> tuple[str, str]:
     persona = plugin._get_default_persona_prompt()
-    schedule_persona = plugin.schedule_persona_prompt
-    worldview = plugin.schedule_worldview_prompt
+    schedule_persona = runtime_persona_setting(plugin, "schedule_persona_prompt", "")
+    worldview = runtime_persona_setting(plugin, "schedule_worldview_prompt", "")
     identity_parts = []
     if schedule_persona:
         identity_parts.append("【日程专用角色设定】\n" + schedule_persona)
@@ -948,11 +949,11 @@ def _format_detail_plan_outline(plan: dict[str, Any], *, limit: int = 18) -> str
 
 
 def _build_maslow_schedule_influence_prompt(plugin) -> str:
-    if not bool(getattr(plugin, "enable_maslow_motivation_experiment", False)):
+    if not bool(runtime_persona_setting(plugin, "enable_maslow_motivation_experiment", False)):
         return ""
-    if not bool(getattr(plugin, "enable_maslow_schedule_influence", False)):
+    if not bool(runtime_persona_setting(plugin, "enable_maslow_schedule_influence", False)):
         return ""
-    strength = _safe_int(getattr(plugin, "maslow_motivation_strength", 35), 35, 0, 100)
+    strength = _safe_int(runtime_persona_setting(plugin, "maslow_motivation_strength", 35), 35, 0, 100)
     if strength <= 0:
         return ""
     influence = "轻微"
@@ -974,7 +975,7 @@ def _build_maslow_schedule_influence_prompt(plugin) -> str:
 
 
 def build_daily_plan_prompt(plugin, now: str, memory_companion_context: str = "") -> str:
-    custom = plugin.daily_plan_prompt
+    custom = runtime_persona_setting(plugin, "daily_plan_prompt", "")
     identity_context, planning_style_context = _build_schedule_reference_sections(plugin)
     schedule_prompt = "\n\n".join(part for part in (identity_context, planning_style_context) if part)
     can_do_text = _sanitize_relationship_generation_source(
@@ -1056,7 +1057,7 @@ def build_daily_plan_prompt(plugin, now: str, memory_companion_context: str = ""
     if custom:
         rendered = custom.format(
             now=now,
-            bot_name=plugin.bot_name,
+            bot_name=runtime_persona_setting(plugin, "bot_name", "小星"),
             astrbot_persona=plugin._get_default_persona_prompt(),
             schedule_persona=schedule_prompt,
             schedule_identity_context=identity_context,
@@ -1076,7 +1077,7 @@ def build_daily_plan_prompt(plugin, now: str, memory_companion_context: str = ""
             important_dates=important_dates,
             memo_notes=memo_notes,
             weather_info=weather_info,
-            daily_plan_item_count=plugin.daily_plan_item_count,
+            daily_plan_item_count=_safe_int(runtime_persona_setting(plugin, "daily_plan_item_count", 10), 10, 1),
         )
         return f"{rendered.rstrip()}\n\n{completion_budget_guidance}\n\n{relationship_authority_guard}".strip()
     return f"""
@@ -1148,8 +1149,8 @@ D. 软灵感与避重：最近日程、最近日记、可做事项、技能倾�
 
 【A｜硬约束】
 当前时间：{now}
-Bot 名字：{plugin.bot_name}
-目标时间点数量：{plugin.daily_plan_item_count}
+    Bot 名字：{runtime_persona_setting(plugin, 'bot_name', '小星')}
+    目标时间点数量：{_safe_int(runtime_persona_setting(plugin, 'daily_plan_item_count', 10), 10, 1)}
 
 日期与当天性质：
 {calendar_context}

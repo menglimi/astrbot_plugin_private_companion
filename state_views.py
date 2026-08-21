@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from .helpers import _now_ts, _safe_float, _single_line, _today_key
+from .persona_config import runtime_persona_setting
 
 
 class StateViewsMixin:
@@ -100,7 +101,7 @@ class StateViewsMixin:
         if current_location:
             location_line = f"地点感：{current_location}\n"
         return (
-            f"{self.bot_name} 今天的拟人状态：\n"
+            f"{runtime_persona_setting(self, 'bot_name', '小星')} 今天的拟人状态：\n"
             f"能量：{state.get('energy', 70)}/100\n"
             f"情绪底色：{state.get('mood_bias', '平稳')}\n"
             f"{location_line}"
@@ -155,7 +156,7 @@ class StateViewsMixin:
         if not afterglow_text:
             afterglow_text = "今天没有明显的梦后余韵。"
         return (
-            f"{self.bot_name} 最近一次梦境：\n"
+            f"{runtime_persona_setting(self, 'bot_name', '小星')} 最近一次梦境：\n"
             f"梦境类型：{dream_type}\n"
             f"梦境因子/碎片：{fragment_text}\n"
             f"梦境内容：{dream_text}\n"

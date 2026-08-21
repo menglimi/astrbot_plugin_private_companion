@@ -107,6 +107,7 @@ from .dreaming import (
 )
 from .helpers import _date_key, _normalize_outbound_punctuation_flow, _normalize_photo_subject_owner, _now_ts, _path_text, _photo_subject_owner_prompt_label, _safe_float, _safe_int, _single_line, _strip_internal_message_blocks, _today_key, normalize_legacy_tag_text
 from .model_routing import CURRENT_MODEL_REPLACEMENT_SOURCES, find_route, scope_allows
+from .persona_config import runtime_persona_setting
 from .domains.affect.affect_modulation import compose_affect_modulation
 from .daily_state_tick import DailyStateTickMixin
 from .memo_notes import memo_note_due_state, memo_note_sort_key, normalize_memo_note
@@ -488,7 +489,7 @@ class DailyStateMixin(DailyStateTickMixin):
         return current
 
     def _next_detail_due_in_seconds(self, now: float | None = None) -> float | None:
-        if not self.enable_detail_enhancement:
+        if not runtime_persona_setting(self, "enable_detail_enhancement", False):
             return None
         plan = self.data.get("daily_plan", {})
         if not isinstance(plan, dict) or not self._is_plan_date_active(plan.get("date")):
@@ -503,7 +504,7 @@ class DailyStateMixin(DailyStateTickMixin):
         now_minutes = self._effective_plan_now_minutes(str(plan.get("date") or ""))
         if now_minutes is None:
             return None
-        lead = max(0, self.detail_enhancement_lead_minutes)
+        lead = max(0, _safe_int(runtime_persona_setting(self, "detail_enhancement_lead_minutes", 3), 3, 0))
         candidates: list[float] = []
         for segment in segments:
             start = _safe_int(segment.get("start"), 0)
@@ -517,7 +518,7 @@ class DailyStateMixin(DailyStateTickMixin):
         return min(candidates)
 
     async def _ensure_daily_plan(self, force: bool = False) -> dict[str, Any] | None:
-        if not self.enable_daily_plan and not force:
+        if not runtime_persona_setting(self, "enable_daily_plan", True) and not force:
             return None
 
         await self._ensure_daily_state(force=force)
@@ -657,7 +658,7 @@ class DailyStateMixin(DailyStateTickMixin):
             return diary
 
     async def _ensure_daily_diary_once(self, force: bool = False) -> dict[str, Any] | None:
-        if not self.enable_daily_diary and not force:
+        if not runtime_persona_setting(self, "enable_daily_diary", True) and not force:
             return None
         request_day = _today_key()
         async with self._data_lock:
@@ -773,7 +774,8 @@ class DailyStateMixin(DailyStateTickMixin):
                 diaries[:] = refreshed
             else:
                 diaries.append(diary)
-            del diaries[:-self.max_diary_entries]
+            max_entries = max(1, _safe_int(runtime_persona_setting(self, "max_diary_entries", 14), 14, 1))
+            del diaries[:-max_entries]
             # Mark the diary as generated before optional enrichment so a post-process
             # bug cannot make the scheduler call the LLM again and again.
             previous_generated_day = _single_line(self.data.get("diary_generated_day"), 16)
@@ -839,7 +841,7 @@ class DailyStateMixin(DailyStateTickMixin):
         return diary
 
     async def _ensure_detail_enhancement(self, force: bool = False) -> dict[str, Any] | None:
-        if not self.enable_detail_enhancement and not force:
+        if not runtime_persona_setting(self, "enable_detail_enhancement", False) and not force:
             return None
         async with self._data_lock:
             plan = dict(self.data.get("daily_plan", {}))
@@ -1738,7 +1740,7 @@ class DailyStateMixin(DailyStateTickMixin):
             return False
         start = _safe_int(segment.get("start"), 0)
         end = _safe_int(segment.get("end"), self._segment_end_minutes(start, segment.get("item")))
-        lead = max(0, self.detail_enhancement_lead_minutes)
+        lead = max(0, _safe_int(runtime_persona_setting(self, "detail_enhancement_lead_minutes", 3), 3, 0))
         return start - lead <= now_minutes < end
 
     def _detail_segment_has_story_coverage(
@@ -2139,7 +2141,7 @@ class DailyStateMixin(DailyStateTickMixin):
             return 0
 
     def _is_daily_diary_due(self) -> bool:
-        diary_minutes = self._parse_hhmm_to_minutes(self.daily_diary_time)
+        diary_minutes = self._parse_hhmm_to_minutes(runtime_persona_setting(self, "daily_diary_time", "23:10"))
         if diary_minutes is None:
             diary_minutes = 23 * 60 + 10
         now = self._environment_now()
@@ -2147,7 +2149,7 @@ class DailyStateMixin(DailyStateTickMixin):
 
     def _next_daily_diary_due_in_seconds(self, now: float | None = None) -> float | None:
         """Return the next diary maintenance deadline without creating another timer."""
-        if not self.enable_daily_diary:
+        if not runtime_persona_setting(self, "enable_daily_diary", True):
             return None
         check_now = _safe_float(now, _now_ts())
         now_dt = self._environment_fromtimestamp(check_now)
@@ -2157,7 +2159,7 @@ class DailyStateMixin(DailyStateTickMixin):
         if self._daily_diary_was_manually_deleted(today):
             return None
 
-        diary_minutes = self._parse_hhmm_to_minutes(self.daily_diary_time)
+        diary_minutes = self._parse_hhmm_to_minutes(runtime_persona_setting(self, "daily_diary_time", "23:10"))
         if diary_minutes is None:
             diary_minutes = 23 * 60 + 10
         due_dt = datetime.combine(
@@ -2775,11 +2777,11 @@ class DailyStateMixin(DailyStateTickMixin):
         overlap_floor = 0.0
         if use_proactive_dedup_config:
             try:
-                min_shared_tokens = max(1, min(4, int(getattr(self, "proactive_dedup_min_shared_tokens", 1))))
+                min_shared_tokens = max(1, min(4, int(runtime_persona_setting(self, "proactive_dedup_min_shared_tokens", 1))))
             except (TypeError, ValueError):
                 min_shared_tokens = 1
             try:
-                overlap_floor = max(0.0, min(1.0, float(getattr(self, "proactive_dedup_min_overlap_ratio", 0.0))))
+                overlap_floor = max(0.0, min(1.0, float(runtime_persona_setting(self, "proactive_dedup_min_overlap_ratio", 0.0))))
             except (TypeError, ValueError):
                 overlap_floor = 0.0
         if smaller_size <= 2:
@@ -2830,7 +2832,7 @@ class DailyStateMixin(DailyStateTickMixin):
         del recent[:-12]
 
     def _proactive_dedup_enabled_policies(self) -> frozenset[str]:
-        raw_value = getattr(self, "proactive_dedup_policies", None)
+        raw_value = runtime_persona_setting(self, "proactive_dedup_policies", None)
         if raw_value is None:
             return frozenset({"semantic", "content_fingerprint", "life_event"})
         raw = str(raw_value).strip().lower()
@@ -2845,7 +2847,7 @@ class DailyStateMixin(DailyStateTickMixin):
         motive: str = "",
         now: float | None = None,
     ) -> str:
-        if not bool(getattr(self, "proactive_dedup_enabled", True)):
+        if not bool(runtime_persona_setting(self, "proactive_dedup_enabled", True)):
             return ""
         signature = self._proactive_topic_signature(text, topic, motive)
         if not signature:
@@ -2877,7 +2879,7 @@ class DailyStateMixin(DailyStateTickMixin):
             and user.get("proactive_sending")
         )
         if (
-            bool(getattr(self, "proactive_dedup_last_message_enabled", True))
+            bool(runtime_persona_setting(self, "proactive_dedup_last_message_enabled", True))
             and not unconfirmed_current_candidate
             and last_message
             and last_at > 0
@@ -3468,7 +3470,7 @@ class DailyStateMixin(DailyStateTickMixin):
                     "prompt": "暂无天气信息",
                     "source": "passive_fast",
                 }
-                if not self.enable_humanized_states:
+                if not runtime_persona_setting(self, "enable_humanized_states", True):
                     state = dict(DEFAULT_HUMANIZED_STATE)
                     state.update(self._base_state_values())
                     state["date"] = today
@@ -3498,7 +3500,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 "prompt": "暂无天气信息",
                 "source": "passive_fast",
             }
-            if not self.enable_humanized_states:
+            if not runtime_persona_setting(self, "enable_humanized_states", True):
                 state = dict(DEFAULT_HUMANIZED_STATE)
                 state.update(self._base_state_values())
                 state["date"] = today
@@ -3510,7 +3512,7 @@ class DailyStateMixin(DailyStateTickMixin):
         if not skip_conversation_summary:
             await self._ensure_yesterday_conversation_summary(force=force)
         async with self._data_lock:
-            if not self.enable_humanized_states and not force:
+            if not runtime_persona_setting(self, "enable_humanized_states", True) and not force:
                 state = dict(DEFAULT_HUMANIZED_STATE)
                 state.update(self._base_state_values())
                 state["date"] = today
@@ -3595,7 +3597,7 @@ class DailyStateMixin(DailyStateTickMixin):
         *,
         deferred_state_updates: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        intensity = self.humanized_state_intensity / 100
+        intensity = _safe_float(runtime_persona_setting(self, "humanized_state_intensity", 50), 50, 0, 100) / 100
         persona_profile = self._persona_state_profile()
         now_dt = self._environment_now()
         current_minute = now_dt.hour * 60 + now_dt.minute
@@ -3633,7 +3635,7 @@ class DailyStateMixin(DailyStateTickMixin):
 
         sleep_pick = pick(sleep_pool, 0.42)
         enhanced_dream = None
-        if bool(getattr(self, "enable_enhanced_dreams", False)):
+        if bool(runtime_persona_setting(self, "enable_enhanced_dreams", False)):
             enhanced_dream = await self._generate_enhanced_dream_pick(weather)
         dream_pick = enhanced_dream or pick(dream_pool, 0.55)
         if deferred_state_updates is None:
@@ -3828,7 +3830,7 @@ class DailyStateMixin(DailyStateTickMixin):
         attempts["last_key"] = attempt_key
         attempts["last_attempt_ts"] = _now_ts()
         self.data["hunger_window_attempts"] = attempts
-        intensity = max(0.0, min(1.0, self.humanized_state_intensity / 100))
+        intensity = max(0.0, min(1.0, _safe_float(runtime_persona_setting(self, "humanized_state_intensity", 50), 50, 0, 100) / 100))
         chance = 0.25 + 0.30 * intensity
         if window_id in {"afternoon", "late_snack"}:
             chance *= 0.65
@@ -3936,7 +3938,7 @@ class DailyStateMixin(DailyStateTickMixin):
     }
 
     def _advanced_cycle_enabled(self) -> bool:
-        return bool(getattr(self, "enable_advanced_cycle_strategy", False))
+        return bool(runtime_persona_setting(self, "enable_advanced_cycle_strategy", False))
 
     def _infer_body_cycle_phase(self, label: str) -> str:
         text = str(label or "")
@@ -4122,11 +4124,11 @@ class DailyStateMixin(DailyStateTickMixin):
         Returns:
             A cycle_discomfort condition dict, or None when skipped.
         """
-        if not bool(getattr(self, "advanced_cycle_discomfort_simulation", False)):
+        if not bool(runtime_persona_setting(self, "advanced_cycle_discomfort_simulation", False)):
             return None
         if not self._persona_state_profile().get("allow_cycle", False):
             return None
-        intensity = _safe_int(getattr(self, "humanized_state_intensity", 50), 50, 0, 100)
+        intensity = _safe_int(runtime_persona_setting(self, "humanized_state_intensity", 50), 50, 0, 100)
         if intensity <= 0:
             return None
         meta = self.data.get("body_cycle_state")
@@ -4154,10 +4156,10 @@ class DailyStateMixin(DailyStateTickMixin):
             self.data["body_cycle_state"] = meta
         else:
             deferred_state_updates["cycle_discomfort_roll_date"] = _today_key()
-        chance = _safe_int(getattr(self, "advanced_cycle_discomfort_chance", 55), 55, 0, 100)
+        chance = _safe_int(runtime_persona_setting(self, "advanced_cycle_discomfort_chance", 55), 55, 0, 100)
         if chance <= 0 or random.random() > chance / 100.0:
             return None
-        raw_types = str(getattr(self, "advanced_cycle_discomfort_types", "") or "痛经,头痛,腰酸,乏力")
+        raw_types = str(runtime_persona_setting(self, "advanced_cycle_discomfort_types", "痛经,头痛,腰酸,乏力") or "痛经,头痛,腰酸,乏力")
         requested = {token.strip() for token in raw_types.replace("，", ",").split(",") if token.strip()}
         candidates = [
             (name, spec)
@@ -4187,7 +4189,7 @@ class DailyStateMixin(DailyStateTickMixin):
 
     def _advanced_cycle_linked_energy(self, phase: str) -> int:
         median = self._ADVANCED_CYCLE_INTENSITY_MEDIANS.get(phase, 0.0)
-        intensity = _safe_int(getattr(self, "humanized_state_intensity", 50), 50, 0, 100)
+        intensity = _safe_int(runtime_persona_setting(self, "humanized_state_intensity", 50), 50, 0, 100)
         return int(round(median * (intensity / 50.0)))
 
     def _advanced_cycle_phase_spec(self, phase: str) -> tuple[str, str, int, int]:
@@ -4214,7 +4216,7 @@ class DailyStateMixin(DailyStateTickMixin):
         mood = _single_line(getattr(self, mood_attr, default_mood), 20) or default_mood
         energy_delta = (
             self._advanced_cycle_linked_energy(selected_phase)
-            if bool(getattr(self, "advanced_cycle_link_intensity", False))
+        if bool(runtime_persona_setting(self, "advanced_cycle_link_intensity", False))
             else _safe_int(getattr(self, energy_attr, default_energy), default_energy, -50, 30)
         )
         return label, mood, energy_delta, self._advanced_cycle_phase_days(selected_phase) * 24
@@ -4239,7 +4241,7 @@ class DailyStateMixin(DailyStateTickMixin):
             mood=mood,
             energy_delta=energy_delta,
             duration_hours=max(1, int(duration_hours or configured_hours)),
-            intensity=max(35, _safe_int(getattr(self, "humanized_state_intensity", 50), 50, 0, 100)),
+            intensity=max(35, _safe_int(runtime_persona_setting(self, "humanized_state_intensity", 50), 50, 0, 100)),
             cause=cause,
             phase=phase,
             episode_key=episode_key or f"body-cycle-{_today_key()}",
@@ -4394,7 +4396,7 @@ class DailyStateMixin(DailyStateTickMixin):
         return ""
 
     def _dream_afterglow_strength(self, dream_pick: tuple[str, str, int, int]) -> float:
-        mode = str(self.dream_afterglow_mode or "auto")
+        mode = str(runtime_persona_setting(self, "dream_afterglow_mode", "auto") or "auto")
         if mode == "轻":
             return 0.7
         if mode == "标准":
@@ -4901,7 +4903,7 @@ class DailyStateMixin(DailyStateTickMixin):
         return "\n".join(lines)
 
     async def _maybe_refresh_environment_change(self) -> None:
-        if not bool(getattr(self, "enable_environment_change_proactive", True)) or not self.enable_weather_context:
+        if not bool(runtime_persona_setting(self, "enable_environment_change_proactive", True)) or not runtime_persona_setting(self, "enable_weather_context", True):
             return
         lock = getattr(self, "_environment_change_lock", None)
         if not isinstance(lock, asyncio.Lock):
@@ -4918,7 +4920,7 @@ class DailyStateMixin(DailyStateTickMixin):
             initialized = bool(state.get("initialized"))
             interval_minutes = max(
                 5,
-                _safe_int(getattr(self, "environment_change_check_minutes", 10), 10, 5, 60),
+                    _safe_int(runtime_persona_setting(self, "environment_change_check_minutes", 10), 10, 5, 60),
             )
             state["next_check_at"] = now + interval_minutes * 60
             previous = deepcopy(self.data.get("daily_weather", {}))
@@ -4942,7 +4944,7 @@ class DailyStateMixin(DailyStateTickMixin):
             fingerprint = _single_line(change.get("fingerprint"), 160)
             cooldown_minutes = max(
                 20,
-                _safe_int(getattr(self, "environment_change_cooldown_minutes", 90), 90, 20, 360),
+                    _safe_int(runtime_persona_setting(self, "environment_change_cooldown_minutes", 90), 90, 20, 360),
             )
             last_prompted_at = _safe_float(state.get("last_prompted_at"), 0)
             recent_fingerprints = state.get("recent_fingerprints")
@@ -4994,14 +4996,14 @@ class DailyStateMixin(DailyStateTickMixin):
     def _weather_context_config_key(self) -> str:
         """Return a credential-free identity for the active weather place."""
 
-        source = str(getattr(self, "weather_source", "qweather") or "qweather").strip().lower()
+        source = str(runtime_persona_setting(self, "weather_source", "qweather") or "qweather").strip().lower()
         parts = [source]
         if source == "qweather":
             parts.extend((self._qweather_weather_api_host(), self._qweather_location_identity()))
         elif source == "amap":
-            parts.append(_single_line(getattr(self, "weather_amap_city", ""), 80).casefold())
+            parts.append(_single_line(runtime_persona_setting(self, "weather_amap_city", ""), 80).casefold())
         elif source == "openweathermap":
-            city = _single_line(getattr(self, "weather_city", ""), 120).casefold()
+            city = _single_line(runtime_persona_setting(self, "weather_city", ""), 120).casefold()
             if city:
                 parts.append("city:" + city)
             else:
@@ -5014,9 +5016,9 @@ class DailyStateMixin(DailyStateTickMixin):
 
     async def _ensure_weather_context(self, force: bool = False) -> dict[str, Any]:
         today = _today_key()
-        if not self.enable_weather_context:
+        if not runtime_persona_setting(self, "enable_weather_context", True):
             return {"date": today, "prompt": "暂无天气信息", "source": "disabled"}
-        weather_source = getattr(self, "weather_source", "qweather")
+        weather_source = runtime_persona_setting(self, "weather_source", "qweather")
         config_key = self._weather_context_config_key()
         cached = self.data.get("daily_weather", {})
         if isinstance(cached, dict):
@@ -5026,7 +5028,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 and cached.get("date") == today
                 and cached.get("weather_source", "qweather") == weather_source
                 and cached.get("config_key") == config_key
-                and _now_ts() - fetched_at < self.weather_refresh_minutes * 60
+                and _now_ts() - fetched_at < _safe_int(runtime_persona_setting(self, "weather_refresh_minutes", 90), 90, 1) * 60
             ):
                 return cached
         prompt = "暂无天气信息"
@@ -5145,7 +5147,7 @@ class DailyStateMixin(DailyStateTickMixin):
         )
         if not self._user_asks_current_weather(inbound_text):
             return False
-        if not bool(getattr(self, "enable_weather_context", False)):
+        if not bool(runtime_persona_setting(self, "enable_weather_context", True)):
             return False
 
         weather = await self._ensure_weather_context(force=False)
@@ -5154,7 +5156,7 @@ class DailyStateMixin(DailyStateTickMixin):
         role = ""
         location_label = ""
         fetched_at = _safe_float(weather.get("fetched_ts"), 0) if isinstance(weather, dict) else 0
-        configured_source = str(getattr(self, "weather_source", "qweather") or "qweather").strip().lower()
+        configured_source = str(runtime_persona_setting(self, "weather_source", "qweather") or "qweather").strip().lower()
         expected_source = {
             "qweather": "qweather",
             "amap": "amap",
@@ -5252,11 +5254,11 @@ class DailyStateMixin(DailyStateTickMixin):
             screen_companion_available = self._get_screen_companion_plugin() is not None
         except Exception:
             screen_companion_available = False
-        if not getattr(self, "enable_yesterday_screen_diary_context", True) or not screen_companion_available:
+        if not runtime_persona_setting(self, "enable_yesterday_screen_diary_context", True) or not screen_companion_available:
             payload = {
                 "date": today,
                 "source_date": source_date,
-                "source": "disabled" if not getattr(self, "enable_yesterday_screen_diary_context", True) else "screen_companion_unavailable",
+            "source": "disabled" if not runtime_persona_setting(self, "enable_yesterday_screen_diary_context", True) else "screen_companion_unavailable",
                 "summary": "",
                 "items": [],
                 "available": False,
@@ -5315,7 +5317,7 @@ class DailyStateMixin(DailyStateTickMixin):
             items = self._screen_diary_items_from_markdown(diary_text)
             if items and source == "none":
                 source = "screen_companion_markdown"
-        max_chars = max(200, _safe_int(getattr(self, "screen_diary_context_max_chars", 700), 700, 200, 1600))
+        max_chars = max(200, _safe_int(runtime_persona_setting(self, "screen_diary_context_max_chars", 700), 700, 200, 1600))
         summary_text = self._format_screen_diary_context_items(source_date, items, max_chars=max_chars)
         return {
             "date": today,
@@ -5506,12 +5508,12 @@ class DailyStateMixin(DailyStateTickMixin):
         return text[:max_chars]
 
     def _format_yesterday_screen_diary_context_for_prompt(self) -> str:
-        if not getattr(self, "enable_yesterday_screen_diary_context", True):
+        if not runtime_persona_setting(self, "enable_yesterday_screen_diary_context", True):
             return "未启用。"
         payload = self.data.get("screen_diary_context", {})
         if not isinstance(payload, dict) or payload.get("date") != _today_key():
             return "暂无可用的昨日屏幕观察日记。"
-        max_chars = max(200, _safe_int(getattr(self, "screen_diary_context_max_chars", 700), 700, 200, 1600))
+        max_chars = max(200, _safe_int(runtime_persona_setting(self, "screen_diary_context_max_chars", 700), 700, 200, 1600))
         text = str(payload.get("summary") or "").strip()
         if len(text) > max_chars:
             text = text[:max_chars]
@@ -5624,7 +5626,7 @@ class DailyStateMixin(DailyStateTickMixin):
         return number
 
     def _qweather_configured_location(self) -> str:
-        raw = _single_line(getattr(self, "weather_location", ""), 180)
+        raw = _single_line(runtime_persona_setting(self, "weather_location", ""), 180)
         if not raw:
             return ""
         return unicodedata.normalize("NFKC", raw).strip().replace("，", ",")
@@ -5651,12 +5653,12 @@ class DailyStateMixin(DailyStateTickMixin):
 
     def _qweather_legacy_weather_location(self) -> tuple[float, float] | None:
         latitude = self._qweather_alert_coordinate(
-            getattr(self, "weather_lat", None),
+            runtime_persona_setting(self, "weather_lat", 0),
             minimum=-90,
             maximum=90,
         )
         longitude = self._qweather_alert_coordinate(
-            getattr(self, "weather_lon", None),
+            runtime_persona_setting(self, "weather_lon", 0),
             minimum=-180,
             maximum=180,
         )
@@ -5978,8 +5980,8 @@ class DailyStateMixin(DailyStateTickMixin):
         lat_value = getattr(self, "weather_alert_lat", None)
         lon_value = getattr(self, "weather_alert_lon", None)
         if lat_value in (None, "") or lon_value in (None, ""):
-            lat_value = getattr(self, "weather_lat", lat_value)
-            lon_value = getattr(self, "weather_lon", lon_value)
+            lat_value = runtime_persona_setting(self, "weather_lat", lat_value)
+            lon_value = runtime_persona_setting(self, "weather_lon", lon_value)
         lat = self._qweather_alert_coordinate(lat_value, minimum=-90, maximum=90)
         lon = self._qweather_alert_coordinate(lon_value, minimum=-180, maximum=180)
         if lat is None or lon is None or (lat == 0 and lon == 0):
@@ -6382,7 +6384,7 @@ class DailyStateMixin(DailyStateTickMixin):
         if not cache.get("stale"):
             stamp = _safe_float(cache.get("fetched_ts"), stamp)
         refresh_minutes = _safe_int(
-            getattr(self, "weather_alert_refresh_minutes", 10),
+            runtime_persona_setting(self, "weather_alert_refresh_minutes", 10),
             10,
             5,
             60,
@@ -6392,7 +6394,7 @@ class DailyStateMixin(DailyStateTickMixin):
     async def _fetch_qweather_alerts(self) -> dict[str, Any]:
         """Fetch and parse current alerts from QWeather's API Host route."""
 
-        if not bool(getattr(self, "enable_weather_alerts", False)):
+        if not bool(runtime_persona_setting(self, "enable_weather_alerts", False)):
             return {"ok": False, "disabled": True, "alerts": [], "error": "disabled", "source": "qweather"}
         host = self._qweather_alert_api_host()
         token = self._qweather_alert_token()
@@ -6458,7 +6460,7 @@ class DailyStateMixin(DailyStateTickMixin):
     async def _ensure_weather_alert_context(self, force: bool = False) -> dict[str, Any]:
         """Refresh the structured alert cache without dispatching messages."""
 
-        if not bool(getattr(self, "enable_weather_alerts", False)):
+        if not bool(runtime_persona_setting(self, "enable_weather_alerts", False)):
             return {
                 "version": 1,
                 "source": "disabled",
@@ -6693,7 +6695,7 @@ class DailyStateMixin(DailyStateTickMixin):
         updated_ids = set(current_cache.get("updated_alert_ids") or [])
         resolved_ids = set(current_cache.get("resolved_alert_ids") or [])
         events: list[dict[str, Any]] = []
-        threshold = getattr(self, "weather_alert_min_severity", "blue")
+        threshold = runtime_persona_setting(self, "weather_alert_min_severity", "blue")
 
         # QWeather represents an updated warning as a new object whose
         # ``messageType.supersedes`` points at the previous warning ID.  Keep
@@ -6969,7 +6971,7 @@ class DailyStateMixin(DailyStateTickMixin):
     async def _maybe_refresh_weather_alerts(self, *, force: bool = False) -> dict[str, Any]:
         """Refresh QWeather alerts and enqueue owner-only, deduplicated notices."""
 
-        if not bool(getattr(self, "enable_weather_context", True)) or not bool(getattr(self, "enable_weather_alerts", False)):
+        if not bool(runtime_persona_setting(self, "enable_weather_context", True)) or not bool(runtime_persona_setting(self, "enable_weather_alerts", False)):
             return {}
         lock = getattr(self, "_weather_alert_refresh_lock", None)
         if not isinstance(lock, asyncio.Lock):
@@ -6986,7 +6988,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 self._queue_weather_alert_pending_events(now=now)
                 return deepcopy(self.data.get("weather_alerts", {}))
             interval_minutes = _safe_int(
-                getattr(self, "weather_alert_refresh_minutes", 10),
+                runtime_persona_setting(self, "weather_alert_refresh_minutes", 10),
                 10,
                 5,
                 60,
@@ -7231,8 +7233,8 @@ class DailyStateMixin(DailyStateTickMixin):
 
     async def _fetch_openmeteo_weather(self) -> dict[str, str]:
         try:
-            lat = float(getattr(self, "weather_lat", 0))
-            lon = float(getattr(self, "weather_lon", 0))
+            lat = float(runtime_persona_setting(self, "weather_lat", 0))
+            lon = float(runtime_persona_setting(self, "weather_lon", 0))
         except (TypeError, ValueError):
             return {"prompt": "", "source": ""}
         if (
@@ -7284,7 +7286,7 @@ class DailyStateMixin(DailyStateTickMixin):
 
     async def _fetch_amap_weather(self) -> dict[str, str]:
         key = str(getattr(self, "weather_amap_api_key", "") or "").strip()
-        city = str(getattr(self, "weather_amap_city", "") or "").strip()
+        city = str(runtime_persona_setting(self, "weather_amap_city", "") or "").strip()
         if not key or not city:
             return {"prompt": "", "source": ""}
         url = "https://restapi.amap.com/v3/weather/weatherInfo?" + urlencode(
@@ -7320,7 +7322,7 @@ class DailyStateMixin(DailyStateTickMixin):
             return {"prompt": "", "source": ""}
 
     async def _fetch_own_weather_prompt(self) -> dict[str, str]:
-        weather_source = str(getattr(self, "weather_source", "qweather") or "qweather").strip().lower()
+        weather_source = str(runtime_persona_setting(self, "weather_source", "qweather") or "qweather").strip().lower()
         if weather_source == "qweather":
             return await self._fetch_qweather_weather()
         if weather_source == "amap":
@@ -7358,8 +7360,9 @@ class DailyStateMixin(DailyStateTickMixin):
 
     def _build_weather_url(self) -> str:
         key = self.weather_api_key
-        city = self.weather_city
-        lat, lon = self.weather_lat, self.weather_lon
+        city = runtime_persona_setting(self, "weather_city", "")
+        lat = runtime_persona_setting(self, "weather_lat", 0)
+        lon = runtime_persona_setting(self, "weather_lon", 0)
         params = {
             "appid": key,
             "units": "metric",
@@ -7895,7 +7898,7 @@ class DailyStateMixin(DailyStateTickMixin):
         return {"type": item_type, "category": category, "tags": tags}
 
     def _learn_food_menu_from_meal_reply(self, foods: list[str], *, meal_key: str, now: float) -> list[str]:
-        if not foods or not bool(getattr(self, "enable_food_menu_recommendation", True)):
+        if not foods or not bool(runtime_persona_setting(self, "enable_food_menu_recommendation", True)):
             return []
         state = self.data.setdefault("food_menu", {})
         if not isinstance(state, dict):
@@ -8066,7 +8069,7 @@ class DailyStateMixin(DailyStateTickMixin):
                     if len(kept_impulses) != len(impulses):
                         user["proactive_impulses"] = kept_impulses
             return {"kind": "specific" if foods else "none", "foods": foods}
-        followup_minutes = _safe_int(getattr(self, "meal_care_followup_minutes", 45), 45, 15, 180)
+        followup_minutes = _safe_int(runtime_persona_setting(self, "meal_care_followup_minutes", 45), 45, 15, 180)
         kind = "unrelated"
         if foods:
             kind = "specific"
@@ -8490,7 +8493,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 continue
             days_until = (next_day - today).days
             remind_days = _safe_int(
-                entry.get("remind_days"), self.important_date_lookahead_days, 0, 365
+                entry.get("remind_days"), runtime_persona_setting(self, "important_date_lookahead_days", 7), 0, 365
             )
             if 0 <= days_until <= remind_days:
                 copy = dict(entry)
@@ -8958,7 +8961,7 @@ class DailyStateMixin(DailyStateTickMixin):
             "note": note,
             "enabled": True,
             "repeat_yearly": repeat_yearly,
-            "remind_days": self.important_date_lookahead_days,
+                "remind_days": runtime_persona_setting(self, "important_date_lookahead_days", 7),
             "priority": 50,
             "created_at": self._environment_now().strftime("%Y-%m-%d %H:%M"),
         }
@@ -9186,7 +9189,7 @@ class DailyStateMixin(DailyStateTickMixin):
         if not advanced_enabled:
             return kept
 
-        offset = _safe_int(getattr(self, "advanced_cycle_start_offset", 0), 0, 0, 180)
+        offset = _safe_int(runtime_persona_setting(self, "advanced_cycle_start_offset", 0), 0, 0, 180)
         meta = self.data.get("body_cycle_state")
         meta = dict(meta) if isinstance(meta, dict) else {}
         if offset <= 0:
@@ -9271,7 +9274,7 @@ class DailyStateMixin(DailyStateTickMixin):
             conditions = self._synchronize_body_cycle_strategy(conditions, now)
             conditions = self._repair_body_cycle_conditions(conditions, now)
             if not self._advanced_cycle_enabled() or not bool(
-                getattr(self, "advanced_cycle_discomfort_simulation", False)
+                runtime_persona_setting(self, "advanced_cycle_discomfort_simulation", False)
             ):
                 before_count = len(conditions)
                 conditions = [
@@ -9770,14 +9773,14 @@ class DailyStateMixin(DailyStateTickMixin):
         )
 
     def _is_daily_plan_due(self) -> bool:
-        plan_minutes = self._parse_hhmm_to_minutes(self.daily_plan_time)
+        plan_minutes = self._parse_hhmm_to_minutes(runtime_persona_setting(self, "daily_plan_time", "07:30"))
         if plan_minutes is None:
             plan_minutes = 7 * 60 + 30
         now = self._environment_now()
         return now.hour * 60 + now.minute >= plan_minutes
 
     def _daily_plan_due_minutes(self) -> int:
-        plan_minutes = self._parse_hhmm_to_minutes(self.daily_plan_time)
+        plan_minutes = self._parse_hhmm_to_minutes(runtime_persona_setting(self, "daily_plan_time", "07:30"))
         if plan_minutes is None:
             return 7 * 60 + 30
         return plan_minutes
@@ -10194,7 +10197,7 @@ class DailyStateMixin(DailyStateTickMixin):
     def _format_history_item_for_summary(self, item: dict[str, Any]) -> str:
         role = _single_line(item.get("role") or item.get("type") or item.get("speaker"), 20).lower()
         if role in {"assistant", "bot", "ai"}:
-            speaker = f"{self.bot_name}(Bot回复)"
+            speaker = f"{runtime_persona_setting(self, 'bot_name', '小星')}(Bot回复)"
         elif role in {"user", "human"}:
             speaker = "用户"
         else:
@@ -10616,7 +10619,7 @@ class DailyStateMixin(DailyStateTickMixin):
 
     def _persona_state_profile(self) -> dict[str, bool]:
         prompt = self._get_default_persona_prompt()
-        role_prompt = str(getattr(self, "schedule_persona_prompt", "") or "")
+        role_prompt = str(runtime_persona_setting(self, "schedule_persona_prompt", "") or "")
         text = unicodedata.normalize("NFKC", f"{prompt}\n{role_prompt}").lower()
         compact = re.sub(r"\s+", "", text)
 
@@ -10642,9 +10645,9 @@ class DailyStateMixin(DailyStateTickMixin):
         has_strong_non_human = has_any(strong_non_human_markers)
         soft_non_human_hits = sum(1 for marker in soft_non_human_markers if marker in text)
         is_non_human = (has_strong_non_human or soft_non_human_hits >= 2) and not has_human_markers
-        allow_health = bool(getattr(self, "enable_health_state", True))
-        allow_hunger = bool(getattr(self, "enable_hunger_state", True))
-        allow_cycle = bool(getattr(self, "enable_cycle_state", True))
+        allow_health = bool(runtime_persona_setting(self, "enable_health_state", True))
+        allow_hunger = bool(runtime_persona_setting(self, "enable_hunger_state", True))
+        allow_cycle = bool(runtime_persona_setting(self, "enable_cycle_state", True))
         return {
             "non_human": is_non_human or has_bodyless_markers,
             "allow_health": allow_health,
@@ -10925,7 +10928,7 @@ class DailyStateMixin(DailyStateTickMixin):
         for segment in self._collect_detail_segments(plan, {}):
             start = _safe_int(segment.get("start"), 0)
             end = _safe_int(segment.get("end"), self._segment_end_minutes(start, segment.get("item")))
-            lead = max(0, self.detail_enhancement_lead_minutes)
+            lead = max(0, _safe_int(runtime_persona_setting(self, "detail_enhancement_lead_minutes", 3), 3, 0))
             if start - lead <= now_minutes < end:
                 return segment
         return None
@@ -10982,11 +10985,11 @@ class DailyStateMixin(DailyStateTickMixin):
         return runtime
 
     def _sleep_awake_grace_seconds(self) -> int:
-        grace_minutes = _safe_int(getattr(self, "rest_reply_awake_grace_minutes", 30), 30, 0)
+        grace_minutes = _safe_int(runtime_persona_setting(self, "rest_reply_awake_grace_minutes", 30), 30, 0)
         return max(0, min(240, grace_minutes)) * 60
 
     def _sleep_rest_window_active(self) -> bool:
-        if not bool(getattr(self, "enable_rest_reply_simulation", False)):
+        if not bool(runtime_persona_setting(self, "enable_rest_reply_simulation", False)):
             return True
         checker = getattr(self, "_rest_reply_window_active", None)
         if callable(checker):
@@ -12131,10 +12134,10 @@ class DailyStateMixin(DailyStateTickMixin):
         return {"phase": phase, **profile}
 
     def _active_body_cycle_profile(self, state_or_text: Any) -> dict[str, str]:
-        humanized_states = getattr(self, "enable_humanized_states", None)
+        humanized_states = runtime_persona_setting(self, "enable_humanized_states", True)
         if humanized_states is not None and not bool(humanized_states):
             return {}
-        configured = getattr(self, "enable_cycle_state", None)
+        configured = runtime_persona_setting(self, "enable_cycle_state", True)
         if configured is not None and not bool(configured):
             return {}
 
@@ -12834,7 +12837,7 @@ class DailyStateMixin(DailyStateTickMixin):
         )
 
     def _format_hidden_creative_context_for_reply(self, inbound_text: str, user: dict[str, Any] | None = None) -> str:
-        if not self.enable_creative_writing:
+        if not runtime_persona_setting(self, "enable_creative_writing", True):
             return ""
         recent_share_context = self._format_recent_creative_share_snapshot_for_reply(user, inbound_text)
         if recent_share_context:
@@ -12954,11 +12957,11 @@ class DailyStateMixin(DailyStateTickMixin):
 
     def _skill_growth_persona_text(self) -> str:
         return "\n".join(part for part in (
-            self.bot_name,
+            runtime_persona_setting(self, "bot_name", "小星"),
             self._get_default_persona_prompt(),
-            self.schedule_persona_prompt,
-            self.schedule_worldview_prompt,
-            self.worldview_adaptation_prompt,
+            runtime_persona_setting(self, "schedule_persona_prompt", ""),
+            runtime_persona_setting(self, "schedule_worldview_prompt", ""),
+            runtime_persona_setting(self, "worldview_adaptation_prompt", ""),
             " ".join(str(item) for item in self.data.get("can_do", []) if item),
         ) if part)
 
@@ -12970,7 +12973,7 @@ class DailyStateMixin(DailyStateTickMixin):
             if not any(item["name"] == name for item in catalog):
                 catalog.append({"name": name, "category": category, "keywords": keywords})
 
-        for raw in re.split(r"[,，、\n]+", str(self.skill_growth_custom_skills or "")):
+        for raw in re.split(r"[,，、\n]+", str(runtime_persona_setting(self, "skill_growth_custom_skills", "") or "")):
             name = _single_line(raw, 24)
             if name:
                 add(name, "自定义", [name])
@@ -13014,7 +13017,7 @@ class DailyStateMixin(DailyStateTickMixin):
         return catalog[:24]
 
     def _skill_growth_stable_bonus(self, name: str, text: str) -> float:
-        seed = f"{self.bot_name}|{name}|{hashlib.sha1(text.encode('utf-8', errors='ignore')).hexdigest()[:12]}"
+        seed = f"{runtime_persona_setting(self, 'bot_name', '小星')}|{name}|{hashlib.sha1(text.encode('utf-8', errors='ignore')).hexdigest()[:12]}"
         bonus = float(int(hashlib.sha1(seed.encode("utf-8")).hexdigest()[:6], 16) % 60)
         if name and name in text:
             bonus += 55
@@ -13141,7 +13144,7 @@ class DailyStateMixin(DailyStateTickMixin):
         return False
 
     async def _maybe_settle_skill_growth(self, *, force: bool = False) -> None:
-        if not self.enable_skill_growth_simulation:
+        if not runtime_persona_setting(self, "enable_skill_growth_simulation", True):
             return
         now_ts = _now_ts()
         async with self._data_lock:
@@ -13194,7 +13197,7 @@ class DailyStateMixin(DailyStateTickMixin):
                     if weight <= 0:
                         continue
                     old_level = _safe_int(skill.get("level"), 1, 1)
-                    gained = round(max(0.25, weight * 4.0 * float(self.skill_growth_rate or 1.0)), 2)
+                    gained = round(max(0.25, weight * 4.0 * float(runtime_persona_setting(self, "skill_growth_rate", 1.0) or 1.0)), 2)
                     skill["exp"] = round(_safe_float(skill.get("exp"), 0) + gained, 2)
                     new_level = self._skill_level_from_exp(_safe_float(skill.get("exp"), 0))
                     skill["level"] = new_level
@@ -13328,7 +13331,7 @@ class DailyStateMixin(DailyStateTickMixin):
         )
 
     def _format_personal_goals_schedule_context(self, limit: int = 5) -> str:
-        if not bool(getattr(self, "enable_personal_goals", True)):
+        if not bool(runtime_persona_setting(self, "enable_personal_goals", True)):
             return ""
         goals = self.data.get("personal_goals") if isinstance(self.data.get("personal_goals"), list) else []
         active = [goal for goal in goals if isinstance(goal, dict) and self._personal_goal_status(goal.get("status")) == "active"]
@@ -13346,7 +13349,7 @@ class DailyStateMixin(DailyStateTickMixin):
         return "\n".join(lines)
 
     async def _maybe_settle_personal_goals(self, *, force: bool = False) -> None:
-        if not bool(getattr(self, "enable_personal_goals", True)):
+        if not bool(runtime_persona_setting(self, "enable_personal_goals", True)):
             return
         now = _now_ts()
         async with self._data_lock:
@@ -13441,7 +13444,7 @@ class DailyStateMixin(DailyStateTickMixin):
                         changed = True
                     processed.append(key)
                     changed = True
-            stall_seconds = max(1, _safe_int(getattr(self, "personal_goal_stall_days", 3), 3, 1, 30)) * 86400
+            stall_seconds = max(1, _safe_int(runtime_persona_setting(self, "personal_goal_stall_days", 3), 3, 1, 30)) * 86400
             for goal in goals:
                 if not isinstance(goal, dict) or self._personal_goal_status(goal.get("status")) != "active":
                     continue
@@ -13452,7 +13455,7 @@ class DailyStateMixin(DailyStateTickMixin):
                     goal["pending_share_event"] = {"kind": "stalled", "evidence": f"已连续 {max(1, int((now - last_progress) / 86400))} 天没有匹配到真实推进"}
                     changed = True
             del processed[:-160]
-            cooldown_hours = min(168.0, max(1.0, _safe_float(getattr(self, "personal_goal_share_cooldown_hours", 12.0), 12.0)))
+            cooldown_hours = min(168.0, max(1.0, _safe_float(runtime_persona_setting(self, "personal_goal_share_cooldown_hours", 12.0), 12.0)))
             cooldown = cooldown_hours * 3600
             pending_events = [
                 (goal, goal.get("pending_share_event"))
@@ -13483,7 +13486,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 )
 
     def _format_skill_growth_for_prompt(self, limit: int = 8) -> str:
-        if not self.enable_skill_growth_simulation:
+        if not runtime_persona_setting(self, "enable_skill_growth_simulation", True):
             return ""
         state = self.data.get("skill_growth") if isinstance(self.data.get("skill_growth"), dict) else {}
         skills = state.get("skills") if isinstance(state.get("skills"), dict) else {}
@@ -13501,7 +13504,7 @@ class DailyStateMixin(DailyStateTickMixin):
         return "\n".join(lines)
 
     def _format_skill_growth_for_user_text(self, text: str, limit: int = 3) -> str:
-        if not self.enable_skill_growth_simulation:
+        if not runtime_persona_setting(self, "enable_skill_growth_simulation", True):
             return ""
         query = _single_line(text, 500)
         if not query:
@@ -13540,9 +13543,9 @@ class DailyStateMixin(DailyStateTickMixin):
         return "\n".join(lines)
 
     def _format_skill_growth_schedule_context(self, limit: int = 8) -> str:
-        if not self.enable_skill_growth_simulation or not self.enable_skill_growth_schedule_influence:
+        if not runtime_persona_setting(self, "enable_skill_growth_simulation", True) or not runtime_persona_setting(self, "enable_skill_growth_schedule_influence", True):
             return ""
-        strength = max(0.0, min(1.0, _safe_float(self.skill_growth_schedule_influence_strength, 0.35)))
+        strength = max(0.0, min(1.0, _safe_float(runtime_persona_setting(self, "skill_growth_schedule_influence_strength", 0.35), 0.35)))
         if strength <= 0:
             return ""
         state = self.data.get("skill_growth") if isinstance(self.data.get("skill_growth"), dict) else {}
@@ -14104,8 +14107,8 @@ class DailyStateMixin(DailyStateTickMixin):
         if max_intensity >= 3:
             persona_text = " ".join(
                 (
-                    str(getattr(self, "schedule_persona_prompt", "") or ""),
-                    str(getattr(self, "persona_proactive_voice_prompt", "") or ""),
+                    str(runtime_persona_setting(self, "schedule_persona_prompt", "") or ""),
+                    str(runtime_persona_setting(self, "persona_proactive_voice_prompt", "") or ""),
                     str(current_user.get("style") or ""),
                 )
             )
@@ -15385,7 +15388,7 @@ class DailyStateMixin(DailyStateTickMixin):
         normalized = _single_line(name, 32).casefold()
         if not normalized:
             return False
-        known_names = [_single_line(getattr(self, "bot_name", ""), 80)]
+        known_names = [_single_line(runtime_persona_setting(self, "bot_name", "小星"), 80)]
         data = getattr(self, "data", {})
         users = data.get("users") if isinstance(data, dict) else None
         if isinstance(users, dict):
@@ -15399,8 +15402,8 @@ class DailyStateMixin(DailyStateTickMixin):
         if any(candidate and candidate.casefold() == normalized for candidate in known_names):
             return True
         persona_sources = (
-            getattr(self, "schedule_persona_prompt", ""),
-            getattr(self, "schedule_worldview_prompt", ""),
+            runtime_persona_setting(self, "schedule_persona_prompt", ""),
+            runtime_persona_setting(self, "schedule_worldview_prompt", ""),
             getattr(self, "_default_persona_prompt_cache", ""),
         )
         boundary = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(normalized)}(?![A-Za-z0-9_])", re.IGNORECASE)
@@ -15496,8 +15499,8 @@ class DailyStateMixin(DailyStateTickMixin):
 
     def _daily_plan_relationship_authority_sources(self) -> tuple[str, ...]:
         sources = [
-            str(getattr(self, "schedule_persona_prompt", "") or ""),
-            str(getattr(self, "schedule_worldview_prompt", "") or ""),
+            str(runtime_persona_setting(self, "schedule_persona_prompt", "") or ""),
+            str(runtime_persona_setting(self, "schedule_worldview_prompt", "") or ""),
             str(getattr(self, "_default_persona_prompt_cache", "") or ""),
         ]
         getter = getattr(self, "_get_default_persona_prompt", None)
@@ -16773,7 +16776,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 }
             )
         items = sorted(items, key=lambda item: self._parse_hhmm_to_minutes(item["time"]) or 0)
-        items = items[: self.daily_plan_item_count]
+        items = items[: _safe_int(runtime_persona_setting(self, "daily_plan_item_count", 10), 10, 1)]
         self._normalize_plan_item_intervals(items)
         # Pass every generated item through the C3 write gate.  LLM fields such
         # as status, source_refs, authority and evidence are never trusted;
@@ -16816,7 +16819,7 @@ class DailyStateMixin(DailyStateTickMixin):
         return start
 
     def _skill_levels_for_plan_bounds(self) -> dict[str, int]:
-        if not self.enable_skill_growth_simulation or not self.enable_skill_growth_schedule_influence:
+        if not runtime_persona_setting(self, "enable_skill_growth_simulation", True) or not runtime_persona_setting(self, "enable_skill_growth_schedule_influence", True):
             return {}
         state = self.data.get("skill_growth") if isinstance(self.data.get("skill_growth"), dict) else {}
         skills = state.get("skills") if isinstance(state.get("skills"), dict) else {}
@@ -17160,7 +17163,7 @@ class DailyStateMixin(DailyStateTickMixin):
             return "今天还没有日程。"
         source = "模型生成" if plan.get("source") == "llm" else "备用日程"
         lines = [
-            f"{self.bot_name} 今天的日程（{plan.get('date', _today_key())},{source}）："
+            f"{runtime_persona_setting(self, 'bot_name', '小星')} 今天的日程（{plan.get('date', _today_key())},{source}）："
         ]
         state = self.data.get("daily_state", {})
         if isinstance(state, dict) and state.get("date") == plan.get("date"):

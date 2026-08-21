@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Any
 
 from .helpers import _now_ts, _safe_float, _safe_int, _single_line, _today_key
+from .persona_config import runtime_persona_setting
 
 
 _ABSTRACT_DREAM_FRAGMENT_MARKERS = (
@@ -552,13 +553,13 @@ def dream_theme_specs(plugin) -> list[tuple[str, str]]:
         "怀旧": "梦会把旧场景、旧物件、旧关系轻轻翻出来，但不一定讲得明白。",
         "暧昧春梦": "梦里会有一点亲密、靠近、心跳变快的错觉，但保持含蓄，不写露骨内容。",
     }
-    raw = str(plugin.dream_theme_candidates or "").strip()
+    raw = str(runtime_persona_setting(plugin, "dream_theme_candidates", "温柔日常,奇幻,恐怖,追逐,悬疑,荒诞,怀旧,暧昧春梦") or "").strip()
     names = [name.strip() for name in raw.split(",") if name.strip()]
     if not names:
         names = list(default_specs.keys())
     specs: list[tuple[str, str]] = []
     for name in names:
-        if name == "暧昧春梦" and not plugin.enable_intimate_dream_theme:
+        if name == "暧昧春梦" and not runtime_persona_setting(plugin, "enable_intimate_dream_theme", False):
             continue
         specs.append((name, default_specs.get(name, f"梦整体偏{name}，但仍然要从具体生活碎片出发,保留一条能读懂的梦内情绪线。")))
     if not specs:
@@ -584,7 +585,7 @@ async def generate_enhanced_dream_pick(plugin, weather: dict[str, Any] | None = 
     primary_name, primary_hint = random.choice(dream_themes)
     theme_name = primary_name
     theme_hint = primary_hint
-    if plugin.enable_mixed_dream_themes and len(dream_themes) >= 2 and random.random() < 0.35:
+    if runtime_persona_setting(plugin, "enable_mixed_dream_themes", True) and len(dream_themes) >= 2 and random.random() < 0.35:
         alt_name, alt_hint = random.choice([item for item in dream_themes if item[0] != primary_name])
         theme_name = f"{primary_name}+{alt_name}"
         theme_hint = f"主调偏{primary_name}，但中途会混进一点{alt_name}的质感。{primary_hint} 同时，{alt_hint}"
@@ -809,7 +810,7 @@ def _daily_diary_evidence_ledger(plugin) -> tuple[str, list[dict[str, str]]]:
 
 
 def _daily_diary_form_instruction(plugin, evidence: list[dict[str, str]]) -> tuple[str, str]:
-    configured = str(getattr(plugin, "daily_diary_form", "auto") or "auto").strip().lower()
+    configured = str(runtime_persona_setting(plugin, "daily_diary_form", "auto") or "auto").strip().lower()
     forms = {
         "scene": "场景短记：围绕一个确有依据的场景写清当时的动作和注意力变化。",
         "fragments": "碎片手记：允许两到四个短段或断句，不强求完整起承转合，但彼此要有同一天的气息。",
@@ -825,12 +826,12 @@ def _daily_diary_form_instruction(plugin, evidence: list[dict[str, str]]) -> tup
 
 
 def _daily_diary_length_instruction(plugin) -> tuple[int, int]:
-    mode = str(getattr(plugin, "daily_diary_length", "standard") or "standard").strip().lower()
+    mode = str(runtime_persona_setting(plugin, "daily_diary_length", "standard") or "standard").strip().lower()
     return {"short": (60, 130), "long": (180, 360)}.get(mode, (110, 240))
 
 
 def _daily_diary_creativity_instruction(plugin) -> str:
-    mode = str(getattr(plugin, "daily_diary_creativity", "balanced") or "balanced").strip().lower()
+    mode = str(runtime_persona_setting(plugin, "daily_diary_creativity", "balanced") or "balanced").strip().lower()
     if mode == "strict":
         return "严格写实：只写已确认发生的事实；材料不足就写短，不补场景。"
     if mode == "expressive":
@@ -979,7 +980,7 @@ async def _extract_daily_diary_derivatives(plugin, payload: dict[str, Any]) -> d
     body = _single_line(payload.get("body"), 700)
     if not body:
         return {}
-    share_enabled = bool(getattr(plugin, "daily_diary_generate_share_seed", True))
+    share_enabled = bool(runtime_persona_setting(plugin, "daily_diary_generate_share_seed", True))
     prompt = f"""
 请从这篇已经写好的私人日记中提取后台结构，不要改写日记正文，也不要新增事件。
 
@@ -1013,15 +1014,15 @@ async def generate_daily_diary(plugin) -> dict[str, Any]:
     today = _today_key()
     state = plugin.data.get("daily_state", {})
     persona = plugin._get_default_persona_prompt()
-    schedule_persona = _single_line(getattr(plugin, "schedule_persona_prompt", ""), 1200)
-    schedule_worldview = _single_line(getattr(plugin, "schedule_worldview_prompt", ""), 1200)
+    schedule_persona = _single_line(runtime_persona_setting(plugin, "schedule_persona_prompt", ""), 1200)
+    schedule_worldview = _single_line(runtime_persona_setting(plugin, "schedule_worldview_prompt", ""), 1200)
     calendar_context = plugin._format_calendar_context_for_prompt()
     recent_diary_avoid_context = _recent_diary_avoid_context(plugin)
     evidence_text, evidence = _daily_diary_evidence_ledger(plugin)
     diary_form, form_instruction = _daily_diary_form_instruction(plugin, evidence)
     min_chars, max_chars = _daily_diary_length_instruction(plugin)
     creativity_instruction = _daily_diary_creativity_instruction(plugin)
-    custom_direction = _single_line(getattr(plugin, "daily_diary_custom_direction", ""), 500)
+    custom_direction = _single_line(runtime_persona_setting(plugin, "daily_diary_custom_direction", ""), 500)
     continuity_memory_context = ""
     memory_composer = getattr(plugin, "_memory_companion_compose_feature_context", None)
     if callable(memory_composer):
@@ -1152,7 +1153,7 @@ async def generate_daily_diary(plugin) -> dict[str, Any]:
     derivatives = {} if used_fallback else await _extract_daily_diary_derivatives(plugin, payload)
     if not isinstance(derivatives, dict):
         derivatives = {}
-    share_seed = _single_line(derivatives.get("share_seed"), 120) if getattr(plugin, "daily_diary_generate_share_seed", True) else ""
+    share_seed = _single_line(derivatives.get("share_seed"), 120) if runtime_persona_setting(plugin, "daily_diary_generate_share_seed", True) else ""
     continuity_thread = derivatives.get("continuity_thread") if isinstance(derivatives.get("continuity_thread"), dict) else {}
     derivative_payload = {
         "dream_fragments": derivatives.get("dream_fragments", []),

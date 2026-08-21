@@ -31,6 +31,7 @@ from astrbot.core.astr_main_agent import MainAgentBuildConfig, build_main_agent
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from .helpers import _missing_optional_model_dependency, _now_ts, _safe_float, _safe_int, _single_line, _strip_internal_message_blocks, _today_key, _url_host_is_public
+from .persona_config import runtime_persona_setting
 from .segmented_message import (
     component_kind,
     component_order_from_owner,
@@ -58,6 +59,10 @@ class _PublicOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 class PrivateImageMixin:
     """Methods split from main.PrivateCompanionPlugin."""
+
+    def _private_image_setting(self, key: str, default: Any = None) -> Any:
+        """Read a config key in the active persona without mutating shared attrs."""
+        return runtime_persona_setting(self, key, default)
 
     def _private_image_framework_context(self) -> Any | None:
         resolver = getattr(self, "_proactive_framework_context", None)
@@ -844,7 +849,7 @@ class PrivateImageMixin:
         scope: str = "private_image",
         allow_image_key_fallback: bool = True,
     ) -> str:
-        if not bool(getattr(self, "enable_private_image_vision_cache", True)):
+        if not bool(self._private_image_setting("enable_private_image_vision_cache", True)):
             return ""
         cache = self._private_image_vision_cache_store()
         clean_image_keys = [str(item).strip() for item in (image_keys or []) if str(item or "").strip()]
@@ -944,7 +949,7 @@ class PrivateImageMixin:
         scope: str = "private_image",
         preview: dict[str, Any] | None = None,
     ) -> None:
-        if not bool(getattr(self, "enable_private_image_vision_cache", True)):
+        if not bool(self._private_image_setting("enable_private_image_vision_cache", True)):
             return
         cleaned = _single_line(text, 900 if scope == "forward_image" else self._private_image_vision_text_limit(image_count))
         if not cache_key or not cleaned:
@@ -1019,7 +1024,7 @@ class PrivateImageMixin:
         cache[cache_key] = item
         if removed_variants:
             self._record_cache_metric(f"image_vision:{scope}", hit=True, detail=f"dedupe:{removed_variants}")
-        max_items = int(getattr(self, "private_image_vision_cache_max_items", 300) or 0)
+        max_items = int(self._private_image_setting("private_image_vision_cache_max_items", 300) or 0)
         if max_items > 0 and len(cache) > max_items:
             stale = sorted(
                 cache.items(),
@@ -1153,7 +1158,7 @@ class PrivateImageMixin:
         prompt = str(provider_settings.get("image_caption_prompt") or "").strip()
         fallback_key = self._private_image_visual_provider_card_key()
         plugin_provider_id = _single_line(
-            getattr(self, "plugin_vision_provider_id", ""),
+            self._private_image_setting("PLUGIN_VISION_PROVIDER_ID", getattr(self, "plugin_vision_provider_id", "")),
             160,
         )
         fallback_getter = getattr(self, "_model_fallback_provider_id", None)
@@ -1303,7 +1308,7 @@ class PrivateImageMixin:
         ordered: list[tuple[str, str, str]] = []
         used: set[str] = set()
         priority = self._normalize_private_image_vision_provider_priority(
-            getattr(self, "private_image_vision_provider_priority", "astrbot_first")
+            self._private_image_setting("private_image_vision_provider_priority", "astrbot_first")
         )
         base_ordered = list(base)
         if priority == "plugin_first":
@@ -1380,7 +1385,7 @@ class PrivateImageMixin:
 
     def _private_image_provider_in_failure_cooldown(self, provider_id: str, provider_source: str = "") -> bool:
         cooldown = _safe_float(
-            getattr(self, "private_image_provider_failure_cooldown_seconds", 0.0),
+            self._private_image_setting("private_image_provider_failure_cooldown_seconds", 0.0),
             0.0,
             0.0,
         )
@@ -1399,7 +1404,7 @@ class PrivateImageMixin:
     def _mark_private_image_provider_failure(self, provider_id: str, provider_source: str, exc: Exception | str, *, task: str) -> None:
         key = self._private_image_provider_failure_key(provider_id, provider_source)
         cooldown = _safe_float(
-            getattr(self, "private_image_provider_failure_cooldown_seconds", 0.0),
+            self._private_image_setting("private_image_provider_failure_cooldown_seconds", 0.0),
             0.0,
             0.0,
             3600.0,
@@ -1488,7 +1493,7 @@ class PrivateImageMixin:
         failures.sort(**{"key": failure_until_sort_key, "reverse": True})
         return {
             "priority": self._normalize_private_image_vision_provider_priority(
-                getattr(self, "private_image_vision_provider_priority", "astrbot_first")
+                self._private_image_setting("private_image_vision_provider_priority", "astrbot_first")
             ),
             "last_success": {
                 "provider_id": _single_line(last_success.get("provider_id"), 160),
@@ -1524,7 +1529,7 @@ class PrivateImageMixin:
 
     def _group_generated_image_review_prompt(self) -> str:
         sensitivity = _single_line(
-            getattr(self, "group_nsfw_image_review_sensitivity", "balanced"), 32
+            self._private_image_setting("group_nsfw_image_review_sensitivity", "balanced"), 32
         ).lower()
         sensitivity_rules = {
             "relaxed": (
@@ -1541,7 +1546,7 @@ class PrivateImageMixin:
             ),
         }
         custom_rule = _single_line(
-            getattr(self, "group_nsfw_image_review_custom_prompt", ""), 1200
+            self._private_image_setting("group_nsfw_image_review_custom_prompt", ""), 1200
         )
         custom_section = (
             "管理员补充的可见内容审核规则：" + custom_rule
@@ -1563,7 +1568,7 @@ class PrivateImageMixin:
 
     def _prepare_group_generated_image_review_sources(self, sources: list[str]) -> list[str]:
         max_dimension = _safe_int(
-            getattr(self, "group_nsfw_image_review_max_dimension", 1280),
+            self._private_image_setting("group_nsfw_image_review_max_dimension", 1280),
             1280,
             0,
             4096,
@@ -1650,11 +1655,11 @@ class PrivateImageMixin:
             return {"label": "unavailable", "reason": "图片无法转换为审核模型输入"}
 
         prompt = self._group_generated_image_review_prompt()
-        review_mode = _single_line(getattr(self, "group_nsfw_image_review_mode", "single"), 20).lower()
+        review_mode = _single_line(self._private_image_setting("group_nsfw_image_review_mode", "single"), 20).lower()
         if review_mode not in {"single", "dual"}:
             review_mode = "single"
         min_confidence = _safe_float(
-            getattr(self, "group_nsfw_image_review_min_confidence", 0.7),
+            self._private_image_setting("group_nsfw_image_review_min_confidence", 0.7),
             0.7,
             0.0,
             1.0,
@@ -1715,7 +1720,7 @@ class PrivateImageMixin:
                     continue
                 result = await asyncio.wait_for(
                     provider.text_chat(prompt=prompt, image_urls=image_urls, max_tokens=80),
-                    timeout=max(3.0, min(float(getattr(self, "group_nsfw_image_review_timeout_seconds", 8.0) or 8.0), 30.0)),
+                    timeout=max(3.0, min(float(self._private_image_setting("group_nsfw_image_review_timeout_seconds", 8.0) or 8.0), 30.0)),
                 )
                 raw_text = str(getattr(result, "completion_text", result) or "").strip()
                 payload = self._extract_json_payload(raw_text) if callable(getattr(self, "_extract_json_payload", None)) else {}
@@ -1866,7 +1871,7 @@ class PrivateImageMixin:
             group_id = self._extract_group_id_from_event(event)
         except Exception:
             group_id = ""
-        if not group_id or not bool(getattr(self, "enable_group_nsfw_private_fallback", False)):
+        if not group_id or not bool(self._private_image_setting("enable_group_nsfw_private_fallback", False)):
             sent, error, uncertain = await send_to_current_event()
             return {
                 "sent": sent,
@@ -1905,7 +1910,7 @@ class PrivateImageMixin:
                 ),
             }
         failure_action = _single_line(
-            getattr(self, "group_nsfw_image_review_failure_action", "private"), 20
+            self._private_image_setting("group_nsfw_image_review_failure_action", "private"), 20
         ).lower()
         if label in {"uncertain", "unavailable"} and failure_action == "block":
             return {
@@ -1959,9 +1964,9 @@ class PrivateImageMixin:
         if callable(timeout_getter) and clean_source != "astrbot_image_caption":
             provider_key = self._private_image_visual_provider_card_key()
             configured_provider_id = (
-                str(getattr(self, "plugin_vision_provider_id", "") or "")
+                str(self._private_image_setting("PLUGIN_VISION_PROVIDER_ID", getattr(self, "plugin_vision_provider_id", "")) or "")
                 if provider_key == "PLUGIN_VISION_PROVIDER_ID"
-                else str(getattr(self, "narration_provider_id", "") or "")
+                else str(self._private_image_setting("NARRATION_PROVIDER_ID", getattr(self, "narration_provider_id", "")) or "")
             )
             override = timeout_getter(
                 task="private_image_vision",
@@ -1970,7 +1975,7 @@ class PrivateImageMixin:
             )
             if override is not None:
                 return max(3.0, float(override))
-        configured = _safe_float(getattr(self, "private_image_provider_timeout_seconds", 12.0), 12.0, 0.0)
+        configured = _safe_float(self._private_image_setting("private_image_provider_timeout_seconds", 12.0), 12.0, 0.0)
         if configured <= 0:
             return 0.0
         return max(3.0, configured)
@@ -1978,7 +1983,7 @@ class PrivateImageMixin:
     def _private_image_vision_wait_budget_seconds(self) -> float:
         return max(
             0.0,
-            _safe_float(getattr(self, "private_image_vision_wait_seconds", 30.0), 30.0, 0.0),
+            _safe_float(self._private_image_setting("private_image_vision_wait_seconds", 30.0), 30.0, 0.0),
         )
 
     def _private_image_model_image_items(self, image_sources: list[str]) -> list[tuple[str, str]]:
@@ -1988,8 +1993,8 @@ class PrivateImageMixin:
     def _private_image_model_image_items_with_meta(self, image_sources: list[str]) -> tuple[list[tuple[str, str]], int, bool]:
         image_items: list[tuple[str, str]] = []
         seen_image_keys: set[str] = set()
-        gif_enhancement_enabled = bool(getattr(self, "enable_private_image_gif_enhancement", True))
-        gif_max_frames = max(1, min(8, int(getattr(self, "private_image_gif_max_frames", 4) or 4)))
+        gif_enhancement_enabled = bool(self._private_image_setting("enable_private_image_gif_enhancement", True))
+        gif_max_frames = max(1, min(8, int(self._private_image_setting("private_image_gif_max_frames", 4) or 4)))
         sources = [str(item).strip() for item in (image_sources or []) if str(item or "").strip()][:5]
         max_model_images = max(len(sources), max(8, min(16, len(sources) * 2)))
         pending_gif_frames: list[list[tuple[str, str]]] = []
@@ -2117,7 +2122,7 @@ class PrivateImageMixin:
                         1,
                         min(
                             8,
-                            int(getattr(self, "private_image_gif_max_frames", 4) or 4),
+                            int(self._private_image_setting("private_image_gif_max_frames", 4) or 4),
                         ),
                     ),
                 )
@@ -2332,7 +2337,7 @@ class PrivateImageMixin:
         return any(marker in lowered for marker in markers)
 
     def _private_image_role_self_recognition_hint(self) -> str:
-        raw = str(getattr(self, "private_image_self_recognition_hint", "") or "")
+        raw = str(self._private_image_setting("private_image_self_recognition_hint", "") or "")
         if not raw.strip():
             return ""
         user_labels = (
@@ -2372,9 +2377,9 @@ class PrivateImageMixin:
     def _private_image_self_recognition_context_prompt(self) -> str:
         if not self._private_image_enhancement_enabled():
             return ""
-        bot_name = _single_line(getattr(self, "bot_name", ""), 40)
+        bot_name = _single_line(self._private_image_setting("bot_name", ""), 40)
         default_persona = self._private_image_default_persona_prompt()
-        schedule_persona = str(getattr(self, "schedule_persona_prompt", "") or "")
+        schedule_persona = str(self._private_image_setting("schedule_persona_prompt", "") or "")
         custom_hint = self._private_image_role_self_recognition_hint()
         visual_profile_parts = self._private_image_visual_profile_parts(default_persona, schedule_persona)
         visual_profile = "\n".join(visual_profile_parts)
@@ -2404,7 +2409,7 @@ class PrivateImageMixin:
                 return bool(checker("enable_private_image_self_recognition"))
             except Exception:
                 pass
-        return bool(getattr(self, "enable_private_image_self_recognition", True))
+        return bool(self._private_image_setting("enable_private_image_self_recognition", True))
 
     def _private_image_visual_profile_parts(self, default_persona: str = "", schedule_persona: str = "") -> list[str]:
         labels = (
@@ -2511,7 +2516,7 @@ class PrivateImageMixin:
 
     def _private_image_role_visual_text(self) -> str:
         default_persona = self._private_image_default_persona_prompt()
-        schedule_persona = str(getattr(self, "schedule_persona_prompt", "") or "")
+        schedule_persona = str(self._private_image_setting("schedule_persona_prompt", "") or "")
         custom_hint = self._private_image_role_self_recognition_hint()
         parts = self._private_image_visual_profile_parts(default_persona, schedule_persona)
         if custom_hint:
@@ -2520,7 +2525,7 @@ class PrivateImageMixin:
 
     def _private_image_direct_role_appearance_prompt(self) -> str:
         lines: list[str] = []
-        bot_name = _single_line(getattr(self, "bot_name", ""), 40)
+        bot_name = _single_line(self._private_image_setting("bot_name", ""), 40)
         visual_text = _single_line(self._private_image_role_visual_text(), 520)
         visual_text = re.sub(r"(?:AstrBot人格|日程角色设定)", "", visual_text)
         if bot_name:
@@ -2544,7 +2549,7 @@ class PrivateImageMixin:
             "兽耳", "猫耳", "狐耳", "角", "尾巴", "翅膀", "光环", "眼镜", "校服", "制服", "女仆装",
         )
         found = [anchor for anchor in anchors if anchor in role_text]
-        name = re.sub(r"\s+", "", _single_line(getattr(self, "bot_name", ""), 40))
+        name = re.sub(r"\s+", "", _single_line(self._private_image_setting("bot_name", ""), 40))
         raw = "|".join([name, *found])
         return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()[:12] if raw.strip("|") else ""
 
@@ -2782,10 +2787,10 @@ class PrivateImageMixin:
 
     def _private_image_vision_text_limit(self, image_count: int = 1) -> int:
         del image_count
-        return _safe_int(getattr(self, "private_image_vision_max_chars", 2400), 2400, 300, 12000)
+        return _safe_int(self._private_image_setting("private_image_vision_max_chars", 2400), 2400, 300, 12000)
 
     def _private_image_custom_vision_prompt(self) -> str:
-        return str(getattr(self, "private_image_vision_custom_prompt", "") or "").strip()[:12000]
+        return str(self._private_image_setting("private_image_vision_custom_prompt", "") or "").strip()[:12000]
 
     def _private_image_resolve_visual_prompt(
         self,
@@ -3244,7 +3249,7 @@ class PrivateImageMixin:
                 add(self._image_component_source(component))
             except Exception:
                 continue
-        limit = max(0, _safe_int(getattr(self, "group_image_max_images", 4), 4, 0, 12))
+        limit = max(0, _safe_int(self._private_image_setting("group_image_max_images", 4), 4, 0, 12))
         return sources[:limit] if limit > 0 else []
 
     def _group_image_understanding_task_key(
@@ -3399,7 +3404,7 @@ class PrivateImageMixin:
         sender_id: str = "",
         text: str = "",
     ) -> asyncio.Task | None:
-        if not bool(getattr(self, "enable_group_image_understanding", False)):
+        if not bool(self._private_image_setting("enable_group_image_understanding", False)):
             return None
         group_id = _single_line(group_id, 80)
         if not group_id:
@@ -3512,7 +3517,7 @@ class PrivateImageMixin:
         return ""
 
     def _group_image_cached_summary_from_sources(self, sources: list[str]) -> str:
-        if not bool(getattr(self, "enable_private_image_vision_cache", True)):
+        if not bool(self._private_image_setting("enable_private_image_vision_cache", True)):
             return ""
         clean_sources = [str(item or "").strip() for item in (sources or []) if str(item or "").strip()][:5]
         if not clean_sources:
@@ -3565,7 +3570,7 @@ class PrivateImageMixin:
         return ""
 
     async def _await_group_image_understanding_for_request(self, event: AstrMessageEvent) -> str:
-        understanding_enabled = bool(getattr(self, "enable_group_image_understanding", False))
+        understanding_enabled = bool(self._private_image_setting("enable_group_image_understanding", False))
         group_id_getter = getattr(self, "_extract_group_id_from_event", None)
         group_id = _single_line(group_id_getter(event), 80) if callable(group_id_getter) else ""
         allowed = getattr(self, "_group_enabled_for_event", None)
@@ -3630,7 +3635,7 @@ class PrivateImageMixin:
             else:
                 wait_seconds = max(
                     0.0,
-                    _safe_float(getattr(self, "group_image_vision_wait_seconds", 8.0), 8.0, 0.0, 60.0),
+                    _safe_float(self._private_image_setting("group_image_vision_wait_seconds", 8.0), 8.0, 0.0, 60.0),
                 )
                 if wait_seconds <= 0:
                     return ""
@@ -3641,7 +3646,7 @@ class PrivateImageMixin:
                 "[PrivateCompanion] 群聊回复等待图片理解超时，主链继续且后台任务保留: group=%s message=%s timeout=%.1fs",
                 group_id,
                 message_id or "-",
-                _safe_float(getattr(self, "group_image_vision_wait_seconds", 8.0), 8.0, 0.0, 60.0),
+            _safe_float(self._private_image_setting("group_image_vision_wait_seconds", 8.0), 8.0, 0.0, 60.0),
             )
             return ""
         except asyncio.CancelledError:
@@ -3651,11 +3656,11 @@ class PrivateImageMixin:
             return ""
 
     async def _maybe_group_image_wakeup(self, event: AstrMessageEvent, *, sender_id: str = "") -> dict[str, Any]:
-        if not bool(getattr(self, "enable_group_image_understanding", False)):
+        if not bool(self._private_image_setting("enable_group_image_understanding", False)):
             return {}
-        if not bool(getattr(self, "enable_group_image_wakeup", False)):
+        if not bool(self._private_image_setting("enable_group_image_wakeup", False)):
             return {}
-        if not bool(getattr(self, "enable_group_wakeup_enhancement", False)):
+        if not bool(self._private_image_setting("enable_group_wakeup_enhancement", False)):
             return {}
         try:
             sources = self._group_image_sources_from_event(event)
@@ -4004,7 +4009,7 @@ class PrivateImageMixin:
         for key, expires_at in list(failure_cache.items()):
             if _safe_float(expires_at, 0.0) <= now:
                 failure_cache.pop(key, None)
-        configured_wait = max(0.0, _safe_float(getattr(self, "context_image_caption_timeout_seconds", 30.0), 30.0, 0.0))
+        configured_wait = max(0.0, _safe_float(self._private_image_setting("context_image_caption_timeout_seconds", 30.0), 30.0, 0.0))
         provider_timeout = self._private_image_provider_timeout_seconds()
         vision_budget = self._private_image_vision_wait_budget_seconds()
         wait_seconds = (
@@ -4035,13 +4040,13 @@ class PrivateImageMixin:
     async def _enrich_request_context_image_placeholders(self, event: AstrMessageEvent, req: ProviderRequest) -> dict[str, int]:
         if (
             not self._private_image_enhancement_enabled()
-            or not bool(getattr(self, "enable_context_image_captioning", True))
+            or not bool(self._private_image_setting("enable_context_image_captioning", True))
         ):
             return {"contexts": 0, "replaced": 0, "missed": 0}
         contexts = getattr(req, "contexts", None)
         if not isinstance(contexts, list) or not contexts:
             return {"contexts": 0, "replaced": 0, "missed": 0}
-        max_items = max(0, _safe_int(getattr(self, "context_image_caption_max_items", 12), 12, 0, 50))
+        max_items = max(0, _safe_int(self._private_image_setting("context_image_caption_max_items", 12), 12, 0, 50))
         if max_items <= 0:
             return {"contexts": len(contexts), "replaced": 0, "missed": 0}
 
@@ -4117,13 +4122,13 @@ class PrivateImageMixin:
         return {"contexts": len(contexts), "replaced": replaced, "missed": missed}
 
     def _message_debounce_seconds(self, kind: str = "text") -> float:
-        if not bool(getattr(self, "enable_message_debounce", getattr(self, "enable_semantic_message_debounce", True))):
+        if not bool(self._private_image_setting("enable_message_debounce", self._private_image_setting("enable_semantic_message_debounce", True))):
             return 0.0
-        text_wait = _safe_float(getattr(self, "text_message_debounce_seconds", 0.0), 0.0, 0.0)
+        text_wait = _safe_float(self._private_image_setting("text_message_debounce_seconds", 0.0), 0.0, 0.0)
         if kind == "image":
-            return max(0.0, _safe_float(getattr(self, "image_message_debounce_seconds", 8.0), 8.0, 0.0))
+            return max(0.0, _safe_float(self._private_image_setting("image_message_debounce_seconds", 8.0), 8.0, 0.0))
         if kind == "forward":
-            return max(0.0, _safe_float(getattr(self, "forward_message_debounce_seconds", 0.0), 0.0, 0.0))
+            return max(0.0, _safe_float(self._private_image_setting("forward_message_debounce_seconds", 0.0), 0.0, 0.0))
         if kind == "group":
             return max(0.0, text_wait)
         return max(0.0, text_wait)
@@ -4137,7 +4142,7 @@ class PrivateImageMixin:
             return ""
         force_consume = False
         if private_chat:
-            if not bool(getattr(self, "enable_message_debounce", getattr(self, "enable_semantic_message_debounce", True))):
+            if not bool(self._private_image_setting("enable_message_debounce", self._private_image_setting("enable_semantic_message_debounce", True))):
                 return ""
             resolver = getattr(self, "_private_user_id_for_event", None)
             if callable(resolver):
@@ -4182,7 +4187,7 @@ class PrivateImageMixin:
         buffer = buffers.get(key)
         if not isinstance(buffer, dict):
             return ""
-        wait = max(0.0, _safe_float(buffer.get("wait_seconds"), getattr(self, "text_message_debounce_seconds", 0.0), 0.0))
+        wait = max(0.0, _safe_float(buffer.get("wait_seconds"), self._private_image_setting("text_message_debounce_seconds", 0.0), 0.0))
         if wait <= 0:
             return ""
         identity = getattr(self, "_semantic_buffer_identity", None)
@@ -4739,11 +4744,11 @@ class PrivateImageMixin:
         scope_value = (
             scope_getter("scope", event=event, default="proactive_only")
             if callable(scope_getter)
-            else getattr(self, "segmented_proactive_scope", "proactive_only")
+            else self._private_image_setting("segmented_proactive_scope", "proactive_only")
         )
         scope_checker = getattr(self, "_segmented_scope_allows_event", None)
         scope_allowed = bool(scope_checker(event)) if callable(scope_checker) else True
-        should_segment = bool(getattr(self, "enable_segmented_proactive_reply", False)) and (
+        should_segment = bool(self._private_image_setting("enable_segmented_proactive_reply", False)) and (
             str(scope_value or "") == "all_llm"
         ) and scope_allowed
         try:
@@ -4828,7 +4833,7 @@ class PrivateImageMixin:
             except Exception:
                 pass
         has_tts_block = bool(re.search(r"<tts\b[^>]*>.*?</tts>", normalized, flags=re.IGNORECASE | re.DOTALL))
-        if has_tts_block and bool(getattr(self, "enable_tts_enhancement", False)):
+        if has_tts_block and bool(self._private_image_setting("enable_tts_enhancement", False)):
             processor = getattr(self, "_process_tts_tags", None)
             if callable(processor):
                 fallback_plain = re.sub(r"</?t{2,}s\b[^>]*>", "", normalized, flags=re.IGNORECASE).strip()
@@ -5433,7 +5438,7 @@ class PrivateImageMixin:
         feature_enabled = (
             feature_checker("enable_private_image_self_recognition")
             if callable(feature_checker)
-            else bool(getattr(self, "enable_private_image_self_recognition", True))
+            else bool(self._private_image_setting("enable_private_image_self_recognition", True))
         )
         if not feature_enabled:
             logger.info(
@@ -5537,7 +5542,7 @@ class PrivateImageMixin:
             main_provider_supports_image = self._event_main_provider_supports_image(framework_event)
             has_visual_provider = self._has_private_image_visual_provider(umo)
             has_dynamic_gif_sources = (
-                bool(getattr(self, "enable_private_image_gif_enhancement", True))
+                bool(self._private_image_setting("enable_private_image_gif_enhancement", True))
                 and self._private_image_sources_include_gif(raw_image_sources)
             )
             resolved_image_mode = self._private_image_delivery_mode(
