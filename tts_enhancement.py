@@ -3588,6 +3588,7 @@ TTS 朗读文本：
         chunks: list[list[Any]],
         *,
         started_at: float | None = None,
+        primary_delivery_confirmed: bool = False,
     ) -> None:
         if not chunks:
             return
@@ -3667,7 +3668,11 @@ TTS 朗读文本：
             for chunk in expanded_chunks:
                 if not chunk:
                     continue
-                if callable(generation_checker) and not generation_checker(scope, turn_generation):
+                if (
+                    not primary_delivery_confirmed
+                    and callable(generation_checker)
+                    and not generation_checker(scope, turn_generation)
+                ):
                     logger.info(
                         "[PrivateCompanion] 新回合已到达，停止旧 TTS 尾段: session=%s sent=%s/%s",
                         _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
@@ -3688,7 +3693,11 @@ TTS 朗读文本：
                         except Exception:
                             delay = 0.45
                 await asyncio.sleep(delay)
-                if callable(generation_checker) and not generation_checker(scope, turn_generation):
+                if (
+                    not primary_delivery_confirmed
+                    and callable(generation_checker)
+                    and not generation_checker(scope, turn_generation)
+                ):
                     logger.info(
                         "[PrivateCompanion] 等待期间收到新回合，停止旧 TTS 尾段: session=%s",
                         _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",

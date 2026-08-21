@@ -6,8 +6,9 @@ import unittest
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
-from astrbot.api.message_components import Plain
+from astrbot.api.message_components import Plain, Record
 
 from astrbot_plugin_private_companion.main import PrivateCompanionPlugin
 from astrbot_plugin_private_companion.private_image import PrivateImageMixin
@@ -118,7 +119,7 @@ class _TtsRemainderHarness(TtsEnhancementMixin):
 
     @staticmethod
     def _split_tts_chain_for_ordered_send(_chain: list[Any]) -> list[list[Any]]:
-        return [[Plain("voice")], [Plain("caption")]]
+        return [[Record(file="voice.wav")], [Plain("caption")]]
 
     @staticmethod
     def _tts_segment_plain_chunk_for_ordered_send(_event: Any, chunk: list[Any]) -> list[list[Any]]:
@@ -135,6 +136,10 @@ class _TtsRemainderHarness(TtsEnhancementMixin):
     def _create_lifecycle_background_task(self, operation: Any, *, label: str) -> None:
         self.background_jobs.append((operation, label))
 
+    def _create_tts_background_task(self, operation: Any, *, label: str) -> None:
+        self.background_jobs.append((operation, label))
+
+    _reply_turn_generation = PrivateCompanionPlugin._reply_turn_generation
     _reply_turn_is_current = PrivateCompanionPlugin._reply_turn_is_current
 
     @staticmethod
@@ -214,16 +219,25 @@ class BackgroundTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     @staticmethod
     def _tts_remainder_event(*, proactive: bool = False) -> Any:
+        sent: list[Any] = []
         event = SimpleNamespace(
             _private_companion_tts_request_applied=True,
             unified_msg_origin="default:FriendMessage:1",
-            get_result=lambda: SimpleNamespace(chain=[Plain("reply")]),
+            result=SimpleNamespace(chain=[Plain("reply")]),
+            sent=sent,
         )
         if proactive:
             event._private_companion_proactive_delivery_umo = (
                 "default:FriendMessage:1"
             )
         event.set_result = lambda result: setattr(event, "result", result)
+        event.get_result = lambda: event.result
+        event.chain_result = lambda chain: SimpleNamespace(chain=list(chain))
+
+        async def send(result: Any) -> None:
+            sent.append(result)
+
+        event.send = send
         return event
 
     async def test_passive_tts_remainder_waits_for_platform_send_confirmation(self) -> None:
@@ -232,7 +246,7 @@ class BackgroundTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         await harness.apply_tts_enhancement_before_send(event)
 
-        self.assertEqual("voice", event.result.chain[0].text)
+        self.assertIsInstance(event.result.chain[0], Record)
         self.assertEqual([], harness.background_jobs)
         self.assertEqual(
             "caption",
@@ -291,22 +305,67 @@ class BackgroundTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         await harness.apply_tts_enhancement_before_send(event)
 
-        self.assertEqual("voice", event.result.chain[0].text)
+        self.assertIsInstance(event.result.chain[0], Record)
         self.assertEqual("tts_reply_remainder", harness.background_jobs[0][1])
         self.assertFalse(hasattr(event, "_private_companion_tts_reply_remainder"))
         harness.background_jobs[0][0].close()
 
-    async def test_passive_tts_remainder_is_dropped_after_new_inbound_turn(self) -> None:
+    async def test_passive_tts_remainder_is_released_after_generation_state_reset(self) -> None:
         harness = _TtsRemainderHarness()
         event = self._tts_remainder_event()
         event._private_companion_reply_turn_generation = 1
-        harness._reply_turn_generation_by_scope[event.unified_msg_origin] = 2
+        event._has_send_oper = True
+        harness._reply_turn_generation_by_scope[event.unified_msg_origin] = 1
+
+        await harness.apply_tts_enhancement_before_send(event)
+        harness._reply_turn_generation_by_scope.clear()
+        await harness.release_tts_reply_remainder_after_send(event)
+
+        self.assertEqual("tts_reply_remainder", harness.background_jobs[0][1])
+        with patch(
+            "astrbot_plugin_private_companion.tts_enhancement.asyncio.sleep",
+            new=AsyncMock(),
+        ):
+            await harness.background_jobs[0][0]
+        self.assertEqual(["caption"], [item.chain[0].text for item in event.sent])
+
+    async def test_committed_tts_remainder_survives_new_turn_during_wait(self) -> None:
+        harness = _TtsRemainderHarness()
+        event = self._tts_remainder_event()
+        event._private_companion_reply_turn_generation = 1
+        harness._reply_turn_generation_by_scope[event.unified_msg_origin] = 1
         event._has_send_oper = True
 
         await harness.apply_tts_enhancement_before_send(event)
         await harness.release_tts_reply_remainder_after_send(event)
 
-        self.assertEqual([], harness.background_jobs)
+        async def note_new_turn(_delay: float) -> None:
+            harness._reply_turn_generation_by_scope[event.unified_msg_origin] = 2
+
+        with patch(
+            "astrbot_plugin_private_companion.tts_enhancement.asyncio.sleep",
+            new=AsyncMock(side_effect=note_new_turn),
+        ):
+            await harness.background_jobs[0][0]
+        self.assertEqual(["caption"], [item.chain[0].text for item in event.sent])
+
+    async def test_unconfirmed_proactive_tts_remainder_still_stops_after_new_turn(self) -> None:
+        harness = _TtsRemainderHarness()
+        event = self._tts_remainder_event(proactive=True)
+        event._private_companion_reply_turn_generation = 1
+        harness._reply_turn_generation_by_scope[event.unified_msg_origin] = 1
+
+        await harness.apply_tts_enhancement_before_send(event)
+
+        async def note_new_turn(_delay: float) -> None:
+            harness._reply_turn_generation_by_scope[event.unified_msg_origin] = 2
+
+        with patch(
+            "astrbot_plugin_private_companion.tts_enhancement.asyncio.sleep",
+            new=AsyncMock(side_effect=note_new_turn),
+        ):
+            await harness.background_jobs[0][0]
+        self.assertEqual([], event.sent)
 
     async def test_reply_interception_forward_uses_lifecycle_tracker(self) -> None:
         harness = _ReplyInterceptionHarness()
