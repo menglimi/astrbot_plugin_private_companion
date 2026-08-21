@@ -153,6 +153,16 @@ def test_runtime_resolver_reads_sparse_and_explicit_falsy_values():
         assert plugin.get_persona_setting("max_daily_messages", "alt") == plugin.max_daily_messages
 
 
+def test_canonical_provider_setting_uses_runtime_attribute_as_primary_fallback():
+    with tempfile.TemporaryDirectory() as root:
+        plugin = _harness(root)
+        plugin.fast_response_provider_id = "primary-fast"
+        profile = plugin._ensure_persona_profile("alt")
+        assert plugin.get_persona_setting("FAST_RESPONSE_PROVIDER_ID", "alt") == "primary-fast"
+        profile["persona_settings"]["FAST_RESPONSE_PROVIDER_ID"] = "persona-fast"
+        assert plugin.get_persona_setting("FAST_RESPONSE_PROVIDER_ID", "alt") == "persona-fast"
+
+
 def test_stale_window_upsert_is_rejected():
     async def run():
         with tempfile.TemporaryDirectory() as root:

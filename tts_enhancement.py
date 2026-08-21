@@ -1069,12 +1069,26 @@ class TtsEnhancementMixin:
             self.data["runtime_settings"] = settings
         if text.lower() in {"default", "config", "reset", "clear"} or text in {"默认", "配置", "配置页", "重置", "清除", "跟随配置"}:
             settings.pop("tts_voice_language", None)
+            if not bool(getattr(self, "enable_multi_persona_mode", False)) and hasattr(self, "tts_voice_language"):
+                config_value = ""
+                config = getattr(self, "config", {})
+                if isinstance(config, dict):
+                    config_value = config.get("tts_voice_language", "")
+                    for group in config.values():
+                        if isinstance(group, dict) and "tts_voice_language" in group:
+                            config_value = group["tts_voice_language"]
+                            break
+                self.tts_voice_language = self._normalize_tts_voice_language_value(
+                    config_value or self._tts_setting("tts_voice_language", "zh")
+                ) or "zh"
             self._save_data_sync(sections={"runtime_settings"})
             return f"已恢复 TTS 语音语种为配置页设置：{self._tts_language_label()}。"
         lang = self._normalize_tts_voice_language_value(text)
         if not lang:
             return "没认出这个 TTS 语种。可用：日语 / 中文 / 英语；例如：陪伴 TTS语种 日语。"
         settings["tts_voice_language"] = lang
+        if not bool(getattr(self, "enable_multi_persona_mode", False)) and hasattr(self, "tts_voice_language"):
+            self.tts_voice_language = lang
         self._save_data_sync(sections={"runtime_settings"})
         return f"已切换 TTS 语音语种：{self._tts_language_label()}。之后 <tts> 和自动语音转换会按这个语种处理。"
 
