@@ -19,6 +19,7 @@ from .helpers import (
     _today_key,
     normalize_legacy_tag_text,
 )
+from .persona_config import runtime_persona_setting
 
 
 class DailyStateTickMixin:
@@ -695,7 +696,7 @@ class DailyStateTickMixin:
                     image_path=image_path,
                 )
             except Exception as exc:
-                review_enabled = bool(getattr(self, "enable_proactive_message_review", True))
+                review_enabled = bool(runtime_persona_setting(self, "enable_proactive_message_review", True))
                 if review_enabled:
                     review_failure_signature = self._proactive_topic_signature(
                         " ".join(
@@ -730,7 +731,11 @@ class DailyStateTickMixin:
                         self._save_data_sync(sections={"users"})
                     if failure_count >= 3:
                         review_strength_getter = getattr(self, "_proactive_review_strength", None)
-                        review_strength = review_strength_getter() if callable(review_strength_getter) else str(getattr(self, "proactive_review_strength", "lenient") or "lenient")
+                        review_strength = (
+                            review_strength_getter()
+                            if callable(review_strength_getter)
+                            else str(runtime_persona_setting(self, "proactive_review_strength", "lenient") or "lenient")
+                        )
                         if review_strength == "strict":
                             logger.warning(
                                 "[PrivateCompanion] 主动消息发送前价值复核连续失败,严格模式放弃本条候选避免反复调用: count=%s error=%s",
@@ -1502,7 +1507,10 @@ class DailyStateTickMixin:
             return
         try:
             reason_label = _REASON_TEXT.get(reason, reason or "check_in")
-            target_name = _single_line(user.get("nickname") or self.default_nickname, 24)
+            target_name = _single_line(
+                user.get("nickname") or runtime_persona_setting(self, "default_nickname", "你"),
+                24,
+            )
             reason_label = reason_label.replace("{name}", target_name)
             reason_detail = "；".join(
                 item
@@ -2048,7 +2056,12 @@ class DailyStateTickMixin:
                 planned_meal = current.get("planned_meal_care_context") if isinstance(current.get("planned_meal_care_context"), dict) else {}
                 meal_key = _single_line(planned_meal.get("meal_key"), 20) or self._current_food_time_key()
                 meal_label = _single_line(planned_meal.get("meal_label"), 12) or self._food_menu_time_label(meal_key) or "这顿饭"
-                followup_minutes = _safe_int(getattr(self, "meal_care_followup_minutes", 45), 45, 15, 180)
+                followup_minutes = _safe_int(
+                    runtime_persona_setting(self, "meal_care_followup_minutes", 45),
+                    45,
+                    15,
+                    180,
+                )
                 meal_context = {
                     "active": True,
                     "date": _today_key(),
@@ -2179,7 +2192,7 @@ class DailyStateTickMixin:
                 max_burst_messages = (
                     max_burst_getter()
                     if callable(max_burst_getter)
-                    else _safe_int(getattr(self, "proactive_burst_max_messages", 2), 2, 2, 3)
+                    else _safe_int(runtime_persona_setting(self, "proactive_burst_max_messages", 2), 2, 2, 3)
                 )
                 if burst_was_active:
                     current["planned_proactive_burst"] = False

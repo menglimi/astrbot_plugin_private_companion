@@ -28,6 +28,7 @@ from .photo_reference_catalog import (
     validate_and_serialize,
 )
 from .photo_prompt_context import PhotoPromptSection
+from .persona_config import runtime_persona_setting
 
 
 _PHOTO_REFERENCE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
@@ -39,7 +40,7 @@ class CommandHandlersMixin:
     async def _qweather_location_command_text(self, action: str, value: Any = "") -> str:
         """View or persist the shared QWeather city used by weather and alerts."""
 
-        configured = _single_line(getattr(self, "weather_location", ""), 180).replace("，", ",").strip()
+        configured = _single_line(runtime_persona_setting(self, 'weather_location', ""), 180).replace("，", ",").strip()
         if action in {"查看城市", "当前城市", "天气城市"}:
             snapshot_getter = getattr(self, "_qweather_location_snapshot", None)
             snapshot = snapshot_getter() if callable(snapshot_getter) else {}
@@ -67,7 +68,7 @@ class CommandHandlersMixin:
                 "请这样使用：陪伴 绑定城市 <城市|区县,城市|LocationID>\n"
                 "同名区县建议写成“朝阳区,北京”。"
             )
-        if str(getattr(self, "weather_source", "qweather") or "qweather").strip().lower() != "qweather":
+        if str(runtime_persona_setting(self, 'weather_source', "qweather") or "qweather").strip().lower() != "qweather":
             return "当前天气来源不是和风天气。请先在功能开关的天气设置中选择和风天气，再绑定城市。"
         host_getter = getattr(self, "_qweather_alert_api_host", None)
         token_getter = getattr(self, "_qweather_alert_token", None)
@@ -111,7 +112,7 @@ class CommandHandlersMixin:
         config = getattr(self, "config", None)
         if config is None:
             return False
-        previous_runtime = str(getattr(self, "weather_location", "") or "")
+        previous_runtime = str(runtime_persona_setting(self, 'weather_location', "") or "")
         previous_config = _flat_get(config, "weather_location", previous_runtime)
         self.weather_location = value
         if not _set_into_config(config, "weather_location", value):
@@ -253,7 +254,7 @@ class CommandHandlersMixin:
                 "切换优先级：陪伴 切换生图API（交换前两条）",
             ]
             return "\n".join(lines)
-        enabled_backup = bool(getattr(self, "enable_backup_external_image_api", False))
+        enabled_backup = bool(runtime_persona_setting(self, 'enable_backup_external_image_api', False))
         return (
             "在线生图 API 当前配置：\n"
             f"{self._image_api_format_runtime_pair(backup=False)}\n"
@@ -359,7 +360,7 @@ class CommandHandlersMixin:
             self._set_image_api_config_value(primary_key, backup_value)
             self._set_image_api_config_value(backup_key, primary_value)
 
-        old_backup_enabled = bool(getattr(self, "enable_backup_external_image_api", False))
+        old_backup_enabled = bool(runtime_persona_setting(self, 'enable_backup_external_image_api', False))
         self.enable_backup_external_image_api = old_primary_complete
         self._set_image_api_config_value("enable_backup_external_image_api", old_primary_complete)
         if not await self._save_config_if_possible():
@@ -408,21 +409,21 @@ class CommandHandlersMixin:
             allowed = bool(self._group_enabled_for_event(group_id))
         except Exception:
             allowed = False
-        mode = _single_line(getattr(self, "group_access_mode", ""), 20) or "unknown"
-        return f"当前群：{group_id}｜群聊陪伴：{self._feature_on_text(getattr(self, 'enable_group_companion', False))}｜名单模式：{mode}｜本群可用：{self._feature_on_text(allowed)}"
+        mode = _single_line(runtime_persona_setting(self, 'group_access_mode', ""), 20) or "unknown"
+        return f"当前群：{group_id}｜群聊陪伴：{self._feature_on_text(runtime_persona_setting(self, 'enable_group_companion', False))}｜名单模式：{mode}｜本群可用：{self._feature_on_text(allowed)}"
 
     def _companion_manual_setting_snapshot(self) -> list[str]:
-        rest_probability = _safe_float(getattr(self, "rest_reply_probability", 0.0), 0.0, 0.0)
+        rest_probability = _safe_float(runtime_persona_setting(self, 'rest_reply_probability', 0.0), 0.0, 0.0)
         if rest_probability <= 1:
             rest_probability_text = f"{rest_probability * 100:.0f}%"
         else:
             rest_probability_text = f"{rest_probability:.0f}%"
-        silence_confidence = _safe_float(getattr(self, "smart_silence_min_confidence", 0.0), 0.0, 0.0)
+        silence_confidence = _safe_float(runtime_persona_setting(self, 'smart_silence_min_confidence', 0.0), 0.0, 0.0)
         if silence_confidence <= 1:
             silence_confidence_text = f"{silence_confidence * 100:.0f}%"
         else:
             silence_confidence_text = f"{silence_confidence:.0f}%"
-        reply_style = str(getattr(self, "reply_style_prompt", "") or "").strip()
+        reply_style = str(runtime_persona_setting(self, 'reply_style_prompt', "") or "").strip()
         command_photo_limit = self._command_photo_generation_daily_limit()
         if command_photo_limit < 0:
             command_photo_limit_text = "不限量（-1）"
@@ -431,18 +432,18 @@ class CommandHandlersMixin:
         else:
             command_photo_limit_text = f"{command_photo_limit} 次"
         return [
-            f"群聊连续对话：{self._feature_on_text(getattr(self, 'enable_group_conversation_followup', False))}，窗口 {getattr(self, 'group_conversation_followup_seconds', 0)} 秒，最多 {getattr(self, 'group_conversation_followup_max_turns', 0)} 轮",
-            f"高强度收口：{self._feature_on_text(getattr(self, 'enable_group_high_intensity_mode', False))}，{getattr(self, 'group_high_intensity_wakeup_window_seconds', 0)} 秒内 {getattr(self, 'group_high_intensity_wakeup_threshold', 0)} 次唤醒后持续 {getattr(self, 'group_high_intensity_cooldown_seconds', 0)} 秒",
-            f"高强度合并：等待 {getattr(self, 'group_high_intensity_merge_seconds', 0)} 秒，范围 {getattr(self, 'group_high_intensity_merge_scope', 'group')}，最多 {getattr(self, 'group_high_intensity_max_merge_messages', 0)} 条",
-            f"消息收口：{self._feature_on_text(getattr(self, 'enable_message_debounce', False))}，智能文本收口 {self._feature_on_text(getattr(self, 'enable_smart_message_debounce', False))}，文本最长等待 {getattr(self, 'text_message_debounce_max_wait_seconds', 0)} 秒",
-            f"群聊唤醒增强：{self._feature_on_text(getattr(self, 'enable_group_wakeup_enhancement', False))}，全局强唤醒词 {len(getattr(self, 'group_wakeup_direct_words', []) or [])} 个，主要用户专属强唤醒词 {len(getattr(self, 'group_wakeup_owner_direct_words', []) or [])} 个，短唤醒补话等待 {getattr(self, 'group_wakeup_short_text_wait_seconds', 0)} 秒",
-            f"休息回复闸门：{self._feature_on_text(getattr(self, 'enable_rest_reply_simulation', False))}，模式 {getattr(self, 'rest_reply_mode', 'probability')}，概率 {rest_probability_text}，模型阈值 {getattr(self, 'rest_reply_llm_threshold', 0)}，清醒宽限 {getattr(self, 'rest_reply_awake_grace_minutes', 0)} 分钟",
-            f"繁忙回复闸门：{self._feature_on_text(getattr(self, 'enable_busy_reply_gate', False))}，私聊延迟 {getattr(self, 'busy_reply_min_delay_seconds', 60)}-{getattr(self, 'busy_reply_max_delay_seconds', 300)} 秒，群聊上限 12 秒，忙完后主动缓冲 {getattr(self, 'busy_reply_proactive_resume_buffer_minutes', 10)} 分钟",
-            f"智能沉默：{self._feature_on_text(getattr(self, 'enable_smart_silence', True))}，模式 {getattr(self, 'smart_silence_judge_mode', 'boundary_only')}，置信度 {silence_confidence_text}，超时 {getattr(self, 'smart_silence_model_timeout_seconds', 0)} 秒",
-            f"被动回复复核：{self._feature_on_text(getattr(self, 'enable_passive_response_review', getattr(self, 'enable_response_self_review', True)))}，模式 {getattr(self, 'passive_review_mode', getattr(self, 'response_review_mode', 'severe_only'))}，强度 {getattr(self, 'passive_review_strength', 'lenient')}，长度阈值 {getattr(self, 'response_review_max_chars', 260)} 字；框架异常文本外发拦截：{self._feature_on_text(getattr(self, 'enable_framework_error_leak_guard', True))}",
-            f"主动消息终审：{self._feature_on_text(getattr(self, 'enable_proactive_message_review', True))}，模式 {getattr(self, 'proactive_review_mode', 'full')}，强度 {getattr(self, 'proactive_review_strength', 'lenient')}",
-            f"用户请求生图每日上限：{command_photo_limit_text}；非指令生图：{_single_line(getattr(self, 'natural_language_photo_generation_mode', 'tool_first'), 24) or 'tool_first'}，规则快判{self._feature_on_text(getattr(self, 'enable_natural_language_photo_generation', False))}，每日上限 {getattr(self, 'natural_language_photo_generation_max_daily', 0)}",
-            f"拟人状态：健康 {self._feature_on_text(getattr(self, 'enable_health_state', True))}，饥饿 {self._feature_on_text(getattr(self, 'enable_hunger_state', True))}，生理期 {self._feature_on_text(getattr(self, 'enable_cycle_state', True))}，强度 {getattr(self, 'humanized_state_intensity', 0)}",
+            f"群聊连续对话：{self._feature_on_text(runtime_persona_setting(self, 'enable_group_conversation_followup', False))}，窗口 {runtime_persona_setting(self, 'group_conversation_followup_seconds', 0)} 秒，最多 {runtime_persona_setting(self, 'group_conversation_followup_max_turns', 0)} 轮",
+            f"高强度收口：{self._feature_on_text(runtime_persona_setting(self, 'enable_group_high_intensity_mode', False))}，{runtime_persona_setting(self, 'group_high_intensity_wakeup_window_seconds', 0)} 秒内 {runtime_persona_setting(self, 'group_high_intensity_wakeup_threshold', 0)} 次唤醒后持续 {runtime_persona_setting(self, 'group_high_intensity_cooldown_seconds', 0)} 秒",
+            f"高强度合并：等待 {runtime_persona_setting(self, 'group_high_intensity_merge_seconds', 0)} 秒，范围 {runtime_persona_setting(self, 'group_high_intensity_merge_scope', 'group')}，最多 {runtime_persona_setting(self, 'group_high_intensity_max_merge_messages', 0)} 条",
+            f"消息收口：{self._feature_on_text(runtime_persona_setting(self, 'enable_message_debounce', False))}，智能文本收口 {self._feature_on_text(runtime_persona_setting(self, 'enable_smart_message_debounce', False))}，文本最长等待 {runtime_persona_setting(self, 'text_message_debounce_max_wait_seconds', 0)} 秒",
+            f"群聊唤醒增强：{self._feature_on_text(runtime_persona_setting(self, 'enable_group_wakeup_enhancement', False))}，全局强唤醒词 {len(runtime_persona_setting(self, 'group_wakeup_direct_words', []) or [])} 个，主要用户专属强唤醒词 {len(runtime_persona_setting(self, 'group_wakeup_owner_direct_words', []) or [])} 个，短唤醒补话等待 {runtime_persona_setting(self, 'group_wakeup_short_text_wait_seconds', 0)} 秒",
+            f"休息回复闸门：{self._feature_on_text(runtime_persona_setting(self, 'enable_rest_reply_simulation', False))}，模式 {runtime_persona_setting(self, 'rest_reply_mode', 'probability')}，概率 {rest_probability_text}，模型阈值 {runtime_persona_setting(self, 'rest_reply_llm_threshold', 0)}，清醒宽限 {runtime_persona_setting(self, 'rest_reply_awake_grace_minutes', 0)} 分钟",
+            f"繁忙回复闸门：{self._feature_on_text(runtime_persona_setting(self, 'enable_busy_reply_gate', False))}，私聊延迟 {runtime_persona_setting(self, 'busy_reply_min_delay_seconds', 60)}-{runtime_persona_setting(self, 'busy_reply_max_delay_seconds', 300)} 秒，群聊上限 12 秒，忙完后主动缓冲 {runtime_persona_setting(self, 'busy_reply_proactive_resume_buffer_minutes', 10)} 分钟",
+            f"智能沉默：{self._feature_on_text(runtime_persona_setting(self, 'enable_smart_silence', True))}，模式 {runtime_persona_setting(self, 'smart_silence_judge_mode', 'boundary_only')}，置信度 {silence_confidence_text}，超时 {runtime_persona_setting(self, 'smart_silence_model_timeout_seconds', 0)} 秒",
+            f"被动回复复核：{self._feature_on_text(runtime_persona_setting(self, 'enable_passive_response_review', runtime_persona_setting(self, 'enable_response_self_review', True)))}，模式 {runtime_persona_setting(self, 'passive_review_mode', runtime_persona_setting(self, 'response_review_mode', 'severe_only'))}，强度 {runtime_persona_setting(self, 'passive_review_strength', 'lenient')}，长度阈值 {runtime_persona_setting(self, 'response_review_max_chars', 260)} 字；框架异常文本外发拦截：{self._feature_on_text(runtime_persona_setting(self, 'enable_framework_error_leak_guard', True))}",
+            f"主动消息终审：{self._feature_on_text(runtime_persona_setting(self, 'enable_proactive_message_review', True))}，模式 {runtime_persona_setting(self, 'proactive_review_mode', 'full')}，强度 {runtime_persona_setting(self, 'proactive_review_strength', 'lenient')}",
+            f"用户请求生图每日上限：{command_photo_limit_text}；非指令生图：{_single_line(runtime_persona_setting(self, 'natural_language_photo_generation_mode', 'tool_first'), 24) or 'tool_first'}，规则快判{self._feature_on_text(runtime_persona_setting(self, 'enable_natural_language_photo_generation', False))}，每日上限 {runtime_persona_setting(self, 'natural_language_photo_generation_max_daily', 0)}",
+            f"拟人状态：健康 {self._feature_on_text(runtime_persona_setting(self, 'enable_health_state', True))}，饥饿 {self._feature_on_text(runtime_persona_setting(self, 'enable_hunger_state', True))}，生理期 {self._feature_on_text(runtime_persona_setting(self, 'enable_cycle_state', True))}，强度 {runtime_persona_setting(self, 'humanized_state_intensity', 0)}",
             self._cycle_status_text(),
             f"回复风格：{'已配置' if reply_style else '未配置'}，长度 {len(reply_style)} 字",
         ]
@@ -2483,8 +2484,8 @@ class CommandHandlersMixin:
         if not ok:
             return False, error, None, None
         old = self._companion_manual_current_config_value(key)
-        old_semantic_debounce = getattr(self, "enable_semantic_message_debounce", None)
-        old_semantic_seconds = getattr(self, "semantic_message_debounce_seconds", None)
+        old_semantic_debounce = runtime_persona_setting(self, 'enable_semantic_message_debounce', None)
+        old_semantic_seconds = runtime_persona_setting(self, 'semantic_message_debounce_seconds', None)
         setattr(self, key, normalized)
         extra_config_updates: dict[str, Any] = {}
         if key == "enable_message_debounce":
@@ -3559,7 +3560,7 @@ class CommandHandlersMixin:
         item = data.get("daily_outfit_photo") if isinstance(data.get("daily_outfit_photo"), dict) else {}
         today = _today_key()
         if not item:
-            if not bool(getattr(self, "enable_daily_outfit_photo", False)):
+            if not bool(runtime_persona_setting(self, 'enable_daily_outfit_photo', False)):
                 return (
                     "今天还没有每日穿搭图；每日穿搭照片当前没有开启。\n"
                     "需要的话，管理员可以在配置页开启“每日穿搭照片”，或手动用：陪伴 生成穿搭。",
@@ -4046,8 +4047,8 @@ class CommandHandlersMixin:
 
     async def _set_photo_reference_config_path(self, path: str) -> bool:
         clean = _path_text(path, 1000)
-        if getattr(self, "photo_reference_catalog", None) is None:
-            previous = _path_text(getattr(self, "photo_persona_reference_image_path", ""), 1000)
+        if runtime_persona_setting(self, 'photo_reference_catalog', None) is None:
+            previous = _path_text(runtime_persona_setting(self, 'photo_persona_reference_image_path', ""), 1000)
             self.photo_persona_reference_image_path = clean
             try:
                 saved = _set_into_config(self.config, "photo_persona_reference_image_path", clean)
@@ -4064,7 +4065,7 @@ class CommandHandlersMixin:
                     pass
                 return False
         try:
-            catalog = tuple(getattr(self, "photo_reference_catalog", ()) or ())
+            catalog = tuple(runtime_persona_setting(self, 'photo_reference_catalog', ()) or ())
             persona = next(
                 (item for item in catalog if isinstance(item, PhotoReference) and item.kind == "persona"),
                 None,
@@ -4092,9 +4093,9 @@ class CommandHandlersMixin:
         if bool(getattr(self, "photo_reference_catalog_read_only", False)):
             logger.warning("[PrivateCompanion] 参考图目录当前为只读状态，拒绝覆盖原配置；请在管理页校验并保存目录")
             return False
-        previous = tuple(getattr(self, "photo_reference_catalog", ()) or ())
-        previous_version = _safe_int(getattr(self, "photo_reference_catalog_version", 0), 0, 0)
-        previous_user_cleared = bool(getattr(self, "photo_reference_catalog_user_cleared", False))
+        previous = tuple(runtime_persona_setting(self, 'photo_reference_catalog', ()) or ())
+        previous_version = _safe_int(runtime_persona_setting(self, 'photo_reference_catalog_version', 0), 0, 0)
+        previous_user_cleared = bool(runtime_persona_setting(self, 'photo_reference_catalog_user_cleared', False))
         preset_names = self._photo_generation_scene_presets().keys()
         try:
             serialized = validate_and_serialize(items, preset_names=preset_names)
@@ -4108,7 +4109,7 @@ class CommandHandlersMixin:
             cleared_set = _set_into_config(
                 self.config,
                 "photo_reference_catalog_user_cleared",
-                self.photo_reference_catalog_user_cleared,
+                runtime_persona_setting(self, 'photo_reference_catalog_user_cleared', False),
             )
             if not catalog_set or not version_set or not cleared_set or not await self._save_config_if_possible():
                 self.photo_reference_catalog = previous
@@ -4137,7 +4138,7 @@ class CommandHandlersMixin:
             return False
 
     async def _set_photo_reference_library_config(self, items: list[Any]) -> bool:
-        if getattr(self, "photo_reference_catalog", None) is None:
+        if runtime_persona_setting(self, 'photo_reference_catalog', None) is None:
             normalized: list[Any] = []
             seen_sources: set[str] = set()
             for raw_item in items[:24]:
@@ -4153,7 +4154,7 @@ class CommandHandlersMixin:
                 if text and source not in seen_sources:
                     seen_sources.add(source)
                     normalized.append(text[:3000])
-            previous = list(getattr(self, "photo_reference_library", []) or [])
+            previous = list(runtime_persona_setting(self, 'photo_reference_library', []) or [])
             self.photo_reference_library = normalized
             try:
                 saved = _set_into_config(self.config, "photo_reference_library", normalized)
@@ -4177,7 +4178,7 @@ class CommandHandlersMixin:
                 legacy_library=items,
                 preset_names=preset_names,
             )
-            catalog = tuple(getattr(self, "photo_reference_catalog", ()) or ())
+            catalog = tuple(runtime_persona_setting(self, 'photo_reference_catalog', ()) or ())
             kept = tuple(
                 item
                 for item in catalog
@@ -4275,7 +4276,7 @@ class CommandHandlersMixin:
                 "画风": "style",
             }[shortcut]
             updated: list[PhotoReference] = []
-            for reference in tuple(getattr(self, "photo_reference_catalog", ()) or ()):
+            for reference in tuple(runtime_persona_setting(self, 'photo_reference_catalog', ()) or ()):
                 if not isinstance(reference, PhotoReference):
                     continue
                 if reference.id == selected.get("id"):
@@ -4306,7 +4307,7 @@ class CommandHandlersMixin:
                 index = entries.index(removed)
             try:
                 kept = delete_reference(
-                    tuple(getattr(self, "photo_reference_catalog", ()) or ()),
+                    tuple(runtime_persona_setting(self, 'photo_reference_catalog', ()) or ()),
                     removed["id"],
                 )
             except KeyError:
@@ -4319,7 +4320,7 @@ class CommandHandlersMixin:
         if action in {"清空", "全部清空", "clear", "clear all"}:
             kept = tuple(
                 item
-                for item in (getattr(self, "photo_reference_catalog", ()) or ())
+                for item in (runtime_persona_setting(self, 'photo_reference_catalog', ()) or ())
                 if isinstance(item, PhotoReference) and item.kind != "library"
             )
             saved = await self._set_photo_reference_catalog_config(kept)
@@ -4333,7 +4334,7 @@ class CommandHandlersMixin:
                 if saw_image:
                     return "找到了图片，但没能保存为参考图；请确认是 png、jpg、jpeg 或 webp。", ""
                 return "请把一张或多张图片与命令一起发送，或回复图片后发送“陪伴 参考图库 添加 用途注释”。", ""
-            current = tuple(getattr(self, "photo_reference_catalog", ()) or ())
+            current = tuple(runtime_persona_setting(self, 'photo_reference_catalog', ()) or ())
             available = max(0, 24 - len(entries))
             added = images[:available]
             if not added:
@@ -4385,7 +4386,7 @@ class CommandHandlersMixin:
                 saved = await self._set_photo_reference_config_path(image_path)
                 enabled_note = (
                     "参考图一致性已开启，会在 selfie/人像/头像/角色表情包自动生图里使用。"
-                    if getattr(self, "enable_photo_reference_image", False)
+                    if runtime_persona_setting(self, 'enable_photo_reference_image', False)
                     else "参考图路径已保存，但“参考图一致性”当前关闭；需要自动用于自拍/头像/角色表情包时，请在生图/拍照能力详情里开启。"
                 )
                 return (
@@ -4403,14 +4404,14 @@ class CommandHandlersMixin:
             persona = next(
                 (
                     item
-                    for item in (getattr(self, "photo_reference_catalog", ()) or ())
+                    for item in (runtime_persona_setting(self, 'photo_reference_catalog', ()) or ())
                     if isinstance(item, PhotoReference) and item.kind == "persona"
                 ),
                 None,
             )
             configured = _path_text(persona.source if persona is not None else "", 1000)
             resolved = self._photo_persona_reference_image_path() if callable(getattr(self, "_photo_persona_reference_image_path", None)) else ""
-            enabled = bool(getattr(self, "enable_photo_reference_image", False))
+            enabled = bool(runtime_persona_setting(self, 'enable_photo_reference_image', False))
             if not configured:
                 return (
                     f"参考图一致性：{'开启' if enabled else '关闭'}\n"
@@ -4441,7 +4442,7 @@ class CommandHandlersMixin:
         saved = await self._set_photo_reference_config_path(stable_path)
         enabled_note = (
             "参考图一致性已开启，会在 selfie/人像/头像/角色表情包自动生图里使用。"
-            if getattr(self, "enable_photo_reference_image", False)
+            if runtime_persona_setting(self, 'enable_photo_reference_image', False)
             else "参考图路径已保存，但“参考图一致性”当前关闭；需要自动用于自拍/头像/角色表情包时，请在生图/拍照能力详情里开启。"
         )
         return (
@@ -4630,7 +4631,7 @@ class CommandHandlersMixin:
         }
 
     def _natural_language_photo_quota_left(self, user: dict[str, Any]) -> int:
-        limit = max(0, _safe_int(getattr(self, "natural_language_photo_generation_max_daily", 0), 0))
+        limit = max(0, _safe_int(runtime_persona_setting(self, 'natural_language_photo_generation_max_daily', 0), 0))
         if limit <= 0:
             return 0
         today = self._environment_now().strftime("%Y-%m-%d") if callable(getattr(self, "_environment_now", None)) else ""
@@ -4654,7 +4655,7 @@ class CommandHandlersMixin:
 
     def _command_photo_generation_daily_limit(self) -> int:
         return _safe_int(
-            getattr(self, "command_photo_generation_max_daily", -1),
+            runtime_persona_setting(self, 'command_photo_generation_max_daily', -1),
             -1,
             -1,
             100,
@@ -4750,7 +4751,7 @@ class CommandHandlersMixin:
             else (_single_line(style_instruction, 220) or _single_line(style_name, 40) or "natural image style")
         )
         extra_prompt = str(
-            getattr(self, "natural_language_photo_extra_prompt", DEFAULT_NATURAL_LANGUAGE_PHOTO_EXTRA_PROMPT)
+            runtime_persona_setting(self, 'natural_language_photo_extra_prompt', DEFAULT_NATURAL_LANGUAGE_PHOTO_EXTRA_PROMPT)
             or ""
         ).strip()
         visual_memory = self._visual_photo_memory_context(memory_context)
@@ -5116,13 +5117,13 @@ class CommandHandlersMixin:
         if not text or text.startswith(("陪伴", "/陪伴", "私聊陪伴", "主动陪伴")):
             return False
         explicit_plugin_request = self._natural_language_photo_explicit_plugin_request(text)
-        if not getattr(self, "enable_photo_text_action", False):
+        if not runtime_persona_setting(self, 'enable_photo_text_action', False):
             if explicit_plugin_request:
                 await self._reply(event, self._natural_language_photo_disabled_text("photo_off"))
                 event.stop_event()
                 return True
             return False
-        mode = _single_line(getattr(self, "natural_language_photo_generation_mode", "tool_first"), 40).lower()
+        mode = _single_line(runtime_persona_setting(self, 'natural_language_photo_generation_mode', "tool_first"), 40).lower()
         if mode not in {"tool_first", "rule_fast", "off"}:
             mode = "tool_first"
         if mode in {"tool_first", "off"}:
@@ -5134,7 +5135,7 @@ class CommandHandlersMixin:
                     _single_line(text, 160),
                 )
             return False
-        if not getattr(self, "enable_natural_language_photo_generation", False):
+        if not runtime_persona_setting(self, 'enable_natural_language_photo_generation', False):
             if explicit_plugin_request:
                 await self._reply(event, self._natural_language_photo_disabled_text("natural_off"))
                 event.stop_event()
@@ -5447,7 +5448,7 @@ class CommandHandlersMixin:
             "p图": "edit",
         }
         forced_kind = action_kind_map.get(action_text, "text2img")
-        if not getattr(self, "enable_photo_text_action", False):
+        if not runtime_persona_setting(self, 'enable_photo_text_action', False):
             await self._reply(event, self._natural_language_photo_disabled_text("photo_off"))
             event.stop_event()
             return True
@@ -5839,7 +5840,7 @@ class CommandHandlersMixin:
             yield event.plain_result(response)
             event.stop_event()
             return
-        if not self.enable_group_companion:
+        if not runtime_persona_setting(self, 'enable_group_companion', True):
             yield event.plain_result(
                 "群聊陪伴总开关当前关闭。\n"
                 "这个群的名单和本群开关配置仍会保留，但暂时不会观察或参与群聊。\n"
@@ -5847,9 +5848,9 @@ class CommandHandlersMixin:
             )
             return
         if not self._group_allowed_by_access_mode(group_id):
-            if self.group_access_mode == "blacklist" and group_id in self._configured_group_blacklist_ids():
+            if runtime_persona_setting(self, 'group_access_mode', 'whitelist') == "blacklist" and group_id in self._configured_group_blacklist_ids():
                 yield event.plain_result("这个群在群聊陪伴黑名单中，暂时不启用。")
-            elif self.group_access_mode == "whitelist":
+            elif runtime_persona_setting(self, 'group_access_mode', 'whitelist') == "whitelist":
                 yield event.plain_result("这个群还没有加入群聊陪伴白名单，暂时不启用。")
             else:
                 yield event.plain_result("这个群暂时不启用群聊陪伴。")
@@ -5922,7 +5923,7 @@ class CommandHandlersMixin:
             elif action in {"关系网", "关系网络", "互动关系"}:
                 response = "群友互动图：\n" + (self._format_group_relationship_graph_for_prompt(group) or "暂无。")
             elif action in {"撤回消息", "防撤回", "转述撤回", "撤回转述"}:
-                if not self.enable_recall_enhancement or not self.enable_recall_transcribe_command:
+                if not runtime_persona_setting(self, 'enable_recall_enhancement', True) or not runtime_persona_setting(self, 'enable_recall_transcribe_command', True):
                     response = "撤回消息转述没有开启。"
                 else:
                     response = self._format_recalled_messages_for_event(event, limit=5)

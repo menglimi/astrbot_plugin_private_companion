@@ -104,6 +104,7 @@ from .dreaming import (
     weighted_unique_fragment_sample,
 )
 from .helpers import _date_key, _now_ts, _safe_float, _safe_int, _single_line, _strip_internal_message_blocks, _today_key
+from .persona_config import runtime_persona_setting
 from .planning import (
     build_daily_plan_prompt,
     build_detail_enhancement_prompt,
@@ -242,7 +243,10 @@ class WorldbookMixin:
         data_root = Path(get_astrbot_data_path())
         configured = [
             Path(part.strip())
-            for part in re.split(r"[\n,;；]+", str(self.worldbook_config_paths or ""))
+            for part in re.split(
+                r"[\n,;；]+",
+                str(runtime_persona_setting(self, "worldbook_config_paths", "") or ""),
+            )
             if part.strip()
         ]
         defaults = [
@@ -444,7 +448,7 @@ class WorldbookMixin:
         return changed
 
     def _remember_worldbook_observed_name(self, user_id: str, name: str) -> None:
-        if not self.enable_worldbook_member_recognition:
+        if not runtime_persona_setting(self, "enable_worldbook_member_recognition", True):
             return
         user_id = str(user_id or "").strip()
         name = _single_line(name, 40)
@@ -616,7 +620,7 @@ class WorldbookMixin:
         *,
         include_observation: bool = False,
     ) -> dict[str, Any] | None:
-        if not self.enable_worldbook_member_recognition:
+        if not runtime_persona_setting(self, "enable_worldbook_member_recognition", True):
             return None
         user_id = str(user_id or "").strip()
         if not user_id:
@@ -760,7 +764,7 @@ class WorldbookMixin:
         return False
 
     def _resolve_worldbook_member_by_name(self, keyword: str) -> list[dict[str, Any]]:
-        if not self.enable_worldbook_member_recognition:
+        if not runtime_persona_setting(self, "enable_worldbook_member_recognition", True):
             return []
         query = _single_line(keyword, 40)
         if not query:
@@ -1006,7 +1010,14 @@ class WorldbookMixin:
         }
 
     def _worldbook_self_registration_block_word_hit(self, *texts: Any) -> str:
-        raw_words = getattr(self, "worldbook_self_registration_block_words", [])
+        raw_words = runtime_persona_setting(self, "worldbook_self_registration_block_words", "")
+        if isinstance(raw_words, str):
+            parser = getattr(self, "_parse_text_list_config", None)
+            raw_words = (
+                parser(raw_words, limit=120)
+                if callable(parser)
+                else [item.strip() for item in re.split(r"[\n,，、;；]+", raw_words) if item.strip()][:120]
+            )
         if not isinstance(raw_words, list) or not raw_words:
             return ""
         haystacks = []
@@ -1030,7 +1041,10 @@ class WorldbookMixin:
         return ""
 
     def _worldbook_self_registration_block_reply_text(self) -> str:
-        reply = _single_line(getattr(self, "worldbook_self_registration_block_reply", ""), 80)
+        reply = _single_line(
+            runtime_persona_setting(self, "worldbook_self_registration_block_reply", "这个称呼我不记。"),
+            80,
+        )
         if reply in {"这个称呼我先不记。", "你是小猪"}:
             reply = ""
         return reply or "这个称呼我不记。"
@@ -1038,8 +1052,9 @@ class WorldbookMixin:
     def _extract_worldbook_self_intro(self, text: str) -> dict[str, Any] | None:
         cleaned = str(text or "")
         cleaned = re.sub(r"\[CQ:at,[^\]]+\]", " ", cleaned)
-        if self.bot_name:
-            cleaned = cleaned.replace(self.bot_name, " ")
+        bot_name = runtime_persona_setting(self, "bot_name", "小星")
+        if bot_name:
+            cleaned = cleaned.replace(bot_name, " ")
         cleaned = re.sub(r"@\S+", " ", cleaned)
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
         if not cleaned or len(cleaned) > 20:
@@ -1090,7 +1105,10 @@ class WorldbookMixin:
         text: str,
         group: dict[str, Any],
     ) -> dict[str, Any] | None:
-        if not (self.enable_worldbook_member_recognition and self.worldbook_self_registration):
+        if not (
+            runtime_persona_setting(self, "enable_worldbook_member_recognition", True)
+            and runtime_persona_setting(self, "worldbook_self_registration", True)
+        ):
             return None
         sender_id = str(sender_id or "").strip()
         if not sender_id:
@@ -1262,7 +1280,18 @@ class WorldbookMixin:
         impression = await self._llm_call(
             prompt,
             max_tokens=180,
-            provider_id=self._task_provider(self.relationship_analysis_provider_id, self.mai_style_provider_id),
+            provider_id=self._task_provider(
+                runtime_persona_setting(
+                    self,
+                    "RELATIONSHIP_ANALYSIS_PROVIDER_ID",
+                    getattr(self, "relationship_analysis_provider_id", ""),
+                ),
+                runtime_persona_setting(
+                    self,
+                    "MAI_STYLE_PROVIDER_ID",
+                    getattr(self, "mai_style_provider_id", ""),
+                ),
+            ),
             task="worldbook_registration",
         )
         cleaned = _single_line(impression, 220)
@@ -1417,7 +1446,7 @@ class WorldbookMixin:
         return view
 
     def _select_worldbook_member_profiles_for_private_text(self, text: str, *, limit: int | None = None) -> list[dict[str, Any]]:
-        if not self.enable_worldbook_member_recognition:
+        if not runtime_persona_setting(self, "enable_worldbook_member_recognition", True):
             return []
         profiles = self.data.get("worldbook_member_profiles")
         if not isinstance(profiles, dict):
@@ -1425,7 +1454,8 @@ class WorldbookMixin:
         text = str(text or "")
         if not text:
             return []
-        max_items = max(1, min(8, _safe_int(limit, min(self.worldbook_member_inject_limit, 4), 1)))
+        configured_limit = max(1, _safe_int(runtime_persona_setting(self, "worldbook_member_inject_limit", 6), 6, 1))
+        max_items = max(1, min(8, _safe_int(limit, min(configured_limit, 4), 1)))
         selected: dict[str, dict[str, Any]] = {}
         for match in re.findall(r"\d{5,12}", text):
             profile = self._worldbook_profile_by_user_id(match)
@@ -1488,7 +1518,7 @@ class WorldbookMixin:
         sender_id: str = "",
         text: str = "",
     ) -> list[dict[str, Any]]:
-        if not self.enable_worldbook_member_recognition:
+        if not runtime_persona_setting(self, "enable_worldbook_member_recognition", True):
             return []
         profiles = self.data.get("worldbook_member_profiles")
         if not isinstance(profiles, dict):
@@ -1511,7 +1541,8 @@ class WorldbookMixin:
                 confidence="confirmed",
                 scope="current_sender",
             )
-        if self.worldbook_member_match_aliases and text and len(selected) < self.worldbook_member_inject_limit:
+        member_limit = max(1, _safe_int(runtime_persona_setting(self, "worldbook_member_inject_limit", 6), 6, 1))
+        if runtime_persona_setting(self, "worldbook_member_match_aliases", True) and text and len(selected) < member_limit:
             token_hits: dict[str, list[tuple[str, dict[str, Any]]]] = {}
             for user_id, profile in profiles.items():
                 if not isinstance(profile, dict) or not profile.get("enabled", True):
@@ -1534,10 +1565,10 @@ class WorldbookMixin:
                     confidence="mentioned",
                     scope="mentioned",
                 )
-                if len(selected) >= self.worldbook_member_inject_limit:
+                if len(selected) >= member_limit:
                     break
         for recent_id in recent_speaker_ids:
-            if len(selected) >= self.worldbook_member_inject_limit:
+            if len(selected) >= member_limit:
                 break
             if recent_id in selected:
                 continue
@@ -1564,10 +1595,10 @@ class WorldbookMixin:
             ),
             reverse=True,
         )
-        return ranked[: self.worldbook_member_inject_limit]
+        return ranked[:member_limit]
 
     def _format_worldbook_group_members_for_prompt(self, group: dict[str, Any], sender_id: str = "", text: str = "") -> str:
-        if not self.enable_worldbook_member_recognition:
+        if not runtime_persona_setting(self, "enable_worldbook_member_recognition", True):
             return ""
         lines: list[str] = []
         group_id = _single_line(group.get("group_id"), 40)

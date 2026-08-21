@@ -87,6 +87,7 @@ from .constants import (
     _REASON_TEXT,
     _SIMULATION_FALLBACK_EVENTS,
 )
+from .persona_config import runtime_persona_setting
 from .dreaming import (
     build_dream_memory_fragments,
     dream_fragment_effective_weight,
@@ -298,7 +299,7 @@ class UserMemoryMixin:
             item["created_ts"] = created_ts or now
             deduped.append(item)
         deduped.sort(key=lambda item: (_safe_int(item.get("weight"), 1, 0), _safe_float(item.get("created_ts"), 0)), reverse=True)
-        memory["items"] = deduped[: self.max_companion_memory_items]
+        memory["items"] = deduped[: runtime_persona_setting(self, "max_companion_memory_items", 36)]
         return memory["items"]
 
     def _companion_memory_relevant_items(self, user: dict[str, Any], *, hint: str = "", limit: int = 6) -> list[dict[str, Any]]:
@@ -328,8 +329,8 @@ class UserMemoryMixin:
         reply_rate = reply_count / proactive_count if reply_rate_available else 0.0
         reply_rate_label = f"{reply_rate:.0%}" if reply_rate_available else "暂无样本"
         policy = (
-            getattr(self, "relationship_stage_policy", None)
-            if bool(getattr(self, "enable_custom_relationship_stage_policy", False))
+            runtime_persona_setting(self, "relationship_stage_policy", None)
+            if bool(runtime_persona_setting(self, "enable_custom_relationship_stage_policy", False))
             else None
         )
         stage_projection = relationship_stage_for_score(
@@ -356,7 +357,7 @@ class UserMemoryMixin:
             relationship_role=role,
             relationship_mode=str(user.get("relationship_mode") or "normal"),
             relationship_score=score,
-            normal_interaction_band_cap=getattr(self, "normal_interaction_band_cap", "warm"),
+            normal_interaction_band_cap=runtime_persona_setting(self, "normal_interaction_band_cap", "warm"),
             now=_now_ts(),
         )
         return {
@@ -393,7 +394,10 @@ class UserMemoryMixin:
         dims = dict(raw) if isinstance(raw, dict) else {}
         last_ts = _safe_float(dims.get("updated_ts"), _safe_float(state.get("mood_updated_ts"), now))
         hours = max(0.0, (now - last_ts) / 3600.0) if last_ts > 0 else 0.0
-        recovery = max(1, _safe_int(getattr(self, "emotional_gate_recovery_per_hour", 24), 24, 1, 60))
+        recovery = max(
+            1,
+            _safe_int(runtime_persona_setting(self, "emotional_gate_recovery_per_hour", 24), 24, 1, 60),
+        )
         steps = max(0, int(hours * recovery))
         result: dict[str, int] = {}
         for key, target in baseline.items():
@@ -497,7 +501,10 @@ class UserMemoryMixin:
         values = dict(raw) if isinstance(raw, dict) else {}
         last_ts = _safe_float(values.get("updated_ts"), _safe_float(state.get("mood_updated_ts"), now))
         hours = max(0.0, (now - last_ts) / 3600.0) if last_ts > 0 else 0.0
-        recovery = max(1, _safe_int(getattr(self, "emotional_gate_recovery_per_hour", 24), 24, 1, 60))
+        recovery = max(
+            1,
+            _safe_int(runtime_persona_setting(self, "emotional_gate_recovery_per_hour", 24), 24, 1, 60),
+        )
         decay = max(0, int(hours * recovery))
         result: dict[str, int] = {}
         for key in labels:
@@ -752,11 +759,11 @@ class UserMemoryMixin:
         return regulation
 
     def _expression_scope_mode(self, key: str, allowed: set[str], default: str) -> str:
-        value = str(getattr(self, key, default) or default).strip().lower()
+        value = str(runtime_persona_setting(self, key, default) or default).strip().lower()
         return value if value in allowed else default
 
     def _expression_scope_ids(self, key: str, *, group: bool = False) -> set[str]:
-        raw = getattr(self, key, [])
+        raw = runtime_persona_setting(self, key, [])
         parser = getattr(self, "_parse_group_id_list" if group else "_parse_text_list_config", None)
         try:
             values = parser(raw) if callable(parser) else (raw if isinstance(raw, list) else [])
@@ -1082,7 +1089,7 @@ class UserMemoryMixin:
                     -_safe_int(item.get("evidence_count"), 0, 0),
                     -_safe_float(item.get("last_seen_ts"), 0.0),
                 ),
-            )[: self.max_learned_expression_items],
+            )[: runtime_persona_setting(self, "max_learned_expression_items", 60)],
             "scope_signature": self._expression_scope_signature(),
             "refresh_day": refresh_day,
             "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -1221,7 +1228,7 @@ class UserMemoryMixin:
         inbound_text: str = "",
         context_owner: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        if not bool(getattr(self, "enable_expression_learning", True)):
+        if not bool(runtime_persona_setting(self, "enable_expression_learning", True)):
             return {"prompt": "", "rules": [], "context": {}}
         if scope in {"private", "proactive"} and not self._expression_private_application_enabled(target_id):
             return {"prompt": "", "rules": [], "context": {}}
@@ -1299,7 +1306,7 @@ class UserMemoryMixin:
         return str(selection.get("prompt") or "")
 
     def _update_expression_profile_from_message(self, user: dict[str, Any], text: str) -> None:
-        if not self.enable_expression_learning:
+        if not runtime_persona_setting(self, "enable_expression_learning", True):
             return
         cleaned = _single_line(_strip_internal_message_blocks(text), self._expression_sample_max_chars())
         if not cleaned:
@@ -1328,7 +1335,7 @@ class UserMemoryMixin:
                 if _safe_int(count, 0, 0) > 0
             ]
             if legacy_count:
-                migrate_count = min(legacy_count, self.max_learned_expression_items)
+                migrate_count = min(legacy_count, runtime_persona_setting(self, "max_learned_expression_items", 60))
                 for idx in range(migrate_count):
                     punctuation = {}
                     if punctuation_items:
@@ -1356,7 +1363,7 @@ class UserMemoryMixin:
                 approved_by="" if pending_review else "automatic_policy",
             )
         if self._expression_manual_review_enabled():
-            profile["samples"] = samples[: self.max_learned_expression_items]
+            profile["samples"] = samples[: runtime_persona_setting(self, "max_learned_expression_items", 60)]
             self._queue_expression_pending_sample(profile, sample, cleaned)
             self._refresh_expression_profile_legacy_summary(profile)
             if scope_context is not None:
@@ -1365,7 +1372,7 @@ class UserMemoryMixin:
                 )
             return
         samples.insert(0, sample)
-        profile["samples"] = samples[: self.max_learned_expression_items]
+        profile["samples"] = samples[: runtime_persona_setting(self, "max_learned_expression_items", 60)]
         self._refresh_expression_profile_legacy_summary(profile)
         if scope_context is not None:
             user["expression_profile"] = self._expression_bind_profile_scope(
@@ -1373,7 +1380,7 @@ class UserMemoryMixin:
             )
 
     def _update_group_expression_profile_from_message(self, group: dict[str, Any], text: str) -> None:
-        if not self.enable_expression_learning:
+        if not runtime_persona_setting(self, "enable_expression_learning", True):
             return
         cleaned = _single_line(_strip_internal_message_blocks(text), self._expression_sample_max_chars())
         if not cleaned or self._should_skip_expression_sample(cleaned):
@@ -1490,7 +1497,7 @@ class UserMemoryMixin:
             bucket["pattern_status"] = "active" if evidence >= 2 else "observing"
             patterns.append(bucket)
         patterns.sort(key=lambda item: (-_safe_int(item.get("evidence_count"), 0, 0), -_safe_float(item.get("ts"), 0.0)))
-        return patterns[: self.max_learned_expression_items]
+        return patterns[: runtime_persona_setting(self, "max_learned_expression_items", 60)]
 
     def _normalize_group_expression_profile(self, profile: dict[str, Any], *, now: float | None = None) -> bool:
         if not isinstance(profile, dict):
@@ -2603,7 +2610,7 @@ class UserMemoryMixin:
                         -_safe_float(item.get("last_seen_ts"), 0.0),
                     )
                 )
-                profile["learned_rules"] = approved_rules[: self.max_learned_expression_items]
+                profile["learned_rules"] = approved_rules[: runtime_persona_setting(self, "max_learned_expression_items", 60)]
             candidates = pending_candidates
             if not candidates:
                 return approved_changed
@@ -2726,7 +2733,7 @@ class UserMemoryMixin:
                 -_safe_float(item.get("last_seen_ts"), 0.0),
             )
         )
-        profile[storage_key] = existing[: self.max_learned_expression_items]
+        profile[storage_key] = existing[: runtime_persona_setting(self, "max_learned_expression_items", 60)]
         return changed
 
     def _select_learned_expression_rules(
@@ -2962,7 +2969,7 @@ class UserMemoryMixin:
         return features
 
     def _expression_learning_mode(self) -> str:
-        mode = str(getattr(self, "expression_learning_mode", "balanced") or "balanced").strip().lower()
+        mode = str(runtime_persona_setting(self, "expression_learning_mode", "balanced") or "balanced").strip().lower()
         if mode not in {"light", "balanced", "aggressive"}:
             return "balanced"
         return mode
@@ -3029,14 +3036,14 @@ class UserMemoryMixin:
 
     def _expression_style_review_enabled(self) -> bool:
         return bool(
-            getattr(self, "enable_expression_learning", True)
-            and getattr(self, "enable_expression_style_review", True)
+            runtime_persona_setting(self, "enable_expression_learning", True)
+            and runtime_persona_setting(self, "enable_expression_style_review", True)
         )
 
     def _expression_manual_review_enabled(self) -> bool:
         return bool(
-            getattr(self, "enable_expression_learning", True)
-            and getattr(self, "enable_expression_manual_review", False)
+            runtime_persona_setting(self, "enable_expression_learning", True)
+            and runtime_persona_setting(self, "enable_expression_manual_review", False)
         )
 
     def _queue_expression_pending_sample(self, profile: dict[str, Any], sample: dict[str, Any], cleaned: str) -> None:
@@ -3056,7 +3063,7 @@ class UserMemoryMixin:
         item["review_status"] = "pending"
         item["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
         kept.insert(0, item)
-        profile["pending_samples"] = kept[: min(80, max(12, self.max_learned_expression_items * 2))]
+        profile["pending_samples"] = kept[: min(80, max(12, runtime_persona_setting(self, "max_learned_expression_items", 60) * 2))]
         profile["pending_count"] = len(profile["pending_samples"])
         profile["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -3176,8 +3183,8 @@ class UserMemoryMixin:
                 feature_counts[feature] = _safe_int(feature_counts.get(feature), 0, 0) + evidence
                 fingerprint_features[feature] = _safe_int(fingerprint_features.get(feature), 0, 0) + evidence
         profile["punctuation"] = punctuation
-        profile["endings"] = endings[: self.max_learned_expression_items]
-        profile["recent_phrases"] = phrases[: self.max_learned_expression_items]
+        profile["endings"] = endings[: runtime_persona_setting(self, "max_learned_expression_items", 60)]
+        profile["recent_phrases"] = phrases[: runtime_persona_setting(self, "max_learned_expression_items", 60)]
         profile["scene_profiles"] = {
             scene: {
                 "count": _safe_int(bucket.get("count"), 0, 0),
@@ -3344,7 +3351,7 @@ class UserMemoryMixin:
         return {"keep": True, "kind": kind, "weight": weight, "reason": "explicit" if explicit else "rule_match"}
 
     def _update_companion_memory_from_message(self, user: dict[str, Any], text: str) -> None:
-        if not self.enable_companion_memory:
+        if not runtime_persona_setting(self, "enable_companion_memory", True):
             return
         cleaned = _single_line(text, 260)
         if not cleaned:
@@ -3393,7 +3400,7 @@ class UserMemoryMixin:
             if isinstance(old, dict) and self._memory_fact_signature(_single_line(old.get("text"), 260)) != signature
         ]
         deduped.insert(0, item)
-        memory["items"] = deduped[: self.max_companion_memory_items]
+        memory["items"] = deduped[: runtime_persona_setting(self, "max_companion_memory_items", 36)]
         memory["updated_at"] = item["created_at"]
 
     def _req041_private_memory_write_allowed(self, user: dict[str, Any]) -> bool:
@@ -3947,7 +3954,9 @@ class UserMemoryMixin:
                         ]
                         pending_rules.insert(0, needs_review)
                         source_profile["learned_rules"] = learned_rules
-                        source_profile["pending_rules"] = pending_rules[: self.max_learned_expression_items]
+                        source_profile["pending_rules"] = pending_rules[
+                            : runtime_persona_setting(self, "max_learned_expression_items", 60)
+                        ]
                         demoted += 1
                     elif source_scope_context is not None:
                         binding = source_rule.get("scope_binding") if isinstance(source_rule.get("scope_binding"), dict) else None
@@ -4420,7 +4429,7 @@ class UserMemoryMixin:
         return None
 
     def _update_open_loops_from_message(self, user: dict[str, Any], text: str) -> None:
-        if not self.enable_open_loop_tracking:
+        if not runtime_persona_setting(self, "enable_open_loop_tracking", True):
             return
         cleaned = _single_line(text, 260)
         if not cleaned:
@@ -5058,7 +5067,7 @@ class UserMemoryMixin:
         return {}
 
     def _update_user_behavior_habits_from_message(self, user: dict[str, Any], text: str) -> None:
-        if not self.enable_user_habit_learning:
+        if not runtime_persona_setting(self, "enable_user_habit_learning", True):
             return
         cleaned = _single_line(text, 220)
         if not cleaned or cleaned.startswith(("/", "!", "！", "#")):
@@ -5144,7 +5153,7 @@ class UserMemoryMixin:
             ),
             reverse=True,
         )
-        del patterns[self.user_habit_max_items:]
+        del patterns[runtime_persona_setting(self, "user_habit_max_items", 24):]
         habits["updated_at"] = now_dt.strftime("%Y-%m-%d %H:%M")
         self._maybe_sync_user_behavior_habit_to_memory_companion(user, matched)
 
@@ -5168,7 +5177,7 @@ class UserMemoryMixin:
             kept.append(item)
         if len(kept) == len(patterns):
             return False
-        habits["patterns"] = kept[: self.user_habit_max_items]
+        habits["patterns"] = kept[: runtime_persona_setting(self, "user_habit_max_items", 24)]
         habits["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
         return True
 
@@ -5177,7 +5186,7 @@ class UserMemoryMixin:
             return
         if str(habit.get("category") or "") != "固定检索":
             return
-        min_count = max(2, self.user_habit_min_count)
+        min_count = max(2, runtime_persona_setting(self, "user_habit_min_count", 3))
         if _safe_int(habit.get("count"), 0, 0) < min_count:
             return
         now = _now_ts()
@@ -5254,7 +5263,7 @@ class UserMemoryMixin:
         if not isinstance(patterns, list):
             return []
         now = _now_ts()
-        min_count = max(2, self.user_habit_min_count)
+        min_count = max(2, runtime_persona_setting(self, "user_habit_min_count", 3))
         kept = []
         for item in patterns:
             if not isinstance(item, dict):
@@ -5336,7 +5345,7 @@ class UserMemoryMixin:
         time_window_minutes: int | None = None,
         require_relevant: bool = False,
     ) -> str:
-        if not self.enable_user_habit_learning:
+        if not runtime_persona_setting(self, "enable_user_habit_learning", True):
             return ""
         items = self._qualified_user_behavior_habits(user)
         if current_only:
@@ -5374,7 +5383,7 @@ class UserMemoryMixin:
         )
 
     def _format_all_user_behavior_habits_for_schedule(self, *, limit: int = 8) -> str:
-        if not self.enable_user_habit_learning:
+        if not runtime_persona_setting(self, "enable_user_habit_learning", True):
             return "暂无用户习惯线索。"
         users = self.data.get("users")
         if not isinstance(users, dict):
@@ -5401,7 +5410,7 @@ class UserMemoryMixin:
         )
 
     def _habit_proactive_event_for_user(self, user: dict[str, Any], *, now: float | None = None) -> dict[str, Any] | None:
-        if not self.enable_user_habit_learning:
+        if not runtime_persona_setting(self, "enable_user_habit_learning", True):
             return None
         now = now or _now_ts()
         now_dt = datetime.fromtimestamp(now)
@@ -5777,7 +5786,7 @@ class UserMemoryMixin:
         """Project a candidate onto the current unified relationship tier."""
         if not isinstance(user, dict) or not isinstance(intent, dict):
             return intent
-        if not bool(getattr(self, "enable_relationship_boundary_feedback", True)):
+        if not bool(runtime_persona_setting(self, "enable_relationship_boundary_feedback", True)):
             return intent
         try:
             role = self._private_user_role(user, str(user.get("user_id") or ""))
@@ -5802,7 +5811,7 @@ class UserMemoryMixin:
         )
         stage = relationship_stage_for_score(
             user.get("relationship_score", 0),
-            getattr(self, "relationship_stage_policy", None),
+            runtime_persona_setting(self, "relationship_stage_policy", None),
             previous_stage_key=user.get("relationship_phase_key", ""),
         ).get("phase", {})
         current_tier = str(stage.get("key") or "acquaintance")
@@ -5964,7 +5973,7 @@ class UserMemoryMixin:
         )
 
     def _should_use_llm_emotion_judgement(self, text: str, intent: dict[str, Any]) -> bool:
-        if not bool(getattr(self, "enable_llm_emotion_judgement", False)):
+        if not bool(runtime_persona_setting(self, "enable_llm_emotion_judgement", False)):
             return False
         if bool(intent.get("boundary_feedback_exempt")):
             return False
@@ -5976,7 +5985,7 @@ class UserMemoryMixin:
         source = str(intent.get("source") or "")
         if bool(intent.get("playful_or_ambiguous")) or source in {"weak_boundary_ignored", "soft_boundary_play_rule", "single_turn_boundary"}:
             return False
-        mode = str(getattr(self, "emotion_judgement_mode", "suspicious") or "suspicious").lower()
+        mode = str(runtime_persona_setting(self, "emotion_judgement_mode", "suspicious") or "suspicious").lower()
         if mode in {"off", "none", "disabled"}:
             return False
         if mode in {"always", "all"}:
@@ -6162,7 +6171,7 @@ Local classifier result:
 {json.dumps({k: local_intent.get(k) for k in ("intent", "emotion", "source", "reason", "emotion_event", "emotion_target", "emotion_intensity", "emotion_reason", "emotion_confidence", "boundary_feedback_type", "boundary_suitable_tier", "boundary_current_tier")}, ensure_ascii=False)}
 
 Character-specific bottom-line baseline (reference only; empty means use the conservative general rule):
-{_single_line(getattr(self, "relationship_boundary_bottom_line_baseline", ""), 600) or "未单独配置"}
+{_single_line(runtime_persona_setting(self, "relationship_boundary_bottom_line_baseline", ""), 600) or "未单独配置"}
 """.strip()
         provider_id = self._emotion_judgement_provider_id()
         raw = ""
@@ -6206,7 +6215,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
                     "trace_id": observed.get("trace_id"),
                     "revision": _safe_int(observed.get("revision"), 1, 1) + 1,
                 }
-            if self.enable_intent_emotion_analysis:
+            if runtime_persona_setting(self, "enable_intent_emotion_analysis", True):
                 user["intent_profile"] = intent_to_apply
             violation_settler = getattr(self, "_apply_relationship_violation_policy", None)
             if callable(violation_settler):
@@ -6270,7 +6279,10 @@ Character-specific bottom-line baseline (reference only; empty means use the con
             state["mood_updated_ts"] = now
             return score
         hours = max(0.0, (now - last_ts) / 3600)
-        recovery = max(1, _safe_int(getattr(self, "emotional_gate_recovery_per_hour", 24), 24, 1, 60))
+        recovery = max(
+            1,
+            _safe_int(runtime_persona_setting(self, "emotional_gate_recovery_per_hour", 24), 24, 1, 60),
+        )
         delta = int(hours * recovery)
         if delta <= 0:
             return score
@@ -6372,11 +6384,11 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         return event
 
     def _boundary_feedback_tier_deduct_factor(self, user: dict[str, Any]) -> float:
-        if not bool(getattr(self, "relationship_boundary_tier_adaptive", True)):
+        if not bool(runtime_persona_setting(self, "relationship_boundary_tier_adaptive", True)):
             return 1.0
         stage = relationship_stage_for_score(
             user.get("relationship_score", 0),
-            getattr(self, "relationship_stage_policy", None),
+            runtime_persona_setting(self, "relationship_stage_policy", None),
         ).get("phase", {})
         return {
             "deeply_distant": 1.0,
@@ -6390,11 +6402,11 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         }.get(str(stage.get("key") or "acquaintance"), 1.0)
 
     def _boundary_feedback_tier_recovery_factor(self, user: dict[str, Any]) -> float:
-        if not bool(getattr(self, "relationship_boundary_tier_adaptive", True)):
+        if not bool(runtime_persona_setting(self, "relationship_boundary_tier_adaptive", True)):
             return 1.0
         stage = relationship_stage_for_score(
             user.get("relationship_score", 0),
-            getattr(self, "relationship_stage_policy", None),
+            runtime_persona_setting(self, "relationship_stage_policy", None),
         ).get("phase", {})
         return {
             "deeply_distant": 0.5,
@@ -6408,18 +6420,25 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         }.get(str(stage.get("key") or "acquaintance"), 1.0)
 
     def _refresh_relationship_violation_stage(self, state: dict[str, Any], *, now: float) -> str:
-        if not bool(getattr(self, "enable_relationship_boundary_stage", True)):
+        if not bool(runtime_persona_setting(self, "enable_relationship_boundary_stage", True)):
             state["stage"] = "normal"
             return "normal"
         load = _safe_int(state.get("stage_load"), 0, 0, 120)
-        avoid_at = _safe_int(getattr(self, "relationship_boundary_stage_avoid_points", 6), 6, 1, 120)
-        forbid_at = _safe_int(getattr(self, "relationship_boundary_stage_forbid_points", 12), 12, avoid_at, 120)
-        reflect_at = _safe_int(getattr(self, "relationship_boundary_stage_reflect_points", 20), 20, forbid_at, 120)
+        avoid_at = _safe_int(runtime_persona_setting(self, "relationship_boundary_stage_avoid_points", 6), 6, 1, 120)
+        forbid_at = _safe_int(runtime_persona_setting(self, "relationship_boundary_stage_forbid_points", 12), 12, avoid_at, 120)
+        reflect_at = _safe_int(runtime_persona_setting(self, "relationship_boundary_stage_reflect_points", 20), 20, forbid_at, 120)
         if load >= reflect_at:
             stage = "reflect"
             state["cold_until"] = max(
                 _safe_float(state.get("cold_until"), 0),
-                now + _safe_int(getattr(self, "relationship_boundary_cold_minutes", 180), 180, 10, 1440) * 60,
+                now
+                + _safe_int(
+                    runtime_persona_setting(self, "relationship_boundary_cold_minutes", 180),
+                    180,
+                    10,
+                    1440,
+                )
+                * 60,
             )
         elif load >= forbid_at:
             stage = "forbid"
@@ -6440,7 +6459,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         """Demote one configured tier while preserving the unified ledger audit."""
         projection = relationship_stage_for_score(
             user.get("relationship_score", 0),
-            getattr(self, "relationship_stage_policy", None),
+            runtime_persona_setting(self, "relationship_stage_policy", None),
         )
         stages = projection.get("stages") if isinstance(projection.get("stages"), list) else []
         index = _safe_int(projection.get("stage_index"), 0, 0)
@@ -6531,7 +6550,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
             return 0
         last = _safe_float(state.get("last_recovery_at") or state.get("last_violation_at"), now, 0)
         minutes_per_point = _safe_int(
-            getattr(self, "relationship_violation_recovery_minutes_per_point", 180),
+                runtime_persona_setting(self, "relationship_violation_recovery_minutes_per_point", 180),
             180,
             15,
             10080,
@@ -6544,7 +6563,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         effective_seconds = max(60.0, minutes_per_point * 60 / max(0.3, min(2.0, recovery_factor)))
         if _safe_float(state.get("apology_speedup_until"), 0) > now:
             speedup = _safe_float(
-                getattr(self, "relationship_boundary_apology_speedup_multiplier", 3.0),
+                runtime_persona_setting(self, "relationship_boundary_apology_speedup_multiplier", 3.0),
                 3.0,
                 1.0,
                 10.0,
@@ -6588,9 +6607,9 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         """Apply bounded penalties/recovery for secondary-user boundary events."""
         if not isinstance(user, dict) or not isinstance(intent, dict):
             return {"changed": False, "reason": "invalid_input"}
-        if not bool(getattr(self, "enable_relationship_violation_penalties", True)):
+        if not bool(runtime_persona_setting(self, "enable_relationship_violation_penalties", True)):
             return {"changed": False, "reason": "disabled"}
-        if not bool(getattr(self, "enable_custom_relationship_stage_policy", True)):
+        if not bool(runtime_persona_setting(self, "enable_custom_relationship_stage_policy", True)):
             return {"changed": False, "reason": "relationship_system_disabled"}
         try:
             role = self._private_user_role(user, str(user.get("user_id") or ""))
@@ -6624,19 +6643,29 @@ Character-specific bottom-line baseline (reference only; empty means use the con
                 )
             return {"changed": True, "reason": "confession_feedback", "state": deepcopy(state)}
         if event == "apology":
-            if not bool(getattr(self, "enable_relationship_boundary_apology", True)):
+            if not bool(runtime_persona_setting(self, "enable_relationship_boundary_apology", True)):
                 return {"changed": False, "reason": "apology_recovery_disabled", "state": deepcopy(state)}
             outstanding = _safe_int(state.get("unrecovered_points"), 0, 0, 60)
             if outstanding <= 0:
                 return {"changed": False, "reason": "nothing_to_recover", "state": deepcopy(state)}
             last_kind = _single_line(state.get("last_kind"), 40) or "general"
             apology_by_kind = state.get("apology_by_kind") if isinstance(state.get("apology_by_kind"), dict) else {}
-            apology_limit = _safe_int(getattr(self, "relationship_boundary_apology_duplicate_limit", 3), 3, 1, 20)
+            apology_limit = _safe_int(
+                runtime_persona_setting(self, "relationship_boundary_apology_duplicate_limit", 3),
+                3,
+                1,
+                20,
+            )
             apology_count = _safe_int(apology_by_kind.get(last_kind), 0, 0)
             if apology_count >= apology_limit:
                 state["last_event_id"] = explicit_id
                 return {"changed": False, "reason": "apology_trust_exhausted", "state": deepcopy(state)}
-            apology_ratio = _safe_float(getattr(self, "relationship_boundary_apology_restore_ratio", 0.6), 0.6, 0.0, 1.0)
+            apology_ratio = _safe_float(
+                runtime_persona_setting(self, "relationship_boundary_apology_restore_ratio", 0.6),
+                0.6,
+                0.0,
+                1.0,
+            )
             recover = min(6, max(1, int(math.ceil(outstanding * apology_ratio))))
             recoverable_score = _safe_int(state.get("recoverable_score"), outstanding, 0, 60)
             recover = min(recover, recoverable_score if "recoverable_score" in state else outstanding)
@@ -6660,9 +6689,21 @@ Character-specific bottom-line baseline (reference only; empty means use the con
                 apology_by_kind[last_kind] = apology_count + 1
                 state["apology_by_kind"] = apology_by_kind
                 state["last_recovery_at"] = ts
-                state["apology_speedup_until"] = ts + max(3600, outstanding * 60 * _safe_int(
-                    getattr(self, "relationship_violation_recovery_minutes_per_point", 180), 180, 15, 10080
-                ))
+                state["apology_speedup_until"] = ts + max(
+                    3600,
+                    outstanding
+                    * 60
+                    * _safe_int(
+                        runtime_persona_setting(
+                            self,
+                            "relationship_violation_recovery_minutes_per_point",
+                            180,
+                        ),
+                        180,
+                        15,
+                        10080,
+                    ),
+                )
                 state["last_event_id"] = explicit_id
                 stage_refresher = getattr(self, "_refresh_relationship_violation_stage", None)
                 if callable(stage_refresher):
@@ -6701,7 +6742,9 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         prior_apology = _safe_int(state.get("apology_recovered_points"), 0, 0, 6)
         clawed_back = 0
         violation_kind = feedback_kind or ("hurt" if is_severe_hurt_violation else "boundary")
-        if violation_kind == "bottom_line" and not bool(getattr(self, "enable_relationship_boundary_bottom_line", True)):
+        if violation_kind == "bottom_line" and not bool(
+            runtime_persona_setting(self, "enable_relationship_boundary_bottom_line", True)
+        ):
             violation_kind = "harassment"
         apology_kind = _single_line(state.get("apology_recovered_kind"), 40)
         if prior_apology and (not apology_kind or apology_kind == violation_kind):
@@ -6716,12 +6759,12 @@ Character-specific bottom-line baseline (reference only; empty means use the con
             state["apology_recovered_points"] = 0
             state["apology_recovered_kind"] = ""
         penalty_defaults = {
-            1: _safe_int(getattr(self, "relationship_boundary_penalty_light", 4), 4, 1, 60),
-            2: _safe_int(getattr(self, "relationship_boundary_penalty_mid", 7), 7, 1, 60),
-            3: _safe_int(getattr(self, "relationship_boundary_penalty_severe", 12), 12, 1, 60),
+            1: _safe_int(runtime_persona_setting(self, "relationship_boundary_penalty_light", 4), 4, 1, 60),
+            2: _safe_int(runtime_persona_setting(self, "relationship_boundary_penalty_mid", 7), 7, 1, 60),
+            3: _safe_int(runtime_persona_setting(self, "relationship_boundary_penalty_severe", 12), 12, 1, 60),
         }
         penalty = (
-            _safe_int(getattr(self, "relationship_boundary_penalty_bottom_line", 14), 14, 1, 60)
+                _safe_int(runtime_persona_setting(self, "relationship_boundary_penalty_bottom_line", 14), 14, 1, 60)
             if violation_kind == "bottom_line"
             else penalty_defaults[severity]
         )
@@ -6747,9 +6790,9 @@ Character-specific bottom-line baseline (reference only; empty means use the con
             )
             previous_recoverable = 0
         recover_ratio = {
-            1: _safe_float(getattr(self, "relationship_boundary_recover_ratio_light", 0.5), 0.5, 0.0, 1.0),
-            2: _safe_float(getattr(self, "relationship_boundary_recover_ratio_mid", 0.33), 0.33, 0.0, 1.0),
-            3: _safe_float(getattr(self, "relationship_boundary_recover_ratio_severe", 0.25), 0.25, 0.0, 1.0),
+            1: _safe_float(runtime_persona_setting(self, "relationship_boundary_recover_ratio_light", 0.5), 0.5, 0.0, 1.0),
+            2: _safe_float(runtime_persona_setting(self, "relationship_boundary_recover_ratio_mid", 0.33), 0.33, 0.0, 1.0),
+            3: _safe_float(runtime_persona_setting(self, "relationship_boundary_recover_ratio_severe", 0.25), 0.25, 0.0, 1.0),
         }[severity]
         if violation_kind == "bottom_line":
             recover_ratio *= 0.5
@@ -6785,9 +6828,25 @@ Character-specific bottom-line baseline (reference only; empty means use the con
             state["bottom_line_count"] = _safe_int(state.get("bottom_line_count"), 0, 0) + 1
             bottom_count = _safe_int(state.get("bottom_line_count"), 0, 0)
             if bottom_count == 1:
-                state["stage_load"] = max(state["stage_load"], _safe_int(getattr(self, "relationship_boundary_stage_forbid_points", 12), 12, 1, 120))
+                state["stage_load"] = max(
+                    state["stage_load"],
+                    _safe_int(
+                        runtime_persona_setting(self, "relationship_boundary_stage_forbid_points", 12),
+                        12,
+                        1,
+                        120,
+                    ),
+                )
             elif bottom_count >= 2:
-                state["stage_load"] = max(state["stage_load"], _safe_int(getattr(self, "relationship_boundary_stage_reflect_points", 20), 20, 1, 120))
+                state["stage_load"] = max(
+                    state["stage_load"],
+                    _safe_int(
+                        runtime_persona_setting(self, "relationship_boundary_stage_reflect_points", 20),
+                        20,
+                        1,
+                        120,
+                    ),
+                )
             if bottom_count >= 3 and _safe_int(state.get("last_bottom_line_demoted_count"), 0, 0) < bottom_count:
                 demoter = getattr(self, "_demote_relationship_after_repeated_bottom_line", None)
                 if callable(demoter):
@@ -6833,7 +6892,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         points = _safe_int(state.get("unrecovered_points"), 0, 0, 60)
         if points <= 0 and _safe_float(state.get("confession_until"), 0) > ts:
             tone = _single_line(
-                getattr(
+                runtime_persona_setting(
                     self,
                     "relationship_boundary_tone_confession",
                     "把这次表达当作心意，不当作冒犯；结合当前关系自然害羞、迟疑或温和说明节奏，不必机械拒绝。",
@@ -6847,24 +6906,36 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         kind = str(state.get("last_kind") or "boundary")
         if kind == "bottom_line":
             default_tone = "明确表达这触碰了重要底线，受伤和距离感可以真实存在；不要功能化播报惩罚，也不要立即恢复亲密。"
-            tone = _single_line(getattr(self, "relationship_boundary_tone_bottom_line", default_tone), 240) or default_tone
+            tone = _single_line(
+                runtime_persona_setting(self, "relationship_boundary_tone_bottom_line", default_tone),
+                240,
+            ) or default_tone
         elif _safe_int(state.get("last_severity"), 1, 1, 3) >= 3:
             default_tone = "明显收住亲密表达，直接说明不舒服并拒绝继续；保持角色口吻，不使用系统式警告。"
-            tone = _single_line(getattr(self, "relationship_boundary_tone_severe", default_tone), 240) or default_tone
+            tone = _single_line(
+                runtime_persona_setting(self, "relationship_boundary_tone_severe", default_tone),
+                240,
+            ) or default_tone
         elif stage in {"forbid", "reflect"}:
             default_tone = "平静而明确地划清界限，减少主动贴近和暧昧回应；可以说明原因，但不要反复说教。"
-            tone = _single_line(getattr(self, "relationship_boundary_tone_mid", default_tone), 240) or default_tone
+            tone = _single_line(
+                runtime_persona_setting(self, "relationship_boundary_tone_mid", default_tone),
+                240,
+            ) or default_tone
         else:
             default_tone = "轻微降低亲密度，带一点迟疑或回避并自然说明节奏；不要把普通互动渲染成严重冒犯。"
-            tone = _single_line(getattr(self, "relationship_boundary_tone_light", default_tone), 240) or default_tone
+            tone = _single_line(
+                runtime_persona_setting(self, "relationship_boundary_tone_light", default_tone),
+                240,
+            ) or default_tone
         relationship_stage = relationship_stage_for_score(
             user.get("relationship_score", 0),
-            getattr(self, "relationship_stage_policy", None),
+            runtime_persona_setting(self, "relationship_stage_policy", None),
         ).get("phase", {})
         relationship_stage_key = str(relationship_stage.get("key") or "acquaintance")
         if relationship_stage_key in {"deeply_distant", "strongly_distant", "distant", "acquaintance"}:
             tier_tone = _single_line(
-                getattr(
+                runtime_persona_setting(
                     self,
                     "relationship_boundary_tone_silent",
                     "关系尚浅时不必长篇袒露脆弱，可以安静收住互动并记住这次不舒服。",
@@ -6873,7 +6944,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
             )
         elif relationship_stage_key in {"intimate", "deeply_bonded"}:
             tier_tone = _single_line(
-                getattr(
+                runtime_persona_setting(
                     self,
                     "relationship_boundary_tone_communicate",
                     "关系很深时可以因为信任而说清为什么难过或生气，但亲密关系不等于放弃边界。",
@@ -6906,7 +6977,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
 
     def _boundary_feedback_probability(self, prefix: str, level: str, default: float) -> float:
         return _safe_float(
-            getattr(self, f"relationship_boundary_{prefix}_probability_{level}", default),
+            runtime_persona_setting(self, f"relationship_boundary_{prefix}_probability_{level}", default),
             default,
             0.0,
             1.0,
@@ -6926,12 +6997,12 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         state["last_side_effect_event_id"] = event_id
         level = self._boundary_feedback_level_key(state)
         vent_defaults = {"light": 0.15, "mid": 0.35, "severe": 0.6, "bottom_line": 0.9}
-        if bool(getattr(self, "enable_relationship_boundary_vent", True)) and random.random() <= self._boundary_feedback_probability(
+        if bool(runtime_persona_setting(self, "enable_relationship_boundary_vent", True)) and random.random() <= self._boundary_feedback_probability(
             "vent", level, vent_defaults[level]
         ):
             self._append_relationship_boundary_vent(user, intent, state, now=now)
 
-        if not bool(getattr(self, "enable_relationship_boundary_owner_report", True)):
+        if not bool(runtime_persona_setting(self, "enable_relationship_boundary_owner_report", True)):
             return
         report = self._queue_relationship_boundary_owner_report(user, intent, state, now=now)
         if not report:
@@ -6962,7 +7033,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         *,
         now: float,
     ) -> None:
-        raw_targets = getattr(self, "relationship_boundary_vent_targets", [])
+        raw_targets = runtime_persona_setting(self, "relationship_boundary_vent_targets", [])
         if isinstance(raw_targets, str):
             targets = [item.strip() for item in re.split(r"[,，\n]", raw_targets) if item.strip()]
         elif isinstance(raw_targets, (list, tuple, set)):
@@ -6979,7 +7050,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
             "bottom_line": "委屈又生气",
         }[level]
         reason = _single_line(intent.get("emotion_reason") or state.get("last_reason"), 80) or "对方越过了相处边界"
-        template = str(getattr(self, "relationship_boundary_vent_scene_template", "") or "").strip()
+        template = str(runtime_persona_setting(self, "relationship_boundary_vent_scene_template", "") or "").strip()
         if template:
             try:
                 event_text = template.format(
@@ -7180,8 +7251,8 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         )
 
     def _relationship_boundary_report_ability_available(self, ctx: dict[str, Any]) -> bool:
-        if not bool(getattr(self, "enable_relationship_violation_penalties", True)) or not bool(
-            getattr(self, "enable_relationship_boundary_owner_report", True)
+        if not bool(runtime_persona_setting(self, "enable_relationship_violation_penalties", True)) or not bool(
+            runtime_persona_setting(self, "enable_relationship_boundary_owner_report", True)
         ):
             return False
         user = ctx.get("user") if isinstance(ctx, dict) and isinstance(ctx.get("user"), dict) else {}
@@ -7205,8 +7276,8 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         )
 
     def _relationship_boundary_report_ability_executor(self, ctx: dict[str, Any]) -> dict[str, Any]:
-        if not bool(getattr(self, "enable_relationship_violation_penalties", True)) or not bool(
-            getattr(self, "enable_relationship_boundary_owner_report", True)
+        if not bool(runtime_persona_setting(self, "enable_relationship_violation_penalties", True)) or not bool(
+            runtime_persona_setting(self, "enable_relationship_boundary_owner_report", True)
         ):
             return {"success": False, "text": "", "context": "关系边界转达当前未启用", "summary": "能力未启用"}
         user = ctx.get("user") if isinstance(ctx, dict) and isinstance(ctx.get("user"), dict) else {}
@@ -7252,8 +7323,8 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         The legacy relationship-state projection is still maintained below for
         compatibility and diagnostics, but it no longer drives expression.
         """
-        emotion_enabled = bool(getattr(self, "enable_emotion_simulation", True))
-        relation_enabled = bool(getattr(self, "enable_relationship_state_machine", True))
+        emotion_enabled = bool(runtime_persona_setting(self, "enable_emotion_simulation", True))
+        relation_enabled = bool(runtime_persona_setting(self, "enable_relationship_state_machine", True))
         if not (emotion_enabled or relation_enabled):
             return
         now = _now_ts()
@@ -7268,7 +7339,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
             relationship_role=role,
             relationship_mode=relationship_mode,
             relationship_score=user.get("relationship_score"),
-            normal_interaction_band_cap=getattr(self, "normal_interaction_band_cap", "warm"),
+            normal_interaction_band_cap=runtime_persona_setting(self, "normal_interaction_band_cap", "warm"),
             now=now,
         )
         inbound_intent = str(intent.get("intent") or "chat").strip().lower()
@@ -7278,12 +7349,12 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         intensity = _safe_int(intent.get("emotion_intensity"), 0, 0, 100)
         target = _single_line(intent.get("emotion_target"), 24).lower() or "none"
         pressure = _safe_int(intent.get("pressure"), 0, 0, 5)
-        hurt_threshold = _safe_int(getattr(self, "emotional_gate_hurt_threshold", 70), 70, 10, 100)
-        avoidant_threshold = _safe_int(getattr(self, "emotional_gate_refuse_threshold", 90), 90, 20, 100)
+        hurt_threshold = _safe_int(runtime_persona_setting(self, "emotional_gate_hurt_threshold", 70), 70, 10, 100)
+        avoidant_threshold = _safe_int(runtime_persona_setting(self, "emotional_gate_refuse_threshold", 90), 90, 20, 100)
         if avoidant_threshold <= hurt_threshold:
             avoidant_threshold = min(100, hurt_threshold + 5)
-        recovery_per_hour = _safe_int(getattr(self, "emotional_gate_recovery_per_hour", 24), 24, 1, 60)
-        max_hurt_minutes = _safe_int(getattr(self, "emotional_gate_max_hurt_minutes", 90), 90, 10, 720)
+        recovery_per_hour = _safe_int(runtime_persona_setting(self, "emotional_gate_recovery_per_hour", 24), 24, 1, 60)
+        max_hurt_minutes = _safe_int(runtime_persona_setting(self, "emotional_gate_max_hurt_minutes", 90), 90, 10, 720)
         boundary_durable = bool(intent.get("boundary_durable"))
         contact = user.get("contact_preference")
         contact_state = dict(contact) if isinstance(contact, dict) else {}
@@ -7457,7 +7528,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
             relationship_role=role,
             relationship_mode=relationship_mode,
             relationship_score=user.get("relationship_score"),
-            normal_interaction_band_cap=getattr(self, "normal_interaction_band_cap", "warm"),
+            normal_interaction_band_cap=runtime_persona_setting(self, "normal_interaction_band_cap", "warm"),
             now=now,
         )
         logger.info(
@@ -7470,7 +7541,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
     def _update_relationship_state_from_intent(self, user: dict[str, Any], intent: dict[str, Any]) -> None:
         if not isinstance(intent, dict):
             return
-        if not bool(getattr(self, "enable_custom_relationship_stage_policy", True)):
+        if not bool(runtime_persona_setting(self, "enable_custom_relationship_stage_policy", True)):
             return
         # REQ-040: the seven-band interaction projection is the only durable
         # relationship-expression state.  Legacy relationship_state is not
@@ -7480,7 +7551,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         return
 
     def _remember_passive_reply_topic(self, user: dict[str, Any], text: str, inbound_text: str = "") -> None:
-        if not self.enable_passive_topic_suppression:
+        if not runtime_persona_setting(self, "enable_passive_topic_suppression", True):
             return
         signature = self._proactive_topic_signature(text, inbound_text)
         if not signature:
@@ -7594,7 +7665,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         boundary = self._smart_silence_trigger_reason(inbound_text)
         if boundary:
             return boundary
-        mode = str(getattr(self, "smart_silence_judge_mode", "boundary_only") or "boundary_only").strip().lower()
+        mode = str(runtime_persona_setting(self, "smart_silence_judge_mode", "boundary_only") or "boundary_only").strip().lower()
         if mode != "contextual":
             return ""
         inbound = _single_line(inbound_text, 260)
@@ -7626,7 +7697,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         session_kind: str = "",
         recent_context: list[str] | None = None,
     ) -> dict[str, Any]:
-        if not bool(getattr(self, "enable_smart_silence", True)):
+        if not bool(runtime_persona_setting(self, "enable_smart_silence", True)):
             return {"decision": "send", "reason": "disabled", "confidence": 0.0, "source": "disabled"}
         inbound = _single_line(inbound_text, 320)
         response = _single_line(response_text, 600)
@@ -7704,7 +7775,14 @@ Character-specific bottom-line baseline (reference only; empty means use the con
 """.strip()
         timeout_seconds = max(
             0.2,
-            min(5.0, _safe_float(getattr(self, "smart_silence_model_timeout_seconds", 1.2), 1.2, 0.2)),
+            min(
+                5.0,
+                _safe_float(
+                    runtime_persona_setting(self, "smart_silence_model_timeout_seconds", 1.2),
+                    1.2,
+                    0.2,
+                ),
+            ),
         )
         started = time.perf_counter()
         raw = ""
@@ -7756,7 +7834,13 @@ Character-specific bottom-line baseline (reference only; empty means use the con
             decision = "send"
         confidence = max(0.0, min(1.0, _safe_float(payload.get("confidence"), 0.0, 0.0)))
         reason = _single_line(payload.get("reason"), 80) or "模型判定"
-        threshold = max(0.0, min(1.0, _safe_float(getattr(self, "smart_silence_min_confidence", 0.66), 0.66, 0.0)))
+        threshold = max(
+            0.0,
+            min(
+                1.0,
+                _safe_float(runtime_persona_setting(self, "smart_silence_min_confidence", 0.66), 0.66, 0.0),
+            ),
+        )
         if decision == "silent" and confidence < threshold:
             decision = "send"
             reason = f"低置信度:{reason}"
@@ -8421,7 +8505,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
                     _single_line(fallback, 160),
                 )
                 return fallback
-        content_policy_enabled = bool(getattr(self, "enable_relationship_content_tiers", False))
+        content_policy_enabled = bool(runtime_persona_setting(self, "enable_relationship_content_tiers", False))
         content_tier = self._response_content_tier(review_event) if content_policy_enabled else "unmanaged"
         if not self._passive_response_review_enabled():
             return self._fallback_temporal_or_continuity_confused_reply(inbound_text, response_text, user=user) or response_text
@@ -8609,7 +8693,10 @@ Character-specific bottom-line baseline (reference only; empty means use the con
                 flags=effective_flags,
                 user=user,
             ) or response_text
-        if len(cleaned) > max(len(response_text) + 80, self.response_review_max_chars + 160):
+        if len(cleaned) > max(
+            len(response_text) + 80,
+            runtime_persona_setting(self, "response_review_max_chars", 260) + 160,
+        ):
             fallback = self._fallback_overlong_casual_reply(inbound_text, response_text)
             return fallback or response_text
         if re.search(r"(提示词|系统|JSON|改写后|以下是)", cleaned, re.IGNORECASE):
@@ -8637,22 +8724,26 @@ Character-specific bottom-line baseline (reference only; empty means use the con
 
     def _passive_response_review_enabled(self) -> bool:
         return bool(
-            getattr(
+            runtime_persona_setting(
                 self,
                 "enable_passive_response_review",
-                getattr(self, "enable_response_self_review", True),
+                runtime_persona_setting(self, "enable_response_self_review", True),
             )
         )
 
     def _effective_passive_review_mode(self) -> str:
         mode = str(
-            getattr(self, "passive_review_mode", getattr(self, "response_review_mode", "severe_only"))
+            runtime_persona_setting(
+                self,
+                "passive_review_mode",
+                runtime_persona_setting(self, "response_review_mode", "severe_only"),
+            )
             or "severe_only"
         ).strip().lower()
         return mode if mode in {"local_only", "severe_only", "full"} else "severe_only"
 
     def _effective_passive_review_strength(self) -> str:
-        strength = str(getattr(self, "passive_review_strength", "lenient") or "lenient").strip().lower()
+        strength = str(runtime_persona_setting(self, "passive_review_strength", "lenient") or "lenient").strip().lower()
         return strength if strength in {"lenient", "balanced", "strict"} else "lenient"
 
     @staticmethod
@@ -8740,10 +8831,10 @@ Character-specific bottom-line baseline (reference only; empty means use the con
     def _casual_reply_review_limit(self, inbound_text: str) -> int:
         inbound_compact = self._compact_repeat_text(inbound_text)
         if len(inbound_compact) <= 12:
-            return min(140, max(90, self.response_review_max_chars // 2))
+            return min(140, max(90, runtime_persona_setting(self, "response_review_max_chars", 260) // 2))
         if len(inbound_compact) <= 28:
-            return min(180, max(120, int(self.response_review_max_chars * 0.65)))
-        return self.response_review_max_chars
+            return min(180, max(120, int(runtime_persona_setting(self, "response_review_max_chars", 260) * 0.65)))
+        return runtime_persona_setting(self, "response_review_max_chars", 260)
 
     def _is_short_casual_inbound_for_review(self, inbound_text: str, user: dict[str, Any]) -> bool:
         inbound = str(inbound_text or "").strip()
@@ -8970,7 +9061,10 @@ Character-specific bottom-line baseline (reference only; empty means use the con
             last_proactive_summary = _single_line(user.get("last_proactive_behavior_summary"), 300)
             delivery_umo = _single_line(user.get("last_proactive_delivery_umo") or user.get("umo"), 180)
             consumed_for = _safe_float(user.get("last_proactive_reply_context_consumed_for"), 0)
-            max_age = min(max(1, self.proactive_reply_context_hours) * 3600, 30 * 60)
+            max_age = min(
+                max(1, runtime_persona_setting(self, "proactive_reply_context_hours", 12)) * 3600,
+                30 * 60,
+            )
             same_delivery = last_proactive_at > 0 and abs(consumed_for - last_proactive_at) > 0.001
             if (
                 last_proactive_text
@@ -9011,7 +9105,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         if isinstance(suspended, dict) and suspended.get("active") and (
             suspended.get("resume_ready") or consume_suspended
         ):
-            opener = _single_line(suspended.get("opener_text"), 60) or f"{self.default_nickname}……"
+            opener = _single_line(suspended.get("opener_text"), 60) or f"{runtime_persona_setting(self, 'default_nickname', '你')}……"
             hidden_reason = _single_line(suspended.get("reason"), 40)
             hidden_action = _single_line(suspended.get("action"), 32)
             hidden_motive = _single_line(suspended.get("motive"), 120)
@@ -9088,7 +9182,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         return result
 
     async def _maybe_refresh_dialogue_episode(self, user_id: str, user: dict[str, Any]) -> None:
-        if not self.enable_dialogue_episode_memory:
+        if not runtime_persona_setting(self, "enable_dialogue_episode_memory", True):
             return
         now = _now_ts()
         async with self._data_lock:
@@ -9105,7 +9199,10 @@ Character-specific bottom-line baseline (reference only; empty means use the con
             return
         count = _safe_int(user.get("episode_message_count"), 0, 0)
         last_at = _safe_float(user.get("last_episode_refresh_at"), 0)
-        if count < self.episode_memory_refresh_messages and now - last_at < self.episode_memory_refresh_minutes * 60:
+        if (
+            count < runtime_persona_setting(self, "episode_memory_refresh_messages", 8)
+            and now - last_at < runtime_persona_setting(self, "episode_memory_refresh_minutes", 90) * 60
+        ):
             return
         raw_text = await self._collect_recent_private_conversation_text(user, hours=24, max_lines=70)
         if not raw_text or len(raw_text) < 80:
@@ -9115,7 +9212,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
             user, source_kind="private",
         )
         learn_expression_rules = bool(
-            getattr(self, "enable_expression_learning", False)
+            runtime_persona_setting(self, "enable_expression_learning", False)
             and len(user_utterances) >= 5
             and self._expression_private_learning_source_enabled(user, user_id)
             and (not expression_scope_managed or expression_scope_context is not None)
@@ -9220,7 +9317,7 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
             "dialogue_episode",
             now,
             refresh_key="last_episode_refresh_at",
-            refresh_seconds=self.episode_memory_refresh_minutes * 60,
+            refresh_seconds=runtime_persona_setting(self, "episode_memory_refresh_minutes", 90) * 60,
         )
         if not acquired:
             return
@@ -9272,8 +9369,8 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
                 or _single_line(episodes[-1].get("summary") if isinstance(episodes[-1], dict) else "", 140) != episode["summary"]
             ):
                 episodes.append(episode)
-            del episodes[:-self.max_dialogue_episodes]
-            if self.enable_open_loop_tracking:
+            del episodes[:-runtime_persona_setting(self, "max_dialogue_episodes", 12)]
+            if runtime_persona_setting(self, "enable_open_loop_tracking", True):
                 current_loops = current.setdefault("open_loops", [])
                 if not isinstance(current_loops, list):
                     current_loops = []
@@ -9352,7 +9449,7 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
         channel_scope: str = "private",
         now: float | None = None,
     ):
-        if not bool(getattr(self, "enable_custom_relationship_stage_policy", False)):
+        if not bool(runtime_persona_setting(self, "enable_custom_relationship_stage_policy", False)):
             # Keep the caller contract stable without reading or projecting
             # archived affinity data when the master switch is off.
             return build_expression_decision({})
@@ -9367,18 +9464,25 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
             role = str(user.get("relationship_role") or "friend")
         relationship_mode = str(user.get("relationship_mode") or "normal")
         is_owner_group = channel_scope == "group" and role == "owner"
-        project_relationship = is_owner_group and bool(getattr(self, "owner_group_relationship_projection", True))
-        project_interaction = is_owner_group and bool(getattr(self, "owner_group_interaction_projection", True))
+        project_relationship = is_owner_group and bool(
+            runtime_persona_setting(self, "owner_group_relationship_projection", True)
+        )
+        project_interaction = is_owner_group and bool(
+            runtime_persona_setting(self, "owner_group_interaction_projection", True)
+        )
         if role == "owner" and relationship_mode == "owner_exclusive" and not project_relationship:
             relationship_baseline = {
                 "stage_key": "owner_exclusive",
-                "tone": _single_line(getattr(self, "owner_exclusive_tone", "温暖、亲近、稳定"), 120),
+                "tone": _single_line(
+                    runtime_persona_setting(self, "owner_exclusive_tone", "温暖、亲近、稳定"),
+                    120,
+                ),
                 "address_level": _single_line(
-                    getattr(self, "owner_exclusive_address_style", "优先使用已确认的专属称呼"),
+                    runtime_persona_setting(self, "owner_exclusive_address_style", "优先使用已确认的专属称呼"),
                     100,
                 ),
                 "proactive_care_limit": _safe_int(
-                    getattr(self, "owner_exclusive_proactive_limit", 6),
+                    runtime_persona_setting(self, "owner_exclusive_proactive_limit", 6),
                     6,
                     0,
                     30,
@@ -9392,8 +9496,8 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
             }
         else:
             policy = (
-                getattr(self, "relationship_stage_policy", None)
-                if bool(getattr(self, "enable_custom_relationship_stage_policy", False))
+                runtime_persona_setting(self, "relationship_stage_policy", None)
+                if bool(runtime_persona_setting(self, "enable_custom_relationship_stage_policy", False))
                 else None
             )
             stage_projection = relationship_stage_for_score(
@@ -9434,7 +9538,7 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
             relationship_role="friend" if project_interaction else role,
             relationship_mode="normal" if project_relationship else relationship_mode,
             relationship_score=user.get("relationship_score"),
-            normal_interaction_band_cap=getattr(self, "normal_interaction_band_cap", "warm"),
+            normal_interaction_band_cap=runtime_persona_setting(self, "normal_interaction_band_cap", "warm"),
             now=decision_now,
         )
         contact = user.get("contact_preference")
@@ -9460,7 +9564,7 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
                 "relationship_mode": "normal" if project_relationship else relationship_mode,
                 "relationship_baseline": relationship_baseline,
                 "relationship_stage": relationship_baseline.get("stage_key"),
-                "normal_interaction_band_cap": getattr(self, "normal_interaction_band_cap", "warm"),
+                "normal_interaction_band_cap": runtime_persona_setting(self, "normal_interaction_band_cap", "warm"),
                 "current_interaction": interaction,
                 "administrator_override": manual_override,
                 "bot_state": bot_state or {"energy": user.get("bot_energy", 70)},
@@ -9622,7 +9726,7 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
         )
 
     def _format_companion_planner_injection(self, user: dict[str, Any]) -> str:
-        if not self.enable_mai_style_integration:
+        if not runtime_persona_setting(self, "enable_mai_style_integration", True):
             return ""
         intent_injection = self._format_intent_relationship_injection(user)
         if not intent_injection:
@@ -9664,11 +9768,11 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
         return any(cue in hint for cue in relation_cues)
 
     def _format_private_chat_context_injection(self, user: dict[str, Any], *, limit: int = 2) -> str:
-        if not self.enable_mai_style_integration:
+        if not runtime_persona_setting(self, "enable_mai_style_integration", True):
             return ""
         hint = _single_line(user.get("last_user_message"), 260)
         lines: list[str] = []
-        if self.enable_companion_memory:
+        if runtime_persona_setting(self, "enable_companion_memory", True):
             memory_text = self._format_companion_memory_for_prompt(user, style_only=True)
             if memory_text and memory_text != "暂无专门沉淀的用户记忆。":
                 for raw_line in memory_text.splitlines():
@@ -9749,7 +9853,10 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
     def _format_private_identity_anchor_for_prompt(self, user_id: str, user: dict[str, Any], event: Any | None = None) -> str:
         # The unified archive is the only person authority.  Retired
         # Worldbook identities and text must never enter a private prompt.
-        stable_name = _single_line(user.get("nickname") or self.default_nickname, 24)
+        stable_name = _single_line(
+            user.get("nickname") or runtime_persona_setting(self, "default_nickname", "你"),
+            24,
+        )
         identity_note = _single_line(user.get("profile_note"), 180)
         display_name = _single_line(user.get("last_display_name") or user.get("display_name"), 40)
         if event is not None:
@@ -9809,7 +9916,7 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
             del observed[:-8]
 
     async def _maybe_refresh_companion_memory(self, user_id: str, user: dict[str, Any]) -> None:
-        if not self.enable_companion_memory:
+        if not runtime_persona_setting(self, "enable_companion_memory", True):
             return
         now = _now_ts()
         async with self._data_lock:
@@ -9825,7 +9932,7 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
         if now < _safe_float(user.get("companion_memory_retry_after"), 0):
             return
         last_at = _safe_float(user.get("last_memory_refresh_at"), 0)
-        if now - last_at < self.memory_refresh_interval_minutes * 60:
+        if now - last_at < runtime_persona_setting(self, "memory_refresh_interval_minutes", 360) * 60:
             return
         memory = user.get("companion_memory")
         if not isinstance(memory, dict):
@@ -9836,7 +9943,7 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
         profile = self._relationship_profile(user)
         facts = "\n".join(
             f"- {_single_line(item.get('text'), 160)}"
-            for item in items[: self.max_companion_memory_items]
+            for item in items[: runtime_persona_setting(self, "max_companion_memory_items", 36)]
             if isinstance(item, dict) and _single_line(item.get("text"), 160)
         )
         if not facts:
@@ -9876,7 +9983,7 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
             "companion_memory",
             now,
             refresh_key="last_memory_refresh_at",
-            refresh_seconds=self.memory_refresh_interval_minutes * 60,
+            refresh_seconds=runtime_persona_setting(self, "memory_refresh_interval_minutes", 360) * 60,
         )
         if not acquired:
             return
@@ -9960,9 +10067,17 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
         error_key = f"{task}_last_error"
         running_key = f"{task}_running_at"
         if task == "dialogue_episode":
-            configured = _safe_int(getattr(self, "episode_memory_refresh_minutes", 60), 60, 1) * 60
+            configured = _safe_int(
+                runtime_persona_setting(self, "episode_memory_refresh_minutes", 90),
+                90,
+                1,
+            ) * 60
         elif task == "companion_memory":
-            configured = _safe_int(getattr(self, "memory_refresh_interval_minutes", 180), 180, 1) * 60
+            configured = _safe_int(
+                runtime_persona_setting(self, "memory_refresh_interval_minutes", 360),
+                360,
+                1,
+            ) * 60
         else:
             configured = 10 * 60
         delay = min(max(10 * 60, configured), 30 * 60)
@@ -9984,7 +10099,7 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
         intent = user.get("intent_profile")
         lines: list[str] = []
         if (
-            bool(getattr(self, "enable_intent_emotion_analysis", True))
+            bool(runtime_persona_setting(self, "enable_intent_emotion_analysis", True))
             and isinstance(intent, dict)
             and intent.get("intent")
         ):
@@ -10036,7 +10151,8 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
         kept = [
             item for item in raw
             if isinstance(item, dict)
-            and now - _safe_float(item.get("ts"), 0) <= self.passive_topic_memory_hours * 3600
+            and now - _safe_float(item.get("ts"), 0)
+            <= runtime_persona_setting(self, "passive_topic_memory_hours", 8) * 3600
             and not (
                 callable(getattr(self, "_framework_agent_meta_summary_leak", None))
                 and (
@@ -10049,7 +10165,7 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
         return user["recent_reply_topics"]
 
     def _format_recent_passive_topics_hint(self, user: dict[str, Any]) -> str:
-        if not self.enable_passive_topic_suppression:
+        if not runtime_persona_setting(self, "enable_passive_topic_suppression", True):
             return ""
         recent = self._cleanup_recent_passive_topics(user)
         lines = []
@@ -10128,7 +10244,7 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
             return flags
         intent_profile = user.get("intent_profile") if isinstance(user.get("intent_profile"), dict) else {}
         is_help = str(intent_profile.get("intent") or "") == "help"
-        length_limit = self.response_review_max_chars * (2 if is_help else 1)
+        length_limit = runtime_persona_setting(self, "response_review_max_chars", 260) * (2 if is_help else 1)
         if len(cleaned) > length_limit:
             flags.append("too_long")
         if not is_help and self._is_short_casual_inbound_for_review(inbound_text, user):
@@ -10170,7 +10286,7 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
         if self._expression_style_review_enabled():
             flags.extend(self._expression_review_flags(cleaned, user))
         signature = self._proactive_topic_signature(cleaned)
-        if self.enable_passive_topic_suppression:
+        if runtime_persona_setting(self, "enable_passive_topic_suppression", True):
             for item in self._cleanup_recent_passive_topics(user):
                 if self._topic_signature_similar(signature, str(item.get("signature") or "")):
                     flags.append("repeated_topic")
@@ -10182,7 +10298,11 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
             and not self._inbound_explicitly_requests_repeat(inbound_text)
             and self._text_repeats_recent_message(cleaned, last_message)
         ):
-            if not last_sent or _now_ts() - last_sent <= self.proactive_reply_context_hours * 3600:
+            if not last_sent or _now_ts() - last_sent <= runtime_persona_setting(
+                self,
+                "proactive_reply_context_hours",
+                12,
+            ) * 3600:
                 flags.append("repeats_last_bot_message")
         return list(dict.fromkeys(flags))
 

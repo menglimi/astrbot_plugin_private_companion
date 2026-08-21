@@ -104,6 +104,7 @@ from .dreaming import (
     weighted_unique_fragment_sample,
 )
 from .helpers import _date_key, _now_ts, _safe_float, _safe_int, _single_line, _strip_internal_message_blocks, _today_key, normalize_legacy_tag_text
+from .persona_config import runtime_persona_setting
 from .planning import (
     build_daily_plan_prompt,
     build_detail_enhancement_prompt,
@@ -344,7 +345,9 @@ class AtRelayMixin:
         wb_matches = self._resolve_worldbook_member_by_name(query)
         if wb_matches:
             return wb_matches[0] if len(wb_matches) == 1 else {"ambiguous": True, "matches": wb_matches[:8], "source": "worldbook"}
-        if self.atrelay_require_worldbook_first and self.enable_worldbook_member_recognition:
+        if self.atrelay_require_worldbook_first and runtime_persona_setting(
+            self, "enable_worldbook_member_recognition", True
+        ):
             return {}
         members = await self._get_group_member_list_for_tool(event, group_id)
         formatted = [self._format_atrelay_member(item) for item in members]
@@ -597,7 +600,18 @@ class AtRelayMixin:
             rewritten = await self._llm_call(
                 prompt,
                 max_tokens=120,
-                provider_id=self._task_provider(getattr(self, "mai_style_provider_id", ""), getattr(self, "llm_provider_id", "")),
+                provider_id=self._task_provider(
+                    runtime_persona_setting(
+                        self,
+                        "MAI_STYLE_PROVIDER_ID",
+                        getattr(self, "mai_style_provider_id", ""),
+                    ),
+                    runtime_persona_setting(
+                        self,
+                        "LLM_PROVIDER_ID",
+                        getattr(self, "llm_provider_id", ""),
+                    ),
+                ),
                 task="atrelay_rewrite",
             )
         except Exception as exc:

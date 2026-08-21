@@ -224,6 +224,25 @@ _EXTERNAL_IMAGE_DOWNLOAD_TIMEOUT_OVERRIDE: ContextVar[float | None] = ContextVar
     default=None,
 )
 from .proactive_routes import PROACTIVE_ROUTE_REGISTRY
+from .persona_config import runtime_persona_setting
+
+
+def _persona_provider_id(owner: Any, canonical_key: str, legacy_attr: str, quick_role: str) -> str:
+    """Resolve canonical persona provider settings while preserving test harnesses."""
+    fallback = str(getattr(owner, legacy_attr, "") or "").strip()
+    if not callable(getattr(owner, "persona_setting", None)):
+        return fallback
+    mode = str(getattr(owner, "provider_config_mode", "quick") or "quick").strip().lower()
+    if mode != "quick":
+        return str(runtime_persona_setting(owner, canonical_key, fallback) or "").strip()
+    complex_id = str(runtime_persona_setting(owner, "COMPLEX_REASONING_PROVIDER_ID", "") or "").strip()
+    if quick_role == "complex":
+        return complex_id or fallback
+    if quick_role == "creative":
+        creative_id = str(runtime_persona_setting(owner, "CREATIVE_MODEL_PROVIDER_ID", "") or "").strip()
+        return creative_id or complex_id or fallback
+    fast_id = str(runtime_persona_setting(owner, "FAST_RESPONSE_PROVIDER_ID", "") or "").strip()
+    return fast_id or complex_id or fallback
 
 DEFAULT_NEWS_SOURCES = "\n".join(
     [
@@ -698,7 +717,9 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             min(
                 600,
                 _safe_int(
-                    getattr(self, "proactive_chat_bridge_collision_window_seconds", 90),
+                    runtime_persona_setting(
+                        self, "proactive_chat_bridge_collision_window_seconds", 90
+                    ),
                     90,
                     10,
                     600,
@@ -720,7 +741,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         *,
         unanswered_count: int = 0,
     ) -> dict[str, Any]:
-        if not bool(getattr(self, "enable_proactive_chat_integration", True)):
+        if not bool(runtime_persona_setting(self, "enable_proactive_chat_integration", True)):
             return {"enabled": False, "allowed": True, "reason": "integration_disabled"}
         user_id, user = self._proactive_chat_bridge_user(session_id)
         if not user_id or not isinstance(user, dict):
@@ -856,7 +877,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         token: str = "",
         attempt_id: str = "",
     ) -> dict[str, Any]:
-        if not bool(getattr(self, "enable_proactive_chat_integration", True)):
+        if not bool(runtime_persona_setting(self, "enable_proactive_chat_integration", True)):
             return {"ok": True, "text": str(text or "").strip(), "reason": "integration_disabled"}
         user_id, user = self._proactive_chat_bridge_user(session_id)
         if not user_id or not isinstance(user, dict):
@@ -889,13 +910,19 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
                 topic="",
                 action_context="没有外部图片或工具结果",
             )
-        review_mode = str(getattr(self, "proactive_chat_bridge_review_mode", "local") or "local").strip().lower()
+        review_mode = str(
+            runtime_persona_setting(self, "proactive_chat_bridge_review_mode", "local")
+            or "local"
+        ).strip().lower()
         full_reviewer = getattr(self, "_review_proactive_message_send_decision", None)
         if (
             review_mode == "follow_proactive_review"
-            and bool(getattr(self, "enable_proactive_message_review", True))
+            and bool(runtime_persona_setting(self, "enable_proactive_message_review", True))
             and callable(full_reviewer)
-            and str(getattr(self, "proactive_review_mode", "full") or "full").strip().lower() != "local_only"
+            and str(runtime_persona_setting(self, "proactive_review_mode", "full") or "full")
+            .strip()
+            .lower()
+            != "local_only"
         ):
             try:
                 decision = await full_reviewer(
@@ -947,7 +974,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         token: str = "",
         attempt_id: str = "",
     ) -> dict[str, Any]:
-        if not bool(getattr(self, "enable_proactive_chat_integration", True)):
+        if not bool(runtime_persona_setting(self, "enable_proactive_chat_integration", True)):
             return {"recorded": False, "reason": "integration_disabled"}
         user_id, user = self._proactive_chat_bridge_user(session_id)
         if not user_id or not isinstance(user, dict):
@@ -1407,7 +1434,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         return any(token in lowered for token in ("web exploration", "recent search", "search history", "browsing history"))
 
     def _format_recent_web_exploration_context_for_reply(self, inbound_text: str = "") -> str:
-        if not getattr(self, "enable_web_exploration", False):
+        if not runtime_persona_setting(self, "enable_web_exploration", False):
             return ""
         if not self._user_asks_web_exploration_context(inbound_text):
             return ""
@@ -1463,7 +1490,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         )
 
     def _format_recent_ai_daily_context_for_reply(self, inbound_text: str = "") -> str:
-        if not self.enable_news_integration:
+        if not runtime_persona_setting(self, "enable_news_integration", False):
             return ""
         if not self._user_asks_ai_daily_context(inbound_text):
             return ""
@@ -1520,7 +1547,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         )
 
     def _format_recent_news_context_for_reply(self, inbound_text: str = "") -> str:
-        if not self.enable_news_integration:
+        if not runtime_persona_setting(self, "enable_news_integration", False):
             return ""
         ai_daily_context = self._format_recent_ai_daily_context_for_reply(inbound_text)
         if ai_daily_context:
@@ -1576,7 +1603,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
 
     def _format_news_digest_for_command(self) -> str:
         state = self.data.get("news_integration") if isinstance(self.data.get("news_integration"), dict) else {}
-        if not self.enable_news_integration:
+        if not runtime_persona_setting(self, "enable_news_integration", False):
             return "新闻阅读功能没有开启。"
         status = _single_line(state.get("last_status"), 60) or "未知"
         digest = state.get("last_digest") if isinstance(state.get("last_digest"), dict) else {}
@@ -1610,9 +1637,9 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
 
     def _format_ai_daily_digest_for_command(self) -> str:
         state = self.data.get("news_integration") if isinstance(self.data.get("news_integration"), dict) else {}
-        if not self.enable_news_integration:
+        if not runtime_persona_setting(self, "enable_news_integration", False):
             return "新闻阅读功能没有开启。"
-        if not self.enable_ai_daily_watch:
+        if not runtime_persona_setting(self, "enable_ai_daily_watch", True):
             return "AI 日报/早报追踪没有开启。"
         ai_state = state.get("ai_daily") if isinstance(state.get("ai_daily"), dict) else {}
         digest, selected_item = self._select_ai_daily_digest_item(ai_state)
@@ -1669,12 +1696,12 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         status = _single_line(ai_state.get("status"), 60) or "未知"
         lines = [
             "AI 日报/早报测试结果：",
-            f"- 新闻集成：{'开启' if self.enable_news_integration else '关闭'}",
-            f"- AI日报/早报追踪：{'开启' if self.enable_ai_daily_watch else '关闭'}",
+            f"- 新闻集成：{'开启' if runtime_persona_setting(self, 'enable_news_integration', False) else '关闭'}",
+            f"- AI日报/早报追踪：{'开启' if runtime_persona_setting(self, 'enable_ai_daily_watch', True) else '关闭'}",
             f"- 状态：{status_labels.get(status, status)}",
         ]
         sources = ai_state.get("sources") if isinstance(ai_state.get("sources"), list) else []
-        configured_sources = str(getattr(self, "ai_daily_sources", "") or "").strip()
+        configured_sources = str(runtime_persona_setting(self, "ai_daily_sources", "") or "").strip()
         if configured_sources:
             lines.append("- 来源计划：")
             for raw_line in configured_sources.splitlines()[:8]:
@@ -1801,9 +1828,9 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
                 published = _single_line(item.get("published"), 24) or "无发布时间"
                 today_mark = "今天" if item.get("is_today") else "非今天"
                 lines.append(f"- [{today_mark}] {published}｜{title_line}")
-        if not self.enable_news_integration:
+        if not runtime_persona_setting(self, "enable_news_integration", False):
             lines.append("提示：新闻集成关闭时不会执行抓取。")
-        elif not self.enable_ai_daily_watch:
+        elif not runtime_persona_setting(self, "enable_ai_daily_watch", True):
             lines.append("提示：AI 日报/早报追踪关闭时不会执行抓取。")
         return "\n".join(lines)
 
@@ -1846,7 +1873,10 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         )
 
     async def _narrate_action_context(self, action: str, action_context: str) -> str:
-        if not self.narration_provider_id:
+        narration_provider_id = _persona_provider_id(
+            self, "NARRATION_PROVIDER_ID", "narration_provider_id", "fast"
+        )
+        if not narration_provider_id:
             return self._sanitize_action_context_text(action, action_context)
         if action in {"message", "photo_text", "poke", "voice"} or "photo_text" in action or "voice" in action or "poke" in action or not action_context:
             return self._sanitize_action_context_text(action, action_context)
@@ -1870,7 +1900,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         text = await self._llm_call(
             prompt,
             max_tokens=80,
-            provider_id=self.narration_provider_id,
+            provider_id=narration_provider_id,
             task="screen_narration",
         )
         return _single_line(text, 120) if text else cleaned_context
@@ -2161,7 +2191,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         sensitive_names = [
             _single_line(item, 24)
             for item in (
-                getattr(self, "default_nickname", ""),
+                runtime_persona_setting(self, "default_nickname", ""),
                 *(getattr(self, "target_user_ids", []) or []),
             )
             if _single_line(item, 24)
@@ -2364,8 +2394,8 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
 
     def _proactive_persona_address_candidates(self) -> list[str]:
         sources = [
-            str(getattr(self, "persona_proactive_voice_prompt", "") or ""),
-            str(getattr(self, "persona_conversation_voice_prompt", "") or ""),
+            str(runtime_persona_setting(self, "persona_proactive_voice_prompt", "") or ""),
+            str(runtime_persona_setting(self, "persona_conversation_voice_prompt", "") or ""),
         ]
         try:
             sources.append(str(self._get_default_persona_prompt() or ""))
@@ -2534,9 +2564,9 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             return False
         provider_available = getattr(self, "_reaction_image_provider_available", None)
         return bool(
-            getattr(self, "enable_reaction_expression_experiment", False)
-            and getattr(self, "reaction_expression_private_enabled", True)
-            and getattr(self, "reaction_expression_proactive_enabled", True)
+            runtime_persona_setting(self, "enable_reaction_expression_experiment", False)
+            and runtime_persona_setting(self, "reaction_expression_private_enabled", True)
+            and runtime_persona_setting(self, "reaction_expression_proactive_enabled", True)
             and callable(provider_available)
             and provider_available()
         )
@@ -2595,7 +2625,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             "- 当前触发概率为 100%：只要正文是轻松、社交或带明确情绪的正常主动消息，默认追加标签；"
             "不要把‘是否自然’再次当作概率筛选。事实通知、严肃或敏感话题、低压提醒和边界场景仍只输出正文。"
             if reaction_expression_high_frequency(
-                getattr(self, "reaction_expression_trigger_probability", 0.2)
+                runtime_persona_setting(self, "reaction_expression_trigger_probability", 0.2)
             )
             else "- 只有轻松分享、玩笑、庆祝、撒娇、接梗、轻吐槽或温和安慰等场景中，追加一张表情包确实比纯文字更自然时，才在全部可见正文之后留下一个内部标签。"
         )
@@ -2620,7 +2650,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         if not self._proactive_reaction_expression_enabled(action):
             return {}
         if not reaction_expression_high_frequency(
-            getattr(self, "reaction_expression_trigger_probability", 0.2)
+            runtime_persona_setting(self, "reaction_expression_trigger_probability", 0.2)
         ):
             return {}
         text = _single_line(visible_text, 700)
@@ -2634,7 +2664,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             intensity=2,
             candidate_queries=["开心回应", "轻松互动", "日常分享"],
             candidate_limit=_safe_int(
-                getattr(self, "reaction_expression_candidate_limit", 6),
+                runtime_persona_setting(self, "reaction_expression_candidate_limit", 6),
                 6,
                 1,
                 16,
@@ -2934,7 +2964,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             reason=reason,
             action=action,
         )
-        prompt = self.proactive_prompt_template or self._default_proactive_prompt_template()
+        prompt = runtime_persona_setting(self, "proactive_prompt_template", "") or self._default_proactive_prompt_template()
         worldview_adaptation = ""
         reason_text = _REASON_TEXT.get(reason, reason).replace("{name}", name)
         action_text = _ACTION_TEXT.get(action.split("+")[0], action).replace("{name}", name)
@@ -3878,7 +3908,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             getattr(
                 self,
                 "_effective_plugin_persona_id",
-                lambda: getattr(self, "plugin_specific_persona_id", ""),
+                lambda: runtime_persona_setting(self, "plugin_specific_persona_id", ""),
             )()
             or ""
         ).strip()
@@ -4191,17 +4221,20 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         cleaned_lines = [str(line or "").strip() for line in lines if str(line or "").strip()]
         if not cleaned_lines:
             return ""
-        mode = str(getattr(self, "proactive_history_context_mode", "compact") or "compact").strip().lower()
+        mode = str(
+            runtime_persona_setting(self, "proactive_history_context_mode", "compact")
+            or "compact"
+        ).strip().lower()
         if mode not in {"recent_only", "compact", "expanded"}:
             mode = "compact"
         recent_count = _safe_int(
-            getattr(self, "proactive_history_recent_raw_count", 8),
+            runtime_persona_setting(self, "proactive_history_recent_raw_count", 8),
             8,
             1,
             50,
         )
         max_chars = _safe_int(
-            getattr(self, "proactive_history_max_chars", 6000),
+            runtime_persona_setting(self, "proactive_history_max_chars", 6000),
             6000,
             500,
             20000,
@@ -4255,7 +4288,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             last_user = _single_line(user.get("last_user_message"), 180)
             last_bot = _single_line(user.get("last_companion_message"), 180)
             if last_bot:
-                lines.append(f"{self.bot_name}: {last_bot}")
+                lines.append(f"{runtime_persona_setting(self, 'bot_name', '小星')}: {last_bot}")
             if last_user:
                 lines.append(f"用户: {last_user}")
         return self._format_proactive_history_context(lines[-max(1, limit):])
@@ -4501,15 +4534,35 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         default_hard_risk = 0.70 if strength == "lenient" else 0.45
         hard_risk_threshold = max(
             0.0,
-            min(1.0, _safe_float(getattr(self, "proactive_review_hard_risk_threshold", default_hard_risk), default_hard_risk)),
+            min(
+                1.0,
+                _safe_float(
+                    runtime_persona_setting(
+                        self, "proactive_review_hard_risk_threshold", default_hard_risk
+                    ),
+                    default_hard_risk,
+                ),
+            ),
         )
         low_score_threshold = max(
             0.0,
-            min(1.0, _safe_float(getattr(self, "proactive_review_low_score_threshold", 0.34), 0.34)),
+            min(
+                1.0,
+                _safe_float(
+                    runtime_persona_setting(self, "proactive_review_low_score_threshold", 0.34),
+                    0.34,
+                ),
+            ),
         )
         pressure_threshold = max(
             0.0,
-            min(1.0, _safe_float(getattr(self, "proactive_review_pressure_threshold", 0.55), 0.55)),
+            min(
+                1.0,
+                _safe_float(
+                    runtime_persona_setting(self, "proactive_review_pressure_threshold", 0.55),
+                    0.55,
+                ),
+            ),
         )
         if semantic_risk >= hard_risk_threshold:
             return {
@@ -4622,7 +4675,9 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
                 "reason": f"来源平台错配：应为{expected_label}而不是{claimed_platform}",
                 "hard": True,
             }
-        require_source_link = bool(getattr(self, "external_share_require_source_link", True))
+        require_source_link = bool(
+            runtime_persona_setting(self, "external_share_require_source_link", True)
+        )
         if require_source_link and source_link and source_link not in cleaned:
             reference = self._external_share_fallback_reference(source_text)
             if reference:
@@ -4931,11 +4986,15 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         return "\n".join(kept)[:260].strip()
 
     def _proactive_review_strength(self) -> str:
-        strength = str(getattr(self, "proactive_review_strength", "lenient") or "lenient").strip().lower()
+        strength = str(
+            runtime_persona_setting(self, "proactive_review_strength", "lenient") or "lenient"
+        ).strip().lower()
         return strength if strength in {"lenient", "balanced", "strict"} else "lenient"
 
     def _effective_proactive_review_mode(self) -> str:
-        mode = str(getattr(self, "proactive_review_mode", "full") or "full").strip().lower()
+        mode = str(
+            runtime_persona_setting(self, "proactive_review_mode", "full") or "full"
+        ).strip().lower()
         return mode if mode in {"local_only", "severe_only", "full"} else "full"
 
     @staticmethod
@@ -4983,9 +5042,13 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             return ""
         idle_getter = getattr(self, "_effective_user_idle_minutes", None)
         try:
-            idle_minutes = idle_getter(user) if callable(idle_getter) else _safe_int(getattr(self, "idle_minutes", 20), 20)
+            idle_minutes = (
+                idle_getter(user)
+                if callable(idle_getter)
+                else _safe_int(runtime_persona_setting(self, "idle_minutes", 20), 20)
+            )
         except Exception:
-            idle_minutes = _safe_int(getattr(self, "idle_minutes", 20), 20)
+            idle_minutes = _safe_int(runtime_persona_setting(self, "idle_minutes", 20), 20)
         recent_private_at = max(
             _safe_float(user.get("last_user_message_at"), 0),
             _safe_float(user.get("last_private_seen"), 0),
@@ -5102,13 +5165,23 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         idle_getter = getattr(self, "_effective_user_idle_minutes", None)
         interval_getter = getattr(self, "_effective_user_min_interval_minutes", None)
         try:
-            idle_minutes = idle_getter(user) if callable(idle_getter) else _safe_int(getattr(self, "idle_minutes", 20), 20)
+            idle_minutes = (
+                idle_getter(user)
+                if callable(idle_getter)
+                else _safe_int(runtime_persona_setting(self, "idle_minutes", 20), 20)
+            )
         except Exception:
-            idle_minutes = _safe_int(getattr(self, "idle_minutes", 20), 20)
+            idle_minutes = _safe_int(runtime_persona_setting(self, "idle_minutes", 20), 20)
         try:
-            min_interval = interval_getter(user) if callable(interval_getter) else _safe_int(getattr(self, "min_interval_minutes", 80), 80)
+            min_interval = (
+                interval_getter(user)
+                if callable(interval_getter)
+                else _safe_int(runtime_persona_setting(self, "min_interval_minutes", 80), 80)
+            )
         except Exception:
-            min_interval = _safe_int(getattr(self, "min_interval_minutes", 80), 80)
+            min_interval = _safe_int(
+                runtime_persona_setting(self, "min_interval_minutes", 80), 80
+            )
         private_elapsed = check_now - last_private_at if last_private_at > 0 else -1
         sent_elapsed = check_now - last_sent_at if last_sent_at > 0 else -1
         return "\n".join(
@@ -5373,7 +5446,9 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
                 "reason": "事务路线保留原始提醒事实，忽略通用低价值软拦截",
             }
             local_decision = "send"
-        review_enabled = bool(getattr(self, "enable_proactive_message_review", True))
+        review_enabled = bool(
+            runtime_persona_setting(self, "enable_proactive_message_review", True)
+        )
         review_mode = self._effective_proactive_review_mode()
         if not review_enabled:
             local_mode_label = "主动发送前审核未启用"
@@ -5635,7 +5710,10 @@ Output:
 {{"decision":"send|rewrite|drop","text":"","reason":"brief reason"}}
 """.strip()
         started = time.perf_counter()
-        review_provider_id = self._task_provider(self.response_review_provider_id, self.mai_style_provider_id)
+        review_provider_id = self._task_provider(
+            _persona_provider_id(self, "RESPONSE_REVIEW_PROVIDER_ID", "response_review_provider_id", "fast"),
+            _persona_provider_id(self, "MAI_STYLE_PROVIDER_ID", "mai_style_provider_id", "fast"),
+        )
         timeout_seconds = 8.0
         timeout_getter = getattr(self, "_model_timeout_seconds_for_call", None)
         timeout_override = (
@@ -6025,7 +6103,7 @@ Output:
         user.pop("_proactive_render_failure_stage", None)
         umo = _single_line(user.get("umo"), 240)
         self._clear_proactive_reaction_intent(umo)
-        if not self.enable_llm_proactive_message:
+        if not runtime_persona_setting(self, "enable_llm_proactive_message", True):
             user["_proactive_render_failure_stage"] = "主动消息模型生成已关闭"
             return ""
         raw_text = await self._generate_proactive_message_via_framework(
@@ -6471,7 +6549,9 @@ Output:
         if not flags:
             return cleaned
         mode = self._effective_proactive_review_mode()
-        review_disabled = not bool(getattr(self, "enable_proactive_message_review", True))
+        review_disabled = not bool(
+            runtime_persona_setting(self, "enable_proactive_message_review", True)
+        )
         if review_disabled or mode == "local_only":
             hard_flags = {"delivery_receipt", "claims_missing_media"}
             if hard_flags.intersection(flags):
@@ -6622,7 +6702,10 @@ Output:
         rewritten = await self._llm_call(
             prompt,
             max_tokens=180,
-            provider_id=self._task_provider(self.response_review_provider_id, self.mai_style_provider_id),
+            provider_id=self._task_provider(
+                _persona_provider_id(self, "RESPONSE_REVIEW_PROVIDER_ID", "response_review_provider_id", "fast"),
+                _persona_provider_id(self, "MAI_STYLE_PROVIDER_ID", "mai_style_provider_id", "fast"),
+            ),
             task="response_review",
         )
         candidate = self._sanitize_proactive_text(str(rewritten or "").strip())
@@ -6817,7 +6900,7 @@ Output:
         opener_tokens = [
             _single_line(name, 16),
             _single_line(user.get("nickname") if isinstance(user, dict) else "", 16),
-            _single_line(getattr(self, "default_nickname", ""), 16),
+            _single_line(runtime_persona_setting(self, "default_nickname", ""), 16),
         ]
         first_opener = ""
         match = re.match(r"^([\w\u4e00-\u9fffぁ-んァ-ヶー]{1,8})[，,、\s]", units[0])
@@ -6937,7 +7020,9 @@ Output:
             re.split(r"[，,。！？!?…\s]", text, maxsplit=1)[0][:6] == current_opening
             for text in recent_texts
         )
-        proactive_voice = str(getattr(self, "persona_proactive_voice_prompt", "") or "")
+        proactive_voice = str(
+            runtime_persona_setting(self, "persona_proactive_voice_prompt", "") or ""
+        )
         # Repetition control must not erase an opening explicitly defined by the persona.
         if repeated_opening and current_opening not in proactive_voice:
             cleaned = re.sub(r"^(唔|嗯|诶|啊|欸)[…\.。!！?？~～\s，,]*", "", cleaned).strip()
@@ -7371,7 +7456,7 @@ Output:
             "user": dict(user or {}),
             "display_name": display_name,
             "reason": reason,
-            "bot_name": self.bot_name,
+            "bot_name": runtime_persona_setting(self, "bot_name", "小星"),
             "state": deepcopy(self.data.get("daily_state", {})),
             "current_plan_item": deepcopy(self._get_current_plan_item(self.data.get("daily_plan", {})) or {}),
             "config": config,
@@ -7515,8 +7600,8 @@ Output:
         now: float | None = None,
     ) -> bool:
         """Schedule one private screen check after a mutual goodnight."""
-        if not bool(getattr(self, "enable_screen_glance_action", False)) or not bool(
-            getattr(self, "enable_goodnight_screen_check", False)
+        if not bool(runtime_persona_setting(self, "enable_screen_glance_action", False)) or not bool(
+            runtime_persona_setting(self, "enable_goodnight_screen_check", False)
         ):
             return False
         if not isinstance(user, dict) or not self._goodnight_screen_check_reply_matches(bot_reply):
@@ -7548,7 +7633,17 @@ Output:
 
         delay_minutes = max(
             1,
-            min(180, _safe_int(getattr(self, "goodnight_screen_check_delay_minutes", 45), 45, 1, 180)),
+            min(
+                180,
+                _safe_int(
+                    runtime_persona_setting(
+                        self, "goodnight_screen_check_delay_minutes", 45
+                    ),
+                    45,
+                    1,
+                    180,
+                ),
+            ),
         )
         user["goodnight_screen_check_due_at"] = check_now + delay_minutes * 60
         user["goodnight_screen_check_episode_at"] = rest_set_at
@@ -7567,9 +7662,9 @@ Output:
         now: float,
         require_screen: bool,
     ) -> str:
-        if not bool(getattr(self, "enable_screen_glance_action", False)):
+        if not bool(runtime_persona_setting(self, "enable_screen_glance_action", False)):
             return "screen_glance_disabled"
-        if not bool(getattr(self, "enable_goodnight_screen_check", False)):
+        if not bool(runtime_persona_setting(self, "enable_goodnight_screen_check", False)):
             return "goodnight_screen_check_disabled"
         if not isinstance(user, dict) or self._private_user_role(user, user_id) != "owner":
             return "not_primary_user"
@@ -7869,7 +7964,7 @@ Output:
         *,
         quota_exempt: bool = False,
     ) -> str:
-        if not self.enable_screen_glance_action:
+        if not runtime_persona_setting(self, "enable_screen_glance_action", False):
             return "screen_peek：未授权,跳过"
         plugin = self._get_screen_companion_plugin()
         if plugin is None:
@@ -7940,7 +8035,15 @@ Output:
         inflight_until = _safe_float(user.get("poke_action_inflight_until"), 0.0)
         if inflight_until > current_ts:
             return inflight_until - current_ts
-        cooldown_seconds = max(0, _safe_int(getattr(self, "poke_action_cooldown_minutes", 30), 30, 0, 1440)) * 60
+        cooldown_seconds = max(
+            0,
+            _safe_int(
+                runtime_persona_setting(self, "poke_action_cooldown_minutes", 30),
+                30,
+                0,
+                1440,
+            ),
+        ) * 60
         last_at = _safe_float(user.get("last_poke_action_at"), 0.0)
         return max(0.0, last_at + cooldown_seconds - current_ts) if cooldown_seconds > 0 and last_at > 0 else 0.0
 
@@ -7965,7 +8068,7 @@ Output:
         *,
         explicit_count: int | None = None,
     ) -> str:
-        if not self.enable_poke_action:
+        if not runtime_persona_setting(self, "enable_poke_action", False):
             return "poke：未启用"
         user_umo = str(user.get("umo") or "")
         platform_supports = getattr(self, "_platform_supports", None)
@@ -8107,7 +8210,7 @@ Output:
         return poke_count, context
 
     async def _run_voice_action(self, user: dict[str, Any], name: str, reason: str) -> dict[str, Any]:
-        if not self.enable_voice_action:
+        if not runtime_persona_setting(self, "enable_voice_action", False):
             return {"success": False, "context": "voice：未启用", "extra_components": [], "summary": "语音"}
         target = str(user.get("umo") or "").strip()
         if not target:
@@ -8573,7 +8676,7 @@ Output:
                 if retry_text:
                     spoken = str(retry_text).strip()
             if "<tts>" not in spoken:
-                spoken = _single_line(spoken, self.voice_action_max_chars)
+                spoken = _single_line(spoken, runtime_persona_setting(self, "voice_action_max_chars", 30))
                 spoken = re.sub(r"[“”\"'`]", "", spoken).strip()
             if requirement["strict"] and not self._voice_text_matches_requirement(spoken, requirement):
                 repair_prompt = self._build_voice_repair_prompt(
@@ -8584,13 +8687,16 @@ Output:
                 repaired = await self._llm_call(
                     repair_prompt,
                     max_tokens=140,
-                    provider_id=self._task_provider(self.voice_prompt_provider_id, self.mai_style_provider_id),
+                    provider_id=self._task_provider(
+                        _persona_provider_id(self, "VOICE_PROMPT_PROVIDER_ID", "voice_prompt_provider_id", "fast"),
+                        _persona_provider_id(self, "MAI_STYLE_PROVIDER_ID", "mai_style_provider_id", "fast"),
+                    ),
                     task="voice_repair",
                 )
                 if repaired:
                     spoken = str(repaired).strip()
                     if "<tts>" not in spoken:
-                        spoken = _single_line(spoken, self.voice_action_max_chars)
+                        spoken = _single_line(spoken, runtime_persona_setting(self, "voice_action_max_chars", 30))
                         spoken = re.sub(r"[“”\"'`]", "", spoken).strip()
             if requirement["strict"] and not self._voice_text_matches_requirement(spoken, requirement):
                 logger.warning(
@@ -8634,21 +8740,24 @@ Output:
 要求：
 1. 优先遵守人格里自己写的特殊 TTS 规则；如果人格或当前会话 TTS 规则要求使用 <tts>...</tts>、日语、情绪标签或双语格式,就按那个格式输出。
 2. 如果没有明确格式要求,就只输出适合真正念出来的一小句语音内容,不要解释。
-3. 整体要短,适合私聊语音,不像朗读稿,也不要太正式；纯中文可控制在 {self.voice_action_max_chars} 个字以内。
+3. 整体要短,适合私聊语音,不像朗读稿,也不要太正式；纯中文可控制在 {runtime_persona_setting(self, "voice_action_max_chars", 30)} 个字以内。
 4. 可以有一点嘴硬、黏人、藏着的想念,但不要把喜欢说满。
 5. 不要提 AI、模型、插件、TTS、语音合成这些词。
 """.strip()
         text = await self._llm_call(
             prompt,
             max_tokens=120,
-            provider_id=self._task_provider(self.voice_prompt_provider_id, self.mai_style_provider_id),
+            provider_id=self._task_provider(
+                _persona_provider_id(self, "VOICE_PROMPT_PROVIDER_ID", "voice_prompt_provider_id", "fast"),
+                _persona_provider_id(self, "MAI_STYLE_PROVIDER_ID", "mai_style_provider_id", "fast"),
+            ),
             task="voice",
         )
         spoken = str(text or "").strip()
         if not spoken:
             spoken = random.choice(VOICE_FALLBACK_TEMPLATES)
         if "<tts>" not in spoken:
-            spoken = _single_line(spoken, self.voice_action_max_chars)
+            spoken = _single_line(spoken, runtime_persona_setting(self, "voice_action_max_chars", 30))
             spoken = re.sub(r"[“”\"'`]", "", spoken).strip()
         if requirement["strict"] and not self._voice_text_matches_requirement(spoken, requirement):
             repair_prompt = self._build_voice_repair_prompt(
@@ -8659,13 +8768,16 @@ Output:
             repaired = await self._llm_call(
                 repair_prompt,
                 max_tokens=140,
-                provider_id=self._task_provider(self.voice_prompt_provider_id, self.mai_style_provider_id),
+                provider_id=self._task_provider(
+                    _persona_provider_id(self, "VOICE_PROMPT_PROVIDER_ID", "voice_prompt_provider_id", "fast"),
+                    _persona_provider_id(self, "MAI_STYLE_PROVIDER_ID", "mai_style_provider_id", "fast"),
+                ),
                 task="voice_repair",
             )
             if repaired:
                 spoken = str(repaired).strip()
                 if "<tts>" not in spoken:
-                    spoken = _single_line(spoken, self.voice_action_max_chars)
+                    spoken = _single_line(spoken, runtime_persona_setting(self, "voice_action_max_chars", 30))
                     spoken = re.sub(r"[“”\"'`]", "", spoken).strip()
         return spoken
 
@@ -8777,7 +8889,7 @@ Output:
         return [component], str(audio_path)
 
     def _get_tts_prompt_text(self, target: str) -> str:
-        if getattr(self, "enable_tts_enhancement", False):
+        if runtime_persona_setting(self, "enable_tts_enhancement", False):
             builder = getattr(self, "_build_tts_rule_prompt", None)
             if callable(builder):
                 return str(builder("generic") or "").strip()
@@ -8929,7 +9041,11 @@ Output:
             source = re.sub(r"</?t{2,}s\b[^>]*>", "", source, flags=re.IGNORECASE).strip()
         has_kana = bool(re.search(r"[\u3040-\u30ff]", source))
         has_cjk = bool(re.search(r"[\u4e00-\u9fff]", source))
-        if has_kana and has_cjk and getattr(self, "tts_voice_language", "zh") != "zh":
+        if (
+            has_kana
+            and has_cjk
+            and runtime_persona_setting(self, "tts_voice_language", "zh") != "zh"
+        ):
             units = re.findall(r".*?[。！？!?…~～]+|.+$", source, flags=re.DOTALL)
             kept: list[str] = []
             dropped = False
@@ -8946,7 +9062,7 @@ Output:
         return _single_line(_strip_internal_message_blocks(source), limit)
 
     async def _run_photo_text_action(self, user: dict[str, Any], name: str, reason: str) -> str:
-        if not self.enable_photo_text_action:
+        if not runtime_persona_setting(self, "enable_photo_text_action", True):
             return "photo_text：未启用"
         user_id = str(user.get("user_id") or "")
         scope_checker = getattr(self, "_photo_generation_scope_allowed", None)
@@ -9218,7 +9334,7 @@ Output:
         *,
         force: bool = False,
     ) -> dict[str, Any] | None:
-        if not force and not getattr(self, "enable_daily_outfit_photo", False):
+        if not force and not runtime_persona_setting(self, "enable_daily_outfit_photo", False):
             return None
         today = _today_key()
         async with self._data_lock:
@@ -9244,7 +9360,7 @@ Output:
         today: str = "",
     ) -> dict[str, Any] | None:
         today = today or _today_key()
-        if not self.enable_photo_text_action:
+        if not runtime_persona_setting(self, "enable_photo_text_action", True):
             return await self._record_daily_outfit_photo_result(today, "", "主动拍照/生图未开启")
         scope_checker = getattr(self, "_photo_generation_scope_allowed", None)
         if callable(scope_checker) and not scope_checker(proactive=True):
@@ -9436,7 +9552,12 @@ Output:
         return history[:30]
 
     def _daily_outfit_rotation_history(self) -> list[dict[str, Any]]:
-        rotation_days = _safe_int(getattr(self, "daily_outfit_rotation_days", 10), 10, 1, 30)
+        rotation_days = _safe_int(
+            runtime_persona_setting(self, "daily_outfit_rotation_days", 10),
+            10,
+            1,
+            30,
+        )
         cutoff = date.today() - timedelta(days=rotation_days - 1)
         history: list[dict[str, Any]] = []
         for item in self._daily_outfit_history_items():
@@ -9758,7 +9879,9 @@ Output:
             or (diary or {}).get("body"),
             80,
         )
-        custom = _single_line(getattr(self, "daily_outfit_photo_prompt", ""), 220)
+        custom = _single_line(
+            runtime_persona_setting(self, "daily_outfit_photo_prompt", ""), 220
+        )
         anime_style = style_name == "二次元"
         composition_style = (
             [
@@ -10063,8 +10186,10 @@ Output:
         return _single_line(", ".join(dict.fromkeys(hints)), 180)
 
     def _daily_outfit_role_appearance_text(self) -> str:
-        persona = str(getattr(self, "schedule_persona_prompt", "") or "")
-        recognition = str(getattr(self, "private_image_self_recognition_hint", "") or "")
+        persona = str(runtime_persona_setting(self, "schedule_persona_prompt", "") or "")
+        recognition = str(
+            runtime_persona_setting(self, "private_image_self_recognition_hint", "") or ""
+        )
         labels = {
             "性别": "gender",
             "识别点": "key visual traits",
@@ -10151,7 +10276,7 @@ Output:
                     f"/{'ready' if ready else 'unready'}"
                 )
             return (
-                f"preferred={_single_line(getattr(self, 'photo_generation_backend', ''), 30) or 'auto'} "
+                f"preferred={_single_line(runtime_persona_setting(self, 'photo_generation_backend', ''), 30) or 'auto'} "
                 f"comfyui={self._comfyui_photo_available()} "
                 f"sdgen={self._sdgen_photo_available()} "
                 f"external={self._external_photo_available()} "
@@ -10169,16 +10294,16 @@ Output:
         if backup_base:
             backup_base = re.sub(r"([?&](?:key|token|access_token|api_key)=)[^&]+", r"\1***", backup_base, flags=re.I)
         return (
-            f"preferred={_single_line(getattr(self, 'photo_generation_backend', ''), 30) or 'auto'} "
+            f"preferred={_single_line(runtime_persona_setting(self, 'photo_generation_backend', ''), 30) or 'auto'} "
             f"comfyui={self._comfyui_photo_available()} "
             f"sdgen={self._sdgen_photo_available()} "
             f"external={self._external_photo_available()} "
             f"external_platform={self._resolved_external_image_api_platform()} "
             f"external_model={_single_line(getattr(self, 'external_image_api_model', ''), 80) or '-'} "
-            f"external_size={_single_line(getattr(self, 'external_image_api_size', ''), 40) or '-'} "
+            f"external_size={_single_line(runtime_persona_setting(self, 'external_image_api_size', ''), 40) or '-'} "
             f"external_base={external_base or '-'} "
             f"backup_external={self._backup_external_photo_available()} "
-            f"backup_platform={_single_line(getattr(self, 'backup_external_image_api_platform', ''), 30) or '-'} "
+            f"backup_platform={_single_line(runtime_persona_setting(self, 'backup_external_image_api_platform', ''), 30) or '-'} "
             f"backup_model={_single_line(getattr(self, 'backup_external_image_api_model', ''), 80) or '-'} "
             f"backup_base={backup_base or '-'} "
             f"backup_note={_single_line(self._backup_external_photo_unavailable_note(), 80) or '-'} "
@@ -10189,7 +10314,7 @@ Output:
 
     def _photo_generation_trace_max_bytes(self) -> int:
         max_kb = _safe_int(
-            getattr(self, "photo_generation_trace_max_size_kb", 0),
+            runtime_persona_setting(self, "photo_generation_trace_max_size_kb", 0),
             0,
         )
         return max(0, min(102400, max_kb)) * 1024
@@ -10199,7 +10324,9 @@ Output:
             0,
             min(
                 20,
-                _safe_int(getattr(self, "photo_generation_trace_backup_count", 5), 5),
+                _safe_int(
+                    runtime_persona_setting(self, "photo_generation_trace_backup_count", 5), 5
+                ),
             ),
         )
 
@@ -11044,7 +11171,9 @@ Output:
 
     def _apply_photo_generation_fixed_prompt(self, prompt_text: str) -> str:
         prompt = str(prompt_text or "").strip()
-        fixed = _single_line(getattr(self, "photo_generation_fixed_prompt", ""), 500)
+        fixed = _single_line(
+            runtime_persona_setting(self, "photo_generation_fixed_prompt", ""), 500
+        )
         if not fixed:
             return prompt
         if fixed in prompt:
@@ -11134,7 +11263,7 @@ Output:
 
     def _photo_generation_prompt_format_mode(self) -> str:
         return self._normalize_photo_generation_prompt_format(
-            getattr(self, "photo_generation_prompt_format", "traditional")
+            runtime_persona_setting(self, "photo_generation_prompt_format", "traditional")
         )
 
     @staticmethod
@@ -11148,7 +11277,9 @@ Output:
 
     def _photo_generation_negative_prompt_mode(self) -> str:
         return self._normalize_photo_generation_negative_prompt_mode(
-            getattr(self, "photo_generation_negative_prompt_mode", "safe_default")
+            runtime_persona_setting(
+                self, "photo_generation_negative_prompt_mode", "safe_default"
+            )
         )
 
     @classmethod
@@ -11199,7 +11330,7 @@ Output:
             "edit": "photo_generation_edit_negative_prompt",
         }[normalized]
         values = (
-            getattr(self, "photo_generation_negative_prompt", ""),
+            runtime_persona_setting(self, "photo_generation_negative_prompt", ""),
             getattr(self, scoped_key, ""),
         )
         combined: list[str] = []
@@ -12057,7 +12188,11 @@ Output:
 
     def _photo_generation_scene_presets(self) -> dict[str, str]:
         presets = self._builtin_photo_generation_scene_presets()
-        presets.update(self._parse_photo_generation_scene_presets(getattr(self, "photo_generation_scene_presets", "")))
+        presets.update(
+            self._parse_photo_generation_scene_presets(
+                runtime_persona_setting(self, "photo_generation_scene_presets", "")
+            )
+        )
         return presets
 
     def _apply_photo_generation_scene_presets(
@@ -12364,10 +12499,10 @@ Output:
                 1200,
             )
         relationship_block = ""
-        if getattr(self, "enable_bot_relationship_network", False):
+        if runtime_persona_setting(self, "enable_bot_relationship_network", False):
             card_lines: list[str] = []
             for raw_card in self._normalize_bot_relationship_cards(
-                getattr(self, "bot_relationship_cards", [])
+                runtime_persona_setting(self, "bot_relationship_cards", [])
             ):
                 parts = [_single_line(part, 200) for part in raw_card.split(" || ", 2)]
                 relation = parts[1] if len(parts) > 1 else ""
@@ -12440,7 +12575,10 @@ Output:
             text = await self._llm_call(
                 prompt,
                 max_tokens=260,
-                provider_id=self._task_provider(self.photo_prompt_provider_id, self.mai_style_provider_id),
+                provider_id=self._task_provider(
+                    _persona_provider_id(self, "PHOTO_PROMPT_PROVIDER_ID", "photo_prompt_provider_id", "creative"),
+                    _persona_provider_id(self, "MAI_STYLE_PROVIDER_ID", "mai_style_provider_id", "fast"),
+                ),
                 task="photo_prompt",
             )
         except Exception as exc:
@@ -12560,18 +12698,21 @@ Output:
         }
 
     def _get_photo_style_instruction(self) -> tuple[str, str]:
-        style = str(self.photo_generation_style or "真实").strip()
+        style = str(runtime_persona_setting(self, "photo_generation_style", "真实") or "真实").strip()
         if style == "二次元":
             return "二次元", "日系二次元插画风,人物与场景干净细腻,保留生活感,不要写实摄影质感"
         if style == "其他":
-            custom = _single_line(self.photo_generation_style_custom_prompt, 200)
+            custom = _single_line(
+                runtime_persona_setting(self, "photo_generation_style_custom_prompt", ""),
+                200,
+            )
             if custom:
                 return "其他", custom
             return "其他", "保持统一审美风格,自然生活感,避免默认写实照片风格"
         return "真实", "真实摄影风格,像手机随手拍到的生活照片,光线自然,细节可信"
 
     def _q5_structured_reference_assets_enabled(self) -> bool:
-        return bool(getattr(self, "enable_p5_structured_reference_assets", False))
+        return bool(runtime_persona_setting(self, "enable_p5_structured_reference_assets", False))
 
     def _q5_structured_reference_generation_mode(
         self,
@@ -12612,7 +12753,7 @@ Output:
             reference_candidate,
         )
         plan, status = gate.plan(
-            getattr(self, "photo_structured_reference_assets", []),
+            runtime_persona_setting(self, "photo_structured_reference_assets", []),
             generation_id=generation_id,
             mode=mode,
         )
@@ -12644,9 +12785,12 @@ Output:
         }
 
     def _photo_persona_reference_image_path(self) -> str:
-        catalog = getattr(self, "photo_reference_catalog", None)
+        catalog = runtime_persona_setting(self, "photo_reference_catalog", None)
         if catalog is None:
-            raw = _path_text(getattr(self, "photo_persona_reference_image_path", ""), 1000)
+            raw = _path_text(
+                runtime_persona_setting(self, "photo_persona_reference_image_path", ""),
+                1000,
+            )
         else:
             persona = next(
                 (
@@ -12865,22 +13009,22 @@ Output:
         return normalized
 
     def _photo_reference_library_entries(self) -> list[dict[str, Any]]:
-        if getattr(self, "photo_reference_catalog", None) is None:
+        if runtime_persona_setting(self, "photo_reference_catalog", None) is None:
             loaded = load_catalog(
                 [],
                 catalog_version=0,
-                legacy_library=getattr(self, "photo_reference_library", []),
+                legacy_library=runtime_persona_setting(self, "photo_reference_library", []),
                 preset_names=self._photo_generation_scene_presets().keys(),
             )
             entries = [project_reference_candidate(item) for item in loaded.references if item.kind == "library"]
             for index, entry in enumerate(entries):
-                raw_items = getattr(self, "photo_reference_library", []) or []
+                raw_items = runtime_persona_setting(self, "photo_reference_library", []) or []
                 raw_item = raw_items[index] if isinstance(raw_items, list) and index < len(raw_items) else None
                 entry["_config_format"] = "dict" if isinstance(raw_item, dict) else "text"
             return entries
         return [
             project_reference_candidate(item)
-            for item in (getattr(self, "photo_reference_catalog", ()) or ())
+            for item in (runtime_persona_setting(self, "photo_reference_catalog", ()) or ())
             if isinstance(item, PhotoReference) and item.kind == "library"
         ]
 
@@ -12926,7 +13070,7 @@ Output:
         return str(path)
 
     def _photo_persona_reference_image_for_kind(self, workflow_kind: str, *, allow_daily_outfit: bool = True) -> str:
-        if not bool(getattr(self, "enable_photo_reference_image", False)):
+        if not bool(runtime_persona_setting(self, "enable_photo_reference_image", False)):
             return ""
         if str(workflow_kind or "").strip().lower() not in {"selfie", "portrait", "自拍", "人像"}:
             return ""
@@ -12984,14 +13128,17 @@ Output:
         return _path_text(selected.get("path") if isinstance(selected, dict) else "", 1000)
 
     async def _photo_persona_reference_image_path_async(self) -> str:
-        if not bool(getattr(self, "enable_photo_reference_image", False)):
+        if not bool(runtime_persona_setting(self, "enable_photo_reference_image", False)):
             return ""
         local_path = self._photo_persona_reference_image_path()
         if local_path:
             return local_path
-        catalog = getattr(self, "photo_reference_catalog", None)
+        catalog = runtime_persona_setting(self, "photo_reference_catalog", None)
         if catalog is None:
-            raw = _path_text(getattr(self, "photo_persona_reference_image_path", ""), 1000)
+            raw = _path_text(
+                runtime_persona_setting(self, "photo_persona_reference_image_path", ""),
+                1000,
+            )
         else:
             persona = next(
                 (
@@ -13140,10 +13287,10 @@ Output:
         asset is eligible only when the current request names the role/name or
         clearly asks for a group frame.
         """
-        if not bool(getattr(self, "enable_bot_relationship_network", False)):
+        if not bool(runtime_persona_setting(self, "enable_bot_relationship_network", False)):
             return []
         cards = self._normalize_bot_relationship_cards(
-            getattr(self, "bot_relationship_cards", [])
+            runtime_persona_setting(self, "bot_relationship_cards", [])
         )
         if not cards:
             return []
@@ -13213,7 +13360,7 @@ Output:
     def _photo_reference_knowledge_asset_candidates(self, *, request_text: str, ambient_context: str) -> list[dict[str, Any]]:
         selected = {
             str(item or "").strip()
-            for item in (getattr(self, "roleplay_knowledge_source_ids", None) or [])
+            for item in (runtime_persona_setting(self, "roleplay_knowledge_source_ids", None) or [])
             if str(item or "").strip().startswith(("kb:", "doc:"))
         }
         if not selected:
@@ -13265,15 +13412,17 @@ Output:
         scoped_only: bool = False,
     ) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
-        canonical_mode = getattr(self, "photo_reference_catalog", None) is not None
+        canonical_mode = runtime_persona_setting(self, "photo_reference_catalog", None) is not None
         if canonical_mode:
-            catalog = tuple(getattr(self, "photo_reference_catalog", ()) or ())
+            catalog = tuple(runtime_persona_setting(self, "photo_reference_catalog", ()) or ())
         else:
             catalog = load_catalog(
                 [],
                 catalog_version=0,
-                legacy_persona=getattr(self, "photo_persona_reference_image_path", ""),
-                legacy_library=getattr(self, "photo_reference_library", []),
+                legacy_persona=runtime_persona_setting(
+                    self, "photo_persona_reference_image_path", ""
+                ),
+                legacy_library=runtime_persona_setting(self, "photo_reference_library", []),
                 preset_names=self._photo_generation_scene_presets().keys(),
             ).references
         updated_catalog = list(catalog)
@@ -13544,7 +13693,9 @@ Output:
             return {}
 
         using_candidate_overrides = candidate_overrides is not None
-        if not using_candidate_overrides and not bool(getattr(self, "enable_photo_reference_image", False)):
+        if not using_candidate_overrides and not bool(
+            runtime_persona_setting(self, "enable_photo_reference_image", False)
+        ):
             return empty_selection("reference_feature_disabled")
         normalized_workflow = str(workflow_kind or "").strip().lower()
         portrait_workflow = normalized_workflow in {"selfie", "portrait", "自拍", "人像"}
@@ -14557,11 +14708,14 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         tts_enabled = (
             feature_enabled("enable_tts_enhancement")
             if callable(feature_enabled)
-            else bool(getattr(self, "enable_tts_enhancement", False))
+            else bool(runtime_persona_setting(self, "enable_tts_enhancement", False))
         )
         if (
             not tts_enabled
-            or str(getattr(self, "tts_message_scope", "replies_only") or "replies_only").lower()
+            or str(
+                runtime_persona_setting(self, "tts_message_scope", "replies_only")
+                or "replies_only"
+            ).lower()
             != "replies_and_proactive"
         ):
             return False
@@ -14578,7 +14732,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         return True
 
     async def _trigger_proactive_decorating_hooks(self, umo: str, chain: list[Any]) -> list[Any]:
-        if not self.enable_proactive_decorating_hooks or not chain:
+        if not runtime_persona_setting(self, "enable_proactive_decorating_hooks", True) or not chain:
             return chain
         session = self._parse_message_session(umo)
         if not session:
@@ -14956,7 +15110,9 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         return "0"
 
     def _forward_nodes_for_segments(self, segments: list[str], *, event: Any | None = None) -> list[dict[str, Any]]:
-        sender_name = _single_line(getattr(self, "bot_name", ""), 40) or "PrivateCompanion"
+        sender_name = _single_line(
+            runtime_persona_setting(self, "bot_name", ""), 40
+        ) or "PrivateCompanion"
         sender_id = self._forward_sender_id_for_segments(event)
         nodes: list[dict[str, Any]] = []
         for segment in segments:
@@ -15119,7 +15275,9 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         raw_segments = [_redact_outbound_secrets(item, self).strip() for item in segments if str(item or "").strip()]
         if len(raw_segments) <= 1:
             return False
-        if getattr(self, "enable_tts_enhancement", False) and any(re.search(r"</?t{2,}s\b", item, flags=re.IGNORECASE) for item in raw_segments):
+        if runtime_persona_setting(self, "enable_tts_enhancement", False) and any(
+            re.search(r"</?t{2,}s\b", item, flags=re.IGNORECASE) for item in raw_segments
+        ):
             logger.info("[PrivateCompanion] 分段合并消息跳过 TTS 内容: source=%s target=%s:%s", source or "unknown", target_type, target_id)
             return False
         cleaned_segments = self._clean_forward_segment_texts(raw_segments)
@@ -15233,7 +15391,9 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         chat_type = str(chat_type or "").strip().lower()
         if chat_type not in {"private", "group"}:
             chat_type = "private"
-        if bool(getattr(self, "enable_segmented_proactive_chat_profiles", False)):
+        if bool(
+            runtime_persona_setting(self, "enable_segmented_proactive_chat_profiles", False)
+        ):
             return bool(
                 getattr(
                     self,
@@ -15241,7 +15401,9 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
                     True,
                 )
             )
-        scope = str(getattr(self, "segmented_proactive_chat_scope", "all") or "all").strip().lower()
+        scope = str(
+            runtime_persona_setting(self, "segmented_proactive_chat_scope", "all") or "all"
+        ).strip().lower()
         if scope not in {"all", "private", "group"}:
             scope = "all"
         return scope == "all" or scope == chat_type
@@ -15271,7 +15433,9 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
     ) -> Any:
         normalized_name = str(name or "").strip()
         fallback = getattr(self, f"segmented_proactive_{normalized_name}", default)
-        if not bool(getattr(self, "enable_segmented_proactive_chat_profiles", False)):
+        if not bool(
+            runtime_persona_setting(self, "enable_segmented_proactive_chat_profiles", False)
+        ):
             return fallback
         resolved_chat_type = str(chat_type or "").strip().lower()
         if resolved_chat_type not in {"private", "group"}:
@@ -15427,7 +15591,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         session = self._parse_message_session(umo)
         platform = self._get_platform_for_session(session) if session else None
         precise_error: Exception | None = None
-        if self.enable_precise_platform_send and session and platform:
+        if runtime_persona_setting(self, "enable_precise_platform_send", True) and session and platform:
             status = getattr(platform, "status", None)
             if status is not None and status != PlatformStatus.RUNNING:
                 logger.warning("[PrivateCompanion] 目标平台未运行,跳过主动发送: %s", umo)
@@ -16083,7 +16247,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
                 text = cleaned_text
         reaction_pending: dict[str, Any] | None = None
         reaction_delivery_mode = self._normalize_reaction_expression_delivery_mode(
-            getattr(self, "reaction_expression_delivery_mode", "separate_after")
+            runtime_persona_setting(self, "reaction_expression_delivery_mode", "separate_after")
         )
         has_existing_media = bool(
             image_path
@@ -17131,7 +17295,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
             reasons.append("quiet_care")
         if energy < 45 and random.random() < 0.55:
             reasons.append("quiet_care")
-        share_probability = self.proactive_share_probability
+        share_probability = runtime_persona_setting(self, "proactive_share_probability", 45)
         activity_share_blocked = False
         block_checker = getattr(self, "_activity_share_duplicate_block_remaining", None)
         if callable(block_checker):
@@ -17146,7 +17310,11 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         upcoming_dates = self._get_relevant_important_dates()
         if upcoming_dates and random.random() < 0.35:
             reasons.append("important_date_share")
-        if current_item and self.include_schedule_in_messages and random.random() < 0.22:
+        if (
+            current_item
+            and runtime_persona_setting(self, "include_schedule_in_messages", True)
+            and random.random() < 0.22
+        ):
             reasons.append("background_schedule")
         if not reasons:
             reasons.append("check_in")
@@ -17204,7 +17372,10 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
             detail = "；".join(part for part in (activity, seed) if part)
             return reason, f"当前日程片段：{detail or '没有明确片段'}；只取一个生活切口，不逐项汇报。"
 
-        style = _single_line(user.get("style") or self.default_style, 24)
+        style = _single_line(
+            user.get("style") or runtime_persona_setting(self, "default_style", "温柔"),
+            24,
+        )
         style_hint = f"；参考语气偏好：{style}" if style else ""
         return "check_in", f"无明确来源时的轻量开场{style_hint}；优先贴近关系事实、当前状态或当前日程，不使用固定模板。"
 

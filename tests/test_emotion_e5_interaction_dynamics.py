@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 
 from companion_interaction_expression import current_interaction_projection
 from interaction_dynamics import settle_interaction_dynamics
+from persona_config import runtime_persona_setting
 from relationship_policy import relationship_projection_for_bridge, relationship_stage_for_score
 
 
@@ -63,6 +64,7 @@ def _load_interaction_settler() -> Any:
         "_safe_float": _safe_float,
         "_safe_int": _safe_int,
         "_single_line": _single_line,
+        "runtime_persona_setting": runtime_persona_setting,
     }
     module = ast.Module(body=[copy.deepcopy(method)], type_ignores=[])
     ast.fix_missing_locations(module)

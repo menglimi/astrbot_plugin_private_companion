@@ -31,6 +31,7 @@ from relationship_ledger import (
     relationship_positive_score_cap,
 )
 from relationship_policy import relationship_stage_for_score
+from persona_config import runtime_persona_setting
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -99,6 +100,7 @@ SETTLE_INTERACTION = _class_method(
         "_safe_float": _safe_float,
         "_safe_int": _safe_int,
         "_single_line": _single_line,
+        "runtime_persona_setting": runtime_persona_setting,
     },
 )
 BUILD_EXPRESSION_FOR_USER = _class_method(
@@ -114,6 +116,7 @@ BUILD_EXPRESSION_FOR_USER = _class_method(
         "_safe_float": _safe_float,
         "_safe_int": _safe_int,
         "_single_line": _single_line,
+        "runtime_persona_setting": runtime_persona_setting,
     },
 )
 APPLY_RELATIONSHIP_EVENT = _class_method(

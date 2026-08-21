@@ -9,6 +9,7 @@ from typing import Any
 from astrbot.api import logger
 
 from .helpers import _redact_outbound_secrets, _single_line, _strip_nonstandard_chat_control_tags
+from .persona_config import runtime_persona_setting
 
 
 class TtsToolSanitizerMixin:
@@ -217,9 +218,9 @@ class TtsToolSanitizerMixin:
         *,
         fallback_plain: str,
     ) -> list[Any]:
-        if not bool(getattr(self, "enable_tts_enhancement", False)):
+        if not bool(runtime_persona_setting(self, "enable_tts_enhancement", False)):
             return []
-        if getattr(self, "tts_generation_mode", "fast_tag") == "postprocess":
+        if runtime_persona_setting(self, "tts_generation_mode", "fast_tag") == "postprocess":
             converter = getattr(self, "_maybe_convert_plain_reply_to_tts", None)
             return await converter(fallback_plain, event) if callable(converter) else []
         processor = getattr(self, "_process_tts_tags", None)
@@ -351,7 +352,8 @@ class TtsToolSanitizerMixin:
                         processor = getattr(self, "_process_tts_tags", None)
                         tts_components = (
                             await processor(f"<pc_tts>{text}</pc_tts>", event, fallback_plain=text)
-                            if callable(processor) and bool(getattr(self, "enable_tts_enhancement", False))
+                            if callable(processor)
+                            and bool(runtime_persona_setting(self, "enable_tts_enhancement", False))
                             else []
                         )
                         if tts_components:

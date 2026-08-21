@@ -3529,7 +3529,7 @@ class GroupObservationMixin:
         last_reason = _single_line(user.get("last_proactive_reason"), 40)
         last_sent_at = _safe_float(user.get("last_proactive_sent_at"), 0)
         last_umo = _single_line(user.get("last_proactive_delivery_umo"), 180)
-        max_age = min(max(1, _safe_int(getattr(self, "proactive_reply_context_hours", 12), 12, 1, 72)), 12) * 3600
+        max_age = min(max(1, _safe_int(_persona_value(self, "proactive_reply_context_hours", 12), 12, 1, 72)), 12) * 3600
         if (
             last_reason == "group_share"
             and last_sent_at > 0
@@ -3988,7 +3988,7 @@ class GroupObservationMixin:
     ) -> bool:
         day = _today_key()
         limit = _safe_int(
-            getattr(self, "expression_group_learning_daily_batch_limit", 6),
+            _persona_value(self, "expression_group_learning_daily_batch_limit", 6),
             6,
             1,
             50,
@@ -4057,13 +4057,13 @@ class GroupObservationMixin:
         if len(lines) < 8:
             return
         min_new_messages = _safe_int(
-            getattr(self, "expression_group_learning_min_new_messages", 20),
+            _persona_value(self, "expression_group_learning_min_new_messages", 20),
             20,
             5,
             80,
         )
         wants_expression_rules = bool(
-            getattr(self, "enable_expression_learning", False)
+            _persona_value(self, "enable_expression_learning", False)
             and len(expression_candidate_lines) >= min_new_messages
             and self._expression_group_learning_source_enabled(group_id)
         )

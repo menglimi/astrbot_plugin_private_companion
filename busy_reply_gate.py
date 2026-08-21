@@ -9,6 +9,7 @@ from typing import Any
 from astrbot.api import logger
 
 from .helpers import _safe_float, _safe_int, _single_line
+from .persona_config import runtime_persona_setting
 
 
 class BusyReplyGateMixin:
@@ -52,7 +53,7 @@ class BusyReplyGateMixin:
 
     def _busy_reply_note_inbound_event(self, event: Any) -> int:
         """Give each meaningful private inbound event a monotonic session token."""
-        if not bool(getattr(self, "enable_busy_reply_gate", False)):
+        if not bool(runtime_persona_setting(self, "enable_busy_reply_gate", False)):
             return 0
         if bool(getattr(event, "_private_companion_busy_reply_inbound_token", 0)):
             return _safe_int(getattr(event, "_private_companion_busy_reply_inbound_token", 0), 0, 0)
@@ -220,7 +221,7 @@ class BusyReplyGateMixin:
         return now_ts + remaining_seconds if now_ts > 0 else 0.0
 
     def _busy_reply_context(self) -> dict[str, Any]:
-        if not bool(getattr(self, "enable_busy_reply_gate", False)):
+        if not bool(runtime_persona_setting(self, "enable_busy_reply_gate", False)):
             return {"busy": False, "reason": "disabled", "until": 0.0, "schedule": ""}
         data = getattr(self, "data", None)
         plan = data.get("daily_plan") if isinstance(data, dict) and isinstance(data.get("daily_plan"), dict) else {}
@@ -265,7 +266,7 @@ class BusyReplyGateMixin:
         return ""
 
     async def _apply_busy_reply_gate_delay(self, event: Any, *, is_private_chat: bool) -> tuple[float, str]:
-        if not bool(getattr(self, "enable_busy_reply_gate", False)):
+        if not bool(runtime_persona_setting(self, "enable_busy_reply_gate", False)):
             return 0.0, "disabled"
         if bool(getattr(event, "_private_companion_busy_reply_delay_applied", False)):
             return 0.0, "already_applied"
@@ -284,8 +285,8 @@ class BusyReplyGateMixin:
         bypass = self._busy_reply_bypass_reason(getattr(event, "message_str", ""))
         if bypass:
             return 0.0, f"bypass:{bypass}"
-        minimum = _safe_int(getattr(self, "busy_reply_min_delay_seconds", 60), 60, 0)
-        maximum = _safe_int(getattr(self, "busy_reply_max_delay_seconds", 300), 300, 0)
+        minimum = _safe_int(runtime_persona_setting(self, "busy_reply_min_delay_seconds", 60), 60, 0)
+        maximum = _safe_int(runtime_persona_setting(self, "busy_reply_max_delay_seconds", 300), 300, 0)
         minimum = min(900, minimum)
         maximum = min(900, maximum)
         if maximum < minimum:
@@ -358,7 +359,7 @@ class BusyReplyGateMixin:
             return {"until": 0.0, "kind": "exempt", "note": normalized_source}
         if normalized_reason in self._BUSY_PROACTIVE_EXEMPT_REASONS:
             return {"until": 0.0, "kind": "exempt", "note": normalized_reason}
-        if not bool(getattr(self, "enable_busy_reply_gate", False)):
+        if not bool(runtime_persona_setting(self, "enable_busy_reply_gate", False)):
             return {"until": 0.0, "kind": "disabled", "note": "繁忙回复闸门未开启"}
         context = self._busy_reply_context()
         if not bool(context.get("busy")):
@@ -371,7 +372,7 @@ class BusyReplyGateMixin:
         if until <= now:
             until = now + 15 * 60
         buffer_minutes = _safe_int(
-            getattr(self, "busy_reply_proactive_resume_buffer_minutes", 10),
+            runtime_persona_setting(self, "busy_reply_proactive_resume_buffer_minutes", 10),
             10,
             0,
         )

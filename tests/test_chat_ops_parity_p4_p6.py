@@ -28,6 +28,7 @@ from p4_live_runtime import decide_live_request  # noqa: E402
 from p4_runtime_gate import SAFE_CONFINEMENT_REPLY, apply_confinement_gate, build_warmth_projection  # noqa: E402
 from p6_four_package_manifest import FOUR_PACKAGE_IDS, FOUR_PACKAGE_MANIFEST_SCHEMA, verify_four_package_manifests  # noqa: E402
 from p6_readonly_projection import build_p6_readonly_status  # noqa: E402
+from persona_config import runtime_persona_setting  # noqa: E402
 from relationship_ledger import apply_relationship_event, migrate_legacy_relationship_score  # noqa: E402
 from unified_person_registry import UnifiedPersonRegistry  # noqa: E402
 
@@ -105,6 +106,7 @@ def _load_p4_relationship_event_settlement() -> object:
         "Any": object,
         "apply_relationship_event": apply_relationship_event,
         "migrate_legacy_relationship_score": migrate_legacy_relationship_score,
+        "runtime_persona_setting": runtime_persona_setting,
     }
     exec(compile(ast.fix_missing_locations(module), str(ROOT / "core_store.py"), "exec"), namespace)
     return namespace["_apply_relationship_event"]

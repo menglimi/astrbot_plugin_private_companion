@@ -8,6 +8,7 @@ import re
 from typing import Any
 
 from .helpers import _flat_get, _now_ts, _path_text, _safe_float, _safe_int, _single_line
+from .persona_config import runtime_persona_setting
 
 
 SCENE_CONTEXT_VERSION = 3
@@ -304,7 +305,9 @@ class SceneContextMixin:
     def _scene_context_weather_alert_snapshot(self, data: dict[str, Any]) -> dict[str, Any]:
         """Read the already-fetched alert cache without doing network I/O."""
 
-        if not bool(getattr(self, "enable_weather_context", True)) or not bool(getattr(self, "enable_weather_alerts", True)):
+        if not bool(runtime_persona_setting(self, "enable_weather_context", True)) or not bool(
+            runtime_persona_setting(self, "enable_weather_alerts", True)
+        ):
             return {
                 "enabled": False,
                 "stale": False,
@@ -329,7 +332,14 @@ class SceneContextMixin:
                 raw_alerts = []
         filter_getter = getattr(self, "_filter_weather_alerts", None)
         try:
-            alerts = filter_getter(raw_alerts, getattr(self, "weather_alert_min_severity", "blue")) if callable(filter_getter) else raw_alerts
+            alerts = (
+                filter_getter(
+                    raw_alerts,
+                    runtime_persona_setting(self, "weather_alert_min_severity", "blue"),
+                )
+                if callable(filter_getter)
+                else raw_alerts
+            )
         except Exception:
             alerts = raw_alerts
         now = _now_ts()

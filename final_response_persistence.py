@@ -24,6 +24,7 @@ from .helpers import (
     _single_line,
     _strip_internal_message_blocks,
 )
+from .persona_config import runtime_persona_setting
 
 
 _DELIVERY_TASK_LABELS = frozenset({"segmented_llm_remainder"})
@@ -825,7 +826,7 @@ class FinalResponsePersistenceMixin:
         dispatch_event = event or self._proactive_synthetic_event(
             umo,
             prompt="",
-            name=str(getattr(self, "bot_name", "") or "PrivateCompanion"),
+            name=str(runtime_persona_setting(self, "bot_name", "小星") or "PrivateCompanion"),
         )
         if dispatch_event is None:
             return False

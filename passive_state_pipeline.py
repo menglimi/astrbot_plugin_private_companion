@@ -8,6 +8,7 @@ from typing import Any
 from astrbot.api import logger
 
 from .helpers import _now_ts, _safe_float, _single_line
+from .persona_config import runtime_persona_setting
 from .prompt_surface import PromptSurface
 
 
@@ -91,7 +92,7 @@ async def inject_humanized_state(
             if callable(scoped_getter):
                 private_user = scoped_getter(event, private_user)
             preferred_address = _single_line(
-                private_user.get("nickname") or getattr(self, "default_nickname", "你"),
+                private_user.get("nickname") or runtime_persona_setting(self, "default_nickname", "你"),
                 24,
             )
             if preferred_address:
@@ -164,7 +165,7 @@ async def inject_humanized_state(
                     pass
     await self.apply_tts_enhancement_request(event, req)
     await self._append_forward_message_context_to_request(event, req)
-    if not is_private_chat and self.enable_group_reality_promise_guard:
+    if not is_private_chat and runtime_persona_setting(self, "enable_group_reality_promise_guard", True):
         await self._append_capability_boundary_to_request(event, req)
     if not is_private_chat:
         await self._mark_group_conversation_from_llm_request(event)
@@ -304,7 +305,7 @@ async def inject_humanized_state(
                         mode="group",
                         metadata={"注入位置": placement, "范围": "全局抽象表达底色"},
                     )
-        if self.enable_group_context_injection and self._feature_enabled_or_temp_unlocked("enable_group_companion"):
+        if runtime_persona_setting(self, "enable_group_context_injection", True) and self._feature_enabled_or_temp_unlocked("enable_group_companion"):
             if group_id and self._group_enabled_for_event(group_id):
                 if not isinstance(group, dict):
                     group = self._get_group(group_id)
@@ -607,7 +608,7 @@ async def inject_humanized_state(
             )
     state_changed = False
     state_update_reason = "legacy"
-    if bool(getattr(self, "enable_passive_state_delta_injection", True)):
+    if bool(runtime_persona_setting(self, "enable_passive_state_delta_injection", True)):
         session_key = _single_line(getattr(event, "unified_msg_origin", ""), 160) or f"private:{user_id}"
         state_update_text, state_changed, state_update_reason = self._private_passive_state_update_for_prompt(
             session=session_key,
@@ -646,7 +647,8 @@ async def inject_humanized_state(
             prompt_surface.add("memo.notes", memo_notes, priority=37, source="daily_state")
         worldview_context = (
             self._format_worldview_adaptation_prompt()
-            if self._feature_enabled_or_temp_unlocked("enable_environment_perception") and self.enable_worldview_perception
+            if self._feature_enabled_or_temp_unlocked("enable_environment_perception")
+            and runtime_persona_setting(self, "enable_worldview_perception", True)
             else ""
         )
         worldview_context = self._sanitize_owner_environment_context_for_private_user(worldview_context, current_user)
@@ -818,7 +820,7 @@ async def inject_humanized_state(
         except Exception as exc:
             logger.info("[PrivateCompanion] 私聊图片视觉转述获取失败: %s", _single_line(exc, 120))
     buffered_images_include_gif = (
-        bool(getattr(self, "enable_private_image_gif_enhancement", True))
+        bool(runtime_persona_setting(self, "enable_private_image_gif_enhancement", True))
         and self._private_image_sources_include_gif(buffered_images)
         if buffered_images
         else False
@@ -1236,7 +1238,9 @@ async def inject_humanized_state(
                 "状态": "｜".join(state_log_parts),
                 "当前日程": current_schedule,
                 "注入位置": injection_placement,
-                "状态注入模式": "增量" if bool(getattr(self, "enable_passive_state_delta_injection", True)) else "完整",
+                "状态注入模式": "增量"
+                if bool(runtime_persona_setting(self, "enable_passive_state_delta_injection", True))
+                else "完整",
                 "状态变化": "是" if state_changed else "否",
                 "状态触发": state_update_reason,
                 "会话": _single_line(getattr(event, "unified_msg_origin", ""), 160) or "unknown",
@@ -1247,7 +1251,7 @@ async def inject_humanized_state(
         "[PrivateCompanion] 已注入被动状态提示词到 %s: mode=%s state_mode=%s reason=%s placement=%s chars=%s 状态=%s；当前日程=%s",
         _single_line(getattr(event, "unified_msg_origin", ""), 80) or "unknown_session",
         "light" if lightweight_passive else "full",
-        "delta" if bool(getattr(self, "enable_passive_state_delta_injection", True)) else "legacy",
+        "delta" if bool(runtime_persona_setting(self, "enable_passive_state_delta_injection", True)) else "legacy",
         state_update_reason,
         injection_placement,
         len(injection),

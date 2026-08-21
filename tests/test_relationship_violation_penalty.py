@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from helpers import _now_ts, _safe_float, _safe_int, _single_line
+from persona_config import runtime_persona_setting
 from relationship_ledger import apply_relationship_event
 
 
@@ -25,6 +26,7 @@ def _load_methods(*names: str) -> dict[str, Any]:
         "_safe_float": _safe_float,
         "_safe_int": _safe_int,
         "_single_line": _single_line,
+        "runtime_persona_setting": runtime_persona_setting,
     }
     for name in names:
         method = next(node for node in owner.body if isinstance(node, ast.FunctionDef) and node.name == name)

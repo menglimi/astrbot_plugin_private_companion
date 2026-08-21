@@ -155,6 +155,7 @@ from .persona_config import (
     normalize_setting_value,
     resolve_effective_settings,
     resolve_persona_setting,
+    runtime_persona_setting,
 )
 from .persona_window_bindings import (
     BindingRevisionConflict,
@@ -1972,11 +1973,12 @@ class PrivateCompanionPlugin(
         key = str(key or "").strip()
         if not key:
             return default
+        runtime_key = key.lower() if key.isupper() and key.endswith("_PROVIDER_ID") else key
         active = self._sanitize_persona_id(persona_id or _ACTIVE_PERSONA_ID.get())
         enabled = bool(object.__getattribute__(self, "enable_multi_persona_mode")) if hasattr(self, "enable_multi_persona_mode") else False
         if not enabled or not active:
             try:
-                return object.__getattribute__(self, key)
+                return object.__getattribute__(self, runtime_key)
             except AttributeError:
                 return default
         if key == "plugin_specific_persona_id":
@@ -1986,12 +1988,12 @@ class PrivateCompanionPlugin(
         )
         if active == primary:
             try:
-                return object.__getattribute__(self, key)
+                return object.__getattribute__(self, runtime_key)
             except AttributeError:
                 pass
         settings = self._persona_settings_for_id(active)
         try:
-            primary_value = object.__getattribute__(self, key)
+            primary_value = object.__getattribute__(self, runtime_key)
             primary_source: Any = {key: deepcopy(primary_value)}
         except AttributeError:
             primary_source = self._primary_persona_config()
@@ -2114,7 +2116,7 @@ class PrivateCompanionPlugin(
         active = _ACTIVE_PERSONA_ID.get()
         if bool(getattr(self, "enable_multi_persona_mode", False)) and active:
             return active
-        return str(getattr(self, "plugin_specific_persona_id", "") or "").strip()
+        return str(runtime_persona_setting(self, 'plugin_specific_persona_id', "") or "").strip()
 
     def _active_persona_scope(self) -> str:
         return _ACTIVE_PERSONA_ID.get() if bool(getattr(self, "enable_multi_persona_mode", False)) else ""
@@ -3414,7 +3416,7 @@ class PrivateCompanionPlugin(
             if not primary:
                 primary = self._sanitize_persona_id(
                     getattr(self, "_single_mode_plugin_specific_persona_id", "")
-                    or getattr(self, "plugin_specific_persona_id", "")
+                    or runtime_persona_setting(self, 'plugin_specific_persona_id', "")
                 )
             if not primary:
                 configured = self._configured_multi_persona_ids()
@@ -4206,7 +4208,7 @@ class PrivateCompanionPlugin(
         portrait_backend_available = callable(getattr(bridge, "read_unified_profile_portrait", None))
         return req036_capability_summary(
             user,
-            global_portrait_mode=getattr(self, "portrait_global_mode", "disabled"),
+            global_portrait_mode=runtime_persona_setting(self, 'portrait_global_mode', "disabled"),
             portrait_backend_available=portrait_backend_available,
         )
 
@@ -5104,23 +5106,23 @@ class PrivateCompanionPlugin(
 
     def _req041_compatibility_snapshot(self) -> dict[str, Any]:
         return {
-            "auto_profile_creation": bool(getattr(self, "enable_auto_user_profile_creation", False)),
+            "auto_profile_creation": bool(runtime_persona_setting(self, 'enable_auto_user_profile_creation', False)),
             "private_access_policy": {
                 "passive_private_default": "legacy_effective",
-                "configured_targets_default": bool(getattr(self, "default_enable_configured_targets", False)),
+                "configured_targets_default": bool(runtime_persona_setting(self, 'default_enable_configured_targets', False)),
             },
             "proactive_policy": {
-                "proactive_only": bool(getattr(self, "enable_proactive_only_mode", False)),
-                "intensity": _single_line(getattr(self, "proactive_intensity_preset", "off"), 40) or "off",
+                "proactive_only": bool(runtime_persona_setting(self, 'enable_proactive_only_mode', False)),
+                "intensity": _single_line(runtime_persona_setting(self, 'proactive_intensity_preset', "off"), 40) or "off",
             },
             "tool_policy": {
-                "photo": bool(getattr(self, "enable_photo_text_action", False)),
-                "screen": bool(getattr(self, "enable_screen_glance_action", False)),
-                "poke": bool(getattr(self, "enable_poke_action", False)),
-                "voice": bool(getattr(self, "enable_voice_action", False)),
+                "photo": bool(runtime_persona_setting(self, 'enable_photo_text_action', False)),
+                "screen": bool(runtime_persona_setting(self, 'enable_screen_glance_action', False)),
+                "poke": bool(runtime_persona_setting(self, 'enable_poke_action', False)),
+                "voice": bool(runtime_persona_setting(self, 'enable_voice_action', False)),
             },
             "content_policy": {
-                "relationship_tiers": bool(getattr(self, "enable_relationship_content_tiers", False)),
+                "relationship_tiers": bool(runtime_persona_setting(self, 'enable_relationship_content_tiers', False)),
             },
             "owner_policy": {
                 "configured_target": _single_line(getattr(self, "target_user_id", ""), 80) != "",
@@ -5128,9 +5130,9 @@ class PrivateCompanionPlugin(
                 "exclusive_mode_frozen": True,
             },
             "relationship_policy": {
-                "enabled": bool(getattr(self, "enable_custom_relationship_stage_policy", False)),
+                "enabled": bool(runtime_persona_setting(self, 'enable_custom_relationship_stage_policy', False)),
                 "positive_cap": _single_line(
-                    getattr(self, "relationship_positive_stage_cap_key", "deeply_bonded"), 40
+                    runtime_persona_setting(self, 'relationship_positive_stage_cap_key', "deeply_bonded"), 40
                 ) or "deeply_bonded",
                 "group_ordinary_delta": 0,
             },
@@ -6545,7 +6547,7 @@ class PrivateCompanionPlugin(
             or getattr(self, "req041_dual_write_producer", None) is None
             or getattr(self, "req041_migration_replay", None) is None
             or getattr(self, "req041_relationship_store", None) is None
-            or not bool(getattr(self, "enable_custom_relationship_stage_policy", False))
+            or not bool(runtime_persona_setting(self, 'enable_custom_relationship_stage_policy', False))
         ):
             return None
         direction = "at_bot" if scene_trigger == "at_bot" else "reply_bot" if scene_trigger == "reply_bot" else ""
@@ -6587,7 +6589,7 @@ class PrivateCompanionPlugin(
             getattr(self, "group_relationship_affinity_allowlist", ())
         )
         if (
-            not bool(getattr(self, "enable_custom_relationship_stage_policy", False))
+            not bool(runtime_persona_setting(self, 'enable_custom_relationship_stage_policy', False))
             or not bool(getattr(self, "enable_group_relationship_affinity", False))
             or str(candidate.get("raw_group_id") or "") not in live_allowlist
         ):
@@ -7187,7 +7189,7 @@ class PrivateCompanionPlugin(
         self._log_registered_command_handlers()
         self._install_send_message_to_user_tool_sanitizer()
         boundary_ability_registrar = getattr(self, "_register_relationship_boundary_proactive_ability", None)
-        if callable(boundary_ability_registrar) and bool(getattr(self, "enable_relationship_boundary_feedback", True)):
+        if callable(boundary_ability_registrar) and bool(runtime_persona_setting(self, 'enable_relationship_boundary_feedback', True)):
             boundary_ability_registrar()
         self._schedule_default_persona_prompt_refresh()
         await self._body_monitor_integration.set_enabled(self.enable_body_monitor_integration)
@@ -7213,7 +7215,7 @@ class PrivateCompanionPlugin(
                         "[PrivateCompanion] 已清理旧版低质量用户习惯记录: users=%s",
                         cleaned_habit_users,
                     )
-            if self.default_enable_configured_targets:
+            if runtime_persona_setting(self, 'default_enable_configured_targets', True):
                 self._sync_configured_targets()
                 changed = True
             recovered_troubleshooting = self._recover_stale_troubleshooting_proactive_plans()
@@ -7259,7 +7261,7 @@ class PrivateCompanionPlugin(
         self._create_startup_background_task("prepare_today", self._startup_prepare_today)
         # Keep one orchestrator alive in multi-persona mode so each persona's
         # own enable/time/provider settings are evaluated inside its ContextVar.
-        if self.enable_daily_review or bool(getattr(self, "enable_multi_persona_mode", False)):
+        if runtime_persona_setting(self, 'enable_daily_review', True) or bool(getattr(self, "enable_multi_persona_mode", False)):
             self._create_startup_background_task("daily_review", self._daily_review_loop)
         if self.enable_balance_awareness:
             self._create_startup_background_task(
@@ -7493,7 +7495,7 @@ class PrivateCompanionPlugin(
 
         run_step("group_record_cleanup", cleanup_groups)
 
-        if self.worldbook_auto_import:
+        if runtime_persona_setting(self, 'worldbook_auto_import', True):
             run_step("worldbook_auto_import", self._import_worldbook_entries_from_sources)
         return changed
 
@@ -7513,7 +7515,7 @@ class PrivateCompanionPlugin(
                         logger.info(
                             "[PrivateCompanion] 参考图目录迁移完成: version=%s references=%s",
                             CATALOG_VERSION,
-                            len(getattr(self, "photo_reference_catalog", ()) or ()),
+                            len(runtime_persona_setting(self, 'photo_reference_catalog', ()) or ()),
                         )
                     else:
                         logger.error("[PrivateCompanion] 参考图目录已保存，但迁移版本号保存失败；下次启动会安全重试")
@@ -7787,7 +7789,7 @@ class PrivateCompanionPlugin(
             return
         self._note_inbound_activity_for_scope(event)
         self._busy_reply_note_inbound_event(event)
-        if not self.enable_recall_enhancement:
+        if not runtime_persona_setting(self, 'enable_recall_enhancement', True):
             return
         raw = self._event_raw_payload(event)
         if raw.get("post_type") == "notice":
@@ -7827,14 +7829,14 @@ class PrivateCompanionPlugin(
             return
 
         await self._cache_message_for_recall(event)
-        if not self.enable_forbidden_word_recall or not self._forbidden_recall_words():
+        if not runtime_persona_setting(self, 'enable_forbidden_word_recall', False) or not self._forbidden_recall_words():
             return
         message_id = self._event_message_id(event)
         if not message_id:
             return
         is_group = bool(self._extract_group_id_from_event(event))
         is_self = self._event_sender_id(event) and self._event_sender_id(event) == self._event_self_id(event)
-        scope = self.recall_forbidden_scope
+        scope = runtime_persona_setting(self, 'recall_forbidden_scope', 'bot_and_group')
         if scope == "bot_only" and not is_self:
             return
         if scope == "group_only" and not is_group:
@@ -7860,7 +7862,7 @@ class PrivateCompanionPlugin(
     @_multi_persona_event_context
     async def bridge_proactive_chat_outbound(self, event: AstrMessageEvent, *args, **kwargs):
         """识别 Proactive Chat 的装饰发送链，接入状态、边界和 TTS 统一出口。"""
-        if self is None or not self.enabled or not self.enable_proactive_chat_integration:
+        if self is None or not self.enabled or not runtime_persona_setting(self, 'enable_proactive_chat_integration', True):
             return
         bridge_context = self._proactive_chat_decorating_context()
         if not bridge_context.get("detected"):
@@ -8263,7 +8265,7 @@ class PrivateCompanionPlugin(
 
     def _reaction_expression_delivery_mode(self) -> str:
         raw_mode = _single_line(
-            getattr(self, "reaction_expression_delivery_mode", "separate_after"),
+            runtime_persona_setting(self, 'reaction_expression_delivery_mode', "separate_after"),
             32,
         )
         normalizer = getattr(
@@ -8283,7 +8285,7 @@ class PrivateCompanionPlugin(
 
     def _reaction_expression_image_format(self) -> str:
         image_format = _single_line(
-            getattr(self, "reaction_expression_image_format", "image"),
+            runtime_persona_setting(self, 'reaction_expression_image_format', "image"),
             24,
         ).lower()
         return image_format if image_format in {"image", "qq_emoji"} else "image"
@@ -8305,7 +8307,7 @@ class PrivateCompanionPlugin(
             format_getter()
             if callable(format_getter)
             else _single_line(
-                getattr(self, "reaction_expression_image_format", "image"),
+                runtime_persona_setting(self, 'reaction_expression_image_format', "image"),
                 24,
             ).lower()
         )
@@ -8593,7 +8595,7 @@ class PrivateCompanionPlugin(
     @_multi_persona_event_context
     async def finalize_proactive_chat_outbound_bridge(self, event: AstrMessageEvent, *args, **kwargs):
         """在所有装饰器结束后，仅为仍有实际发送内容的 Proactive Chat 链同步状态。"""
-        if self is None or not self.enabled or not self.enable_proactive_chat_integration:
+        if self is None or not self.enabled or not runtime_persona_setting(self, 'enable_proactive_chat_integration', True):
             return
         if str(getattr(event, "_private_companion_external_proactive_source", "") or "") != "proactive_chat":
             return
@@ -8964,7 +8966,7 @@ class PrivateCompanionPlugin(
         changed = False
         protected_tts_tokens = getattr(event, "_private_companion_tts_block_tokens", None)
         preserve_private_tts_tokens = (
-            bool(getattr(self, "enable_tts_enhancement", False))
+            bool(runtime_persona_setting(self, 'enable_tts_enhancement', False))
             and isinstance(protected_tts_tokens, dict)
             and bool(protected_tts_tokens)
         )
@@ -8977,7 +8979,7 @@ class PrivateCompanionPlugin(
                 preserve_private_tts_tokens=preserve_private_tts_tokens,
                 allowed_private_tts_tokens=set(protected_tts_tokens.keys()) if isinstance(protected_tts_tokens, dict) else None,
             )
-            if not bool(getattr(self, "enable_tts_enhancement", False)):
+            if not bool(runtime_persona_setting(self, 'enable_tts_enhancement', False)):
                 cleaned = re.sub(r"</?t{2,}s\b[^>]*>", "", cleaned, flags=re.IGNORECASE).strip()
             if cleaned != original:
                 changed = True
@@ -9005,7 +9007,7 @@ class PrivateCompanionPlugin(
             return
         protected_tts_tokens = getattr(event, "_private_companion_tts_block_tokens", None)
         preserve_private_tts_tokens = (
-            bool(getattr(self, "enable_tts_enhancement", False))
+            bool(runtime_persona_setting(self, 'enable_tts_enhancement', False))
             and isinstance(protected_tts_tokens, dict)
             and bool(protected_tts_tokens)
         )
@@ -9025,7 +9027,7 @@ class PrivateCompanionPlugin(
                     else None
                 ),
             )
-            if not bool(getattr(self, "enable_tts_enhancement", False)):
+            if not bool(runtime_persona_setting(self, 'enable_tts_enhancement', False)):
                 cleaned = re.sub(r"</?t{2,}s\b[^>]*>", "", cleaned, flags=re.IGNORECASE).strip()
             if cleaned:
                 cleaned_chain.append(Plain(cleaned) if cleaned != original else component)
@@ -9123,7 +9125,7 @@ class PrivateCompanionPlugin(
             return
         if self._proactive_only_blocks_passive_event(event, "enable_recall_enhancement"):
             return
-        if not self.enable_recall_enhancement or not self.enable_forbidden_word_recall:
+        if not runtime_persona_setting(self, 'enable_recall_enhancement', True) or not runtime_persona_setting(self, 'enable_forbidden_word_recall', False):
             return
         if not self._forbidden_recall_words():
             return
@@ -9284,7 +9286,7 @@ class PrivateCompanionPlugin(
             event.set_result(empty_result)
             event.stop_event()
             return
-        if not bool(getattr(self, "enable_framework_error_leak_guard", True)):
+        if not bool(runtime_persona_setting(self, 'enable_framework_error_leak_guard', True)):
             return
         tool_loop_markers = (
             "trying to send messages",
@@ -9491,7 +9493,7 @@ class PrivateCompanionPlugin(
             event.set_result(empty_result)
             event.stop_event()
             return
-        if not bool(getattr(self, "enable_smart_silence", True)):
+        if not bool(runtime_persona_setting(self, 'enable_smart_silence', True)):
             return
         try:
             if bool(getattr(event, "is_private_chat", lambda: False)()):
@@ -9912,7 +9914,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             except Exception:
                 is_llm_result = False
         if (
-            bool(getattr(self, "enable_framework_error_leak_guard", True))
+            bool(runtime_persona_setting(self, 'enable_framework_error_leak_guard', True))
             and chain
             and all(isinstance(comp, Plain) for comp in chain)
         ):
@@ -10025,7 +10027,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             event.stop_event()
             return
         event.set_result(self._build_result_from_chain(chunks[0]))
-        if self.enable_daily_case_review_experiment:
+        if runtime_persona_setting(self, 'enable_daily_case_review_experiment', False):
             self._record_daily_review_outbound_case(event, chunks[0])
         activity_baseline = time.time()
         if len(chunks) > 1:
@@ -10223,7 +10225,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
     def _sanitize_segmented_plain_text(self, event: AstrMessageEvent, text: Any) -> str:
         protected_tts_tokens = getattr(event, "_private_companion_tts_block_tokens", None)
         preserve_private_tts_tokens = (
-            bool(getattr(self, "enable_tts_enhancement", False))
+            bool(runtime_persona_setting(self, 'enable_tts_enhancement', False))
             and isinstance(protected_tts_tokens, dict)
             and bool(protected_tts_tokens)
         )
@@ -10233,7 +10235,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             allowed_private_tts_tokens=set(protected_tts_tokens.keys())
             if isinstance(protected_tts_tokens, dict) else None,
         )
-        if not bool(getattr(self, "enable_tts_enhancement", False)):
+        if not bool(runtime_persona_setting(self, 'enable_tts_enhancement', False)):
             cleaned = re.sub(r"</?t{2,}s\b[^>]*>", "", cleaned, flags=re.IGNORECASE).strip()
         return cleaned
 
@@ -10270,8 +10272,8 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         reply_prefix = [comp for comp in working_chain if self._is_reply_component(comp)]
         content_chain = [comp for comp in working_chain if not self._is_reply_component(comp)]
         if (
-            bool(getattr(self, "enable_proactive_quote_trigger_message", False))
-            and bool(getattr(self, "enable_quote_group_reply", True))
+            bool(runtime_persona_setting(self, 'enable_proactive_quote_trigger_message', False))
+            and bool(runtime_persona_setting(self, 'enable_quote_group_reply', True))
             and not reply_prefix
             and not self._chain_has_reply_component(working_chain)
         ):
@@ -10407,7 +10409,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                         normalized_segment = "".join(str(getattr(comp, "text", "") or "") for comp in chunk).strip()
                         provider_error_checker = getattr(self, "_looks_like_internal_provider_error_text", None)
                         if (
-                            bool(getattr(self, "enable_framework_error_leak_guard", True))
+                            bool(runtime_persona_setting(self, 'enable_framework_error_leak_guard', True))
                             and callable(provider_error_checker)
                         ):
                             try:
@@ -10427,7 +10429,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                             except Exception:
                                 pass
                         if (
-                            bool(getattr(self, "enable_tts_enhancement", False))
+                            bool(runtime_persona_setting(self, 'enable_tts_enhancement', False))
                             and re.search(r"<tts\b[^>]*>.*?</tts>", normalized_segment, flags=re.IGNORECASE | re.DOTALL)
                         ):
                             processor = getattr(self, "_process_tts_tags", None)
@@ -10622,7 +10624,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                     except Exception:
                         pass
                 if (
-                    bool(getattr(self, "enable_tts_enhancement", False))
+                    bool(runtime_persona_setting(self, 'enable_tts_enhancement', False))
                     and re.search(r"<tts\b[^>]*>.*?</tts>", normalized_segment, flags=re.IGNORECASE | re.DOTALL)
                 ):
                         processor = getattr(self, "_process_tts_tags", None)
@@ -10765,9 +10767,9 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             if self._is_reply_component(component)
         ]
         if not existing_replies:
-            if not bool(getattr(self, "enable_proactive_quote_trigger_message", False)):
+            if not bool(runtime_persona_setting(self, 'enable_proactive_quote_trigger_message', False)):
                 return
-            if not bool(getattr(self, "enable_quote_group_reply", True)):
+            if not bool(runtime_persona_setting(self, 'enable_quote_group_reply', True)):
                 return
             if self._proactive_only_blocks_passive_event(event, "enable_group_companion"):
                 return
@@ -11620,7 +11622,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         return text[:max_chars].strip()
 
     def _format_persona_voice_channel_prompt(self, channel: str) -> str:
-        if not bool(getattr(self, "enable_persona_voice_channels", True)):
+        if not bool(runtime_persona_setting(self, 'enable_persona_voice_channels', True)):
             return ""
         channel = str(channel or "").strip().lower()
         specs = {
@@ -11658,7 +11660,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
 
     def _format_proactive_voice_prompt(self) -> str:
         parts: list[str] = []
-        base = self._normalize_persona_voice_text(getattr(self, "reply_style_prompt", ""), max_chars=900)
+        base = self._normalize_persona_voice_text(runtime_persona_setting(self, 'reply_style_prompt', ""), max_chars=900)
         if base:
             parts.append(
                 "【主动消息基础表达约束】\n"
@@ -11677,7 +11679,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         return "\n\n".join(part for part in parts if part).strip()
 
     def _format_reply_style_prompt(self) -> str:
-        text = str(getattr(self, "reply_style_prompt", "") or "").strip()
+        text = str(runtime_persona_setting(self, 'reply_style_prompt', "") or "").strip()
         persona_voice = self._format_persona_voice_channel_prompt("conversation")
         if not text and not persona_voice:
             return ""
@@ -12305,7 +12307,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         source: str = "",
         force_dynamic: bool = False,
     ) -> bool:
-        position = self._normalize_passive_injection_position(getattr(self, "passive_injection_position", "prompt"))
+        position = self._normalize_passive_injection_position(runtime_persona_setting(self, 'passive_injection_position', "prompt"))
         if position == "system_prompt" and not force_dynamic:
             return False
         content = str(text or "").strip()
@@ -12820,8 +12822,8 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             "已学场景": stable_scene_count,
             "本轮命中": _single_line((rule_details or {}).get("label"), 32) or "无稳定规则",
             "规则证据": _safe_int((rule_details or {}).get("evidence_count"), 0, 0),
-            "启用": bool(getattr(self, "enable_expression_learning", False)),
-            "模式": _single_line(getattr(self, "expression_learning_mode", "balanced"), 20),
+            "启用": bool(runtime_persona_setting(self, "enable_expression_learning", False)),
+            "模式": _single_line(runtime_persona_setting(self, "expression_learning_mode", "balanced"), 20),
         }
 
     async def _collect_private_passive_prompt_contexts(
@@ -13358,7 +13360,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         reaction_expression_authorized = False
         if (
             not explicit_media_request
-            and bool(getattr(self, "enable_reaction_expression_experiment", False))
+            and bool(runtime_persona_setting(self, 'enable_reaction_expression_experiment', False))
         ):
             reaction_expression_authorized = await self._preauthorize_reaction_expression_prompt(event)
         reaction_expression_evaluated = bool(
@@ -13930,7 +13932,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             )
             state_changed = True
             reason = "changed"
-        elif bool(getattr(self, "enable_passive_state_continuity_anchor", False)):
+        elif bool(runtime_persona_setting(self, 'enable_passive_state_continuity_anchor', False)):
             state_text = self._format_private_passive_state_continuity_anchor(
                 state, current_user
             )
@@ -14048,7 +14050,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         return boundary
 
     def _format_group_persona_denoise_prompt(self, event: AstrMessageEvent | None = None) -> str:
-        if not bool(getattr(self, "enable_group_persona_denoise", True)):
+        if not bool(runtime_persona_setting(self, 'enable_group_persona_denoise', True)):
             return ""
         scene = getattr(event, "private_companion_group_scene", None) if event is not None else None
         trigger = _single_line(scene.get("trigger"), 40) if isinstance(scene, dict) else ""
@@ -14122,7 +14124,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         return "\n".join(lines)
 
     async def _append_group_persona_denoise_to_request(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
-        if not bool(getattr(self, "enable_group_companion", True)):
+        if not bool(runtime_persona_setting(self, 'enable_group_companion', True)):
             return
         group_id = self._extract_group_id_from_event(event)
         if not group_id or not self._group_enabled_for_event(group_id):
@@ -14633,7 +14635,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         *,
         mode: str = "conditional",
     ) -> None:
-        if not bool(getattr(self, "enable_worldbook_member_recognition", False)):
+        if not bool(runtime_persona_setting(self, 'enable_worldbook_member_recognition', False)):
             return
         text = str(
             getattr(event, "private_companion_group_text", "")
@@ -14803,7 +14805,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         )
 
     def _rest_reply_window_active(self) -> bool:
-        raw = str(getattr(self, "rest_reply_active_windows", "") or "").strip()
+        raw = str(runtime_persona_setting(self, 'rest_reply_active_windows', "") or "").strip()
         if not raw:
             return True
         raw = re.sub(r"\s+", "", raw)
@@ -14925,12 +14927,12 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             score = 0
         should_reply = bool(payload.get("should_reply"))
         reason = _single_line(payload.get("reason"), 80) or "llm"
-        if should_reply and score < self.rest_reply_llm_threshold:
-            score = self.rest_reply_llm_threshold
+        if should_reply and score < runtime_persona_setting(self, 'rest_reply_llm_threshold', 65):
+            score = runtime_persona_setting(self, 'rest_reply_llm_threshold', 65)
         return score, reason
 
     async def _should_reply_during_rest(self, event: AstrMessageEvent, *, is_private_chat: bool) -> tuple[bool, str]:
-        if not self.enable_rest_reply_simulation:
+        if not runtime_persona_setting(self, 'enable_rest_reply_simulation', False):
             return True, "disabled"
         sleeping, runtime, _current_item, schedule_text = self._rest_reply_sleep_context()
         if not sleeping:
@@ -14939,13 +14941,13 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         boundary_score, boundary_reason = self._rest_reply_boundary_score(text)
         if boundary_score < 0:
             return False, boundary_reason
-        if boundary_score >= max(1, self.rest_reply_llm_threshold):
+        if boundary_score >= max(1, runtime_persona_setting(self, 'rest_reply_llm_threshold', 65)):
             try:
                 self._mark_sleep_woken_by_user(text)
             except Exception:
                 pass
             return True, boundary_reason
-        mode = getattr(self, "rest_reply_mode", "probability")
+        mode = runtime_persona_setting(self, 'rest_reply_mode', "probability")
         if mode == "llm":
             score, reason = await self._rest_reply_llm_score(
                 text=text,
@@ -14953,14 +14955,14 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 runtime=runtime,
                 is_private_chat=is_private_chat,
             )
-            allowed = score >= self.rest_reply_llm_threshold
+            allowed = score >= runtime_persona_setting(self, 'rest_reply_llm_threshold', 65)
             if allowed:
                 try:
                     self._mark_sleep_woken_by_user(text)
                 except Exception:
                     pass
-            return allowed, f"llm:{score}/{self.rest_reply_llm_threshold}:{reason}"
-        probability = max(0.0, min(1.0, float(getattr(self, "rest_reply_probability", 0.0) or 0.0)))
+            return allowed, f"llm:{score}/{runtime_persona_setting(self, 'rest_reply_llm_threshold', 65)}:{reason}"
+        probability = max(0.0, min(1.0, float(runtime_persona_setting(self, 'rest_reply_probability', 0.0) or 0.0)))
         hit = random.random() <= probability
         if hit:
             try:
@@ -14993,7 +14995,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         return user_id, user
 
     def _record_rest_reply_backlog(self, event: AstrMessageEvent, reason: str) -> None:
-        if not bool(getattr(self, "enable_rest_backlog_reply", True)):
+        if not bool(runtime_persona_setting(self, 'enable_rest_backlog_reply', True)):
             return
         user_id, user = self._rest_backlog_user_for_event(event)
         if not isinstance(user, dict):
@@ -15012,7 +15014,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 "reason": _single_line(reason, 80),
             }
         )
-        max_items = max(1, _safe_int(getattr(self, "rest_backlog_max_messages", 4), 4, 1))
+        max_items = max(1, _safe_int(runtime_persona_setting(self, 'rest_backlog_max_messages', 4), 4, 1))
         user["rest_reply_backlog"] = backlog[-max_items:]
         user["rest_reply_backlog_updated_at"] = now
         self._schedule_data_save(sections={"users"})
@@ -15025,12 +15027,12 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         )
 
     def _take_rest_reply_backlog_prompt(self, user: dict[str, Any]) -> str:
-        if not bool(getattr(self, "enable_rest_backlog_reply", True)):
+        if not bool(runtime_persona_setting(self, 'enable_rest_backlog_reply', True)):
             return ""
         backlog = user.get("rest_reply_backlog")
         if not isinstance(backlog, list) or not backlog:
             return ""
-        max_items = max(1, _safe_int(getattr(self, "rest_backlog_max_messages", 4), 4, 1))
+        max_items = max(1, _safe_int(runtime_persona_setting(self, 'rest_backlog_max_messages', 4), 4, 1))
         items = [item for item in backlog[-max_items:] if isinstance(item, dict)]
         if not items:
             user["rest_reply_backlog"] = []
@@ -15441,7 +15443,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
     @_multi_persona_event_context
     async def record_daily_review_outbound_case_before_send(self, event: AstrMessageEvent, *args, **kwargs):
         """Experimental final-stage sampling for the next daily case review."""
-        if self is None or not self.enabled or not self.enable_daily_case_review_experiment:
+        if self is None or not self.enabled or not runtime_persona_setting(self, 'enable_daily_case_review_experiment', False):
             return
         result = event.get_result()
         chain = list(getattr(result, "chain", []) or []) if result is not None else []
@@ -15488,16 +15490,16 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         return bool(group and (group & unlocks))
 
     def _feature_enabled_or_temp_unlocked(self, feature: str, default: bool = False) -> bool:
-        if bool(getattr(self, feature, default)):
+        if bool(runtime_persona_setting(self, feature, default)):
             return True
         return bool(
-            getattr(self, "enable_proactive_only_mode", False)
+            runtime_persona_setting(self, 'enable_proactive_only_mode', False)
             and self._proactive_only_temp_unlock_allows(feature)
         )
 
     def _proactive_only_limited_passive_event(self, event: AstrMessageEvent | None) -> bool:
         return bool(
-            getattr(self, "enable_proactive_only_mode", False)
+            runtime_persona_setting(self, 'enable_proactive_only_mode', False)
             and not bool(getattr(event, "private_companion_proactive_framework", False))
         )
 
@@ -15528,7 +15530,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             await self._append_environment_perception_to_request(event, req)
 
     def _clear_proactive_only_temp_unlocks_if_mode_off(self) -> None:
-        if getattr(self, "enable_proactive_only_mode", False):
+        if runtime_persona_setting(self, 'enable_proactive_only_mode', False):
             return
         if not self._proactive_only_unlock_store():
             return
@@ -15573,7 +15575,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         effective_feature = "pc_tools" if allow_proactive_photo else feature
         if effective_feature == "pc_tools" and proactive_framework and not allow_proactive_photo:
             return True
-        if not bool(getattr(self, "enable_proactive_only_mode", False)):
+        if not bool(runtime_persona_setting(self, 'enable_proactive_only_mode', False)):
             self._clear_proactive_only_temp_unlocks_if_mode_off()
             return False
         if proactive_framework:
@@ -16012,7 +16014,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         """Inject one fail-closed relationship expression decision before Memory enrichment."""
         if self is None or req is None or not bool(getattr(self, "enabled", False)):
             return
-        if not bool(getattr(self, "enable_custom_relationship_stage_policy", False)):
+        if not bool(runtime_persona_setting(self, 'enable_custom_relationship_stage_policy', False)):
             return
         is_private = self._safe_event_is_private(event)
         group_id = "" if is_private else self._extract_group_id_from_event(event)
@@ -16055,13 +16057,13 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 },
                 message_intent=content_intent_from_text(getattr(event, "message_str", "")),
                 content_policy={
-                    "enabled": bool(getattr(self, "enable_relationship_content_tiers", False)),
-                    "flirt_enabled": bool(getattr(self, "enable_flirt_content_tier", True)),
-                    "adult_enabled": bool(getattr(self, "enable_adult_content_tier", False)),
+                    "enabled": bool(runtime_persona_setting(self, 'enable_relationship_content_tiers', False)),
+                    "flirt_enabled": bool(runtime_persona_setting(self, 'enable_flirt_content_tier', True)),
+                    "adult_enabled": bool(runtime_persona_setting(self, 'enable_adult_content_tier', False)),
                     "adult_owner_confirmed": bool(getattr(self, "adult_content_owner_confirmed", False)),
-                    "require_turn_consent": bool(getattr(self, "adult_content_require_turn_consent", True)),
-                    "require_exclusive": bool(getattr(self, "adult_content_require_exclusive", True)),
-                    "require_affectionate": bool(getattr(self, "adult_content_require_affectionate", True)),
+                    "require_turn_consent": bool(runtime_persona_setting(self, 'adult_content_require_turn_consent', True)),
+                    "require_exclusive": bool(runtime_persona_setting(self, 'adult_content_require_exclusive', True)),
+                    "require_affectionate": bool(runtime_persona_setting(self, 'adult_content_require_affectionate', True)),
                     "private_chat": is_private,
                     "local_provider_configured": bool(getattr(self, "adult_content_provider_id", "")),
                     "local_provider_match": self._adult_content_provider_matches(event, req),
@@ -16242,7 +16244,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         **kwargs,
     ):
         """Add a default-off, request-only Bot cycle privacy boundary for allowed groups."""
-        if self is None or req is None or not bool(getattr(self, "enable_group_cycle_awareness", False)):
+        if self is None or req is None or not bool(runtime_persona_setting(self, 'enable_group_cycle_awareness', False)):
             return
         try:
             if bool(getattr(event, "is_private_chat", lambda: False)()):
@@ -17325,7 +17327,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 memory_companion_context=memory_companion_context,
             )
         if normalized in {"主动", "proactive"}:
-            name = str(user.get("nickname") or self.default_nickname)
+            name = str(user.get("nickname") or runtime_persona_setting(self, 'default_nickname', '你'))
             planned_reason = str(user.get("planned_proactive_reason") or "")
             planned_action = str(user.get("planned_proactive_action") or "message")
             planned_motive = _single_line(user.get("planned_proactive_motive"), 140)
@@ -17609,7 +17611,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             await self._reply(event, self._sensitive_location_denied_text())
             event.stop_event()
             return
-        if self.require_private_opt_in and not is_private and action not in public_safe_actions:
+        if runtime_persona_setting(self, 'require_private_opt_in', True) and not is_private and action not in public_safe_actions:
             await self._reply(event, self._private_only_text())
             event.stop_event()
             return
@@ -17709,14 +17711,14 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 response = "".join(
                     [
                         "运行模式：默认开启\n",
-                        f"称呼：{user.get('nickname') or self.default_nickname}\n",
-                        f"语气：{user.get('style') or self.default_style}\n",
+                        f"称呼：{user.get('nickname') or runtime_persona_setting(self, 'default_nickname', '你')}\n",
+                        f"语气：{user.get('style') or runtime_persona_setting(self, 'default_style', '温柔')}\n",
                         f"日程：{plan_text}\n",
                         f"拟人状态：{state_text}\n",
                         f"关系角色：{self._private_user_role_label(self._private_user_role(user, user_id))}\n",
                         f"今日主动消息：{user.get('sent_today', 0)}/{self._effective_user_daily_limit(user)}\n",
                         f"今日软目标：约 {self._soft_daily_target(user):.1f} 条\n",
-                        f"免打扰：{self.quiet_hours}\n",
+                        f"免打扰：{runtime_persona_setting(self, 'quiet_hours', '23:00-08:30')}\n",
                         f"上次活跃：{last_seen}\n",
                         f"上次主动：{last_sent}\n",
                         f"下次候选：{self._format_next_proactive(user)}\n",
@@ -17727,7 +17729,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                     ]
                 )
             elif action in {"撤回消息", "防撤回", "转述撤回", "撤回转述"}:
-                if not self.enable_recall_enhancement or not self.enable_recall_transcribe_command:
+                if not runtime_persona_setting(self, 'enable_recall_enhancement', True) or not runtime_persona_setting(self, 'enable_recall_transcribe_command', True):
                     response = "撤回消息转述没有开启。"
                 else:
                     response = self._format_recalled_messages_for_event(event, limit=5)
@@ -18423,7 +18425,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             return
         if not self._feature_enabled_or_temp_unlocked("enable_group_companion"):
             return
-        if not bool(getattr(self, "enable_group_member_safety", True)):
+        if not bool(runtime_persona_setting(self, 'enable_group_member_safety', True)):
             return
         group_id = self._extract_group_id_from_event(event)
         if not group_id or not self._group_enabled_for_event(group_id):
@@ -18550,7 +18552,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             return
         if not self._feature_enabled_or_temp_unlocked("enable_group_companion"):
             return
-        if not bool(getattr(self, "enable_group_member_safety", True)):
+        if not bool(runtime_persona_setting(self, 'enable_group_member_safety', True)):
             return
         if self._group_member_safety_hidden_marker_mode() == "reply_only":
             return
@@ -18590,7 +18592,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         """Reject third-party portrait probing before any retrieval or LLM hook."""
         if self is None or bool(getattr(event, "_private_companion_member_safety_blocked", False)):
             return
-        if not bool(getattr(self, "enable_group_third_party_portrait_guard", True)):
+        if not bool(runtime_persona_setting(self, 'enable_group_third_party_portrait_guard', True)):
             return
         group_id = self._extract_group_id_from_event(event)
         if not group_id:

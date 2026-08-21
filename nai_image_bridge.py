@@ -13,6 +13,7 @@ from astrbot.api import logger
 
 from .helpers import _single_line
 from .external_bridge_resolver import resolve_external_bridge
+from .persona_config import runtime_persona_setting
 
 
 class NAIImageBridgeMixin:
@@ -31,7 +32,7 @@ class NAIImageBridgeMixin:
     def _nai_image_selected(self, operation: str = "") -> bool:
         """Return whether the configured photo backend is the NAI direct link."""
         selected = (
-            str(getattr(self, "photo_generation_backend", "") or "").strip().lower()
+            str(runtime_persona_setting(self, "photo_generation_backend", "auto") or "").strip().lower()
             == "nai"
         )
         if not selected:

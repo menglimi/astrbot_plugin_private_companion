@@ -14,6 +14,25 @@ from typing import Any
 from astrbot.api import logger
 
 from .helpers import _day_start_ts, _now_ts, _safe_float, _safe_int, _single_line, _today_key
+from .persona_config import runtime_persona_setting
+
+
+def _persona_provider_id(owner: Any, canonical_key: str, legacy_attr: str, quick_role: str) -> str:
+    """Resolve canonical persona provider settings while preserving test harnesses."""
+    fallback = str(getattr(owner, legacy_attr, "") or "").strip()
+    if not callable(getattr(owner, "persona_setting", None)):
+        return fallback
+    mode = str(getattr(owner, "provider_config_mode", "quick") or "quick").strip().lower()
+    if mode != "quick":
+        return str(runtime_persona_setting(owner, canonical_key, fallback) or "").strip()
+    complex_id = str(runtime_persona_setting(owner, "COMPLEX_REASONING_PROVIDER_ID", "") or "").strip()
+    if quick_role == "complex":
+        return complex_id or fallback
+    if quick_role == "creative":
+        creative_id = str(runtime_persona_setting(owner, "CREATIVE_MODEL_PROVIDER_ID", "") or "").strip()
+        return creative_id or complex_id or fallback
+    fast_id = str(runtime_persona_setting(owner, "FAST_RESPONSE_PROVIDER_ID", "") or "").strip()
+    return fast_id or complex_id or fallback
 
 __all__ = (
     "QZONE_INTRA_DAY_GAP_FLOOR_MINUTES",
@@ -164,9 +183,12 @@ class QzoneScheduleMixin:
 
     def _qzone_life_publish_window_source(self) -> str:
         """Return the raw window text for the configured mode."""
-        mode = _single_line(getattr(self, "qzone_life_publish_window_mode", "template_double"), 32) or "template_double"
+        mode = _single_line(
+            runtime_persona_setting(self, "qzone_life_publish_window_mode", "template_double"),
+            32,
+        ) or "template_double"
         if mode in {"custom", "自定义"}:
-            raw = str(getattr(self, "qzone_life_publish_windows", "") or "")
+            raw = str(runtime_persona_setting(self, "qzone_life_publish_windows", "") or "")
             if not raw.strip():
                 # Legacy field kept working so upgrades never lose a config.
                 raw = str(getattr(self, "qzone_life_publish_custom_windows", "") or "")
@@ -184,7 +206,9 @@ class QzoneScheduleMixin:
 
     def _qzone_night_publish_allowed(self) -> bool:
         """Night windows only open when the bot is genuinely sleepless."""
-        if not bool(getattr(self, "qzone_life_publish_allow_insomnia_night", False)):
+        if not bool(
+            runtime_persona_setting(self, "qzone_life_publish_allow_insomnia_night", False)
+        ):
             return False
         checker = getattr(self, "_has_active_insomnia_state", None)
         if not callable(checker):
@@ -198,7 +222,10 @@ class QzoneScheduleMixin:
         """Windows usable right now, with night hours trimmed unless sleepless."""
         windows = self._qzone_parse_windows(self._qzone_life_publish_window_source())
         if not windows:
-            mode = _single_line(getattr(self, "qzone_life_publish_window_mode", "template_double"), 32)
+            mode = _single_line(
+                runtime_persona_setting(self, "qzone_life_publish_window_mode", "template_double"),
+                32,
+            )
             if mode in {"custom", "自定义"}:
                 return []
             windows = self._qzone_parse_windows(
@@ -218,12 +245,22 @@ class QzoneScheduleMixin:
 
     def _qzone_cross_day_gap_seconds(self) -> float:
         """Minimum spacing carried over from the previous published post."""
-        hours = _safe_int(getattr(self, "qzone_life_publish_min_interval_hours", 24), 24, 1, 168)
+        hours = _safe_int(
+            runtime_persona_setting(self, "qzone_life_publish_min_interval_hours", 24),
+            24,
+            1,
+            168,
+        )
         return float(max(1, hours) * 3600)
 
     def _qzone_intra_day_gap_seconds(self) -> float:
         """Minimum spacing between two posts planned for the same day."""
-        configured = _safe_int(getattr(self, "qzone_life_publish_intra_day_gap_minutes", 0), 0, 0, 1440)
+        configured = _safe_int(
+            runtime_persona_setting(self, "qzone_life_publish_intra_day_gap_minutes", 0),
+            0,
+            0,
+            1440,
+        )
         floor_minutes = int(
             _qzone_compat_constant("QZONE_INTRA_DAY_GAP_FLOOR_MINUTES")
         )
@@ -394,13 +431,32 @@ class QzoneScheduleMixin:
 
     def _qzone_life_publish_plan_signature(self) -> str:
         payload = {
-            "max_daily": _safe_int(getattr(self, "qzone_life_publish_max_daily", 1), 1, 1),
-            "probability": _safe_float(getattr(self, "qzone_life_publish_probability", 0.18), 0.18),
-            "window_mode": _single_line(getattr(self, "qzone_life_publish_window_mode", "template_double"), 32),
+            "max_daily": _safe_int(
+                runtime_persona_setting(self, "qzone_life_publish_max_daily", 1), 1, 1
+            ),
+            "probability": _safe_float(
+                runtime_persona_setting(self, "qzone_life_publish_probability", 0.18), 0.18
+            ),
+            "window_mode": _single_line(
+                runtime_persona_setting(self, "qzone_life_publish_window_mode", "template_double"),
+                32,
+            ),
             "windows": self._qzone_life_publish_window_source(),
-            "allow_night": bool(getattr(self, "qzone_life_publish_allow_insomnia_night", False)),
-            "cross_day_hours": _safe_int(getattr(self, "qzone_life_publish_min_interval_hours", 24), 24, 1, 168),
-            "intra_day_minutes": _safe_int(getattr(self, "qzone_life_publish_intra_day_gap_minutes", 0), 0, 0, 1440),
+            "allow_night": bool(
+                runtime_persona_setting(self, "qzone_life_publish_allow_insomnia_night", False)
+            ),
+            "cross_day_hours": _safe_int(
+                runtime_persona_setting(self, "qzone_life_publish_min_interval_hours", 24),
+                24,
+                1,
+                168,
+            ),
+            "intra_day_minutes": _safe_int(
+                runtime_persona_setting(self, "qzone_life_publish_intra_day_gap_minutes", 0),
+                0,
+                0,
+                1440,
+            ),
         }
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()[:20]
@@ -507,8 +563,20 @@ class QzoneScheduleMixin:
 
         # The user controls this limit; do not impose a product-level ceiling.
         # Scheduling still naturally limits actual items by windows and gaps.
-        limit = max(1, _safe_int(getattr(self, "qzone_life_publish_max_daily", 1), 1, 1))
-        probability = max(0.0, min(1.0, _safe_float(getattr(self, "qzone_life_publish_probability", 0.18), 0.18)))
+        limit = max(
+            1,
+            _safe_int(runtime_persona_setting(self, "qzone_life_publish_max_daily", 1), 1, 1),
+        )
+        probability = max(
+            0.0,
+            min(
+                1.0,
+                _safe_float(
+                    runtime_persona_setting(self, "qzone_life_publish_probability", 0.18),
+                    0.18,
+                ),
+            ),
+        )
         plan: dict[str, Any] = {
             "date": today,
             "configured_limit": limit,
@@ -520,7 +588,10 @@ class QzoneScheduleMixin:
             "night_allowed": self._qzone_night_publish_allowed(),
             "config_signature": signature,
         }
-        mode = _single_line(getattr(self, "qzone_life_publish_window_mode", "template_double"), 32)
+        mode = _single_line(
+            runtime_persona_setting(self, "qzone_life_publish_window_mode", "template_double"),
+            32,
+        )
         if mode in {"custom", "自定义"} and not self._qzone_parse_windows(self._qzone_life_publish_window_source()):
             plan["skip_reason"] = "invalid_window_config"
             state["life_publish_daily_plan"] = plan
@@ -663,7 +734,12 @@ class QzoneScheduleMixin:
             rewritten = await self._llm_call(
                 rewrite_prompt,
                 max_tokens=180,
-                provider_id=self._task_provider(self.mai_style_provider_id, self.llm_provider_id),
+                provider_id=self._task_provider(
+                    _persona_provider_id(
+                        self, "MAI_STYLE_PROVIDER_ID", "mai_style_provider_id", "fast"
+                    ),
+                    _persona_provider_id(self, "LLM_PROVIDER_ID", "llm_provider_id", "complex"),
+                ),
                 task="qzone_publish_length",
             )
         except Exception as exc:
@@ -687,7 +763,15 @@ class QzoneScheduleMixin:
         items = state.get("recent_life_publish_texts") if isinstance(state, dict) else []
         if not isinstance(items, list):
             return []
-        threshold = max(1, _safe_int(getattr(self, "qzone_life_publish_similarity_threshold", 2), 2, 1, 20))
+        threshold = max(
+            1,
+            _safe_int(
+                runtime_persona_setting(self, "qzone_life_publish_similarity_threshold", 2),
+                2,
+                1,
+                20,
+            ),
+        )
         matches: list[dict[str, Any]] = []
         for item in items[-8:]:
             old = _single_line(item.get("text") if isinstance(item, dict) else item, 180)
@@ -730,7 +814,12 @@ class QzoneScheduleMixin:
             rewritten = await self._llm_call(
                 rewrite_prompt,
                 max_tokens=180,
-                provider_id=self._task_provider(self.mai_style_provider_id, self.llm_provider_id),
+                provider_id=self._task_provider(
+                    _persona_provider_id(
+                        self, "MAI_STYLE_PROVIDER_ID", "mai_style_provider_id", "fast"
+                    ),
+                    _persona_provider_id(self, "LLM_PROVIDER_ID", "llm_provider_id", "complex"),
+                ),
                 task="qzone_publish_deduplicate",
             )
         except Exception as exc:
@@ -746,7 +835,10 @@ class QzoneScheduleMixin:
             await self._maybe_publish_qzone_life_post_locked()
 
     async def _maybe_publish_qzone_life_post_locked(self) -> None:
-        if not (self._qzone_available() and self.enable_qzone_life_publish):
+        if not (
+            self._qzone_available()
+            and runtime_persona_setting(self, "enable_qzone_life_publish", False)
+        ):
             return
         now = _now_ts()
         state = self.data.setdefault("qzone_integration", {})
@@ -941,7 +1033,12 @@ class QzoneScheduleMixin:
             text = await self._llm_call(
                 prompt,
                 max_tokens=180,
-                provider_id=self._task_provider(self.mai_style_provider_id, self.llm_provider_id),
+                provider_id=self._task_provider(
+                    _persona_provider_id(
+                        self, "MAI_STYLE_PROVIDER_ID", "mai_style_provider_id", "fast"
+                    ),
+                    _persona_provider_id(self, "LLM_PROVIDER_ID", "llm_provider_id", "complex"),
+                ),
                 task="qzone_publish",
             )
             text = await self._sanitize_qzone_life_post_text(text, prompt=prompt)
@@ -1071,8 +1168,8 @@ class QzoneScheduleMixin:
     ) -> None:
         if not (
             self._qzone_available()
-            and getattr(self, "enable_emotion_simulation", False)
-            and getattr(self, "enable_qzone_emotional_vent_publish", False)
+            and runtime_persona_setting(self, "enable_emotion_simulation", True)
+            and runtime_persona_setting(self, "enable_qzone_emotional_vent_publish", False)
         ):
             return
         # The short-lived interaction projection is the source of truth for
@@ -1083,7 +1180,12 @@ class QzoneScheduleMixin:
             legacy_projection = relationship_state.get("current_interaction")
             if isinstance(legacy_projection, dict):
                 interaction = legacy_projection
-        threshold = _safe_int(getattr(self, "qzone_emotional_vent_threshold", 90), 90, 40, 100)
+        threshold = _safe_int(
+            runtime_persona_setting(self, "qzone_emotional_vent_threshold", 90),
+            90,
+            40,
+            100,
+        )
         event_intensity = _safe_int((intent or {}).get("emotion_intensity"), 0, 0, 100)
         if event_intensity < threshold or interaction.get("expression_band") not in {"avoidant", "hurt"}:
             return
@@ -1105,7 +1207,15 @@ class QzoneScheduleMixin:
         if not isinstance(state, dict):
             self.data["qzone_integration"] = {}
             state = self.data["qzone_integration"]
-        cooldown = max(4, _safe_int(getattr(self, "qzone_emotional_vent_cooldown_hours", 72), 72, 4, 336)) * 3600
+        cooldown = max(
+            4,
+            _safe_int(
+                runtime_persona_setting(self, "qzone_emotional_vent_cooldown_hours", 72),
+                72,
+                4,
+                336,
+            ),
+        ) * 3600
         if now - _safe_float(state.get("last_emotional_vent_at"), 0) < cooldown:
             logger.info("[PrivateCompanion] 公开心情动态跳过: cooldown intensity=%s", event_intensity)
             return
@@ -1118,7 +1228,16 @@ class QzoneScheduleMixin:
         if now - _safe_float(state.get("last_emotional_vent_failed_at"), 0) < 15 * 60:
             return
         reusable_text = self._qzone_reusable_draft(state, "emotional_vent", now=now)
-        probability = max(0.0, min(1.0, _safe_float(getattr(self, "qzone_emotional_vent_probability", 0.35), 0.35)))
+        probability = max(
+            0.0,
+            min(
+                1.0,
+                _safe_float(
+                    runtime_persona_setting(self, "qzone_emotional_vent_probability", 0.35),
+                    0.35,
+                ),
+            ),
+        )
         if not reusable_text and random.random() > probability:
             state["last_emotional_vent_status"] = "skipped:probability_miss"
             state["last_emotional_vent_checked_at"] = now
@@ -1188,7 +1307,12 @@ class QzoneScheduleMixin:
                 text = await self._llm_call(
                     prompt,
                     max_tokens=140,
-                    provider_id=self._task_provider(self.mai_style_provider_id, self.llm_provider_id),
+                    provider_id=self._task_provider(
+                        _persona_provider_id(
+                            self, "MAI_STYLE_PROVIDER_ID", "mai_style_provider_id", "fast"
+                        ),
+                        _persona_provider_id(self, "LLM_PROVIDER_ID", "llm_provider_id", "complex"),
+                    ),
                     task="qzone_emotional_vent",
                 )
                 text = await self._sanitize_qzone_life_post_text(text, prompt=prompt)

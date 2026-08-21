@@ -32,6 +32,7 @@ from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 from xml.etree import ElementTree as ET
 
 from astrbot.api import AstrBotConfig, logger
+from .persona_config import runtime_persona_setting
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 try:
     from astrbot.api.message_components import At, Image, Plain, Record, Reply
@@ -402,8 +403,8 @@ class IntegrationStatusMixin:
                 state = "开启" if bool(getattr(self, key, False)) else "关闭"
                 logger.info("[PrivateCompanion] %s", message % state)
         if self._integrated_plugin_installed("astrbot_plugin_proactive_chat"):
-            enabled = bool(getattr(self, "enable_proactive_chat_integration", True))
-            review_mode = str(getattr(self, "proactive_chat_bridge_review_mode", "local") or "local")
+            enabled = bool(runtime_persona_setting(self, 'enable_proactive_chat_integration', True))
+            review_mode = str(runtime_persona_setting(self, 'proactive_chat_bridge_review_mode', "local") or "local")
             logger.info(
                 "[PrivateCompanion] 已检测到 Proactive Chat，私聊主动发送联动%s（复核模式=%s）；不会修改对方调度配置。",
                 "开启" if enabled else "关闭",
@@ -411,16 +412,16 @@ class IntegrationStatusMixin:
             )
 
     def _worldview_mode_effective(self) -> str:
-        mode = str(getattr(self, "worldview_adaptation_mode", "auto") or "auto")
+        mode = str(runtime_persona_setting(self, 'worldview_adaptation_mode', "auto") or "auto")
         if mode != "auto":
             return mode
         source = " ".join(
             part
             for part in (
-                self.schedule_persona_prompt,
-                self.schedule_worldview_prompt,
-                self.worldview_adaptation_prompt,
-                self.bot_name,
+                runtime_persona_setting(self, 'schedule_persona_prompt', ''),
+                runtime_persona_setting(self, 'schedule_worldview_prompt', ''),
+                runtime_persona_setting(self, 'worldview_adaptation_prompt', ''),
+                runtime_persona_setting(self, 'bot_name', '小星'),
             )
             if part
         )
@@ -479,7 +480,7 @@ class IntegrationStatusMixin:
         if mode == "off":
             return ""
         terms = self._worldview_terms()
-        custom = _single_line(getattr(self, "worldview_adaptation_prompt", ""), 1200)
+        custom = _single_line(runtime_persona_setting(self, 'worldview_adaptation_prompt', ""), 1200)
         base = [
             "【世界观适配】",
             f"当前适配模式：{mode}。",
@@ -748,7 +749,7 @@ class IntegrationStatusMixin:
         return "当前会话"
 
     async def _format_platform_perception(self, event: AstrMessageEvent) -> str:
-        if not self.enable_platform_perception:
+        if not runtime_persona_setting(self, 'enable_platform_perception', True):
             return ""
         platform = ""
         getter = getattr(event, "get_platform_name", None)
@@ -962,7 +963,7 @@ class IntegrationStatusMixin:
         return provider_id, provider
 
     def _format_model_perception(self, event: AstrMessageEvent) -> str:
-        if not self.enable_model_perception:
+        if not runtime_persona_setting(self, 'enable_model_perception', True):
             return ""
         lines: list[str] = []
         chat_provider_id, chat_provider = self._current_event_chat_provider_id(event)
@@ -1015,7 +1016,7 @@ class IntegrationStatusMixin:
             except Exception:
                 pass
 
-        enhancement_enabled = bool(getattr(self, "enable_tts_enhancement", False))
+        enhancement_enabled = bool(runtime_persona_setting(self, 'enable_tts_enhancement', False))
         if provider is None:
             availability = "已配置但当前会话不可用" if bool(provider_settings.get("enable", False)) else "当前会话未配置 TTS Provider"
         else:
@@ -1052,16 +1053,16 @@ class IntegrationStatusMixin:
             mode_label = {
                 "fast_tag": "快速标签",
                 "postprocess": "后处理",
-            }.get(str(getattr(self, "tts_generation_mode", "fast_tag") or "fast_tag"), "快速标签")
-            scope_label = "全量转换" if str(getattr(self, "tts_conversion_scope", "partial") or "partial") == "full" else "局部转换"
-            delivery_label = "仅语音" if str(getattr(self, "tts_delivery_mode", "voice_and_text") or "voice_and_text") == "voice_only" else "语音+文字"
+            }.get(str(runtime_persona_setting(self, 'tts_generation_mode', "fast_tag") or "fast_tag"), "快速标签")
+            scope_label = "全量转换" if str(runtime_persona_setting(self, 'tts_conversion_scope', "partial") or "partial") == "full" else "局部转换"
+            delivery_label = "仅语音" if str(runtime_persona_setting(self, 'tts_delivery_mode', "voice_and_text") or "voice_and_text") == "voice_only" else "语音+文字"
             language_getter = getattr(self, "_tts_language_label", None)
             language_label = language_getter() if callable(language_getter) else {
                 "ja": "日语",
                 "zh": "中文",
                 "en": "英语",
-            }.get(str(getattr(self, "tts_voice_language", "zh") or "zh"), "中文")
-            conversion_id = _single_line(getattr(self, "tts_conversion_provider_id", ""), 120)
+            }.get(str(runtime_persona_setting(self, 'tts_voice_language', "zh") or "zh"), "中文")
+            conversion_id = _single_line(runtime_persona_setting(self, 'tts_conversion_provider_id', ""), 120)
             if conversion_id:
                 conversion_label = self._provider_model_label(conversion_id)
             else:
@@ -1079,11 +1080,11 @@ class IntegrationStatusMixin:
 
     def _format_photo_generation_perception(self) -> str:
         if not (
-            bool(getattr(self, "enable_photo_text_action", False))
-            or bool(getattr(self, "enable_natural_language_photo_generation", False))
+            bool(runtime_persona_setting(self, 'enable_photo_text_action', False))
+            or bool(runtime_persona_setting(self, 'enable_natural_language_photo_generation', False))
         ):
             return ""
-        preferred = _single_line(getattr(self, "photo_generation_backend", ""), 30) or "auto"
+        preferred = _single_line(runtime_persona_setting(self, 'photo_generation_backend', ""), 30) or "auto"
         external_model = _single_line(getattr(self, "external_image_api_model", ""), 80)
         configured_endpoints = getattr(self, "external_image_api_endpoints", [])
         endpoint_queue: list[dict[str, Any]] = []
@@ -1171,7 +1172,7 @@ class IntegrationStatusMixin:
         if callable(checker):
             if not checker("enable_environment_perception"):
                 return ""
-        elif not self.enable_environment_perception:
+        elif not runtime_persona_setting(self, 'enable_environment_perception', True):
             return ""
         current = self._environment_now()
         lines = [
@@ -1247,12 +1248,12 @@ class IntegrationStatusMixin:
         return current.hour * 60 + current.minute
 
     def _format_holiday_perception(self, current: datetime) -> str:
-        if not self.enable_holiday_perception:
+        if not runtime_persona_setting(self, 'enable_holiday_perception', True):
             return ""
         label, _ = self._current_time_period_label(current)
         weekday = "一二三四五六日"[current.weekday()]
         parts = [f"周{weekday}"]
-        if self.holiday_country != "CN" or calendar_cn is None:
+        if runtime_persona_setting(self, 'holiday_country', 'CN') != "CN" or calendar_cn is None:
             parts.append("周末" if current.weekday() >= 5 else "工作日")
         else:
             try:
@@ -1269,7 +1270,7 @@ class IntegrationStatusMixin:
         return "、".join(part for part in parts if part)
 
     def _format_lunar_perception(self, current: datetime) -> str:
-        if not self.enable_lunar_perception or Converter is None or Solar is None:
+        if not runtime_persona_setting(self, 'enable_lunar_perception', True) or Converter is None or Solar is None:
             return ""
         try:
             lunar = Converter.Solar2Lunar(Solar(current.year, current.month, current.day))
@@ -1281,7 +1282,7 @@ class IntegrationStatusMixin:
             return ""
 
     def _format_solar_term_perception(self, current: datetime) -> str:
-        if not self.enable_solar_term_perception:
+        if not runtime_persona_setting(self, 'enable_solar_term_perception', True):
             return ""
         today = (current.month, current.day)
         if today in _SOLAR_TERM_DATES:
@@ -1295,7 +1296,7 @@ class IntegrationStatusMixin:
         return ""
 
     def _format_almanac_perception(self, current: datetime) -> str:
-        if not self.enable_almanac_perception:
+        if not runtime_persona_setting(self, 'enable_almanac_perception', False):
             return ""
         seed = current.year * 10000 + current.month * 100 + current.day
         yi = _ALMANAC_YI[seed % len(_ALMANAC_YI)]

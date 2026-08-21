@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 from companion_interaction_expression import allowed_expression_bands, current_interaction_projection  # noqa: E402
 from interaction_dynamics import settle_interaction_dynamics  # noqa: E402
+from persona_config import runtime_persona_setting  # noqa: E402
 from relationship_ledger import (  # noqa: E402
     is_owner_exclusive,
     normalize_relationship_mode,
@@ -115,6 +116,7 @@ def _load_interaction_settler() -> Any:
         "_safe_float": _safe_float,
         "_safe_int": _safe_int,
         "_single_line": _single_line,
+        "runtime_persona_setting": runtime_persona_setting,
     }
     module = ast.Module(body=[copy.deepcopy(method)], type_ignores=[])
     ast.fix_missing_locations(module)

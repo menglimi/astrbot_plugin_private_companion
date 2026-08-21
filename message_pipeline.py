@@ -346,7 +346,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
         fast_target_user
         and text
         and not forward_only_prompt
-        and not bool(getattr(self, "enable_smart_message_debounce", False))
+        and not bool(_persona_value(self, 'enable_smart_message_debounce', False))
         and self._message_debounce_seconds("text") <= 0
         and self._is_lightweight_private_passive_inbound(text)
         and not self._meal_care_requires_full_reply(fast_user, text)
@@ -479,7 +479,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
                 now=received_ts,
             )
         fast_interaction_warmth_applied = (
-            bool(getattr(self, "enable_custom_relationship_stage_policy", False))
+            bool(_persona_value(self, "enable_custom_relationship_stage_policy", False))
             and fast_user_is_owner
             and self._apply_interaction_warmth_to_state(text, fast_user)
         )
@@ -547,7 +547,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
             ))
         private_image_enhancement_enabled = (
             self._feature_enabled_or_temp_unlocked("enable_private_image_self_recognition")
-            and bool(getattr(self, "enable_message_debounce", getattr(self, "enable_semantic_message_debounce", True)))
+            and bool(_persona_value(self, 'enable_message_debounce', _persona_value(self, 'enable_semantic_message_debounce', True)))
             and self._message_debounce_seconds("image") > 0
         )
         private_image_only = (
@@ -596,7 +596,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
                     has_visual_provider = False
                 setattr(event, "private_companion_delayed_image_sources", usable_images[:5])
                 has_dynamic_gif_sources = (
-                    bool(getattr(self, "enable_private_image_gif_enhancement", True))
+                    bool(_persona_value(self, 'enable_private_image_gif_enhancement', True))
                     and self._private_image_sources_include_gif(usable_images)
                 )
                 image_mode = self._private_image_delivery_mode(
@@ -695,7 +695,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
                 buffers[key]["images"] = persisted_images
                 buffers[key]["original_event"] = event
                 has_dynamic_gif_sources = (
-                    bool(getattr(self, "enable_private_image_gif_enhancement", True))
+                    bool(_persona_value(self, 'enable_private_image_gif_enhancement', True))
                     and self._private_image_sources_include_gif(persisted_images)
                 )
                 umo = str(getattr(event, "unified_msg_origin", "") or "")
@@ -833,7 +833,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
         if (
             isinstance(suspended, dict)
             and suspended.get("active")
-            and _now_ts() - _safe_float(suspended.get("created_at"), 0) <= self.proactive_reply_context_hours * 3600
+            and _now_ts() - _safe_float(suspended.get("created_at"), 0) <= _persona_value(self, 'proactive_reply_context_hours', 12) * 3600
         ):
             suspended["resume_ready"] = True
             suspended["complaint_enabled"] = False
@@ -942,9 +942,9 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
             if (
                 not rest_silence_early_block
                 and (
-                    self.enable_intent_emotion_analysis
-                    or self.enable_relationship_state_machine
-                    or self.enable_emotion_simulation
+                    _persona_value(self, 'enable_intent_emotion_analysis', True)
+                    or _persona_value(self, 'enable_relationship_state_machine', True)
+                    or _persona_value(self, 'enable_emotion_simulation', True)
                 )
             ):
                 intent_profile = self._analyze_inbound_intent(text)
@@ -959,7 +959,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
                         event_id=self._event_message_id(event),
                         now=received_ts,
                     )
-                if self.enable_intent_emotion_analysis:
+                if _persona_value(self, 'enable_intent_emotion_analysis', True):
                     user["intent_profile"] = intent_profile
                 if self._should_use_llm_emotion_judgement(text, intent_profile):
                     # Model review does not block the current passive reply; it keeps using cached emotion state.
@@ -1050,7 +1050,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
                 now=received_ts,
             )
         interaction_warmth_applied = (
-            bool(getattr(self, "enable_custom_relationship_stage_policy", False))
+            bool(_persona_value(self, 'enable_custom_relationship_stage_policy', False))
             and bool(text)
             and is_target_user
             and user_is_owner
@@ -1397,7 +1397,7 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
                 )
             )
             if (at_bot or reply_to_bot) and boundary_profile_known and bool(
-                getattr(self, "enable_relationship_boundary_feedback", True)
+                _persona_value(self, 'enable_relationship_boundary_feedback', True)
             ):
                 current_sender.setdefault("user_id", scoped_sender_id)
                 group_boundary_intent = self._analyze_inbound_intent(text)

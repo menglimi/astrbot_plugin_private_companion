@@ -137,6 +137,7 @@ from .photo_generation_scope import (
     PHOTO_GENERATION_SCOPES,
     normalize_photo_generation_scope_limit,
 )
+from .persona_config import runtime_persona_setting
 from .unified_profile_service import (
     DEFAULT_CLOSED_REPAIR_OPERATION_ID,
     ensure_legacy_profile_capabilities,
@@ -3106,7 +3107,7 @@ class CoreStoreMixin:
     async def _reset_plugin_store(self) -> None:
         async with self._data_lock:
             self.data = self._new_store()
-            if self.default_enable_configured_targets:
+            if runtime_persona_setting(self, "default_enable_configured_targets", True):
                 self._sync_configured_targets()
             self._clear_default_data_save_dirty()
             await asyncio.to_thread(
@@ -3126,7 +3127,7 @@ class CoreStoreMixin:
             )
 
         diary = None
-        if self.enable_daily_diary:
+        if runtime_persona_setting(self, "enable_daily_diary", True):
             diary = await self._generate_daily_diary()
             async with self._data_lock:
                 diaries = self.data.setdefault("bot_diaries", [])
@@ -3134,7 +3135,8 @@ class CoreStoreMixin:
                     diaries = []
                     self.data["bot_diaries"] = diaries
                 diaries.append(diary)
-                del diaries[:-self.max_diary_entries]
+                max_entries = max(1, _safe_int(runtime_persona_setting(self, "max_diary_entries", 14), 14, 1))
+                del diaries[:-max_entries]
                 self.data["diary_generated_day"] = _today_key()
                 try:
                     self.data["dream_fragments"] = self._merge_dream_fragment_pool(
@@ -4174,11 +4176,11 @@ class CoreStoreMixin:
         if _safe_float(user.get("relationship_score"), 0.0) != 0 and not group_only_ledger:
             return True
 
-        default_nickname = _single_line(getattr(self, "default_nickname", ""), 40)
+        default_nickname = _single_line(runtime_persona_setting(self, "default_nickname", ""), 40)
         nickname = _single_line(user.get("nickname"), 40)
         if nickname and nickname != default_nickname:
             return True
-        default_style = _single_line(getattr(self, "default_style", ""), 120)
+        default_style = _single_line(runtime_persona_setting(self, "default_style", ""), 120)
         style = _single_line(user.get("style"), 120)
         return bool(style and style != default_style)
 
@@ -4277,7 +4279,7 @@ class CoreStoreMixin:
             if compact and compact != text and 2 <= len(compact) <= 12 and compact not in generic:
                 tokens.add(compact)
 
-        add(getattr(self, "default_nickname", ""))
+        add(runtime_persona_setting(self, "default_nickname", ""))
         target_ids = set()
         try:
             target_ids = set(self._configured_target_ids())
@@ -4322,10 +4324,12 @@ class CoreStoreMixin:
 
     def _ensure_relationship_user_state(self, user: dict[str, Any], *, created: bool = False) -> bool:
         """Lazily normalize additive relationship fields without migrating user identity or data paths."""
+        setting_getter = getattr(self, "persona_setting", None)
+        setting = setting_getter if callable(setting_getter) else lambda key, default=None: getattr(self, key, default)
         # The user-visible affinity master switch is intentionally a hard
         # runtime boundary: archived relationship data remains readable, but
         # it must not be normalized, decayed or otherwise changed while off.
-        if not bool(getattr(self, "enable_custom_relationship_stage_policy", False)):
+        if not bool(setting("enable_custom_relationship_stage_policy", False)):
             return False
         before = {
             "relationship_mode": user.get("relationship_mode"),
@@ -4348,10 +4352,10 @@ class CoreStoreMixin:
             user.get("relationship_role"),
         )
         positive_cap = normalize_relationship_positive_stage_cap_key(
-            getattr(self, "relationship_positive_stage_cap_key", "close")
+            setting("relationship_positive_stage_cap_key", "close")
         )
         interaction_cap = normalize_normal_interaction_band_cap(
-            getattr(self, "normal_interaction_band_cap", "warm")
+            setting("normal_interaction_band_cap", "warm")
         )
         user["relationship_positive_stage_cap_key"] = positive_cap
         user["normal_interaction_band_cap"] = interaction_cap
@@ -4359,7 +4363,7 @@ class CoreStoreMixin:
         raw_interaction = user.get("current_interaction")
         if created and not raw_interaction:
             raw_interaction = {
-                "expression_band": str(getattr(self, "default_interaction_band", "relaxed") or "relaxed"),
+                "expression_band": str(setting("default_interaction_band", "relaxed") or "relaxed"),
                 "source": "default_profile",
                 "reason": "profile_created",
                 "updated_at": _now_ts(),
@@ -4381,8 +4385,8 @@ class CoreStoreMixin:
             middle_rate=int(getattr(self, "relationship_decay_middle_per_day", 5)),
             late_rate=int(getattr(self, "relationship_decay_late_per_day", 8)),
             policy=(
-                getattr(self, "relationship_stage_policy", None)
-                if bool(getattr(self, "enable_custom_relationship_stage_policy", False))
+                setting("relationship_stage_policy", None)
+                if bool(setting("enable_custom_relationship_stage_policy", False))
                 else None
             ),
             timezone_name=getattr(self, "environment_perception_timezone", None),
@@ -4414,13 +4418,15 @@ class CoreStoreMixin:
         now: float | None = None,
         req041_group_admission_event_id: str = "",
     ) -> dict[str, Any]:
+        setting_getter = getattr(self, "persona_setting", None)
+        setting = setting_getter if callable(setting_getter) else lambda key, default=None: getattr(self, key, default)
         if bool(getattr(self, "enable_p4_b_legacy_score_isolation", False)):
             return {
                 "changed": False,
                 "code": "p4_legacy_score_isolated",
                 "score": user.get("relationship_score"),
             }
-        if not bool(getattr(self, "enable_custom_relationship_stage_policy", False)):
+        if not bool(setting("enable_custom_relationship_stage_policy", False)):
             return {
                 "changed": False,
                 "code": "relationship_system_disabled",
@@ -4468,7 +4474,7 @@ class CoreStoreMixin:
             event_window_seconds=int(getattr(self, "relationship_event_window_minutes", 30)) * 60,
             positive_event_cap=int(getattr(self, "relationship_positive_event_cap", 4)),
             negative_event_cap=int(getattr(self, "relationship_negative_event_cap", 12)),
-            positive_stage_cap_key=getattr(self, "relationship_positive_stage_cap_key", "close"),
+            positive_stage_cap_key=setting("relationship_positive_stage_cap_key", "close"),
             timezone_name=getattr(self, "environment_perception_timezone", None),
         )
         producer = getattr(self, "req041_dual_write_producer", None)
@@ -4576,15 +4582,15 @@ class CoreStoreMixin:
         # Compatibility mirror only: passive private chat is always available.
         user["enabled"] = True
         if not user.get("nickname"):
-            user["nickname"] = self.default_nickname
+            user["nickname"] = runtime_persona_setting(self, "default_nickname", "你")
         if not user.get("style"):
-            user["style"] = self.default_style
+            user["style"] = runtime_persona_setting(self, "default_style", "温柔")
         if relationship_changed or alias_migration_changed:
             self._schedule_data_save(sections={"users"})
         return user
 
     def _auto_profile_platform_set(self) -> set[str]:
-        raw = getattr(self, "auto_profile_platforms", None)
+        raw = runtime_persona_setting(self, "auto_profile_platforms", None)
         if isinstance(raw, str):
             items = re.split(r"[\s,，、;；]+", raw)
         elif isinstance(raw, (list, tuple, set)):
@@ -4599,8 +4605,8 @@ class CoreStoreMixin:
         return normalized or {"onebot", "qq_official", "telegram", "webchat", "generic"}
 
     def _auto_profile_nickname(self, user_id: str, sender_display_name: str) -> str:
-        strategy = str(getattr(self, "default_nickname_strategy", "platform_display_name") or "").strip()
-        fixed = _single_line(getattr(self, "default_nickname", "你"), 24) or "你"
+        strategy = str(runtime_persona_setting(self, "default_nickname_strategy", "platform_display_name") or "").strip()
+        fixed = _single_line(runtime_persona_setting(self, "default_nickname", "你"), 24) or "你"
         observed = _single_line(sender_display_name, 24)
         generic = {"用户", "主人", "主要用户", "默认用户", "unknown", "未知"}
         if strategy == "fixed":
@@ -4667,7 +4673,7 @@ class CoreStoreMixin:
             if callable(stamper):
                 stamper(user, event, normalized_user_id or raw_user_id)
             return user, False
-        if not bool(getattr(self, "enable_auto_user_profile_creation", False)):
+        if not bool(runtime_persona_setting(self, "enable_auto_user_profile_creation", False)):
             return None, False
 
         user = self._get_user(canonical_user_id)
@@ -4681,8 +4687,8 @@ class CoreStoreMixin:
         # `_get_user()` owns relationship initialization.  An automatic profile
         # must not bypass the ledger or overwrite an explicitly configured role.
         user["nickname"] = self._auto_profile_nickname(canonical_user_id, sender_display_name)
-        user["style"] = _single_line(getattr(self, "default_style", "温柔"), 24) or "温柔"
-        default_proactive_enabled = bool(getattr(self, "default_proactive_enabled", False))
+        user["style"] = _single_line(runtime_persona_setting(self, "default_style", "温柔"), 24) or "温柔"
+        default_proactive_enabled = bool(runtime_persona_setting(self, "default_proactive_enabled", False))
         user["auto_enabled"] = True
         user["manual_enabled"] = False
         user["manual_disabled"] = False
@@ -4690,7 +4696,7 @@ class CoreStoreMixin:
         user["private_memory_enabled"] = False
         user["cross_group_memory_enabled"] = False
         user["proactive_daily_limit"] = (
-            max(0, min(30, _safe_int(getattr(self, "default_proactive_daily_limit", 0), 0)))
+            max(0, min(30, _safe_int(runtime_persona_setting(self, "default_proactive_daily_limit", 0), 0)))
             if default_proactive_enabled
             else 0
         )
@@ -4823,9 +4829,9 @@ class CoreStoreMixin:
         scope = str(scope or "").strip().lower()
         key = PHOTO_GENERATION_SCOPE_LIMIT_KEYS.get(scope)
         if key and hasattr(self, key):
-            return normalize_photo_generation_scope_limit(getattr(self, key, -1))
+            return normalize_photo_generation_scope_limit(runtime_persona_setting(self, key, -1))
 
-        legacy = getattr(self, "photo_generation_allowed_scopes", None)
+        legacy = runtime_persona_setting(self, "photo_generation_allowed_scopes", None)
         if isinstance(legacy, dict):
             return normalize_photo_generation_scope_limit(legacy.get(scope, -1))
         allowed = normalize_photo_generation_scopes(
@@ -5169,18 +5175,18 @@ class CoreStoreMixin:
 
     def _configured_group_ids(self) -> list[str]:
         # Backward compatibility: old target_group_ids is now treated as whitelist.
-        whitelist = self._parse_group_id_list(self.group_whitelist_ids)
-        legacy = self._parse_group_id_list(self.target_group_ids)
+        whitelist = self._parse_group_id_list(runtime_persona_setting(self, "group_whitelist_ids", []))
+        legacy = self._parse_group_id_list(runtime_persona_setting(self, "target_group_ids", []))
         for group_id in legacy:
             if group_id not in whitelist:
                 whitelist.append(group_id)
         return whitelist
 
     def _configured_group_blacklist_ids(self) -> list[str]:
-        return self._parse_group_id_list(self.group_blacklist_ids)
+        return self._parse_group_id_list(runtime_persona_setting(self, "group_blacklist_ids", []))
 
     def _group_enabled_for_event(self, group_id: str) -> bool:
-        if not self.enable_group_companion:
+        if not runtime_persona_setting(self, "enable_group_companion", True):
             return False
         if not self._group_allowed_by_access_mode(group_id):
             return False
@@ -5188,7 +5194,7 @@ class CoreStoreMixin:
         return bool(group.get("enabled", True))
 
     def _group_allowed_by_access_mode(self, group_id: str) -> bool:
-        if self.group_access_mode == "blacklist":
+        if runtime_persona_setting(self, "group_access_mode", "whitelist") == "blacklist":
             if group_id in self._configured_group_blacklist_ids():
                 return False
         else:

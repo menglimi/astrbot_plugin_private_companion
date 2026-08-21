@@ -20,6 +20,7 @@ except ImportError:
 from astrbot.api.provider import ProviderRequest
 
 from .helpers import _group_link_message_context, _safe_float, _safe_int, _single_line, _strip_internal_message_blocks
+from .persona_config import runtime_persona_setting
 
 class ForwardMessageMixin:
     """Forward-message parsing and prompt-context helpers."""
@@ -688,8 +689,9 @@ class ForwardMessageMixin:
         rows: list[dict[str, Any]] = []
         image_urls: list[str] = []
         nested_count = 0
+        max_messages = max(1, _safe_int(runtime_persona_setting(self, "forward_message_max_messages", 80), 80, 1))
         for node in messages:
-            if len(rows) >= self.forward_message_max_messages:
+            if len(rows) >= max_messages:
                 break
             node_data = self._forward_node_data(node)
             sender = node.get("sender") if isinstance(node.get("sender"), dict) else {}
@@ -772,7 +774,7 @@ class ForwardMessageMixin:
                     elif seg_type == "file":
                         name = _single_line(seg_data.get("name") or seg_data.get("file"), 80)
                         text_parts.append(f"[文件:{name}]" if name else "[文件]")
-                    elif seg_type == "forward" and self.forward_message_parse_nested:
+                    elif seg_type == "forward" and runtime_persona_setting(self, "forward_message_parse_nested", True):
                         nested_id = self._extract_forward_id_from_segment_data(seg_data)
                         nested_payload = {"messages": seg_data.get("messages", [])} if isinstance(seg_data.get("messages"), list) else None
                         nested_rows, nested_images, child_nested = await self._extract_forward_messages_for_prompt(
@@ -812,14 +814,18 @@ class ForwardMessageMixin:
                     }
                 )
             rows.extend(pending_nested_rows)
-        return rows[: self.forward_message_max_messages], image_urls[: max(0, self.forward_message_image_limit)], nested_count
+        return (
+            rows[:max_messages],
+            image_urls[: max(0, _safe_int(runtime_persona_setting(self, "forward_message_image_limit", 4), 4, 0))],
+            nested_count,
+        )
 
     async def _format_forward_message_context_for_prompt(self, event: AstrMessageEvent, req: ProviderRequest) -> str:
         checker = getattr(self, "_feature_enabled_or_temp_unlocked", None)
         if callable(checker):
             if not checker("enable_forward_message_adaptation"):
                 return ""
-        elif not self.enable_forward_message_adaptation:
+        elif not runtime_persona_setting(self, "enable_forward_message_adaptation", True):
             return ""
         cached = getattr(event, "_private_companion_forward_context", None)
         if isinstance(cached, str):
@@ -861,7 +867,7 @@ class ForwardMessageMixin:
             setattr(event, "_private_companion_forward_context", "")
             return ""
         image_vision_text = await self._transcribe_forward_message_images(event, image_urls)
-        if self.forward_message_mode == "transcribe":
+        if runtime_persona_setting(self, "forward_message_mode", "inject") == "transcribe":
             transcribed = await self._transcribe_forward_message_rows(rows, image_urls, nested_count, image_vision_text=image_vision_text)
             if transcribed:
                 context_prefix = (
@@ -881,7 +887,19 @@ class ForwardMessageMixin:
                     "[PrivateCompanion] 已注入合并消息转述: messages=%s images=%s provider=%s",
                     len(rows),
                     len(image_urls),
-                    self._task_provider(self.forward_message_provider_id, self.mai_style_provider_id) or "(default)",
+                    self._task_provider(
+                        runtime_persona_setting(
+                            self,
+                            "FORWARD_MESSAGE_PROVIDER_ID",
+                            getattr(self, "forward_message_provider_id", ""),
+                        ),
+                        runtime_persona_setting(
+                            self,
+                            "MAI_STYLE_PROVIDER_ID",
+                            getattr(self, "mai_style_provider_id", ""),
+                        ),
+                    )
+                    or "(default)",
                 )
                 return context
         lines = [
@@ -915,7 +933,7 @@ class ForwardMessageMixin:
             text = _single_line(row.get("text"), 500)
             line = f"{indent}{index}. {nested_label}{sender}{note}｜{when}｜{text}"
             used += len(line)
-            if used > self.forward_message_max_chars:
+            if used > max(800, _safe_int(runtime_persona_setting(self, "forward_message_max_chars", 5000), 5000, 800)):
                 lines.append("……后续内容因长度限制已省略。")
                 break
             lines.append(line)
@@ -925,10 +943,10 @@ class ForwardMessageMixin:
         return context
 
     async def _transcribe_forward_message_images(self, event: AstrMessageEvent, image_sources: list[str]) -> str:
-        if not self.forward_message_image_vision:
+        if not runtime_persona_setting(self, "forward_message_image_vision", True):
             logger.info("[PrivateCompanion] 合并/引用图片视觉跳过: forward_message_image_vision=false")
             return ""
-        limit = max(0, int(getattr(self, "forward_message_image_limit", 0) or 0))
+        limit = max(0, _safe_int(runtime_persona_setting(self, "forward_message_image_limit", 4), 4, 0))
         if limit <= 0:
             logger.info("[PrivateCompanion] 合并/引用图片视觉跳过: forward_message_image_limit=%s", limit)
             return ""
@@ -1079,7 +1097,7 @@ class ForwardMessageMixin:
                     float(
                         override_timeout
                         if override_timeout is not None
-                        else (getattr(self, "forward_message_image_vision_timeout_seconds", 60.0) or 0.0)
+                        else (runtime_persona_setting(self, "forward_message_image_vision_timeout_seconds", 60.0) or 0.0)
                     ),
                 )
                 if timeout > 0:
@@ -1980,7 +1998,18 @@ class ForwardMessageMixin:
         *,
         image_vision_text: str = "",
     ) -> str:
-        provider_id = self._task_provider(self.forward_message_provider_id, self.mai_style_provider_id)
+        provider_id = self._task_provider(
+            runtime_persona_setting(
+                self,
+                "FORWARD_MESSAGE_PROVIDER_ID",
+                getattr(self, "forward_message_provider_id", ""),
+            ),
+            runtime_persona_setting(
+                self,
+                "MAI_STYLE_PROVIDER_ID",
+                getattr(self, "mai_style_provider_id", ""),
+            ),
+        )
         raw_lines: list[str] = []
         used = 0
         for index, row in enumerate(rows, 1):
@@ -1999,7 +2028,7 @@ class ForwardMessageMixin:
             text = _single_line(row.get("text"), 500)
             line = f"{indent}{index}. {nested_label}{sender}{note}｜{when}｜{text}"
             used += len(line)
-            if used > max(800, self.forward_message_max_chars):
+            if used > max(800, _safe_int(runtime_persona_setting(self, "forward_message_max_chars", 5000), 5000, 800)):
                 raw_lines.append("……后续节点因长度限制已省略。")
                 break
             raw_lines.append(line)

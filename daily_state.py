@@ -13374,7 +13374,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 state["processed_day"] = day_key
             now_minutes = self._effective_plan_now_minutes(day_key)
             starts = self._normalized_plan_item_starts(items)
-            auto_progress = bool(getattr(self, "enable_personal_goal_auto_progress", True))
+            auto_progress = bool(runtime_persona_setting(self, "enable_personal_goal_auto_progress", True))
             changed = False
             if auto_progress:
                 for index, item in enumerate(items):

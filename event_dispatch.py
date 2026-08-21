@@ -1949,11 +1949,11 @@ class EventDispatchMixin:
             self._cleanup_recall_message_image_cache()
             return
         now = _now_ts()
-        ttl = max(60.0, _safe_float(getattr(self, "recall_message_cache_ttl_seconds", 600), 600))
+        ttl = max(60.0, _safe_float(_persona_value(self, 'recall_message_cache_ttl_seconds', 600), 600))
         stale = [key for key, item in cache.items() if now - _safe_float(item.get("ts") if isinstance(item, dict) else 0, 0) > ttl]
         for key in stale:
             cache.pop(key, None)
-        max_items = max(0, _safe_int(getattr(self, "recall_message_cache_max_items", 300), 300, 0))
+        max_items = max(0, _safe_int(_persona_value(self, 'recall_message_cache_max_items', 300), 300, 0))
         if max_items and len(cache) > max_items:
             ordered = sorted(cache.items(), key=lambda kv: _safe_float(kv[1].get("ts") if isinstance(kv[1], dict) else 0, 0))
             for key, _ in ordered[: len(cache) - max_items]:
@@ -2021,8 +2021,8 @@ class EventDispatchMixin:
             if now - last_cleanup < 300:
                 return False
         self._last_recall_image_cache_cleanup_ts = now
-        ttl = max(60.0, _safe_float(getattr(self, "recall_message_cache_ttl_seconds", 600), 600))
-        max_mb = max(0.0, _safe_float(getattr(self, "recall_message_image_cache_max_mb", 256.0), 256.0, 0.0))
+        ttl = max(60.0, _safe_float(_persona_value(self, 'recall_message_cache_ttl_seconds', 600), 600))
+        max_mb = max(0.0, _safe_float(_persona_value(self, 'recall_message_image_cache_max_mb', 256.0), 256.0, 0.0))
         max_bytes = int(max_mb * 1024 * 1024) if max_mb > 0 else 0
         files: list[tuple[float, int, Path]] = []
         removed_count = 0
@@ -2089,9 +2089,9 @@ class EventDispatchMixin:
         delivery_cleanup = getattr(self, "_cleanup_framework_delivery_caches", None)
         if callable(delivery_cleanup):
             delivery_cleanup()
-        if not getattr(self, "enable_recall_enhancement", True):
+        if not _persona_value(self, 'enable_recall_enhancement', True):
             return
-        if not getattr(self, "enable_recall_message_cache", True):
+        if not _persona_value(self, 'enable_recall_message_cache', True):
             return
         if not self._event_is_platform_message_event(event):
             return
@@ -2099,7 +2099,7 @@ class EventDispatchMixin:
         message_ids = self._event_message_id_candidates(event)
         if not message_ids:
             return
-        text = self._event_text_for_recall_cache(event, limit=max(80, _safe_int(getattr(self, "recall_message_cache_text_chars", 500), 500, 80)))
+        text = self._event_text_for_recall_cache(event, limit=max(80, _safe_int(_persona_value(self, 'recall_message_cache_text_chars', 500), 500, 80)))
         if not text:
             return
         raw_message = str(raw.get("raw_message") or raw.get("message") or "")
@@ -2122,7 +2122,7 @@ class EventDispatchMixin:
         snapshot_sender_name = _single_line(self._sender_display_name(event), 60)
         if is_message_sent_event:
             setting_getter = getattr(self, "persona_setting", None)
-            bot_name = setting_getter("bot_name", "") if callable(setting_getter) else getattr(self, "bot_name", "")
+            bot_name = setting_getter("bot_name", "") if callable(setting_getter) else _persona_value(self, 'bot_name', "")
             snapshot_sender_name = _single_line(bot_name, 60) or snapshot_sender_name
         tts_spoken_text = ""
         tts_source_text = ""
@@ -2334,9 +2334,9 @@ class EventDispatchMixin:
         return unique
 
     def _should_cancel_reply_for_recalled_trigger(self, event: AstrMessageEvent, *extra_message_ids: str) -> str:
-        if not getattr(self, "enable_recall_enhancement", True):
+        if not _persona_value(self, 'enable_recall_enhancement', True):
             return ""
-        if not getattr(self, "enable_recall_cancel_reply", True):
+        if not _persona_value(self, 'enable_recall_cancel_reply', True):
             return ""
         for message_id in self._reply_cancel_trigger_message_ids(event, *extra_message_ids):
             if self._is_message_id_recalled(message_id):
@@ -2378,9 +2378,9 @@ class EventDispatchMixin:
         recalled_message_id = self._should_cancel_reply_for_recalled_trigger(event, *extra_message_ids)
         if recalled_message_id:
             return recalled_message_id
-        if not getattr(self, "enable_recall_enhancement", True):
+        if not _persona_value(self, 'enable_recall_enhancement', True):
             return ""
-        if not getattr(self, "enable_recall_cancel_reply", True):
+        if not _persona_value(self, 'enable_recall_cancel_reply', True):
             return ""
         for message_id in self._reply_cancel_trigger_message_ids(event, *extra_message_ids):
             exists = await self._platform_message_exists_for_cancel_check(event, message_id)
@@ -2390,9 +2390,9 @@ class EventDispatchMixin:
         return ""
 
     def _should_cancel_reply_for_recalled_message_ids(self, *message_ids: str) -> str:
-        if not getattr(self, "enable_recall_enhancement", True):
+        if not _persona_value(self, 'enable_recall_enhancement', True):
             return ""
-        if not getattr(self, "enable_recall_cancel_reply", True):
+        if not _persona_value(self, 'enable_recall_cancel_reply', True):
             return ""
         for message_id in message_ids:
             message_id = _single_line(message_id, 120)
@@ -2401,9 +2401,9 @@ class EventDispatchMixin:
         return ""
 
     def _recent_recalled_messages_for_scope(self, scope: str, *, limit: int = 5) -> list[dict[str, Any]]:
-        if not getattr(self, "enable_recall_enhancement", True):
+        if not _persona_value(self, 'enable_recall_enhancement', True):
             return []
-        if not getattr(self, "enable_recall_message_cache", True):
+        if not _persona_value(self, 'enable_recall_message_cache', True):
             return []
         self._cleanup_recalled_message_ids()
         recalled = getattr(self, "_recalled_message_ids", None)
@@ -2515,7 +2515,7 @@ class EventDispatchMixin:
         return bool(re.search(r"撤[回了掉]?.*(说|发|讲|聊)", compact))
 
     def _format_recalled_messages_for_natural_query(self, event: AstrMessageEvent, *, limit: int = 5) -> str:
-        if not getattr(self, "enable_recall_enhancement", True) or not getattr(self, "enable_recall_transcribe_command", True):
+        if not _persona_value(self, 'enable_recall_enhancement', True) or not _persona_value(self, 'enable_recall_transcribe_command', True):
             return (
                 "【撤回消息查询】\n"
                 "用户正在问当前会话刚才撤回了什么,但撤回消息转述功能没有开启。请自然说明这边看不到可转述的撤回内容。"
@@ -2555,18 +2555,18 @@ class EventDispatchMixin:
         return "\n".join(lines)
 
     def _forbidden_recall_words(self) -> list[str]:
-        words = getattr(self, "recall_forbidden_words", [])
+        words = _persona_value(self, 'recall_forbidden_words', [])
         return [str(item) for item in words if str(item or "").strip()]
 
     def _forbidden_recall_hit(self, text: str) -> str:
-        if not getattr(self, "enable_recall_enhancement", True):
+        if not _persona_value(self, 'enable_recall_enhancement', True):
             return ""
-        if not getattr(self, "enable_forbidden_word_recall", False):
+        if not _persona_value(self, 'enable_forbidden_word_recall', False):
             return ""
         text = str(text or "")
         if not text:
             return ""
-        case_sensitive = bool(getattr(self, "recall_forbidden_word_case_sensitive", False))
+        case_sensitive = bool(_persona_value(self, 'recall_forbidden_word_case_sensitive', False))
         haystack = text if case_sensitive else text.lower()
         for word in self._forbidden_recall_words():
             needle = word if case_sensitive else word.lower()
@@ -2653,9 +2653,9 @@ class EventDispatchMixin:
         user["planned_proactive_trigger_inbound_count"] = _safe_int(user.get("private_inbound_count"), 0)
 
     def _planned_proactive_quote_message_id(self, user: dict[str, Any], umo: str) -> str:
-        if not getattr(self, "enable_proactive_quote_trigger_message", False):
+        if not _persona_value(self, 'enable_proactive_quote_trigger_message', False):
             return ""
-        if not getattr(self, "enable_quote_private_proactive", True):
+        if not _persona_value(self, 'enable_quote_private_proactive', True):
             return ""
         message_id = _single_line(user.get("planned_proactive_trigger_message_id"), 120)
         if not message_id:
@@ -2664,7 +2664,7 @@ class EventDispatchMixin:
         if trigger_umo and trigger_umo != _single_line(umo, 160):
             return ""
         trigger_ts = _safe_float(user.get("planned_proactive_trigger_ts"), 0)
-        if trigger_ts > 0 and _now_ts() - trigger_ts > max(1, self.proactive_reply_context_hours) * 3600:
+        if trigger_ts > 0 and _now_ts() - trigger_ts > max(1, _persona_value(self, 'proactive_reply_context_hours', 12)) * 3600:
             return ""
         trigger_inbound_count = _safe_int(user.get("planned_proactive_trigger_inbound_count"), -1)
         if trigger_inbound_count >= 0 and _safe_int(user.get("private_inbound_count"), 0) > trigger_inbound_count:
@@ -2774,7 +2774,7 @@ class EventDispatchMixin:
         return len(re.sub(r"\s+", "", text))
 
     def _quote_skip_reason_for_short_reply(self, text_or_chain: Any = None) -> str:
-        threshold = _safe_int(getattr(self, "quote_skip_short_reply_chars", 0), 0, 0)
+        threshold = _safe_int(_persona_value(self, 'quote_skip_short_reply_chars', 0), 0, 0)
         if threshold <= 0 or text_or_chain is None:
             return ""
         length = self._quote_plain_text_len(text_or_chain)
@@ -2793,7 +2793,7 @@ class EventDispatchMixin:
         *,
         text_or_chain: Any = None,
     ) -> bool:
-        if not bool(getattr(self, "quote_group_reply_once_per_target", True)):
+        if not bool(_persona_value(self, 'quote_group_reply_once_per_target', True)):
             return False
         if text_or_chain is None:
             return False
@@ -2834,14 +2834,14 @@ class EventDispatchMixin:
         return ""
 
     def _quote_scene_allowed(self, scene_name: str) -> bool:
-        if not getattr(self, "enable_proactive_quote_trigger_message", False):
+        if not _persona_value(self, 'enable_proactive_quote_trigger_message', False):
             return False
         if scene_name == "group_reply":
-            return bool(getattr(self, "enable_quote_group_reply", True))
+            return bool(_persona_value(self, 'enable_quote_group_reply', True))
         if scene_name == "group_interjection":
-            return bool(getattr(self, "enable_quote_group_interjection", True))
+            return bool(_persona_value(self, 'enable_quote_group_interjection', True))
         if scene_name == "private_proactive":
-            return bool(getattr(self, "enable_quote_private_proactive", True))
+            return bool(_persona_value(self, 'enable_quote_private_proactive', True))
         return True
 
     def _resolve_quote_message_id(
@@ -2903,7 +2903,7 @@ class EventDispatchMixin:
             scene = getattr(event, "private_companion_group_scene", None)
             trigger = _single_line((scene or {}).get("trigger") if isinstance(scene, dict) else "", 40)
             quoted_id = self._event_quoted_original_message_id(event)
-            strategy = _single_line(getattr(self, "quote_target_strategy", "current"), 20).lower()
+            strategy = _single_line(_persona_value(self, 'quote_target_strategy', "current"), 20).lower()
             if strategy not in {"current", "quoted", "auto"}:
                 strategy = "current"
             if quoted_id and trigger == "reply_bot" and strategy in {"quoted", "auto"}:
@@ -3045,7 +3045,7 @@ class EventDispatchMixin:
         text: str,
         now: float | None = None,
     ) -> bool:
-        seconds = max(0.0, float(getattr(self, "inbound_message_debounce_seconds", 0.0) or 0.0))
+        seconds = max(0.0, float(_persona_value(self, 'inbound_message_debounce_seconds', 0.0) or 0.0))
         if seconds <= 0:
             return False
         now = now or _now_ts()
@@ -3112,17 +3112,17 @@ class EventDispatchMixin:
     def _message_debounce_max_wait_seconds(self, kind: str = "text") -> float:
         if kind not in {"text", "group_text"}:
             return 0.0
-        return max(0.0, _safe_float(getattr(self, "text_message_debounce_max_wait_seconds", 12.0), 12.0, 0.0))
+        return max(0.0, _safe_float(_persona_value(self, 'text_message_debounce_max_wait_seconds', 12.0), 12.0, 0.0))
 
     def _message_debounce_max_merge_messages(self, kind: str = "text") -> int:
         if kind == "group_high_intensity":
             return max(0, _safe_int(_persona_value(self, "group_high_intensity_max_merge_messages", 8), 8, 0))
-        return max(0, _safe_int(getattr(self, "message_debounce_max_merge_messages", 8), 8, 0))
+        return max(0, _safe_int(_persona_value(self, 'message_debounce_max_merge_messages', 8), 8, 0))
 
     def _semantic_buffer_active_snapshot(self, key: str, *, wait_seconds: float | None = None, force: bool = False) -> dict[str, Any]:
-        default_wait = self._message_debounce_seconds("text") if hasattr(self, "_message_debounce_seconds") else getattr(self, "semantic_message_debounce_seconds", 0.0)
+        default_wait = self._message_debounce_seconds("text") if hasattr(self, "_message_debounce_seconds") else _persona_value(self, 'semantic_message_debounce_seconds', 0.0)
         wait = max(0.0, float(wait_seconds if wait_seconds is not None else default_wait or 0.0))
-        if (not force and not bool(getattr(self, "enable_message_debounce", getattr(self, "enable_semantic_message_debounce", True)))) or wait <= 0:
+        if (not force and not bool(_persona_value(self, 'enable_message_debounce', _persona_value(self, 'enable_semantic_message_debounce', True)))) or wait <= 0:
             return {}
         buffers = getattr(self, "_semantic_message_buffers", None)
         if not isinstance(buffers, dict):
@@ -3168,9 +3168,9 @@ class EventDispatchMixin:
         smart_debounce: dict[str, Any] | None = None,
         kind: str = "text",
     ) -> bool:
-        if not force and not bool(getattr(self, "enable_message_debounce", getattr(self, "enable_semantic_message_debounce", True))):
+        if not force and not bool(_persona_value(self, 'enable_message_debounce', _persona_value(self, 'enable_semantic_message_debounce', True))):
             return False
-        default_wait = self._message_debounce_seconds("text") if hasattr(self, "_message_debounce_seconds") else getattr(self, "semantic_message_debounce_seconds", 0.0)
+        default_wait = self._message_debounce_seconds("text") if hasattr(self, "_message_debounce_seconds") else _persona_value(self, 'semantic_message_debounce_seconds', 0.0)
         wait = max(0.0, float(wait_seconds if wait_seconds is not None else default_wait or 0.0))
         if wait <= 0:
             return False
@@ -3301,7 +3301,7 @@ class EventDispatchMixin:
         return False
 
     def _smart_message_debounce_enabled(self) -> bool:
-        return bool(getattr(self, "enable_message_debounce", True)) and bool(getattr(self, "enable_smart_message_debounce", False))
+        return bool(_persona_value(self, 'enable_message_debounce', True)) and bool(_persona_value(self, 'enable_smart_message_debounce', False))
 
     def _message_debounce_command_text(self, event: AstrMessageEvent, text: str) -> bool:
         """Command-like messages should not be delayed or merged as chat follow-ups."""
@@ -3328,7 +3328,7 @@ class EventDispatchMixin:
         return store
 
     def _message_debounce_pending_key(self, event: AstrMessageEvent) -> str:
-        if not bool(getattr(self, "enable_message_debounce", getattr(self, "enable_semantic_message_debounce", True))):
+        if not bool(_persona_value(self, 'enable_message_debounce', _persona_value(self, 'enable_semantic_message_debounce', True))):
             return ""
         if self._message_debounce_command_text(event, str(getattr(event, "message_str", "") or "")):
             return ""
@@ -3748,7 +3748,7 @@ class EventDispatchMixin:
     def _smart_message_debounce_examples(self) -> list[dict[str, Any]]:
         if not self._smart_message_debounce_enabled():
             return []
-        limit = max(0, _safe_int(getattr(self, "smart_message_debounce_examples_limit", 8), 8, 0))
+        limit = max(0, _safe_int(_persona_value(self, 'smart_message_debounce_examples_limit', 8), 8, 0))
         if limit <= 0:
             return []
         store = self._smart_message_debounce_store()
@@ -3790,7 +3790,7 @@ class EventDispatchMixin:
                 "note": _single_line(note, 120),
             }
         )
-        del examples[:- max(20, _safe_int(getattr(self, "smart_message_debounce_examples_limit", 8), 8, 0) * 4 or 20)]
+        del examples[:- max(20, _safe_int(_persona_value(self, 'smart_message_debounce_examples_limit', 8), 8, 0) * 4 or 20)]
         logger.info(
             "[PrivateCompanion] 智能防抖学习样本已记录: kind=%s scope=%s messages=%s note=%s",
             kind,
@@ -3866,7 +3866,7 @@ class EventDispatchMixin:
         if str(previous.get("decision") or "") != "complete":
             return False
         now = now or _now_ts()
-        window = max(1.0, _safe_float(getattr(self, "smart_message_debounce_learning_window_seconds", 8.0), 8.0, 1.0))
+        window = max(1.0, _safe_float(_persona_value(self, "smart_message_debounce_learning_window_seconds", 8.0), 8.0, 1.0))
         if now - _safe_float(previous.get("ts"), 0) > window:
             return False
         return self._record_smart_message_debounce_example(
@@ -3897,7 +3897,7 @@ class EventDispatchMixin:
         compact = re.sub(r"\s+", "", cleaned)
         compact = re.sub(r"[?？。.!！~～…]+$", "", compact)
         setting_getter = getattr(self, "persona_setting", None)
-        bot_name = re.sub(r"\s+", "", str(setting_getter("bot_name", "") if callable(setting_getter) else getattr(self, "bot_name", "") or ""))
+        bot_name = re.sub(r"\s+", "", str(setting_getter("bot_name", "") if callable(setting_getter) else _persona_value(self, 'bot_name', "") or ""))
         if bot_name and compact.startswith(bot_name) and len(compact) > len(bot_name):
             addressed_tail = compact[len(bot_name):].lstrip("，,、:： ")
             if re.fullmatch(r"(你)?知道(吗|嘛|么|不|吧)?", addressed_tail):
@@ -4069,7 +4069,7 @@ class EventDispatchMixin:
         cleaned = _single_line(text, 260)
         if not cleaned:
             return 0.0
-        wait = max(0.0, min(15.0, _safe_float(getattr(self, "smart_message_debounce_wait_seconds", 3.0), 3.0, 0.0)))
+        wait = max(0.0, min(15.0, _safe_float(_persona_value(self, "smart_message_debounce_wait_seconds", 3.0), 3.0, 0.0)))
         if wait <= 0:
             return 0.0
         # Fast-rule decisions also need a durable section before they record
@@ -4221,7 +4221,7 @@ class EventDispatchMixin:
 """.strip()
         raw = ""
         model_error = ""
-        timeout_seconds = max(0.2, min(5.0, _safe_float(getattr(self, "smart_message_debounce_model_timeout_seconds", 0.8), 0.8, 0.2)))
+        timeout_seconds = max(0.2, min(5.0, _safe_float(_persona_value(self, 'smart_message_debounce_model_timeout_seconds', 0.8), 0.8, 0.2)))
         provider_selector = getattr(self, "_task_provider", None)
         if callable(provider_selector):
             debounce_provider_id = provider_selector(
@@ -4916,7 +4916,7 @@ Bot 近期回复：
 
         def _is_bot_at(user_id: str, name: str) -> bool:
             setting_getter = getattr(self, "persona_setting", None)
-            bot_name = str(setting_getter("bot_name", "") if callable(setting_getter) else getattr(self, "bot_name", "") or "").strip()
+            bot_name = str(setting_getter("bot_name", "") if callable(setting_getter) else _persona_value(self, 'bot_name', "") or "").strip()
             clean_name = str(name or "").strip().lstrip("@")
             if self_id and user_id and user_id == self_id:
                 return True
@@ -5186,7 +5186,7 @@ Bot 近期回复：
         return trimmed.replace("\\n", "\n").replace("\\t", "\t")
 
     def _segmented_content_replacement_pairs(self) -> list[tuple[str, str]]:
-        raw_rules = getattr(self, "segmented_proactive_content_replacements", [])
+        raw_rules = _persona_value(self, 'segmented_proactive_content_replacements', [])
         if isinstance(raw_rules, str):
             rules: list[Any] = [line for line in raw_rules.splitlines() if line.strip()]
         elif isinstance(raw_rules, list):
@@ -5219,7 +5219,7 @@ Bot 近期回复：
     def _apply_segmented_content_replacements(self, text: Any) -> tuple[str, int]:
         original = str(text or "")
         if not original or not bool(
-            getattr(self, "enable_segmented_proactive_content_replacement", False)
+            _persona_value(self, 'enable_segmented_proactive_content_replacement', False)
         ):
             return original, 0
         pairs = self._segmented_content_replacement_pairs()
@@ -5275,7 +5275,7 @@ Bot 近期回复：
         if callable(checker):
             if not checker("enable_segmented_proactive_reply"):
                 return [normalized]
-        elif not self.enable_segmented_proactive_reply:
+        elif not _persona_value(self, 'enable_segmented_proactive_reply', False):
             return [normalized]
         if event is not None or umo or chat_type:
             chat_scope_checker = getattr(self, "_segmented_chat_scope_allows", None)
@@ -5319,14 +5319,14 @@ Bot 近期回复：
         cleanup_pattern: re.Pattern[str] | None = None
         cleanup_words: list[str] = []
         match_width_variants = bool(
-            getattr(self, "segmented_proactive_match_width_variants", True)
+            _persona_value(self, 'segmented_proactive_match_width_variants', True)
         )
-        if self.enable_segmented_proactive_content_cleanup:
-            if self.segmented_proactive_split_mode == "words":
-                configured_words = getattr(self, "segmented_proactive_content_cleanup_words", [])
+        if _persona_value(self, 'enable_segmented_proactive_content_cleanup', False):
+            if _persona_value(self, 'segmented_proactive_split_mode', 'regex') == "words":
+                configured_words = _persona_value(self, 'segmented_proactive_content_cleanup_words', [])
                 if isinstance(configured_words, list):
                     cleanup_words = [str(item) for item in configured_words if str(item) != ""]
-                raw_cleanup_rule = str(self.segmented_proactive_content_cleanup_rule or "")
+                raw_cleanup_rule = str(_persona_value(self, 'segmented_proactive_content_cleanup_rule', '[\\n]') or "")
                 parsed_words: list[Any] | None = None
                 if not cleanup_words and raw_cleanup_rule:
                     try:
@@ -5340,9 +5340,9 @@ Bot 近期回复：
                     cleanup_words = [str(item) for item in parsed_words if str(item) != ""]
                 if match_width_variants:
                     cleanup_words = _expand_segmented_width_variant_words(cleanup_words)
-            elif self.segmented_proactive_content_cleanup_rule:
+            elif _persona_value(self, 'segmented_proactive_content_cleanup_rule', '[\\n]'):
                 try:
-                    cleanup_pattern = re.compile(self.segmented_proactive_content_cleanup_rule)
+                    cleanup_pattern = re.compile(_persona_value(self, 'segmented_proactive_content_cleanup_rule', '[\\n]'))
                 except re.error as e:
                     logger.warning("[PrivateCompanion] 主动分段内容清理正则无效,跳过清理: %s", e)
 
@@ -5541,7 +5541,7 @@ Bot 近期回复：
         def _clean_segment(segment: str) -> str:
             original = str(segment or "")
             cleaned_parts: list[str] = []
-            cleanup_scope = str(getattr(self, "segmented_proactive_content_cleanup_scope", "all") or "all")
+            cleanup_scope = str(_persona_value(self, 'segmented_proactive_content_cleanup_scope', "all") or "all")
 
             def _strip_trailing_words(value: str, words: list[str]) -> str:
                 stripped = str(value or "").rstrip()
@@ -5714,8 +5714,8 @@ Bot 近期回复：
                 del merged[merge_index + 1]
             return merged
 
-        if self.segmented_proactive_split_mode == "words":
-            split_words = [word for word in self.segmented_proactive_split_words if word]
+        if _persona_value(self, 'segmented_proactive_split_mode', 'regex') == "words":
+            split_words = [word for word in _persona_value(self, 'segmented_proactive_split_words', ['。', '？', '！', '~', '…', '“']) if word]
             if match_width_variants:
                 split_words = _expand_segmented_width_variant_words(split_words)
             if "\n" not in split_words:
@@ -5733,11 +5733,11 @@ Bot 近期回复：
                     if cleaned:
                         segments.append(cleaned)
             segments = _merge_segments(segments)
-            return segments if segments and (len(segments) > 1 or self.enable_segmented_proactive_content_cleanup) else [normalized]
+            return segments if segments and (len(segments) > 1 or _persona_value(self, 'enable_segmented_proactive_content_cleanup', False)) else [normalized]
 
         try:
             raw_segments = re.findall(
-                self.segmented_proactive_regex or r".*?[。？！~…\n]+|.+$",
+                _persona_value(self, 'segmented_proactive_regex', '.*?[。？！~…\\n]+|.+$') or r".*?[。？！~…\n]+|.+$",
                 protected_normalized,
                 re.DOTALL | re.MULTILINE,
             )
@@ -5756,7 +5756,7 @@ Bot 近期回复：
                 if cleaned:
                     segments.append(cleaned)
         segments = _merge_segments(segments)
-        return segments if segments and (len(segments) > 1 or self.enable_segmented_proactive_content_cleanup) else [normalized]
+        return segments if segments and (len(segments) > 1 or _persona_value(self, 'enable_segmented_proactive_content_cleanup', False)) else [normalized]
 
     async def _calc_segmented_proactive_interval(
         self,
@@ -5807,7 +5807,7 @@ Bot 近期回复：
         )
 
     def _apply_group_wakeup_to_humanized_state(self, scene: dict[str, Any], text: str) -> dict[str, Any]:
-        if not self.enable_humanized_states or not isinstance(scene, dict):
+        if not _persona_value(self, 'enable_humanized_states', True) or not isinstance(scene, dict):
             return {}
         trigger = str(scene.get("trigger") or "")
         if not trigger.startswith("group_wakeup_"):

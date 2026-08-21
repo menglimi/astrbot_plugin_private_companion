@@ -12,6 +12,7 @@ except ImportError:
     from astrbot.api.message_components import Plain
 
 from .helpers import _single_line
+from .persona_config import runtime_persona_setting
 
 
 class InteractionUtilsMixin:
@@ -322,7 +323,11 @@ class InteractionUtilsMixin:
         extra_components: list[Any] | None = None,
         quote_message_id: str = "",
     ):
-        quote_message_id = _single_line(quote_message_id, 120) if getattr(self, "enable_proactive_quote_trigger_message", False) else ""
+        quote_message_id = (
+            _single_line(quote_message_id, 120)
+            if runtime_persona_setting(self, "enable_proactive_quote_trigger_message", False)
+            else ""
+        )
         if quote_message_id and self._quote_skip_reason_for_short_reply(text):
             quote_message_id = ""
         recalled_message_id = await self._should_cancel_reply_for_missing_or_recalled_trigger(event, quote_message_id)

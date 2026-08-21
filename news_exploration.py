@@ -105,6 +105,25 @@ from .dreaming import (
     weighted_unique_fragment_sample,
 )
 from .helpers import _date_key, _now_ts, _safe_float, _safe_int, _single_line, _strip_internal_message_blocks, _text_looks_garbled, _today_key
+from .persona_config import runtime_persona_setting
+
+
+def _persona_provider_id(owner: Any, canonical_key: str, legacy_attr: str, quick_role: str) -> str:
+    """Resolve canonical persona provider settings while preserving test harnesses."""
+    fallback = str(getattr(owner, legacy_attr, "") or "").strip()
+    if not callable(getattr(owner, "persona_setting", None)):
+        return fallback
+    mode = str(getattr(owner, "provider_config_mode", "quick") or "quick").strip().lower()
+    if mode != "quick":
+        return str(runtime_persona_setting(owner, canonical_key, fallback) or "").strip()
+    complex_id = str(runtime_persona_setting(owner, "COMPLEX_REASONING_PROVIDER_ID", "") or "").strip()
+    if quick_role == "complex":
+        return complex_id or fallback
+    if quick_role == "creative":
+        creative_id = str(runtime_persona_setting(owner, "CREATIVE_MODEL_PROVIDER_ID", "") or "").strip()
+        return creative_id or complex_id or fallback
+    fast_id = str(runtime_persona_setting(owner, "FAST_RESPONSE_PROVIDER_ID", "") or "").strip()
+    return fast_id or complex_id or fallback
 from .planning import (
     build_daily_plan_prompt,
     build_detail_enhancement_prompt,
@@ -807,7 +826,10 @@ class NewsExplorationMixin:
             score += 1
         if _safe_float(payload.get("published_ts"), 0) > 0:
             score += 1
-        if _safe_int(payload.get("score"), 0, 0, 10) >= max(1, _safe_int(getattr(self, "bilibili_share_min_score", 7), 7, 0, 10)):
+        if _safe_int(payload.get("score"), 0, 0, 10) >= max(
+            1,
+            _safe_int(runtime_persona_setting(self, "bilibili_share_min_score", 7), 7, 0, 10),
+        ):
             score += 2
         return min(10, score)
 
@@ -841,10 +863,19 @@ class NewsExplorationMixin:
         noisy = self._external_event_recently_seen(payload, source_type=source_type, now=now)
         duplicate_penalty = 4 if noisy else 0
         interrupt_penalty = 0
-        external_idle_min = _safe_int(getattr(self, "external_event_idle_minutes", 90), 90, 5, 1440)
-        if now - _safe_float(user.get("last_seen"), 0) < max(self.idle_minutes, external_idle_min) * 60:
+        external_idle_min = _safe_int(
+            runtime_persona_setting(self, "external_event_idle_minutes", 90),
+            90,
+            5,
+            1440,
+        )
+        if now - _safe_float(user.get("last_seen"), 0) < max(
+            runtime_persona_setting(self, "idle_minutes", 60), external_idle_min
+        ) * 60:
             interrupt_penalty += 3
-        if now - _safe_float(user.get("last_sent"), 0) < max(self.min_interval_minutes, 120) * 60:
+        if now - _safe_float(user.get("last_sent"), 0) < max(
+            runtime_persona_setting(self, "min_interval_minutes", 120), 120
+        ) * 60:
             interrupt_penalty += 2
         total = relevance * 2 + desire * 2 + user_match * 2 + quality + freshness - duplicate_penalty - interrupt_penalty
         normalized = max(0.0, min(1.0, base_probability + total / 100.0))
@@ -856,7 +887,15 @@ class NewsExplorationMixin:
             "freshness": freshness,
             "duplicate_penalty": duplicate_penalty,
             "interrupt_penalty": interrupt_penalty,
-            "should_share": bool((wish or {}).get("should_share")) and total >= _safe_int(getattr(self, "external_event_share_min_total", 18), 18, 0, 100) and not noisy,
+            "should_share": bool((wish or {}).get("should_share"))
+            and total
+            >= _safe_int(
+                runtime_persona_setting(self, "external_event_share_min_total", 18),
+                18,
+                0,
+                100,
+            )
+            and not noisy,
             "duplicate": noisy,
         }
 
@@ -876,7 +915,10 @@ class NewsExplorationMixin:
             return 0.0
         cooldown_hours = max(
             0.0,
-            _safe_float(getattr(self, "external_link_share_cooldown_hours", 72), 72.0),
+            _safe_float(
+                runtime_persona_setting(self, "external_link_share_cooldown_hours", 72),
+                72.0,
+            ),
         )
         if cooldown_hours <= 0:
             return 0.0
@@ -1206,7 +1248,7 @@ class NewsExplorationMixin:
                 "bvid": bvid,
                 "title": title,
                 "up_name": "",
-                "score": self.bilibili_share_min_score,
+                "score": runtime_persona_setting(self, "bilibili_share_min_score", 7),
                 "mood": "",
                 "comment": text,
                 "review": text,
@@ -1231,7 +1273,7 @@ class NewsExplorationMixin:
                 if not bvid or not title:
                     continue
                 score = _safe_int(item.get("score"), 0, 0, 10)
-                if score < self.bilibili_share_min_score:
+                if score < runtime_persona_setting(self, "bilibili_share_min_score", 7):
                     continue
                 key = f"{bvid}:{_single_line(item.get('time'), 20)}"
                 if key in seen:
@@ -1336,7 +1378,10 @@ class NewsExplorationMixin:
         return 35 <= energy <= 72 and random.random() < 0.34
 
     async def _maybe_trigger_bilibili_boredom_watch(self) -> None:
-        if not (self.enable_bilibili_integration and self.enable_bilibili_boredom_watch):
+        if not (
+            runtime_persona_setting(self, "enable_bilibili_integration", True)
+            and runtime_persona_setting(self, "enable_bilibili_boredom_watch", True)
+        ):
             return
         if not self._bilibili_available() or not self._bot_currently_bored_enough_for_bilibili():
             return
@@ -1345,7 +1390,10 @@ class NewsExplorationMixin:
             self.data["bilibili_integration"] = {}
             state = self.data["bilibili_integration"]
         now = _now_ts()
-        min_interval = max(2, self.bilibili_boredom_min_interval_hours) * 3600
+        min_interval = max(
+            2,
+            runtime_persona_setting(self, "bilibili_boredom_min_interval_hours", 8),
+        ) * 3600
         if now - _safe_float(state.get("last_boredom_watch_at"), 0) < min_interval:
             return
         if now - _safe_float(state.get("last_boredom_watch_probe_at"), 0) < 30 * 60:
@@ -1396,7 +1444,7 @@ class NewsExplorationMixin:
             logger.debug(f"[PrivateCompanion] 触发 B站 AI Bot 刷视频失败: {e}")
 
     def _maybe_schedule_bilibili_video_share(self) -> bool:
-        if not self.enable_bilibili_integration:
+        if not runtime_persona_setting(self, "enable_bilibili_integration", True):
             return False
         include_memory_api = bool(self._bilibili_memory_api_available(allow_probe=False))
         candidates = self._latest_bilibili_video_candidates(include_memory_api=include_memory_api, limit=8)
@@ -1410,9 +1458,22 @@ class NewsExplorationMixin:
         for user_id, user in users.items():
             if not isinstance(user, dict) or not self._is_target_private_user(str(user_id), user) or not user.get("enabled", True) or not user.get("umo"):
                 continue
-            if now - _safe_float(user.get("last_seen"), 0) < max(self.idle_minutes, _safe_int(getattr(self, "external_event_idle_minutes", 90), 90, 5, 1440)) * 60:
+            if now - _safe_float(user.get("last_seen"), 0) < max(
+                runtime_persona_setting(self, "idle_minutes", 60),
+                _safe_int(
+                    runtime_persona_setting(self, "external_event_idle_minutes", 90),
+                    90,
+                    5,
+                    1440,
+                ),
+            ) * 60:
                 continue
-            if now - _safe_float(user.get("last_bilibili_share_at"), 0) < _safe_int(getattr(self, "bilibili_share_cooldown_hours", 10), 10, 0, 168) * 3600:
+            if now - _safe_float(user.get("last_bilibili_share_at"), 0) < _safe_int(
+                runtime_persona_setting(self, "bilibili_share_cooldown_hours", 10),
+                10,
+                0,
+                168,
+            ) * 3600:
                 continue
             if self._external_link_share_cooldown_remaining(user, now=now) > 0:
                 continue
@@ -1438,14 +1499,18 @@ class NewsExplorationMixin:
                 wish={
                     "relevance": score,
                     "desire": max(score - 1, 0),
-                    "should_share": score >= self.bilibili_share_min_score,
+                    "should_share": score >= runtime_persona_setting(self, "bilibili_share_min_score", 7),
                 },
-                base_probability=self.bilibili_share_probability,
+                base_probability=runtime_persona_setting(self, "bilibili_share_probability", 0.35),
                 now=now,
             )
             if not decision.get("should_share"):
                 continue
-            chance = min(0.9, max(self.bilibili_share_probability, _safe_float(decision.get("probability"), self.bilibili_share_probability)))
+            base_probability = runtime_persona_setting(self, "bilibili_share_probability", 0.35)
+            chance = min(
+                0.9,
+                max(base_probability, _safe_float(decision.get("probability"), base_probability)),
+            )
             preference = selection.get("preference") if isinstance(selection.get("preference"), dict) else {}
             if _safe_int(preference.get("score"), 0) >= 8:
                 chance = min(0.95, chance + 0.12)
@@ -1480,7 +1545,7 @@ class NewsExplorationMixin:
         return changed
 
     def _news_source_items(self) -> list[dict[str, str]]:
-        raw = str(getattr(self, "news_sources", "") or "")
+        raw = str(runtime_persona_setting(self, "news_sources", "") or "")
         items: list[dict[str, str]] = []
         seen: set[str] = set()
         for line in self._split_news_source_lines(raw):
@@ -1643,7 +1708,10 @@ class NewsExplorationMixin:
         return hashlib.sha1(name.encode("utf-8", errors="ignore")).hexdigest()[:12] if name else "unknown"
 
     def _ai_daily_source_items(self) -> list[dict[str, Any]]:
-        raw = str(getattr(self, "ai_daily_sources", "") or "").strip() or DEFAULT_AI_DAILY_SOURCES
+        raw = (
+            str(runtime_persona_setting(self, "ai_daily_sources", "") or "").strip()
+            or DEFAULT_AI_DAILY_SOURCES
+        )
         items: list[dict[str, Any]] = []
         seen: set[str] = set()
         for line in raw.splitlines():
@@ -1686,7 +1754,17 @@ class NewsExplorationMixin:
                 break
         if items:
             return items
-        legacy_mid = re.sub(r"\D+", "", str(getattr(self, "ai_daily_source_uid", "") or DEFAULT_AI_DAILY_JUYA_UID)) or DEFAULT_AI_DAILY_JUYA_UID
+        legacy_mid = (
+            re.sub(
+                r"\D+",
+                "",
+                str(
+                    runtime_persona_setting(self, "ai_daily_source_uid", "")
+                    or DEFAULT_AI_DAILY_JUYA_UID
+                ),
+            )
+            or DEFAULT_AI_DAILY_JUYA_UID
+        )
         return [
             {
                 "name": "AI日报",
@@ -1781,7 +1859,7 @@ class NewsExplorationMixin:
             }
             async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
                 for query in queries:
-                    if len(items) >= max(1, self.news_max_items_per_source):
+                    if len(items) >= max(1, runtime_persona_setting(self, "news_max_items_per_source", 5)):
                         break
                     url = f"https://api.bilibili.com/x/web-interface/search/all/v2?keyword={quote(query)}"
                     try:
@@ -1832,14 +1910,14 @@ class NewsExplorationMixin:
                             if item:
                                 item["bilibili_integration_source"] = "search_api"
                                 items.append(item)
-                            if len(items) >= max(1, self.news_max_items_per_source):
+                            if len(items) >= max(1, runtime_persona_setting(self, "news_max_items_per_source", 5)):
                                 break
-                        if len(items) >= max(1, self.news_max_items_per_source):
+                        if len(items) >= max(1, runtime_persona_setting(self, "news_max_items_per_source", 5)):
                             break
         except Exception as exc:
             logger.debug("[PrivateCompanion] B站搜索 API 兜底失败: %s", exc)
         items.sort(key=lambda item: (_safe_float(item.get("published_ts"), 0), _safe_float(item.get("fetched_ts"), 0)), reverse=True)
-        return items[: max(1, self.news_max_items_per_source)]
+        return items[: max(1, runtime_persona_setting(self, "news_max_items_per_source", 5))]
 
     async def _fetch_bilibili_news_search_fallback(self, source: dict[str, str]) -> list[dict[str, Any]]:
         source_name = _single_line(source.get("name"), 40) or "B站 AI早报"
@@ -1874,10 +1952,10 @@ class NewsExplorationMixin:
         items: list[dict[str, Any]] = []
         seen_links: set[str] = set()
         for query in queries:
-            if len(items) >= max(1, self.news_max_items_per_source):
+            if len(items) >= max(1, runtime_persona_setting(self, "news_max_items_per_source", 5)):
                 break
             results = await self._run_astrbot_web_search(query, umo=umo, topic="news")
-            for result in results[: max(2, self.news_max_items_per_source)]:
+            for result in results[: max(2, runtime_persona_setting(self, "news_max_items_per_source", 5))]:
                 title = _single_line(result.get("title"), 160)
                 link = _single_line(result.get("url"), 400)
                 snippet = _single_line(result.get("snippet"), 360)
@@ -1905,7 +1983,7 @@ class NewsExplorationMixin:
                         if str(item.get("link") or "") not in seen_links:
                             seen_links.add(str(item.get("link") or ""))
                             items.append(item)
-                    if len(items) >= max(1, self.news_max_items_per_source):
+                    if len(items) >= max(1, runtime_persona_setting(self, "news_max_items_per_source", 5)):
                         break
                     continue
                 final_link = article_link or link
@@ -1938,7 +2016,7 @@ class NewsExplorationMixin:
                 item["key"] = self._news_item_key(item)
                 if item["key"]:
                     items.append(item)
-                if len(items) >= max(1, self.news_max_items_per_source):
+                if len(items) >= max(1, runtime_persona_setting(self, "news_max_items_per_source", 5)):
                     break
         if items:
             items.sort(
@@ -1949,10 +2027,10 @@ class NewsExplorationMixin:
                 ),
                 reverse=True,
             )
-            return items[: max(1, self.news_max_items_per_source)]
+            return items[: max(1, runtime_persona_setting(self, "news_max_items_per_source", 5))]
         query = queries[0]
         results = await self._run_astrbot_web_search(query, umo=umo, topic="news")
-        for result in results[: max(1, self.news_max_items_per_source)]:
+        for result in results[: max(1, runtime_persona_setting(self, "news_max_items_per_source", 5))]:
             title = _single_line(result.get("title"), 160)
             link = _single_line(result.get("url"), 400)
             snippet = _single_line(result.get("snippet"), 320)
@@ -2152,7 +2230,11 @@ class NewsExplorationMixin:
             return {}
 
         context: dict[str, Any] = {"bvid": safe_bvid}
-        for obj in self._find_bilibili_runtime_objects() if getattr(self, "enable_bilibili_integration", False) else []:
+        for obj in (
+            self._find_bilibili_runtime_objects()
+            if runtime_persona_setting(self, "enable_bilibili_integration", False)
+            else []
+        ):
             try:
                 oid = 0
                 get_oid = getattr(obj, "_get_video_oid", None)
@@ -2374,7 +2456,7 @@ class NewsExplorationMixin:
 
     async def _fetch_bilibili_video_info_via_integration(self, bvid: str) -> dict[str, Any]:
         safe_bvid = _single_line(bvid, 40)
-        if not safe_bvid or not self.enable_bilibili_integration:
+        if not safe_bvid or not runtime_persona_setting(self, "enable_bilibili_integration", True):
             return {}
         for obj in self._find_bilibili_runtime_objects():
             try:
@@ -2410,7 +2492,7 @@ class NewsExplorationMixin:
 
     async def _fetch_bilibili_space_payloads_via_integration(self, mid: str) -> list[dict[str, Any]]:
         safe_mid = re.sub(r"\D+", "", str(mid or ""))
-        if not safe_mid or not self.enable_bilibili_integration:
+        if not safe_mid or not runtime_persona_setting(self, "enable_bilibili_integration", True):
             return []
         payloads: list[dict[str, Any]] = []
         for obj in self._find_bilibili_runtime_objects():
@@ -2548,7 +2630,11 @@ class NewsExplorationMixin:
         mid = re.sub(r"\D+", "", str(source.get("mid") or ""))
         if not mid:
             return []
-        item_limit = max(1, _safe_int(limit if limit is not None else self.news_max_items_per_source, self.news_max_items_per_source, 1))
+        configured_limit = runtime_persona_setting(self, "news_max_items_per_source", 5)
+        item_limit = max(
+            1,
+            _safe_int(limit if limit is not None else configured_limit, configured_limit, 1),
+        )
         payloads: list[dict[str, Any]] = await self._fetch_bilibili_space_payloads_via_integration(mid)
         try:
             import aiohttp
@@ -2664,7 +2750,7 @@ class NewsExplorationMixin:
         if not nodes:
             nodes = list(root.findall(".//{http://www.w3.org/2005/Atom}entry"))
         results: list[dict[str, Any]] = []
-        for node in nodes[: max(1, self.news_max_items_per_source)]:
+        for node in nodes[: max(1, runtime_persona_setting(self, "news_max_items_per_source", 5))]:
             title = self._news_xml_text(node, "title", "{http://www.w3.org/2005/Atom}title")
             link = self._news_xml_text(node, "link")
             if not link:
@@ -2790,7 +2876,11 @@ class NewsExplorationMixin:
     async def _summarize_news_items(self, items: list[dict[str, Any]]) -> dict[str, Any]:
         if not items:
             return {}
-        provider_id = self._task_provider(self.news_provider_id, self.narration_provider_id, self.llm_provider_id)
+        provider_id = self._task_provider(
+            _persona_provider_id(self, "NEWS_PROVIDER_ID", "news_provider_id", "fast"),
+            _persona_provider_id(self, "NARRATION_PROVIDER_ID", "narration_provider_id", "fast"),
+            _persona_provider_id(self, "LLM_PROVIDER_ID", "llm_provider_id", "complex"),
+        )
         if not provider_id:
             return self._news_fallback_digest(items)
         lines = []
@@ -2855,21 +2945,34 @@ class NewsExplorationMixin:
         }
 
     def _external_event_self_link_provider_id(self) -> str:
-        return self._task_provider(self.news_provider_id, self.web_exploration_provider_id, self.narration_provider_id, self.llm_provider_id)
+        return self._task_provider(
+            _persona_provider_id(self, "NEWS_PROVIDER_ID", "news_provider_id", "fast"),
+            _persona_provider_id(
+                self, "WEB_EXPLORATION_PROVIDER_ID", "web_exploration_provider_id", "fast"
+            ),
+            _persona_provider_id(self, "NARRATION_PROVIDER_ID", "narration_provider_id", "fast"),
+            _persona_provider_id(self, "LLM_PROVIDER_ID", "llm_provider_id", "complex"),
+        )
 
     def _format_external_event_stable_self_context(self) -> str:
         model_lines = []
-        plugin_main = self._task_provider(self.llm_provider_id)
+        plugin_main = self._task_provider(
+            _persona_provider_id(self, "LLM_PROVIDER_ID", "llm_provider_id", "complex")
+        )
         if plugin_main:
             model_lines.append(f"插件主模型：{self._provider_identity_label(plugin_main)}")
-        if self.news_provider_id:
-            model_lines.append(f"新闻整理模型：{self._provider_identity_label(self.news_provider_id)}")
-        if self.web_exploration_provider_id:
-            model_lines.append(f"主动搜索整理模型：{self._provider_identity_label(self.web_exploration_provider_id)}")
+        news_provider_id = _persona_provider_id(self, "NEWS_PROVIDER_ID", "news_provider_id", "fast")
+        if news_provider_id:
+            model_lines.append(f"新闻整理模型：{self._provider_identity_label(news_provider_id)}")
+        web_provider_id = _persona_provider_id(
+            self, "WEB_EXPLORATION_PROVIDER_ID", "web_exploration_provider_id", "fast"
+        )
+        if web_provider_id:
+            model_lines.append(f"主动搜索整理模型：{self._provider_identity_label(web_provider_id)}")
         return "\n".join(
             part
             for part in (
-                f"Bot 名称：{self.bot_name}",
+                f"Bot 名称：{runtime_persona_setting(self, 'bot_name', '小星')}",
                 "当前模型环境：" + "；".join(model_lines) if model_lines else "",
                 f"人格：{_single_line(self._get_default_persona_prompt(), 900)}",
                 self._format_worldview_adaptation_prompt(),
@@ -2963,7 +3066,7 @@ class NewsExplorationMixin:
         }
 
     async def _build_external_event_wish(self, payload: dict[str, Any], *, source_type: str) -> dict[str, Any]:
-        if not self.enable_external_event_self_link or not isinstance(payload, dict):
+        if not runtime_persona_setting(self, "enable_external_event_self_link", True) or not isinstance(payload, dict):
             return {}
         cached = self._cached_external_event_wish(payload, source_type=source_type)
         if cached:
@@ -3045,8 +3148,18 @@ class NewsExplorationMixin:
         # promote the item to shareable instead of dropping it silently.
         # boost_reason marks strong self-link so downstream probability/idle
         # boosts apply. Life-opportunity wishes still win below.
-        override_min_rel = _safe_int(getattr(self, "external_event_self_link_override_min_relevance", 0), 0, 0, 10)
-        override_min_des = _safe_int(getattr(self, "external_event_self_link_override_min_desire", 0), 0, 0, 10)
+        override_min_rel = _safe_int(
+            runtime_persona_setting(self, "external_event_self_link_override_min_relevance", 0),
+            0,
+            0,
+            10,
+        )
+        override_min_des = _safe_int(
+            runtime_persona_setting(self, "external_event_self_link_override_min_desire", 0),
+            0,
+            0,
+            10,
+        )
         if (
             not result["should_share"]
             and override_min_rel > 0
@@ -3057,7 +3170,12 @@ class NewsExplorationMixin:
             result["should_share"] = True
             result["share_probability"] = max(
                 result["share_probability"],
-                _safe_float(getattr(self, "external_event_self_link_override_probability", 0.6), 0.6),
+                _safe_float(
+                    runtime_persona_setting(
+                        self, "external_event_self_link_override_probability", 0.6
+                    ),
+                    0.6,
+                ),
             )
             result["boost_reason"] = "override_by_user_threshold"
         if life_wish:
@@ -3092,7 +3210,7 @@ class NewsExplorationMixin:
         return 30 <= energy <= 80 and random.random() < 0.28
 
     async def _perform_news_reading(self, *, reason: str = "boredom", allow_share: bool = True, force: bool = False) -> None:
-        if not self.enable_news_integration:
+        if not runtime_persona_setting(self, "enable_news_integration", False):
             return
         state = self.data.setdefault("news_integration", {})
         if not isinstance(state, dict):
@@ -3217,9 +3335,31 @@ class NewsExplorationMixin:
                         or _safe_int(user_preference.get("score"), 0) >= 10
                     )
                 )
-                idle_required = max(self.idle_minutes, _safe_int(getattr(self, "external_event_idle_minutes", 90), 90, 5, 1440)) * 60
+                idle_required = max(
+                    runtime_persona_setting(self, "idle_minutes", 60),
+                    _safe_int(
+                        runtime_persona_setting(self, "external_event_idle_minutes", 90),
+                        90,
+                        5,
+                        1440,
+                    ),
+                ) * 60
                 if strong_self_link:
-                    idle_required = min(idle_required, max(_safe_int(getattr(self, "external_event_idle_strong_minutes", 20), 20, 1, 1440), self.idle_minutes) * 60)
+                    idle_required = min(
+                        idle_required,
+                        max(
+                            _safe_int(
+                                runtime_persona_setting(
+                                    self, "external_event_idle_strong_minutes", 20
+                                ),
+                                20,
+                                1,
+                                1440,
+                            ),
+                            runtime_persona_setting(self, "idle_minutes", 60),
+                        )
+                        * 60,
+                    )
                 idle_elapsed = now - _safe_float(user.get("last_seen"), 0)
                 if idle_elapsed < idle_required:
                     _note_news_share(user_id, "skipped", "用户近期仍活跃，暂不主动打扰", idle_elapsed_seconds=round(idle_elapsed, 1), idle_required_seconds=round(idle_required, 1))
@@ -3227,7 +3367,12 @@ class NewsExplorationMixin:
                 if str(user.get("last_news_share_key") or "") == user_selected_key:
                     _note_news_share(user_id, "skipped", "这条新闻已经给该用户排过主动")
                     continue
-                if now - _safe_float(user.get("last_news_share_at"), 0) < _safe_int(getattr(self, "news_share_cooldown_hours", 8), 8, 0, 168) * 3600:
+                if now - _safe_float(user.get("last_news_share_at"), 0) < _safe_int(
+                    runtime_persona_setting(self, "news_share_cooldown_hours", 8),
+                    8,
+                    0,
+                    168,
+                ) * 3600:
                     _note_news_share(user_id, "skipped", "新闻分享 8 小时冷却中")
                     continue
                 shared_link_cooldown = self._external_link_share_cooldown_remaining(user, now=now)
@@ -3240,7 +3385,10 @@ class NewsExplorationMixin:
                     )
                     continue
                 if isinstance(user_wish, dict) and user_wish:
-                    if now - _safe_float(user.get("last_external_event_self_link_at"), 0) < self.external_event_self_link_cooldown_hours * 3600:
+                    if (
+                        now - _safe_float(user.get("last_external_event_self_link_at"), 0)
+                        < runtime_persona_setting(self, "external_event_self_link_cooldown_hours", 12) * 3600
+                    ):
                         _note_news_share(user_id, "skipped", "外界信息自我关联冷却中")
                         continue
                     if not user_wish.get("should_share") and _safe_int(user_preference.get("score"), 0) < 8:
@@ -3251,7 +3399,7 @@ class NewsExplorationMixin:
                         user_digest,
                         source_type="news",
                         wish=user_wish,
-                        base_probability=self.news_share_probability,
+                        base_probability=runtime_persona_setting(self, "news_share_probability", 0.22),
                         now=now,
                     )
                     if decision.get("duplicate"):
@@ -3267,8 +3415,14 @@ class NewsExplorationMixin:
                             user_preference=_safe_int(user_preference.get("score"), 0),
                         )
                         continue
-                    share_probability = max(self.news_share_probability, _safe_float(decision.get("probability"), self.news_share_probability))
-                    share_probability *= self.external_event_self_link_probability
+                    base_probability = runtime_persona_setting(self, "news_share_probability", 0.22)
+                    share_probability = max(
+                        base_probability,
+                        _safe_float(decision.get("probability"), base_probability),
+                    )
+                    share_probability *= runtime_persona_setting(
+                        self, "external_event_self_link_probability", 0.62
+                    )
                     if strong_self_link:
                         share_probability = max(share_probability, min(0.95, _safe_float(user_wish.get("share_probability"), share_probability)))
                     if _safe_int(user_preference.get("score"), 0) >= 8:
@@ -3279,13 +3433,13 @@ class NewsExplorationMixin:
                         user_digest,
                         source_type="news",
                         wish={"relevance": 4, "desire": 4, "should_share": True},
-                        base_probability=self.news_share_probability,
+                        base_probability=runtime_persona_setting(self, "news_share_probability", 0.22),
                         now=now,
                     )
                     if decision.get("duplicate") or not decision.get("should_share"):
                         _note_news_share(user_id, "skipped", "统一评分认为这条新闻不值得现在主动分享")
                         continue
-                    share_probability = self.news_share_probability
+                    share_probability = runtime_persona_setting(self, "news_share_probability", 0.22)
                 if random.random() > max(0.0, min(1.0, share_probability)):
                     _note_news_share(user_id, "skipped", "分享概率未命中", probability=round(max(0.0, min(1.0, share_probability)), 3))
                     continue
@@ -3462,7 +3616,9 @@ class NewsExplorationMixin:
                 }
             )
             return True
-        if getattr(self, "ai_daily_prefer_text_version", True) and not item.get("article_readable"):
+        if runtime_persona_setting(self, "ai_daily_prefer_text_version", True) and not item.get(
+            "article_readable"
+        ):
             source_state.update(
                 {
                     "status": "today_video_without_text",
@@ -3564,7 +3720,10 @@ class NewsExplorationMixin:
         return True
 
     async def _maybe_track_ai_daily(self, *, force: bool = False) -> None:
-        if not (self.enable_news_integration and self.enable_ai_daily_watch):
+        if not (
+            runtime_persona_setting(self, "enable_news_integration", False)
+            and runtime_persona_setting(self, "enable_ai_daily_watch", True)
+        ):
             return
         ai_state = self._ai_daily_state()
         today = _today_key()
@@ -3633,7 +3792,10 @@ class NewsExplorationMixin:
         self._save_data_sync(sections={"news_integration"})
 
     async def _maybe_trigger_news_boredom_read(self) -> None:
-        if not (self.enable_news_integration and self.enable_news_boredom_read):
+        if not (
+            runtime_persona_setting(self, "enable_news_integration", False)
+            and runtime_persona_setting(self, "enable_news_boredom_read", True)
+        ):
             return
         if not self._bot_currently_bored_enough_for_news():
             return
@@ -3642,7 +3804,10 @@ class NewsExplorationMixin:
             self.data["news_integration"] = {}
             state = self.data["news_integration"]
         now = _now_ts()
-        min_interval = max(1, self.news_min_interval_hours) * 3600
+        min_interval = max(
+            1,
+            runtime_persona_setting(self, "news_min_interval_hours", 6),
+        ) * 3600
         if now - _safe_float(state.get("last_read_at"), 0) < min_interval:
             return
         if random.random() > 0.42:
@@ -3650,7 +3815,10 @@ class NewsExplorationMixin:
         await self._perform_news_reading(reason="boredom", allow_share=True, force=False)
 
     async def _ensure_daily_news_reading(self, *, force: bool = False) -> None:
-        if not (self.enable_news_integration and self.enable_news_daily_hot_read):
+        if not (
+            runtime_persona_setting(self, "enable_news_integration", False)
+            and runtime_persona_setting(self, "enable_news_daily_hot_read", True)
+        ):
             return
         state = self.data.setdefault("news_integration", {})
         if not isinstance(state, dict):
@@ -3725,7 +3893,9 @@ class NewsExplorationMixin:
         cleaned_query = _single_line(query, 240)
         if not base_url or not cleaned_query:
             return ""
-        max_results = str(max(1, min(20, self.web_exploration_max_results)))
+        max_results = str(
+            max(1, min(20, runtime_persona_setting(self, "web_exploration_max_results", 6)))
+        )
         values = {
             "query": cleaned_query,
             "q": cleaned_query,
@@ -3940,10 +4110,10 @@ class NewsExplorationMixin:
                 continue
             key = hashlib.sha1(f"custom|{cleaned_query}|{title}|{url}|{snippet}".encode("utf-8", errors="ignore")).hexdigest()[:16]
             results.append({"key": key, "title": title or snippet[:80], "url": url, "snippet": snippet, "provider": "custom_web_exploration"})
-            if len(results) >= self.web_exploration_max_results:
+            if len(results) >= runtime_persona_setting(self, "web_exploration_max_results", 6):
                 break
         if results:
-            return results[: self.web_exploration_max_results]
+            return results[: runtime_persona_setting(self, "web_exploration_max_results", 6)]
 
         content = _single_line(self._extract_custom_web_search_content(payload), 720)
         if content:
@@ -4009,7 +4179,10 @@ class NewsExplorationMixin:
             payload = {
                 "query": cleaned_query,
                 "topic": "news" if topic == "news" else "general",
-                "max_results": max(1, min(20, self.web_exploration_max_results)),
+                "max_results": max(
+                    1,
+                    min(20, runtime_persona_setting(self, "web_exploration_max_results", 6)),
+                ),
             }
             if model:
                 payload["model"] = model
@@ -4092,7 +4265,10 @@ class NewsExplorationMixin:
             if provider == "tavily":
                 payload = {
                     "query": cleaned_query,
-                    "max_results": max(5, min(20, self.web_exploration_max_results)),
+                    "max_results": max(
+                        5,
+                        min(20, runtime_persona_setting(self, "web_exploration_max_results", 6)),
+                    ),
                     "include_favicon": True,
                     "search_depth": "basic",
                     "topic": "news" if topic == "news" else "general",
@@ -4105,7 +4281,10 @@ class NewsExplorationMixin:
                     settings,
                     {
                         "query": cleaned_query,
-                        "count": max(1, min(50, self.web_exploration_max_results)),
+                        "count": max(
+                            1,
+                            min(50, runtime_persona_setting(self, "web_exploration_max_results", 6)),
+                        ),
                         "summary": True,
                         "freshness": "noLimit",
                     },
@@ -4115,7 +4294,10 @@ class NewsExplorationMixin:
                     settings,
                     {
                         "q": cleaned_query,
-                        "count": max(1, min(20, self.web_exploration_max_results)),
+                        "count": max(
+                            1,
+                            min(20, runtime_persona_setting(self, "web_exploration_max_results", 6)),
+                        ),
                         "country": "CN",
                         "search_lang": "zh-hans",
                     },
@@ -4123,7 +4305,14 @@ class NewsExplorationMixin:
             elif provider == "firecrawl":
                 raw_results = await ws._firecrawl_search(
                     settings,
-                    {"query": cleaned_query, "limit": max(1, min(20, self.web_exploration_max_results)), "sources": ["web"]},
+                    {
+                        "query": cleaned_query,
+                        "limit": max(
+                            1,
+                            min(20, runtime_persona_setting(self, "web_exploration_max_results", 6)),
+                        ),
+                        "sources": ["web"],
+                    },
                 )
             elif provider == "baidu_ai_search":
                 raw_results = await ws._baidu_search(
@@ -4131,7 +4320,18 @@ class NewsExplorationMixin:
                     {
                         "messages": [{"role": "user", "content": cleaned_query[:72]}],
                         "search_source": "baidu_search_v2",
-                        "resource_type_filter": [{"type": "web", "top_k": max(1, min(50, self.web_exploration_max_results))}],
+                        "resource_type_filter": [
+                            {
+                                "type": "web",
+                                "top_k": max(
+                                    1,
+                                    min(
+                                        50,
+                                        runtime_persona_setting(self, "web_exploration_max_results", 6),
+                                    ),
+                                ),
+                            }
+                        ],
                     },
                 )
             else:
@@ -4150,7 +4350,7 @@ class NewsExplorationMixin:
                 continue
             key = hashlib.sha1(f"{title}|{url}|{snippet}".encode("utf-8", errors="ignore")).hexdigest()[:16]
             results.append({"key": key, "title": title, "url": url, "snippet": snippet, "provider": provider})
-        return results[: self.web_exploration_max_results]
+        return results[: runtime_persona_setting(self, "web_exploration_max_results", 6)]
 
     def _web_exploration_recent_context(self) -> str:
         state = self.data.get("daily_state", {})
@@ -4177,13 +4377,22 @@ class NewsExplorationMixin:
                 f"当前日程：{activity}" if activity else "",
                 f"最近用户提到：{recent_user}" if recent_user else "",
                 f"今日新闻见闻：{news_topic}" if news_topic else "",
-                f"兴趣倾向配置：{_single_line(self.web_exploration_interests, 240)}",
+                "兴趣倾向配置：{}".format(
+                    _single_line(
+                        runtime_persona_setting(
+                            self,
+                            "web_exploration_interests",
+                            "按 Bot 人格自行决定；可偏向最近聊天、日程、人设兴趣、作品、技术、生活小知识、流行梗、时讯、新鲜事物。",
+                        ),
+                        240,
+                    )
+                ),
             )
             if part
         )
 
     def _hot_trend_source_names(self) -> list[str]:
-        raw = str(self.news_hot_sources or "")
+        raw = str(runtime_persona_setting(self, "news_hot_sources", "weibo,hackernews") or "")
         names = []
         for item in re.split(r"[,，\n]+", raw):
             name = item.strip().lower()
@@ -4225,7 +4434,8 @@ class NewsExplorationMixin:
             return []
         rows = (((data or {}).get("data") or {}).get("realtime") or []) if isinstance(data, dict) else []
         items: list[dict[str, Any]] = []
-        for index, row in enumerate(rows[: max(1, self.news_hot_max_items)], 1):
+        hot_max_items = runtime_persona_setting(self, "news_hot_max_items", 12)
+        for index, row in enumerate(rows[: max(1, hot_max_items)], 1):
             if not isinstance(row, dict):
                 continue
             topic = _single_line(row.get("note") or row.get("word"), 80)
@@ -4237,7 +4447,7 @@ class NewsExplorationMixin:
                 "title": topic,
                 "snippet": f"微博热搜第 {index} 位" + (f"，热度 {int(score)}" if score > 0 else ""),
                 "url": f"https://s.weibo.com/weibo?q={quote('#' + topic + '#')}",
-                "score": score or max(1, self.news_hot_max_items - index + 1),
+                "score": score or max(1, hot_max_items - index + 1),
                 "rank": index,
                 "published": "",
                 "published_ts": 0,
@@ -4257,7 +4467,13 @@ class NewsExplorationMixin:
             async with aiohttp.ClientSession(timeout=timeout, headers={"User-Agent": f"{PLUGIN_NAME}/hot-trends"}) as session:
                 async with session.get(
                     "https://hn.algolia.com/api/v1/search",
-                    params={"tags": "front_page", "hitsPerPage": max(3, min(30, self.news_hot_max_items))},
+                    params={
+                        "tags": "front_page",
+                        "hitsPerPage": max(
+                            3,
+                            min(30, runtime_persona_setting(self, "news_hot_max_items", 12)),
+                        ),
+                    },
                 ) as resp:
                     if resp.status >= 400:
                         return []
@@ -4267,7 +4483,10 @@ class NewsExplorationMixin:
             return []
         hits = data.get("hits") if isinstance(data, dict) else []
         items: list[dict[str, Any]] = []
-        for index, row in enumerate((hits or [])[: max(1, self.news_hot_max_items)], 1):
+        for index, row in enumerate(
+            (hits or [])[: max(1, runtime_persona_setting(self, "news_hot_max_items", 12))],
+            1,
+        ):
             if not isinstance(row, dict):
                 continue
             title = _single_line(row.get("title") or row.get("story_title"), 120)
@@ -4295,7 +4514,7 @@ class NewsExplorationMixin:
         return items
 
     async def _fetch_hot_trend_candidates(self) -> list[dict[str, Any]]:
-        if not self.enable_news_daily_hot_read:
+        if not runtime_persona_setting(self, "enable_news_daily_hot_read", True):
             return []
         tasks = []
         for source in self._hot_trend_source_names():
@@ -4320,7 +4539,9 @@ class NewsExplorationMixin:
                 seen.add(key)
                 items.append(item)
         items.sort(key=lambda item: (_safe_float(item.get("score"), 0), -_safe_float(item.get("rank"), 999)), reverse=True)
-        return items[: max(3, min(30, self.news_hot_max_items))]
+        return items[
+            : max(3, min(30, runtime_persona_setting(self, "news_hot_max_items", 12)))
+        ]
 
     def _format_hot_trend_candidates_for_prompt(self, hot_items: list[dict[str, Any]]) -> str:
         lines = []
@@ -4332,7 +4553,13 @@ class NewsExplorationMixin:
         return "\n".join(lines)
 
     async def _choose_web_exploration_query(self, hot_items: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-        provider_id = self._task_provider(self.web_exploration_provider_id, self.news_provider_id, self.llm_provider_id)
+        provider_id = self._task_provider(
+            _persona_provider_id(
+                self, "WEB_EXPLORATION_PROVIDER_ID", "web_exploration_provider_id", "fast"
+            ),
+            _persona_provider_id(self, "NEWS_PROVIDER_ID", "news_provider_id", "fast"),
+            _persona_provider_id(self, "LLM_PROVIDER_ID", "llm_provider_id", "complex"),
+        )
         fallback_topics = [
             "今天有什么有趣的新鲜事",
             "最近流行的网络梗",
@@ -4360,7 +4587,7 @@ class NewsExplorationMixin:
 6. query 40字以内；reason 80字以内。
 
 【Bot 名称】
-{self.bot_name}
+{runtime_persona_setting(self, "bot_name", "小星")}
 
 【人格】
 {self._get_default_persona_prompt()}
@@ -4415,7 +4642,13 @@ class NewsExplorationMixin:
                     parts.append(snippet)
             return _single_line("；".join(parts), 360)
 
-        provider_id = self._task_provider(self.web_exploration_provider_id, self.news_provider_id, self.llm_provider_id)
+        provider_id = self._task_provider(
+            _persona_provider_id(
+                self, "WEB_EXPLORATION_PROVIDER_ID", "web_exploration_provider_id", "fast"
+            ),
+            _persona_provider_id(self, "NEWS_PROVIDER_ID", "news_provider_id", "fast"),
+            _persona_provider_id(self, "LLM_PROVIDER_ID", "llm_provider_id", "complex"),
+        )
         if not provider_id:
             first = results[0]
             return {
@@ -4474,14 +4707,20 @@ class NewsExplorationMixin:
         }
 
     async def _maybe_trigger_web_exploration(self) -> None:
-        if not (self.enable_web_exploration and self.enable_web_exploration_boredom_search):
+        if not (
+            runtime_persona_setting(self, "enable_web_exploration", False)
+            and runtime_persona_setting(self, "enable_web_exploration_boredom_search", True)
+        ):
             return
         state = self.data.setdefault("web_exploration", {})
         if not isinstance(state, dict):
             self.data["web_exploration"] = {}
             state = self.data["web_exploration"]
         now = _now_ts()
-        min_interval = max(1, self.web_exploration_min_interval_hours) * 3600
+        min_interval = max(
+            1,
+            runtime_persona_setting(self, "web_exploration_min_interval_hours", 8),
+        ) * 3600
         if now - _safe_float(state.get("last_explore_at"), 0) < min_interval:
             return
         if now - _safe_float(state.get("last_probe_at"), 0) < 45 * 60:
@@ -4555,14 +4794,30 @@ class NewsExplorationMixin:
         if digest.get("possible_share") and target_users:
             random.shuffle(target_users)
             for user_id, user in target_users[:3]:
-                if now - _safe_float(user.get("last_seen"), 0) < max(self.idle_minutes, _safe_int(getattr(self, "external_event_idle_minutes", 90), 90, 5, 1440)) * 60:
+                if now - _safe_float(user.get("last_seen"), 0) < max(
+                    runtime_persona_setting(self, "idle_minutes", 60),
+                    _safe_int(
+                        runtime_persona_setting(self, "external_event_idle_minutes", 90),
+                        90,
+                        5,
+                        1440,
+                    ),
+                ) * 60:
                     continue
-                if now - _safe_float(user.get("last_web_exploration_share_at"), 0) < _safe_int(getattr(self, "web_exploration_share_cooldown_hours", 10), 10, 0, 168) * 3600:
+                if now - _safe_float(user.get("last_web_exploration_share_at"), 0) < _safe_int(
+                    runtime_persona_setting(self, "web_exploration_share_cooldown_hours", 10),
+                    10,
+                    0,
+                    168,
+                ) * 3600:
                     continue
                 if self._external_link_share_cooldown_remaining(user, now=now) > 0:
                     continue
                 if isinstance(wish, dict) and wish:
-                    if now - _safe_float(user.get("last_external_event_self_link_at"), 0) < self.external_event_self_link_cooldown_hours * 3600:
+                    if (
+                        now - _safe_float(user.get("last_external_event_self_link_at"), 0)
+                        < runtime_persona_setting(self, "external_event_self_link_cooldown_hours", 12) * 3600
+                    ):
                         continue
                     if not wish.get("should_share"):
                         continue
@@ -4571,25 +4826,36 @@ class NewsExplorationMixin:
                         digest,
                         source_type="web_exploration",
                         wish=wish,
-                        base_probability=self.web_exploration_share_probability,
+                        base_probability=runtime_persona_setting(
+                            self, "web_exploration_share_probability", 0.18
+                        ),
                         now=now,
                     )
                     if decision.get("duplicate") or not decision.get("should_share"):
                         continue
-                    share_probability = max(self.web_exploration_share_probability, _safe_float(decision.get("probability"), 0.0))
-                    share_probability *= self.external_event_self_link_probability
+                    share_probability = max(
+                        runtime_persona_setting(self, "web_exploration_share_probability", 0.18),
+                        _safe_float(decision.get("probability"), 0.0),
+                    )
+                    share_probability *= runtime_persona_setting(
+                        self, "external_event_self_link_probability", 0.62
+                    )
                 else:
                     decision = self._external_event_share_decision(
                         user,
                         digest,
                         source_type="web_exploration",
                         wish={"relevance": 4, "desire": 4, "should_share": True},
-                        base_probability=self.web_exploration_share_probability,
+                        base_probability=runtime_persona_setting(
+                            self, "web_exploration_share_probability", 0.18
+                        ),
                         now=now,
                     )
                     if decision.get("duplicate") or not decision.get("should_share"):
                         continue
-                    share_probability = self.web_exploration_share_probability
+                    share_probability = runtime_persona_setting(
+                        self, "web_exploration_share_probability", 0.18
+                    )
                 if random.random() > max(0.0, min(1.0, share_probability)):
                     continue
                 self_link_motive = _single_line(wish.get("motive") if isinstance(wish, dict) else "", 180)

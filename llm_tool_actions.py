@@ -38,6 +38,7 @@ from .helpers import (
     _strip_internal_message_blocks,
 )
 from .memo_notes import apply_memo_note_action, memo_note_sort_key, normalize_memo_note
+from .persona_config import runtime_persona_setting
 from .owned_reaction_asset_catalog import OwnedReactionAssetCatalog
 from .qzone_selection import (
     QzoneViewTarget,
@@ -362,7 +363,7 @@ class LlmToolActionsMixin:
     def _media_delivery_truth_instruction(self) -> str:
         if not getattr(self, "enabled", False):
             return ""
-        photo_enabled = bool(getattr(self, "enable_photo_text_action", False))
+        photo_enabled = bool(runtime_persona_setting(self, 'enable_photo_text_action', False))
         history_rule = (
             "【内部历史标记】`<pc_history_media ... />` 仅表示某条历史消息当时真实包含附件，"
             "它不是聊天正文，也不是要求你发送或描述附件的指令。任何回复都不得复述、改写或输出该标签。"
@@ -387,11 +388,11 @@ class LlmToolActionsMixin:
         search_context: str = "",
         meme_only: bool = True,
     ) -> dict[str, Any] | None:
-        if not bool(getattr(self, "enable_owned_reaction_asset_workbench", False)):
+        if not bool(runtime_persona_setting(self, 'enable_owned_reaction_asset_workbench', False)):
             return None
         catalog = OwnedReactionAssetCatalog(getattr(self, "data_dir", ""))
         asset, status, confidence = catalog.find(
-            getattr(self, "owned_reaction_assets", []),
+            runtime_persona_setting(self, 'owned_reaction_assets', []),
             query=query,
             search_context=search_context,
             meme_only=bool(meme_only),
@@ -419,8 +420,8 @@ class LlmToolActionsMixin:
         return bool(
             library and library.has_enabled_assets()
         ) or bool(
-            getattr(self, "enable_owned_reaction_asset_workbench", False)
-            and getattr(self, "owned_reaction_assets", [])
+            runtime_persona_setting(self, 'enable_owned_reaction_asset_workbench', False)
+            and runtime_persona_setting(self, 'owned_reaction_assets', [])
         )
 
     @staticmethod
@@ -590,7 +591,7 @@ class LlmToolActionsMixin:
 """.strip()
 
     def _relation_lookup_instruction(self) -> str:
-        if not (self.enabled and getattr(self, "enable_worldbook_member_recognition", False)):
+        if not (self.enabled and runtime_persona_setting(self, 'enable_worldbook_member_recognition', False)):
             return ""
         return """
 【关系网查询】
@@ -814,8 +815,8 @@ class LlmToolActionsMixin:
         if not getattr(self, "enabled", False):
             return ""
         reaction_enabled = self._reaction_image_provider_available()
-        photo_enabled = bool(getattr(self, "enable_photo_text_action", False))
-        mode = _single_line(getattr(self, "natural_language_photo_generation_mode", "tool_first"), 40).lower()
+        photo_enabled = bool(runtime_persona_setting(self, 'enable_photo_text_action', False))
+        mode = _single_line(runtime_persona_setting(self, 'natural_language_photo_generation_mode', "tool_first"), 40).lower()
         photo_enabled = photo_enabled and mode != "off" and not spontaneous_only
         if not reaction_enabled and not photo_enabled:
             return ""
@@ -824,7 +825,7 @@ class LlmToolActionsMixin:
                 "- 当前触发概率为 100%：对轻松、社交或有明确情绪的正常回复，默认追加一个标签；"
                 "不要把‘是否自然’再次当作概率筛选。纯事实、严肃、敏感或明确边界场景仍只发正文。"
                 if reaction_expression_high_frequency(
-                    getattr(self, "reaction_expression_trigger_probability", 0.2)
+                    runtime_persona_setting(self, 'reaction_expression_trigger_probability', 0.2)
                 )
                 else "- 轻松闲聊、玩笑、安慰、撒娇、庆祝、惊讶、接梗或轻吐槽等能自然补充语气的场景，通常应在完整回复末尾追加内部标签。只有纯事实答复、严肃或敏感情境，或确实没有合适情绪时才省略。"
             )
@@ -852,7 +853,7 @@ class LlmToolActionsMixin:
                     ]
                 )
             experiment_enabled = bool(
-                getattr(self, "enable_reaction_expression_experiment", False)
+                runtime_persona_setting(self, 'enable_reaction_expression_experiment', False)
             )
             spontaneous_enabled = experiment_enabled and (
                 include_spontaneous is not False
@@ -1492,7 +1493,7 @@ class LlmToolActionsMixin:
                     intensity=payload_obj.get("intensity", 0),
                     candidate_queries=raw_queries,
                     candidate_limit=_safe_int(
-                        getattr(self, "reaction_expression_candidate_limit", 6),
+                        runtime_persona_setting(self, 'reaction_expression_candidate_limit', 6),
                         6,
                         1,
                         16,
@@ -1528,9 +1529,7 @@ class LlmToolActionsMixin:
         return cleaned, parsed_intent
 
     def _creative_work_tool_instruction(self) -> str:
-        if not self.enabled or not getattr(
-            self, "enable_creative_work_read_guard", True
-        ):
+        if not self.enabled or not runtime_persona_setting(self, 'enable_creative_work_read_guard', True):
             return ""
         return """
 【书柜与自己的创作读取工具】
@@ -1841,7 +1840,7 @@ class LlmToolActionsMixin:
 
     def _guard_unread_creative_work_response(self, event: AstrMessageEvent, text: Any) -> str:
         raw = str(text or "")
-        if not getattr(self, "enable_creative_work_read_guard", True):
+        if not runtime_persona_setting(self, 'enable_creative_work_read_guard', True):
             return raw
         if not bool(getattr(event, "private_companion_creative_work_tool_required", False)):
             return raw
@@ -3061,10 +3060,10 @@ class LlmToolActionsMixin:
             )
 
         tool_started_at = time.monotonic()
-        mode = _single_line(getattr(self, "natural_language_photo_generation_mode", "tool_first"), 40).lower()
+        mode = _single_line(runtime_persona_setting(self, 'natural_language_photo_generation_mode', "tool_first"), 40).lower()
         if mode == "off":
             return public_receipt({"status": "disabled", "message": "非指令生图/改图已关闭；显式指令仍可使用“陪伴 生图/自拍/改图”。"}, ensure_ascii=False)
-        if not getattr(self, "enable_photo_text_action", False):
+        if not runtime_persona_setting(self, 'enable_photo_text_action', False):
             return public_receipt({"status": "disabled", "message": "主动拍照/生图能力未启用"}, ensure_ascii=False)
         scope_checker = getattr(self, "_photo_generation_scope_allowed", None)
         structured_generator = getattr(self, "_generate_photo_image_result", None)
@@ -3099,7 +3098,7 @@ class LlmToolActionsMixin:
             )
         compact_prompt = re.sub(r"\s+", "", content)
         group_photo_requested = _photo_group_request_matches(content)
-        bot_name = re.sub(r"\s+", "", _single_line(getattr(self, "bot_name", ""), 80))
+        bot_name = re.sub(r"\s+", "", _single_line(runtime_persona_setting(self, 'bot_name', ""), 80))
         assistant_in_frame = bool(
             (bot_name and bot_name in compact_prompt)
             or any(
@@ -3417,7 +3416,7 @@ class LlmToolActionsMixin:
                 "_photo_reference_role_asset_candidates",
                 None,
             )
-            if bool(getattr(self, "enable_photo_reference_image", False)) and callable(
+            if bool(runtime_persona_setting(self, 'enable_photo_reference_image', False)) and callable(
                 role_reference_resolver
             ):
                 try:
@@ -4529,7 +4528,7 @@ class LlmToolActionsMixin:
             }
         if base_probability <= 0:
             return default
-        if not bool(getattr(self, "reaction_expression_semantic_trigger_enabled", True)):
+        if not bool(runtime_persona_setting(self, 'reaction_expression_semantic_trigger_enabled', True)):
             return default
 
         profile = user.get("intent_profile")
@@ -4652,7 +4651,7 @@ class LlmToolActionsMixin:
         high_frequency = bool(authorization.get("high_frequency_mode")) or reaction_expression_high_frequency(
             authorization.get(
                 "configured_probability",
-                getattr(self, "reaction_expression_trigger_probability", 0.2),
+                runtime_persona_setting(self, 'reaction_expression_trigger_probability', 0.2),
             )
         )
         allowed_modes = {"semantic_rule", "strong_emotion"}
@@ -4697,7 +4696,7 @@ class LlmToolActionsMixin:
                 intensity=2,
                 candidate_queries=["开心回应", "轻松互动", "日常分享"],
                 candidate_limit=_safe_int(
-                    getattr(self, "reaction_expression_candidate_limit", 6),
+                    runtime_persona_setting(self, 'reaction_expression_candidate_limit', 6),
                     6,
                     1,
                     16,
@@ -4775,7 +4774,7 @@ class LlmToolActionsMixin:
             intensity=level,
             candidate_queries=candidates,
             candidate_limit=_safe_int(
-                getattr(self, "reaction_expression_candidate_limit", 6),
+                runtime_persona_setting(self, 'reaction_expression_candidate_limit', 6),
                 6,
                 1,
                 16,
@@ -4809,7 +4808,7 @@ class LlmToolActionsMixin:
             "scope": scope,
             "trace_id": self._reaction_expression_trace_id(event),
         }
-        if not bool(getattr(self, "enable_reaction_expression_experiment", False)):
+        if not bool(runtime_persona_setting(self, 'enable_reaction_expression_experiment', False)):
             self._set_reaction_expression_authorization(event, authorization)
             self._log_reaction_expression_event(
                 event,
@@ -4832,9 +4831,9 @@ class LlmToolActionsMixin:
             return False
 
         allowed = (
-            bool(getattr(self, "reaction_expression_private_enabled", True))
+            bool(runtime_persona_setting(self, 'reaction_expression_private_enabled', True))
             if scope == "private"
-            else bool(getattr(self, "reaction_expression_group_enabled", False))
+            else bool(runtime_persona_setting(self, 'reaction_expression_group_enabled', False))
             if scope == "group"
             else False
         )
@@ -4869,11 +4868,11 @@ class LlmToolActionsMixin:
 
         scope_key = self._reaction_expression_scope_key(event, user_id)
         configured_probability = reaction_expression_normalize_probability(
-            getattr(self, "reaction_expression_trigger_probability", 0.2),
+            runtime_persona_setting(self, 'reaction_expression_trigger_probability', 0.2),
             0.2,
         )
         cooldown = _safe_float(
-            getattr(self, "reaction_expression_cooldown_seconds", 180),
+            runtime_persona_setting(self, 'reaction_expression_cooldown_seconds', 180),
             180.0,
             0.0,
             86400.0,
@@ -5251,7 +5250,7 @@ class LlmToolActionsMixin:
     async def _reaction_embedding_vector(self, provider: Any, text: str) -> list[float]:
         if not self._is_reaction_embedding_provider(provider):
             return []
-        limit = max(0, _safe_int(getattr(self, "reaction_expression_embedding_timeout_ms", 5000), 5000, 0))
+        limit = max(0, _safe_int(runtime_persona_setting(self, 'reaction_expression_embedding_timeout_ms', 5000), 5000, 0))
         async def wait_result(value: Any) -> Any:
             if not inspect.isawaitable(value):
                 return value
@@ -5288,7 +5287,7 @@ class LlmToolActionsMixin:
             vector = await self._reaction_embedding_vector(provider, cleaned[0])
             return [vector] if vector else []
 
-        limit = max(0, _safe_int(getattr(self, "reaction_expression_embedding_timeout_ms", 5000), 5000, 0))
+        limit = max(0, _safe_int(runtime_persona_setting(self, 'reaction_expression_embedding_timeout_ms', 5000), 5000, 0))
 
         async def wait_result(value: Any) -> Any:
             if not inspect.isawaitable(value):
@@ -5359,7 +5358,7 @@ class LlmToolActionsMixin:
 
     async def _reaction_embedding_backfill(self, library: Any, provider: Any, provider_id: str) -> None:
         try:
-            batch_size = max(1, min(100, _safe_int(getattr(self, "reaction_expression_embedding_backfill_batch_size", 24), 24, 1)))
+            batch_size = max(1, min(100, _safe_int(runtime_persona_setting(self, 'reaction_expression_embedding_backfill_batch_size', 24), 24, 1)))
             rows = await asyncio.to_thread(library.list_embedding_missing, provider_id, limit=batch_size)
             updates: list[dict[str, Any]] = []
             for item, text_hash in rows:
@@ -5378,7 +5377,7 @@ class LlmToolActionsMixin:
             inflight.discard(provider_id)
 
     def _schedule_reaction_embedding_backfill(self, library: Any, provider: Any, provider_id: str) -> None:
-        if not bool(getattr(self, "reaction_expression_embedding_backfill_enabled", True)):
+        if not bool(runtime_persona_setting(self, 'reaction_expression_embedding_backfill_enabled', True)):
             return
         inflight = getattr(self, "_reaction_embedding_backfill_inflight", None)
         if not isinstance(inflight, set):
@@ -5391,7 +5390,7 @@ class LlmToolActionsMixin:
         if not isinstance(last_runs, dict):
             last_runs = {}
             setattr(self, "_reaction_embedding_backfill_last_run", last_runs)
-        interval = max(0, _safe_int(getattr(self, "reaction_expression_embedding_backfill_interval_seconds", 300), 300, 0))
+        interval = max(0, _safe_int(runtime_persona_setting(self, 'reaction_expression_embedding_backfill_interval_seconds', 300), 300, 0))
         if interval and now - _safe_float(last_runs.get(provider_id), 0.0, 0.0) < interval:
             return
         inflight.add(provider_id)
@@ -5637,7 +5636,7 @@ class LlmToolActionsMixin:
             signal,
             text,
             now=_now_ts(),
-            event_limit=max(8, _safe_int(getattr(self, "reaction_expression_candidate_limit", 6), 6, 1, 16) * 2),
+            event_limit=max(8, _safe_int(runtime_persona_setting(self, 'reaction_expression_candidate_limit', 6), 6, 1, 16) * 2),
             scope_key=scope_key,
         )
 
@@ -5676,7 +5675,7 @@ class LlmToolActionsMixin:
             signal,
             text,
             now=now,
-            event_limit=max(8, _safe_int(getattr(self, "reaction_expression_candidate_limit", 6), 6, 1, 16) * 2),
+            event_limit=max(8, _safe_int(runtime_persona_setting(self, 'reaction_expression_candidate_limit', 6), 6, 1, 16) * 2),
             scope_key=scope_key,
         )
         if preference_change:
@@ -5699,7 +5698,7 @@ class LlmToolActionsMixin:
         attach_only: bool = False,
     ) -> str:
         self._note_reaction_expression_runtime(attempts=1)
-        if not bool(getattr(self, "enable_reaction_expression_experiment", False)):
+        if not bool(runtime_persona_setting(self, 'enable_reaction_expression_experiment', False)):
             return json.dumps(
                 self._reaction_expression_skip_result(
                     "experiment_disabled",
@@ -5718,9 +5717,9 @@ class LlmToolActionsMixin:
 
         scope = self._reaction_expression_scope(event)
         scope_enabled = (
-            bool(getattr(self, "reaction_expression_private_enabled", True))
+            bool(runtime_persona_setting(self, 'reaction_expression_private_enabled', True))
             if scope == "private"
-            else bool(getattr(self, "reaction_expression_group_enabled", False))
+            else bool(runtime_persona_setting(self, 'reaction_expression_group_enabled', False))
             if scope == "group"
             else False
         )
@@ -5772,7 +5771,7 @@ class LlmToolActionsMixin:
             )
 
         candidate_limit = _safe_int(
-            getattr(self, "reaction_expression_candidate_limit", 6), 6, 1, 16
+            runtime_persona_setting(self, 'reaction_expression_candidate_limit', 6), 6, 1, 16
         )
         intent = normalize_reaction_expression_intent(
             query=query,
@@ -5805,7 +5804,7 @@ class LlmToolActionsMixin:
                 now=now,
                 probability=1.0,
                 cooldown_seconds=_safe_float(
-                    getattr(self, "reaction_expression_cooldown_seconds", 180),
+                    runtime_persona_setting(self, 'reaction_expression_cooldown_seconds', 180),
                     180.0,
                     0.0,
                     86400.0,
@@ -5866,7 +5865,7 @@ class LlmToolActionsMixin:
                     1000,
                 )
 
-        low_latency = bool(getattr(self, "reaction_expression_low_latency_mode", True))
+        low_latency = bool(runtime_persona_setting(self, 'reaction_expression_low_latency_mode', True))
         raw_lookup = await self._pc_find_reaction_image_impl(
             event,
             query=_single_line(intent.get("provider_query"), 500),
@@ -5945,7 +5944,7 @@ class LlmToolActionsMixin:
         duplicate_window = max(
             600.0,
             _safe_float(
-                getattr(self, "reaction_expression_cooldown_seconds", 180),
+                runtime_persona_setting(self, 'reaction_expression_cooldown_seconds', 180),
                 180.0,
                 0.0,
                 86400.0,
@@ -5975,7 +5974,7 @@ class LlmToolActionsMixin:
             else:
                 last_sent_at = _safe_float(scoped_state.get("last_sent_at"), 0.0)
                 cooldown_seconds = _safe_float(
-                    getattr(self, "reaction_expression_cooldown_seconds", 180),
+                    runtime_persona_setting(self, 'reaction_expression_cooldown_seconds', 180),
                     180.0,
                     0.0,
                     86400.0,
@@ -6683,7 +6682,7 @@ class LlmToolActionsMixin:
         embedding_provider = None
         embedding_provider_id = ""
         embedding_query: list[float] = []
-        if bool(getattr(self, "reaction_expression_embedding_enabled", False)):
+        if bool(runtime_persona_setting(self, 'reaction_expression_embedding_enabled', False)):
             try:
                 embedding_provider, embedding_provider_id = await self._reaction_embedding_provider()
                 if embedding_provider is not None and embedding_provider_id:
@@ -6741,15 +6740,9 @@ class LlmToolActionsMixin:
                         {
                             "embedding_query": embedding_query,
                             "embedding_provider_id": embedding_provider_id,
-                            "embedding_score_threshold": getattr(
-                                self, "reaction_expression_embedding_score_threshold", 0.42
-                            ),
-                            "embedding_weight": getattr(
-                                self, "reaction_expression_embedding_weight", 0.55
-                            ),
-                            "embedding_candidate_limit": getattr(
-                                self, "reaction_expression_embedding_candidate_limit", 1200
-                            ),
+                            "embedding_score_threshold": runtime_persona_setting(self, 'reaction_expression_embedding_score_threshold', 0.42),
+                            "embedding_weight": runtime_persona_setting(self, 'reaction_expression_embedding_weight', 0.55),
+                            "embedding_candidate_limit": runtime_persona_setting(self, 'reaction_expression_embedding_candidate_limit', 1200),
                         }
                     )
                 lookup = await asyncio.to_thread(
@@ -8180,7 +8173,7 @@ class LlmToolActionsMixin:
         return _single_line(text.strip(" ：:，,。？?"), 60)
 
     async def _pc_query_relation_person_impl(self, event: AstrMessageEvent, **kwargs) -> str:
-        if not getattr(self, "enable_worldbook_member_recognition", False):
+        if not runtime_persona_setting(self, 'enable_worldbook_member_recognition', False):
             return json.dumps({"status": "disabled", "message": "关系网未启用"}, ensure_ascii=False)
         if not self._relation_lookup_authorized(event):
             return json.dumps({"status": "forbidden", "message": "关系网查询只允许主要用户/管理员在私聊中使用"}, ensure_ascii=False)
@@ -8272,7 +8265,7 @@ class LlmToolActionsMixin:
                     or query in item.get("group_card", "")
                     or query in item.get("relation_name", "")
                 ]
-            if self.enable_worldbook_member_recognition:
+            if runtime_persona_setting(self, 'enable_worldbook_member_recognition', True):
                 async with self._data_lock:
                     self._save_data_sync(sections={"worldbook_member_profiles"})
             return json.dumps({"status": "success", "group_id": target_group, "count": len(formatted), "members": formatted[:80]}, ensure_ascii=False)

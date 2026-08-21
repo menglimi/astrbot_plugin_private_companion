@@ -7,6 +7,7 @@ import unittest
 import uuid
 
 from expression_scope_ownership import bind_expression_item
+from persona_config import runtime_persona_setting
 from scoped_runtime_view import (
     overlay_group_runtime_view,
     overlay_private_runtime_view,
@@ -200,6 +201,7 @@ _ExpressionHarness._expression_voice_selection = _method_from(
     "_expression_voice_selection",
     {
         "_safe_int": _safe_int,
+        "runtime_persona_setting": runtime_persona_setting,
         "scoped_approved_expression_rules": scoped_approved_expression_rules,
     },
 )

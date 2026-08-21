@@ -270,7 +270,7 @@ class DailyReviewMixin:
         if not isinstance(raw, list):
             raw = []
             self.data["daily_review_case_audit"] = raw
-        if not bool(getattr(self, "enable_daily_case_review_experiment", False)):
+        if not bool(self._daily_review_setting("enable_daily_case_review_experiment", False)):
             raw.clear()
             return raw
         cutoff = time.time() - 4 * 86400
@@ -293,7 +293,7 @@ class DailyReviewMixin:
         signals: dict[str, Any] | None = None,
         ts: float | None = None,
     ) -> str:
-        if not bool(getattr(self, "enable_daily_case_review_experiment", False)):
+        if not bool(self._daily_review_setting("enable_daily_case_review_experiment", False)):
             return ""
         now = float(ts or time.time())
         item = {
@@ -346,7 +346,7 @@ class DailyReviewMixin:
             return
 
     def _record_daily_review_outbound_case(self, event: Any, chain: list[Any]) -> str:
-        if not bool(getattr(self, "enable_daily_case_review_experiment", False)):
+        if not bool(self._daily_review_setting("enable_daily_case_review_experiment", False)):
             return ""
         if bool(getattr(event, "private_companion_proactive_framework", False)):
             return ""
@@ -477,7 +477,7 @@ class DailyReviewMixin:
         return "|".join(parts)
 
     def _daily_review_case_samples(self, date_key: str) -> dict[str, Any]:
-        if not bool(getattr(self, "enable_daily_case_review_experiment", False)):
+        if not bool(self._daily_review_setting("enable_daily_case_review_experiment", False)):
             return {"enabled": False, "experimental": True, "cases": [], "coverage": {}}
 
         candidates: list[dict[str, Any]] = []
@@ -1600,7 +1600,7 @@ class DailyReviewMixin:
             "active_guidance": active,
             "trends": self._daily_review_trends(),
             "case_review_experiment": {
-                "enabled": bool(getattr(self, "enable_daily_case_review_experiment", False)),
+                "enabled": bool(self._daily_review_setting("enable_daily_case_review_experiment", False)),
                 "experimental": True,
                 "collected": len(self._daily_review_case_audit()),
                 "latest_date": latest_date,

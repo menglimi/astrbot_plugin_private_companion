@@ -12,6 +12,7 @@ from astrbot.api import logger
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from .helpers import _single_line
+from .persona_config import runtime_persona_setting
 from .reference_assets import normalize_reference_asset
 
 
@@ -114,7 +115,7 @@ class AstrBotKnowledgeMixin:
 
     def _roleplay_knowledge_summary(self) -> dict[str, Any]:
         selected = self._normalize_roleplay_knowledge_source_ids(
-            getattr(self, "roleplay_knowledge_source_ids", [])
+            runtime_persona_setting(self, "roleplay_knowledge_source_ids", [])
         )
         sources = self._astrbot_knowledge_sources()
         selected_set = set(selected)
@@ -169,7 +170,7 @@ class AstrBotKnowledgeMixin:
         max_chunks: int = 18,
     ) -> str:
         selected = self._normalize_roleplay_knowledge_source_ids(
-            getattr(self, "roleplay_knowledge_source_ids", [])
+            runtime_persona_setting(self, "roleplay_knowledge_source_ids", [])
         )
         if not selected:
             return ""
@@ -250,11 +251,11 @@ class AstrBotKnowledgeMixin:
         parts = [
             str(purpose or ""),
             anchor,
-            getattr(self, "bot_name", ""),
-            getattr(self, "schedule_persona_prompt", ""),
-            getattr(self, "schedule_worldview_prompt", ""),
-            getattr(self, "roleplay_user_profile_prompt", ""),
-            getattr(self, "worldview_adaptation_prompt", ""),
+            runtime_persona_setting(self, "bot_name", "小星"),
+            runtime_persona_setting(self, "schedule_persona_prompt", ""),
+            runtime_persona_setting(self, "schedule_worldview_prompt", ""),
+            runtime_persona_setting(self, "roleplay_user_profile_prompt", ""),
+            runtime_persona_setting(self, "worldview_adaptation_prompt", ""),
         ]
         getter = getattr(self, "_get_default_persona_prompt", None)
         if callable(getter):

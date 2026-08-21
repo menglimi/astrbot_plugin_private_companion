@@ -10,6 +10,7 @@ from typing import Any
 from migration_coordinator import MigrationCoordinator
 from migration_dual_write import MigrationDualWriteProducer
 from migration_outbox import MigrationOutbox, StaleMigrationEpoch
+from persona_config import runtime_persona_setting
 from relationship_ledger import apply_relationship_event, migrate_legacy_relationship_score
 from unified_person_registry import UnifiedPersonRegistry
 
@@ -28,6 +29,7 @@ def _load_relationship_writer():
         "Any": Any,
         "apply_relationship_event": apply_relationship_event,
         "migrate_legacy_relationship_score": migrate_legacy_relationship_score,
+        "runtime_persona_setting": runtime_persona_setting,
         "logger": type("Logger", (), {"warning": staticmethod(lambda *_args, **_kwargs: None)})(),
         "_single_line": lambda value, limit=160: " ".join(str(value or "").split())[:limit],
     }

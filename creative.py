@@ -28,6 +28,25 @@ from .constants import (
     CREATIVE_LEGACY_FALLBACK_CHUNKS,
 )
 from .helpers import _now_ts, _path_text, _safe_float, _safe_int, _single_line, _text_similarity
+from .persona_config import runtime_persona_setting
+
+
+def _persona_provider_id(owner: Any, canonical_key: str, legacy_attr: str, quick_role: str) -> str:
+    """Resolve canonical persona provider settings while preserving test harnesses."""
+    fallback = str(getattr(owner, legacy_attr, "") or "").strip()
+    if not callable(getattr(owner, "persona_setting", None)):
+        return fallback
+    mode = str(getattr(owner, "provider_config_mode", "quick") or "quick").strip().lower()
+    if mode != "quick":
+        return str(runtime_persona_setting(owner, canonical_key, fallback) or "").strip()
+    complex_id = str(runtime_persona_setting(owner, "COMPLEX_REASONING_PROVIDER_ID", "") or "").strip()
+    if quick_role == "complex":
+        return complex_id or fallback
+    if quick_role == "creative":
+        creative_id = str(runtime_persona_setting(owner, "CREATIVE_MODEL_PROVIDER_ID", "") or "").strip()
+        return creative_id or complex_id or fallback
+    fast_id = str(runtime_persona_setting(owner, "FAST_RESPONSE_PROVIDER_ID", "") or "").strip()
+    return fast_id or complex_id or fallback
 
 DEFAULT_AI_DAILY_NEWS_SOURCE = "B站 AI早报|bilibili:285286947"
 
@@ -176,9 +195,13 @@ class CreativeMixin:
         return valid_projects
 
     def _creative_chars_per_session(self) -> int:
-        style = str(self.default_style or "")
-        persona = f"{self.schedule_persona_prompt} {self.default_style} {self.bot_name}"
-        budget = self.creative_chars_per_session
+        style = str(runtime_persona_setting(self, "default_style", "温柔") or "")
+        persona = "{} {} {}".format(
+            runtime_persona_setting(self, "schedule_persona_prompt", ""),
+            runtime_persona_setting(self, "default_style", "温柔"),
+            runtime_persona_setting(self, "bot_name", "小星"),
+        )
+        budget = runtime_persona_setting(self, "creative_chars_per_session", 220)
         if any(token in persona for token in ("慢热", "寡言", "内敛", "病弱", "疲惫", "懒", "迟钝")):
             budget = int(budget * 0.72)
         elif any(token in persona for token in ("活泼", "话多", "元气", "急性子")) or style == "活泼":
@@ -359,9 +382,9 @@ class CreativeMixin:
 
     def _creative_persona_style_context(self) -> str:
         default_persona = _single_line(self._get_default_persona_prompt(), 700)
-        schedule_persona = _single_line(self.schedule_persona_prompt, 500)
-        style = _single_line(self.default_style, 80)
-        bot_name = _single_line(self.bot_name, 40)
+        schedule_persona = _single_line(runtime_persona_setting(self, "schedule_persona_prompt", ""), 500)
+        style = _single_line(runtime_persona_setting(self, "default_style", "温柔"), 80)
+        bot_name = _single_line(runtime_persona_setting(self, "bot_name", "小星"), 40)
         creative_voice = ""
         voice_formatter = getattr(self, "_format_persona_voice_channel_prompt", None)
         if callable(voice_formatter):
@@ -656,7 +679,7 @@ class CreativeMixin:
         source_text = _single_line(source.get("text"), 220)
         source_label = _single_line(source.get("label"), 24) or "小灵感"
         persona_context = self._creative_persona_style_context()
-        direction_prompt = str(getattr(self, "creative_direction_prompt", "") or "").strip()[:2000]
+        direction_prompt = str(runtime_persona_setting(self, "creative_direction_prompt", "") or "").strip()[:2000]
         memory_context = ""
         composer = getattr(self, "_memory_companion_compose_feature_context", None)
         if callable(composer):
@@ -713,7 +736,10 @@ class CreativeMixin:
         text = await self._llm_call(
             prompt,
             max_tokens=500,
-            provider_id=self._task_provider(self.creative_provider_id, self.mai_style_provider_id),
+            provider_id=self._task_provider(
+                _persona_provider_id(self, "CREATIVE_PROVIDER_ID", "creative_provider_id", "creative"),
+                _persona_provider_id(self, "MAI_STYLE_PROVIDER_ID", "mai_style_provider_id", "fast"),
+            ),
             task="creative_project",
         )
         payload = self._extract_json_payload(text or "")
@@ -741,7 +767,8 @@ class CreativeMixin:
             "title": title,
             "work_type": work_type,
             "premise": _single_line(payload.get("premise"), 140) or f"从{source_label}里长出来的一个短篇念头",
-            "tone": _single_line(payload.get("tone"), 40) or self.default_style,
+            "tone": _single_line(payload.get("tone"), 40)
+            or runtime_persona_setting(self, "default_style", "温柔"),
             "point_of_view": _single_line(payload.get("point_of_view"), 30) or "第三人称有限视角",
             "point_of_view_policy_version": 2,
             "source": source.get("source") or "life",
@@ -788,7 +815,7 @@ class CreativeMixin:
         manual_outline_ctx = self._creative_manual_outline_context(project)
         character_ctx = self._creative_character_context(project)
         revision_ctx = self._creative_manual_revision_context(project)
-        direction_prompt = str(getattr(self, "creative_direction_prompt", "") or "").strip()[:2000]
+        direction_prompt = str(runtime_persona_setting(self, "creative_direction_prompt", "") or "").strip()[:2000]
         companion_memory_ctx = ""
         composer = getattr(self, "_memory_companion_compose_feature_context", None)
         if callable(composer):
@@ -841,7 +868,13 @@ class CreativeMixin:
 """.strip()
         text = await self._llm_call(
             prompt, max_tokens=200,
-            provider_id=self._task_provider(self.creative_outline_provider_id, self.creative_provider_id, self.mai_style_provider_id),
+            provider_id=self._task_provider(
+                _persona_provider_id(
+                    self, "CREATIVE_OUTLINE_PROVIDER_ID", "creative_outline_provider_id", "creative"
+                ),
+                _persona_provider_id(self, "CREATIVE_PROVIDER_ID", "creative_provider_id", "creative"),
+                _persona_provider_id(self, "MAI_STYLE_PROVIDER_ID", "mai_style_provider_id", "fast"),
+            ),
             task="creative_outline",
         )
         outline = self._normalize_outline_text(text)
@@ -867,7 +900,7 @@ class CreativeMixin:
         manual_outline_ctx = self._creative_manual_outline_context(project)
         character_ctx = self._creative_character_context(project)
         revision_ctx = self._creative_manual_revision_context(project)
-        direction_prompt = str(getattr(self, "creative_direction_prompt", "") or "").strip()[:2000]
+        direction_prompt = str(runtime_persona_setting(self, "creative_direction_prompt", "") or "").strip()[:2000]
         companion_memory_ctx = ""
         composer = getattr(self, "_memory_companion_compose_feature_context", None)
         if callable(composer):
@@ -932,7 +965,13 @@ class CreativeMixin:
 """.strip()
         text = await self._llm_call(
             prompt, max_tokens=220,
-            provider_id=self._task_provider(self.creative_review_provider_id, self.creative_provider_id, self.mai_style_provider_id),
+            provider_id=self._task_provider(
+                _persona_provider_id(
+                    self, "CREATIVE_REVIEW_PROVIDER_ID", "creative_review_provider_id", "creative"
+                ),
+                _persona_provider_id(self, "CREATIVE_PROVIDER_ID", "creative_provider_id", "creative"),
+                _persona_provider_id(self, "MAI_STYLE_PROVIDER_ID", "mai_style_provider_id", "fast"),
+            ),
             task="creative_review",
         )
         payload = self._extract_json_payload(text or "")
@@ -949,7 +988,7 @@ class CreativeMixin:
         manual_outline_ctx = self._creative_manual_outline_context(project)
         character_ctx = self._creative_character_context(project)
         revision_ctx = self._creative_manual_revision_context(project)
-        direction_prompt = str(getattr(self, "creative_direction_prompt", "") or "").strip()[:2000]
+        direction_prompt = str(runtime_persona_setting(self, "creative_direction_prompt", "") or "").strip()[:2000]
         companion_memory_ctx = ""
         composer = getattr(self, "_memory_companion_compose_feature_context", None)
         if callable(composer):
@@ -999,7 +1038,13 @@ class CreativeMixin:
 """.strip()
         text = await self._llm_call(
             prompt, max_tokens=300,
-            provider_id=self._task_provider(self.creative_review_provider_id, self.creative_provider_id, self.mai_style_provider_id),
+            provider_id=self._task_provider(
+                _persona_provider_id(
+                    self, "CREATIVE_REVIEW_PROVIDER_ID", "creative_review_provider_id", "creative"
+                ),
+                _persona_provider_id(self, "CREATIVE_PROVIDER_ID", "creative_provider_id", "creative"),
+                _persona_provider_id(self, "MAI_STYLE_PROVIDER_ID", "mai_style_provider_id", "fast"),
+            ),
             task="creative_extract",
         )
         payload = self._extract_json_payload(text or "")
@@ -1252,7 +1297,7 @@ class CreativeMixin:
         manual_outline_ctx = self._creative_manual_outline_context(project)
         character_ctx = self._creative_character_context(project)
         revision_ctx = self._creative_manual_revision_context(project)
-        direction_prompt = str(getattr(self, "creative_direction_prompt", "") or "").strip()[:2000]
+        direction_prompt = str(runtime_persona_setting(self, "creative_direction_prompt", "") or "").strip()[:2000]
         outline = await self._generate_outline_for_chunk(project, story_bible, memories, budget)
         companion_memory_ctx = ""
         composer = getattr(self, "_memory_companion_compose_feature_context", None)
@@ -1322,7 +1367,14 @@ class CreativeMixin:
 """.strip()
             text = await self._llm_call(
                 prompt, max_tokens=max(220, budget + 160),
-                provider_id=self._task_provider(self.creative_provider_id, self.mai_style_provider_id),
+                provider_id=self._task_provider(
+                    _persona_provider_id(
+                        self, "CREATIVE_PROVIDER_ID", "creative_provider_id", "creative"
+                    ),
+                    _persona_provider_id(
+                        self, "MAI_STYLE_PROVIDER_ID", "mai_style_provider_id", "fast"
+                    ),
+                ),
                 task="creative_writing",
             )
             cleaned = str(text or "").strip()
@@ -1390,19 +1442,19 @@ class CreativeMixin:
         return delay_minutes
 
     async def _maybe_start_creative_project(self, *, idle_checked: bool = False) -> bool:
-        if not self.enable_creative_writing:
+        if not runtime_persona_setting(self, "enable_creative_writing", True):
             return False
         if not idle_checked and not self._bot_currently_idle_for_creative_writing():
             return False
         projects = self._creative_projects()
         active = [item for item in projects if item.get("status") == "drafting"]
         now = _now_ts()
-        if len(active) >= self.creative_max_active_projects:
+        if len(active) >= runtime_persona_setting(self, "creative_max_active_projects", 2):
             return False
         last_created = max((_safe_float(item.get("created_at"), 0) for item in projects), default=0)
         if now - last_created < 10 * 3600:
             return False
-        if random.random() > self.creative_inspiration_probability:
+        if random.random() > runtime_persona_setting(self, "creative_inspiration_probability", 0.2):
             return False
         source = self._creative_inspiration_source()
         if not source:
@@ -1414,7 +1466,7 @@ class CreativeMixin:
             projects = self._creative_projects()
             active = [item for item in projects if item.get("status") == "drafting"]
             now = _now_ts()
-            if len(active) >= self.creative_max_active_projects:
+            if len(active) >= runtime_persona_setting(self, "creative_max_active_projects", 2):
                 return False
             last_created = max((_safe_float(item.get("created_at"), 0) for item in projects), default=0)
             if now - last_created < 10 * 3600:
@@ -1440,7 +1492,7 @@ class CreativeMixin:
             return False
 
     def _creative_cover_person_reference_configured(self) -> bool:
-        if not bool(getattr(self, "enable_photo_reference_image", False)):
+        if not bool(runtime_persona_setting(self, "enable_photo_reference_image", False)):
             return False
         getter = getattr(self, "_photo_persona_reference_image_path", None)
         if callable(getter):
@@ -1449,7 +1501,12 @@ class CreativeMixin:
                     return True
             except Exception:
                 pass
-        return bool(_single_line(getattr(self, "photo_persona_reference_image_path", ""), 1000))
+        return bool(
+            _single_line(
+                runtime_persona_setting(self, "photo_persona_reference_image_path", ""),
+                1000,
+            )
+        )
 
     def _creative_cover_needs_identity_upgrade(self, project: dict[str, Any]) -> bool:
         if not self._creative_cover_file_exists(project):
@@ -1464,7 +1521,7 @@ class CreativeMixin:
         )
 
     def _creative_cover_candidate_id(self) -> str:
-        if not bool(getattr(self, "enable_creative_cover_generation", False)):
+        if not bool(runtime_persona_setting(self, "enable_creative_cover_generation", False)):
             return ""
         now = _now_ts()
         for project in reversed(self._creative_projects()):
@@ -1577,10 +1634,8 @@ class CreativeMixin:
         )
 
     def _creative_cover_prompt_format_mode(self, value: Any = "") -> str:
-        raw_value = value if str(value or "").strip() else getattr(
-            self,
-            "photo_generation_prompt_format",
-            "traditional",
+        raw_value = value if str(value or "").strip() else runtime_persona_setting(
+            self, "photo_generation_prompt_format", "traditional"
         )
         format_normalizer = getattr(
             self,
@@ -1750,7 +1805,9 @@ class CreativeMixin:
             return ""
 
     async def _maybe_generate_creative_cover(self, project_id: str, *, force: bool = False) -> dict[str, Any] | None:
-        if not force and not bool(getattr(self, "enable_creative_cover_generation", False)):
+        if not force and not bool(
+            runtime_persona_setting(self, "enable_creative_cover_generation", False)
+        ):
             return None
         project_id = _single_line(project_id, 32)
         if not project_id:
@@ -1791,7 +1848,7 @@ class CreativeMixin:
             generator = getattr(self, "_generate_photo_image", None)
             available = getattr(self, "_photo_text_available", None)
             if (
-                not bool(getattr(self, "enable_photo_text_action", False))
+                not bool(runtime_persona_setting(self, "enable_photo_text_action", False))
                 or not callable(generator)
                 or (callable(available) and not available())
             ):
@@ -1904,7 +1961,7 @@ class CreativeMixin:
                 return dict(project)
 
     async def _maybe_advance_creative_projects(self) -> None:
-        if not self.enable_creative_writing:
+        if not runtime_persona_setting(self, "enable_creative_writing", True):
             return
         if self._creative_has_pending_proactive_plan():
             return
@@ -2097,7 +2154,7 @@ class CreativeMixin:
             break
 
     def _maybe_schedule_creative_share(self) -> bool:
-        if not bool(getattr(self, "enable_creative_writing", True)):
+        if not bool(runtime_persona_setting(self, "enable_creative_writing", True)):
             return False
         candidate = self._latest_creative_share_candidate()
         if not isinstance(candidate, dict):
@@ -2118,7 +2175,7 @@ class CreativeMixin:
             if not self._friend_can_receive_proactive_reason(user, "creative_share", "message"):
                 continue
             idle_seconds = now - _safe_float(user.get("last_seen"), 0)
-            required_idle = max(self.idle_minutes, 75) * 60
+            required_idle = max(runtime_persona_setting(self, "idle_minutes", 60), 75) * 60
             if disclosure_kind == "ask_impression":
                 required_idle = max(required_idle, 120 * 60)
             if idle_seconds < required_idle:
@@ -2134,7 +2191,18 @@ class CreativeMixin:
             mat_bonus = min(0.22, max(0.0, (maturity_score - 40.0) / 120.0))
             comp_bonus = min(0.12, completion_ratio * 0.18)
             imp_penalty = 0.12 if disclosure_kind == "ask_impression" else 0.0
-            share_p = max(0.08, min(0.88, float(self.creative_share_probability or 0.0) + rel_bonus + mat_bonus + comp_bonus - pressure_penalty - imp_penalty))
+            share_p = max(
+                0.08,
+                min(
+                    0.88,
+                    float(runtime_persona_setting(self, "creative_share_probability", 0.28) or 0.0)
+                    + rel_bonus
+                    + mat_bonus
+                    + comp_bonus
+                    - pressure_penalty
+                    - imp_penalty,
+                ),
+            )
             if chunk_count < 2 and disclosure_kind != "finished":
                 continue
             if random.random() > share_p:

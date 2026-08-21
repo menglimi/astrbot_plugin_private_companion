@@ -11,6 +11,7 @@ from typing import Any
 from astrbot.api import logger
 
 from .helpers import _safe_float, _safe_int, _single_line, _strip_group_member_safety_markers
+from .persona_config import runtime_persona_setting
 
 
 class GroupMemberSafetyMixin:
@@ -69,7 +70,7 @@ class GroupMemberSafetyMixin:
         return raw
 
     def _group_member_safety_is_exempt_event(self, event: Any, user_id: str) -> bool:
-        if not bool(getattr(self, "group_member_safety_exempt_managers", True)):
+        if not bool(runtime_persona_setting(self, "group_member_safety_exempt_managers", True)):
             return False
         try:
             if self._is_plugin_manager_user_id(user_id):
@@ -124,7 +125,7 @@ class GroupMemberSafetyMixin:
         if not isinstance(member, dict):
             return []
         current = float(now if now is not None else time.time())
-        window_days = max(1, _safe_int(getattr(self, "group_member_safety_strike_window_days", 30), 30, 1, 365))
+        window_days = max(1, _safe_int(runtime_persona_setting(self, "group_member_safety_strike_window_days", 30), 30, 1, 365))
         cutoff = current - window_days * 86400
         forgiven_at = _safe_float(member.get("forgiven_at"), 0.0, 0.0)
         events = member.get("events") if isinstance(member.get("events"), list) else []
@@ -156,7 +157,7 @@ class GroupMemberSafetyMixin:
         sender_id: str,
         scene: dict[str, Any] | None,
     ) -> bool:
-        mode = str(getattr(self, "group_member_safety_review_mode", "directed") or "directed").strip().lower()
+        mode = str(runtime_persona_setting(self, "group_member_safety_review_mode", "directed") or "directed").strip().lower()
         if mode == "all":
             return True
         scene = scene if isinstance(scene, dict) else {}
@@ -206,7 +207,7 @@ class GroupMemberSafetyMixin:
 
     def _group_member_safety_hidden_marker_mode(self) -> str:
         mode = str(
-            getattr(self, "group_member_safety_hidden_marker_mode", "reply_only") or "reply_only"
+            runtime_persona_setting(self, "group_member_safety_hidden_marker_mode", "reply_only") or "reply_only"
         ).strip().lower()
         aliases = {
             "on": "supplement",
@@ -436,8 +437,8 @@ class GroupMemberSafetyMixin:
         """Allow the normal group reply model to emit one optional internal safety decision."""
         if (
             self._group_member_safety_hidden_marker_mode() == "disabled"
-            or not bool(getattr(self, "enable_group_member_safety", True))
-            or not bool(getattr(self, "enable_group_companion", True))
+            or not bool(runtime_persona_setting(self, "enable_group_member_safety", True))
+            or not bool(runtime_persona_setting(self, "enable_group_companion", True))
         ):
             return
         try:
@@ -525,7 +526,7 @@ class GroupMemberSafetyMixin:
         source: str,
     ) -> dict[str, Any]:
         """Persist one normalized decision and keep all review sources idempotent."""
-        if not bool(getattr(self, "enable_group_member_safety", True)) or not sender_id:
+        if not bool(runtime_persona_setting(self, "enable_group_member_safety", True)) or not sender_id:
             return {"reviewed": False, "counted": False, "blocked": False, "reason": "disabled"}
         if self._group_member_safety_is_exempt_event(event, sender_id):
             return {"reviewed": False, "counted": False, "blocked": False, "reason": "manager_exempt"}
@@ -565,7 +566,7 @@ class GroupMemberSafetyMixin:
             )
             min_confidence = min(
                 1.0,
-                _safe_float(getattr(self, "group_member_safety_min_confidence", 0.86), 0.86, 0.5, 1.0),
+                _safe_float(runtime_persona_setting(self, "group_member_safety_min_confidence", 0.86), 0.86, 0.5, 1.0),
             )
             counted = bool(normalized.get("strike_eligible")) and _safe_float(normalized.get("confidence"), 0.0) >= min_confidence
             validation_reason = _single_line(normalized.get("validation_reason"), 240)
@@ -600,14 +601,14 @@ class GroupMemberSafetyMixin:
                         "validation_reason": validation_reason,
                     }
                 )
-                audit_limit = max(10, _safe_int(getattr(self, "group_member_safety_audit_limit", 40), 40, 10, 200))
+                audit_limit = max(10, _safe_int(runtime_persona_setting(self, "group_member_safety_audit_limit", 40), 40, 10, 200))
                 del events[:-audit_limit]
             if counted:
                 member["last_strike_at"] = now
-                threshold = max(1, _safe_int(getattr(self, "group_member_safety_strike_threshold", 3), 3, 1, 20))
+                threshold = max(1, _safe_int(runtime_persona_setting(self, "group_member_safety_strike_threshold", 3), 3, 1, 20))
                 if self._group_member_safety_strike_count(member, now=now) >= threshold:
                     member["blocked_at"] = now
-                    hours = max(0, _safe_int(getattr(self, "group_member_safety_block_hours", 168), 168, 0, 8760))
+                    hours = max(0, _safe_int(runtime_persona_setting(self, "group_member_safety_block_hours", 168), 168, 0, 8760))
                     member["blocked_until"] = now + hours * 3600 if hours else 0
                     member["manual_blocked"] = False
                     member["last_block_reason"] = normalized.get("reason", "")
@@ -636,10 +637,26 @@ class GroupMemberSafetyMixin:
         scene: dict[str, Any],
     ) -> dict[str, Any]:
         provider_id = self._task_provider(
-            getattr(self, "group_member_safety_provider_id", ""),
-            getattr(self, "group_followup_judge_provider_id", ""),
-            getattr(self, "response_review_provider_id", ""),
-            getattr(self, "mai_style_provider_id", ""),
+            runtime_persona_setting(
+                self,
+                "GROUP_MEMBER_SAFETY_PROVIDER_ID",
+                getattr(self, "group_member_safety_provider_id", ""),
+            ),
+            runtime_persona_setting(
+                self,
+                "GROUP_FOLLOWUP_JUDGE_PROVIDER_ID",
+                getattr(self, "group_followup_judge_provider_id", ""),
+            ),
+            runtime_persona_setting(
+                self,
+                "RESPONSE_REVIEW_PROVIDER_ID",
+                getattr(self, "response_review_provider_id", ""),
+            ),
+            runtime_persona_setting(
+                self,
+                "MAI_STYLE_PROVIDER_ID",
+                getattr(self, "mai_style_provider_id", ""),
+            ),
         )
         if not provider_id:
             return {"malicious": False, "reason": "未配置可用判定模型", "source": "no_provider"}
@@ -724,7 +741,7 @@ evidence.target 只能是 bot、group_member、third_party、unclear；evidence.
         sender_name: str,
         text: str,
     ) -> dict[str, Any]:
-        if not bool(getattr(self, "enable_group_member_safety", True)) or not sender_id:
+        if not bool(runtime_persona_setting(self, "enable_group_member_safety", True)) or not sender_id:
             return {"reviewed": False, "blocked": False, "reason": "disabled"}
         if self._group_member_safety_is_exempt_event(event, sender_id):
             return {"reviewed": False, "blocked": False, "reason": "manager_exempt"}
@@ -836,12 +853,12 @@ evidence.target 只能是 bot、group_member、third_party、unclear；evidence.
             elif self._group_member_safety_strike_count(member, now=now) > 0:
                 watching_count += 1
         return {
-            "enabled": bool(getattr(self, "enable_group_member_safety", True)),
-            "review_mode": str(getattr(self, "group_member_safety_review_mode", "directed")),
-            "strike_threshold": max(1, _safe_int(getattr(self, "group_member_safety_strike_threshold", 3), 3, 1, 20)),
-            "strike_window_days": max(1, _safe_int(getattr(self, "group_member_safety_strike_window_days", 30), 30, 1, 365)),
-            "block_hours": max(0, _safe_int(getattr(self, "group_member_safety_block_hours", 168), 168, 0, 8760)),
-            "min_confidence": min(1.0, _safe_float(getattr(self, "group_member_safety_min_confidence", 0.86), 0.86, 0.5, 1.0)),
+            "enabled": bool(runtime_persona_setting(self, "enable_group_member_safety", True)),
+            "review_mode": str(runtime_persona_setting(self, "group_member_safety_review_mode", "directed")),
+            "strike_threshold": max(1, _safe_int(runtime_persona_setting(self, "group_member_safety_strike_threshold", 3), 3, 1, 20)),
+            "strike_window_days": max(1, _safe_int(runtime_persona_setting(self, "group_member_safety_strike_window_days", 30), 30, 1, 365)),
+            "block_hours": max(0, _safe_int(runtime_persona_setting(self, "group_member_safety_block_hours", 168), 168, 0, 8760)),
+            "min_confidence": min(1.0, _safe_float(runtime_persona_setting(self, "group_member_safety_min_confidence", 0.86), 0.86, 0.5, 1.0)),
             "hidden_marker_mode": self._group_member_safety_hidden_marker_mode(),
             "tracked_count": len(store),
             "blocked_count": blocked_count,
@@ -935,7 +952,7 @@ evidence.target 只能是 bot、group_member、third_party、unclear；evidence.
                 "counted": False,
             }
         )
-        audit_limit = max(10, _safe_int(getattr(self, "group_member_safety_audit_limit", 40), 40, 10, 200))
+        audit_limit = max(10, _safe_int(runtime_persona_setting(self, "group_member_safety_audit_limit", 40), 40, 10, 200))
         del events[:-audit_limit]
         member["last_manual_action"] = action
         member["last_manual_action_at"] = now

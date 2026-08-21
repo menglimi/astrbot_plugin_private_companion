@@ -8,6 +8,7 @@ from pathlib import Path
 import unittest
 
 from expression_scope_ownership import bind_expression_item, bind_expression_profile
+from persona_config import runtime_persona_setting
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -76,6 +77,7 @@ GLOBALS = {
     "_now_ts": lambda: 1000.0,
     "bind_expression_item": bind_expression_item,
     "bind_expression_profile": bind_expression_profile,
+    "runtime_persona_setting": runtime_persona_setting,
 }
 
 

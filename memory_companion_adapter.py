@@ -32,6 +32,7 @@ from .relationship_ledger import normalize_relationship_mode
 from .relationship_policy import relationship_projection_for_bridge
 from .namespace_capability import negotiate_namespace_capability
 from .identity_namespace import validate_namespace_context
+from .persona_config import runtime_persona_setting
 
 
 # The v2 contract was published by the previous Memory Companion release.
@@ -2283,8 +2284,8 @@ class MemoryCompanionAdapterMixin:
     ) -> None:
         payload = self._memory_companion_build_private_context(user_id=user_id, user=user, text=text, event=event)
         policy = (
-            getattr(self, "relationship_stage_policy", None)
-            if bool(getattr(self, "enable_custom_relationship_stage_policy", False))
+            runtime_persona_setting(self, "relationship_stage_policy", None)
+            if bool(runtime_persona_setting(self, "enable_custom_relationship_stage_policy", False))
             else None
         )
         projection = relationship_projection_for_bridge(

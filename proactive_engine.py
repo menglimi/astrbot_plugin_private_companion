@@ -117,6 +117,25 @@ from .planning import (
     pick_detail_segment,
 )
 from .proactive_routes import PROACTIVE_ROUTE_REGISTRY
+from .persona_config import runtime_persona_setting
+
+
+def _persona_provider_id(owner: Any, canonical_key: str, legacy_attr: str, quick_role: str) -> str:
+    """Resolve canonical persona provider settings while preserving test harnesses."""
+    fallback = str(getattr(owner, legacy_attr, "") or "").strip()
+    if not callable(getattr(owner, "persona_setting", None)):
+        return fallback
+    mode = str(getattr(owner, "provider_config_mode", "quick") or "quick").strip().lower()
+    if mode != "quick":
+        return str(runtime_persona_setting(owner, canonical_key, fallback) or "").strip()
+    complex_id = str(runtime_persona_setting(owner, "COMPLEX_REASONING_PROVIDER_ID", "") or "").strip()
+    if quick_role == "complex":
+        return complex_id or fallback
+    if quick_role == "creative":
+        creative_id = str(runtime_persona_setting(owner, "CREATIVE_MODEL_PROVIDER_ID", "") or "").strip()
+        return creative_id or complex_id or fallback
+    fast_id = str(runtime_persona_setting(owner, "FAST_RESPONSE_PROVIDER_ID", "") or "").strip()
+    return fast_id or complex_id or fallback
 
 
 DEFAULT_AI_DAILY_NEWS_SOURCE = "B站 AI早报|bilibili:285286947"
@@ -1657,7 +1676,9 @@ class ProactiveEngineMixin:
             score -= 0.28
             blocker = True
             note("内部机制泄露风险")
-        worldview_mode = str(getattr(self, "worldview_adaptation_mode", "auto") or "auto")
+        worldview_mode = str(
+            runtime_persona_setting(self, "worldview_adaptation_mode", "auto") or "auto"
+        )
         if worldview_mode in {"fantasy", "sci_fi", "custom"} and any(token in text for token in ("现实网络", "现实设备", "影响现实", "控制设备")):
             score -= 0.25
             blocker = True
@@ -1835,7 +1856,7 @@ class ProactiveEngineMixin:
         if kind == "check_in" and anchor_score < 0.45:
             score -= 0.08
         need_profile: dict[str, Any] = {}
-        if bool(getattr(self, "enable_maslow_motivation_experiment", False)):
+        if bool(runtime_persona_setting(self, "enable_maslow_motivation_experiment", False)):
             need_profile = self._maslow_motivation_profile(
                 user,
                 reason=normalized_reason,
@@ -1848,7 +1869,18 @@ class ProactiveEngineMixin:
                 anchor_score=anchor_score,
                 evidence_text=evidence_text,
             )
-            strength = max(0.0, min(1.0, _safe_float(getattr(self, "maslow_motivation_strength", 35), 35, 0.0) / 100.0))
+            strength = max(
+                0.0,
+                min(
+                    1.0,
+                    _safe_float(
+                        runtime_persona_setting(self, "maslow_motivation_strength", 35),
+                        35,
+                        0.0,
+                    )
+                    / 100.0,
+                ),
+            )
             score += _safe_float(need_profile.get("score_bias"), 0.0) * strength
             pressure += _safe_float(need_profile.get("pressure_bias"), 0.0) * strength
             need_note = _single_line(need_profile.get("note"), 60)
@@ -2119,7 +2151,15 @@ class ProactiveEngineMixin:
         if not signature:
             return None
         check_now = _now_ts() if now is None else now
-        ttl = max(5, _safe_int(getattr(self, "proactive_persona_judge_cache_minutes", 180), 180, 5, 720)) * 60
+        ttl = max(
+            5,
+            _safe_int(
+                runtime_persona_setting(self, "proactive_persona_judge_cache_minutes", 180),
+                180,
+                5,
+                720,
+            ),
+        ) * 60
         cache = user.get("proactive_persona_judge_cache")
         if isinstance(cache, dict):
             entry = cache.get(signature)
@@ -2169,7 +2209,12 @@ class ProactiveEngineMixin:
         threshold = (
             threshold_getter()
             if callable(threshold_getter)
-            else _safe_int(getattr(self, "proactive_persona_judge_send_threshold", 62), 62, 0, 100)
+            else _safe_int(
+                runtime_persona_setting(self, "proactive_persona_judge_send_threshold", 62),
+                62,
+                0,
+                100,
+            )
         )
         reason = self._normalize_legacy_proactive_text(payload.get("reason"), limit=140) or "模型人格判定"
         if decision == "send" and score > 0 and score < threshold:
@@ -2390,7 +2435,9 @@ class ProactiveEngineMixin:
         planning_voice = self._format_persona_voice_channel_prompt("planning") if callable(getattr(self, "_format_persona_voice_channel_prompt", None)) else ""
         inner_voice = self._format_persona_voice_channel_prompt("inner") if callable(getattr(self, "_format_persona_voice_channel_prompt", None)) else ""
         role = self._private_user_role(user)
-        nickname = _single_line(user.get("nickname"), 40) or self.default_nickname
+        nickname = _single_line(user.get("nickname"), 40) or runtime_persona_setting(
+            self, "default_nickname", "你"
+        )
         message_freshness = self._format_proactive_user_message_freshness(user, now=now)
         location_formatter = getattr(self, "_format_mobile_user_location_context_for_proactive", None)
         try:
@@ -2476,7 +2523,7 @@ class ProactiveEngineMixin:
         now: float | None = None,
     ) -> dict[str, Any]:
         check_now = _now_ts() if now is None else now
-        if not bool(getattr(self, "enable_llm_proactive_persona_judge", True)):
+        if not bool(runtime_persona_setting(self, "enable_llm_proactive_persona_judge", True)):
             return {"decision": "send", "score": 100, "reason": "模型人格判定关闭"}
         if self._normalize_legacy_proactive_text(user.get("planned_proactive_source"), limit=40) in {"timer", "troubleshooting", "simulation"}:
             return {"decision": "send", "score": 100, "reason": "特权计划跳过模型人格判定"}
@@ -2489,7 +2536,12 @@ class ProactiveEngineMixin:
         local_result = self._local_proactive_persona_judgement(user)
         if isinstance(local_result, dict):
             return local_result
-        daily_limit = _safe_int(getattr(self, "proactive_persona_judge_max_daily", 12), 12, 0, 100)
+        daily_limit = _safe_int(
+            runtime_persona_setting(self, "proactive_persona_judge_max_daily", 12),
+            12,
+            0,
+            100,
+        )
         if daily_limit <= 0 or self._proactive_persona_judge_calls_today() >= daily_limit:
             return {"decision": "send", "score": 0, "reason": "模型日预算已满，使用本地规则", "local": True}
         prompt = self._format_proactive_model_judge_prompt(user, now=check_now)
@@ -2528,9 +2580,16 @@ class ProactiveEngineMixin:
             prompt,
             max_tokens=260,
             provider_id=self._task_provider(
-                getattr(self, "proactive_persona_judge_provider_id", ""),
-                self.response_review_provider_id,
-                self.mai_style_provider_id,
+                _persona_provider_id(
+                    self,
+                    "PROACTIVE_PERSONA_JUDGE_PROVIDER_ID",
+                    "proactive_persona_judge_provider_id",
+                    "complex",
+                ),
+                _persona_provider_id(
+                    self, "RESPONSE_REVIEW_PROVIDER_ID", "response_review_provider_id", "fast"
+                ),
+                _persona_provider_id(self, "MAI_STYLE_PROVIDER_ID", "mai_style_provider_id", "fast"),
             ),
             task="proactive_persona_judge",
         )
@@ -2569,7 +2628,15 @@ class ProactiveEngineMixin:
         user["planned_proactive_model_judge_at"] = judged_at
         cache = user.get("proactive_persona_judge_cache")
         cache = dict(cache) if isinstance(cache, dict) else {}
-        ttl = max(5, _safe_int(getattr(self, "proactive_persona_judge_cache_minutes", 180), 180, 5, 720)) * 60
+        ttl = max(
+            5,
+            _safe_int(
+                runtime_persona_setting(self, "proactive_persona_judge_cache_minutes", 180),
+                180,
+                5,
+                720,
+            ),
+        ) * 60
         cache = {
             key: value for key, value in cache.items()
             if isinstance(value, dict) and judged_at - _safe_float(value.get("judged_at"), 0) <= ttl
@@ -3779,7 +3846,10 @@ class ProactiveEngineMixin:
         return True
 
     def _llm_timer_pre_silence_seconds(self) -> float:
-        return max(0.0, float(getattr(self, "timer_pre_silence_minutes", 20) or 0) * 60.0)
+        return max(
+            0.0,
+            float(runtime_persona_setting(self, "timer_pre_silence_minutes", 20) or 0) * 60.0,
+        )
 
     def _upcoming_llm_timer_ts(self, user: dict[str, Any], *, now: float | None = None) -> float:
         event = self._get_active_llm_timer(user)
@@ -4063,7 +4133,7 @@ class ProactiveEngineMixin:
             not is_troubleshooting
             and not due_timer_active
             and (planned_source == "creative_writing" or planned_reason == "creative_share")
-            and not bool(getattr(self, "enable_creative_writing", True))
+            and not bool(runtime_persona_setting(self, "enable_creative_writing", True))
         ):
             self._mark_planned_candidate_status(user, "blocked", "创作功能未开启，已清理旧的创作分享候选")
             user["creative_share_context"] = {}
@@ -6121,9 +6191,18 @@ class ProactiveEngineMixin:
                 prompt,
                 max_tokens=1000,
                 provider_id=self._task_provider(
-                    self.detail_enhancement_provider_id,
-                    self.daily_plan_provider_id,
-                    self.mai_style_provider_id,
+                    _persona_provider_id(
+                        self,
+                        "DETAIL_ENHANCEMENT_PROVIDER_ID",
+                        "detail_enhancement_provider_id",
+                        "complex",
+                    ),
+                    _persona_provider_id(
+                        self, "DAILY_PLAN_PROVIDER_ID", "daily_plan_provider_id", "complex"
+                    ),
+                    _persona_provider_id(
+                        self, "MAI_STYLE_PROVIDER_ID", "mai_style_provider_id", "fast"
+                    ),
                 ),
                 task="full_test_detail",
             )
@@ -6326,7 +6405,11 @@ class ProactiveEngineMixin:
             event_ts = self._timestamp_from_story_event(event, reason)
             if self._friend_proactive_scheduled_too_early(user, event_ts):
                 continue
-            if event_ts > now or (event_ts > 0 and now - event_ts <= self.max_proactive_plan_lag_minutes * 60):
+            if event_ts > now or (
+                event_ts > 0
+                and now - event_ts
+                <= runtime_persona_setting(self, "max_proactive_plan_lag_minutes", 180) * 60
+            ):
                 candidates.append((event_ts, event))
         if not candidates:
             return None
@@ -6821,7 +6904,7 @@ class ProactiveEngineMixin:
 
     def _meal_care_interval_remaining(self, user: dict[str, Any], *, now: float) -> float:
         interval_hours = _safe_int(
-            getattr(self, "meal_care_min_interval_hours", 48),
+            runtime_persona_setting(self, "meal_care_min_interval_hours", 48),
             48,
             0,
             168,
@@ -6864,7 +6947,10 @@ class ProactiveEngineMixin:
         minute = when.hour * 60 + when.minute
         if not (10 * 60 + 30 <= minute <= 21 * 60 + 40):
             return None
-        intensity = max(0.0, min(1.0, self.humanized_state_intensity / 100))
+        intensity = max(
+            0.0,
+            min(1.0, runtime_persona_setting(self, "humanized_state_intensity", 50) / 100),
+        )
         chance = 0.18 + 0.32 * intensity
         if random.random() > chance:
             return None
@@ -6922,7 +7008,7 @@ class ProactiveEngineMixin:
         )
 
     def _breakfast_waiting_for_morning_reply(self, user: dict[str, Any]) -> bool:
-        if not bool(getattr(self, "enable_daily_greetings", True)):
+        if not bool(runtime_persona_setting(self, "enable_daily_greetings", True)):
             return False
         self._reset_daily_counter_if_needed(user)
         morning_sent_at = _safe_float(user.get("morning_greeting_sent_at"), 0)
@@ -7004,7 +7090,7 @@ class ProactiveEngineMixin:
         }
 
     def _pick_meal_care_event(self, user: dict[str, Any], *, now: float | None = None) -> dict[str, Any] | None:
-        if not bool(getattr(self, "enable_meal_care_proactive", True)):
+        if not bool(runtime_persona_setting(self, "enable_meal_care_proactive", True)):
             return None
         if self._private_user_role(user) != "owner":
             return None
@@ -7019,7 +7105,9 @@ class ProactiveEngineMixin:
             return None
         asked = user.get("meal_care_asked") if isinstance(user.get("meal_care_asked"), list) else []
         satisfied = user.get("meal_care_satisfied") if isinstance(user.get("meal_care_satisfied"), list) else []
-        max_daily = _safe_int(getattr(self, "meal_care_max_daily", 1), 1, 0, 3)
+        max_daily = _safe_int(
+            runtime_persona_setting(self, "meal_care_max_daily", 1), 1, 0, 3
+        )
         if max_daily <= 0 or len(asked) >= max_daily:
             return None
         now_dt = self._environment_fromtimestamp(check_now)
@@ -7081,7 +7169,7 @@ class ProactiveEngineMixin:
         now: float | None = None,
     ) -> dict[str, Any] | None:
         """Turn an unresolved conversation thread into a normal, expiring impulse."""
-        if not bool(getattr(self, "enable_open_loop_tracking", True)):
+        if not bool(runtime_persona_setting(self, "enable_open_loop_tracking", True)):
             return None
         if self._private_user_role(user) == "friend":
             return None
@@ -7220,7 +7308,10 @@ class ProactiveEngineMixin:
         now = now or _now_ts()
         if now < due_at:
             return None
-        name = _single_line(user.get("nickname") or self.default_nickname, 24)
+        name = _single_line(
+            user.get("nickname") or runtime_persona_setting(self, "default_nickname", "你"),
+            24,
+        )
         return {
             "date": _today_key(),
             "window": self._window_from_delay_minutes(4, width_minutes=18),
@@ -7450,7 +7541,7 @@ class ProactiveEngineMixin:
     def _pick_daily_greeting_event(
         self, user: dict[str, Any], now: float | None = None
     ) -> dict[str, Any] | None:
-        if not self.enable_daily_greetings:
+        if not runtime_persona_setting(self, "enable_daily_greetings", True):
             return None
         self._reset_daily_counter_if_needed(user)
         sent = user.get("greetings_sent", [])
@@ -7957,7 +8048,11 @@ class ProactiveEngineMixin:
                 prepared.get("scheduled_ts"),
                 self._timestamp_from_story_event(event, reason),
             )
-            if event_ts > now or (event_ts > 0 and now - event_ts <= self.max_proactive_plan_lag_minutes * 60):
+            if event_ts > now or (
+                event_ts > 0
+                and now - event_ts
+                <= runtime_persona_setting(self, "max_proactive_plan_lag_minutes", 180) * 60
+            ):
                 future_events.append((event_ts, event))
         if not future_events:
             return None
@@ -8190,7 +8285,10 @@ class ProactiveEngineMixin:
             "voice": "刚才发完语音消息以后，想和{name}聊聊",
             "screen_peek": "刚才看过屏幕后，想问问{name}现在还忙不忙",
         }.get(action.split("+")[0], "刚才那条主动后面，还有一句话想补上")
-        display_name = _single_line(user.get("nickname") or self.default_nickname, 24)
+        display_name = _single_line(
+            user.get("nickname") or runtime_persona_setting(self, "default_nickname", "你"),
+            24,
+        )
         if display_name:
             motive = motive.replace("{name}", display_name)
         return {
@@ -8246,20 +8344,26 @@ class ProactiveEngineMixin:
         reason: str,
         action: str,
     ) -> dict[str, Any] | None:
-        if not self.enable_unanswered_screen_peek_followup:
+        if not runtime_persona_setting(self, "enable_unanswered_screen_peek_followup", True):
             return None
         if "screen_peek" in str(action or ""):
             return None
         if not self._screen_glance_available(user, ignore_daily_limit=True):
             return None
         now = _now_ts()
-        cooldown = max(30, self.unanswered_screen_peek_cooldown_minutes) * 60
+        cooldown = max(
+            30,
+            runtime_persona_setting(self, "unanswered_screen_peek_cooldown_minutes", 180),
+        ) * 60
         last_at = _safe_float(user.get("last_unanswered_screen_peek_at"), 0)
         if last_at > 0 and now - last_at < cooldown:
             return None
         if not self._bot_currently_bored_for_unanswered_peek(user):
             return None
-        delay_minutes = max(10, self.unanswered_screen_peek_after_minutes)
+        delay_minutes = max(
+            10,
+            runtime_persona_setting(self, "unanswered_screen_peek_after_minutes", 45),
+        )
         return {
             "date": _today_key(),
             "window": self._window_from_delay_minutes(delay_minutes, width_minutes=18),
@@ -8351,7 +8455,7 @@ class ProactiveEngineMixin:
             (isinstance(can_do, list) and can_do)
             or (isinstance(diaries, list) and diaries)
             or important_dates
-            or self.include_schedule_in_messages
+            or runtime_persona_setting(self, "include_schedule_in_messages", True)
         )
         reasons = ["activity_share", "activity_share", "diary_share"]
         if not has_contextual_source:
@@ -8366,7 +8470,7 @@ class ProactiveEngineMixin:
             reasons.extend(["diary_share"] * 2)
         if important_dates:
             reasons.extend(["important_date_share"] * 2)
-        if self.include_schedule_in_messages:
+        if runtime_persona_setting(self, "include_schedule_in_messages", True):
             reasons.extend(["background_schedule"] * 2)
         state_note = _single_line(state.get("note"), 80) if isinstance(state, dict) else ""
         state_mood = _single_line(state.get("mood_bias"), 20) if isinstance(state, dict) else ""
@@ -8946,7 +9050,7 @@ class ProactiveEngineMixin:
         *,
         ignore_daily_limit: bool = False,
     ) -> bool:
-        if not self.enable_screen_glance_action:
+        if not runtime_persona_setting(self, "enable_screen_glance_action", False):
             return False
         if isinstance(user, dict) and self._private_user_role(user) == "friend":
             return False
@@ -8964,7 +9068,10 @@ class ProactiveEngineMixin:
             )
             if not ignore_daily_limit and used_today >= daily_limit:
                 return False
-            cooldown_seconds = max(0, self.screen_peek_cooldown_minutes) * 60
+            cooldown_seconds = max(
+                0,
+                runtime_persona_setting(self, "screen_peek_cooldown_minutes", 240),
+            ) * 60
             last_at = _safe_float(user.get("screen_peek_last_at"), 0.0)
             if cooldown_seconds > 0 and last_at > 0 and _now_ts() - last_at < cooldown_seconds:
                 return False
@@ -8975,13 +9082,13 @@ class ProactiveEngineMixin:
             return False
 
     def _comfyui_photo_available(self) -> bool:
-        return bool(self.enable_photo_text_action) and self._image_companion_backend_available("comfyui")
+        return bool(runtime_persona_setting(self, "enable_photo_text_action", True)) and self._image_companion_backend_available("comfyui")
 
     def _external_photo_available(self) -> bool:
-        return bool(self.enable_photo_text_action) and self._image_companion_backend_available("external")
+        return bool(runtime_persona_setting(self, "enable_photo_text_action", True)) and self._image_companion_backend_available("external")
 
     def _backup_external_photo_unavailable_note(self) -> str:
-        if not self.enable_photo_text_action:
+        if not runtime_persona_setting(self, "enable_photo_text_action", True):
             return "photo_action_disabled"
         status = self._image_companion_status()
         return _single_line(status.get("backup_external_note"), 120) or ""
@@ -8990,10 +9097,10 @@ class ProactiveEngineMixin:
         return not bool(self._backup_external_photo_unavailable_note())
 
     def _sdgen_photo_available(self) -> bool:
-        return bool(self.enable_photo_text_action) and self._image_companion_backend_available("sdgen")
+        return bool(runtime_persona_setting(self, "enable_photo_text_action", True)) and self._image_companion_backend_available("sdgen")
 
     def _custom_tool_photo_available(self) -> bool:
-        return bool(self.enable_photo_text_action) and self._image_companion_backend_available("tool_call")
+        return bool(runtime_persona_setting(self, "enable_photo_text_action", True)) and self._image_companion_backend_available("tool_call")
 
     def _local_photo_generation_load_state(self, *, force_refresh: bool = False) -> dict[str, Any]:
         return self._image_companion_load_state(force_refresh=force_refresh)
@@ -9013,7 +9120,13 @@ class ProactiveEngineMixin:
         *parts: Any,
         user: dict[str, Any] | None = None,
     ) -> float:
-        base = max(0.0, min(1.0, float(getattr(self, "proactive_photo_text_probability", 0.18))))
+        base = max(
+            0.0,
+            min(
+                1.0,
+                float(runtime_persona_setting(self, "proactive_photo_text_probability", 0.18)),
+            ),
+        )
         if base <= 0:
             return 0.0
         base = max(base, min(0.45, base + self._photo_text_overdue_boost(user)))
@@ -9057,11 +9170,15 @@ class ProactiveEngineMixin:
             return ""
         return (
             "电脑高负荷,已延后本地生图"
-            f"（{state.get('reason') or '负载偏高'}；{self.local_photo_defer_minutes} 分钟后重试）"
+            f"（{state.get('reason') or '负载偏高'}；"
+            f"{runtime_persona_setting(self, 'local_photo_defer_minutes', 30)} 分钟后重试）"
         )
 
     def _defer_planned_photo_text_for_load(self, user: dict[str, Any], *, now: float, note: str) -> None:
-        delay_seconds = max(60, int(self.local_photo_defer_minutes) * 60)
+        delay_seconds = max(
+            60,
+            int(runtime_persona_setting(self, "local_photo_defer_minutes", 30)) * 60,
+        )
         self._defer_or_replace_planned_impulse(
             user,
             now=now,
@@ -9073,7 +9190,7 @@ class ProactiveEngineMixin:
         user["proactive_sending_started_at"] = 0
 
     def _photo_text_available(self, user: dict[str, Any] | None = None) -> bool:
-        if not self.enable_photo_text_action:
+        if not runtime_persona_setting(self, "enable_photo_text_action", True):
             return False
         if isinstance(user, dict) and self._private_user_role(user) == "friend":
             return False
@@ -9129,7 +9246,7 @@ class ProactiveEngineMixin:
             return False
 
     def _poke_available(self) -> bool:
-        if not self.enable_poke_action:
+        if not runtime_persona_setting(self, "enable_poke_action", False):
             return False
         if self._resolve_aiocqhttp_client() is None:
             return False
@@ -9144,7 +9261,7 @@ class ProactiveEngineMixin:
                 return False
 
     def _voice_available(self, user: dict[str, Any] | None = None) -> bool:
-        if not self.enable_voice_action:
+        if not runtime_persona_setting(self, "enable_voice_action", False):
             return False
         target = ""
         if isinstance(user, dict):
@@ -9658,7 +9775,9 @@ class ProactiveEngineMixin:
         return random.random() < min(0.32, chance)
 
     def _build_name_only_opener(self, name: str) -> str:
-        clean_name = _single_line(name, 24) or self.default_nickname
+        clean_name = _single_line(name, 24) or runtime_persona_setting(
+            self, "default_nickname", "你"
+        )
         return f"{clean_name}……"
 
     def _build_suspended_proactive_payload(
@@ -9868,7 +9987,7 @@ class ProactiveEngineMixin:
         """睡眠相位门：Bot 睡着时不放行非豁免的主动消息。返回空串表示放行。"""
         if reason in self._PROACTIVE_SLEEP_EXEMPT_REASONS:
             return ""
-        if not bool(getattr(self, "enable_rest_reply_simulation", False)):
+        if not bool(runtime_persona_setting(self, "enable_rest_reply_simulation", False)):
             return ""
         state_getter = getattr(self, "_sleep_runtime_state", None)
         if not callable(state_getter):
@@ -9939,7 +10058,7 @@ class ProactiveEngineMixin:
         *,
         now: float | None = None,
     ) -> bool:
-        if not bool(getattr(self, "allow_insomnia_night_message", True)):
+        if not bool(runtime_persona_setting(self, "allow_insomnia_night_message", True)):
             return False
         if not self._has_active_insomnia_state():
             return False
@@ -10023,7 +10142,7 @@ class ProactiveEngineMixin:
         return random.random() < probability
 
     async def _render_message(self, user: dict[str, Any]) -> tuple[str, str, str, list[Any], str, str]:
-        name = str(user.get("nickname") or self.default_nickname)
+        name = str(user.get("nickname") or runtime_persona_setting(self, "default_nickname", "你"))
         user["planned_opener_mode"] = ""
         user.pop("_proactive_photo_subject_owner", None)
         planned_reason = self._normalize_legacy_proactive_text(user.get("planned_proactive_reason"), limit=40)
@@ -10239,7 +10358,7 @@ class ProactiveEngineMixin:
         action_name: str,
         reason: str,
     ) -> tuple[str, str, list[Any]]:
-        name = str(user.get("nickname") or self.default_nickname)
+        name = str(user.get("nickname") or runtime_persona_setting(self, "default_nickname", "你"))
         motive = self._choose_proactive_motive(reason, user, action=action_name)
         action_payload = await self._execute_proactive_action(action_name, user, name, reason)
         action_context = str(action_payload.get("context") or "")
