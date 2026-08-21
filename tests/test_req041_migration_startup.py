@@ -68,6 +68,7 @@ def _load_methods(*names: str) -> dict[str, Any]:
         "normalize_relationship_positive_stage_cap_key": normalize_relationship_positive_stage_cap_key,
         "_single_line": lambda value, limit=240: " ".join(str(value or "").split())[:limit],
         "_now_ts": lambda: 1_786_291_200.0,
+        "runtime_persona_setting": lambda host, key, default=None: getattr(host, key, default),
         "logger": types.SimpleNamespace(warning=lambda *_args, **_kwargs: None),
     }
     exec(compile(module, str(ROOT / "main.py"), "exec"), namespace)

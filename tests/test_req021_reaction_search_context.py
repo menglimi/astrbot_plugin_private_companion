@@ -60,6 +60,7 @@ def _load_reaction_impl() -> Any:
         "time": time,
         "_path_text": lambda value, _limit: str(value or ""),
         "_single_line": _single_line,
+        "runtime_persona_setting": lambda host, key, default=None: getattr(host, key, default),
     }
     module = ast.Module(body=[copy.deepcopy(method)], type_ignores=[])
     ast.fix_missing_locations(module)

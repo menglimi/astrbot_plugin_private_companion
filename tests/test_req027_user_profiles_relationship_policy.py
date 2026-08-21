@@ -105,6 +105,7 @@ CORE_METHODS = _load_class_methods(
         "_now_ts": lambda: 123.0,
         "ensure_legacy_profile_capabilities": _load_unified_profile_service().ensure_legacy_profile_capabilities,
         "ensure_new_profile_capabilities": _load_unified_profile_service().ensure_new_profile_capabilities,
+        "runtime_persona_setting": lambda host, key, default=None: getattr(host, key, default),
     },
 )
 

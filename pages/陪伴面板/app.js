@@ -36969,7 +36969,12 @@ function bindExperimentalSubpageActions(key) {
           toggleControl,
           { reload: false },
         );
-      const persisted = personaConfigEditingEnabled() ? Boolean(personaSaved) : actionResultPersisted(result);
+      let persisted = false;
+      if (personaConfigEditingEnabled()) {
+        persisted = Boolean(personaSaved);
+      } else if (actionResultPersisted(result)) {
+        persisted = true;
+      }
       if (persisted) {
         reflectExperimentalToggleChange(toggleKey, requestedValue);
         if (toggleKey === "enable_experimental_bluetooth_wakeup") {

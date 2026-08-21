@@ -42,6 +42,7 @@ def _load_methods(filename: str, class_name: str, names: set[str]) -> dict[str, 
         "logger": _Logger(),
         "time": time,
         "deepcopy": copy.deepcopy,
+        "_persona_value": lambda host, key, default=None: getattr(host, key, default),
     }
     for node in owner.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names:

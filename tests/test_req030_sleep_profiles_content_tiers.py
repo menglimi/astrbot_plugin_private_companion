@@ -72,6 +72,7 @@ def test_0824_rest_gate_returns_not_sleeping_for_natural_wake_schedule() -> None
         "_single_line": _single_line,
         "_safe_float": _safe_float,
         "_now_ts": lambda: 1_700_000_000.0,
+        "runtime_persona_setting": lambda host, key, default=None: getattr(host, key, default),
     }
     sleepy = _class_method("daily_state.py", "DailyStateMixin", "_is_sleepy_plan_item", namespace)
     refresh = _class_method("daily_state.py", "DailyStateMixin", "_refresh_sleep_runtime_state", namespace)
@@ -263,6 +264,7 @@ def test_strict_llm_provider_skips_peak_replacement_and_fallback() -> None:
         "_single_line": _single_line,
         "_looks_like_upstream_llm_error_response": lambda _value: False,
         "logger": SimpleNamespace(info=lambda *_a, **_k: None, warning=lambda *_a, **_k: None),
+        "runtime_persona_setting": lambda host, key, default=None: getattr(host, key, default),
     }
     llm_call = _class_method("token_budget.py", "TokenBudgetMixin", "_llm_call", namespace)
 
@@ -312,6 +314,13 @@ def test_strict_llm_provider_skips_peak_replacement_and_fallback() -> None:
 
         def _record_llm_usage(self, **_kwargs: Any) -> None:
             return None
+
+        def _sensitive_model_replacement_provider(self, _provider_id: str = "") -> str:
+            return ""
+
+        @staticmethod
+        def _sensitive_model_replacement_keyword(_completion: str) -> str:
+            return ""
 
     Host._llm_call = llm_call
     host = Host()

@@ -91,6 +91,7 @@ def _load_hook() -> Any:
         "_multi_persona_event_context": lambda target: target,
         "filter": SimpleNamespace(on_llm_request=lambda **_kwargs: lambda target: target),
         "build_group_cycle_boundary": build_group_cycle_boundary,
+        "runtime_persona_setting": lambda host, key, default=None: getattr(host, key, default),
     }
     module = ast.Module(body=[copy.deepcopy(hook)], type_ignores=[])
     ast.fix_missing_locations(module)

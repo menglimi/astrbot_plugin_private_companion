@@ -48,6 +48,7 @@ def _load_owned_lookup_impl() -> Any:
         "logger": logging.getLogger("test_req021_q6"),
         "_single_line": _single_line,
         "OwnedReactionAssetCatalog": OwnedReactionAssetCatalog,
+        "runtime_persona_setting": lambda host, key, default=None: getattr(host, key, default),
     }
     module = ast.Module(body=[copy.deepcopy(method)], type_ignores=[])
     ast.fix_missing_locations(module)

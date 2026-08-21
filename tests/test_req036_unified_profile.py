@@ -92,6 +92,7 @@ def _load_method(name: str) -> Any:
         "_now_ts": lambda: 100.0,
         "_safe_float": lambda value, default=0.0: float(value or default),
         "_single_line": lambda value, limit=240: str(value or "").strip()[:limit],
+        "runtime_persona_setting": lambda host, key, default=None: getattr(host, key, default),
     }
     exec(compile(module, str(ROOT / "main.py"), "exec"), namespace)
     return namespace[name]
@@ -230,6 +231,7 @@ def _load_proactive_target_sync() -> Any:
         "req036_update_capabilities": update_capabilities,
         "_safe_int": lambda value, default=0, minimum=0: max(minimum, int(value or default)),
         "_safe_float": lambda value, default=0.0: float(value or default),
+        "_proactive_setting_value": lambda host, key, default=None: getattr(host, key, default),
         "_now_ts": lambda: 100.0,
     }
     exec(compile(module, str(ROOT / "proactive.py"), "exec"), namespace)
