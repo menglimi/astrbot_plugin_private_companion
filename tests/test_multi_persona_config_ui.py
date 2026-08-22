@@ -31,6 +31,7 @@ class MultiPersonaConfigUiTests(unittest.TestCase):
         self.assertEqual(order, sorted(order))
         self.assertEqual(html.count('id="configPersonaSelect"'), 1)
         self.assertEqual(html.count('id="configStats"'), 1)
+        self.assertEqual(html.count('id="pagePersonaSelect"'), 1)
 
     def test_persona_selector_is_stateful_and_protects_drafts(self) -> None:
         script = (PRIMARY / "app.js").read_text(encoding="utf-8")
@@ -39,6 +40,9 @@ class MultiPersonaConfigUiTests(unittest.TestCase):
             "function persistSelectedPagePersonaId(personaId)",
             "function loadSelectedPersonaOverview(personaId)",
             "function renderConfigPersonaSelector()",
+            "function renderPagePersonaSelector()",
+            "async function selectPagePersona(nextPersonaId, control = null)",
+            "function resetPersonaScopedPageState()",
             "if (hasUnsavedChanges())",
             "discardAllFeatureChanges();",
             "discardUnsavedModuleFormChanges();",
@@ -52,27 +56,26 @@ class MultiPersonaConfigUiTests(unittest.TestCase):
 
     def test_persona_operations_lock_the_single_selector(self) -> None:
         script = (PRIMARY / "app.js").read_text(encoding="utf-8")
-        self.assertGreaterEqual(script.count("setPersonaOperationBusy(true);"), 5)
-        self.assertGreaterEqual(script.count("setPersonaOperationBusy(false);"), 5)
+        self.assertGreaterEqual(script.count("setPersonaOperationBusy(true);"), 3)
+        self.assertGreaterEqual(script.count("setPersonaOperationBusy(false);"), 3)
         run_action = script.split("async function runAction(", 1)[1].split(
             "\n}\n\nfunction configSavedValue", 1
         )[0]
         self.assertIn("setPersonaOperationBusy(true);", run_action)
         self.assertIn("setPersonaOperationBusy(false);", run_action)
-        self.assertIn("const bindingControl = event.currentTarget;", script)
-        self.assertIn("bindingControl.disabled = false;", script)
+        self.assertNotIn("const bindingControl = event.currentTarget;", script)
 
-    def test_window_binding_rows_support_edit_delete_and_auto_rebind_copy(self) -> None:
+    def test_window_binding_crud_is_absent_and_legacy_notice_is_read_only(self) -> None:
         script = (PRIMARY / "app.js").read_text(encoding="utf-8")
         for marker in (
-            'data-persona-window-edit="${escapeHtml(windowKey)}"',
-            'data-persona-window-delete="${escapeHtml(windowKey)}"',
-            'postJson("/persona/window-bindings/delete"',
-            'postJson("/persona/window-bindings"',
-            "删除后将恢复自动识别",
+            "data-persona-window-edit",
+            "data-persona-window-delete",
+            'postJson("/persona/window-bindings',
             "function bindPersonaWindowBindingActions(root)",
         ):
-            self.assertIn(marker, script)
+            self.assertNotIn(marker, script)
+        self.assertIn("function multiPersonaLegacyRoutingNotice()", script)
+        self.assertIn("status.legacy_routing", script)
 
     def test_multi_persona_management_uses_dedicated_feature_detail_workspace(self) -> None:
         script = (PRIMARY / "app.js").read_text(encoding="utf-8")
@@ -116,8 +119,8 @@ class MultiPersonaConfigUiTests(unittest.TestCase):
         self.assertNotIn('if (!enabled) {\n    root.innerHTML', script)
         self.assertNotIn('if (!modeRequested) return "";', script)
         self.assertIn('enable_multi_persona_mode: multiPersonaModeDraftEnabled()', script)
-        self.assertIn("总开关关闭时保留并展示已有绑定", script)
-        self.assertIn('data-persona-window-edit="${escapeHtml(windowKey)}" data-persona-window-target-id="${escapeHtml(personaId)}" ${modeRequested ? "" : "disabled"}', script)
+        self.assertNotIn("总开关关闭时保留并展示已有绑定", script)
+        self.assertNotIn("data-persona-window-edit", script)
         self.assertIn("#panel-config .multi-persona-mode-summary.on .feature-toggle-visual", polish)
         self.assertIn("#panel-config .multi-persona-mode-summary.dirty", polish)
         self.assertIn('class="config-persona-top-row"', html)
@@ -137,18 +140,74 @@ class MultiPersonaConfigUiTests(unittest.TestCase):
         self.assertIn('class="persona-topology-switch"', script)
         self.assertIn('const primary = id === primaryPersonaId;', script)
         self.assertIn('const requestedPrimaryPersonaId = String(settings.plugin_specific_persona_id || "").trim();', script)
-        self.assertIn('<option value="" disabled hidden selected>未选择</option>', script)
-        self.assertIn('topologyPrimary?.addEventListener("change"', script)
-        self.assertIn('input.disabled = isPrimary;', script)
-        self.assertIn('const syncCreatePersonaOptions = () => {', script)
-        self.assertIn('return id && id !== primary && enabledIds.has(id);', script)
-        self.assertIn('const createPersonaRecords = enabledPersonaRecords.filter', script)
+        self.assertIn('plugin_specific_persona_id</code> · 状态 ${primaryPersonaId ? "primary" : "missing"} · 路由权威 AstrBot', script)
+        self.assertNotIn('<select name="multi_persona_primary_id"', script)
+        self.assertNotIn('topologyPrimary?.addEventListener("change"', script)
+        self.assertIn('${primary ? " disabled" : ""}', script)
+        self.assertNotIn('const syncCreatePersonaOptions = () => {', script)
+        self.assertIn('const configuredPersonaIds = new Set(normalizeMultiPersonaIds(state.multiPersona?.configured_profiles));', script)
+        self.assertIn('configuredPersonaIds.has(id) ? "配置就绪" : enabledPersonaIds.has(id) ? "待创建配置"', script)
+        self.assertIn('return id !== primaryPersonaId && !configuredPersonaIds.has(id);', script)
+        self.assertIn('const configuredSourceIds = new Set(normalizeMultiPersonaIds(state.multiPersona?.configured_profiles));', script)
+        self.assertIn('const candidates = copySourceRecords.filter((item) => String(item.id || "").trim() !== targetId);', script)
+        self.assertIn('sourceSelect.disabled = createMode?.value !== "copy" || !candidates.length;', script)
+        self.assertIn('if (mode === "copy" && sourcePersonaId === personaId)', script)
+        self.assertNotIn('querySelectorAll("[data-common-persona-id]:checked") || [])\n        .map', script)
+        self.assertIn('const createPersonaRecords = primaryMissing', script)
         self.assertIn('const createPersonaOptions = createPersonaRecords.length', script)
         self.assertIn('<select name="persona_id" required>${createPersonaOptions}</select>', script)
+        self.assertIn('<option value="">暂无可选择人格</option>', script)
+        self.assertNotIn('暂无已启用人格', script)
         self.assertIn('const personaBotNameMap = Object.fromEntries(', script)
-        self.assertIn('sourceSelect.disabled = !copying;', script)
         self.assertIn('${escapeHtml(String(item.id || "").trim())} · ${escapeHtml(personaBotName(item))}', script)
-        self.assertIn('const createdPersonaIds = new Set(normalizeMultiPersonaIds(state.multiPersona?.profiles));', script)
+        self.assertIn('.filter((item) => configuredPersonaIds.has(String(item.id || "").trim()))', script)
+        self.assertIn('const createPersonaRecords = primaryMissing', script)
+        self.assertIn('data-persona-primary-setup', script)
+        self.assertIn('settings: { plugin_specific_persona_id: personaId }', script)
+        self.assertIn('source !== "独立资料" && source !== "插件配置"', script)
+        self.assertNotIn("multi_persona_primary_id", script)
+
+    def test_config_and_header_selectors_only_use_available_profile_records(self) -> None:
+        html = (PRIMARY / "index.html").read_text(encoding="utf-8")
+        script = (PRIMARY / "app.js").read_text(encoding="utf-8")
+        polish = (PRIMARY / "css" / "polish.css").read_text(encoding="utf-8")
+        self.assertIn('id="pagePersonaSelector"', html)
+        self.assertIn('id="pagePersonaSelect"', html)
+        self.assertIn('function pagePersonaRecords()', script)
+        self.assertIn('const available = new Set(normalizeMultiPersonaIds(state.multiPersona?.profiles));', script)
+        self.assertIn('state.multiPersona?.profile_labels?.[id]', script)
+        self.assertIn('const records = pagePersonaRecords();', script)
+        self.assertIn('const records = enabled ? pagePersonaRecords() : [];', script)
+        self.assertGreaterEqual(script.count('void selectPagePersona(event.currentTarget.value, event.currentTarget);'), 2)
+        self.assertIn('await loadSelectedPersonaOverview(next);', script)
+        self.assertIn('await ensureTabData(state.activeTab, true).catch(() => {});', script)
+        self.assertIn('url.searchParams.set("_persona_id", selectedPersonaId);', script)
+        self.assertIn('.page-persona-selector select', polish)
+        self.assertIn('.folio-persona-context', polish)
+
+    def test_topology_hides_astrbot_default_marker(self) -> None:
+        script = (PRIMARY / "app.js").read_text(encoding="utf-8")
+        self.assertIn("function personaTopologyLabel(personaOrId)", script)
+        self.assertIn('replace(/\\s*（默认）\\s*/g, " ")', script)
+        topology = script.split('const topologyPersonaChecks =', 1)[1].split('const configuredPersonaRecords', 1)[0]
+        self.assertIn('personaTopologyLabel(item)', topology)
+        self.assertNotIn('personaDisplayLabel(item)', topology)
+
+    def test_restore_follow_is_inline_and_uses_three_second_button_confirmation(self) -> None:
+        script = (PRIMARY / "app.js").read_text(encoding="utf-8")
+        css = (PRIMARY / "app.css").read_text(encoding="utf-8")
+        self.assertIn("const personaFollowConfirmTimers = new WeakMap();", script)
+        self.assertIn("function consumePersonaFollowConfirmation(button)", script)
+        self.assertIn('button.textContent = "点击确认";', script)
+        self.assertIn("window.setTimeout(() => resetPersonaFollowConfirmation(button), 3000)", script)
+        self.assertGreaterEqual(script.count("if (!consumePersonaFollowConfirmation(button)) return;"), 2)
+        self.assertNotIn('window.confirm("当前人格还有未保存的配置，恢复跟随不会提交这些草稿。继续吗？")', script)
+        feature_card = script.split("function featureSwitchItem(key)", 1)[1].split("function relationshipStageCapLabel", 1)[0]
+        meta = feature_card.split('<div class="feature-switch-meta">', 1)[1].split("</div>", 1)[0]
+        self.assertLess(meta.index("${sourceBadge}"), meta.index("${followButton}"))
+        self.assertNotIn("</div>\n      ${followButton}", feature_card)
+        self.assertIn(".persona-follow-button.is-confirming", css)
+        self.assertIn("min-width: 68px;", css)
 
 
 if __name__ == "__main__":

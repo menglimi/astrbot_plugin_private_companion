@@ -1407,10 +1407,17 @@ class MemoryCompanionAdapterMixin:
                 value = ""
             if value:
                 return value
-        for attr in ("plugin_specific_persona_id", "multi_persona_primary_id"):
-            value = _single_line(getattr(self, attr, ""), 96)
+        primary_getter = getattr(self, "_primary_persona_id", None)
+        if callable(primary_getter):
+            try:
+                value = _single_line(primary_getter(), 96)
+            except Exception:
+                value = ""
             if value:
                 return value
+        value = _single_line(getattr(self, "plugin_specific_persona_id", ""), 96)
+        if value:
+            return value
         # Single-persona installs still need a non-empty namespace for v3.
         return "default"
 

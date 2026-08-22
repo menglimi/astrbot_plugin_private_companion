@@ -25,13 +25,14 @@ from astrbot_plugin_private_companion.storage.store_manager import StoreManager
 def _plugin_harness(root: str) -> PrivateCompanionPlugin:
     plugin = PrivateCompanionPlugin.__new__(PrivateCompanionPlugin)
     plugin.enable_multi_persona_mode = True
-    plugin.multi_persona_primary_id = "main"
     plugin.multi_persona_ids = ["main", "alt"]
     plugin.plugin_specific_persona_id = "main"
     plugin.config = {
         "multi_persona_ids": ["main", "alt"],
         "multi_persona_window_bindings": {},
     }
+    plugin.data_dir = root
+    plugin.data_file = str(Path(root) / "companions.json")
     plugin._persona_profiles_dir = str(Path(root) / "persona_profiles")
     plugin._persona_data_profiles = {}
     plugin._persona_window_claims = {}
@@ -56,6 +57,12 @@ def _plugin_harness(root: str) -> PrivateCompanionPlugin:
         "daily_plan": {},
         "bot_diaries": {},
         "persona_settings": {},
+    }
+    plugin._persona_data_profiles["alt"] = {
+        **plugin._new_store(),
+        "persona_settings": {"bot_name": "alt"},
+        "persona_settings_schema_version": 1,
+        "persona_settings_revision": 1,
     }
     plugin._ensure_store_defaults = lambda profile: profile
     plugin._sanitize_store_control_tags_inplace = lambda _profile: 0
@@ -268,7 +275,7 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
             )
             reader.assert_awaited_once()
 
-    async def test_primary_inherits_legacy_store_and_secondary_starts_blank(self):
+    async def test_primary_is_single_store_and_secondary_starts_blank(self):
         with tempfile.TemporaryDirectory() as root:
             plugin = _plugin_harness(root)
 
@@ -276,6 +283,8 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
             secondary = plugin._ensure_persona_profile("alt")
 
             self.assertEqual("旧用户", primary["users"]["legacy"]["name"])
+            self.assertIs(primary, plugin._data_default)
+            self.assertFalse(plugin._persona_profile_path("main").exists())
             self.assertEqual("旧日程", primary["daily_plan"]["marker"])
             self.assertEqual({}, secondary["users"])
             self.assertEqual({}, secondary["daily_plan"])
@@ -321,12 +330,15 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
                 plugin._ensure_persona_profile("alt")["users"],
             )
             self.assertEqual(config_before, plugin.config)
-            self.assertNotIn(main_window, plugin._passive_state_session_cache)
+            self.assertEqual(
+                {"state": "old-main"},
+                plugin._passive_state_session_cache[main_window],
+            )
             self.assertEqual(
                 {"state": "keep-alt"},
                 plugin._passive_state_session_cache[alt_window],
             )
-            self.assertNotIn(main_window, plugin._persona_window_claims)
+            self.assertEqual("main", plugin._persona_window_claims[main_window])
             self.assertEqual("alt", plugin._persona_window_claims[alt_window])
 
             backup_path = Path(result["backup_path"])
@@ -334,7 +346,7 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
             backup = json.loads(backup_path.read_text(encoding="utf-8"))
             self.assertEqual("main", backup["persona_id"])
             self.assertEqual("旧人格记忆", backup["data"]["users"]["用户甲"]["note"])
-            stored = json.loads(plugin._persona_profile_path("main").read_text(encoding="utf-8"))
+            stored = json.loads(Path(plugin.data_file).read_text(encoding="utf-8"))
             self.assertEqual(4, stored["persona_lifecycle"]["generation"])
             self.assertEqual({}, stored["users"])
 
@@ -387,18 +399,20 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
             backup = json.loads(Path(result["backup_path"]).read_text(encoding="utf-8"))
             self.assertEqual("单人格旧资料", backup["data"]["users"]["旧用户"]["note"])
 
-    async def test_private_and_group_events_keep_concurrent_profiles_isolated(self):
+    async def test_cached_astrbot_routes_keep_concurrent_profiles_isolated(self):
         with tempfile.TemporaryDirectory() as root:
             plugin = _plugin_harness(root)
-            plugin.config["multi_persona_window_bindings"] = {
-                "default:FriendMessage:10001": "main",
-                "default:GroupMessage:20001": "alt",
-            }
             private_event = SimpleNamespace(
-                unified_msg_origin="default:FriendMessage:10001"
+                unified_msg_origin="default:FriendMessage:10001",
+                _private_companion_persona_route_decision={
+                    "plugin_persona_id": "main"
+                },
             )
             group_event = SimpleNamespace(
-                unified_msg_origin="default:GroupMessage:20001"
+                unified_msg_origin="default:GroupMessage:20001",
+                _private_companion_persona_route_decision={
+                    "plugin_persona_id": "alt"
+                },
             )
 
             private_result, group_result = await asyncio.gather(
@@ -408,38 +422,37 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(("main", ["main"]), private_result)
             self.assertEqual(("alt", ["alt"]), group_result)
-            self.assertEqual(["main"], plugin._persona_data_profiles["main"]["event_trace"])
+            self.assertEqual(["main"], plugin._data_default["event_trace"])
+            self.assertNotIn("main", plugin._persona_data_profiles)
             self.assertEqual(["alt"], plugin._persona_data_profiles["alt"]["event_trace"])
             self.assertEqual("", plugin._active_persona_scope())
 
-    async def test_explicit_binding_wins_and_conversation_persona_is_auto_bound(self):
+    async def test_legacy_binding_never_overrides_astrbot_or_auto_rebinds(self):
         with tempfile.TemporaryDirectory() as root:
             plugin = _plugin_harness(root)
+            plugin._ensure_persona_profile("alt")
             explicit_umo = "default:FriendMessage:explicit"
             plugin.config["multi_persona_window_bindings"] = {explicit_umo: "main"}
-            plugin.context = SimpleNamespace(
-                conversation_manager=_ConversationManager("alt")
+            plugin._astrbot_effective_persona_for_event = AsyncMock(
+                return_value={
+                    "persona_id": "alt",
+                    "source": "conversation",
+                    "exists": True,
+                    "explicit_none": False,
+                    "umo": explicit_umo,
+                    "error": "",
+                }
             )
 
             token, persona_id = await plugin._activate_persona_for_event_context(
                 SimpleNamespace(unified_msg_origin=explicit_umo)
             )
-            self.assertEqual("main", persona_id)
-            plugin._deactivate_persona_for_event(token)
-
-            auto_umo = "default:GroupMessage:auto"
-            event = SimpleNamespace(unified_msg_origin=auto_umo)
-            token, persona_id = await plugin._activate_persona_for_event_context(event)
             self.assertEqual("alt", persona_id)
-            self.assertEqual("alt", event.private_companion_persona_id)
-            self.assertEqual(
-                "alt",
-                plugin.config["multi_persona_window_bindings"][auto_umo],
-            )
             plugin._deactivate_persona_for_event(token)
-            plugin._save_config_if_possible.assert_awaited_once()
+            self.assertEqual({explicit_umo: "main"}, plugin.config["multi_persona_window_bindings"])
+            plugin._save_config_if_possible.assert_not_awaited()
 
-    async def test_conflict_switch_and_default_diary_migration(self):
+    async def test_default_diary_profile_migration_is_independent_of_routing(self):
         with tempfile.TemporaryDirectory() as root:
             plugin = _plugin_harness(root)
             source = plugin._ensure_persona_profile("main")
@@ -462,28 +475,11 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIn("旧日记", stored)
 
-            window = "default:FriendMessage:conflict"
-            plugin.config["multi_persona_window_bindings"] = {window: "main"}
-            conflict = plugin._switch_persona_for_window("alt", window_key=window)
-            self.assertTrue(conflict["conflict"])
-            self.assertEqual("main", plugin._persona_window_bindings()[window])
+            removed = plugin._switch_persona_for_window("alt", window_key="legacy")
+            self.assertFalse(removed["ok"])
+            self.assertEqual("plugin_persona_routing_removed", removed["code"])
 
-            source["runtime_cache"] = {"source": True}
-            target["recent_context"] = ["target"]
-            switched = plugin._switch_persona_for_window(
-                "alt",
-                window_key=window,
-                source_persona_id="main",
-                migrate_keys=["users"],
-                force=True,
-            )
-            self.assertTrue(switched["switched"])
-            self.assertTrue(switched["migrated"]["cache_cleared"])
-            self.assertNotIn("runtime_cache", source)
-            self.assertNotIn("recent_context", target)
-            self.assertEqual("alt", plugin._persona_window_bindings()[window])
-
-    async def test_forced_window_rebind_without_migration_clears_runtime_caches(self):
+    async def test_forced_window_rebind_is_retired_without_touching_caches(self):
         with tempfile.TemporaryDirectory() as root:
             plugin = _plugin_harness(root)
             source = plugin._ensure_persona_profile("main")
@@ -509,19 +505,13 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
                 force=True,
             )
 
-            self.assertTrue(switched["switched"])
-            self.assertTrue(switched["cache_cleared"])
-            self.assertNotIn("runtime_cache", source)
-            self.assertNotIn("pending_context", target)
-            self.assertEqual("", plugin._default_persona_prompt_cache)
-            self.assertEqual("", plugin._default_persona_prompt_cache_persona_id)
-            self.assertEqual({}, plugin._default_persona_prompt_cache_by_scope)
-            self.assertNotIn("main", plugin._passive_light_injection_cache)
-            self.assertNotIn("alt", plugin._passive_light_injection_cache)
-            self.assertNotIn(window, plugin._passive_state_session_cache)
-            self.assertEqual("alt", plugin._persona_window_bindings()[window])
+            self.assertFalse(switched["ok"])
+            self.assertEqual("plugin_persona_routing_removed", switched["code"])
+            self.assertIn("runtime_cache", source)
+            self.assertIn("pending_context", target)
+            self.assertIn(window, plugin._passive_state_session_cache)
 
-    async def test_stale_conflict_confirmation_cannot_migrate_wrong_persona(self):
+    async def test_removed_window_switch_cannot_migrate_any_persona(self):
         with tempfile.TemporaryDirectory() as root:
             plugin = _plugin_harness(root)
             plugin.config["multi_persona_ids"] = ["main", "work", "alt"]
@@ -543,12 +533,10 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
             )
 
             self.assertFalse(result["ok"])
-            self.assertTrue(result["conflict"])
-            self.assertTrue(result["stale_conflict"])
-            self.assertEqual("work", result["current_persona_id"])
+            self.assertEqual("plugin_persona_routing_removed", result["code"])
             self.assertEqual({"alt-user": {"name": "次人格用户"}}, target["users"])
             self.assertIn("runtime_cache", work)
-            self.assertEqual("work", plugin._persona_window_bindings()[window])
+            self.assertEqual({}, plugin._persona_window_bindings())
 
     async def test_lightweight_passive_state_cache_is_scoped_by_persona(self):
         with tempfile.TemporaryDirectory() as root:
@@ -576,7 +564,7 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("MAIN_STATE", plugin._passive_light_injection_cache["main"]["text"])
             self.assertEqual("ALT_STATE", plugin._passive_light_injection_cache["alt"]["text"])
 
-    async def test_window_switch_rolls_back_when_config_save_fails(self):
+    async def test_page_persona_selection_does_not_write_window_or_profile_data(self):
         with tempfile.TemporaryDirectory() as root:
             plugin = _plugin_harness(root)
             window = "default:FriendMessage:persistence-rollback"
@@ -593,23 +581,9 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
             target["recent_context"] = ["alt-context"]
             plugin._save_config_if_possible = AsyncMock(side_effect=[False, True])
             api = PrivateCompanionPageApi(plugin)
-            app = Quart(__name__)
 
-            async with app.test_request_context(
-                "/persona/switch",
-                method="POST",
-                json={
-                    "persona_id": "alt",
-                    "window_key": window,
-                    "source_persona_id": "main",
-                    "migrate_keys": ["users"],
-                    "force": True,
-                },
-            ):
-                response = await api.switch_persona()
-
-            self.assertFalse(response["success"])
-            self.assertEqual("main", plugin._persona_window_bindings()[window])
+            self.assertFalse(hasattr(api, "switch_persona"))
+            self.assertEqual({}, plugin._persona_window_bindings())
             self.assertEqual("main", plugin._persona_window_claims[window])
             self.assertEqual("main", plugin._page_current_persona_id)
             self.assertEqual(
@@ -617,136 +591,47 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
                 plugin._passive_state_session_cache[window],
             )
             self.assertEqual({"alt-user": {"name": "次人格用户"}}, target["users"])
-            self.assertNotIn("runtime_cache", source)
-            self.assertNotIn("recent_context", target)
-            self.assertEqual(2, plugin._save_config_if_possible.await_count)
+            self.assertIn("runtime_cache", source)
+            self.assertIn("recent_context", target)
+            plugin._save_config_if_possible.assert_not_awaited()
 
-    async def test_window_switch_reports_success_only_after_config_is_saved(self):
+    async def test_page_persona_selection_is_local_and_uses_astrbot_authority(self):
         with tempfile.TemporaryDirectory() as root:
             plugin = _plugin_harness(root)
-            window = "default:FriendMessage:persisted-binding"
+            plugin._ensure_persona_profile("alt")
             api = PrivateCompanionPageApi(plugin)
-            app = Quart(__name__)
+            paths = {path for path, _handler, _methods, _description in api.route_bindings()}
 
-            async with app.test_request_context(
-                "/persona/switch",
-                method="POST",
-                json={"persona_id": "alt", "window_key": window},
-            ):
-                response = await api.switch_persona()
+            self.assertFalse(hasattr(api, "switch_persona"))
+            self.assertNotIn("/persona/switch", paths)
+            self.assertEqual({}, plugin._persona_window_bindings())
+            plugin._save_config_if_possible.assert_not_awaited()
 
-            self.assertTrue(response["success"])
-            self.assertTrue(response["data"]["config_saved"])
-            self.assertEqual("alt", plugin._persona_window_bindings()[window])
-            plugin._save_config_if_possible.assert_awaited_once()
-
-    async def test_window_binding_survives_reload_when_astrbot_drops_dynamic_object_keys(self):
+    async def test_legacy_window_binding_file_is_backed_up_but_not_loaded(self):
         with tempfile.TemporaryDirectory() as root:
             plugin = _plugin_harness(root)
             window = "default:FriendMessage:reload-persistence"
 
-            result = await plugin._switch_persona_for_window_async(
-                "alt",
-                window_key=window,
-                persist=True,
-            )
-
-            self.assertTrue(result["ok"])
-            self.assertTrue(result["binding_store_saved"])
-            stored = json.loads(
-                (Path(root) / "persona_window_bindings.json").read_text(encoding="utf-8")
-            )
-            self.assertEqual("alt", stored["bindings"][window])
+            source = Path(root) / "persona_window_bindings.json"
+            source.write_text(json.dumps({window: "alt"}), encoding="utf-8")
+            status = plugin._retire_legacy_persona_routing_sync()
+            self.assertTrue(status["ignored"])
+            self.assertTrue(Path(status["backup_path"]).is_file())
 
             reloaded = _plugin_harness(root)
-            reloaded.config["multi_persona_window_bindings"] = {}
-            self.assertEqual("alt", reloaded._persona_window_bindings()[window])
+            reloaded._retire_legacy_persona_routing_sync()
+            self.assertEqual({}, reloaded._persona_window_bindings())
 
-    async def test_existing_config_binding_can_be_migrated_to_reload_store(self):
+    async def test_existing_config_binding_is_preserved_only_in_retired_backup(self):
         with tempfile.TemporaryDirectory() as root:
             plugin = _plugin_harness(root)
             window = "default:GroupMessage:legacy-config-binding"
             plugin.config["multi_persona_window_bindings"] = {window: "main"}
 
-            self.assertTrue(
-                plugin._save_persona_window_bindings_store_sync(
-                    plugin._persona_window_bindings()
-                )
-            )
-
-            reloaded = _plugin_harness(root)
-            reloaded.config["multi_persona_window_bindings"] = {}
-            self.assertEqual("main", reloaded._persona_window_bindings()[window])
-
-    async def test_manual_unbind_survives_reload_and_blocks_auto_rebinding(self):
-        with tempfile.TemporaryDirectory() as root:
-            plugin = _plugin_harness(root)
-            window = "default:FriendMessage:wrong-persona"
-            plugin.config["multi_persona_window_bindings"] = {window: "alt"}
-            plugin._persona_window_claims[window] = "alt"
-            plugin._passive_state_session_cache[window] = {"fingerprint": "alt-state"}
-
-            result = await plugin._unbind_persona_for_window_async(window)
-
-            self.assertTrue(result["ok"])
-            self.assertTrue(result["unbound"])
-            self.assertNotIn(window, plugin._persona_window_bindings())
-            self.assertNotIn(window, plugin._persona_window_claims)
-            self.assertNotIn(window, plugin._passive_state_session_cache)
-            stored = json.loads(
-                (Path(root) / "persona_window_bindings.json").read_text(encoding="utf-8")
-            )
-            self.assertEqual(2, stored["version"])
-            self.assertIn(window, stored["suppressed_windows"])
-
-            reloaded = _plugin_harness(root)
-            # AstrBot may retain a stale dynamic config key; the manual unbind
-            # marker must still win after restart.
-            reloaded.config["multi_persona_window_bindings"] = {window: "alt"}
-            reloaded.context = SimpleNamespace(
-                conversation_manager=_ConversationManager("alt")
-            )
-            self.assertNotIn(window, reloaded._persona_window_bindings())
-            event = SimpleNamespace(unified_msg_origin=window)
-            token, persona_id = await reloaded._activate_persona_for_event_context(event)
-            try:
-                self.assertEqual("main", persona_id)
-                self.assertNotIn(window, reloaded._persona_window_bindings())
-            finally:
-                reloaded._deactivate_persona_for_event(token)
-
-    async def test_explicit_rebind_clears_manual_unbind_marker(self):
-        with tempfile.TemporaryDirectory() as root:
-            plugin = _plugin_harness(root)
-            window = "default:GroupMessage:rebind-after-unbind"
-            plugin.config["multi_persona_window_bindings"] = {window: "main"}
-            await plugin._unbind_persona_for_window_async(window)
-
-            result = await plugin._switch_persona_for_window_async(
-                "alt",
-                window_key=window,
-                persist=True,
-            )
-
-            self.assertTrue(result["ok"])
-            self.assertEqual("alt", plugin._persona_window_bindings()[window])
-            self.assertNotIn(window, plugin._persona_window_binding_suppressions())
-
-    async def test_window_unbind_rolls_back_when_config_save_fails(self):
-        with tempfile.TemporaryDirectory() as root:
-            plugin = _plugin_harness(root)
-            window = "default:FriendMessage:unbind-rollback"
-            plugin.config["multi_persona_window_bindings"] = {window: "alt"}
-            plugin._persona_window_claims[window] = "alt"
-            plugin._save_config_if_possible = AsyncMock(side_effect=[False, True])
-
-            result = await plugin._unbind_persona_for_window_async(window)
-
-            self.assertFalse(result["ok"])
-            self.assertTrue(result["rolled_back"])
-            self.assertEqual("alt", plugin._persona_window_bindings()[window])
-            self.assertEqual("alt", plugin._persona_window_claims[window])
-            self.assertNotIn(window, plugin._persona_window_binding_suppressions())
+            status = plugin._retire_legacy_persona_routing_sync()
+            backup = json.loads(Path(status["backup_path"]).read_text(encoding="utf-8"))
+            self.assertEqual("main", backup["config_bindings"][window])
+            self.assertEqual({}, plugin._persona_window_bindings())
 
     async def test_page_route_reads_selected_persona_users_and_schedule(self):
         with tempfile.TemporaryDirectory() as root:
@@ -783,6 +668,25 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
                 },
                 alt_payload,
             )
+
+    async def test_page_route_rejects_topology_only_persona_without_creating_profile(self):
+        with tempfile.TemporaryDirectory() as root:
+            plugin = _plugin_harness(root)
+            plugin._persona_data_profiles.pop("alt", None)
+            alt_path = plugin._persona_profile_path("alt")
+            alt_path.unlink(missing_ok=True)
+            api = PrivateCompanionPageApi(plugin)
+            app = Quart(__name__)
+
+            async def read_scope():
+                return plugin._active_persona_scope()
+
+            handler = api._persona_scoped_route_handler(read_scope)
+            async with app.test_request_context("/?_persona_id=alt"):
+                active = await handler()
+
+            self.assertEqual("main", active)
+            self.assertFalse(alt_path.exists())
             self.assertEqual("", plugin._active_persona_scope())
 
     async def test_scheduler_runs_each_persona_and_uses_effective_proactive_persona(self):
@@ -886,8 +790,8 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
         plugin = SimpleNamespace(
             context=SimpleNamespace(persona_manager=PersonaManager()),
             enable_multi_persona_mode=True,
-            multi_persona_primary_id="secondary",
             plugin_specific_persona_id="secondary",
+            _primary_persona_id=lambda: "secondary",
             _page_current_persona_id="secondary",
             _persona_profile_ids=lambda: ["secondary"],
             _multi_persona_status=lambda: {
@@ -931,9 +835,8 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as root:
             plugin = _plugin_harness(root)
             persona_id = "星缘-私聊"
-            plugin.multi_persona_primary_id = persona_id
-            plugin.multi_persona_ids = [persona_id, "alt"]
-            plugin.config["multi_persona_ids"] = [persona_id, "alt"]
+            plugin.multi_persona_ids = ["main", persona_id, "alt"]
+            plugin.config["multi_persona_ids"] = ["main", persona_id, "alt"]
 
             profile = plugin._ensure_persona_profile(persona_id)
             profile["unicode_marker"] = "中文资料"
@@ -953,12 +856,8 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
                 persona_id,
                 window_key=window,
             )
-            self.assertTrue(switched["switched"])
-            self.assertEqual(persona_id, switched["persona_id"])
-            self.assertEqual(
-                persona_id,
-                plugin.config["multi_persona_window_bindings"][window],
-            )
+            self.assertFalse(switched["ok"])
+            self.assertEqual("plugin_persona_routing_removed", switched["code"])
 
     async def test_profile_filename_encoding_is_safe_and_reversible(self):
         with tempfile.TemporaryDirectory() as root:
@@ -1062,6 +961,28 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
             plugin._ensure_daily_diary.assert_awaited_once()
             plugin._maybe_settle_skill_growth.assert_awaited_once()
 
+    async def test_topology_only_persona_is_not_started_or_materialized(self):
+        with tempfile.TemporaryDirectory() as root:
+            plugin = _plugin_harness(root)
+            plugin._persona_data_profiles.pop("alt", None)
+            alt_path = plugin._persona_profile_path("alt")
+            alt_path.unlink(missing_ok=True)
+            seen: list[str] = []
+
+            async def ensure_state():
+                seen.append(plugin._active_persona_scope())
+
+            plugin._ensure_daily_state = ensure_state
+            plugin._ensure_daily_plan = AsyncMock()
+            plugin._ensure_daily_diary = AsyncMock()
+            plugin._maybe_settle_skill_growth = AsyncMock()
+
+            await plugin._startup_prepare_today()
+
+            self.assertEqual(["main"], seen)
+            self.assertEqual(["main"], plugin._scheduler_persona_ids())
+            self.assertFalse(alt_path.exists())
+
     async def test_delayed_saves_persist_each_persona_independently(self):
         with tempfile.TemporaryDirectory() as root:
             plugin = _plugin_harness(root)
@@ -1082,35 +1003,33 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
 
             await plugin._flush_scheduled_data_save()
 
-            main = (Path(root) / "persona_profiles" / "main.json").read_text(
-                encoding="utf-8"
-            )
+            main = Path(plugin.data_file).read_text(encoding="utf-8")
             alt = (Path(root) / "persona_profiles" / "alt.json").read_text(
                 encoding="utf-8"
             )
             self.assertIn('"save_marker": "main"', main)
             self.assertIn('"save_marker": "alt"', alt)
+            self.assertFalse(plugin._persona_profile_path("main").exists())
             self.assertFalse(plugin._persona_data_save_dirty)
             self.assertEqual({}, plugin._persona_data_save_tasks)
 
     async def test_terminate_queues_final_snapshot_after_timed_out_persona_writer(self):
         with tempfile.TemporaryDirectory() as root:
             plugin = _plugin_harness(root)
-            original_saver = plugin._save_persona_profile_sync
+            original_writer = plugin._write_data_snapshot_sync
             writer_started = threading.Event()
             writer_release = threading.Event()
             first_write = True
 
-            def blocking_writer(persona_id, snapshot):
+            def blocking_writer(snapshot):
                 nonlocal first_write
                 if first_write:
                     first_write = False
                     writer_started.set()
                     writer_release.wait(timeout=3)
-                return original_saver(persona_id, snapshot)
+                return original_writer(snapshot)
 
-            plugin._save_persona_profile_sync = blocking_writer
-            plugin._write_data_snapshot_sync = lambda _snapshot: 0
+            plugin._write_data_snapshot_sync = blocking_writer
             token = plugin._activate_persona_id("main")
             try:
                 plugin.data["users"]["final_marker"] = "old"
@@ -1133,25 +1052,22 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
             writer_release.set()
             await asyncio.wait_for(final_save, timeout=2.0)
 
-            stored = (Path(root) / "persona_profiles" / "main.json").read_text(
-                encoding="utf-8"
-            )
+            stored = Path(plugin.data_file).read_text(encoding="utf-8")
             self.assertIn('"final_marker": "latest"', stored)
+            self.assertFalse(plugin._persona_profile_path("main").exists())
 
     async def test_terminate_saves_all_loaded_persona_profiles(self):
         with tempfile.TemporaryDirectory() as root:
             plugin = _plugin_harness(root)
             plugin._ensure_persona_profile("main")["final_marker"] = "main"
             plugin._ensure_persona_profile("alt")["final_marker"] = "alt"
-            plugin._write_data_snapshot_sync = lambda _snapshot: 0
-
             await plugin._save_data_on_terminate()
 
-            for persona_id in ("main", "alt"):
-                stored = (
-                    Path(root) / "persona_profiles" / f"{persona_id}.json"
-                ).read_text(encoding="utf-8")
-                self.assertIn(f'"final_marker": "{persona_id}"', stored)
+            main_stored = Path(plugin.data_file).read_text(encoding="utf-8")
+            alt_stored = plugin._persona_profile_path("alt").read_text(encoding="utf-8")
+            self.assertIn('"final_marker": "main"', main_stored)
+            self.assertIn('"final_marker": "alt"', alt_stored)
+            self.assertFalse(plugin._persona_profile_path("main").exists())
 
     async def test_sqlite_terminate_preserves_bookshelf_tombstone_on_restart(self):
         with tempfile.TemporaryDirectory() as root:

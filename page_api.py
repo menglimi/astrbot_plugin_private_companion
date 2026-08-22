@@ -38,7 +38,8 @@ def _multi_persona_page_context(function):
     async def wrapper(self, *args, **kwargs):
         plugin = getattr(self, "plugin", None)
         activator = getattr(plugin, "_activate_persona_id", None)
-        pid = getattr(plugin, "_page_current_persona_id", "") if plugin is not None else ""
+        primary_getter = getattr(plugin, "_primary_persona_id", None)
+        pid = primary_getter() if callable(primary_getter) else ""
         active_getter = getattr(plugin, "_active_persona_scope", None)
         active = str(active_getter() if callable(active_getter) else "").strip()
         token = (
@@ -682,10 +683,14 @@ class PrivateCompanionPageApi(
                 payload = await request.get_json(silent=True) or {}
                 if isinstance(payload, dict):
                     persona_id = self._single_line(payload.get("_persona_id"), 96)
-            known_getter = getattr(plugin, "_persona_profile_ids", None)
-            known = set(known_getter() if callable(known_getter) else [])
+            config_getter = getattr(plugin, "_persona_config_profile_ids", None)
+            known = set(config_getter() if callable(config_getter) else [])
+            primary_getter = getattr(plugin, "_primary_persona_id", None)
+            primary = str(primary_getter() if callable(primary_getter) else "").strip()
+            if primary:
+                known.add(primary)
             if persona_id not in known:
-                persona_id = str(getattr(plugin, "_page_current_persona_id", "") or "").strip()
+                persona_id = primary
             token = (
                 activator(persona_id, allow_inactive=True)
                 if callable(activator) and persona_id
@@ -880,8 +885,6 @@ class PrivateCompanionPageApi(
             ("/setup/daily/run", self.run_setup_daily_generation, ["POST"], "Private Companion Page setup guide daily generation"),
             ("/daily/detail/regenerate", self.regenerate_daily_detail_segment, ["POST"], "Private Companion Page regenerate one daily detail segment"),
             ("/roleplay/personas", self.list_roleplay_personas, ["GET"], "Private Companion Page roleplay personas"),
-            ("/persona/switch", self.switch_persona, ["POST"], "Private Companion Page switch persona"),
-            ("/persona/unbind", self.unbind_persona, ["POST"], "Private Companion Page unbind persona window"),
             ("/persona/migrate", self.migrate_persona_profile, ["POST"], "Private Companion Page migrate persona profile"),
             ("/persona/reset-current", self.reset_current_persona, ["POST"], "Private Companion Page reset current persona"),
             ("/persona/config-state", self.get_persona_config_state, ["GET"], "Private Companion Page persona config state"),
@@ -889,8 +892,6 @@ class PrivateCompanionPageApi(
             ("/persona/settings/update", self.update_persona_settings, ["POST"], "Private Companion Page update persona settings"),
             ("/persona/config/detach-preview", self.preview_persona_config_detach, ["POST"], "Private Companion Page preview persona config detach"),
             ("/persona/config/detach-apply", self.apply_persona_config_detach, ["POST"], "Private Companion Page apply persona config detach"),
-            ("/persona/window-bindings", self.persona_window_bindings, ["GET", "POST"], "Private Companion Page persona window bindings"),
-            ("/persona/window-bindings/delete", self.delete_persona_window_binding, ["POST"], "Private Companion Page delete persona window binding"),
             ("/roleplay/draft_from_persona", self.generate_roleplay_draft_from_persona, ["POST"], "Private Companion Page roleplay draft from persona"),
             ("/roleplay/standardize_persona", self.standardize_persona_from_questionnaire, ["POST"], "Private Companion Page roleplay persona standardization"),
             ("/roleplay/persona_style_scenarios", self.generate_persona_style_scenarios, ["POST"], "Private Companion Page roleplay persona style scenarios"),
@@ -909,8 +910,6 @@ class PrivateCompanionPageApi(
             "/extension-migration-notice",
             "/extension-migration-notice/update",
             "/roleplay/personas",
-            "/persona/switch",
-            "/persona/unbind",
             "/persona/migrate",
             "/persona/reset-current",
             "/persona/config-state",
@@ -918,8 +917,6 @@ class PrivateCompanionPageApi(
             "/persona/settings/update",
             "/persona/config/detach-preview",
             "/persona/config/detach-apply",
-            "/persona/window-bindings",
-            "/persona/window-bindings/delete",
         }
         bindings: list[tuple[str, Any, list[str], str]] = []
         for path, handler, methods, desc in routes:
@@ -4771,7 +4768,12 @@ class PrivateCompanionPageApi(
         try:
             active_getter = getattr(self.plugin, "_active_persona_scope", None)
             active_persona = str(active_getter() if callable(active_getter) else "").strip()
-            primary_persona = str(getattr(self.plugin, "multi_persona_primary_id", "") or "").strip()
+            primary_getter = getattr(self.plugin, "_primary_persona_id", None)
+            primary_persona = str(
+                primary_getter()
+                if callable(primary_getter)
+                else getattr(self.plugin, "plugin_specific_persona_id", "")
+            ).strip()
             if (
                 active_persona
                 and bool(getattr(self.plugin, "enable_multi_persona_mode", False))
@@ -4865,13 +4867,11 @@ class PrivateCompanionPageApi(
                     mode_value = changed.get("provider_config_mode") or self._config_get("provider_config_mode") or getattr(self.plugin, "provider_config_mode", "quick")
                     provider_payload = self._expand_provider_overwrite_bundle(str(mode_value), provider_payload)
                 changed.update(provider_payload)
-            # Enabling multi-persona mode depends on the primary ID being
-            # installed on the runtime object first.  JSON object order is not
-            # a safe dependency boundary: the panel commonly sends the toggle
-            # before the topology fields in the same request.
+            # Enabling depends on the single authoritative primary ID being
+            # installed before the mode transition.
             if bool(changed.get("enable_multi_persona_mode")):
                 ordered_changed: dict[str, Any] = {}
-                for dependency_key in ("multi_persona_primary_id", "multi_persona_ids"):
+                for dependency_key in ("plugin_specific_persona_id", "multi_persona_ids"):
                     if dependency_key in changed:
                         ordered_changed[dependency_key] = changed[dependency_key]
                 ordered_changed.update(changed)
@@ -5055,10 +5055,8 @@ class PrivateCompanionPageApi(
             key: deepcopy(getattr(self.plugin, key, None))
             for key in (
                 "enable_multi_persona_mode",
-                "multi_persona_primary_id",
                 "multi_persona_ids",
                 "plugin_specific_persona_id",
-                "_single_mode_plugin_specific_persona_id",
                 "_page_current_persona_id",
             )
         }
@@ -5691,6 +5689,7 @@ class PrivateCompanionPageApi(
             await self._recover_stale_troubleshooting_proactive_test()
             async with self.plugin._data_lock:
                 data = deepcopy(self.plugin.data)
+                default_data = deepcopy(getattr(self.plugin, "_data_default", {}) or {})
             users = data.get("users") if isinstance(data.get("users"), dict) else {}
             groups = data.get("groups") if isinstance(data.get("groups"), dict) else {}
             tune_result = await self._maybe_apply_personality_iteration_auto_tune(users, groups)
@@ -5719,6 +5718,12 @@ class PrivateCompanionPageApi(
                 all_sqlite_items.append(item)
             sqlite_status = {**sqlite_status, "items": all_sqlite_items}
             passive_no_reply = self._passive_no_reply_summary(data)
+            routing_root = default_data.get("persona_routing_warnings")
+            persona_routing_warnings = (
+                routing_root.get("items", [])
+                if isinstance(routing_root, dict) and isinstance(routing_root.get("items"), list)
+                else []
+            )
             screen_companion = self._screen_companion_summary(data)
             qzone = self._qzone_summary(data)
             all_recent_events = self._troubleshooting_recent_events(
@@ -5727,6 +5732,7 @@ class PrivateCompanionPageApi(
                 proactive_candidates=proactive_candidates,
                 token_stats=token_stats,
                 passive_no_reply=passive_no_reply,
+                persona_routing_warnings=persona_routing_warnings,
             )
             all_checks = self._troubleshooting_checks(
                 data=data,
@@ -10295,6 +10301,7 @@ class PrivateCompanionPageApi(
         proactive_candidates: dict[str, Any],
         token_stats: dict[str, Any],
         passive_no_reply: dict[str, Any] | None = None,
+        persona_routing_warnings: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
 
@@ -10343,6 +10350,42 @@ class PrivateCompanionPageApi(
                 jump="troubleshooting",
                 warning_type=self._single_line(item.get("warning_type"), 64),
                 warning_code=self._single_line(item.get("warning_code"), 120),
+            )
+
+        for item in list(persona_routing_warnings or [])[:120]:
+            if not isinstance(item, dict):
+                continue
+            requested = self._single_line(item.get("requested_persona_id"), 96) or "未解析"
+            active = self._single_line(item.get("active_persona_id"), 96) or "未激活"
+            reason = self._single_line(item.get("reason_code"), 100) or "unknown"
+            count = max(1, self._int(item.get("count")))
+            disposition = self._single_line(item.get("disposition"), 24) or "fallback"
+            detail = "；".join(
+                part
+                for part in (
+                    f"AstrBot 人格 {requested}",
+                    f"插件人格 {active}",
+                    f"原因 {reason}",
+                    f"已合并 {count} 次" if count > 1 else "",
+                    f"会话 {self._single_line(item.get('window_key'), 100)}" if item.get("window_key") else "",
+                )
+                if part
+            )
+            add(
+                self._single_line(item.get("level"), 12) or "warn",
+                "人格路由",
+                (
+                    "被动消息已回退主人格"
+                    if disposition.startswith("fallback")
+                    else "旧插件窗口绑定已忽略"
+                    if disposition == "ignored"
+                    else "主动消息人格校验未通过"
+                ),
+                detail,
+                ts=self._float(item.get("last_ts")),
+                action="检查 AstrBot 会话规则、已启用人格和人格配置健康状态",
+                jump="config",
+                warning_code=self._single_line(item.get("code"), 120) or "persona.route.unknown",
             )
 
         for item in proactive_tasks.get("audit_items", [])[:40]:
@@ -13155,9 +13198,11 @@ class PrivateCompanionPageApi(
                 for pid in configured_ids:
                     if pid and pid not in known:
                         items.append({"id": pid, "label": pid, "source": "独立资料", "is_default": False})
+            primary_getter = getattr(self.plugin, "_primary_persona_id", None)
             current = self._single_line(
-                getattr(self.plugin, "_page_current_persona_id", "")
-                or (getattr(self.plugin, "multi_persona_primary_id", "") if enabled else getattr(self.plugin, "plugin_specific_persona_id", "")),
+                primary_getter()
+                if callable(primary_getter)
+                else getattr(self.plugin, "plugin_specific_persona_id", ""),
                 120,
             )
             default_id = ""
@@ -13177,9 +13222,10 @@ class PrivateCompanionPageApi(
                     if callable(status_getter)
                     else {
                         "enabled": enabled,
-                        "primary": self._single_line(getattr(self.plugin, "multi_persona_primary_id", ""), 120),
+                        "primary": current,
                         "profiles": configured_ids,
                         "window_bindings": {},
+                        "routing_authority": "astrbot",
                     }
                 )
                 response["multi_persona"]["current"] = current or default_id
@@ -13187,47 +13233,6 @@ class PrivateCompanionPageApi(
         except Exception as exc:
             logger.warning(f"[PrivateCompanionPage] 获取人格列表失败: {exc}", exc_info=True)
             return self._ok({"items": self._fallback_roleplay_persona_items(), "current": "", "default": ""})
-
-    async def switch_persona(self) -> dict[str, Any]:
-        payload = await request.get_json(silent=True) or {}
-        if not bool(getattr(self.plugin, "enable_multi_persona_mode", False)):
-            return self._ok({"enabled": False, "switched": False, "message": "多人格支持模式未开启"})
-        persona_id = str(payload.get("persona_id") or payload.get("id") or "").strip()
-        window_key = str(payload.get("window_key") or payload.get("umo") or "").strip()
-        source_id = str(payload.get("source_persona_id") or "").strip()
-        migrate_keys = payload.get("migrate_keys") if isinstance(payload.get("migrate_keys"), list) else []
-        switcher = getattr(
-            self.plugin,
-            "_switch_persona_for_window_async",
-            None,
-        )
-        switch_args = {
-            "window_key": window_key,
-            "source_persona_id": source_id,
-            "migrate_keys": migrate_keys,
-            "force": bool(payload.get("force")),
-        }
-        if window_key and not callable(switcher):
-            return self._error("当前运行态缺少安全窗口绑定事务，请重载插件后重试")
-        result = (
-            await switcher(
-                persona_id,
-                persist=bool(window_key),
-                **switch_args,
-            )
-            if callable(switcher)
-            else self.plugin._switch_persona_for_window(
-                persona_id,
-                **switch_args,
-            )
-        )
-        if not result.get("ok"):
-            if result.get("conflict"):
-                return self._ok(result)
-            return self._error(result.get("message") or "人格窗口存在冲突")
-        if result.get("window_key") and result.get("config_saved") is not True:
-            return self._error("窗口绑定配置未确认落盘，本次切换已取消")
-        return self._ok(result)
 
     async def get_persona_config_state(self) -> dict[str, Any]:
         persona_id = self._single_line(request.args.get("persona_id"), 96)
@@ -13286,40 +13291,6 @@ class PrivateCompanionPageApi(
         )
         return self._ok(result) if result.get("ok") else self._error(result.get("message") or "脱离主人格失败", status_code=int(result.get("status_code") or 400))
 
-    async def persona_window_bindings(self) -> dict[str, Any]:
-        if request.method == "GET":
-            bindings = getattr(self.plugin, "_persona_window_bindings", lambda: {})()
-            return self._ok(
-                {
-                    "revision": int(getattr(self.plugin, "_persona_window_bindings_revision", 0) or 0),
-                    "bindings": bindings,
-                }
-            )
-        payload = await request.get_json(silent=True) or {}
-        mutator = getattr(self.plugin, "_mutate_persona_window_binding_async", None)
-        if not callable(mutator):
-            return self._error("当前版本不支持窗口绑定管理", status_code=503)
-        result = await mutator(
-            action="upsert",
-            window_key=payload.get("window_key") or payload.get("umo"),
-            persona_id=payload.get("persona_id"),
-            previous_window_key=payload.get("previous_window_key"),
-            expected_revision=payload.get("expected_revision"),
-        )
-        return self._ok(result) if result.get("ok") else self._error(result.get("message") or "窗口绑定保存失败", status_code=int(result.get("status_code") or 400))
-
-    async def delete_persona_window_binding(self) -> dict[str, Any]:
-        payload = await request.get_json(silent=True) or {}
-        mutator = getattr(self.plugin, "_mutate_persona_window_binding_async", None)
-        if not callable(mutator):
-            return self._error("当前版本不支持窗口绑定管理", status_code=503)
-        result = await mutator(
-            action="delete",
-            window_key=payload.get("window_key") or payload.get("umo"),
-            expected_revision=payload.get("expected_revision"),
-        )
-        return self._ok(result) if result.get("ok") else self._error(result.get("message") or "窗口绑定删除失败", status_code=int(result.get("status_code") or 400))
-
     async def migrate_persona_profile(self) -> dict[str, Any]:
         payload = await request.get_json(silent=True) or {}
         if not bool(getattr(self.plugin, "enable_multi_persona_mode", False)):
@@ -13334,15 +13305,6 @@ class PrivateCompanionPageApi(
             else self.plugin._migrate_persona_profile(source_id, target_id, keys)
         )
         return self._ok(result) if result.get("ok") else self._error(result.get("message") or "人格资料迁移失败")
-
-    async def unbind_persona(self) -> dict[str, Any]:
-        payload = await request.get_json(silent=True) or {}
-        window_key = str(payload.get("window_key") or payload.get("umo") or "").strip()
-        unbinder = getattr(self.plugin, "_unbind_persona_for_window_async", None)
-        if not callable(unbinder):
-            return self._error("当前运行态缺少安全窗口解绑事务，请重载插件后重试")
-        result = await unbinder(window_key)
-        return self._ok(result) if result.get("ok") else self._error(result.get("message") or "解除窗口绑定失败")
 
     async def reset_current_persona(self) -> dict[str, Any]:
         payload = await request.get_json(silent=True) or {}
@@ -21490,9 +21452,7 @@ class PrivateCompanionPageApi(
             "deepseek_peak_match_keywords",
             "plugin_specific_persona_id",
             "enable_multi_persona_mode",
-            "multi_persona_primary_id",
             "multi_persona_ids",
-            "multi_persona_window_bindings",
             "target_user_ids",
             "private_user_aliases",
             "private_user_delivery_aliases",
@@ -22169,7 +22129,12 @@ class PrivateCompanionPageApi(
             values.pop(key, None)
         active_getter = getattr(self.plugin, "_active_persona_scope", None)
         active_persona = str(active_getter() if callable(active_getter) else "").strip()
-        primary_persona = str(getattr(self.plugin, "multi_persona_primary_id", "") or "").strip()
+        primary_getter = getattr(self.plugin, "_primary_persona_id", None)
+        primary_persona = str(
+            primary_getter()
+            if callable(primary_getter)
+            else getattr(self.plugin, "plugin_specific_persona_id", "")
+        ).strip()
         manifest_getter = getattr(self.plugin, "_persona_scope_manifest", None)
         setting_getter = getattr(self.plugin, "get_persona_setting", None)
         if active_persona and active_persona != primary_persona and callable(manifest_getter) and callable(setting_getter):
@@ -23725,38 +23690,31 @@ class PrivateCompanionPageApi(
             if callable(transition):
                 transition(enabled)
             self.plugin.enable_multi_persona_mode = enabled
-            if enabled and not self.plugin.multi_persona_primary_id:
-                fallback_id = self.plugin._sanitize_persona_id(
-                    getattr(self.plugin, "_single_mode_plugin_specific_persona_id", "")
-                    or getattr(self.plugin, "plugin_specific_persona_id", "")
-                )
-                if fallback_id:
-                    self.plugin.multi_persona_primary_id = fallback_id
-                    self.plugin.multi_persona_ids = [fallback_id]
-                    self._set_config_value("multi_persona_primary_id", fallback_id)
-                    self._set_config_value("multi_persona_ids", [fallback_id])
-            if enabled and self.plugin.multi_persona_primary_id:
-                self.plugin.plugin_specific_persona_id = self.plugin.multi_persona_primary_id
-                self.plugin._page_current_persona_id = self.plugin.multi_persona_primary_id
-            elif not enabled:
-                self.plugin.plugin_specific_persona_id = str(getattr(self.plugin, "_single_mode_plugin_specific_persona_id", "") or "")
+            primary_getter = getattr(self.plugin, "_primary_persona_id", None)
+            primary = primary_getter() if callable(primary_getter) else ""
+            if primary:
+                self.plugin._page_current_persona_id = primary
             return
         if key == "plugin_specific_persona_id":
-            normalized = str(value or "").strip()[:160]
-            if not self.plugin.enable_multi_persona_mode:
-                self.plugin._single_mode_plugin_specific_persona_id = normalized
-                self.plugin.plugin_specific_persona_id = normalized
-            return
-        if key == "multi_persona_primary_id":
-            self.plugin.multi_persona_primary_id = self.plugin._sanitize_persona_id(value)
-            if self.plugin.enable_multi_persona_mode and self.plugin.multi_persona_primary_id:
-                self.plugin.plugin_specific_persona_id = self.plugin.multi_persona_primary_id
-                self.plugin._page_current_persona_id = self.plugin.multi_persona_primary_id
+            normalizer = getattr(self.plugin, "_sanitize_persona_id", None)
+            normalized = normalizer(value) if callable(normalizer) else str(value or "").strip()[:96]
+            if bool(getattr(self.plugin, "enable_multi_persona_mode", False)):
+                current_getter = getattr(self.plugin, "_primary_persona_id", None)
+                current = current_getter() if callable(current_getter) else ""
+                if current and normalized != current:
+                    raise ValueError("多人格模式下不能切换主人格，请先关闭多人格模式")
+            self.plugin.plugin_specific_persona_id = normalized
+            self.plugin._page_current_persona_id = normalized
+            if normalized:
+                self.plugin._multi_persona_primary_requires_configuration = False
+                self.plugin._multi_persona_primary_invalid = False
+                self.plugin._multi_persona_enable_requested = bool(
+                    getattr(self.plugin, "_multi_persona_enable_requested", False)
+                    or getattr(self.plugin, "enable_multi_persona_mode", False)
+                )
             return
         if key == "multi_persona_ids":
             self.plugin.multi_persona_ids = self.plugin._configured_multi_persona_ids()
-            return
-        if key == "multi_persona_window_bindings":
             return
         if key == "photo_reference_catalog":
             loaded = load_catalog(
@@ -24717,9 +24675,7 @@ class PrivateCompanionPageApi(
             "enable_body_monitor_integration",
             "plugin_specific_persona_id",
             "enable_multi_persona_mode",
-            "multi_persona_primary_id",
             "multi_persona_ids",
-            "multi_persona_window_bindings",
             "target_user_ids",
             "private_user_aliases",
             "private_user_delivery_aliases",

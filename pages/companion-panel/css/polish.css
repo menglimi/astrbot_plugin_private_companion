@@ -235,6 +235,58 @@
   overflow-wrap: anywhere;
 }
 
+#panel-config .persona-primary-setup {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 280px) auto;
+  align-items: end;
+  gap: 10px;
+  margin-bottom: 12px;
+  border: 1px solid color-mix(in srgb, #b7791f 42%, var(--line));
+  border-radius: 8px;
+  padding: 11px;
+  background: color-mix(in srgb, #fff7df 72%, var(--panel));
+}
+
+#panel-config .persona-primary-setup header,
+#panel-config .persona-primary-setup label,
+#panel-config .persona-primary-readonly {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+#panel-config .persona-primary-setup header span,
+#panel-config .persona-primary-setup label,
+#panel-config .persona-primary-readonly span,
+#panel-config .persona-primary-readonly small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+#panel-config .persona-primary-setup select {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 0 9px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+
+#panel-config .persona-primary-readonly strong,
+#panel-config .persona-primary-readonly code {
+  overflow-wrap: anywhere;
+}
+
+#panel-config .multi-persona-legacy-routing {
+  margin-bottom: 12px;
+  border-color: color-mix(in srgb, #b7791f 34%, var(--line));
+}
+
+#panel-config .multi-persona-legacy-routing code {
+  overflow-wrap: anywhere;
+}
+
 #panel-config .persona-topology-form {
   display: grid;
   grid-template-columns: minmax(180px, 260px) minmax(0, 1fr) auto;
@@ -426,59 +478,13 @@
   font-size: 14px;
 }
 
-#panel-config .multi-persona-binding-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px 12px;
-  min-width: 0;
-  border-top: 1px solid var(--line-soft);
-  padding: 9px 0;
-}
-
-#panel-config .multi-persona-binding-route {
-  display: flex;
-  flex: 1 1 220px;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 8px;
-  min-width: 0;
-}
-
-#panel-config .multi-persona-binding-route code {
-  max-width: 100%;
-  overflow-wrap: anywhere;
-  color: var(--ink);
-  font-size: 11px;
-}
-
-#panel-config .multi-persona-binding-route em {
-  color: var(--muted);
-  font-size: 12px;
-  font-style: normal;
-}
-
-#panel-config .multi-persona-binding-actions,
-#panel-config .multi-persona-binding-form-actions {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-#panel-config .multi-persona-binding-actions button,
-#panel-config .multi-persona-binding-form-actions button {
-  min-height: 30px;
-  padding-inline: 9px;
-  font-size: 11px;
-}
-
 @media (max-width: 760px) {
   #panel-config .config-persona-selector,
   #panel-config .config-persona-top-row,
   #panel-config .config-stats,
   #panel-config .persona-config-admin-grid,
-  #panel-config .persona-config-admin-fields {
+  #panel-config .persona-config-admin-fields,
+  #panel-config .persona-primary-setup {
     grid-template-columns: 1fr;
   }
 
@@ -4113,6 +4119,50 @@ small {
   text-align: right;
 }
 
+.folio-persona-context {
+  display: flex;
+  min-width: 0;
+  max-width: min(58%, 720px);
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.page-persona-selector {
+  display: inline-flex;
+  min-width: 210px;
+  align-items: center;
+  gap: 8px;
+}
+
+.page-persona-selector[hidden] {
+  display: none;
+}
+
+.page-persona-selector > span {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.page-persona-selector select {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 0 30px 0 10px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 700;
+}
+
+.folio-persona-context #subtitle {
+  max-width: 260px;
+}
+
 .folio-stats {
   grid-template-columns: repeat(4, minmax(100px, 1fr));
 }
@@ -4222,6 +4272,23 @@ small {
   #subtitle {
     max-width: none;
     text-align: left;
+  }
+
+  .folio-persona-context {
+    width: 100%;
+    max-width: none;
+    align-items: stretch;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .page-persona-selector {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .folio-persona-context #subtitle {
+    max-width: none;
   }
 
   .folio-stats {

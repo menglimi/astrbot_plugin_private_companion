@@ -229,7 +229,13 @@
             <div class="folio-eyebrow"><b>●</b> PRIVATE COMPANION</div>
             <h1 class="folio-title">陪伴面板</h1>
           </div>
-          <p id="subtitle">读取运行态中...</p>
+          <div class="folio-persona-context">
+            <label id="pagePersonaSelector" class="page-persona-selector" for="pagePersonaSelect" hidden>
+              <span>界面人格</span>
+              <select id="pagePersonaSelect" aria-label="切换当前界面显示的人格"></select>
+            </label>
+            <p id="subtitle">读取运行态中...</p>
+          </div>
         </div>
         <div class="folio-stats" id="stats"></div>
       </div>
@@ -1452,10 +1458,10 @@ QQ空间 = 公开札记
               <div class="config-fold-heading">
                 <span class="config-fold-kicker">配置工作台</span>
                 <h2>通用设置</h2>
-                <p>多人格拓扑、窗口绑定、群聊范围、数据维护与页面外观。</p>
+                <p>多人格拓扑、AstrBot 路由状态、群聊范围、数据维护与页面外观。</p>
                 <span class="config-fold-preview" aria-label="包含的配置范围">
                   <span>人格管理</span>
-                  <span>窗口绑定</span>
+                  <span>AstrBot 路由</span>
                   <span>群聊范围</span>
                   <span>页面外观</span>
                 </span>

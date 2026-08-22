@@ -81,8 +81,6 @@ class PageSettingNormalizerMixin:
             return self._normalize_bool_value(value)
         if key == "enable_multi_persona_mode":
             return self._normalize_bool_value(value)
-        if key == "multi_persona_primary_id":
-            return self.plugin._sanitize_persona_id(value)
         if key == "multi_persona_ids":
             raw = value if isinstance(value, (list, tuple, set)) else re.split(r"[\s,，、]+", str(value or ""))
             result = []
@@ -91,14 +89,6 @@ class PageSettingNormalizerMixin:
                 if pid and pid not in result:
                     result.append(pid)
             return result
-        if key == "multi_persona_window_bindings":
-            if not isinstance(value, dict):
-                return {}
-            return {
-                str(window).strip(): self.plugin._sanitize_persona_id(persona)
-                for window, persona in value.items()
-                if str(window).strip() and self.plugin._sanitize_persona_id(persona)
-            }
         if key in {"enable_cycle_state", "enable_advanced_cycle_strategy", "advanced_cycle_link_intensity"}:
             return self._normalize_bool_value(value)
         if key == "advanced_cycle_start_offset":
@@ -202,7 +192,7 @@ class PageSettingNormalizerMixin:
         if key == "target_user_ids":
             return self._normalize_private_target_id_list(value)
         if key == "plugin_specific_persona_id":
-            return str(value or "").strip()[:160]
+            return self.plugin._sanitize_persona_id(value)
         if key == "page_font_family":
             text = str(value or "original").strip().lower()
             return text if text in PAGE_FONT_NAMES else "original"

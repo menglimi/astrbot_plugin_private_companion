@@ -3729,10 +3729,17 @@ class ProactiveMixin(UserRestGateMixin):
         active = str(active_getter() if callable(active_getter) else "").strip()
         if not bool(getattr(self, "enable_multi_persona_mode", False)):
             return [""]
-        getter = getattr(self, "_configured_multi_persona_ids", None)
-        ids = list(getter() if callable(getter) else [])
-        if not ids:
-            ids = [str(getattr(self, "multi_persona_primary_id", "") or "").strip()]
+        primary_getter = getattr(self, "_primary_persona_id", None)
+        try:
+            primary = str(primary_getter() or "").strip() if callable(primary_getter) else ""
+        except Exception:
+            primary = ""
+        primary = primary or str(getattr(self, "plugin_specific_persona_id", "") or "").strip()
+        configured_getter = getattr(self, "_persona_config_profile_ids", None)
+        configured_profiles = list(configured_getter() if callable(configured_getter) else [])
+        enabled_getter = getattr(self, "_configured_multi_persona_ids", None)
+        enabled_ids = set(enabled_getter() if callable(enabled_getter) else [])
+        ids = [primary, *(pid for pid in configured_profiles if pid in enabled_ids)]
         enabled = list(dict.fromkeys(item for item in ids if item))
         if active and active in enabled:
             return [active]

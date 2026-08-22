@@ -94,7 +94,7 @@ class ScopeEntry:
 
 # These groups are shared infrastructure or account-level integrations.  All
 # other groups default to persona scope; the key-level exceptions below keep
-# mixed groups explicit without maintaining a fragile 927-item allowlist.
+# mixed groups explicit without maintaining a fragile key-by-key allowlist.
 COMMON_GROUPS = frozenset(
     {
         "balance_awareness_config",
@@ -111,10 +111,9 @@ COMMON_KEYS = frozenset(
         "enable_p4_b_legacy_score_isolation",
         "bot_scope_mode",
         "bot_scope_ids",
+        "plugin_specific_persona_id",
         "enable_multi_persona_mode",
-        "multi_persona_primary_id",
         "multi_persona_ids",
-        "multi_persona_window_bindings",
         "storage_backend",
         "storage_sqlite_path",
         "enable_standalone_webui",
@@ -266,7 +265,6 @@ SAFETY_OR_KEYS = frozenset(
 IDENTITY_KEYS = frozenset(
     {
         "bot_name",
-        "plugin_specific_persona_id",
         "default_nickname",
         "default_style",
         "reply_style_prompt",
@@ -336,7 +334,7 @@ def _schema_default(field: Mapping[str, Any]) -> Any:
 
 
 def _iter_grouped_leaves(schema: Mapping[str, Any]) -> Iterator[tuple[str, str, dict[str, Any]]]:
-    """Yield ``(key, group, field)`` for the canonical 927 grouped leaves."""
+    """Yield ``(key, group, field)`` for all canonical grouped leaves."""
 
     def walk(mapping: Mapping[str, Any], group: str) -> Iterator[tuple[str, str, dict[str, Any]]]:
         for key, node in mapping.items():

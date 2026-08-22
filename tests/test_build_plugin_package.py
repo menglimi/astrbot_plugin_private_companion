@@ -43,7 +43,6 @@ def test_plugin_package_contains_complete_runtime_tree(tmp_path: Path) -> None:
         f"{ARCHIVE_ROOT}/plugin_bootstrap.py",
         f"{ARCHIVE_ROOT}/unified_person_registry.py",
         f"{ARCHIVE_ROOT}/persona_config.py",
-        f"{ARCHIVE_ROOT}/persona_window_bindings.py",
         f"{ARCHIVE_ROOT}/pages/companion-panel/index.html",
         f"{ARCHIVE_ROOT}/pages/陪伴面板/index.html",
         f"{ARCHIVE_ROOT}/storage/backend_base.py",

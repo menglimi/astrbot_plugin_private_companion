@@ -38,6 +38,17 @@ class QzoneRuntimeMixin:
         "instance",
     )
 
+    def _qzone_primary_persona_id(self) -> str:
+        getter = getattr(self, "_primary_persona_id", None)
+        if callable(getter):
+            try:
+                primary = getter()
+            except Exception:
+                primary = ""
+            if str(primary or "").strip():
+                return str(primary).strip()
+        return str(getattr(self, "plugin_specific_persona_id", "") or "").strip()
+
     def _qzone_operation_lock(self, name: str) -> asyncio.Lock:
         attr = f"_qzone_{name}_lock"
         lock = getattr(self, attr, None)
@@ -52,7 +63,7 @@ class QzoneRuntimeMixin:
             return True
         active_getter = getattr(self, "_active_persona_scope", None)
         active = str(active_getter() if callable(active_getter) else "").strip()
-        primary = str(getattr(self, "multi_persona_primary_id", "") or "").strip()
+        primary = self._qzone_primary_persona_id()
         return bool(primary and active == primary)
 
     def _qzone_activate_primary_persona(self) -> Any | None:
@@ -60,7 +71,7 @@ class QzoneRuntimeMixin:
             return None
         active_getter = getattr(self, "_active_persona_scope", None)
         active = str(active_getter() if callable(active_getter) else "").strip()
-        primary = str(getattr(self, "multi_persona_primary_id", "") or "").strip()
+        primary = self._qzone_primary_persona_id()
         if not primary or active == primary:
             return None
         activator = getattr(self, "_activate_persona_id", None)

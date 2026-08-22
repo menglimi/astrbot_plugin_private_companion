@@ -236,19 +236,6 @@ class GameIntegrationMixin:
             if not configured_known or event_persona in configured:
                 return event_persona
             return ""
-        if multi_persona:
-            session_id = self._game_clean_text(source.get("session_id"), 200)
-            bindings_getter = getattr(self, "_persona_window_bindings", None)
-            if session_id and callable(bindings_getter):
-                try:
-                    bindings = bindings_getter()
-                except Exception:
-                    bindings = {}
-                bound = self._game_clean_persona_id(
-                    bindings.get(session_id) if isinstance(bindings, dict) else "",
-                )
-                if bound and (not configured_known or bound in configured):
-                    return bound
         for getter_name in ("_active_persona_scope", "_effective_plugin_persona_id"):
             getter = getattr(self, getter_name, None)
             if callable(getter):
@@ -259,10 +246,17 @@ class GameIntegrationMixin:
                 if value:
                     if not multi_persona or not configured_known or value in configured:
                         return value
-        for attr_name in ("plugin_specific_persona_id", "multi_persona_primary_id"):
-            value = self._game_clean_persona_id(getattr(self, attr_name, ""))
-            if value and (not multi_persona or not configured_known or value in configured):
-                return value
+        primary_getter = getattr(self, "_primary_persona_id", None)
+        try:
+            primary = self._game_clean_persona_id(
+                primary_getter()
+                if callable(primary_getter)
+                else getattr(self, "plugin_specific_persona_id", "")
+            )
+        except Exception:
+            primary = ""
+        if primary and (not multi_persona or not configured_known or primary in configured):
+            return primary
         if multi_persona and configured_order:
             return configured_order[0]
         return "default"

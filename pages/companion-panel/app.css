@@ -484,7 +484,8 @@
 }
 
 .persona-follow-button {
-  margin-left: 6px;
+  min-width: 68px;
+  margin-left: 0;
   padding: 3px 8px;
   border: 1px solid var(--line, #d7dee8);
   border-radius: 5px;
@@ -493,11 +494,27 @@
   cursor: pointer;
   font-size: 11px;
   line-height: 1.35;
+  white-space: nowrap;
 }
 
 .persona-follow-button:hover {
   border-color: var(--accent, #2c6cb0);
   background: color-mix(in srgb, var(--accent, #2c6cb0) 8%, var(--surface, #fff));
+}
+
+.persona-follow-button.is-confirming,
+.persona-follow-button.is-confirming:hover {
+  border-color: #b9382f;
+  background: #b9382f;
+  color: #fff;
+}
+
+.feature-switch-meta .persona-follow-button,
+.feature-param-main header .persona-follow-button,
+.feature-detail-taxonomy .persona-follow-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .feature-param-control .persona-follow-button {

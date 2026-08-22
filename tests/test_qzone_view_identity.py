@@ -105,7 +105,7 @@ class QzoneViewIdentityTests(unittest.IsolatedAsyncioTestCase):
     async def test_secondary_persona_treats_bot_uin_as_shared_account(self) -> None:
         harness = _QzoneViewHarness(BOT_UIN)
         harness.enable_multi_persona_mode = True
-        harness.multi_persona_primary_id = "main"
+        harness.plugin_specific_persona_id = "main"
         harness._active_persona_scope = lambda: "alt"
 
         result = json.loads(
@@ -128,7 +128,7 @@ class QzoneViewIdentityTests(unittest.IsolatedAsyncioTestCase):
     async def test_primary_persona_does_not_claim_unrecorded_shared_account_post(self) -> None:
         harness = _QzoneViewHarness(BOT_UIN)
         harness.enable_multi_persona_mode = True
-        harness.multi_persona_primary_id = "main"
+        harness.plugin_specific_persona_id = "main"
         harness._active_persona_scope = lambda: "main"
 
         result = json.loads(
@@ -150,7 +150,7 @@ class QzoneViewIdentityTests(unittest.IsolatedAsyncioTestCase):
     async def test_primary_persona_claims_post_matching_verified_publish_tid(self) -> None:
         harness = _QzoneViewHarness(BOT_UIN)
         harness.enable_multi_persona_mode = True
-        harness.multi_persona_primary_id = "main"
+        harness.plugin_specific_persona_id = "main"
         harness._active_persona_scope = lambda: "main"
         harness.data["qzone_integration"]["recent_life_publish_texts"] = [
             {
@@ -183,7 +183,7 @@ class QzoneViewIdentityTests(unittest.IsolatedAsyncioTestCase):
     async def test_persona_can_use_verified_exact_text_when_record_has_no_tid(self) -> None:
         harness = _QzoneViewHarness(BOT_UIN)
         harness.enable_multi_persona_mode = True
-        harness.multi_persona_primary_id = "main"
+        harness.plugin_specific_persona_id = "main"
         harness._active_persona_scope = lambda: "main"
         harness.post.create_time = 1_775_000_000
         harness.data["qzone_integration"]["recent_life_publish_texts"] = [

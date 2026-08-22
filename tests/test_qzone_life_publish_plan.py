@@ -325,7 +325,7 @@ class QzoneLifePublishPlanTests(unittest.IsolatedAsyncioTestCase):
         comment = SimpleNamespace(comment_id="c1", uin="100", name="user", content="评论", raw={})
         harness = _CommentHarness(SimpleNamespace(tid="post1", comments=[comment]))
         harness.enable_multi_persona_mode = True
-        harness.multi_persona_primary_id = "primary"
+        harness.plugin_specific_persona_id = "primary"
         harness._active_persona_scope = lambda: "secondary"
         await harness._maybe_process_qzone_comment_inbox()
         self.assertEqual(harness.sent, [])

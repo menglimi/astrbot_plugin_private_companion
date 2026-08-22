@@ -157,10 +157,6 @@ from .persona_config import (
     resolve_persona_setting,
     runtime_persona_setting,
 )
-from .persona_window_bindings import (
-    BindingRevisionConflict,
-    PersonaWindowBindingStore,
-)
 from .model_routing import contains_sensitive_refusal, scope_allows
 from .person_context_contract import (
     CONTRACT_NAME as PERSON_CONTRACT_NAME,
@@ -1929,6 +1925,8 @@ class PrivateCompanionPlugin(
         """Return the profile store bound to the current event task."""
         active = _ACTIVE_PERSONA_ID.get()
         if active and bool(getattr(self, "enable_multi_persona_mode", False)):
+            if self._sanitize_persona_id(active) == self._primary_persona_id():
+                return getattr(self, "_data_default", {})
             profiles = getattr(self, "_persona_data_profiles", {})
             profile = profiles.get(active) if isinstance(profiles, dict) else None
             if isinstance(profile, dict):
@@ -1953,15 +1951,19 @@ class PrivateCompanionPlugin(
     def _primary_persona_config(self) -> Any:
         return getattr(self, "config", {})
 
+    def _primary_persona_id(self) -> str:
+        """Return the plugin's only authoritative primary persona ID."""
+        return self._sanitize_persona_id(
+            object.__getattribute__(self, "plugin_specific_persona_id")
+            if hasattr(self, "plugin_specific_persona_id")
+            else ""
+        )
+
     def _persona_settings_for_id(self, persona_id: Any = "") -> dict[str, Any]:
         pid = self._sanitize_persona_id(persona_id or _ACTIVE_PERSONA_ID.get())
         if not pid:
             return {}
-        primary = self._sanitize_persona_id(
-            object.__getattribute__(self, "multi_persona_primary_id")
-            if hasattr(self, "multi_persona_primary_id")
-            else ""
-        )
+        primary = self._primary_persona_id()
         if pid == primary:
             return {}
         profile = self._ensure_persona_profile(pid)
@@ -1983,9 +1985,7 @@ class PrivateCompanionPlugin(
                 return default
         if key == "plugin_specific_persona_id":
             return active
-        primary = self._sanitize_persona_id(
-            object.__getattribute__(self, "multi_persona_primary_id")
-        )
+        primary = self._primary_persona_id()
         if active == primary:
             try:
                 return object.__getattribute__(self, runtime_key)
@@ -2015,15 +2015,9 @@ class PrivateCompanionPlugin(
     def effective_persona_settings(self, persona_id: Any = "", *, include_common: bool = False) -> dict[str, Any]:
         active = self._sanitize_persona_id(persona_id or _ACTIVE_PERSONA_ID.get())
         if not active:
-            active = self._sanitize_persona_id(
-                object.__getattribute__(self, "multi_persona_primary_id")
-                if hasattr(self, "multi_persona_primary_id")
-                else ""
-            )
+            active = self._primary_persona_id()
         settings = self._persona_settings_for_id(active)
-        primary = self._sanitize_persona_id(
-            object.__getattribute__(self, "multi_persona_primary_id")
-        ) if hasattr(self, "multi_persona_primary_id") else ""
+        primary = self._primary_persona_id()
         if active == primary:
             result: dict[str, Any] = {}
             for key, entry in self._persona_scope_manifest().items():
@@ -2053,7 +2047,7 @@ class PrivateCompanionPlugin(
         profiles_dir = Path(str(getattr(self, "_persona_profiles_dir", "") or ""))
         if not profiles_dir.exists():
             return result
-        primary = self._sanitize_persona_id(getattr(self, "multi_persona_primary_id", ""))
+        primary = self._primary_persona_id()
         errors = getattr(self, "_persona_profile_errors", None)
         if not isinstance(errors, dict):
             errors = {}
@@ -2104,6 +2098,9 @@ class PrivateCompanionPlugin(
     def data(self, value: dict[str, Any]) -> None:
         active = _ACTIVE_PERSONA_ID.get()
         if active and bool(getattr(self, "enable_multi_persona_mode", False)):
+            if self._sanitize_persona_id(active) == self._primary_persona_id():
+                self._data_default = value if isinstance(value, dict) else {}
+                return
             profiles = getattr(self, "_persona_data_profiles", None)
             if profiles is None:
                 profiles = {}
@@ -2171,9 +2168,9 @@ class PrivateCompanionPlugin(
             pid = self._sanitize_persona_id(value)
             if pid and pid not in result:
                 result.append(pid)
-        primary = self._sanitize_persona_id(getattr(self, "multi_persona_primary_id", ""))
-        if primary and primary not in result:
-            result.insert(0, primary)
+        primary = self._primary_persona_id()
+        if primary:
+            result = [primary, *(pid for pid in result if pid != primary)]
         return result
 
     def _req041_update_unified_profile_facts(
@@ -2245,8 +2242,10 @@ class PrivateCompanionPlugin(
         return pid
 
     def _ensure_persona_profile(self, persona_id: str) -> dict[str, Any]:
-        pid = self._sanitize_persona_id(persona_id) or self._sanitize_persona_id(getattr(self, "multi_persona_primary_id", ""))
+        pid = self._sanitize_persona_id(persona_id) or self._primary_persona_id()
         if not pid:
+            return self._data_default
+        if pid == self._primary_persona_id():
             return self._data_default
         profile_errors = getattr(self, "_persona_profile_errors", None)
         if not isinstance(profile_errors, dict):
@@ -2272,12 +2271,8 @@ class PrivateCompanionPlugin(
             self._backup_corrupt_persona_profile_sync(path, reason=str(exc))
             profile_errors[pid] = str(exc)
             logger.warning("[PrivateCompanion] 人格资料读取失败 persona=%s error=%s", pid, _single_line(exc, 160))
-        primary = self._sanitize_persona_id(getattr(self, "multi_persona_primary_id", ""))
         if loaded is not None:
             profile = loaded
-        elif pid == primary:
-            # The primary profile inherits the legacy store once for seamless upgrades.
-            profile = deepcopy(self._data_default)
         else:
             factory = getattr(self, "_new_store", None)
             profile = factory() if callable(factory) else {}
@@ -2291,7 +2286,7 @@ class PrivateCompanionPlugin(
             self._backup_corrupt_persona_profile_sync(path, reason=reason)
             profile_errors[pid] = reason
             profile[PERSONA_SETTINGS_KEY] = {}
-        if pid != primary and not str(profile[PERSONA_SETTINGS_KEY].get("bot_name") or "").strip():
+        if loaded is not None and not str(profile[PERSONA_SETTINGS_KEY].get("bot_name") or "").strip():
             # Pre-settings secondary profiles need an identity to be editable;
             # ordinary missing keys remain sparse and continue following the
             # primary configuration.
@@ -2313,6 +2308,10 @@ class PrivateCompanionPlugin(
     def _save_persona_profile_sync(self, persona_id: str, data: dict[str, Any] | None = None) -> None:
         pid = self._sanitize_persona_id(persona_id)
         if not pid:
+            return
+        if pid == self._primary_persona_id():
+            payload = data if isinstance(data, dict) else self._data_default
+            self._write_data_snapshot_sync(deepcopy(payload))
             return
         path = self._persona_profile_path(pid)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -2384,7 +2383,7 @@ class PrivateCompanionPlugin(
                 requested
                 or active
                 or self._sanitize_persona_id(getattr(self, "_page_current_persona_id", ""))
-                or self._sanitize_persona_id(getattr(self, "multi_persona_primary_id", ""))
+                or self._primary_persona_id()
                 or (configured[0] if configured else "")
             )
             if not pid or pid not in set(configured):
@@ -2523,17 +2522,6 @@ class PrivateCompanionPlugin(
                     raise
 
             self._reset_persona_prompt_caches(pid)
-            bindings = self._persona_window_bindings() if multi_enabled else {}
-            for window, bound_persona in bindings.items():
-                if bound_persona != pid:
-                    continue
-                self._clear_persona_window_runtime_cache(window)
-                claims = getattr(self, "_persona_window_claims", None)
-                if isinstance(claims, dict):
-                    claims.pop(window, None)
-                conflicts = getattr(self, "_persona_window_conflicts", None)
-                if isinstance(conflicts, dict):
-                    conflicts.pop(window, None)
             bookshelf_tokens = getattr(self, "_bookshelf_access_tokens", None)
             if isinstance(bookshelf_tokens, dict):
                 bookshelf_tokens.clear()
@@ -2586,32 +2574,90 @@ class PrivateCompanionPlugin(
             pass
         return ids
 
-    def _persona_window_bindings(self) -> dict[str, str]:
-        raw = self._cfg_raw(getattr(self, "config", {}), "multi_persona_window_bindings", {})
-        result: dict[str, str] = {}
-        persisted = getattr(self, "_persona_window_bindings_persisted", None)
-        if not isinstance(persisted, dict):
-            persisted = self._load_persona_window_bindings_store_sync()
-            self._persona_window_bindings_persisted = persisted
-        suppressed = self._persona_window_binding_suppressions()
-        if isinstance(raw, dict):
-            for window, persona in raw.items():
-                window_key = str(window or "").strip()
-                pid = self._sanitize_persona_id(persona)
-                if window_key and pid and window_key not in suppressed:
-                    result[window_key] = pid
-        for window, persona in persisted.items():
-            window_key = str(window or "").strip()
-            pid = self._sanitize_persona_id(persona)
-            if window_key and pid and window_key not in suppressed:
-                result[window_key] = pid
+    def _persona_profile_snapshot_if_exists(self, persona_id: Any) -> dict[str, Any] | None:
+        """Read an existing profile without creating one as a side effect."""
+        pid = self._sanitize_persona_id(persona_id)
+        if not pid:
+            return None
+        profiles = getattr(self, "_persona_data_profiles", {})
+        if isinstance(profiles, dict) and isinstance(profiles.get(pid), dict):
+            return profiles[pid]
+        path = self._persona_profile_path(pid)
+        if not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _persona_config_exists(self, persona_id: Any) -> bool:
+        pid = self._sanitize_persona_id(persona_id)
+        if not pid or pid == self._primary_persona_id():
+            return bool(pid)
+        errors = getattr(self, "_persona_profile_errors", {})
+        if isinstance(errors, dict) and pid in errors:
+            return False
+        profile = self._persona_profile_snapshot_if_exists(pid)
+        if not isinstance(profile, dict):
+            return False
+        settings = profile.get(PERSONA_SETTINGS_KEY)
+        if not isinstance(settings, dict) or not _single_line(settings.get("bot_name"), 80):
+            return False
+        try:
+            revision = int(profile.get(PERSONA_SETTINGS_REVISION_KEY) or 0)
+        except (TypeError, ValueError):
+            revision = 0
+        if revision > 0 or any(key != "bot_name" for key in settings):
+            return True
+        factory = getattr(self, "_new_store", None)
+        if not callable(factory):
+            return False
+        try:
+            baseline = factory()
+            ensure_defaults = getattr(self, "_ensure_store_defaults", None)
+            if callable(ensure_defaults):
+                baseline = ensure_defaults(baseline)
+            candidate = deepcopy(profile)
+            for key in (
+                PERSONA_SETTINGS_KEY,
+                PERSONA_SETTINGS_VERSION_KEY,
+                PERSONA_SETTINGS_REVISION_KEY,
+            ):
+                candidate.pop(key, None)
+                baseline.pop(key, None)
+            return candidate != baseline
+        except Exception:
+            return False
+
+    def _persona_config_profile_ids(self) -> list[str]:
+        primary = self._primary_persona_id()
+        candidates: list[str] = []
+        profiles = getattr(self, "_persona_data_profiles", {})
+        if isinstance(profiles, dict):
+            candidates.extend(map(str, profiles))
+        try:
+            candidates.extend(
+                self._persona_id_from_profile_path(path)
+                for path in Path(self._persona_profiles_dir).glob("*.json")
+            )
+        except Exception:
+            pass
+        result: list[str] = []
+        for candidate in candidates:
+            pid = self._sanitize_persona_id(candidate)
+            if (
+                pid
+                and pid != primary
+                and pid not in result
+                and self._persona_config_exists(pid)
+            ):
+                result.append(pid)
         return result
 
-    def _persona_window_binding_store(self) -> PersonaWindowBindingStore:
-        return PersonaWindowBindingStore(
-            self._persona_window_bindings_store_path(),
-            persona_normalizer=self._sanitize_persona_id,
-        )
+    def _persona_window_bindings(self) -> dict[str, str]:
+        # Compatibility surface only. AstrBot is the sole routing authority.
+        return {}
 
     def _persona_window_bindings_store_path(self) -> Path:
         configured = str(getattr(self, "_persona_window_bindings_file", "") or "").strip()
@@ -2623,79 +2669,415 @@ class PrivateCompanionPlugin(
         profiles_dir = Path(str(getattr(self, "_persona_profiles_dir", "persona_profiles")))
         return profiles_dir.parent / "persona_window_bindings.json"
 
-    def _load_persona_window_bindings_store_sync(self) -> dict[str, str]:
+    def _retire_legacy_persona_routing_sync(self) -> dict[str, Any]:
+        """Back up legacy plugin-owned routes without using them at runtime."""
+        config_bindings = self._cfg_raw(
+            getattr(self, "config", {}), "multi_persona_window_bindings", {}
+        )
+        config_bindings = dict(config_bindings) if isinstance(config_bindings, dict) else {}
         path = self._persona_window_bindings_store_path()
-        try:
-            state = self._persona_window_binding_store().load(migrate=True)
-            self._persona_window_bindings_revision = state.revision
-            self._persona_window_bindings_updated_at = state.updated_at
-            return state.bindings
-        except Exception as exc:
-            if path.exists():
-                backup = path.with_name(
-                    f"{path.name}.corrupt-{int(time.time())}-{uuid.uuid4().hex[:8]}.bak"
-                )
-                try:
-                    shutil.copy2(path, backup)
-                except Exception:
-                    backup = None
-            logger.warning(
-                "[PrivateCompanion] 多人格窗口绑定持久化文件读取失败，回退到插件配置: error=%s backup=%s",
-                _single_line(exc, 160),
-                backup or "failed",
+        file_bindings: dict[str, Any] = {}
+        file_error = ""
+        if path.is_file():
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(payload, dict) and isinstance(payload.get("bindings"), dict):
+                    file_bindings = dict(payload["bindings"])
+                elif isinstance(payload, dict):
+                    file_bindings = dict(payload)
+                else:
+                    file_error = "legacy_binding_root_invalid"
+            except Exception as exc:
+                file_error = _single_line(exc, 160) or "legacy_binding_read_failed"
+        merged = {
+            _single_line(window, 240): self._sanitize_persona_id(persona_id)
+            for window, persona_id in {**config_bindings, **file_bindings}.items()
+            if _single_line(window, 240) and self._sanitize_persona_id(persona_id)
+        }
+        backup_path = path.with_name("persona_window_bindings.retired.json")
+        if (merged or file_error) and not backup_path.exists():
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = backup_path.with_name(
+                f".{backup_path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
             )
-            return {}
+            try:
+                temporary.write_text(
+                    json.dumps(
+                        {
+                            "version": 1,
+                            "retired_at": time.time(),
+                            "reason": "astrbot_is_persona_routing_authority",
+                            "config_bindings": config_bindings,
+                            "file_bindings": file_bindings,
+                            "source_file": str(path),
+                            "source_file_error": file_error,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                os.replace(temporary, backup_path)
+            finally:
+                temporary.unlink(missing_ok=True)
+        status = {
+            "ignored": bool(merged or file_error),
+            "count": len(merged),
+            "backup_path": str(backup_path) if backup_path.exists() else "",
+            "warning_code": "legacy_persona_binding_ignored" if merged or file_error else "",
+            "source_file_preserved": path.is_file(),
+            "source_file_error": file_error,
+        }
+        self._legacy_persona_window_bindings = merged
+        self._legacy_persona_routing_status = status
+        if status["ignored"]:
+            logger.warning(
+                "[PrivateCompanion] 已停用插件窗口人格路由，AstrBot 为唯一权威: count=%s backup=%s error=%s",
+                len(merged),
+                status["backup_path"] or "-",
+                file_error or "-",
+            )
+        return status
 
-    def _save_persona_window_bindings_store_sync(self, bindings: dict[str, str] | None = None) -> bool:
-        source = bindings if isinstance(bindings, dict) else self._persona_window_bindings()
-        store = self._persona_window_binding_store()
-        current_revision = getattr(self, "_persona_window_bindings_revision", None)
-        state = store.save(source, expected_revision=current_revision)
-        self._persona_window_bindings_persisted = dict(state.bindings)
-        self._persona_window_bindings_revision = state.revision
-        self._persona_window_bindings_updated_at = state.updated_at
-        return True
 
     def _persona_id_for_event(self, event: Any) -> tuple[str, str]:
+        """Return a cached plugin scope without consulting legacy bindings."""
         umo = str(getattr(event, "unified_msg_origin", "") or "").strip()
-        bindings = self._persona_window_bindings()
-        enabled_ids = self._configured_multi_persona_ids()
-        enabled = set(enabled_ids)
-        configured = bindings.get(umo, "")
-        profile_errors = getattr(self, "_persona_profile_errors", {})
-        if configured not in enabled or (isinstance(profile_errors, dict) and configured in profile_errors):
-            configured = ""
-        event_persona = self._sanitize_persona_id(
-            getattr(event, "private_companion_persona_id", "")
+        cached = getattr(event, "_private_companion_persona_route_decision", None)
+        pid = self._sanitize_persona_id(
+            cached.get("plugin_persona_id") if isinstance(cached, dict) else ""
         )
-        if event_persona not in enabled or (isinstance(profile_errors, dict) and event_persona in profile_errors):
-            event_persona = ""
-        primary = self._sanitize_persona_id(getattr(self, "multi_persona_primary_id", ""))
-        pid = configured or event_persona or (primary if primary in enabled else "") or (enabled_ids or [""])[0]
-        return pid, umo if umo else ""
+        enabled = set(self._configured_multi_persona_ids())
+        if pid not in enabled:
+            pid = self._primary_persona_id()
+        return pid, umo
+
+    @staticmethod
+    async def _await_if_needed(value: Any) -> Any:
+        return await value if inspect.isawaitable(value) else value
+
+    def _astrbot_persona_exists(self, persona_id: Any) -> bool:
+        pid = self._sanitize_persona_id(persona_id)
+        if not pid:
+            return False
+        manager = getattr(getattr(self, "context", None), "persona_manager", None)
+        getter = getattr(manager, "get_persona_v3_by_id", None)
+        if callable(getter):
+            try:
+                return getter(pid) is not None
+            except Exception:
+                pass
+        for item in list(getattr(manager, "personas_v3", None) or []) + list(
+            getattr(manager, "personas", None) or []
+        ):
+            if isinstance(item, dict):
+                item_id = item.get("name") or item.get("persona_id") or item.get("id")
+            else:
+                item_id = (
+                    getattr(item, "persona_id", None)
+                    or getattr(item, "name", None)
+                    or getattr(item, "id", None)
+                )
+            if self._sanitize_persona_id(item_id) == pid:
+                return True
+        return False
+
+    async def _astrbot_effective_persona_for_event(self, event: Any) -> dict[str, Any]:
+        """Resolve AstrBot's request persona using AstrBot's own precedence."""
+        umo = str(getattr(event, "unified_msg_origin", "") or "").strip()
+        result = {
+            "persona_id": "",
+            "source": "unresolved",
+            "exists": False,
+            "explicit_none": False,
+            "umo": umo,
+            "error": "",
+        }
+        if not umo:
+            result["error"] = "umo_missing"
+            return result
+        context = getattr(self, "context", None)
+        conversation_persona = None
+        try:
+            conversation_manager = getattr(context, "conversation_manager", None)
+            if conversation_manager is not None:
+                cid = await self._await_if_needed(
+                    conversation_manager.get_curr_conversation_id(umo)
+                )
+                if cid:
+                    conversation = await self._await_if_needed(
+                        conversation_manager.get_conversation(umo, cid)
+                    )
+                    conversation_persona = getattr(conversation, "persona_id", None)
+
+            config_getter = getattr(context, "get_config", None)
+            try:
+                astrbot_config = config_getter(umo=umo) if callable(config_getter) else {}
+            except TypeError:
+                astrbot_config = config_getter() if callable(config_getter) else {}
+            provider_settings = (
+                astrbot_config.get("provider_settings", {})
+                if isinstance(astrbot_config, dict)
+                else {}
+            )
+            platform_getter = getattr(event, "get_platform_name", None)
+            platform_name = (
+                str(platform_getter() or "") if callable(platform_getter) else ""
+            )
+            persona_manager = getattr(context, "persona_manager", None)
+            resolver = getattr(persona_manager, "resolve_selected_persona", None)
+            if callable(resolver):
+                resolved = await self._await_if_needed(
+                    resolver(
+                        umo=umo,
+                        conversation_persona_id=conversation_persona,
+                        platform_name=platform_name,
+                        provider_settings=provider_settings,
+                    )
+                )
+                selected = resolved[0] if isinstance(resolved, (list, tuple)) and resolved else ""
+                persona = resolved[1] if isinstance(resolved, (list, tuple)) and len(resolved) > 1 else None
+                forced = resolved[2] if isinstance(resolved, (list, tuple)) and len(resolved) > 2 else ""
+                pid = self._sanitize_persona_id(selected)
+                result.update(
+                    {
+                        "persona_id": pid,
+                        "source": (
+                            "session_rule"
+                            if forced
+                            else "explicit_none"
+                            if conversation_persona == "[%None]"
+                            else "conversation"
+                            if conversation_persona
+                            else "provider_default"
+                        ),
+                        "exists": persona is not None,
+                        "explicit_none": selected == "[%None]" or conversation_persona == "[%None]",
+                    }
+                )
+                return result
+
+            selected = conversation_persona
+            source = "conversation"
+            if selected is None:
+                selected = provider_settings.get("default_personality")
+                source = "provider_default"
+            result.update(
+                {
+                    "persona_id": self._sanitize_persona_id(selected),
+                    "source": "explicit_none" if selected == "[%None]" else source,
+                    "exists": self._astrbot_persona_exists(selected),
+                    "explicit_none": selected == "[%None]",
+                    "error": "astrbot_effective_persona_resolver_unavailable",
+                }
+            )
+        except Exception as exc:
+            result["error"] = _single_line(exc, 160) or "persona_resolution_failed"
+        return result
 
     async def _conversation_persona_id_for_event(self, event: Any) -> str:
-        """Read AstrBot's active conversation persona without guessing on failure."""
-        umo = str(getattr(event, "unified_msg_origin", "") or "").strip()
+        """Compatibility wrapper returning AstrBot's final effective persona."""
+        resolved = await self._astrbot_effective_persona_for_event(event)
+        return self._sanitize_persona_id(resolved.get("persona_id"))
+
+    async def _validate_proactive_persona_delivery(
+        self,
+        target_umo: Any,
+        scheduled_persona_id: Any,
+    ) -> dict[str, Any]:
+        """Validate the last-mile target without changing AstrBot's routing."""
+        umo = _single_line(target_umo, 240)
+        multi = bool(getattr(self, "enable_multi_persona_mode", False))
+        scheduled = self._sanitize_persona_id(
+            scheduled_persona_id
+            or _ACTIVE_PERSONA_ID.get()
+            or ("" if multi else self._primary_persona_id())
+        )
+        event = SimpleNamespace(
+            unified_msg_origin=umo,
+            get_platform_name=lambda: umo.partition(":")[0],
+        )
+        resolved = await self._astrbot_effective_persona_for_event(event)
+        astrbot_persona = self._sanitize_persona_id(resolved.get("persona_id"))
+        reason = ""
         if not umo:
-            return ""
-        context = getattr(self, "context", None)
-        manager = getattr(context, "conversation_manager", None)
-        if manager is None:
-            return ""
-        try:
-            conversation_id = await manager.get_curr_conversation_id(umo)
-            if not conversation_id:
-                return ""
-            conversation = await manager.get_conversation(umo, conversation_id)
-            return self._sanitize_persona_id(getattr(conversation, "persona_id", ""))
-        except Exception as exc:
-            logger.debug(
-                "[PrivateCompanion] 读取会话人格失败，使用已绑定或主人格: session=%s error=%s",
-                _single_line(umo, 120),
-                _single_line(exc, 120),
+            reason = "target_umo_missing"
+        elif not astrbot_persona:
+            reason = "astrbot_persona_unresolved"
+        elif not resolved.get("exists"):
+            reason = "astrbot_persona_missing"
+        elif not scheduled:
+            reason = "scheduled_persona_missing"
+        elif astrbot_persona != scheduled:
+            reason = "target_persona_mismatch"
+        elif multi:
+            ready, readiness_reason = self._persona_profile_route_status(scheduled)
+            if not ready:
+                reason = readiness_reason
+
+        if not reason:
+            return {
+                "ok": True,
+                "action": "matched",
+                "astrbot_persona_id": astrbot_persona,
+                "scheduled_persona_id": scheduled,
+                "reason_code": "",
+            }
+        if not multi:
+            await self._record_persona_routing_warning(
+                code="persona.route.proactive_single_mismatch_allowed",
+                channel="proactive",
+                disposition="sent_with_warning",
+                reason_code=reason,
+                window_key=umo,
+                requested_persona_id=astrbot_persona,
+                resolved_persona_id=scheduled,
+                active_persona_id=scheduled,
             )
-            return ""
+            return {
+                "ok": True,
+                "action": "sent_with_warning",
+                "astrbot_persona_id": astrbot_persona,
+                "scheduled_persona_id": scheduled,
+                "reason_code": reason,
+            }
+        await self._record_persona_routing_warning(
+            code="persona.route.proactive_multi_mismatch_blocked",
+            channel="proactive",
+            disposition="blocked",
+            reason_code=reason,
+            window_key=umo,
+            requested_persona_id=astrbot_persona,
+            resolved_persona_id=scheduled,
+            active_persona_id=scheduled,
+        )
+        return {
+            "ok": False,
+            "action": "blocked",
+            "astrbot_persona_id": astrbot_persona,
+            "scheduled_persona_id": scheduled,
+            "reason_code": reason,
+        }
+
+    def _persona_profile_route_status(self, persona_id: Any) -> tuple[bool, str]:
+        pid = self._sanitize_persona_id(persona_id)
+        primary = self._primary_persona_id()
+        if not pid:
+            return False, "persona_id_missing"
+        if pid not in set(self._configured_multi_persona_ids()):
+            return False, "persona_not_enabled"
+        if pid == primary:
+            return True, "primary"
+        errors = getattr(self, "_persona_profile_errors", {})
+        if isinstance(errors, dict) and pid in errors:
+            return False, "persona_profile_degraded"
+        if not self._persona_config_exists(pid):
+            return False, "persona_config_missing"
+        return True, "configured"
+
+    async def _record_persona_routing_warning(
+        self,
+        *,
+        code: str,
+        channel: str,
+        disposition: str,
+        reason_code: str,
+        window_key: Any = "",
+        requested_persona_id: Any = "",
+        resolved_persona_id: Any = "",
+        active_persona_id: Any = "",
+    ) -> None:
+        """Persist one global, content-free persona routing diagnostic."""
+        now = time.time()
+        window = _single_line(window_key, 180)
+        requested = self._sanitize_persona_id(requested_persona_id)
+        resolved = self._sanitize_persona_id(resolved_persona_id)
+        active = self._sanitize_persona_id(active_persona_id)
+        reason = _single_line(reason_code, 80) or "unknown"
+        signature = "|".join((code, reason, window, requested, resolved, active))
+        record_id = hashlib.sha256(signature.encode("utf-8")).hexdigest()[:20]
+        should_schedule = False
+        lock = getattr(self, "_data_lock", None)
+
+        async def update() -> None:
+            nonlocal should_schedule
+            store = getattr(self, "_data_default", None)
+            if not isinstance(store, dict):
+                return
+            root = store.get("persona_routing_warnings")
+            if not isinstance(root, dict):
+                root = {"schema_version": 1, "items": []}
+                store["persona_routing_warnings"] = root
+            items = root.get("items")
+            if not isinstance(items, list):
+                items = []
+                root["items"] = items
+            item = next(
+                (candidate for candidate in items if isinstance(candidate, dict) and candidate.get("id") == record_id),
+                None,
+            )
+            if item is None:
+                item = {"id": record_id, "first_ts": now, "count": 0}
+                items.append(item)
+                should_schedule = True
+            item.update(
+                {
+                    "schema_version": 1,
+                    "code": _single_line(code, 100),
+                    "level": "error" if disposition == "blocked" else "warn",
+                    "channel": _single_line(channel, 24),
+                    "disposition": _single_line(disposition, 24),
+                    "reason_code": reason,
+                    "source": "persona_router",
+                    "window_key": window,
+                    "requested_persona_id": requested,
+                    "resolved_persona_id": resolved,
+                    "active_persona_id": active,
+                    "primary_persona_id": self._primary_persona_id(),
+                    "multi_persona": bool(getattr(self, "enable_multi_persona_mode", False)),
+                    "last_ts": now,
+                    "count": int(item.get("count") or 0) + 1,
+                }
+            )
+            items.sort(key=lambda candidate: float((candidate or {}).get("last_ts") or 0), reverse=True)
+            del items[120:]
+            save_marks = getattr(self, "_persona_routing_warning_save_marks", None)
+            if not isinstance(save_marks, dict):
+                save_marks = {}
+                self._persona_routing_warning_save_marks = save_marks
+            previous_save = float(save_marks.get(record_id) or 0)
+            if now - previous_save >= 60:
+                save_marks[record_id] = now
+                should_schedule = True
+
+        if isinstance(lock, asyncio.Lock):
+            async with lock:
+                await update()
+        else:
+            await update()
+        if should_schedule:
+            scheduler = getattr(self, "_schedule_default_data_save", None)
+            if callable(scheduler):
+                clear_token = _ACTIVE_PERSONA_ID.set("")
+                try:
+                    scheduler(sections={"persona_routing_warnings"}, delay=0.2)
+                finally:
+                    _ACTIVE_PERSONA_ID.reset(clear_token)
+        log_marks = getattr(self, "_persona_routing_warning_log_marks", None)
+        if not isinstance(log_marks, dict):
+            log_marks = {}
+            self._persona_routing_warning_log_marks = log_marks
+        if now - float(log_marks.get(record_id) or 0) >= 300:
+            log_marks[record_id] = now
+            logger.warning(
+                "[PrivateCompanion] 人格路由告警 code=%s reason=%s umo=%s astrbot=%s plugin=%s action=%s",
+                code,
+                reason,
+                window or "-",
+                requested or "-",
+                active or "-",
+                disposition,
+            )
 
     async def _activate_persona_for_event_context(self, event: Any) -> tuple[Any, str]:
         if not bool(getattr(self, "enable_multi_persona_mode", False)):
@@ -2703,72 +3085,102 @@ class PrivateCompanionPlugin(
         active = _ACTIVE_PERSONA_ID.get()
         if active:
             return None, active
-        umo = str(getattr(event, "unified_msg_origin", "") or "").strip()
-        bindings = self._persona_window_bindings()
-        binding_suppressed = umo in self._persona_window_binding_suppressions()
-        configured = set(self._configured_multi_persona_ids())
-        profile_errors = getattr(self, "_persona_profile_errors", {})
-        event_persona = self._sanitize_persona_id(
-            getattr(event, "private_companion_persona_id", "")
+        cached = getattr(event, "_private_companion_persona_route_decision", None)
+        if isinstance(cached, dict):
+            pid = self._sanitize_persona_id(cached.get("plugin_persona_id"))
+            if pid:
+                return _ACTIVE_PERSONA_ID.set(pid), pid
+
+        primary = self._primary_persona_id()
+        resolved = await self._astrbot_effective_persona_for_event(event)
+        astrbot_persona = self._sanitize_persona_id(resolved.get("persona_id"))
+        legacy_bindings = getattr(self, "_legacy_persona_window_bindings", {})
+        legacy_persona = self._sanitize_persona_id(
+            legacy_bindings.get(str(resolved.get("umo") or ""), "")
+            if isinstance(legacy_bindings, dict)
+            else ""
         )
-        bound_persona = bindings.get(umo, "")
-        pid = bound_persona if bound_persona in configured and not (isinstance(profile_errors, dict) and bound_persona in profile_errors) else ""
-        if not pid and event_persona in configured and not (isinstance(profile_errors, dict) and event_persona in profile_errors):
-            pid = event_persona
-        if not pid and not binding_suppressed:
-            conversation_persona = await self._conversation_persona_id_for_event(event)
-            if conversation_persona and conversation_persona in configured and not (isinstance(profile_errors, dict) and conversation_persona in profile_errors):
-                pid = conversation_persona
-                if umo:
-                    binder = getattr(self, "_mutate_persona_window_binding_async", None)
-                    if callable(binder):
-                        bound = await binder(
-                            action="upsert",
-                            window_key=umo,
-                            persona_id=pid,
-                        )
-                        if not bound.get("ok"):
-                            logger.warning(
-                                "[PrivateCompanion] 自动会话人格绑定未能完整落盘: session=%s error=%s",
-                                _single_line(umo, 120),
-                                _single_line(bound.get("message"), 160),
-                            )
-                    else:
-                        bindings[umo] = pid
-                        _set_into_config(self.config, "multi_persona_window_bindings", bindings)
-        if not pid:
-            pid, _ = self._persona_id_for_event(event)
-        if not pid:
-            return None, ""
-        self._ensure_persona_profile(pid)
-        token = _ACTIVE_PERSONA_ID.set(pid)
-        try:
-            setattr(event, "private_companion_persona_id", pid)
-            setattr(event, "private_companion_persona_window", umo)
-            setattr(
-                event,
-                "private_companion_persona_conflict",
-                deepcopy(getattr(self, "_persona_window_conflicts", {}).get(umo, {})),
+        if legacy_persona and legacy_persona != astrbot_persona:
+            await self._record_persona_routing_warning(
+                code="persona.route.legacy_binding_ignored",
+                channel="passive",
+                disposition="ignored",
+                reason_code="astrbot_is_routing_authority",
+                window_key=resolved.get("umo"),
+                requested_persona_id=legacy_persona,
+                resolved_persona_id=astrbot_persona,
+                active_persona_id=astrbot_persona,
             )
+        ready, route_reason = self._persona_profile_route_status(astrbot_persona)
+        if resolved.get("explicit_none"):
+            ready, route_reason = False, "astrbot_persona_explicit_none"
+        elif not astrbot_persona:
+            ready, route_reason = False, "astrbot_persona_unresolved"
+        elif not resolved.get("exists"):
+            ready, route_reason = False, "astrbot_persona_missing"
+        pid = astrbot_persona if ready else primary
+        if not pid:
+            await self._record_persona_routing_warning(
+                code="persona.route.passive_primary_fallback",
+                channel="passive",
+                disposition="fallback_unavailable",
+                reason_code="primary_persona_invalid",
+                window_key=resolved.get("umo"),
+                requested_persona_id=astrbot_persona,
+            )
+            return None, ""
+        primary_ready, primary_reason = self._persona_profile_route_status(primary)
+        if not ready and not primary_ready:
+            await self._record_persona_routing_warning(
+                code="persona.route.passive_primary_fallback",
+                channel="passive",
+                disposition="fallback_unavailable",
+                reason_code=f"{route_reason}:{primary_reason}",
+                window_key=resolved.get("umo"),
+                requested_persona_id=astrbot_persona,
+                resolved_persona_id=primary,
+            )
+            return None, ""
+
+        decision = {
+            "astrbot_persona_id": astrbot_persona,
+            "plugin_persona_id": pid,
+            "source": resolved.get("source"),
+            "reason_code": route_reason,
+            "fallback": not ready,
+            "umo": resolved.get("umo"),
+        }
+        try:
+            setattr(event, "_private_companion_persona_route_decision", decision)
+            setattr(event, "private_companion_astrbot_persona_id", astrbot_persona)
+            setattr(event, "private_companion_persona_id", pid)
+            setattr(event, "private_companion_persona_window", "")
+            setattr(event, "private_companion_persona_conflict", {})
         except Exception:
             pass
-        return token, pid
+        if not ready:
+            await self._record_persona_routing_warning(
+                code="persona.route.passive_primary_fallback",
+                channel="passive",
+                disposition="fallback",
+                reason_code=route_reason,
+                window_key=resolved.get("umo"),
+                requested_persona_id=astrbot_persona,
+                resolved_persona_id=primary,
+                active_persona_id=pid,
+            )
+        self._ensure_persona_profile(pid)
+        return _ACTIVE_PERSONA_ID.set(pid), pid
 
     def _activate_persona_for_event(self, event: Any) -> tuple[Any, str]:
+        """Legacy synchronous activation uses only a prior async decision."""
         if not bool(getattr(self, "enable_multi_persona_mode", False)):
             return None, ""
-        pid, window = self._persona_id_for_event(event)
+        pid, _ = self._persona_id_for_event(event)
         if not pid:
             return None, ""
         self._ensure_persona_profile(pid)
-        token = _ACTIVE_PERSONA_ID.set(pid)
-        try:
-            setattr(event, "private_companion_persona_id", pid)
-            setattr(event, "private_companion_persona_window", window)
-            setattr(event, "private_companion_persona_conflict", deepcopy(getattr(self, "_persona_window_conflicts", {}).get(window, {})))
-        except Exception:
-            pass
-        return token, pid
+        return _ACTIVE_PERSONA_ID.set(pid), pid
 
     def _activate_persona_id(self, persona_id: Any, *, allow_inactive: bool = False) -> Any:
         pid = self._sanitize_persona_id(persona_id)
@@ -2778,6 +3190,8 @@ class PrivateCompanionPlugin(
         if isinstance(profile_errors, dict) and pid in profile_errors and not allow_inactive:
             return None
         if not allow_inactive and pid not in set(self._configured_multi_persona_ids()):
+            return None
+        if pid != self._primary_persona_id() and not self._persona_config_exists(pid):
             return None
         self._ensure_persona_profile(pid)
         return _ACTIVE_PERSONA_ID.set(pid)
@@ -2820,45 +3234,6 @@ class PrivateCompanionPlugin(
         for pid in ids:
             next_cache.pop(pid, None)
         self._passive_light_injection_cache = next_cache
-
-    def _clear_persona_window_runtime_cache(self, window_key: Any) -> None:
-        window = _single_line(window_key, 240)
-        if not window:
-            return
-        cache = getattr(self, "_passive_state_session_cache", None)
-        if isinstance(cache, dict):
-            cache.pop(window, None)
-
-    def _clear_persona_switch_caches(self, *persona_ids: Any) -> dict[str, Any]:
-        """Clear transient profile caches before a forced window rebind."""
-        ids: list[str] = []
-        for raw_id in persona_ids:
-            pid = self._sanitize_persona_id(raw_id)
-            if pid and pid not in ids:
-                ids.append(pid)
-        if not ids:
-            return {"ok": True, "cache_cleared": False}
-        profiles = {pid: self._ensure_persona_profile(pid) for pid in ids}
-        before = {pid: deepcopy(profile) for pid, profile in profiles.items()}
-        next_profiles = {pid: deepcopy(profile) for pid, profile in profiles.items()}
-        for profile in next_profiles.values():
-            self._clear_persona_runtime_cache(profile)
-        try:
-            for pid, profile in next_profiles.items():
-                self._save_persona_profile_sync(pid, profile)
-        except Exception as exc:
-            for pid, profile in before.items():
-                try:
-                    self._save_persona_profile_sync(pid, profile)
-                except Exception:
-                    pass
-            return {"ok": False, "message": f"人格缓存清理落盘失败: {_single_line(exc, 120)}"}
-        for pid, profile in profiles.items():
-            profile.clear()
-            profile.update(next_profiles[pid])
-        # Prompt caches are process-level and may outlive the profile switch.
-        self._reset_persona_prompt_caches(*ids)
-        return {"ok": True, "cache_cleared": True}
 
     def _migrate_persona_profile(self, source_persona_id: Any, target_persona_id: Any, keys: list[Any]) -> dict[str, Any]:
         source = self._sanitize_persona_id(source_persona_id)
@@ -2947,119 +3322,6 @@ class PrivateCompanionPlugin(
         self._reset_persona_prompt_caches(source, target)
         return {"ok": True, "source_persona_id": source, "target_persona_id": target, "keys": migration_keys, "cache_cleared": True}
 
-    def _persona_window_switch_snapshot(
-        self,
-        window_key: Any,
-        persona_ids: list[Any] | tuple[Any, ...] = (),
-    ) -> dict[str, Any]:
-        ids: list[str] = []
-        for raw_id in persona_ids:
-            pid = self._sanitize_persona_id(raw_id)
-            if pid and pid not in ids:
-                ids.append(pid)
-        profiles: dict[str, dict[str, Any]] = {}
-        for pid in ids:
-            profile = deepcopy(self._ensure_persona_profile(pid))
-            self._clear_persona_runtime_cache(profile)
-            profiles[pid] = profile
-        window = _single_line(window_key, 240)
-        session_cache = getattr(self, "_passive_state_session_cache", None)
-        return {
-            "window_key": window,
-            "bindings": deepcopy(
-                self._cfg_raw(
-                    getattr(self, "config", {}),
-                    "multi_persona_window_bindings",
-                    {},
-                )
-            ),
-            "persisted_bindings": deepcopy(
-                getattr(self, "_persona_window_bindings_persisted", {})
-            ),
-            "suppressed_windows": sorted(self._persona_window_binding_suppressions()),
-            "claims": deepcopy(getattr(self, "_persona_window_claims", {})),
-            "conflicts": deepcopy(getattr(self, "_persona_window_conflicts", {})),
-            "page_current_persona_id": str(
-                getattr(self, "_page_current_persona_id", "") or ""
-            ),
-            "profiles": profiles,
-            "passive_state_session_present": bool(
-                window and isinstance(session_cache, dict) and window in session_cache
-            ),
-            "passive_state_session_entry": deepcopy(
-                session_cache.get(window)
-                if window and isinstance(session_cache, dict)
-                else None
-            ),
-        }
-
-    def _restore_persona_window_switch_snapshot(
-        self,
-        snapshot: dict[str, Any],
-    ) -> dict[str, Any]:
-        errors: list[str] = []
-        try:
-            bindings = snapshot.get("bindings")
-            _set_into_config(
-                self.config,
-                "multi_persona_window_bindings",
-                deepcopy(bindings if isinstance(bindings, dict) else {}),
-            )
-        except Exception as exc:
-            errors.append(f"binding:{_single_line(exc, 80)}")
-        persisted_bindings = snapshot.get("persisted_bindings")
-        self._persona_window_bindings_persisted = deepcopy(
-            persisted_bindings if isinstance(persisted_bindings, dict) else {}
-        )
-        self._persona_window_bindings_suppressed = set(
-            snapshot.get("suppressed_windows") or []
-        )
-
-        for attr, key in (
-            ("_persona_window_claims", "claims"),
-            ("_persona_window_conflicts", "conflicts"),
-        ):
-            previous = deepcopy(snapshot.get(key) or {})
-            current = getattr(self, attr, None)
-            if isinstance(current, dict):
-                current.clear()
-                current.update(previous)
-            else:
-                setattr(self, attr, previous)
-        self._page_current_persona_id = str(
-            snapshot.get("page_current_persona_id") or ""
-        )
-        window = _single_line(snapshot.get("window_key"), 240)
-        if window:
-            session_cache = getattr(self, "_passive_state_session_cache", None)
-            if not isinstance(session_cache, dict):
-                session_cache = {}
-                self._passive_state_session_cache = session_cache
-            if snapshot.get("passive_state_session_present"):
-                session_cache[window] = deepcopy(
-                    snapshot.get("passive_state_session_entry")
-                )
-            else:
-                session_cache.pop(window, None)
-
-        restored_ids: list[str] = []
-        profiles = snapshot.get("profiles")
-        if isinstance(profiles, dict):
-            for raw_id, previous in profiles.items():
-                pid = self._sanitize_persona_id(raw_id)
-                if not pid or not isinstance(previous, dict):
-                    continue
-                restored_ids.append(pid)
-                try:
-                    self._save_persona_profile_sync(pid, previous)
-                    current = self._ensure_persona_profile(pid)
-                    current.clear()
-                    current.update(deepcopy(previous))
-                except Exception as exc:
-                    errors.append(f"profile:{pid}:{_single_line(exc, 80)}")
-        self._reset_persona_prompt_caches(*restored_ids)
-        return {"ok": not errors, "errors": errors}
-
     async def _migrate_persona_profile_async(
         self,
         source_persona_id: Any,
@@ -3083,74 +3345,12 @@ class PrivateCompanionPlugin(
         migrate_keys: list[Any] | None = None,
         force: bool = False,
     ) -> dict[str, Any]:
-        if not bool(getattr(self, "enable_multi_persona_mode", False)):
-            return {"ok": True, "enabled": False, "switched": False}
-        pid = self._sanitize_persona_id(persona_id)
-        if not pid:
-            return {"ok": False, "message": "人格 ID 不能为空"}
-        known = self._configured_multi_persona_ids()
-        if known and pid not in known:
-            return {"ok": False, "message": "人格不在多人格列表中", "persona_id": pid}
-        window = _single_line(window_key, 240)
-        bindings = self._persona_window_bindings()
-        previous = bindings.get(window) or self._persona_window_claims.get(window, "") if window else ""
-        if window and previous and previous != pid and not force:
-            return {
-                "ok": False,
-                "conflict": True,
-                "window_key": window,
-                "current_persona_id": previous,
-                "requested_persona_id": pid,
-                "migration_available": True,
-                "message": "该窗口已绑定其他人格，请先迁移资料后再切换",
-            }
-        migrated = None
-        cache_cleared = False
-        if source_persona_id and migrate_keys:
-            source = self._sanitize_persona_id(source_persona_id)
-            if not window or not previous or previous == pid or source != previous:
-                return {
-                    "ok": False,
-                    "conflict": True,
-                    "stale_conflict": True,
-                    "window_key": window,
-                    "current_persona_id": previous,
-                    "expected_persona_id": source,
-                    "requested_persona_id": pid,
-                    "migration_available": bool(previous and previous != pid),
-                    "message": "窗口绑定已变化，请重新确认当前来源人格后再切换",
-                }
-            migrated = self._migrate_persona_profile(source, pid, migrate_keys)
-            if not migrated.get("ok"):
-                return migrated
-            cache_cleared = bool(migrated.get("cache_cleared"))
-        elif window and previous and previous != pid and force:
-            cleared = self._clear_persona_switch_caches(previous, pid)
-            if not cleared.get("ok"):
-                return cleared
-            cache_cleared = bool(cleared.get("cache_cleared"))
-        if window and previous and previous != pid:
-            self._clear_persona_window_runtime_cache(window)
-        if window:
-            suppressions = self._persona_window_binding_suppressions()
-            suppressions.discard(window)
-            self._persona_window_bindings_suppressed = suppressions
-            bindings[window] = pid
-            _set_into_config(self.config, "multi_persona_window_bindings", bindings)
-            self._persona_window_bindings_persisted = dict(bindings)
-            self._persona_window_claims[window] = pid
-            self._persona_window_conflicts.pop(window, None)
-        self._ensure_persona_profile(pid)
-        self._page_current_persona_id = pid
         return {
-            "ok": True,
-            "enabled": True,
-            "switched": True,
-            "persona_id": pid,
-            "window_key": window,
-            "previous_persona_id": previous,
-            "migrated": migrated,
-            "cache_cleared": cache_cleared,
+            "ok": False,
+            "status_code": 410,
+            "code": "plugin_persona_routing_removed",
+            "message": "窗口人格由 AstrBot 管理，插件不再提供窗口绑定",
+            "routing_authority": "astrbot",
         }
 
     async def _switch_persona_for_window_async(
@@ -3159,215 +3359,67 @@ class PrivateCompanionPlugin(
         persist: bool = False,
         **kwargs,
     ) -> dict[str, Any]:
-        source_persona_id = str(kwargs.get("source_persona_id") or "").strip()
-        migrate_keys = kwargs.get("migrate_keys")
-        window_key = _single_line(kwargs.get("window_key"), 240)
-        force_rebind = bool(kwargs.get("force")) and bool(window_key)
-        transactional_switch = bool(window_key) and bool(persist)
-        if (
-            (source_persona_id and isinstance(migrate_keys, list) and migrate_keys)
-            or force_rebind
-            or transactional_switch
-        ):
-            await self._flush_scheduled_data_save()
-            async with self._data_lock:
-                target_id = self._sanitize_persona_id(
-                    args[0] if args else kwargs.get("persona_id", "")
-                )
-                bindings = self._persona_window_bindings()
-                claims = getattr(self, "_persona_window_claims", {})
-                previous = ""
-                if window_key:
-                    previous = bindings.get(window_key) or (
-                        claims.get(window_key, "") if isinstance(claims, dict) else ""
-                    )
-                profile_ids: list[str] = []
-                if force_rebind and previous and previous != target_id:
-                    profile_ids = [previous, target_id]
-                snapshot = (
-                    self._persona_window_switch_snapshot(window_key, profile_ids)
-                    if transactional_switch
-                    else None
-                )
-                result = self._switch_persona_for_window(*args, **kwargs)
-                if (
-                    not transactional_switch
-                    or not result.get("ok")
-                    or not result.get("window_key")
-                ):
-                    return result
-
-                saver = getattr(self, "_save_config_if_possible", None)
-                binding_store_saved = False
-                try:
-                    binding_store_saved = bool(
-                        self._save_persona_window_bindings_store_sync(
-                            self._persona_window_bindings()
-                        )
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "[PrivateCompanion] 人格窗口绑定独立落盘失败: %s",
-                        _single_line(exc, 120),
-                    )
-                config_saved = False
-                if binding_store_saved and callable(saver):
-                    try:
-                        config_saved = bool(await saver())
-                    except Exception as exc:
-                        logger.warning(
-                            "[PrivateCompanion] 人格窗口绑定保存失败: %s",
-                            _single_line(exc, 120),
-                        )
-                if binding_store_saved and config_saved:
-                    result["binding_store_saved"] = True
-                    result["config_saved"] = True
-                    return result
-
-                rollback = self._restore_persona_window_switch_snapshot(snapshot or {})
-                rollback_binding_store_saved = False
-                try:
-                    rollback_binding_store_saved = bool(
-                        self._save_persona_window_bindings_store_sync(
-                            self._persona_window_bindings()
-                        )
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "[PrivateCompanion] 人格窗口绑定独立存储回滚失败: %s",
-                        _single_line(exc, 120),
-                    )
-                rollback_config_saved = False
-                if callable(saver):
-                    try:
-                        rollback_config_saved = bool(await saver())
-                    except Exception as exc:
-                        logger.warning(
-                            "[PrivateCompanion] 人格窗口绑定回滚保存失败: %s",
-                            _single_line(exc, 120),
-                        )
-                message = "窗口绑定未完整落盘，已回滚本次切换并清理临时缓存"
-                if not rollback.get("ok") or not rollback_binding_store_saved:
-                    message = "窗口绑定配置未落盘，且资料回滚未完整完成，请检查日志"
-                return {
-                    "ok": False,
-                    "message": message,
-                    "config_saved": False,
-                    "binding_store_saved": binding_store_saved,
-                    "rolled_back": bool(rollback.get("ok")),
-                    "rollback_binding_store_saved": rollback_binding_store_saved,
-                    "rollback_config_saved": rollback_config_saved,
-                    "window_key": window_key,
-                    "persona_id": target_id,
-                    "previous_persona_id": previous,
-                }
-        return self._switch_persona_for_window(*args, **kwargs)
-
-    async def _unbind_persona_for_window_async(self, window_key: Any) -> dict[str, Any]:
-        """Remove one explicit binding without deleting persona data or history."""
-        window = _single_line(window_key, 240)
-        if not window:
-            return {"ok": False, "message": "会话窗口 UMO 不能为空"}
-        await self._flush_scheduled_data_save()
-        async with self._data_lock:
-            bindings = self._persona_window_bindings()
-            previous = bindings.get(window) or self._persona_window_claims.get(window, "")
-            if not previous:
-                return {
-                    "ok": True,
-                    "unbound": False,
-                    "window_key": window,
-                    "message": "该窗口当前没有固定绑定",
-                }
-
-            snapshot = self._persona_window_switch_snapshot(window)
-            bindings.pop(window, None)
-            suppressions = self._persona_window_binding_suppressions()
-            suppressions.add(window)
-            self._persona_window_bindings_suppressed = suppressions
-            _set_into_config(self.config, "multi_persona_window_bindings", bindings)
-            self._persona_window_bindings_persisted = dict(bindings)
-            self._persona_window_claims.pop(window, None)
-            self._persona_window_conflicts.pop(window, None)
-            self._clear_persona_window_runtime_cache(window)
-
-            binding_store_saved = False
-            try:
-                binding_store_saved = bool(
-                    self._save_persona_window_bindings_store_sync(bindings)
-                )
-            except Exception as exc:
-                logger.warning(
-                    "[PrivateCompanion] 人格窗口解绑独立落盘失败: %s",
-                    _single_line(exc, 120),
-                )
-            saver = getattr(self, "_save_config_if_possible", None)
-            config_saved = False
-            if binding_store_saved and callable(saver):
-                try:
-                    config_saved = bool(await saver())
-                except Exception as exc:
-                    logger.warning(
-                        "[PrivateCompanion] 人格窗口解绑配置保存失败: %s",
-                        _single_line(exc, 120),
-                    )
-            if binding_store_saved and config_saved:
-                return {
-                    "ok": True,
-                    "unbound": True,
-                    "window_key": window,
-                    "previous_persona_id": previous,
-                    "binding_store_saved": True,
-                    "config_saved": True,
-                }
-
-            rollback = self._restore_persona_window_switch_snapshot(snapshot)
-            try:
-                self._save_persona_window_bindings_store_sync(
-                    self._persona_window_bindings()
-                )
-            except Exception:
-                pass
-            if callable(saver):
-                try:
-                    await saver()
-                except Exception:
-                    pass
-            return {
-                "ok": False,
-                "message": (
-                    "窗口解绑未完整落盘，已恢复原绑定"
-                    if rollback.get("ok")
-                    else "窗口解绑失败，且原绑定未完整恢复，请检查日志"
-                ),
-                "window_key": window,
-                "previous_persona_id": previous,
-                "config_saved": False,
-                "binding_store_saved": binding_store_saved,
-                "rolled_back": bool(rollback.get("ok")),
-            }
+        return self._switch_persona_for_window(
+            args[0] if args else kwargs.get("persona_id", "")
+        )
 
     def _multi_persona_status(self) -> dict[str, Any]:
         enabled = bool(getattr(self, "enable_multi_persona_mode", False))
+        primary = self._primary_persona_id()
+        configured_profiles = self._persona_config_profile_ids()
+        profile_labels: dict[str, str] = {}
+        if primary:
+            profile_labels[primary] = _single_line(
+                getattr(self, "bot_name", "") or primary,
+                80,
+            )
+        for pid in configured_profiles:
+            profile = self._persona_profile_snapshot_if_exists(pid)
+            settings = profile.get(PERSONA_SETTINGS_KEY) if isinstance(profile, dict) else {}
+            profile_labels[pid] = _single_line(
+                settings.get("bot_name") if isinstance(settings, dict) else "",
+                80,
+            ) or pid
         return {
             "enabled": enabled,
-            "primary": self._sanitize_persona_id(getattr(self, "multi_persona_primary_id", "")) if enabled else "",
-            "profiles": self._persona_profile_ids() if enabled else [],
-            "window_bindings": self._persona_window_bindings() if enabled else {},
-            "window_conflicts": deepcopy(getattr(self, "_persona_window_conflicts", {})) if enabled else {},
-            "window_bindings_revision": int(getattr(self, "_persona_window_bindings_revision", 0) or 0),
-            "profile_errors": deepcopy(getattr(self, "_persona_profile_errors", {})) if enabled else {},
-            "settings_migration": deepcopy(getattr(self, "_persona_settings_migration_status", {})) if enabled else {},
+            "primary": primary,
+            "enabled_ids": self._configured_multi_persona_ids(),
+            "configured_profiles": configured_profiles,
+            "profiles": [primary, *configured_profiles] if primary else configured_profiles,
+            "profile_labels": profile_labels,
+            "window_bindings": {},
+            "window_conflicts": {},
+            "window_bindings_revision": 0,
+            "routing_authority": "astrbot",
+            "legacy_routing": deepcopy(getattr(self, "_legacy_persona_routing_status", {})),
+            "primary_setup": {
+                "required": bool(
+                    getattr(self, "_multi_persona_primary_requires_configuration", False)
+                    or getattr(self, "_multi_persona_primary_invalid", False)
+                    or (getattr(self, "_multi_persona_enable_requested", False) and not primary)
+                ),
+                "invalid": bool(getattr(self, "_multi_persona_primary_invalid", False)),
+                "legacy_candidate": self._sanitize_persona_id(
+                    getattr(self, "_legacy_multi_persona_primary_id_candidate", "")
+                ),
+                "legacy_mismatch": deepcopy(
+                    getattr(self, "_multi_persona_primary_id_mismatch", {})
+                ),
+            },
+            "profile_errors": deepcopy(getattr(self, "_persona_profile_errors", {})),
+            "settings_migration": deepcopy(getattr(self, "_persona_settings_migration_status", {})),
         }
 
     def _persona_config_state(self, persona_id: Any) -> dict[str, Any]:
         pid = self._sanitize_persona_id(persona_id)
-        primary = self._sanitize_persona_id(getattr(self, "multi_persona_primary_id", ""))
+        primary = self._primary_persona_id()
         if not pid:
             pid = primary
         if not pid:
             raise PersonaConfigError("人格 ID 不能为空")
         is_primary = pid == primary
+        if not is_primary and not self._persona_config_exists(pid):
+            raise PersonaConfigError("该人格尚未创建独立配置")
         profile = self._ensure_persona_profile(pid)
         raw = {} if is_primary else deepcopy(profile.get(PERSONA_SETTINGS_KEY) or {})
         effective = self.effective_persona_settings(pid, include_common=False)
@@ -3407,48 +3459,22 @@ class PrivateCompanionPlugin(
         }
 
     def _prepare_multi_persona_transition(self, enabled: bool) -> None:
-        """Keep legacy companions.json and the primary profile coherent."""
+        """Keep the canonical single store authoritative across mode changes."""
         current = bool(getattr(self, "enable_multi_persona_mode", False))
         if current == bool(enabled):
             return
         if enabled:
-            primary = self._sanitize_persona_id(getattr(self, "multi_persona_primary_id", ""))
+            primary = self._primary_persona_id()
             if not primary:
-                primary = self._sanitize_persona_id(
-                    getattr(self, "_single_mode_plugin_specific_persona_id", "")
-                    or runtime_persona_setting(self, 'plugin_specific_persona_id', "")
-                )
-            if not primary:
-                configured = self._configured_multi_persona_ids()
-                primary = configured[0] if configured else ""
-            if not primary:
-                raise PersonaConfigError("开启多人格前必须先指定主人格 ID")
-            self.multi_persona_primary_id = primary
+                raise PersonaConfigError("开启多人格前必须先补充插件指定人格 ID")
+            if not self._astrbot_persona_exists(primary):
+                raise PersonaConfigError("插件指定人格在 AstrBot 中不存在，请先重新选择")
             ids = self._configured_multi_persona_ids()
             if primary not in ids:
                 ids.insert(0, primary)
             self.multi_persona_ids = ids
-            path = self._persona_profile_path(primary)
-            if not path.exists():
-                self._save_persona_profile_sync(primary, deepcopy(self._data_default))
         else:
-            primary = self._sanitize_persona_id(getattr(self, "multi_persona_primary_id", ""))
-            if primary:
-                previous_default = deepcopy(self._data_default)
-                profile = deepcopy(self._ensure_persona_profile(primary))
-                try:
-                    self._data_default = profile
-                    self._write_data_snapshot_sync(deepcopy(profile))
-                except Exception:
-                    self._data_default = previous_default
-                    try:
-                        self._write_data_snapshot_sync(deepcopy(previous_default))
-                    except Exception as rollback_exc:
-                        logger.error(
-                            "[PrivateCompanion] 关闭多人格失败后的单人格数据回滚失败: %s",
-                            _single_line(rollback_exc, 160),
-                        )
-                    raise
+            self._write_data_snapshot_sync(deepcopy(self._data_default))
 
     async def _create_persona_config_async(
         self,
@@ -3461,11 +3487,20 @@ class PrivateCompanionPlugin(
     ) -> dict[str, Any]:
         pid = self._sanitize_persona_id(persona_id)
         name = _single_line(bot_name, 80)
-        primary = self._sanitize_persona_id(getattr(self, "multi_persona_primary_id", ""))
+        primary = self._primary_persona_id()
         if not pid or pid == primary:
             return {"ok": False, "code": "persona_config_target_invalid", "message": "请选择非主人格作为新配置目标"}
+        if pid not in set(self._configured_multi_persona_ids()):
+            return {"ok": False, "code": "persona_config_target_not_enabled", "message": "请先保存人格拓扑，再为该人格创建配置"}
         if not name:
             return {"ok": False, "code": "persona_bot_name_required", "message": "Bot 名字不能为空"}
+        create_mode = str(mode or "follow_primary").strip().lower()
+        source_id = self._sanitize_persona_id(source_persona_id)
+        if create_mode == "copy":
+            if not source_id or source_id == pid:
+                return {"ok": False, "code": "persona_config_invalid", "message": "请选择不同的来源人格"}
+            if source_id != primary and not self._persona_config_exists(source_id):
+                return {"ok": False, "code": "persona_config_invalid", "message": "复制来源尚未创建独立人格配置"}
         await self._flush_scheduled_data_save()
         async with self._data_lock:
             path = self._persona_profile_path(pid)
@@ -3475,11 +3510,8 @@ class PrivateCompanionPlugin(
             profile_degraded = pid in set(getattr(self, "_persona_profile_errors", {}))
             if existed and isinstance(current_settings, dict) and current_settings and not (recovery and profile_degraded):
                 return {"ok": False, "code": "persona_config_exists", "message": "该人格配置已存在，请直接编辑或恢复使用"}
-            source_id = self._sanitize_persona_id(source_persona_id)
             try:
-                if str(mode or "").strip().lower() == "copy":
-                    if not source_id or source_id == pid:
-                        raise PersonaConfigError("请选择不同的来源人格")
+                if create_mode == "copy":
                     if source_id == primary:
                         settings = copy_from_primary_config(
                             self._primary_persona_config(),
@@ -3496,7 +3528,7 @@ class PrivateCompanionPlugin(
                         )
                 else:
                     settings = create_persona_settings(
-                        str(mode or "follow_primary"),
+                        create_mode,
                         bot_name=name,
                         primary_config=self._primary_persona_config(),
                         manifest=self._persona_scope_manifest(),
@@ -3545,9 +3577,11 @@ class PrivateCompanionPlugin(
         expected_revision: Any,
     ) -> dict[str, Any]:
         pid = self._sanitize_persona_id(persona_id)
-        primary = self._sanitize_persona_id(getattr(self, "multi_persona_primary_id", ""))
+        primary = self._primary_persona_id()
         if not pid or pid == primary:
             return {"ok": False, "code": "persona_settings_target_invalid", "message": "主人格请使用现有通用配置保存接口"}
+        if not self._persona_config_exists(pid):
+            return {"ok": False, "code": "persona_config_missing", "message": "该人格尚未创建独立配置"}
         if not isinstance(changes, dict) or not isinstance(follow_primary_keys, list):
             return {"ok": False, "code": "persona_settings_payload_invalid", "message": "人格配置更新格式无效"}
         manifest = self._persona_scope_manifest()
@@ -3654,7 +3688,17 @@ class PrivateCompanionPlugin(
             ):
                 importer = getattr(self, "_import_worldbook_entries_from_sources", None)
                 if callable(importer) and importer():
-                    self._schedule_data_save(delay=0.1)
+                    self._schedule_data_save(
+                        sections={
+                            "worldbook_entries",
+                            "worldbook_member_profiles",
+                            "worldbook_group_profiles",
+                            "worldbook_import_state",
+                            "worldbook_deleted_member_ids",
+                            "worldbook_deleted_group_ids",
+                        },
+                        delay=0.1,
+                    )
         finally:
             self._deactivate_persona_for_event(token)
 
@@ -3696,9 +3740,11 @@ class PrivateCompanionPlugin(
 
     def _persona_detach_preview(self, persona_id: Any) -> dict[str, Any]:
         pid = self._sanitize_persona_id(persona_id)
-        primary = self._sanitize_persona_id(getattr(self, "multi_persona_primary_id", ""))
+        primary = self._primary_persona_id()
         if not pid or pid == primary:
             return {"ok": False, "code": "persona_detach_target_invalid", "message": "主人格不需要脱离跟随"}
+        if not self._persona_config_exists(pid):
+            return {"ok": False, "code": "persona_config_missing", "message": "该人格尚未创建独立配置，不能执行脱离"}
         profile = self._ensure_persona_profile(pid)
         revision = int(profile.get(PERSONA_SETTINGS_REVISION_KEY) or 0)
         settings = profile.get(PERSONA_SETTINGS_KEY) or {}
@@ -3735,68 +3781,13 @@ class PrivateCompanionPlugin(
         previous_window_key: Any = "",
         expected_revision: Any = None,
     ) -> dict[str, Any]:
-        await self._flush_scheduled_data_save()
-        async with self._data_lock:
-            store = self._persona_window_binding_store()
-            state = store.load(migrate=True)
-            config_bindings = self._cfg_raw(self.config, "multi_persona_window_bindings", {})
-            snapshot = store.capture_runtime(
-                config_bindings,
-                claims=getattr(self, "_persona_window_claims", {}),
-                conflicts=getattr(self, "_persona_window_conflicts", {}),
-                passive_cache=getattr(self, "_passive_state_session_cache", {}),
-            )
-            snapshot.persisted_bindings = deepcopy(state.bindings)
-            snapshot.revision = state.revision
-            snapshot.updated_at = state.updated_at
-            try:
-                expected = state.revision if expected_revision in (None, "") else int(expected_revision)
-                if action == "delete":
-                    plan = store.plan_delete(snapshot, window_key, expected_revision=expected)
-                else:
-                    pid = self._sanitize_persona_id(persona_id)
-                    if pid not in set(self._configured_multi_persona_ids()):
-                        return {"ok": False, "code": "persona_binding_target_invalid", "message": "绑定目标人格未启用"}
-                    old_window = _single_line(previous_window_key, 240)
-                    working = snapshot
-                    if old_window and old_window != _single_line(window_key, 240):
-                        delete_plan = store.plan_delete(working, old_window, expected_revision=expected)
-                        working = delete_plan.after
-                        working.revision = state.revision
-                    plan = store.plan_upsert(working, window_key, pid, expected_revision=expected)
-            except BindingRevisionConflict:
-                return {"ok": False, "status_code": 409, "code": "persona_window_bindings_revision_conflict", "message": "窗口绑定已被其他页面修改", "revision": state.revision}
-            except Exception as exc:
-                return {"ok": False, "code": "persona_window_binding_invalid", "message": str(exc)}
-            if not plan.changed:
-                return {"ok": True, "changed": False, "revision": state.revision, "bindings": snapshot.effective_bindings}
-            before = snapshot.clone()
-            try:
-                store.persist_plan(plan)
-                _set_into_config(self.config, "multi_persona_window_bindings", deepcopy(plan.after.config_bindings))
-                self._persona_window_bindings_persisted = deepcopy(plan.after.persisted_bindings)
-                self._persona_window_claims = deepcopy(plan.after.claims)
-                self._persona_window_conflicts = deepcopy(plan.after.conflicts)
-                self._passive_state_session_cache = deepcopy(plan.after.passive_cache)
-                self._persona_window_bindings_revision = plan.after.revision
-                self._persona_window_bindings_updated_at = plan.after.updated_at
-                if not bool(await self._save_config_if_possible()):
-                    raise RuntimeError("AstrBot 配置未能持久化")
-            except Exception as exc:
-                _set_into_config(self.config, "multi_persona_window_bindings", deepcopy(before.config_bindings))
-                self._persona_window_bindings_persisted = deepcopy(before.persisted_bindings)
-                self._persona_window_claims = deepcopy(before.claims)
-                self._persona_window_conflicts = deepcopy(before.conflicts)
-                self._passive_state_session_cache = deepcopy(before.passive_cache)
-                self._persona_window_bindings_revision = before.revision
-                self._persona_window_bindings_updated_at = before.updated_at
-                try:
-                    store.save_snapshot(state)
-                    await self._save_config_if_possible()
-                except Exception:
-                    pass
-                return {"ok": False, "code": "persona_window_binding_persistence_failed", "message": f"窗口绑定保存失败，已回滚: {_single_line(exc, 120)}"}
-            return {"ok": True, "changed": True, "revision": plan.after.revision, "bindings": plan.after.effective_bindings, "window_key": plan.window_key, "persona_id": plan.persona_id, "auto_recognition_restored": action == "delete"}
+        return {
+            "ok": False,
+            "status_code": 410,
+            "code": "plugin_persona_routing_removed",
+            "message": "窗口人格由 AstrBot 管理，旧插件绑定只读保留",
+            "routing_authority": "astrbot",
+        }
 
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -7857,13 +7848,14 @@ class PrivateCompanionPlugin(
                 snapshot = deepcopy(getattr(self, "_data_default", self.data))
             await asyncio.to_thread(self._write_data_snapshot_sync, snapshot)
 
+        primary = self._primary_persona_id()
         if bool(getattr(self, "enable_multi_persona_mode", False)):
             profiles = getattr(self, "_persona_data_profiles", {}) or {}
             persona_ids = (
                 [
                     str(persona_id)
                     for persona_id, profile in profiles.items()
-                    if isinstance(profile, dict)
+                    if isinstance(profile, dict) and str(persona_id) != primary
                 ]
                 if isinstance(profiles, dict)
                 else []

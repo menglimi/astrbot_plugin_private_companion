@@ -34,7 +34,6 @@ REQUIRED_ARCHIVE_FILES = (
     "plugin_bootstrap.py",
     "unified_person_registry.py",
     "persona_config.py",
-    "persona_window_bindings.py",
 )
 IGNORED_NAMES = {
     ".DS_Store",

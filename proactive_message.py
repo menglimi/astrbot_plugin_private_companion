@@ -16206,6 +16206,67 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
                 type(exc).__name__,
             )
 
+    async def _proactive_persona_delivery_allowed(self, target_umo: str) -> bool:
+        """Revalidate the scheduled persona immediately before platform I/O."""
+        validator = getattr(self, "_validate_proactive_persona_delivery", None)
+        if not callable(validator):
+            return True
+
+        multi_persona = bool(getattr(self, "enable_multi_persona_mode", False))
+        active_getter = getattr(self, "_active_persona_scope", None)
+        scheduled_persona_id = ""
+        if callable(active_getter):
+            try:
+                scheduled_persona_id = str(active_getter() or "").strip()
+            except Exception:
+                scheduled_persona_id = ""
+        if not multi_persona and not scheduled_persona_id:
+            effective_getter = getattr(self, "_effective_plugin_persona_id", None)
+            if callable(effective_getter):
+                try:
+                    scheduled_persona_id = str(effective_getter() or "").strip()
+                except Exception:
+                    scheduled_persona_id = ""
+        if not multi_persona and not scheduled_persona_id:
+            primary_getter = getattr(self, "_primary_persona_id", None)
+            try:
+                scheduled_persona_id = str(
+                    primary_getter()
+                    if callable(primary_getter)
+                    else getattr(self, "plugin_specific_persona_id", "")
+                ).strip()
+            except Exception:
+                scheduled_persona_id = ""
+
+        try:
+            result = validator(target_umo, scheduled_persona_id)
+            if inspect.isawaitable(result):
+                result = await result
+            allowed = bool(result.get("ok")) if isinstance(result, dict) else bool(result)
+        except Exception as exc:
+            logger.warning(
+                "[PrivateCompanion] 主动消息最终人格一致性校验失败: multi=%s persona=%s umo=%s error=%s",
+                multi_persona,
+                _single_line(scheduled_persona_id, 96) or "-",
+                _single_line(target_umo, 140) or "-",
+                _single_line(exc, 160),
+            )
+            return not multi_persona
+
+        if allowed:
+            return True
+        reason_code = _single_line(result.get("reason_code"), 80) if isinstance(result, dict) else ""
+        action = _single_line(result.get("action"), 40) if isinstance(result, dict) else ""
+        logger.warning(
+            "[PrivateCompanion] 主动投递因人格不一致被取消: multi=%s persona=%s umo=%s action=%s reason=%s",
+            multi_persona,
+            _single_line(scheduled_persona_id, 96) or "-",
+            _single_line(target_umo, 140) or "-",
+            action or "blocked",
+            reason_code or "validator_rejected",
+        )
+        return False
+
     @collect_proactive_delivery
     async def _send_proactive_message_chain(
         self,
@@ -16217,6 +16278,8 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         quote_message_id: str = "",
         disable_segmenting: bool = False,
     ) -> _ProactiveSendOutcome:
+        if not await self._proactive_persona_delivery_allowed(umo):
+            return _ProactiveSendOutcome(False, False, note="主动投递人格已变化，已取消发送")
         # Recheck at the final delivery boundary. A realtime call may start
         # after a proactive candidate was planned but before it is sent.
         busy_context_getter = getattr(self, "_busy_reply_proactive_block_context", None)

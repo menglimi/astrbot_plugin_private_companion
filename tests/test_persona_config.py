@@ -29,9 +29,9 @@ class PersonaConfigTests(unittest.TestCase):
         cls.schema = load_schema(ROOT / "_conf_schema.json")
         cls.manifest = build_scope_manifest(cls.schema)
 
-    def test_manifest_covers_canonical_grouped_927_leaves(self) -> None:
+    def test_manifest_covers_canonical_grouped_925_leaves(self) -> None:
         leaves = discover_grouped_schema_leaves(self.schema)
-        self.assertEqual(len(leaves), 927)
+        self.assertEqual(len(leaves), 925)
         self.assertEqual(set(leaves), set(self.manifest))
         required_fields = {
             "scope",
@@ -53,6 +53,11 @@ class PersonaConfigTests(unittest.TestCase):
         self.assertTrue(self.manifest["bot_name"]["identity"])
         self.assertFalse(self.manifest["bot_name"]["inherit_primary"])
         self.assertEqual(self.manifest["storage_backend"]["scope"], "common")
+        self.assertEqual(self.manifest["plugin_specific_persona_id"]["scope"], "common")
+        self.assertFalse(self.manifest["plugin_specific_persona_id"]["cloneable"])
+        self.assertFalse(self.manifest["plugin_specific_persona_id"]["inherit_primary"])
+        self.assertFalse(self.manifest["plugin_specific_persona_id"]["identity"])
+        self.assertNotIn("multi_persona_primary_id", self.manifest)
         self.assertEqual(self.manifest["quiet_hours"]["scope"], "persona")
 
     def test_missing_setting_follows_primary_but_falsy_values_are_explicit(self) -> None:

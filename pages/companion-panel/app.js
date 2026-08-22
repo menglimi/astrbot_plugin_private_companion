@@ -147,7 +147,7 @@ const state = {
   personaOperationBusyCount: 0,
   personaCommonBaseline: null,
   personaDetachPreview: null,
-  multiPersona: { enabled: false, primary: "", profiles: [], current: "", window_bindings: {} },
+  multiPersona: { enabled: false, primary: "", profiles: [], current: "" },
   providerFilter: "",
   providerMode: "all",
   modelsSection: "providers",
@@ -1297,7 +1297,7 @@ const providerGroupByKey = providerGroups.reduce((acc, group) => {
 
 const featureMeta = {
   enable_proactive_only_mode: ["仅保留主动能力", "只让本插件负责主动私聊调度、生成和发送；普通私聊/群聊放行给默认主链或其他插件。"],
-  enable_multi_persona_mode: ["多人格支持模式", "按人格隔离资料、日程、状态、日记、用户、群聊和 Token；同一窗口固定使用一个人格，避免串人格。"],
+  enable_multi_persona_mode: ["多人格支持模式", "按人格隔离资料、日程、状态、日记、用户、群聊和 Token；会话人格由 AstrBot 路由决定。"],
   enable_custom_relationship_stage_policy: ["启用好感度系统", "关闭后不记账、不更新关系或当前互动、不注入关系表达；用户档案和画像仍会更新，已有关系数据会保留。"],
   enable_group_relationship_affinity: ["测试群贡献好感度", "默认关闭；只允许白名单测试群中明确 @/引用 Bot 且回复成功的正式用户事件按低权重结算。"],
   enable_relationship_content_tiers: ["关系内容尺度", "把日常、含蓄暧昧和成人私密内容纳入同一表达决策；关系阶段只是必要条件，不会自动授权。"],
@@ -1921,9 +1921,7 @@ const configLabels = {
   persona_proactive_voice_prompt: "主动开口风格",
   plugin_specific_persona_id: "插件指定人格 ID",
   enable_multi_persona_mode: "多人格支持模式",
-  multi_persona_primary_id: "多人格主人格 ID",
   multi_persona_ids: "多人格 ID 列表",
-  multi_persona_window_bindings: "窗口到人格绑定",
   private_user_aliases: "私聊身份别名归并",
   private_user_delivery_aliases: "私聊主动发送目标映射",
   proactive_intensity_preset: "主动强度预设",
@@ -2612,9 +2610,8 @@ const configDescriptions = {
   daily_review_auto_apply_guidance: "只把低风险表达与判断建议作为次日柔性提示词使用；配置、阈值、名单、权限和 Provider 不会自动修改。",
   daily_review_retention_days: "只保留结构化结论和脱敏证据计数，不保存原始聊天内容。",
   enable_proactive_only_mode: "开启后，本插件只保留主动私聊的日程、主动生成和发送链路；普通私聊、群聊消息不会再被本插件做状态/TTS/图片/转发/群聊上下文注入，也不会触发本插件的被动回复增强，但不会阻止 AstrBot 默认回复或其他插件处理。用户回复主动消息时仍会被轻量记为已回应。适合只想使用主动陪伴、或担心本插件被动链路误接管/误识别的场景。",
-  enable_multi_persona_mode: "开启后，不同人格使用独立资料、日程、状态、日记、用户、群聊和 Token 记录；窗口会固定绑定人格，切换冲突时先确认迁移并清理缓存。",
-  multi_persona_primary_id: "主人格用于未绑定窗口的默认回退，也作为其他插件读取本插件人格时的兼容人格。",
-  multi_persona_ids: "选择需要由本插件独立维护完整资料的人格。主人格会自动包含在内。",
+  enable_multi_persona_mode: "开启后，不同人格使用独立资料、日程、状态、日记、用户、群聊和 Token 记录；会话与人格的对应关系由 AstrBot 路由提供。",
+  multi_persona_ids: "选择需要由本插件独立维护完整资料的人格。插件指定人格会作为只读主人格自动包含在内。",
   enable_llm_proactive_message: "开启后，主动调度只负责挑选动机和时机，真正文本会调用 AstrBot 人格生成；关闭时回退为本地模板，更省但更机械。",
   proactive_generation_history_limit: "主动生成和人格改写最多读取多少条当前私聊历史；消息密集时可调高，但仍受整理模式和字符上限约束。",
   proactive_history_context_mode: "compact 保留最近消息原文并压缩较早消息；recent_only 只注入最近原文；expanded 在字符上限内尽量保留全部历史。整理过程不额外调用模型。",
@@ -3314,7 +3311,7 @@ const featureSettingGroups = {
   enable_user_habit_learning: ["user_habit_min_count", "user_habit_max_items"],
   enable_food_menu_recommendation: ["enable_meal_care_proactive", "meal_care_max_daily", "meal_care_followup_minutes"],
   enable_proactive_only_mode: ["enable_llm_proactive_message", "proactive_prompt_template", "proactive_generation_history_limit", "proactive_history_context_mode", "proactive_history_recent_raw_count", "proactive_history_max_chars", "enable_proactive_chat_integration", "proactive_chat_bridge_review_mode", "proactive_chat_bridge_collision_window_seconds", "enable_llm_proactive_persona_judge", "PROACTIVE_PERSONA_JUDGE_PROVIDER_ID", "proactive_persona_judge_send_threshold", "proactive_persona_judge_cache_minutes", "proactive_persona_judge_max_daily", "default_enable_configured_targets", "proactive_reply_context_hours", "enable_proactive_decorating_hooks", "enable_precise_platform_send", "max_proactive_plan_lag_minutes"],
-  enable_multi_persona_mode: ["multi_persona_primary_id", "multi_persona_ids"],
+  enable_multi_persona_mode: ["multi_persona_ids"],
   enable_reply_interception_forward: ["reply_interception_forward_target_umo", "reply_interception_forward_plugin_blocks", "reply_interception_forward_rewrites", "reply_interception_forward_proactive_blocks"],
   enable_reaction_expression_experiment: ["reaction_expression_private_enabled", "reaction_expression_proactive_enabled", "reaction_expression_group_enabled", "reaction_expression_delivery_mode", "reaction_expression_image_format", "reaction_expression_trigger_probability", "reaction_expression_cooldown_seconds", "reaction_expression_semantic_trigger_enabled", "reaction_expression_low_latency_mode", "reaction_expression_candidate_limit", "reaction_expression_embedding_enabled", "REACTION_EXPRESSION_EMBEDDING_PROVIDER_ID", "reaction_expression_embedding_timeout_ms", "reaction_expression_embedding_candidate_limit", "reaction_expression_embedding_score_threshold", "reaction_expression_embedding_weight", "reaction_expression_embedding_backfill_enabled", "reaction_expression_embedding_backfill_batch_size", "reaction_expression_embedding_backfill_interval_seconds"],
   enable_maslow_motivation_experiment: ["enable_maslow_schedule_influence", "maslow_motivation_strength"],
@@ -3418,8 +3415,8 @@ const featureSettingSections = {
   enable_multi_persona_mode: [
     {
       title: "人格隔离范围",
-      note: "主人格负责兼容其他插件；参与人格分别维护完整资料和日程。",
-      keys: ["multi_persona_primary_id", "multi_persona_ids"],
+      note: "插件指定人格是只读主人格；参与人格分别维护完整资料和日程，路由由 AstrBot 决定。",
+      keys: ["multi_persona_ids"],
     },
   ],
   enable_custom_relationship_stage_policy: [
@@ -6165,7 +6162,6 @@ async function savePersonaScopedFeatureChanges(payload, control = null, successM
 async function followPersonaSetting(key, control = null) {
   const settingKey = String(key || "").trim();
   if (!settingKey || !personaConfigIsOverride(settingKey)) return false;
-  if (hasUnsavedChanges() && !window.confirm("当前人格还有未保存的配置，恢复跟随不会提交这些草稿。继续吗？")) return false;
   const expectedRevision = Number(state.personaConfigState?.revision);
   if (!Number.isFinite(expectedRevision) || expectedRevision < 0) {
     showToast("人格配置版本不可用，请刷新后重试", "error");
@@ -6196,7 +6192,7 @@ async function followPersonaSetting(key, control = null) {
 
 function scopePagePersonaRequest(path, options, method) {
   const selectedPersonaId = selectedPagePersonaId();
-  if (/^\/(?:persona\/(?:switch|migrate|config-state|config\/create|settings\/update|config\/detach-(?:preview|apply)|window-bindings(?:\/delete)?)|roleplay\/personas)(?:[/?]|$)/.test(path)) {
+  if (/^\/(?:persona\/(?:migrate|config-state|config\/create|settings\/update|config\/detach-(?:preview|apply))|roleplay\/personas)(?:[/?]|$)/.test(path)) {
     return { path, options };
   }
   if (method === "GET") {
@@ -6966,13 +6962,15 @@ function syncRealityTouchOverviewState(snapshot = null) {
 }
 
 function applyOverviewData(overview) {
-  if (overview?.multi_persona?.enabled) {
-    const current = selectedPagePersonaId();
+  if (overview?.multi_persona && typeof overview.multi_persona === "object") {
+    const enabled = Boolean(overview.multi_persona.enabled);
+    const current = enabled ? selectedPagePersonaId() : "";
     state.multiPersona = {
       ...state.multiPersona,
       ...overview.multi_persona,
-      current: current || overview.multi_persona.current || overview.multi_persona.primary || "",
+      current: enabled ? (current || overview.multi_persona.current || overview.multi_persona.primary || "") : "",
     };
+    if (!enabled) persistSelectedPagePersonaId("");
   }
   const activePersonaId = activeBookshelfPersonaId();
   if (state.bookshelfUnlocked && activePersonaId && state.bookshelfPersonaId !== activePersonaId) {
@@ -7296,6 +7294,7 @@ function hydrateTokenStatsFromOverview(overview) {
 
 function renderAll() {
   scheduleDailyOutfitHydration();
+  renderPagePersonaSelector();
   renderStats();
   renderDashboard();
   renderActiveTab(state.activeTab);
@@ -7665,7 +7664,7 @@ async function loadRoleplayPersonas(force = false) {
   const storedPersona = storedPagePersonaId();
   const result = await fetchJson("/roleplay/personas").catch(() => ({ items: [] }));
   state.roleplayPersonas = Array.isArray(result.items) ? result.items : [];
-  state.multiPersona = result.multi_persona || { enabled: false, primary: "", profiles: [], window_bindings: {} };
+  state.multiPersona = result.multi_persona || { enabled: false, primary: "", profiles: [] };
   const profiles = Array.isArray(state.multiPersona.profiles) ? state.multiPersona.profiles : [];
   const requested = String(state.selectedPersonaId || storedPersona || "").trim();
   const selected = state.multiPersona.enabled
@@ -7688,6 +7687,7 @@ async function loadRoleplayPersonas(force = false) {
     state.personaConfigState = null;
     state.personaConfigError = "";
   }
+  renderPagePersonaSelector();
   const draft = setupGuideDraft();
   if (!draft.personaId) {
     draft.personaId = result.current || result.default || state.roleplayPersonas[0]?.id || "";
@@ -23023,7 +23023,7 @@ function renderMultiPersonaModeSummary() {
               <span class="proactive-chat-status ${dirty ? "paused" : enabled ? "on" : "off"}">${escapeHtml(status)}</span>
             </div>
             <h3>多人格支持</h3>
-            <p>为不同 AstrBot 人格分别维护陪伴配置、生活资料与会话窗口归属。</p>
+            <p>为不同 AstrBot 人格分别维护陪伴配置和生活资料；会话路由由 AstrBot 负责。</p>
             <small class="proactive-mode-code">enable_multi_persona_mode</small>
           </div>
         </section>
@@ -23052,9 +23052,32 @@ function configPersonaRecords() {
     state.multiPersona?.primary,
   ];
   ids.map((item) => String(item || "").trim()).filter(Boolean).forEach((id) => {
-    if (!records.has(id)) records.set(id, { id });
+    const label = String(state.multiPersona?.profile_labels?.[id] || "").trim();
+    if (records.has(id)) records.set(id, { ...records.get(id), id, label: label || records.get(id).label });
+    else records.set(id, { id, label });
   });
   return [...records.values()];
+}
+
+function pagePersonaRecords() {
+  const available = new Set(normalizeMultiPersonaIds(state.multiPersona?.profiles));
+  return configPersonaRecords().filter((item) => available.has(String(item.id || "").trim()));
+}
+
+function astrBotPersonaRecords() {
+  return (Array.isArray(state.roleplayPersonas) ? state.roleplayPersonas : [])
+    .filter((item) => {
+      const id = String(item?.id || "").trim();
+      const source = String(item?.source || "").trim();
+      return id && source !== "独立资料" && source !== "插件配置";
+    });
+}
+
+function configuredPrimaryPersonaId() {
+  const requested = String(state.overview?.settings?.plugin_specific_persona_id || "").trim();
+  return astrBotPersonaRecords().some((item) => String(item.id || "").trim() === requested)
+    ? requested
+    : "";
 }
 
 function personaBotName(personaOrId) {
@@ -23062,6 +23085,141 @@ function personaBotName(personaOrId) {
   const id = String(input.id || "").trim();
   const raw = String(input.bot_name || input.name || input.label || id).trim();
   return raw.replace(/\s*（(?:默认|插件当前指定)）\s*$/, "").trim() || id;
+}
+
+function personaTopologyLabel(personaOrId) {
+  return personaDisplayLabel(personaOrId).replace(/\s*（默认）\s*/g, " ").trim();
+}
+
+const personaFollowConfirmTimers = new WeakMap();
+
+function resetPersonaFollowConfirmation(button) {
+  if (!button) return;
+  const timer = personaFollowConfirmTimers.get(button);
+  if (timer) window.clearTimeout(timer);
+  personaFollowConfirmTimers.delete(button);
+  button.classList.remove("is-confirming");
+  button.textContent = button.dataset.followOriginalText || "恢复跟随";
+  button.title = "恢复跟随主人格";
+  button.removeAttribute("data-follow-confirm-armed");
+}
+
+function consumePersonaFollowConfirmation(button) {
+  if (!button) return false;
+  if (button.dataset.followConfirmArmed === "1") {
+    resetPersonaFollowConfirmation(button);
+    return true;
+  }
+  button.dataset.followOriginalText = button.textContent || "恢复跟随";
+  button.dataset.followConfirmArmed = "1";
+  button.classList.add("is-confirming");
+  button.textContent = "点击确认";
+  button.title = "3 秒内再次点击确认恢复跟随";
+  personaFollowConfirmTimers.set(
+    button,
+    window.setTimeout(() => resetPersonaFollowConfirmation(button), 3000),
+  );
+  return false;
+}
+
+function resetPersonaScopedPageState() {
+  cancelUserGroupPrefetch();
+  loadAllRequestSeq += 1;
+  state.users = [];
+  state.groups = [];
+  state.selectedUserId = "";
+  state.selectedGroupId = "";
+  state.userDetailCache = {};
+  state.groupMemberSafety = null;
+  state.memoNotes = null;
+  state.selectedBook = null;
+  state.bookshelfUnlocked = null;
+  state.bookshelfPersonaId = "";
+  state.bookshelfAccessToken = "";
+  state.tokenStats = null;
+  state.troubleshooting = null;
+  state.dailyReview = null;
+  state.userGroupListPromise = null;
+  state.userGroupListError = "";
+  Object.assign(state.lazyLoaded, {
+    diagnostics: false,
+    dailyReview: false,
+    tokenStats: false,
+    userGroupLists: false,
+    memoNotes: false,
+  });
+}
+
+async function selectPagePersona(nextPersonaId, control = null) {
+  const next = String(nextPersonaId || "").trim();
+  const previous = selectedPagePersonaId();
+  const available = new Set(pagePersonaRecords().map((item) => String(item.id || "").trim()));
+  if (!next || next === previous) return false;
+  if (!available.has(next)) {
+    if (control) control.value = previous;
+    showToast("该人格尚无可用配置", "error");
+    return false;
+  }
+  if (hasUnsavedChanges()) {
+    const confirmed = window.confirm("当前人格还有未保存的配置。切换人格将放弃这些更改，确定继续吗？");
+    if (!confirmed) {
+      if (control) control.value = previous;
+      return false;
+    }
+    discardAllFeatureChanges();
+    discardUnsavedModuleFormChanges();
+    discardUnsavedTtsProviderChanges();
+  }
+  setPersonaOperationBusy(true);
+  resetPersonaScopedPageState();
+  persistSelectedPagePersonaId(next);
+  state.multiPersona.current = next;
+  try {
+    await loadSelectedPersonaOverview(next);
+    return true;
+  } catch (error) {
+    persistSelectedPagePersonaId(previous);
+    state.multiPersona.current = previous;
+    if (control) control.value = previous;
+    showToast(`切换人格失败：${error.message || "读取配置失败"}`, "error");
+    await loadSelectedPersonaOverview(previous).catch(() => {});
+    return false;
+  } finally {
+    setPersonaOperationBusy(false);
+    renderPagePersonaSelector();
+    renderConfigPersonaSelector();
+  }
+}
+
+function renderPagePersonaSelector() {
+  const root = $("#pagePersonaSelector");
+  const select = $("#pagePersonaSelect");
+  if (!root || !select) return;
+  const enabled = Boolean(state.multiPersona?.enabled);
+  const records = enabled ? pagePersonaRecords() : [];
+  root.hidden = !enabled || !records.length;
+  if (root.hidden) {
+    select.innerHTML = "";
+    if (!enabled) persistSelectedPagePersonaId("");
+    return;
+  }
+  const primary = String(state.multiPersona?.primary || records[0]?.id || "").trim();
+  const current = selectedPagePersonaId();
+  const selected = records.some((item) => String(item.id || "").trim() === current)
+    ? current
+    : (primary || String(records[0]?.id || "").trim());
+  if (selected !== state.selectedPersonaId) persistSelectedPagePersonaId(selected);
+  select.innerHTML = records.map((item) => {
+    const id = String(item.id || "").trim();
+    return `<option value="${escapeHtml(id)}"${id === selected ? " selected" : ""}>${escapeHtml(personaDisplayLabel(item))}</option>`;
+  }).join("");
+  select.value = selected;
+  select.disabled = Number(state.personaOperationBusyCount || 0) > 0 || records.length <= 1;
+  if (select.dataset.bound === "1") return;
+  select.dataset.bound = "1";
+  select.addEventListener("change", (event) => {
+    void selectPagePersona(event.currentTarget.value, event.currentTarget);
+  });
 }
 
 function renderConfigPersonaSelector() {
@@ -23076,8 +23234,8 @@ function renderConfigPersonaSelector() {
     select.innerHTML = "";
     return;
   }
-  const records = configPersonaRecords();
-  const primary = String(state.multiPersona?.primary || settings.multi_persona_primary_id || records[0]?.id || "").trim();
+  const records = pagePersonaRecords();
+  const primary = String(configuredPrimaryPersonaId() || state.multiPersona?.primary || records[0]?.id || "").trim();
   const selected = records.some((item) => item.id === selectedPagePersonaId())
     ? selectedPagePersonaId()
     : (primary || records[0]?.id || "");
@@ -23106,34 +23264,8 @@ function renderConfigPersonaSelector() {
   }
   if (select.dataset.bound === "1") return;
   select.dataset.bound = "1";
-  select.addEventListener("change", async (event) => {
-    const next = String(event.currentTarget.value || "").trim();
-    const previous = selectedPagePersonaId();
-    if (!next || next === previous) return;
-    if (hasUnsavedChanges()) {
-      const confirmed = window.confirm("当前人格还有未保存的配置。切换人格将放弃这些更改，确定继续吗？");
-      if (!confirmed) {
-        event.currentTarget.value = previous;
-        return;
-      }
-      discardAllFeatureChanges();
-      discardUnsavedModuleFormChanges();
-      discardUnsavedTtsProviderChanges();
-    }
-    event.currentTarget.disabled = true;
-    persistSelectedPagePersonaId(next);
-    state.multiPersona.current = next;
-    try {
-      await loadSelectedPersonaOverview(next);
-    } catch (error) {
-      persistSelectedPagePersonaId(previous);
-      state.multiPersona.current = previous;
-      event.currentTarget.value = previous;
-      showToast(`切换人格失败：${error.message || "读取配置失败"}`, "error");
-    } finally {
-      event.currentTarget.disabled = false;
-      renderConfigPersonaSelector();
-    }
+  select.addEventListener("change", (event) => {
+    void selectPagePersona(event.currentTarget.value, event.currentTarget);
   });
 }
 
@@ -23144,40 +23276,58 @@ function renderPersonaConfigManagement() {
   const enabled = multiPersonaModeDraftEnabled();
   const ids = configuredMultiPersonaIds();
   const personaRecords = configPersonaRecords();
+  const astrBotPersonas = astrBotPersonaRecords();
   const requestedPrimaryPersonaId = String(settings.plugin_specific_persona_id || "").trim();
-  const primaryPersonaId = personaRecords.some((item) => String(item.id || "").trim() === requestedPrimaryPersonaId)
+  const primaryPersonaId = astrBotPersonas.some((item) => String(item.id || "").trim() === requestedPrimaryPersonaId)
     ? requestedPrimaryPersonaId
     : "";
+  const primaryMissing = !primaryPersonaId;
   const enabledPersonaIds = new Set([
     ...normalizeMultiPersonaIds(settings.multi_persona_ids),
     primaryPersonaId,
   ].filter(Boolean));
-  const enabledPersonaRecords = personaRecords.filter((item) => enabledPersonaIds.has(String(item.id || "").trim()));
-  const topologyPrimaryOptions = `${primaryPersonaId ? "" : '<option value="" disabled hidden selected>未选择</option>'}${personaRecords
-    .map((item) => `<option value="${escapeHtml(String(item.id ?? ""))}"${String(item.id) === primaryPersonaId ? " selected" : ""}>${escapeHtml(personaDisplayLabel(item))}</option>`)
-    .join("")}`;
-  const topologyPersonaChecks = personaRecords
+  const configuredPersonaIds = new Set(normalizeMultiPersonaIds(state.multiPersona?.configured_profiles));
+  const enabledPersonaRecords = astrBotPersonas.filter((item) => enabledPersonaIds.has(String(item.id || "").trim()));
+  const topologyPersonaChecks = astrBotPersonas
     .map((item) => {
       const id = String(item.id || "").trim();
       const primary = id === primaryPersonaId;
-      return `<label class="persona-topology-switch"><input type="checkbox" data-common-persona-id value="${escapeHtml(String(item.id ?? ""))}"${enabledPersonaIds.has(id) ? " checked" : ""}${primary ? " disabled" : ""}><span class="feature-toggle-visual"></span><span>${escapeHtml(personaDisplayLabel(item))}${primary ? " · 主人格" : enabledPersonaIds.has(id) ? "" : " · 已停用"}</span></label>`;
+      const stateLabel = primary ? "主人格" : configuredPersonaIds.has(id) ? "配置就绪" : enabledPersonaIds.has(id) ? "待创建配置" : "已停用";
+      return `<label class="persona-topology-switch"><input type="checkbox" data-common-persona-id value="${escapeHtml(String(item.id ?? ""))}"${enabledPersonaIds.has(id) ? " checked" : ""}${primary ? " disabled" : ""}><span class="feature-toggle-visual"></span><span>${escapeHtml(personaTopologyLabel(item))} · ${escapeHtml(stateLabel)}</span></label>`;
     })
     .join("");
-  const personaOptions = enabledPersonaRecords
+  const configuredPersonaRecords = personaRecords.filter((item) => configuredPersonaIds.has(String(item.id || "").trim()));
+  const primaryPersonaRecord = astrBotPersonas.find((item) => String(item.id || "").trim() === primaryPersonaId);
+  const copySourceRecords = [primaryPersonaRecord, ...configuredPersonaRecords].filter(Boolean);
+  const personaOptions = copySourceRecords
     .map((item) => `<option value="${escapeHtml(String(item.id ?? ""))}">${escapeHtml(personaDisplayLabel(item))}</option>`)
     .join("");
-  const createPersonaRecords = enabledPersonaRecords.filter((item) => String(item.id || "").trim() !== primaryPersonaId);
+  const createPersonaRecords = primaryMissing
+    ? []
+    : enabledPersonaRecords.filter((item) => {
+      const id = String(item.id || "").trim();
+      return id !== primaryPersonaId && !configuredPersonaIds.has(id);
+    });
   const createPersonaOptions = createPersonaRecords.length
     ? createPersonaRecords.map((item) => `<option value="${escapeHtml(String(item.id ?? ""))}">${escapeHtml(personaDisplayLabel(item))}</option>`).join("")
-    : '<option value="">暂无已启用人格</option>';
-  const createdPersonaIds = new Set(normalizeMultiPersonaIds(state.multiPersona?.profiles));
+    : '<option value="">暂无可选择人格</option>';
   const detachOptions = personaRecords
-    .filter((item) => String(item.id || "") !== primaryPersonaId && createdPersonaIds.has(String(item.id || "").trim()))
+    .filter((item) => configuredPersonaIds.has(String(item.id || "").trim()))
     .map((item) => `<option value="${escapeHtml(String(item.id ?? ""))}">${escapeHtml(String(item.id || "").trim())} · ${escapeHtml(personaBotName(item))}</option>`)
     .join("");
   const profileErrors = state.multiPersona?.profile_errors && typeof state.multiPersona.profile_errors === "object"
     ? Object.entries(state.multiPersona.profile_errors)
     : [];
+  const primaryCandidateOptions = astrBotPersonas
+    .map((item) => `<option value="${escapeHtml(String(item.id ?? ""))}">${escapeHtml(personaDisplayLabel(item))}</option>`)
+    .join("");
+  const primarySetup = primaryMissing && enabled ? `
+    <form class="persona-primary-setup" data-persona-primary-setup>
+      <header><b>补充插件指定人格</b><span>多人格启用前必须先确定 AstrBot 路由中的主人格；此入口完成后不再显示。</span></header>
+      <label><span>AstrBot 人格</span><select name="plugin_specific_persona_id" required>${primaryCandidateOptions || '<option value="">暂无 AstrBot 有效人格</option>'}</select></label>
+      <button type="submit" class="feature-param-save" ${primaryCandidateOptions ? "" : "disabled"}>保存主人格并启用多人格</button>
+    </form>
+  ` : "";
   root.innerHTML = `
     <header class="persona-management-head">
       <div>
@@ -23191,11 +23341,12 @@ function renderPersonaConfigManagement() {
       <span>创建方式：跟随主人格、从默认值创建、复制已有人格；也可以把当前有效配置脱离主人格并固化。</span>
       <span>人格配置缺少某个键时继续读取主人格；显式的 false、0、空列表和空字符串会保留为独立值。</span>
     </div>
+    ${primarySetup}
     ${profileErrors.length ? `<div class="persona-config-degraded" role="alert"><b>${escapeHtml(profileErrors.length)} 个人格配置需要修复</b>${profileErrors.map(([id, reason]) => `<span>${escapeHtml(personaDisplayLabel(id))}：${escapeHtml(reason || "配置文件无法读取")}。原文件已保留备份。<button type="button" data-persona-recovery="${escapeHtml(id)}">重新初始化配置</button></span>`).join("")}</div>` : ""}
     <form class="persona-topology-form" data-common-persona-topology>
-      <label><span>主人格</span><select name="multi_persona_primary_id">${topologyPrimaryOptions}</select></label>
+      <div class="persona-primary-readonly"><span>主人格</span><strong>${escapeHtml(primaryPersonaId ? personaDisplayLabel(primaryPersonaId) : "尚未配置")}</strong><small><code>plugin_specific_persona_id</code> · 状态 ${primaryPersonaId ? "primary" : "missing"} · 路由权威 AstrBot</small></div>
       <fieldset><legend>启用的人格</legend><div class="persona-topology-checks">${topologyPersonaChecks || '<span class="empty small">暂无可用人格</span>'}</div></fieldset>
-      <button type="submit" class="feature-param-save">保存多人格拓扑</button>
+      <button type="submit" class="feature-param-save" ${primaryMissing ? "disabled" : ""}>保存多人格拓扑</button>
     </form>
     <div class="persona-config-admin-grid">
       <form class="persona-config-create-form" data-persona-config-create>
@@ -23210,13 +23361,13 @@ function renderPersonaConfigManagement() {
           </select></label>
           <label data-persona-copy-source hidden><span>复制来源</span><select name="source_persona_id">${personaOptions}</select></label>
         </div>
-        <button type="submit" class="feature-param-save">创建人格配置</button>
+        <button type="submit" class="feature-param-save" ${createPersonaRecords.length ? "" : "disabled"}>创建人格配置</button>
       </form>
       <form class="persona-config-detach-form" data-persona-config-detach>
         <header><b>脱离主人格跟随</b><span>把目标人格缺失键的当前有效值固化到自身配置。</span></header>
         <label><span>目标人格</span><select name="persona_id">${detachOptions || '<option value="">暂无独立人格配置</option>'}</select></label>
         <div class="persona-config-detach-actions">
-          <button type="button" data-persona-detach-preview>预览固化内容</button>
+          <button type="button" data-persona-detach-preview ${detachOptions ? "" : "disabled"}>预览固化内容</button>
           <button type="button" class="feature-param-save" data-persona-detach-apply disabled>确认脱离</button>
         </div>
         <div class="persona-config-detach-preview" data-persona-detach-result>${state.personaDetachPreview ? personaDetachPreviewHtml(state.personaDetachPreview) : "尚未生成预览。"}</div>
@@ -23249,7 +23400,7 @@ function multiPersonaFeatureDetailPage() {
             <span class="feature-stage-tags"><span>全流程</span></span>
           </div>
           <h2>多人格设置</h2>
-          <p>维护人格拓扑、独立配置、生活资料迁移和会话窗口归属。</p>
+          <p>维护 AstrBot 路由下的人格拓扑、独立配置和生活资料迁移。</p>
         </div>
         <label class="feature-detail-toggle multi-persona-detail-toggle">
           <input type="checkbox" data-common-multi-persona-toggle ${enabled ? "checked" : ""}>
@@ -23263,6 +23414,34 @@ function multiPersonaFeatureDetailPage() {
 }
 
 function bindPersonaManagementActions(root) {
+  root?.querySelector("[data-persona-primary-setup]")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const personaId = String(new FormData(event.currentTarget).get("plugin_specific_persona_id") || "").trim();
+    const validIds = new Set(astrBotPersonaRecords().map((item) => String(item.id || "").trim()).filter(Boolean));
+    if (!personaId || !validIds.has(personaId)) {
+      showToast("请选择 AstrBot 当前有效人格", "error");
+      return;
+    }
+    const ids = Array.from(new Set([
+      personaId,
+      ...normalizeMultiPersonaIds(state.overview?.settings?.multi_persona_ids),
+    ]));
+    const saved = await runAction(async () => {
+      const primaryResult = await postJson("/settings/update", {
+        settings: { plugin_specific_persona_id: personaId },
+      });
+      if (configPersistenceFailed(primaryResult)) {
+        throw new Error("插件指定人格未能持久化，尚未启用多人格");
+      }
+      return postJson("/settings/update", {
+        settings: {
+          enable_multi_persona_mode: true,
+          multi_persona_ids: ids,
+        },
+      });
+    }, "已保存主人格并启用多人格", event.submitter, { reload: false });
+    if (saved) await loadAll({ waitForLists: false });
+  });
   root?.querySelectorAll("[data-persona-recovery]").forEach((button) => {
     button.addEventListener("click", async () => {
       const personaId = String(button.dataset.personaRecovery || "").trim();
@@ -23281,7 +23460,7 @@ function bindPersonaManagementActions(root) {
   root?.querySelector("[data-common-persona-topology]")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
-    const primary = String(form.elements.multi_persona_primary_id?.value || "").trim();
+    const primary = configuredPrimaryPersonaId();
     const ids = Array.from(form.querySelectorAll("[data-common-persona-id]:checked"))
       .map((input) => String(input.value || "").trim())
       .filter(Boolean);
@@ -23293,14 +23472,12 @@ function bindPersonaManagementActions(root) {
     const saved = await runAction(() => postJson("/settings/update", {
       settings: {
         enable_multi_persona_mode: multiPersonaModeDraftEnabled(),
-        multi_persona_primary_id: primary,
         multi_persona_ids: Array.from(new Set(ids)),
       },
     }), "已保存多人格拓扑", event.submitter, { reload: false });
     if (saved) await loadAll({ waitForLists: false });
   });
-  const topologyForm = root?.querySelector("[data-common-persona-topology]");
-  const topologyPrimary = topologyForm?.elements?.multi_persona_primary_id;
+  const topologyPrimary = configuredPrimaryPersonaId();
   const createForm = root?.querySelector("[data-persona-config-create]");
   const createMode = createForm?.elements?.mode;
   const sourceWrap = createForm?.querySelector("[data-persona-copy-source]");
@@ -23309,51 +23486,40 @@ function bindPersonaManagementActions(root) {
   const personaBotNameMap = Object.fromEntries(
     configPersonaRecords().map((item) => [String(item.id || ""), personaBotName(item)]),
   );
+  const configuredSourceIds = new Set(normalizeMultiPersonaIds(state.multiPersona?.configured_profiles));
+  const copySourceRecords = configPersonaRecords().filter((item) => {
+    const id = String(item.id || "").trim();
+    return id && (id === topologyPrimary || configuredSourceIds.has(id));
+  });
+  const syncCopySourceOptions = () => {
+    const sourceSelect = createForm?.elements?.source_persona_id;
+    if (!sourceSelect) return;
+    const targetId = String(createPersonaId?.value || "").trim();
+    const previous = String(sourceSelect.value || "").trim();
+    const candidates = copySourceRecords.filter((item) => String(item.id || "").trim() !== targetId);
+    sourceSelect.innerHTML = candidates.length
+      ? candidates.map((item) => `<option value="${escapeHtml(String(item.id || ""))}">${escapeHtml(personaDisplayLabel(item))}</option>`).join("")
+      : '<option value="">暂无可复制来源</option>';
+    if (candidates.some((item) => String(item.id || "").trim() === previous)) {
+      sourceSelect.value = previous;
+    }
+    sourceSelect.disabled = createMode?.value !== "copy" || !candidates.length;
+  };
   const syncCreateFields = () => {
     const copying = createMode?.value === "copy";
     if (sourceWrap) sourceWrap.hidden = !copying;
-    const sourceSelect = createForm?.elements?.source_persona_id;
-    if (sourceSelect) sourceSelect.disabled = !copying;
+    syncCopySourceOptions();
+  };
+  const syncCreateTarget = () => {
     if (createPersonaId && botNameInput && createPersonaId.value) {
       botNameInput.value = personaBotNameMap[createPersonaId.value] || createPersonaId.value;
     }
+    syncCopySourceOptions();
   };
-  const syncCreatePersonaOptions = () => {
-    if (!createPersonaId) return;
-    const primary = String(topologyPrimary?.value || "").trim();
-    const enabledIds = new Set(
-      Array.from(topologyForm?.querySelectorAll("[data-common-persona-id]:checked") || [])
-        .map((input) => String(input.value || "").trim())
-        .filter(Boolean),
-    );
-    const candidates = configPersonaRecords().filter((item) => {
-      const id = String(item.id || "").trim();
-      return id && id !== primary && enabledIds.has(id);
-    });
-    const previous = String(createPersonaId.value || "").trim();
-    createPersonaId.innerHTML = candidates.length
-      ? candidates.map((item) => `<option value="${escapeHtml(String(item.id || ""))}">${escapeHtml(personaDisplayLabel(item))}</option>`).join("")
-      : '<option value="">暂无已启用的非主人格</option>';
-    if (candidates.some((item) => String(item.id || "").trim() === previous)) {
-      createPersonaId.value = previous;
-    }
-    syncCreateFields();
-  };
-  topologyPrimary?.addEventListener("change", () => {
-    const primary = String(topologyPrimary.value || "").trim();
-    topologyForm.querySelectorAll("[data-common-persona-id]").forEach((input) => {
-      const isPrimary = String(input.value || "").trim() === primary;
-      input.disabled = isPrimary;
-      if (isPrimary) input.checked = true;
-    });
-    syncCreatePersonaOptions();
-  });
-  topologyForm?.querySelectorAll("[data-common-persona-id]").forEach((input) => {
-    input.addEventListener("change", syncCreatePersonaOptions);
-  });
   createMode?.addEventListener("change", syncCreateFields);
-  createPersonaId?.addEventListener("change", syncCreateFields);
-  syncCreatePersonaOptions();
+  createPersonaId?.addEventListener("change", syncCreateTarget);
+  syncCreateTarget();
+  syncCreateFields();
   createForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(createForm);
@@ -23367,6 +23533,10 @@ function bindPersonaManagementActions(root) {
     }
     if (mode === "copy" && !sourcePersonaId) {
       showToast("请选择要复制的来源人格", "error");
+      return;
+    }
+    if (mode === "copy" && sourcePersonaId === personaId) {
+      showToast("复制来源不能与目标人格相同", "error");
       return;
     }
     const saved = await runAction(() => postJson("/persona/config/create", {
@@ -23949,7 +24119,7 @@ function moduleWorkbenchCard(item) {
 
 async function resetPersonaFromPanel(button, personaId, label) {
   const confirmed = window.confirm(
-    `确定重置当前人格“${label}”吗？\n\n旧资料会先备份；插件基础配置、多人格列表和窗口绑定会保留。外部长期记忆不会直接删除。`,
+    `确定重置当前人格“${label}”吗？\n\n旧资料会先备份；插件基础配置、多人格列表和 AstrBot 路由状态会保留。外部长期记忆不会直接删除。`,
   );
   if (!confirmed) return;
   button.disabled = true;
@@ -26307,6 +26477,7 @@ function renderFeatureSwitches() {
   document.querySelectorAll("[data-persona-follow-key]").forEach((button) => {
     button.addEventListener("click", async (event) => {
       event.stopPropagation();
+      if (!consumePersonaFollowConfirmation(button)) return;
       await followPersonaSetting(button.dataset.personaFollowKey, button);
     });
   });
@@ -26503,19 +26674,12 @@ function normalizeMultiPersonaIds(value) {
 }
 
 function multiPersonaConfigIds(root = document) {
-  const settings = state.overview?.settings || {};
   const checkedIds = Array.from(root?.querySelectorAll?.("[data-multi-persona-profile]:checked") || [])
     .map((item) => String(item.value || "").trim())
     .filter(Boolean);
-  const primaryControl = root?.querySelector?.('[data-feature-param="multi_persona_primary_id"]');
-  const primary = String(
-    primaryControl?.value
-    || settings.multi_persona_primary_id
-    || state.multiPersona?.primary
-    || "",
-  ).trim();
+  const primary = configuredPrimaryPersonaId();
   return Array.from(new Set([
-    ...normalizeMultiPersonaIds(settings.multi_persona_ids),
+    ...normalizeMultiPersonaIds(state.overview?.settings?.multi_persona_ids),
     ...normalizeMultiPersonaIds(state.featureDetailParamDraft?.multi_persona_ids),
     ...checkedIds,
     primary,
@@ -26529,82 +26693,6 @@ function configuredMultiPersonaIds(root = document) {
   ]));
 }
 
-function multiPersonaBindingIds(root = document) {
-  const configured = configuredMultiPersonaIds(root);
-  const available = (state.roleplayPersonas || [])
-    .map((item) => String(item?.id || "").trim())
-    .filter(Boolean);
-  return Array.from(new Set([...configured, ...available]));
-}
-
-async function ensureMultiPersonaBindingProfile(personaId, root = document) {
-  const pid = String(personaId || "").trim();
-  if (!pid) throw new Error("请选择使用人格");
-  const settings = state.overview?.settings || {};
-  const modeRequested = toBool(
-    state.featureDraft?.enable_multi_persona_mode
-    ?? settings.enable_multi_persona_mode,
-  );
-  if (!modeRequested) throw new Error("请先开启多人格支持模式");
-  const persistedSettings = state.featureDetailBaseline?.key === "enable_multi_persona_mode"
-    ? (state.featureDetailBaseline.settings || {})
-    : settings;
-  const persistedIds = normalizeMultiPersonaIds(persistedSettings.multi_persona_ids);
-  const persistedPrimary = String(persistedSettings.multi_persona_primary_id || "").trim();
-  const modeEnabled = Boolean(
-    state.multiPersona?.enabled
-    && toBool(persistedSettings.enable_multi_persona_mode),
-  );
-  if (modeEnabled && (persistedIds.includes(pid) || persistedPrimary === pid)) return;
-
-  const ids = Array.from(new Set([...multiPersonaConfigIds(root), pid]));
-  const saved = await postJson("/settings/update", {
-    settings: {
-      enable_multi_persona_mode: true,
-      multi_persona_ids: ids,
-    },
-  });
-  if (configPersistenceFailed(saved)) {
-    throw new Error("多人格列表未能持久化，窗口绑定已取消");
-  }
-
-  const returnedIds = saved?.settings?.multi_persona_ids;
-  const savedIds = normalizeMultiPersonaIds(returnedIds);
-  const savedModeEnabled = toBool(saved?.settings?.enable_multi_persona_mode);
-  if (
-    !saved
-    || !savedModeEnabled
-    || !Object.prototype.hasOwnProperty.call(saved?.settings || {}, "multi_persona_ids")
-    || !savedIds.includes(pid)
-  ) {
-    throw new Error("服务器未确认该人格已加入多人格列表，窗口绑定已取消");
-  }
-  if (state.overview) {
-    state.overview.settings = {
-      ...(state.overview.settings || {}),
-      enable_multi_persona_mode: true,
-      multi_persona_ids: savedIds,
-    };
-  }
-  state.featureDetailParamDraft = {
-    ...(state.featureDetailParamDraft || {}),
-    multi_persona_ids: savedIds,
-  };
-  state.featureDraft.enable_multi_persona_mode = true;
-  state.multiPersona = {
-    ...state.multiPersona,
-    ...(saved?.multi_persona || {}),
-    enabled: true,
-    profiles: normalizeMultiPersonaIds(saved?.multi_persona?.profiles || savedIds),
-  };
-
-  const profileInput = Array.from(root?.querySelectorAll?.("[data-multi-persona-profile]") || [])
-    .find((item) => String(item.value || "").trim() === pid);
-  if (profileInput) profileInput.checked = true;
-  const hidden = root?.querySelector?.('[data-feature-param="multi_persona_ids"]');
-  if (hidden) hidden.value = savedIds.join("\n");
-}
-
 const MULTI_PERSONA_MIGRATION_KEYS = Object.freeze([
   "daily_plan",
   "daily_state",
@@ -26615,46 +26703,36 @@ const MULTI_PERSONA_MIGRATION_KEYS = Object.freeze([
   "token_usage",
 ]);
 
-function multiPersonaMigrationDetailCard() {
-  const modeRequested = multiPersonaModeDraftEnabled();
-  const ids = configuredMultiPersonaIds();
-  const bindingIds = multiPersonaBindingIds();
-  const bindingEditable = modeRequested && bindingIds.length > 0;
-  const bindings = state.multiPersona?.window_bindings && typeof state.multiPersona.window_bindings === "object"
-    ? state.multiPersona.window_bindings
-    : {};
-  const options = ids.map((id) => `<option value="${escapeHtml(id)}">${escapeHtml(personaDisplayLabel(id))}</option>`).join("");
-  const bindingOptions = bindingIds.length
-    ? bindingIds.map((id) => `<option value="${escapeHtml(id)}">${escapeHtml(personaDisplayLabel(id))}</option>`).join("")
-    : '<option value="">暂无可用人格</option>';
-  const bindingRows = Object.entries(bindings)
-    .sort(([left], [right]) => left.localeCompare(right, "zh-CN"))
-    .map(([windowKey, personaId]) => `
-      <div class="multi-persona-binding-row" data-persona-binding-row="${escapeHtml(windowKey)}">
-        <span class="multi-persona-binding-route"><code>${escapeHtml(windowKey)}</code><em>${escapeHtml(personaDisplayLabel(personaId))}</em></span>
-        <span class="multi-persona-binding-actions">
-          <button type="button" class="soft" data-persona-window-edit="${escapeHtml(windowKey)}" data-persona-window-target-id="${escapeHtml(personaId)}" ${modeRequested ? "" : "disabled"}>编辑</button>
-          <button type="button" class="danger-outline" data-persona-window-delete="${escapeHtml(windowKey)}">删除</button>
-        </span>
-      </div>`)
-    .join("");
-  const bindingCard = `
-    <article class="feature-detail-card multi-persona-binding-card">
-      <h3>会话窗口绑定</h3>
-      ${modeRequested ? "" : '<p class="persona-setting-disabled-note">总开关关闭时保留并展示已有绑定；开启并保存多人格支持后才能新增或编辑绑定。</p>'}
-      <div class="multi-persona-migration-selects">
-        <label><span>会话窗口 UMO</span><input type="text" data-persona-window-key value="" maxlength="512" ${modeRequested ? "" : "disabled"}/></label>
-        <label><span>使用人格</span><select data-persona-window-target ${bindingEditable ? "" : "disabled"}>${bindingOptions}</select></label>
-      </div>
-      <div class="multi-persona-binding-form-actions">
-        <button type="button" class="feature-param-save" data-persona-window-bind ${bindingEditable ? "" : "disabled"}>保存窗口绑定</button>
-        <button type="button" class="ghost" data-persona-window-cancel-edit hidden>取消编辑</button>
-      </div>
-      <div class="multi-persona-binding-list">${bindingRows || "<span class=\"empty small\">暂无固定窗口绑定</span>"}</div>
+function multiPersonaLegacyRoutingNotice() {
+  const status = state.multiPersona || {};
+  const raw = status.legacy_routing
+    ?? status.legacy_binding_warning
+    ?? status.legacy_window_bindings_warning
+    ?? status.legacy_warning;
+  if (!raw) return "";
+  const item = typeof raw === "object" ? raw : { ignored: true, message: String(raw) };
+  const ignored = Boolean(item.ignored ?? true);
+  const count = Math.max(0, Number(item.count || 0));
+  const warningCode = String(item.warning_code || "").trim();
+  const backupPath = String(item.backup_path || "").trim();
+  const message = String(item.message || "").trim();
+  if (!ignored && !count && !warningCode && !backupPath && !message) return "";
+  return `
+    <article class="feature-detail-card multi-persona-legacy-routing" role="status">
+      <h3>旧插件窗口绑定已停用</h3>
+      <p>${escapeHtml(message || `检测到 ${count || "若干"} 条旧绑定；当前仅由 AstrBot 决定会话人格，插件不会再读取或修改这些绑定。`)}</p>
+      ${backupPath ? `<span>备份位置：<code>${escapeHtml(backupPath)}</code></span>` : ""}
+      ${warningCode ? `<small>${escapeHtml(warningCode)}</small>` : ""}
     </article>
   `;
+}
+
+function multiPersonaMigrationDetailCard() {
+  const ids = configuredMultiPersonaIds();
+  const legacyRoutingNotice = multiPersonaLegacyRoutingNotice();
+  const options = ids.map((id) => `<option value="${escapeHtml(id)}">${escapeHtml(personaDisplayLabel(id))}</option>`).join("");
   if (ids.length < 2) {
-    return `${bindingCard}
+    return `${legacyRoutingNotice}
       <article class="feature-detail-card">
         <h3>人格资料迁移</h3>
         <p>保存至少两个人格后，这里会显示按功能迁移资料的入口。</p>
@@ -26670,7 +26748,7 @@ function multiPersonaMigrationDetailCard() {
     ["memo_notes", "备忘录"],
     ["token_usage", "Token 记录"],
   ];
-  return `${bindingCard}
+  return `${legacyRoutingNotice}
     <article class="feature-detail-card multi-persona-migration-card">
       <h3>人格资料迁移</h3>
       <p>从已有的人格复制选中的资料；目标人格的缓存会同步清理，避免旧人格上下文残留。</p>
@@ -26684,151 +26762,6 @@ function multiPersonaMigrationDetailCard() {
       <button type="button" class="feature-param-save" data-migrate-submit>迁移选中资料并清理缓存</button>
     </article>
   `;
-}
-
-function bindPersonaWindowBindingActions(root) {
-  const detailPage = root;
-  const card = detailPage?.querySelector?.(".multi-persona-binding-card");
-  if (!card) return;
-  const windowInput = card.querySelector("[data-persona-window-key]");
-  const personaSelect = card.querySelector("[data-persona-window-target]");
-  const bindButton = card.querySelector("[data-persona-window-bind]");
-  const cancelButton = card.querySelector("[data-persona-window-cancel-edit]");
-  const bindingRevisionPayload = () => {
-    const revision = state.multiPersona?.window_bindings_revision ?? state.multiPersona?.binding_revision;
-    return revision === undefined || revision === null ? {} : { expected_revision: Number(revision) };
-  };
-  const clearEditor = () => {
-    if (windowInput) {
-      windowInput.value = "";
-      delete windowInput.dataset.previousWindowKey;
-    }
-    if (cancelButton) cancelButton.hidden = true;
-    if (bindButton) bindButton.textContent = "保存窗口绑定";
-  };
-  cancelButton?.addEventListener("click", clearEditor);
-  card.querySelectorAll("[data-persona-window-edit]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const windowKey = String(button.dataset.personaWindowEdit || "").trim();
-      const targetPersona = String(button.dataset.personaWindowTargetId || "").trim();
-      if (windowInput) {
-        windowInput.value = windowKey;
-        windowInput.dataset.previousWindowKey = windowKey;
-      }
-      if (personaSelect && targetPersona) personaSelect.value = targetPersona;
-      if (cancelButton) cancelButton.hidden = false;
-      if (bindButton) bindButton.textContent = "更新窗口绑定";
-      windowInput?.focus();
-    });
-  });
-  card.querySelectorAll("[data-persona-window-delete]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const windowKey = String(button.dataset.personaWindowDelete || "").trim();
-      if (!windowKey || !window.confirm(`确认删除窗口“${windowKey}”的固定人格绑定吗？删除后将恢复自动识别。`)) return;
-      setPersonaOperationBusy(true);
-      setActionBusy(button, true);
-      try {
-        let result;
-        try {
-          result = await postJson("/persona/window-bindings/delete", {
-            action: "delete",
-            window_key: windowKey,
-            ...bindingRevisionPayload(),
-          });
-        } catch (error) {
-          if (!isRouteMissingError(error)) throw error;
-          result = await postJson("/persona/switch", { action: "delete", window_key: windowKey });
-        }
-        if (result?.conflict) throw new Error(result.message || "窗口绑定已变化，请刷新后重试");
-        const nextBindings = { ...(state.multiPersona.window_bindings || {}) };
-        delete nextBindings[windowKey];
-        state.multiPersona.window_bindings = nextBindings;
-        if (result?.revision !== undefined) state.multiPersona.window_bindings_revision = Number(result.revision);
-        showToast("已删除窗口绑定，后续消息将恢复自动识别");
-        clearEditor();
-        await loadRoleplayPersonas(true).catch(() => {});
-        renderConfig();
-      } catch (error) {
-        showToast(error.message || "删除窗口绑定失败", "error");
-      } finally {
-        setActionBusy(button, false);
-        setPersonaOperationBusy(false);
-      }
-    });
-  });
-  bindButton?.addEventListener("click", async (event) => {
-    const bindingControl = event.currentTarget;
-    const windowKey = String(windowInput?.value || "").trim();
-    const personaId = String(personaSelect?.value || "").trim();
-    const previousWindowKey = String(windowInput?.dataset.previousWindowKey || "").trim();
-    if (!windowKey || !personaId) {
-      showToast("请填写会话窗口并选择人格", "error");
-      return;
-    }
-    setPersonaOperationBusy(true);
-    bindingControl.disabled = true;
-    try {
-      await ensureMultiPersonaBindingProfile(personaId, detailPage);
-      let result;
-      try {
-        result = await postJson("/persona/window-bindings", {
-          action: "upsert",
-          window_key: windowKey,
-          persona_id: personaId,
-          previous_window_key: previousWindowKey || "",
-          ...bindingRevisionPayload(),
-        });
-      } catch (error) {
-        if (!isRouteMissingError(error)) throw error;
-        result = await postJson("/persona/switch", {
-          persona_id: personaId,
-          window_key: windowKey,
-          previous_window_key: previousWindowKey || "",
-        });
-      }
-      if (result.conflict) {
-        const sourcePersonaId = String(result.current_persona_id || "").trim();
-        if (!sourcePersonaId) throw new Error("窗口冲突来源未能确认，绑定已取消");
-        const migrate = window.confirm(
-          `该窗口已绑定人格“${personaDisplayLabel(sourcePersonaId)}”。确认迁移其资料到“${personaDisplayLabel(personaId)}”并清理双方缓存后切换吗？取消后可选择仅清理缓存并切换。`,
-        );
-        if (migrate) {
-          result = await postJson("/persona/switch", {
-            persona_id: personaId,
-            window_key: windowKey,
-            source_persona_id: sourcePersonaId,
-            migrate_keys: [...MULTI_PERSONA_MIGRATION_KEYS],
-            force: true,
-          });
-        } else if (window.confirm("不迁移资料，仅清理原人格和目标人格缓存后切换窗口绑定吗？再次取消将保留当前绑定。")) {
-          result = await postJson("/persona/switch", { persona_id: personaId, window_key: windowKey, force: true });
-        } else {
-          return;
-        }
-        if (result.conflict) throw new Error(result.message || "窗口绑定已变化，请重新确认后再切换");
-        const cacheCleared = migrate
-          ? result.migrated?.cache_cleared
-          : result.cache_cleared;
-        if (!cacheCleared) {
-          throw new Error("人格资料迁移或缓存清理未完成，窗口绑定已取消");
-        }
-      }
-      const nextBindings = { ...(state.multiPersona.window_bindings || {}) };
-      if (previousWindowKey && previousWindowKey !== windowKey) delete nextBindings[previousWindowKey];
-      nextBindings[windowKey] = result?.persona_id || result?.binding?.persona_id || personaId;
-      state.multiPersona.window_bindings = nextBindings;
-      if (result?.revision !== undefined) state.multiPersona.window_bindings_revision = Number(result.revision);
-      showToast(previousWindowKey ? "已更新会话窗口绑定" : "已保存会话窗口绑定");
-      clearEditor();
-      await loadRoleplayPersonas(true).catch(() => {});
-      renderConfig();
-    } catch (error) {
-      showToast(error.message || "窗口绑定失败", "error");
-    } finally {
-      bindingControl.disabled = false;
-      setPersonaOperationBusy(false);
-    }
-  });
 }
 
 function bodyMonitorFeatureDetailCard() {
@@ -26939,11 +26872,11 @@ function featureSwitchItem(key) {
         <div class="feature-switch-meta">
           <span class="feature-state-text">${escapeHtml(stateText)}</span>
           ${sourceBadge}
+          ${followButton}
           ${locked ? `<span class="feature-lock-note">${escapeHtml(lockNote)}</span>` : ""}
         </div>
         ${locked && relatedText ? `<div class="feature-lock-related">${escapeHtml(relatedText)}</div>` : ""}
       </div>
-      ${followButton}
       ${locked ? `<button type="button" class="feature-temp-unlock-btn" data-proactive-temp-unlock="${escapeHtml(key)}" data-action="${tempUnlocked ? "clear" : "unlock"}">${escapeHtml(tempUnlocked ? "取消放行" : "临时放行")}</button>` : ""}
     </section>
   `;
@@ -27696,16 +27629,6 @@ function featureSettingInput(key, value, accessibility = {}) {
   const disabled = featureLockedByProactiveOnlyMode(key);
   const disabledAttr = disabled ? " disabled" : "";
   const accessibilityAttrs = featureSettingAccessibilityAttrs(accessibility);
-  if (key === "multi_persona_primary_id") {
-    const current = String(value || "").trim();
-    const personas = (state.roleplayPersonas || []).filter((item) => String(item.id || "").trim());
-    return `
-      <select data-feature-param="${safeKey}"${accessibilityAttrs}${disabledAttr}>
-        <option value="">请选择主人格</option>
-        ${personas.map((item) => `<option value="${escapeHtml(String(item.id ?? ""))}"${String(item.id) === current ? " selected" : ""}>${escapeHtml(personaDisplayLabel(item))}</option>`).join("")}
-      </select>
-    `;
-  }
   if (key === "multi_persona_ids") {
     const selected = new Set((Array.isArray(value) ? value : String(value || "").split(/[\r\n,，、]+/)).map((item) => String(item || "").trim()).filter(Boolean));
     const personas = (state.roleplayPersonas || []).filter((item) => String(item.id || "").trim());
@@ -27916,6 +27839,12 @@ async function saveFeatureSwitchChanges(control = null, successMessage = "已保
   syncFeatureFooterAction();
   try {
     const payload = collectFeatureSwitchPayload();
+    if (toBool(payload.settings?.enable_multi_persona_mode) && !configuredPrimaryPersonaId()) {
+      state.selectedFeatureKey = "enable_multi_persona_mode";
+      renderFeatureSwitches();
+      showToast("请先在多人格设置中补充 AstrBot 有效主人格", "error");
+      return false;
+    }
     if (personaConfigEditingEnabled()) {
       return await savePersonaScopedFeatureChanges(payload, control || $("#saveFeaturesBtn"), successMessage);
     }
@@ -28633,9 +28562,9 @@ const featureDetailGuides = {
     disabled: "创作相关内容更容易被主动提起。",
   },
   enable_multi_persona_mode: {
-    summary: "每个人格独立维护完整陪伴资料，并把一个私聊或群聊窗口固定给一个人格。",
-    trigger: "开启后，收到消息、生成日程和查看拓展页资料时都会先解析当前人格上下文。",
-    enabled: "资料、日程、状态、日记、用户、群聊和 Token 分开保存；主人格继续兼容其他插件。",
+    summary: "每个 AstrBot 人格独立维护完整陪伴资料，会话人格由 AstrBot 路由决定。",
+    trigger: "开启后，收到消息、生成日程和查看拓展页资料时都会读取 AstrBot 当前人格上下文。",
+    enabled: "资料、日程、状态、日记、用户、群聊和 Token 分开保存；插件指定人格作为只读主人格。",
     disabled: "保持原有单人格行为，页面不显示人格切换、迁移和 Token 分类。",
   },
 };
@@ -30121,12 +30050,12 @@ function featureDetailPage(key) {
             <b>${settingLabel}</b>
             ${compactPlacement ? "" : `<code>${escapeHtml(name)}</code>`}
             ${sourceBadge}
+            ${followButton}
           </header>
           <p id="${accessibility.descriptionId}">${escapeHtml(description)}</p>
         </div>
         <div class="feature-param-control">
           ${name === "photo_reference_catalog" ? photoReferenceManagerLaunchControl(value) : name === "bot_relationship_cards" ? relationshipCardEditorHtml(value) : featureSettingInput(name, value, accessibility)}
-          ${followButton}
         </div>
       </section>
       ${key === "enable_environment_perception" && name === "weather_api_host" && weatherSource === "qweather" ? qweatherConsoleLinksHtml() : ""}
@@ -30212,8 +30141,9 @@ function featureDetailPage(key) {
             <span class="module-badge">${escapeHtml(featureGroupForKey(key))}</span>
             <span class="feature-stage-tags" aria-label="作用阶段">${stageTags}</span>
             ${personaSourceBadgeHtml(key)}
+            ${personaConfigIsOverride(key) ? `<button type="button" class="persona-follow-button" data-persona-follow-key="${escapeHtml(key)}" title="恢复跟随主人格">恢复跟随</button>` : ""}
           </div>
-          <h2>${escapeHtml(featureLabel(key))}${personaConfigIsOverride(key) ? ` <button type="button" class="persona-follow-button" data-persona-follow-key="${escapeHtml(key)}" title="恢复跟随主人格">恢复跟随</button>` : ""}</h2>
+          <h2>${escapeHtml(featureLabel(key))}</h2>
           <p>${escapeHtml(featureDetailExplanation(key))}</p>
         </div>
         <label class="feature-detail-toggle">
@@ -30280,6 +30210,7 @@ function bindFeatureDetailActions() {
     button.addEventListener("click", async (event) => {
       event.preventDefault();
       event.stopPropagation();
+      if (!consumePersonaFollowConfirmation(button)) return;
       await followPersonaSetting(button.dataset.personaFollowKey, button);
     });
   });
@@ -30312,7 +30243,6 @@ function bindFeatureDetailActions() {
       event.currentTarget,
     );
   });
-  bindPersonaWindowBindingActions(detailPage);
   const trackFeatureDetailChange = (event) => {
     if (
       event.target?.matches?.("[data-photo-reference-filter], [data-photo-reference-source], [data-photo-reference-note], [data-photo-reference-roles], [data-photo-reference-multi-option], [data-photo-reference-outfit-category], [data-photo-reference-outfit-lock], [data-photo-reference-scenes], [data-photo-reference-times], [data-photo-reference-preferred-preset], [data-photo-reference-persona-source]")
@@ -32399,6 +32329,8 @@ function setPersonaOperationBusy(busy) {
   state.personaOperationBusyCount = busy ? current + 1 : Math.max(0, current - 1);
   const select = $("#configPersonaSelect");
   if (select) select.disabled = state.personaOperationBusyCount > 0;
+  const pageSelect = $("#pagePersonaSelect");
+  if (pageSelect) pageSelect.disabled = state.personaOperationBusyCount > 0 || pagePersonaRecords().length <= 1;
 }
 
 function configSavedValue(result) {

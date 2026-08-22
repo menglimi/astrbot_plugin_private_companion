@@ -52,40 +52,24 @@
         "default": []
       },
       "plugin_specific_persona_id": {
-        "description": "插件指定人格 ID",
+        "description": "插件主人格 ID",
         "type": "string",
         "_special": "select_persona",
         "default": "",
-        "hint": "选择系统中已定义的人设后，本插件内部的关系评估、状态注入、日程、主动消息等人格参考会优先使用该人格。留空时回退到 AstrBot 当前默认人格。"
+        "hint": "本插件唯一的主人格 ID。单人格模式直接使用它；多人格模式下它也是 AstrBot 人格不可用时的回退人格和次人格配置的继承来源。开启多人格前必须明确选择。"
       },
       "enable_multi_persona_mode": {
         "description": "开启多人格支持模式",
         "type": "bool",
         "default": false,
-        "hint": "关闭时保持原有单人格行为，不显示人格切换和分类。开启后每个人格使用独立资料与日程；窗口通过绑定映射到固定人格。"
-      },
-      "multi_persona_primary_id": {
-        "description": "多人格主人格 ID",
-        "type": "string",
-        "_special": "select_persona",
-        "default": "",
-        "condition": "enable_multi_persona_mode",
-        "hint": "作为未单独绑定窗口的默认人格，并用于适配其他插件；建议保持稳定。"
+        "hint": "关闭时全部会话使用插件主人格。开启后每个人格使用独立资料与日程，并完全跟随 AstrBot 对当前会话解析出的有效人格。"
       },
       "multi_persona_ids": {
         "description": "多人格 ID 列表",
         "type": "list",
         "default": [],
         "condition": "enable_multi_persona_mode",
-        "hint": "填写已定义的人格 ID，每个人格会创建独立资料文件。主人格会自动加入列表。"
-      },
-      "multi_persona_window_bindings": {
-        "description": "窗口到人格绑定",
-        "type": "object",
-        "default": {},
-        "items": {},
-        "condition": "enable_multi_persona_mode",
-        "hint": "键为完整 UMO/会话窗口，值为人格 ID；同一窗口只应绑定一个人格，避免串人格。"
+        "hint": "填写已定义的人格 ID，每个人格会创建独立资料文件。上方的插件主人格会自动加入列表。"
       },
       "LLM_PROVIDER_ID": {
         "description": "主模型 / 日程模型（留空用 AstrBot 默认）",
@@ -677,23 +661,10 @@
     "default": false,
     "invisible": true
   },
-  "multi_persona_primary_id": {
-    "description": "Legacy flat config: 多人格主人格 ID",
-    "type": "string",
-    "default": "",
-    "invisible": true
-  },
   "multi_persona_ids": {
     "description": "Legacy flat config: 多人格 ID 列表",
     "type": "list",
     "default": [],
-    "invisible": true
-  },
-  "multi_persona_window_bindings": {
-    "description": "Legacy flat config: 窗口到人格绑定",
-    "type": "object",
-    "default": {},
-    "items": {},
     "invisible": true
   },
   "LLM_PROVIDER_ID": {

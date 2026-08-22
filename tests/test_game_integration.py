@@ -43,7 +43,7 @@ class PersonaGameHarness(GameHarness):
     def __init__(self, replies: list[dict]) -> None:
         super().__init__(replies)
         self.enable_multi_persona_mode = True
-        self.multi_persona_primary_id = "琳沐"
+        self.plugin_specific_persona_id = "琳沐"
         self.active_persona = ""
         self.profile_data = {
             "琳沐": {"users": {}},
@@ -53,8 +53,14 @@ class PersonaGameHarness(GameHarness):
     def _configured_multi_persona_ids(self) -> list[str]:
         return list(self.profile_data)
 
-    def _persona_window_bindings(self) -> dict[str, str]:
-        return {"default:FriendMessage:10001": "姐姐"}
+    def _primary_persona_id(self) -> str:
+        return self.plugin_specific_persona_id
+
+    def _active_persona_scope(self) -> str:
+        return self.active_persona
+
+    def _effective_plugin_persona_id(self) -> str:
+        return self.active_persona or self.plugin_specific_persona_id
 
     def _activate_persona_id(self, persona_id: str) -> str | None:
         if persona_id not in self.profile_data:
@@ -452,7 +458,7 @@ async def test_multi_persona_event_activates_the_matching_profile_store() -> Non
 
 
 @pytest.mark.asyncio
-async def test_multi_persona_event_uses_session_binding_when_id_is_omitted() -> None:
+async def test_multi_persona_event_uses_effective_primary_when_id_is_omitted() -> None:
     host = PersonaGameHarness([game_assessment()])
     event = round_event("event-1")
     event.update(
@@ -460,26 +466,24 @@ async def test_multi_persona_event_uses_session_binding_when_id_is_omitted() -> 
             "room_id": "",
             "scope": "private",
             "session_id": "default:FriendMessage:10001",
-            "request_text": "bound-profile",
+            "request_text": "effective-profile",
         }
     )
 
     await host._record_external_game_event(event)
 
-    assert "10001" not in host.profile_data["琳沐"]["users"]
-    assert host.profile_data["姐姐"]["users"]["10001"]["game_afterglow"]["persona_id"] == "姐姐"
+    assert host.profile_data["琳沐"]["users"]["10001"]["game_afterglow"]["persona_id"] == "琳沐"
+    assert "10001" not in host.profile_data["姐姐"]["users"]
     assert host.active_persona == ""
 
 
 @pytest.mark.asyncio
-async def test_alias_canonicalization_preserves_original_persona_window_binding() -> None:
+async def test_alias_canonicalization_preserves_effective_persona_context() -> None:
     host = PersonaGameHarness([game_assessment()])
     host._canonical_private_user_id = lambda user_id: {
         "member-alias": "member-canonical",
     }.get(user_id, user_id)
-    host._persona_window_bindings = lambda: {
-        "default:FriendMessage:member-alias": "姐姐",
-    }
+    host._effective_plugin_persona_id = lambda: "姐姐"
     event = round_event("event-1")
     event.update(
         {

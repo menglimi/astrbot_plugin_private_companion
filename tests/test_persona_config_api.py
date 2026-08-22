@@ -16,8 +16,8 @@ def _harness(root: str):
     from tests.test_multi_persona_isolation import _plugin_harness
 
     plugin = _plugin_harness(root)
+    plugin._persona_data_profiles.pop("alt", None)
     plugin._persona_settings_migration_status = {}
-    plugin.multi_persona_primary_id = "main"
     plugin.multi_persona_ids = ["main", "alt"]
     plugin.config["multi_persona_ids"] = ["main", "alt"]
     plugin.config["basic_config"] = {
@@ -46,9 +46,7 @@ async def _call(api, app, path, method, payload=None):
             return await api.preview_persona_config_detach()
         if route.endswith("detach-apply"):
             return await api.apply_persona_config_detach()
-        if route.endswith("/window-bindings"):
-            return await api.persona_window_bindings()
-        return await api.delete_persona_window_binding()
+        raise AssertionError(f"unsupported test route: {route}")
 
 
 def test_persona_config_api_lifecycle_and_sparse_following():
@@ -93,6 +91,110 @@ def test_persona_config_api_lifecycle_and_sparse_following():
             )
             assert preview["success"]
             assert preview["data"]["materialized_count"] > 2
+            status = plugin._multi_persona_status()
+            assert status["enabled_ids"] == ["main", "alt"]
+            assert status["configured_profiles"] == ["alt"]
+            assert status["profiles"] == ["main", "alt"]
+            assert status["profile_labels"] == {"main": "主人格", "alt": "次人格"}
+
+    asyncio.run(run())
+
+
+def test_saved_topology_without_config_is_not_editable_detachable_or_schedulable():
+    async def run():
+        with tempfile.TemporaryDirectory() as root:
+            plugin = _harness(root)
+            alt_path = plugin._persona_profile_path("alt")
+
+            status = plugin._multi_persona_status()
+            assert status["enabled_ids"] == ["main", "alt"]
+            assert status["configured_profiles"] == []
+            assert status["profiles"] == ["main"]
+            assert plugin._scheduler_persona_ids() == ["main"]
+            assert plugin._activate_persona_id("alt") is None
+
+            preview = plugin._persona_detach_preview("alt")
+            assert preview["ok"] is False
+            assert preview["code"] == "persona_config_missing"
+            assert alt_path.exists() is False
+
+            try:
+                plugin._persona_config_state("alt")
+            except ValueError as exc:
+                assert "尚未创建独立配置" in str(exc)
+            else:
+                raise AssertionError("topology-only persona must not expose config state")
+            assert alt_path.exists() is False
+
+    asyncio.run(run())
+
+
+def test_revision_zero_empty_shell_from_old_preview_is_not_a_created_config():
+    with tempfile.TemporaryDirectory() as root:
+        plugin = _harness(root)
+        profile = plugin._new_store()
+        profile["persona_settings"] = {"bot_name": "alt"}
+        profile["persona_settings_schema_version"] = 1
+        profile["persona_settings_revision"] = 0
+        plugin._save_persona_profile_sync("alt", profile)
+        plugin._persona_data_profiles.clear()
+
+        assert plugin._persona_config_exists("alt") is False
+        assert plugin._multi_persona_status()["configured_profiles"] == []
+        assert plugin._persona_detach_preview("alt")["code"] == "persona_config_missing"
+
+
+def test_revision_zero_legacy_profile_with_life_data_remains_compatible():
+    with tempfile.TemporaryDirectory() as root:
+        plugin = _harness(root)
+        profile = plugin._new_store()
+        profile["users"] = {"legacy": {"name": "旧用户"}}
+        profile["persona_settings"] = {"bot_name": "alt"}
+        profile["persona_settings_schema_version"] = 1
+        profile["persona_settings_revision"] = 0
+        plugin._save_persona_profile_sync("alt", profile)
+        plugin._persona_data_profiles.clear()
+
+        assert plugin._persona_config_exists("alt") is True
+        assert plugin._multi_persona_status()["configured_profiles"] == ["alt"]
+
+
+def test_create_requires_saved_topology_and_copy_source_must_be_distinct_and_configured():
+    async def run():
+        with tempfile.TemporaryDirectory() as root:
+            plugin = _harness(root)
+            plugin.config["multi_persona_ids"] = ["main", "alt", "work"]
+            plugin.multi_persona_ids = ["main", "alt", "work"]
+
+            outside = await plugin._create_persona_config_async(
+                "outside", bot_name="Outside", mode="follow_primary"
+            )
+            assert outside["ok"] is False
+            assert outside["code"] == "persona_config_target_not_enabled"
+            assert plugin._persona_profile_path("outside").exists() is False
+
+            same = await plugin._create_persona_config_async(
+                "alt", bot_name="Alt", mode="copy", source_persona_id="alt"
+            )
+            assert same["ok"] is False
+            assert "不同的来源人格" in same["message"]
+            assert plugin._persona_profile_path("alt").exists() is False
+
+            missing_source = await plugin._create_persona_config_async(
+                "work", bot_name="Work", mode="copy", source_persona_id="alt"
+            )
+            assert missing_source["ok"] is False
+            assert "尚未创建" in missing_source["message"]
+            assert plugin._persona_profile_path("work").exists() is False
+
+            created = await plugin._create_persona_config_async(
+                "alt", bot_name="Alt", mode="follow_primary"
+            )
+            assert created["ok"] is True
+            copied = await plugin._create_persona_config_async(
+                "work", bot_name="Work", mode="copy", source_persona_id="alt"
+            )
+            assert copied["ok"] is True
 
     asyncio.run(run())
 
@@ -102,11 +204,19 @@ def test_multi_persona_enable_applies_primary_before_toggle_even_when_payload_to
         with tempfile.TemporaryDirectory() as root:
             plugin = _harness(root)
             plugin.enable_multi_persona_mode = False
-            plugin.multi_persona_primary_id = ""
             plugin.multi_persona_ids = []
             plugin.plugin_specific_persona_id = ""
-            plugin._single_mode_plugin_specific_persona_id = ""
             plugin.config["multi_persona_ids"] = []
+            plugin.context = SimpleNamespace(
+                persona_manager=SimpleNamespace(
+                    personas_v3=[{"name": "main", "prompt": "MAIN"}],
+                    get_persona_v3_by_id=lambda persona_id: (
+                        {"name": "main", "prompt": "MAIN"}
+                        if persona_id == "main"
+                        else None
+                    ),
+                )
+            )
             api = PrivateCompanionPageApi(plugin)
             api._save_config_if_possible = AsyncMock(return_value=True)
             app = Quart(__name__)
@@ -118,46 +228,35 @@ def test_multi_persona_enable_applies_primary_before_toggle_even_when_payload_to
                 {
                     "settings": {
                         "enable_multi_persona_mode": True,
-                        "multi_persona_primary_id": "main",
+                        "plugin_specific_persona_id": "main",
                         "multi_persona_ids": ["main", "alt"],
                     },
                 },
             )
             assert response["success"] is True
             assert plugin.enable_multi_persona_mode is True
-            assert plugin.multi_persona_primary_id == "main"
+            assert plugin.plugin_specific_persona_id == "main"
+            assert not hasattr(plugin, "multi_persona_primary_id")
             assert plugin.multi_persona_ids == ["main", "alt"]
 
     asyncio.run(run())
 
 
-def test_window_binding_api_delete_restores_auto_recognition():
-    async def run():
-        with tempfile.TemporaryDirectory() as root:
-            plugin = _harness(root)
-            api = PrivateCompanionPageApi(plugin)
-            app = Quart(__name__)
-            created = await _call(
-                api,
-                app,
-                "/persona/window-bindings",
-                "POST",
-                {"window_key": "QBot4012710235:GroupMessage:group-1", "persona_id": "alt"},
-            )
-            assert created["success"]
-            revision = created["data"]["revision"]
-            deleted = await _call(
-                api,
-                app,
-                "/persona/window-bindings/delete",
-                "POST",
-                {"window_key": "QBot4012710235:GroupMessage:group-1", "expected_revision": revision},
-            )
-            assert deleted["success"]
-            assert deleted["data"]["auto_recognition_restored"] is True
-            assert deleted["data"]["bindings"] == {}
+def test_window_binding_api_is_retired():
+    with tempfile.TemporaryDirectory() as root:
+        api = PrivateCompanionPageApi(_harness(root))
+        assert not hasattr(api, "persona_window_bindings")
+        assert not hasattr(api, "delete_persona_window_binding")
+        assert not hasattr(api, "switch_persona")
 
-    asyncio.run(run())
+
+def test_plugin_persona_routing_endpoints_are_not_registered():
+    with tempfile.TemporaryDirectory() as root:
+        api = PrivateCompanionPageApi(_harness(root))
+        paths = {path for path, _handler, _methods, _description in api.route_bindings()}
+        assert "/persona/switch" not in paths
+        assert "/persona/window-bindings" not in paths
+        assert "/persona/window-bindings/delete" not in paths
 
 
 def test_existing_sparse_profile_is_repaired_without_materializing_old_keys():
@@ -200,23 +299,17 @@ def test_canonical_provider_setting_uses_runtime_attribute_as_primary_fallback()
         assert plugin.get_persona_setting("FAST_RESPONSE_PROVIDER_ID", "alt") == "persona-fast"
 
 
-def test_stale_window_upsert_is_rejected():
+def test_runtime_window_binding_mutation_is_retired():
     async def run():
         with tempfile.TemporaryDirectory() as root:
             plugin = _harness(root)
             first = await plugin._mutate_persona_window_binding_async(
                 action="upsert", window_key="QBot:GroupMessage:one", persona_id="alt"
             )
-            assert first["ok"] and first["revision"] == 1
-            stale = await plugin._mutate_persona_window_binding_async(
-                action="upsert",
-                window_key="QBot:GroupMessage:one",
-                persona_id="main",
-                expected_revision=0,
-            )
-            assert stale["ok"] is False
-            assert stale["status_code"] == 409
-            assert plugin._persona_window_bindings()["QBot:GroupMessage:one"] == "alt"
+            assert first["ok"] is False
+            assert first["status_code"] == 410
+            assert first["code"] == "plugin_persona_routing_removed"
+            assert plugin._persona_window_bindings() == {}
 
     asyncio.run(run())
 
@@ -253,6 +346,7 @@ def test_disabling_multi_persona_rolls_back_default_store_on_write_failure():
         primary = {"users": {"primary": {"name": "主人格数据"}}}
         plugin._data_default = previous
         plugin._persona_data_profiles["main"] = primary
+        Path(plugin.data_file).write_text(json.dumps(previous), encoding="utf-8")
         writes = 0
 
         def writer(snapshot):
@@ -278,13 +372,17 @@ def test_enabling_multi_persona_rolls_back_runtime_profile_and_config_on_save_fa
         with tempfile.TemporaryDirectory() as root:
             plugin = _harness(root)
             plugin.enable_multi_persona_mode = False
-            plugin.multi_persona_primary_id = "main"
             plugin.multi_persona_ids = ["main", "alt"]
             plugin.plugin_specific_persona_id = "main"
-            plugin._single_mode_plugin_specific_persona_id = "main"
             plugin.config["enable_multi_persona_mode"] = False
-            plugin.config["multi_persona_primary_id"] = "main"
             plugin.config["multi_persona_ids"] = ["main", "alt"]
+            plugin.context = SimpleNamespace(
+                persona_manager=SimpleNamespace(
+                    get_persona_v3_by_id=lambda persona_id: (
+                        {"name": "main"} if persona_id == "main" else None
+                    )
+                )
+            )
             plugin.data_file = str(Path(root) / "companions.json")
             plugin._data_default = {"users": {"single": {"name": "单人格"}}}
             Path(plugin.data_file).write_text(

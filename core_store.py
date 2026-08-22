@@ -286,6 +286,7 @@ _DURABLE_SECTION_NAMES = frozenset(
         "users",
         "private_user_alias_merge_backups",
         "groups",
+        "persona_routing_warnings",
         "daily_plan",
         "daily_plan_history",
         "agenda_version",
@@ -897,9 +898,21 @@ class CoreStoreMixin:
             if bool(getattr(self, "enable_multi_persona_mode", False)):
                 persona_ids = getattr(self, "_configured_multi_persona_ids", lambda: [])()
                 if not persona_ids:
-                    persona_ids = [getattr(self, "multi_persona_primary_id", "")]
+                    primary_getter = getattr(self, "_primary_persona_id", None)
+                    try:
+                        primary = primary_getter() if callable(primary_getter) else ""
+                    except Exception:
+                        primary = ""
+                    primary = primary or getattr(self, "plugin_specific_persona_id", "")
+                    persona_ids = [primary]
                 for persona_id in persona_ids:
                     token = getattr(self, "_activate_persona_id", lambda _pid: None)(persona_id)
+                    if token is None:
+                        logger.info(
+                            "[PrivateCompanion] 跳过尚未创建独立配置的人格启动任务: persona=%s",
+                            _single_line(persona_id, 96),
+                        )
+                        continue
                     try:
                         try:
                             await self._ensure_daily_state()
@@ -941,6 +954,7 @@ class CoreStoreMixin:
             "users": {},
             "private_user_alias_merge_backups": {},
             "groups": {},
+            "persona_routing_warnings": {"schema_version": 1, "items": []},
             "daily_plan": {},
             "daily_plan_history": [],
             "agenda_version": 1,
@@ -1088,6 +1102,7 @@ class CoreStoreMixin:
         data.setdefault("users", {})
         data.setdefault("private_user_alias_merge_backups", {})
         data.setdefault("groups", {})
+        data.setdefault("persona_routing_warnings", {"schema_version": 1, "items": []})
         data.setdefault("daily_plan", {})
         data.setdefault("daily_plan_history", [])
         data.setdefault("agenda_version", 1)
@@ -1778,7 +1793,13 @@ class CoreStoreMixin:
         if group_observation_save:
             self._group_observation_dirty = False
         active_persona = str(getattr(self, "_active_persona_scope", lambda: "")() or "")
-        if bool(getattr(self, "enable_multi_persona_mode", False)) and active_persona:
+        primary_getter = getattr(self, "_primary_persona_id", None)
+        primary = str(primary_getter() if callable(primary_getter) else "").strip()
+        if (
+            bool(getattr(self, "enable_multi_persona_mode", False))
+            and active_persona
+            and active_persona != primary
+        ):
             try:
                 asyncio.get_running_loop()
             except RuntimeError:
@@ -1985,6 +2006,10 @@ class CoreStoreMixin:
                 pass
 
     def _persona_data_for_save(self, persona_id: str) -> dict[str, Any]:
+        primary_getter = getattr(self, "_primary_persona_id", None)
+        primary = str(primary_getter() if callable(primary_getter) else "").strip()
+        if str(persona_id or "").strip() == primary:
+            return getattr(self, "_data_default", {})
         profiles = getattr(self, "_persona_data_profiles", {})
         if isinstance(profiles, dict):
             profile = profiles.get(persona_id)
@@ -1998,6 +2023,10 @@ class CoreStoreMixin:
         return {}
 
     def _write_persona_data_snapshot_sync(self, persona_id: str, data: dict[str, Any]) -> int:
+        primary_getter = getattr(self, "_primary_persona_id", None)
+        primary = str(primary_getter() if callable(primary_getter) else "").strip()
+        if str(persona_id or "").strip() == primary:
+            return self._write_data_snapshot_sync(data)
         changed = self._sanitize_store_control_tags_inplace(data)
         self._sanitize_proactive_candidate_repeat_counts_inplace(data)
         self._compact_store_history_inplace(data)
@@ -3011,7 +3040,13 @@ class CoreStoreMixin:
             self._group_observation_dirty = False
         active_getter = getattr(self, "_active_persona_scope", None)
         persona_id = str(active_getter() if callable(active_getter) else "").strip()
-        if bool(getattr(self, "enable_multi_persona_mode", False)) and persona_id:
+        primary_getter = getattr(self, "_primary_persona_id", None)
+        primary = str(primary_getter() if callable(primary_getter) else "").strip()
+        if (
+            bool(getattr(self, "enable_multi_persona_mode", False))
+            and persona_id
+            and persona_id != primary
+        ):
             self._schedule_persona_data_save(
                 persona_id,
                 delay,

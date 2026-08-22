@@ -295,6 +295,53 @@ class ProactiveReactionExpressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, harness.prepare_calls)
         self.assertEqual([(True, "delivered")], harness.settled)
 
+    async def test_multi_persona_delivery_gate_blocks_before_platform_send(self) -> None:
+        harness = _ModeDeliveryHarness()
+        harness.enable_multi_persona_mode = True
+        harness._active_persona_scope = lambda: "scheduled-persona"
+        harness._validate_proactive_persona_delivery = AsyncMock(
+            return_value={"ok": False, "action": "blocked", "reason_code": "persona_mismatch"}
+        )
+
+        outcome = await harness._send_proactive_message_chain(UMO, "不应发送")
+
+        self.assertFalse(outcome.delivered)
+        self.assertEqual([], harness.sent_chains)
+        harness._validate_proactive_persona_delivery.assert_awaited_once_with(
+            UMO,
+            "scheduled-persona",
+        )
+
+    async def test_single_persona_delivery_gate_mismatch_keeps_compatibility_send(self) -> None:
+        harness = _ModeDeliveryHarness()
+        harness.enable_multi_persona_mode = False
+        harness.plugin_specific_persona_id = "single-persona"
+        harness._validate_proactive_persona_delivery = AsyncMock(
+            return_value={"ok": True, "action": "sent_with_warning", "reason_code": "single_mode_mismatch"}
+        )
+
+        outcome = await harness._send_proactive_message_chain(UMO, "继续发送")
+
+        self.assertTrue(outcome.delivered)
+        self.assertEqual(2, len(harness.sent_chains))
+        harness._validate_proactive_persona_delivery.assert_awaited_once_with(
+            UMO,
+            "single-persona",
+        )
+
+    async def test_multi_persona_delivery_gate_exception_fails_closed(self) -> None:
+        harness = _ModeDeliveryHarness()
+        harness.enable_multi_persona_mode = True
+        harness._active_persona_scope = lambda: "scheduled-persona"
+        harness._validate_proactive_persona_delivery = AsyncMock(
+            side_effect=RuntimeError("conversation unavailable")
+        )
+
+        outcome = await harness._send_proactive_message_chain(UMO, "不应发送")
+
+        self.assertFalse(outcome.delivered)
+        self.assertEqual([], harness.sent_chains)
+
     async def test_default_separate_after_sends_complete_text_before_image(self) -> None:
         harness = _ModeDeliveryHarness()
 

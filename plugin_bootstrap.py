@@ -94,6 +94,102 @@ _LEGACY_PHOTO_SCENE_PRESET_NAMES = {
     "表情包场景",
 }
 
+_LEGACY_MULTI_PERSONA_PRIMARY_KEY = "multi_persona_primary_id"
+
+
+def _config_root_mapping(config: Any) -> dict[str, Any] | None:
+    if isinstance(config, dict):
+        return config
+    for attr in ("data", "config"):
+        value = getattr(config, attr, None)
+        if isinstance(value, dict):
+            return value
+    return None
+
+
+def _remove_legacy_multi_persona_primary_from_runtime_config(config: Any) -> bool:
+    """Remove the retired key only when existing persistence can save the change."""
+    if not any(callable(getattr(config, name, None)) for name in ("save_config", "save", "save_conf")):
+        return False
+    root = _config_root_mapping(config)
+    if root is None:
+        return False
+    removed = False
+
+    def remove_from(mapping: dict[str, Any]) -> None:
+        nonlocal removed
+        for value in tuple(mapping.values()):
+            if isinstance(value, dict):
+                remove_from(value)
+        if _LEGACY_MULTI_PERSONA_PRIMARY_KEY in mapping:
+            mapping.pop(_LEGACY_MULTI_PERSONA_PRIMARY_KEY, None)
+            removed = True
+
+    remove_from(root)
+    return removed
+
+
+def _initialize_primary_persona_config(self: Any, config: Any) -> bool:
+    """Resolve the sole primary persona and retain the retired value as diagnostics."""
+    authoritative = self._sanitize_persona_id(
+        self._cfg_str(config, "plugin_specific_persona_id", "", "")
+    )
+    legacy_candidate = self._sanitize_persona_id(
+        self._cfg_str(config, _LEGACY_MULTI_PERSONA_PRIMARY_KEY, "", "")
+    )
+    self.plugin_specific_persona_id = authoritative
+    self._legacy_multi_persona_primary_id_candidate = legacy_candidate
+    self._multi_persona_primary_id_mismatch = (
+        {
+            "authoritative": authoritative,
+            "legacy_candidate": legacy_candidate,
+        }
+        if authoritative and legacy_candidate and authoritative != legacy_candidate
+        else {}
+    )
+    self._multi_persona_primary_requires_configuration = bool(
+        getattr(self, "enable_multi_persona_mode", False) and not authoritative
+    )
+
+    if self._multi_persona_primary_id_mismatch:
+        logger.warning(
+            "[PrivateCompanion] 检测到旧主人格配置不一致，继续以 plugin_specific_persona_id 为权威: "
+            "authoritative=%s legacy_candidate=%s",
+            authoritative,
+            legacy_candidate,
+        )
+    elif self._multi_persona_primary_requires_configuration and legacy_candidate:
+        logger.warning(
+            "[PrivateCompanion] 多人格模式缺少 plugin_specific_persona_id；旧 multi_persona_primary_id "
+            "仅保留为待确认候选，不会静默启用: legacy_candidate=%s",
+            legacy_candidate,
+        )
+
+    cleanup_pending = bool(authoritative) and _remove_legacy_multi_persona_primary_from_runtime_config(
+        config
+    )
+    self._legacy_multi_persona_primary_id_cleanup_pending = cleanup_pending
+    return cleanup_pending
+
+
+def _validate_primary_persona_runtime(self: Any) -> bool:
+    """Keep multi-persona disabled when AstrBot no longer has its primary."""
+    primary = self._sanitize_persona_id(
+        getattr(self, "plugin_specific_persona_id", "")
+    )
+    invalid = False
+    if bool(getattr(self, "_multi_persona_enable_requested", False)) and primary:
+        checker = getattr(self, "_astrbot_persona_exists", None)
+        invalid = bool(callable(checker) and not checker(primary))
+    self._multi_persona_primary_invalid = invalid
+    if invalid:
+        self.enable_multi_persona_mode = False
+        logger.warning(
+            "[PrivateCompanion] 多人格主人格已不在 AstrBot 人格列表中，运行态保持关闭等待修复: persona=%s",
+            primary,
+        )
+    return invalid
+
 
 def _legacy_photo_scene_preset_names(raw: Any) -> set[str]:
     """Read preset names only for validating legacy catalog migration."""
@@ -179,34 +275,18 @@ def _initialize_core_and_relationship_config(self: Any, c: Any) -> None:
     os.makedirs(self.data_dir, exist_ok=True)
     self.data_file = os.path.join(self.data_dir, "companions.json")
     self.enable_multi_persona_mode = self._cfg_bool(c, "enable_multi_persona_mode", False)
-    self.multi_persona_primary_id = self._sanitize_persona_id(
-        self._cfg_str(c, "multi_persona_primary_id", "", "")
-    )
+    self._multi_persona_enable_requested = self.enable_multi_persona_mode
+    legacy_primary_cleanup_pending = _initialize_primary_persona_config(self, c)
+    if self._multi_persona_primary_requires_configuration:
+        # Keep runtime in single-persona mode until the WebUI transaction
+        # installs and validates an authoritative primary persona.
+        self.enable_multi_persona_mode = False
+    _validate_primary_persona_runtime(self)
     self.multi_persona_ids = self._configured_multi_persona_ids()
     self._persona_profiles_dir = os.path.join(self.data_dir, "persona_profiles")
     self._persona_data_profiles: dict[str, dict[str, Any]] = {}
     self._persona_profile_errors: dict[str, str] = {}
-    self._persona_window_claims: dict[str, str] = {}
-    self._persona_window_conflicts: dict[str, dict[str, str]] = {}
-    self._persona_window_bindings_file = os.path.join(self.data_dir, "persona_window_bindings.json")
-    binding_loader = getattr(self, "_load_persona_window_bindings_store_sync", None)
-    self._persona_window_bindings_persisted = binding_loader() if callable(binding_loader) else {}
-    binding_getter = getattr(self, "_persona_window_bindings", None)
-    binding_saver = getattr(self, "_save_persona_window_bindings_store_sync", None)
-    effective_bindings = binding_getter() if callable(binding_getter) else {}
-    if (
-        effective_bindings
-        and effective_bindings != self._persona_window_bindings_persisted
-        and callable(binding_saver)
-    ):
-        try:
-            binding_saver(effective_bindings)
-        except Exception as exc:
-            logger.warning(
-                "[PrivateCompanion] 旧版多人格窗口绑定迁移到独立存储失败: %s",
-                _single_line(exc, 120),
-            )
-    self._page_current_persona_id = self.multi_persona_primary_id
+    self._page_current_persona_id = self.plugin_specific_persona_id
     self.storage_backend = self._cfg_str(c, "storage_backend", "json", "json").strip().lower() or "json"
     if self.storage_backend not in {"json", "sqlite"}:
         self.storage_backend = "json"
@@ -233,6 +313,8 @@ def _initialize_core_and_relationship_config(self: Any, c: Any) -> None:
         logger=logger,
         save=False,
     )
+    if legacy_primary_cleanup_pending:
+        self._startup_config_migration_changes += 1
     config_migration_elapsed_ms = int((time.perf_counter() - config_migration_started) * 1000)
     if config_migration_elapsed_ms > 1200:
         logger.warning(
@@ -583,10 +665,6 @@ def _initialize_world_and_model_config(self: Any, c: Any) -> None:
     self.bot_scope_ids = self._cfg_raw(c, "bot_scope_ids", [])
     self.include_schedule_in_messages = self._cfg_bool(c, "include_schedule_in_messages", True)
     self.daily_plan_prompt = self._cfg_str(c, "daily_plan_prompt", "")
-    self.plugin_specific_persona_id = self._cfg_str(c, "plugin_specific_persona_id", "")
-    self._single_mode_plugin_specific_persona_id = self.plugin_specific_persona_id
-    if self.enable_multi_persona_mode and self.multi_persona_primary_id:
-        self.plugin_specific_persona_id = self.multi_persona_primary_id
     self.schedule_persona_prompt = self._cfg_str(c, "schedule_persona_prompt", "")
     self.schedule_worldview_prompt = self._cfg_str(c, "schedule_worldview_prompt", "")
     self.roleplay_user_profile_prompt = self._cfg_str(c, "roleplay_user_profile_prompt", "")
@@ -2052,6 +2130,15 @@ def initialize_plugin_runtime(self: Any) -> None:
             )
         except Exception:
             pass
+    retire_legacy_routing = getattr(self, "_retire_legacy_persona_routing_sync", None)
+    if callable(retire_legacy_routing):
+        try:
+            retire_legacy_routing()
+        except Exception as exc:
+            logger.warning(
+                "[PrivateCompanion] 旧人格路由停用失败，保留原数据等待下次启动重试: %s",
+                _single_line(exc, 180),
+            )
     migrate_profiles = getattr(self, "_migrate_persona_profiles_sync", None)
     if callable(migrate_profiles):
         try:
