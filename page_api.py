@@ -4766,6 +4766,8 @@ class PrivateCompanionPageApi(
 
     async def update_settings(self) -> dict[str, Any]:
         payload = await request.get_json(silent=True) or {}
+        mode_transition_snapshot: dict[str, Any] = {}
+        mode_transition_committed = False
         try:
             active_getter = getattr(self.plugin, "_active_persona_scope", None)
             active_persona = str(active_getter() if callable(active_getter) else "").strip()
@@ -4876,6 +4878,8 @@ class PrivateCompanionPageApi(
                 flush_save = getattr(self.plugin, "_flush_scheduled_data_save", None)
                 if callable(flush_save):
                     await flush_save()
+            if mode_transition_changed:
+                mode_transition_snapshot = self._multi_persona_transition_snapshot()
             if self.IMAGE_API_RUNTIME_SETTING_KEYS & set(changed):
                 async with self._image_api_runtime_lock():
                     for key, value in changed.items():
@@ -4972,6 +4976,10 @@ class PrivateCompanionPageApi(
                             "配置保存失败，REQ-041 运行值已恢复，但旧配置重新持久化失败"
                         )
                     raise RuntimeError("配置保存失败，REQ-041 关键运行值已回滚")
+                if not config_saved and mode_transition_snapshot:
+                    raise RuntimeError("配置保存失败，多人格模式切换已回滚")
+                if config_saved and mode_transition_snapshot:
+                    mode_transition_committed = True
             overview = await self.get_overview()
             if self._is_http_error_response(overview):
                 return overview
@@ -5007,8 +5015,93 @@ class PrivateCompanionPageApi(
                 "ts": int(time.time()),
             }
         except Exception as exc:
+            if mode_transition_snapshot and not mode_transition_committed:
+                try:
+                    await self._rollback_multi_persona_transition(mode_transition_snapshot)
+                except Exception as rollback_exc:
+                    logger.error(
+                        "[PrivateCompanionPage] 多人格模式切换回滚失败: %s",
+                        rollback_exc,
+                        exc_info=True,
+                    )
+                    return self._exception_error(
+                        f"{exc}；多人格模式切换回滚失败: {rollback_exc}"
+                    )
             logger.error(f"[PrivateCompanionPage] 更新设置失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
+
+    def _multi_persona_transition_snapshot(self) -> dict[str, Any]:
+        """Capture every mutable boundary touched by a mode transition."""
+        profiles_dir = Path(str(getattr(self.plugin, "_persona_profiles_dir", "") or ""))
+        profile_files: dict[str, bytes] = {}
+        if profiles_dir.is_dir():
+            for path in profiles_dir.glob("*.json"):
+                try:
+                    profile_files[path.name] = path.read_bytes()
+                except OSError:
+                    continue
+        attrs = {
+            key: deepcopy(getattr(self.plugin, key, None))
+            for key in (
+                "enable_multi_persona_mode",
+                "multi_persona_primary_id",
+                "multi_persona_ids",
+                "plugin_specific_persona_id",
+                "_single_mode_plugin_specific_persona_id",
+                "_page_current_persona_id",
+            )
+        }
+        return {
+            "config": deepcopy(dict(getattr(self.plugin, "config", {}) or {})),
+            "attrs": attrs,
+            "data_default": deepcopy(getattr(self.plugin, "_data_default", {})),
+            "persona_data_profiles": deepcopy(
+                getattr(self.plugin, "_persona_data_profiles", {})
+            ),
+            "profiles_dir": str(profiles_dir),
+            "profile_files": profile_files,
+        }
+
+    async def _rollback_multi_persona_transition(
+        self,
+        snapshot: dict[str, Any],
+    ) -> None:
+        """Restore config, memory, profile files, and the legacy data snapshot."""
+        config = getattr(self.plugin, "config", None)
+        config_snapshot = snapshot.get("config")
+        if isinstance(config, dict) and isinstance(config_snapshot, dict):
+            config.clear()
+            config.update(deepcopy(config_snapshot))
+        attrs = snapshot.get("attrs")
+        if isinstance(attrs, dict):
+            for key, value in attrs.items():
+                setattr(self.plugin, key, deepcopy(value))
+        self.plugin._data_default = deepcopy(snapshot.get("data_default") or {})
+        self.plugin._persona_data_profiles = deepcopy(
+            snapshot.get("persona_data_profiles") or {}
+        )
+
+        profiles_dir = Path(str(snapshot.get("profiles_dir") or ""))
+        profile_files = snapshot.get("profile_files")
+        if isinstance(profile_files, dict) and profiles_dir:
+            profiles_dir.mkdir(parents=True, exist_ok=True)
+            for path in profiles_dir.glob("*.json"):
+                if path.name not in profile_files:
+                    path.unlink(missing_ok=True)
+            for name, payload in profile_files.items():
+                if not isinstance(name, str) or not isinstance(payload, bytes):
+                    continue
+                path = profiles_dir / name
+                temporary = path.with_name(f".{path.name}.rollback-{uuid.uuid4().hex}.tmp")
+                try:
+                    temporary.write_bytes(payload)
+                    os.replace(temporary, path)
+                finally:
+                    temporary.unlink(missing_ok=True)
+
+        writer = getattr(self.plugin, "_write_data_snapshot_sync", None)
+        if callable(writer):
+            await asyncio.to_thread(writer, deepcopy(self.plugin._data_default))
 
     def _req041_config_runtime_snapshot(self, changed: dict[str, Any]) -> dict[str, Any]:
         """Snapshot only identity/relationship isolation controls before hot apply."""

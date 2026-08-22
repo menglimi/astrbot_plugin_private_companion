@@ -44,8 +44,21 @@ class MultiPersonaConfigUiTests(unittest.TestCase):
             "discardUnsavedModuleFormChanges();",
             "discardUnsavedTtsProviderChanges();",
             "state.personaSelectionRequestSeq",
+            "personaOperationBusyCount: 0",
+            "function setPersonaOperationBusy(busy)",
+            "select.disabled = Number(state.personaOperationBusyCount || 0) > 0;",
         ):
             self.assertIn(marker, script)
+
+    def test_persona_operations_lock_the_single_selector(self) -> None:
+        script = (PRIMARY / "app.js").read_text(encoding="utf-8")
+        self.assertGreaterEqual(script.count("setPersonaOperationBusy(true);"), 5)
+        self.assertGreaterEqual(script.count("setPersonaOperationBusy(false);"), 5)
+        run_action = script.split("async function runAction(", 1)[1].split(
+            "\n}\n\nfunction configSavedValue", 1
+        )[0]
+        self.assertIn("setPersonaOperationBusy(true);", run_action)
+        self.assertIn("setPersonaOperationBusy(false);", run_action)
 
     def test_window_binding_rows_support_edit_delete_and_auto_rebind_copy(self) -> None:
         script = (PRIMARY / "app.js").read_text(encoding="utf-8")

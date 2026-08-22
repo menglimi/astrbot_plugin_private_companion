@@ -144,6 +144,7 @@ const state = {
   personaConfigState: null,
   personaConfigLoading: false,
   personaConfigError: "",
+  personaOperationBusyCount: 0,
   personaCommonBaseline: null,
   personaDetachPreview: null,
   multiPersona: { enabled: false, primary: "", profiles: [], current: "", window_bindings: {} },
@@ -6115,6 +6116,7 @@ async function savePersonaScopedFeatureChanges(payload, control = null, successM
     showToast("人格配置版本不可用，请刷新后重试", "error");
     return false;
   }
+  setPersonaOperationBusy(true);
   setActionBusy(control, true);
   try {
     let result = null;
@@ -6188,6 +6190,7 @@ async function followPersonaSetting(key, control = null) {
     return false;
   } finally {
     setActionBusy(control, false);
+    setPersonaOperationBusy(false);
   }
 }
 
@@ -12268,6 +12271,7 @@ async function updateTroubleshootingWarningSuppression(control) {
     payload.title = String(control.dataset.warningTitle || "").trim();
     payload.source = String(control.dataset.warningSource || "").trim();
   }
+  setPersonaOperationBusy(true);
   setActionBusy(control, true);
   let result = null;
   try {
@@ -12291,6 +12295,7 @@ async function updateTroubleshootingWarningSuppression(control) {
     }
   } finally {
     setActionBusy(control, false);
+    setPersonaOperationBusy(false);
   }
 }
 
@@ -23013,6 +23018,7 @@ function renderConfigPersonaSelector() {
     }).join("")
     : `<option value="">暂无可用人格</option>`;
   select.value = selected;
+  select.disabled = Number(state.personaOperationBusyCount || 0) > 0;
   const meta = $("#configPersonaSelectorMeta");
   if (meta) {
     const configuredIds = new Set([
@@ -26597,6 +26603,7 @@ function bindPersonaWindowBindingActions(root) {
     button.addEventListener("click", async () => {
       const windowKey = String(button.dataset.personaWindowDelete || "").trim();
       if (!windowKey || !window.confirm(`确认删除窗口“${windowKey}”的固定人格绑定吗？删除后将恢复自动识别。`)) return;
+      setPersonaOperationBusy(true);
       setActionBusy(button, true);
       try {
         let result;
@@ -26623,6 +26630,7 @@ function bindPersonaWindowBindingActions(root) {
         showToast(error.message || "删除窗口绑定失败", "error");
       } finally {
         setActionBusy(button, false);
+        setPersonaOperationBusy(false);
       }
     });
   });
@@ -26634,6 +26642,7 @@ function bindPersonaWindowBindingActions(root) {
       showToast("请填写会话窗口并选择人格", "error");
       return;
     }
+    setPersonaOperationBusy(true);
     event.currentTarget.disabled = true;
     try {
       await ensureMultiPersonaBindingProfile(personaId, detailPage);
@@ -26694,6 +26703,7 @@ function bindPersonaWindowBindingActions(root) {
       showToast(error.message || "窗口绑定失败", "error");
     } finally {
       event.currentTarget.disabled = false;
+      setPersonaOperationBusy(false);
     }
   });
 }
@@ -32217,6 +32227,7 @@ function requireSecondClick(control, key, message, nextText = "再次点击确�
 
 async function runAction(action, successMessage = "", control = null, options = {}) {
   const { reload = true } = options;
+  setPersonaOperationBusy(true);
   setActionBusy(control, true);
   showToast("正在处理...");
   try {
@@ -32251,7 +32262,15 @@ async function runAction(action, successMessage = "", control = null, options = 
     return null;
   } finally {
     setActionBusy(control, false);
+    setPersonaOperationBusy(false);
   }
+}
+
+function setPersonaOperationBusy(busy) {
+  const current = Math.max(0, Number(state.personaOperationBusyCount || 0));
+  state.personaOperationBusyCount = busy ? current + 1 : Math.max(0, current - 1);
+  const select = $("#configPersonaSelect");
+  if (select) select.disabled = state.personaOperationBusyCount > 0;
 }
 
 function configSavedValue(result) {

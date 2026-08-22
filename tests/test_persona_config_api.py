@@ -234,3 +234,76 @@ def test_disabling_multi_persona_rolls_back_default_store_on_write_failure():
             raise AssertionError("expected transition failure")
         assert plugin._data_default == previous
         assert json.loads(Path(plugin.data_file).read_text(encoding="utf-8")) == previous
+
+
+def test_enabling_multi_persona_rolls_back_runtime_profile_and_config_on_save_failure():
+    async def run():
+        with tempfile.TemporaryDirectory() as root:
+            plugin = _harness(root)
+            plugin.enable_multi_persona_mode = False
+            plugin.multi_persona_primary_id = "main"
+            plugin.multi_persona_ids = ["main", "alt"]
+            plugin.plugin_specific_persona_id = "main"
+            plugin._single_mode_plugin_specific_persona_id = "main"
+            plugin.config["enable_multi_persona_mode"] = False
+            plugin.config["multi_persona_primary_id"] = "main"
+            plugin.config["multi_persona_ids"] = ["main", "alt"]
+            plugin.data_file = str(Path(root) / "companions.json")
+            plugin._data_default = {"users": {"single": {"name": "单人格"}}}
+            Path(plugin.data_file).write_text(
+                json.dumps(plugin._data_default), encoding="utf-8"
+            )
+            config_before = json.loads(json.dumps(plugin.config, ensure_ascii=False))
+            api = PrivateCompanionPageApi(plugin)
+            api._save_config_if_possible = lambda: asyncio.sleep(0, result=False)
+            app = Quart(__name__)
+
+            async with app.test_request_context(
+                "/settings/update",
+                method="POST",
+                json={"features": {"enable_multi_persona_mode": True}},
+            ):
+                response = await api.update_settings()
+
+            assert response[0]["success"] is False if isinstance(response, tuple) else response["success"] is False
+            assert plugin.enable_multi_persona_mode is False
+            assert plugin.plugin_specific_persona_id == "main"
+            assert plugin.config == config_before
+            assert plugin._persona_data_profiles == {}
+            assert not plugin._persona_profile_path("main").exists()
+            assert json.loads(Path(plugin.data_file).read_text(encoding="utf-8")) == plugin._data_default
+
+    asyncio.run(run())
+
+
+def test_disabling_multi_persona_rolls_back_written_legacy_data_on_config_save_failure():
+    async def run():
+        with tempfile.TemporaryDirectory() as root:
+            plugin = _harness(root)
+            plugin.data_file = str(Path(root) / "companions.json")
+            legacy = {"users": {"legacy": {"name": "旧单人格"}}}
+            primary = {"users": {"primary": {"name": "主人格"}}}
+            plugin._data_default = legacy
+            plugin._persona_data_profiles["main"] = primary
+            plugin._save_persona_profile_sync("main", primary)
+            Path(plugin.data_file).write_text(json.dumps(legacy), encoding="utf-8")
+            config_before = json.loads(json.dumps(plugin.config, ensure_ascii=False))
+            api = PrivateCompanionPageApi(plugin)
+            api._save_config_if_possible = lambda: asyncio.sleep(0, result=False)
+            app = Quart(__name__)
+
+            async with app.test_request_context(
+                "/settings/update",
+                method="POST",
+                json={"features": {"enable_multi_persona_mode": False}},
+            ):
+                response = await api.update_settings()
+
+            assert response[0]["success"] is False if isinstance(response, tuple) else response["success"] is False
+            assert plugin.enable_multi_persona_mode is True
+            assert plugin.config == config_before
+            assert plugin._data_default == legacy
+            assert plugin._persona_data_profiles["main"] == primary
+            assert json.loads(Path(plugin.data_file).read_text(encoding="utf-8")) == legacy
+
+    asyncio.run(run())
