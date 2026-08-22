@@ -54,15 +54,18 @@ def test_window_binding_uses_available_personas_before_profile_save():
         assert "async function ensureMultiPersonaBindingProfile(personaId" in script
         assert 'enable_multi_persona_mode: true' in script
         assert 'await ensureMultiPersonaBindingProfile(personaId, detailPage);' in script
-        assert 'data-persona-window-target ${bindingIds.length ? "" : "disabled"}' in script
+        assert "const bindingEditable = modeRequested && bindingIds.length > 0;" in script
+        assert 'data-persona-window-target ${bindingEditable ? "" : "disabled"}' in script
 
 
-def test_window_binding_requires_enabled_mode_and_persisted_target():
+def test_window_binding_stays_visible_while_editing_requires_enabled_mode():
     for script in _panel_scripts():
         migration_start = script.index("function multiPersonaMigrationDetailCard()")
         migration_end = script.index("function bodyMonitorFeatureDetailCard()", migration_start)
         migration = script[migration_start:migration_end]
-        assert 'if (!modeRequested) return "";' in migration
+        assert 'if (!modeRequested) return "";' not in migration
+        assert "总开关关闭时保留并展示已有绑定" in migration
+        assert 'data-persona-window-bind ${bindingEditable ? "" : "disabled"}' in migration
 
         ensure_start = script.index("async function ensureMultiPersonaBindingProfile(")
         ensure_end = script.index("const MULTI_PERSONA_MIGRATION_KEYS", ensure_start)

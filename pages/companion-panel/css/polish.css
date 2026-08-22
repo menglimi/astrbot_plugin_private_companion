@@ -19,6 +19,37 @@
   min-width: 0;
 }
 
+#panel-config .config-persona-top-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: stretch;
+  min-width: 0;
+}
+
+#panel-config .config-persona-top-row > #proactiveOnlyModeCard,
+#panel-config .config-persona-top-row > #multiPersonaModeSummary {
+  grid-column: auto;
+  width: 100%;
+  min-width: 0;
+}
+
+#panel-config .config-persona-top-row .proactive-mode-stack {
+  height: 100%;
+  margin-top: 0;
+}
+
+#panel-config .config-persona-top-row .proactive-mode-settings-row {
+  height: 100%;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+#panel-config .config-persona-top-row .proactive-mode-card {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+}
+
 #panel-config .config-persona-selector {
   display: grid;
   grid-template-columns: minmax(220px, 360px) minmax(0, 1fr);
@@ -106,8 +137,57 @@
   min-height: 76px;
 }
 
-#panel-config .persona-management-card {
+#panel-config .config-common-multi-persona-summary {
   min-width: 0;
+}
+
+#panel-config .multi-persona-mode-summary {
+  cursor: pointer;
+  transition: border-color .16s var(--ease), background .16s var(--ease), box-shadow .16s var(--ease);
+}
+
+#panel-config .multi-persona-mode-summary:hover {
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--line));
+  box-shadow: 0 10px 24px rgba(15, 42, 74, .08);
+}
+
+#panel-config .multi-persona-mode-summary.on {
+  border-left: 4px solid var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 42%, white);
+}
+
+#panel-config .multi-persona-mode-summary.off {
+  border-left: 4px solid #b15a4f;
+}
+
+#panel-config .multi-persona-mode-summary.dirty {
+  border-color: color-mix(in srgb, #b7791f 58%, var(--line));
+}
+
+#panel-config .multi-persona-mode-summary.on .feature-toggle-visual {
+  background: var(--accent);
+}
+
+#panel-config .multi-persona-mode-summary.on .feature-toggle-visual::after {
+  transform: translateX(16px);
+}
+
+#panel-config .persona-management-feature-view {
+  min-width: 0;
+  border-top: 1px solid var(--line-soft);
+  padding: 16px;
+}
+
+#panel-config .multi-persona-feature-head {
+  grid-template-columns: minmax(0, 1fr) 132px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+#panel-config .persona-setting-disabled-note {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 #panel-config .persona-management-head p {
@@ -209,6 +289,45 @@
   gap: 4px;
   color: var(--ink);
   font-size: 11px;
+}
+
+#panel-config .persona-topology-switch {
+  position: relative;
+  display: inline-grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  min-width: 132px;
+  min-height: 34px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  padding: 5px 7px;
+  background: var(--surface);
+}
+
+#panel-config .persona-topology-switch input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+#panel-config .persona-topology-switch input:checked + .feature-toggle-visual {
+  background: var(--accent);
+}
+
+#panel-config .persona-topology-switch input:checked + .feature-toggle-visual::after {
+  transform: translateX(16px);
+}
+
+#panel-config .persona-topology-switch input:disabled + .feature-toggle-visual {
+  background: color-mix(in srgb, var(--accent) 58%, #a6b1bd);
+  opacity: .86;
+}
+
+#panel-config .persona-topology-switch > span:last-child {
+  line-height: 1.35;
 }
 
 #panel-config .persona-management-body {
@@ -356,6 +475,7 @@
 
 @media (max-width: 760px) {
   #panel-config .config-persona-selector,
+  #panel-config .config-persona-top-row,
   #panel-config .config-stats,
   #panel-config .persona-config-admin-grid,
   #panel-config .persona-config-admin-fields {
@@ -364,6 +484,7 @@
 
   #panel-config .config-persona-stats > header,
   #panel-config .persona-management-head,
+  #panel-config .multi-persona-feature-head,
   #panel-config .persona-topology-form {
     align-items: flex-start;
     flex-direction: column;

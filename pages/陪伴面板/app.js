@@ -22965,12 +22965,80 @@ function renderConfig() {
   renderStorageConfig();
   renderAppearanceSettings();
   renderAccessManager(group);
+  renderMultiPersonaModeSummary();
   renderConfigPersonaSelector();
-  renderPersonaConfigManagement();
   renderFeatureSwitches();
   renderConfigBackups();
   renderConfigImportChecks();
   renderConfigMigrationPreview();
+}
+
+function multiPersonaModeDraftEnabled() {
+  const key = "enable_multi_persona_mode";
+  if (Object.prototype.hasOwnProperty.call(state.featureDraft || {}, key)) {
+    return toBool(state.featureDraft[key]);
+  }
+  const settings = state.overview?.settings || {};
+  if (Object.prototype.hasOwnProperty.call(settings, key)) {
+    return toBool(settings[key]);
+  }
+  return toBool(state.multiPersona?.enabled);
+}
+
+function multiPersonaModePersistedEnabled() {
+  const settings = state.overview?.settings || {};
+  if (Object.prototype.hasOwnProperty.call(settings, "enable_multi_persona_mode")) {
+    return toBool(settings.enable_multi_persona_mode);
+  }
+  return toBool(state.multiPersona?.enabled);
+}
+
+function setMultiPersonaModeDraft(enabled) {
+  state.featureDraft = state.featureDraft || {};
+  state.featureDraft.enable_multi_persona_mode = Boolean(enabled);
+  renderMultiPersonaModeSummary();
+  renderConfigPersonaSelector();
+  renderFeatureSwitches();
+  syncFeatureFooterAction();
+}
+
+function renderMultiPersonaModeSummary() {
+  const root = $("#multiPersonaModeSummary");
+  if (!root) return;
+  const enabled = multiPersonaModeDraftEnabled();
+  const persisted = multiPersonaModePersistedEnabled();
+  const dirty = enabled !== persisted;
+  const status = dirty ? `待保存：${enabled ? "开启" : "关闭"}` : enabled ? "已开启" : "未开启";
+  root.innerHTML = `
+    <div class="proactive-mode-stack">
+      <div class="proactive-mode-settings-row">
+        <section class="proactive-mode-card multi-persona-mode-summary ${enabled ? "on" : "off"}${dirty ? " dirty" : ""}" data-common-multi-persona-summary>
+          <label class="feature-toggle-hit proactive-mode-toggle" aria-label="多人格支持">
+            <input type="checkbox" data-common-multi-persona-toggle ${enabled ? "checked" : ""}>
+            <span class="feature-toggle-visual"></span>
+          </label>
+          <div class="proactive-mode-main">
+            <div class="proactive-mode-heading-row">
+              <div class="proactive-mode-kicker">兼容与隔离</div>
+              <span class="proactive-chat-status ${dirty ? "paused" : enabled ? "on" : "off"}">${escapeHtml(status)}</span>
+            </div>
+            <h3>多人格支持</h3>
+            <p>为不同 AstrBot 人格分别维护陪伴配置、生活资料与会话窗口归属。</p>
+            <small class="proactive-mode-code">enable_multi_persona_mode</small>
+          </div>
+        </section>
+      </div>
+    </div>
+  `;
+  root.querySelector("[data-common-multi-persona-toggle]")?.addEventListener("change", (event) => {
+    setMultiPersonaModeDraft(event.currentTarget.checked);
+  });
+  root.querySelector("[data-common-multi-persona-summary]")?.addEventListener("click", (event) => {
+    if (event.target.closest("input, label, button, select, textarea, a")) return;
+    state.selectedFeatureKey = "enable_multi_persona_mode";
+    renderFeatureSwitches();
+    document.getElementById("config-feature-settings")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
 }
 
 function configPersonaRecords() {
@@ -22989,15 +23057,19 @@ function configPersonaRecords() {
   return [...records.values()];
 }
 
+function personaBotName(personaOrId) {
+  const input = personaOrId && typeof personaOrId === "object" ? personaOrId : { id: personaOrId };
+  const id = String(input.id || "").trim();
+  const raw = String(input.bot_name || input.name || input.label || id).trim();
+  return raw.replace(/\s*（(?:默认|插件当前指定)）\s*$/, "").trim() || id;
+}
+
 function renderConfigPersonaSelector() {
   const root = $("#configPersonaSelector");
   const select = $("#configPersonaSelect");
   if (!root || !select) return;
   const settings = state.overview?.settings || {};
-  const enabled = toBool(
-    state.featureDraft?.enable_multi_persona_mode
-    ?? (state.multiPersona?.enabled || settings.enable_multi_persona_mode),
-  );
+  const enabled = multiPersonaModeDraftEnabled();
   root.hidden = !enabled;
   if (!enabled) {
     persistSelectedPagePersonaId("");
@@ -23069,46 +23141,39 @@ function renderPersonaConfigManagement() {
   const root = $("#personaConfigManagement");
   if (!root) return;
   const settings = state.overview?.settings || {};
-  const enabled = toBool(
-    state.featureDraft?.enable_multi_persona_mode
-    ?? (state.multiPersona?.enabled || settings.enable_multi_persona_mode),
-  );
-  const modeControl = `
-    <div class="persona-management-mode-control">
-      <label class="feature-detail-toggle">
-        <input type="checkbox" data-common-multi-persona-toggle ${enabled ? "checked" : ""}>
-        <span class="feature-toggle-visual"></span>
-        <b>${enabled ? "已开启" : "未开启"}</b>
-      </label>
-      <button type="button" class="soft" data-common-multi-persona-detail>查看详细说明</button>
-    </div>`;
-  if (!enabled) {
-    root.innerHTML = `<div class="persona-management-head"><div class="persona-management-empty"><b>多人格支持未开启</b><span>开启后可在这里创建、复制、初始化或脱离人格配置，并管理会话窗口绑定。</span></div>${modeControl}</div>`;
-    bindPersonaManagementActions(root);
-    return;
-  }
+  const enabled = multiPersonaModeDraftEnabled();
   const ids = configuredMultiPersonaIds();
   const personaRecords = configPersonaRecords();
-  const primaryPersonaId = String(state.multiPersona?.primary || settings.multi_persona_primary_id || "").trim();
+  const requestedPrimaryPersonaId = String(settings.plugin_specific_persona_id || "").trim();
+  const primaryPersonaId = personaRecords.some((item) => String(item.id || "").trim() === requestedPrimaryPersonaId)
+    ? requestedPrimaryPersonaId
+    : "";
   const enabledPersonaIds = new Set([
     ...normalizeMultiPersonaIds(settings.multi_persona_ids),
     primaryPersonaId,
   ].filter(Boolean));
-  const topologyPrimaryOptions = personaRecords
+  const enabledPersonaRecords = personaRecords.filter((item) => enabledPersonaIds.has(String(item.id || "").trim()));
+  const topologyPrimaryOptions = `${primaryPersonaId ? "" : '<option value="" disabled hidden selected>未选择</option>'}${personaRecords
     .map((item) => `<option value="${escapeHtml(String(item.id ?? ""))}"${String(item.id) === primaryPersonaId ? " selected" : ""}>${escapeHtml(personaDisplayLabel(item))}</option>`)
-    .join("");
+    .join("")}`;
   const topologyPersonaChecks = personaRecords
     .map((item) => {
       const id = String(item.id || "").trim();
-      return `<label><input type="checkbox" data-common-persona-id value="${escapeHtml(String(item.id ?? ""))}"${enabledPersonaIds.has(id) ? " checked" : ""}><span>${escapeHtml(personaDisplayLabel(item))}${enabledPersonaIds.has(id) ? "" : " · 已停用"}</span></label>`;
+      const primary = id === primaryPersonaId;
+      return `<label class="persona-topology-switch"><input type="checkbox" data-common-persona-id value="${escapeHtml(String(item.id ?? ""))}"${enabledPersonaIds.has(id) ? " checked" : ""}${primary ? " disabled" : ""}><span class="feature-toggle-visual"></span><span>${escapeHtml(personaDisplayLabel(item))}${primary ? " · 主人格" : enabledPersonaIds.has(id) ? "" : " · 已停用"}</span></label>`;
     })
     .join("");
-  const personaOptions = personaRecords
+  const personaOptions = enabledPersonaRecords
     .map((item) => `<option value="${escapeHtml(String(item.id ?? ""))}">${escapeHtml(personaDisplayLabel(item))}</option>`)
     .join("");
+  const createPersonaRecords = enabledPersonaRecords.filter((item) => String(item.id || "").trim() !== primaryPersonaId);
+  const createPersonaOptions = createPersonaRecords.length
+    ? createPersonaRecords.map((item) => `<option value="${escapeHtml(String(item.id ?? ""))}">${escapeHtml(personaDisplayLabel(item))}</option>`).join("")
+    : '<option value="">暂无已启用人格</option>';
+  const createdPersonaIds = new Set(normalizeMultiPersonaIds(state.multiPersona?.profiles));
   const detachOptions = personaRecords
-    .filter((item) => String(item.id || "") !== primaryPersonaId)
-    .map((item) => `<option value="${escapeHtml(String(item.id ?? ""))}">${escapeHtml(personaDisplayLabel(item))}</option>`)
+    .filter((item) => String(item.id || "") !== primaryPersonaId && createdPersonaIds.has(String(item.id || "").trim()))
+    .map((item) => `<option value="${escapeHtml(String(item.id ?? ""))}">${escapeHtml(String(item.id || "").trim())} · ${escapeHtml(personaBotName(item))}</option>`)
     .join("");
   const profileErrors = state.multiPersona?.profile_errors && typeof state.multiPersona.profile_errors === "object"
     ? Object.entries(state.multiPersona.profile_errors)
@@ -23120,7 +23185,7 @@ function renderPersonaConfigManagement() {
         <h2>人格配置管理</h2>
         <p>创建和维护人格配置属于通用拓扑；下方操作不会改变当前选择的人格页面草稿。</p>
       </div>
-      <div class="persona-management-status"><span class="module-badge">${escapeHtml(enabledPersonaIds.size)} / ${escapeHtml(ids.length)} 启用</span>${modeControl}</div>
+      <div class="persona-management-status"><span class="module-badge">${enabled ? `${escapeHtml(enabledPersonaIds.size)} / ${escapeHtml(ids.length)} 启用` : "总开关未开启"}</span></div>
     </header>
     <div class="persona-management-note">
       <span>创建方式：跟随主人格、从默认值创建、复制已有人格；也可以把当前有效配置脱离主人格并固化。</span>
@@ -23128,7 +23193,7 @@ function renderPersonaConfigManagement() {
     </div>
     ${profileErrors.length ? `<div class="persona-config-degraded" role="alert"><b>${escapeHtml(profileErrors.length)} 个人格配置需要修复</b>${profileErrors.map(([id, reason]) => `<span>${escapeHtml(personaDisplayLabel(id))}：${escapeHtml(reason || "配置文件无法读取")}。原文件已保留备份。<button type="button" data-persona-recovery="${escapeHtml(id)}">重新初始化配置</button></span>`).join("")}</div>` : ""}
     <form class="persona-topology-form" data-common-persona-topology>
-      <label><span>主人格</span><select name="multi_persona_primary_id">${topologyPrimaryOptions || '<option value="">暂无人格</option>'}</select></label>
+      <label><span>主人格</span><select name="multi_persona_primary_id">${topologyPrimaryOptions}</select></label>
       <fieldset><legend>启用的人格</legend><div class="persona-topology-checks">${topologyPersonaChecks || '<span class="empty small">暂无可用人格</span>'}</div></fieldset>
       <button type="submit" class="feature-param-save">保存多人格拓扑</button>
     </form>
@@ -23136,7 +23201,7 @@ function renderPersonaConfigManagement() {
       <form class="persona-config-create-form" data-persona-config-create>
         <header><b>创建人格配置</b><span>人格 ID 与 bot_name 不会从来源复制或继承。</span></header>
         <div class="persona-config-admin-fields">
-          <label><span>人格 ID</span><input name="persona_id" type="text" maxlength="96" required /></label>
+          <label><span>人格 ID</span><select name="persona_id" required>${createPersonaOptions}</select></label>
           <label><span>人格名称 / bot_name</span><input name="bot_name" type="text" maxlength="80" required /></label>
           <label><span>创建方式</span><select name="mode">
             <option value="follow_primary">跟随主人格</option>
@@ -23162,6 +23227,41 @@ function renderPersonaConfigManagement() {
   bindPersonaManagementActions(root);
 }
 
+function multiPersonaFeatureDetailPage() {
+  const enabled = multiPersonaModeDraftEnabled();
+  const persisted = multiPersonaModePersistedEnabled();
+  const dirty = enabled !== persisted;
+  const status = dirty ? `待保存：${enabled ? "开启" : "关闭"}` : enabled ? "已开启" : "未开启";
+  return `
+    <section class="feature-detail-page multi-persona-feature-detail ${enabled ? "on" : "off"}">
+      <nav class="feature-detail-breadcrumb">
+        <button type="button" data-feature-back>功能开关</button>
+        <span>/ 兼容与隔离</span>
+      </nav>
+      <div class="feature-state-strip ${enabled ? "on" : "off"}">
+        <b>${enabled ? "开启" : "关闭"}</b>
+        <span>开关在上方通用设置中保存；本页集中管理多人格详细设置。</span>
+      </div>
+      <header class="feature-detail-head multi-persona-feature-head">
+        <div>
+          <div class="feature-detail-taxonomy">
+            <span class="module-badge">兼容与隔离</span>
+            <span class="feature-stage-tags"><span>全流程</span></span>
+          </div>
+          <h2>多人格设置</h2>
+          <p>维护人格拓扑、独立配置、生活资料迁移和会话窗口归属。</p>
+        </div>
+        <label class="feature-detail-toggle multi-persona-detail-toggle">
+          <input type="checkbox" data-common-multi-persona-toggle ${enabled ? "checked" : ""}>
+          <span class="feature-toggle-visual"></span>
+          <b>${escapeHtml(status)}</b>
+        </label>
+      </header>
+      <div id="personaConfigManagement" class="persona-config-management persona-management-feature-view"></div>
+    </section>
+  `;
+}
+
 function bindPersonaManagementActions(root) {
   root?.querySelectorAll("[data-persona-recovery]").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -23178,17 +23278,6 @@ function bindPersonaManagementActions(root) {
       if (saved) await loadAll({ waitForLists: false });
     });
   });
-  root?.querySelector("[data-common-multi-persona-toggle]")?.addEventListener("change", (event) => {
-    state.featureDraft.enable_multi_persona_mode = Boolean(event.currentTarget.checked);
-    renderConfigPersonaSelector();
-    renderPersonaConfigManagement();
-    syncFeatureFooterAction();
-  });
-  root?.querySelector("[data-common-multi-persona-detail]")?.addEventListener("click", () => {
-    state.selectedFeatureKey = "enable_multi_persona_mode";
-    document.getElementById("config-feature-settings")?.scrollIntoView({ behavior: "smooth", block: "start" });
-    renderFeatureSwitches();
-  });
   root?.querySelector("[data-common-persona-topology]")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -23203,21 +23292,68 @@ function bindPersonaManagementActions(root) {
     }
     const saved = await runAction(() => postJson("/settings/update", {
       settings: {
-        enable_multi_persona_mode: true,
+        enable_multi_persona_mode: multiPersonaModeDraftEnabled(),
         multi_persona_primary_id: primary,
         multi_persona_ids: Array.from(new Set(ids)),
       },
     }), "已保存多人格拓扑", event.submitter, { reload: false });
     if (saved) await loadAll({ waitForLists: false });
   });
+  const topologyForm = root?.querySelector("[data-common-persona-topology]");
+  const topologyPrimary = topologyForm?.elements?.multi_persona_primary_id;
   const createForm = root?.querySelector("[data-persona-config-create]");
   const createMode = createForm?.elements?.mode;
   const sourceWrap = createForm?.querySelector("[data-persona-copy-source]");
-  const syncSourceVisibility = () => {
-    if (sourceWrap) sourceWrap.hidden = createMode?.value !== "copy";
+  const createPersonaId = createForm?.elements?.persona_id;
+  const botNameInput = createForm?.elements?.bot_name;
+  const personaBotNameMap = Object.fromEntries(
+    configPersonaRecords().map((item) => [String(item.id || ""), personaBotName(item)]),
+  );
+  const syncCreateFields = () => {
+    const copying = createMode?.value === "copy";
+    if (sourceWrap) sourceWrap.hidden = !copying;
+    const sourceSelect = createForm?.elements?.source_persona_id;
+    if (sourceSelect) sourceSelect.disabled = !copying;
+    if (createPersonaId && botNameInput && createPersonaId.value) {
+      botNameInput.value = personaBotNameMap[createPersonaId.value] || createPersonaId.value;
+    }
   };
-  createMode?.addEventListener("change", syncSourceVisibility);
-  syncSourceVisibility();
+  const syncCreatePersonaOptions = () => {
+    if (!createPersonaId) return;
+    const primary = String(topologyPrimary?.value || "").trim();
+    const enabledIds = new Set(
+      Array.from(topologyForm?.querySelectorAll("[data-common-persona-id]:checked") || [])
+        .map((input) => String(input.value || "").trim())
+        .filter(Boolean),
+    );
+    const candidates = configPersonaRecords().filter((item) => {
+      const id = String(item.id || "").trim();
+      return id && id !== primary && enabledIds.has(id);
+    });
+    const previous = String(createPersonaId.value || "").trim();
+    createPersonaId.innerHTML = candidates.length
+      ? candidates.map((item) => `<option value="${escapeHtml(String(item.id || ""))}">${escapeHtml(personaDisplayLabel(item))}</option>`).join("")
+      : '<option value="">暂无已启用的非主人格</option>';
+    if (candidates.some((item) => String(item.id || "").trim() === previous)) {
+      createPersonaId.value = previous;
+    }
+    syncCreateFields();
+  };
+  topologyPrimary?.addEventListener("change", () => {
+    const primary = String(topologyPrimary.value || "").trim();
+    topologyForm.querySelectorAll("[data-common-persona-id]").forEach((input) => {
+      const isPrimary = String(input.value || "").trim() === primary;
+      input.disabled = isPrimary;
+      if (isPrimary) input.checked = true;
+    });
+    syncCreatePersonaOptions();
+  });
+  topologyForm?.querySelectorAll("[data-common-persona-id]").forEach((input) => {
+    input.addEventListener("change", syncCreatePersonaOptions);
+  });
+  createMode?.addEventListener("change", syncCreateFields);
+  createPersonaId?.addEventListener("change", syncCreateFields);
+  syncCreatePersonaOptions();
   createForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(createForm);
@@ -23281,22 +23417,6 @@ function bindPersonaManagementActions(root) {
     await loadRoleplayPersonas(true).catch(() => {});
     renderConfig();
   });
-  root?.querySelector("[data-migrate-submit]")?.addEventListener("click", async (event) => {
-    const card = event.currentTarget.closest(".multi-persona-migration-card");
-    const source = card?.querySelector("[data-migrate-source]")?.value || "";
-    const target = card?.querySelector("[data-migrate-target]")?.value || "";
-    const keys = Array.from(card?.querySelectorAll("[data-migrate-key]:checked") || []).map((item) => item.value);
-    if (!source || !target || source === target) {
-      showToast("请选择不同的来源人格和目标人格", "error");
-      return;
-    }
-    await runAction(
-      () => postJson("/persona/migrate", { source_persona_id: source, target_persona_id: target, keys }),
-      "已迁移选中资料并清理目标缓存",
-      event.currentTarget,
-    );
-  });
-  bindPersonaWindowBindingActions(root);
 }
 
 function personaDetachPreviewHtml(preview) {
@@ -26120,7 +26240,11 @@ function renderFeatureSwitches() {
   if (inFeatureDetail) {
     const result = $("#featureFilterResult");
     if (result) result.innerHTML = `<span>${escapeHtml(featureGroupForKey(state.selectedFeatureKey))}</span><b>${escapeHtml(featureStageLabel(featureStagesForKey(state.selectedFeatureKey)[0], true))}</b>`;
-    $("#featureFlags").innerHTML = featureDetailPage(state.selectedFeatureKey);
+    const multiPersonaDetail = state.selectedFeatureKey === "enable_multi_persona_mode";
+    $("#featureFlags").innerHTML = multiPersonaDetail
+      ? multiPersonaFeatureDetailPage()
+      : featureDetailPage(state.selectedFeatureKey);
+    if (multiPersonaDetail) renderPersonaConfigManagement();
     captureFeatureDetailBaselineFromDom($("#featureFlags"));
     bindFeatureDetailActions();
     syncFeatureFooterAction();
@@ -26492,13 +26616,10 @@ const MULTI_PERSONA_MIGRATION_KEYS = Object.freeze([
 ]);
 
 function multiPersonaMigrationDetailCard() {
-  const modeRequested = toBool(
-    state.featureDraft?.enable_multi_persona_mode
-    ?? state.overview?.settings?.enable_multi_persona_mode,
-  );
-  if (!modeRequested) return "";
+  const modeRequested = multiPersonaModeDraftEnabled();
   const ids = configuredMultiPersonaIds();
-  const bindingIds = modeRequested ? multiPersonaBindingIds() : [];
+  const bindingIds = multiPersonaBindingIds();
+  const bindingEditable = modeRequested && bindingIds.length > 0;
   const bindings = state.multiPersona?.window_bindings && typeof state.multiPersona.window_bindings === "object"
     ? state.multiPersona.window_bindings
     : {};
@@ -26512,7 +26633,7 @@ function multiPersonaMigrationDetailCard() {
       <div class="multi-persona-binding-row" data-persona-binding-row="${escapeHtml(windowKey)}">
         <span class="multi-persona-binding-route"><code>${escapeHtml(windowKey)}</code><em>${escapeHtml(personaDisplayLabel(personaId))}</em></span>
         <span class="multi-persona-binding-actions">
-          <button type="button" class="soft" data-persona-window-edit="${escapeHtml(windowKey)}" data-persona-window-target-id="${escapeHtml(personaId)}">编辑</button>
+          <button type="button" class="soft" data-persona-window-edit="${escapeHtml(windowKey)}" data-persona-window-target-id="${escapeHtml(personaId)}" ${modeRequested ? "" : "disabled"}>编辑</button>
           <button type="button" class="danger-outline" data-persona-window-delete="${escapeHtml(windowKey)}">删除</button>
         </span>
       </div>`)
@@ -26520,12 +26641,13 @@ function multiPersonaMigrationDetailCard() {
   const bindingCard = `
     <article class="feature-detail-card multi-persona-binding-card">
       <h3>会话窗口绑定</h3>
+      ${modeRequested ? "" : '<p class="persona-setting-disabled-note">总开关关闭时保留并展示已有绑定；开启并保存多人格支持后才能新增或编辑绑定。</p>'}
       <div class="multi-persona-migration-selects">
-        <label><span>会话窗口 UMO</span><input type="text" data-persona-window-key value="" maxlength="512" /></label>
-        <label><span>使用人格</span><select data-persona-window-target ${bindingIds.length ? "" : "disabled"}>${bindingOptions}</select></label>
+        <label><span>会话窗口 UMO</span><input type="text" data-persona-window-key value="" maxlength="512" ${modeRequested ? "" : "disabled"}/></label>
+        <label><span>使用人格</span><select data-persona-window-target ${bindingEditable ? "" : "disabled"}>${bindingOptions}</select></label>
       </div>
       <div class="multi-persona-binding-form-actions">
-        <button type="button" class="feature-param-save" data-persona-window-bind ${bindingIds.length ? "" : "disabled"}>保存窗口绑定</button>
+        <button type="button" class="feature-param-save" data-persona-window-bind ${bindingEditable ? "" : "disabled"}>保存窗口绑定</button>
         <button type="button" class="ghost" data-persona-window-cancel-edit hidden>取消编辑</button>
       </div>
       <div class="multi-persona-binding-list">${bindingRows || "<span class=\"empty small\">暂无固定窗口绑定</span>"}</div>
@@ -30065,8 +30187,8 @@ function featureDetailPage(key) {
     : `<div><dt>-</dt><dd>无额外依赖</dd></div>`;
   const impactRows = impacts.map(([name, value]) => `<div><dt>${escapeHtml(name)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("");
   const runtimeCardHtml = key === "enable_body_monitor_integration" ? bodyMonitorFeatureDetailCard() : "";
-  // Multi-persona topology, migration and window bindings live in Common
-  // Settings so the selected persona panel remains focused on behavior.
+  // Multi-persona uses a dedicated detail workspace rendered by
+  // renderFeatureSwitches(), so the generic feature page stays free of duplicates.
   const personaMigrationCardHtml = "";
   const managerCardHtml = key === "enable_group_member_safety" ? groupMemberSafetyManagerCardHtml() : "";
   const referenceManagerOpen = key === "enable_photo_text_action" && state.featureDetailSubpage === "photo_reference_library";
@@ -30151,6 +30273,9 @@ function bindFeatureDetailActions() {
     button.addEventListener("click", () => leaveFeatureDetail(button));
   });
   const detailPage = document.querySelector(".feature-detail-page");
+  detailPage?.querySelector("[data-common-multi-persona-toggle]")?.addEventListener("change", (event) => {
+    setMultiPersonaModeDraft(event.currentTarget.checked);
+  });
   detailPage?.querySelectorAll("[data-persona-follow-key]").forEach((button) => {
     button.addEventListener("click", async (event) => {
       event.preventDefault();
@@ -30193,6 +30318,7 @@ function bindFeatureDetailActions() {
       event.target?.matches?.("[data-photo-reference-filter], [data-photo-reference-source], [data-photo-reference-note], [data-photo-reference-roles], [data-photo-reference-multi-option], [data-photo-reference-outfit-category], [data-photo-reference-outfit-lock], [data-photo-reference-scenes], [data-photo-reference-times], [data-photo-reference-preferred-preset], [data-photo-reference-persona-source]")
       || event.target?.closest?.("[data-photo-reference-add-form]")
       || event.target?.matches?.("[data-group-safety-manage-group]")
+      || event.target?.closest?.(".persona-management-feature-view")
     ) return;
     rememberFeatureParamDraft(event.target);
     markFeatureDetailDirty();
@@ -30205,8 +30331,9 @@ function bindFeatureDetailActions() {
       state.featureDraft[input.dataset.featureDetailToggle] = input.checked;
       renderFeatureSwitches();
       if (input.dataset.featureDetailToggle === "enable_multi_persona_mode") {
+        renderMultiPersonaModeSummary();
         renderConfigPersonaSelector();
-        renderPersonaConfigManagement();
+        renderFeatureSwitches();
       }
     });
   });

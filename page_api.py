@@ -4865,6 +4865,17 @@ class PrivateCompanionPageApi(
                     mode_value = changed.get("provider_config_mode") or self._config_get("provider_config_mode") or getattr(self.plugin, "provider_config_mode", "quick")
                     provider_payload = self._expand_provider_overwrite_bundle(str(mode_value), provider_payload)
                 changed.update(provider_payload)
+            # Enabling multi-persona mode depends on the primary ID being
+            # installed on the runtime object first.  JSON object order is not
+            # a safe dependency boundary: the panel commonly sends the toggle
+            # before the topology fields in the same request.
+            if bool(changed.get("enable_multi_persona_mode")):
+                ordered_changed: dict[str, Any] = {}
+                for dependency_key in ("multi_persona_primary_id", "multi_persona_ids"):
+                    if dependency_key in changed:
+                        ordered_changed[dependency_key] = changed[dependency_key]
+                ordered_changed.update(changed)
+                changed = ordered_changed
             mode_transition_changed = "enable_multi_persona_mode" in changed and (
                 bool(changed.get("enable_multi_persona_mode"))
                 != bool(getattr(self.plugin, "enable_multi_persona_mode", False))

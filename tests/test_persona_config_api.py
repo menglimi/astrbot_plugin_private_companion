@@ -5,6 +5,7 @@ import json
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from quart import Quart
 
@@ -35,6 +36,8 @@ async def _call(api, app, path, method, payload=None):
         route = path.split("?", 1)[0]
         if route.endswith("/create"):
             return await api.create_persona_config()
+        if route == "/settings/update":
+            return await api.update_settings()
         if route.endswith("/config-state"):
             return await api.get_persona_config_state()
         if route.endswith("/settings/update"):
@@ -90,6 +93,40 @@ def test_persona_config_api_lifecycle_and_sparse_following():
             )
             assert preview["success"]
             assert preview["data"]["materialized_count"] > 2
+
+    asyncio.run(run())
+
+
+def test_multi_persona_enable_applies_primary_before_toggle_even_when_payload_toggle_is_first():
+    async def run():
+        with tempfile.TemporaryDirectory() as root:
+            plugin = _harness(root)
+            plugin.enable_multi_persona_mode = False
+            plugin.multi_persona_primary_id = ""
+            plugin.multi_persona_ids = []
+            plugin.plugin_specific_persona_id = ""
+            plugin._single_mode_plugin_specific_persona_id = ""
+            plugin.config["multi_persona_ids"] = []
+            api = PrivateCompanionPageApi(plugin)
+            api._save_config_if_possible = AsyncMock(return_value=True)
+            app = Quart(__name__)
+            response = await _call(
+                api,
+                app,
+                "/settings/update",
+                "POST",
+                {
+                    "settings": {
+                        "enable_multi_persona_mode": True,
+                        "multi_persona_primary_id": "main",
+                        "multi_persona_ids": ["main", "alt"],
+                    },
+                },
+            )
+            assert response["success"] is True
+            assert plugin.enable_multi_persona_mode is True
+            assert plugin.multi_persona_primary_id == "main"
+            assert plugin.multi_persona_ids == ["main", "alt"]
 
     asyncio.run(run())
 

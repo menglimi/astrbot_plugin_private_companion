@@ -163,7 +163,7 @@
   </style>
   <link rel="stylesheet" href="./css/header-tools.css?v=20260713-font-options" />
   <link rel="stylesheet" href="./css/qzone-mobile.css?v=20260711-qzone-image-preview" />
-  <link rel="stylesheet" href="./css/polish.css?v=20260810-responsive-containment-v1&amp;world=20260811-responsive-v2&amp;config=config-lifecycle-v1" />
+  <link rel="stylesheet" href="./css/polish.css?v=20260810-responsive-containment-v1&amp;world=20260811-responsive-v2&amp;config=multi-persona-summary-v2" />
   <script>
     (function () {
       try {
@@ -1683,11 +1683,6 @@ QQ空间 = 公开札记
                   </div>
                 </div>
               </details>
-              <article class="config-card wide persona-management-card" id="config-persona-management">
-                <div id="personaConfigManagement" class="persona-config-management">
-                  <div class="empty small">开启多人格支持后，这里会显示人格配置管理和窗口绑定。</div>
-                </div>
-              </article>
             </div>
           </details>
 
@@ -1699,7 +1694,10 @@ QQ空间 = 公开札记
               </label>
               <div class="config-persona-selector-meta" id="configPersonaSelectorMeta" aria-live="polite"></div>
             </div>
-            <div id="proactiveOnlyModeCard"></div>
+            <div class="config-persona-top-row">
+              <div id="proactiveOnlyModeCard"></div>
+              <div id="multiPersonaModeSummary" class="config-common-multi-persona-summary"></div>
+            </div>
             <section class="config-persona-stats" id="configPersonaStats" aria-labelledby="configPersonaStatsTitle">
               <header>
                 <div>
@@ -2064,6 +2062,6 @@ QQ空间 = 公开札记
   <!-- Loaded on demand by app.js through AstrBot's relative dynamic-import rewriting:
        ./js/panels/provider-tree.js?v=20260804-private-reading-capability-v1&amp;manual=provider-input-v2&amp;layout=v2
        ./js/panels/qzone-panel.js?v=20260810-qzone-classic-loader-v1 -->
-  <script src="./app.js?v=20260809-proactive-tts-external-ability-photo-fixed-v1&amp;build=20260810-reference-upload-v2&amp;page=lazy-classic-loader-v1&amp;scope=photo-scope-quota-v1&amp;touch=reality-workspace-v1&amp;memory-source=memory-companion-v2&amp;user-create=profile-v1&amp;relationship-role-photo=pr125-v1&amp;camera-runtime-scope=v1&amp;config=config-lifecycle-v1&amp;troubleshooting=diagnostic-category-label-v1&amp;content-visibility=v1&amp;migration-notice=v4&amp;component-order=v1&amp;layout=model-routing-v2&amp;persona-style-batch-recovery=v1&amp;preset-save=v1&amp;release=6.3.2"></script>
+  <script src="./app.js?v=20260809-proactive-tts-external-ability-photo-fixed-v1&amp;build=20260810-reference-upload-v2&amp;page=lazy-classic-loader-v1&amp;scope=photo-scope-quota-v1&amp;touch=reality-workspace-v1&amp;memory-source=memory-companion-v2&amp;user-create=profile-v1&amp;relationship-role-photo=pr125-v1&amp;camera-runtime-scope=v1&amp;config=multi-persona-summary-v2&amp;troubleshooting=diagnostic-category-label-v1&amp;content-visibility=v1&amp;migration-notice=v4&amp;component-order=v1&amp;layout=model-routing-v2&amp;persona-style-batch-recovery=v1&amp;preset-save=v1&amp;release=6.3.4"></script>
 </body>
 </html>
