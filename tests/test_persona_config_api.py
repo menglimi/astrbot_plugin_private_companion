@@ -307,3 +307,47 @@ def test_disabling_multi_persona_rolls_back_written_legacy_data_on_config_save_f
             assert json.loads(Path(plugin.data_file).read_text(encoding="utf-8")) == legacy
 
     asyncio.run(run())
+
+
+def test_persona_setting_hot_apply_is_target_scoped():
+    async def run():
+        with tempfile.TemporaryDirectory() as root:
+            plugin = _harness(root)
+            profile = plugin._ensure_persona_profile("alt")
+            profile["runtime_cache"] = {"stale": True}
+            profile["persona_settings"]["bot_name"] = "次人格"
+            seen: list[tuple[str, str]] = []
+
+            plugin._refresh_expression_voice_profile = lambda: seen.append(
+                ("expression", plugin._active_persona_scope())
+            )
+            plugin._import_worldbook_entries_from_sources = lambda: seen.append(
+                ("worldbook", plugin._active_persona_scope())
+            ) or False
+
+            async def kick():
+                seen.append(("scheduler", plugin._active_persona_scope()))
+
+            plugin._kick_proactive_loop_once = kick
+            revision = int(profile.get("persona_settings_revision") or 0)
+            result = await plugin._update_persona_settings_async(
+                "alt",
+                changes={
+                    "FAST_RESPONSE_PROVIDER_ID": "persona-fast",
+                    "default_style": "独立风格",
+                    "worldbook_config_paths": "worldbook.json",
+                    "max_daily_messages": 2,
+                },
+                follow_primary_keys=[],
+                expected_revision=revision,
+            )
+            await asyncio.sleep(0)
+
+            assert result["ok"] is True
+            assert "runtime_cache" not in plugin._ensure_persona_profile("alt")
+            assert ("expression", "alt") in seen
+            assert ("worldbook", "alt") in seen
+            assert ("scheduler", "alt") in seen
+            assert plugin._active_persona_scope() == ""
+
+    asyncio.run(run())

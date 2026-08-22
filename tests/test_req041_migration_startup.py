@@ -49,6 +49,7 @@ def _load_methods(*names: str) -> dict[str, Any]:
         "asyncio": asyncio,
         "deepcopy": deepcopy,
         "hashlib": hashlib,
+        "json": json,
         "math": math,
         "MigrationBackfill": MigrationBackfill,
         "legacy_pending_reference": legacy_pending_reference,
@@ -284,6 +285,23 @@ class MigrationStartupTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual("req041.backup_manifest.v2", manifest["schema"])
         self.assertEqual(status["source_schema_version"], manifest["source_inventory"]["source_schema_version"])
+
+    async def test_restart_ignores_persona_profiles_created_after_source_manifest(self) -> None:
+        host = self._host()
+        await host._req041_initialize_automatic_migration()
+        first = host.req041_migration_coordinator.status()
+        self.assertTrue(first["backup_manifest"])
+        profiles = self.data_dir / "persona_profiles"
+        profiles.mkdir(parents=True, exist_ok=True)
+        (profiles / "new-persona.json").write_bytes(V608_FIXTURE.read_bytes())
+
+        frozen = host._req041_migration_source_files()
+
+        self.assertEqual([Path(host.data_file)], frozen)
+        await host._req041_initialize_automatic_migration()
+        second = host.req041_migration_coordinator.status()
+        self.assertEqual(first["migration_epoch"], second["migration_epoch"])
+        self.assertNotEqual("migration_resume_contract_conflict", second["error_code"])
 
     async def test_sanitized_v608_fixture_upgrades_without_manual_action_and_preserves_scope_isolation(self) -> None:
         host = self._host()

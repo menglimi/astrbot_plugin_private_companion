@@ -26635,6 +26635,7 @@ function bindPersonaWindowBindingActions(root) {
     });
   });
   bindButton?.addEventListener("click", async (event) => {
+    const bindingControl = event.currentTarget;
     const windowKey = String(windowInput?.value || "").trim();
     const personaId = String(personaSelect?.value || "").trim();
     const previousWindowKey = String(windowInput?.dataset.previousWindowKey || "").trim();
@@ -26643,7 +26644,7 @@ function bindPersonaWindowBindingActions(root) {
       return;
     }
     setPersonaOperationBusy(true);
-    event.currentTarget.disabled = true;
+    bindingControl.disabled = true;
     try {
       await ensureMultiPersonaBindingProfile(personaId, detailPage);
       let result;
@@ -26702,7 +26703,7 @@ function bindPersonaWindowBindingActions(root) {
     } catch (error) {
       showToast(error.message || "窗口绑定失败", "error");
     } finally {
-      event.currentTarget.disabled = false;
+      bindingControl.disabled = false;
       setPersonaOperationBusy(false);
     }
   });

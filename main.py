@@ -3555,6 +3555,7 @@ class PrivateCompanionPlugin(
         if overlap:
             return {"ok": False, "code": "persona_settings_overlap", "message": "同一配置项不能同时覆盖和恢复跟随"}
         await self._flush_scheduled_data_save()
+        changed_keys = sorted(set(changes) | set(map(str, follow_primary_keys)))
         async with self._data_lock:
             profile = self._ensure_persona_profile(pid)
             revision = int(profile.get(PERSONA_SETTINGS_REVISION_KEY) or 0)
@@ -3584,14 +3585,114 @@ class PrivateCompanionPlugin(
             next_profile[PERSONA_SETTINGS_KEY] = normalize_persona_settings(raw, manifest=manifest, preserve_unknown=True)
             next_profile[PERSONA_SETTINGS_VERSION_KEY] = PERSONA_SETTINGS_SCHEMA_VERSION
             next_profile[PERSONA_SETTINGS_REVISION_KEY] = revision + 1
+            if any(
+                self._persona_setting_invalidates_runtime_cache(key, manifest)
+                for key in changed_keys
+            ):
+                self._clear_persona_runtime_cache(next_profile)
             try:
                 self._save_persona_profile_sync(pid, next_profile)
             except Exception as exc:
                 return {"ok": False, "code": "persona_settings_persistence_failed", "message": f"人格配置保存失败: {_single_line(exc, 120)}"}
             profile.clear()
             profile.update(next_profile)
-            self._reset_persona_prompt_caches(pid)
-            return {"ok": True, "changed": sorted(set(changes) | set(map(str, follow_primary_keys))), **self._persona_config_state(pid)}
+            result = {
+                "ok": True,
+                "changed": changed_keys,
+                **self._persona_config_state(pid),
+            }
+        self._apply_persona_setting_hot_effects(pid, changed_keys)
+        return result
+
+    @staticmethod
+    def _persona_setting_invalidates_runtime_cache(
+        key: str,
+        manifest: dict[str, dict[str, Any]],
+    ) -> bool:
+        entry = manifest.get(str(key)) or {}
+        lowered = str(key).lower()
+        return bool(entry.get("identity")) or any(
+            marker in lowered
+            for marker in (
+                "provider",
+                "prompt",
+                "reference",
+                "worldbook",
+                "knowledge_source",
+                "voice",
+                "tts_",
+            )
+        )
+
+    def _apply_persona_setting_hot_effects(
+        self,
+        persona_id: str,
+        changed_keys: list[str],
+    ) -> None:
+        """Apply target-scoped cache, projection, and scheduler side effects."""
+        pid = self._sanitize_persona_id(persona_id)
+        if not pid:
+            return
+        self._reset_persona_prompt_caches(pid)
+        token = self._activate_persona_id(pid, allow_inactive=True)
+        try:
+            expression_changed = any(
+                key.startswith("expression_")
+                or key in {"bot_name", "default_style", "reply_style_prompt"}
+                for key in changed_keys
+            )
+            if expression_changed:
+                refresher = getattr(self, "_refresh_expression_voice_profile", None)
+                if callable(refresher):
+                    refresher()
+            worldbook_changed = bool(
+                {"worldbook_config_paths", "roleplay_knowledge_source_ids"}
+                & set(changed_keys)
+            )
+            if worldbook_changed and bool(
+                runtime_persona_setting(self, "worldbook_auto_import", True)
+            ):
+                importer = getattr(self, "_import_worldbook_entries_from_sources", None)
+                if callable(importer) and importer():
+                    self._schedule_data_save(delay=0.1)
+        finally:
+            self._deactivate_persona_for_event(token)
+
+        proactive_changed = any(
+            key.startswith("proactive_")
+            or key.startswith("enable_proactive")
+            or key
+            in {
+                "max_daily_messages",
+                "idle_minutes",
+                "min_interval_minutes",
+                "quiet_hours",
+                "enable_daily_review",
+                "daily_review_time",
+                "daily_review_provider_id",
+            }
+            for key in changed_keys
+        )
+        kicker = getattr(self, "_kick_proactive_loop_once", None)
+        if not proactive_changed or not callable(kicker):
+            return
+
+        async def kick_target_persona() -> None:
+            active_token = self._activate_persona_id(pid, allow_inactive=True)
+            try:
+                await kicker()
+            finally:
+                self._deactivate_persona_for_event(active_token)
+
+        task = self._create_lifecycle_background_task(
+            kick_target_persona(),
+            label=f"persona_setting_hot_apply:{pid}",
+        )
+        if task is None:
+            logger.warning(
+                "[PrivateCompanion] 人格配置已保存，但主动调度即时唤醒未启动: persona=%s",
+                pid,
+            )
 
     def _persona_detach_preview(self, persona_id: Any) -> dict[str, Any]:
         pid = self._sanitize_persona_id(persona_id)
@@ -5087,6 +5188,46 @@ class PrivateCompanionPlugin(
             logger.warning("[PrivateCompanion] 修复热更新残留回调绑定失败: %s", _single_line(exc, 160))
 
     def _req041_migration_source_files(self) -> list[Path]:
+        # Once a migration has a verified backup, its manifest is the authority
+        # for the legacy source set. Persona profiles created later are new
+        # runtime stores and must not change the resume contract on restart.
+        coordinator = getattr(self, "req041_migration_coordinator", None)
+        status_getter = getattr(coordinator, "status", None)
+        if callable(status_getter):
+            try:
+                status = status_getter()
+            except Exception:
+                status = {}
+            manifest_name = _single_line(
+                status.get("backup_manifest") if isinstance(status, dict) else "",
+                300,
+            )
+            if manifest_name:
+                data_root = Path(str(getattr(self, "data_dir", "") or "")).resolve()
+                try:
+                    manifest_path = (data_root / manifest_name).resolve(strict=True)
+                    manifest_path.relative_to(data_root)
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    entries = manifest.get("files") if isinstance(manifest, dict) else None
+                    frozen: list[Path] = []
+                    if isinstance(entries, list):
+                        for entry in entries:
+                            name = entry.get("name") if isinstance(entry, dict) else ""
+                            if not isinstance(name, str) or not name.strip():
+                                frozen = []
+                                break
+                            candidate = (data_root / name).resolve(strict=False)
+                            candidate.relative_to(data_root)
+                            if candidate.is_symlink():
+                                frozen = []
+                                break
+                            frozen.append(candidate)
+                    if frozen:
+                        return frozen
+                except (OSError, ValueError, json.JSONDecodeError):
+                    # Fall through to live discovery. The coordinator will then
+                    # retain its existing fail-closed validation and error code.
+                    pass
         candidates: list[Path] = []
         if str(getattr(self, "storage_backend", "json") or "json").lower() == "sqlite":
             candidates.append(Path(str(getattr(self, "storage_sqlite_effective_path", "") or "")))

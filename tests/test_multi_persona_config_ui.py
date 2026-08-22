@@ -59,6 +59,8 @@ class MultiPersonaConfigUiTests(unittest.TestCase):
         )[0]
         self.assertIn("setPersonaOperationBusy(true);", run_action)
         self.assertIn("setPersonaOperationBusy(false);", run_action)
+        self.assertIn("const bindingControl = event.currentTarget;", script)
+        self.assertIn("bindingControl.disabled = false;", script)
 
     def test_window_binding_rows_support_edit_delete_and_auto_rebind_copy(self) -> None:
         script = (PRIMARY / "app.js").read_text(encoding="utf-8")
