@@ -150,7 +150,7 @@ python scripts/build_plugin_package.py
 生成的文件位于 `dist/astrbot_plugin_private_companion-v<版本>.zip`，可直接在 AstrBot WebUI 使用“从本地上传”安装。构建器会校验核心运行文件，并在缺少 `unified_person_registry.py`、多人格配置模块或启动模块时拒绝生成归档。已有 ZIP 也可以再次校验：
 
 ~~~bash
-python scripts/build_plugin_package.py --verify dist/astrbot_plugin_private_companion-v6.3.2.zip
+python scripts/build_plugin_package.py --verify dist/astrbot_plugin_private_companion-v6.3.4.zip
 ~~~
 
 ### 手动安装

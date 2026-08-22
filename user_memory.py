@@ -9645,7 +9645,13 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
         except Exception:
             role = str(user.get("relationship_role") or "friend") if isinstance(user, dict) else "friend"
         mode = _single_line(user.get("relationship_mode"), 32).lower() if isinstance(user, dict) else ""
-        feature_enabled = bool(getattr(self, "enable_custom_relationship_stage_policy", False))
+        feature_enabled = bool(
+            runtime_persona_setting(
+                self,
+                "enable_custom_relationship_stage_policy",
+                False,
+            )
+        )
         eligible = role == "owner"
         active = bool(text and identity_exact and eligible and mode == "owner_exclusive" and feature_enabled)
         return {

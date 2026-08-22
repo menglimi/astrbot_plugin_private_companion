@@ -84,14 +84,14 @@ class PersonaRoutingAuthorityTests(unittest.IsolatedAsyncioTestCase):
     async def test_primary_uses_single_store_without_profile_file(self):
         with tempfile.TemporaryDirectory() as root:
             plugin = _plugin_harness(root)
-            plugin._data_default["real_data_marker"] = {"users": 1}
+            plugin._data_default["users"]["real_data_marker"] = {"value": 1}
 
             primary = plugin._ensure_persona_profile("main")
             token = plugin._activate_persona_id("main")
             try:
                 self.assertIs(plugin.data, plugin._data_default)
-                plugin.data["real_data_marker"] = {"users": 2}
-                plugin._save_data_sync()
+                plugin.data["users"]["real_data_marker"] = {"value": 2}
+                plugin._save_data_sync(sections={"users"})
             finally:
                 plugin._deactivate_persona_for_event(token)
             await plugin._flush_scheduled_data_save()
@@ -99,7 +99,7 @@ class PersonaRoutingAuthorityTests(unittest.IsolatedAsyncioTestCase):
             self.assertIs(primary, plugin._data_default)
             self.assertFalse(plugin._persona_profile_path("main").exists())
             stored = json.loads(Path(plugin.data_file).read_text(encoding="utf-8"))
-            self.assertEqual({"users": 2}, stored["real_data_marker"])
+            self.assertEqual({"value": 2}, stored["users"]["real_data_marker"])
 
     async def test_session_rule_wins_over_conversation_persona(self):
         with tempfile.TemporaryDirectory() as root:

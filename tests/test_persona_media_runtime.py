@@ -24,7 +24,7 @@ class _PersonaTtsHarness(TtsEnhancementMixin):
     def persona_setting(self, key: str, default: object = None, persona_id: str = "") -> object:
         return self._overrides.get(key, default)
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs: object) -> None:
         return None
 
 
