@@ -830,6 +830,22 @@ class ConfigGroupAuthorityTests(unittest.TestCase):
             self.assertEqual(value, config["group_wakeup_config"][key], key)
             self.assertEqual(value, config[key], f"{key} legacy copy")
 
+    def test_group_bot_name_wakeup_flat_value_migrates_to_group(self):
+        config = {
+            "enable_group_bot_name_wakeup": False,
+            "group_wakeup_config": {},
+        }
+
+        changed = migrate_flat_config_into_schema_groups(
+            config,
+            schema_path=ROOT / "_conf_schema.json",
+            save=False,
+        )
+
+        self.assertGreaterEqual(changed, 1)
+        self.assertFalse(config["enable_group_bot_name_wakeup"])
+        self.assertFalse(config["group_wakeup_config"]["enable_group_bot_name_wakeup"])
+
     def test_legacy_review_master_switch_migrates_to_independent_switches(self):
         config = {
             "enable_response_self_review": False,

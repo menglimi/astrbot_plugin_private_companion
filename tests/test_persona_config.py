@@ -29,9 +29,9 @@ class PersonaConfigTests(unittest.TestCase):
         cls.schema = load_schema(ROOT / "_conf_schema.json")
         cls.manifest = build_scope_manifest(cls.schema)
 
-    def test_manifest_covers_canonical_grouped_925_leaves(self) -> None:
+    def test_manifest_covers_canonical_grouped_926_leaves(self) -> None:
         leaves = discover_grouped_schema_leaves(self.schema)
-        self.assertEqual(len(leaves), 925)
+        self.assertEqual(len(leaves), 926)
         self.assertEqual(set(leaves), set(self.manifest))
         required_fields = {
             "scope",
@@ -59,6 +59,8 @@ class PersonaConfigTests(unittest.TestCase):
         self.assertFalse(self.manifest["plugin_specific_persona_id"]["identity"])
         self.assertNotIn("multi_persona_primary_id", self.manifest)
         self.assertEqual(self.manifest["quiet_hours"]["scope"], "persona")
+        self.assertEqual(self.manifest["enable_group_bot_name_wakeup"]["scope"], "persona")
+        self.assertTrue(self.manifest["enable_group_bot_name_wakeup"]["default"])
 
     def test_missing_setting_follows_primary_but_falsy_values_are_explicit(self) -> None:
         primary = {
@@ -217,32 +219,52 @@ class PersonaConfigTests(unittest.TestCase):
             legacy_bot_name="旧人格",
         )
         self.assertEqual(migrated["users"], legacy["users"])
-        self.assertEqual(migrated["persona_settings"], {"bot_name": "旧人格"})
+        self.assertEqual(
+            migrated["persona_settings"],
+            {"bot_name": "旧人格", "enable_group_bot_name_wakeup": True},
+        )
         self.assertEqual(
             migrated["persona_settings_schema_version"], PERSONA_SETTINGS_SCHEMA_VERSION
         )
         self.assertEqual(migrated["persona_settings_revision"], 0)
         # A future version explicitly lists new keys; only those keys are
         # materialized, while old missing keys retain follow-primary semantics.
-        migrated_v2 = migrate_persona_profile(
+        migrated_v3 = migrate_persona_profile(
             migrated,
             manifest=self.manifest,
-            target_version=2,
-            new_keys_by_version={2: ["quiet_hours"]},
+            target_version=3,
+            new_keys_by_version={3: ["quiet_hours"]},
         )
         self.assertEqual(
-            migrated_v2["persona_settings"]["quiet_hours"],
+            migrated_v3["persona_settings"]["quiet_hours"],
             self.manifest["quiet_hours"]["new_key_default"],
         )
-        self.assertNotIn("max_daily_messages", migrated_v2["persona_settings"])
+        self.assertNotIn("max_daily_messages", migrated_v3["persona_settings"])
 
-    def test_existing_empty_persona_settings_gets_identity_only(self) -> None:
+    def test_v1_profile_materializes_bot_name_wakeup_default_during_v2_migration(self) -> None:
+        migrated = migrate_persona_profile(
+            {
+                "persona_settings": {"bot_name": "次人格"},
+                "persona_settings_schema_version": 1,
+                "persona_settings_revision": 4,
+            },
+            manifest=self.manifest,
+        )
+
+        self.assertTrue(migrated["persona_settings"]["enable_group_bot_name_wakeup"])
+        self.assertEqual(PERSONA_SETTINGS_SCHEMA_VERSION, migrated["persona_settings_schema_version"])
+        self.assertEqual(4, migrated["persona_settings_revision"])
+
+    def test_existing_empty_persona_settings_gets_identity_and_new_v2_key(self) -> None:
         migrated = migrate_persona_profile(
             {"users": {}, "persona_settings": {}},
             manifest=self.manifest,
             persona_id="existing-alt",
         )
-        self.assertEqual(migrated["persona_settings"], {"bot_name": "existing-alt"})
+        self.assertEqual(
+            migrated["persona_settings"],
+            {"bot_name": "existing-alt", "enable_group_bot_name_wakeup": True},
+        )
         self.assertEqual(
             migrated["persona_settings_schema_version"],
             PERSONA_SETTINGS_SCHEMA_VERSION,

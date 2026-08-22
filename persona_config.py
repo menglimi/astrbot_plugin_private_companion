@@ -19,12 +19,15 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping
 
 
-PERSONA_SETTINGS_SCHEMA_VERSION = 1
+PERSONA_SETTINGS_SCHEMA_VERSION = 2
 PERSONA_CONFIG_SCHEMA_VERSION = PERSONA_SETTINGS_SCHEMA_VERSION
 SCOPE_MANIFEST_VERSION = 1
 PERSONA_SETTINGS_KEY = "persona_settings"
 PERSONA_SETTINGS_VERSION_KEY = "persona_settings_schema_version"
 PERSONA_SETTINGS_REVISION_KEY = "persona_settings_revision"
+PERSONA_SETTINGS_NEW_KEYS_BY_VERSION: dict[int, tuple[str, ...]] = {
+    2: ("enable_group_bot_name_wakeup",),
+}
 
 MODE_FOLLOW_PRIMARY = "follow_primary"
 MODE_DEFAULTS = "defaults"
@@ -935,6 +938,8 @@ def migrate_persona_settings(
 
     if manifest is None:
         manifest = load_scope_manifest()
+    if new_keys_by_version is None:
+        new_keys_by_version = PERSONA_SETTINGS_NEW_KEYS_BY_VERSION
     legacy_sparse = settings is None
     if settings is None:
         result: dict[str, Any] = {}
@@ -1014,6 +1019,7 @@ __all__ = [
     "MODE_FOLLOW_PRIMARY",
     "PERSONA_CONFIG_SCHEMA_VERSION",
     "PERSONA_SETTINGS_KEY",
+    "PERSONA_SETTINGS_NEW_KEYS_BY_VERSION",
     "PERSONA_SETTINGS_REVISION_KEY",
     "PERSONA_SETTINGS_SCHEMA_VERSION",
     "PERSONA_SETTINGS_VERSION_KEY",

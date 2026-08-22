@@ -2750,6 +2750,12 @@
     "default": [],
     "invisible": true
   },
+  "enable_group_bot_name_wakeup": {
+    "description": "Legacy flat config: Bot 名字作为强唤醒词",
+    "type": "bool",
+    "default": true,
+    "invisible": true
+  },
   "group_wakeup_owner_direct_words": {
     "description": "Legacy flat config: 主要用户专属强唤醒词",
     "type": "list",
@@ -8789,8 +8795,17 @@
       "group_wakeup_direct_words": {
         "description": "强唤醒词",
         "type": "list",
-        "hint": "群聊消息中出现任一词就直接唤醒 Bot。适合填写 Bot 名字、昵称、固定称呼。Bot 名字会自动加入，即使这里留空也可生效。",
+        "hint": "群聊消息中出现任一词就直接唤醒 Bot。适合填写昵称、固定称呼或其他明确叫法。多个词可用换行、逗号或顿号分隔。",
         "default": [],
+        "condition": {
+          "enable_group_wakeup_enhancement": true
+        }
+      },
+      "enable_group_bot_name_wakeup": {
+        "description": "Bot 名字作为强唤醒词",
+        "type": "bool",
+        "hint": "开启后，当前人格的 bot_name 会自动加入强唤醒词；关闭后只使用上方手工填写的强唤醒词。不会影响 @ Bot、引用 Bot 或主要用户专属强唤醒词。",
+        "default": true,
         "condition": {
           "enable_group_wakeup_enhancement": true
         }

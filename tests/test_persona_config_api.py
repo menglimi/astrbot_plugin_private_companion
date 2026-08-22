@@ -272,7 +272,10 @@ def test_existing_sparse_profile_is_repaired_without_materializing_old_keys():
         assert status["ok"] is True
         profile = plugin._ensure_persona_profile("alt")
         assert profile["users"]["legacy"]["name"] == "保留"
-        assert profile["persona_settings"] == {"bot_name": "alt"}
+        assert profile["persona_settings"] == {
+            "bot_name": "alt",
+            "enable_group_bot_name_wakeup": True,
+        }
         assert "quiet_hours" not in profile["persona_settings"]
 
 

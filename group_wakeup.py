@@ -272,7 +272,7 @@ class GroupWakeupMixin:
         cleaned = str(text or "")
         setting_getter = getattr(self, "persona_setting", None)
         bot_name = str(setting_getter("bot_name", "") if callable(setting_getter) else getattr(self, "bot_name", "") or "")
-        if bot_name and bot_name in cleaned:
+        if bool(_persona_value(self, "enable_group_bot_name_wakeup", True)) and bot_name and bot_name in cleaned:
             return True
         return False
 
@@ -305,7 +305,7 @@ class GroupWakeupMixin:
     def _configured_group_direct_wakeup_words(self) -> list[str]:
         words = list(_persona_value(self, "group_wakeup_direct_words", []) or [])
         bot_name = _single_line(_persona_value(self, "bot_name", ""), 40)
-        if bot_name and bot_name not in words:
+        if bool(_persona_value(self, "enable_group_bot_name_wakeup", True)) and bot_name and bot_name not in words:
             words.insert(0, bot_name)
         return list(dict.fromkeys(word for word in words if _single_line(word, 60)))
 
@@ -1434,7 +1434,7 @@ class GroupWakeupMixin:
             return scene
         setting_getter = getattr(self, "persona_setting", None)
         bot_name = str(setting_getter("bot_name", "") if callable(setting_getter) else getattr(self, "bot_name", "") or "")
-        if bot_name and bot_name in cleaned:
+        if bool(_persona_value(self, "enable_group_bot_name_wakeup", True)) and bot_name and bot_name in cleaned:
             scene.update({"trigger": "mention_bot_name", "talking_to": "bot", "talking_to_name": "你", "reason": "bot_name_mentioned"})
             return scene
         recent = group.get("recent_messages") if isinstance(group.get("recent_messages"), list) else []
