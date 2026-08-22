@@ -17,4 +17,6 @@ _TEST_RUNTIME_ROOT = (
     / "astrbot_private_companion_tests"
     / str(os.getpid())
 )
-os.environ.setdefault("ASTRBOT_ROOT", str(_TEST_RUNTIME_ROOT))
+# A caller may already have ASTRBOT_ROOT pointed at a real AstrBot checkout.
+# Test imports must never inherit that writable runtime location.
+os.environ["ASTRBOT_ROOT"] = str(_TEST_RUNTIME_ROOT)
