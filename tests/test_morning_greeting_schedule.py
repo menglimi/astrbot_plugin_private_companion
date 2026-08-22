@@ -16,6 +16,7 @@ class MorningGreetingHarness(UserMemoryMixin, ProactiveMixin, ProactiveEngineMix
     enable_daily_greetings = True
     enable_meal_care_proactive = False
     default_nickname = "用户"
+    quiet_hours = "23:00-06:00"
 
     def __init__(self) -> None:
         self.data = {
