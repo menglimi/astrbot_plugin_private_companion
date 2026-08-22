@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import hashlib
 import sqlite3
 import threading
 import time
@@ -375,6 +374,10 @@ class SqliteStoreBackend(StoreBackendBase):
                     raise SqliteSchemaError(
                         f"SQLite v1 section schema version is invalid: {name}"
                     )
+                if not isinstance(raw_payload, str):
+                    raise SqliteSchemaError(
+                        f"SQLite v1 section payload type is invalid: {name}"
+                    )
                 try:
                     parsed = json.loads(raw_payload)
                 except (TypeError, json.JSONDecodeError) as exc:
@@ -384,7 +387,11 @@ class SqliteStoreBackend(StoreBackendBase):
                 payload_json = _canonical_json(parsed)
                 checksum = _payload_checksum(payload_json)
                 existing_checksum = str(raw_checksum or "")
-                if existing_checksum and existing_checksum != checksum:
+                raw_payload_checksum = _payload_checksum(raw_payload)
+                if existing_checksum and existing_checksum not in {
+                    raw_payload_checksum,
+                    checksum,
+                }:
                     raise SqliteSchemaError(
                         f"SQLite v1 section checksum mismatch: {name}"
                     )

@@ -363,6 +363,42 @@ class IncrementalPersistenceStorageTests(unittest.TestCase):
             connection.close()
         self.assertNotIn("revision", columns)
 
+    def test_v1_raw_json_checksum_is_validated_before_canonical_migration(self) -> None:
+        payload = {"users": {"z": 1, "a": "中文"}}
+        self._create_v1(payload)
+        raw_payload = json.dumps(
+            payload["users"],
+            ensure_ascii=False,
+            indent=2,
+        )
+        raw_checksum = hashlib.sha256(raw_payload.encode("utf-8")).hexdigest()
+        connection = sqlite3.connect(self.sqlite_path)
+        try:
+            connection.execute(
+                "UPDATE store_sections SET payload_json=?,checksum=? "
+                "WHERE section_name='users'",
+                (raw_payload, raw_checksum),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        self.assertEqual(_ensure_defaults(payload), self.backend.load_store())
+        migrated = self._row("users")
+        self.assertEqual(_canonical(payload["users"]), migrated[0])
+        self.assertEqual(_checksum(payload["users"]), migrated[2])
+
+        backup_path = next(self.root.glob("companions.db.pre-v2-*.bak"))
+        backup = sqlite3.connect(backup_path)
+        try:
+            backed_up = backup.execute(
+                "SELECT payload_json,checksum FROM store_sections "
+                "WHERE section_name='users'"
+            ).fetchone()
+        finally:
+            backup.close()
+        self.assertEqual((raw_payload, raw_checksum), backed_up)
+
     def test_unknown_newer_schema_is_rejected_without_mutation(self) -> None:
         connection = sqlite3.connect(self.sqlite_path)
         try:

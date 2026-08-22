@@ -34,7 +34,7 @@ class ConfigPageLifecycleFilterTests(unittest.TestCase):
             'id="featureStageFilters"',
             'id="featureStatusFilters"',
             'aria-live="polite"',
-            "config=config-lifecycle-v1",
+            "config=multi-persona-summary-v2",
         ):
             self.assertIn(marker, self.html)
 
@@ -69,14 +69,14 @@ class ConfigPageLifecycleFilterTests(unittest.TestCase):
 
     def test_image_plugin_adds_a_cross_domain_capability_filter(self) -> None:
         for marker in (
-            '...(imageCompanionInstalled() ? [{ title: "image_generation", label: "生图", capability: true }] : [])',
+            '...(anyImageGeneratorInstalled() ? [{ title: "image_generation", label: "生图", capability: true }] : [])',
             'enable_photo_text_action: "主动/用户生图"',
             'enable_qzone_integration: "空间配图"',
             'enable_creative_writing: "作品封面"',
             'function featureMatchesDomainFilter(key, domain = state.featureDomainFilter)',
             'state.featureDomainFilter === "image_generation" ? imageGenerationFeatureUse(key) : ""',
             'class="feature-image-use"',
-            'if (!imageInstalled && state.featureDomainFilter === "image_generation")',
+            'if (!anyImageInstalled && state.featureDomainFilter === "image_generation")',
         ):
             self.assertIn(marker, self.script)
         self.assertIn(".feature-domain-filters button.is-capability", self.css)

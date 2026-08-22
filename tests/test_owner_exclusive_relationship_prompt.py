@@ -21,6 +21,13 @@ def _strip_internal_message_blocks(value: Any) -> str:
     return str(value or "")
 
 
+def _runtime_persona_setting(owner: Any, key: str, default: Any = None) -> Any:
+    getter = getattr(owner, "persona_setting", None)
+    if callable(getter):
+        return getter(key, default)
+    return getattr(owner, key, default)
+
+
 def _relationship_prompt_probe() -> type:
     path = ROOT / "user_memory.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -51,6 +58,7 @@ def _relationship_prompt_probe() -> type:
         "_now_ts": time.time,
         "_single_line": _single_line,
         "_strip_internal_message_blocks": _strip_internal_message_blocks,
+        "runtime_persona_setting": _runtime_persona_setting,
         "re": re,
         "unicodedata": unicodedata,
     }

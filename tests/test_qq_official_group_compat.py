@@ -69,7 +69,7 @@ class _PagePlugin:
         return self.data["groups"].setdefault(group_id, {"group_id": group_id, "enabled": True})
 
     @staticmethod
-    def _save_data_sync() -> None:
+    def _save_data_sync(**_kwargs) -> None:
         return None
 
 
