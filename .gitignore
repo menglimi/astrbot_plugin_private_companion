@@ -16,6 +16,7 @@ __pycache__/
 
 # Local release verification snapshots are not plugin source.
 /verification/
+/dist/
 
 # The Android companion terminal is maintained and distributed separately.
 /android/
