@@ -4212,6 +4212,7 @@ const featureSettingTypes = {
   photo_generation_group_max_daily: { type: "number", min: -1, max: 100, step: 1 },
   photo_generation_proactive_max_daily: { type: "number", min: -1, max: 100, step: 1 },
   default_interaction_band: { type: "select", options: [["avoidant", "回避"], ["hurt", "受伤"], ["relaxed", "放松"], ["lively", "活泼"], ["warm", "温暖"]] },
+  portrait_global_mode: { type: "select", options: [["disabled", "关闭智能画像"], ["use_existing", "仅使用已有画像"], ["learn_and_use", "持续学习与使用"]] },
   relationship_positive_stage_cap_key: { type: "select", options: [["familiar", "熟悉"], ["close", "亲近"], ["intimate", "亲密"], ["deeply_bonded", "深度联结"]] },
   normal_interaction_band_cap: { type: "select", options: [["relaxed", "放松"], ["lively", "活泼"], ["warm", "温暖"]] },
   owner_group_relationship_projection: { type: "checkbox" },
