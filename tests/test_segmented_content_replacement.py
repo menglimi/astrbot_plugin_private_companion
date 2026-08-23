@@ -125,6 +125,21 @@ class SegmentedContentReplacementTests(unittest.TestCase):
 
         self.assertEqual(segments, ["嗯，被捏得软绵绵的"])
 
+    def test_leading_ellipsis_is_preserved_when_short_segments_merge(self) -> None:
+        harness = _SegmentReplacementHarness()
+        harness.segmented_proactive_split_mode = "words"
+        harness.segmented_proactive_split_words = ["。", "？", "！", "~", "…"]
+        harness.segmented_proactive_match_width_variants = True
+        harness.enable_segmented_proactive_content_cleanup = True
+        harness.segmented_proactive_content_cleanup_scope = "trailing"
+        harness.segmented_proactive_content_cleanup_words = ["\n"]
+        harness.segmented_proactive_min_segment_chars = 8
+
+        for prefix in ("……", "......"):
+            with self.subTest(prefix=prefix):
+                segments = harness._split_proactive_text(f"{prefix}被你抓到了。那次确实偷懒了。")
+                self.assertEqual(segments[0], f"{prefix}被你抓到了，那次确实偷懒了。")
+
     def test_configuration_and_preview_expose_replacement_controls(self) -> None:
         root = Path(__file__).resolve().parents[1]
         script = (root / "pages" / "陪伴面板" / "app.js").read_text(encoding="utf-8")

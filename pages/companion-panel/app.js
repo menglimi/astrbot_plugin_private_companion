@@ -2090,6 +2090,7 @@ const configLabels = {
   segmented_proactive_face_strategy: "平台表情位置",
   segmented_proactive_other_strategy: "其他附件位置",
   segmented_proactive_split_mode: "分段模式",
+  enable_qq_official_segmented_reply: "允许 qq_official 使用分段",
   segmented_proactive_match_width_variants: "自动匹配全角/半角",
   segmented_proactive_regex: "分段正则",
   segmented_proactive_split_words: "分段词列表",
@@ -2902,6 +2903,7 @@ const configDescriptions = {
   segmented_proactive_face_strategy: "控制平台原生 Face/Emoji 组件，不影响表情包素材库。",
   segmented_proactive_other_strategy: "文件、视频等其他附件默认单独发送，减少平台对混合消息链的兼容差异。",
   segmented_proactive_split_mode: "regex 使用正则切句；words 使用分段词列表，更适合清理句号、空格等固定分隔符。网址会自动保护，不会被按点号或斜杠拆开。",
+  enable_qq_official_segmented_reply: "需在QQ群和私聊中开启“允许机器人主动发言”",
   segmented_proactive_match_width_variants: "仅在分段词列表模式生效。开启后，~／～、,／，、!／！等常见标点只需配置一种写法，分段和清理都会匹配另一种；不会改写发送正文。",
   segmented_proactive_regex: "分段模式为 regex 时使用的切分正则。",
   segmented_proactive_split_words: "分段模式为 words 时使用的分段词。推荐一行一个；中文逗号要单独写一行，或写“逗号”。英文点号会把连续 ... 当成一个省略号边界；配置了“……”时会自动兼容单个“…”。网址内部字符会自动保护，完整网址结束处可作为自然断点；括号、标题引号和 <image>/<video> 这类尖括号媒体块内部字符会跳过。",
@@ -3324,7 +3326,7 @@ const featureSettingGroups = {
   enable_daily_diary: ["daily_diary_time", "daily_diary_form", "daily_diary_length", "daily_diary_creativity", "daily_diary_custom_direction", "daily_diary_generate_share_seed", "max_diary_entries"],
   enable_rest_reply_simulation: ["rest_reply_mode", "rest_reply_probability", "rest_reply_llm_threshold", "rest_reply_active_windows", "rest_reply_awake_grace_minutes", "enable_rest_backlog_reply", "rest_backlog_max_messages", "REST_WAKEUP_PROVIDER_ID"],
   enable_busy_reply_gate: ["busy_reply_min_delay_seconds", "busy_reply_max_delay_seconds", "busy_reply_proactive_resume_buffer_minutes"],
-  enable_segmented_proactive_reply: ["enable_segmented_proactive_chat_profiles", "segmented_proactive_private_enabled", "segmented_proactive_private_scope", "segmented_proactive_private_threshold", "segmented_proactive_private_min_segment_chars", "segmented_proactive_private_max_segments", "segmented_proactive_private_send_as_forward", "segmented_proactive_private_interval_method", "segmented_proactive_private_interval_min", "segmented_proactive_private_interval_max", "segmented_proactive_private_log_base", "segmented_proactive_group_enabled", "segmented_proactive_group_scope", "segmented_proactive_group_threshold", "segmented_proactive_group_min_segment_chars", "segmented_proactive_group_max_segments", "segmented_proactive_group_send_as_forward", "segmented_proactive_group_interval_method", "segmented_proactive_group_interval_min", "segmented_proactive_group_interval_max", "segmented_proactive_group_log_base", "segmented_proactive_scope", "segmented_proactive_chat_scope", "segmented_proactive_threshold", "segmented_proactive_min_segment_chars", "segmented_proactive_max_segments", "segmented_proactive_send_as_forward", "segmented_proactive_voice_strategy", "segmented_proactive_image_strategy", "segmented_proactive_at_strategy", "segmented_proactive_face_strategy", "segmented_proactive_component_order", "reaction_expression_delivery_mode", "segmented_proactive_other_strategy", "segmented_proactive_split_mode", "segmented_proactive_match_width_variants", "segmented_proactive_regex", "segmented_proactive_split_words", "enable_segmented_proactive_content_cleanup", "segmented_proactive_content_cleanup_scope", "segmented_proactive_content_cleanup_rule", "segmented_proactive_content_cleanup_words", "enable_segmented_proactive_content_replacement", "segmented_proactive_content_replacements", "segmented_proactive_interval_method", "segmented_proactive_interval_min", "segmented_proactive_interval_max", "segmented_proactive_log_base"],
+  enable_segmented_proactive_reply: ["enable_segmented_proactive_chat_profiles", "segmented_proactive_private_enabled", "segmented_proactive_private_scope", "segmented_proactive_private_threshold", "segmented_proactive_private_min_segment_chars", "segmented_proactive_private_max_segments", "segmented_proactive_private_send_as_forward", "segmented_proactive_private_interval_method", "segmented_proactive_private_interval_min", "segmented_proactive_private_interval_max", "segmented_proactive_private_log_base", "segmented_proactive_group_enabled", "segmented_proactive_group_scope", "segmented_proactive_group_threshold", "segmented_proactive_group_min_segment_chars", "segmented_proactive_group_max_segments", "segmented_proactive_group_send_as_forward", "segmented_proactive_group_interval_method", "segmented_proactive_group_interval_min", "segmented_proactive_group_interval_max", "segmented_proactive_group_log_base", "segmented_proactive_scope", "segmented_proactive_chat_scope", "segmented_proactive_threshold", "segmented_proactive_min_segment_chars", "segmented_proactive_max_segments", "segmented_proactive_send_as_forward", "segmented_proactive_voice_strategy", "segmented_proactive_image_strategy", "segmented_proactive_at_strategy", "segmented_proactive_face_strategy", "segmented_proactive_component_order", "reaction_expression_delivery_mode", "segmented_proactive_other_strategy", "segmented_proactive_split_mode", "enable_qq_official_segmented_reply", "segmented_proactive_match_width_variants", "segmented_proactive_regex", "segmented_proactive_split_words", "enable_segmented_proactive_content_cleanup", "segmented_proactive_content_cleanup_scope", "segmented_proactive_content_cleanup_rule", "segmented_proactive_content_cleanup_words", "enable_segmented_proactive_content_replacement", "segmented_proactive_content_replacements", "segmented_proactive_interval_method", "segmented_proactive_interval_min", "segmented_proactive_interval_max", "segmented_proactive_log_base"],
   inject_passive_states: ["humanized_state_intensity", "enable_passive_state_delta_injection", "enable_passive_state_continuity_anchor"],
   enable_passive_state_delta_injection: ["enable_passive_state_continuity_anchor"],
   enable_health_state: ["humanized_state_intensity"],
@@ -4041,7 +4043,7 @@ const featureSettingSections = {
     {
       title: "共享切分规则与兼容默认值",
       note: "分隔符与内容处理规则由两类会话共享；会话范围、长度和分段数在独立配置关闭时作为兼容默认值使用。",
-      keys: ["segmented_proactive_scope", "segmented_proactive_chat_scope", "segmented_proactive_threshold", "segmented_proactive_min_segment_chars", "segmented_proactive_max_segments", "segmented_proactive_split_mode", "segmented_proactive_match_width_variants", "segmented_proactive_regex", "segmented_proactive_split_words"],
+      keys: ["segmented_proactive_scope", "segmented_proactive_chat_scope", "segmented_proactive_threshold", "segmented_proactive_min_segment_chars", "segmented_proactive_max_segments", "segmented_proactive_split_mode", "enable_qq_official_segmented_reply", "segmented_proactive_match_width_variants", "segmented_proactive_regex", "segmented_proactive_split_words"],
     },
     {
       title: "共享默认发送方式",
@@ -4464,6 +4466,7 @@ const featureSettingTypes = {
   segmented_proactive_face_strategy: { type: "select", options: [["inline", "嵌入正文"], ["separate", "单独发送"], ["previous", "跟随上段"], ["next", "跟随下段"]] },
   segmented_proactive_other_strategy: { type: "select", options: [["inline", "嵌入正文"], ["separate", "单独发送"], ["previous", "跟随上段"], ["next", "跟随下段"]] },
   segmented_proactive_split_mode: { type: "select", options: [["regex", "正则"], ["words", "分段词列表"]] },
+  enable_qq_official_segmented_reply: { type: "checkbox" },
   segmented_proactive_match_width_variants: { type: "checkbox" },
   segmented_proactive_interval_method: { type: "select", options: [["log", "按字数对数"], ["random", "随机"]] },
   segmented_proactive_content_cleanup_scope: { type: "select", options: [["all", "全段清理"], ["trailing", "仅句尾清理"]] },
@@ -4612,6 +4615,9 @@ function collectSettingValue(key, input) {
     } catch {
       return raw.split(/[\s,，、]+/).filter(Boolean);
     }
+  }
+  if (["segmented_proactive_split_words", "segmented_proactive_content_cleanup_words"].includes(key)) {
+    return parseSegmentedWordList(input.value);
   }
   if (key === "multi_persona_ids") {
     const host = input.closest("[data-feature-param-group='multi_persona_ids']");
@@ -25261,6 +25267,16 @@ function decodeSegmentedWordToken(value) {
   return raw;
 }
 
+function encodeSegmentedWordToken(value) {
+  const raw = String(value ?? "");
+  if (raw === " ") return "<space>";
+  if (raw === "\n") return "<newline>";
+  if (raw === "\t") return "<tab>";
+  if (raw === ",") return "<comma>";
+  if (raw === "，") return "<zh_comma>";
+  return raw;
+}
+
 function parseSegmentedWordList(value) {
   if (Array.isArray(value)) {
     return value.map(decodeSegmentedWordToken).filter((item) => item !== "");
@@ -25279,6 +25295,7 @@ const segmentedWidthVariantGroups = [
   ["(", "（"], [")", "）"], ["[", "［"], ["]", "］"], ["{", "｛"], ["}", "｝"], ["<", "＜"], [">", "＞"],
   ["\"", "＂"], ["'", "＇"], ["\\", "＼"], ["/", "／"], ["|", "｜"], ["+", "＋"], ["-", "－"], ["=", "＝"],
   ["*", "＊"], ["&", "＆"], ["%", "％"], ["#", "＃"], ["@", "＠"], ["$", "＄"], ["^", "＾"], ["_", "＿"],
+  ["--", "－－", "——"],
 ];
 
 function expandSegmentedWidthVariantWords(words) {
@@ -25309,6 +25326,15 @@ function decodeSegmentedReplacementToken(value, replacement = false) {
     return aliases.get(lower);
   }
   return trimmed.replace(/\\n/g, "\n").replace(/\\t/g, "\t");
+}
+
+function encodeSegmentedReplacementToken(value, replacement = false) {
+  const raw = String(value ?? "");
+  if (raw === " ") return "<space>";
+  if (raw === "\n" || raw === "\r\n" || raw === "\r") return "<newline>";
+  if (raw === "\t") return "<tab>";
+  if (replacement && raw === "") return "<empty>";
+  return raw.replaceAll("\r\n", "\\n").replaceAll("\r", "\\n").replaceAll("\n", "\\n").replaceAll("\t", "\\t");
 }
 
 function parseSegmentedReplacementRules(value) {
@@ -25486,6 +25512,13 @@ function splitSegmentedWordsOutsideProtected(value, splitWords) {
   const feedPlain = (chunk) => {
     const text = String(chunk || "");
     let index = 0;
+    const nextIsAsciiDigit = (start, allowSpaces = false) => {
+      let position = start;
+      if (allowSpaces) {
+        while (position < text.length && /\s/.test(text[position])) position += 1;
+      }
+      return position < text.length && /[0-9]/.test(text[position]);
+    };
     while (index < text.length) {
       const matched = words.find((word) => text.startsWith(word, index));
       if (matched) {
@@ -25497,9 +25530,34 @@ function splitSegmentedWordsOutsideProtected(value, splitWords) {
             end += 1;
           }
           current += delimiter;
+          if (nextIsAsciiDigit(end)) {
+            index = end;
+            continue;
+          }
           pushCurrent();
           index = end;
           continue;
+        }
+        if (matched === ",") {
+          const end = index + matched.length;
+          current += delimiter;
+          if (nextIsAsciiDigit(end)) {
+            index = end;
+            continue;
+          }
+          pushCurrent();
+          index = end;
+          continue;
+        }
+        if (["-", "－", "—"].includes(matched[0]) && [...matched].every((char) => char === matched[0])) {
+          let end = index + matched.length;
+          while (end < text.length && text[end] === matched[0]) end += 1;
+          const dashRun = text.slice(index, end);
+          if (dashRun.length >= 2 && nextIsAsciiDigit(end, true)) {
+            current += dashRun;
+            index = end;
+            continue;
+          }
         }
         if (["…", "~", "～"].includes(matched)) {
           let end = index + matched.length;
@@ -25508,6 +25566,10 @@ function splitSegmentedWordsOutsideProtected(value, splitWords) {
             end += matched.length;
           }
           current += delimiter;
+          if (["~", "～"].includes(matched) && nextIsAsciiDigit(end, true)) {
+            index = end;
+            continue;
+          }
           pushCurrent();
           index = end;
           continue;
@@ -25552,6 +25614,7 @@ function segmentedJoinPair(left, right) {
   const rhs = String(right || "").trim();
   if (!lhs) return rhs;
   if (!rhs) return lhs;
+  if (/^(?:…+|\.{2,})$/.test(lhs)) return `${lhs}${rhs}`;
   if (/[！？!?]$/.test(lhs)) return `${lhs} ${rhs}`.trim();
   let softened = lhs.replace(/[。…~～]+$/g, "，").replace(/[!?！？]+$/g, "，");
   if (!/[，,、\s]$/.test(softened)) softened += "，";
@@ -27656,12 +27719,15 @@ function bindRelationshipPolicyEditor(root = document) {
 
 function featureTextareaValue(key, value) {
   if (!Array.isArray(value)) return String(value ?? "");
+  if (["segmented_proactive_split_words", "segmented_proactive_content_cleanup_words"].includes(key)) {
+    return value.map(encodeSegmentedWordToken).join("\n");
+  }
   return value.map((item) => {
     if (!item || typeof item !== "object") return String(item ?? "");
     if (key === "segmented_proactive_content_replacements") {
-      const from = item.from ?? item.old ?? item.source ?? "";
-      const to = item.to ?? item.new ?? item.replacement ?? "";
-      return `${String(from)} => ${String(to)}`;
+      const from = encodeSegmentedReplacementToken(item.from ?? item.old ?? item.source ?? "");
+      const to = encodeSegmentedReplacementToken(item.to ?? item.new ?? item.replacement ?? "", true);
+      return `${from} => ${to}`;
     }
     try {
       return JSON.stringify(item);

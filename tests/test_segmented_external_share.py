@@ -75,6 +75,37 @@ class SegmentedExternalShareTests(unittest.TestCase):
             harness._split_proactive_text("第一段，第二段"),
         )
 
+    def test_tilde_and_dash_numeric_suffixes_stay_in_the_current_segment(self) -> None:
+        harness = self._width_variant_harness(enabled=True)
+        harness.segmented_proactive_max_segments = 20
+        cases = (
+            (["~"], "范围~1~下一段", ["范围~1~", "下一段"]),
+            (["~"], "范围～ 1～下一段", ["范围～ 1～", "下一段"]),
+            (["——"], "编号——1——下一段", ["编号——1——", "下一段"]),
+            (["——"], "编号-- 1--下一段", ["编号-- 1--", "下一段"]),
+            (["——"], "编号－－ 1－－下一段", ["编号－－ 1－－", "下一段"]),
+        )
+        for split_words, source, expected in cases:
+            with self.subTest(source=source):
+                harness.segmented_proactive_split_words = split_words
+                self.assertEqual(expected, harness._split_proactive_text(source))
+
+    def test_ascii_dot_and_comma_only_protect_adjacent_digits(self) -> None:
+        harness = self._width_variant_harness(enabled=True)
+        harness.segmented_proactive_max_segments = 20
+        cases = (
+            (["."], "值.5.下一段", ["值.5.", "下一段"]),
+            (["."], "值. 5.下一段", ["值.", "5.", "下一段"]),
+            (["．"], "值．5．下一段", ["值．", "5．", "下一段"]),
+            ([","], "值,5,下一段", ["值,5,", "下一段"]),
+            ([","], "值, 5,下一段", ["值,", "5,", "下一段"]),
+            (["，"], "值，5，下一段", ["值，", "5，", "下一段"]),
+        )
+        for split_words, source, expected in cases:
+            with self.subTest(source=source):
+                harness.segmented_proactive_split_words = split_words
+                self.assertEqual(expected, harness._split_proactive_text(source))
+
     def test_external_shares_follow_segmenting_config(self) -> None:
         for reason in (
             "bili_video_share",

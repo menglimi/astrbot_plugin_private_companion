@@ -254,8 +254,18 @@ class QqOfficialPlatformAdapterTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(harness._platform_supports(capability, umo=OFFICIAL_UMO))
         self.assertTrue(harness._platform_supports("image", umo=OFFICIAL_UMO))
         self.assertTrue(harness._platform_supports("voice", umo=OFFICIAL_UMO))
+        harness.enable_qq_official_segmented_reply = True
+        self.assertTrue(harness._platform_supports("segmented_reply", umo=OFFICIAL_UMO))
+        self.assertFalse(harness._platform_supports("merged_forward", umo=OFFICIAL_UMO))
         self.assertIn("只有实际工具/发送结果成功后", harness._platform_capability_prompt(_CustomNamedOfficialEvent()))
         self.assertIn("不支持 QQ 空间", harness._platform_capability_prompt(_CustomNamedOfficialEvent()))
+
+    def test_qq_official_segmenting_gate_uses_the_explicit_opt_in(self) -> None:
+        harness = _OfficialSendHarness()
+
+        self.assertFalse(harness._segmented_platform_allows(umo=OFFICIAL_UMO))
+        harness.enable_qq_official_segmented_reply = True
+        self.assertTrue(harness._segmented_platform_allows(umo=OFFICIAL_UMO))
 
     def test_unique_running_instance_is_used_without_manual_mode_switch(self) -> None:
         harness = _DefaultUmoHarness(_FakePlatform())

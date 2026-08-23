@@ -973,6 +973,11 @@ def _initialize_proactive_and_reaction_config(self: Any, c: Any) -> None:
     self.segmented_proactive_split_mode = self._cfg_str(c, "segmented_proactive_split_mode", "regex", "regex")
     if self.segmented_proactive_split_mode not in {"regex", "words"}:
         self.segmented_proactive_split_mode = "regex"
+    self.enable_qq_official_segmented_reply = self._cfg_bool(
+        c,
+        "enable_qq_official_segmented_reply",
+        False,
+    )
     self.segmented_proactive_match_width_variants = self._cfg_bool(
         c,
         "segmented_proactive_match_width_variants",

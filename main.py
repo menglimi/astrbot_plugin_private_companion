@@ -10220,8 +10220,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             return
         if getattr(result, "use_t2i_", None) or getattr(result, "use_markdown_", None):
             return
-        platform_supports = getattr(self, "_platform_supports", None)
-        if callable(platform_supports) and not platform_supports("segmented_reply", event=event):
+        if not self._segmented_platform_allows(event=event):
             return
         if not chain:
             return

@@ -15503,6 +15503,17 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
     def _segmented_scope_allows_event(self, event: AstrMessageEvent) -> bool:
         return self._segmented_chat_scope_allows(self._segmented_chat_type_for_event(event))
 
+    def _segmented_platform_allows(
+        self,
+        *,
+        event: AstrMessageEvent | None = None,
+        umo: str = "",
+    ) -> bool:
+        platform_supports = getattr(self, "_platform_supports", None)
+        return not callable(platform_supports) or bool(
+            platform_supports("segmented_reply", event=event, umo=umo)
+        )
+
     async def _onebot_messages_from_chain(self, chain: list[Any]) -> tuple[list[dict[str, Any]], str]:
         try:
             from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
@@ -15855,7 +15866,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
                 note="" if sent else "主动正文与表情同链发送未被平台接受"
             )
         platform_supports = getattr(self, "_platform_supports", None)
-        platform_segmented = not callable(platform_supports) or platform_supports("segmented_reply", umo=umo)
+        platform_segmented = self._segmented_platform_allows(umo=umo)
         platform_quote = not callable(platform_supports) or platform_supports("reply_quote", umo=umo)
         if quote_message_id and not platform_quote:
             logger.info(
@@ -16460,7 +16471,11 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
             umo=umo,
             image_path="",
             extra_components=None,
-            disable_segmenting=disable_segmenting or not self._segmented_scope_allows_umo(umo),
+            disable_segmenting=(
+                disable_segmenting
+                or not self._segmented_platform_allows(umo=umo)
+                or not self._segmented_scope_allows_umo(umo)
+            ),
         )
         if len(segments) > 1:
             logger.info(

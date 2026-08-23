@@ -221,6 +221,7 @@ _SEGMENTED_WIDTH_VARIANT_GROUPS: tuple[tuple[str, ...], ...] = (
     ("$", "＄"),
     ("^", "＾"),
     ("_", "＿"),
+    ("--", "－－", "——"),
 )
 
 
@@ -5471,6 +5472,14 @@ Bot 近期回复：
                         pos += 1
                     return text_chunk[pos] if pos < len(text_chunk) else ""
 
+                def next_char_is_ascii_digit(start: int, *, allow_spaces: bool = False) -> bool:
+                    candidate = (
+                        next_non_space_char(start)
+                        if allow_spaces
+                        else text_chunk[start] if start < len(text_chunk) else ""
+                    )
+                    return candidate in "0123456789"
+
                 while index < len(text_chunk):
                     matched = ""
                     for word in sorted_words:
@@ -5485,15 +5494,39 @@ Bot 近期回复：
                                 delimiter += text_chunk[end]
                                 end += 1
                             current.append(delimiter)
+                            if next_char_is_ascii_digit(end):
+                                index = end
+                                continue
                             push_current()
                             index = end
                             continue
+                        if matched == ",":
+                            end = index + len(matched)
+                            current.append(delimiter)
+                            if next_char_is_ascii_digit(end):
+                                index = end
+                                continue
+                            push_current()
+                            index = end
+                            continue
+                        if matched and matched[0] in {"-", "－", "—"} and set(matched) == {matched[0]}:
+                            end = index + len(matched)
+                            while end < len(text_chunk) and text_chunk[end] == matched[0]:
+                                end += 1
+                            dash_run = text_chunk[index:end]
+                            if len(dash_run) >= 2 and next_char_is_ascii_digit(end, allow_spaces=True):
+                                current.append(dash_run)
+                                index = end
+                                continue
                         if matched in {"…", "~", "～"}:
                             end = index + len(matched)
                             while end < len(text_chunk) and text_chunk.startswith(matched, end):
                                 delimiter += matched
                                 end += len(matched)
                             current.append(delimiter)
+                            if matched in {"~", "～"} and next_char_is_ascii_digit(end, allow_spaces=True):
+                                index = end
+                                continue
                             push_current()
                             index = end
                             continue
@@ -5664,6 +5697,8 @@ Bot 近期回复：
                 return _normalize_cjk_chat_spaces(f"{left}{right}")
             if re.search(r"[！？!?]$", left):
                 return _normalize_cjk_chat_spaces(f"{left} {right}".strip())
+            if re.fullmatch(r"(?:…+|\.{2,})", left):
+                return _normalize_cjk_chat_spaces(f"{left}{right.lstrip()}")
             softened = re.sub(r"[。…~～]+$", "，", left)
             softened = re.sub(r"[!?！？]+$", "，", softened)
             if not re.search(r"[，,、\s]$", softened):

@@ -19,6 +19,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class SegmentedConfigSaveTests(unittest.TestCase):
     def test_width_variant_toggle_is_exposed_in_both_panels(self) -> None:
+        schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+        official_setting = schema["legacy_compat_config"]["items"]["enable_qq_official_segmented_reply"]
+        self.assertEqual("需在QQ群和私聊中开启“允许机器人主动发言”", official_setting["hint"])
+        self.assertFalse(official_setting["default"])
         for relative_path in (
             Path("pages") / "companion-panel" / "app.js",
             Path("pages") / "陪伴面板" / "app.js",
@@ -32,6 +36,16 @@ class SegmentedConfigSaveTests(unittest.TestCase):
                 "expandSegmentedWidthVariantWords(parseSegmentedWordList(values.segmented_proactive_split_words))",
                 script,
             )
+            self.assertIn('enable_qq_official_segmented_reply: { type: "checkbox" }', script)
+            self.assertIn('enable_qq_official_segmented_reply: "需在QQ群和私聊中开启“允许机器人主动发言”"', script)
+            self.assertLess(
+                script.index('segmented_proactive_split_mode", "enable_qq_official_segmented_reply"'),
+                script.index('"enable_qq_official_segmented_reply", "segmented_proactive_match_width_variants"'),
+            )
+            self.assertIn('["--", "－－", "——"]', script)
+            self.assertIn("const nextIsAsciiDigit = (start, allowSpaces = false)", script)
+            self.assertIn('if (matched === ",")', script)
+            self.assertIn('dashRun.length >= 2 && nextIsAsciiDigit(end, true)', script)
             self.assertIn('enable_segmented_proactive_chat_profiles: { type: "checkbox" }', script)
             self.assertIn('segmented_proactive_private_scope: { type: "select"', script)
             self.assertIn('segmented_proactive_group_scope: { type: "select"', script)
@@ -68,6 +82,19 @@ class SegmentedConfigSaveTests(unittest.TestCase):
         self.assertIn("item.from ?? item.old ?? item.source", script)
         self.assertIn("escapeHtml(featureTextareaValue(key, value))", script)
 
+    def test_segmented_word_lists_have_reversible_visible_tokens(self) -> None:
+        script = (ROOT / "pages" / "陪伴面板" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function encodeSegmentedWordToken(value)", script)
+        self.assertIn('if (raw === "\\n") return "<newline>";', script)
+        self.assertIn('if (raw === ",") return "<comma>";', script)
+        self.assertIn("return parseSegmentedWordList(input.value);", script)
+        self.assertIn('return value.map(encodeSegmentedWordToken).join("\\n");', script)
+        self.assertIn("function encodeSegmentedReplacementToken(value, replacement = false)", script)
+        self.assertIn('if (replacement && raw === "") return "<empty>";', script)
+        self.assertIn("const from = encodeSegmentedReplacementToken", script)
+        self.assertIn("const to = encodeSegmentedReplacementToken", script)
+
     def test_runtime_overview_prefers_persisted_segmented_values(self) -> None:
         persisted = {
             "message_debounce_config": {
@@ -88,6 +115,7 @@ class SegmentedConfigSaveTests(unittest.TestCase):
                 "segmented_proactive_component_order": ["image", "text", "voice", "at", "face", "other", "reaction"],
                 "segmented_proactive_other_strategy": "separate",
                 "segmented_proactive_split_mode": "words",
+                "enable_qq_official_segmented_reply": True,
                 "segmented_proactive_match_width_variants": False,
                 "segmented_proactive_regex": "test-regex",
                 "segmented_proactive_split_words": ["。", "！"],
@@ -157,6 +185,7 @@ class SegmentedConfigSaveTests(unittest.TestCase):
             "segmented_proactive_component_order": ["image", "text", "voice", "at", "face", "other", "reaction"],
             "segmented_proactive_other_strategy": "separate",
             "segmented_proactive_split_mode": "words",
+            "enable_qq_official_segmented_reply": True,
             "segmented_proactive_match_width_variants": False,
             "segmented_proactive_split_words": ["。", "！", "<newline>"],
             "enable_segmented_proactive_content_cleanup": True,
@@ -191,6 +220,17 @@ class SegmentedConfigSaveTests(unittest.TestCase):
                 self.assertTrue(group_key, key)
                 self.assertEqual(reloaded[group_key][key], normalized, f"{key} grouped")
                 self.assertEqual(_flat_get(reloaded, key), normalized, f"{key} reload")
+
+    def test_segmented_word_textarea_values_are_normalized_to_lists(self) -> None:
+        api = PrivateCompanionPageApi(SimpleNamespace(config={}))
+
+        self.assertEqual(
+            ["。", "\n", ",", "，"],
+            api._normalize_setting_value(
+                "segmented_proactive_content_cleanup_words",
+                "。\n<newline>\n<comma>\n<zh_comma>",
+            ),
+        )
 
     def test_component_strategy_aliases_and_invalid_values_are_normalized(self) -> None:
         api = PrivateCompanionPageApi(SimpleNamespace(config={}))

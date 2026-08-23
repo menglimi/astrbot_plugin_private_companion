@@ -13272,9 +13272,15 @@ class PrivateCompanionPageApi(
         updater = getattr(self.plugin, "_update_persona_settings_async", None)
         if not callable(updater):
             return self._error("当前版本不支持人格配置更新", status_code=503)
+        changes = payload.get("changes") or {}
+        if isinstance(changes, dict):
+            changes = {
+                str(key): self._normalize_setting_value(str(key), value)
+                for key, value in changes.items()
+            }
         result = await updater(
             payload.get("persona_id"),
-            changes=payload.get("changes") or {},
+            changes=changes,
             follow_primary_keys=payload.get("follow_primary_keys") or [],
             expected_revision=payload.get("expected_revision"),
         )

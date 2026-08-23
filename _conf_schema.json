@@ -4573,6 +4573,12 @@
     "default": "regex",
     "invisible": true
   },
+  "enable_qq_official_segmented_reply": {
+    "description": "Legacy flat config: 允许 qq_official 使用分段",
+    "type": "bool",
+    "default": false,
+    "invisible": true
+  },
   "segmented_proactive_match_width_variants": {
     "description": "Legacy flat config: 分段词自动匹配全角半角标点",
     "type": "bool",
@@ -13639,6 +13645,15 @@
           "分段词列表"
         ],
         "default": "regex",
+        "condition": {
+          "enable_segmented_proactive_reply": true
+        }
+      },
+      "enable_qq_official_segmented_reply": {
+        "description": "允许 qq_official 使用分段",
+        "type": "bool",
+        "hint": "需在QQ群和私聊中开启“允许机器人主动发言”",
+        "default": false,
         "condition": {
           "enable_segmented_proactive_reply": true
         }

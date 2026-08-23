@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 from quart import Quart
 
 from astrbot_plugin_private_companion.page_api import PrivateCompanionPageApi
+from astrbot_plugin_private_companion.persona_config import load_scope_manifest
 
 
 def _harness(root: str):
@@ -76,11 +77,20 @@ def test_persona_config_api_lifecycle_and_sparse_following():
                 {
                     "persona_id": "alt",
                     "expected_revision": revision,
-                    "changes": {"quiet_hours": "01:00-09:00", "enable_proactive_burst": False},
+                    "changes": {
+                        "quiet_hours": "01:00-09:00",
+                        "enable_proactive_burst": False,
+                        "segmented_proactive_content_cleanup_words": "。\n<newline>",
+                    },
                 },
             )
             assert updated["success"]
             assert updated["data"]["raw_settings"]["enable_proactive_burst"] is False
+            assert updated["data"]["raw_settings"]["segmented_proactive_content_cleanup_words"] == ["。", "\n"]
+            saved_profile = json.loads(plugin._persona_profile_path("alt").read_text(encoding="utf-8"))
+            assert saved_profile["persona_settings"]["segmented_proactive_content_cleanup_words"] == ["。", "\n"]
+            reloaded = await _call(api, app, "/persona/config-state?persona_id=alt", "GET")
+            assert reloaded["data"]["raw_settings"]["segmented_proactive_content_cleanup_words"] == ["。", "\n"]
 
             preview = await _call(
                 api,
@@ -137,6 +147,82 @@ def test_saved_topology_without_config_is_not_editable_detachable_or_schedulable
             assert alt_path.exists() is False
 
     asyncio.run(run())
+
+
+def test_persona_api_preserves_structured_assets_and_spaced_vent_targets():
+    async def run():
+        with tempfile.TemporaryDirectory() as root:
+            plugin = _harness(root)
+            api = PrivateCompanionPageApi(plugin)
+            app = Quart(__name__)
+            created = await _call(
+                api,
+                app,
+                "/persona/config/create",
+                "POST",
+                {"persona_id": "alt", "bot_name": "次人格", "mode": "follow_primary"},
+            )
+            assert created["success"]
+            structured_asset = {
+                "id": "identity-1",
+                "role": "identity",
+                "file": "identity.png",
+                "sha256": "a" * 64,
+            }
+            reaction_asset = {
+                "id": "smile-1",
+                "file": "smile.png",
+                "sha256": "b" * 64,
+                "tags": ["开心"],
+                "meme_only": True,
+            }
+
+            updated = await _call(
+                api,
+                app,
+                "/persona/settings/update",
+                "POST",
+                {
+                    "persona_id": "alt",
+                    "expected_revision": created["data"]["revision"],
+                    "changes": {
+                        "photo_structured_reference_assets": [structured_asset],
+                        "owned_reaction_assets": [reaction_asset],
+                        "relationship_boundary_vent_targets": "小 林\n姐姐",
+                    },
+                },
+            )
+
+            assert updated["success"]
+            raw = updated["data"]["raw_settings"]
+            assert raw["photo_structured_reference_assets"] == [structured_asset]
+            assert raw["owned_reaction_assets"] == [reaction_asset]
+            assert raw["relationship_boundary_vent_targets"] == ["小 林", "姐姐"]
+            saved = json.loads(plugin._persona_profile_path("alt").read_text(encoding="utf-8"))
+            assert saved["persona_settings"]["photo_structured_reference_assets"] == [structured_asset]
+            assert saved["persona_settings"]["owned_reaction_assets"] == [reaction_asset]
+            reloaded = await _call(api, app, "/persona/config-state?persona_id=alt", "GET")
+            assert reloaded["data"]["raw_settings"]["relationship_boundary_vent_targets"] == ["小 林", "姐姐"]
+
+    asyncio.run(run())
+
+
+def test_persona_complex_setting_defaults_keep_manifest_shapes_after_page_normalization():
+    with tempfile.TemporaryDirectory() as root:
+        api = PrivateCompanionPageApi(_harness(root))
+        entries = {
+            key: entry
+            for key, entry in load_scope_manifest().items()
+            if entry.get("scope") == "persona"
+            and entry.get("type") in {"list", "template_list", "object"}
+        }
+
+        assert entries
+        for key, entry in entries.items():
+            value = json.loads(json.dumps(entry.get("default"), ensure_ascii=False))
+            normalized = api._normalize_setting_value(key, value)
+            expected_type = dict if entry.get("type") == "object" else list
+            assert isinstance(normalized, expected_type), key
 
 
 def test_persona_data_migration_requires_enabled_profiles_with_configuration():
@@ -305,6 +391,7 @@ def test_existing_sparse_profile_is_repaired_without_materializing_old_keys():
         assert profile["persona_settings"] == {
             "bot_name": "alt",
             "enable_group_bot_name_wakeup": True,
+            "enable_qq_official_segmented_reply": False,
         }
         assert "quiet_hours" not in profile["persona_settings"]
 

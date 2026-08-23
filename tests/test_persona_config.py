@@ -29,9 +29,9 @@ class PersonaConfigTests(unittest.TestCase):
         cls.schema = load_schema(ROOT / "_conf_schema.json")
         cls.manifest = build_scope_manifest(cls.schema)
 
-    def test_manifest_covers_canonical_grouped_926_leaves(self) -> None:
+    def test_manifest_covers_canonical_grouped_927_leaves(self) -> None:
         leaves = discover_grouped_schema_leaves(self.schema)
-        self.assertEqual(len(leaves), 926)
+        self.assertEqual(len(leaves), 927)
         self.assertEqual(set(leaves), set(self.manifest))
         required_fields = {
             "scope",
@@ -61,6 +61,8 @@ class PersonaConfigTests(unittest.TestCase):
         self.assertEqual(self.manifest["quiet_hours"]["scope"], "persona")
         self.assertEqual(self.manifest["enable_group_bot_name_wakeup"]["scope"], "persona")
         self.assertTrue(self.manifest["enable_group_bot_name_wakeup"]["default"])
+        self.assertEqual(self.manifest["enable_qq_official_segmented_reply"]["scope"], "persona")
+        self.assertFalse(self.manifest["enable_qq_official_segmented_reply"]["default"])
 
     def test_missing_setting_follows_primary_but_falsy_values_are_explicit(self) -> None:
         primary = {
@@ -221,7 +223,11 @@ class PersonaConfigTests(unittest.TestCase):
         self.assertEqual(migrated["users"], legacy["users"])
         self.assertEqual(
             migrated["persona_settings"],
-            {"bot_name": "旧人格", "enable_group_bot_name_wakeup": True},
+            {
+                "bot_name": "旧人格",
+                "enable_group_bot_name_wakeup": True,
+                "enable_qq_official_segmented_reply": False,
+            },
         )
         self.assertEqual(
             migrated["persona_settings_schema_version"], PERSONA_SETTINGS_SCHEMA_VERSION
@@ -229,19 +235,19 @@ class PersonaConfigTests(unittest.TestCase):
         self.assertEqual(migrated["persona_settings_revision"], 0)
         # A future version explicitly lists new keys; only those keys are
         # materialized, while old missing keys retain follow-primary semantics.
-        migrated_v3 = migrate_persona_profile(
+        migrated_v4 = migrate_persona_profile(
             migrated,
             manifest=self.manifest,
-            target_version=3,
-            new_keys_by_version={3: ["quiet_hours"]},
+            target_version=4,
+            new_keys_by_version={4: ["quiet_hours"]},
         )
         self.assertEqual(
-            migrated_v3["persona_settings"]["quiet_hours"],
+            migrated_v4["persona_settings"]["quiet_hours"],
             self.manifest["quiet_hours"]["new_key_default"],
         )
-        self.assertNotIn("max_daily_messages", migrated_v3["persona_settings"])
+        self.assertNotIn("max_daily_messages", migrated_v4["persona_settings"])
 
-    def test_v1_profile_materializes_bot_name_wakeup_default_during_v2_migration(self) -> None:
+    def test_v1_profile_materializes_new_defaults_during_current_migration(self) -> None:
         migrated = migrate_persona_profile(
             {
                 "persona_settings": {"bot_name": "次人格"},
@@ -252,8 +258,26 @@ class PersonaConfigTests(unittest.TestCase):
         )
 
         self.assertTrue(migrated["persona_settings"]["enable_group_bot_name_wakeup"])
+        self.assertFalse(migrated["persona_settings"]["enable_qq_official_segmented_reply"])
         self.assertEqual(PERSONA_SETTINGS_SCHEMA_VERSION, migrated["persona_settings_schema_version"])
         self.assertEqual(4, migrated["persona_settings_revision"])
+
+    def test_v2_profile_materializes_qq_official_segmented_opt_in_as_disabled(self) -> None:
+        migrated = migrate_persona_profile(
+            {
+                "persona_settings": {
+                    "bot_name": "次人格",
+                    "enable_group_bot_name_wakeup": True,
+                },
+                "persona_settings_schema_version": 2,
+                "persona_settings_revision": 5,
+            },
+            manifest=self.manifest,
+        )
+
+        self.assertFalse(migrated["persona_settings"]["enable_qq_official_segmented_reply"])
+        self.assertEqual(PERSONA_SETTINGS_SCHEMA_VERSION, migrated["persona_settings_schema_version"])
+        self.assertEqual(5, migrated["persona_settings_revision"])
 
     def test_existing_empty_persona_settings_gets_identity_and_new_v2_key(self) -> None:
         migrated = migrate_persona_profile(
@@ -263,7 +287,11 @@ class PersonaConfigTests(unittest.TestCase):
         )
         self.assertEqual(
             migrated["persona_settings"],
-            {"bot_name": "existing-alt", "enable_group_bot_name_wakeup": True},
+            {
+                "bot_name": "existing-alt",
+                "enable_group_bot_name_wakeup": True,
+                "enable_qq_official_segmented_reply": False,
+            },
         )
         self.assertEqual(
             migrated["persona_settings_schema_version"],

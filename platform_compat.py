@@ -5,6 +5,7 @@ from copy import deepcopy
 from typing import Any
 
 from .helpers import _single_line
+from .persona_config import runtime_persona_setting
 
 
 _PLATFORM_KIND_ALIASES = {
@@ -276,6 +277,10 @@ class PlatformCompatibilityMixin:
         )
         profile = deepcopy(_PLATFORM_PROFILES.get(resolved, _PLATFORM_PROFILES["generic"]))
         profile["kind"] = resolved if resolved in _PLATFORM_PROFILES else "generic"
+        if profile["kind"] == "qq_official" and bool(
+            runtime_persona_setting(self, "enable_qq_official_segmented_reply", False)
+        ):
+            profile["capabilities"]["segmented_reply"] = True
         raw_platform = ""
         getter = getattr(event, "get_platform_name", None) if event is not None else None
         if callable(getter):

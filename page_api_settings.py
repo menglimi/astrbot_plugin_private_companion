@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+from copy import deepcopy
 from typing import Any
 
 from .companion_interaction_expression import normalize_normal_interaction_band_cap
@@ -500,6 +501,17 @@ class PageSettingNormalizerMixin:
             return mode if mode in {"auto", "comfyui", "sdgen", "external", "tool_call", "nai"} else "auto"
         if key == "photo_generation_allowed_scopes":
             return normalize_photo_generation_scopes(value)
+        if key in {"photo_structured_reference_assets", "owned_reaction_assets"}:
+            raw_items = value
+            if isinstance(raw_items, str):
+                try:
+                    raw_items = json.loads(raw_items or "[]")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    raw_items = []
+            if not isinstance(raw_items, list):
+                return []
+            limit = 16 if key == "photo_structured_reference_assets" else 96
+            return [deepcopy(item) for item in raw_items if isinstance(item, dict)][:limit]
         if key in PHOTO_GENERATION_SCOPE_LIMIT_KEYS.values():
             return normalize_photo_generation_scope_limit(value)
         if key == "photo_reference_catalog":
@@ -789,6 +801,18 @@ class PageSettingNormalizerMixin:
         return _SETTING_UNHANDLED
 
     def _normalize_page_companion_setting(self, key: str, value: Any) -> Any:
+        if key == "relationship_boundary_vent_targets":
+            raw_items = (
+                value
+                if isinstance(value, (list, tuple, set))
+                else re.split(r"[\r\n,，、;；]+", str(value or ""))
+            )
+            targets: list[str] = []
+            for item in raw_items:
+                target = " ".join(str(item or "").split())[:24]
+                if target and target not in targets:
+                    targets.append(target)
+            return targets[:32]
         if key == "humanized_state_intensity":
             try:
                 return max(0, min(100, int(value)))
