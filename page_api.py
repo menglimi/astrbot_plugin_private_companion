@@ -22028,6 +22028,16 @@ class PrivateCompanionPageApi(
             )
             for key in keys
         }
+        # This is the persisted primary-persona authority. It must remain
+        # stable when the WebUI is viewing a secondary persona; the resolver's
+        # active scope is only for persona-scoped settings.
+        primary_getter = getattr(self.plugin, "_primary_persona_id", None)
+        primary_id = (
+            primary_getter()
+            if callable(primary_getter)
+            else getattr(self.plugin, "plugin_specific_persona_id", "")
+        )
+        values["plugin_specific_persona_id"] = self._single_line(primary_id, 120)
         values["environment_perception_timezone"] = getattr(
             self.plugin,
             "environment_perception_timezone_setting",

@@ -830,6 +830,44 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
         selected = next(item for item in items if item["id"] == "single")
         self.assertEqual("single（插件当前指定）", selected["label"])
 
+    async def test_overview_primary_setting_does_not_follow_selected_persona(self):
+        plugin = SimpleNamespace(
+            enable_multi_persona_mode=True,
+            plugin_specific_persona_id="main",
+            _primary_persona_id=lambda: "main",
+            persona_setting=lambda key, default=None: "secondary"
+            if key == "plugin_specific_persona_id" else default,
+        )
+        page = PrivateCompanionPageApi.__new__(PrivateCompanionPageApi)
+        page.plugin = plugin
+        page._schema_setting_keys = lambda public_only=True: set()
+        page._schema_provider_keys = lambda public_only=True: set()
+        page._schema_bool_keys = lambda: set()
+        page._config_get = lambda _key, default=None: default
+
+        settings = page._runtime_settings()
+
+        self.assertEqual("main", settings["plugin_specific_persona_id"])
+
+    async def test_overview_primary_setting_does_not_follow_selected_persona(self):
+        plugin = SimpleNamespace(
+            enable_multi_persona_mode=True,
+            plugin_specific_persona_id="main",
+            _primary_persona_id=lambda: "main",
+            persona_setting=lambda key, default=None: "secondary"
+            if key == "plugin_specific_persona_id" else default,
+        )
+        page = PrivateCompanionPageApi.__new__(PrivateCompanionPageApi)
+        page.plugin = plugin
+        page._schema_setting_keys = lambda public_only=True: set()
+        page._schema_provider_keys = lambda public_only=True: set()
+        page._schema_bool_keys = lambda: set()
+        page._config_get = lambda _key, default=None: default
+
+        settings = page._runtime_settings()
+
+        self.assertEqual("main", settings["plugin_specific_persona_id"])
+
     async def test_lowercase_provider_runtime_alias_reads_canonical_profile_key(self):
         with tempfile.TemporaryDirectory() as root:
             plugin = _plugin_harness(root)
