@@ -811,6 +811,57 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("secondary", ids)
         self.assertNotIn("42", ids)
+        selected = next(item for item in items if item["id"] == "secondary")
+        self.assertEqual("secondary（主人格）", selected["label"])
+        self.assertEqual("运行态人格", selected["source"])
+
+    async def test_single_mode_persona_label_remains_plugin_selected(self):
+        plugin = SimpleNamespace(
+            context=SimpleNamespace(persona_manager=None),
+            enable_multi_persona_mode=False,
+            plugin_specific_persona_id="single",
+        )
+        page = PrivateCompanionPageApi.__new__(PrivateCompanionPageApi)
+        page.plugin = plugin
+        page._astrbot_config_candidate_paths = lambda: []
+
+        items = await page._roleplay_persona_items()
+
+        selected = next(item for item in items if item["id"] == "single")
+        self.assertEqual("single（插件当前指定）", selected["label"])
+
+    async def test_lowercase_provider_runtime_alias_reads_canonical_profile_key(self):
+        with tempfile.TemporaryDirectory() as root:
+            plugin = _plugin_harness(root)
+            plugin.daily_plan_provider_id = "primary-plan"
+            plugin._persona_data_profiles["alt"]["persona_settings"]["DAILY_PLAN_PROVIDER_ID"] = "alt-plan"
+            token = plugin._activate_persona_id("alt")
+            try:
+                self.assertEqual("alt-plan", plugin.persona_setting("daily_plan_provider_id", "fallback"))
+                plugin._persona_data_profiles["alt"]["persona_settings"].pop("DAILY_PLAN_PROVIDER_ID")
+                self.assertEqual("primary-plan", plugin.persona_setting("daily_plan_provider_id", "fallback"))
+            finally:
+                plugin._deactivate_persona_for_event(token)
+
+    async def test_empty_secondary_persona_can_generate_daily_plan(self):
+        with tempfile.TemporaryDirectory() as root:
+            plugin = _plugin_harness(root)
+            plugin.enable_daily_plan = True
+            plugin.daily_plan_time = "00:00"
+            plugin._ensure_daily_state = AsyncMock()
+            plugin._is_daily_plan_due = lambda: True
+            plugin._generate_daily_plan = AsyncMock(
+                return_value={"date": "2099-01-01", "source": "test", "items": []}
+            )
+            plugin._ensure_daily_news_reading = AsyncMock()
+            plugin._save_data_sync = lambda **_kwargs: None
+            token = plugin._activate_persona_id("alt")
+            try:
+                plan = await plugin._ensure_daily_plan(force=False)
+                self.assertEqual("test", plan["source"])
+                plugin._generate_daily_plan.assert_awaited_once()
+            finally:
+                plugin._deactivate_persona_for_event(token)
 
     async def test_unicode_persona_ids_keep_their_full_logical_identity(self):
         with tempfile.TemporaryDirectory() as root:

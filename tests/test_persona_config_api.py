@@ -129,6 +129,26 @@ def test_saved_topology_without_config_is_not_editable_detachable_or_schedulable
     asyncio.run(run())
 
 
+def test_persona_data_migration_requires_enabled_profiles_with_configuration():
+    async def run():
+        with tempfile.TemporaryDirectory() as root:
+            plugin = _harness(root)
+            result = await plugin._migrate_persona_profile_async("main", "alt", [])
+
+            assert result["ok"] is False
+            assert result["code"] == "persona_migration_target_config_missing"
+            assert not plugin._persona_profile_path("alt").exists()
+
+            plugin.config["multi_persona_ids"] = ["main"]
+            plugin.multi_persona_ids = ["main"]
+            result = await plugin._migrate_persona_profile_async("main", "alt", [])
+            assert result["ok"] is False
+            assert result["code"] == "persona_migration_target_not_enabled"
+            assert not plugin._persona_profile_path("alt").exists()
+
+    asyncio.run(run())
+
+
 def test_revision_zero_empty_shell_from_old_preview_is_not_a_created_config():
     with tempfile.TemporaryDirectory() as root:
         plugin = _harness(root)

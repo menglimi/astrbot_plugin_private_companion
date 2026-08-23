@@ -66,6 +66,7 @@ from .constants import (
 from .config_migration import _ensure_config_parent_dir
 from .diagnostic_envelope import DIAGNOSTIC_ENVELOPE_VERSION, diagnostic_test_id, normalize_diagnostic_result
 from .helpers import _MISSING, _flat_get, _normalize_timezone_name, _normalize_timezone_setting, _path_text, _redact_outbound_secrets, _safe_int, _set_into_config, _set_today_key_timezone, _strip_internal_message_blocks, _text_looks_garbled, _text_similarity, _today_key, normalize_bot_relationship_cards
+from .persona_config import runtime_persona_setting
 from .reference_asset_gate import ReferenceAssetGate
 from .owned_reaction_asset_catalog import MAX_ASSET_BYTES, OwnedReactionAssetCatalog
 from .companion_interaction_expression import current_interaction_projection, normalize_normal_interaction_band_cap
@@ -1134,7 +1135,11 @@ class PrivateCompanionPageApi(
             payload = {
                 "plugin": {
                     "enabled": bool(getattr(self.plugin, "enabled", False)),
-                    "bot_name": getattr(self.plugin, "bot_name", ""),
+                    "bot_name": runtime_persona_setting(
+                        self.plugin,
+                        "bot_name",
+                        getattr(self.plugin, "bot_name", ""),
+                    ),
                     "data_file": getattr(self.plugin, "data_file", ""),
                     "storage_backend": getattr(self.plugin, "storage_backend", "json"),
                     "storage_sqlite_path": getattr(
@@ -4695,9 +4700,9 @@ class PrivateCompanionPageApi(
         return PrivateCompanionPageApi._single_line(match.group(1), limit)
 
     def _auto_import_worldbook_if_needed_locked(self) -> None:
-        if not bool(getattr(self.plugin, "worldbook_auto_import", False)):
+        if not bool(runtime_persona_setting(self.plugin, "worldbook_auto_import", False)):
             return
-        if not bool(getattr(self.plugin, "enable_worldbook_member_recognition", False)):
+        if not bool(runtime_persona_setting(self.plugin, "enable_worldbook_member_recognition", False)):
             return
         data = getattr(self.plugin, "data", {})
         if not isinstance(data, dict):
@@ -10360,6 +10365,7 @@ class PrivateCompanionPageApi(
             reason = self._single_line(item.get("reason_code"), 100) or "unknown"
             count = max(1, self._int(item.get("count")))
             disposition = self._single_line(item.get("disposition"), 24) or "fallback"
+            warning_code = self._single_line(item.get("code"), 120) or "persona.route.unknown"
             detail = "；".join(
                 part
                 for part in (
@@ -10371,21 +10377,24 @@ class PrivateCompanionPageApi(
                 )
                 if part
             )
+            title = (
+                "插件人格未指定"
+                if warning_code == "persona.route.plugin_persona_unspecified"
+                else "被动消息已回退主人格"
+                if disposition.startswith("fallback")
+                else "旧插件窗口绑定已忽略"
+                if disposition == "ignored"
+                else "主动消息人格校验未通过"
+            )
             add(
                 self._single_line(item.get("level"), 12) or "warn",
                 "人格路由",
-                (
-                    "被动消息已回退主人格"
-                    if disposition.startswith("fallback")
-                    else "旧插件窗口绑定已忽略"
-                    if disposition == "ignored"
-                    else "主动消息人格校验未通过"
-                ),
+                title,
                 detail,
                 ts=self._float(item.get("last_ts")),
                 action="检查 AstrBot 会话规则、已启用人格和人格配置健康状态",
                 jump="config",
-                warning_code=self._single_line(item.get("code"), 120) or "persona.route.unknown",
+                warning_code=warning_code,
             )
 
         for item in proactive_tasks.get("audit_items", [])[:40]:
@@ -13371,7 +13380,20 @@ class PrivateCompanionPageApi(
 
         configured = self._single_line(getattr(self.plugin, "plugin_specific_persona_id", ""), 120)
         if configured:
-            add_item(configured, label=f"{configured}（插件当前指定）", source="插件配置")
+            configured_role = (
+                "主人格"
+                if bool(getattr(self.plugin, "enable_multi_persona_mode", False))
+                else "插件当前指定"
+            )
+            configured_label = f"{configured}（{configured_role}）"
+            add_item(configured, label=configured_label, source="插件配置")
+            # AstrBot may already have supplied a display name such as
+            # ``璃（默认）``. The plugin primary marker must win regardless of
+            # the order in which the host exposes persona records.
+            if bool(getattr(self.plugin, "enable_multi_persona_mode", False)):
+                item = items.get(configured)
+                if isinstance(item, dict):
+                    item["label"] = configured_label
 
         for path in self._astrbot_config_candidate_paths():
             try:
@@ -13399,7 +13421,17 @@ class PrivateCompanionPageApi(
     def _fallback_roleplay_persona_items(self) -> list[dict[str, Any]]:
         configured = self._single_line(getattr(self.plugin, "plugin_specific_persona_id", ""), 120)
         if configured:
-            return [{"id": configured, "label": f"{configured}（插件当前指定）", "source": "插件配置", "is_default": True}]
+            configured_role = (
+                "主人格"
+                if bool(getattr(self.plugin, "enable_multi_persona_mode", False))
+                else "插件当前指定"
+            )
+            return [{
+                "id": configured,
+                "label": f"{configured}（{configured_role}）",
+                "source": "插件配置",
+                "is_default": True,
+            }]
         return [{"id": "", "label": "继承 AstrBot 当前配置人格", "source": "当前会话", "is_default": True}]
 
     def _iter_persona_entries(self, raw: Any) -> list[dict[str, Any]]:
@@ -19463,7 +19495,16 @@ class PrivateCompanionPageApi(
             "creative_hidden_mode",
             "enable_reply_interception_forward",
         ]
-        values = {key: bool(getattr(self.plugin, key, False)) for key in keys}
+        values = {
+            key: bool(
+                runtime_persona_setting(
+                    self.plugin,
+                    key,
+                    getattr(self.plugin, key, False),
+                )
+            )
+            for key in keys
+        }
         try:
             reality_api_getter = getattr(self.plugin, "_reality_companion_api", None)
             reality_api = reality_api_getter() if callable(reality_api_getter) else None
@@ -21979,7 +22020,14 @@ class PrivateCompanionPageApi(
         for key in sorted(self._schema_setting_keys(public_only=True) - PAGE_PRIVATE_CONFIG_KEYS):
             if key not in keys and key not in provider_keys:
                 keys.append(key)
-        values = {key: getattr(self.plugin, key, self._config_get(key)) for key in keys}
+        values = {
+            key: runtime_persona_setting(
+                self.plugin,
+                key,
+                getattr(self.plugin, key, self._config_get(key)),
+            )
+            for key in keys
+        }
         values["environment_perception_timezone"] = getattr(
             self.plugin,
             "environment_perception_timezone_setting",
@@ -25629,7 +25677,11 @@ class PrivateCompanionPageApi(
                 role_assets_by_owner.setdefault(str(asset.get("owner_id") or ""), []).append(asset)
         role_cards: list[dict[str, Any]] = []
         for raw_card in normalize_bot_relationship_cards(
-            getattr(self.plugin, "bot_relationship_cards", [])
+            runtime_persona_setting(
+                self.plugin,
+                "bot_relationship_cards",
+                getattr(self.plugin, "bot_relationship_cards", []),
+            )
         ):
             parts = [self._single_line(part, 200) for part in raw_card.split(" || ", 2)]
             role_name = parts[0] if parts else ""
@@ -25740,17 +25792,32 @@ class PrivateCompanionPageApi(
         if "worldbook_group_profile_count" not in data:
             group_count = len(group_items)
         return {
-            "enabled": bool(getattr(self.plugin, "enable_worldbook_member_recognition", False)),
-            "auto_import": bool(getattr(self.plugin, "worldbook_auto_import", False)),
-            "match_aliases": bool(getattr(self.plugin, "worldbook_member_match_aliases", False)),
-            "self_registration": bool(getattr(self.plugin, "worldbook_self_registration", False)),
+            "enabled": bool(runtime_persona_setting(self.plugin, "enable_worldbook_member_recognition", False)),
+            "auto_import": bool(runtime_persona_setting(self.plugin, "worldbook_auto_import", False)),
+            "match_aliases": bool(runtime_persona_setting(self.plugin, "worldbook_member_match_aliases", False)),
+            "self_registration": bool(runtime_persona_setting(self.plugin, "worldbook_self_registration", False)),
             "self_registration_block_word_count": len(
-                getattr(self.plugin, "worldbook_self_registration_block_words", [])
-                if isinstance(getattr(self.plugin, "worldbook_self_registration_block_words", []), list)
+                runtime_persona_setting(
+                    self.plugin,
+                    "worldbook_self_registration_block_words",
+                    [],
+                )
+                if isinstance(
+                    runtime_persona_setting(
+                        self.plugin,
+                        "worldbook_self_registration_block_words",
+                        [],
+                    ),
+                    list,
+                )
                 else []
             ),
-            "auto_pending_observations": bool(getattr(self.plugin, "worldbook_auto_pending_observations", False)),
-            "inject_limit": getattr(self.plugin, "worldbook_member_inject_limit", 0),
+            "auto_pending_observations": bool(runtime_persona_setting(self.plugin, "worldbook_auto_pending_observations", False)),
+            "inject_limit": runtime_persona_setting(
+                self.plugin,
+                "worldbook_member_inject_limit",
+                0,
+            ),
             "entry_count": entry_count,
             "member_count": member_count,
             "enabled_member_count": enabled_member_count,

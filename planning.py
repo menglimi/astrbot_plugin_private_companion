@@ -65,9 +65,9 @@ async def generate_detail_enhancement(
     system_prompt, prompt = split_detail_prompt_cache_sections(full_prompt)
     target_event_count = detail_target_event_count(plugin, segment)
     detail_provider = plugin._task_provider(
-        getattr(plugin, "detail_enhancement_provider_id", ""),
-        getattr(plugin, "daily_plan_provider_id", ""),
-        getattr(plugin, "mai_style_provider_id", ""),
+        runtime_persona_setting(plugin, "detail_enhancement_provider_id", ""),
+        runtime_persona_setting(plugin, "daily_plan_provider_id", ""),
+        runtime_persona_setting(plugin, "mai_style_provider_id", ""),
     )
     raw_text = await plugin._llm_call(
         prompt,
@@ -673,8 +673,8 @@ async def generate_daily_plan(plugin) -> dict[str, Any]:
         memory_companion_context = await memory_companion_context_getter(kind="daily_plan", max_chars=1300)
     prompt = plugin._build_daily_plan_prompt(now, memory_companion_context=memory_companion_context)
     plan_provider = plugin._task_provider(
-        getattr(plugin, "daily_plan_provider_id", ""),
-        getattr(plugin, "mai_style_provider_id", ""),
+        runtime_persona_setting(plugin, "daily_plan_provider_id", ""),
+        runtime_persona_setting(plugin, "mai_style_provider_id", ""),
     )
     plan_max_tokens = daily_plan_completion_budget(plugin)
     raw_text = await plugin._llm_call(

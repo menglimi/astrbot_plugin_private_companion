@@ -188,7 +188,9 @@ class MultiPersonaConfigUiTests(unittest.TestCase):
     def test_topology_hides_astrbot_default_marker(self) -> None:
         script = (PRIMARY / "app.js").read_text(encoding="utf-8")
         self.assertIn("function personaTopologyLabel(personaOrId)", script)
-        self.assertIn('replace(/\\s*（默认）\\s*/g, " ")', script)
+        self.assertIn('const cleanLabel = label.replace(/\\s*（默认）\\s*$/, "").trim();', script)
+        self.assertIn('replace(/\\s*（(?:默认|主人格)）\\s*/g, " ")', script)
+        self.assertIn('replace(/\\s*（(?:默认|主人格|插件当前指定)）\\s*$/, "")', script)
         topology = script.split('const topologyPersonaChecks =', 1)[1].split('const configuredPersonaRecords', 1)[0]
         self.assertIn('personaTopologyLabel(item)', topology)
         self.assertNotIn('personaDisplayLabel(item)', topology)

@@ -5626,13 +5626,21 @@ function personaDisplayLabel(personaOrId, options = {}) {
   const persona = { ...(known || {}), ...(input || { id: rawId }) };
   const id = String(persona.id ?? rawId).trim();
   const label = String(persona.label || persona.name || "").trim();
-  let display = label || id;
-  if (label && id && label.toLocaleLowerCase().includes(id.toLocaleLowerCase()) === false) {
-    display = `${label} · ${id}`;
+  const cleanLabel = label.replace(/\s*（默认）\s*$/, "").trim();
+  let display = cleanLabel || id;
+  if (cleanLabel && id && cleanLabel.toLocaleLowerCase().includes(id.toLocaleLowerCase()) === false) {
+    display = `${cleanLabel} · ${id}`;
   }
   const source = options.includeSource ? String(persona.source || "").trim() : "";
   if (source && !display.toLocaleLowerCase().includes(source.toLocaleLowerCase())) {
     display = display ? `${display} · ${source}` : source;
+  }
+  const primaryId = String(state.multiPersona?.primary || "").trim();
+  if (state.multiPersona?.enabled && id && id === primaryId) {
+    display = display
+      .replace(/\s*（(?:默认|主人格|插件当前指定)）\s*$/, "")
+      .trim();
+    display = `${display || id}（主人格）`;
   }
   return display || "未命名人格";
 }
@@ -7720,6 +7728,10 @@ async function loadSelectedPersonaOverview(personaId) {
   if (configState) applyPersonaConfigState(configState);
   state.overviewRefreshedAt = Date.now();
   renderAll();
+  const subtitle = document.getElementById("subtitle");
+  if (subtitle) {
+    subtitle.textContent = `${overview.plugin?.bot_name || "Private Companion"} · 总览已加载`;
+  }
   await ensureTabData(state.activeTab, true).catch(() => {});
   const label = selected ? personaDisplayLabel(selected) : "当前人格";
   const source = document.getElementById("configPersonaStatsSource");
@@ -19288,19 +19300,26 @@ async function loadWorldbookLivingMemory(userId, button) {
     return;
   }
   const panel = findWorldbookLivingMemoryPanel(userId);
+  const personaId = selectedPagePersonaId();
   const requestId = ++state.worldbookLivingMemoryRequestSeq;
-  state.worldbookLivingMemory[userId] = { loading: true, requestId };
+  state.worldbookLivingMemory[userId] = { loading: true, requestId, personaId };
   if (panel) panel.innerHTML = worldbookLivingMemoryPanel(userId);
   setActionBusy(button, true);
   try {
     const result = await fetchJson(`/worldbook/member/livingmemory?user_id=${encodeURIComponent(userId)}&limit=24`);
-    if (state.worldbookLivingMemory[userId]?.requestId !== requestId) return;
+    if (
+      state.worldbookLivingMemory[userId]?.requestId !== requestId
+      || selectedPagePersonaId() !== personaId
+    ) return;
     state.worldbookLivingMemory[userId] = result || { items: [] };
     if (panel) panel.innerHTML = worldbookLivingMemoryPanel(userId);
     updateWorldbookExternalMemoryCount(userId);
     showToast(result?.message || "LivingMemory 查询完成");
   } catch (error) {
-    if (state.worldbookLivingMemory[userId]?.requestId !== requestId) return;
+    if (
+      state.worldbookLivingMemory[userId]?.requestId !== requestId
+      || selectedPagePersonaId() !== personaId
+    ) return;
     state.worldbookLivingMemory[userId] = { error: error.message || "查询失败", items: [] };
     if (panel) panel.innerHTML = worldbookLivingMemoryPanel(userId);
     updateWorldbookExternalMemoryCount(userId);
@@ -23086,11 +23105,11 @@ function personaBotName(personaOrId) {
   const input = personaOrId && typeof personaOrId === "object" ? personaOrId : { id: personaOrId };
   const id = String(input.id || "").trim();
   const raw = String(input.bot_name || input.name || input.label || id).trim();
-  return raw.replace(/\s*（(?:默认|插件当前指定)）\s*$/, "").trim() || id;
+  return raw.replace(/\s*（(?:默认|主人格|插件当前指定)）\s*$/, "").trim() || id;
 }
 
 function personaTopologyLabel(personaOrId) {
-  return personaDisplayLabel(personaOrId).replace(/\s*（默认）\s*/g, " ").trim();
+  return personaDisplayLabel(personaOrId).replace(/\s*（(?:默认|主人格)）\s*/g, " ").trim();
 }
 
 const personaFollowConfirmTimers = new WeakMap();
@@ -23141,6 +23160,8 @@ function resetPersonaScopedPageState() {
   state.tokenStats = null;
   state.troubleshooting = null;
   state.dailyReview = null;
+  state.worldbookLivingMemory = {};
+  state.worldbookLivingMemoryRequestSeq += 1;
   state.userGroupListPromise = null;
   state.userGroupListError = "";
   Object.assign(state.lazyLoaded, {
@@ -23442,7 +23463,34 @@ function bindPersonaManagementActions(root) {
         },
       });
     }, "已保存主人格并启用多人格", event.submitter, { reload: false });
-    if (saved) await loadAll({ waitForLists: false });
+    if (saved) {
+      // The two-step transaction has already persisted the authoritative
+      // primary before the follow-up overview request completes. Update the
+      // local view immediately so stale overview data cannot keep the setup
+      // gate visible or leave topology controls disabled.
+      state.overview = state.overview || {};
+      state.overview.settings = {
+        ...(state.overview.settings || {}),
+        plugin_specific_persona_id: personaId,
+        enable_multi_persona_mode: true,
+        multi_persona_ids: ids,
+      };
+      state.featureDraft = state.featureDraft || {};
+      state.featureDraft.enable_multi_persona_mode = true;
+      state.multiPersona = {
+        ...(state.multiPersona || {}),
+        enabled: true,
+        primary: personaId,
+        current: personaId,
+        enabled_ids: ids,
+        profiles: Array.from(new Set([
+          personaId,
+          ...normalizeMultiPersonaIds(state.multiPersona?.configured_profiles),
+        ])),
+      };
+      renderAll();
+      await loadAll({ waitForLists: false });
+    }
   });
   root?.querySelectorAll("[data-persona-recovery]").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -26730,7 +26778,20 @@ function multiPersonaLegacyRoutingNotice() {
 }
 
 function multiPersonaMigrationDetailCard() {
-  const ids = configuredMultiPersonaIds();
+  const settings = state.overview?.settings || {};
+  const primary = configuredPrimaryPersonaId() || String(state.multiPersona?.primary || "").trim();
+  const enabledIds = new Set([
+    ...normalizeMultiPersonaIds(state.multiPersona?.enabled_ids),
+    ...normalizeMultiPersonaIds(settings.multi_persona_ids),
+  ]);
+  if (primary) enabledIds.add(primary);
+  const configuredProfiles = new Set(
+    normalizeMultiPersonaIds(state.multiPersona?.configured_profiles),
+  );
+  const ids = Array.from(new Set([
+    primary,
+    ...Array.from(configuredProfiles),
+  ].filter((id) => id && enabledIds.has(id) && (id === primary || configuredProfiles.has(id)))));
   const legacyRoutingNotice = multiPersonaLegacyRoutingNotice();
   const options = ids.map((id) => `<option value="${escapeHtml(id)}">${escapeHtml(personaDisplayLabel(id))}</option>`).join("");
   if (ids.length < 2) {
@@ -26753,7 +26814,7 @@ function multiPersonaMigrationDetailCard() {
   return `${legacyRoutingNotice}
     <article class="feature-detail-card multi-persona-migration-card">
       <h3>人格资料迁移</h3>
-      <p>从已有的人格复制选中的资料；目标人格的缓存会同步清理，避免旧人格上下文残留。</p>
+      <p>从已启用且已建立配置的人格复制选中的资料；目标人格的缓存会同步清理，避免旧人格上下文残留。</p>
       <div class="multi-persona-migration-selects">
         <label><span>来源人格</span><select data-migrate-source>${options}</select></label>
         <label><span>目标人格</span><select data-migrate-target>${options}</select></label>

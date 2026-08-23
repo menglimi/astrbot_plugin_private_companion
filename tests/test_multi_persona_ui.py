@@ -30,7 +30,25 @@ def test_persona_display_label_preserves_label_and_full_id():
             'const label = String(persona.label || persona.name || "").trim();'
             in helper
         )
-        assert 'display = `${label} · ${id}`;' in helper
+        assert 'const cleanLabel = label.replace(/\\s*（默认）\\s*$/, "").trim();' in helper
+        assert 'display = `${cleanLabel} · ${id}`;' in helper
+        assert 'plugin_specific_persona_id: personaId' in script
+        assert 'state.multiPersona = {' in script
+
+
+def test_persona_switch_refreshes_bot_name_and_invalidates_worldbook_requests():
+    for script in _panel_scripts():
+        assert 'subtitle.textContent = `${overview.plugin?.bot_name || "Private Companion"} · 总览已加载`;' in script
+        reset = script.split("function resetPersonaScopedPageState()", 1)[1].split(
+            "async function selectPagePersona", 1
+        )[0]
+        assert "state.worldbookLivingMemory = {};" in reset
+        assert "state.worldbookLivingMemoryRequestSeq += 1;" in reset
+        loader = script.split("async function loadWorldbookLivingMemory", 1)[1].split(
+            "async function handleWorldbookMemberAction", 1
+        )[0]
+        assert "const personaId = selectedPagePersonaId();" in loader
+        assert "selectedPagePersonaId() !== personaId" in loader
 
 
 def test_multi_persona_selectors_keep_raw_id_as_value_and_use_shared_label():
@@ -45,6 +63,16 @@ def test_multi_persona_selectors_keep_raw_id_as_value_and_use_shared_label():
         # Keep the previous label-only rendering from returning in persona controls.
         assert "escapeHtml(item.label || item.id)" not in script
         assert "escapeHtml(item.label || item.name || item.id)" not in script
+
+
+def test_persona_migration_only_uses_saved_configured_profiles():
+    for script in _panel_scripts():
+        migration = script.split("function multiPersonaMigrationDetailCard()", 1)[1].split(
+            "function bodyMonitorFeatureDetailCard", 1
+        )[0]
+        assert "state.multiPersona?.configured_profiles" in migration
+        assert "state.multiPersona?.enabled_ids" in migration
+        assert "已启用且已建立配置的人格" in migration
 
 
 def test_plugin_routing_controls_and_api_calls_are_removed():

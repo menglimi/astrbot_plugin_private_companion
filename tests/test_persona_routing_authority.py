@@ -253,6 +253,39 @@ class PersonaRoutingAuthorityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("", plugin._active_persona_scope())
             self.assertEqual(plugin._data_default, plugin.data)
 
+    async def test_single_mode_without_plugin_persona_records_unspecified_warning(self):
+        with tempfile.TemporaryDirectory() as root:
+            plugin = _routing_harness(root, conversation_persona="alt")
+            plugin.enable_multi_persona_mode = False
+            plugin.plugin_specific_persona_id = ""
+
+            token, persona_id = await plugin._activate_persona_for_event_context(_event())
+
+            self.assertIsNone(token)
+            self.assertEqual("", persona_id)
+            warnings = plugin._data_default["persona_routing_warnings"]["items"]
+            self.assertEqual(1, len(warnings))
+            self.assertEqual("persona.route.plugin_persona_unspecified", warnings[0]["code"])
+            self.assertEqual("plugin_persona_unspecified", warnings[0]["reason_code"])
+            self.assertEqual("passive", warnings[0]["channel"])
+
+    async def test_single_mode_without_plugin_persona_allows_proactive_delivery(self):
+        with tempfile.TemporaryDirectory() as root:
+            plugin = _routing_harness(root, conversation_persona="alt")
+            plugin.enable_multi_persona_mode = False
+            plugin.plugin_specific_persona_id = ""
+
+            result = await plugin._validate_proactive_persona_delivery(
+                "onebot:FriendMessage:1", ""
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual("sent_with_warning", result["action"])
+            self.assertEqual("plugin_persona_unspecified", result["reason_code"])
+            warnings = plugin._data_default["persona_routing_warnings"]["items"]
+            self.assertEqual(1, len(warnings))
+            self.assertEqual("proactive", warnings[0]["channel"])
+
 
 if __name__ == "__main__":
     unittest.main()

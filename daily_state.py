@@ -539,7 +539,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 if plan_changed:
                     self._refresh_daily_state_location_from_plan(plan=current_plan)
                 if plan_changed or detail_day_changed:
-                    self._save_data_sync(
+                    self._save_daily_state_sections(
                         sections={
                             "daily_plan",
                             "daily_state",
@@ -564,7 +564,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 if plan_changed:
                     self._refresh_daily_state_location_from_plan(plan=current_plan)
                 if plan_changed or detail_day_changed:
-                    self._save_data_sync(
+                    self._save_daily_state_sections(
                         sections={
                             "daily_plan",
                             "daily_state",
@@ -574,7 +574,20 @@ class DailyStateMixin(DailyStateTickMixin):
                         }
                     )
                 return current_plan
-            if not force and not known_users:
+            active_persona = str(
+                getattr(self, "_active_persona_scope", lambda: "")() or ""
+            ).strip()
+            primary_persona = str(
+                getattr(self, "_primary_persona_id", lambda: "")() or ""
+            ).strip()
+            configured_empty_secondary = bool(
+                getattr(self, "enable_multi_persona_mode", False)
+                and active_persona
+                and active_persona != primary_persona
+                and callable(getattr(self, "_persona_config_exists", None))
+                and self._persona_config_exists(active_persona)
+            )
+            if not force and not known_users and not configured_empty_secondary:
                 return current_plan if current_plan.get("date") == today else None
             if not force and not self._is_daily_plan_due():
                 if self._is_plan_date_active(current_plan.get("date")):
@@ -582,7 +595,7 @@ class DailyStateMixin(DailyStateTickMixin):
                     if plan_changed:
                         self._refresh_daily_state_location_from_plan(plan=current_plan)
                     if plan_changed or detail_day_changed:
-                        self._save_data_sync(
+                        self._save_daily_state_sections(
                             sections={
                                 "daily_plan",
                                 "daily_state",
@@ -617,7 +630,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 self.data["daily_plan"] = plan
                 self._sync_detail_enhancement_day_locked(plan.get("date"), reset=True)
                 self._refresh_daily_state_location_from_plan(plan=plan)
-                self._save_data_sync(
+                self._save_daily_state_sections(
                     sections={
                         "daily_plan",
                         "daily_state",
@@ -10267,7 +10280,11 @@ class DailyStateMixin(DailyStateTickMixin):
         raw = await self._llm_call(
             prompt,
             max_tokens=650,
-            provider_id=self._task_provider(self.history_summary_provider_id, self.daily_plan_provider_id, self.mai_style_provider_id),
+            provider_id=self._task_provider(
+                runtime_persona_setting(self, "history_summary_provider_id", ""),
+                runtime_persona_setting(self, "daily_plan_provider_id", ""),
+                runtime_persona_setting(self, "mai_style_provider_id", ""),
+            ),
             task="yesterday_summary",
         )
         payload = self._extract_json_payload(raw or "")

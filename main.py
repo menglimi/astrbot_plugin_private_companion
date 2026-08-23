@@ -1975,7 +1975,23 @@ class PrivateCompanionPlugin(
         key = str(key or "").strip()
         if not key:
             return default
-        runtime_key = key.lower() if key.isupper() and key.endswith("_PROVIDER_ID") else key
+        manifest = self._persona_scope_manifest()
+        # Runtime attributes use snake_case while AstrBot's provider schema
+        # keeps legacy provider IDs in upper case. Treat those spellings as
+        # aliases at the resolver boundary so sparse persona profiles written
+        # by either version continue to work.
+        manifest_key = key
+        if manifest_key not in manifest:
+            folded = key.casefold()
+            manifest_key = next(
+                (candidate for candidate in manifest if str(candidate).casefold() == folded),
+                key,
+            )
+        runtime_key = (
+            manifest_key.lower()
+            if manifest_key.isupper() and manifest_key.endswith("_PROVIDER_ID")
+            else key
+        )
         active = self._sanitize_persona_id(persona_id or _ACTIVE_PERSONA_ID.get())
         enabled = bool(object.__getattribute__(self, "enable_multi_persona_mode")) if hasattr(self, "enable_multi_persona_mode") else False
         if not enabled or not active:
@@ -1983,7 +1999,7 @@ class PrivateCompanionPlugin(
                 return object.__getattribute__(self, runtime_key)
             except AttributeError:
                 return default
-        if key == "plugin_specific_persona_id":
+        if manifest_key == "plugin_specific_persona_id":
             return active
         primary = self._primary_persona_id()
         if active == primary:
@@ -1992,16 +2008,21 @@ class PrivateCompanionPlugin(
             except AttributeError:
                 pass
         settings = self._persona_settings_for_id(active)
+        if manifest_key not in settings and key in settings and manifest_key != key:
+            # Accept the lowercase runtime spelling in hand-edited/early
+            # profile files while keeping the schema's canonical key in the
+            # resolver path.
+            settings[manifest_key] = deepcopy(settings[key])
         try:
             primary_value = object.__getattribute__(self, runtime_key)
-            primary_source: Any = {key: deepcopy(primary_value)}
+            primary_source: Any = {manifest_key: deepcopy(primary_value)}
         except AttributeError:
             primary_source = self._primary_persona_config()
         value = resolve_persona_setting(
-            key,
+            manifest_key,
             settings,
             primary_source,
-            manifest=self._persona_scope_manifest(),
+            manifest=manifest,
             default=default,
         )
         # The resolver intentionally returns a copy. This keeps mutable list/
@@ -2888,11 +2909,30 @@ class PrivateCompanionPlugin(
         """Validate the last-mile target without changing AstrBot's routing."""
         umo = _single_line(target_umo, 240)
         multi = bool(getattr(self, "enable_multi_persona_mode", False))
+        primary = self._primary_persona_id()
         scheduled = self._sanitize_persona_id(
             scheduled_persona_id
             or _ACTIVE_PERSONA_ID.get()
-            or ("" if multi else self._primary_persona_id())
+            or ("" if multi else primary)
         )
+        # In single-persona mode an empty plugin_specific_persona_id means
+        # “use AstrBot's current/default persona”, not a persona mismatch.
+        # Keep delivery allowed and emit one actionable configuration warning.
+        if not multi and not primary and umo:
+            await self._record_persona_routing_warning(
+                code="persona.route.plugin_persona_unspecified",
+                channel="proactive",
+                disposition="sent_with_warning",
+                reason_code="plugin_persona_unspecified",
+                window_key=umo,
+            )
+            return {
+                "ok": True,
+                "action": "sent_with_warning",
+                "astrbot_persona_id": "",
+                "scheduled_persona_id": "",
+                "reason_code": "plugin_persona_unspecified",
+            }
         event = SimpleNamespace(
             unified_msg_origin=umo,
             get_platform_name=lambda: umo.partition(":")[0],
@@ -3081,6 +3121,14 @@ class PrivateCompanionPlugin(
 
     async def _activate_persona_for_event_context(self, event: Any) -> tuple[Any, str]:
         if not bool(getattr(self, "enable_multi_persona_mode", False)):
+            if not self._primary_persona_id():
+                await self._record_persona_routing_warning(
+                    code="persona.route.plugin_persona_unspecified",
+                    channel="passive",
+                    disposition="sent_with_warning",
+                    reason_code="plugin_persona_unspecified",
+                    window_key=getattr(event, "unified_msg_origin", ""),
+                )
             return None, ""
         active = _ACTIVE_PERSONA_ID.get()
         if active:
@@ -3240,6 +3288,44 @@ class PrivateCompanionPlugin(
         target = self._sanitize_persona_id(target_persona_id)
         if not source or not target or source == target:
             return {"ok": False, "message": "源人格和目标人格必须不同"}
+        if not bool(getattr(self, "enable_multi_persona_mode", False)):
+            return {
+                "ok": False,
+                "code": "persona_migration_multi_persona_disabled",
+                "message": "请先开启多人格模式后再迁移人格资料",
+            }
+        enabled_ids = set(self._configured_multi_persona_ids())
+        if source not in enabled_ids:
+            return {
+                "ok": False,
+                "code": "persona_migration_source_not_enabled",
+                "message": "来源人格未在已保存的人格拓扑中启用",
+            }
+        if target not in enabled_ids:
+            return {
+                "ok": False,
+                "code": "persona_migration_target_not_enabled",
+                "message": "目标人格未在已保存的人格拓扑中启用",
+            }
+        primary = self._primary_persona_id()
+
+        def eligible(persona_id: str) -> bool:
+            # The primary intentionally has no separate persona JSON; its
+            # authoritative data is the single-persona store.
+            return persona_id == primary or self._persona_config_exists(persona_id)
+
+        if not eligible(source):
+            return {
+                "ok": False,
+                "code": "persona_migration_source_config_missing",
+                "message": "来源人格尚未建立有效的人格配置文件",
+            }
+        if not eligible(target):
+            return {
+                "ok": False,
+                "code": "persona_migration_target_config_missing",
+                "message": "目标人格尚未建立有效的人格配置文件",
+            }
         source_data = self._ensure_persona_profile(source)
         target_data = self._ensure_persona_profile(target)
         source_before = deepcopy(source_data)
