@@ -25,6 +25,12 @@ class _PromptFormatHarness(ProactiveMessageMixin):
     photo_generation_selfie_fixed_prompt = "selfie fixed"
     photo_generation_edit_fixed_prompt = "edit fixed"
 
+    def __init__(self) -> None:
+        self.persona_values: dict[str, object] = {}
+
+    def persona_setting(self, key: str, default: object = None) -> object:
+        return self.persona_values.get(key, getattr(self, key, default))
+
 
 class PhotoPromptFormatTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -133,6 +139,35 @@ class PhotoPromptFormatTests(unittest.TestCase):
         self.assertEqual(resolved[-1].name, "custom_negative_prompt")
         self.assertEqual(resolved[-1].negative, "lowres, watermark, bad hands")
         self.assertTrue(resolved[-1].protected)
+
+    def test_negative_and_fixed_prompts_use_active_persona_settings(self) -> None:
+        self.harness.photo_generation_negative_prompt_mode = "merge"
+        self.harness.photo_generation_negative_prompt = "primary global"
+        self.harness.photo_generation_selfie_negative_prompt = "primary scoped"
+        self.harness.photo_generation_selfie_fixed_prompt = "primary fixed"
+        self.harness.persona_values.update(
+            {
+                "photo_generation_negative_prompt_mode": "merge",
+                "photo_generation_negative_prompt": "persona global",
+                "photo_generation_selfie_negative_prompt": "persona scoped",
+                "photo_generation_selfie_fixed_prompt": "persona fixed",
+            }
+        )
+        sections = (
+            PhotoPromptSection("natural_language_contract", "composition", negative="nsfw"),
+        )
+
+        resolved = self.harness._apply_photo_generation_negative_prompt_policy(
+            sections,
+            "selfie",
+        )
+        fixed, _audit = self.harness._photo_generation_workflow_fixed_prompt_section(
+            "selfie"
+        )
+
+        self.assertEqual("persona global, persona scoped", resolved[-1].negative)
+        self.assertIn("persona fixed", fixed.positive)
+        self.assertNotIn("primary fixed", fixed.positive)
 
     def test_negative_prompt_replace_only_removes_system_base_sections(self) -> None:
         self.harness.photo_generation_negative_prompt_mode = "replace"

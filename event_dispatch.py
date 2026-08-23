@@ -4225,11 +4225,15 @@ class EventDispatchMixin:
         provider_selector = getattr(self, "_task_provider", None)
         if callable(provider_selector):
             debounce_provider_id = provider_selector(
-                getattr(self, "smart_message_debounce_provider_id", ""),
-                getattr(self, "llm_provider_id", ""),
+                _persona_value(self, "smart_message_debounce_provider_id", ""),
+                _persona_value(self, "llm_provider_id", ""),
             )
         else:
-            debounce_provider_id = str(getattr(self, "smart_message_debounce_provider_id", "") or getattr(self, "llm_provider_id", "") or "")
+            debounce_provider_id = str(
+                _persona_value(self, "smart_message_debounce_provider_id", "")
+                or _persona_value(self, "llm_provider_id", "")
+                or ""
+            )
         timeout_getter = getattr(self, "_model_timeout_seconds_for_call", None)
         timeout_override = (
             timeout_getter(

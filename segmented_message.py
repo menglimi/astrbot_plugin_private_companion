@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Mapping
 
+from .persona_config import runtime_persona_setting
+
 
 COMPONENT_STRATEGIES = frozenset({"inline", "separate", "previous", "next"})
 DEFAULT_COMPONENT_ORDER = (
@@ -104,29 +106,30 @@ def component_kind(component: Any) -> str:
 def component_strategies_from_owner(owner: Any) -> dict[str, str]:
     """Read component placement with backward-compatible defaults."""
     reaction_mode = str(
-        getattr(owner, "reaction_expression_delivery_mode", "separate_after") or "separate_after"
+        runtime_persona_setting(owner, "reaction_expression_delivery_mode", "separate_after")
+        or "separate_after"
     ).strip().lower()
     reaction_strategy = "inline" if reaction_mode == "same_message" else "separate"
     return {
         "voice": normalize_component_strategy(
-            getattr(owner, "segmented_proactive_voice_strategy", "separate"),
+            runtime_persona_setting(owner, "segmented_proactive_voice_strategy", "separate"),
             "separate",
         ),
         "image": normalize_component_strategy(
-            getattr(owner, "segmented_proactive_image_strategy", "separate"),
+            runtime_persona_setting(owner, "segmented_proactive_image_strategy", "separate"),
             "separate",
         ),
         "at": normalize_component_strategy(
-            getattr(owner, "segmented_proactive_at_strategy", "inline"),
+            runtime_persona_setting(owner, "segmented_proactive_at_strategy", "inline"),
             "inline",
         ),
         "face": normalize_component_strategy(
-            getattr(owner, "segmented_proactive_face_strategy", "inline"),
+            runtime_persona_setting(owner, "segmented_proactive_face_strategy", "inline"),
             "inline",
         ),
         "reaction": reaction_strategy,
         "other": normalize_component_strategy(
-            getattr(owner, "segmented_proactive_other_strategy", "separate"),
+            runtime_persona_setting(owner, "segmented_proactive_other_strategy", "separate"),
             "separate",
         ),
     }
@@ -135,7 +138,11 @@ def component_strategies_from_owner(owner: Any) -> dict[str, str]:
 def component_order_from_owner(owner: Any) -> list[str]:
     """Read the visual component order with a forward-compatible default."""
     return normalize_component_order(
-        getattr(owner, "segmented_proactive_component_order", DEFAULT_COMPONENT_ORDER)
+        runtime_persona_setting(
+            owner,
+            "segmented_proactive_component_order",
+            DEFAULT_COMPONENT_ORDER,
+        )
     )
 
 

@@ -13,6 +13,7 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
 from .helpers import _now_ts, _path_text, _safe_float, _safe_int, _single_line
+from .persona_config import runtime_persona_setting
 
 __all__ = ("QzonePublishMixin",)
 
@@ -431,7 +432,10 @@ class QzonePublishMixin:
             rewritten = await self._llm_call(
                 rewrite_prompt,
                 max_tokens=160,
-                provider_id=self._task_provider(self.mai_style_provider_id, self.llm_provider_id),
+                provider_id=self._task_provider(
+                    runtime_persona_setting(self, "MAI_STYLE_PROVIDER_ID", ""),
+                    runtime_persona_setting(self, "LLM_PROVIDER_ID", ""),
+                ),
                 task="qzone_publish_sanitize",
             )
             rewritten = _single_line(
@@ -541,7 +545,10 @@ class QzonePublishMixin:
             draft = await self._llm_call(
                 prompt,
                 max_tokens=180,
-                provider_id=self._task_provider(self.mai_style_provider_id, self.llm_provider_id),
+                provider_id=self._task_provider(
+                    runtime_persona_setting(self, "MAI_STYLE_PROVIDER_ID", ""),
+                    runtime_persona_setting(self, "LLM_PROVIDER_ID", ""),
+                ),
                 task="qzone_publish_test",
             )
             draft = await self._sanitize_qzone_life_post_text(draft, prompt=prompt)
@@ -671,7 +678,10 @@ class QzonePublishMixin:
             draft = await self._llm_call(
                 prompt,
                 max_tokens=160,
-                provider_id=self._task_provider(self.mai_style_provider_id, self.llm_provider_id),
+                provider_id=self._task_provider(
+                    runtime_persona_setting(self, "MAI_STYLE_PROVIDER_ID", ""),
+                    runtime_persona_setting(self, "LLM_PROVIDER_ID", ""),
+                ),
                 task="qzone_publish_image_test_draft",
             )
             draft = await self._sanitize_qzone_life_post_text(draft, prompt=prompt)
@@ -1045,7 +1055,10 @@ class QzonePublishMixin:
             text = await self._llm_call(
                 prompt,
                 max_tokens=360,
-                provider_id=self._task_provider(self.photo_prompt_provider_id, self.mai_style_provider_id),
+                provider_id=self._task_provider(
+                    runtime_persona_setting(self, "PHOTO_PROMPT_PROVIDER_ID", ""),
+                    runtime_persona_setting(self, "MAI_STYLE_PROVIDER_ID", ""),
+                ),
                 task=f"qzone_{reason}_photo_prompt",
             )
             payload = self._extract_json_payload(text or "")

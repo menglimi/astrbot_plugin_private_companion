@@ -9,6 +9,12 @@ from astrbot_plugin_private_companion.proactive_message import ProactiveMessageM
 
 
 class _SegmentedProfileHarness(ProactiveMessageMixin, EventDispatchMixin):
+    def __init__(self) -> None:
+        self.persona_values: dict[str, object] = {}
+
+    def persona_setting(self, key: str, default: object = None) -> object:
+        return self.persona_values.get(key, getattr(self, key, default))
+
     def _feature_enabled_or_temp_unlocked(self, key: str) -> bool:
         return key == "enable_segmented_proactive_reply"
 
@@ -97,6 +103,43 @@ class SegmentedChatProfileTests(unittest.TestCase):
         self.assertTrue(harness._segmented_chat_scope_allows("private"))
         self.assertFalse(harness._segmented_chat_scope_allows("group"))
         self.assertEqual(5, harness._segmented_setting("max_segments", chat_type="private"))
+
+    def test_active_persona_overrides_shared_and_chat_profile_settings(self) -> None:
+        harness = _harness()
+        harness.enable_segmented_proactive_chat_profiles = False
+        harness.segmented_proactive_chat_scope = "private"
+        harness.segmented_proactive_scope = "proactive_only"
+        harness.segmented_proactive_max_segments = 5
+        harness.persona_values.update(
+            {
+                "enable_segmented_proactive_chat_profiles": False,
+                "segmented_proactive_chat_scope": "group",
+                "segmented_proactive_scope": "all_llm",
+                "segmented_proactive_max_segments": 2,
+            }
+        )
+
+        self.assertFalse(harness._segmented_chat_scope_allows("private"))
+        self.assertTrue(harness._segmented_chat_scope_allows("group"))
+        self.assertEqual(
+            "all_llm",
+            harness._segmented_setting("scope", chat_type="group"),
+        )
+        self.assertEqual(2, harness._segmented_setting("max_segments", chat_type="group"))
+
+        harness.persona_values.update(
+            {
+                "enable_segmented_proactive_chat_profiles": True,
+                "segmented_proactive_group_enabled": False,
+                "segmented_proactive_group_scope": "all_llm",
+                "segmented_proactive_group_threshold": 240,
+                "segmented_proactive_group_interval_min": 0.4,
+            }
+        )
+        self.assertFalse(harness._segmented_chat_scope_allows("group"))
+        self.assertEqual("all_llm", harness._segmented_setting("scope", chat_type="group"))
+        self.assertEqual(240, harness._segmented_setting("threshold", chat_type="group"))
+        self.assertEqual(0.4, harness._segmented_setting("interval_min", chat_type="group"))
 
 
 if __name__ == "__main__":

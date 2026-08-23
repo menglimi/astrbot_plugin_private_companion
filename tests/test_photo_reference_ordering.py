@@ -779,6 +779,48 @@ class PhotoReferenceOrderingTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(intent.confidence, 0.7)
         self.assertEqual(intent.source, "model_conservative")
 
+    async def test_reference_models_use_active_persona_provider_settings(self) -> None:
+        harness = _SelectionHarness(
+            [
+                _candidate("one", outfit_category="", scene_categories=(), note="第一张"),
+                _candidate("two", outfit_category="", scene_categories=(), note="第二张"),
+            ],
+            llm_reply=(
+                '{"requested_roles":["identity"],"excluded_roles":[],'
+                '"continuity_mode":"continuation","confidence":0.9}'
+            ),
+        )
+        harness.provider_config_mode = "precision"
+        harness.photo_prompt_provider_id = "primary-photo"
+        harness.fast_response_provider_id = "primary-fast"
+        harness.llm_provider_id = "primary-llm"
+        harness.mai_style_provider_id = "primary-style"
+        persona_values = {
+            "PHOTO_PROMPT_PROVIDER_ID": "persona-photo",
+            "FAST_RESPONSE_PROVIDER_ID": "persona-fast",
+            "LLM_PROVIDER_ID": "persona-llm",
+            "MAI_STYLE_PROVIDER_ID": "persona-style",
+        }
+        harness.persona_setting = lambda key, default=None: persona_values.get(key, default)
+        harness._task_provider = lambda *values: next(
+            (value for value in values if str(value or "").strip()),
+            "",
+        )
+
+        await harness._analyze_photo_reference_intent_async(
+            "照着这种感觉再画一张",
+            workflow_kind="selfie",
+            has_explicit_reference=True,
+        )
+        self.assertEqual("persona-photo", harness.llm_kwargs[-1]["provider_id"])
+
+        harness._llm_reply = "1"
+        await harness._select_photo_reference_candidate_async(
+            "selfie",
+            request_text="从这两张里选一个继续画",
+        )
+        self.assertEqual("persona-photo", harness.llm_kwargs[-1]["provider_id"])
+
     async def test_generic_reference_request_skips_extra_intent_model_call(self) -> None:
         harness = _SelectionHarness([], llm_reply=(
             '{"requested_roles":["identity","outfit"],'

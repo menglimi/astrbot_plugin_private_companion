@@ -38,6 +38,10 @@ class DiaryHarness:
         self.prompts = []
         self.memory_context = ""
         self.memory_calls = []
+        self.persona_overrides = {}
+
+    def persona_setting(self, key, default=None):
+        return self.persona_overrides.get(key, getattr(self, key, default))
 
     def _environment_now(self):
         return datetime.now()
@@ -54,8 +58,8 @@ class DiaryHarness:
     def _recent_diary_context(self):
         return recent_diary_context(self)
 
-    def _task_provider(self, *_args):
-        return ""
+    def _task_provider(self, *provider_ids):
+        return next((str(item) for item in provider_ids if str(item or "").strip()), "")
 
     async def _llm_call(self, *args, **kwargs):
         self.prompts.append({"prompt": str(args[0] if args else ""), "kwargs": kwargs})
@@ -98,6 +102,32 @@ class DiaryHarness:
 
 
 class DailyDiaryCreativePipelineTests(unittest.IsolatedAsyncioTestCase):
+    async def test_daily_diary_provider_uses_active_persona_override(self):
+        plugin = DiaryHarness(responses=[
+            json.dumps({
+                "summary": "今天读到一句话",
+                "body": "今天读书时遇到一句值得停下来的话，我顺着前后文慢慢读了一遍，只把当时真实留下的感受写了下来。",
+                "tags": ["阅读"],
+            }, ensure_ascii=False),
+            json.dumps({
+                "share_seed": "",
+                "dream_fragments": [],
+                "continuity_thread": {},
+                "long_term_events": [],
+            }, ensure_ascii=False),
+        ])
+        plugin.diary_provider_id = "primary-diary"
+        plugin.mai_style_provider_id = "primary-style"
+        plugin.persona_overrides = {
+            "DIARY_PROVIDER_ID": "persona-diary",
+            "MAI_STYLE_PROVIDER_ID": "persona-style",
+        }
+
+        await generate_daily_diary(plugin)
+
+        self.assertTrue(plugin.prompts)
+        self.assertTrue(all(item["kwargs"]["provider_id"] == "persona-diary" for item in plugin.prompts))
+
     def test_evidence_ledger_keeps_schedule_adjustments_unconfirmed(self):
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         plugin = DiaryHarness({

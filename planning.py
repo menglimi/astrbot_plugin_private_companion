@@ -825,7 +825,7 @@ async def generate_daily_plan(plugin) -> dict[str, Any]:
         "date": today,
         "generated_at": now,
         "source": source,
-        "provider_id": plan_provider or plugin.llm_provider_id,
+        "provider_id": plan_provider or runtime_persona_setting(plugin, "LLM_PROVIDER_ID", ""),
         "raw": raw_text,
         "items": items,
         "quality": quality,

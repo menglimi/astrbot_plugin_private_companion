@@ -659,7 +659,7 @@ class TtsEnhancementMixin:
     def _language_tts_provider(self, event: Any = None) -> Any:
         language = self._tts_voice_language_for_event(event)
         attr = TTS_LANGUAGE_PROVIDER_ATTRS.get(language, "")
-        provider_id = _single_line(getattr(self, attr, ""), 160) if attr else ""
+        provider_id = _single_line(self._tts_setting(attr, ""), 160) if attr else ""
         if not provider_id:
             return None
         context = getattr(self, "context", None)
@@ -745,7 +745,11 @@ class TtsEnhancementMixin:
             voice_language or self._tts_setting("tts_voice_language", "zh")
         ) or "zh"
         language_attr = TTS_LANGUAGE_PROVIDER_ATTRS.get(language, "")
-        language_provider_id = _single_line(self._tts_setting(language_attr, getattr(self, language_attr, "")), 160) if language_attr else ""
+        language_provider_id = (
+            _single_line(self._tts_setting(language_attr, ""), 160)
+            if language_attr
+            else ""
+        )
         active_provider_id = self._tts_synthesis_provider_id(tts_provider)
         has_dedicated_language_provider = bool(
             language_provider_id

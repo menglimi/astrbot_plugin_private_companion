@@ -5965,11 +5965,11 @@ class UserMemoryMixin:
 
     def _emotion_judgement_provider_id(self) -> str:
         return self._task_provider(
-            getattr(self, "emotion_judgement_provider_id", ""),
-            getattr(self, "troubleshooting_provider_id", ""),
-            getattr(self, "relationship_analysis_provider_id", ""),
-            getattr(self, "mai_style_provider_id", ""),
-            getattr(self, "llm_provider_id", ""),
+            runtime_persona_setting(self, "emotion_judgement_provider_id", ""),
+            runtime_persona_setting(self, "troubleshooting_provider_id", ""),
+            runtime_persona_setting(self, "relationship_analysis_provider_id", ""),
+            runtime_persona_setting(self, "mai_style_provider_id", ""),
+            runtime_persona_setting(self, "llm_provider_id", ""),
         )
 
     def _should_use_llm_emotion_judgement(self, text: str, intent: dict[str, Any]) -> bool:
@@ -7729,11 +7729,11 @@ Character-specific bottom-line baseline (reference only; empty means use the con
                     cache.pop(key, None)
 
         provider_id = self._task_provider(
-            getattr(self, "smart_silence_provider_id", ""),
-            getattr(self, "response_review_provider_id", ""),
-            getattr(self, "smart_message_debounce_provider_id", ""),
-            getattr(self, "mai_style_provider_id", ""),
-            getattr(self, "llm_provider_id", ""),
+            runtime_persona_setting(self, "smart_silence_provider_id", ""),
+            runtime_persona_setting(self, "response_review_provider_id", ""),
+            runtime_persona_setting(self, "smart_message_debounce_provider_id", ""),
+            runtime_persona_setting(self, "mai_style_provider_id", ""),
+            runtime_persona_setting(self, "llm_provider_id", ""),
         )
         if not provider_id:
             return {"decision": "send", "reason": "no_provider", "confidence": 0.0, "source": "prefilter"}
@@ -8633,7 +8633,10 @@ Character-specific bottom-line baseline (reference only; empty means use the con
             setattr(review_event, "_private_companion_response_review_fallback_text", response_text)
         started = time.perf_counter()
         try:
-            review_provider_id = self._task_provider(self.response_review_provider_id, self.mai_style_provider_id)
+            review_provider_id = self._task_provider(
+                runtime_persona_setting(self, "response_review_provider_id", ""),
+                runtime_persona_setting(self, "mai_style_provider_id", ""),
+            )
             if content_tier == "adult":
                 review_provider_id = _single_line(getattr(self, "adult_content_provider_id", ""), 160)
                 if not review_provider_id:
@@ -9325,7 +9328,10 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
             raw = await self._llm_call(
                 prompt,
                 max_tokens=860 if learn_expression_rules else 520,
-                provider_id=self._task_provider(self.dialogue_episode_provider_id, self.mai_style_provider_id),
+                provider_id=self._task_provider(
+                    runtime_persona_setting(self, "dialogue_episode_provider_id", ""),
+                    runtime_persona_setting(self, "mai_style_provider_id", ""),
+                ),
                 task="dialogue_episode",
             )
             payload = self._extract_json_payload(raw or "")
@@ -9997,7 +10003,10 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
             raw = await self._llm_call(
                 prompt,
                 max_tokens=560,
-                provider_id=self._task_provider(self.companion_memory_provider_id, self.mai_style_provider_id),
+                provider_id=self._task_provider(
+                    runtime_persona_setting(self, "companion_memory_provider_id", ""),
+                    runtime_persona_setting(self, "mai_style_provider_id", ""),
+                ),
                 task="memory_profile",
             )
             payload = self._extract_json_payload(raw or "")

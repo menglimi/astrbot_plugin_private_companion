@@ -9,6 +9,8 @@ from astrbot.api.message_components import At, Image, Plain, Record, Reply
 from astrbot_plugin_private_companion.segmented_message import (
     bind_reply_components_to_first_text,
     component_kind,
+    component_order_from_owner,
+    component_strategies_from_owner,
     normalize_component_order,
     normalize_component_strategy,
     plan_component_chunks,
@@ -158,6 +160,43 @@ class SegmentedComponentPlannerTests(unittest.TestCase):
         self.assertEqual(
             ["image", "text", "at", "voice", "face", "other", "reaction"],
             normalize_component_order(["image", "image", "text", "unknown", "at", "voice"]),
+        )
+
+    def test_component_policy_uses_active_persona_settings(self):
+        class Owner:
+            segmented_proactive_voice_strategy = "separate"
+            segmented_proactive_image_strategy = "separate"
+            segmented_proactive_at_strategy = "inline"
+            segmented_proactive_face_strategy = "inline"
+            segmented_proactive_other_strategy = "separate"
+            segmented_proactive_component_order = ["voice", "text", "image"]
+            reaction_expression_delivery_mode = "separate_after"
+
+            values = {
+                "segmented_proactive_voice_strategy": "inline",
+                "segmented_proactive_image_strategy": "next",
+                "segmented_proactive_at_strategy": "separate",
+                "segmented_proactive_face_strategy": "previous",
+                "segmented_proactive_other_strategy": "inline",
+                "segmented_proactive_component_order": ["image", "text", "voice"],
+                "reaction_expression_delivery_mode": "same_message",
+            }
+
+            def persona_setting(self, key, default=None):
+                return self.values.get(key, getattr(self, key, default))
+
+        owner = Owner()
+        strategies = component_strategies_from_owner(owner)
+
+        self.assertEqual("inline", strategies["voice"])
+        self.assertEqual("next", strategies["image"])
+        self.assertEqual("separate", strategies["at"])
+        self.assertEqual("previous", strategies["face"])
+        self.assertEqual("inline", strategies["other"])
+        self.assertEqual("inline", strategies["reaction"])
+        self.assertEqual(
+            ["image", "text", "voice", "at", "face", "other", "reaction"],
+            component_order_from_owner(owner),
         )
 
 

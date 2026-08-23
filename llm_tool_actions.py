@@ -5214,8 +5214,12 @@ class LlmToolActionsMixin:
 
     async def _shared_embedding_provider(self) -> tuple[Any, str]:
         configured = _single_line(
-            getattr(self, "embedding_provider_id", "")
-            or getattr(self, "reaction_expression_embedding_provider_id", ""),
+            runtime_persona_setting(self, "embedding_provider_id", "")
+            or runtime_persona_setting(
+                self,
+                "reaction_expression_embedding_provider_id",
+                "",
+            ),
             160,
         )
         if not configured:
@@ -5224,8 +5228,12 @@ class LlmToolActionsMixin:
 
     async def _reaction_embedding_provider(self) -> tuple[Any, str]:
         configured = _single_line(
-            getattr(self, "reaction_expression_embedding_provider_id", "")
-            or getattr(self, "embedding_provider_id", ""),
+            runtime_persona_setting(
+                self,
+                "reaction_expression_embedding_provider_id",
+                "",
+            )
+            or runtime_persona_setting(self, "embedding_provider_id", ""),
             160,
         )
         return await self._embedding_provider_for_configured_id(configured)

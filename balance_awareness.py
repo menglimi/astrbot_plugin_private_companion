@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 from astrbot.api import logger
 
 from .helpers import _now_ts, _safe_float, _single_line
+from .persona_config import runtime_persona_setting
 
 
 class BalanceAwarenessMixin:
@@ -295,11 +296,11 @@ class BalanceAwarenessMixin:
             by_id[source_id] = raw
 
         preferred_values = [
-            getattr(self, "llm_provider_id", ""),
-            getattr(self, "mai_style_provider_id", ""),
-            getattr(self, "response_review_provider_id", ""),
-            getattr(self, "proactive_persona_judge_provider_id", ""),
-            getattr(self, "fast_response_provider_id", ""),
+            runtime_persona_setting(self, "llm_provider_id", ""),
+            runtime_persona_setting(self, "mai_style_provider_id", ""),
+            runtime_persona_setting(self, "response_review_provider_id", ""),
+            runtime_persona_setting(self, "proactive_persona_judge_provider_id", ""),
+            runtime_persona_setting(self, "fast_response_provider_id", ""),
         ]
         settings = config.get("provider_settings") if isinstance(config.get("provider_settings"), dict) else {}
         preferred_values.extend(

@@ -12,6 +12,7 @@ import uuid
 
 from identity_namespace import NamespaceContext
 from migration_scoped_projection import scoped_persona_ref
+from astrbot_plugin_private_companion.persona_config import runtime_persona_setting
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +41,7 @@ def _load_methods(*names: str) -> dict[str, Any]:
         "uuid": uuid,
         "_now_ts": lambda: 100.0,
         "_single_line": lambda value, limit=240: " ".join(str(value or "").split())[:limit],
+        "runtime_persona_setting": runtime_persona_setting,
     }
     exec(compile(module, str(ROOT / "main.py"), "exec"), namespace)
     return {name: namespace[name] for name in names}
@@ -90,6 +92,8 @@ class _Host:
         self._data_lock = asyncio.Lock()
         self.enable_multi_persona_mode = False
         self.default_enable_configured_targets = False
+        self._persona_overrides: dict[str, Any] = {}
+        self.sync_calls = 0
         self.req041_migration_status = {"required": True}
         self.req041_scoped_projection_sync = _Remote()
         self.persisted = deepcopy(self._data_default)
@@ -141,6 +145,12 @@ class _Host:
         data.setdefault("groups", {})
         return data
 
+    def persona_setting(self, key: str, default: Any = None) -> Any:
+        return self._persona_overrides.get(key, getattr(self, key, default))
+
+    def _sync_configured_targets(self) -> None:
+        self.sync_calls += 1
+
     def _write_data_snapshot_sync(self, snapshot: dict[str, Any]) -> None:
         if self.fail_replacement_once and "_req041_persona_reset_saga" not in snapshot:
             self.fail_replacement_once = False
@@ -165,6 +175,17 @@ class _Host:
 
 
 class PersonaResetSagaTests(unittest.TestCase):
+    def test_reset_uses_active_persona_target_sync_setting(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            host = _Host(root)
+            host._persona_overrides["default_enable_configured_targets"] = True
+
+            result = asyncio.run(host._reset_current_persona_store(rebuild_today=False))
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(1, host.sync_calls)
+            self.assertFalse(host.default_enable_configured_targets)
+
     def test_remote_failure_preserves_local_profile_and_restart_resumes_same_operation(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             host = _Host(root)

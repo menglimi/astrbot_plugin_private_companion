@@ -18,6 +18,7 @@ from .constants import (
 )
 from .helpers import _flat_get, _now_ts, _safe_float, _safe_int, _single_line, _today_key
 from .model_routing import contains_sensitive_refusal, scope_allows
+from .persona_config import runtime_persona_setting
 
 
 def _looks_like_upstream_llm_error_response(text: Any) -> bool:
@@ -965,7 +966,12 @@ class TokenBudgetMixin:
         return _single_line(getattr(provider, "provider_id", ""), 160)
 
     def _resolve_chat_provider_id(self, provider_id: str | None = None, *, umo: str = "") -> str:
-        return str(provider_id or self.llm_provider_id or self._default_chat_provider_id(umo) or "").strip()
+        return str(
+            provider_id
+            or runtime_persona_setting(self, "llm_provider_id", "")
+            or self._default_chat_provider_id(umo)
+            or ""
+        ).strip()
 
     def _sensitive_model_replacement_provider(self, primary_provider_id: str = "") -> str:
         if not bool(getattr(self, "enable_sensitive_model_replacement", False)):
@@ -1030,7 +1036,7 @@ class TokenBudgetMixin:
 
     def _chat_provider_ready(self) -> bool:
         """Return whether an explicit or currently loaded chat Provider is ready."""
-        if _single_line(getattr(self, "llm_provider_id", ""), 160):
+        if _single_line(runtime_persona_setting(self, "llm_provider_id", ""), 160):
             return True
         return bool(self._default_chat_provider_id())
 
@@ -1587,7 +1593,10 @@ class TokenBudgetMixin:
     ) -> str | None:
         selected_provider = self._resolve_chat_provider_id(provider_id)
         peak_router = getattr(self, "_apply_deepseek_peak_replacement", None)
-        if not strict_provider and callable(peak_router) and (str(provider_id or "").strip() or str(getattr(self, "llm_provider_id", "") or "").strip()):
+        if not strict_provider and callable(peak_router) and (
+            str(provider_id or "").strip()
+            or str(runtime_persona_setting(self, "llm_provider_id", "") or "").strip()
+        ):
             selected_provider = peak_router(selected_provider)
         task_key = _single_line(task, 40) or self._classify_llm_prompt(prompt)
         usage_prompt = (

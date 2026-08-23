@@ -12,6 +12,7 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
 from .helpers import _now_ts, _safe_float, _safe_int, _single_line
+from .persona_config import runtime_persona_setting
 
 __all__ = ("QzoneCommentMixin",)
 
@@ -351,7 +352,10 @@ class QzoneCommentMixin:
         raw = await self._llm_call(
             prompt,
             max_tokens=120,
-            provider_id=self._task_provider(self.mai_style_provider_id, self.llm_provider_id),
+            provider_id=self._task_provider(
+                runtime_persona_setting(self, "MAI_STYLE_PROVIDER_ID", ""),
+                runtime_persona_setting(self, "LLM_PROVIDER_ID", ""),
+            ),
             task="qzone_comment_inbox_decision",
         )
         payload = self._extract_json_payload(raw or "")

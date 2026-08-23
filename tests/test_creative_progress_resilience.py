@@ -496,6 +496,27 @@ class CreativePersonaPolishTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(slow_gap, int(320 * 1.35))
         self.assertEqual(energetic_gap, int(320 * 0.8))
 
+    def test_advance_gap_uses_active_persona_style(self) -> None:
+        class PersonaCreative(CreativeMixin):
+            schedule_persona_prompt = ""
+            default_style = ""
+            bot_name = "主人格"
+
+            def persona_setting(self, key, default=None):
+                values = {
+                    "schedule_persona_prompt": "慢热寡言",
+                    "default_style": "",
+                    "bot_name": "次人格",
+                }
+                return values.get(key, getattr(self, key, default))
+
+        harness = PersonaCreative()
+        noon = datetime(2026, 8, 12, 13, 0).timestamp()
+        with patch.object(creative_module.random, "random", return_value=0.99), \
+                patch.object(creative_module.random, "randint", side_effect=lambda low, high: high):
+            self.assertEqual(int(320 * 1.35), harness._creative_advance_gap_minutes({}, noon))
+        self.assertEqual("", harness.schedule_persona_prompt)
+
     def test_advance_gap_occasional_burst_does_not_chain(self) -> None:
         harness = CreativeMixin()
         harness.schedule_persona_prompt = ""

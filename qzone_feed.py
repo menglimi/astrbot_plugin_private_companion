@@ -14,6 +14,7 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
 from .helpers import _safe_float, _safe_int, _single_line
+from .persona_config import runtime_persona_setting
 from .qzone_recent_parser import is_official_qzone_promotion
 
 __all__ = ("QzoneFeedMixin",)
@@ -529,7 +530,10 @@ class QzoneFeedMixin:
         text = await self._llm_call(
             prompt,
             max_tokens=80,
-            provider_id=self._task_provider(self.mai_style_provider_id, self.llm_provider_id),
+            provider_id=self._task_provider(
+                runtime_persona_setting(self, "MAI_STYLE_PROVIDER_ID", ""),
+                runtime_persona_setting(self, "LLM_PROVIDER_ID", ""),
+            ),
             task="qzone_comment",
         )
         return _single_line(text, 80)

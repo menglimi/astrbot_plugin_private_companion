@@ -2763,9 +2763,7 @@ class DailyStateMixin(DailyStateTickMixin):
             if kind == "last_message"
             else "proactive_dedup_sent_window_minutes"
         )
-        raw = getattr(self, key, None)
-        if raw is None:
-            return max(0, int(default))
+        raw = runtime_persona_setting(self, key, default)
         try:
             return max(0, int(raw))
         except (TypeError, ValueError):
@@ -4011,7 +4009,7 @@ class DailyStateMixin(DailyStateTickMixin):
         }
         default = defaults.get(phase, 1)
         attribute = attributes.get(phase, "")
-        return _safe_int(getattr(self, attribute, default), default, 1, 30) if attribute else default
+        return _safe_int(runtime_persona_setting(self, attribute, default), default, 1, 30) if attribute else default
 
     def _advanced_cycle_phase_hours(self, phase: str) -> int | None:
         if phase not in self._ADVANCED_CYCLE_PHASES:
@@ -4225,12 +4223,12 @@ class DailyStateMixin(DailyStateTickMixin):
         selected_phase = phase if phase in defaults else "menstrual"
         default_prompt, default_mood, default_energy = defaults[selected_phase]
         prompt_attr, mood_attr, energy_attr = attributes[selected_phase]
-        label = _single_line(getattr(self, prompt_attr, default_prompt), 160) or default_prompt
-        mood = _single_line(getattr(self, mood_attr, default_mood), 20) or default_mood
+        label = _single_line(runtime_persona_setting(self, prompt_attr, default_prompt), 160) or default_prompt
+        mood = _single_line(runtime_persona_setting(self, mood_attr, default_mood), 20) or default_mood
         energy_delta = (
             self._advanced_cycle_linked_energy(selected_phase)
         if bool(runtime_persona_setting(self, "advanced_cycle_link_intensity", False))
-            else _safe_int(getattr(self, energy_attr, default_energy), default_energy, -50, 30)
+            else _safe_int(runtime_persona_setting(self, energy_attr, default_energy), default_energy, -50, 30)
         )
         return label, mood, energy_delta, self._advanced_cycle_phase_days(selected_phase) * 24
 

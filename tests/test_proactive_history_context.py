@@ -21,6 +21,10 @@ class _HistoryHarness(ProactiveMessageMixin, DailyStateMixin):
         self._conversation = SimpleNamespace(
             history=json.dumps(items or [], ensure_ascii=False)
         )
+        self.persona_values: dict[str, object] = {}
+
+    def persona_setting(self, key: str, default: object = None) -> object:
+        return self.persona_values.get(key, getattr(self, key, default))
 
     async def _get_current_conversation_safely(self, _umo: str, *, label: str = ""):
         return self._conversation
@@ -37,6 +41,15 @@ class ProactiveHistoryContextTests(unittest.IsolatedAsyncioTestCase):
         harness.proactive_review_history_limit = 64
         self.assertEqual(42, harness._proactive_history_limit("generation"))
         self.assertEqual(64, harness._proactive_history_limit("review"))
+
+        harness.persona_values.update(
+            {
+                "proactive_generation_history_limit": 17,
+                "proactive_review_history_limit": 23,
+            }
+        )
+        self.assertEqual(17, harness._proactive_history_limit("generation"))
+        self.assertEqual(23, harness._proactive_history_limit("review"))
 
     async def test_compact_mode_keeps_recent_raw_and_includes_older_facts(self):
         items = [

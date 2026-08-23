@@ -4196,7 +4196,12 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         review_stage = str(stage or "").strip().lower() == "review"
         attr = "proactive_review_history_limit" if review_stage else "proactive_generation_history_limit"
         default = 30 if review_stage else 20
-        return _safe_int(getattr(self, attr, default), default, 1, 200)
+        return _safe_int(
+            runtime_persona_setting(self, attr, default),
+            default,
+            1,
+            200,
+        )
 
     @staticmethod
     def _fit_proactive_history_lines(lines: list[str], max_chars: int) -> list[str]:
@@ -4406,9 +4411,24 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
                 prompt,
                 max_tokens=140,
                 provider_id=self._task_provider(
-                    getattr(self, "response_review_provider_id", ""),
-                    getattr(self, "mai_style_provider_id", ""),
-                    getattr(self, "llm_provider_id", ""),
+                    _persona_provider_id(
+                        self,
+                        "RESPONSE_REVIEW_PROVIDER_ID",
+                        "response_review_provider_id",
+                        "fast",
+                    ),
+                    _persona_provider_id(
+                        self,
+                        "MAI_STYLE_PROVIDER_ID",
+                        "mai_style_provider_id",
+                        "fast",
+                    ),
+                    _persona_provider_id(
+                        self,
+                        "LLM_PROVIDER_ID",
+                        "llm_provider_id",
+                        "complex",
+                    ),
                 ),
                 task=task,
             )
@@ -11222,7 +11242,7 @@ Output:
             config_key = "photo_generation_text2img_fixed_prompt"
             label = "Additional text-to-image fixed prompt"
 
-        raw = str(getattr(self, config_key, "") or "")
+        raw = str(runtime_persona_setting(self, config_key, "") or "")
         normalized_prompt = self._sanitize_photo_generation_fixed_prompt_config(raw)
         positive, negative = self._photo_generation_semantic_prompt_parts(normalized_prompt)
         section = PhotoPromptSection(
@@ -11336,7 +11356,7 @@ Output:
         }[normalized]
         values = (
             runtime_persona_setting(self, "photo_generation_negative_prompt", ""),
-            getattr(self, scoped_key, ""),
+            runtime_persona_setting(self, scoped_key, ""),
         )
         combined: list[str] = []
         seen: set[str] = set()
@@ -13097,7 +13117,9 @@ Output:
         suggested_scene_preset: str = "",
         continuity_key: str = "",
     ) -> str:
-        if not bool(getattr(self, "enable_photo_reference_image", False)):
+        if not bool(
+            runtime_persona_setting(self, "enable_photo_reference_image", False)
+        ):
             return ""
         if str(workflow_kind or "").strip().lower() not in {
             "selfie",
@@ -13873,10 +13895,18 @@ Output:
         provider_selector = getattr(self, "_task_provider", None)
         if not provider_id and callable(provider_selector):
             provider_id = provider_selector(
-                getattr(self, "photo_prompt_provider_id", ""),
-                getattr(self, "fast_response_provider_id", ""),
-                getattr(self, "llm_provider_id", ""),
-                getattr(self, "mai_style_provider_id", ""),
+                _persona_provider_id(
+                    self, "PHOTO_PROMPT_PROVIDER_ID", "photo_prompt_provider_id", "creative"
+                ),
+                _persona_provider_id(
+                    self, "FAST_RESPONSE_PROVIDER_ID", "fast_response_provider_id", "fast"
+                ),
+                _persona_provider_id(
+                    self, "LLM_PROVIDER_ID", "llm_provider_id", "complex"
+                ),
+                _persona_provider_id(
+                    self, "MAI_STYLE_PROVIDER_ID", "mai_style_provider_id", "fast"
+                ),
             )
         llm_call = getattr(self, "_llm_call", None)
         specialized_candidate = any(
@@ -14118,10 +14148,18 @@ Output:
         provider_id = ""
         if callable(provider_selector):
             provider_id = provider_selector(
-                getattr(self, "photo_prompt_provider_id", ""),
-                getattr(self, "fast_response_provider_id", ""),
-                getattr(self, "llm_provider_id", ""),
-                getattr(self, "mai_style_provider_id", ""),
+                _persona_provider_id(
+                    self, "PHOTO_PROMPT_PROVIDER_ID", "photo_prompt_provider_id", "creative"
+                ),
+                _persona_provider_id(
+                    self, "FAST_RESPONSE_PROVIDER_ID", "fast_response_provider_id", "fast"
+                ),
+                _persona_provider_id(
+                    self, "LLM_PROVIDER_ID", "llm_provider_id", "complex"
+                ),
+                _persona_provider_id(
+                    self, "MAI_STYLE_PROVIDER_ID", "mai_style_provider_id", "fast"
+                ),
             )
 
         prompt = f"""
@@ -15400,7 +15438,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
             runtime_persona_setting(self, "enable_segmented_proactive_chat_profiles", False)
         ):
             return bool(
-                getattr(
+                runtime_persona_setting(
                     self,
                     f"segmented_proactive_{chat_type}_enabled",
                     True,
@@ -15437,7 +15475,11 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         default: Any = None,
     ) -> Any:
         normalized_name = str(name or "").strip()
-        fallback = getattr(self, f"segmented_proactive_{normalized_name}", default)
+        fallback = runtime_persona_setting(
+            self,
+            f"segmented_proactive_{normalized_name}",
+            default,
+        )
         if not bool(
             runtime_persona_setting(self, "enable_segmented_proactive_chat_profiles", False)
         ):
@@ -15449,7 +15491,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
                 if event is not None
                 else self._segmented_chat_type_for_umo(umo)
             )
-        return getattr(
+        return runtime_persona_setting(
             self,
             f"segmented_proactive_{resolved_chat_type}_{normalized_name}",
             fallback,

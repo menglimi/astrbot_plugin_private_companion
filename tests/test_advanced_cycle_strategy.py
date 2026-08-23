@@ -42,6 +42,10 @@ class _AdvancedCycleHarness(DailyStateMixin):
 
     def __init__(self) -> None:
         self.data = {"state_conditions": [], "daily_weather": {}}
+        self._persona_overrides: dict[str, object] = {}
+
+    def persona_setting(self, key: str, default=None):
+        return self._persona_overrides.get(key, getattr(self, key, default))
 
     def _persona_state_profile(self) -> dict[str, bool]:
         return {"allow_hunger": False, "allow_health": False, "allow_cycle": True}
@@ -72,6 +76,26 @@ class _AdvancedCycleHarness(DailyStateMixin):
 
 
 class AdvancedCycleStrategyTests(unittest.IsolatedAsyncioTestCase):
+    def test_advanced_cycle_fields_and_dedup_windows_use_persona_overrides(self) -> None:
+        harness = _AdvancedCycleHarness()
+        harness._persona_overrides.update(
+            {
+                "advanced_cycle_menstrual_days": 9,
+                "advanced_cycle_menstrual_prompt": "次人格经期提示",
+                "advanced_cycle_menstrual_mood": "次人格疲惫",
+                "advanced_cycle_menstrual_energy": -23,
+                "proactive_dedup_sent_window_minutes": 17,
+            }
+        )
+
+        self.assertEqual(9, harness._advanced_cycle_phase_days("menstrual"))
+        self.assertEqual(
+            ("次人格经期提示", "次人格疲惫", -23, 216),
+            harness._advanced_cycle_phase_spec("menstrual"),
+        )
+        self.assertEqual(17, harness._proactive_dedup_window_minutes("sent", 240))
+        self.assertEqual(5, harness.advanced_cycle_menstrual_days)
+
     def test_all_six_phases_are_inferred_without_legacy_collisions(self) -> None:
         harness = _AdvancedCycleHarness()
         cases = {

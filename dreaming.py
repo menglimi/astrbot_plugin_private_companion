@@ -647,9 +647,9 @@ async def generate_enhanced_dream_pick(plugin, weather: dict[str, Any] | None = 
         max_tokens=1050,
         task="dream",
         provider_id=plugin._task_provider(
-            getattr(plugin, "dream_provider_id", ""),
-            getattr(plugin, "diary_provider_id", ""),
-            getattr(plugin, "mai_style_provider_id", ""),
+            runtime_persona_setting(plugin, "DREAM_PROVIDER_ID", ""),
+            runtime_persona_setting(plugin, "DIARY_PROVIDER_ID", ""),
+            runtime_persona_setting(plugin, "MAI_STYLE_PROVIDER_ID", ""),
         ),
     )
     payload = plugin._extract_json_payload(raw_text or "")
@@ -966,8 +966,8 @@ async def _rewrite_daily_diary_once(
             max_tokens=520,
             task="diary_rewrite",
             provider_id=plugin._task_provider(
-                getattr(plugin, "diary_provider_id", ""),
-                getattr(plugin, "mai_style_provider_id", ""),
+                runtime_persona_setting(plugin, "DIARY_PROVIDER_ID", ""),
+                runtime_persona_setting(plugin, "MAI_STYLE_PROVIDER_ID", ""),
             ),
         )
         parsed = plugin._extract_json_payload(raw or "")
@@ -1002,7 +1002,10 @@ async def _extract_daily_diary_derivatives(plugin, payload: dict[str, Any]) -> d
             prompt,
             max_tokens=320,
             task="diary_derivatives",
-            provider_id=plugin._task_provider(getattr(plugin, "diary_provider_id", ""), getattr(plugin, "mai_style_provider_id", "")),
+            provider_id=plugin._task_provider(
+                runtime_persona_setting(plugin, "DIARY_PROVIDER_ID", ""),
+                runtime_persona_setting(plugin, "MAI_STYLE_PROVIDER_ID", ""),
+            ),
         )
         parsed = plugin._extract_json_payload(raw or "")
         return parsed if isinstance(parsed, dict) else {}
@@ -1106,8 +1109,8 @@ async def generate_daily_diary(plugin) -> dict[str, Any]:
             max_tokens=620,
             task="diary",
             provider_id=plugin._task_provider(
-                getattr(plugin, "diary_provider_id", ""),
-                getattr(plugin, "mai_style_provider_id", ""),
+                runtime_persona_setting(plugin, "DIARY_PROVIDER_ID", ""),
+                runtime_persona_setting(plugin, "MAI_STYLE_PROVIDER_ID", ""),
             ),
         )
     except Exception:

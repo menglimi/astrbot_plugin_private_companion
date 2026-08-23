@@ -58,6 +58,15 @@ def test_memory_and_affect_paths_use_persona_overrides() -> None:
 
 def test_runtime_mixins_do_not_bypass_persona_setting_resolver() -> None:
     manifest = load_scope_manifest()
+    manifest_aliases = {
+        key.casefold(): key
+        for key in manifest
+        if key.isupper() and key.endswith("_PROVIDER_ID")
+    }
+
+    def manifest_key(runtime_key: str) -> str:
+        return manifest_aliases.get(runtime_key.casefold(), runtime_key)
+
     targets = {
         "user_memory.py": "UserMemoryMixin",
         "memory_companion_adapter.py": "MemoryCompanionAdapterMixin",
@@ -93,7 +102,7 @@ def test_runtime_mixins_do_not_bypass_persona_setting_resolver() -> None:
                 and isinstance(node.args[1].value, str)
             ):
                 key = node.args[1].value
-            if key and manifest.get(key, {}).get("scope") == "persona":
+            if key and manifest.get(manifest_key(key), {}).get("scope") == "persona":
                 violations.append(f"{filename}:{node.lineno}:{key}")
 
             if (
@@ -103,10 +112,10 @@ def test_runtime_mixins_do_not_bypass_persona_setting_resolver() -> None:
                 and len(node.args) >= 2
                 and isinstance(node.args[1], ast.Constant)
                 and isinstance(node.args[1].value, str)
-            ):
-                resolver_key = node.args[1].value
-                if manifest.get(resolver_key, {}).get("scope") != "persona":
-                    invalid_resolver_calls.append(f"{filename}:{node.lineno}:{resolver_key}")
+                ):
+                    resolver_key = node.args[1].value
+                    if manifest.get(manifest_key(resolver_key), {}).get("scope") != "persona":
+                        invalid_resolver_calls.append(f"{filename}:{node.lineno}:{resolver_key}")
 
     assert violations == []
     assert invalid_resolver_calls == []

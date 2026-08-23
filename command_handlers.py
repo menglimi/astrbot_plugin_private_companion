@@ -3370,19 +3370,19 @@ class CommandHandlersMixin:
         provider_selector = getattr(self, "_task_provider", None)
         if callable(provider_selector):
             provider_id = provider_selector(
-                getattr(self, "troubleshooting_provider_id", ""),
-                getattr(self, "complex_reasoning_provider_id", ""),
-                getattr(self, "llm_provider_id", ""),
-                getattr(self, "response_review_provider_id", ""),
-                getattr(self, "mai_style_provider_id", ""),
+                runtime_persona_setting(self, "troubleshooting_provider_id", ""),
+                runtime_persona_setting(self, "complex_reasoning_provider_id", ""),
+                runtime_persona_setting(self, "llm_provider_id", ""),
+                runtime_persona_setting(self, "response_review_provider_id", ""),
+                runtime_persona_setting(self, "mai_style_provider_id", ""),
             )
         else:
             provider_id = str(
-                getattr(self, "troubleshooting_provider_id", "")
-                or getattr(self, "complex_reasoning_provider_id", "")
-                or getattr(self, "llm_provider_id", "")
-                or getattr(self, "response_review_provider_id", "")
-                or getattr(self, "mai_style_provider_id", "")
+                runtime_persona_setting(self, "troubleshooting_provider_id", "")
+                or runtime_persona_setting(self, "complex_reasoning_provider_id", "")
+                or runtime_persona_setting(self, "llm_provider_id", "")
+                or runtime_persona_setting(self, "response_review_provider_id", "")
+                or runtime_persona_setting(self, "mai_style_provider_id", "")
                 or ""
             )
         if not provider_id:

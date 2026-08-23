@@ -236,7 +236,7 @@ class CreativeMixin:
         elif 7 <= now_dt.hour < 10:
             low, high = int(low * 1.8), int(high * 1.3)
         persona = " ".join(
-            str(getattr(self, name, "") or "")
+            str(runtime_persona_setting(self, name, "") or "")
             for name in ("schedule_persona_prompt", "default_style", "bot_name")
         )
         if any(token in persona for token in ("慢热", "寡言", "内敛", "病弱", "疲惫", "懒", "迟钝")):

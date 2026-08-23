@@ -49,6 +49,10 @@ class _RoutingHarness(TtsEnhancementMixin):
         self.data = {"runtime_settings": {}}
         self.config = {"tts_voice_language": "ja"}
         self.saved = 0
+        self.persona_values: dict[str, object] = {}
+
+    def persona_setting(self, key: str, default: object = None) -> object:
+        return self.persona_values.get(key, getattr(self, key, default))
 
     def _save_data_sync(self) -> None:
         self.saved += 1
@@ -95,6 +99,17 @@ class TtsLanguageProviderRoutingTests(unittest.TestCase):
         self.assertEqual(
             harness._tts_fishaudio_model_for_provider(harness.ja, harness.ja.provider_config),
             "s2.1-pro",
+        )
+
+    def test_language_provider_uses_active_persona_override(self) -> None:
+        harness = _RoutingHarness()
+        harness.tts_voice_language = "zh"
+        harness.tts_provider_id_zh = "tts-zh"
+        harness.persona_values["tts_provider_id_zh"] = "tts-en"
+
+        self.assertIs(
+            harness._resolve_tts_synthesis_provider(None, harness.default),
+            harness.en,
         )
 
     def test_page_api_lists_only_tts_provider_choices(self) -> None:
