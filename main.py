@@ -3835,11 +3835,25 @@ class PrivateCompanionPlugin(
         revision = int(profile.get(PERSONA_SETTINGS_REVISION_KEY) or 0)
         settings = profile.get(PERSONA_SETTINGS_KEY) or {}
         detached = detach_persona_settings(settings, self._primary_persona_config(), manifest=self._persona_scope_manifest())
+        existing = sorted(set(detached) & set(settings))
         missing = sorted(set(detached) - set(settings))
         digest = hashlib.sha256(
             json.dumps({"persona_id": pid, "revision": revision, "settings": detached}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
-        return {"ok": True, "persona_id": pid, "revision": revision, "missing_keys": missing, "materialized_count": len(detached), "preview_hash": digest}
+        return {
+            "ok": True,
+            "persona_id": pid,
+            "revision": revision,
+            "existing_override_keys": existing,
+            "existing_override_count": len(existing),
+            "follow_primary_keys": missing,
+            "follow_primary_count": len(missing),
+            "final_settings_count": len(detached),
+            # Kept for compatibility with clients built before split statistics.
+            "missing_keys": missing,
+            "materialized_count": len(detached),
+            "preview_hash": digest,
+        }
 
     async def _detach_persona_settings_async(self, persona_id: Any, *, expected_revision: Any, preview_hash: Any) -> dict[str, Any]:
         preview = self._persona_detach_preview(persona_id)

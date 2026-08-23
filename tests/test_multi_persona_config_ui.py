@@ -65,6 +65,34 @@ class MultiPersonaConfigUiTests(unittest.TestCase):
         self.assertIn("setPersonaOperationBusy(false);", run_action)
         self.assertNotIn("const bindingControl = event.currentTarget;", script)
 
+    def test_persona_config_save_and_follow_release_balanced_selector_locks(self) -> None:
+        script = (PRIMARY / "app.js").read_text(encoding="utf-8")
+        save_scope = script.split(
+            "async function savePersonaScopedFeatureChanges(", 1
+        )[1].split("\n}\n\nasync function followPersonaSetting", 1)[0]
+        follow_scope = script.split("async function followPersonaSetting(", 1)[1].split(
+            "\n}\n\nfunction scopePagePersonaRequest", 1
+        )[0]
+
+        for scope in (save_scope, follow_scope):
+            self.assertEqual(scope.count("setPersonaOperationBusy(true);"), 1)
+            self.assertEqual(scope.count("setPersonaOperationBusy(false);"), 1)
+            self.assertLess(
+                scope.index("setPersonaOperationBusy(true);"),
+                scope.index("setPersonaOperationBusy(false);"),
+            )
+
+    def test_detach_copy_and_persona_selector_use_plain_language(self) -> None:
+        script = (PRIMARY / "app.js").read_text(encoding="utf-8")
+        self.assertIn("把指定人格原本的跟随项以值的方式写入自身配置。", script)
+        self.assertIn(">统计变更</button>", script)
+        self.assertIn("existing_override_count", script)
+        self.assertIn("follow_primary_count", script)
+        self.assertIn("final_settings_count", script)
+        self.assertIn('rawSource === "运行态人格" ? "" : rawSource', script)
+        self.assertNotIn("预览固化内容", script)
+        self.assertNotIn(" · 版本 ${escapeHtml(state.personaConfigState.revision", script)
+
     def test_window_binding_crud_is_absent_and_legacy_notice_is_read_only(self) -> None:
         script = (PRIMARY / "app.js").read_text(encoding="utf-8")
         for marker in (

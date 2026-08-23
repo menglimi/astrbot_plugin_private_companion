@@ -90,7 +90,17 @@ def test_persona_config_api_lifecycle_and_sparse_following():
                 {"persona_id": "alt"},
             )
             assert preview["success"]
-            assert preview["data"]["materialized_count"] > 2
+            preview_data = preview["data"]
+            existing_keys = set(preview_data["existing_override_keys"])
+            follow_keys = set(preview_data["follow_primary_keys"])
+            assert {"bot_name", "quiet_hours", "enable_proactive_burst"} <= existing_keys
+            assert existing_keys.isdisjoint(follow_keys)
+            assert preview_data["existing_override_count"] == len(existing_keys)
+            assert preview_data["follow_primary_count"] == len(follow_keys)
+            assert preview_data["final_settings_count"] == len(existing_keys | follow_keys)
+            assert preview_data["materialized_count"] == preview_data["final_settings_count"]
+            assert preview_data["missing_keys"] == preview_data["follow_primary_keys"]
+            assert preview_data["follow_primary_count"] > 0
             status = plugin._multi_persona_status()
             assert status["enabled_ids"] == ["main", "alt"]
             assert status["configured_profiles"] == ["alt"]

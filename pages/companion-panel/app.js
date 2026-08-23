@@ -5631,7 +5631,8 @@ function personaDisplayLabel(personaOrId, options = {}) {
   if (cleanLabel && id && cleanLabel.toLocaleLowerCase().includes(id.toLocaleLowerCase()) === false) {
     display = `${cleanLabel} · ${id}`;
   }
-  const source = options.includeSource ? String(persona.source || "").trim() : "";
+  const rawSource = options.includeSource ? String(persona.source || "").trim() : "";
+  const source = rawSource === "运行态人格" ? "" : rawSource;
   if (source && !display.toLocaleLowerCase().includes(source.toLocaleLowerCase())) {
     display = display ? `${display} · ${source}` : source;
   }
@@ -6165,6 +6166,7 @@ async function savePersonaScopedFeatureChanges(payload, control = null, successM
     return false;
   } finally {
     setActionBusy(control, false);
+    setPersonaOperationBusy(false);
     syncFeatureFooterAction();
   }
 }
@@ -6177,6 +6179,7 @@ async function followPersonaSetting(key, control = null) {
     showToast("人格配置版本不可用，请刷新后重试", "error");
     return false;
   }
+  setPersonaOperationBusy(true);
   setActionBusy(control, true);
   try {
     const result = await postJson("/persona/settings/update", {
@@ -12293,6 +12296,7 @@ async function updateTroubleshootingWarningSuppression(control) {
   } catch (error) {
     showToast(`更新警告屏蔽失败：${error.message}`, "error");
     setActionBusy(control, false);
+    setPersonaOperationBusy(false);
     return;
   }
   try {
@@ -23282,7 +23286,7 @@ function renderConfigPersonaSelector() {
       ? "主人格配置"
       : "独立人格配置";
     meta.innerHTML = selected
-      ? `当前编辑：<b>${escapeHtml(personaDisplayLabel(selected))}</b><span>${escapeHtml(source)} · ${configuredIds.has(selected) ? "运行中" : "已停用，可编辑恢复"} · 保存只影响所选人格${state.personaConfigState && state.personaConfigState.persona_id === selected ? ` · 版本 ${escapeHtml(state.personaConfigState.revision ?? 0)}` : ""}</span>${state.personaConfigError ? `<em class="persona-config-error">${escapeHtml(state.personaConfigError)}</em>` : ""}`
+      ? `当前编辑：<b>${escapeHtml(personaDisplayLabel(selected))}</b><span>${escapeHtml(source)} · ${configuredIds.has(selected) ? "运行中" : "已停用，可编辑恢复"} · 保存只影响所选人格</span>${state.personaConfigError ? `<em class="persona-config-error">${escapeHtml(state.personaConfigError)}</em>` : ""}`
       : "请先在通用设置中配置人格列表";
   }
   if (select.dataset.bound === "1") return;
@@ -23361,7 +23365,7 @@ function renderPersonaConfigManagement() {
       <div class="persona-management-status"><span class="module-badge">${enabled ? `${escapeHtml(enabledPersonaIds.size)} / ${escapeHtml(ids.length)} 启用` : "总开关未开启"}</span></div>
     </header>
     <div class="persona-management-note">
-      <span>创建方式：跟随主人格、从默认值创建、复制已有人格；也可以把当前有效配置脱离主人格并固化。</span>
+      <span>创建方式：跟随主人格、从默认值创建、复制已有人格；也可以把跟随项以当前值写入人格自身配置。</span>
       <span>人格配置缺少某个键时继续读取主人格；显式的 false、0、空列表和空字符串会保留为独立值。</span>
     </div>
     ${primarySetup}
@@ -23387,13 +23391,13 @@ function renderPersonaConfigManagement() {
         <button type="submit" class="feature-param-save" ${createPersonaRecords.length ? "" : "disabled"}>创建人格配置</button>
       </form>
       <form class="persona-config-detach-form" data-persona-config-detach>
-        <header><b>脱离主人格跟随</b><span>把目标人格缺失键的当前有效值固化到自身配置。</span></header>
+        <header><b>脱离主人格跟随</b><span>把指定人格原本的跟随项以值的方式写入自身配置。</span></header>
         <label><span>目标人格</span><select name="persona_id">${detachOptions || '<option value="">暂无独立人格配置</option>'}</select></label>
         <div class="persona-config-detach-actions">
-          <button type="button" data-persona-detach-preview ${detachOptions ? "" : "disabled"}>预览固化内容</button>
+          <button type="button" data-persona-detach-preview ${detachOptions ? "" : "disabled"}>统计变更</button>
           <button type="button" class="feature-param-save" data-persona-detach-apply disabled>确认脱离</button>
         </div>
-        <div class="persona-config-detach-preview" data-persona-detach-result>${state.personaDetachPreview ? personaDetachPreviewHtml(state.personaDetachPreview) : "尚未生成预览。"}</div>
+        <div class="persona-config-detach-preview" data-persona-detach-result>${state.personaDetachPreview ? personaDetachPreviewHtml(state.personaDetachPreview) : "尚未统计变更。"}</div>
       </form>
     </div>
     <div class="persona-management-body">${multiPersonaMigrationDetailCard()}</div>
@@ -23606,7 +23610,7 @@ function bindPersonaManagementActions(root) {
     state.personaDetachPreview = null;
     const result = detachForm.querySelector("[data-persona-detach-result]");
     const apply = detachForm.querySelector("[data-persona-detach-apply]");
-    if (result) result.textContent = "人格已变化，请重新预览。";
+    if (result) result.textContent = "人格已变化，请重新统计变更。";
     if (apply) apply.disabled = true;
   });
   detachForm?.querySelector("[data-persona-detach-preview]")?.addEventListener("click", async (event) => {
@@ -23620,13 +23624,13 @@ function bindPersonaManagementActions(root) {
       if (output) output.innerHTML = personaDetachPreviewHtml(result);
       if (apply) apply.disabled = !result;
       return result;
-    }, "脱离预览已生成", event.currentTarget, { reload: false });
+    }, "变更统计已生成", event.currentTarget, { reload: false });
   });
   detachForm?.querySelector("[data-persona-detach-apply]")?.addEventListener("click", async (event) => {
     const preview = state.personaDetachPreview;
     const personaId = String(detachSelect?.value || "").trim();
-    if (!preview || !personaId) return showToast("请先生成脱离预览", "error");
-    if (!window.confirm(`确认将“${personaDisplayLabel(personaId)}”的当前有效配置全部固化吗？`)) return;
+    if (!preview || !personaId) return showToast("请先统计变更", "error");
+    if (!window.confirm(`确认将“${personaDisplayLabel(personaId)}”原本跟随主人格的配置项以当前值写入自身配置吗？`)) return;
     const saved = await runAction(() => postJson("/persona/config/detach-apply", {
       persona_id: personaId,
       expected_revision: preview.revision ?? preview.persona_settings_revision ?? 0,
@@ -23640,11 +23644,14 @@ function bindPersonaManagementActions(root) {
 }
 
 function personaDetachPreviewHtml(preview) {
-  const keys = Array.isArray(preview?.materialized_keys)
-    ? preview.materialized_keys
-    : (Array.isArray(preview?.keys) ? preview.keys : []);
-  const count = Number(preview?.materialized_count ?? preview?.count ?? keys.length ?? 0);
-  return `<b>将固化 ${escapeHtml(count)} 个配置项</b><span>${escapeHtml(keys.slice(0, 12).join("、") || "当前缺失项将使用预览中的有效值")}${keys.length > 12 ? ` 等 ${escapeHtml(keys.length)} 项` : ""}</span>`;
+  const followKeys = Array.isArray(preview?.follow_primary_keys)
+    ? preview.follow_primary_keys
+    : (Array.isArray(preview?.missing_keys) ? preview.missing_keys : []);
+  const existingCount = Number(preview?.existing_override_count ?? 0);
+  const followCount = Number(preview?.follow_primary_count ?? followKeys.length ?? 0);
+  const finalCount = Number(preview?.final_settings_count ?? preview?.materialized_count ?? existingCount + followCount);
+  const changedKeys = followKeys.slice(0, 12).join("、");
+  return `<b>本次写入 ${escapeHtml(followCount)} 项跟随设置</b><span>原有 ${escapeHtml(existingCount)} 项独立设置保持不变；完成后共 ${escapeHtml(finalCount)} 项独立设置。</span><span>${escapeHtml(changedKeys || "当前没有需要写入的跟随项")}${followKeys.length > 12 ? ` 等 ${escapeHtml(followKeys.length)} 项` : ""}</span>`;
 }
 
 function renderStorageConfig(options = {}) {
