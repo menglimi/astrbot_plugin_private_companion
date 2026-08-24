@@ -2121,6 +2121,7 @@ const configLabels = {
   group_air_guard_max_bot_replies: "窗口内最大 Bot 回复数",
   group_air_guard_polite_loop_limit: "礼貌收尾循环上限",
   enable_group_context_injection: "群上下文注入",
+  intercept_astrbot_group_context: "拦截AstrBot群聊对话注入",
   enable_group_image_understanding: "群聊图片理解增强",
   enable_group_image_wakeup: "图片命中唤醒 Bot",
   group_image_vision_wait_seconds: "群聊回复等待识图秒数",
@@ -2930,6 +2931,7 @@ const configDescriptions = {
   group_air_guard_max_bot_replies: "窗口内 Bot 回复达到该次数后，后续明确唤醒也会硬拦截，防止机器人互相引用刷屏。建议 3。",
   group_air_guard_polite_loop_limit: "窗口内 Bot 已回复过几次晚安/谢谢/拜拜等收尾话术后，再遇到类似消息就静默。建议 1-2。",
   enable_group_context_injection: "开启后，群聊回复会参考最近群消息、当前话题、活跃成员和群内氛围；关闭后只按当前单条消息理解。",
+  intercept_astrbot_group_context: "开启后，仅在插件群上下文成功注入时排除本轮 AstrBot 会话历史和官方群聊 ICL；不会删除 AstrBot 已保存记录，插件注入失败时仍由 AstrBot 上下文回退。",
   enable_group_image_understanding: "控制是否为群聊图片发起新的视觉识别。关闭后不会调用视觉模型，但当前图片命中已有缓存或群观察摘要时仍会注入语义；开启后只在允许观察的群中识别新图片，普通观察不等待，真正触发回复时才有限等待。建议关闭 AstrBot 官方“自动理解图片”，避免重复调用。",
   enable_group_image_wakeup: "仅在群聊图片理解和群聊唤醒强化同时开启时生效。视觉摘要命中 Bot 名称、强唤醒词或主要用户专属强唤醒词后，才把当前图片消息接入群聊回复链；弱相关唤醒词不会仅凭图片直接触发。会复用群聊图片等待秒数，设为 0 时只使用已完成的视觉结果。",
   group_image_vision_wait_seconds: "只限制 Bot 已准备回复时等待视觉摘要的时间。视觉提前完成会立即继续；超时后主回复照常进行，后台识图不会取消。0 表示不等待，只使用已经完成的结果。",
@@ -3352,7 +3354,7 @@ const featureSettingGroups = {
   enable_group_conversation_followup: ["group_conversation_followup_seconds", "group_conversation_followup_max_turns", "GROUP_FOLLOWUP_JUDGE_PROVIDER_ID"],
   enable_group_air_reply_guard: ["group_air_guard_window_seconds", "group_air_guard_max_bot_replies", "group_air_guard_polite_loop_limit"],
   enable_group_high_intensity_mode: ["group_high_intensity_wakeup_window_seconds", "group_high_intensity_wakeup_threshold", "group_high_intensity_cooldown_seconds", "group_high_intensity_merge_seconds", "group_high_intensity_max_merge_messages", "group_high_intensity_merge_scope"],
-  enable_group_context_injection: ["max_group_recent_messages", "enable_group_scene_awareness", "group_scene_recent_limit", "FORWARD_MESSAGE_PROVIDER_ID"],
+  enable_group_context_injection: ["max_group_recent_messages", "intercept_astrbot_group_context", "enable_group_scene_awareness", "group_scene_recent_limit", "FORWARD_MESSAGE_PROVIDER_ID"],
   enable_group_injection_guard: ["enable_group_privacy_guard", "enable_group_third_party_portrait_guard", "enable_group_persona_denoise", "enable_group_reality_promise_guard"],
   enable_group_wakeup_enhancement: ["group_wakeup_direct_words", "enable_group_bot_name_wakeup", "group_wakeup_owner_direct_words", "group_wakeup_context_words", "group_wakeup_short_text_wait_seconds", "group_wakeup_cooldown_seconds", "group_wakeup_fatigue_limit", "group_wakeup_fatigue_decay_minutes", "group_wakeup_log_limit", "group_wakeup_interest_keywords", "group_wakeup_interest_probability", "enable_group_wakeup_question", "group_wakeup_question_threshold", "enable_group_wakeup_cold_group", "group_wakeup_cold_group_threshold", "group_wakeup_cold_group_idle_minutes", "group_wakeup_topic_interest_max_boost", "group_wakeup_generated_keyword_limit", "group_wakeup_debounce_pending_penalty", "enable_group_interjection", "group_interject_min_interval_minutes", "group_interject_max_daily", "enable_group_interjection_feedback", "GROUP_INTERJECT_PROVIDER_ID"],
   enable_group_member_profiles: ["enable_group_relationship_graph", "max_group_relationship_edges", "enable_group_slang_learning", "enable_group_slang_meanings", "enable_group_slang_web_search", "max_group_slang_terms", "group_slang_summary_minutes", "group_slang_web_search_terms", "group_slang_web_search_results", "enable_group_topic_threads", "max_group_topic_threads", "enable_group_episode_memory", "group_episode_refresh_minutes", "max_group_episodes", "GROUP_SLANG_PROVIDER_ID", "GROUP_EPISODE_PROVIDER_ID"],
@@ -3806,7 +3808,7 @@ const featureSettingSections = {
     {
       title: "上下文范围",
       note: "控制回复前能参考多少近期群聊，以及是否做场景/对象理解。",
-      keys: ["max_group_recent_messages", "enable_group_scene_awareness", "group_scene_recent_limit"],
+      keys: ["max_group_recent_messages", "intercept_astrbot_group_context", "enable_group_scene_awareness", "group_scene_recent_limit"],
     },
     {
       title: "合并消息模型",
@@ -8702,6 +8704,7 @@ const setupGuideAdvancedItems = {
       kind: "feature",
       settings: [
         { key: "max_group_recent_messages", type: "number", label: "近期群聊条数", placeholder: "80", min: 20 },
+        { key: "intercept_astrbot_group_context", type: "bool", kind: "feature", label: "拦截AstrBot群聊对话注入", description: "插件群上下文成功注入时，排除本轮 AstrBot 会话历史和官方群聊 ICL，但保留其已保存记录。" },
         { key: "enable_group_scene_awareness", type: "bool", kind: "feature", label: "群聊场景感知", description: "判断当前话是对 Bot、群友还是全群。" },
         { key: "group_scene_recent_limit", type: "number", label: "场景最近消息数", placeholder: "5", min: 1 },
         { key: "FORWARD_MESSAGE_PROVIDER_ID", type: "provider", label: "合并消息转述模型", description: "群聊引用/合并消息需要转述时使用。" },

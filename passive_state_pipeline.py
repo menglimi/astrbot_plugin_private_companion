@@ -191,34 +191,29 @@ async def inject_humanized_state(
             req,
             current_user=weather_query_user,
         )
-    if not self._feature_enabled_or_temp_unlocked("inject_passive_states"):
-        if is_private_chat and private_user_active:
+    passive_states_enabled = self._feature_enabled_or_temp_unlocked("inject_passive_states")
+    if not passive_states_enabled and is_private_chat:
+        if private_user_active:
             await self._append_reply_style_to_request(event, req, mode="private")
-        elif not is_private_chat:
-            group_id_for_style = self._extract_group_id_from_event(event)
-            if (
-                group_id_for_style
-                and self._feature_enabled_or_temp_unlocked("enable_group_companion")
-                and self._group_enabled_for_event(group_id_for_style)
-            ):
-                await self._append_reply_style_to_request(event, req, mode="group")
-        if is_private_chat:
-            try:
-                resolver = getattr(self, "_private_user_id_for_event", None)
-                backlog_user_id = (
-                    resolver(event)
-                    if callable(resolver)
-                    else self._canonical_private_user_id(str(event.get_sender_id()))
-                )
-            except Exception:
-                backlog_user_id = ""
-            backlog_user = self.data.get("users", {}).get(backlog_user_id) if backlog_user_id else None
-            if isinstance(backlog_user, dict):
-                await self._append_rest_reply_backlog_to_request(event, req, backlog_user)
+        try:
+            resolver = getattr(self, "_private_user_id_for_event", None)
+            backlog_user_id = (
+                resolver(event)
+                if callable(resolver)
+                else self._canonical_private_user_id(str(event.get_sender_id()))
+            )
+        except Exception:
+            backlog_user_id = ""
+        backlog_user = self.data.get("users", {}).get(backlog_user_id) if backlog_user_id else None
+        if isinstance(backlog_user, dict):
+            await self._append_rest_reply_backlog_to_request(event, req, backlog_user)
         await self._append_worldbook_mentions_to_request(event, req, mode="light")
         await self._append_conditional_tool_instructions_to_request(event, req)
         await self._append_environment_perception_to_request(event, req)
-        log_bookshelf_secret_skip("passive_injection_disabled", backlog_user if is_private_chat and isinstance(backlog_user, dict) else None)
+        log_bookshelf_secret_skip(
+            "passive_injection_disabled",
+            backlog_user if isinstance(backlog_user, dict) else None,
+        )
         return
 
     if not is_private_chat:
@@ -340,7 +335,7 @@ async def inject_humanized_state(
                             )
                     wakeup_effect = getattr(event, "private_companion_group_wakeup_state_effect", None)
                     wakeup_state_text = ""
-                    if isinstance(wakeup_effect, dict) and wakeup_effect:
+                    if passive_states_enabled and isinstance(wakeup_effect, dict) and wakeup_effect:
                         try:
                             state = await self._ensure_daily_state()
                         except Exception:
@@ -426,11 +421,12 @@ async def inject_humanized_state(
                         mode="group",
                         metadata={"注入位置": placement},
                     )
-        await self._append_group_active_period_boundary_to_request(
-            event,
-            req,
-            group_id if isinstance(group, dict) else "",
-        )
+        if passive_states_enabled:
+            await self._append_group_active_period_boundary_to_request(
+                event,
+                req,
+                group_id if isinstance(group, dict) else "",
+            )
         group_recall_text = _single_line(
             getattr(event, "private_companion_group_text", "") or getattr(event, "message_str", ""),
             260,

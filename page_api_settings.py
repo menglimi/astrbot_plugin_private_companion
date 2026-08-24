@@ -1300,6 +1300,7 @@ class PageSettingNormalizerMixin:
             "enable_cycle_state",
             "enable_worldbook_member_recognition",
             "enable_group_scene_awareness",
+            "intercept_astrbot_group_context",
             "enable_group_reality_promise_guard",
             "enable_group_wakeup_enhancement",
             "enable_group_high_intensity_mode",

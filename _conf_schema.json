@@ -2623,6 +2623,12 @@
     "default": true,
     "invisible": true
   },
+  "intercept_astrbot_group_context": {
+    "description": "Legacy flat config: 拦截AstrBot群聊对话注入",
+    "type": "bool",
+    "default": true,
+    "invisible": true
+  },
   "enable_group_injection_guard": {
     "description": "Legacy flat config: 群聊防注入",
     "type": "bool",
@@ -8542,6 +8548,15 @@
         "default": true,
         "condition": {
           "enable_group_companion": true
+        }
+      },
+      "intercept_astrbot_group_context": {
+        "description": "拦截AstrBot群聊对话注入",
+        "type": "bool",
+        "hint": "开启后，插件成功注入群上下文后拦截 AstrBot 会话历史和官方群聊 ICL，防止相同的群聊上下文被重复注入。",
+        "default": true,
+        "condition": {
+          "enable_group_context_injection": true
         }
       },
       "enable_group_image_understanding": {

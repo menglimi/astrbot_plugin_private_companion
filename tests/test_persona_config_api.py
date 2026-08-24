@@ -392,6 +392,7 @@ def test_existing_sparse_profile_is_repaired_without_materializing_old_keys():
             "bot_name": "alt",
             "enable_group_bot_name_wakeup": True,
             "enable_qq_official_segmented_reply": False,
+            "intercept_astrbot_group_context": True,
         }
         assert "quiet_hours" not in profile["persona_settings"]
 

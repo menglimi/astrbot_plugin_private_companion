@@ -139,6 +139,10 @@ from .helpers import (
     _resolve_timezone_setting,
 )
 from .config_migration import migrate_flat_config_into_schema_groups
+from .group_context_interception import (
+    intercept_astrbot_group_context,
+    restore_astrbot_group_history,
+)
 from .persona_config import (
     PERSONA_SETTINGS_KEY,
     PERSONA_SETTINGS_REVISION_KEY,
@@ -9175,6 +9179,33 @@ class PrivateCompanionPlugin(
             return
         await self._prepare_final_response_after_agent(event, run_context, response)
 
+    @filter.on_agent_done(priority=1000000)
+    @_multi_persona_event_context
+    async def restore_intercepted_astrbot_group_history(
+        self,
+        event: AstrMessageEvent,
+        run_context: Any,
+        response: Any,
+        *args,
+        **kwargs,
+    ):
+        """Restore provider-hidden AstrBot history before the core persists it."""
+        if self is None or event is None:
+            return
+        result = restore_astrbot_group_history(event, run_context)
+        if result.get("failed"):
+            logger.error(
+                "[PrivateCompanion] AstrBot 群聊历史恢复失败，已阻止本轮覆盖旧会话: session=%s reason=%s",
+                _single_line(getattr(event, "unified_msg_origin", ""), 140) or "unknown",
+                _single_line(result.get("reason"), 80) or "unknown",
+            )
+        elif result.get("restored"):
+            logger.debug(
+                "[PrivateCompanion] 已在核心保存前恢复 AstrBot 群聊历史: session=%s messages=%s",
+                _single_line(getattr(event, "unified_msg_origin", ""), 140) or "unknown",
+                result.get("history_messages", 0),
+            )
+
     @filter.on_decorating_result(priority=-30000)
     @_multi_persona_event_context
     async def capture_final_outbound_chain_for_persistence(
@@ -16686,6 +16717,33 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 "[PrivateCompanion] pc_generate_photo 工具提示词格式标注失败: %s",
                 _single_line(exc, 120),
             )
+
+    @filter.on_llm_request(priority=-252000)
+    @_multi_persona_event_context
+    async def intercept_native_astrbot_group_context(
+        self,
+        event: AstrMessageEvent,
+        req: ProviderRequest,
+        *args,
+        **kwargs,
+    ):
+        """Prefer the plugin group context while preserving AstrBot records."""
+        if self is None or req is None or not bool(getattr(self, "enabled", False)):
+            return
+        if bool(getattr(event, "is_private_chat", lambda: False)()):
+            return
+        if not bool(runtime_persona_setting(self, "intercept_astrbot_group_context", True)):
+            return
+        marker = "<!-- private_companion_group_context_v1 -->"
+        if not self._request_has_managed_prompt_marker(req, marker):
+            return
+        result = intercept_astrbot_group_context(event, req)
+        logger.info(
+            "[PrivateCompanion] 已拦截 AstrBot 群聊对话注入: session=%s history=%s icl=%s",
+            _single_line(getattr(event, "unified_msg_origin", ""), 140) or "unknown",
+            result.get("history_messages", 0),
+            result.get("group_icl_removed", 0),
+        )
 
     @filter.on_llm_request()
     @_multi_persona_event_context

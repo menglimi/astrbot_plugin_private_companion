@@ -63,6 +63,8 @@ class PersonaConfigTests(unittest.TestCase):
         self.assertTrue(self.manifest["enable_group_bot_name_wakeup"]["default"])
         self.assertEqual(self.manifest["enable_qq_official_segmented_reply"]["scope"], "persona")
         self.assertFalse(self.manifest["enable_qq_official_segmented_reply"]["default"])
+        self.assertEqual(self.manifest["intercept_astrbot_group_context"]["scope"], "persona")
+        self.assertTrue(self.manifest["intercept_astrbot_group_context"]["default"])
 
     def test_missing_setting_follows_primary_but_falsy_values_are_explicit(self) -> None:
         primary = {
@@ -227,6 +229,7 @@ class PersonaConfigTests(unittest.TestCase):
                 "bot_name": "旧人格",
                 "enable_group_bot_name_wakeup": True,
                 "enable_qq_official_segmented_reply": False,
+                "intercept_astrbot_group_context": True,
             },
         )
         self.assertEqual(
@@ -259,6 +262,7 @@ class PersonaConfigTests(unittest.TestCase):
 
         self.assertTrue(migrated["persona_settings"]["enable_group_bot_name_wakeup"])
         self.assertFalse(migrated["persona_settings"]["enable_qq_official_segmented_reply"])
+        self.assertTrue(migrated["persona_settings"]["intercept_astrbot_group_context"])
         self.assertEqual(PERSONA_SETTINGS_SCHEMA_VERSION, migrated["persona_settings_schema_version"])
         self.assertEqual(4, migrated["persona_settings_revision"])
 
@@ -291,6 +295,7 @@ class PersonaConfigTests(unittest.TestCase):
                 "bot_name": "existing-alt",
                 "enable_group_bot_name_wakeup": True,
                 "enable_qq_official_segmented_reply": False,
+                "intercept_astrbot_group_context": True,
             },
         )
         self.assertEqual(

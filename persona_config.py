@@ -27,7 +27,7 @@ PERSONA_SETTINGS_VERSION_KEY = "persona_settings_schema_version"
 PERSONA_SETTINGS_REVISION_KEY = "persona_settings_revision"
 PERSONA_SETTINGS_NEW_KEYS_BY_VERSION: dict[int, tuple[str, ...]] = {
     2: ("enable_group_bot_name_wakeup",),
-    3: ("enable_qq_official_segmented_reply",),
+    3: ("enable_qq_official_segmented_reply", "intercept_astrbot_group_context"),
 }
 
 MODE_FOLLOW_PRIMARY = "follow_primary"

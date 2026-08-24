@@ -1767,6 +1767,9 @@ def _initialize_review_and_group_config(self: Any, c: Any) -> None:
         c, "group_member_safety_audit_limit", 40, 10, 200
     )
     self.enable_group_context_injection = self._cfg_bool(c, "enable_group_context_injection", True)
+    self.intercept_astrbot_group_context = self._cfg_bool(
+        c, "intercept_astrbot_group_context", True
+    )
     self.enable_group_injection_guard = self._cfg_bool(c, "enable_group_injection_guard", True)
     self.enable_group_persona_denoise = self._cfg_bool(c, "enable_group_persona_denoise", True)
     self.enable_forward_message_adaptation = self._cfg_bool(c, "enable_forward_message_adaptation", True)
