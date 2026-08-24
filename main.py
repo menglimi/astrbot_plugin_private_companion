@@ -4717,6 +4717,14 @@ class PrivateCompanionPlugin(
     @staticmethod
     def _req036_group_portrait_query_kind(text: Any) -> str:
         value = _single_line(text, 240)
+        # A preference phrase followed by advice or a conclusion is ordinary
+        # group chatter, not a request to summarize anyone's profile.
+        ordinary_statement_patterns = (
+            r"(?:^|[\s，,：:@])(?:自己|按自己|个人|各自)\s*(?:喜欢|爱)(?:吃|喝|玩|看|听)?什么\s*(?:就|便|吧|呀|喵|都|随便)",
+            r"(?:喜欢|爱)(?:吃|喝|玩|看|听)?什么\s*(?:就|便|吧|呀|喵|都|随便)",
+        )
+        if any(re.search(pattern, value) for pattern in ordinary_statement_patterns):
+            return ""
         probe_patterns = (
             r"喜欢(?:吃|喝|玩|看|听)?什么",
             r"爱(?:吃|喝|玩|看|听)什么",
@@ -18830,9 +18838,10 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             return
         if kind == "third_party":
             logger.info(
-                "[PrivateCompanion] 群聊第三方画像查询已拦截: group=%s text=%s",
-                group_id,
-                _single_line(text, 120),
+                "[PrivateCompanion] 群聊第三方画像查询已拦截: reason=explicit_third_party_query group_hash=%s text_hash=%s text_len=%s",
+                hashlib.sha256(str(group_id).encode("utf-8", errors="ignore")).hexdigest()[:12],
+                hashlib.sha256(str(text).encode("utf-8", errors="ignore")).hexdigest()[:12],
+                len(str(text)),
             )
             event.stop_event()
             await self._reply(event, "这个我不方便替别人整理啦。")

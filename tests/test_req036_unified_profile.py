@@ -1640,6 +1640,8 @@ class Req036CompanionTests(unittest.TestCase):
         self.assertEqual("bot_self", classify("@bot 你喜欢什么"))
         self.assertEqual("bot_self", classify("@bot 我想知道你有什么爱好"))
         self.assertEqual("third_party", classify("@bot 你姐姐喜欢什么"))
+        self.assertEqual("", classify("@用户甲 自己喜欢什么就玩什么喵"))
+        self.assertEqual("", classify("喜欢什么就玩什么呀"))
         self.assertEqual("", classify("@bot 喜欢什么发型的女孩子"))
         self.assertEqual("", classify("@bot 什么爱好"))
         self.assertEqual("", classify("@bot 你觉得喜欢什么"))
@@ -1660,6 +1662,12 @@ class Req036CompanionTests(unittest.TestCase):
         asyncio.run(REQ036_GROUP_GATE(host, event))
         self.assertFalse(event.stopped)
         self.assertEqual([], host.replies)
+
+    def test_req036_intercept_log_does_not_include_group_or_message_text(self) -> None:
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        self.assertIn("group_hash=", source)
+        self.assertIn("text_hash=", source)
+        self.assertNotIn("群聊第三方画像查询已拦截: group=%s text=%s", source)
 
     def test_ordinary_group_preference_chatter_is_not_intercepted(self) -> None:
         host = _GroupGateHost()
