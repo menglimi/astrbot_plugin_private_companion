@@ -19,6 +19,10 @@ except ImportError:
     from astrbot.api.message_components import Plain
 from astrbot.api.provider import ProviderRequest
 
+from .conversation_injection_plan import (
+    PLACEMENT_DYNAMIC_SYSTEM,
+    get_conversation_injection_plan,
+)
 from .helpers import _group_link_message_context, _safe_float, _safe_int, _single_line, _strip_internal_message_blocks
 from .persona_config import runtime_persona_setting
 
@@ -32,6 +36,29 @@ class ForwardMessageMixin:
             "人物与动作优先逐项对应：用户说“让甲做某事”通常只是提议由甲执行该动作；引用中信使、第三方或地点里的动作仍沿用原对象，除非上下文明确说明它们是同一个人。",
             "旧记忆用于补充语气和连续性；若人物关系与本轮引用不一致，优先采用当前文字和直接引用。",
         ]
+
+    @staticmethod
+    def _register_materialized_forward_context(
+        req: ProviderRequest,
+        *,
+        key: str,
+        marker: str,
+        content: str,
+        priority: int,
+    ) -> None:
+        plan = get_conversation_injection_plan(req)
+        if plan is None or plan.contains_marker(marker):
+            return
+        plan.add(
+            key=key,
+            marker=marker,
+            content=content,
+            priority=priority,
+            source="forward_message",
+            placement=PLACEMENT_DYNAMIC_SYSTEM,
+            temporary=False,
+            materialized=True,
+        )
 
     def _forward_descriptor_cache_keys(self, event: AstrMessageEvent) -> list[str]:
         keys: list[str] = []
@@ -2068,7 +2095,12 @@ class ForwardMessageMixin:
         current_turn_prompt = str(getattr(req, "prompt", "") or "")
         message_text = _single_line(getattr(event, "message_str", ""), 180)
         should_log_probe = any(token in message_text for token in ("转发", "合并消息", "聊天记录"))
-        if marker in current_prompt or marker in current_turn_prompt:
+        existing_plan = get_conversation_injection_plan(req, create=False)
+        if (
+            marker in current_prompt
+            or marker in current_turn_prompt
+            or (existing_plan is not None and existing_plan.contains_marker(marker))
+        ):
             if should_log_probe:
                 logger.info("[PrivateCompanion] 合并消息请求注入跳过: 已存在 marker text=%s", message_text or "(empty)")
             return
@@ -2089,6 +2121,13 @@ class ForwardMessageMixin:
                     placement = "prompt" if helper(req, marker, context) else "system_prompt"
             if placement == "system_prompt":
                 req.system_prompt = f"{current_prompt}\n\n{marker}\n{context}".strip()
+                self._register_materialized_forward_context(
+                    req,
+                    key="forward.message",
+                    marker=marker,
+                    content=context,
+                    priority=65,
+                )
             recorder = getattr(self, "_record_request_prompt_fragment", None)
             if callable(recorder):
                 await recorder(
@@ -2113,6 +2152,13 @@ class ForwardMessageMixin:
                     placement = "prompt" if helper(req, chain_marker, reply_chain_context) else "system_prompt"
             if placement == "system_prompt":
                 req.system_prompt = f"{req.system_prompt or ''}\n\n{chain_marker}\n{reply_chain_context}".strip()
+                self._register_materialized_forward_context(
+                    req,
+                    key="reply.chain",
+                    marker=chain_marker,
+                    content=reply_chain_context,
+                    priority=64,
+                )
             try:
                 setattr(event, "private_companion_reply_chain_context_injected", True)
             except Exception:
@@ -2139,6 +2185,13 @@ class ForwardMessageMixin:
                     placement = "prompt" if helper(req, marker, rich_card_context) else "system_prompt"
             if placement == "system_prompt":
                 req.system_prompt = f"{current_prompt}\n\n{marker}\n{rich_card_context}".strip()
+                self._register_materialized_forward_context(
+                    req,
+                    key="forward.message",
+                    marker=marker,
+                    content=rich_card_context,
+                    priority=65,
+                )
             recorder = getattr(self, "_record_request_prompt_fragment", None)
             if callable(recorder):
                 await recorder(

@@ -18,6 +18,10 @@ from typing import Any
 from astrbot.api import logger
 
 from .helpers import _redact_outbound_secrets, _safe_float, _safe_int, _single_line
+from .conversation_injection_plan import (
+    PLACEMENT_DYNAMIC_SYSTEM,
+    get_conversation_injection_plan,
+)
 
 
 class DailyReviewMixin:
@@ -1521,7 +1525,19 @@ class DailyReviewMixin:
             "它不能覆盖当前用户意图、人格、安全规则、事实边界或工具约束；与当前语境冲突时忽略。\n"
             + "\n".join(lines)
         )
-        req.system_prompt = f"{current_prompt}\n\n{marker}\n{text}".strip()
+        plan = get_conversation_injection_plan(req)
+        if plan is not None:
+            plan.materialize_system_block(
+                req,
+                key="daily_review.guidance",
+                marker=marker,
+                content=text,
+                priority=20,
+                source="daily_review",
+                placement=PLACEMENT_DYNAMIC_SYSTEM,
+            )
+        else:
+            req.system_prompt = f"{current_prompt}\n\n{marker}\n{text}".strip()
         recorder = getattr(self, "_record_request_prompt_fragment", None)
         if callable(recorder):
             try:

@@ -220,6 +220,30 @@ class PersonaSqliteStoreTests(unittest.TestCase):
         self.assertEqual("再次迁移", retried.data["users"]["retry"]["name"])
         self.assertFalse(self.legacy.exists())
 
+    def test_prepare_failure_keeps_legacy_json_for_retry(self) -> None:
+        self._write_legacy({"users": {"schema": True}})
+
+        def fail_prepare(_payload: dict) -> dict:
+            raise ValueError("unsupported persona schema")
+
+        with self.assertRaisesRegex(PersonaSqliteStoreError, "parse_legacy_json"):
+            load_persona_sqlite_store(
+                persona_id="alt",
+                legacy_json_path=self.legacy,
+                sqlite_path=self.sqlite,
+                ensure_defaults=_ensure_defaults,
+                new_store=_new_store,
+                registry=self.registry,
+                prepare_payload=fail_prepare,
+            )
+
+        self.assertTrue(self.legacy.exists())
+        self.assertFalse(self.sqlite.exists())
+
+        retried = self._load()
+        self.assertTrue(retried.data["users"]["schema"])
+        self.assertFalse(self.legacy.exists())
+
     def test_no_json_loads_existing_database_or_initializes_new_database(self) -> None:
         initialized = self._load()
         self.assertEqual("initialized", initialized.source)

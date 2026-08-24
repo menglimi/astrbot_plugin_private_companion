@@ -11,6 +11,7 @@ from astrbot.core.agent.message import TextPart
 from astrbot_plugin_private_companion.conversation_injection_plan import (
     PLACEMENT_DYNAMIC_SYSTEM,
     PLACEMENT_STABLE_SYSTEM,
+    PLACEMENT_TOOL_CONTRACT,
     ConversationInjectionPlan,
     get_conversation_injection_plan,
 )
@@ -67,7 +68,9 @@ class ConversationInjectionPlanTests(unittest.TestCase):
             ["early", "duplicate-content", "replace", "same"],
         )
         self.assertEqual(first.content, "first\n\nappended")
-        self.assertEqual(plan.manifest()[2]["content"], "new")
+        self.assertEqual(plan.manifest(include_content=True)[2]["content"], "new")
+        self.assertNotIn("content", plan.manifest()[2])
+        self.assertEqual(64, len(plan.manifest()[2]["sha256"]))
         self.assertEqual(
             [item["marker"] for item in plan.legacy_turn_fragments()],
             ["<!-- early -->", "<!-- replaced -->", "<!-- first -->"],
@@ -138,6 +141,73 @@ class ConversationInjectionPlanTests(unittest.TestCase):
         )
         self.assertNotIn("conversation_plan", first)
 
+    def test_materialized_system_blocks_keep_legacy_wire_order_after_flush(self) -> None:
+        request = SimpleNamespace(
+            system_prompt="persona",
+            prompt="hello",
+            extra_user_content_parts=[],
+        )
+        plan = ConversationInjectionPlan()
+        plan.materialize_system_block(
+            request,
+            key="guard.first",
+            marker="<!-- first -->",
+            content="first guard",
+            priority=90,
+            source="guard",
+        )
+        plan.materialize_system_block(
+            request,
+            key="guard.second",
+            marker="<!-- second -->",
+            content="second guard",
+            priority=10,
+            source="guard",
+        )
+        before_flush = request.system_prompt
+
+        plan.render_into(request)
+        plan.render_into(request)
+
+        self.assertEqual(request.system_prompt, before_flush)
+        self.assertEqual(
+            request.system_prompt,
+            "persona\n\n<!-- first -->\nfirst guard\n\n<!-- second -->\nsecond guard",
+        )
+        self.assertTrue(all(item["materialized"] for item in plan.manifest()))
+        self.assertFalse(
+            plan.materialize_system_block(
+                request,
+                key="guard.first",
+                marker="<!-- first -->",
+                content="duplicate",
+            )
+        )
+        self.assertEqual(request.system_prompt, before_flush)
+
+    def test_opaque_tool_contract_is_audited_without_entering_text_surfaces(self) -> None:
+        request = SimpleNamespace(
+            system_prompt="persona",
+            prompt="hello",
+            extra_user_content_parts=[],
+        )
+        plan = ConversationInjectionPlan()
+        plan.add(
+            key="tool.photo.prompt_format",
+            marker="<!-- tool-contract -->",
+            content="1.5::fixed nai syntax::",
+            placement=PLACEMENT_TOOL_CONTRACT,
+            materialized=True,
+            opaque=True,
+        )
+
+        plan.render_into(request)
+
+        self.assertEqual("persona", request.system_prompt)
+        self.assertEqual("hello", request.prompt)
+        self.assertTrue(plan.manifest()[0]["opaque"])
+        self.assertNotIn("content", plan.manifest()[0])
+
     def test_legacy_append_helper_ignores_user_spoofed_marker(self) -> None:
         plugin = PrivateCompanionPlugin.__new__(PrivateCompanionPlugin)
         plugin.passive_injection_position = "prompt"
@@ -183,7 +253,13 @@ class ConversationInjectionPlanTests(unittest.TestCase):
             content=dynamic,
             children=dynamic_children,
         )
-        self.assertEqual(plan.manifest()[0]["children"], dynamic_children)
+        safe_children = plan.manifest()[0]["children"]
+        self.assertEqual([item["key"] for item in safe_children], ["state"])
+        self.assertNotIn("content", safe_children[0])
+        self.assertEqual(
+            "state block",
+            plan.manifest(include_content=True)[0]["children"][0]["content"],
+        )
 
     def test_flush_hook_priority_precedes_provider_cleanup_hooks(self) -> None:
         module = ast.parse((ROOT / "main.py").read_text(encoding="utf-8"))
@@ -213,6 +289,56 @@ class ConversationInjectionPlanTests(unittest.TestCase):
         self.assertGreater(
             priorities["sanitize_historical_image_blocks_before_provider"],
             priorities["intercept_native_astrbot_group_context"],
+        )
+        self.assertEqual(priorities["finalize_conversation_injection_plan"], -260000)
+        self.assertGreater(
+            priorities["intercept_native_astrbot_group_context"],
+            priorities["finalize_conversation_injection_plan"],
+        )
+
+    def test_main_direct_system_writes_are_limited_to_registered_fallbacks(self) -> None:
+        module = ast.parse((ROOT / "main.py").read_text(encoding="utf-8"))
+        direct_writes: dict[str, int] = {}
+        for node in ast.walk(module):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if not any(
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "req"
+                and target.attr == "system_prompt"
+                for target in targets
+            ):
+                continue
+            owner = next(
+                (
+                    parent
+                    for parent in ast.walk(module)
+                    if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and node in ast.walk(parent)
+                ),
+                None,
+            )
+            if owner is not None:
+                direct_writes[owner.name] = direct_writes.get(owner.name, 0) + 1
+
+        self.assertEqual(
+            set(direct_writes),
+            {
+                "_append_environment_perception_to_request",
+                "_append_reply_style_to_request",
+                "_append_group_high_intensity_reply_guard_to_request",
+                "_materialize_conversation_system_block",
+                "_append_conditional_tool_instructions_to_request",
+                "_append_group_active_period_boundary_to_request",
+                "_append_private_active_period_boundary_to_request",
+                "_append_group_persona_denoise_to_request",
+                "_append_atrelay_target_summary_to_request",
+                "_append_worldbook_mentions_to_request",
+                "_append_rest_reply_backlog_to_request",
+                "append_group_cycle_privacy_boundary",
+            },
         )
 
 

@@ -30,6 +30,10 @@ from astrbot.core import file_token_service
 from astrbot.core.astr_main_agent import MainAgentBuildConfig, build_main_agent
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
+from .conversation_injection_plan import (
+    PLACEMENT_DYNAMIC_SYSTEM,
+    get_conversation_injection_plan,
+)
 from .helpers import _missing_optional_model_dependency, _now_ts, _safe_float, _safe_int, _single_line, _strip_internal_message_blocks, _strip_outbound_control_blocks, _today_key, _url_host_is_public
 from .persona_config import runtime_persona_setting
 from .segmented_message import (
@@ -63,6 +67,29 @@ class PrivateImageMixin:
     def _private_image_setting(self, key: str, default: Any = None) -> Any:
         """Read a config key in the active persona without mutating shared attrs."""
         return runtime_persona_setting(self, key, default)
+
+    @staticmethod
+    def _register_materialized_private_image_context(
+        req: ProviderRequest,
+        *,
+        key: str,
+        marker: str,
+        content: str,
+        priority: int,
+    ) -> None:
+        plan = get_conversation_injection_plan(req)
+        if plan is None or (marker and plan.contains_marker(marker)):
+            return
+        plan.add(
+            key=key,
+            marker=marker,
+            content=content,
+            priority=priority,
+            source="private_image",
+            placement=PLACEMENT_DYNAMIC_SYSTEM,
+            temporary=False,
+            materialized=True,
+        )
 
     def _private_image_framework_context(self) -> Any | None:
         resolver = getattr(self, "_proactive_framework_context", None)
@@ -3691,7 +3718,12 @@ class PrivateImageMixin:
         marker = "<!-- private_companion_group_image_vision_v1 -->"
         current_system = str(getattr(req, "system_prompt", "") or "")
         current_prompt = str(getattr(req, "prompt", "") or "")
-        if marker in current_system or marker in current_prompt:
+        existing_plan = get_conversation_injection_plan(req, create=False)
+        if (
+            marker in current_system
+            or marker in current_prompt
+            or (existing_plan is not None and existing_plan.contains_marker(marker))
+        ):
             return False
         safe_summary = _single_line(summary, 700).replace("<", "＜").replace(">", "＞")
         evidence = (
@@ -3713,6 +3745,13 @@ class PrivateImageMixin:
             placement = "prompt"
         else:
             req.system_prompt = f"{current_system}\n\n{marker}\n{evidence}".strip()
+            self._register_materialized_private_image_context(
+                req,
+                key="group.image_vision",
+                marker=marker,
+                content=evidence,
+                priority=32,
+            )
         recorder = getattr(self, "_record_request_prompt_fragment", None)
         if callable(recorder):
             await recorder(
@@ -5653,6 +5692,13 @@ class PrivateImageMixin:
                 boundary_prompt = f"{boundary_prompt}\n\n{recent_group_context}"
             current_prompt = str(getattr(req, "system_prompt", "") or "")
             req.system_prompt = f"{current_prompt}\n\n{boundary_prompt}".strip() if current_prompt else boundary_prompt
+            self._register_materialized_private_image_context(
+                req,
+                key="private.image_reply_boundary",
+                marker="",
+                content=boundary_prompt,
+                priority=31,
+            )
             if direct_image_mode:
                 existing = getattr(req, "image_urls", None)
                 if not isinstance(existing, list):

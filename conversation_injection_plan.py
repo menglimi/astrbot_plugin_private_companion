@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
@@ -20,10 +21,12 @@ TURN_END_MARKER = "<!-- private_companion_turn_fragments_end -->"
 PLACEMENT_STABLE_SYSTEM = "stable_system"
 PLACEMENT_DYNAMIC_SYSTEM = "dynamic_system"
 PLACEMENT_TURN_TAIL = "turn_tail"
+PLACEMENT_TOOL_CONTRACT = "tool_contract"
 _PLACEMENTS = {
     PLACEMENT_STABLE_SYSTEM,
     PLACEMENT_DYNAMIC_SYSTEM,
     PLACEMENT_TURN_TAIL,
+    PLACEMENT_TOOL_CONTRACT,
 }
 _MERGE_POLICIES = {"first", "replace", "append"}
 
@@ -52,12 +55,35 @@ class ConversationInjectionBlock:
     temporary: bool = True
     merge_policy: str = "first"
     materialized: bool = False
+    opaque: bool = False
     index: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
     children: list[dict[str, Any]] = field(default_factory=list)
 
-    def manifest_item(self) -> dict[str, Any]:
-        return {
+    @staticmethod
+    def _manifest_children(
+        children: Iterable[dict[str, Any]],
+        *,
+        include_content: bool,
+    ) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        for raw in children:
+            if not isinstance(raw, dict):
+                continue
+            item = copy.deepcopy(raw)
+            content = str(item.pop("content", "") or "")
+            if content:
+                item["chars"] = len(content)
+                item["sha256"] = hashlib.sha256(
+                    content.encode("utf-8", "ignore")
+                ).hexdigest()
+                if include_content:
+                    item["content"] = content
+            result.append(item)
+        return result
+
+    def manifest_item(self, *, include_content: bool = False) -> dict[str, Any]:
+        item = {
             "key": self.key,
             "marker": self.marker,
             "source": self.source,
@@ -66,12 +92,19 @@ class ConversationInjectionBlock:
             "temporary": self.temporary,
             "merge_policy": self.merge_policy,
             "materialized": self.materialized,
+            "opaque": self.opaque,
             "index": self.index,
             "chars": len(self.content),
-            "content": self.content,
+            "sha256": hashlib.sha256(self.content.encode("utf-8", "ignore")).hexdigest(),
             "metadata": copy.deepcopy(self.metadata),
-            "children": copy.deepcopy(self.children),
+            "children": self._manifest_children(
+                self.children,
+                include_content=include_content,
+            ),
         }
+        if include_content:
+            item["content"] = self.content
+        return item
 
 
 class ConversationInjectionPlan:
@@ -103,6 +136,7 @@ class ConversationInjectionPlan:
         temporary: bool = True,
         merge_policy: str = "first",
         materialized: bool = False,
+        opaque: bool = False,
         metadata: dict[str, Any] | None = None,
         children: Iterable[dict[str, Any]] | None = None,
     ) -> ConversationInjectionBlock | None:
@@ -140,6 +174,7 @@ class ConversationInjectionPlan:
             existing.temporary = bool(temporary)
             existing.merge_policy = normalized_merge
             existing.materialized = bool(materialized)
+            existing.opaque = bool(opaque)
             existing.metadata = copy.deepcopy(metadata or {})
             existing.children = child_items
             return existing
@@ -154,6 +189,7 @@ class ConversationInjectionPlan:
             temporary=bool(temporary),
             merge_policy=normalized_merge,
             materialized=bool(materialized),
+            opaque=bool(opaque),
             index=self._next_index,
             metadata=copy.deepcopy(metadata or {}),
             children=child_items,
@@ -178,6 +214,43 @@ class ConversationInjectionPlan:
             target.metadata.update(copy.deepcopy(metadata))
         if children is not None:
             target.children = [copy.deepcopy(item) for item in children if isinstance(item, dict)]
+        return True
+
+    def materialize_system_block(
+        self,
+        req: Any,
+        *,
+        key: str,
+        marker: str,
+        content: str,
+        priority: int = 50,
+        source: str = "",
+        placement: str = PLACEMENT_DYNAMIC_SYSTEM,
+        metadata: dict[str, Any] | None = None,
+    ) -> bool:
+        """Append one system block in legacy order while registering its provenance."""
+
+        normalized_key = _clean_key(key, "") or _key_from_marker(marker)
+        if self.contains_key(normalized_key):
+            return False
+        text = str(content or "").strip()
+        if not text:
+            return False
+        marker_text = _clean_key(marker, "")
+        rendered = f"{marker_text}\n{text}".strip() if marker_text else text
+        current = str(getattr(req, "system_prompt", "") or "")
+        req.system_prompt = f"{current}\n\n{rendered}".strip() if current else rendered
+        self.add(
+            key=normalized_key,
+            marker=marker_text,
+            content=text,
+            priority=priority,
+            source=source,
+            placement=placement,
+            temporary=False,
+            materialized=True,
+            metadata={"materialized_by_plan": True, **copy.deepcopy(metadata or {})},
+        )
         return True
 
     def contains_key(self, key: str) -> bool:
@@ -217,8 +290,11 @@ class ConversationInjectionPlan:
             )
         return fragments
 
-    def manifest(self) -> list[dict[str, Any]]:
-        return [block.manifest_item() for block in self.blocks()]
+    def manifest(self, *, include_content: bool = False) -> list[dict[str, Any]]:
+        return [
+            block.manifest_item(include_content=include_content)
+            for block in self.blocks()
+        ]
 
     @staticmethod
     def _remove_owned_turn_part(req: Any) -> None:
@@ -325,6 +401,7 @@ __all__ = [
     "ConversationInjectionPlan",
     "PLACEMENT_DYNAMIC_SYSTEM",
     "PLACEMENT_STABLE_SYSTEM",
+    "PLACEMENT_TOOL_CONTRACT",
     "PLACEMENT_TURN_TAIL",
     "PLAN_ATTR",
     "get_conversation_injection_plan",

@@ -28,6 +28,11 @@ from astrbot.core import file_token_service
 from astrbot.core.message.message_event_result import ResultContentType
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
+from .conversation_injection_plan import (
+    PLACEMENT_DYNAMIC_SYSTEM,
+    PLACEMENT_TOOL_CONTRACT,
+    get_conversation_injection_plan,
+)
 from .helpers import (
     _has_history_media_marker,
     _normalize_outbound_punctuation_flow,
@@ -2597,6 +2602,30 @@ TTS 朗读文本：
         marker = "<!-- private_companion_tts_enhancement_v1 -->"
         prompt = str(getattr(req, "system_prompt", "") or "")
 
+        def register_materialized_tts_fragment(
+            fragment_marker: str,
+            text: str,
+            *,
+            key: str = "",
+            priority: int = 55,
+            placement: str = PLACEMENT_DYNAMIC_SYSTEM,
+            opaque: bool = False,
+        ) -> None:
+            plan = get_conversation_injection_plan(req)
+            if plan is None or plan.contains_marker(fragment_marker):
+                return
+            plan.add(
+                key=key,
+                marker=fragment_marker,
+                content=text,
+                priority=priority,
+                source="tts",
+                placement=placement,
+                temporary=False,
+                materialized=True,
+                opaque=opaque,
+            )
+
         def append_dynamic_tts_fragment(fragment_marker: str, text: str, *, priority: int = 55) -> str:
             helper = getattr(self, "_append_turn_prompt_fragment_by_position", None)
             if callable(helper):
@@ -2609,6 +2638,11 @@ TTS 朗读文本：
                 except Exception as exc:
                     logger.debug("[PrivateCompanion] TTS 指定位置动态注入失败,回退 system_prompt: %s", _single_line(exc, 120))
             req.system_prompt = f"{getattr(req, 'system_prompt', '') or ''}\n\n{text}".strip()
+            register_materialized_tts_fragment(
+                fragment_marker,
+                text,
+                priority=priority,
+            )
             return "system_prompt"
 
         async def record_tts_fragment(title: str, key: str, text: str, mode: str = "", placement: str = "system_prompt") -> None:
@@ -2740,6 +2774,14 @@ TTS 朗读文本：
         if marker not in prompt and mode == "fast_tag" and not strong_block_reason:
             rule_prompt = self._build_tts_rule_prompt(provider_kind, event=event)
             req.system_prompt = f"{prompt}\n\n{marker}\n{rule_prompt}".strip()
+            register_materialized_tts_fragment(
+                marker,
+                rule_prompt,
+                key="tts.rule",
+                priority=20,
+                placement=PLACEMENT_TOOL_CONTRACT,
+                opaque=True,
+            )
             await record_tts_fragment("TTS 基础规则注入", "tts.rule", rule_prompt)
         elif marker not in prompt and mode == "postprocess" and not strong_block_reason:
             scope_text = "是否将整条回复转成语音" if full_scope else "是否把其中一小段转成语音"
@@ -2768,6 +2810,14 @@ TTS 朗读文本：
                 f"{temporary_language_rule}{temporary_visible_rule}"
             )
             req.system_prompt = f"{prompt}\n\n{marker}\n{postprocess_prompt}".strip()
+            register_materialized_tts_fragment(
+                marker,
+                postprocess_prompt,
+                key="tts.rule",
+                priority=20,
+                placement=PLACEMENT_TOOL_CONTRACT,
+                opaque=True,
+            )
             await record_tts_fragment("TTS 后处理模式注入", "tts.rule", postprocess_prompt, mode="postprocess")
         if strong_block_reason:
             reverse_prompt = (

@@ -429,6 +429,34 @@ class IncrementalPersistenceWriterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(harness.store_manager.section_writes))
         self.assertFalse(harness.store_manager.snapshot_writes)
 
+    async def test_primary_json_delayed_snapshot_keeps_restart_tail_only(self) -> None:
+        harness = _WriterHarness(
+            {
+                "groups": {
+                    "room": {
+                        "recent_messages": [
+                            {"text": str(index)} for index in range(15)
+                        ],
+                        "recent_bot_replies": [
+                            {"text": f"bot-{index}"} for index in range(15)
+                        ],
+                    }
+                }
+            },
+            backend="json",
+        )
+
+        harness._schedule_data_save(full_scope="startup_maintenance", delay=0.0)
+        await asyncio.wait_for(harness._flush_scheduled_data_save(), timeout=1.0)
+
+        saved = harness.store_manager.snapshot_writes[-1]
+        self.assertEqual(12, len(saved["groups"]["room"]["recent_messages"]))
+        self.assertEqual(12, len(saved["groups"]["room"]["recent_bot_replies"]))
+        self.assertEqual(
+            15,
+            len(harness.data["groups"]["room"]["recent_messages"]),
+        )
+
     async def test_sync_save_with_explicit_sections_only_writes_target_section(self) -> None:
         harness = _WriterHarness(
             {

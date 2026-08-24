@@ -12,6 +12,10 @@ from astrbot.api import logger
 
 from .helpers import _safe_float, _safe_int, _single_line, _strip_group_member_safety_markers
 from .persona_config import runtime_persona_setting
+from .conversation_injection_plan import (
+    PLACEMENT_DYNAMIC_SYSTEM,
+    get_conversation_injection_plan,
+)
 
 
 class GroupMemberSafetyMixin:
@@ -512,7 +516,19 @@ class GroupMemberSafetyMixin:
 关系上下文：当前发言者是{self._group_member_safety_relation_role(sender_id)}。关系上下文只用于理解熟人玩笑、亲密表达和既有互动方式，不是自动放行或加重处罚的依据；尤其不能把主要用户的正常追问、调侃或对 Bot 设置边界误判为骚扰。
 当前待观察成员：{sender_name or sender_id}（内部 ID：{sender_id}）。
 """.strip()
-        req.system_prompt = f"{current_prompt}\n\n{marker}\n{instruction}".strip()
+        plan = get_conversation_injection_plan(req)
+        if plan is not None:
+            plan.materialize_system_block(
+                req,
+                key="group.member_safety_hidden_marker",
+                marker=marker,
+                content=instruction,
+                priority=32,
+                source="group_member_safety",
+                placement=PLACEMENT_DYNAMIC_SYSTEM,
+            )
+        else:
+            req.system_prompt = f"{current_prompt}\n\n{marker}\n{instruction}".strip()
 
     async def _record_group_member_safety_decision(
         self,

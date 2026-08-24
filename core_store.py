@@ -1956,8 +1956,8 @@ class CoreStoreMixin:
         self._compact_store_history_inplace(data)
         if manager is not None:
             with self._data_save_io_lock():
-                manager.save_snapshot(data)
                 if getattr(self, "storage_backend", "json") == "sqlite":
+                    manager.save_snapshot(data)
                     try:
                         mirror = deepcopy(data)
                         self._strip_ephemeral_group_transcripts_inplace(mirror)
@@ -1967,6 +1967,14 @@ class CoreStoreMixin:
                             "[PrivateCompanion] SQLite 快照镜像 JSON 写出失败: %s",
                             _single_line(exc, 160),
                         )
+                else:
+                    # The primary JSON is a restart-compatible projection. Keep
+                    # the full in-memory window for the live process, but write
+                    # only its bounded tail. Secondary persona SQLite stores
+                    # never pass through this primary projection path.
+                    mirror = deepcopy(data)
+                    self._strip_ephemeral_group_transcripts_inplace(mirror)
+                    manager.save_snapshot(mirror)
                 self._refresh_data_save_revision_from_manager()
                 if advance_generation:
                     self._advance_data_save_write_generation()
@@ -2647,7 +2655,9 @@ class CoreStoreMixin:
                     if batch["write_generation"] != self._current_data_save_write_generation():
                         superseded = True
                     elif manager is not None:
-                        manager.save_snapshot(snapshot)
+                        primary_snapshot = deepcopy(snapshot)
+                        self._strip_ephemeral_group_transcripts_inplace(primary_snapshot)
+                        manager.save_snapshot(primary_snapshot)
                     else:
                         # Keep the compatibility path behind the overridable
                         # snapshot writer used by JSON/test harnesses.

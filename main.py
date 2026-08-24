@@ -301,6 +301,8 @@ from .forward_message import ForwardMessageMixin
 from .private_image import PrivateImageMixin
 from .conversation_injection_plan import (
     PLACEMENT_DYNAMIC_SYSTEM,
+    PLACEMENT_STABLE_SYSTEM,
+    PLACEMENT_TOOL_CONTRACT,
     PLACEMENT_TURN_TAIL,
     get_conversation_injection_plan,
 )
@@ -2100,29 +2102,25 @@ class PrivateCompanionPlugin(
             legacy_path = self._persona_profile_path(pid)
             legacy_present = legacy_path.is_file()
             try:
-                if legacy_present:
-                    preview = json.loads(legacy_path.read_text(encoding="utf-8"))
-                    if not isinstance(preview, dict):
-                        raise PersonaConfigError("persona profile root must be an object")
-                    preview_settings = preview.get(PERSONA_SETTINGS_KEY)
-                    if preview_settings is not None and not isinstance(preview_settings, dict):
-                        raise PersonaSettingsTypeError("persona_settings must be an object")
                 handle = self._load_secondary_persona_store_sync(pid)
                 raw = handle.data
                 settings = raw.get(PERSONA_SETTINGS_KEY)
                 if settings is not None and not isinstance(settings, dict):
                     raise PersonaSettingsTypeError("persona_settings must be an object")
-                # Legacy profiles did not have a persona bot name. It is an
-                # identity repair, not inheritance from the primary bot name.
-                legacy_bot_name = ""
-                if not isinstance(settings, dict) or not str(settings.get("bot_name") or "").strip():
-                    legacy_bot_name = self._persona_display_name_for_id(pid)
-                migrated = migrate_persona_profile(
+                # Legacy JSON is transformed before the SQLite write. For an
+                # existing DB, keep the upgrade path below so a failed schema
+                # migration leaves the already-authoritative DB untouched.
+                migrated = raw if legacy_present else migrate_persona_profile(
                     raw,
                     manifest=self._persona_scope_manifest(),
                     target_version=PERSONA_SETTINGS_SCHEMA_VERSION,
                     persona_id=pid,
-                    legacy_bot_name=legacy_bot_name,
+                    legacy_bot_name=(
+                        self._persona_display_name_for_id(pid)
+                        if not isinstance(settings, dict)
+                        or not str(settings.get("bot_name") or "").strip()
+                        else ""
+                    ),
                 )
                 changed = migrated != raw
                 if changed:
@@ -2281,12 +2279,21 @@ class PrivateCompanionPlugin(
             self._persona_sqlite_store_registry = registry
         return registry
 
-    def _load_secondary_persona_store_sync(self, persona_id: Any):
+    def _load_secondary_persona_store_sync(
+        self,
+        persona_id: Any,
+        *,
+        prepare_payload: Any = None,
+    ):
         pid = self._sanitize_persona_id(persona_id)
         if not pid or pid == self._primary_persona_id():
             raise PersonaConfigError("secondary persona SQLite requires a non-primary persona")
         legacy_path, database_path = self._persona_profile_store_paths(pid)
         database_path.parent.mkdir(parents=True, exist_ok=True)
+        if not callable(prepare_payload):
+            prepare_payload = lambda payload: self._prepare_legacy_persona_payload(
+                pid, payload
+            )
         return load_persona_sqlite_store(
             persona_id=pid,
             legacy_json_path=legacy_path,
@@ -2294,6 +2301,29 @@ class PrivateCompanionPlugin(
             ensure_defaults=self._ensure_store_defaults,
             new_store=self._new_store,
             registry=self._persona_sqlite_registry(),
+            prepare_payload=prepare_payload,
+        )
+
+    def _prepare_legacy_persona_payload(
+        self,
+        persona_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Validate and migrate a legacy JSON profile before SQLite commit."""
+        settings = payload.get(PERSONA_SETTINGS_KEY)
+        if settings is not None and not isinstance(settings, dict):
+            raise PersonaSettingsTypeError("persona_settings must be an object")
+        return migrate_persona_profile(
+            payload,
+            manifest=self._persona_scope_manifest(),
+            target_version=PERSONA_SETTINGS_SCHEMA_VERSION,
+            persona_id=persona_id,
+            legacy_bot_name=(
+                self._persona_display_name_for_id(persona_id)
+                if not isinstance(settings, dict)
+                or not str(settings.get("bot_name") or "").strip()
+                else ""
+            ),
         )
 
     def _secondary_persona_store_exists(self, persona_id: Any) -> bool:
@@ -2382,7 +2412,7 @@ class PrivateCompanionPlugin(
             profile["persona_settings"] = {}
         elif not isinstance(profile.get(PERSONA_SETTINGS_KEY), dict):
             reason = "persona_settings must be an object"
-            self._backup_corrupt_persona_profile_sync(path, reason=reason)
+            self._backup_corrupt_persona_profile_sync(legacy_path, reason=reason)
             profile_errors[pid] = reason
             profile[PERSONA_SETTINGS_KEY] = {}
         if store_existed and loaded is not None and not str(profile[PERSONA_SETTINGS_KEY].get("bot_name") or "").strip():
@@ -3703,6 +3733,7 @@ class PrivateCompanionPlugin(
             before_config = deepcopy(self._cfg_raw(self.config, "multi_persona_ids", []))
             before_profile = deepcopy(profile)
             next_profile = deepcopy(profile)
+            database_path = self._persona_profile_db_path(pid)
             next_profile[PERSONA_SETTINGS_KEY] = settings
             next_profile[PERSONA_SETTINGS_VERSION_KEY] = PERSONA_SETTINGS_SCHEMA_VERSION
             next_profile[PERSONA_SETTINGS_REVISION_KEY] = max(1, int(profile.get(PERSONA_SETTINGS_REVISION_KEY) or 0) + 1)
@@ -3721,7 +3752,13 @@ class PrivateCompanionPlugin(
                     if existed:
                         self._save_persona_profile_sync(pid, before_profile)
                     else:
-                        path.unlink(missing_ok=True)
+                        registry = getattr(self, "_persona_sqlite_store_registry", None)
+                        discard = getattr(registry, "discard", None)
+                        if callable(discard):
+                            discard(database_path)
+                        database_path.unlink(missing_ok=True)
+                        database_path.with_name(database_path.name + "-wal").unlink(missing_ok=True)
+                        database_path.with_name(database_path.name + "-shm").unlink(missing_ok=True)
                 except Exception:
                     pass
                 return {"ok": False, "code": "persona_config_persistence_failed", "message": f"人格配置保存失败，已回滚: {_single_line(exc, 120)}"}
@@ -12706,6 +12743,36 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             logger.debug("[PrivateCompanion] 指定位置 prompt 注入失败,回退 system_prompt: %s", _single_line(exc, 120))
             return False
 
+    def _materialize_conversation_system_block(
+        self,
+        req: ProviderRequest,
+        *,
+        key: str,
+        marker: str,
+        content: str,
+        priority: int = 50,
+        source: str = "",
+        placement: str = PLACEMENT_DYNAMIC_SYSTEM,
+        metadata: dict[str, Any] | None = None,
+    ) -> bool:
+        """Register and append a legacy system block without changing its wire shape."""
+        plan = get_conversation_injection_plan(req)
+        if plan is not None:
+            return plan.materialize_system_block(
+                req,
+                key=key,
+                marker=marker,
+                content=content,
+                priority=priority,
+                source=source,
+                placement=placement,
+                metadata=metadata,
+            )
+        rendered = f"{marker}\n{str(content or '').strip()}".strip()
+        current = str(getattr(req, "system_prompt", "") or "")
+        req.system_prompt = f"{current}\n\n{rendered}".strip() if current else rendered
+        return True
+
     @staticmethod
     def _request_has_managed_prompt_marker(req: ProviderRequest, marker: str) -> bool:
         """Only trust markers placed by the plugin, never raw user prompt text."""
@@ -13448,7 +13515,15 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             platform_boundary = platform_boundary_getter(event)
             if platform_boundary:
                 boundary = f"{boundary}\n\n{platform_boundary}"
-        req.system_prompt = f"{current_prompt}\n\n{marker}\n{boundary}".strip()
+        self._materialize_conversation_system_block(
+            req,
+            key="guard.capability_boundary",
+            marker=marker,
+            content=boundary,
+            priority=30,
+            source="guard",
+            placement=PLACEMENT_DYNAMIC_SYSTEM,
+        )
         await self._record_request_prompt_fragment(
             event,
             title="能力边界注入",
@@ -13469,7 +13544,15 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             or media_truth_marker in current_turn_prompt
         ):
             return
-        req.system_prompt = f"{current_prompt}\n\n{media_truth_marker}\n{media_truth_instruction}".strip()
+        self._materialize_conversation_system_block(
+            req,
+            key="tools.media_delivery_truth",
+            marker=media_truth_marker,
+            content=media_truth_instruction,
+            priority=30,
+            source="tools",
+            placement=PLACEMENT_STABLE_SYSTEM,
+        )
         await self._record_request_prompt_fragment(
             event,
             title="媒体发送真实性约束",
@@ -14599,7 +14682,15 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 lines.append(f"互动边界：{boundary}")
             lines.append("即使此用户资料中有亲昵称呼,也必须服从上面的防串规则：不要把目标陪伴用户的专属关系套给 TA。")
         guard_text = chr(10).join(lines)
-        req.system_prompt = f"{current_prompt}\n\n{marker}\n{guard_text}".strip()
+        self._materialize_conversation_system_block(
+            req,
+            key="identity.non_target_private",
+            marker=marker,
+            content=guard_text,
+            priority=10,
+            source="identity",
+            placement=PLACEMENT_DYNAMIC_SYSTEM,
+        )
         await self._record_request_prompt_fragment(
             event,
             title="非目标私聊防串注入",
@@ -16172,7 +16263,15 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             "回复当前会话的普通文字时，直接输出最终回复，不要调用 send_message_to_user；"
             "确需使用该工具发送媒体或主动消息时，plain 文本不得为空，调用同一轮不要额外输出可见正文。"
         )
-        req.system_prompt = f"{current_prompt}\n\n{marker}\n{instruction}".strip()
+        self._materialize_conversation_system_block(
+            req,
+            key="tools.deepseek_protocol",
+            marker=marker,
+            content=instruction,
+            priority=10,
+            source="tools",
+            placement=PLACEMENT_DYNAMIC_SYSTEM,
+        )
         return True
 
     def _append_passive_reply_tool_boundary(self, event: AstrMessageEvent, req: ProviderRequest) -> list[str]:
@@ -16210,7 +16309,29 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             "需要跨会话主动发送时，使用 PrivateCompanion 专用发送工具；官方 Cron 任务不受此边界影响。"
         )
         if marker not in prompt and hasattr(req, "system_prompt"):
-            req.system_prompt = f"{prompt}\n\n{marker}\n{instruction}".strip()
+            materializer = getattr(self, "_materialize_conversation_system_block", None)
+            if callable(materializer):
+                materializer(
+                    req,
+                    key="tools.passive_reply_boundary",
+                    marker=marker,
+                    content=instruction,
+                    priority=10,
+                    source="tools",
+                    placement=PLACEMENT_DYNAMIC_SYSTEM,
+                )
+            else:
+                plan = get_conversation_injection_plan(req)
+                if plan is not None:
+                    plan.materialize_system_block(
+                        req,
+                        key="tools.passive_reply_boundary",
+                        marker=marker,
+                        content=instruction,
+                        priority=10,
+                        source="tools",
+                        placement=PLACEMENT_DYNAMIC_SYSTEM,
+                    )
             if self._tool_set_has_named_tool(getattr(req, "func_tool", None), "send_message_to_user"):
                 logger.info(
                     "[PrivateCompanion] 已约束被动回复的 send_message_to_user 仅用于媒体投递: session=%s",
@@ -16373,7 +16494,15 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             pass
         instruction = _single_line(temperature.get("instruction"), 240)
         if instruction and hasattr(req, "system_prompt"):
-            req.system_prompt = f"{str(getattr(req, 'system_prompt', '') or '').rstrip()}\n\n[Reply boundary]\n{instruction}"
+            self._materialize_conversation_system_block(
+                req,
+                key="relationship.reply_temperature",
+                marker="[Reply boundary]",
+                content=instruction,
+                priority=5,
+                source="relationship",
+                placement=PLACEMENT_DYNAMIC_SYSTEM,
+            )
 
     @filter.on_llm_request(priority=-30000)
     @_multi_persona_event_context
@@ -16515,7 +16644,15 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             "遇到这类请求时必须简短拒绝,说明屏幕内容只允许主要用户本人在授权私聊里使用；不要改用记忆、关系网、屏幕日记或猜测来替代窥屏。\n"
             "这条边界只约束屏幕工具，不代表摄像头能力不存在；若本轮另有“摄像头请求”提示，应按其独立资格、授权和单帧规则调用 pc_reality_touch_camera_snapshot。"
         )
-        req.system_prompt = f"{current_prompt}\n\n{marker}\n{guard}".strip()
+        self._materialize_conversation_system_block(
+            req,
+            key="guard.screen_privacy",
+            marker=marker,
+            content=guard,
+            priority=10,
+            source="guard",
+            placement=PLACEMENT_DYNAMIC_SYSTEM,
+        )
         await self._record_request_prompt_fragment(
             event,
             title="屏幕隐私边界注入",
@@ -16697,8 +16834,6 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             return
         try:
             plan.render_into(req)
-            setattr(req, "_private_companion_conversation_injection_manifest", plan.manifest())
-            plan.freeze()
         except Exception as exc:
             logger.error(
                 "[PrivateCompanion] 主对话注入计划最终渲染失败: session=%s error=%s",
@@ -16786,6 +16921,23 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             f"{marker}"
         ).strip()
 
+        def record_contract() -> None:
+            plan = get_conversation_injection_plan(req)
+            if plan is None:
+                return
+            plan.add(
+                key="tool.photo.prompt_format",
+                marker=marker,
+                content=annotated,
+                priority=10,
+                source="photo_tool",
+                placement=PLACEMENT_TOOL_CONTRACT,
+                temporary=True,
+                materialized=True,
+                opaque=True,
+                merge_policy="replace",
+            )
+
         tools = getattr(tool_set, "tools", None)
         if isinstance(tools, list):
             try:
@@ -16798,6 +16950,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                         request_tool_set = copy(tool_set)
                         request_tool_set.tools = request_tools
                         req.func_tool = request_tool_set
+                        record_contract()
                         return True
             except Exception as exc:
                 logger.debug(
@@ -16810,6 +16963,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         if getattr(tool, "handler", None) is None:
             try:
                 tool.description = annotated
+                record_contract()
                 return True
             except Exception as exc:
                 logger.debug(
@@ -16864,6 +17018,37 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             result.get("history_messages", 0),
             result.get("group_icl_removed", 0),
         )
+
+    @filter.on_llm_request(priority=-260000)
+    @_multi_persona_event_context
+    async def finalize_conversation_injection_plan(
+        self,
+        event: AstrMessageEvent,
+        req: ProviderRequest,
+        *args,
+        **kwargs,
+    ):
+        """Freeze a privacy-safe manifest after all plugin-owned request changes."""
+        if self is None or req is None or not bool(getattr(self, "enabled", False)):
+            return
+        plan = get_conversation_injection_plan(req, create=False)
+        if plan is None:
+            return
+        try:
+            plan.render_into(req)
+            setattr(
+                req,
+                "_private_companion_conversation_injection_manifest",
+                plan.manifest(),
+            )
+            plan.freeze()
+        except Exception as exc:
+            logger.error(
+                "[PrivateCompanion] 主对话注入计划冻结失败: session=%s error=%s",
+                _single_line(getattr(event, "unified_msg_origin", ""), 120)
+                or "unknown",
+                _single_line(exc, 180),
+            )
 
     @filter.on_llm_request()
     @_multi_persona_event_context

@@ -114,6 +114,11 @@ from .helpers import (
     _strip_internal_message_blocks,
     _today_key,
 )
+from .conversation_injection_plan import (
+    PLACEMENT_DYNAMIC_SYSTEM,
+    PLACEMENT_TURN_TAIL,
+    get_conversation_injection_plan,
+)
 from .group_prompt_context import (
     build_group_prompt_context,
     render_group_prompt_context,
@@ -3144,8 +3149,30 @@ class GroupObservationMixin:
             priority=31,
             source="group",
         ) else "system_prompt"
+        plan = get_conversation_injection_plan(req)
         if placement == "system_prompt":
-            req.system_prompt = f"{current_prompt}\n\n{marker}\n{guard_text}".strip()
+            if plan is not None:
+                plan.materialize_system_block(
+                    req,
+                    key="group.injection_guard",
+                    marker=marker,
+                    content=guard_text,
+                    priority=31,
+                    source="group",
+                    placement=PLACEMENT_DYNAMIC_SYSTEM,
+                )
+            else:
+                req.system_prompt = f"{current_prompt}\n\n{marker}\n{guard_text}".strip()
+        elif plan is not None and not plan.contains_marker(marker):
+            plan.add(
+                key="group.injection_guard",
+                marker=marker,
+                content=guard_text,
+                priority=31,
+                source="group",
+                placement=PLACEMENT_TURN_TAIL,
+                temporary=True,
+            )
         recorder = getattr(self, "_record_request_prompt_fragment", None)
         if callable(recorder):
             await recorder(

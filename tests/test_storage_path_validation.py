@@ -62,6 +62,36 @@ class _StorePathHost(CoreStoreMixin):
 
 
 class StoragePathValidationTests(unittest.TestCase):
+    def test_primary_json_store_keeps_only_restart_tail_with_store_manager(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            host = _StorePathHost(root, "")
+            host.storage_backend = "json"
+            host.store_manager = host.manager("json", root / "unused.db")
+            host._data_save_revision = 0
+            host._data_default = {
+                "groups": {
+                    "room": {
+                        "recent_messages": [
+                            {"sender_id": "user", "text": str(index)}
+                            for index in range(15)
+                        ],
+                        "recent_bot_replies": [
+                            {"sender_id": "bot", "text": str(index)}
+                            for index in range(15)
+                        ],
+                    }
+                }
+            }
+            host.data = host._data_default
+
+            host._write_data_snapshot_sync(deepcopy(host.data))
+            stored = host.store_manager.backend.load_store()
+
+            self.assertEqual(12, len(stored["groups"]["room"]["recent_messages"]))
+            self.assertEqual(12, len(stored["groups"]["room"]["recent_bot_replies"]))
+            self.assertEqual(15, len(host.data["groups"]["room"]["recent_messages"]))
+
     def test_startup_imports_newer_legacy_json_into_existing_sqlite(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

@@ -189,6 +189,7 @@ class PersonaSqliteStoreRegistry:
         sqlite_path: str | Path,
         ensure_defaults: Callable[[dict[str, Any]], dict[str, Any]],
         new_store: Callable[[], dict[str, Any]],
+        prepare_payload: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> PersonaSqliteStoreHandle:
         manager = self.manager_for(
             legacy_json_path=legacy_json_path,
@@ -203,6 +204,7 @@ class PersonaSqliteStoreRegistry:
             ensure_defaults=ensure_defaults,
             new_store=new_store,
             manager=manager,
+            prepare_payload=prepare_payload,
         )
 
 
@@ -232,6 +234,7 @@ def _load_persona_sqlite_store(
     ensure_defaults: Callable[[dict[str, Any]], dict[str, Any]],
     new_store: Callable[[], dict[str, Any]],
     manager: StoreManager,
+    prepare_payload: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> PersonaSqliteStoreHandle:
     pid = str(persona_id or "").strip()
     if not pid:
@@ -242,6 +245,11 @@ def _load_persona_sqlite_store(
             try:
                 source = _strict_load_json_object(legacy_json_path)
                 normalized_source = _normalized_payload(source, ensure_defaults)
+                if prepare_payload is not None:
+                    normalized_source = _normalized_payload(
+                        prepare_payload(deepcopy(normalized_source)),
+                        ensure_defaults,
+                    )
             except Exception as exc:
                 raise PersonaSqliteStoreError(
                     persona_id=pid,
@@ -337,6 +345,7 @@ def load_persona_sqlite_store(
     ensure_defaults: Callable[[dict[str, Any]], dict[str, Any]],
     new_store: Callable[[], dict[str, Any]],
     registry: PersonaSqliteStoreRegistry | None = None,
+    prepare_payload: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> PersonaSqliteStoreHandle:
     active_registry = registry or PersonaSqliteStoreRegistry()
     return active_registry.load(
@@ -345,6 +354,7 @@ def load_persona_sqlite_store(
         sqlite_path=sqlite_path,
         ensure_defaults=ensure_defaults,
         new_store=new_store,
+        prepare_payload=prepare_payload,
     )
 
 

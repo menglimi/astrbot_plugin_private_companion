@@ -109,6 +109,11 @@ from .dreaming import (
 from .helpers import _date_key, _normalize_outbound_punctuation_flow, _normalize_photo_subject_owner, _now_ts, _path_text, _photo_subject_owner_prompt_label, _safe_float, _safe_int, _single_line, _strip_internal_message_blocks, _today_key, normalize_legacy_tag_text
 from .model_routing import CURRENT_MODEL_REPLACEMENT_SOURCES, find_route, scope_allows
 from .persona_config import runtime_persona_setting
+from .conversation_injection_plan import (
+    PLACEMENT_DYNAMIC_SYSTEM,
+    PLACEMENT_TURN_TAIL,
+    get_conversation_injection_plan,
+)
 from .domains.affect.affect_modulation import compose_affect_modulation
 from .daily_state_tick import DailyStateTickMixin
 from .memo_notes import memo_note_due_state, memo_note_sort_key, normalize_memo_note
@@ -5220,8 +5225,30 @@ class DailyStateMixin(DailyStateTickMixin):
             source="weather_query",
             force_dynamic=True,
         ) else "system_prompt"
+        plan = get_conversation_injection_plan(req)
         if placement == "system_prompt":
-            req.system_prompt = f"{req.system_prompt or ''}\n\n{marker}\n{injection}".strip()
+            if plan is not None:
+                plan.materialize_system_block(
+                    req,
+                    key="weather.query",
+                    marker=marker,
+                    content=injection,
+                    priority=24,
+                    source="weather_query",
+                    placement=PLACEMENT_DYNAMIC_SYSTEM,
+                )
+            else:
+                req.system_prompt = f"{req.system_prompt or ''}\n\n{marker}\n{injection}".strip()
+        elif plan is not None and not plan.contains_marker(marker):
+            plan.add(
+                key="weather.query",
+                marker=marker,
+                content=injection,
+                priority=24,
+                source="weather_query",
+                placement=PLACEMENT_TURN_TAIL,
+                temporary=True,
+            )
         recorder = getattr(self, "_record_request_prompt_fragment", None)
         if callable(recorder):
             await recorder(

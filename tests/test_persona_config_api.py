@@ -399,6 +399,35 @@ def test_existing_sparse_profile_is_repaired_without_materializing_old_keys():
         assert "quiet_hours" not in profile["persona_settings"]
 
 
+def test_schema_migration_failure_keeps_legacy_persona_json():
+    with tempfile.TemporaryDirectory() as root:
+        plugin = _harness(root)
+        profiles = Path(root) / "persona_profiles"
+        profiles.mkdir(parents=True, exist_ok=True)
+        legacy = profiles / "alt.json"
+        legacy.write_text(
+            json.dumps(
+                {
+                    "users": {"u": {"name": "保留"}},
+                    "persona_settings": {
+                        "bot_name": "alt",
+                        "persona_settings_schema_version": 999,
+                    },
+                    "persona_settings_schema_version": 999,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        status = plugin._migrate_persona_profiles_sync()
+
+        assert status["ok"] is False
+        assert "alt" in status["degraded"]
+        assert legacy.exists()
+        assert not plugin._persona_profile_db_path("alt").exists()
+
+
 def test_multi_persona_transition_rollback_restores_sqlite_profiles():
     async def run():
         with tempfile.TemporaryDirectory() as root:
