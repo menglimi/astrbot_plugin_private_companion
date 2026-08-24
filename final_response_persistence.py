@@ -1076,6 +1076,7 @@ class FinalResponsePersistenceMixin:
         *,
         response_text: str,
         now: float,
+        delivery_id: str = "",
     ) -> set[str]:
         visible_text = _single_line(
             _strip_internal_message_blocks(response_text),
@@ -1150,6 +1151,19 @@ class FinalResponsePersistenceMixin:
         talking_to_bot = (
             isinstance(scene, dict) and str(scene.get("talking_to") or "") == "bot"
         )
+        reply_recorder = getattr(self, "_record_group_bot_reply", None)
+        if callable(reply_recorder):
+            recorded = reply_recorder(
+                group,
+                text=visible_text,
+                reply_to_id=sender_id,
+                kind="passive_reply",
+                talking_to_bot=talking_to_bot,
+                ts=now,
+                delivery_id=delivery_id,
+            )
+            if isinstance(recorded, dict):
+                updated_sections.add("groups")
         active_getter = getattr(self, "_group_active_conversation", None)
         active = active_getter(group) if callable(active_getter) else {}
         if talking_to_bot or (
@@ -1158,22 +1172,6 @@ class FinalResponsePersistenceMixin:
         ):
             active["last_bot_reply"] = visible_text
             active["last_bot_reply_ts"] = now
-            recent_bot = group.setdefault("recent_bot_replies", [])
-            if not isinstance(recent_bot, list):
-                recent_bot = []
-                group["recent_bot_replies"] = recent_bot
-            recent_bot.append(
-                {
-                    "ts": now,
-                    "sender_id": sender_id,
-                    "text": visible_text,
-                    "talking_to_bot": talking_to_bot,
-                }
-            )
-            del recent_bot[:-20]
-            trimmer = getattr(self, "_group_air_guard_trim_bot_replies", None)
-            if callable(trimmer):
-                trimmer(group)
             if talking_to_bot:
                 refresher = getattr(
                     self,
@@ -1210,6 +1208,7 @@ class FinalResponsePersistenceMixin:
                     event,
                     response_text=response_text,
                     now=now,
+                    delivery_id=delivery_id,
                 )
                 sections = private_sections | group_sections
                 if sections:

@@ -133,7 +133,7 @@ class GroupContextInterceptionTests(unittest.TestCase):
             script = (ROOT / relative).read_text(encoding="utf-8")
             self.assertIn('intercept_astrbot_group_context: "拦截AstrBot群聊对话注入"', script)
             self.assertIn(
-                'enable_group_context_injection: ["max_group_recent_messages", "intercept_astrbot_group_context"',
+                'enable_group_context_injection: ["max_group_recent_messages", "group_scene_recent_limit", "intercept_astrbot_group_context"',
                 script,
             )
             detail_section = script.split('title: "上下文范围"', 1)[1].split("},", 1)[0]

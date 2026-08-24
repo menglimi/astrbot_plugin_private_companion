@@ -7,6 +7,10 @@ from typing import Any
 
 from astrbot.api import logger
 
+from .conversation_injection_plan import (
+    PLACEMENT_STABLE_SYSTEM,
+    get_conversation_injection_plan,
+)
 from .helpers import _now_ts, _safe_float, _single_line
 from .persona_config import runtime_persona_setting
 from .prompt_surface import PromptSurface
@@ -1164,7 +1168,12 @@ async def inject_humanized_state(
             setattr(event, "private_companion_creative_reply_context", creative_reply_context)
         self._add_collected_prompt_contexts(prompt_surface, collected_contexts)
     static_fragment_keys = {"reply.style"}
-    static_injection, dynamic_injection = prompt_surface.render_partition(
+    (
+        static_injection,
+        dynamic_injection,
+        static_prompt_modules,
+        dynamic_prompt_modules,
+    ) = prompt_surface.render_partition_with_fragments(
         lambda fragment: fragment.normalized_key() in static_fragment_keys
     )
     injection = "\n\n".join(part for part in (static_injection, dynamic_injection) if part)
@@ -1182,10 +1191,24 @@ async def inject_humanized_state(
         return
     static_placement = ""
     dynamic_placement = ""
+    conversation_plan = get_conversation_injection_plan(req)
     if static_injection and not self._request_has_managed_prompt_marker(req, static_marker):
         current_prompt = req.system_prompt or ""
         req.system_prompt = f"{current_prompt}\n\n{static_marker}\n{static_injection}".strip()
         static_placement = "system_prompt"
+        if conversation_plan is not None:
+            conversation_plan.add(
+                key="passive.static",
+                marker=static_marker,
+                content=static_injection,
+                priority=12,
+                source="passive_state",
+                placement=PLACEMENT_STABLE_SYSTEM,
+                temporary=False,
+                materialized=True,
+                metadata={"batch": True},
+                children=static_prompt_modules,
+            )
     if dynamic_injection:
         if not self._append_turn_prompt_fragment_by_position(
             req,
@@ -1202,6 +1225,12 @@ async def inject_humanized_state(
                 getattr(req, "_private_companion_turn_prompt_placement", "prompt"),
                 40,
             ) or "prompt"
+        if conversation_plan is not None:
+            conversation_plan.annotate_marker(
+                marker,
+                metadata={"batch": True},
+                children=dynamic_prompt_modules,
+            )
     injection_placement = "+".join(part for part in (static_placement, dynamic_placement) if part) or "none"
     await self._append_conditional_tool_instructions_to_request(event, req)
     state_log_parts = [

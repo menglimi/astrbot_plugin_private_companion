@@ -322,7 +322,7 @@ class InteractionUtilsMixin:
         image_path: str = "",
         extra_components: list[Any] | None = None,
         quote_message_id: str = "",
-    ):
+    ) -> bool:
         quote_message_id = (
             _single_line(quote_message_id, 120)
             if runtime_persona_setting(self, "enable_proactive_quote_trigger_message", False)
@@ -332,7 +332,7 @@ class InteractionUtilsMixin:
             quote_message_id = ""
         recalled_message_id = await self._should_cancel_reply_for_missing_or_recalled_trigger(event, quote_message_id)
         if recalled_message_id:
-            return
+            return False
         if (image_path and os.path.exists(image_path)) or extra_components:
             if image_path and os.path.exists(image_path):
                 marker = getattr(self, "_mark_private_companion_skip_reaction_expression", None)
@@ -347,10 +347,11 @@ class InteractionUtilsMixin:
                     )
                 )
             )
-            return
+            return True
         if quote_message_id and text:
             await event.send(event.chain_result(self._with_optional_reply([Plain(text)], quote_message_id, event=event)))
-            return
+            return True
         if not text:
-            return
+            return False
         await event.send(event.plain_result(text))
+        return True

@@ -1794,7 +1794,7 @@ def _initialize_review_and_group_config(self: Any, c: Any) -> None:
         600.0,
     )
     self.enable_group_scene_awareness = self._cfg_bool(c, "enable_group_scene_awareness", True)
-    self.group_scene_recent_limit = self._cfg_int(c, "group_scene_recent_limit", 5, 2, 12)
+    self.group_scene_recent_limit = self._cfg_int(c, "group_scene_recent_limit", 20, 2, 100)
     self.enable_group_reality_promise_guard = self._cfg_bool(c, "enable_group_reality_promise_guard", True)
     self.enable_group_wakeup_enhancement = self._cfg_bool(c, "enable_group_wakeup_enhancement", True)
     self.group_wakeup_direct_words = self._parse_text_list_config(self._cfg_raw(c, "group_wakeup_direct_words", []))

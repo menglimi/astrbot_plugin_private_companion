@@ -4368,12 +4368,10 @@ class EventDispatchMixin:
         current = _now_ts() if now is None else float(now)
         window = max(30, _safe_int(_persona_value(self, "group_air_guard_window_seconds", 180), 180, 30, 1800))
         raw = group.get("recent_bot_replies") if isinstance(group.get("recent_bot_replies"), list) else []
-        kept = [
-            item for item in raw[-40:]
+        return [
+            item for item in raw
             if isinstance(item, dict) and current - _safe_float(item.get("ts"), 0) <= window
         ]
-        group["recent_bot_replies"] = kept[-20:]
-        return kept
 
     def _group_air_guard_is_polite_terminal(self, text: Any) -> bool:
         cleaned = _single_line(text, 80).lower()

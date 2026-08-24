@@ -1583,6 +1583,7 @@ class CoreStoreMixin:
         if not isinstance(groups, dict):
             return {}
         removed_messages = 0
+        removed_bot_replies = 0
         removed_phrases = 0
         for group in groups.values():
             if not isinstance(group, dict):
@@ -1597,6 +1598,13 @@ class CoreStoreMixin:
                     item.pop("image_vision", None)
                 removed_messages += max(0, len(recent) - len(keep))
                 group["recent_messages"] = keep
+            recent_bot = group.get("recent_bot_replies")
+            if isinstance(recent_bot, list) and recent_bot:
+                keep_bot = [item for item in recent_bot[-12:] if isinstance(item, dict)]
+                for item in keep_bot:
+                    item["text"] = _single_line(item.get("text"), 500)
+                removed_bot_replies += max(0, len(recent_bot) - len(keep_bot))
+                group["recent_bot_replies"] = keep_bot
             members = group.get("members")
             if not isinstance(members, dict):
                 continue
@@ -1611,6 +1619,8 @@ class CoreStoreMixin:
         changed: dict[str, int] = {}
         if removed_messages:
             changed["group_recent_messages"] = removed_messages
+        if removed_bot_replies:
+            changed["group_recent_bot_replies"] = removed_bot_replies
         if removed_phrases:
             changed["group_member_recent_phrases"] = removed_phrases
         return changed
@@ -3587,6 +3597,7 @@ class CoreStoreMixin:
             "topic_threads": ("signature", "topic_id", "id"),
             "slang_terms": ("term", "text", "id"),
             "recent_messages": ("message_id", "id"),
+            "recent_bot_replies": ("message_id", "delivery_id", "id"),
             "pending_atrelay_tasks": ("task_id", "id"),
             "group_wakeup_logs": ("trace_id", "id"),
         }.get(field, ("id", "event_id", "trace_id"))
@@ -3600,6 +3611,14 @@ class CoreStoreMixin:
                 "message",
                 str(item.get("ts") or ""),
                 str(item.get("sender_id") or ""),
+                str(item.get("text") or ""),
+            )
+        if field == "recent_bot_replies":
+            return (
+                "bot_message",
+                str(item.get("ts") or ""),
+                str(item.get("reply_to_id") or item.get("sender_id") or ""),
+                str(item.get("kind") or ""),
                 str(item.get("text") or ""),
             )
         try:

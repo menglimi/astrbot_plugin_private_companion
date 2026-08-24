@@ -124,6 +124,7 @@ class ScopedProjectionTests(unittest.TestCase):
         self.snapshot["groups"] = {
             "group-a": {
                 "group_id": "group-a", "recent_messages": [{"text": "group-a-sentinel"}],
+                "recent_bot_replies": [{"text": "group-a-bot-sentinel"}],
                 "group_episodes": [{"summary": "group-a-episode"}],
                 "expression_profile": {"learned_rules": [{"id": "ga", "style": "group-a-rule"}]},
                 "members": {"10001": {"name": "A-in-group-a", "count": 3, "recent_phrases": ["ga-phrase"]}},
@@ -144,6 +145,7 @@ class ScopedProjectionTests(unittest.TestCase):
         serialized = str([item.payload for item in records])
         self.assertIn("private-sentinel", serialized)
         self.assertIn("group-a-sentinel", serialized)
+        self.assertIn("group-a-bot-sentinel", serialized)
         self.assertIn("group-b-sentinel", serialized)
         self.assertNotIn("relationship_role", serialized)
         self.assertNotIn("relationship_score", serialized)

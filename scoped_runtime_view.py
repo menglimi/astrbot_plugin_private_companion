@@ -24,7 +24,7 @@ PRIVATE_FIELDS = frozenset({
 })
 
 GROUP_SHARED_FIELDS = frozenset({
-    "recent_messages", "slang_terms", "slang_meanings", "topic_signatures", "topic_threads",
+    "recent_messages", "recent_bot_replies", "slang_terms", "slang_meanings", "topic_signatures", "topic_threads",
     "group_episodes", "relationship_edges", "atmosphere", "interjection_feedback",
     "expression_profile",
 })

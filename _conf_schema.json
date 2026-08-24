@@ -2696,9 +2696,9 @@
     "invisible": true
   },
   "group_scene_recent_limit": {
-    "description": "Legacy flat config: 场景感知最近消息数",
+    "description": "Legacy flat config: 群聊上下文消息数",
     "type": "int",
-    "default": 5,
+    "default": 20,
     "invisible": true
   },
   "enable_group_reality_promise_guard": {
@@ -8744,17 +8744,17 @@
         }
       },
       "group_scene_recent_limit": {
-        "description": "场景感知最近消息数",
+        "description": "群聊上下文消息数",
         "type": "int",
-        "hint": "scene 中 recent_flow 最多包含多少条最近群聊消息。越大越清楚，但会增加上下文长度。",
+        "hint": "主对话 LLM 每轮注入的合并群聊时间线最多包含多少条用户与 Bot 消息。实际不会超过群聊最近消息保留数，并继续受字符预算限制。",
         "slider": {
           "min": 2,
-          "max": 12,
+          "max": 100,
           "step": 1
         },
-        "default": 5,
+        "default": 20,
         "condition": {
-          "enable_group_scene_awareness": true
+          "enable_group_context_injection": true
         }
       },
       "enable_group_reality_promise_guard": {

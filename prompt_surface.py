@@ -104,17 +104,43 @@ class PromptSurface:
         return "\n\n".join(parts)
 
     def render_partition(self, predicate: Callable[[PromptFragment], bool]) -> tuple[str, str]:
+        matched, rest, _matched_fragments, _rest_fragments = self.render_partition_with_fragments(predicate)
+        return matched, rest
+
+    def render_partition_with_fragments(
+        self,
+        predicate: Callable[[PromptFragment], bool],
+    ) -> tuple[str, str, list[dict[str, object]], list[dict[str, object]]]:
+        """Render a partition and expose the exact child manifest for plan bridges."""
         matched: list[str] = []
         rest: list[str] = []
+        matched_fragments: list[dict[str, object]] = []
+        rest_fragments: list[dict[str, object]] = []
         for fragment in self._rendered_fragments():
             content = str(fragment.content or "").strip()
             if not content:
                 continue
+            item: dict[str, object] = {
+                "key": fragment.normalized_key(),
+                "source": _single_line(fragment.source, 80),
+                "priority": int(fragment.priority),
+                "content": content,
+                "chars": len(content),
+            }
+            if fragment.metadata:
+                item["metadata"] = dict(fragment.metadata)
             if predicate(fragment):
                 matched.append(content)
+                matched_fragments.append(item)
             else:
                 rest.append(content)
-        return "\n\n".join(matched), "\n\n".join(rest)
+                rest_fragments.append(item)
+        return (
+            "\n\n".join(matched),
+            "\n\n".join(rest),
+            matched_fragments,
+            rest_fragments,
+        )
 
     def __len__(self) -> int:
         return len(self._fragments)

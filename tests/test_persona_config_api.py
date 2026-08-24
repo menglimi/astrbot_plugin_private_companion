@@ -386,6 +386,8 @@ def test_existing_sparse_profile_is_repaired_without_materializing_old_keys():
         )
         status = plugin._migrate_persona_profiles_sync()
         assert status["ok"] is True
+        assert not profile_path.exists()
+        assert plugin._persona_profile_db_path("alt").is_file()
         profile = plugin._ensure_persona_profile("alt")
         assert profile["users"]["legacy"]["name"] == "保留"
         assert profile["persona_settings"] == {
@@ -395,6 +397,30 @@ def test_existing_sparse_profile_is_repaired_without_materializing_old_keys():
             "intercept_astrbot_group_context": True,
         }
         assert "quiet_hours" not in profile["persona_settings"]
+
+
+def test_multi_persona_transition_rollback_restores_sqlite_profiles():
+    async def run():
+        with tempfile.TemporaryDirectory() as root:
+            plugin = _harness(root)
+            plugin._ensure_persona_profile("alt")["rollback_marker"] = "before"
+            plugin._save_persona_profile_sync("alt")
+            api = PrivateCompanionPageApi(plugin)
+            snapshot = api._multi_persona_transition_snapshot()
+
+            plugin._ensure_persona_profile("alt")["rollback_marker"] = "after"
+            plugin._save_persona_profile_sync("alt")
+            plugin._ensure_persona_profile("work")["created_during_transition"] = True
+            plugin._save_persona_profile_sync("work")
+            assert plugin._persona_profile_db_path("work").is_file()
+
+            await api._rollback_multi_persona_transition(snapshot)
+            plugin._persona_data_profiles.clear()
+
+            assert plugin._ensure_persona_profile("alt")["rollback_marker"] == "before"
+            assert not plugin._persona_profile_db_path("work").exists()
+
+    asyncio.run(run())
 
 
 def test_runtime_resolver_reads_sparse_and_explicit_falsy_values():
@@ -454,7 +480,11 @@ def test_startup_migration_backs_up_invalid_profile_and_uses_persona_label():
         status = plugin._migrate_persona_profiles_sync()
         assert status["ok"] is False
         assert Path(status["backups"]["broken"]).is_file()
-        migrated = json.loads((profiles / "alt.json").read_text(encoding="utf-8"))
+        migrated = plugin._load_secondary_persona_store_sync(
+            "alt"
+        ).manager.backend.load_store()
+        assert not (profiles / "alt.json").exists()
+        assert (profiles / "alt.db").is_file()
         assert migrated["persona_settings"]["bot_name"] == "次人格显示名"
 
 

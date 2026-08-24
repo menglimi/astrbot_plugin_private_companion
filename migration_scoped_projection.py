@@ -44,7 +44,7 @@ _PRIVATE_MEMORY_FIELDS = (
     "birthday_curiosity_asked_at", "birthday_curiosity_answered_at",
 )
 _GROUP_MEMORY_FIELDS = (
-    "recent_messages", "slang_terms", "slang_meanings", "topic_signatures", "topic_threads",
+    "recent_messages", "recent_bot_replies", "slang_terms", "slang_meanings", "topic_signatures", "topic_threads",
     "group_episodes", "relationship_edges", "atmosphere", "interjection_feedback",
 )
 _MEMBER_PROFILE_FIELDS = (

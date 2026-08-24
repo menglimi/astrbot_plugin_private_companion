@@ -161,6 +161,11 @@ from .persona_config import (
     resolve_persona_setting,
     runtime_persona_setting,
 )
+from .persona_sqlite_store import (
+    PersonaSqliteStoreError,
+    PersonaSqliteStoreRegistry,
+    load_persona_sqlite_store,
+)
 from .model_routing import contains_sensitive_refusal, scope_allows
 from .person_context_contract import (
     CONTRACT_NAME as PERSON_CONTRACT_NAME,
@@ -294,6 +299,11 @@ from .message_pipeline import (
 from .tool_history_sanitizer import sanitize_history_image_blocks, sanitize_openai_tool_history
 from .forward_message import ForwardMessageMixin
 from .private_image import PrivateImageMixin
+from .conversation_injection_plan import (
+    PLACEMENT_DYNAMIC_SYSTEM,
+    PLACEMENT_TURN_TAIL,
+    get_conversation_injection_plan,
+)
 from .prompt_surface import PromptSurface
 from .passive_state_pipeline import inject_humanized_state as run_humanized_state_injection
 from .qzone_integration import QzoneMixin
@@ -2063,7 +2073,7 @@ class PrivateCompanionPlugin(
         )
 
     def _migrate_persona_profiles_sync(self) -> dict[str, Any]:
-        """Upgrade existing profile settings without materializing old gaps."""
+        """Migrate legacy persona JSON into SQLite and upgrade sparse settings."""
         result = {"ok": True, "migrated": [], "degraded": [], "skipped": []}
         profiles_dir = Path(str(getattr(self, "_persona_profiles_dir", "") or ""))
         if not profiles_dir.exists():
@@ -2073,15 +2083,32 @@ class PrivateCompanionPlugin(
         if not isinstance(errors, dict):
             errors = {}
             self._persona_profile_errors = errors
-        for path in sorted(profiles_dir.glob("*.json")):
-            pid = self._persona_id_from_profile_path(path)
+        candidates: dict[str, list[Path]] = {}
+        for pattern in ("*.json", "*.db"):
+            for path in sorted(profiles_dir.glob(pattern)):
+                pid = self._persona_id_from_profile_path(path)
+                if pid:
+                    candidates.setdefault(pid, []).append(path)
+        profiles = getattr(self, "_persona_data_profiles", None)
+        if not isinstance(profiles, dict):
+            profiles = {}
+            self._persona_data_profiles = profiles
+        for pid, paths in sorted(candidates.items()):
             if not pid or pid == primary:
-                result["skipped"].append(pid or path.name)
+                result["skipped"].append(pid or paths[0].name)
                 continue
+            legacy_path = self._persona_profile_path(pid)
+            legacy_present = legacy_path.is_file()
             try:
-                raw = json.loads(path.read_text(encoding="utf-8"))
-                if not isinstance(raw, dict):
-                    raise PersonaConfigError("persona profile root must be an object")
+                if legacy_present:
+                    preview = json.loads(legacy_path.read_text(encoding="utf-8"))
+                    if not isinstance(preview, dict):
+                        raise PersonaConfigError("persona profile root must be an object")
+                    preview_settings = preview.get(PERSONA_SETTINGS_KEY)
+                    if preview_settings is not None and not isinstance(preview_settings, dict):
+                        raise PersonaSettingsTypeError("persona_settings must be an object")
+                handle = self._load_secondary_persona_store_sync(pid)
+                raw = handle.data
                 settings = raw.get(PERSONA_SETTINGS_KEY)
                 if settings is not None and not isinstance(settings, dict):
                     raise PersonaSettingsTypeError("persona_settings must be an object")
@@ -2099,10 +2126,17 @@ class PrivateCompanionPlugin(
                 )
                 changed = migrated != raw
                 if changed:
-                    self._save_persona_profile_sync(pid, migrated)
+                    handle.manager.save_snapshot(deepcopy(migrated))
+                profiles[pid] = migrated
+                errors.pop(pid, None)
+                if changed or legacy_present:
                     result["migrated"].append(pid)
             except Exception as exc:
-                backup = self._backup_corrupt_persona_profile_sync(path, reason=str(exc))
+                backup = (
+                    self._backup_corrupt_persona_profile_sync(legacy_path, reason=str(exc))
+                    if legacy_path.is_file()
+                    else None
+                )
                 errors[pid] = str(exc)
                 result["degraded"].append(pid)
                 result["ok"] = False
@@ -2149,8 +2183,8 @@ class PrivateCompanionPlugin(
         ).strip()
         return text[:96]
 
-    def _persona_profile_filename(self, persona_id: Any) -> str:
-        """Return a reversible, cross-platform-safe filename for one logical ID."""
+    def _persona_profile_stem(self, persona_id: Any) -> str:
+        """Return a reversible, cross-platform-safe filename stem."""
         pid = self._sanitize_persona_id(persona_id)
         encoded_parts: list[str] = []
         for character in pid:
@@ -2166,14 +2200,23 @@ class PrivateCompanionPlugin(
         stem = "".join(encoded_parts)
         if stem.partition(".")[0].upper() in _WINDOWS_RESERVED_FILENAME_STEMS and stem:
             stem = f"%{ord(stem[0]):02X}{stem[1:]}"
-        return f"{stem}.json"
+        return stem
+
+    def _persona_profile_filename(self, persona_id: Any) -> str:
+        """Return the legacy JSON filename for one logical persona ID."""
+        return f"{self._persona_profile_stem(persona_id)}.json"
+
+    def _persona_profile_db_filename(self, persona_id: Any) -> str:
+        """Return the authoritative secondary-persona SQLite filename."""
+        return f"{self._persona_profile_stem(persona_id)}.db"
 
     def _persona_id_from_profile_path(self, path: Path) -> str:
         filename = path.name
-        if not filename.lower().endswith(".json"):
+        suffix = path.suffix.lower()
+        if suffix not in {".json", ".db"}:
             return ""
         try:
-            decoded = unquote(filename[:-5], encoding="utf-8", errors="strict")
+            decoded = unquote(filename[: -len(suffix)], encoding="utf-8", errors="strict")
         except (UnicodeDecodeError, ValueError):
             return ""
         return self._sanitize_persona_id(decoded)
@@ -2223,6 +2266,42 @@ class PrivateCompanionPlugin(
 
     def _persona_profile_path(self, persona_id: str) -> Path:
         return Path(self._persona_profiles_dir) / self._persona_profile_filename(persona_id)
+
+    def _persona_profile_db_path(self, persona_id: str) -> Path:
+        return Path(self._persona_profiles_dir) / self._persona_profile_db_filename(persona_id)
+
+    def _persona_profile_store_paths(self, persona_id: Any) -> tuple[Path, Path]:
+        pid = self._sanitize_persona_id(persona_id)
+        return self._persona_profile_path(pid), self._persona_profile_db_path(pid)
+
+    def _persona_sqlite_registry(self) -> PersonaSqliteStoreRegistry:
+        registry = getattr(self, "_persona_sqlite_store_registry", None)
+        if not isinstance(registry, PersonaSqliteStoreRegistry):
+            registry = PersonaSqliteStoreRegistry()
+            self._persona_sqlite_store_registry = registry
+        return registry
+
+    def _load_secondary_persona_store_sync(self, persona_id: Any):
+        pid = self._sanitize_persona_id(persona_id)
+        if not pid or pid == self._primary_persona_id():
+            raise PersonaConfigError("secondary persona SQLite requires a non-primary persona")
+        legacy_path, database_path = self._persona_profile_store_paths(pid)
+        database_path.parent.mkdir(parents=True, exist_ok=True)
+        return load_persona_sqlite_store(
+            persona_id=pid,
+            legacy_json_path=legacy_path,
+            sqlite_path=database_path,
+            ensure_defaults=self._ensure_store_defaults,
+            new_store=self._new_store,
+            registry=self._persona_sqlite_registry(),
+        )
+
+    def _secondary_persona_store_exists(self, persona_id: Any) -> bool:
+        pid = self._sanitize_persona_id(persona_id)
+        if not pid or pid == self._primary_persona_id():
+            return False
+        legacy_path, database_path = self._persona_profile_store_paths(pid)
+        return legacy_path.is_file() or database_path.is_file()
 
     def _backup_corrupt_persona_profile_sync(self, path: Path, *, reason: str) -> Path | None:
         if not path.exists():
@@ -2279,17 +2358,16 @@ class PrivateCompanionPlugin(
         existing = profiles.get(pid)
         if isinstance(existing, dict):
             return existing
-        path = self._persona_profile_path(pid)
+        legacy_path, database_path = self._persona_profile_store_paths(pid)
+        store_existed = legacy_path.is_file() or database_path.is_file()
         loaded: dict[str, Any] | None = None
         try:
-            if path.exists():
-                raw = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(raw, dict):
-                    loaded = raw
-                else:
-                    self._backup_corrupt_persona_profile_sync(path, reason="profile root is not an object")
+            handle = self._load_secondary_persona_store_sync(pid)
+            loaded = handle.data
+            profile_errors.pop(pid, None)
         except Exception as exc:
-            self._backup_corrupt_persona_profile_sync(path, reason=str(exc))
+            if legacy_path.is_file():
+                self._backup_corrupt_persona_profile_sync(legacy_path, reason=str(exc))
             profile_errors[pid] = str(exc)
             logger.warning("[PrivateCompanion] 人格资料读取失败 persona=%s error=%s", pid, _single_line(exc, 160))
         if loaded is not None:
@@ -2307,22 +2385,21 @@ class PrivateCompanionPlugin(
             self._backup_corrupt_persona_profile_sync(path, reason=reason)
             profile_errors[pid] = reason
             profile[PERSONA_SETTINGS_KEY] = {}
-        if loaded is not None and not str(profile[PERSONA_SETTINGS_KEY].get("bot_name") or "").strip():
+        if store_existed and loaded is not None and not str(profile[PERSONA_SETTINGS_KEY].get("bot_name") or "").strip():
             # Pre-settings secondary profiles need an identity to be editable;
             # ordinary missing keys remain sparse and continue following the
             # primary configuration.
             profile[PERSONA_SETTINGS_KEY]["bot_name"] = self._persona_display_name_for_id(pid)
             profile[PERSONA_SETTINGS_VERSION_KEY] = PERSONA_SETTINGS_SCHEMA_VERSION
             profile.setdefault(PERSONA_SETTINGS_REVISION_KEY, 0)
-            if not path.exists():
-                try:
-                    self._save_persona_profile_sync(pid, profile)
-                except Exception as exc:
-                    logger.warning(
-                        "[PrivateCompanion] 旧人格身份配置初始化落盘失败: persona=%s error=%s",
-                        pid,
-                        _single_line(exc, 160),
-                    )
+            try:
+                self._save_persona_profile_sync(pid, profile)
+            except Exception as exc:
+                logger.warning(
+                    "[PrivateCompanion] 旧人格身份配置初始化落盘失败: persona=%s error=%s",
+                    pid,
+                    _single_line(exc, 160),
+                )
         profiles[pid] = profile
         return profile
 
@@ -2334,18 +2411,9 @@ class PrivateCompanionPlugin(
             payload = data if isinstance(data, dict) else self._data_default
             self._write_data_snapshot_sync(deepcopy(payload))
             return
-        path = self._persona_profile_path(pid)
-        path.parent.mkdir(parents=True, exist_ok=True)
         payload = data if isinstance(data, dict) else self._ensure_persona_profile(pid)
-        temp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-        try:
-            temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            os.replace(temp, path)
-        finally:
-            try:
-                temp.unlink(missing_ok=True)
-            except Exception:
-                pass
+        handle = self._load_secondary_persona_store_sync(pid)
+        handle.manager.save_snapshot(deepcopy(payload))
 
     def _write_persona_reset_backup_sync(
         self,
@@ -2587,10 +2655,12 @@ class PrivateCompanionPlugin(
                 if clean and clean not in ids:
                     ids.append(clean)
         try:
-            for path in Path(self._persona_profiles_dir).glob("*.json"):
-                clean = self._persona_id_from_profile_path(path)
-                if clean and clean not in ids:
-                    ids.append(clean)
+            profiles_dir = Path(self._persona_profiles_dir)
+            for pattern in ("*.db", "*.json"):
+                for path in profiles_dir.glob(pattern):
+                    clean = self._persona_id_from_profile_path(path)
+                    if clean and clean not in ids:
+                        ids.append(clean)
         except Exception:
             pass
         return ids
@@ -2603,11 +2673,10 @@ class PrivateCompanionPlugin(
         profiles = getattr(self, "_persona_data_profiles", {})
         if isinstance(profiles, dict) and isinstance(profiles.get(pid), dict):
             return profiles[pid]
-        path = self._persona_profile_path(pid)
-        if not path.is_file():
+        if not self._secondary_persona_store_exists(pid):
             return None
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = self._load_secondary_persona_store_sync(pid).data
         except Exception:
             return None
         return payload if isinstance(payload, dict) else None
@@ -2647,6 +2716,12 @@ class PrivateCompanionPlugin(
             ):
                 candidate.pop(key, None)
                 baseline.pop(key, None)
+            for payload in (candidate, baseline):
+                for key in tuple(payload):
+                    if payload.get(key) in (None, "", [], {}) and key not in (
+                        baseline if payload is candidate else candidate
+                    ):
+                        payload.pop(key, None)
             return candidate != baseline
         except Exception:
             return False
@@ -2658,10 +2733,12 @@ class PrivateCompanionPlugin(
         if isinstance(profiles, dict):
             candidates.extend(map(str, profiles))
         try:
-            candidates.extend(
-                self._persona_id_from_profile_path(path)
-                for path in Path(self._persona_profiles_dir).glob("*.json")
-            )
+            profiles_dir = Path(self._persona_profiles_dir)
+            for pattern in ("*.db", "*.json"):
+                candidates.extend(
+                    self._persona_id_from_profile_path(path)
+                    for path in profiles_dir.glob(pattern)
+                )
         except Exception:
             pass
         result: list[str] = []
@@ -3589,8 +3666,9 @@ class PrivateCompanionPlugin(
                 return {"ok": False, "code": "persona_config_invalid", "message": "复制来源尚未创建独立人格配置"}
         await self._flush_scheduled_data_save()
         async with self._data_lock:
-            path = self._persona_profile_path(pid)
-            existed = path.exists() or pid in getattr(self, "_persona_data_profiles", {})
+            existed = self._secondary_persona_store_exists(pid) or pid in getattr(
+                self, "_persona_data_profiles", {}
+            )
             profile = deepcopy(self._ensure_persona_profile(pid))
             current_settings = profile.get(PERSONA_SETTINGS_KEY)
             profile_degraded = pid in set(getattr(self, "_persona_profile_errors", {}))
@@ -5127,6 +5205,14 @@ class PrivateCompanionPlugin(
             data_root / "plugin_data" / "astrbot_plugin_livingmemory" / "livingmemory_graph_documents.db",
             data_root / "knowledge_base" / "kb.db",
         ]
+        effective_store = Path(
+            str(getattr(self, "storage_sqlite_effective_path", "") or "")
+        )
+        if effective_store:
+            candidates.append(effective_store)
+        profiles_dir = Path(str(getattr(self, "_persona_profiles_dir", "") or ""))
+        if profiles_dir.is_dir():
+            candidates.extend(sorted(profiles_dir.glob("*.db")))
         seen: set[str] = set()
         paths: list[Path] = []
         for path in candidates:
@@ -5334,6 +5420,7 @@ class PrivateCompanionPlugin(
             candidates.append(Path(str(getattr(self, "data_file", "") or "")))
         profiles = Path(str(getattr(self, "_persona_profiles_dir", "") or ""))
         if profiles.is_dir():
+            candidates.extend(sorted(profiles.glob("*.db")))
             candidates.extend(sorted(profiles.glob("*.json")))
         result: list[Path] = []
         for candidate in candidates:
@@ -12590,30 +12677,30 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         force_dynamic: bool = False,
     ) -> bool:
         position = self._normalize_passive_injection_position(runtime_persona_setting(self, 'passive_injection_position', "prompt"))
-        if position == "system_prompt" and not force_dynamic:
-            return False
         content = str(text or "").strip()
         if not content:
             return False
         try:
             marker = _single_line(marker, 120) or "<!-- private_companion_turn_fragment -->"
-            fragments = getattr(req, "_private_companion_turn_prompt_fragments", None)
-            if not isinstance(fragments, list):
-                fragments = []
-                setattr(req, "_private_companion_turn_prompt_fragments", fragments)
             if self._request_has_managed_prompt_marker(req, marker):
                 return True
-            fragments.append(
-                {
-                    "marker": marker,
-                    "content": content,
-                    "priority": int(priority),
-                    "source": _single_line(source, 80),
-                    "index": len(fragments),
-                }
+            plan = get_conversation_injection_plan(req)
+            if plan is None:
+                return False
+            use_system_prompt = position == "system_prompt" and not force_dynamic
+            plan.add(
+                marker=marker,
+                content=content,
+                priority=int(priority),
+                source=_single_line(source, 80),
+                placement=PLACEMENT_DYNAMIC_SYSTEM if use_system_prompt else PLACEMENT_TURN_TAIL,
+                temporary=not use_system_prompt,
+                materialized=use_system_prompt,
             )
-            if not self._render_turn_prompt_fragments(req, prefer_extra_user_content=True):
-                self._render_turn_prompt_fragments(req, prefer_extra_user_content=False)
+            setattr(req, "_private_companion_turn_prompt_fragments", plan.legacy_turn_fragments())
+            if use_system_prompt:
+                return False
+            plan.render_into(req, prefer_extra_user_content=True)
             return True
         except Exception as exc:
             logger.debug("[PrivateCompanion] 指定位置 prompt 注入失败,回退 system_prompt: %s", _single_line(exc, 120))
@@ -12625,6 +12712,9 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         marker_text = _single_line(marker, 120)
         if not marker_text:
             return False
+        plan = get_conversation_injection_plan(req, create=False)
+        if plan is not None and plan.contains_marker(marker_text):
+            return True
         if marker_text in str(getattr(req, "system_prompt", "") or ""):
             return True
         fragments = getattr(req, "_private_companion_turn_prompt_fragments", None)
@@ -12900,6 +12990,10 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             return False
 
     def _render_turn_prompt_fragments(self, req: ProviderRequest, *, prefer_extra_user_content: bool = False) -> bool:
+        plan = get_conversation_injection_plan(req, create=False)
+        if plan is not None:
+            plan.render_into(req, prefer_extra_user_content=prefer_extra_user_content)
+            return True
         start_marker = "<!-- private_companion_turn_fragments_start -->"
         end_marker = "<!-- private_companion_turn_fragments_end -->"
         current = str(getattr(req, "prompt", "") or "")
@@ -16586,6 +16680,32 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 umo or "unknown",
             )
 
+    @filter.on_llm_request(priority=-240000)
+    @_multi_persona_event_context
+    async def flush_conversation_injection_plan(
+        self,
+        event: AstrMessageEvent,
+        req: ProviderRequest,
+        *args,
+        **kwargs,
+    ):
+        """Render all registered plugin-owned conversation blocks once before provider cleanup."""
+        if self is None or req is None or not bool(getattr(self, "enabled", False)):
+            return
+        plan = get_conversation_injection_plan(req, create=False)
+        if plan is None:
+            return
+        try:
+            plan.render_into(req)
+            setattr(req, "_private_companion_conversation_injection_manifest", plan.manifest())
+            plan.freeze()
+        except Exception as exc:
+            logger.error(
+                "[PrivateCompanion] 主对话注入计划最终渲染失败: session=%s error=%s",
+                _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
+                _single_line(exc, 180),
+            )
+
     @filter.on_llm_request(priority=-249000)
     @_multi_persona_event_context
     async def sanitize_historical_image_blocks_before_provider(
@@ -18831,6 +18951,9 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                         current["interject_day"] = repeat_group_snapshot.get("interject_day", "")
                         current["interject_today"] = repeat_group_snapshot.get("interject_today", 0)
                         current["last_bot_interjection"] = repeat_group_snapshot.get("last_bot_interjection", {})
+                        current["recent_bot_replies"] = deepcopy(
+                            repeat_group_snapshot.get("recent_bot_replies", current.get("recent_bot_replies", []))
+                        )
                     self._save_data_sync(sections={"groups"})
         self._start_group_image_understanding(
             event,

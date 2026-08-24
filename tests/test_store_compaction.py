@@ -51,6 +51,32 @@ class _CanonicalSanitizeHarness(CoreStoreMixin):
 
 
 class StoreCompactionTests(unittest.IsolatedAsyncioTestCase):
+    def test_primary_json_projection_keeps_twelve_member_and_bot_messages(self) -> None:
+        data = {
+            "groups": {
+                "group-a": {
+                    "recent_messages": [
+                        {"sender_id": "user", "text": f"member-{index}"}
+                        for index in range(15)
+                    ],
+                    "recent_bot_replies": [
+                        {"reply_to_id": "user", "text": f"bot-{index}"}
+                        for index in range(15)
+                    ],
+                }
+            }
+        }
+
+        changed = CoreStoreMixin._strip_ephemeral_group_transcripts_inplace(data)
+
+        group = data["groups"]["group-a"]
+        self.assertEqual(12, len(group["recent_messages"]))
+        self.assertEqual(12, len(group["recent_bot_replies"]))
+        self.assertEqual("member-3", group["recent_messages"][0]["text"])
+        self.assertEqual("bot-3", group["recent_bot_replies"][0]["text"])
+        self.assertEqual(3, changed["group_recent_messages"])
+        self.assertEqual(3, changed["group_recent_bot_replies"])
+
     def test_store_control_tag_sanitization_can_be_disabled(self) -> None:
         data = {"memory": {"text": "先这样 <bubble/> 再继续"}}
 

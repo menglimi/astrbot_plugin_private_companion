@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+from copy import deepcopy
 import json
 import tempfile
 import threading
@@ -470,10 +471,10 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(["2026-08-02"], target["daily_diary_deleted_days"])
             self.assertEqual(7, target["daily_diary_delete_revision"])
             self.assertNotIn("runtime_cache", target)
-            stored = (Path(root) / "persona_profiles" / "alt.json").read_text(
-                encoding="utf-8"
-            )
-            self.assertIn("旧日记", stored)
+            stored = plugin._load_secondary_persona_store_sync(
+                "alt"
+            ).manager.backend.load_store()
+            self.assertIn("旧日记", json.dumps(stored, ensure_ascii=False))
 
             removed = plugin._switch_persona_for_window("alt", window_key="legacy")
             self.assertFalse(removed["ok"])
@@ -931,7 +932,7 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
             profile["unicode_marker"] = "中文资料"
             plugin._save_persona_profile_sync(persona_id)
 
-            path = Path(root) / "persona_profiles" / "星缘-私聊.json"
+            path = Path(root) / "persona_profiles" / "星缘-私聊.db"
             self.assertTrue(path.is_file())
             plugin._persona_data_profiles.clear()
             self.assertEqual(
@@ -955,13 +956,15 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
             plugin.config["multi_persona_ids"] = ["main", persona_id]
 
             path = plugin._persona_profile_path(persona_id)
+            database_path = plugin._persona_profile_db_path(persona_id)
             self.assertEqual(
                 (Path(root) / "persona_profiles").resolve(),
                 path.parent.resolve(),
             )
-            self.assertNotIn("/", path.name)
-            self.assertNotIn(":", path.name)
-            self.assertNotIn("?", path.name)
+            for candidate in (path, database_path):
+                self.assertNotIn("/", candidate.name)
+                self.assertNotIn(":", candidate.name)
+                self.assertNotIn("?", candidate.name)
             plugin._ensure_persona_profile(persona_id)["safe_marker"] = True
             plugin._save_persona_profile_sync(persona_id)
 
@@ -975,6 +978,7 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual("main.json", plugin._persona_profile_path("main").name)
             self.assertEqual("alt.json", plugin._persona_profile_path("alt").name)
+            self.assertEqual("alt.db", plugin._persona_profile_db_path("alt").name)
             self.assertNotEqual("CON.json", plugin._persona_profile_path("CON").name)
             self.assertEqual(
                 "CON",
@@ -1093,14 +1097,46 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
             await plugin._flush_scheduled_data_save()
 
             main = Path(plugin.data_file).read_text(encoding="utf-8")
-            alt = (Path(root) / "persona_profiles" / "alt.json").read_text(
-                encoding="utf-8"
-            )
+            alt = plugin._load_secondary_persona_store_sync(
+                "alt"
+            ).manager.backend.load_store()
             self.assertIn('"save_marker": "main"', main)
-            self.assertIn('"save_marker": "alt"', alt)
+            self.assertEqual("alt", alt["users"]["save_marker"])
             self.assertFalse(plugin._persona_profile_path("main").exists())
             self.assertFalse(plugin._persona_data_save_dirty)
             self.assertEqual({}, plugin._persona_data_save_tasks)
+
+    async def test_primary_json_tail_is_twelve_but_secondary_sqlite_keeps_full_history(self):
+        with tempfile.TemporaryDirectory() as root:
+            plugin = _plugin_harness(root)
+
+            def group_history():
+                return {
+                    "recent_messages": [
+                        {"sender_id": "user", "text": f"member-{index}"}
+                        for index in range(15)
+                    ],
+                    "recent_bot_replies": [
+                        {"reply_to_id": "user", "text": f"bot-{index}"}
+                        for index in range(15)
+                    ],
+                }
+
+            plugin._data_default["groups"] = {"group-a": group_history()}
+            plugin._write_data_snapshot_sync(deepcopy(plugin._data_default))
+            primary = json.loads(Path(plugin.data_file).read_text(encoding="utf-8"))
+
+            alt = plugin._ensure_persona_profile("alt")
+            alt["groups"] = {"group-a": group_history()}
+            plugin._save_persona_profile_sync("alt")
+            secondary = plugin._load_secondary_persona_store_sync(
+                "alt"
+            ).manager.backend.load_store()
+
+            self.assertEqual(12, len(primary["groups"]["group-a"]["recent_messages"]))
+            self.assertEqual(12, len(primary["groups"]["group-a"]["recent_bot_replies"]))
+            self.assertEqual(15, len(secondary["groups"]["group-a"]["recent_messages"]))
+            self.assertEqual(15, len(secondary["groups"]["group-a"]["recent_bot_replies"]))
 
     async def test_terminate_queues_final_snapshot_after_timed_out_persona_writer(self):
         with tempfile.TemporaryDirectory() as root:
@@ -1153,9 +1189,11 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
             await plugin._save_data_on_terminate()
 
             main_stored = Path(plugin.data_file).read_text(encoding="utf-8")
-            alt_stored = plugin._persona_profile_path("alt").read_text(encoding="utf-8")
+            alt_stored = plugin._load_secondary_persona_store_sync(
+                "alt"
+            ).manager.backend.load_store()
             self.assertIn('"final_marker": "main"', main_stored)
-            self.assertIn('"final_marker": "alt"', alt_stored)
+            self.assertEqual("alt", alt_stored["final_marker"])
             self.assertFalse(plugin._persona_profile_path("main").exists())
 
     async def test_sqlite_terminate_preserves_bookshelf_tombstone_on_restart(self):

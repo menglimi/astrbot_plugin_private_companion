@@ -1395,6 +1395,29 @@ class PrivateCompanionPageApiUsersGroupsMixin:
             projected.append(item)
         return projected
 
+    def _group_page_recent_bot_replies(self, group: dict[str, Any]) -> list[dict[str, Any]]:
+        items = self._limited_list(group.get("recent_bot_replies"), 30)
+        projected: list[dict[str, Any]] = []
+        for raw in items:
+            if not isinstance(raw, dict):
+                continue
+            item: dict[str, Any] = {
+                "ts": raw.get("ts", 0),
+                "text": self._display_message_text(raw.get("text"), 500),
+                "reply_to_id": self._single_line(
+                    raw.get("reply_to_id") or raw.get("sender_id"),
+                    80,
+                ),
+                "kind": self._single_line(raw.get("kind"), 40) or "bot_reply",
+                "talking_to_bot": bool(raw.get("talking_to_bot")),
+            }
+            for key in ("message_id", "delivery_id"):
+                value = self._single_line(raw.get(key), 160)
+                if value:
+                    item[key] = value
+            projected.append(item)
+        return projected
+
     def _looks_like_member_shadow_group(self, group_id: str, group: dict[str, Any]) -> bool:
         """Hide historical records created when a sender id was mistaken for a group id."""
         gid = str(group_id or group.get("group_id") or "").strip()
@@ -1672,6 +1695,7 @@ class PrivateCompanionPageApiUsersGroupsMixin:
                 {
                     "members": group.get("members") if isinstance(group.get("members"), dict) else {},
                     "recent_messages": self._group_page_recent_messages(group, identity_names),
+                    "recent_bot_replies": self._group_page_recent_bot_replies(group),
                     "topic_threads": self._group_topic_thread_items(group),
                     "group_episodes": self._limited_list(group.get("group_episodes"), 12),
                     "relationship_edges": group.get("relationship_edges") if isinstance(group.get("relationship_edges"), dict) else {},
@@ -1816,6 +1840,7 @@ class PrivateCompanionPageApiUsersGroupsMixin:
                             "interject_day": "",
                             "interject_today": 0,
                             "recent_messages": [],
+                            "recent_bot_replies": [],
                             "members": {},
                             "member_safety": {},
                             "slang_terms": [],
@@ -1827,6 +1852,7 @@ class PrivateCompanionPageApiUsersGroupsMixin:
                             "interjection_feedback": {},
                             "last_bot_interjection": {},
                             "last_speaker": {},
+                            "active_bot_conversation": {},
                             "atmosphere": {},
                             "last_summary_at": 0,
                             "last_episode_refresh_at": 0,

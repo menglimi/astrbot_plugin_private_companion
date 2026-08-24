@@ -621,6 +621,7 @@ _DEFAULT_GROUP_TEMPLATE = {
     "interject_day": "",
     "interject_today": 0,
     "recent_messages": [],
+    "recent_bot_replies": [],
     "members": {},
     "role_snapshot": {},
     "member_safety": {},

@@ -5433,13 +5433,23 @@ class PrivateCompanionPageApi(
     def _multi_persona_transition_snapshot(self) -> dict[str, Any]:
         """Capture every mutable boundary touched by a mode transition."""
         profiles_dir = Path(str(getattr(self.plugin, "_persona_profiles_dir", "") or ""))
-        profile_files: dict[str, bytes] = {}
+        legacy_profile_files: dict[str, bytes] = {}
+        profile_payloads: dict[str, dict[str, Any]] = {}
+        profile_database_names: set[str] = set()
         if profiles_dir.is_dir():
             for path in profiles_dir.glob("*.json"):
                 try:
-                    profile_files[path.name] = path.read_bytes()
+                    legacy_profile_files[path.name] = path.read_bytes()
                 except OSError:
                     continue
+            for path in profiles_dir.glob("*.db"):
+                persona_id = self.plugin._persona_id_from_profile_path(path)
+                if not persona_id:
+                    continue
+                profile_database_names.add(path.name)
+                profile = self.plugin._persona_profile_snapshot_if_exists(persona_id)
+                if isinstance(profile, dict):
+                    profile_payloads[persona_id] = deepcopy(profile)
         attrs = {
             key: deepcopy(getattr(self.plugin, key, None))
             for key in (
@@ -5457,7 +5467,9 @@ class PrivateCompanionPageApi(
                 getattr(self.plugin, "_persona_data_profiles", {})
             ),
             "profiles_dir": str(profiles_dir),
-            "profile_files": profile_files,
+            "legacy_profile_files": legacy_profile_files,
+            "profile_payloads": profile_payloads,
+            "profile_database_names": sorted(profile_database_names),
         }
 
     async def _rollback_multi_persona_transition(
@@ -5480,13 +5492,29 @@ class PrivateCompanionPageApi(
         )
 
         profiles_dir = Path(str(snapshot.get("profiles_dir") or ""))
-        profile_files = snapshot.get("profile_files")
-        if isinstance(profile_files, dict) and profiles_dir:
+        legacy_profile_files = snapshot.get("legacy_profile_files")
+        profile_payloads = snapshot.get("profile_payloads")
+        profile_database_names = {
+            str(value)
+            for value in (snapshot.get("profile_database_names") or [])
+            if str(value)
+        }
+        if profiles_dir:
             profiles_dir.mkdir(parents=True, exist_ok=True)
             for path in profiles_dir.glob("*.json"):
-                if path.name not in profile_files:
+                if not isinstance(legacy_profile_files, dict) or path.name not in legacy_profile_files:
                     path.unlink(missing_ok=True)
-            for name, payload in profile_files.items():
+            for path in profiles_dir.glob("*.db"):
+                if path.name in profile_database_names:
+                    continue
+                registry = getattr(self.plugin, "_persona_sqlite_store_registry", None)
+                discard = getattr(registry, "discard", None)
+                if callable(discard):
+                    discard(path)
+                path.unlink(missing_ok=True)
+                path.with_name(path.name + "-wal").unlink(missing_ok=True)
+                path.with_name(path.name + "-shm").unlink(missing_ok=True)
+            for name, payload in (legacy_profile_files or {}).items():
                 if not isinstance(name, str) or not isinstance(payload, bytes):
                     continue
                 path = profiles_dir / name
@@ -5496,6 +5524,14 @@ class PrivateCompanionPageApi(
                     os.replace(temporary, path)
                 finally:
                     temporary.unlink(missing_ok=True)
+            for persona_id, payload in (profile_payloads or {}).items():
+                if not isinstance(payload, dict):
+                    continue
+                await asyncio.to_thread(
+                    self.plugin._save_persona_profile_sync,
+                    persona_id,
+                    deepcopy(payload),
+                )
 
         writer = getattr(self.plugin, "_write_data_snapshot_sync", None)
         if callable(writer):
@@ -19206,6 +19242,7 @@ class PrivateCompanionPageApi(
             "member_safety_blocked_count": _safe_int(member_safety.get("blocked_count"), 0),
             "member_safety_watching_count": _safe_int(member_safety.get("watching_count"), 0),
             "recent_message_count": len(group.get("recent_messages") or []),
+            "recent_bot_reply_count": len(group.get("recent_bot_replies") or []),
             "slang_count": len(slang_terms),
             "slang_meaning_count": len(slang_meanings),
             "slang_terms": slang_terms[:16],

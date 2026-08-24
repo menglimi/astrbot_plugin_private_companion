@@ -2105,4 +2105,7 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
             current["interject_today"] = group_snapshot.get("interject_today", current.get("interject_today", 0))
             current["last_bot_interjection"] = group_snapshot.get("last_bot_interjection", current.get("last_bot_interjection", {}))
             current["repeat_follow_state"] = group_snapshot.get("repeat_follow_state", current.get("repeat_follow_state", {}))
+            current["recent_bot_replies"] = deepcopy(
+                group_snapshot.get("recent_bot_replies", current.get("recent_bot_replies", []))
+            )
             self._save_data_sync(sections={"groups"})

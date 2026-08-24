@@ -90,6 +90,7 @@ class ScopedRuntimeViewTests(unittest.TestCase):
             "ok": True,
             "fields": {
                 "recent_messages": ["group-a"],
+                "recent_bot_replies": ["group-a-bot"],
                 "companion_memory": {"items": ["private-must-not-enter"]},
             },
         }
@@ -102,6 +103,7 @@ class ScopedRuntimeViewTests(unittest.TestCase):
         }
         view = overlay_group_runtime_view(base, shared, sender_id="a", member_projection=member)
         self.assertEqual(["group-a"], view["recent_messages"])
+        self.assertEqual(["group-a-bot"], view["recent_bot_replies"])
         self.assertEqual("a-in-group-a", view["members"]["a"]["name"])
         self.assertEqual("keep-b", view["members"]["b"]["name"])
         self.assertNotIn("companion_memory", view)

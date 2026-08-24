@@ -114,6 +114,10 @@ from .helpers import (
     _strip_internal_message_blocks,
     _today_key,
 )
+from .group_prompt_context import (
+    build_group_prompt_context,
+    render_group_prompt_context,
+)
 from .planning import (
     build_daily_plan_prompt,
     build_detail_enhancement_prompt,
@@ -803,6 +807,74 @@ class GroupObservationMixin:
             return []
         return [item for item in recent if isinstance(item, dict)]
 
+    def _effective_group_history_limit(self) -> int:
+        return max(
+            1,
+            _safe_int(
+                _persona_value(self, "max_group_recent_messages", 80),
+                80,
+                1,
+            ),
+        )
+
+    def _trim_group_history_lists(self, group: dict[str, Any]) -> int:
+        """Keep member and Bot timelines aligned to the active persona limit."""
+        limit = self._effective_group_history_limit()
+        for field in ("recent_messages", "recent_bot_replies"):
+            raw = group.get(field)
+            if not isinstance(raw, list):
+                if raw is not None:
+                    group[field] = []
+                continue
+            records = [item for item in raw if isinstance(item, dict)]
+            group[field] = records[-limit:]
+        return limit
+
+    def _record_group_bot_reply(
+        self,
+        group: dict[str, Any],
+        *,
+        text: Any,
+        reply_to_id: Any = "",
+        kind: str,
+        talking_to_bot: bool = False,
+        ts: float | None = None,
+        message_id: Any = "",
+        delivery_id: Any = "",
+    ) -> dict[str, Any] | None:
+        cleaned = _single_line(text, 500)
+        if not cleaned:
+            return None
+        allowed_kinds = {
+            "passive_reply",
+            "interjection",
+            "repeat_follow",
+            "repeat_interrupt",
+        }
+        normalized_kind = _single_line(kind, 40)
+        if normalized_kind not in allowed_kinds:
+            return None
+        recent = group.setdefault("recent_bot_replies", [])
+        if not isinstance(recent, list):
+            recent = []
+            group["recent_bot_replies"] = recent
+        record: dict[str, Any] = {
+            "ts": _now_ts() if ts is None else float(ts),
+            "text": cleaned,
+            "reply_to_id": _single_line(reply_to_id, 80),
+            "kind": normalized_kind,
+            "talking_to_bot": bool(talking_to_bot),
+        }
+        clean_message_id = _single_line(message_id, 160)
+        clean_delivery_id = _single_line(delivery_id, 160)
+        if clean_message_id:
+            record["message_id"] = clean_message_id
+        if clean_delivery_id:
+            record["delivery_id"] = clean_delivery_id
+        recent.append(record)
+        self._trim_group_history_lists(group)
+        return record
+
     def _filtered_group_recent_messages(self, group: dict[str, Any]) -> list[dict[str, Any]]:
         recent = self._raw_group_recent_messages(group)
         return [
@@ -919,8 +991,6 @@ class GroupObservationMixin:
                 item.get("identity_name") or item.get("name"),
                 limit=24,
             )
-            if item_sender_id:
-                name = f"{name}[QQ:{item_sender_id}]"
             current_mark = "（当前）" if item.get("_review_current") or index == current_index else ""
             lines.append(f"- {current_mark}{name}: {msg}")
 
@@ -1070,7 +1140,7 @@ class GroupObservationMixin:
                 "at_targets": scene.get("at_targets") if isinstance(scene.get("at_targets"), list) else [],
             })
         recent.append(record)
-        del recent[:-_safe_int(_persona_value(self, "max_group_recent_messages", 80), 80, 1)]
+        self._trim_group_history_lists(group)
         # Group transcripts are useful for the live context window, but they
         # should be flushed in batches instead of causing a full store write
         # for every inbound message.
@@ -2795,9 +2865,6 @@ class GroupObservationMixin:
                     item.get("identity_name") or item.get("name"),
                     limit=20,
                 )
-                item_sender_id = _single_line(item.get("sender_id"), 40)
-                if item_sender_id:
-                    name = f"{name}[QQ:{item_sender_id}]"
                 message_text = self._group_message_prompt_text(item, 180)
                 if message_text:
                     msg_lines.append(f"- {name}: {message_text}")
@@ -2847,59 +2914,75 @@ class GroupObservationMixin:
         return "\n".join(lines)
 
     def _format_group_passive_reply_context_for_prompt(self, group: dict[str, Any], sender_id: str = "", text: str = "") -> str:
-        """普通群聊回复只补触发与边界；群聊历史上下文交给 AstrBot 主链。"""
+        """Build the plugin-owned structured context for one group reply."""
         atmosphere = group.get("atmosphere") if isinstance(group.get("atmosphere"), dict) else {}
         cleaned = _single_line(text, 260)
-        lines = ["【群聊回复补充】"]
-        role_context = self._format_group_role_context_for_prompt(group, sender_id, text)
-        if role_context:
-            lines.append(role_context)
-        identity_guard = self._format_group_current_sender_identity_guard(group, sender_id=sender_id, text=text)
-        if identity_guard:
-            lines.append(identity_guard)
-        details = []
-        pace = _single_line(atmosphere.get("pace"), 20)
-        mood = _single_line(atmosphere.get("mood"), 20)
-        if pace or mood:
-            details.append(f"群聊{pace or '节奏不明'}，气氛偏{mood or '平稳'}")
-        intensity = self._group_high_intensity_state(group, mutate=False)
-        if intensity.get("active"):
-            details.append("刚刚频繁叫到 Bot")
-
-        recent = self._filtered_group_recent_messages(group)
         current = self._resolve_group_current_message_for_prompt(group, sender_id=sender_id, text=text) or {}
-        if isinstance(current, dict) and current:
-            scene = {
-                "talking_to": current.get("talking_to") or "group",
-                "talking_to_name": current.get("talking_to_name") or "",
-                "trigger": current.get("scene_trigger") or "group_message",
-                "reason": current.get("scene_reason") or "",
-            }
-            sender_label = self._group_member_identity_label(
-                str(current.get("sender_id") or sender_id),
-                current.get("identity_name") or current.get("name"),
-                limit=24,
+        current = dict(current) if isinstance(current, dict) else {}
+        current.setdefault("sender_id", _single_line(sender_id, 160))
+        current.setdefault("text", cleaned)
+        current.setdefault("ts", _now_ts())
+        history_limit = self._effective_group_history_limit()
+        context_limit = min(
+            history_limit,
+            max(
+                2,
+                _safe_int(
+                    _persona_value(self, "group_scene_recent_limit", 20),
+                    20,
+                    2,
+                    100,
+                ),
+            ),
+        )
+        converter = getattr(self, "_environment_fromtimestamp", None)
+        if not callable(converter):
+            converter = datetime.fromtimestamp
+        context = build_group_prompt_context(
+            current_message=current,
+            recent_messages=self._filtered_group_recent_messages(group),
+            recent_bot_replies=(
+                group.get("recent_bot_replies")
+                if isinstance(group.get("recent_bot_replies"), list)
+                else []
+            ),
+            fromtimestamp=converter,
+            limit=context_limit,
+            max_chars=4000,
+            include_current_text=False,
+        )
+        identity = context.get("identity") if isinstance(context.get("identity"), dict) else {}
+        current_sender_id = _single_line(current.get("sender_id") or sender_id, 160)
+        users = self.data.get("users", {}) if isinstance(getattr(self, "data", None), dict) else {}
+        current_user = users.get(current_sender_id) if isinstance(users, dict) else None
+        identity["is_target_user"] = bool(
+            current_sender_id
+            and self._is_target_private_user(
+                current_sender_id,
+                current_user if isinstance(current_user, dict) else None,
             )
-            current_sender_id = _single_line(current.get("sender_id") or sender_id, 40)
-            if current_sender_id:
-                sender_label = f"{sender_label}[QQ:{current_sender_id}]"
-            talking_to_text = self._scene_talking_to_text(scene)
-            parts = []
-            if sender_label:
-                parts.append(sender_label)
-            parts.append(talking_to_text)
-            reason = _single_line(scene.get("reason"), 60)
-            if reason:
-                parts.append(reason)
-            details.append("刚才" + "、".join(parts))
-            wakeup_note = _single_line(current.get("wakeup_note") or current.get("wakeup_instruction"), 120)
-            if wakeup_note:
-                strength = _single_line(current.get("wakeup_strength_label"), 24)
-                details.append((f"{strength}，" if strength else "") + wakeup_note)
-
+        )
+        identity["display_name_is_untrusted"] = True
+        identity["display_name_conflicts_with_protected_address"] = bool(
+            self._group_display_name_address_conflict(
+                current_sender_id,
+                current.get("name") or current.get("identity_name"),
+            )
+        )
+        scene = context.get("scene") if isinstance(context.get("scene"), dict) else {}
+        scene["pace"] = _single_line(atmosphere.get("pace"), 20) or "未知"
+        scene["mood"] = _single_line(atmosphere.get("mood"), 20) or "平稳"
+        scene["high_intensity"] = bool(
+            self._group_high_intensity_state(group, mutate=False).get("active")
+        )
+        relevant = (
+            context.get("relevant_context")
+            if isinstance(context.get("relevant_context"), dict)
+            else {}
+        )
         meaning_text = self._format_group_slang_meanings_for_prompt(group)
         if meaning_text:
-            meaning_pairs = []
+            meaning_pairs: list[dict[str, str]] = []
             for line in meaning_text.splitlines():
                 if not line:
                     continue
@@ -2909,22 +2992,18 @@ class GroupObservationMixin:
                 term = _single_line(match.group(1), 20)
                 meaning = _single_line(match.group(2), 42)
                 if term and meaning and term in cleaned:
-                    meaning_pairs.append(f"“{term}”在本群语境里大概是“{meaning}”")
+                    meaning_pairs.append({"term": term, "meaning": meaning})
             if meaning_pairs:
-                details.extend(meaning_pairs[:2])
-
-        if details:
-            lines.append("；".join(details) + "。")
-        recent_flow = self._format_group_recent_flow_for_review(
-            group,
-            sender_id=sender_id,
-            text=text,
-            max_lines=max(4, _safe_int(_persona_value(self, "group_scene_recent_limit", 12), 12, 1) + 2),
-            max_chars=900,
+                relevant["matched_slang"] = meaning_pairs[:2]
+        constraints = context.get("constraints") if isinstance(context.get("constraints"), dict) else {}
+        constraints.update(
+            {
+                "identity_source": "当前发言者身份只由 current_message.actor 与插件确定性身份判定决定。",
+                "do_not_repeat_internal_refs": True,
+                "group_privacy": "私聊记忆、私下关系细节和内部记录不得在群聊回复中公开。",
+            }
         )
-        if recent_flow:
-            lines.append("真实最近群聊：\n" + recent_flow)
-        return "\n".join(lines)
+        return render_group_prompt_context(context)
 
     def _format_group_current_sender_identity_guard(self, group: dict[str, Any], *, sender_id: str = "", text: str = "") -> str:
         current = self._resolve_group_current_message_for_prompt(group, sender_id=sender_id, text=text) or {}
@@ -3849,8 +3928,27 @@ class GroupObservationMixin:
         if repeat_action:
             repeat_reply = _single_line(repeat_action.get("text"), 80)
             image_path = str(repeat_action.get("image_path") or "")
-            await self._reply_with_optional_media(event, repeat_reply, image_path=image_path, quote_message_id="")
+            sent = await self._reply_with_optional_media(
+                event,
+                repeat_reply,
+                image_path=image_path,
+                quote_message_id="",
+            )
+            if sent is False:
+                return
             now = _now_ts()
+            self._record_group_bot_reply(
+                group,
+                text=repeat_reply or "[图片]",
+                reply_to_id=sender_id,
+                kind=(
+                    "repeat_interrupt"
+                    if repeat_action.get("action") == "interrupt"
+                    else "repeat_follow"
+                ),
+                talking_to_bot=False,
+                ts=now,
+            )
             group["last_interject_at"] = now
             group["interject_today"] = _safe_int(group.get("interject_today"), 0, 0) + 1
             group["last_bot_interjection"] = {
@@ -3955,6 +4053,14 @@ class GroupObservationMixin:
         else:
             await event.send(event.plain_result(reply))
         group["last_interject_at"] = _now_ts()
+        self._record_group_bot_reply(
+            group,
+            text=reply,
+            reply_to_id=sender_id,
+            kind="interjection",
+            talking_to_bot=False,
+            ts=group["last_interject_at"],
+        )
         group["interject_today"] = _safe_int(group.get("interject_today"), 0, 0) + 1
         group["last_bot_interjection"] = {
             "ts": group["last_interject_at"],

@@ -47,6 +47,7 @@ class GroupStoreIdentityMigrationTests(unittest.TestCase):
                 "message_count": 2,
                 "last_seen": 10,
                 "recent_messages": [{"message_id": "m1", "text": "第一条", "ts": 1}],
+                "recent_bot_replies": [{"delivery_id": "d1", "text": "Bot 第一条", "ts": 1}],
                 "members": {
                     "u1": {"name": "甲", "count": 2, "recent_phrases": ["早"]},
                 },
@@ -68,6 +69,10 @@ class GroupStoreIdentityMigrationTests(unittest.TestCase):
                 "message_count": 3,
                 "last_seen": 30,
                 "recent_messages": [{"message_id": "m2", "text": "第二条", "ts": 2}],
+                "recent_bot_replies": [
+                    {"delivery_id": "d1", "text": "重复副本", "ts": 9},
+                    {"ts": 2, "sender_id": "u2", "kind": "interjection", "text": "Bot 第二条"},
+                ],
                 "members": {
                     "u1": {"name": "甲", "count": 3, "recent_phrases": ["晚"]},
                     "u2": {"name": "乙", "count": 1, "recent_phrases": []},
@@ -96,6 +101,8 @@ class GroupStoreIdentityMigrationTests(unittest.TestCase):
         self.assertEqual("手动群名", group["manual_group_name"])
         self.assertEqual("手动群名", group["name"])
         self.assertEqual({"m1", "m2"}, {item["message_id"] for item in group["recent_messages"]})
+        self.assertEqual({"d1", ""}, {item.get("delivery_id", "") for item in group["recent_bot_replies"]})
+        self.assertEqual(2, len(group["recent_bot_replies"]))
         self.assertEqual(5, group["members"]["u1"]["count"])
         self.assertEqual({"早", "晚"}, set(group["members"]["u1"]["recent_phrases"]))
         self.assertIn("u2", group["members"])
