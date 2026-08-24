@@ -6470,6 +6470,9 @@ Output:
         if not cleaned or action not in {"message", "photo_text"}:
             return []
         flags: list[str] = []
+        # 外部分享（新闻/B站/搜索）是「分享外界信息」场景，不做回复空气检查，直接放行。
+        if reason in {"news_share", "bili_video_share", "web_exploration_share"}:
+            return flags
         reply_opener_pattern = (
             r"^(?:好呀|好啊|可以呀|可以啊|行呀|行啊|嗯好|那就|你说呢|要不|不然|"
             r"确实|对呀|对啊|是吧|也是|哈哈[,，\s]*我也|我也觉得|你说得对)"
