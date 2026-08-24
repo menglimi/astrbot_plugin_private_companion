@@ -349,8 +349,8 @@ class PrivateCompanionPageApi(
         "proactive_review_low_score_threshold",
         "proactive_review_pressure_threshold",
         "smart_silence_min_confidence",
-        "private_reading_share_probability",
-        "private_reading_ask_probability",
+        "reading_archive_share_probability",
+        "reading_archive_ask_probability",
         "creative_inspiration_probability",
         "creative_share_probability",
         "skill_growth_schedule_influence_strength",
@@ -1217,7 +1217,7 @@ class PrivateCompanionPageApi(
                 "news": section("news", lambda: self._news_summary(data), {}),
                 "web_exploration": section("web_exploration", lambda: self._web_exploration_summary(data), {}),
                 "qzone": section("qzone", lambda: self._qzone_summary(data), {}),
-                "private_reading": section("private_reading", lambda: self._jm_cosmos_summary(data), {}),
+                "reading_archive": section("reading_archive", lambda: self._reading_archive_summary(data), {}),
                 "creative": section("creative", lambda: self._creative_summary(data), {}),
                 "bookshelf": bookshelf,
                 "skill_growth": section("skill_growth", lambda: self._skill_growth_summary(data), {}),
@@ -1618,8 +1618,8 @@ class PrivateCompanionPageApi(
             "worldbook_import_state",
             "worldbook_group_profiles",
             "qzone_integration",
-            "jm_cosmos_integration",
-            "private_reading_state",
+            "reading_archive_integration",
+            "reading_archive_state",
             "skill_growth",
             "personal_goal_state",
             "food_menu",
@@ -2076,7 +2076,7 @@ class PrivateCompanionPageApi(
             return requested
         getter = getattr(self.plugin, "_private_image_provider_timeout_seconds", None)
         if callable(getter):
-            source = "plugin_vision" if key == "PLUGIN_VISION_PROVIDER_ID" else "private_reading_vision"
+            source = "plugin_vision" if key == "PLUGIN_VISION_PROVIDER_ID" else "reading_archive_vision"
             return max(0.0, float(getter(provider_id, source)))
         return 30.0
 
@@ -4756,6 +4756,8 @@ class PrivateCompanionPageApi(
                         else "现实触及联动操作失败"
                     )
                 snapshot = result.get("data") if isinstance(result.get("data"), dict) else {}
+                if isinstance(result.get("result"), dict):
+                    snapshot["action_result"] = result["result"]
                 snapshot["message"] = self._single_line(result.get("message"), 240) or "现实触及联动操作已完成"
                 return self._ok(snapshot)
             except Exception as exc:
@@ -10245,7 +10247,7 @@ class PrivateCompanionPageApi(
             "screen_narration": "识屏转述",
             "forward_message": "合并转发转述",
             "forward_message_image_vision": "转发图片识别",
-            "private_reading_vision": "夹层视觉",
+            "reading_archive_vision": "夹层视觉",
             "private_image_vision": "私聊图片识别",
             "group_image_vision": "群聊图片识别",
             "private_image_only_framework": "单图回复主链",
@@ -10277,8 +10279,8 @@ class PrivateCompanionPageApi(
             "companion_manual_diagnosis": "陪伴答疑",
             "proactive_send_review": "主动发送复核",
             "atrelay_rewrite": "代答转写",
-            "bookshelf_password": "书柜密码生成",
-            "bookshelf_password_reason": "书柜密码缘由",
+            "bookshelf_password": "资料柜密码生成",
+            "bookshelf_password_reason": "资料柜密码缘由",
             "astrbot_private_reply": "非插件私聊主回复",
             "astrbot_group_reply": "非插件群聊主回复",
             "astrbot_reply": "非插件主回复",
@@ -10996,7 +10998,7 @@ class PrivateCompanionPageApi(
                 data = deepcopy(self.plugin.data)
             return self._ok({"bookshelf": await self._bookshelf_summary(data, unlocked=True, access_token=access_token)})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 解锁书柜夹层失败: {exc}", exc_info=True)
+            logger.error(f"[PrivateCompanionPage] 解锁资料柜夹层失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def get_bookshelf_session(self) -> dict[str, Any]:
@@ -11018,7 +11020,7 @@ class PrivateCompanionPageApi(
             bookshelf["access_expires_at"] = int(expires_at) if expires_at > 0 else 0
             return self._ok({"bookshelf": bookshelf})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 恢复书柜夹层会话失败: {exc}", exc_info=True)
+            logger.error(f"[PrivateCompanionPage] 恢复资料柜夹层会话失败: {exc}", exc_info=True)
             return self._error(str(exc))
 
     def _memo_notes_payload(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -11458,7 +11460,7 @@ class PrivateCompanionPageApi(
             response.headers["Cache-Control"] = "no-store, max-age=0"
             return response
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 读取书柜图片失败: {exc}", exc_info=True)
+            logger.error(f"[PrivateCompanionPage] 读取资料柜图片失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def get_bookshelf_image_data(self) -> dict[str, Any]:
@@ -11480,7 +11482,7 @@ class PrivateCompanionPageApi(
                 }
             )
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 读取书柜图片数据失败: {exc}", exc_info=True)
+            logger.error(f"[PrivateCompanionPage] 读取资料柜图片数据失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def _read_file_base64(self, path: Path) -> str:
@@ -11498,7 +11500,7 @@ class PrivateCompanionPageApi(
         try:
             async with self.plugin._data_lock:
                 data = deepcopy(self.plugin.data)
-            jm_state = data.get("jm_cosmos_integration") if isinstance(data.get("jm_cosmos_integration"), dict) else {}
+            jm_state = data.get("reading_archive_integration") if isinstance(data.get("reading_archive_integration"), dict) else {}
             deleted_ids = self._bookshelf_deleted_album_ids(jm_state)
             if album_id in deleted_ids:
                 return {"error": "图片不存在"}
@@ -11531,12 +11533,12 @@ class PrivateCompanionPageApi(
             try:
                 path.relative_to(data_root)
             except ValueError:
-                return {"error": "图片路径不在书柜目录内"}
+                return {"error": "图片路径不在资料柜目录内"}
             if not path.exists() or not path.is_file():
                 return {"error": "图片文件不存在"}
             return path
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 读取书柜图片失败: {exc}", exc_info=True)
+            logger.error(f"[PrivateCompanionPage] 读取资料柜图片失败: {exc}", exc_info=True)
             return {"error": str(exc)}
 
     async def delete_bookshelf_item(self) -> dict[str, Any]:
@@ -11666,7 +11668,7 @@ class PrivateCompanionPageApi(
                             continue
                         kept.append(item)
                     self.plugin.data["bookshelf_items"] = kept
-                    state = self.plugin.data.get("jm_cosmos_integration")
+                    state = self.plugin.data.get("reading_archive_integration")
                     if isinstance(state, dict):
                         last_album = state.get("last_album")
                         last_values = {
@@ -11692,10 +11694,10 @@ class PrivateCompanionPageApi(
                             removed_album_ids.add(album_id)
                             changed = True
                     if removed_album_ids or title_payload:
-                        state = self.plugin.data.setdefault("jm_cosmos_integration", {})
+                        state = self.plugin.data.setdefault("reading_archive_integration", {})
                         if not isinstance(state, dict):
                             state = {}
-                            self.plugin.data["jm_cosmos_integration"] = state
+                            self.plugin.data["reading_archive_integration"] = state
                         deleted_ids = state.setdefault("deleted_album_ids", [])
                         if not isinstance(deleted_ids, list):
                             deleted_ids = []
@@ -11723,7 +11725,7 @@ class PrivateCompanionPageApi(
                     self._cleanup_bookshelf_page_files(removed_pages)
                     self._cleanup_bookshelf_album_dirs(removed_album_ids)
                     logger.info(
-                        "[PrivateCompanionPage] 书柜夹层移除: changed=%s id=%s album_id=%s title=%s removed=%s",
+                        "[PrivateCompanionPage] 资料柜夹层移除: changed=%s id=%s album_id=%s title=%s removed=%s",
                         changed,
                         item_id,
                         album_id,
@@ -11731,7 +11733,7 @@ class PrivateCompanionPageApi(
                         sorted(removed_album_ids),
                     )
                 else:
-                    return self._error("不支持的书柜项目类型")
+                    return self._error("不支持的资料柜项目类型")
                 if changed:
                     if kind == "jm_album":
                         self._mark_bookshelf_data_changed()
@@ -11739,7 +11741,7 @@ class PrivateCompanionPageApi(
                 data = deepcopy(self.plugin.data)
             return self._ok({"changed": changed, "bookshelf": await self._bookshelf_summary(data, unlocked=True, access_token=access_token)})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 删除书柜项目失败: {exc}", exc_info=True)
+            logger.error(f"[PrivateCompanionPage] 删除资料柜项目失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     def _cleanup_bookshelf_page_files(self, pages: list[dict[str, Any]]) -> None:
@@ -11813,7 +11815,7 @@ class PrivateCompanionPageApi(
                     None,
                 )
                 if target is None:
-                    return self._error("没有找到这本私密阅读记录")
+                    return self._error("没有找到这本资料归档记录")
                 safe_total = total_pages or max(0, self._int(target.get("image_count")))
                 if safe_total > 0:
                     page = min(page, safe_total)
@@ -11832,7 +11834,7 @@ class PrivateCompanionPageApi(
                 data = deepcopy(self.plugin.data)
             return self._ok({"bookshelf": await self._bookshelf_summary(data, unlocked=True, access_token=access_token)})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 更新书柜阅读进度失败: {exc}", exc_info=True)
+            logger.error(f"[PrivateCompanionPage] 更新资料柜阅读进度失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def rate_bookshelf_item(self) -> dict[str, Any]:
@@ -11862,7 +11864,7 @@ class PrivateCompanionPageApi(
                         item["user_rated_ts"] = time.time()
                         target = item
                         break
-                state = self.plugin.data.setdefault("jm_cosmos_integration", {})
+                state = self.plugin.data.setdefault("reading_archive_integration", {})
                 if isinstance(state, dict):
                     last_album = state.get("last_album")
                     if isinstance(last_album, dict) and str(last_album.get("id") or last_album.get("album_id") or "") == album_id:
@@ -11872,8 +11874,8 @@ class PrivateCompanionPageApi(
                         if target is None:
                             target = last_album
                 if target is None:
-                    return self._error("没有找到这条私密阅读记录")
-                updater = getattr(self.plugin, "_update_private_reading_preference_profile", None)
+                    return self._error("没有找到这条资料归档记录")
+                updater = getattr(self.plugin, "_update_reading_archive_preference_profile", None)
                 if callable(updater):
                     updater(target)
                 self._mark_bookshelf_data_changed()
@@ -11881,7 +11883,7 @@ class PrivateCompanionPageApi(
                 data = deepcopy(self.plugin.data)
             return self._ok({"bookshelf": await self._bookshelf_summary(data, unlocked=True, access_token=access_token)})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 保存私密阅读评分失败: {exc}", exc_info=True)
+            logger.error(f"[PrivateCompanionPage] 保存资料归档评分失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     def _normalize_bookshelf_tag_list(self, value: Any, *, limit: int = 8) -> list[str]:
@@ -11972,7 +11974,7 @@ class PrivateCompanionPageApi(
                         item["user_tags_updated_ts"] = time.time()
                         target = item
                         break
-                state = self.plugin.data.setdefault("jm_cosmos_integration", {})
+                state = self.plugin.data.setdefault("reading_archive_integration", {})
                 if isinstance(state, dict):
                     last_album = state.get("last_album")
                     if isinstance(last_album, dict) and str(last_album.get("id") or last_album.get("album_id") or "") == album_id:
@@ -11982,8 +11984,8 @@ class PrivateCompanionPageApi(
                         if target is None:
                             target = last_album
                 if target is None:
-                    return self._error("没有找到这条私密阅读记录")
-                updater = getattr(self.plugin, "_update_private_reading_preference_profile", None)
+                    return self._error("没有找到这条资料归档记录")
+                updater = getattr(self.plugin, "_update_reading_archive_preference_profile", None)
                 if callable(updater):
                     updater(target)
                 self._mark_bookshelf_data_changed()
@@ -11991,7 +11993,7 @@ class PrivateCompanionPageApi(
                 data = deepcopy(self.plugin.data)
             return self._ok({"bookshelf": await self._bookshelf_summary(data, unlocked=True, access_token=access_token)})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 保存私密阅读标签失败: {exc}", exc_info=True)
+            logger.error(f"[PrivateCompanionPage] 保存资料归档标签失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     def _resolve_bookshelf_data_file(self, value: Any) -> Path | None:
@@ -12052,17 +12054,17 @@ class PrivateCompanionPageApi(
                     None,
                 )
                 if target is None:
-                    state = self.plugin.data.get("jm_cosmos_integration") if isinstance(self.plugin.data.get("jm_cosmos_integration"), dict) else {}
+                    state = self.plugin.data.get("reading_archive_integration") if isinstance(self.plugin.data.get("reading_archive_integration"), dict) else {}
                     last_album = state.get("last_album") if isinstance(state.get("last_album"), dict) else None
                     if last_album and str(last_album.get("id") or last_album.get("album_id") or "") == album_id:
                         target = last_album
                 if target is None:
-                    return self._error("没有找到这条私密阅读记录")
+                    return self._error("没有找到这条资料归档记录")
                 target_snapshot = deepcopy(target)
             cover_path, page_paths, sampled_pages = self._jm_album_comment_sample(target_snapshot)
             if not page_paths:
                 return self._error("没有找到可用于重读的本地图片")
-            vision = getattr(self.plugin, "_call_jm_cosmos_vision", None)
+            vision = getattr(self.plugin, "_call_reading_archive_vision", None)
             if not callable(vision):
                 return self._error("当前插件版本不支持让 Bot 重读")
             vision_result = await vision(cover_path, target_snapshot, page_paths=page_paths, sampled_pages=sampled_pages)
@@ -12118,7 +12120,7 @@ class PrivateCompanionPageApi(
                         target = item
                         written = True
                         break
-                state = self.plugin.data.setdefault("jm_cosmos_integration", {})
+                state = self.plugin.data.setdefault("reading_archive_integration", {})
                 if isinstance(state, dict):
                     last_album = state.get("last_album")
                     if isinstance(last_album, dict) and str(last_album.get("id") or last_album.get("album_id") or "") == album_id:
@@ -12127,8 +12129,8 @@ class PrivateCompanionPageApi(
                             target = last_album
                             written = True
                 if not written:
-                    return self._error("没有找到可写回的私密阅读记录")
-                updater = getattr(self.plugin, "_update_private_reading_preference_profile", None)
+                    return self._error("没有找到可写回的资料归档记录")
+                updater = getattr(self.plugin, "_update_reading_archive_preference_profile", None)
                 if callable(updater):
                     updater(target)
                 self._mark_bookshelf_data_changed()
@@ -12136,7 +12138,7 @@ class PrivateCompanionPageApi(
                 data = deepcopy(self.plugin.data)
             return self._ok({"message": "Bot 已重新读过并更新读后感", "bookshelf": await self._bookshelf_summary(data, unlocked=True, access_token=access_token)})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 更新私密阅读批注失败: {exc}", exc_info=True)
+            logger.error(f"[PrivateCompanionPage] 更新资料归档批注失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def import_worldbook(self) -> dict[str, Any]:
@@ -14414,7 +14416,7 @@ class PrivateCompanionPageApi(
             '  "persona_parts": {"name":"","species":"","age":"","gender":"","appearance":"","hair":"","eyes":"","clothing":"","identity":"","personality":"","desire":"","hobbies":"","taboo":"","key_lore":"","extra":""},\n'
             '  "world_parts": {"world":"","era":"","tone":"","rules":"","scenes":"","network":"","extra":""},\n'
             '  "user_parts": {"nickname":"","user_gender":"","user_age":"","user_occupation":"","role_relation":"","interaction":"","extra":""},\n'
-            '  "translations": {"群聊":"","识屏":"","B站":"","QQ空间":"","书柜":""},\n'
+            '  "translations": {"群聊":"","识屏":"","B站":"","QQ空间":"","资料柜":""},\n'
             '  "image_self_recognition_hint": "",\n'
             '  "notes": []\n'
             "}"
@@ -15896,7 +15898,7 @@ class PrivateCompanionPageApi(
             '  "persona_parts": {"name":"","species":"","age":"","gender":"","appearance":"","hair":"","eyes":"","clothing":"","identity":"","personality":"","desire":"","hobbies":"","taboo":"","key_lore":"","extra":""},\n'
             '  "world_parts": {"world":"","era":"","tone":"","rules":"","scenes":"","network":"","extra":""},\n'
             '  "user_parts": {"nickname":"","user_gender":"","user_age":"","user_occupation":"","role_relation":"","interaction":"","extra":""},\n'
-            '  "translations": {"群聊":"","识屏":"","B站":"","QQ空间":"","书柜":""},\n'
+            '  "translations": {"群聊":"","识屏":"","B站":"","QQ空间":"","资料柜":""},\n'
             '  "image_self_recognition_hint": "",\n'
             '  "notes": []\n'
             "}"
@@ -16002,7 +16004,7 @@ class PrivateCompanionPageApi(
         }
         world_keys = {"world", "era", "tone", "rules", "scenes", "network", "extra"}
         user_keys = {"nickname", "user_gender", "user_age", "user_occupation", "role_relation", "interaction", "extra"}
-        translation_keys = {"群聊", "识屏", "B站", "QQ空间", "书柜"}
+        translation_keys = {"群聊", "识屏", "B站", "QQ空间", "资料柜"}
 
         def text_map(value: Any, allowed: set[str], limit: int = 220) -> dict[str, str]:
             source = value if isinstance(value, dict) else {}
@@ -16065,7 +16067,7 @@ class PrivateCompanionPageApi(
                 vector = await vector_getter(provider, "开心 安慰 抱抱 表情语义测试")
                 text = f"{len(vector)} 维向量" if vector else ""
                 step_name = "向量生成"
-            elif key in {"PLUGIN_VISION_PROVIDER_ID", "PRIVATE_READING_VISION_PROVIDER_ID"}:
+            elif key in {"PLUGIN_VISION_PROVIDER_ID", "READING_ARCHIVE_VISION_PROVIDER_ID"}:
                 provider = self._visual_provider_for_test(provider_id)
                 supports_image = getattr(self.plugin, "_provider_supports_image", None)
                 if provider is None:
@@ -16099,7 +16101,7 @@ class PrivateCompanionPageApi(
             elapsed_ms = int((time.time() - start) * 1000)
             ok = bool(text)
             embedding_test = key in {"EMBEDDING_PROVIDER_ID", "REACTION_EXPRESSION_EMBEDDING_PROVIDER_ID"}
-            vision_test = key in {"PLUGIN_VISION_PROVIDER_ID", "PRIVATE_READING_VISION_PROVIDER_ID"}
+            vision_test = key in {"PLUGIN_VISION_PROVIDER_ID", "READING_ARCHIVE_VISION_PROVIDER_ID"}
             result = {
                 "ok": ok,
                 "key": key,
@@ -19482,13 +19484,13 @@ class PrivateCompanionPageApi(
             "enable_qzone_generated_image_publish",
             "enable_qzone_comment_inbox",
             "enable_qzone_emotional_vent_publish",
-            "enable_private_reading_integration",
-            "enable_private_reading_boredom_read",
-            "enable_private_reading_ask_recommendation",
-            "enable_private_reading_vision",
-            "enable_private_reading_page_comments",
-            "enable_private_reading_rating",
-            "enable_private_reading_preference_influence",
+            "enable_reading_archive_integration",
+            "enable_reading_archive_boredom_read",
+            "enable_reading_archive_ask_recommendation",
+            "enable_reading_archive_vision",
+            "enable_reading_archive_page_comments",
+            "enable_reading_archive_rating",
+            "enable_reading_archive_preference_influence",
             "enable_unanswered_screen_peek_followup",
             "enable_goodnight_screen_check",
             "enable_screen_glance_action",
@@ -19529,9 +19531,9 @@ class PrivateCompanionPageApi(
         except Exception:
             screen_companion_available = False
         try:
-            private_reading_available = bool(getattr(self.plugin, "_jm_cosmos_available", lambda: False)())
+            reading_archive_available = bool(getattr(self.plugin, "_reading_archive_available", lambda: False)())
         except Exception:
-            private_reading_available = False
+            reading_archive_available = False
         values["enable_livingmemory_integration"] = bool(getattr(self.plugin, "enable_livingmemory_integration", False))
         values["enable_bilibili_integration"] = bool(bilibili_available and getattr(self.plugin, "enable_bilibili_integration", False))
         values["enable_bilibili_boredom_watch"] = bool(bilibili_available and getattr(self.plugin, "enable_bilibili_boredom_watch", False))
@@ -19541,17 +19543,17 @@ class PrivateCompanionPageApi(
         values["enable_qzone_comment_inbox"] = bool(getattr(self.plugin, "enable_qzone_comment_inbox", False))
         values["enable_qzone_emotional_vent_publish"] = bool(getattr(self.plugin, "enable_qzone_emotional_vent_publish", False))
         values["enable_yesterday_screen_diary_context"] = bool(screen_companion_available and getattr(self.plugin, "enable_yesterday_screen_diary_context", False))
-        values["enable_private_reading_integration"] = bool(
-            private_reading_available and getattr(self.plugin, "enable_private_reading_integration", False)
+        values["enable_reading_archive_integration"] = bool(
+            reading_archive_available and getattr(self.plugin, "enable_reading_archive_integration", False)
         )
-        values["enable_private_reading_boredom_read"] = bool(
-            private_reading_available and getattr(self.plugin, "enable_private_reading_boredom_read", False)
+        values["enable_reading_archive_boredom_read"] = bool(
+            reading_archive_available and getattr(self.plugin, "enable_reading_archive_boredom_read", False)
         )
-        values["enable_private_reading_ask_recommendation"] = bool(private_reading_available and getattr(self.plugin, "enable_private_reading_ask_recommendation", False))
-        values["enable_private_reading_vision"] = bool(private_reading_available and getattr(self.plugin, "enable_private_reading_vision", True))
-        values["enable_private_reading_page_comments"] = bool(private_reading_available and getattr(self.plugin, "enable_private_reading_page_comments", True))
-        values["enable_private_reading_rating"] = bool(private_reading_available and getattr(self.plugin, "enable_private_reading_rating", True))
-        values["enable_private_reading_preference_influence"] = bool(private_reading_available and getattr(self.plugin, "enable_private_reading_preference_influence", True))
+        values["enable_reading_archive_ask_recommendation"] = bool(reading_archive_available and getattr(self.plugin, "enable_reading_archive_ask_recommendation", False))
+        values["enable_reading_archive_vision"] = bool(reading_archive_available and getattr(self.plugin, "enable_reading_archive_vision", True))
+        values["enable_reading_archive_page_comments"] = bool(reading_archive_available and getattr(self.plugin, "enable_reading_archive_page_comments", True))
+        values["enable_reading_archive_rating"] = bool(reading_archive_available and getattr(self.plugin, "enable_reading_archive_rating", True))
+        values["enable_reading_archive_preference_influence"] = bool(reading_archive_available and getattr(self.plugin, "enable_reading_archive_preference_influence", True))
         return values
 
     def _proactive_only_mode_snapshot(self) -> dict[str, Any]:
@@ -19579,7 +19581,7 @@ class PrivateCompanionPageApi(
             "enable_group_companion",
             "enable_skill_growth_passive_injection",
             "enable_food_menu_recommendation",
-            "enable_private_reading_preference_influence",
+            "enable_reading_archive_preference_influence",
             "enable_worldbook_member_recognition",
             "enable_atrelay_tools",
             "enable_livingmemory_integration",
@@ -19631,7 +19633,7 @@ class PrivateCompanionPageApi(
             "GROUP_FOLLOWUP_JUDGE_PROVIDER_ID",
             "FORWARD_MESSAGE_PROVIDER_ID",
             "PLUGIN_VISION_PROVIDER_ID",
-            "PRIVATE_READING_VISION_PROVIDER_ID",
+            "READING_ARCHIVE_VISION_PROVIDER_ID",
             "REACTION_EXPRESSION_EMBEDDING_PROVIDER_ID",
             "NEWS_PROVIDER_ID",
             "WEB_EXPLORATION_PROVIDER_ID",
@@ -19654,7 +19656,7 @@ class PrivateCompanionPageApi(
             ("CREATIVE_MODEL_PROVIDER_ID", "creative_model_provider_id"),
             ("PLUGIN_VISION_PROVIDER_ID", "plugin_vision_provider_id"),
             ("EMBEDDING_PROVIDER_ID", "embedding_provider_id"),
-            ("PRIVATE_READING_VISION_PROVIDER_ID", "private_reading_vision_provider_id"),
+            ("READING_ARCHIVE_VISION_PROVIDER_ID", "reading_archive_vision_provider_id"),
             ("DREAM_DIARY_PROVIDER_ID", "dream_diary_provider_id"),
             ("SMART_MESSAGE_DEBOUNCE_PROVIDER_ID", "smart_message_debounce_provider_id"),
             ("SMART_SILENCE_PROVIDER_ID", "smart_silence_provider_id"),
@@ -19969,7 +19971,7 @@ class PrivateCompanionPageApi(
         if "food_skills" in selected:
             sections.extend(["skill_growth", "food_menu", "external_proactive_abilities", "important_dates", "can_do"])
         if "sensitive" in selected:
-            sections.extend(["jm_cosmos_integration", "bookshelf_items"])
+            sections.extend(["reading_archive_integration", "bookshelf_items"])
         return tuple(sections)
 
     @staticmethod
@@ -19983,9 +19985,9 @@ class PrivateCompanionPageApi(
             return "sensitive"
         if text == "WEB_EXPLORATION_API_KEY":
             return "sensitive"
-        if text.startswith("private_reading_") or text.startswith("enable_private_reading_"):
+        if text.startswith("reading_archive_") or text.startswith("enable_reading_archive_"):
             return "sensitive"
-        if text in {"PRIVATE_READING_VISION_PROVIDER_ID"}:
+        if text in {"READING_ARCHIVE_VISION_PROVIDER_ID"}:
             return "sensitive"
         if text.endswith("_PROVIDER_ID") or text in {"LLM_PROVIDER_ID", "tts_conversion_provider_id"}:
             return "providers"
@@ -20004,8 +20006,8 @@ class PrivateCompanionPageApi(
             "external_proactive_abilities": "外部主动能力",
             "important_dates": "重要日期",
             "can_do": "自定义能力",
-            "jm_cosmos_integration": "私密阅读状态",
-            "bookshelf_items": "书柜阅读记录",
+            "reading_archive_integration": "资料归档状态",
+            "bookshelf_items": "资料柜阅读记录",
         }.get(key, key)
 
     def _extract_migration_package(self, payload: Any, *, allow_checksum_mismatch: bool = False) -> dict[str, Any]:
@@ -21964,26 +21966,26 @@ class PrivateCompanionPageApi(
             "qzone_emotional_vent_threshold",
             "qzone_emotional_vent_cooldown_hours",
             "qzone_emotional_vent_probability",
-            "enable_private_reading_integration",
-            "enable_private_reading_boredom_read",
-            "enable_private_reading_ask_recommendation",
-            "enable_private_reading_vision",
-            "enable_private_reading_page_comments",
-            "enable_private_reading_rating",
-            "enable_private_reading_preference_influence",
+            "enable_reading_archive_integration",
+            "enable_reading_archive_boredom_read",
+            "enable_reading_archive_ask_recommendation",
+            "enable_reading_archive_vision",
+            "enable_reading_archive_page_comments",
+            "enable_reading_archive_rating",
+            "enable_reading_archive_preference_influence",
             "enable_unanswered_screen_peek_followup",
             "unanswered_screen_peek_after_minutes",
             "unanswered_screen_peek_cooldown_minutes",
             "enable_goodnight_screen_check",
             "goodnight_screen_check_delay_minutes",
-            "private_reading_min_interval_hours",
-            "private_reading_max_photo_count",
-            "private_reading_share_probability",
-            "private_reading_ask_probability",
-            "private_reading_preference_min_ratings",
-            "private_reading_preference_max_terms",
-            "private_reading_default_keywords",
-            "private_reading_blocked_tags",
+            "reading_archive_min_interval_hours",
+            "reading_archive_max_photo_count",
+            "reading_archive_share_probability",
+            "reading_archive_ask_probability",
+            "reading_archive_preference_min_ratings",
+            "reading_archive_preference_max_terms",
+            "reading_archive_default_keywords",
+            "reading_archive_blocked_tags",
             "enable_unanswered_screen_peek_followup",
             "unanswered_screen_peek_after_minutes",
             "unanswered_screen_peek_cooldown_minutes",
@@ -22142,21 +22144,21 @@ class PrivateCompanionPageApi(
         values["private_user_delivery_aliases"] = self._private_alias_config_text("private_user_delivery_aliases")
         values.update(
             {
-                "enable_private_reading_integration": bool(getattr(self.plugin, "enable_private_reading_integration", False)),
-                "enable_private_reading_boredom_read": bool(getattr(self.plugin, "enable_private_reading_boredom_read", False)),
-                "enable_private_reading_ask_recommendation": bool(getattr(self.plugin, "enable_private_reading_ask_recommendation", False)),
-                "enable_private_reading_vision": bool(getattr(self.plugin, "enable_private_reading_vision", True)),
-                "enable_private_reading_page_comments": bool(getattr(self.plugin, "enable_private_reading_page_comments", True)),
-                "enable_private_reading_rating": bool(getattr(self.plugin, "enable_private_reading_rating", True)),
-                "enable_private_reading_preference_influence": bool(getattr(self.plugin, "enable_private_reading_preference_influence", True)),
-                "private_reading_min_interval_hours": getattr(self.plugin, "private_reading_min_interval_hours", 18),
-                "private_reading_max_photo_count": getattr(self.plugin, "private_reading_max_photo_count", 60),
-                "private_reading_share_probability": getattr(self.plugin, "private_reading_share_probability", 0.18),
-                "private_reading_ask_probability": getattr(self.plugin, "private_reading_ask_probability", 0.16),
-                "private_reading_preference_min_ratings": getattr(self.plugin, "private_reading_preference_min_ratings", 5),
-                "private_reading_preference_max_terms": getattr(self.plugin, "private_reading_preference_max_terms", 8),
-                "private_reading_default_keywords": getattr(self.plugin, "private_reading_default_keywords", ""),
-                "private_reading_blocked_tags": getattr(self.plugin, "private_reading_blocked_tags", "連載中,長篇,青年漫"),
+                "enable_reading_archive_integration": bool(getattr(self.plugin, "enable_reading_archive_integration", False)),
+                "enable_reading_archive_boredom_read": bool(getattr(self.plugin, "enable_reading_archive_boredom_read", False)),
+                "enable_reading_archive_ask_recommendation": bool(getattr(self.plugin, "enable_reading_archive_ask_recommendation", False)),
+                "enable_reading_archive_vision": bool(getattr(self.plugin, "enable_reading_archive_vision", True)),
+                "enable_reading_archive_page_comments": bool(getattr(self.plugin, "enable_reading_archive_page_comments", True)),
+                "enable_reading_archive_rating": bool(getattr(self.plugin, "enable_reading_archive_rating", True)),
+                "enable_reading_archive_preference_influence": bool(getattr(self.plugin, "enable_reading_archive_preference_influence", True)),
+                "reading_archive_min_interval_hours": getattr(self.plugin, "reading_archive_min_interval_hours", 18),
+                "reading_archive_max_photo_count": getattr(self.plugin, "reading_archive_max_photo_count", 60),
+                "reading_archive_share_probability": getattr(self.plugin, "reading_archive_share_probability", 0.18),
+                "reading_archive_ask_probability": getattr(self.plugin, "reading_archive_ask_probability", 0.16),
+                "reading_archive_preference_min_ratings": getattr(self.plugin, "reading_archive_preference_min_ratings", 5),
+                "reading_archive_preference_max_terms": getattr(self.plugin, "reading_archive_preference_max_terms", 8),
+                "reading_archive_default_keywords": getattr(self.plugin, "reading_archive_default_keywords", ""),
+                "reading_archive_blocked_tags": getattr(self.plugin, "reading_archive_blocked_tags", "連載中,長篇,青年漫"),
                 "group_repeat_trigger_threshold": int(getattr(self.plugin, "group_repeat_trigger_threshold", 4) or 4),
                 "group_repeat_count_distinct_users_only": bool(getattr(self.plugin, "group_repeat_count_distinct_users_only", False)),
                 "group_repeat_follow_probability": int(round(float(getattr(self.plugin, "group_repeat_follow_probability", 0.18) or 0) * 100)),
@@ -22923,11 +22925,11 @@ class PrivateCompanionPageApi(
                 "已检测到 B站 AI Bot 或观看日志" if bili_available else "联动开关已开，但暂未检测到 B站 AI Bot 实例或日志",
             )
 
-        if features.get("enable_private_reading_integration"):
-            jm_available = bool(getattr(self.plugin, "_jm_cosmos_available", lambda: False)())
+        if features.get("enable_reading_archive_integration"):
+            jm_available = bool(getattr(self.plugin, "_reading_archive_available", lambda: False)())
             add(
                 "ok" if jm_available else "info",
-                "夹层阅读素材",
+                "资料归档素材",
                 "已检测到可用素材能力" if jm_available else "开关已开，但暂未检测到可用素材能力",
             )
 
@@ -23923,7 +23925,7 @@ class PrivateCompanionPageApi(
             "GROUP_MEMBER_SAFETY_PROVIDER_ID": "group_member_safety_provider_id",
             "FORWARD_MESSAGE_PROVIDER_ID": "forward_message_provider_id",
             "PLUGIN_VISION_PROVIDER_ID": "plugin_vision_provider_id",
-            "PRIVATE_READING_VISION_PROVIDER_ID": "private_reading_vision_provider_id",
+            "READING_ARCHIVE_VISION_PROVIDER_ID": "reading_archive_vision_provider_id",
             "REACTION_EXPRESSION_EMBEDDING_PROVIDER_ID": "reaction_expression_embedding_provider_id",
             "NEWS_PROVIDER_ID": "news_provider_id",
             "WEB_EXPLORATION_PROVIDER_ID": "web_exploration_provider_id",
@@ -23974,25 +23976,25 @@ class PrivateCompanionPageApi(
             normalizer = getattr(self.plugin, "_normalize_roleplay_knowledge_source_ids", None)
             self.plugin.roleplay_knowledge_source_ids = normalizer(value) if callable(normalizer) else list(value or [])
             return
-        private_reading_attr_map = {
-            "enable_private_reading_integration": "enable_private_reading_integration",
-            "enable_private_reading_boredom_read": "enable_private_reading_boredom_read",
-            "enable_private_reading_ask_recommendation": "enable_private_reading_ask_recommendation",
-            "enable_private_reading_vision": "enable_private_reading_vision",
-            "enable_private_reading_page_comments": "enable_private_reading_page_comments",
-            "enable_private_reading_rating": "enable_private_reading_rating",
-            "enable_private_reading_preference_influence": "enable_private_reading_preference_influence",
-            "private_reading_min_interval_hours": "private_reading_min_interval_hours",
-            "private_reading_max_photo_count": "private_reading_max_photo_count",
-            "private_reading_share_probability": "private_reading_share_probability",
-            "private_reading_ask_probability": "private_reading_ask_probability",
-            "private_reading_preference_min_ratings": "private_reading_preference_min_ratings",
-            "private_reading_preference_max_terms": "private_reading_preference_max_terms",
-            "private_reading_default_keywords": "private_reading_default_keywords",
-            "private_reading_blocked_tags": "private_reading_blocked_tags",
+        reading_archive_attr_map = {
+            "enable_reading_archive_integration": "enable_reading_archive_integration",
+            "enable_reading_archive_boredom_read": "enable_reading_archive_boredom_read",
+            "enable_reading_archive_ask_recommendation": "enable_reading_archive_ask_recommendation",
+            "enable_reading_archive_vision": "enable_reading_archive_vision",
+            "enable_reading_archive_page_comments": "enable_reading_archive_page_comments",
+            "enable_reading_archive_rating": "enable_reading_archive_rating",
+            "enable_reading_archive_preference_influence": "enable_reading_archive_preference_influence",
+            "reading_archive_min_interval_hours": "reading_archive_min_interval_hours",
+            "reading_archive_max_photo_count": "reading_archive_max_photo_count",
+            "reading_archive_share_probability": "reading_archive_share_probability",
+            "reading_archive_ask_probability": "reading_archive_ask_probability",
+            "reading_archive_preference_min_ratings": "reading_archive_preference_min_ratings",
+            "reading_archive_preference_max_terms": "reading_archive_preference_max_terms",
+            "reading_archive_default_keywords": "reading_archive_default_keywords",
+            "reading_archive_blocked_tags": "reading_archive_blocked_tags",
         }
-        if key in private_reading_attr_map:
-            setattr(self.plugin, private_reading_attr_map[key], value)
+        if key in reading_archive_attr_map:
+            setattr(self.plugin, reading_archive_attr_map[key], value)
             return
         if key == "plugin_specific_persona_id":
             self.plugin.plugin_specific_persona_id = str(value or "").strip()
@@ -24646,13 +24648,13 @@ class PrivateCompanionPageApi(
             "enable_qzone_generated_image_publish",
             "enable_qzone_comment_inbox",
             "enable_qzone_emotional_vent_publish",
-            "enable_private_reading_integration",
-            "enable_private_reading_boredom_read",
-            "enable_private_reading_ask_recommendation",
-            "enable_private_reading_vision",
-            "enable_private_reading_page_comments",
-            "enable_private_reading_rating",
-            "enable_private_reading_preference_influence",
+            "enable_reading_archive_integration",
+            "enable_reading_archive_boredom_read",
+            "enable_reading_archive_ask_recommendation",
+            "enable_reading_archive_vision",
+            "enable_reading_archive_page_comments",
+            "enable_reading_archive_rating",
+            "enable_reading_archive_preference_influence",
             "enable_unanswered_screen_peek_followup",
             "enable_goodnight_screen_check",
             "enable_screen_glance_action",
@@ -24700,7 +24702,7 @@ class PrivateCompanionPageApi(
             "GROUP_FOLLOWUP_JUDGE_PROVIDER_ID",
             "FORWARD_MESSAGE_PROVIDER_ID",
             "PLUGIN_VISION_PROVIDER_ID",
-            "PRIVATE_READING_VISION_PROVIDER_ID",
+            "READING_ARCHIVE_VISION_PROVIDER_ID",
             "NEWS_PROVIDER_ID",
             "WEB_EXPLORATION_PROVIDER_ID",
             "EMOTION_JUDGEMENT_PROVIDER_ID",
@@ -25203,20 +25205,20 @@ class PrivateCompanionPageApi(
             "qzone_emotional_vent_threshold",
             "qzone_emotional_vent_cooldown_hours",
             "qzone_emotional_vent_probability",
-            "enable_private_reading_integration",
-            "enable_private_reading_boredom_read",
-            "enable_private_reading_ask_recommendation",
-            "enable_private_reading_vision",
-            "enable_private_reading_page_comments",
-            "enable_private_reading_rating",
-            "private_reading_min_interval_hours",
-            "private_reading_max_photo_count",
-            "private_reading_share_probability",
-            "private_reading_ask_probability",
-            "private_reading_preference_min_ratings",
-            "private_reading_preference_max_terms",
-            "private_reading_default_keywords",
-            "private_reading_blocked_tags",
+            "enable_reading_archive_integration",
+            "enable_reading_archive_boredom_read",
+            "enable_reading_archive_ask_recommendation",
+            "enable_reading_archive_vision",
+            "enable_reading_archive_page_comments",
+            "enable_reading_archive_rating",
+            "reading_archive_min_interval_hours",
+            "reading_archive_max_photo_count",
+            "reading_archive_share_probability",
+            "reading_archive_ask_probability",
+            "reading_archive_preference_min_ratings",
+            "reading_archive_preference_max_terms",
+            "reading_archive_default_keywords",
+            "reading_archive_blocked_tags",
             "enable_unanswered_screen_peek_followup",
             "unanswered_screen_peek_after_minutes",
             "unanswered_screen_peek_cooldown_minutes",
@@ -26435,10 +26437,10 @@ class PrivateCompanionPageApi(
             "cookie_fetch_at": self.plugin._format_timestamp_elapsed(state.get("last_cookie_fetch_at", 0)),
         }
 
-    def _jm_cosmos_summary(self, data: dict[str, Any]) -> dict[str, Any]:
-        state = data.get("jm_cosmos_integration") if isinstance(data.get("jm_cosmos_integration"), dict) else {}
+    def _reading_archive_summary(self, data: dict[str, Any]) -> dict[str, Any]:
+        state = data.get("reading_archive_integration") if isinstance(data.get("reading_archive_integration"), dict) else {}
         try:
-            available = bool(getattr(self.plugin, "_jm_cosmos_available", lambda: False)())
+            available = bool(getattr(self.plugin, "_reading_archive_available", lambda: False)())
         except Exception:
             available = False
         album = state.get("last_album") if isinstance(state.get("last_album"), dict) else {}
@@ -26454,11 +26456,11 @@ class PrivateCompanionPageApi(
         ):
             album = {}
         return {
-            "enabled": bool(available and getattr(self.plugin, "enable_private_reading_integration", False)),
+            "enabled": bool(available and getattr(self.plugin, "enable_reading_archive_integration", False)),
             "boredom_read_enabled": bool(
-                available and getattr(self.plugin, "enable_private_reading_boredom_read", False)
+                available and getattr(self.plugin, "enable_reading_archive_boredom_read", False)
             ),
-            "ask_recommendation_enabled": bool(available and getattr(self.plugin, "enable_private_reading_ask_recommendation", False)),
+            "ask_recommendation_enabled": bool(available and getattr(self.plugin, "enable_reading_archive_ask_recommendation", False)),
             "available": available,
             "last_read_at": self.plugin._format_timestamp_elapsed(state.get("last_read_at", 0)),
             "last_status": state.get("last_status", ""),
@@ -26537,7 +26539,7 @@ class PrivateCompanionPageApi(
         projects = data.get("creative_projects") if isinstance(data.get("creative_projects"), list) else []
         diaries = self._bookshelf_diary_entries(data.get("bot_diaries"))
         shelf_items = data.get("bookshelf_items") if isinstance(data.get("bookshelf_items"), list) else []
-        jm_state = data.get("jm_cosmos_integration") if isinstance(data.get("jm_cosmos_integration"), dict) else {}
+        jm_state = data.get("reading_archive_integration") if isinstance(data.get("reading_archive_integration"), dict) else {}
         deleted_jm_ids = self._bookshelf_deleted_album_ids(jm_state)
         jm_items = [
             item
@@ -26598,7 +26600,7 @@ class PrivateCompanionPageApi(
                 }
             )
         data_root = Path(str(getattr(self.plugin, "data_dir", ""))).resolve()
-        covers_root = data_root / "jm_cosmos_covers"
+        covers_root = data_root / "reading_archive_covers"
         if unlocked:
             pages_root = data_root / "bookshelf_pages"
             known_jm_ids = {
@@ -26650,7 +26652,7 @@ class PrivateCompanionPageApi(
                     {
                         "type": "jm_album",
                         "album_id": album_id,
-                        "title": meta.get("title") or f"私密阅读 {album_id}",
+                        "title": meta.get("title") or f"资料归档 {album_id}",
                         "description": meta.get("reason") or "",
                         "tags": meta.get("terms") if isinstance(meta.get("terms"), list) else [],
                         "rating": meta.get("bot_rating") or meta.get("rating"),
@@ -26860,7 +26862,7 @@ class PrivateCompanionPageApi(
                     {
                         "id": f"jm-{album_id or len(secret_books)}",
                         "kind": "jm_album",
-                        "category": "私密阅读",
+                        "category": "资料归档",
                         "album_id": album_id,
                         "title": self._single_line(item.get("title"), 100) or "未命名阅读记录",
                         "intro": self._single_line(album_description, 600),
@@ -26957,7 +26959,7 @@ class PrivateCompanionPageApi(
         if not key:
             return "未记录原因"
         extra = {
-            "bookshelf_reading_share": "跟你提起刚翻到的漫画本子",
+            "bookshelf_reading_share": "跟你提起刚翻到的漫画资料",
             "bookshelf_recommendation_request": "想问你要不要推荐阅读",
             "web_exploration_share": "分享主动搜索后的发现",
             "news_share": "分享刚读到的新闻",
@@ -26994,7 +26996,7 @@ class PrivateCompanionPageApi(
             "story": {"label": "日常剧情", "note": ""},
             "habit": {"label": "习惯关心", "note": ""},
             "bilibili": {"label": "B站分享", "note": ""},
-            "bookshelf_reading": {"label": "私密阅读", "note": ""},
+            "bookshelf_reading": {"label": "资料归档", "note": ""},
             "creative_writing": {"label": "创作灵感", "note": ""},
             "group_share": {"label": "群聊见闻", "note": ""},
             "web_exploration": {"label": "主动搜索", "note": ""},
@@ -27011,7 +27013,7 @@ class PrivateCompanionPageApi(
                 "label": "晚安后群聊活跃",
                 "note": "和主要用户互道晚安后，对方仍在群里活跃时按人格低概率形成的轻调侃或关心。",
             },
-            "jm_cosmos": {"label": "私密阅读", "note": ""},
+            "reading_archive": {"label": "资料归档", "note": ""},
             "personal_goal": {"label": "个人目标", "note": "非创作型长期目标在真实推进、停滞或完成后形成的主动。"},
             "candidate": {"label": "主动候选", "note": ""},
             "followup": {"label": "补一句", "note": "前面的话还差个具体点，所以顺手再接一句。"},
@@ -27189,7 +27191,7 @@ class PrivateCompanionPageApi(
                 user_bucket["counts"] = bucket_counts
             bucket_counts[status] = self._int(bucket_counts.get(status)) + repeat_count
             source = self._single_line(item.get("source"), 40) or "unknown"
-            display_source = "bookshelf_reading" if source == "jm_cosmos" else source
+            display_source = "bookshelf_reading" if source == "reading_archive" else source
             counts[status] = counts.get(status, 0) + repeat_count
             source_counts[display_source] = source_counts.get(display_source, 0) + repeat_count
             scheduled = self._float(item.get("scheduled_ts"))
@@ -27197,11 +27199,11 @@ class PrivateCompanionPageApi(
             last_seen = self._float(item.get("last_seen_ts")) or created
             reason = reason_raw
             action = action_raw
-            if reason == "jm_cosmos_share":
+            if reason == "reading_archive_share":
                 reason = "bookshelf_reading_share"
-            if reason == "jm_cosmos_recommendation_request":
+            if reason == "reading_archive_recommendation_request":
                 reason = "bookshelf_recommendation_request"
-            if action == "jm_cosmos_read":
+            if action == "reading_archive_read":
                 action = "bookshelf_reading"
             signature = self._single_line(item.get("signature"), 120)
             topic = self._single_line(item.get("topic"), 100)

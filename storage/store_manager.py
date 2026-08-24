@@ -18,7 +18,7 @@ from .sqlite_backend import SqliteStoreNotInitializedError
 
 _BOOKSHELF_SECTIONS = (
     "bookshelf_items",
-    "jm_cosmos_integration",
+    "reading_archive_integration",
     "bookshelf_secret",
     "bookshelf_store_revision",
 )
@@ -52,7 +52,7 @@ def _bookshelf_revision(data: Any) -> int:
 def _bookshelf_state(data: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         return {}
-    state = data.get("jm_cosmos_integration")
+    state = data.get("reading_archive_integration")
     return state if isinstance(state, dict) else {}
 
 
@@ -145,8 +145,8 @@ def reconcile_bookshelf_payload(
     else:
         primary, secondary = preferred, fallback
 
-    primary_state_raw = primary.get("jm_cosmos_integration")
-    secondary_state_raw = secondary.get("jm_cosmos_integration")
+    primary_state_raw = primary.get("reading_archive_integration")
+    secondary_state_raw = secondary.get("reading_archive_integration")
     primary_state = (
         deepcopy(primary_state_raw) if isinstance(primary_state_raw, dict) else None
     )
@@ -254,11 +254,11 @@ def reconcile_bookshelf_payload(
     ):
         result["bookshelf_items"] = merged_items
     if merged_state is not None and (
-        isinstance(preferred.get("jm_cosmos_integration"), dict)
+        isinstance(preferred.get("reading_archive_integration"), dict)
         or bool(merged_state)
-        or preferred.get("jm_cosmos_integration") is None
+        or preferred.get("reading_archive_integration") is None
     ):
-        result["jm_cosmos_integration"] = merged_state
+        result["reading_archive_integration"] = merged_state
 
     primary_secret = primary.get("bookshelf_secret")
     secondary_secret = secondary.get("bookshelf_secret")

@@ -32988,6 +32988,86 @@ pre {
 .reality-mobile-guide-line { margin-top: 8px !important; }
 .reality-mobile-proxy-field { grid-column: span 3; }
 .reality-mobile-troubleshooting { border-left-color: var(--reality-amber, #a56a24) !important; }
+.reality-mobile-capability-section {
+  grid-column: 1 / -1;
+  margin-top: 2px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line-soft, rgba(31, 42, 51, 0.12));
+}
+.reality-mobile-capability-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.reality-mobile-capability-head span { color: var(--accent-strong); font-size: 11px; font-weight: 700; }
+.reality-mobile-capability-head h4 { margin: 3px 0 0; font-size: 15px; }
+.reality-mobile-capability-head small,
+.reality-mobile-ttl-field small { color: var(--muted, #667078); font-size: 11px; line-height: 1.5; }
+.reality-mobile-capability-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(180px, .6fr);
+  gap: 10px 12px;
+  align-items: stretch;
+}
+.reality-mobile-capability-grid .reality-enable-field { min-height: 46px; }
+.reality-mobile-ttl-field > span { display: block; margin-bottom: 6px; color: var(--muted, #667078); font-size: 12px; }
+.reality-mobile-ttl-field input { width: 100%; box-sizing: border-box; }
+.reality-mobile-capability-grid .reality-enable-field:last-child { grid-column: 1 / -1; }
+.reality-mobile-data-card { margin: 0; }
+.reality-mobile-data-config { display: grid; gap: 12px; }
+.reality-mobile-data-config > button { justify-self: start; }
+.reality-mobile-observation-user { display: grid; grid-template-columns: 110px minmax(0, 1fr); align-items: center; gap: 10px; margin: 12px 0; }
+.reality-mobile-observation-user > span { color: var(--muted, #667078); font-size: 12px; }
+.reality-mobile-observation-user select { min-height: 38px; }
+.reality-mobile-feedback-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 12px 0; }
+.reality-mobile-feedback-card { min-width: 0; padding: 12px 13px; border: 1px solid var(--line-soft); border-left: 3px solid var(--muted); border-radius: 6px; background: color-mix(in srgb, var(--panel) 92%, var(--surface)); }
+.reality-mobile-feedback-card.is-positive { border-left-color: var(--reality-green); }
+.reality-mobile-feedback-card .reality-capability-title { align-items: flex-start; }
+.reality-mobile-feedback-card > strong { display: block; margin-top: 10px; overflow-wrap: anywhere; font-size: 14px; }
+.reality-mobile-feedback-card > small { display: block; margin-top: 6px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.reality-mobile-measurements { margin: 12px 0; padding-top: 10px; border-top: 1px solid var(--line-soft); }
+.reality-mobile-measurements h4 { margin: 0 0 8px; font-size: 13px; }
+.reality-mobile-measurements > div { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--line-soft); border-radius: 6px; background: var(--line-soft); }
+.reality-mobile-measurements > div > div { display: grid; gap: 4px; padding: 9px 10px; background: var(--panel); }
+.reality-mobile-measurements span { color: var(--muted); font-size: 11px; }
+.reality-mobile-measurements b { font-size: 13px; overflow-wrap: anywhere; }
+.reality-home-health-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+.reality-home-health-item {
+  min-width: 0;
+  padding: 13px 14px;
+  border-left: 3px solid var(--reality-green, #2f7d61);
+  background: color-mix(in srgb, var(--panel, #fff) 86%, var(--accent-soft, #eaf1f7));
+}
+.reality-home-health-item:nth-child(2) { border-left-color: var(--reality-blue, #356e9f); }
+.reality-home-health-item:nth-child(3) { border-left-color: var(--reality-amber, #a56a24); }
+.reality-home-health-item:nth-child(4) { border-left-color: var(--muted, #667078); }
+.reality-capability-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.reality-capability-title b { font-size: 13px; }
+.reality-capability-title span { color: var(--accent-strong); font-size: 11px; font-weight: 700; white-space: nowrap; }
+.reality-home-health-item p,
+.reality-home-health-item small { display: block; margin: 7px 0 0; color: var(--muted, #667078); font-size: 12px; line-height: 1.65; }
+.reality-home-health-action { display: grid; grid-template-columns: minmax(180px, .35fr) minmax(0, 1fr) auto; gap: 10px; align-items: end; margin-top: 14px; }
+.reality-home-health-action label > span { display: block; margin-bottom: 6px; color: var(--muted); font-size: 12px; }
+.reality-home-health-action select,
+.reality-home-health-action textarea { width: 100%; box-sizing: border-box; border: 1px solid var(--line-soft); border-radius: 6px; background: var(--panel); }
+.reality-home-health-action select { min-height: 40px; }
+.reality-home-health-action textarea { min-height: 40px; padding: 9px 10px; resize: vertical; }
+.reality-home-health-result { margin-top: 12px; padding: 11px 13px; border-left: 3px solid var(--line); background: color-mix(in srgb, var(--panel) 90%, var(--surface)); }
+.reality-home-health-result.has-result { border-left-color: var(--reality-blue); }
+.reality-home-health-result b,
+.reality-home-health-result small { display: block; }
+.reality-home-health-result small { margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.reality-provider-status { display: grid; gap: 4px; margin-top: 12px; padding: 10px 12px; border-left: 3px solid var(--muted); background: color-mix(in srgb, var(--panel) 90%, var(--surface)); }
+.reality-provider-status.is-positive { border-left-color: var(--reality-green); }
+.reality-provider-status b { font-size: 12px; }
+.reality-provider-status span { color: var(--muted); font-size: 11px; line-height: 1.5; }
 
 @media (max-width: 980px) {
   .reality-page-status-grid,
@@ -32997,6 +33077,13 @@ pre {
   .reality-mobile-inline-fields { grid-column: span 2; }
   .reality-mobile-proxy-field { grid-column: span 2; }
   .reality-mobile-methods { grid-template-columns: minmax(0, 1fr); }
+  .reality-mobile-capability-section { grid-column: 1 / -1; }
+  .reality-mobile-capability-grid { grid-template-columns: minmax(0, 1fr) minmax(150px, .65fr); }
+  .reality-mobile-data-config > button { justify-self: start; }
+  .reality-mobile-feedback-grid { grid-template-columns: minmax(0, 1fr); }
+  .reality-mobile-measurements > div { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .reality-home-health-action { grid-template-columns: minmax(0, 1fr); }
+  .reality-home-health-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 640px) {
@@ -33011,6 +33098,14 @@ pre {
   .reality-mobile-config .reality-enable-field { grid-column: auto; }
   .reality-mobile-inline-fields { grid-column: auto; grid-template-columns: minmax(0, 1fr); }
   .reality-mobile-proxy-field { grid-column: auto; }
+  .reality-mobile-capability-section { grid-column: auto; }
+  .reality-mobile-capability-grid { grid-template-columns: minmax(0, 1fr); }
+  .reality-mobile-capability-grid .reality-enable-field:last-child { grid-column: auto; }
+  .reality-mobile-capability-head { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .reality-mobile-data-config > button { width: 100%; }
+  .reality-mobile-observation-user { grid-template-columns: minmax(0, 1fr); gap: 5px; }
+  .reality-mobile-measurements > div { grid-template-columns: minmax(0, 1fr); }
+  .reality-home-health-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* Reality touch workspace: quiet hierarchy, task-oriented navigation */

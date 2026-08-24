@@ -10559,10 +10559,10 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
             "photo_text": "发图",
             "poke": "戳一戳",
             "voice": "语音",
-            "jm_cosmos_read": "私下阅读",
+            "reading_archive_read": "资料归档",
         }
         parts = []
-        for key in ("screen_peek", "photo_text", "poke", "voice", "jm_cosmos_read"):
+        for key in ("screen_peek", "photo_text", "poke", "voice", "reading_archive_read"):
             stats = raw.get(key)
             if not isinstance(stats, dict):
                 continue

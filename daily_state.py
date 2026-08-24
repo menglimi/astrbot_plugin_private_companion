@@ -2609,7 +2609,7 @@ class DailyStateMixin(DailyStateTickMixin):
             base = "刚好有点空，想看看那边是不是还在忙"
         elif action == "photo_text":
             base = "刚刚看到的画面想分享一下"
-        elif action == "jm_cosmos_read":
+        elif action == "reading_archive_read":
             base = "刚刚私下翻到一点漫画内容,只想含糊地提一句"
         elif action == "poke":
             base = "想做一次轻量提醒"
@@ -12605,16 +12605,16 @@ class DailyStateMixin(DailyStateTickMixin):
     def _user_asks_bookshelf_creative_inventory(text: str) -> bool:
         normalized = _single_line(text, 220)
         if not normalized or any(
-            token in normalized for token in ("书柜密码", "书架密码", "夹层密码", "抽屉密码")
+            token in normalized for token in ("资料柜密码", "书架密码", "夹层密码", "抽屉密码")
         ):
             return False
         return bool(
             re.search(
-                r"(?:书柜|书架|作品柜|创作柜).{0,12}(?:能看到|看得到|能看见|可以看|看看|查一下|查询|检索|列一下|列出|有什么|有哪些|有几|多少|空不空|是不是空|还是空|空的)",
+                r"(?:资料柜|书架|作品柜|创作柜).{0,12}(?:能看到|看得到|能看见|可以看|看看|查一下|查询|检索|列一下|列出|有什么|有哪些|有几|多少|空不空|是不是空|还是空|空的)",
                 normalized,
             )
             or re.search(
-                r"(?:能看到|看得到|能看见|可以看|看看|查一下|查询|检索|列一下|列出).{0,12}(?:书柜|书架|作品柜|创作柜)",
+                r"(?:能看到|看得到|能看见|可以看|看看|查一下|查询|检索|列一下|列出).{0,12}(?:资料柜|书架|作品柜|创作柜)",
                 normalized,
             )
         )
@@ -12888,8 +12888,8 @@ class DailyStateMixin(DailyStateTickMixin):
         if not candidates:
             if asks_bookshelf_inventory:
                 return (
-                    "【书柜创作区真实库存】\n"
-                    "用户正在询问能否看到书柜或书柜里有什么。当前书柜创作区确实没有保存过正文的作品。\n"
+                    "【资料柜创作区真实库存】\n"
+                    "用户正在询问能否看到资料柜或资料柜里有什么。当前资料柜创作区确实没有保存过正文的作品。\n"
                     "必须直接说明真实结果；不要假装翻找，不要用括号动作、挠头或含糊的场景描写代替回答。"
                 )
             return ""
@@ -12905,7 +12905,7 @@ class DailyStateMixin(DailyStateTickMixin):
             f"用户提到了你私下创作过的作品《{mentioned_title}》。"
             if mentioned_title
             else
-            "用户正在询问能否看到书柜或书柜里有哪些真实内容。"
+            "用户正在询问能否看到资料柜或资料柜里有哪些真实内容。"
             if asks_bookshelf_inventory
             else
             "用户正在确认你是否写过自己的书、小说或其他文本作品。"
@@ -12944,7 +12944,7 @@ class DailyStateMixin(DailyStateTickMixin):
             + f"\n{creative_continuity_hint}\n"
             + (f"{existence_rule}\n" if existence_rule else "")
             + (f"最近一句/片段：{snippet}\n" if snippet else "")
-            + "如果用户询问书柜库存，必须直接依据真实数量和标题回答，禁止用括号动作或假装翻找代替结果。如果用户明确问指定作品的正文、某一部分、写作想法或作者怎么看，下面的短片段只能用于定位，必须先调用 pc_view_creative_work 读取真实正文后再回答；不要先发“我去看看”，也不要凭短片段假装已经读完。若只是泛问最近有没有创作，可以直接概括并给一小句片段。否则这不是必须回答的内容，可以只含糊说“在弄一点小东西”。不要主动汇报系统进度，不要一次给完整正文。"
+            + "如果用户询问资料柜库存，必须直接依据真实数量和标题回答，禁止用括号动作或假装翻找代替结果。如果用户明确问指定作品的正文、某一部分、写作想法或作者怎么看，下面的短片段只能用于定位，必须先调用 pc_view_creative_work 读取真实正文后再回答；不要先发“我去看看”，也不要凭短片段假装已经读完。若只是泛问最近有没有创作，可以直接概括并给一小句片段。否则这不是必须回答的内容，可以只含糊说“在弄一点小东西”。不要主动汇报系统进度，不要一次给完整正文。"
         )
 
     @staticmethod
@@ -14937,7 +14937,7 @@ class DailyStateMixin(DailyStateTickMixin):
             else:
                 estimated_minutes = 0
             action = _single_line(payload.get("action"), 24) or "message"
-            if action not in {"message", "screen_peek", "photo_text", "voice", "jm_cosmos_read"}:
+            if action not in {"message", "screen_peek", "photo_text", "voice", "reading_archive_read"}:
                 action = "message"
             if not self._friend_can_receive_proactive_reason(user, reason, action):
                 reason = "check_in"
@@ -17822,10 +17822,10 @@ class DailyStateMixin(DailyStateTickMixin):
             ("网页探索", self._maybe_trigger_web_exploration),
             ("AI日报追踪", self._maybe_track_ai_daily),
             ("新闻无聊阅读", self._maybe_trigger_news_boredom_read),
-            ("夹层无聊阅读", self._maybe_trigger_jm_cosmos_boredom_read),
+            ("夹层无聊阅读", self._maybe_trigger_reading_archive_boredom_read),
             ("QQ空间生活说说", self._maybe_publish_qzone_life_post),
             ("QQ空间评论收件箱", self._maybe_process_qzone_comment_inbox),
-            ("夹层推荐请求", self._maybe_schedule_private_reading_recommendation_request),
+            ("夹层推荐请求", self._maybe_schedule_reading_archive_recommendation_request),
         ):
             try:
                 await task_factory()

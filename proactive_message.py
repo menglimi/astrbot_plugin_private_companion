@@ -2794,8 +2794,8 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             "news_share",
             "web_exploration_share",
             "creative_share",
-            "jm_cosmos_share",
-            "jm_cosmos_recommendation_request",
+            "reading_archive_share",
+            "reading_archive_recommendation_request",
         }
         if troubleshooting_hint:
             current_schedule = "（本轮不使用生活片段；只按用户刚发起的测试请求自然开口，不补写虚构见闻）"
@@ -5106,8 +5106,8 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             "news_share",
             "web_exploration_share",
             "creative_share",
-            "jm_cosmos_share",
-            "jm_cosmos_recommendation_request",
+            "reading_archive_share",
+            "reading_archive_recommendation_request",
             "weather_alert",
             "goodnight_screen_check",
         }
@@ -6490,6 +6490,9 @@ Output:
         if not cleaned or action not in {"message", "photo_text"}:
             return []
         flags: list[str] = []
+        # 外部分享（新闻/B站/搜索）是「分享外界信息」场景，不做回复空气检查，直接放行。
+        if reason in {"news_share", "bili_video_share", "web_exploration_share"}:
+            return flags
         reply_opener_pattern = (
             r"^(?:好呀|好啊|可以呀|可以啊|行呀|行啊|嗯好|那就|你说呢|要不|不然|"
             r"确实|对呀|对啊|是吧|也是|哈哈[,，\s]*我也|我也觉得|你说得对)"
@@ -7384,23 +7387,23 @@ Output:
             payload.setdefault("summary", "留了句语音")
             payload.setdefault("effective_action", "voice")
             return payload
-        if action == "jm_cosmos_read":
-            result = await self._run_jm_cosmos_read_action(user)
+        if action == "reading_archive_read":
+            result = await self._run_reading_archive_read_action(user)
             if isinstance(result, dict):
-                user["jm_cosmos_reading_context"] = result
+                user["reading_archive_reading_context"] = result
                 return {
                     "success": True,
-                    "context": self._format_jm_cosmos_action_context(user),
+                    "context": self._format_reading_archive_action_context(user),
                     "extra_components": [],
                     "summary": "私下翻了会儿漫画",
-                    "effective_action": "jm_cosmos_read",
+                    "effective_action": "reading_archive_read",
                 }
             return {
                 "success": False,
-                "context": "私密阅读线索：这次没有找到适合继续看的内容",
+                "context": "资料归档线索：这次没有找到适合继续看的内容",
                 "extra_components": [],
                 "summary": "没有读到合适内容",
-                "effective_action": "jm_cosmos_read",
+                "effective_action": "reading_archive_read",
             }
         if action.startswith("external:"):
             return await self._execute_external_proactive_ability(action.split(":", 1)[1], user, name, reason)
@@ -17263,7 +17266,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
             return cleaned
         abrupt_markers = (
             "今天", "刚刚", "刚才", "现在", "天气", "云", "太阳", "雨", "风", "作业", "阅读",
-            "视频", "新闻", "群里", "书柜", "日程", "吃", "喝", "路上", "窗外", "看到", "觉得",
+            "视频", "新闻", "群里", "资料柜", "日程", "吃", "喝", "路上", "窗外", "看到", "觉得",
         )
         looks_abrupt = any(marker in tail for marker in abrupt_markers) or len(tail) >= 6
         if not looks_abrupt:

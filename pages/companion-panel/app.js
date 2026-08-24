@@ -324,7 +324,7 @@ const providerLabels = {
   GROUP_MEMBER_SAFETY_PROVIDER_ID: "群成员风控判定",
   FORWARD_MESSAGE_PROVIDER_ID: "合并消息转述",
   PLUGIN_VISION_PROVIDER_ID: "插件识图模型",
-  PRIVATE_READING_VISION_PROVIDER_ID: "夹层阅读视觉模型",
+  READING_ARCHIVE_VISION_PROVIDER_ID: "资料归档视觉模型",
   REACTION_EXPRESSION_EMBEDDING_PROVIDER_ID: "表情嵌入模型覆盖",
   NEWS_PROVIDER_ID: "新闻整理",
   WEB_EXPLORATION_PROVIDER_ID: "搜索决策/整理",
@@ -378,27 +378,27 @@ function normalizeModelFallbackOverrides(raw) {
   return result;
 }
 
-const privateReadingConfigKeys = new Set([
-  "enable_private_reading_integration",
-  "enable_private_reading_boredom_read",
-  "enable_private_reading_ask_recommendation",
-  "enable_private_reading_vision",
-  "enable_private_reading_page_comments",
-  "enable_private_reading_rating",
-  "enable_private_reading_preference_influence",
-  "private_reading_min_interval_hours",
-  "private_reading_max_photo_count",
-  "private_reading_share_probability",
-  "private_reading_ask_probability",
-  "private_reading_preference_min_ratings",
-  "private_reading_preference_max_terms",
-  "private_reading_default_keywords",
-  "private_reading_blocked_tags",
-  "PRIVATE_READING_VISION_PROVIDER_ID",
+const readingArchiveConfigKeys = new Set([
+  "enable_reading_archive_integration",
+  "enable_reading_archive_boredom_read",
+  "enable_reading_archive_ask_recommendation",
+  "enable_reading_archive_vision",
+  "enable_reading_archive_page_comments",
+  "enable_reading_archive_rating",
+  "enable_reading_archive_preference_influence",
+  "reading_archive_min_interval_hours",
+  "reading_archive_max_photo_count",
+  "reading_archive_share_probability",
+  "reading_archive_ask_probability",
+  "reading_archive_preference_min_ratings",
+  "reading_archive_preference_max_terms",
+  "reading_archive_default_keywords",
+  "reading_archive_blocked_tags",
+  "READING_ARCHIVE_VISION_PROVIDER_ID",
 ]);
 
 const noFallbackProviderKeys = new Set([
-  "PRIVATE_READING_VISION_PROVIDER_ID",
+  "READING_ARCHIVE_VISION_PROVIDER_ID",
 ]);
 
 const optionalNoFallbackProviderKeys = new Set([
@@ -416,7 +416,7 @@ const quickProviderKeys = new Set([
 ]);
 
 const alwaysVisibleProviderKeys = new Set([
-  "PRIVATE_READING_VISION_PROVIDER_ID",
+  "READING_ARCHIVE_VISION_PROVIDER_ID",
   "EMBEDDING_PROVIDER_ID",
 ]);
 
@@ -559,7 +559,7 @@ function syncProviderConfigModeControls() {
   if (hint) {
     const tokenCostHint = "插件功能通常会携带较多动态上下文，Token 缓存命中率可能较低，请结合调用频率和预算合理规划模型。";
     hint.textContent = quick
-      ? `${tokenCostHint} 快速配置显示通用场景模型；插件识图、夹层阅读视觉和通用嵌入模型各自独立。`
+      ? `${tokenCostHint} 快速配置显示通用场景模型；插件识图、资料归档视觉和通用嵌入模型各自独立。`
       : `${tokenCostHint} 精准配置显示各任务单独 Provider；独立识图与通用嵌入不会跟随文本模型改写。`;
   }
 }
@@ -576,8 +576,8 @@ function setProviderConfigMode(mode, { render = true } = {}) {
   if (render) renderProviders();
 }
 
-function isPrivateReadingAvailable() {
-  return Boolean(state.overview?.private_reading?.available);
+function isReadingArchiveAvailable() {
+  return Boolean(state.overview?.reading_archive?.available);
 }
 
 function toBool(value) {
@@ -963,7 +963,7 @@ function unavailablePluginIntegrationOwner(key) {
 function visibleConfigKey(key) {
   if (hiddenCompatibilityConfigKeys.has(key)) return false;
   if (unavailablePluginIntegrationOwner(key) && !legacyConfigGraceKeys.has(key)) return false;
-  return isPrivateReadingAvailable() || !privateReadingConfigKeys.has(key);
+  return isReadingArchiveAvailable() || !readingArchiveConfigKeys.has(key);
 }
 
 const providerGuides = {
@@ -1206,12 +1206,12 @@ const providerGuides = {
     fit: "适合确认支持图片输入、视觉描述可靠、能简短转述关键信息的多模态模型。",
     fallback: "留空时先尝试 AstrBot 本体图片转述模型，再回退到工具结果转述或主模型。",
   },
-  PRIVATE_READING_VISION_PROVIDER_ID: {
+  READING_ARCHIVE_VISION_PROVIDER_ID: {
     preference: "quality",
     passiveImpact: "async",
-    purpose: "夹层阅读专用：理解封面和抽样页，生成页边批注、读后感、评分和偏好标签。",
+    purpose: "资料归档专用：理解封面和抽样页，生成页边批注、读后感、评分和偏好标签。",
     fit: "必须是支持图片输入的视觉模型，最好能稳定输出 JSON，并能看懂漫画页图细节。",
-    fallback: "不回退。留空或模型不可用时，不生成私密阅读批注和读后感。",
+    fallback: "不回退。留空或模型不可用时，不生成资料归档批注和读后感。",
   },
   REACTION_EXPRESSION_EMBEDDING_PROVIDER_ID: {
     preference: "speed",
@@ -1286,7 +1286,7 @@ const providerGroups = [
     id: "media",
     title: "视觉与外界信息",
     desc: "识图、新闻和主动搜索相关模型。",
-    keys: ["PRIVATE_READING_VISION_PROVIDER_ID", "NEWS_PROVIDER_ID", "WEB_EXPLORATION_PROVIDER_ID"],
+    keys: ["READING_ARCHIVE_VISION_PROVIDER_ID", "NEWS_PROVIDER_ID", "WEB_EXPLORATION_PROVIDER_ID"],
   },
 ];
 
@@ -1410,17 +1410,17 @@ const featureMeta = {
   enable_photo_reference_image: ["参考图一致性", "可选。自拍、人像、头像和角色表情包自动使用人设参考图或今日穿搭图保持外观；关闭后只按提示词生成。"],
   enable_creative_cover_generation: ["创作封面", "可选。作品写出正文后调用当前文生图后端生成封面，并按作品类型、基调和内容自动匹配画风。"],
   enable_group_nsfw_private_fallback: ["群聊成图安全审核", "群聊成图先经视觉审核；安全图发群，其余结果仅私聊原请求者。"],
-  enable_private_reading_integration: ["夹层阅读素材", "检测到可用素材能力时，允许作为低频私下阅读来源。"],
-  enable_private_reading_boredom_read: ["私下阅读", "空档、无聊或夜里低频自己搜索并阅读，形成内部印象。"],
-  enable_private_reading_ask_recommendation: ["征求推荐", "空档或无聊时，低频私聊询问用户有没有合适的私密阅读推荐。"],
-  enable_private_reading_preference_influence: ["私密偏好影响", "评分样本足够后，把稳定偏好作为私聊私密互动的弱背景。"],
+  enable_reading_archive_integration: ["资料归档素材", "检测到可用素材能力时，允许作为低频资料归档来源。"],
+  enable_reading_archive_boredom_read: ["资料归档", "空档、无聊或夜里低频自己搜索并阅读，形成内部印象。"],
+  enable_reading_archive_ask_recommendation: ["征求推荐", "空档或无聊时，低频私聊询问用户有没有合适的资料归档推荐。"],
+  enable_reading_archive_preference_influence: ["资料偏好影响", "评分样本足够后，把稳定偏好作为私聊资料互动的弱背景。"],
   enable_unanswered_screen_peek_followup: ["沉默后窥屏", "主动消息后用户长时间没回、且 Bot 正好无聊时，可免日次数窥屏确认用户在做什么。"],
   enable_goodnight_screen_check: ["晚安识屏提醒", "互道晚安后等待一次识屏判断；仅在明确仍活跃时轻声提醒休息。"],
   enable_tts_enhancement: ["TTS强化", "支持中文聊天文本搭配外语语音块，统一处理生成路径、<tts> 标签规范化、语种控制与朗读文本清洗；生效范围可配置为普通回复，或普通回复加全部主动消息。"],
   enable_proactive_quote_trigger_message: ["引用触发消息", "群聊回复、群主动插话和可追溯的私聊主动消息会引用触发消息；普通群回复可只在首次或对象变化时引用。"],
   enable_reply_interception_forward: ["回复拦截转发", "把插件阻断、回复改写和主动消息拦截情况发送到指定私聊或群聊。"],
   enable_creative_writing: ["独立创作联动", "安装 astrbot_plugin_content_companion 后由独立扩展负责创作项目、续写、审校、创作记忆和作品封面；未安装时才使用本体兼容回退。"],
-  enable_creative_work_read_guard: ["创作原文读取保护", "询问书柜已有作品时先读取真实原文；关闭后不再强制调用工具或替换模型回复。"],
+  enable_creative_work_read_guard: ["创作原文读取保护", "询问资料柜已有作品时先读取真实原文；关闭后不再强制调用工具或替换模型回复。"],
   creative_hidden_mode: ["低调创作模式", "默认不汇报创作，只在节点或用户询问时自然提起。"],
   enable_reaction_expression_experiment: ["表情表达实验", "主模型一次生成完整文字和隐藏表情意图，插件再按配置的位置发送合适图片；没有足够合适的候选时保持纯文字。"],
   enable_maslow_motivation_experiment: ["需求强化功能", "实验性功能第一项：把主动念头按状态、安全、归属、尊重、成长和意义等内部需求层轻量分类，强化候选排序与可选日程倾向。"],
@@ -1548,10 +1548,10 @@ const featureGroups = [
       "enable_qzone_life_publish",
       "enable_qzone_comment_inbox",
       "enable_photo_text_action",
-      "enable_private_reading_integration",
-      "enable_private_reading_boredom_read",
-      "enable_private_reading_ask_recommendation",
-      "enable_private_reading_preference_influence",
+      "enable_reading_archive_integration",
+      "enable_reading_archive_boredom_read",
+      "enable_reading_archive_ask_recommendation",
+      "enable_reading_archive_preference_influence",
       "enable_reply_interception_forward",
       "enable_creative_writing",
       "creative_hidden_mode",
@@ -1599,7 +1599,7 @@ const featureStageKeySets = {
     "enable_cross_user_memory_bridge",
     "enable_environment_perception",
     "enable_livingmemory_integration",
-    "enable_private_reading_preference_influence",
+    "enable_reading_archive_preference_influence",
   ]),
   during: new Set([
     "enable_segmented_proactive_reply",
@@ -1653,7 +1653,7 @@ const featureStageKeySets = {
     "enable_web_exploration",
     "enable_qzone_integration",
     "enable_photo_text_action",
-    "enable_private_reading_integration",
+    "enable_reading_archive_integration",
     "enable_reply_interception_forward",
     "enable_creative_writing",
     "enable_screen_glance_action",
@@ -1741,12 +1741,12 @@ const embeddedFeatureParentByKey = {
   enable_creative_cover_generation: "enable_photo_text_action",
   enable_natural_language_photo_generation: "enable_photo_text_action",
   enable_local_photo_load_guard: "enable_photo_text_action",
-  enable_private_reading_boredom_read: "enable_private_reading_integration",
-  enable_private_reading_ask_recommendation: "enable_private_reading_integration",
-  enable_private_reading_vision: "enable_private_reading_integration",
-  enable_private_reading_page_comments: "enable_private_reading_vision",
-  enable_private_reading_rating: "enable_private_reading_vision",
-  enable_private_reading_preference_influence: "enable_private_reading_integration",
+  enable_reading_archive_boredom_read: "enable_reading_archive_integration",
+  enable_reading_archive_ask_recommendation: "enable_reading_archive_integration",
+  enable_reading_archive_vision: "enable_reading_archive_integration",
+  enable_reading_archive_page_comments: "enable_reading_archive_vision",
+  enable_reading_archive_rating: "enable_reading_archive_vision",
+  enable_reading_archive_preference_influence: "enable_reading_archive_integration",
   enable_unanswered_screen_peek_followup: "enable_screen_glance_action",
   enable_goodnight_screen_check: "enable_screen_glance_action",
   auto_voice_enabled: "enable_tts_enhancement",
@@ -1773,7 +1773,7 @@ const proactiveOnlyLockedFeatureKeys = new Set([
   "enable_forward_message_adaptation",
   "enable_group_companion",
   "enable_skill_growth_passive_injection",
-  "enable_private_reading_preference_influence",
+  "enable_reading_archive_preference_influence",
   "enable_worldbook_member_recognition",
   "enable_atrelay_tools",
   "enable_livingmemory_integration",
@@ -2457,18 +2457,18 @@ const configLabels = {
   photo_generation_scene_presets: "生图场景预设",
   enable_bot_relationship_network: "Bot 关系网",
   bot_relationship_cards: "关系网角色卡",
-  private_reading_min_interval_hours: "阅读最小间隔",
-  private_reading_max_photo_count: "页数上限",
-  private_reading_share_probability: "主动提起概率",
-  private_reading_default_keywords: "默认搜索关键词",
-  private_reading_blocked_tags: "过滤标签",
-  private_reading_ask_probability: "征求推荐概率",
-  enable_private_reading_vision: "本子识图",
-  enable_private_reading_page_comments: "本子页边批注",
-  enable_private_reading_rating: "本子阅读评价",
-  enable_private_reading_preference_influence: "私密偏好影响",
-  private_reading_preference_min_ratings: "偏好生效最少评分数",
-  private_reading_preference_max_terms: "偏好注入最多词条",
+  reading_archive_min_interval_hours: "阅读最小间隔",
+  reading_archive_max_photo_count: "页数上限",
+  reading_archive_share_probability: "主动提起概率",
+  reading_archive_default_keywords: "默认搜索关键词",
+  reading_archive_blocked_tags: "过滤标签",
+  reading_archive_ask_probability: "征求推荐概率",
+  enable_reading_archive_vision: "资料识图",
+  enable_reading_archive_page_comments: "资料页边批注",
+  enable_reading_archive_rating: "资料阅读评价",
+  enable_reading_archive_preference_influence: "资料偏好影响",
+  reading_archive_preference_min_ratings: "偏好生效最少评分数",
+  reading_archive_preference_max_terms: "偏好注入最多词条",
   unanswered_screen_peek_after_minutes: "沉默多久后窥屏",
   unanswered_screen_peek_cooldown_minutes: "沉默窥屏冷却",
   goodnight_screen_check_delay_minutes: "晚安后等待分钟",
@@ -3113,18 +3113,18 @@ const configDescriptions = {
   photo_generation_scene_presets: "格式参考通用生图插件，一行一个：预设名:提示词。内置已有角色自拍、COS自拍、日常穿搭、镜前穿搭、头像特写、房间日常、可拍画面、表情包场景；普通穿搭默认走日常穿搭，只有明确镜前/对镜/镜子时才走镜前穿搭；自定义同名会覆盖内置。",
   enable_bot_relationship_network: "开启后可配置 Bot 熟悉的角色卡。角色卡文字只用于理解关系情境，不等于人物参考图；为角色绑定可用参考图后，明确点名该角色的生图请求可以让其入镜或与 Bot 合影。没有角色参考图时仍只会用第二只杯子、礼物、便签等非人物线索表达关系。",
   bot_relationship_cards: "一行一张角色卡，格式：角色名 || 与Bot的关系 || 角色外貌描述。例如：小林 || 高中同学兼死党 || 齐肩短发，戴黑框眼镜，常穿灰色连帽卫衣。最多保存 16 张。没有其他人物参考图时禁止合影，不会仅凭文字生成该角色。",
-  private_reading_min_interval_hours: "两次私下阅读之间的最小间隔。",
-  private_reading_max_photo_count: "只阅读页数不超过该值的素材，避免视觉理解成本过高。",
-  private_reading_share_probability: "读完后主动提起阅读体验的概率，按百分比填写。",
-  private_reading_default_keywords: "私下阅读时默认搜索关键词。多个词可用逗号或换行分隔。",
-  private_reading_blocked_tags: "过滤标签。匹配到这些标签时跳过对应素材。",
-  private_reading_ask_probability: "无聊时向用户征求推荐的概率，按百分比填写。",
-  enable_private_reading_vision: "开启后调用夹层阅读专用视觉模型读取封面和正文抽样页。",
-  enable_private_reading_page_comments: "开启后保存模型对正文抽样页生成的即时短批注；关闭后不写入新的页边批注。",
-  enable_private_reading_rating: "开启后生成 Bot 自评分、理由和偏好标签；关闭后本次阅读不更新自动偏好画像。",
-  enable_private_reading_preference_influence: "开启后，夹层阅读评分样本足够时会把稳定偏好作为私聊私密互动的弱背景；关闭后评分只用于素材挑选。",
-  private_reading_preference_min_ratings: "累计评分达到这个数量后，偏好画像才会影响私聊私密互动。",
-  private_reading_preference_max_terms: "每次注入最多参考多少个稳定偏好词，避免上下文太长或风格偏移。",
+  reading_archive_min_interval_hours: "两次资料归档之间的最小间隔。",
+  reading_archive_max_photo_count: "只阅读页数不超过该值的素材，避免视觉理解成本过高。",
+  reading_archive_share_probability: "读完后主动提起阅读体验的概率，按百分比填写。",
+  reading_archive_default_keywords: "资料归档时默认搜索关键词。多个词可用逗号或换行分隔。",
+  reading_archive_blocked_tags: "过滤标签。匹配到这些标签时跳过对应素材。",
+  reading_archive_ask_probability: "无聊时向用户征求推荐的概率，按百分比填写。",
+  enable_reading_archive_vision: "开启后调用资料归档专用视觉模型读取封面和正文抽样页。",
+  enable_reading_archive_page_comments: "开启后保存模型对正文抽样页生成的即时短批注；关闭后不写入新的页边批注。",
+  enable_reading_archive_rating: "开启后生成 Bot 自评分、理由和偏好标签；关闭后本次阅读不更新自动偏好画像。",
+  enable_reading_archive_preference_influence: "开启后，资料归档评分样本足够时会把稳定偏好作为私聊资料互动的弱背景；关闭后评分只用于素材挑选。",
+  reading_archive_preference_min_ratings: "累计评分达到这个数量后，偏好画像才会影响私聊资料互动。",
+  reading_archive_preference_max_terms: "每次注入最多参考多少个稳定偏好词，避免上下文太长或风格偏移。",
   unanswered_screen_peek_after_minutes: "主动消息发出后，用户沉默多久才允许尝试识屏观察。",
   unanswered_screen_peek_cooldown_minutes: "沉默识屏触发后的冷却时间。",
   goodnight_screen_check_delay_minutes: "与主要用户互道晚安后等待多久进行一次状态判断；期间用户再次发言会取消。",
@@ -3396,10 +3396,10 @@ const featureSettingGroups = {
   enable_screen_glance_action: ["screen_peek_max_daily", "screen_peek_cooldown_minutes", "enable_goodnight_screen_check", "goodnight_screen_check_delay_minutes", "enable_unanswered_screen_peek_followup", "unanswered_screen_peek_after_minutes", "unanswered_screen_peek_cooldown_minutes"],
   enable_poke_action: ["poke_action_max_times", "poke_action_cooldown_minutes"],
   enable_voice_action: ["voice_action_max_chars"],
-  enable_private_reading_integration: ["enable_private_reading_boredom_read", "enable_private_reading_ask_recommendation", "enable_private_reading_vision", "enable_private_reading_page_comments", "enable_private_reading_rating", "private_reading_min_interval_hours", "private_reading_max_photo_count", "private_reading_ask_probability", "private_reading_default_keywords", "private_reading_blocked_tags", "enable_private_reading_preference_influence", "private_reading_preference_min_ratings", "private_reading_preference_max_terms"],
-  enable_private_reading_boredom_read: ["private_reading_min_interval_hours", "private_reading_max_photo_count", "private_reading_share_probability", "private_reading_default_keywords", "private_reading_blocked_tags", "enable_private_reading_preference_influence", "private_reading_preference_min_ratings", "private_reading_preference_max_terms"],
-  enable_private_reading_ask_recommendation: ["private_reading_ask_probability"],
-  enable_private_reading_preference_influence: ["private_reading_preference_min_ratings", "private_reading_preference_max_terms"],
+  enable_reading_archive_integration: ["enable_reading_archive_boredom_read", "enable_reading_archive_ask_recommendation", "enable_reading_archive_vision", "enable_reading_archive_page_comments", "enable_reading_archive_rating", "reading_archive_min_interval_hours", "reading_archive_max_photo_count", "reading_archive_ask_probability", "reading_archive_default_keywords", "reading_archive_blocked_tags", "enable_reading_archive_preference_influence", "reading_archive_preference_min_ratings", "reading_archive_preference_max_terms"],
+  enable_reading_archive_boredom_read: ["reading_archive_min_interval_hours", "reading_archive_max_photo_count", "reading_archive_share_probability", "reading_archive_default_keywords", "reading_archive_blocked_tags", "enable_reading_archive_preference_influence", "reading_archive_preference_min_ratings", "reading_archive_preference_max_terms"],
+  enable_reading_archive_ask_recommendation: ["reading_archive_ask_probability"],
+  enable_reading_archive_preference_influence: ["reading_archive_preference_min_ratings", "reading_archive_preference_max_terms"],
   enable_unanswered_screen_peek_followup: ["unanswered_screen_peek_after_minutes", "unanswered_screen_peek_cooldown_minutes"],
   enable_goodnight_screen_check: ["goodnight_screen_check_delay_minutes"],
   enable_tts_enhancement: ["tts_delivery_mode", "tts_voice_language", "tts_fishaudio_model", "tts_fishaudio_emotion_mode", "tts_foreign_text_mode", "tts_message_scope", "tts_conversion_scope", "tts_generation_mode", "tts_conversion_provider_id", "tts_extra_prompt", "tts_frequency_control_mode", "tts_constraint_mode", "tts_session_min_interval_seconds", "tts_private_min_interval_seconds", "tts_group_min_interval_seconds", "tts_trigger_probability", "tts_private_trigger_probability", "tts_group_trigger_probability", "enable_tts_local_playback", "enable_tts_local_playback_live_only", "tts_local_playback_volume", "enable_tts_live_subtitle_sync", "tts_live_subtitle_url", "tts_local_playback_min_interval_seconds", "auto_voice_enabled", "auto_voice_max_chars", "auto_voice_cooldown_seconds", "main_user_voice_probability", "main_user_mention_voice_keywords", "main_user_mention_voice_probability", "main_user_mention_voice_prompt"],
@@ -4004,22 +4004,22 @@ const featureSettingSections = {
       keys: ["enable_qzone_emotional_vent_publish", "qzone_emotional_vent_threshold", "qzone_emotional_vent_cooldown_hours", "qzone_emotional_vent_probability"],
     },
   ],
-  enable_private_reading_integration: [
+  enable_reading_archive_integration: [
     {
       title: "自主阅读",
-      note: "控制空档私下阅读、用户推荐请求，以及识图、页边批注、阅读评价和基础素材范围。",
-      keys: ["enable_private_reading_boredom_read", "enable_private_reading_ask_recommendation", "enable_private_reading_vision", "enable_private_reading_page_comments", "enable_private_reading_rating", "private_reading_min_interval_hours", "private_reading_max_photo_count", "private_reading_ask_probability", "private_reading_default_keywords", "private_reading_blocked_tags"],
+      note: "控制空档资料归档、用户推荐请求，以及识图、页边批注、阅读评价和基础素材范围。",
+      keys: ["enable_reading_archive_boredom_read", "enable_reading_archive_ask_recommendation", "enable_reading_archive_vision", "enable_reading_archive_page_comments", "enable_reading_archive_rating", "reading_archive_min_interval_hours", "reading_archive_max_photo_count", "reading_archive_ask_probability", "reading_archive_default_keywords", "reading_archive_blocked_tags"],
     },
     {
       title: "偏好影响",
       note: "评分样本足够后，把稳定偏好作为弱背景。",
-      keys: ["enable_private_reading_preference_influence", "private_reading_preference_min_ratings", "private_reading_preference_max_terms"],
+      keys: ["enable_reading_archive_preference_influence", "reading_archive_preference_min_ratings", "reading_archive_preference_max_terms"],
     },
   ],
   enable_creative_writing: [
     {
       title: "聊天读取",
-      note: "控制询问书柜已有作品时，是否要求先读取真实原文。",
+      note: "控制询问资料柜已有作品时，是否要求先读取真实原文。",
       keys: ["enable_creative_work_read_guard"],
     },
     {
@@ -4516,8 +4516,8 @@ const featureSettingTypes = {
   segmented_proactive_split_words: { type: "textarea" },
   segmented_proactive_content_cleanup_rule: { type: "textarea" },
   segmented_proactive_content_cleanup_words: { type: "textarea" },
-  private_reading_default_keywords: { type: "textarea" },
-  private_reading_blocked_tags: { type: "textarea" },
+  reading_archive_default_keywords: { type: "textarea" },
+  reading_archive_blocked_tags: { type: "textarea" },
   creative_direction_prompt: { type: "textarea" },
   group_repeat_trigger_threshold: { type: "number", min: 3, max: 20, step: 1 },
   group_wakeup_question_threshold: { type: "number", min: 0, max: 100, step: 1 },
@@ -4544,8 +4544,8 @@ const probabilitySettingKeys = new Set([
   "proactive_review_low_score_threshold",
   "proactive_review_pressure_threshold",
   "smart_silence_min_confidence",
-  "private_reading_share_probability",
-  "private_reading_ask_probability",
+  "reading_archive_share_probability",
+  "reading_archive_ask_probability",
   "creative_inspiration_probability",
   "creative_share_probability",
   "skill_growth_schedule_influence_strength",
@@ -5560,7 +5560,7 @@ const tokenTaskLabels = {
   screen_narration: "识屏转述",
   forward_message: "合并转发转述",
   forward_message_image_vision: "转发图片识别",
-  private_reading_vision: "夹层视觉",
+  reading_archive_vision: "夹层视觉",
   private_image_vision: "私聊图片识别",
   group_image_vision: "群聊图片识别",
   private_image_only_framework: "单图回复主链",
@@ -5595,8 +5595,8 @@ const tokenTaskLabels = {
   companion_manual_diagnosis: "陪伴答疑",
   proactive_send_review: "主动发送复核",
   atrelay_rewrite: "代答转写",
-  bookshelf_password: "书柜密码生成",
-  bookshelf_password_reason: "书柜密码缘由",
+  bookshelf_password: "资料柜密码生成",
+  bookshelf_password_reason: "资料柜密码缘由",
   memory_summary: "记忆阶段总结",
   memory_decay_summary: "记忆衰减整理",
   memory_rerank: "记忆重排",
@@ -5661,7 +5661,7 @@ function cleanInterjectionText(value) {
 function bookshelfImageTag(src, alt) {
   const imageSrc = String(src || "");
   if (!imageSrc) return "";
-  const image = `<img src="${TRANSPARENT_IMAGE}" data-bookshelf-image-src="${escapeHtml(imageSrc)}" alt="${escapeHtml(alt || "书柜图片")}" loading="lazy" />`;
+  const image = `<img src="${TRANSPARENT_IMAGE}" data-bookshelf-image-src="${escapeHtml(imageSrc)}" alt="${escapeHtml(alt || "资料柜图片")}" loading="lazy" />`;
   if (!String(alt || "").endsWith("封面")) return image;
   return `
     <button type="button" class="bookshelf-cover-zoom" data-bookshelf-cover-preview disabled aria-label="放大预览${escapeHtml(alt || "作品封面")}">
@@ -5730,7 +5730,7 @@ async function hydrateBookshelfImages(root = document) {
       }
     } catch (error) {
       img.dataset.loaded = "0";
-      img.alt = `${img.alt || "书柜图片"}（加载失败）`;
+      img.alt = `${img.alt || "资料柜图片"}（加载失败）`;
       const previewButton = img.closest("[data-bookshelf-cover-preview]");
       if (previewButton instanceof HTMLButtonElement) {
         previewButton.disabled = true;
@@ -5852,9 +5852,9 @@ function loadOptionalClassicScript(relativePath, retry = 0) {
 
 const optionalModuleLoaders = {
   providerTree: [
-    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-private-reading-capability-v1&manual=provider-input-v2&layout=v2", 0),
-    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-private-reading-capability-v1&manual=provider-input-v2&layout=v2", 1),
-    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-private-reading-capability-v1&manual=provider-input-v2&layout=v2", 2),
+    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2", 0),
+    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2", 1),
+    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2", 2),
   ],
   qzonePanel: [
     () => loadOptionalClassicScript("./js/panels/qzone-panel.js?v=20260810-qzone-classic-loader-v1", 0),
@@ -8002,7 +8002,7 @@ const setupGuideAdvancedBlocks = [
   {
     id: "private",
     title: "私聊增强",
-    body: "配置私聊里的本地陪伴画像、主动终审、读图、合并转发、撤回、未回复跟进和夹层阅读。跨会话长期记忆需要外部记忆插件联动。",
+    body: "配置私聊里的本地陪伴画像、主动终审、读图、合并转发、撤回、未回复跟进和资料归档。跨会话长期记忆需要外部记忆插件联动。",
   },
   {
     id: "group",
@@ -8332,26 +8332,26 @@ const setupGuideAdvancedItems = {
       ],
     },
     {
-      key: "enable_private_reading_integration",
-      title: "夹层阅读",
-      ask: "是否让 Bot 能在空档读你的素材/书柜内容，并在合适时聊起？",
+      key: "enable_reading_archive_integration",
+      title: "资料归档",
+      ask: "是否让 Bot 能在空档读你的素材/资料柜内容，并在合适时聊起？",
       description: "它会从可用素材里读取图片或文本；识图、页边批注和阅读评价可以分别控制。",
       caution: "需要素材插件/数据可用。内容私密时要先整理来源和屏蔽词。",
       dependencies: [
-        { label: "联动", text: "需要已有书柜/素材/JM-Cosmos 兼容数据源；没有素材时只会记录配置，不会凭空阅读。" },
-        { label: "模型", text: "阅读图片素材时需要单独配置夹层阅读视觉模型。" },
+        { label: "联动", text: "需要已有资料柜/素材/Reading Archive 兼容数据源；没有素材时只会记录配置，不会凭空阅读。" },
+        { label: "模型", text: "阅读图片素材时需要单独配置资料归档视觉模型。" },
       ],
       kind: "feature",
       settings: [
-        { key: "enable_private_reading_boredom_read", type: "bool", label: "空档主动阅读", description: "Bot 无聊时自己读一点。" },
-        { key: "enable_private_reading_ask_recommendation", type: "bool", label: "主动征求推荐", description: "会问用户想让它看什么。" },
-        { key: "enable_private_reading_vision", type: "bool", label: "本子识图", description: "允许调用夹层阅读专用视觉模型读取封面和正文抽样页。" },
-        { key: "enable_private_reading_page_comments", type: "bool", label: "本子页边批注", description: "保存模型对正文抽样页生成的即时短批注。" },
-        { key: "enable_private_reading_rating", type: "bool", label: "本子阅读评价", description: "生成 Bot 自评分、理由和偏好标签，并允许本次评分进入偏好画像。" },
-        { key: "private_reading_min_interval_hours", type: "number", label: "阅读最小间隔小时", placeholder: "12", min: 1 },
-        { key: "private_reading_default_keywords", type: "textarea", label: "默认搜索关键词", placeholder: "纯爱, 恋爱, 同人", description: "素材源支持搜索时使用；多个词可用逗号或换行分隔。" },
-        { key: "private_reading_blocked_tags", type: "textarea", label: "过滤标签", placeholder: "連載中, 長篇, 青年漫", description: "匹配这些标签的素材会尽量跳过。" },
-        { key: "enable_private_reading_preference_influence", type: "bool", label: "阅读偏好影响后续选择", description: "越用越偏向用户喜欢的内容。" },
+        { key: "enable_reading_archive_boredom_read", type: "bool", label: "空档主动阅读", description: "Bot 无聊时自己读一点。" },
+        { key: "enable_reading_archive_ask_recommendation", type: "bool", label: "主动征求推荐", description: "会问用户想让它看什么。" },
+        { key: "enable_reading_archive_vision", type: "bool", label: "资料识图", description: "允许调用资料归档专用视觉模型读取封面和正文抽样页。" },
+        { key: "enable_reading_archive_page_comments", type: "bool", label: "资料页边批注", description: "保存模型对正文抽样页生成的即时短批注。" },
+        { key: "enable_reading_archive_rating", type: "bool", label: "资料阅读评价", description: "生成 Bot 自评分、理由和偏好标签，并允许本次评分进入偏好画像。" },
+        { key: "reading_archive_min_interval_hours", type: "number", label: "阅读最小间隔小时", placeholder: "12", min: 1 },
+        { key: "reading_archive_default_keywords", type: "textarea", label: "默认搜索关键词", placeholder: "纯爱, 恋爱, 同人", description: "素材源支持搜索时使用；多个词可用逗号或换行分隔。" },
+        { key: "reading_archive_blocked_tags", type: "textarea", label: "过滤标签", placeholder: "連載中, 長篇, 青年漫", description: "匹配这些标签的素材会尽量跳过。" },
+        { key: "enable_reading_archive_preference_influence", type: "bool", label: "阅读偏好影响后续选择", description: "越用越偏向用户喜欢的内容。" },
       ],
     },
     {
@@ -11134,7 +11134,7 @@ function renderStrategyOverview() {
     creative: overview.creative || {},
     bili: overview.bilibili || {},
     qzone: overview.qzone || {},
-    privateReading: overview.private_reading || {},
+    readingArchive: overview.reading_archive || {},
   });
 }
 
@@ -11639,8 +11639,8 @@ function moduleShortcutNote(overview) {
     ["主动搜索", Boolean(features.enable_web_exploration || settings.enable_web_exploration)],
     ["QQ 空间", Boolean((features.enable_qzone_integration || settings.enable_qzone_integration) && overview?.qzone?.platform_supported !== false)],
   ];
-  if (overview?.private_reading?.available) {
-    items.push(["夹层阅读", Boolean(features.enable_private_reading_integration || settings.enable_private_reading_integration)]);
+  if (overview?.reading_archive?.available) {
+    items.push(["资料归档", Boolean(features.enable_reading_archive_integration || settings.enable_reading_archive_integration)]);
   }
   const enabledItems = items.filter(([, enabled]) => enabled);
   const preview = enabledItems.slice(0, 3).map(([label]) => label).join(" / ");
@@ -11828,9 +11828,9 @@ function renderSetupProgress() {
       title: hasCreative ? `创作已开启（${creative.active_projects || 0} 个进行中）` : "创作未开启",
       hint: hasCreative
         ? "Bot 会自主推进写作项目"
-        : "Bot 不会自主创作；书柜会保持空置",
+        : "Bot 不会自主创作；资料柜会保持空置",
       tab: "creative",
-      action: hasCreative ? "看书柜" : "去配置",
+      action: hasCreative ? "看资料柜" : "去配置",
       critical: false,
     },
     {
@@ -20384,7 +20384,7 @@ function resetBookshelfSelection() {
 function renderBookshelf() {
   const creative = state.overview?.creative || {};
   const bookshelf = bookshelfUnlockedForCurrentPersona() || state.overview?.bookshelf || {};
-  const privateReading = state.overview?.private_reading || {};
+  const readingArchive = state.overview?.reading_archive || {};
   const settings = state.overview?.settings || {};
   $("#bookshelfPublicCount").textContent = bookshelf.public_count ?? creative.project_count ?? 0;
   $("#bookshelfSecretCount").textContent = bookshelf.secret_count ?? 0;
@@ -20440,16 +20440,16 @@ function renderBookshelf() {
       tone: creative.cover_generation_enabled ? "ok" : "off",
     });
   }
-  if (privateReading.available) {
+  if (readingArchive.available) {
     creativeChips.push({
-      label: "夹层阅读",
-      value: privateReading.boredom_read_enabled ? "可触发" : "关闭",
-      tone: privateReading.boredom_read_enabled ? "ok" : "off",
+      label: "资料归档",
+      value: readingArchive.boredom_read_enabled ? "可触发" : "关闭",
+      tone: readingArchive.boredom_read_enabled ? "ok" : "off",
     });
     creativeChips.push({
       label: "征求推荐",
-      value: privateReading.ask_recommendation_enabled ? "可触发" : "关闭",
-      tone: privateReading.ask_recommendation_enabled ? "ok" : "off",
+      value: readingArchive.ask_recommendation_enabled ? "可触发" : "关闭",
+      tone: readingArchive.ask_recommendation_enabled ? "ok" : "off",
     });
   }
   renderCreativeStatusBar("#creativeSettings", creativeChips);
@@ -20536,7 +20536,7 @@ function renderMemoNotes(memoNotes = {}) {
         </article>
       `;
     }).join("")
-    : `<div class="memo-empty">${filter === "completed" ? "还没有已完成便签" : filter === "all" ? "书柜里还没有便签" : "当前没有待处理便签"}</div>`;
+    : `<div class="memo-empty">${filter === "completed" ? "还没有已完成便签" : filter === "all" ? "资料柜里还没有便签" : "当前没有待处理便签"}</div>`;
 }
 
 function currentMemoNotes() {
@@ -20632,13 +20632,13 @@ function renderLockedDrawer(count) {
 
 function renderUnlockedDrawer(items) {
   if (!items.length) {
-    return `<div class="empty small">抽屉已经打开，但里面暂时还没有日记本或私密阅读记录。</div>`;
+    return `<div class="empty small">抽屉已经打开，但里面暂时还没有日记本或资料归档记录。</div>`;
   }
   return renderBookCategoryShelves(items, {
     reverseBooks: true,
     notes: {
       "日记": "按日期收进同一本里",
-      "私密阅读": "只保留标题和阅读印象",
+      "资料归档": "只保留标题和阅读印象",
     },
   });
 }
@@ -20678,7 +20678,7 @@ function bookshelfCategoryTitle(book) {
   if (book?.kind === "creative") return book.work_type || "创作";
   if (book?.kind === "diary") return "日记";
   if (book?.kind === "browsing") return "浏览记录";
-  if (book?.kind === "jm_album") return "私密阅读";
+  if (book?.kind === "jm_album") return "资料归档";
   return "其他";
 }
 
@@ -20687,7 +20687,7 @@ function bookshelfCategoryNote(title, books) {
   if (kind === "browsing") return "新闻阅读和主动搜索会在这里留痕";
   if (kind === "creative") return "";
   if (kind === "diary") return "按日期翻阅";
-  if (kind === "jm_album") return "夹层内的私密阅读记录";
+  if (kind === "jm_album") return "夹层内的资料归档记录";
   return `${books.length} 本`;
 }
 
@@ -20702,7 +20702,7 @@ function renderBookshelfBook(item) {
     creative: "创作",
     diary: "日记本",
     browsing: "浏览记录",
-    jm_album: "私密阅读",
+    jm_album: "资料归档",
   }[kind] || kind;
   const bookId = bookshelfBookId(item);
   const title = item.title || "未命名";
@@ -20718,7 +20718,7 @@ function renderBookshelfBook(item) {
       <div class="book-spine">
         <i class="book-shine"></i>
         <b class="${titleClass}">${escapeHtml(title)}</b>
-        ${meta ? `<small class="${metaClass}">${escapeHtml(meta)}</small>` : `<small>书柜藏本</small>`}
+        ${meta ? `<small class="${metaClass}">${escapeHtml(meta)}</small>` : `<small>资料柜藏本</small>`}
         <em></em>
       </div>
     </button>
@@ -20911,12 +20911,12 @@ function renderCreativeManager(book, kindLabel, displayTitle, displayIntro) {
       </div>
       <div class="book-preview-info creative-manager-info">
         <nav class="book-breadcrumb">
-          <button type="button" data-book-close>书柜</button>
+          <button type="button" data-book-close>资料柜</button>
           <span>/ ${escapeHtml(kindLabel)}</span>
         </nav>
         <div class="reader-toolbar">
           <span>${escapeHtml(kindLabel)}</span>
-          <button type="button" data-book-close>收回书柜</button>
+          <button type="button" data-book-close>收回资料柜</button>
         </div>
         <h2>${escapeHtml(book.title || displayTitle || "未命名")}</h2>
         <p>${escapeHtml(book.premise || displayIntro || "这本作品还没有简介。")}</p>
@@ -20968,12 +20968,12 @@ function renderCreativeBookPreview(book, kindLabel, displayTitle, displayIntro, 
       </div>
       <div class="book-preview-info creative-manager-info">
         <nav class="book-breadcrumb">
-          <button type="button" data-book-close>书柜</button>
+          <button type="button" data-book-close>资料柜</button>
           <span>/ ${escapeHtml(kindLabel)}</span>
         </nav>
         <div class="reader-toolbar">
           <span>${escapeHtml(kindLabel)}</span>
-          <button type="button" data-book-close>收回书柜</button>
+          <button type="button" data-book-close>收回资料柜</button>
         </div>
         <h2>${escapeHtml(book.title || displayTitle || "未命名")}</h2>
         <p>${escapeHtml(book.premise || displayIntro || "这本作品还没有简介。")}</p>
@@ -21318,7 +21318,7 @@ function renderBookDetailPanel() {
     creative: book.work_type || "创作书",
     diary: "日记本",
     browsing: "浏览记录",
-    jm_album: "私密阅读",
+    jm_album: "资料归档",
   }[book.kind] || "书";
   const entryBook = ["diary", "browsing"].includes(book.kind || "");
   const diaryEntries = entryBook && Array.isArray(book.entries)
@@ -21401,7 +21401,7 @@ function renderBookDetailPanel() {
        data-book-title="${escapeHtml(book.title || "")}"
         data-book-date="${escapeHtml(book.kind === "diary" ? (state.selectedDiaryDate || "") : "")}"
         data-book-entry-key="${escapeHtml(book.kind === "diary" ? (diaryEntry?.entry_key || state.selectedDiaryKey || "") : "")}">
-        ${escapeHtml(book.kind === "diary" ? "删除当前日记" : "从书柜移除")}
+        ${escapeHtml(book.kind === "diary" ? "删除当前日记" : "从资料柜移除")}
       </button>
     </div>
   `;
@@ -21435,7 +21435,7 @@ function renderBookDetailPanel() {
     ? `
       <article class="reader-page subpage ${escapeHtml(book.kind || "book")}">
         <nav class="book-breadcrumb">
-          <button type="button" data-book-close>书柜</button>
+          <button type="button" data-book-close>资料柜</button>
           <span>/</span>
           <button type="button" data-book-back>${escapeHtml(book.title || "未命名")}</button>
           <span>/ 阅读</span>
@@ -21443,7 +21443,7 @@ function renderBookDetailPanel() {
         <div class="reader-toolbar">
           <button type="button" data-book-back>返回简介</button>
           <span>${escapeHtml(kindLabel)}</span>
-          <button type="button" data-book-close>收回书柜</button>
+          <button type="button" data-book-close>收回资料柜</button>
         </div>
         <div class="reader-book-shell">
           <aside class="reader-cover ${book.cover_src ? "has-cover-image" : ""}">
@@ -21457,7 +21457,7 @@ function renderBookDetailPanel() {
             </header>
             <div class="reader-content">${formatBookContent(displayContent || "这本书暂时没有正文。")}</div>
             <footer class="reader-page-foot">
-              <span>${escapeHtml(book.created || "书柜藏本")}</span>
+              <span>${escapeHtml(book.created || "资料柜藏本")}</span>
               <span>${escapeHtml(book.tone || book.status || "")}</span>
             </footer>
           </section>
@@ -21471,12 +21471,12 @@ function renderBookDetailPanel() {
         </div>
         <div class="book-preview-info">
           <nav class="book-breadcrumb">
-            <button type="button" data-book-close>书柜</button>
+            <button type="button" data-book-close>资料柜</button>
             <span>/ ${escapeHtml(kindLabel)}</span>
           </nav>
           <div class="reader-toolbar">
             <span>${escapeHtml(kindLabel)}</span>
-            <button type="button" data-book-close>收回书柜</button>
+            <button type="button" data-book-close>收回资料柜</button>
           </div>
           <h2>${escapeHtml(book.title || "未命名")}</h2>
           <p>${escapeHtml(displayIntro)}</p>
@@ -21537,7 +21537,7 @@ function renderJmAlbumReader(book, kindLabel, displayTitle, displayIntro, readin
   return `
     <article class="reader-page subpage jm_album image-reader">
       <nav class="book-breadcrumb">
-        <button type="button" data-book-close>书柜</button>
+        <button type="button" data-book-close>资料柜</button>
         <span>/</span>
         <button type="button" data-book-back>${escapeHtml(book.title || "未命名")}</button>
         <span>/ 阅读</span>
@@ -21545,7 +21545,7 @@ function renderJmAlbumReader(book, kindLabel, displayTitle, displayIntro, readin
       <div class="reader-toolbar">
         <button type="button" data-book-back>返回简介</button>
         <span>${escapeHtml(kindLabel)} · ${escapeHtml(firstPage)}-${escapeHtml(lastPage)} / ${escapeHtml(pages.length)} · ${escapeHtml(progressLabel)} · 备注 ${escapeHtml(pageCommentCount)} 条</span>
-        <button type="button" data-book-close>收回书柜</button>
+        <button type="button" data-book-close>收回资料柜</button>
       </div>
       <div class="manga-reader-shell">
         <header class="manga-reader-head">
@@ -21562,7 +21562,7 @@ function renderJmAlbumReader(book, kindLabel, displayTitle, displayIntro, readin
               data-book-kind="${escapeHtml(book.kind || "")}"
               data-book-id="${escapeHtml(book.id || "")}"
               data-book-album-id="${escapeHtml(book.album_id || "")}"
-              data-book-title="${escapeHtml(book.title || "")}">从书柜移除</button>
+              data-book-title="${escapeHtml(book.title || "")}">从资料柜移除</button>
           </div>
         </header>
         ${readingImpression}
@@ -21581,7 +21581,7 @@ function renderJmAlbumReader(book, kindLabel, displayTitle, displayIntro, readin
             <figure class="manga-page ${comment ? `has-note ${spreadIndex === 0 ? "note-left" : "note-right"}` : ""}">
               ${spreadIndex === 0 ? note : ""}
               <div class="manga-page-image">
-                ${bookshelfImageTag(page.src, `${book.title || "私密阅读"} 第 ${page.index} 页`)}
+                ${bookshelfImageTag(page.src, `${book.title || "资料归档"} 第 ${page.index} 页`)}
                 <figcaption>${escapeHtml(page.index)} / ${escapeHtml(pages.length)}</figcaption>
               </div>
               ${spreadIndex !== 0 ? note : ""}
@@ -21610,7 +21610,7 @@ function renderDiaryBookReader(book, kindLabel, entries, selectedEntry) {
   return `
     <article class="reader-page subpage diary diary-reader-page">
       <nav class="book-breadcrumb">
-        <button type="button" data-book-close>书柜</button>
+        <button type="button" data-book-close>资料柜</button>
         <span>/</span>
         <button type="button" data-book-back>${escapeHtml(book.title || "日记本")}</button>
         <span>/ 阅读</span>
@@ -21618,7 +21618,7 @@ function renderDiaryBookReader(book, kindLabel, entries, selectedEntry) {
       <div class="reader-toolbar">
         <button type="button" data-book-back>返回简介</button>
         <span>${escapeHtml(kindLabel)} · ${escapeHtml(countLabel)}</span>
-        <button type="button" data-book-close>收回书柜</button>
+        <button type="button" data-book-close>收回资料柜</button>
       </div>
       <div class="diary-reader-shell">
         <aside class="diary-date-rail">
@@ -21678,7 +21678,7 @@ function renderBrowsingBookReader(book, kindLabel, entries) {
   return `
     <article class="reader-page subpage browsing browsing-reader-page">
       <nav class="book-breadcrumb">
-        <button type="button" data-book-close>书柜</button>
+        <button type="button" data-book-close>资料柜</button>
         <span>/</span>
         <button type="button" data-book-back>${escapeHtml(book.title || "浏览记录")}</button>
         <span>/ 阅读</span>
@@ -21690,7 +21690,7 @@ function renderBrowsingBookReader(book, kindLabel, entries) {
             <span>${escapeHtml(current.source_label || kindLabel)}</span>
             <b title="${escapeHtml(addressText)}">${escapeHtml(addressText)}</b>
           </div>
-          <button type="button" data-book-close>收回书柜</button>
+          <button type="button" data-book-close>收回资料柜</button>
         </header>
         <div class="browser-body">
           <aside class="browser-history-sidebar">
@@ -21932,7 +21932,7 @@ function renderCreativeBookReader(book, kindLabel, displayTitle, displayIntro, d
   return `
     <article class="reader-page subpage creative creative-reader ${escapeHtml(mode)}">
       <nav class="book-breadcrumb">
-        <button type="button" data-book-close>书柜</button>
+        <button type="button" data-book-close>资料柜</button>
         <span>/</span>
         <button type="button" data-book-back>${escapeHtml(book.title || "未命名")}</button>
         <span>/ 阅读</span>
@@ -21940,7 +21940,7 @@ function renderCreativeBookReader(book, kindLabel, displayTitle, displayIntro, d
       <div class="reader-toolbar">
         <button type="button" data-book-back>返回简介</button>
         <span>${escapeHtml(kindLabel)} · ${escapeHtml(creativeModeLabel(mode))}</span>
-        <button type="button" data-book-close>收回书柜</button>
+        <button type="button" data-book-close>收回资料柜</button>
       </div>
       <div class="reader-book-shell creative-shell ${escapeHtml(mode)}">
         <aside class="reader-cover creative-cover ${escapeHtml(mode)} ${book.cover_src ? "has-cover-image" : ""}">
@@ -21957,7 +21957,7 @@ function renderCreativeBookReader(book, kindLabel, displayTitle, displayIntro, d
             <div class="creative-reader-main">${contentHtml}</div>
           </div>
           <footer class="reader-page-foot">
-            <span>${escapeHtml(book.created || "书柜藏本")}</span>
+            <span>${escapeHtml(book.created || "资料柜藏本")}</span>
             <span>${escapeHtml(book.tone || book.status || "")}</span>
           </footer>
         </section>
@@ -22528,7 +22528,7 @@ function proactiveCandidateSourceLabel(source) {
     story: "日常剧情",
     habit: "习惯关心",
     bilibili: "B站分享",
-    bookshelf_reading: "私密阅读",
+    bookshelf_reading: "资料归档",
     creative_writing: "创作灵感",
     group_share: "群聊见闻",
     web_exploration: "主动搜索",
@@ -22538,7 +22538,7 @@ function proactiveCandidateSourceLabel(source) {
     meal_care: "饭点关心",
     group_ignore_complaint: "群内冒泡关心",
     post_goodnight_group_activity: "晚安后群聊活跃",
-    jm_cosmos: "私密阅读",
+    reading_archive: "资料归档",
     personal_goal: "个人目标",
     candidate: "主动候选",
     followup: "补一句",
@@ -23727,7 +23727,7 @@ function renderGroupStrategyOverview(selector, group) {
   $(selector).innerHTML = compactOverviewList(rows, { columns: 1 });
 }
 
-function renderLongTermStrategyOverview(selector, { creative = {}, bili = {}, qzone = {}, privateReading = {} } = {}) {
+function renderLongTermStrategyOverview(selector, { creative = {}, bili = {}, qzone = {}, readingArchive = {} } = {}) {
   const cards = [
     {
       title: "B 站",
@@ -23754,16 +23754,16 @@ function renderLongTermStrategyOverview(selector, { creative = {}, bili = {}, qz
       text: creative.latest_title || "暂无最新创作",
     },
   ];
-  if (privateReading.available) {
+  if (readingArchive.available) {
     cards.push({
-      title: "夹层阅读",
-      tone: privateReading.enabled ? "ok" : "off",
+      title: "资料归档",
+      tone: readingArchive.enabled ? "ok" : "off",
       meta: [
-        privateReading.enabled ? "可用" : "关闭",
-        privateReading.boredom_read_enabled ? "私下阅读开启" : "私下阅读关闭",
-        privateReading.ask_recommendation_enabled ? "征求推荐开启" : "征求推荐关闭",
+        readingArchive.enabled ? "可用" : "关闭",
+        readingArchive.boredom_read_enabled ? "资料归档开启" : "资料归档关闭",
+        readingArchive.ask_recommendation_enabled ? "征求推荐开启" : "征求推荐关闭",
       ],
-      text: privateReading.last_album?.title || "暂无最近阅读",
+      text: readingArchive.last_album?.title || "暂无最近阅读",
     });
   }
   $(selector).innerHTML = `<div class="longterm-overview-grid">${cards.map(longTermOverviewCard).join("")}</div>`;
@@ -24034,7 +24034,7 @@ function renderModuleWorkbench(settings) {
   const creative = overview.creative || {};
   const bookshelf = overview.bookshelf || {};
   const qzone = overview.qzone || {};
-  const privateReading = overview.private_reading || {};
+  const readingArchive = overview.reading_archive || {};
   const intensity = overview.proactive_intensity || {};
   const intensityEnabled = Boolean(intensity.enabled);
   const intensityLabel = intensityEnabled ? (intensity.label || intensity.preset || "预设开启") : "手动参数";
@@ -24131,14 +24131,14 @@ function renderModuleWorkbench(settings) {
       body: [
         creative.latest_title ? `最近创作：${creative.latest_title}` : "",
         qzone.last_status && qzone.last_status.startsWith("paused:") ? `QQ 空间自动说说已暂停：${qzone.auth_failure_reason || ""}` : (qzone.last_text ? `最近说说：${qzone.last_text}` : ""),
-        privateReading.last_album?.title ? `最近阅读：${privateReading.last_album.title}` : "",
-      ].filter(Boolean).join("；") || "创作、空间、新闻、夹层阅读等外部生活线还没有明显产物。",
+        readingArchive.last_album?.title ? `最近阅读：${readingArchive.last_album.title}` : "",
+      ].filter(Boolean).join("；") || "创作、空间、新闻、资料归档等外部生活线还没有明显产物。",
       meta: [
         settings.enable_creative_writing ? `创作项目 ${creative.active_projects || 0} 个` : "创作关闭",
         external.enabled_count ? `外部能力 ${external.enabled_count}/${external.total || 0}` : "外部能力未启用",
       ],
       actions: [
-        ["bookshelf", "看书柜"],
+        ["bookshelf", "看资料柜"],
         ["proactive", "看长线候选"],
       ],
     },
@@ -24625,7 +24625,7 @@ const roleplayVisionParts = [
   ["interaction", "与角色的相处方式"],
   ["extra", "其他补充信息"],
 ];
-const roleplayTranslationParts = ["群聊", "识屏", "B站", "QQ空间", "书柜"];
+const roleplayTranslationParts = ["群聊", "识屏", "B站", "QQ空间", "资料柜"];
 const roleplayPersonaPresets = {
   neutral: {
     "name": "阿岚",
@@ -24715,7 +24715,7 @@ const roleplayExamples = {
       "识屏": "",
       "B站": "",
       "QQ空间": "",
-      "书柜": "",
+      "资料柜": "",
     },
   },
   user: {
@@ -26488,7 +26488,7 @@ function renderFeatureSwitches() {
   const total = visibleDraftKeys.length;
   const enabled = visibleDraftKeys.filter((key) => toBool(state.featureDraft[key])).length;
   const proactiveLocked = visibleDraftKeys.filter((key) => featureLockedByProactiveOnlyMode(key)).length;
-  const riskyEnabled = ["enable_group_interjection", "enable_bilibili_boredom_watch", isPrivateReadingAvailable() ? "enable_private_reading_boredom_read" : "", isPrivateReadingAvailable() ? "enable_private_reading_ask_recommendation" : "", "enable_goodnight_screen_check", "enable_unanswered_screen_peek_followup"]
+  const riskyEnabled = ["enable_group_interjection", "enable_bilibili_boredom_watch", isReadingArchiveAvailable() ? "enable_reading_archive_boredom_read" : "", isReadingArchiveAvailable() ? "enable_reading_archive_ask_recommendation" : "", "enable_goodnight_screen_check", "enable_unanswered_screen_peek_followup"]
     .filter((key) => toBool(state.featureDraft[key])).length;
   const activeSafeFeatureKeys = safeFeatureKeys.filter((key) => !featureLockedByProactiveOnlyMode(key));
   $("#featureSwitchSummary").innerHTML = `
@@ -28064,9 +28064,9 @@ function featureDependencyLines(key) {
     else if (livingmemory.compatible_available || livingmemory.available || livingmemory.memory_companion_active) dependencies.push(["当前使用", "已检测到可协同记忆插件"]);
     else dependencies.push(["依赖", "需要安装并启用“我会牢牢记住你”/MemoryCompanion 或 LivingMemory"]);
   }
-  if (key.startsWith("enable_private_reading_")) dependencies.push(["依赖", "素材能力可用"]);
+  if (key.startsWith("enable_reading_archive_")) dependencies.push(["依赖", "素材能力可用"]);
   if (key === "enable_private_image_self_recognition") dependencies.push(["依赖", "AstrBot 默认图片转述模型 / 插件识图模型"]);
-  if (["enable_group_interjection", "enable_bilibili_boredom_watch", "enable_news_boredom_read", "enable_web_exploration_boredom_search", "enable_private_reading_boredom_read", "enable_private_reading_ask_recommendation", "enable_goodnight_screen_check", "enable_unanswered_screen_peek_followup"].includes(key)) {
+  if (["enable_group_interjection", "enable_bilibili_boredom_watch", "enable_news_boredom_read", "enable_web_exploration_boredom_search", "enable_reading_archive_boredom_read", "enable_reading_archive_ask_recommendation", "enable_goodnight_screen_check", "enable_unanswered_screen_peek_followup"].includes(key)) {
     dependencies.push(["注意", "高主动项"]);
   }
   return dependencies;
@@ -28631,26 +28631,26 @@ const featureDetailGuides = {
     enabled: "首次开启只记录现有评论；后续新评论会先经过模型判断，再决定跳过或追加一句公开回复。",
     disabled: "不会自动读取或回复自己说说下的评论。",
   },
-  enable_private_reading_integration: {
-    summary: "启用书柜夹层的私下阅读素材入口；仅在检测到对应素材能力时显示相关配置。",
-    trigger: "素材能力可用、书柜打开或私下阅读检查时。",
+  enable_reading_archive_integration: {
+    summary: "启用资料柜夹层的资料归档素材入口；仅在检测到对应素材能力时显示相关配置。",
+    trigger: "素材能力可用、资料柜打开或资料归档检查时。",
     enabled: "夹层可保存阅读素材、封面、页图、批注和读后感。",
-    disabled: "私下阅读素材入口不运行。",
+    disabled: "资料归档素材入口不运行。",
   },
-  enable_private_reading_boredom_read: {
-    summary: "Bot 空档或无聊时低频自己找短篇素材阅读，并把内容放入书柜夹层。",
+  enable_reading_archive_boredom_read: {
+    summary: "Bot 空档或无聊时低频自己找短篇素材阅读，并把内容放入资料柜夹层。",
     trigger: "无聊状态、阅读间隔满足且素材能力可用时。",
     enabled: "Bot 会阅读页图、生成批注和读后感。",
     disabled: "不会主动寻找和阅读素材。",
   },
-  enable_private_reading_ask_recommendation: {
+  enable_reading_archive_ask_recommendation: {
     summary: "Bot 无聊时可低频向用户征求阅读推荐，是否害羞或坦然由人格决定。",
     trigger: "素材能力可用、无聊且概率通过时。",
     enabled: "Bot 可能主动问用户有没有推荐。",
     disabled: "不会主动征求推荐。",
   },
-  enable_private_reading_preference_influence: {
-    summary: "把书柜夹层阅读评分沉淀成私密偏好画像，只在私聊里弱影响亲密互动和语气尺度。",
+  enable_reading_archive_preference_influence: {
+    summary: "把资料柜资料归档评分沉淀成资料偏好画像，只在私聊里弱影响亲密互动和语气尺度。",
     trigger: "私聊回复前，且累计评分数达到配置阈值时。",
     enabled: "Bot 会更自然地参考用户稳定高分倾向，但不会说出评分来源或覆盖人格。",
     disabled: "评分仍用于后续素材挑选，但不注入私聊回复。",
@@ -28680,16 +28680,16 @@ const featureDetailGuides = {
     disabled: "仍保留面板内的执行审计和未回复记录，但不会额外发送诊断通知。",
   },
   enable_creative_writing: {
-    summary: "Bot 会在闲暇时从生活小事、梦境、日记或阅读灵感中可选地写一点文本作品，并放入书柜。",
+    summary: "Bot 会在闲暇时从生活小事、梦境、日记或阅读灵感中可选地写一点文本作品，并放入资料柜。",
     trigger: "日程处于休息、摸鱼、读书、写字等空闲片段，且灵感概率命中时。",
     enabled: "每次只写一小段，不按小时产出，也不会一口气写完。",
     disabled: "不会新建或推进创作项目。",
   },
   enable_creative_work_read_guard: {
-    summary: "明确询问书柜已有作品时，先读取真实原文再回答，避免把记忆片段冒充作品内容。",
-    trigger: "用户询问已有作品、具体章节、书柜库存或要求结合原文讨论时。",
+    summary: "明确询问资料柜已有作品时，先读取真实原文再回答，避免把记忆片段冒充作品内容。",
+    trigger: "用户询问已有作品、具体章节、资料柜库存或要求结合原文讨论时。",
     enabled: "注入只读工具提示；没有实际读取时会阻止占位回答。技术文件、配置、日志和源码不属于此范围。",
-    disabled: "不注入创作读取要求，也不替换模型最终回复；私下创作和书柜功能保持可用。",
+    disabled: "不注入创作读取要求，也不替换模型最终回复；私下创作和资料柜功能保持可用。",
   },
   creative_hidden_mode: {
     summary: "创作默认作为 Bot 自己的私下活动，只在合适节点或用户问近况时自然透露。",
@@ -28709,7 +28709,7 @@ function featureDetailExplanation(key) {
   const guide = featureDetailGuides[key];
   if (guide?.summary) return guide.summary;
   if (key.startsWith("enable_group_")) return "群聊子能力。";
-  if (key.startsWith("enable_private_reading_")) return "夹层阅读子能力。";
+  if (key.startsWith("enable_reading_archive_")) return "资料归档子能力。";
   if (key.startsWith("enable_bilibili_")) return "B 站子能力。";
   if (key.startsWith("enable_qzone_")) return "QQ 空间子能力。";
   return featureDescription(key);
@@ -28754,7 +28754,7 @@ function featureImpactLines(key) {
     lines.push(["场景", "私聊图片 / 引用图片 / 合并图片 / GIF"]);
   } else if (key === "enable_food_menu_recommendation") {
     lines.push(["场景", "私聊 / 吃饭选择"]);
-  } else if (key.startsWith("enable_bilibili_") || key.startsWith("enable_news_") || key === "enable_external_event_self_link" || key.startsWith("enable_web_exploration") || key.startsWith("enable_qzone_") || key === "enable_photo_text_action" || key.startsWith("enable_private_reading_") || key === "enable_creative_writing" || key === "enable_creative_work_read_guard" || key === "creative_hidden_mode") {
+  } else if (key.startsWith("enable_bilibili_") || key.startsWith("enable_news_") || key === "enable_external_event_self_link" || key.startsWith("enable_web_exploration") || key.startsWith("enable_qzone_") || key === "enable_photo_text_action" || key.startsWith("enable_reading_archive_") || key === "enable_creative_writing" || key === "enable_creative_work_read_guard" || key === "creative_hidden_mode") {
     lines.push(["场景", "长线主动"]);
   } else if (key.startsWith("enable_environment_") || key.includes("perception") || key === "enable_yesterday_screen_diary_context") {
     lines.push(["场景", key === "enable_yesterday_screen_diary_context" ? "日程 / 状态 / 屏幕日记" : "日程 / 状态 / 回复"]);
@@ -33708,10 +33708,6 @@ function renderRealityTouchMobilePanel() {
           <input type="checkbox" name="mobile_proxy_rooms" ${mobile.proxy_rooms !== false ? "checked" : ""}>
           <span><b>统一代理一起 / 游戏 / 协同房间</b><small>手机只访问移动网关，由网关转发页面、接口、媒体和 WebSocket；推荐保持开启。</small></span>
         </label>
-        <label class="reality-enable-field">
-          <input type="checkbox" name="mobile_screen_upload_enabled" ${mobile.screen_upload_enabled !== false ? "checked" : ""}>
-          <span><b>接收终端屏幕共享状态</b><small>只同步前台共享状态，实际画面仍由屏幕扩展处理。</small></span>
-        </label>
         <label><span>新配对令牌（可选）</span><input name="mobile_pairing_token" type="password" autocomplete="new-password" placeholder="留空保留现有令牌"></label>
         <button type="submit" class="primary">保存手机终端连接</button>
       </form>
@@ -33739,6 +33735,133 @@ function renderRealityTouchMobilePanel() {
           </ul>
         </section>
       </div>
+    </article>
+    ${renderRealityTouchMobileDataPanel()}
+  `;
+}
+
+function renderRealityTouchMobileDataPanel() {
+  const data = state.realityTouch;
+  if (!data) return realityTouchLoadingPanel("手机数据");
+  const mobile = data.configuration?.mobile || {};
+  const observations = Array.isArray(data.mobile_observations) ? data.mobile_observations : [];
+  const selectedId = state.realityTouchSelectedUserId || selectedRealityTouchUser()?.user_id || observations[0]?.user_id || "";
+  const observation = observations.find((item) => String(item.user_id) === String(selectedId)) || observations[0] || {};
+  const device = observation.device || {};
+  const activity = observation.activity || {};
+  const telemetry = observation.telemetry || {};
+  const reasonLabel = (reason, fallback) => ({
+    activity_disabled: "接收开关未开启",
+    no_recent_activity: "手机尚未上报活动摘要",
+    activity_expired: "最近摘要已过期",
+    telemetry_disabled: "接收开关未开启",
+    no_recent_telemetry: "手机尚未上报健康数据",
+    telemetry_expired: "最近健康数据已过期",
+    mobile_gateway_disabled: "手机网关未运行",
+    no_recent_device_status: "手机尚未上报设备状态",
+  }[reason] || fallback);
+  const ageText = (value) => Number.isFinite(Number(value)) && Number(value) >= 0 ? `${Math.round(Number(value))} 秒前` : "时间未知";
+  const activityStatus = activity.available
+    ? `最近上报 ${ageText(activity.age_seconds)}`
+    : reasonLabel(activity.reason, "暂无活动摘要");
+  const telemetryStatus = telemetry.available
+    ? `最近上报 ${ageText(telemetry.age_seconds)}`
+    : reasonLabel(telemetry.reason, "暂无健康数据");
+  const measurementRows = (Array.isArray(telemetry.measurements) ? telemetry.measurements : []).slice(0, 8).map((item) => `
+    <div><span>${escapeHtml(item.type || "测量")}</span><b>${escapeHtml(String(item.value ?? "-"))} ${escapeHtml(item.unit || "")}</b></div>
+  `).join("");
+  return `
+    <article id="reality-mobile-data" class="exp-detail-card reality-mobile-data-card reality-workspace-card">
+      <div class="reality-touch-section-head">
+        <div><span>手机数据</span><h3>终端上报能力</h3></div>
+        <button type="button" class="soft" data-reality-touch-refresh>刷新接收状态</button>
+      </div>
+      <p class="reality-device-intro">这里显示手机网关实际收到的短期数据，不是“已打开开关”的假状态。选择用户后可看到最近上报时间、过期原因和当前摘要。</p>
+      <label class="reality-mobile-observation-user"><span>查看用户</span><select data-reality-mobile-observation-user>${observations.map((item) => `<option value="${escapeHtml(item.user_id || "")}" ${String(item.user_id) === String(selectedId) ? "selected" : ""}>${escapeHtml(item.label || item.user_id || "未命名用户")}</option>`).join("") || '<option value="">暂无已配对用户</option>'}</select></label>
+      <div class="reality-mobile-feedback-grid">
+        <section class="reality-mobile-feedback-card ${activity.available ? "is-positive" : "is-muted"}">
+          <div class="reality-capability-title"><b>手机活动摘要</b><span>${escapeHtml(activityStatus)}</span></div>
+          <strong>${activity.available ? escapeHtml(activity.app_label || activity.display_title || "其他应用") : "暂无可用摘要"}</strong>
+          <small>${activity.available ? `类别：${escapeHtml(activity.category || "other")} · ${ageText(activity.age_seconds)}` : escapeHtml(reasonLabel(activity.reason, "等待手机上报"))}</small>
+        </section>
+        <section class="reality-mobile-feedback-card ${telemetry.available ? "is-positive" : "is-muted"}">
+          <div class="reality-capability-title"><b>健康 / 身体数据</b><span>${escapeHtml(telemetryStatus)}</span></div>
+          <strong>${telemetry.available ? escapeHtml(telemetry.summary || "已收到结构化数据") : "暂无可用数据"}</strong>
+          <small>${telemetry.available ? `来源：${escapeHtml(telemetry.source || "手机端")} · ${ageText(telemetry.age_seconds)}` : escapeHtml(reasonLabel(telemetry.reason, "等待手机上报"))}</small>
+        </section>
+        <section class="reality-mobile-feedback-card ${device.online ? "is-positive" : "is-muted"}">
+          <div class="reality-capability-title"><b>手机连接反馈</b><span>${device.online ? "在线" : "离线或无状态"}</span></div>
+          <strong>${device.available ? `${escapeHtml(device.device_name || "Android 设备")} · ${device.battery_percent == null ? "电量未知" : `${Number(device.battery_percent)}%`}` : "暂无设备状态"}</strong>
+          <small>${device.available ? `${device.charging ? "充电中" : "未充电"} · 最近上报 ${ageText(device.age_seconds)}` : escapeHtml(reasonLabel(device.reason, "等待手机上报"))}</small>
+        </section>
+      </div>
+      ${measurementRows ? `<div class="reality-mobile-measurements"><h4>最近测量值</h4><div>${measurementRows}</div></div>` : ""}
+      <form class="reality-mobile-data-config" data-reality-mobile-data-config>
+        <div class="reality-mobile-capability-grid">
+          <label class="reality-enable-field">
+            <input type="checkbox" name="mobile_activity_enabled" ${mobile.activity_enabled === true ? "checked" : ""}>
+            <span><b>启用手机活动摘要</b><small>仅接收前台应用类别和脱敏名称，用于伪窥屏与陪伴上下文；不接收截图、窗口标题或消息内容。</small></span>
+          </label>
+          <label class="reality-mobile-ttl-field"><span>活动摘要有效期（秒）</span><input name="mobile_activity_ttl_seconds" type="number" min="60" max="86400" step="60" value="${Number(mobile.activity_ttl_seconds || 900)}"><small>过期后页面和模型都显示暂无可用摘要。</small></label>
+          <label class="reality-enable-field">
+            <input type="checkbox" name="mobile_telemetry_enabled" ${mobile.telemetry_enabled === true ? "checked" : ""}>
+            <span><b>接收健康 / 身体数据</b><small>只接收手机端主动上报的结构化数值和活动状态，不会自动读取手机健康数据。</small></span>
+          </label>
+          <label class="reality-mobile-ttl-field"><span>健康数据有效期（秒）</span><input name="mobile_telemetry_ttl_seconds" type="number" min="60" max="604800" step="60" value="${Number(mobile.telemetry_ttl_seconds || 3600)}"><small>过期后健康摘要会自动隐藏。</small></label>
+          <label class="reality-enable-field">
+            <input type="checkbox" name="mobile_screen_upload_enabled" ${mobile.screen_upload_enabled !== false ? "checked" : ""}>
+            <span><b>接收终端屏幕共享状态</b><small>只同步是否正在共享及连接状态，实际画面仍由屏幕扩展处理。</small></span>
+          </label>
+        </div>
+        <button type="submit" class="primary">保存手机数据设置</button>
+      </form>
+    </article>
+  `;
+}
+
+function renderRealityTouchHomeHealthPanel() {
+  const data = state.realityTouch;
+  if (!data) return realityTouchLoadingPanel("家居与健康能力");
+  const mobile = data.configuration?.mobile || {};
+  const home = data.configuration?.home || {};
+  const health = data.configuration?.health || {};
+  const observations = Array.isArray(data.mobile_observations) ? data.mobile_observations : [];
+  const selectedId = state.realityTouchSelectedUserId || selectedRealityTouchUser()?.user_id || observations[0]?.user_id || "";
+  const observation = observations.find((item) => String(item.user_id) === String(selectedId)) || observations[0] || {};
+  const telemetry = observation.telemetry || {};
+  const users = Array.isArray(data.users) ? data.users : [];
+  const userMap = new Map(users.map((item) => [String(item.user_id || ""), item]));
+  observations.forEach((item) => {
+    const id = String(item.user_id || "");
+    if (id && !userMap.has(id)) userMap.set(id, item);
+  });
+  const userOptions = Array.from(userMap.values()).map((item) => `<option value="${escapeHtml(item.user_id || "")}" ${String(item.user_id) === String(selectedId) ? "selected" : ""}>${escapeHtml(item.label || item.user_id || "未命名用户")}</option>`).join("");
+  const actionResult = data.action_result && typeof data.action_result === "object" ? data.action_result : null;
+  return `
+    <article id="reality-home-health" class="exp-detail-card reality-touch-card reality-workspace-card">
+      <div class="reality-touch-section-head">
+        <div><span>独立模块</span><h3>家居控制</h3></div>
+        <span class="reality-audio-backend ${home.available ? "ready" : "limited"}">${home.available ? "已配置" : "未配置"}</span>
+      </div>
+      <p class="reality-device-intro">家居控制与健康数据分开管理。家居模块只保存服务地址和令牌，未配置时不会发起设备请求。</p>
+      <form class="reality-home-config" data-reality-home-config>
+        <label class="reality-enable-field"><input type="checkbox" name="home_enabled" ${home.enabled ? "checked" : ""}><span><b>启用家居模块</b><small>支持 Home Assistant REST 兼容服务；米家可先通过 Home Assistant 暴露。</small></span></label>
+        <label><span>服务地址</span><input name="home_base_url" value="${escapeHtml(home.base_url || "")}" placeholder="http://127.0.0.1:8123"></label>
+        <label><span>访问令牌</span><input name="home_access_token" type="password" autocomplete="new-password" placeholder="${home.access_token_configured ? "已配置，留空保持" : "粘贴长期访问令牌"}"></label>
+        <div class="reality-mobile-inline-fields"><label><span>默认区域</span><input name="home_default_area" value="${escapeHtml(home.default_area || "")}" placeholder="客厅"></label><label><span>请求超时（秒）</span><input name="home_request_timeout_seconds" type="number" min="1" max="30" value="${Number(home.request_timeout_seconds || 5)}"></label></div>
+        <button type="submit" class="primary">保存家居配置</button>
+      </form>
+      <form class="reality-home-health-action" data-reality-home-action>
+        <label><span>请求用户</span><select name="home_user_id">${userOptions || '<option value="">暂无可用用户</option>'}</select></label>
+        <label class="reality-home-health-request"><span>家居请求</span><textarea name="home_request" rows="2" maxlength="500" placeholder="例如：打开客厅灯"></textarea></label>
+        <button type="submit" class="primary" ${userOptions ? "" : "disabled"}>提交请求</button>
+      </form>
+      <div class="reality-home-health-result ${actionResult ? "has-result" : ""}">
+        <b>${actionResult ? escapeHtml(actionResult.summary || actionResult.message || actionResult.reason || "请求已返回") : "尚未提交请求"}</b>
+        <small>家居控制只处理明确的打开或关闭请求；复杂场景请在家居服务中配置。</small>
+      </div>
+      <div id="reality-health" class="reality-touch-section-head"><div><span>独立模块</span><h3>健康数据接收</h3></div><span class="reality-audio-backend ${health.enabled ? "ready" : "limited"}">${health.enabled ? "已开启" : "未开启"}</span></div>
+      <form class="reality-health-config" data-reality-health-config><label class="reality-enable-field"><input type="checkbox" name="health_enabled" ${health.enabled ? "checked" : ""}><span><b>接收健康数据</b><small>只接收手机端主动上报的结构化数据，不读取手机健康应用。</small></span></label><label><span>数据有效期（秒）</span><input name="health_ttl_seconds" type="number" min="60" max="604800" step="60" value="${Number(health.ttl_seconds || 3600)}"></label><button type="submit" class="primary">保存健康配置</button></form>
     </article>
   `;
 }
@@ -33776,14 +33899,18 @@ function renderRealityTouchPage() {
       </div>
       <nav class="reality-section-nav" aria-label="现实触及页面分区">
         <a href="#reality-connect"><span>01</span>手机连接</a>
-        <a href="#reality-audio"><span>02</span>音频输出</a>
-        <a href="#reality-camera"><span>03</span>摄像头</a>
-        <a href="#reality-automation"><span>04</span>用户与提醒</a>
-        <a href="#reality-runtime"><span>05</span>运行状态</a>
+        <a href="#reality-mobile-data"><span>02</span>手机数据</a>
+        <a href="#reality-home-health"><span>03</span>家居控制</a>
+        <a href="#reality-health"><span>04</span>健康数据</a>
+        <a href="#reality-audio"><span>05</span>本机音频</a>
+        <a href="#reality-camera"><span>06</span>本机摄像头</a>
+        <a href="#reality-automation"><span>07</span>用户与提醒</a>
+        <a href="#reality-runtime"><span>08</span>运行状态</a>
       </nav>
       <div class="reality-console-layout">
         <main class="reality-console-main">
           ${renderRealityTouchMobilePanel()}
+          ${renderRealityTouchHomeHealthPanel()}
           ${renderRealityTouchDevicePanel()}
           ${renderRealityTouchSettings()}
         </main>
@@ -33803,6 +33930,10 @@ function realityGlobalConfigPayload(root, enabledOverride) {
   const configuration = state.realityTouch?.configuration || {};
   const mobile = configuration.mobile || {};
   const form = root.querySelector("[data-reality-mobile-config]");
+  const dataForm = root.querySelector("[data-reality-mobile-data-config]");
+  const homeForm = root.querySelector("[data-reality-home-config]");
+  const healthForm = root.querySelector("[data-reality-health-config]");
+  const field = (name) => dataForm?.elements[name] || form?.elements[name];
   return {
     action: "save_global_config",
     enabled: enabledOverride == null ? Boolean(configuration.enabled ?? state.realityTouch?.global_enabled) : Boolean(enabledOverride),
@@ -33810,6 +33941,17 @@ function realityGlobalConfigPayload(root, enabledOverride) {
     timezone: configuration.timezone || "Asia/Shanghai",
     authorized_user_ids: Array.isArray(configuration.authorized_user_ids) ? configuration.authorized_user_ids : [],
     audio_default_playback_volume: Number(configuration.audio_default_playback_volume ?? 35),
+    home: {
+      enabled: homeForm ? Boolean(homeForm.elements.home_enabled?.checked) : Boolean(configuration.home?.enabled),
+      base_url: homeForm?.elements.home_base_url?.value || configuration.home?.base_url || "",
+      access_token: homeForm?.elements.home_access_token?.value || "",
+      default_area: homeForm?.elements.home_default_area?.value || configuration.home?.default_area || "",
+      request_timeout_seconds: Number(homeForm?.elements.home_request_timeout_seconds?.value || configuration.home?.request_timeout_seconds || 5),
+    },
+    health: {
+      enabled: healthForm ? Boolean(healthForm.elements.health_enabled?.checked) : Boolean(configuration.health?.enabled),
+      ttl_seconds: Number(healthForm?.elements.health_ttl_seconds?.value || configuration.health?.ttl_seconds || 3600),
+    },
     mobile: {
       enabled: form ? Boolean(form.elements.mobile_enabled?.checked) : Boolean(mobile.enabled),
       host: form?.elements.mobile_host?.value || mobile.host || "0.0.0.0",
@@ -33822,14 +33964,22 @@ function realityGlobalConfigPayload(root, enabledOverride) {
       amap_api_key: form?.elements.mobile_amap_api_key?.value || "",
       amap_cache_ttl_seconds: Number(form?.elements.mobile_amap_cache_ttl_seconds?.value || mobile.amap_cache_ttl_seconds || 1800),
       amap_request_timeout_seconds: Number(form?.elements.mobile_amap_request_timeout_seconds?.value || mobile.amap_request_timeout_seconds || 5),
-      telemetry_enabled: form?.elements.mobile_telemetry_enabled
-        ? Boolean(form.elements.mobile_telemetry_enabled.checked)
+      telemetry_enabled: field("mobile_telemetry_enabled")
+        ? Boolean(field("mobile_telemetry_enabled").checked)
         : mobile.telemetry_enabled === true,
       telemetry_ttl_seconds: Number(
-        form?.elements.mobile_telemetry_ttl_seconds?.value || mobile.telemetry_ttl_seconds || 3600,
+        field("mobile_telemetry_ttl_seconds")?.value || mobile.telemetry_ttl_seconds || 3600,
+      ),
+      activity_enabled: field("mobile_activity_enabled")
+        ? Boolean(field("mobile_activity_enabled").checked)
+        : mobile.activity_enabled === true,
+      activity_ttl_seconds: Number(
+        field("mobile_activity_ttl_seconds")?.value || mobile.activity_ttl_seconds || 900,
       ),
       proxy_rooms: form ? Boolean(form.elements.mobile_proxy_rooms?.checked) : mobile.proxy_rooms !== false,
-      screen_upload_enabled: form ? Boolean(form.elements.mobile_screen_upload_enabled?.checked) : mobile.screen_upload_enabled !== false,
+      screen_upload_enabled: field("mobile_screen_upload_enabled")
+        ? Boolean(field("mobile_screen_upload_enabled").checked)
+        : mobile.screen_upload_enabled !== false,
       pairing_token: form?.elements.mobile_pairing_token?.value || "",
     },
   };
@@ -36845,6 +36995,47 @@ function bindExperimentalOverviewActions() {
 }
 
 function bindRealityTouchActions(root) {
+  root.querySelector("[data-reality-mobile-observation-user]")?.addEventListener("change", (event) => {
+    state.realityTouchSelectedUserId = event.currentTarget.value || "";
+    renderExperimentalPage();
+  });
+  root.querySelector("[data-reality-home-action]")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const request = String(form.elements.home_request?.value || "").trim();
+    const userId = String(form.elements.home_user_id?.value || "").trim();
+    if (!request) {
+      showToast("请填写家居或健康请求", "error");
+      return;
+    }
+    const button = form.querySelector('button[type="submit"]');
+    const result = await runAction(
+      () => postJson("/reality-touch/update", { action: "external_reality_request", user_id: userId, request }),
+      "现实触及请求已返回",
+      button,
+      { reload: false },
+    );
+    if (result) {
+      state.realityTouch = result;
+      renderRealityTouchPage();
+    }
+  });
+  for (const selector of ["[data-reality-home-config]", "[data-reality-health-config]"]) {
+    root.querySelector(selector)?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = event.currentTarget.querySelector('button[type="submit"]');
+      const result = await runAction(
+        () => postJson("/reality-touch/update", realityGlobalConfigPayload(root)),
+        "现实触及模块配置已保存",
+        button,
+        { reload: false },
+      );
+      if (result) {
+        state.realityTouch = result;
+        renderRealityTouchPage();
+      }
+    });
+  }
   root.querySelector("[data-reality-touch-user]")?.addEventListener("change", (event) => {
     state.realityTouchSelectedUserId = event.currentTarget.value || "";
     renderExperimentalPage();
@@ -36890,20 +37081,22 @@ function bindRealityTouchActions(root) {
       input.checked = !requested;
     }
   });
-  const mobileConfigForm = root.querySelector("[data-reality-mobile-config]");
-  mobileConfigForm?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const button = mobileConfigForm.querySelector('button[type="submit"]');
-    const result = await runAction(
-      () => postJson("/reality-touch/update", realityGlobalConfigPayload(root)),
-      "手机陪伴终端连接已保存",
-      button,
-      { reload: false },
-    );
-    if (result) {
-      state.realityTouch = result;
-      renderRealityTouchPage();
-    }
+  root.querySelectorAll("[data-reality-mobile-config], [data-reality-mobile-data-config]").forEach((mobileConfigForm) => {
+    mobileConfigForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = mobileConfigForm.querySelector('button[type="submit"]');
+      const isDataForm = mobileConfigForm.matches("[data-reality-mobile-data-config]");
+      const result = await runAction(
+        () => postJson("/reality-touch/update", realityGlobalConfigPayload(root)),
+        isDataForm ? "手机数据设置已保存" : "手机陪伴终端连接已保存",
+        button,
+        { reload: false },
+      );
+      if (result) {
+        state.realityTouch = result;
+        renderRealityTouchPage();
+      }
+    });
   });
   root.querySelector("[data-reality-touch-device-save]")?.addEventListener("click", async (event) => {
     const select = root.querySelector("[data-reality-touch-device]");
@@ -38467,7 +38660,7 @@ async function deleteSelectedBookshelfItem(button = null) {
     button.disabled = true;
     button.textContent = "移除中...";
   }
-  showToast("正在从书柜移除...");
+  showToast("正在从资料柜移除...");
   try {
     if (kind === "creative") {
       const result = await postJson("/creative/project/delete", { id: itemId });
@@ -38510,10 +38703,10 @@ async function deleteSelectedBookshelfItem(button = null) {
       access_token: state.bookshelfAccessToken || bookshelfUnlockedForCurrentPersona()?.access_token || "",
     });
     if (!result.changed) {
-      showToast("没有找到要移除的书柜条目，请刷新拓展页后再试。", "error");
+      showToast("没有找到要移除的资料柜条目，请刷新拓展页后再试。", "error");
       if (button) {
         button.disabled = false;
-        button.textContent = kind === "diary" ? "删除当前日记" : "从书柜移除";
+        button.textContent = kind === "diary" ? "删除当前日记" : "从资料柜移除";
       }
       return;
     }
@@ -38521,12 +38714,12 @@ async function deleteSelectedBookshelfItem(button = null) {
     state.bookshelfAccessToken = result.bookshelf?.access_token || state.bookshelfAccessToken || "";
     resetBookshelfSelection();
     renderBookshelf();
-    showToast(kind === "diary" ? "日记已删除。" : "已从书柜移除。");
+    showToast(kind === "diary" ? "日记已删除。" : "已从资料柜移除。");
   } catch (error) {
     showToast(`移除失败：${error.message}`, "error");
     if (button) {
       button.disabled = false;
-      button.textContent = kind === "diary" ? "删除当前日记" : "从书柜移除";
+      button.textContent = kind === "diary" ? "删除当前日记" : "从资料柜移除";
     }
   }
 }

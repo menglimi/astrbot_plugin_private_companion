@@ -736,7 +736,7 @@ def _daily_diary_evidence_ledger(plugin) -> tuple[str, list[dict[str, str]]]:
 
     for method_name, label in (
         ("_self_timeline_from_creative", "实际创作记录"),
-        ("_self_timeline_from_private_reading", "实际阅读记录"),
+        ("_self_timeline_from_reading_archive", "实际阅读记录"),
         ("_self_timeline_from_photo_generation", "实际生图记录"),
         ("_self_timeline_from_qzone_publish", "实际空间发布"),
     ):

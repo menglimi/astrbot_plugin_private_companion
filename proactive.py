@@ -1755,7 +1755,7 @@ class ProactiveMixin(UserRestGateMixin):
                 "- 对方不是主要用户/恋人/专属陪伴目标。主动联系应像普通朋友：少量、具体、不过度亲密，不使用主要用户专属称呼、占有欲、撒娇索取或暧昧承诺。\n"
                 "- 动机应以礼貌关心、共同话题、必要转告、轻分享为主；不要因为想贴近、想被哄、想确认对方在不在而频繁打扰。\n"
                 "- 不给次要用户使用窥屏或主动生图能力；不要把主要用户或其他私聊对象的图片、生活碎片复用给次要用户。"
-                "- 不对次要用户发起本子/夹层阅读推荐、私密阅读分享、屏幕观察、群聊私下转述、私下创作分享或其他涉及隐私来源的主动。"
+                "- 不对次要用户发起资料/资料归档推荐、资料归档分享、屏幕观察、群聊私下转述、私下创作分享或其他涉及隐私来源的主动。"
             )
         if note:
             text += f"\n- 用户级边界备注：{note}"
@@ -1765,15 +1765,15 @@ class ProactiveMixin(UserRestGateMixin):
         normalized = str(reason or "").strip()
         return normalized in {
             "group_share",
-            "jm_cosmos_share",
-            "jm_cosmos_recommendation_request",
+            "reading_archive_share",
+            "reading_archive_recommendation_request",
             "creative_share",
             "weather_alert",
         }
 
     def _friend_sensitive_proactive_action(self, action: Any) -> bool:
         parts = {part.strip() for part in str(action or "").split("+") if part.strip()}
-        return bool(parts & {"screen_peek", "photo_text", "jm_cosmos_read"})
+        return bool(parts & {"screen_peek", "photo_text", "reading_archive_read"})
 
     def _friend_can_receive_proactive_reason(self, user: dict[str, Any] | None, reason: Any, action: Any = "") -> bool:
         if not isinstance(user, dict) or self._private_user_role(user) != "friend":
@@ -1965,7 +1965,7 @@ class ProactiveMixin(UserRestGateMixin):
     @staticmethod
     def _friend_unanswered_should_remove_action(action: str) -> bool:
         parts = {part.strip() for part in str(action or "").split("+") if part.strip()}
-        return bool(parts & {"poke", "voice", "photo_text", "screen_peek", "jm_cosmos_read"})
+        return bool(parts & {"poke", "voice", "photo_text", "screen_peek", "reading_archive_read"})
 
     def _friend_unanswered_plan_patch(
         self,
@@ -2793,7 +2793,7 @@ class ProactiveMixin(UserRestGateMixin):
     @staticmethod
     def _proactive_action_is_intimate(action: str) -> bool:
         parts = {part.strip() for part in str(action or "").split("+") if part.strip()}
-        return bool(parts & {"poke", "voice", "photo_text", "screen_peek", "jm_cosmos_read"})
+        return bool(parts & {"poke", "voice", "photo_text", "screen_peek", "reading_archive_read"})
 
     @staticmethod
     def _proactive_text_is_intimate(*parts: Any) -> bool:

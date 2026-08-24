@@ -379,7 +379,7 @@ class ContentShareRoute(ProactiveRoute):
             "bili_video_share",
             "web_exploration_share",
             "creative_share",
-            "jm_cosmos_recommendation_request",
+            "reading_archive_recommendation_request",
             "game_invite",
         }
     )
@@ -402,7 +402,7 @@ class ContentShareRoute(ProactiveRoute):
         "news_share": "news_context",
         "web_exploration_share": "web_exploration_context",
         "creative_share": "creative_share_context",
-        "jm_cosmos_recommendation_request": "jm_cosmos_recommendation_context",
+        "reading_archive_recommendation_request": "reading_archive_recommendation_context",
         "game_invite": "game_invite_context",
     }
 

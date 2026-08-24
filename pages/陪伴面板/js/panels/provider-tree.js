@@ -432,13 +432,13 @@ window.PrivateCompanionProviderTree = (() => {
     const speedRecommended = keys.filter((key) => providerNeedsLowLatency(key)).length;
     const qualityRecommended = keys.filter((key) => providerGuides[key]?.preference === "quality").length;
     const genericVision = providers.PLUGIN_VISION_PROVIDER_ID || "跟随 AstrBot 本体图片转文字";
-    const readingVisionAvailable = visibleConfigKey("PRIVATE_READING_VISION_PROVIDER_ID");
-    const readingVision = providers.PRIVATE_READING_VISION_PROVIDER_ID || "未配置";
+    const readingVisionAvailable = visibleConfigKey("READING_ARCHIVE_VISION_PROVIDER_ID");
+    const readingVision = providers.READING_ARCHIVE_VISION_PROVIDER_ID || "未配置";
     const vision = readingVisionAvailable
-      ? `通用：${genericVision} · 夹层阅读：${readingVision}`
+      ? `通用：${genericVision} · 资料归档：${readingVision}`
       : `通用：${genericVision}`;
     const visionHint = readingVisionAvailable
-      ? "通用识图与夹层阅读识图使用独立 Provider"
+      ? "通用识图与资料归档识图使用独立 Provider"
       : "当前仅显示已安装能力使用的视觉通道";
     document.getElementById("providerSummary").innerHTML = `
       <div class="provider-summary-card strong"><span>单独配置</span><b>${configured}/${keys.length}</b><small>已指定专用 Provider</small></div>
@@ -701,10 +701,10 @@ window.PrivateCompanionProviderTree = (() => {
     const mai = resolveProviderId(context, "MAI_STYLE_PROVIDER_ID", providers) || main;
     const pluginVision = providers.PLUGIN_VISION_PROVIDER_ID || "跟随 AstrBot 本体图片转文字";
     if (mode === "quick") {
-      const readingVisionNode = visibleConfigKey("PRIVATE_READING_VISION_PROVIDER_ID")
+      const readingVisionNode = visibleConfigKey("READING_ARCHIVE_VISION_PROVIDER_ID")
         ? `
           <span class="flow-arrow">·</span>
-          <span class="flow-node primary">夹层阅读识图<br><b>${escapeHtml(providers.PRIVATE_READING_VISION_PROVIDER_ID || "未配置")}</b></span>
+          <span class="flow-node primary">资料归档识图<br><b>${escapeHtml(providers.READING_ARCHIVE_VISION_PROVIDER_ID || "未配置")}</b></span>
         `
         : "";
       document.getElementById("providerFlow").innerHTML = `

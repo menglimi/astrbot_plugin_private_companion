@@ -626,7 +626,7 @@
       "worldview_adaptation_prompt": {
         "description": "自定义世界观适配提示",
         "type": "string",
-        "hint": "用于把现代能力翻译成当前人设能理解的说法，例如“异世界冒险者：群聊是酒馆/公会闲谈，视频是吟游诗人的影像记录，书柜是行囊书匣”。留空使用内置映射。",
+        "hint": "用于把现代能力翻译成当前人设能理解的说法，例如“异世界冒险者：群聊是酒馆/公会闲谈，视频是吟游诗人的影像记录，资料柜是行囊书匣”。留空使用内置映射。",
         "default": ""
       },
       "quiet_hours": {
@@ -1003,8 +1003,8 @@
     "default": "",
     "invisible": true
   },
-  "PRIVATE_READING_VISION_PROVIDER_ID": {
-    "description": "Legacy flat config: 夹层阅读视觉模型",
+  "READING_ARCHIVE_VISION_PROVIDER_ID": {
+    "description": "Legacy flat config: 资料归档视觉模型",
     "type": "string",
     "default": "",
     "invisible": true
@@ -2516,92 +2516,92 @@
     "default": 1,
     "invisible": true
   },
-  "enable_private_reading_integration": {
-    "description": "Legacy flat config: 启用夹层阅读素材",
+  "enable_reading_archive_integration": {
+    "description": "Legacy flat config: 启用资料归档素材",
     "type": "bool",
     "default": false,
     "invisible": true
   },
-  "enable_private_reading_boredom_read": {
-    "description": "Legacy flat config: 空闲时私下阅读",
+  "enable_reading_archive_boredom_read": {
+    "description": "Legacy flat config: 空闲时资料归档",
     "type": "bool",
     "default": false,
     "invisible": true
   },
-  "enable_private_reading_ask_recommendation": {
+  "enable_reading_archive_ask_recommendation": {
     "description": "Legacy flat config: 向用户征求推荐",
     "type": "bool",
     "default": false,
     "invisible": true
   },
-  "enable_private_reading_vision": {
-    "description": "Legacy flat config: 本子识图",
+  "enable_reading_archive_vision": {
+    "description": "Legacy flat config: 资料识图",
     "type": "bool",
     "default": true,
     "invisible": true
   },
-  "enable_private_reading_page_comments": {
-    "description": "Legacy flat config: 本子页边批注",
+  "enable_reading_archive_page_comments": {
+    "description": "Legacy flat config: 资料页边批注",
     "type": "bool",
     "default": true,
     "invisible": true
   },
-  "enable_private_reading_rating": {
-    "description": "Legacy flat config: 本子阅读评价",
+  "enable_reading_archive_rating": {
+    "description": "Legacy flat config: 资料阅读评价",
     "type": "bool",
     "default": true,
     "invisible": true
   },
-  "enable_private_reading_preference_influence": {
+  "enable_reading_archive_preference_influence": {
     "description": "Legacy flat config: 评分偏好影响私聊",
     "type": "bool",
     "default": true,
     "invisible": true
   },
-  "private_reading_preference_min_ratings": {
+  "reading_archive_preference_min_ratings": {
     "description": "Legacy flat config: 偏好生效最少评分数",
     "type": "int",
     "default": 5,
     "invisible": true
   },
-  "private_reading_preference_max_terms": {
+  "reading_archive_preference_max_terms": {
     "description": "Legacy flat config: 偏好注入最多词条",
     "type": "int",
     "default": 8,
     "invisible": true
   },
-  "private_reading_min_interval_hours": {
-    "description": "Legacy flat config: 夹层阅读最小间隔（小时）",
+  "reading_archive_min_interval_hours": {
+    "description": "Legacy flat config: 资料归档最小间隔（小时）",
     "type": "int",
     "default": 18,
     "invisible": true
   },
-  "private_reading_max_photo_count": {
-    "description": "Legacy flat config: 夹层阅读页数上限",
+  "reading_archive_max_photo_count": {
+    "description": "Legacy flat config: 资料归档页数上限",
     "type": "int",
     "default": 60,
     "invisible": true
   },
-  "private_reading_share_probability": {
+  "reading_archive_share_probability": {
     "description": "Legacy flat config: 阅读后主动提起概率",
     "type": "float",
     "default": 0.18,
     "invisible": true
   },
-  "private_reading_ask_probability": {
+  "reading_archive_ask_probability": {
     "description": "Legacy flat config: 征求推荐触发概率",
     "type": "float",
     "default": 0.16,
     "invisible": true
   },
-  "private_reading_default_keywords": {
-    "description": "Legacy flat config: 夹层阅读默认搜索关键词",
+  "reading_archive_default_keywords": {
+    "description": "Legacy flat config: 资料归档默认搜索关键词",
     "type": "string",
     "default": "纯爱,恋爱,同人",
     "invisible": true
   },
-  "private_reading_blocked_tags": {
-    "description": "Legacy flat config: 夹层阅读过滤标签",
+  "reading_archive_blocked_tags": {
+    "description": "Legacy flat config: 资料归档过滤标签",
     "type": "string",
     "default": "連載中,長篇,青年漫",
     "invisible": true
@@ -5300,20 +5300,20 @@
       "PLUGIN_VISION_PROVIDER_ID": {
         "description": "插件识图模型（私聊/群聊/合并消息/识屏）",
         "type": "string",
-        "hint": "快速配置的通用视觉入口。用于私聊单图/表情包转述、群聊图片理解、引用图片、合并消息图片和识屏；夹层阅读始终使用下方独立的专用模型。",
+        "hint": "快速配置的通用视觉入口。用于私聊单图/表情包转述、群聊图片理解、引用图片、合并消息图片和识屏；资料归档始终使用下方独立的专用模型。",
         "default": "",
         "condition": {
           "provider_config_mode": "quick"
         },
         "_special": "select_provider"
       },
-      "PRIVATE_READING_VISION_PROVIDER_ID": {
-        "description": "夹层阅读视觉模型",
+      "READING_ARCHIVE_VISION_PROVIDER_ID": {
+        "description": "资料归档视觉模型",
         "type": "string",
-        "hint": "始终仅用于夹层阅读的封面/抽样页理解、页边批注、读后感、评分和阅读偏好标签，不会跟随通用插件识图模型。必须填写支持图片输入的视觉模型；留空或模型不可用时不会生成阅读视觉结果。",
+        "hint": "始终仅用于资料归档的封面/抽样页理解、页边批注、读后感、评分和阅读偏好标签，不会跟随通用插件识图模型。必须填写支持图片输入的视觉模型；留空或模型不可用时不会生成阅读视觉结果。",
         "default": "",
         "condition": {
-          "enable_private_reading_integration": true
+          "enable_reading_archive_integration": true
         },
         "_special": "select_provider"
       }
@@ -6563,7 +6563,7 @@
       "enable_creative_work_read_guard": {
         "description": "启用创作原文读取保护",
         "type": "bool",
-        "hint": "开启后，仅当用户明确询问书柜中的已有作品、具体章节或原文时，要求模型先读取真实内容，并拦截没有实际读取的占位回答。内容扩展可用时，读取结果以扩展返回的作品数据为准；关闭后不再注入读取要求。",
+        "hint": "开启后，仅当用户明确询问资料柜中的已有作品、具体章节或原文时，要求模型先读取真实内容，并拦截没有实际读取的占位回答。内容扩展可用时，读取结果以扩展返回的作品数据为准；关闭后不再注入读取要求。",
         "default": true
       },
       "creative_inspiration_probability": {
@@ -8228,74 +8228,74 @@
       }
     }
   },
-  "private_reading_config": {
-    "description": "私密阅读/书柜夹层",
+  "reading_archive_config": {
+    "description": "资料归档/资料柜夹层",
     "type": "object",
-    "hint": "控制私下阅读、推荐请求、视觉读后感和阅读偏好。",
+    "hint": "控制资料归档、推荐请求、视觉读后感和阅读偏好。",
     "items": {
-      "enable_private_reading_integration": {
-        "description": "启用夹层阅读素材",
+      "enable_reading_archive_integration": {
+        "description": "启用资料归档素材",
         "type": "bool",
-        "hint": "检测到可用素材能力时，允许作为低频私下阅读素材来源。缺少对应能力时会自动跳过，不影响其他功能。",
+        "hint": "检测到可用素材能力时，允许作为低频资料归档素材来源。缺少对应能力时会自动跳过，不影响其他功能。",
         "default": false
       },
-      "enable_private_reading_boredom_read": {
-        "description": "空闲时私下阅读",
+      "enable_reading_archive_boredom_read": {
+        "description": "空闲时资料归档",
         "type": "bool",
-        "hint": "当 Bot 比较空、无聊或夜里休息时，低频搜索并阅读符合偏好的短篇内容，形成内部印象和书柜夹层记录。",
+        "hint": "当 Bot 比较空、无聊或夜里休息时，低频搜索并阅读符合偏好的短篇内容，形成内部印象和资料柜夹层记录。",
         "default": false,
         "condition": {
-          "enable_private_reading_integration": true
+          "enable_reading_archive_integration": true
         }
       },
-      "enable_private_reading_ask_recommendation": {
+      "enable_reading_archive_ask_recommendation": {
         "description": "向用户征求推荐",
         "type": "bool",
-        "hint": "当夹层阅读素材可用且 Bot 比较无聊时，低频主动私聊询问用户有没有合适的私密阅读推荐。",
+        "hint": "当资料归档素材可用且 Bot 比较无聊时，低频主动私聊询问用户有没有合适的资料归档推荐。",
         "default": false,
         "condition": {
-          "enable_private_reading_integration": true
+          "enable_reading_archive_integration": true
         }
       },
-      "enable_private_reading_vision": {
-        "description": "本子识图",
+      "enable_reading_archive_vision": {
+        "description": "资料识图",
         "type": "bool",
-        "hint": "开启后才调用夹层阅读专用视觉模型；关闭后只保留素材和文字元数据，不读取封面或正文页。",
+        "hint": "开启后才调用资料归档专用视觉模型；关闭后只保留素材和文字元数据，不读取封面或正文页。",
         "default": true,
         "condition": {
-          "enable_private_reading_integration": true
+          "enable_reading_archive_integration": true
         }
       },
-      "enable_private_reading_page_comments": {
-        "description": "本子页边批注",
+      "enable_reading_archive_page_comments": {
+        "description": "资料页边批注",
         "type": "bool",
         "hint": "开启后才保存模型生成的页边短批注；关闭后仍可保留识图/读后感/评价。",
         "default": true,
         "condition": {
-          "enable_private_reading_integration": true,
-          "enable_private_reading_vision": true
+          "enable_reading_archive_integration": true,
+          "enable_reading_archive_vision": true
         }
       },
-      "enable_private_reading_rating": {
-        "description": "本子阅读评价",
+      "enable_reading_archive_rating": {
+        "description": "资料阅读评价",
         "type": "bool",
         "hint": "开启后才生成 Bot 自评分、评分理由和偏好标签；关闭后不会用本次阅读更新自动偏好画像。",
         "default": true,
         "condition": {
-          "enable_private_reading_integration": true,
-          "enable_private_reading_vision": true
+          "enable_reading_archive_integration": true,
+          "enable_reading_archive_vision": true
         }
       },
-      "enable_private_reading_preference_influence": {
+      "enable_reading_archive_preference_influence": {
         "description": "评分偏好影响私聊",
         "type": "bool",
-        "hint": "开启后，当书柜夹层阅读评分样本足够时，会把稳定偏好作为私聊私密互动的弱背景。它不会暴露评分来源，也不会覆盖 AstrBot 人格。",
+        "hint": "开启后，当资料柜资料归档评分样本足够时，会把稳定偏好作为私聊资料互动的弱背景。它不会暴露评分来源，也不会覆盖 AstrBot 人格。",
         "default": true,
         "condition": {
-          "enable_private_reading_integration": true
+          "enable_reading_archive_integration": true
         }
       },
-      "private_reading_preference_min_ratings": {
+      "reading_archive_preference_min_ratings": {
         "description": "偏好生效最少评分数",
         "type": "int",
         "hint": "累计评分达到该数量后，偏好画像才会注入私聊回复，避免一两次评分就过拟合。",
@@ -8306,10 +8306,10 @@
         },
         "default": 5,
         "condition": {
-          "enable_private_reading_preference_influence": true
+          "enable_reading_archive_preference_influence": true
         }
       },
-      "private_reading_preference_max_terms": {
+      "reading_archive_preference_max_terms": {
         "description": "偏好注入最多词条",
         "type": "int",
         "hint": "每次私聊注入最多参考多少个高分偏好词。越多越细，但也会增加上下文和风格偏移。",
@@ -8320,11 +8320,11 @@
         },
         "default": 8,
         "condition": {
-          "enable_private_reading_preference_influence": true
+          "enable_reading_archive_preference_influence": true
         }
       },
-      "private_reading_min_interval_hours": {
-        "description": "夹层阅读最小间隔（小时）",
+      "reading_archive_min_interval_hours": {
+        "description": "资料归档最小间隔（小时）",
         "type": "int",
         "hint": "低频阅读触发的最小间隔，避免频繁搜索和消耗视觉模型。",
         "slider": {
@@ -8334,11 +8334,11 @@
         },
         "default": 18,
         "condition": {
-          "enable_private_reading_boredom_read": true
+          "enable_reading_archive_boredom_read": true
         }
       },
-      "private_reading_max_photo_count": {
-        "description": "夹层阅读页数上限",
+      "reading_archive_max_photo_count": {
+        "description": "资料归档页数上限",
         "type": "int",
         "hint": "只选择页数不多、方便 Bot 理解和形成读后印象的短篇内容。详情里没有页数或超过该上限的候选会被跳过。",
         "slider": {
@@ -8348,10 +8348,10 @@
         },
         "default": 60,
         "condition": {
-          "enable_private_reading_boredom_read": true
+          "enable_reading_archive_boredom_read": true
         }
       },
-      "private_reading_share_probability": {
+      "reading_archive_share_probability": {
         "description": "阅读后主动提起概率",
         "type": "float",
         "hint": "Bot 读完后是否在合适时机提起。具体是害羞、坦然、嘴硬还是转移话题交给人格判断；不会发送链接或资源。",
@@ -8362,10 +8362,10 @@
         },
         "default": 0.18,
         "condition": {
-          "enable_private_reading_integration": true
+          "enable_reading_archive_integration": true
         }
       },
-      "private_reading_ask_probability": {
+      "reading_archive_ask_probability": {
         "description": "征求推荐触发概率",
         "type": "float",
         "hint": "每次满足低频触发条件时，是否安排一次向用户征求推荐的主动候选。",
@@ -8376,25 +8376,25 @@
         },
         "default": 0.16,
         "condition": {
-          "enable_private_reading_ask_recommendation": true
+          "enable_reading_archive_ask_recommendation": true
         }
       },
-      "private_reading_default_keywords": {
-        "description": "夹层阅读默认搜索关键词",
+      "reading_archive_default_keywords": {
+        "description": "资料归档默认搜索关键词",
         "type": "string",
         "hint": "逗号分隔。会与用户偏好一起作为搜索候选。",
         "default": "纯爱,恋爱,同人",
         "condition": {
-          "enable_private_reading_integration": true
+          "enable_reading_archive_integration": true
         }
       },
-      "private_reading_blocked_tags": {
-        "description": "夹层阅读过滤标签",
+      "reading_archive_blocked_tags": {
+        "description": "资料归档过滤标签",
         "type": "string",
         "hint": "逗号分隔。候选详情标签命中任一项时会跳过，不下载、不入柜。",
         "default": "連載中,長篇,青年漫",
         "condition": {
-          "enable_private_reading_integration": true
+          "enable_reading_archive_integration": true
         }
       }
     }
@@ -10880,7 +10880,7 @@
       "enable_creative_cover_generation": {
         "description": "为创作内容生成封面",
         "type": "bool",
-        "hint": "默认关闭。开启后，已有正文但没有封面的创作项目会在空闲创作推进时调用一次文生图能力生成封面，并根据悬疑、科幻奇幻、诗歌散文、古风、日常治愈等作品特征自动匹配画风。封面显示在书柜作品详情中；失败最多重试3次且带冷却。关闭后不再生成，但不会删除已有封面。",
+        "hint": "默认关闭。开启后，已有正文但没有封面的创作项目会在空闲创作推进时调用一次文生图能力生成封面，并根据悬疑、科幻奇幻、诗歌散文、古风、日常治愈等作品特征自动匹配画风。封面显示在资料柜作品详情中；失败最多重试3次且带冷却。关闭后不再生成，但不会删除已有封面。",
         "default": false,
         "condition": {
           "enable_photo_text_action": true

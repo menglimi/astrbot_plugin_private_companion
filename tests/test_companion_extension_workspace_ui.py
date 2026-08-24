@@ -67,8 +67,34 @@ def test_reality_workspace_exposes_mobile_gateway_without_owning_implementation(
     assert 'postJson("/reality-touch/update"' in script
     assert "function renderRealityTouchPage()" in script
     assert 'const canToggle = Boolean(data && !state.realityTouchLoading && !state.realityTouchError)' in script
+    assert 'name="mobile_activity_enabled"' in script
+    assert 'name="mobile_activity_ttl_seconds"' in script
+    assert 'name="mobile_telemetry_enabled"' in script
+    assert 'name="mobile_telemetry_ttl_seconds"' in script
+    assert 'activity_enabled: field("mobile_activity_enabled")' in script
+    assert 'activity_ttl_seconds: Number(' in script
     assert 'mobile.telemetry_enabled === true' in script
     assert 'mobile.telemetry_ttl_seconds || 3600' in script
+    assert 'function renderRealityTouchHomeHealthPanel()' in script
+    assert 'function renderRealityTouchMobileDataPanel()' in script
+    assert 'data-reality-mobile-data-config' in script
+    assert '保存手机数据设置' in script
+    assert 'root.querySelectorAll("[data-reality-mobile-config], [data-reality-mobile-data-config]")' in script
+    assert 'mobile_observations' in script
+    assert 'data-reality-mobile-observation-user' in script
+    assert '暂无可用摘要' in script
+    assert '最近测量值' in script
+    assert '刷新接收状态' in script
+    assert 'data-reality-home-action' in script
+    assert 'action: "external_reality_request"' in script
+    assert 'data-reality-home-config' in script
+    assert 'data-reality-health-config' in script
+    assert 'name="home_base_url"' in script
+    assert 'name="home_access_token"' in script
+    assert 'name="health_enabled"' in script
+    assert 'action_result' in script
+    assert 'href="#reality-mobile-data"' in script
+    assert 'href="#reality-home-health"' in script
     assert "syncRealityTouchOverviewState(result)" in script
     assert '"enable_experimental_bluetooth_wakeup",\n  "enable_daily_case_review_experiment"' not in script
 

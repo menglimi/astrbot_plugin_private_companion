@@ -221,7 +221,6 @@ _SEGMENTED_WIDTH_VARIANT_GROUPS: tuple[tuple[str, ...], ...] = (
     ("$", "＄"),
     ("^", "＾"),
     ("_", "＿"),
-    ("--", "－－", "——"),
 )
 
 
@@ -341,9 +340,9 @@ _PROMPT_MODULE_DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "image.reply.vision": ("引用图片摘要", "用户引用/回复某张图时，把被引用图片作为本轮主要依据。"),
     "image.reply.fallback": ("引用图片兜底", "引用图片无法识别时，避免把旧图或历史内容当成当前引用目标。"),
     "creative.hidden": ("创作上下文", "在用户触发创作相关话题时，补充必要的创作状态和边界。"),
-    "bookshelf.secret": ("书柜隐藏线索", "在合适场景提供书柜相关的隐藏上下文，不主动暴露机制。"),
-    "bookshelf.reading": ("阅读上下文", "补充近期阅读/书柜内容对本轮回复的影响。"),
-    "private_reading.preference": ("阅读偏好", "让私聊回复更贴近用户已形成的阅读偏好。"),
+    "bookshelf.secret": ("资料柜隐藏线索", "在合适场景提供资料柜相关的隐藏上下文，不主动暴露机制。"),
+    "bookshelf.reading": ("阅读上下文", "补充近期阅读/资料柜内容对本轮回复的影响。"),
+    "reading_archive.preference": ("阅读偏好", "让私聊回复更贴近用户已形成的阅读偏好。"),
     "news.recent": ("近期新闻", "用户聊到新闻/时事时，提供近期阅读过的新闻上下文。"),
     "web_exploration.recent": ("主动搜索近况", "用户询问最近搜索/网页探索时，提供真实搜索词、动机、笔记和来源。"),
     "skill.growth": ("能力成长", "注入角色近期能力变化，帮助回复体现可成长性。"),
@@ -374,8 +373,8 @@ _PROMPT_MODULE_DESCRIPTIONS: dict[str, tuple[str, str]] = {
 _PROMPT_MODULE_PREFIX_DESCRIPTIONS: tuple[tuple[str, tuple[str, str]], ...] = (
     ("state.", ("状态片段", "提供当前拟人身体状态、情绪底色和表达节奏。")),
     ("image.", ("图片片段", "帮助模型理解当前图片、引用图片或识图失败时的回复边界。")),
-    ("bookshelf.", ("书柜片段", "提供书柜/阅读相关上下文。")),
-    ("private_reading.", ("阅读偏好片段", "提供私聊阅读偏好和阅读状态。")),
+    ("bookshelf.", ("资料柜片段", "提供资料柜/阅读相关上下文。")),
+    ("reading_archive.", ("阅读偏好片段", "提供私聊阅读偏好和阅读状态。")),
     ("proactive.", ("主动相关片段", "处理主动消息节奏、边界和明确挂起的话头。")),
     ("timer.", ("预约片段", "处理模型可见的主动预约规则。")),
     ("creative.", ("创作片段", "提供创作状态或创作相关边界。")),
@@ -4226,15 +4225,11 @@ class EventDispatchMixin:
         provider_selector = getattr(self, "_task_provider", None)
         if callable(provider_selector):
             debounce_provider_id = provider_selector(
-                _persona_value(self, "smart_message_debounce_provider_id", ""),
-                _persona_value(self, "llm_provider_id", ""),
+                getattr(self, "smart_message_debounce_provider_id", ""),
+                getattr(self, "llm_provider_id", ""),
             )
         else:
-            debounce_provider_id = str(
-                _persona_value(self, "smart_message_debounce_provider_id", "")
-                or _persona_value(self, "llm_provider_id", "")
-                or ""
-            )
+            debounce_provider_id = str(getattr(self, "smart_message_debounce_provider_id", "") or getattr(self, "llm_provider_id", "") or "")
         timeout_getter = getattr(self, "_model_timeout_seconds_for_call", None)
         timeout_override = (
             timeout_getter(
@@ -5472,14 +5467,6 @@ Bot 近期回复：
                         pos += 1
                     return text_chunk[pos] if pos < len(text_chunk) else ""
 
-                def next_char_is_ascii_digit(start: int, *, allow_spaces: bool = False) -> bool:
-                    candidate = (
-                        next_non_space_char(start)
-                        if allow_spaces
-                        else text_chunk[start] if start < len(text_chunk) else ""
-                    )
-                    return candidate in "0123456789"
-
                 while index < len(text_chunk):
                     matched = ""
                     for word in sorted_words:
@@ -5494,39 +5481,15 @@ Bot 近期回复：
                                 delimiter += text_chunk[end]
                                 end += 1
                             current.append(delimiter)
-                            if next_char_is_ascii_digit(end):
-                                index = end
-                                continue
                             push_current()
                             index = end
                             continue
-                        if matched == ",":
-                            end = index + len(matched)
-                            current.append(delimiter)
-                            if next_char_is_ascii_digit(end):
-                                index = end
-                                continue
-                            push_current()
-                            index = end
-                            continue
-                        if matched and matched[0] in {"-", "－", "—"} and set(matched) == {matched[0]}:
-                            end = index + len(matched)
-                            while end < len(text_chunk) and text_chunk[end] == matched[0]:
-                                end += 1
-                            dash_run = text_chunk[index:end]
-                            if len(dash_run) >= 2 and next_char_is_ascii_digit(end, allow_spaces=True):
-                                current.append(dash_run)
-                                index = end
-                                continue
                         if matched in {"…", "~", "～"}:
                             end = index + len(matched)
                             while end < len(text_chunk) and text_chunk.startswith(matched, end):
                                 delimiter += matched
                                 end += len(matched)
                             current.append(delimiter)
-                            if matched in {"~", "～"} and next_char_is_ascii_digit(end, allow_spaces=True):
-                                index = end
-                                continue
                             push_current()
                             index = end
                             continue
@@ -5697,8 +5660,6 @@ Bot 近期回复：
                 return _normalize_cjk_chat_spaces(f"{left}{right}")
             if re.search(r"[！？!?]$", left):
                 return _normalize_cjk_chat_spaces(f"{left} {right}".strip())
-            if re.fullmatch(r"(?:…+|\.{2,})", left):
-                return _normalize_cjk_chat_spaces(f"{left}{right.lstrip()}")
             softened = re.sub(r"[。…~～]+$", "，", left)
             softened = re.sub(r"[!?！？]+$", "，", softened)
             if not re.search(r"[，,、\s]$", softened):

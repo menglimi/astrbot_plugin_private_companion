@@ -1270,7 +1270,7 @@ class CommandHandlersMixin:
             return False
         permission_terms = (
             "管理员命令", "管理命令", "管理权限", "管理员权限", "私聊管理员", "私聊管理",
-            "夹层密码", "书柜密码", "抽屉密码", "输出夹层密码", "强制输出", "重置夹层密码",
+            "夹层密码", "资料柜密码", "抽屉密码", "输出夹层密码", "强制输出", "重置夹层密码",
             "admins_id", "adminsid", "target_user_ids", "targetuserids", "umo", "uid", "default",
         )
         problem_terms = (

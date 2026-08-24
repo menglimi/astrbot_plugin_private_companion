@@ -96,7 +96,7 @@ class SelfTimelineMixin:
             )
         lines = [
             "【自我时间线检索】",
-            "用户在问 Bot 自己某个时间做过什么。下面是从日程、细化、日记、主动行为、创作、私密阅读、生图和 QQ 空间发布记录里检索到的线索；只根据这些线索回答，不确定就说记不准。",
+            "用户在问 Bot 自己某个时间做过什么。下面是从日程、细化、日记、主动行为、创作、资料归档、生图和 QQ 空间发布记录里检索到的线索；只根据这些线索回答，不确定就说记不准。",
         ]
         for entry in entries[: max(1, limit)]:
             when = _single_line(entry.get("when"), 40) or "时间不详"
@@ -121,7 +121,7 @@ class SelfTimelineMixin:
         entries.extend(self._self_timeline_from_diaries(data))
         entries.extend(self._self_timeline_from_proactive_audit(data, user=user))
         entries.extend(self._self_timeline_from_creative(data))
-        entries.extend(self._self_timeline_from_private_reading(data))
+        entries.extend(self._self_timeline_from_reading_archive(data))
         entries.extend(self._self_timeline_from_photo_generation(data, user=user))
         entries.extend(self._self_timeline_from_qzone_publish(data))
 
@@ -328,8 +328,8 @@ class SelfTimelineMixin:
                 )
         return entries
 
-    def _self_timeline_from_private_reading(self, data: dict[str, Any]) -> list[dict[str, Any]]:
-        state = data.get("jm_cosmos_integration") if isinstance(data.get("jm_cosmos_integration"), dict) else {}
+    def _self_timeline_from_reading_archive(self, data: dict[str, Any]) -> list[dict[str, Any]]:
+        state = data.get("reading_archive_integration") if isinstance(data.get("reading_archive_integration"), dict) else {}
         album = state.get("last_album") if isinstance(state.get("last_album"), dict) else {}
         if not album:
             return []
@@ -339,13 +339,13 @@ class SelfTimelineMixin:
         keyword = _single_line(album.get("keyword"), 40)
         return [
             {
-                "source": "私密阅读",
+                "source": "资料归档",
                 "ts": ts,
                 "date": self._self_timeline_date_from_ts(ts),
                 "when": self._self_timeline_when_from_ts(ts),
-                "summary": f"翻到《{title}》" if title else "翻了一会儿书柜夹层",
+                "summary": f"翻到《{title}》" if title else "翻了一会儿资料柜夹层",
                 "detail": "；".join(part for part in (f"关键词:{keyword}" if keyword else "", impression) if part),
-                "keywords": "看了什么 读了什么 翻了什么 本子 漫画 夹层 阅读 " + " ".join([title, impression, keyword]),
+                "keywords": "看了什么 读了什么 翻了什么 资料 漫画 夹层 阅读 " + " ".join([title, impression, keyword]),
             }
         ]
 
@@ -481,7 +481,7 @@ class SelfTimelineMixin:
             ("作品", 2.0),
             ("看", 1.6),
             ("读", 1.6),
-            ("本子", 2.8),
+            ("资料", 2.8),
             ("漫画", 2.4),
             ("发", 1.8),
             ("说", 1.2),

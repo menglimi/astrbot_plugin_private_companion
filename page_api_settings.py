@@ -274,7 +274,7 @@ class PageSettingNormalizerMixin:
             return str(value or "").strip()[:1000]
         if key in {"news_sources", "ai_daily_sources"}:
             return self._normalize_multiline_source_config(value, limit=4000)
-        if key in {"news_hot_sources", "web_exploration_interests", "private_reading_default_keywords", "private_reading_blocked_tags"}:
+        if key in {"news_hot_sources", "web_exploration_interests", "reading_archive_default_keywords", "reading_archive_blocked_tags"}:
             return str(value or "").strip()[:1200]
         if key == "WEB_EXPLORATION_API_BASE_URL":
             raw = str(value or "").strip()[:800]
@@ -1077,10 +1077,10 @@ class PageSettingNormalizerMixin:
             "qzone_life_publish_similarity_threshold",
             "qzone_emotional_vent_threshold",
             "qzone_emotional_vent_cooldown_hours",
-            "private_reading_min_interval_hours",
-            "private_reading_max_photo_count",
-            "private_reading_preference_min_ratings",
-            "private_reading_preference_max_terms",
+            "reading_archive_min_interval_hours",
+            "reading_archive_max_photo_count",
+            "reading_archive_preference_min_ratings",
+            "reading_archive_preference_max_terms",
             "unanswered_screen_peek_after_minutes",
             "unanswered_screen_peek_cooldown_minutes",
             "goodnight_screen_check_delay_minutes",
@@ -1271,13 +1271,13 @@ class PageSettingNormalizerMixin:
             "enable_qzone_generated_image_publish",
             "enable_qzone_comment_inbox",
             "enable_qzone_emotional_vent_publish",
-            "enable_private_reading_integration",
-            "enable_private_reading_boredom_read",
-            "enable_private_reading_ask_recommendation",
-            "enable_private_reading_vision",
-            "enable_private_reading_page_comments",
-            "enable_private_reading_rating",
-            "enable_private_reading_preference_influence",
+            "enable_reading_archive_integration",
+            "enable_reading_archive_boredom_read",
+            "enable_reading_archive_ask_recommendation",
+            "enable_reading_archive_vision",
+            "enable_reading_archive_page_comments",
+            "enable_reading_archive_rating",
+            "enable_reading_archive_preference_influence",
             "enable_unanswered_screen_peek_followup",
             "enable_goodnight_screen_check",
             "enable_creative_writing",

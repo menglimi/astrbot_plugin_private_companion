@@ -100,6 +100,29 @@ def collect_runtime_files(root: Path) -> list[Path]:
     return sorted(selected, key=lambda path: path.relative_to(root).as_posix())
 
 
+def validate_public_source(files: list[Path]) -> None:
+    """Keep retired connectors and generic runtime buses out of uploads."""
+
+    forbidden_markers = (
+        "jm_" + "cos" + "mos",
+        "private_" + "read" + "ing",
+        "astrbot_plugin_" + "jm_" + "cos" + "mos",
+        "register_" + "reality_touch_provider",
+        "call_" + "reality_touch_provider",
+        "resolve_" + "reality_touch_request",
+    )
+    for source in files:
+        if source.suffix.lower() not in {".py", ".json", ".md", ".js", ".css", ".html", ".yaml", ".yml"}:
+            continue
+        text = source.read_text(encoding="utf-8", errors="ignore").casefold()
+        found = [marker for marker in forbidden_markers if marker.casefold() in text]
+        if found:
+            raise ValueError(
+                f"public archive contains retired or prohibited integration markers in "
+                f"{source.relative_to(source.parents[0])}: {', '.join(found)}"
+            )
+
+
 def _archive_info(name: str) -> zipfile.ZipInfo:
     info = zipfile.ZipInfo(name, date_time=FIXED_ZIP_TIMESTAMP)
     info.compress_type = zipfile.ZIP_DEFLATED
@@ -139,6 +162,7 @@ def build_package(root: Path, output: Path | None = None) -> Path:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", plugin_name):
         raise ValueError(f"metadata plugin name is unsafe for an archive: {plugin_name}")
     files = collect_runtime_files(root)
+    validate_public_source(files)
     destination = (
         output.resolve()
         if output is not None

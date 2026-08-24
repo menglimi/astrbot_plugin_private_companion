@@ -1532,18 +1532,18 @@ class LlmToolActionsMixin:
         if not self.enabled or not runtime_persona_setting(self, 'enable_creative_work_read_guard', True):
             return ""
         return """
-【书柜与自己的创作读取工具】
-当用户询问能否看到书柜/书架、书柜是否为空、里面有什么或有几篇作品时，必须先调用 `pc_view_creative_work`，action=list。list 返回的是插件当前真实保存的书柜库存；主要用户还会得到日记、私密阅读和便签的分类数量。
+【资料柜与自己的创作读取工具】
+当用户询问能否看到资料柜/书架、资料柜是否为空、里面有什么或有几篇作品时，必须先调用 `pc_view_creative_work`，action=list。list 返回的是插件当前真实保存的资料柜库存；主要用户还会得到日记、资料归档和便签的分类数量。
 当用户询问你自己的某篇创作写了什么、某一部分/片段的内容、你如何看待这篇创作、为什么这样写，或要求你结合原文讲讲时，必须先调用 `pc_view_creative_work` 读取真实创作，再依据工具结果回答。
 - 按标题读取：action=get，selector 传用户提到的作品标题；只有用户明确指定“第 N 部分/第 N 段”时才传 part=N。
 - 不确定有哪些作品或用户泛问“最近写了什么”：先 action=list；拿到准确标题后，如需正文再 action=get。
 - 讨论整篇作品时 part=0，工具会按顺序返回预算内的正文；结果若 truncated=true，可继续用 next_part 读取。
 - 工具返回 success 前，不要说“我看过了/我刚检查了”；也不要先发送“我先去看看”等准备动作。直接调用工具，取得结果后一次性自然回答。
-- 回复必须直接说读取结果，不要用“（翻了翻书柜）”“（挠挠头）”之类括号动作代替结果。
+- 回复必须直接说读取结果，不要用“（翻了翻资料柜）”“（挠挠头）”之类括号动作代替结果。
 - 不得把被动提示中的短片段、长期记忆或聊天印象冒充完整原文；找不到作品或部分时如实说明，并可根据 candidates 请用户进一步说明。
 - 这是只读工具，不能修改、续写或删除创作。
-- 用户只是让你讲一个、编一个或说一个新故事，或泛泛地让你讲“你的故事”时，不是在读取书柜作品，不要调用此工具；只有用户明确提到你写过的故事、某篇作品、书柜内容、原文或具体章节时才读取。
-- 用户要求查看配置文件、数据文件、日志、源码、代码、脚本、插件目录或配置项时，不是在读取书柜作品；即使文件或配置名称中包含“创作”“作品”等词，也不要调用此工具，不要把技术文件问答改写成创作原文读取失败。
+- 用户只是让你讲一个、编一个或说一个新故事，或泛泛地让你讲“你的故事”时，不是在读取资料柜作品，不要调用此工具；只有用户明确提到你写过的故事、某篇作品、资料柜内容、原文或具体章节时才读取。
+- 用户要求查看配置文件、数据文件、日志、源码、代码、脚本、插件目录或配置项时，不是在读取资料柜作品；即使文件或配置名称中包含“创作”“作品”等词，也不要调用此工具，不要把技术文件问答改写成创作原文读取失败。
 """.strip()
 
     @staticmethod
@@ -1551,10 +1551,10 @@ class LlmToolActionsMixin:
         normalized = _single_line(text, 260)
         if not normalized or any(
             token in normalized
-            for token in ("书柜密码", "书架密码", "夹层密码", "抽屉密码", "输出密码", "重置密码")
+            for token in ("资料柜密码", "书架密码", "夹层密码", "抽屉密码", "输出密码", "重置密码")
         ):
             return False
-        shelf_terms = ("书柜", "书架", "作品柜", "创作柜")
+        shelf_terms = ("资料柜", "书架", "作品柜", "创作柜")
         query_terms = (
             "能看到", "看得到", "能看见", "可以看到", "能不能看", "能读到",
             "看看", "看一下", "查一下", "查查", "查询", "检索", "列一下", "列出",
@@ -1585,14 +1585,14 @@ class LlmToolActionsMixin:
             return True
 
         # “故事”也常用于临时讲述或现场创作。只有句子同时指向一篇已经
-        # 存在的作品时，才把它当作书柜读取请求。
+        # 存在的作品时，才把它当作资料柜读取请求。
         if "故事" in normalized:
             existing_story_anchors = (
                 "你写的", "你写过的", "你以前写的", "你之前写的", "你最近写的",
                 "你创作的", "你创作过的", "自己写的", "自己创作的",
                 "那篇", "这篇", "哪篇", "那部", "这部", "哪部",
                 "那篇故事", "这篇故事", "哪篇故事", "那个故事", "这个故事",
-                "上次的故事", "之前的故事", "书柜里的故事", "书架里的故事",
+                "上次的故事", "之前的故事", "资料柜里的故事", "书架里的故事",
                 "故事原文", "故事正文", "故事全文", "故事片段", "故事章节",
                 "故事的原文", "故事的正文", "故事的全文", "故事的片段", "故事的章节",
                 "故事第", "故事写了什么", "故事写的什么", "写过什么故事",
@@ -1782,8 +1782,8 @@ class LlmToolActionsMixin:
             {
                 "scope": "owner",
                 "diary_count": len(diaries),
-                "private_reading_count": len(reading_items),
-                "private_reading_titles": [
+                "reading_archive_count": len(reading_items),
+                "reading_archive_titles": [
                     _single_line(item.get("title"), 80) or "未命名阅读记录"
                     for item in reading_items[-8:]
                 ],
@@ -1812,7 +1812,7 @@ class LlmToolActionsMixin:
             sections.extend(
                 (
                     f"日记本有 {_safe_int(snapshot.get('diary_count'), 0, 0)} 天记录",
-                    f"私密阅读有 {_safe_int(snapshot.get('private_reading_count'), 0, 0)} 条记录",
+                    f"资料归档有 {_safe_int(snapshot.get('reading_archive_count'), 0, 0)} 条记录",
                     f"便签区有 {_safe_int(snapshot.get('memo_active_count'), 0, 0)} 张进行中便签",
                 )
             )
@@ -1826,12 +1826,12 @@ class LlmToolActionsMixin:
         visible_count = _safe_int(snapshot.get("creative_count"), 0, 0)
         if snapshot.get("scope") == "owner":
             visible_count += _safe_int(snapshot.get("diary_count"), 0, 0)
-            visible_count += _safe_int(snapshot.get("private_reading_count"), 0, 0)
+            visible_count += _safe_int(snapshot.get("reading_archive_count"), 0, 0)
             visible_count += _safe_int(snapshot.get("memo_active_count"), 0, 0)
             visible_count += _safe_int(snapshot.get("memo_completed_count"), 0, 0)
         claims_empty = bool(
             re.search(
-                r"(?:书柜|书架)?[^。！？!?\n]{0,12}(?:还是|仍然|依旧|目前|现在)?"
+                r"(?:资料柜|书架)?[^。！？!?\n]{0,12}(?:还是|仍然|依旧|目前|现在)?"
                 r"(?:空空的|是空的|空着|什么都没有|没有东西|没东西|没有内容)",
                 cleaned,
             )
@@ -1859,7 +1859,7 @@ class LlmToolActionsMixin:
             return cleaned
         if inventory_query:
             logger.warning(
-                "[PrivateCompanion] 书柜查询未形成可信正文，已按本地真实库存回答: attempted=%s status=%s inventory_complete=%s session=%s",
+                "[PrivateCompanion] 资料柜查询未形成可信正文，已按本地真实库存回答: attempted=%s status=%s inventory_complete=%s session=%s",
                 bool(getattr(event, "private_companion_creative_work_tool_attempted", False)),
                 _single_line(getattr(event, "private_companion_creative_work_tool_status", ""), 24) or "none",
                 inventory_complete,

@@ -1660,9 +1660,9 @@ class ProactiveEngineMixin:
             else:
                 score -= 0.06
                 note("戳一戳不像当前人格的自然动作")
-        if "jm_cosmos_read" in action_parts and not any(token in str(self._get_default_persona_prompt() or "") for token in ("阅读", "书", "小说", "本子", "夹层")):
+        if "reading_archive_read" in action_parts and not any(token in str(self._get_default_persona_prompt() or "") for token in ("阅读", "书", "小说", "资料", "夹层")):
             score -= 0.08
-            note("私下阅读缺少人格兴趣支撑")
+            note("资料归档缺少人格兴趣支撑")
 
         if normalized_reason in {"activity_share", "diary_share", "background_schedule"}:
             if profile.get("playful") or profile.get("visual") or profile.get("observant"):
@@ -5848,8 +5848,8 @@ class ProactiveEngineMixin:
             actions.append("photo_text")
         if self._voice_available(user):
             actions.append("voice")
-        if self._jm_cosmos_read_available(user):
-            actions.append("jm_cosmos_read")
+        if self._reading_archive_read_available(user):
+            actions.append("reading_archive_read")
         actions.extend(f"external:{item['name']}" for item in self._available_external_proactive_abilities(user) if item.get("name"))
         return actions
 
@@ -6046,8 +6046,8 @@ class ProactiveEngineMixin:
             available.add("poke")
         if self._voice_available(user):
             available.add("voice")
-        if self._jm_cosmos_read_available(user):
-            available.add("jm_cosmos_read")
+        if self._reading_archive_read_available(user):
+            available.add("reading_archive_read")
         items: list[dict[str, str]] = []
         for raw in PROACTIVE_ABILITY_REGISTRY:
             if not isinstance(raw, dict):
@@ -6086,8 +6086,8 @@ class ProactiveEngineMixin:
             if name == "screen_peek":
                 label = f"观察{terms['screen']}"
                 when = when.replace("轻窥屏", f"看一眼{terms['screen']}").replace("探头一下", "轻轻确认一下")
-            elif name == "jm_cosmos_read":
-                label = terms["private_reading"]
+            elif name == "reading_archive_read":
+                label = terms["reading_archive"]
                 when = f"有空、无聊或夜里自己想给{terms['bookshelf']}{terms['secret_drawer']}添一点阅读内容"
                 use_for = "内部阅读、低频形成读后印象,是否提起交给人格"
             elif name == "photo_text" and terms.get("mode") in {"fantasy", "sci_fi"}:
@@ -6117,8 +6117,8 @@ class ProactiveEngineMixin:
             when = item.get("when")
             if name == "screen_peek":
                 label = f"观察{terms['screen']}"
-            elif name == "jm_cosmos_read":
-                label = terms["private_reading"]
+            elif name == "reading_archive_read":
+                label = terms["reading_archive"]
             lines.append(
                 f"- {item.get('module')}/{name}：{label}｜{when}"
             )
@@ -6131,7 +6131,7 @@ class ProactiveEngineMixin:
             "photo_text": "发图",
             "poke": "戳一戳",
             "voice": "语音",
-            "jm_cosmos_read": "私下阅读",
+            "reading_archive_read": "资料归档",
         }
         return "、".join(labels.get(action, action) for action in actions)
 
@@ -6175,7 +6175,7 @@ class ProactiveEngineMixin:
         state: dict[str, Any],
         actions: list[str],
     ) -> tuple[dict[str, Any], list[str]]:
-        required_actions = [action for action in actions if action in {"message", "screen_peek", "photo_text", "voice", "jm_cosmos_read"}]
+        required_actions = [action for action in actions if action in {"message", "screen_peek", "photo_text", "voice", "reading_archive_read"}]
         last_normalized = {
             "summary": "这一段按原日程慢慢推进。",
             "today_events": [],
@@ -6256,7 +6256,7 @@ class ProactiveEngineMixin:
                     continue
                 scoped.append(item)
             usable = scoped
-        required_actions = [action for action in actions if action in {"message", "screen_peek", "photo_text", "voice", "jm_cosmos_read"}]
+        required_actions = [action for action in actions if action in {"message", "screen_peek", "photo_text", "voice", "reading_archive_read"}]
         filtered: list[dict[str, Any]] = []
         for action in required_actions:
             matched = next((item for item in usable if str(item.get("action") or "message") == action and item not in filtered), None)
@@ -9327,7 +9327,7 @@ class ProactiveEngineMixin:
                 return False
             if part == "voice" and not self._voice_available(user):
                 return False
-            if part == "jm_cosmos_read" and not self._jm_cosmos_read_available(user):
+            if part == "reading_archive_read" and not self._reading_archive_read_available(user):
                 return False
             if part.startswith("external:"):
                 external_name = self._normalize_external_ability_name(part.split(":", 1)[1])
@@ -9911,7 +9911,7 @@ class ProactiveEngineMixin:
             "environment_change": [(6 * 60, 23 * 60 + 30)],
             "weather_alert": [(0, 24 * 60)],
             "health_alert": [(0, 24 * 60)],
-            "jm_cosmos_recommendation_request": [(10 * 60, 23 * 60)],
+            "reading_archive_recommendation_request": [(10 * 60, 23 * 60)],
             "creative_share": [(10 * 60, 23 * 60)],
             "memory_echo": [(10 * 60, 21 * 60 + 30)],
             "mood_checkin": [(9 * 60 + 30, 21 * 60 + 30)],
@@ -10197,13 +10197,13 @@ class ProactiveEngineMixin:
         if reason == "web_exploration_share":
             exploration_context = self._format_web_exploration_action_context(user)
             raw_action_context = "\n".join(part for part in (raw_action_context, exploration_context) if part).strip()
-        if reason == "jm_cosmos_share":
-            jm_context = self._format_jm_cosmos_action_context(user)
+        if reason == "reading_archive_share":
+            jm_context = self._format_reading_archive_action_context(user)
             raw_action_context = "\n".join(part for part in (raw_action_context, jm_context) if part).strip()
-        if reason == "jm_cosmos_recommendation_request":
-            ask_context = user.get("jm_cosmos_recommendation_context") if isinstance(user.get("jm_cosmos_recommendation_context"), dict) else {}
+        if reason == "reading_archive_recommendation_request":
+            ask_context = user.get("reading_archive_recommendation_context") if isinstance(user.get("reading_archive_recommendation_context"), dict) else {}
             ask_text = _single_line(ask_context.get("hint"), 160) or "想向用户问有没有适合私下看的阅读素材推荐。"
-            raw_action_context = "\n".join(part for part in (raw_action_context, f"夹层阅读推荐征求：{ask_text}") if part).strip()
+            raw_action_context = "\n".join(part for part in (raw_action_context, f"资料归档推荐征求：{ask_text}") if part).strip()
         if reason == "creative_share":
             creative_context = self._format_creative_share_action_context(user)
             raw_action_context = "\n".join(part for part in (raw_action_context, creative_context) if part).strip()

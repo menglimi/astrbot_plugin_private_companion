@@ -334,7 +334,7 @@ _DURABLE_SECTION_NAMES = frozenset(
         "news_integration",
         "web_exploration",
         "qzone_integration",
-        "jm_cosmos_integration",
+        "reading_archive_integration",
         "bookshelf_items",
         "bookshelf_secret",
         "bookshelf_store_revision",
@@ -1002,7 +1002,7 @@ class CoreStoreMixin:
             "news_integration": {},
             "web_exploration": {},
             "qzone_integration": {},
-            "jm_cosmos_integration": {},
+            "reading_archive_integration": {},
             "bookshelf_items": [],
             "bookshelf_secret": {},
             "bookshelf_store_revision": 0,
@@ -1150,7 +1150,7 @@ class CoreStoreMixin:
         data.setdefault("news_integration", {})
         data.setdefault("web_exploration", {})
         data.setdefault("qzone_integration", {})
-        data.setdefault("jm_cosmos_integration", {})
+        data.setdefault("reading_archive_integration", {})
         data.setdefault("bookshelf_items", [])
         data.setdefault("bookshelf_secret", {})
         data.setdefault("bookshelf_store_revision", 0)
@@ -1646,7 +1646,7 @@ class CoreStoreMixin:
             "bookshelf_items",
             "bookshelf_secret",
             "bookshelf_store_revision",
-            "jm_cosmos_integration",
+            "reading_archive_integration",
         }
         bookshelf_tombstones = bookshelf_sections & set(tombstones)
         if bookshelf_sections & (changed_sections | deleted_sections):
@@ -1711,7 +1711,7 @@ class CoreStoreMixin:
                                 "bookshelf_items",
                                 "bookshelf_secret",
                                 "bookshelf_store_revision",
-                                "jm_cosmos_integration",
+                                "reading_archive_integration",
                             }
                         )
                     )
@@ -2242,7 +2242,7 @@ class CoreStoreMixin:
             "bookshelf_items",
             "bookshelf_secret",
             "bookshelf_store_revision",
-            "jm_cosmos_integration",
+            "reading_archive_integration",
         }
         if not (bookshelf_sections & (changed | deleted)):
             return

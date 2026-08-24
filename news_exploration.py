@@ -2914,7 +2914,7 @@ class NewsExplorationMixin:
             summary = _single_line(item.get("summary"), 180)
             lines.append(f"{idx}. [{source}] {title}" + (f"｜{summary}" if summary else ""))
         prompt = f"""
-请作为 Bot 私下阅读新闻后的内部整理,从下面新闻里挑一条最适合轻轻提起的内容。
+请作为 Bot 资料归档新闻后的内部整理,从下面新闻里挑一条最适合轻轻提起的内容。
 
 要求：
 1. 不要写成新闻播报,要像“刚看到一条消息后脑子里的印象”。

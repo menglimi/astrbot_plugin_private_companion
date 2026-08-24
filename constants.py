@@ -51,7 +51,7 @@ MODEL_PROVIDER_KEYS = frozenset(
         "GROUP_FOLLOWUP_JUDGE_PROVIDER_ID",
         "FORWARD_MESSAGE_PROVIDER_ID",
         "PLUGIN_VISION_PROVIDER_ID",
-        "PRIVATE_READING_VISION_PROVIDER_ID",
+        "READING_ARCHIVE_VISION_PROVIDER_ID",
         "REACTION_EXPRESSION_EMBEDDING_PROVIDER_ID",
         "NEWS_PROVIDER_ID",
         "WEB_EXPLORATION_PROVIDER_ID",
@@ -112,7 +112,7 @@ MODEL_TASK_PROVIDER_KEYS = {
     "forward_message_image_vision": "PLUGIN_VISION_PROVIDER_ID",
     "private_image_vision": "PLUGIN_VISION_PROVIDER_ID",
     "group_nsfw_image_review": "PLUGIN_VISION_PROVIDER_ID",
-    "private_reading_vision": "PRIVATE_READING_VISION_PROVIDER_ID",
+    "reading_archive_vision": "READING_ARCHIVE_VISION_PROVIDER_ID",
     "news_digest": "NEWS_PROVIDER_ID",
     "external_event_self_link": "NEWS_PROVIDER_ID",
     "web_exploration_query": "WEB_EXPLORATION_PROVIDER_ID",
@@ -158,8 +158,8 @@ MODEL_QUICK_TIMEOUT_KEYS = {
     "GROUP_FOLLOWUP_JUDGE_PROVIDER_ID": "FAST_RESPONSE_PROVIDER_ID",
     "FORWARD_MESSAGE_PROVIDER_ID": "COMPLEX_REASONING_PROVIDER_ID",
     "PLUGIN_VISION_PROVIDER_ID": "PLUGIN_VISION_PROVIDER_ID",
-    # 夹层阅读视觉模型在快速模式下也保持独立，不能复用通用识图的超时配置。
-    "PRIVATE_READING_VISION_PROVIDER_ID": "PRIVATE_READING_VISION_PROVIDER_ID",
+    # 资料归档视觉模型在快速模式下也保持独立，不能复用通用识图的超时配置。
+    "READING_ARCHIVE_VISION_PROVIDER_ID": "READING_ARCHIVE_VISION_PROVIDER_ID",
     "NEWS_PROVIDER_ID": "FAST_RESPONSE_PROVIDER_ID",
     "WEB_EXPLORATION_PROVIDER_ID": "FAST_RESPONSE_PROVIDER_ID",
 }
@@ -309,8 +309,8 @@ _REASON_TEXT = {
     "news_share": "跟{name}分享刚看到的一条新闻",
     "web_exploration_share": "跟{name}分享刚探索到的新发现",
     "creative_share": "跟{name}分享小说片段",
-    "jm_cosmos_share": "提起漫画本子",
-    "jm_cosmos_recommendation_request": "向{name}问问有没有适合的阅读推荐",
+    "reading_archive_share": "提起漫画资料",
+    "reading_archive_recommendation_request": "向{name}问问有没有适合的阅读推荐",
     "game_invite": "想约{name}再玩一局",
     "dream_share": "跟{name}分享刚想起的一段梦",
     "qzone_life_publish": "把一点生活片段分享给{name}",
@@ -330,7 +330,7 @@ _ACTION_TEXT = {
     "photo_text": "分享了一张照片",
     "poke": "戳了一下",
     "voice": "用语音说了一句",
-    "jm_cosmos_read": "私下翻了会儿漫画本子",
+    "reading_archive_read": "私下翻了会儿漫画资料",
 }
 
 # 主动能力注册表 - 给提示词和调试输出共用
@@ -377,9 +377,9 @@ PROACTIVE_ABILITY_REGISTRY = [
     },
     {
         "module": "主动行为",
-        "name": "jm_cosmos_read",
-        "label": "私下翻本子",
-        "when": "检测到 JM-Cosmos II,且 Bot 空闲、无聊或夜里自己找点东西看",
+        "name": "reading_archive_read",
+        "label": "私下翻资料",
+        "when": "检测到 Reading Archive II,且 Bot 空闲、无聊或夜里自己找点东西看",
         "use_for": "内部阅读、低频形成读后印象,必要时很含蓄地提一句",
         "avoid": "主动发送文件、露骨复述内容、把搜索/插件/视觉模型过程说出来",
     },

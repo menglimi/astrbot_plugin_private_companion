@@ -96,7 +96,7 @@
       to { opacity: 1; transform: scaleX(1); transform-origin: left; }
     }
   </style>
-  <link rel="stylesheet" href="./app.css?v=20260809-external-ability-controls-v3&amp;build=20260810-reference-upload-v1&amp;touch=reality-workspace-v1&amp;migration-notice=v2&amp;component-order=v1&amp;layout=model-routing-v2&amp;release=6.3.5" />
+  <link rel="stylesheet" href="./app.css?v=20260809-external-ability-controls-v3&amp;build=20260810-reference-upload-v1&amp;touch=reality-workspace-v4&amp;migration-notice=v2&amp;component-order=v1&amp;layout=model-routing-v2&amp;release=6.3.5" />
   <!-- Keep the structured roleplay form readable while a WebUI asset is being refreshed. -->
   <style id="roleplay-layout-fallback">
     .roleplay-form,
@@ -585,7 +585,7 @@
 识屏 = 水晶映像
 B站 = 影像记录
 QQ空间 = 公开札记
-书柜 = 行囊书匣"></textarea>
+资料柜 = 行囊书匣"></textarea>
                 </label>
                 <div class="roleplay-standard blueprint-standard-grid">
                   <fieldset class="roleplay-field-group roleplay-world-foundation-group">
@@ -608,7 +608,7 @@ QQ空间 = 公开札记
                   <summary class="translation-summary">
                     <div class="translation-summary-text">
                       <b>平台称呼转写（可选）</b>
-                      <span>只有角色世界观需要把"群聊、识屏、B站、QQ空间、书柜"换成设定内说法时再填；普通现代日常可以全部留空。</span>
+                      <span>只有角色世界观需要把"群聊、识屏、B站、QQ空间、资料柜"换成设定内说法时再填；普通现代日常可以全部留空。</span>
                     </div>
                   </summary>
                   <div class="roleplay-standard translation-standard-grid">
@@ -616,7 +616,7 @@ QQ空间 = 公开札记
                     <label>识屏（可选） <input data-roleplay-translation-part="识屏" placeholder="可留空，例如 水晶映像" /></label>
                     <label>B站（可选） <input data-roleplay-translation-part="B站" placeholder="可留空，例如 影像记录" /></label>
                     <label>QQ空间（可选） <input data-roleplay-translation-part="QQ空间" placeholder="可留空，例如 公开札记" /></label>
-                    <label>书柜（可选） <input data-roleplay-translation-part="书柜" placeholder="可留空，例如 行囊书匣" /></label>
+                    <label>资料柜（可选） <input data-roleplay-translation-part="资料柜" placeholder="可留空，例如 行囊书匣" /></label>
                   </div>
                 </details>
               </div>
@@ -853,7 +853,7 @@ QQ空间 = 公开札记
                 <a href="https://github.com/menglimi/astrbot_plugin_reality_companion" target="_blank" rel="noopener noreferrer">查看插件仓库 <span aria-hidden="true">↗</span></a>
               </li>
               <li>
-                <div><strong>我会替你留住故事</strong><span>原书柜与 QQ 空间功能</span></div>
+                <div><strong>我会替你留住故事</strong><span>原资料柜与 QQ 空间功能</span></div>
                 <a href="https://github.com/menglimi/astrbot_plugin_content_companion" target="_blank" rel="noopener noreferrer">查看插件仓库 <span aria-hidden="true">↗</span></a>
               </li>
             </ul>
@@ -1090,7 +1090,7 @@ QQ空间 = 公开札记
         <div class="section-head">
           <div>
             <h2>创作</h2>
-            <span class="muted">作品、书柜与 QQ 空间统一由陪伴扩展提供</span>
+            <span class="muted">作品、资料柜与 QQ 空间统一由陪伴扩展提供</span>
           </div>
           <span id="creativeCompanionStatus" class="module-badge">正在检测扩展</span>
         </div>
@@ -1114,7 +1114,7 @@ QQ空间 = 公开札记
             <article>
               <span>阅读</span>
               <b id="bookshelfJmCount">0</b>
-              <small>夹层阅读记录</small>
+              <small>资料归档记录</small>
             </article>
             <article>
               <span>备忘便签</span>
@@ -1187,7 +1187,7 @@ QQ空间 = 公开札记
               <div class="drawer-head">
                 <div>
                   <h2>抽屉夹层</h2>
-                  <p class="section-desc">日记与私密阅读 · 需要密码解锁</p>
+                  <p class="section-desc">日记与资料归档 · 需要密码解锁</p>
                 </div>
                 <span id="bookshelfLockState" class="module-badge">未解锁</span>
               </div>
@@ -2066,8 +2066,8 @@ QQ空间 = 公开札记
   <script src="./js/features/daily-outfit.js?v=20260711-qzone-preview-context"></script>
   <script src="./js/ui/appearance.js?v=20260713-font-options"></script>
   <!-- Loaded on demand by app.js through AstrBot's relative dynamic-import rewriting:
-       ./js/panels/provider-tree.js?v=20260804-private-reading-capability-v1&amp;manual=provider-input-v2&amp;layout=v2
+       ./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&amp;manual=provider-input-v2&amp;layout=v2
        ./js/panels/qzone-panel.js?v=20260810-qzone-classic-loader-v1 -->
-  <script src="./app.js?v=20260809-proactive-tts-external-ability-photo-fixed-v1&amp;build=20260810-reference-upload-v2&amp;page=lazy-classic-loader-v1&amp;scope=photo-scope-quota-v1&amp;touch=reality-workspace-v1&amp;memory-source=memory-companion-v2&amp;user-create=profile-v1&amp;relationship-role-photo=pr125-v1&amp;camera-runtime-scope=v1&amp;config=multi-persona-summary-v2&amp;troubleshooting=diagnostic-category-label-v1&amp;content-visibility=v1&amp;migration-notice=v4&amp;component-order=v1&amp;layout=model-routing-v2&amp;persona-style-batch-recovery=v1&amp;preset-save=v1&amp;release=6.3.5"></script>
+  <script src="./app.js?v=20260809-proactive-tts-external-ability-photo-fixed-v1&amp;build=20260810-reference-upload-v2&amp;page=lazy-classic-loader-v1&amp;scope=photo-scope-quota-v1&amp;touch=reality-workspace-v4&amp;memory-source=memory-companion-v2&amp;user-create=profile-v1&amp;relationship-role-photo=pr125-v1&amp;camera-runtime-scope=v1&amp;config=multi-persona-summary-v2&amp;troubleshooting=diagnostic-category-label-v1&amp;content-visibility=v1&amp;migration-notice=v4&amp;component-order=v1&amp;layout=model-routing-v2&amp;persona-style-batch-recovery=v1&amp;preset-save=v1&amp;release=6.3.5"></script>
 </body>
 </html>

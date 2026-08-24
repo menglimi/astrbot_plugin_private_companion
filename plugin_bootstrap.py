@@ -1994,59 +1994,59 @@ def _initialize_group_and_provider_config(self: Any, c: Any) -> None:
     self.qzone_emotional_vent_threshold = self._cfg_int(c, "qzone_emotional_vent_threshold", 90, 40, 100)
     self.qzone_emotional_vent_cooldown_hours = self._cfg_int(c, "qzone_emotional_vent_cooldown_hours", 72, 4, 336)
     self.qzone_emotional_vent_probability = self._cfg_unit_interval(c, "qzone_emotional_vent_probability", 0.35, 0.0)
-    self.enable_private_reading_integration = self._cfg_bool(c, "enable_private_reading_integration", False)
-    self.enable_private_reading_boredom_read = self._cfg_bool(c, "enable_private_reading_boredom_read", False)
-    self.enable_private_reading_ask_recommendation = self._cfg_bool(
+    self.enable_reading_archive_integration = self._cfg_bool(c, "enable_reading_archive_integration", False)
+    self.enable_reading_archive_boredom_read = self._cfg_bool(c, "enable_reading_archive_boredom_read", False)
+    self.enable_reading_archive_ask_recommendation = self._cfg_bool(
         c,
-        "enable_private_reading_ask_recommendation",
+        "enable_reading_archive_ask_recommendation",
         False,
     )
-    self.enable_private_reading_vision = self._cfg_bool(
+    self.enable_reading_archive_vision = self._cfg_bool(
         c,
-        "enable_private_reading_vision",
+        "enable_reading_archive_vision",
         True,
     )
-    self.enable_private_reading_page_comments = self._cfg_bool(
+    self.enable_reading_archive_page_comments = self._cfg_bool(
         c,
-        "enable_private_reading_page_comments",
+        "enable_reading_archive_page_comments",
         True,
     )
-    self.enable_private_reading_rating = self._cfg_bool(
+    self.enable_reading_archive_rating = self._cfg_bool(
         c,
-        "enable_private_reading_rating",
+        "enable_reading_archive_rating",
         True,
     )
-    self.private_reading_min_interval_hours = self._cfg_int(c, "private_reading_min_interval_hours", 18, 4, 168)
-    self.private_reading_max_photo_count = self._cfg_int(c, "private_reading_max_photo_count", 60, 8, 120)
-    self.private_reading_share_probability = self._cfg_unit_interval(
-        c, "private_reading_share_probability", 0.18, 0.0
+    self.reading_archive_min_interval_hours = self._cfg_int(c, "reading_archive_min_interval_hours", 18, 4, 168)
+    self.reading_archive_max_photo_count = self._cfg_int(c, "reading_archive_max_photo_count", 60, 8, 120)
+    self.reading_archive_share_probability = self._cfg_unit_interval(
+        c, "reading_archive_share_probability", 0.18, 0.0
     )
-    self.private_reading_ask_probability = self._cfg_unit_interval(c, "private_reading_ask_probability", 0.16, 0.0)
-    self.enable_private_reading_preference_influence = self._cfg_bool(
+    self.reading_archive_ask_probability = self._cfg_unit_interval(c, "reading_archive_ask_probability", 0.16, 0.0)
+    self.enable_reading_archive_preference_influence = self._cfg_bool(
         c,
-        "enable_private_reading_preference_influence",
+        "enable_reading_archive_preference_influence",
         True,
     )
-    self.private_reading_preference_min_ratings = self._cfg_int(
+    self.reading_archive_preference_min_ratings = self._cfg_int(
         c,
-        "private_reading_preference_min_ratings",
+        "reading_archive_preference_min_ratings",
         5,
         1,
         30,
     )
-    self.private_reading_preference_max_terms = self._cfg_int(
+    self.reading_archive_preference_max_terms = self._cfg_int(
         c,
-        "private_reading_preference_max_terms",
+        "reading_archive_preference_max_terms",
         8,
         2,
         20,
     )
-    self.private_reading_default_keywords = self._cfg_str(
-        c, "private_reading_default_keywords", "纯爱,恋爱,同人"
+    self.reading_archive_default_keywords = self._cfg_str(
+        c, "reading_archive_default_keywords", "纯爱,恋爱,同人"
     )
-    self.private_reading_blocked_tags = self._cfg_str(c, "private_reading_blocked_tags", "連載中,長篇,青年漫")
+    self.reading_archive_blocked_tags = self._cfg_str(c, "reading_archive_blocked_tags", "連載中,長篇,青年漫")
     self.plugin_vision_provider_id = self._cfg_str(c, "PLUGIN_VISION_PROVIDER_ID", "")
-    self.private_reading_vision_provider_id = self._cfg_str(c, "PRIVATE_READING_VISION_PROVIDER_ID", "")
+    self.reading_archive_vision_provider_id = self._cfg_str(c, "READING_ARCHIVE_VISION_PROVIDER_ID", "")
     self._apply_quick_provider_defaults()
     self.group_episode_refresh_minutes = self._cfg_int(c, "group_episode_refresh_minutes", 180, 30, 1440)
     self.group_slang_summary_minutes = self._cfg_int(c, "group_slang_summary_minutes", 360, 60, 2880)

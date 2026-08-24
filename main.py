@@ -368,7 +368,7 @@ except ModuleNotFoundError as exc:
         "请重新安装包含该文件的完整版本。"
     )
 from .event_dispatch import EventDispatchMixin
-from .private_reading import PrivateReadingMixin
+from .reading_archive import ReadingArchiveMixin
 from .news_exploration import NewsExplorationMixin
 try:
     from .self_timeline import SelfTimelineMixin
@@ -1561,8 +1561,8 @@ _PROACTIVE_ONLY_TEMP_UNLOCK_ALIASES = {
     "候选菜单": "enable_food_menu_recommendation",
     "饭点关心": "enable_meal_care_proactive",
     "吃饭关心": "enable_meal_care_proactive",
-    "书柜偏好": "enable_private_reading_preference_influence",
-    "夹层偏好": "enable_private_reading_preference_influence",
+    "资料柜偏好": "enable_reading_archive_preference_influence",
+    "夹层偏好": "enable_reading_archive_preference_influence",
     "关系网": "enable_worldbook_member_recognition",
     "跨用户记忆": "enable_cross_user_memory_bridge",
     "跨用户记忆互通": "enable_cross_user_memory_bridge",
@@ -1589,7 +1589,7 @@ _PROACTIVE_ONLY_TEMP_UNLOCK_LABELS = {
     "enable_skill_growth_passive_injection": "技能被动注入",
     "enable_food_menu_recommendation": "吃什么候选",
     "enable_meal_care_proactive": "饭点主动关心",
-    "enable_private_reading_preference_influence": "夹层阅读偏好影响",
+    "enable_reading_archive_preference_influence": "资料归档偏好影响",
     "enable_worldbook_member_recognition": "关系网成员识别",
     "enable_cross_user_memory_bridge": "跨用户记忆互通",
     "enable_atrelay_tools": "跨群转述工具",
@@ -1620,7 +1620,7 @@ _PROACTIVE_ONLY_TEMP_UNLOCK_GROUPS = {
         "enable_group_companion",
         "enable_skill_growth_passive_injection",
         "enable_food_menu_recommendation",
-        "enable_private_reading_preference_influence",
+        "enable_reading_archive_preference_influence",
         "enable_worldbook_member_recognition",
         "enable_cross_user_memory_bridge",
         "enable_livingmemory_integration",
@@ -1679,7 +1679,7 @@ class PrivateCompanionPlugin(
     GroupObservationMixin,
     GroupMemberSafetyMixin,
     EventDispatchMixin,
-    PrivateReadingMixin,
+    ReadingArchiveMixin,
     NewsExplorationMixin,
     SelfTimelineMixin,
     AtRelayMixin,
@@ -11570,10 +11570,10 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         part: int = 0,
         max_chars: int = 6000,
     ) -> str:
-        """只读查看 Bot 自己书柜的真实库存、创作项目与正文。
+        """只读查看 Bot 自己资料柜的真实库存、创作项目与正文。
 
         Args:
-            action(string): list/get。list 列出书柜库存与作品；get 读取指定作品正文。
+            action(string): list/get。list 列出资料柜库存与作品；get 读取指定作品正文。
             selector(string): 作品准确标题、项目 id 或列表编号；留空时 get 默认读取最近一篇。
             part(number): 可选，明确读取第几部分，按 1 开始；0 表示从第一部分起按预算读取。
             max_chars(number): 可选，本次最多返回正文字符数，默认 6000。
@@ -12427,7 +12427,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             "reaction_expression_embedding_provider_id": "REACTION_EXPRESSION_EMBEDDING_PROVIDER_ID",
             "deepseek_peak_replacement_provider_id": "DEEPSEEK_PEAK_REPLACEMENT_PROVIDER_ID",
             "sensitive_replacement_provider_id": "SENSITIVE_REPLACEMENT_PROVIDER_ID",
-            "private_reading_vision_provider_id": "PRIVATE_READING_VISION_PROVIDER_ID",
+            "reading_archive_vision_provider_id": "READING_ARCHIVE_VISION_PROVIDER_ID",
         }
 
         if str(getattr(self, "provider_config_mode", "quick") or "quick").strip().lower() != "quick":
@@ -12487,10 +12487,10 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         # JM reading has its own visual route even in quick mode.  Keeping it
         # independent prevents a generic image-model change from changing the
         # cost and output quality of bookshelf analysis.
-        self.private_reading_vision_provider_id = self._cfg_str(
+        self.reading_archive_vision_provider_id = self._cfg_str(
             config,
-            "PRIVATE_READING_VISION_PROVIDER_ID",
-            str(getattr(self, "private_reading_vision_provider_id", "") or ""),
+            "READING_ARCHIVE_VISION_PROVIDER_ID",
+            str(getattr(self, "reading_archive_vision_provider_id", "") or ""),
         )
         self.plugin_vision_provider_id = configured_provider("PLUGIN_VISION_PROVIDER_ID", plugin_vision)
 
@@ -13168,10 +13168,10 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         )
         add_spec("bookshelf.reading", "bookshelf", 62, lambda: self._format_bookshelf_reading_context_for_reply(inbound_text, current_user))
         add_spec(
-            "private_reading.preference",
-            "private_reading",
+            "reading_archive.preference",
+            "reading_archive",
             63,
-            lambda: self._format_private_reading_preference_influence_for_reply(inbound_text, current_user),
+            lambda: self._format_reading_archive_preference_influence_for_reply(inbound_text, current_user),
         )
         add_spec("news.recent", "news", 64, lambda: self._format_recent_news_context_for_reply(inbound_text))
         add_spec("web_exploration.recent", "web_exploration", 65, lambda: self._format_recent_web_exploration_context_for_reply(inbound_text))
@@ -13765,7 +13765,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             "图片", "看图", "照片", "语音", "引用", "转发", "聊天记录",
             "帮我", "怎么", "为什么", "是什么", "怎么办", "分析", "解释", "总结",
             "日程", "状态", "近况", "在干嘛", "做什么", "忙什么",
-            "书柜", "夹层", "抽屉", "阅读", "读过", "看过", "素材", "本子", "漫画", "藏本",
+            "资料柜", "夹层", "抽屉", "阅读", "读过", "看过", "素材", "资料", "漫画", "藏本",
             "创作", "作品", "写作", "写书", "写过书", "小说", "随笔", "散文", "剧本", "手稿", "草稿", "出版",
             "新闻", "说说", "空间", "发给", "转告", "@",
         )
@@ -15757,7 +15757,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             "enable_private_image_self_recognition",
             "enable_group_companion",
             "enable_skill_growth_passive_injection",
-            "enable_private_reading_preference_influence",
+            "enable_reading_archive_preference_influence",
             "enable_worldbook_member_recognition",
             "enable_livingmemory_integration",
         }
@@ -17790,15 +17790,15 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                             value = inline_value
         bookshelf_password_reset_actions = {
             "重置夹层密码", "重设夹层密码", "重新生成夹层密码", "刷新夹层密码", "生成夹层密码",
-            "重置书柜密码", "重设书柜密码", "重新生成书柜密码", "刷新书柜密码", "生成书柜密码",
+            "重置资料柜密码", "重设资料柜密码", "重新生成资料柜密码", "刷新资料柜密码", "生成资料柜密码",
         }
         bookshelf_password_output_actions = {
             "输出夹层密码", "强制输出夹层密码", "查看夹层密码", "显示夹层密码",
-            "输出书柜密码", "强制输出书柜密码", "查看书柜密码", "显示书柜密码",
+            "输出资料柜密码", "强制输出资料柜密码", "查看资料柜密码", "显示资料柜密码",
             "输出抽屉密码", "查看抽屉密码", "显示抽屉密码",
         }
         bookshelf_password_value_actions = {"强制输出", "输出", "查看密码", "查看", "显示"}
-        bookshelf_password_value_targets = {"夹层密码", "书柜密码", "抽屉密码", "书柜暗格", "夹层", "书柜"}
+        bookshelf_password_value_targets = {"夹层密码", "资料柜密码", "抽屉密码", "资料柜暗格", "夹层", "资料柜"}
         bookshelf_password_output_requested = (
             action in bookshelf_password_output_actions
             or (
@@ -18081,17 +18081,17 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 response = self._format_livingmemory_status()
             elif action in {"日记", "bot日记", "小记"}:
                 response = self._format_diaries()
-            elif action in {"书柜密码", "夹层密码", "抽屉密码", "书柜暗格"}:
+            elif action in {"资料柜密码", "夹层密码", "抽屉密码", "资料柜暗格"}:
                 response = "这个要直接问我本人。她会不会说、怎么说,要看当时的人格和心情。"
             elif bookshelf_password_output_requested:
                 password = await self._ensure_bookshelf_password_async()
                 password_reason = await self._ensure_bookshelf_password_reason_async(password)
                 secret = self.data.get("bookshelf_secret", {}) if isinstance(self.data.get("bookshelf_secret"), dict) else {}
                 response = (
-                    "当前书柜夹层密码：\n"
+                    "当前资料柜夹层密码：\n"
                     f"{password}\n"
                     f"生成方式：{_single_line(secret.get('basis'), 40) or '未知'}\n"
-                    f"理由：{password_reason or '这是一枚书柜夹层里的私密暗号。'}"
+                    f"理由：{password_reason or '这是一枚资料柜夹层里的私密暗号。'}"
                 )
             elif action in bookshelf_password_reset_actions:
                 secret = self.data.setdefault("bookshelf_secret", {})
@@ -18108,7 +18108,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 secret["reset_at"] = _now_ts()
                 await self._ensure_bookshelf_password_async()
                 self._save_data_sync(sections={"bookshelf_secret"})
-                response = "已重新设置书柜夹层密码。需要查看真实密码可用：陪伴 输出夹层密码"
+                response = "已重新设置资料柜夹层密码。需要查看真实密码可用：陪伴 输出夹层密码"
             elif action in {"发说说", "发QQ空间", "发布说说", "空间发布", "发布空间"}:
                 response = "正在发布 QQ 空间说说。"
             elif action in {"测试说说链路", "测试空间发布", "测试QQ空间发布", "测试qzone发布"}:
@@ -18507,7 +18507,12 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                         user = users.get(user_id) if isinstance(users, dict) else None
                         if isinstance(user, dict):
                             user.pop("reality_touch_pending_consent", None)
-                            self._save_data_sync(sections={"users"})
+                            try:
+                                self._save_data_sync(sections={"users"})
+                            except TypeError:
+                                # Keep lightweight integration harnesses and older
+                                # hosts compatible with the section-aware call.
+                                self._save_data_sync()
                     confirmation_reply = "主机摄像头只允许 AstrBot 管理员或主要用户本人授权和使用。"
             elif isinstance(user, dict) and isinstance(
                 user.get("reality_touch_pending_consent"), dict

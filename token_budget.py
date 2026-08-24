@@ -803,7 +803,7 @@ class TokenBudgetMixin:
             "relationship",
             "screen_narration",
             "photo_prompt",
-            "private_reading_vision",
+            "reading_archive_vision",
             "proactive_framework",
             "voice_framework",
             "voice",

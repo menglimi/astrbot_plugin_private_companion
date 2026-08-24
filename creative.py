@@ -372,7 +372,7 @@ class CreativeMixin:
             cleaned_projects += 1
         if removed_chunks:
             logger.info(
-                "[PrivateCompanion] 已清理书柜旧版固定兜底片段: projects=%s chunks=%s memories=%s",
+                "[PrivateCompanion] 已清理资料柜旧版固定兜底片段: projects=%s chunks=%s memories=%s",
                 cleaned_projects,
                 removed_chunks,
                 removed_memories,
@@ -2010,7 +2010,7 @@ class CreativeMixin:
                     reason="生成结果为空、重复或未通过质量复核",
                 )
                 logger.info(
-                    "[PrivateCompanion] 创作片段未通过质量门,本轮不写入书柜: project=%s failures=%s delay=%sm",
+                    "[PrivateCompanion] 创作片段未通过质量门,本轮不写入资料柜: project=%s failures=%s delay=%sm",
                     _single_line(project.get("id"), 32),
                     _safe_int(project.get("advance_failure_count"), 1, 1),
                     delay_minutes,

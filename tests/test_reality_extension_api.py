@@ -54,6 +54,20 @@ def test_reality_extension_api_forwards_mobile_location_updates() -> None:
     assert result == {"handled": True}
 
 
+def test_reality_extension_api_does_not_expose_generic_runtime_provider_bus() -> None:
+    class Host(RealityCompanionBridgeMixin):
+        def __init__(self) -> None:
+            self.data = {"users": {}}
+
+    host = Host()
+    api = PrivateCompanionExtensionAPI(host)
+
+    assert not hasattr(api, "register_reality_touch_provider")
+    assert not hasattr(api, "list_reality_touch_providers")
+    assert not hasattr(api, "call_reality_touch_provider")
+    assert not hasattr(api, "resolve_reality_touch_request")
+
+
 class _RecordingHost(RealityCompanionBridgeMixin):
     def __init__(self) -> None:
         self.data = {"users": {"u": {"user_id": "u"}}}
