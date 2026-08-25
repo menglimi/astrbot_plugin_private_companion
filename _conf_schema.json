@@ -5301,6 +5301,12 @@
           "在线陪伴：不省成本"
         ]
       },
+      "proactive_preempt_queue_enabled": {
+        "description": "主动候选挤占时入池排队",
+        "type": "bool",
+        "hint": "默认关闭：保持原行为——已有更早/同级主动候选时，新候选被直接丢弃（blocked「已有更早主动候选」）。开启后：被挤占的候选转为 deferred 入潜在念头池排队，当前计划发送完成后自动晋升为下一条（不会连发轰炸，仍受免打扰/冷却/日上限等闸门约束）。适合希望新闻、B站分享等低时效内容在活跃时段也不被丢弃的场景。",
+        "default": false
+      },
       "max_daily_messages": {
         "description": "每日主动消息配额",
         "type": "int",

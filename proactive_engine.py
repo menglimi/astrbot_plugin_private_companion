@@ -3749,7 +3749,32 @@ class ProactiveEngineMixin:
         if current_next > 0 and current_next <= scheduled:
             current_timeliness = self._planned_proactive_timeliness_level(user)
             if self._proactive_timeliness_rank(incoming_timeliness) <= self._proactive_timeliness_rank(current_timeliness):
-                self._record_proactive_candidate(user_id, candidate, status="blocked", note="已有更早主动候选", user=user)
+                # 挤占策略：默认直接丢弃（blocked，保持原行为）；
+                # 开启 proactive_preempt_queue_enabled 后改为入池排队（deferred），
+                # 当前计划发送完成后由 _schedule_next_proactive 自动晋升为下一条。
+                if bool(runtime_persona_setting(self, "proactive_preempt_queue_enabled", False)):
+                    queued_impulse = self._candidate_to_impulse(user, candidate, source=source, now=now)
+                    if isinstance(queued_impulse, dict):
+                        queued_impulse["state"] = "deferred"
+                        queued_impulse["last_note"] = "已有更早主动候选，挤占入池排队"
+                        queued_impulse["updated_ts"] = now
+                        # 入池时把窗口整体后移：保证 expire_at 至少到入池时刻 +2h，
+                        # 避免排队等待期间窗口过期被 _cleanup_proactive_impulses 清掉。
+                        min_expire = now + 2 * 3600
+                        shift = max(0.0, min_expire - _safe_float(queued_impulse.get("expire_at"), 0))
+                        if shift > 0:
+                            for key in ("window_start_at", "preferred_ts", "best_until_at", "expire_at"):
+                                value = _safe_float(queued_impulse.get(key), 0)
+                                if value > 0:
+                                    queued_impulse[key] = value + shift
+                        self._queue_proactive_impulse(user, queued_impulse)
+                        self._record_proactive_candidate(
+                            user_id, candidate, status="deferred", note="已有更早主动候选，已入池排队等待", user=user
+                        )
+                    else:
+                        self._record_proactive_candidate(user_id, candidate, status="blocked", note="已有更早主动候选", user=user)
+                else:
+                    self._record_proactive_candidate(user_id, candidate, status="blocked", note="已有更早主动候选", user=user)
                 return False
             preempted_for_timeliness = True
         action = _single_line(candidate.get("action"), 40) or "message"
