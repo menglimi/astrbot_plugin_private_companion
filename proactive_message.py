@@ -4755,7 +4755,11 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             if external_fix:
                 return external_fix
         role = self._private_user_role(user) if isinstance(user, dict) else "friend"
-        if role == "owner":
+        # 外部分享（新闻/B站/搜索）跳过「疑似混入其他私聊互动」检查（与 PR #168 同源）：
+        # 该检查的 _daily_plan_clause_has_named_message_interaction 正则会把新闻正文
+        # 「看到个消息」的「个」误判为私聊 target（08-25 16:19 红色沙漠新闻被此误杀实锤）。
+        # 外部分享 gen 不含对其他用户的私聊互动描述，跳过不会漏真问题。
+        if role == "owner" and not external_share_active:
             social_checker = getattr(self, "_daily_plan_clause_has_named_message_interaction", None)
             has_cross_private_interaction = False
             if callable(social_checker):
