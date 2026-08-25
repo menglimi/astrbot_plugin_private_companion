@@ -27449,9 +27449,7 @@ function photoSettingVisibleForValues(settingKey, values = {}) {
   const backend = String(values.photo_generation_backend || "auto").trim().toLowerCase();
   const enabled = (key) => toBool(values[key]);
   const naiUnavailable = new Set([
-    "enable_photo_reference_image",
     "enable_p5_structured_reference_assets",
-    "photo_reference_catalog",
     "photo_generation_style",
     "photo_generation_style_custom_prompt",
     "photo_generation_negative_prompt_mode",

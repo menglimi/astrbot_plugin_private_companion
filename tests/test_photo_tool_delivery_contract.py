@@ -285,7 +285,7 @@ class _CommandEntryPhotoHarness(_PromptAwarePhotoToolHarness):
         return None
 
     @staticmethod
-    def _save_data_sync() -> None:
+    def _save_data_sync(**_kwargs) -> None:
         return None
 
 
