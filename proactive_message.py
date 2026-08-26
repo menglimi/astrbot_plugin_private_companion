@@ -17422,8 +17422,11 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         cleaned = str(text or "").strip()
         if not cleaned:
             return []
+        # 句子边界 = 中文/全角结束标点后的空白（含换行）。英文单词之间的空格
+        # 不是句子边界——新闻标题/品牌名（如 "Koei Tecmo"、"TGS 2026"）里的空格
+        # 必须保留，否则外来文本会被按单词切碎
         units: list[str] = []
-        for part in [item.strip() for item in re.split(r"\s+", cleaned) if item.strip()]:
+        for part in [item.strip() for item in re.split(r"(?<=[。！？!?；;…~～])\s+", cleaned) if item.strip()]:
             if re.search(r"[。！？!?；;…~～]", part):
                 matches = re.findall(r"[^。！？!?；;…~～]+[。！？!?；;…~～]+|[^。！？!?；;…~～]+$", part)
                 units.extend(match.strip() for match in matches if match.strip())
