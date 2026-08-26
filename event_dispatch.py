@@ -2512,10 +2512,18 @@ class EventDispatchMixin:
             return True
         return bool(re.search(r"撤[回了掉]?.*(说|发|讲|聊)", compact))
 
-    def _format_recalled_messages_for_natural_query(self, event: AstrMessageEvent, *, limit: int = 5) -> str:
+    def _format_recalled_messages_for_natural_query(
+        self,
+        event: AstrMessageEvent,
+        *,
+        limit: int = 5,
+        include_heading: bool = True,
+    ) -> str:
+        heading = "【撤回消息查询】\n" if include_heading else ""
         if not _persona_value(self, 'enable_recall_enhancement', True) or not _persona_value(self, 'enable_recall_transcribe_command', True):
             return (
-                "【撤回消息查询】\n"
+                heading
+                +
                 "用户正在问当前会话刚才撤回了什么,但撤回消息转述功能没有开启。请自然说明这边看不到可转述的撤回内容。"
             )
         try:
@@ -2525,21 +2533,24 @@ class EventDispatchMixin:
         allowed = self._can_manage_private_companion(event) if is_private else self._can_manage_group_companion(event)
         if not allowed:
             return (
-                "【撤回消息查询】\n"
+                heading
+                +
                 "用户正在问当前会话刚才撤回了什么,但这类内容只能由 Bot 管理员、配置目标用户或群管理员查看。"
                 "请自然说明权限边界,不要猜测或编造撤回内容。"
             )
         rows = self._recent_recalled_messages_for_scope(self._event_scope_key(event), limit=limit)
         if not rows:
             return (
-                "【撤回消息查询】\n"
+                heading
+                +
                 "用户正在问当前会话刚才撤回了什么,但当前会话没有可转述的撤回消息,或短期缓存已经过期。"
                 "请自然说明没有查到,不要编造。"
             )
         lines = [
-            "【撤回消息查询】",
             "用户正在问当前会话刚才撤回了什么。下面是可转述的短期撤回记录；请用自然口吻回答,不要提插件、缓存或内部记录机制。",
         ]
+        if include_heading:
+            lines.insert(0, "【撤回消息查询】")
         for index, row in enumerate(rows, 1):
             sender = _single_line(row.get("sender_name"), 40) or _single_line(row.get("sender_id"), 40) or "未知"
             text = _single_line(row.get("text"), 360)

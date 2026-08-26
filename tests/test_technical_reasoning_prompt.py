@@ -14,7 +14,8 @@ class TechnicalReasoningPromptTests(unittest.TestCase):
         self.assertIn("def _format_technical_reasoning_prompt(", self.main_source)
         self.assertIn("event: AstrMessageEvent | None", self.main_source)
         self.assertIn("req: ProviderRequest | None = None", self.main_source)
-        self.assertIn("technical_prompt = self._format_technical_reasoning_prompt(event, req)", self.main_source)
+        self.assertIn("technical_prompt = self._format_technical_reasoning_prompt(", self.main_source)
+        self.assertIn("include_heading=False", self.main_source)
         self.assertIn('str(getattr(req, "prompt", "") or "").strip()', self.main_source)
         self.assertIn('"代码", "源码", "脚本", "python", "sleep("', self.main_source)
 

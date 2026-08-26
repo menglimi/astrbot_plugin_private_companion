@@ -335,5 +335,15 @@ class ProactiveFactGroundingTests(unittest.TestCase):
         self.assertIn("不得声称不知道自己发了什么", first)
         self.assertEqual(second, "")
 
+    def test_structured_reply_context_owns_its_original_title(self) -> None:
+        harness = _ReplyContextHarness()
+
+        sections = asyncio.run(
+            harness._format_proactive_reply_context(_ReplyEvent(), as_sections=True)
+        )
+
+        self.assertEqual("刚才你主动发出的消息", sections[0]["title"])
+        self.assertNotIn("【刚才你主动发出的消息】", sections[0]["content"])
+
 if __name__ == "__main__":
     unittest.main()

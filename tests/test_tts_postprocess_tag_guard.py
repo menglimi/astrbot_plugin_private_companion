@@ -8,6 +8,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from astrbot.api.message_components import At, Plain, Record, Reply
+from astrbot_plugin_private_companion.conversation_injection_plan import (
+    get_conversation_injection_plan,
+)
 from astrbot_plugin_private_companion.main import PrivateCompanionPlugin
 from astrbot_plugin_private_companion.tts_enhancement import TtsEnhancementMixin
 
@@ -357,7 +360,10 @@ class TtsPostprocessTagGuardTests(unittest.IsolatedAsyncioTestCase):
 
         await harness.apply_tts_enhancement_request(event, request)
 
-        self.assertIn("功能性回复的语音取舍", request.system_prompt)
+        plan = get_conversation_injection_plan(request, create=False)
+        self.assertIsNotNone(plan)
+        plan.render_into(request)
+        self.assertIn('<section title="功能性回复的语音取舍">', request.system_prompt)
         self.assertIn("优先把执行结果", request.system_prompt)
         self.assertNotIn("【语音消息规则】", request.system_prompt)
 

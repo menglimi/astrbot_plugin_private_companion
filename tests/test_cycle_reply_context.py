@@ -85,8 +85,14 @@ class CycleReplyContextTests(unittest.IsolatedAsyncioTestCase):
         )
         prompt = plugin._request_prompt_context_surface(request)
 
-        self.assertIn("Bot 当前经期与互动边界", boundary)
-        self.assertIn("private_companion_period_boundary_v1", prompt)
+        self.assertNotIn("【Bot 当前经期与互动边界】", boundary)
+        self.assertIn('<section title="Bot 当前经期与互动边界">', prompt)
+        self.assertTrue(
+            plugin._request_has_managed_prompt_marker(
+                request,
+                "<!-- private_companion_period_boundary_v1 -->",
+            )
+        )
         self.assertIn("这是群聊公共场合", prompt)
         self.assertIn("自然、明确地拒绝或推迟这一次互动", prompt)
         plugin._ensure_daily_state.assert_awaited_once_with(
@@ -140,7 +146,7 @@ class CycleReplyContextTests(unittest.IsolatedAsyncioTestCase):
         await plugin._append_group_active_period_boundary_to_request(event, request, "20001")
 
         prompt = plugin._request_prompt_context_surface(request)
-        self.assertEqual(prompt.count("【Bot 当前经期与互动边界】"), 1)
+        self.assertEqual(prompt.count('title="Bot 当前经期与互动边界"'), 1)
         self.assertEqual(prompt.count("自然、明确地拒绝或推迟这一次互动"), 1)
         plugin._record_request_prompt_fragment.assert_awaited_once()
 
@@ -216,7 +222,7 @@ class CycleReplyContextTests(unittest.IsolatedAsyncioTestCase):
                 await plugin.inject_humanized_state(event, request)
 
         prompt = plugin._request_prompt_context_surface(request)
-        self.assertEqual(prompt.count("【Bot 当前经期与互动边界】"), 1)
+        self.assertEqual(prompt.count('title="Bot 当前经期与互动边界"'), 1)
         self.assertEqual(prompt.count("自然、明确地拒绝或推迟这一次互动"), 1)
         self.assertEqual(request._private_companion_preferred_address, "主要用户")
         self.assertEqual(plugin._ensure_daily_state.await_count, 2)
@@ -645,9 +651,9 @@ class CycleReplyContextTests(unittest.IsolatedAsyncioTestCase):
         plugin._is_lightweight_private_passive_inbound = lambda _text: True
         plugin._memo_management_instruction_matches = lambda _text: []
         plugin._bookshelf_secret_signal_info = lambda _text: {}
-        plugin._format_reply_style_prompt = lambda: ""
-        plugin._format_dialogue_outfit_continuity_for_prompt = lambda _user: ""
-        plugin._format_private_routine_check_boundary = lambda _text: ""
+        plugin._format_reply_style_prompt = lambda **_kwargs: ""
+        plugin._format_dialogue_outfit_continuity_for_prompt = lambda _user, **_kwargs: ""
+        plugin._format_private_routine_check_boundary = lambda _text, **_kwargs: ""
         plugin._record_recent_private_fact_correction = lambda *_args, **_kwargs: False
         plugin._format_private_fact_attribution_guard = lambda *_args, **_kwargs: ""
         plugin._private_passive_state_update_for_prompt = Mock(

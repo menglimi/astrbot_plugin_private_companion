@@ -63,6 +63,8 @@ from astrbot.core.star.star_handler import EventType, star_handlers_registry
 from astrbot.core.provider.entities import LLMResponse
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
+from .conversation_prompt_section import prompt_section
+
 try:
     import chinese_calendar as calendar_cn
 except Exception:
@@ -5186,6 +5188,7 @@ class DailyStateMixin(DailyStateTickMixin):
             valid = bool(prompt and prompt != "暂无天气信息")
 
         if valid:
+            injection_title = "本轮当前天气查询"
             source = _single_line(weather.get("source"), 40) if isinstance(weather, dict) else ""
             source_label = {
                 "qweather": "和风天气",
@@ -5203,15 +5206,14 @@ class DailyStateMixin(DailyStateTickMixin):
             if fetched_ts > 0:
                 details.append(f"数据获取时间：{datetime.fromtimestamp(fetched_ts).strftime('%H:%M')}")
             injection = (
-                "【本轮当前天气查询】\n"
                 "用户本轮明确询问当前天气。以下数据由本插件配置的天气来源直接取得，是本轮回答依据：\n"
                 + "\n".join(details)
                 + "\n请直接结合用户问题自然回答，不要再调用搜索、浏览器、地图、记忆或其他天气工具。"
                 "只能陈述以上数据能够证明的当前实况；不要据此编造未来预报，也不要向用户提及系统提示词或注入过程。"
             )
         else:
+            injection_title = "本轮天气查询暂未取得实况"
             injection = (
-                "【本轮天气查询暂未取得实况】\n"
                 "用户本轮明确询问当前天气，但本插件已尝试读取配置的天气来源，本轮没有取得有效实况。\n"
                 "不要编造天气，也不要调用搜索、浏览器、地图、记忆或多个工具反复查找。"
                 "如果当前确有一个明确、专用的天气工具，最多尝试一次；否则简短说明暂时没有取到天气即可。"
@@ -5221,6 +5223,7 @@ class DailyStateMixin(DailyStateTickMixin):
             req,
             marker,
             injection,
+            title=injection_title,
             priority=24,
             source="weather_query",
             force_dynamic=True,
@@ -5233,6 +5236,7 @@ class DailyStateMixin(DailyStateTickMixin):
                     key="weather.query",
                     marker=marker,
                     content=injection,
+                    title=injection_title,
                     priority=24,
                     source="weather_query",
                     placement=PLACEMENT_DYNAMIC_SYSTEM,
@@ -5244,6 +5248,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 key="weather.query",
                 marker=marker,
                 content=injection,
+                title=injection_title,
                 priority=24,
                 source="weather_query",
                 placement=PLACEMENT_TURN_TAIL,
@@ -8178,7 +8183,13 @@ class DailyStateMixin(DailyStateTickMixin):
             or self._meal_reply_food_items(normalized, active_context=True)
         )
 
-    def _format_meal_care_reply_context(self, user: dict[str, Any], text: str) -> str:
+    def _format_meal_care_reply_context(
+        self,
+        user: dict[str, Any],
+        text: str,
+        *,
+        include_heading: bool = True,
+    ) -> str:
         if not isinstance(user, dict):
             return ""
         hint = user.get("meal_care_reply_hint")
@@ -8191,17 +8202,34 @@ class DailyStateMixin(DailyStateTickMixin):
         kind = _single_line(hint.get("kind"), 30)
         meal_label = _single_line(hint.get("meal_label"), 12) or "这顿饭"
         foods = [_single_line(item, 30) for item in hint.get("foods", []) if _single_line(item, 30)] if isinstance(hint.get("foods"), list) else []
+        body = ""
         if kind == "specific" and foods:
-            return f"【吃饭关心承接】用户已经明确说{meal_label}吃了{'、'.join(foods)}。自然接住这个具体内容，不要再问吃了什么；这些内容已回填到吃什么候选。"
-        if kind == "ate_without_detail":
-            return f"【吃饭关心承接】用户只确认{meal_label}吃过了，但没有说具体吃了什么。先接住当前语气，再自然追问一句具体吃了什么；只问一次，不审问。"
-        if kind == "ate_without_detail_final":
-            return f"【吃饭关心承接】用户再次只确认{meal_label}吃过了，仍没有提供具体内容。到这里就接住并收住，不要第三次追问吃了什么。"
-        if kind == "not_eaten":
-            return f"【吃饭关心承接】用户明确说{meal_label}还没吃。不要追问“吃了什么”，改为关心准备什么时候吃、想吃什么；如果下方有吃饭候选，只给少量选择，不要一次报菜单。"
-        if kind == "not_eaten_final":
-            return f"【吃饭关心承接】用户补问后仍说{meal_label}没吃。简短关心一句就收住，不再继续追问；不要责怪或说教。"
-        return ""
+            body = f"用户已经明确说{meal_label}吃了{'、'.join(foods)}。自然接住这个具体内容，不要再问吃了什么；这些内容已回填到吃什么候选。"
+        elif kind == "ate_without_detail":
+            body = f"用户只确认{meal_label}吃过了，但没有说具体吃了什么。先接住当前语气，再自然追问一句具体吃了什么；只问一次，不审问。"
+        elif kind == "ate_without_detail_final":
+            body = f"用户再次只确认{meal_label}吃过了，仍没有提供具体内容。到这里就接住并收住，不要第三次追问吃了什么。"
+        elif kind == "not_eaten":
+            body = f"用户明确说{meal_label}还没吃。不要追问“吃了什么”，改为关心准备什么时候吃、想吃什么；如果下方有吃饭候选，只给少量选择，不要一次报菜单。"
+        elif kind == "not_eaten_final":
+            body = f"用户补问后仍说{meal_label}没吃。简短关心一句就收住，不再继续追问；不要责怪或说教。"
+        if not body:
+            return ""
+        return f"【吃饭关心承接】{body}" if include_heading else body
+
+    def _format_meal_care_reply_prompt_section(
+        self,
+        user: dict[str, Any],
+        text: str,
+    ) -> dict[str, Any]:
+        return prompt_section(
+            "吃饭关心承接",
+            self._format_meal_care_reply_context(
+                user,
+                text,
+                include_heading=False,
+            ),
+        )
 
     @staticmethod
     def _food_menu_type_label(value: Any) -> str:
@@ -8420,7 +8448,14 @@ class DailyStateMixin(DailyStateTickMixin):
         scored.sort(key=lambda pair: (pair[0], bool(pair[1].get("favorite")), _safe_int(pair[1].get("use_count"), 0, 0)), reverse=True)
         return [item for _, item in scored[: max(1, min(5, limit))]]
 
-    def _format_food_menu_for_reply(self, text: str, *, limit: int = 3, user: dict[str, Any] | None = None) -> str:
+    def _format_food_menu_for_reply(
+        self,
+        text: str,
+        *,
+        limit: int = 3,
+        user: dict[str, Any] | None = None,
+        include_heading: bool = True,
+    ) -> str:
         profile = self._food_menu_query_profile(text, user=user)
         if not profile.get("is_query"):
             return ""
@@ -8449,7 +8484,25 @@ class DailyStateMixin(DailyStateTickMixin):
                 line += f"：{note}"
             lines.append(line)
         meal = _single_line(profile.get("meal"), 12) or self._food_menu_time_label(profile.get("time_key")) or "这顿"
-        return "【吃饭候选】\n" + f"这轮用户在问{meal}吃什么。可参考：" + "；".join(lines) + "。"
+        body = f"这轮用户在问{meal}吃什么。可参考：" + "；".join(lines) + "。"
+        return f"【吃饭候选】\n{body}" if include_heading else body
+
+    def _format_food_menu_reply_prompt_section(
+        self,
+        text: str,
+        *,
+        limit: int = 3,
+        user: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return prompt_section(
+            "吃饭候选",
+            self._format_food_menu_for_reply(
+                text,
+                limit=limit,
+                user=user,
+                include_heading=False,
+            ),
+        )
 
     def _mark_food_menu_item_used_from_text(self, text: str) -> list[str]:
         query = _single_line(text, 220)
@@ -9261,7 +9314,14 @@ class DailyStateMixin(DailyStateTickMixin):
         notes.sort(key=lambda item: memo_note_sort_key(item, now=now))
         return notes
 
-    def _format_memo_notes_for_prompt(self, *, days: int = 3, include_pinned: bool = True, limit: int = 6) -> str:
+    def _format_memo_notes_for_prompt(
+        self,
+        *,
+        days: int = 3,
+        include_pinned: bool = True,
+        limit: int = 6,
+        include_heading: bool = True,
+    ) -> str:
         now = _now_ts()
         horizon = now + max(0, int(days)) * 86400
         rows: list[dict[str, Any]] = []
@@ -9272,7 +9332,7 @@ class DailyStateMixin(DailyStateTickMixin):
             rows.append(note)
         if not rows:
             return ""
-        lines = ["【备忘便签】"]
+        lines = ["【备忘便签】"] if include_heading else []
         for note in rows[: max(1, int(limit or 1))]:
             due_at = _safe_float(note.get("due_at"), 0)
             due_text = self._environment_fromtimestamp(due_at).strftime("%m-%d %H:%M") if due_at > 0 else "未设时间"
@@ -9289,6 +9349,23 @@ class DailyStateMixin(DailyStateTickMixin):
             lines.append(f"- {due_text}｜{repeat}｜{text}")
         lines.append("这些是用户主动保存的待办/提醒，不是已经发生的经历；只在当前话题或时间相关时自然承接。")
         return "\n".join(lines)
+
+    def _format_memo_notes_prompt_section(
+        self,
+        *,
+        days: int = 3,
+        include_pinned: bool = True,
+        limit: int = 6,
+    ) -> dict[str, Any]:
+        return prompt_section(
+            "备忘便签",
+            self._format_memo_notes_for_prompt(
+                days=days,
+                include_pinned=include_pinned,
+                limit=limit,
+                include_heading=False,
+            ),
+        )
 
     def _format_memo_note_prompt(self, user: dict[str, Any], *, reason: str = "") -> str:
         if reason != "memo_note_reminder" or not isinstance(user, dict):
@@ -11059,18 +11136,36 @@ class DailyStateMixin(DailyStateTickMixin):
         instruction = _single_line(snapshot.get("instruction"), 180)
         return dict(snapshot) if instruction else {}
 
-    def _format_dialogue_outfit_continuity_for_prompt(self, user: dict[str, Any] | None = None) -> str:
+    def _format_dialogue_outfit_continuity_for_prompt(
+        self,
+        user: dict[str, Any] | None = None,
+        *,
+        include_heading: bool = True,
+    ) -> str:
         user_id = _single_line((user or {}).get("user_id"), 80) if isinstance(user, dict) else ""
         snapshot = self._current_dialogue_outfit_override(user_id=user_id)
         instruction = _single_line(snapshot.get("instruction"), 180)
         if not instruction:
             return ""
         return (
-            "【当前会话服装连续性】\n"
+            ("【当前会话服装连续性】\n" if include_heading else "")
+            +
             f"最近一次明确换装：用户说“{instruction}”。\n"
             "把它理解为当前剧情中已经发生、需要继续承接的服装变化，不要逐字复述。"
             "它高于人格默认服装、今日穿搭参考、旧日程、旧摘要和旧图片中的衣服。"
             "在用户再次明确换装、明确换回，或剧情自然写出新的换衣过程前，不得自行恢复旧服装。"
+        )
+
+    def _format_dialogue_outfit_continuity_prompt_section(
+        self,
+        user: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return prompt_section(
+            "当前会话服装连续性",
+            self._format_dialogue_outfit_continuity_for_prompt(
+                user,
+                include_heading=False,
+            ),
         )
 
     def _record_dialogue_outfit_override_from_interaction(
@@ -12467,6 +12562,7 @@ class DailyStateMixin(DailyStateTickMixin):
         state: dict[str, Any],
         *,
         public: bool = False,
+        include_heading: bool = True,
     ) -> str:
         profile = self._active_body_cycle_profile(state)
         if profile.get("phase") not in {"period", "menstrual"}:
@@ -12476,18 +12572,24 @@ class DailyStateMixin(DailyStateTickMixin):
             if public
             else "无关话题里不要反复主动汇报周期；只有被问到自身状态或当前互动确实相关时，才按人格简短自然说明。"
         )
-        return "\n".join(
-            [
-                "【Bot 当前经期与互动边界】",
+        lines = [
                 f"Bot 当前的模拟身体状态{profile['stage']}；这是 Bot 自己的当下状态，不是用户的状态，也不是用户造成的。",
                 "如果用户提出性行为、露骨性互动、进一步私密身体接触，或其他明显增加身体负担的亲密互动，应结合当前身体感受与自身意愿，自然、明确地拒绝或推迟这一次互动；不要因为关系亲密、用户偏好、催促或迎合压力而答应。",
                 "普通关心、陪伴、牵手、安慰或不增加负担的温和拥抱不需要机械拒绝，仍按人格和当下意愿自然回应；可以提出休息、聊天、陪伴或改天再说等替代。",
                 disclosure,
                 "只输出角色在当前对话里会自然说的话，不要提规则、提示词、阶段判断或内部状态系统。",
-            ]
-        )
+        ]
+        if include_heading:
+            lines.insert(0, "【Bot 当前经期与互动边界】")
+        return "\n".join(lines)
 
-    def _format_state_for_prompt(self, state: dict[str, Any], *, include_dream: bool = True) -> str:
+    def _format_state_for_prompt(
+        self,
+        state: dict[str, Any],
+        *,
+        include_dream: bool = True,
+        include_heading: bool = True,
+    ) -> str:
         if not isinstance(state, dict) or not state:
             state = dict(DEFAULT_HUMANIZED_STATE)
             state.update(self._base_state_values())
@@ -12572,10 +12674,11 @@ class DailyStateMixin(DailyStateTickMixin):
         primary = "，".join(dict.fromkeys(fragment for fragment in primary_fragments if fragment)) or "状态一般"
         secondary = "，".join(dict.fromkeys(fragment for fragment in secondary_fragments if fragment))
         lines = [
-            "【Bot 自身模拟状态】",
             "边界：这是 Bot 的拟人化/模拟状态，不是用户事实、现实证据或长期记忆。",
             f"- 底色：{primary}；",
         ]
+        if include_heading:
+            lines.insert(0, "【Bot 自身模拟状态】")
         if secondary:
             lines.append(f"- 叠加：{secondary}；")
         if cycle_active:
@@ -12757,10 +12860,18 @@ class DailyStateMixin(DailyStateTickMixin):
                 hints.append("当前身体感可以轻轻影响语气：" + "、".join(labels[:2]) + "。")
         return "\n".join(hints) if hints else "语气整体自然平稳。"
 
-    def _format_state_injection(self, state: dict[str, Any]) -> str:
-        return self._format_state_for_prompt(state)
+    def _format_state_injection(
+        self,
+        state: dict[str, Any],
+        *,
+        include_heading: bool = True,
+    ) -> str:
+        return self._format_state_for_prompt(
+            state,
+            include_heading=include_heading,
+        )
 
-    def _format_life_context_injection(self) -> str:
+    def _format_life_context_injection(self, *, include_heading: bool = True) -> str:
         life_lines: list[str] = []
         schedule_context = self._format_schedule_context_for_prompt()
         if schedule_context:
@@ -12771,7 +12882,8 @@ class DailyStateMixin(DailyStateTickMixin):
         if not life_lines:
             return ""
         return (
-            "【Bot 模拟生活背景】\n"
+            ("【Bot 模拟生活背景】\n" if include_heading else "")
+            +
             "以下是给 Bot 的拟人化场景/日程素材，不是用户经历，也不是已证实的现实事件；不要写入用户画像或长期记忆。\n"
             + "\n".join(life_lines)
             + "\n这些内容只用于让回复有生活延续感；用户没问 Bot 近况或今天安排时，不要提具体日程、科目、任务、天气或地点。"
@@ -12781,12 +12893,13 @@ class DailyStateMixin(DailyStateTickMixin):
             + "绝不能把对话里已发生的服装、地点、携带物或动作复原成旧值。生活背景之间互相冲突时，才在未被当前会话确认的部分保留最合理的一条线索。"
         )
 
-    def _format_important_dates_injection(self) -> str:
+    def _format_important_dates_injection(self, *, include_heading: bool = True) -> str:
         important_dates = self._format_important_dates_for_prompt()
         if not important_dates or important_dates == "（近期没有需要特别记住的日期）":
             return ""
         return (
-            "【近期重要日期】\n"
+            ("【近期重要日期】\n" if include_heading else "")
+            +
             f"{important_dates}\n"
             "如果用户提到相关日期、纪念、生日、约定或计划,请自然承接；不要无故强行展开。"
         )
@@ -12794,10 +12907,24 @@ class DailyStateMixin(DailyStateTickMixin):
     def _format_memo_notes_injection(self) -> str:
         return self._format_memo_notes_for_prompt(days=2, include_pinned=False, limit=4)
 
-    def _format_lightweight_state_injection(self, state: dict[str, Any]) -> str:
-        return self._format_state_for_prompt(state)
+    def _format_lightweight_state_injection(
+        self,
+        state: dict[str, Any],
+        *,
+        include_heading: bool = True,
+    ) -> str:
+        return self._format_state_for_prompt(
+            state,
+            include_heading=include_heading,
+        )
 
-    def _prepared_lightweight_state_injection(self, state: dict[str, Any], *, force: bool = False) -> str:
+    def _prepared_lightweight_state_injection(
+        self,
+        state: dict[str, Any],
+        *,
+        force: bool = False,
+        include_heading: bool = True,
+    ) -> str:
         now = _now_ts()
         persona_scope = str(
             getattr(
@@ -12811,16 +12938,18 @@ class DailyStateMixin(DailyStateTickMixin):
         if not isinstance(cache_store, dict) or "text" in cache_store:
             cache_store = {}
         cache = cache_store.get(persona_scope)
+        cache_field = "text" if include_heading else "body"
         if isinstance(cache, dict) and not force:
-            text = str(cache.get("text") or "").strip()
+            text = str(cache.get(cache_field) or "").strip()
             if text and cache.get("date") == _today_key() and now - _safe_float(cache.get("ts"), 0) < 60:
                 return text
-        text = self._format_lightweight_state_injection(state)
-        cache_store[persona_scope] = {
-            "date": _today_key(),
-            "ts": now,
-            "text": text,
-        }
+        text = self._format_lightweight_state_injection(
+            state,
+            include_heading=include_heading,
+        )
+        cache = dict(cache) if isinstance(cache, dict) else {}
+        cache.update({"date": _today_key(), "ts": now, cache_field: text})
+        cache_store[persona_scope] = cache
         self._passive_light_injection_cache = cache_store
         return text
 
@@ -12988,15 +13117,17 @@ class DailyStateMixin(DailyStateTickMixin):
         self,
         user: dict[str, Any] | None,
         inbound_text: str,
-    ) -> str:
+        *,
+        as_section: bool = False,
+    ) -> str | dict[str, Any]:
         snapshot = self._recent_creative_share_snapshot(user)
         if not snapshot:
             return ""
         inbound = _single_line(inbound_text, 220)
         if not inbound:
             return ""
-        title = _single_line(snapshot.get("title"), 60)
-        title_mentioned = bool(title and title in inbound)
+        work_title = _single_line(snapshot.get("title"), 60)
+        title_mentioned = bool(work_title and work_title in inbound)
         asks_creative = self._user_asks_recent_creative_activity(inbound)
         asks_activity = self._user_asks_recent_bot_activity(inbound)
         sent_at = _safe_float(snapshot.get("sent_at"), 0)
@@ -13007,13 +13138,13 @@ class DailyStateMixin(DailyStateTickMixin):
         shared_text = _single_line(snapshot.get("shared_text"), 1600)
         source_snippet = _single_line(snapshot.get("source_snippet"), 420)
         shown_text = shared_text if direct_query else _single_line(shared_text, 360)
-        return "\n".join(
+        section_title = "最近一次真实创作分享"
+        body = "\n".join(
             part
             for part in (
-                "【最近一次真实创作分享】",
                 "这是刚刚已实际发送给当前用户的创作内容，不是待发送计划。只有本轮确实在承接这次分享时才使用；无关时完全忽略。",
                 f"作品类型：{_single_line(snapshot.get('work_type'), 30)}" if snapshot.get("work_type") else "",
-                f"标题：{title}" if title else "",
+                f"标题：{work_title}" if work_title else "",
                 f"设定：{_single_line(snapshot.get('premise'), 180)}" if snapshot.get("premise") else "",
                 f"实际分享正文：{shown_text}" if shown_text else "",
                 f"分享时对应片段：{source_snippet}" if source_snippet and source_snippet != shown_text else "",
@@ -13021,6 +13152,7 @@ class DailyStateMixin(DailyStateTickMixin):
             )
             if part
         )
+        return prompt_section(section_title, body) if as_section else f"【{section_title}】\n{body}"
 
     def _recent_photo_share_snapshot(
         self,
@@ -13080,7 +13212,9 @@ class DailyStateMixin(DailyStateTickMixin):
         self,
         user: dict[str, Any] | None,
         inbound_text: str,
-    ) -> str:
+        *,
+        as_section: bool = False,
+    ) -> str | dict[str, Any]:
         snapshot = self._recent_photo_share_snapshot(user)
         if not snapshot:
             return ""
@@ -13099,10 +13233,9 @@ class DailyStateMixin(DailyStateTickMixin):
             return ""
         subject_owner = _normalize_photo_subject_owner(snapshot.get("subject_owner")) or "unknown"
         owner_label = _photo_subject_owner_prompt_label(subject_owner)
-        return "\n".join(
+        body = "\n".join(
             part
             for part in (
-                "【最近一次真实图片分享】",
                 "这是刚刚已经实际发送给当前用户的图片语义。若本轮是在追问该图，必须以这里为准；不要用旧梦境、旧日程或其他图片自行补写来源。",
                 "图片发送者：Bot/当前人格",
                 f"画面主体归属：{owner_label}",
@@ -13115,11 +13248,22 @@ class DailyStateMixin(DailyStateTickMixin):
             )
             if part
         )
+        return prompt_section("最近一次真实图片分享", body) if as_section else f"【最近一次真实图片分享】\n{body}"
 
-    def _format_hidden_creative_context_for_reply(self, inbound_text: str, user: dict[str, Any] | None = None) -> str:
+    def _format_hidden_creative_context_for_reply(
+        self,
+        inbound_text: str,
+        user: dict[str, Any] | None = None,
+        *,
+        as_section: bool = False,
+    ) -> str | dict[str, Any]:
         if not runtime_persona_setting(self, "enable_creative_writing", True):
             return ""
-        recent_share_context = self._format_recent_creative_share_snapshot_for_reply(user, inbound_text)
+        recent_share_context = self._format_recent_creative_share_snapshot_for_reply(
+            user,
+            inbound_text,
+            as_section=as_section,
+        )
         if recent_share_context:
             return recent_share_context
         mentioned_title = self._mentioned_creative_project_title(inbound_text)
@@ -13152,17 +13296,18 @@ class DailyStateMixin(DailyStateTickMixin):
                 break
         if not candidates:
             if asks_bookshelf_inventory:
-                return (
-                    "【资料柜创作区真实库存】\n"
+                title = "资料柜创作区真实库存"
+                body = (
                     "用户正在询问能否看到资料柜或资料柜里有什么。当前资料柜创作区确实没有保存过正文的作品。\n"
                     "必须直接说明真实结果；不要假装翻找，不要用括号动作、挠头或含糊的场景描写代替回答。"
                 )
+                return prompt_section(title, body) if as_section else f"【{title}】\n{body}"
             return ""
         if mentioned_title or asks_creative:
             candidates.sort(key=lambda item: item[0], reverse=True)
         _, project, latest = candidates[0]
         work_type = self._creative_work_type(project)
-        title = _single_line(project.get("title"), 40)
+        work_title = _single_line(project.get("title"), 40)
         premise = _single_line(project.get("premise"), 120)
         progress = f"{_safe_int(project.get('current_chars'), 0, 0)}/{_safe_int(project.get('target_chars'), 2400, 300, 5200)}"
         snippet = _single_line((latest or {}).get("text"), 180) if isinstance(latest, dict) else ""
@@ -13198,12 +13343,12 @@ class DailyStateMixin(DailyStateTickMixin):
             if asks_existence
             else ""
         )
-        return (
-            "【私下创作近况】\n"
+        section_title = "私下创作近况"
+        body = (
             f"{ask_line}你可以提到：你最近因为生活小事、日记碎片或梦境灵感开了一个自己的文本作品,一直在自己慢慢写。\n"
             f"{inventory_hint}\n"
             f"作品类型：{work_type}\n"
-            f"标题：{title or '未定标题'}\n"
+            f"标题：{work_title or '未定标题'}\n"
             f"设定：{premise or '还没完全想清楚'}\n"
             f"进度：约 {progress} 字\n"
             + f"\n{creative_continuity_hint}\n"
@@ -13211,6 +13356,7 @@ class DailyStateMixin(DailyStateTickMixin):
             + (f"最近一句/片段：{snippet}\n" if snippet else "")
             + "如果用户询问资料柜库存，必须直接依据真实数量和标题回答，禁止用括号动作或假装翻找代替结果。如果用户明确问指定作品的正文、某一部分、写作想法或作者怎么看，下面的短片段只能用于定位，必须先调用 pc_view_creative_work 读取真实正文后再回答；不要先发“我去看看”，也不要凭短片段假装已经读完。若只是泛问最近有没有创作，可以直接概括并给一小句片段。否则这不是必须回答的内容，可以只含糊说“在弄一点小东西”。不要主动汇报系统进度，不要一次给完整正文。"
         )
+        return prompt_section(section_title, body) if as_section else f"【{section_title}】\n{body}"
 
     @staticmethod
     def _skill_level_title(level: int) -> str:
@@ -13765,7 +13911,7 @@ class DailyStateMixin(DailyStateTickMixin):
                     }
                 )
 
-    def _format_skill_growth_for_prompt(self, limit: int = 8) -> str:
+    def _format_skill_growth_for_prompt(self, limit: int = 8, *, as_section: bool = False) -> str | dict[str, Any]:
         if not runtime_persona_setting(self, "enable_skill_growth_simulation", True):
             return ""
         state = self.data.get("skill_growth") if isinstance(self.data.get("skill_growth"), dict) else {}
@@ -13773,17 +13919,16 @@ class DailyStateMixin(DailyStateTickMixin):
         if not skills:
             return ""
         ranked = sorted([item for item in skills.values() if isinstance(item, dict) and not item.get("hidden")], key=lambda item: (_safe_int(item.get("level"), 1, 1), _safe_float(item.get("exp"), 0)), reverse=True)[:limit]
-        lines = [
-            "【能力熟悉度】",
-        ]
+        lines: list[str] = []
         for skill in ranked:
             level = _safe_int(skill.get("level"), 1, 1)
             name = _single_line(skill.get("name"), 24)
             if name:
                 lines.append(f"- {name}水平：{self._skill_level_title(level)}")
-        return "\n".join(lines)
+        body = "\n".join(lines)
+        return prompt_section("能力熟悉度", body) if as_section else f"【能力熟悉度】\n{body}"
 
-    def _format_skill_growth_for_user_text(self, text: str, limit: int = 3) -> str:
+    def _format_skill_growth_for_user_text(self, text: str, limit: int = 3, *, as_section: bool = False) -> str | dict[str, Any]:
         if not runtime_persona_setting(self, "enable_skill_growth_simulation", True):
             return ""
         query = _single_line(text, 500)
@@ -13814,13 +13959,14 @@ class DailyStateMixin(DailyStateTickMixin):
         if not matched:
             return ""
         matched.sort(key=lambda item: (item[0], _safe_int(item[2].get("level"), 1, 1), item[1]), reverse=True)
-        lines = ["【本轮相关技能】"]
+        lines: list[str] = []
         for _, _, skill in matched[: max(1, int(limit or 1))]:
             level = _safe_int(skill.get("level"), 1, 1)
             name = _single_line(skill.get("name"), 24)
             if name:
                 lines.append(f"- {name}水平：{self._skill_level_title(level)}")
-        return "\n".join(lines)
+        body = "\n".join(lines)
+        return prompt_section("本轮相关技能", body) if as_section else f"【本轮相关技能】\n{body}"
 
     def _format_skill_growth_schedule_context(self, limit: int = 8) -> str:
         if not runtime_persona_setting(self, "enable_skill_growth_simulation", True) or not runtime_persona_setting(self, "enable_skill_growth_schedule_influence", True):
@@ -13926,21 +14072,20 @@ class DailyStateMixin(DailyStateTickMixin):
             snapshot["impulse"] = _single_line(current_proactive.get("impulse"), 100)
         return snapshot
 
-    def _format_detail_injection(self) -> str:
+    def _format_detail_injection(self, *, as_section: bool = False) -> str | dict[str, Any]:
         snapshot = self._current_story_plan_snapshot()
         if not snapshot:
             schedule_context = self._format_schedule_context_for_prompt()
             if not schedule_context:
                 return ""
-            return (
-                "【Bot 模拟当前片段】\n"
+            body = (
                 "附近的日程只作 Bot 的拟人化轻量背景，不是用户事实，也不要当成正在逐字发生的现实事件。\n"
                 "当前会话中已经明确发生且尚未撤销的换装、地点、携带物和动作优先于本段日程；"
                 "日程只能补足空白，不能把这些已发生的状态恢复成旧值。\n"
                 f"{schedule_context}"
             )
+            return prompt_section("Bot 模拟当前片段", body) if as_section else f"【Bot 模拟当前片段】\n{body}"
         lines = [
-            "【Bot 模拟当前片段】",
             "这是 Bot 自身的拟人化片段素材，不是用户事实/现实证据；不要写进长期记忆，用户没问就不要复述。",
             "优先级：当前会话中已明确发生且尚未撤销的换装、地点、携带物和动作 > 用户有效介入 > 当前真实时段 > 本段日程及预设素材。"
             "日程、旧摘要和 state_variables 只能补足未指定信息，不能把已经发生的服装、地点、携带物或动作复原成旧值。",
@@ -14034,9 +14179,15 @@ class DailyStateMixin(DailyStateTickMixin):
                         update_lines.append("，".join(pieces))
                 if update_lines:
                     lines.append("刚刚的介入：" + "；".join(update_lines) + "。")
-        return "\n".join(lines)
+        body = "\n".join(lines)
+        return prompt_section("Bot 模拟当前片段", body) if as_section else f"【Bot 模拟当前片段】\n{body}"
 
-    def _format_timer_scheduling_instruction(self, user: dict[str, Any] | None = None) -> str:
+    def _format_timer_scheduling_instruction(
+        self,
+        user: dict[str, Any] | None = None,
+        *,
+        as_section: bool = False,
+    ) -> str | dict[str, Any]:
         if not self.enable_llm_timer_scheduling:
             return ""
         current_user = user if isinstance(user, dict) else {}
@@ -14068,7 +14219,7 @@ class DailyStateMixin(DailyStateTickMixin):
             if reality_ready
             else "当前用户没有可用的现实触及音频授权。即使用户提到音响，也不得承诺本机播放；普通提醒仍使用官方 `future_task`。"
         )
-        return f"""【临时预约与动作回访】
+        body = f"""
 当前本地时间：{current_time}。所有 time 都必须据此换算为未来的绝对时间。
 一、明确约定：用户明确要求稍后提醒/叫醒/回头说，或双方形成明确临时约定时，若本轮提供 AstrBot 官方 `future_task` 工具，优先调用该工具；只有没有官方工具可用时，才在回复末尾写：
 <timer>{{"time":"YYYY-MM-DD HH:MM:SS","topic":"约定内容"}}</timer>
@@ -14086,6 +14237,8 @@ class DailyStateMixin(DailyStateTickMixin):
 
 改时间直接写新时间；取消普通约定时写：<timer>{{"action":"cancel"}}</timer>；取消现实触及提醒时必须保留交付类型，写：<timer>{{"action":"cancel","delivery":"reality_touch","topic":"要取消的提醒事项"}}</timer>。
         除上述动作回访外，时间和约定不明确就不要写。标签不应出现在可见回复中，只会被转写为 AstrBot 官方一次性定时计划。"""
+        body = body.lstrip("\n")
+        return prompt_section("临时预约与动作回访", body) if as_section else f"【临时预约与动作回访】\n{body}"
 
     def _extract_timer_directives(self, text: str) -> tuple[str, list[dict[str, Any]]]:
         raw_text = str(text or "")

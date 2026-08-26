@@ -40,6 +40,7 @@ class _PlanAppendHarness:
         marker: str,
         text: str,
         *,
+        title: str,
         priority: int,
         source: str,
         force_dynamic: bool = False,
@@ -49,6 +50,7 @@ class _PlanAppendHarness:
         plan.add(
             marker=marker,
             content=text,
+            title=title,
             priority=priority,
             source=source,
             placement=PLACEMENT_TURN_TAIL,
@@ -78,6 +80,32 @@ class _GroupGuardHarness(_PlanAppendHarness, GroupObservationMixin):
 class _GroupGuardFallbackHarness(_GroupGuardHarness):
     @staticmethod
     def _append_turn_prompt_fragment_by_position(*_args, **_kwargs) -> bool:
+        return False
+
+
+class _GroupGuardSystemPlanHarness(_GroupGuardHarness):
+    @staticmethod
+    def _append_turn_prompt_fragment_by_position(
+        req,
+        marker: str,
+        text: str,
+        *,
+        title: str,
+        priority: int,
+        source: str,
+        **_kwargs,
+    ) -> bool:
+        plan = get_conversation_injection_plan(req)
+        plan.add(
+            marker=marker,
+            content=text,
+            title=title,
+            priority=priority,
+            source=source,
+            placement=PLACEMENT_DYNAMIC_SYSTEM,
+            temporary=False,
+            materialized=True,
+        )
         return False
 
 
@@ -201,6 +229,7 @@ class ConversationInjectionPlanStage2Tests(unittest.IsolatedAsyncioTestCase):
         item = plan.manifest(include_content=True)[0]
         self.assertTrue(handled)
         self.assertEqual(PLACEMENT_TURN_TAIL, item["placement"])
+        self.assertEqual("本轮当前天气查询", item["title"])
         self.assertIn("晴，20°C", item["content"])
         self.assertEqual([{"role": "user", "content": "history"}], req.contexts)
 
@@ -212,16 +241,29 @@ class ConversationInjectionPlanStage2Tests(unittest.IsolatedAsyncioTestCase):
             req,
         )
 
-        expected = (
-            "persona\n\n<!-- private_companion_group_injection_guard_v1 -->\n"
-            "guard-body"
-        )
         plan = get_conversation_injection_plan(req, create=False)
-        self.assertEqual(expected, req.system_prompt)
+        self.assertTrue(req.system_prompt.startswith("persona\n\n<private_companion_context>"))
+        self.assertIn('<section title="群聊防注入">guard-body</section>', req.system_prompt)
+        self.assertNotIn("<!-- private_companion_group_injection_guard_v1 -->", req.system_prompt)
         self.assertEqual("group.injection_guard", plan.manifest()[0]["key"])
         self.assertTrue(plan.manifest()[0]["materialized"])
+        before = req.system_prompt
         plan.render_into(req)
-        self.assertEqual(expected, req.system_prompt)
+        self.assertEqual(before, req.system_prompt)
+
+    async def test_group_guard_system_registration_reuses_existing_marker(self) -> None:
+        req = _request()
+
+        await _GroupGuardSystemPlanHarness()._append_group_injection_guard_to_request(
+            SimpleNamespace(message_str="hello", get_sender_id=lambda: "user-a"),
+            req,
+        )
+
+        plan = get_conversation_injection_plan(req, create=False)
+        plan.render_into(req)
+        self.assertEqual(1, len(plan.blocks()))
+        self.assertEqual(1, req.system_prompt.count('title="群聊防注入"'))
+        self.assertEqual(1, req.system_prompt.count("guard-body"))
 
     async def test_weather_fallback_keeps_exact_system_wire_shape(self) -> None:
         req = _request("今天天气怎么样")
@@ -235,9 +277,11 @@ class ConversationInjectionPlanStage2Tests(unittest.IsolatedAsyncioTestCase):
         item = plan.manifest(include_content=True)[0]
         before = req.system_prompt
         self.assertEqual("weather.query", item["key"])
+        self.assertEqual("本轮当前天气查询", item["title"])
         self.assertEqual(PLACEMENT_DYNAMIC_SYSTEM, item["placement"])
         self.assertTrue(item["materialized"])
-        self.assertIn("<!-- private_companion_weather_query_v1 -->", before)
+        self.assertNotIn("<!-- private_companion_weather_query_v1 -->", before)
+        self.assertIn("<private_companion_context>", before)
         self.assertIn("晴，20°C", before)
         plan.render_into(req)
         self.assertEqual(before, req.system_prompt)
@@ -267,8 +311,9 @@ class ConversationInjectionPlanStage2Tests(unittest.IsolatedAsyncioTestCase):
         before = req.system_prompt
         plan.render_into(req)
         self.assertEqual(before, req.system_prompt)
-        self.assertEqual(PLACEMENT_DYNAMIC_SYSTEM, item["placement"])
+        self.assertEqual("tool_contract", item["placement"])
         self.assertTrue(item["materialized"])
+        self.assertTrue(item["opaque"])
         self.assertIn("标签完全可选", item["content"])
 
 

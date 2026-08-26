@@ -104,7 +104,8 @@ class PromptCacheAndParallelContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls["recall"]["user_id"], "10001")
         self.assertEqual(calls["state"]["timeout_seconds"], 1.6)
         self.assertEqual(by_key["memory.current_state"]["priority"], 54)
-        self.assertIn("【我会牢牢记住你 当前状态参考】", by_key["memory.current_state"]["content"])
+        self.assertEqual("我会牢牢记住你 当前状态参考", by_key["memory.current_state"]["title"])
+        self.assertNotIn("【我会牢牢记住你 当前状态参考】", by_key["memory.current_state"]["content"])
         self.assertIn("现在在书房，穿浅蓝色居家服。", by_key["memory.current_state"]["content"])
         self.assertIn("优先服从本轮状态注入和当前会话中明确发生的时间线", by_key["memory.current_state"]["content"])
         self.assertEqual(by_key["memory.private_recall"]["status"], "hit")
@@ -210,7 +211,12 @@ class PromptCacheAndParallelContextTests(unittest.IsolatedAsyncioTestCase):
 
         first, second = requests
         self.assertEqual(first.system_prompt, second.system_prompt)
-        self.assertIn("private_companion_media_delivery_truth_v1", first.system_prompt)
+        self.assertNotIn("private_companion_media_delivery_truth_v1", first.system_prompt)
+        self.assertIn('<section title="内部历史标记">', first.system_prompt)
+        self.assertIn('<section title="明确生图请求">', first.system_prompt)
+        self.assertIn('<section title="媒体真实性硬规则">', first.system_prompt)
+        self.assertNotIn("【内部历史标记】", first.system_prompt)
+        self.assertIn("&lt;pc_history_media ... /&gt;", first.system_prompt)
         self.assertNotIn("private_companion_state_v1", first.system_prompt)
         self.assertIn("第一轮动态状态", plugin._request_prompt_context_surface(first))
         self.assertIn("第二轮动态状态", plugin._request_prompt_context_surface(second))

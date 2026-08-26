@@ -32,6 +32,7 @@ from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 from xml.etree import ElementTree as ET
 
 from astrbot.api import AstrBotConfig, logger
+from .conversation_prompt_section import prompt_section
 from .persona_config import runtime_persona_setting
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 try:
@@ -655,14 +656,17 @@ class IntegrationStatusMixin:
             "reading_archive": "翻资料柜夹层",
         }
 
-    def _format_worldview_adaptation_prompt(self) -> str:
+    def _format_worldview_adaptation_prompt(
+        self,
+        *,
+        include_heading: bool = True,
+    ) -> str:
         mode = self._worldview_mode_effective()
         if mode == "off":
             return ""
         terms = self._worldview_terms()
         custom = _single_line(runtime_persona_setting(self, 'worldview_adaptation_prompt', ""), 1200)
         base = [
-            "【世界观适配】",
             f"当前适配模式：{mode}。",
             "插件功能名称只代表现实实现；最终表达必须服从当前人格、身份和世界观。",
             f"可把日程理解为：{terms['schedule']}；资料柜理解为：{terms['bookshelf']}；隐藏夹层理解为：{terms['secret_drawer']}；群聊理解为：{terms['group_chat']}；私聊理解为：{terms['private_chat']}。",
@@ -670,6 +674,8 @@ class IntegrationStatusMixin:
             "如果人格/世界观与现代词冲突，优先使用世界内说法；但不要编造会改变功能结果的事实，也不要向用户解释后台实现。",
             "未在人格、世界观、关系网、近期对话或用户输入中明确出现的人际关系不得凭空添加；家人、父母、兄弟姐妹、亲戚、室友、同学、老师、同事、朋友、邻居、前辈、后辈等关系只能在材料有依据时使用。",
         ]
+        if include_heading:
+            base.insert(0, "【世界观适配】")
         if custom:
             base.append(f"自定义适配：{custom}")
         knowledge_formatter = getattr(self, "_format_roleplay_knowledge_context", None)
@@ -678,6 +684,12 @@ class IntegrationStatusMixin:
             if knowledge_context:
                 base.append(knowledge_context)
         return "\n".join(base)
+
+    def _format_worldview_adaptation_prompt_section(self) -> dict[str, Any]:
+        return prompt_section(
+            "世界观适配",
+            self._format_worldview_adaptation_prompt(include_heading=False),
+        )
 
     def _livingmemory_plugin_dir(self) -> Path:
         candidates = [
@@ -760,7 +772,12 @@ class IntegrationStatusMixin:
         # Compatibility fallback for old AstrBot versions without a tool manager.
         return self._livingmemory_module_loaded()
 
-    def _format_livingmemory_guidance(self, *, scope: str = "private") -> str:
+    def _format_livingmemory_guidance(
+        self,
+        *,
+        scope: str = "private",
+        include_heading: bool = True,
+    ) -> str:
         if not self.enable_livingmemory_integration or not self._livingmemory_available():
             return ""
         tool_name = _single_line(self.livingmemory_tool_name, 60) or "recall_long_term_memory"
@@ -769,7 +786,8 @@ class IntegrationStatusMixin:
         else:
             boundary = "私聊可查当前用户相关的旧约定、偏好和共同经历。"
         return (
-            "【长期记忆检索】\n"
+            ("【长期记忆检索】\n" if include_heading else "")
+            +
             f"上下文不够时可用 `{tool_name}` 查记忆。只有当前工具列表确实提供该工具时才调用；工具未出现时不要猜测、重试或输出工具调用。{boundary}结果只作接话背景。\n"
             "召回结果里出现人名、昵称、QQ 或群成员别名时,不要直接当作稳定身份；能查关系网时先用关系网确认,不能确认就按召回文本里的具体说话人原样转述。\n"
             "如果召回到 Bot 曾说自己在吃饭、整理、犯困、路上、创作等状态/日程，只能理解为当时 Bot 的拟人化表达或历史自称；不要写成用户事实、现实证据或持续状态。"
@@ -1347,7 +1365,12 @@ class IntegrationStatusMixin:
             return f"auto（候选：{external_label()}）"
         return "auto（当前无可用生图后端）"
 
-    async def _format_environment_perception(self, event: AstrMessageEvent) -> str:
+    async def _format_environment_perception(
+        self,
+        event: AstrMessageEvent,
+        *,
+        include_heading: bool = True,
+    ) -> str:
         checker = getattr(self, "_feature_enabled_or_temp_unlocked", None)
         if callable(checker):
             if not checker("enable_environment_perception"):
@@ -1356,9 +1379,10 @@ class IntegrationStatusMixin:
             return ""
         current = self._environment_now()
         lines = [
-            "【环境感知】",
             "这是当前消息的背景边界，主要影响语境判断、节奏和措辞；如果用户明确问到时间、节日、平台或环境线索，可以按需要自然回答，没问到时就把它当作背景参考。",
         ]
+        if include_heading:
+            lines.insert(0, "【环境感知】")
         holiday = self._format_holiday_perception(current)
         if holiday:
             lines.append(f"时间：{current.strftime('%Y-%m-%d %H:%M')}（{holiday}）")
@@ -1404,6 +1428,18 @@ class IntegrationStatusMixin:
         if model:
             lines.append(f"模型：{model}")
         return "\n".join(lines)
+
+    async def _format_environment_perception_prompt_section(
+        self,
+        event: AstrMessageEvent,
+    ) -> dict[str, Any]:
+        return prompt_section(
+            "环境感知",
+            await self._format_environment_perception(
+                event,
+                include_heading=False,
+            ),
+        )
 
     def _environment_timezone(self) -> zoneinfo.ZoneInfo | None:
         timezone_name = _single_line(self.environment_perception_timezone, 64) or "Asia/Shanghai"

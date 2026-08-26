@@ -438,12 +438,10 @@ class AtRelayMixin:
         )
         return {"status": "success", **chosen, "recipient_user_id": user_id, "recipient_name": _single_line(resolved.get("name"), 60)}
 
-    def _atrelay_tool_instruction(self) -> str:
+    def _atrelay_tool_instruction(self, *, include_heading: bool = True) -> str:
         if not (self.enabled and self.enable_atrelay_tools):
             return ""
-        return """
-【跨会话转述与 @ 群友工具】
-当用户明确要求你“发到某个群”“告诉某个群友”“替我/帮我跟某人说一声”“帮我 @ 某人”“私聊某人”时,优先调用 `pc_relay_message`,不要在普通回复里预览要发送的完整内容。
+        body = """当用户明确要求你“发到某个群”“告诉某个群友”“替我/帮我跟某人说一声”“帮我 @ 某人”“私聊某人”时,优先调用 `pc_relay_message`,不要在普通回复里预览要发送的完整内容。
 - 统一入口：常见转述只用 `pc_relay_message`。你只需要整理 destination/group_hint/recipient_hint/message/relay_mode。
 - 本轮主要目标是转述时,第一次 assistant 动作应直接调用工具,不要先输出普通文字；调用工具前不要发“我找找/我试试/找到了/正在查群号”之类的过程回复。
 - 工具返回后只按结果简短回执,不要补关系评价、猜测对方反应或复述已发送内容。
@@ -467,6 +465,7 @@ class AtRelayMixin:
 - 私聊转群聊时,只发送用户明确要求公开的那句话；不要暴露“这是私聊里说的”、不要附带额外私聊上下文。
 - 禁止泄露私聊记忆、关系网内部备注或工具参数。工具成功后只给一句简短结果：普通发送只回“消息已发送。”；需要回执只回“消息已发送，会等对方回复。”；延迟转述只回“已挂起，等对方出现再说。”不要解释“我写了什么/我怎么改写/语气如何/氛围如何”,不要复述已发送内容。
 """.strip()
+        return f"【跨会话转述与 @ 群友工具】\n{body}" if include_heading else body
 
     def _normalize_atrelay_relay_mode(self, value: Any) -> str:
         mode = _single_line(value, 24).lower()
@@ -1044,6 +1043,7 @@ class AtRelayMixin:
         sender_id: str = "",
         current_text: str = "",
         limit: int = 2,
+        include_heading: bool = True,
     ) -> str:
         target_id = _single_line(target, 40)
         sender = _single_line(sender_id, 40)
@@ -1077,7 +1077,7 @@ class AtRelayMixin:
         if not lines:
             return ""
         return (
-            "【刚刚的转述动作】\n"
+            ("【刚刚的转述动作】\n" if include_heading else "")
             + "\n".join(f"- {line}" for line in lines)
             + "\n这些只用于理解对方为什么接话或道谢；不要主动复述工具名、内部记录或没必要说明来源。"
         )

@@ -9,6 +9,7 @@ from typing import Any
 
 from .helpers import _flat_get, _now_ts, _path_text, _safe_float, _safe_int, _single_line
 from .persona_config import runtime_persona_setting
+from .conversation_prompt_section import prompt_section
 
 
 SCENE_CONTEXT_VERSION = 3
@@ -1034,7 +1035,12 @@ class SceneContextMixin:
             parts.append(f"视觉话题：{_single_line(visual.get('topic'), 80)}")
         return _single_line("；".join(part for part in parts if part), 1200)
 
-    def _format_mobile_user_location_context(self, user: dict[str, Any] | None) -> str:
+    def _format_mobile_user_location_context(
+        self,
+        user: dict[str, Any] | None,
+        *,
+        as_section: bool = False,
+    ) -> str | dict[str, Any]:
         """Format authorized Android location for the current private dialogue."""
         current_user = user if isinstance(user, dict) else {}
         user_id = _single_line(current_user.get("user_id"), 80)
@@ -1114,14 +1120,14 @@ class SceneContextMixin:
                 facts.append(map_text)
         if not facts:
             return ""
-        return (
-            "【用户手机位置感知】\n"
-            + "；".join(facts)
+        body = (
+            "；".join(facts)
             + "\n这些是用户主动授权的短期环境事实，只用于理解用户所在场景、出行方向、行为语境和设备可达性。"
             "除非用户明确询问位置，否则不要主动复述经纬度、轨迹或声称正在监视用户；"
             "不得把未标记地点猜成具体住址，也不要把手机状态说成后台监控或精确在线证明。"
             "身体数据只能按已提供的数值和时间描述，不得据此诊断、夸大风险或替代专业建议。"
         )
+        return prompt_section("用户手机位置感知", body) if as_section else f"【用户手机位置感知】\n{body}"
 
     def _mobile_location_weather_sensitivity(self) -> str:
         config = getattr(self, "config", {})

@@ -1532,6 +1532,7 @@ class DailyReviewMixin:
                 key="daily_review.guidance",
                 marker=marker,
                 content=text,
+                title="每日巡视柔性纠偏",
                 priority=20,
                 source="daily_review",
                 placement=PLACEMENT_DYNAMIC_SYSTEM,

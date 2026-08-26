@@ -97,6 +97,27 @@ class CreativeReplyVisibilityTests(unittest.TestCase):
         self.assertIn("当前书柜创作区确实没有保存过正文的作品", context)
         self.assertIn("不要假装翻找", context)
 
+    def test_structured_inventory_context_owns_its_branch_title(self):
+        self.harness.data["creative_projects"] = []
+
+        section = self.harness._format_hidden_creative_context_for_reply(
+            "资料柜里有什么",
+            {},
+            as_section=True,
+        )
+        self.assertEqual("资料柜创作区真实库存", section["title"])
+        self.assertNotIn("【资料柜创作区真实库存】", section["content"])
+
+    def test_structured_creative_context_keeps_real_work_title(self):
+        section = self.harness._format_hidden_creative_context_for_reply(
+            "你写过书吗",
+            {},
+            as_section=True,
+        )
+        self.assertEqual("私下创作近况", section["title"])
+        self.assertIn("标题：楼梯尽头", section["content"])
+        self.assertNotIn("标题：私下创作近况", section["content"])
+
 
 if __name__ == "__main__":
     unittest.main()

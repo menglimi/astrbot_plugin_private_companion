@@ -208,7 +208,7 @@ class TtsTurnLanguageRequestIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(getattr(event, "_private_companion_tts_request_applied", False))
         self.assertIn("本轮明确要求使用英语", request.system_prompt)
         self.assertIn("当前语音正文目标语种：英语", request.system_prompt)
-        self.assertIn("【用户语音请求】", request.system_prompt)
+        self.assertIn("用户本轮明确希望听到语音或你的声音", request.system_prompt)
         self.assertEqual("ja", harness.tts_voice_language)
 
 

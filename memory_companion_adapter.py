@@ -33,6 +33,7 @@ from .relationship_policy import relationship_projection_for_bridge
 from .namespace_capability import negotiate_namespace_capability
 from .identity_namespace import validate_namespace_context
 from .persona_config import runtime_persona_setting
+from .conversation_prompt_section import prompt_section
 
 
 # The v2 contract was published by the previous Memory Companion release.
@@ -1773,7 +1774,8 @@ class MemoryCompanionAdapterMixin:
         user: dict[str, Any],
         user_id: str,
         text: str,
-    ) -> str:
+        as_section: bool = False,
+    ) -> str | dict[str, Any]:
         """Return a small, current-session-only memory supplement for private replies."""
         if not getattr(self, "enable_memory_companion_private_recall", True):
             return ""
@@ -1807,11 +1809,11 @@ class MemoryCompanionAdapterMixin:
         recalled = _single_line(recalled, 620)
         if not recalled:
             return ""
-        return (
-            "【当前私聊长期记忆补充】\n"
+        body = (
             f"{recalled}\n"
             "只在与本轮直接相关时自然接住；不要主动列举记忆、不要提及检索过程，也不要把它当作其他用户的信息。"
         )
+        return prompt_section("当前私聊长期记忆补充", body) if as_section else f"【当前私聊长期记忆补充】\n{body}"
 
     def _memory_companion_agenda_memory_write_entries(
         self,

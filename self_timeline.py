@@ -83,6 +83,7 @@ class SelfTimelineMixin:
         user: dict[str, Any] | None = None,
         *,
         limit: int = 8,
+        include_heading: bool = True,
     ) -> str:
         query = _single_line(text, 300)
         if not self._user_asks_self_timeline(query):
@@ -90,14 +91,16 @@ class SelfTimelineMixin:
         entries = self._collect_self_timeline_entries(query, user=user)
         if not entries:
             return (
-                "【自我时间线检索】\n"
+                ("【自我时间线检索】\n" if include_heading else "")
+                +
                 "用户在问 Bot 自己某个时间做过什么，但当前没有检索到可靠记录。"
                 "回复时可以说记不准或没有留下记录，不要编造具体事件。"
             )
         lines = [
-            "【自我时间线检索】",
             "用户在问 Bot 自己某个时间做过什么。下面是从日程、细化、日记、主动行为、创作、资料归档、生图和 QQ 空间发布记录里检索到的线索；只根据这些线索回答，不确定就说记不准。",
         ]
+        if include_heading:
+            lines.insert(0, "【自我时间线检索】")
         for entry in entries[: max(1, limit)]:
             when = _single_line(entry.get("when"), 40) or "时间不详"
             source = _single_line(entry.get("source"), 24) or "记录"

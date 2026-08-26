@@ -1487,11 +1487,17 @@ class WorldbookMixin:
         )
         return ranked[:max_items]
 
-    def _format_worldbook_private_mentions_for_prompt(self, text: str, *, limit: int | None = None) -> str:
+    def _format_worldbook_private_mentions_for_prompt(
+        self,
+        text: str,
+        *,
+        limit: int | None = None,
+        include_heading: bool = True,
+    ) -> str:
         profiles = self._select_worldbook_member_profiles_for_private_text(text, limit=limit)
         if not profiles:
             return ""
-        lines = ["【本轮提到的关系网对象】"]
+        lines = ["【本轮提到的关系网对象】"] if include_heading else []
         injected = []
         for profile in profiles:
             profile_uid = _single_line(profile.get("user_id"), 40)

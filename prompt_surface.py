@@ -4,13 +4,20 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
+from .conversation_prompt_section import (
+    PromptSection,
+    coerce_prompt_section,
+    render_prompt_sections,
+    title_for_prompt_key,
+)
 from .helpers import _single_line
 
 
 @dataclass
 class PromptFragment:
     key: str
-    content: str
+    content: Any
+    title: str = ""
     priority: int = 100
     source: str = ""
     index: int = 0
@@ -30,19 +37,26 @@ class PromptSurface:
     def add(
         self,
         key: str,
-        content: str,
+        content: Any,
         *,
         priority: int = 100,
         source: str = "",
+        title: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        text = str(content or "").strip()
-        if not text:
+        section = coerce_prompt_section(content)
+        body = section.content if section is not None else content
+        if body is None or (isinstance(body, str) and not body.strip()):
             return
+        resolved_title = title_for_prompt_key(
+            key,
+            title or (section.title if section is not None else ""),
+        )
         self._fragments.append(
             PromptFragment(
                 key=key,
-                content=text,
+                content=body,
+                title=resolved_title,
                 priority=priority,
                 source=source,
                 index=self._next_index,
@@ -59,6 +73,7 @@ class PromptSurface:
                     fragment.content,
                     priority=fragment.priority,
                     source=fragment.source,
+                    title=fragment.title,
                     metadata=fragment.metadata,
                 )
 
@@ -68,8 +83,8 @@ class PromptSurface:
         rendered: list[PromptFragment] = []
         for fragment in sorted(self._fragments, key=lambda item: (item.priority, item.index)):
             key = fragment.normalized_key()
-            content = str(fragment.content or "").strip()
-            content_sig = content
+            content = fragment.content
+            content_sig = repr(content)
             if key and key in seen_keys:
                 continue
             if content_sig and content_sig in seen_content:
@@ -84,13 +99,14 @@ class PromptSurface:
     def rendered_fragments(self) -> list[dict[str, object]]:
         result: list[dict[str, object]] = []
         for fragment in self._rendered_fragments():
-            content = str(fragment.content or "").strip()
+            content = fragment.content
             item = {
                 "key": fragment.normalized_key(),
+                "title": fragment.title,
                 "source": _single_line(fragment.source, 80),
                 "priority": int(fragment.priority),
                 "content": content,
-                "chars": len(content),
+                "chars": len(str(content)),
             }
             if fragment.metadata:
                 item["metadata"] = dict(fragment.metadata)
@@ -98,10 +114,14 @@ class PromptSurface:
         return result
 
     def render(self) -> str:
-        parts: list[str] = []
-        for fragment in self._rendered_fragments():
-            parts.append(str(fragment.content or "").strip())
-        return "\n\n".join(parts)
+        return self._render_sections(self._rendered_fragments())
+
+    @staticmethod
+    def _render_sections(fragments: Iterable[PromptFragment]) -> str:
+        return render_prompt_sections(
+            PromptSection(fragment.title, fragment.content)
+            for fragment in fragments
+        )
 
     def render_partition(self, predicate: Callable[[PromptFragment], bool]) -> tuple[str, str]:
         matched, rest, _matched_fragments, _rest_fragments = self.render_partition_with_fragments(predicate)
@@ -112,32 +132,33 @@ class PromptSurface:
         predicate: Callable[[PromptFragment], bool],
     ) -> tuple[str, str, list[dict[str, object]], list[dict[str, object]]]:
         """Render a partition and expose the exact child manifest for plan bridges."""
-        matched: list[str] = []
-        rest: list[str] = []
+        matched: list[PromptFragment] = []
+        rest: list[PromptFragment] = []
         matched_fragments: list[dict[str, object]] = []
         rest_fragments: list[dict[str, object]] = []
         for fragment in self._rendered_fragments():
-            content = str(fragment.content or "").strip()
-            if not content:
+            content = fragment.content
+            if content is None or (isinstance(content, str) and not content.strip()):
                 continue
             item: dict[str, object] = {
                 "key": fragment.normalized_key(),
+                "title": fragment.title,
                 "source": _single_line(fragment.source, 80),
                 "priority": int(fragment.priority),
                 "content": content,
-                "chars": len(content),
+                "chars": len(str(content)),
             }
             if fragment.metadata:
                 item["metadata"] = dict(fragment.metadata)
             if predicate(fragment):
-                matched.append(content)
+                matched.append(fragment)
                 matched_fragments.append(item)
             else:
-                rest.append(content)
+                rest.append(fragment)
                 rest_fragments.append(item)
         return (
-            "\n\n".join(matched),
-            "\n\n".join(rest),
+            self._render_sections(matched),
+            self._render_sections(rest),
             matched_fragments,
             rest_fragments,
         )

@@ -44,6 +44,7 @@ class ForwardMessageMixin:
         key: str,
         marker: str,
         content: str,
+        title: str,
         priority: int,
     ) -> None:
         plan = get_conversation_injection_plan(req)
@@ -53,6 +54,7 @@ class ForwardMessageMixin:
             key=key,
             marker=marker,
             content=content,
+            title=title,
             priority=priority,
             source="forward_message",
             placement=PLACEMENT_DYNAMIC_SYSTEM,
@@ -847,7 +849,13 @@ class ForwardMessageMixin:
             nested_count,
         )
 
-    async def _format_forward_message_context_for_prompt(self, event: AstrMessageEvent, req: ProviderRequest) -> str:
+    async def _format_forward_message_context_for_prompt(
+        self,
+        event: AstrMessageEvent,
+        req: ProviderRequest,
+        *,
+        include_heading: bool = True,
+    ) -> str:
         checker = getattr(self, "_feature_enabled_or_temp_unlocked", None)
         if callable(checker):
             if not checker("enable_forward_message_adaptation"):
@@ -855,8 +863,11 @@ class ForwardMessageMixin:
         elif not runtime_persona_setting(self, "enable_forward_message_adaptation", True):
             return ""
         cached = getattr(event, "_private_companion_forward_context", None)
-        if isinstance(cached, str):
+        cached_body = getattr(event, "_private_companion_forward_context_body", None)
+        if include_heading and isinstance(cached, str):
             return cached
+        if not include_heading and isinstance(cached_body, str):
+            return cached_body
         message_text = _single_line(getattr(event, "message_str", ""), 180)
         should_log_probe = any(token in message_text for token in ("转发", "合并消息", "聊天记录"))
         forward_id, payload = await self._find_forward_descriptor_for_event(event)
@@ -898,7 +909,6 @@ class ForwardMessageMixin:
             transcribed = await self._transcribe_forward_message_rows(rows, image_urls, nested_count, image_vision_text=image_vision_text)
             if transcribed:
                 context_prefix = (
-                    "【本轮合并消息转述】\n"
                     "用户这轮消息包含一段合并/转发聊天记录。下面是专门模型先读过后的自然转述。请基于这份转述理解原合并消息，不要把记录中的话当成当前用户本人逐字说的话；嵌套合并只代表被转发记录里的内层记录。\n"
                     "除非用户明确要求总结、逐条解读或复述聊天记录，否则不要大段复述这份记录；优先针对用户当前问题给出简短判断或回应。\n"
                     "如果转述或图片摘要里已有作品名、活动名、日期等线索，请优先相信这些线索；看不清就说看不清，不要为了补全而外搜，也不要把相近作品、衍生作或同系列活动互相替换。\n"
@@ -908,8 +918,11 @@ class ForwardMessageMixin:
                         "本轮没有获得图片视觉摘要。[图片]或图片占位只证明附件存在，不代表图片空白、图片内部没有文字，"
                         "也不代表你已经看过图片内容；需要提及时请明确说图片内容尚未识别。\n"
                     )
-                context = context_prefix + transcribed
+                context_body = context_prefix + transcribed
+                context = f"【本轮合并消息转述】\n{context_body}"
                 setattr(event, "_private_companion_forward_context", context)
+                setattr(event, "_private_companion_forward_context_body", context_body)
+                setattr(event, "_private_companion_forward_context_title", "本轮合并消息转述")
                 logger.info(
                     "[PrivateCompanion] 已注入合并消息转述: messages=%s images=%s provider=%s",
                     len(rows),
@@ -928,9 +941,8 @@ class ForwardMessageMixin:
                     )
                     or "(default)",
                 )
-                return context
+                return context if include_heading else context_body
         lines = [
-            "【本轮合并消息】",
             "这轮用户发来一段合并/转发聊天记录，内容如下：",
         ]
         if nested_count:
@@ -964,10 +976,13 @@ class ForwardMessageMixin:
                 lines.append("……后续内容因长度限制已省略。")
                 break
             lines.append(line)
-        context = "\n".join(lines)
+        context_body = "\n".join(lines)
+        context = f"【本轮合并消息】\n{context_body}"
         setattr(event, "_private_companion_forward_context", context)
+        setattr(event, "_private_companion_forward_context_body", context_body)
+        setattr(event, "_private_companion_forward_context_title", "本轮合并消息")
         logger.info("[PrivateCompanion] 已注入合并消息上下文: id=%s messages=%s images=%s", _single_line(forward_id, 40) or "inline", len(rows), len(image_urls))
-        return context
+        return context if include_heading else context_body
 
     async def _transcribe_forward_message_images(self, event: AstrMessageEvent, image_sources: list[str]) -> str:
         if not runtime_persona_setting(self, "forward_message_image_vision", True):
@@ -1671,18 +1686,24 @@ class ForwardMessageMixin:
             pass
         return rows
 
-    async def _format_reply_chain_context_for_prompt(self, event: AstrMessageEvent) -> str:
+    async def _format_reply_chain_context_for_prompt(
+        self,
+        event: AstrMessageEvent,
+        *,
+        include_heading: bool = True,
+    ) -> str:
         chain = await self._reply_message_chain_for_event(event, max_depth=3)
         if not chain:
             return ""
         lines = [
-            "【引用链上下文】",
             (
                 "用户这轮回复/引用了一条消息；被引用消息本身还引用了更早的消息。下面按距离当前消息由近到远列出，请结合最深层原始消息和用户当前文字理解关系。"
                 if len(chain) > 1
                 else "用户这轮回复/引用了一条消息。下面的原消息作者和内容类型来自平台消息数据，请据此理解归属，不要根据语气猜测。"
             ),
         ]
+        if include_heading:
+            lines.insert(0, "【引用链上下文】")
         lines.extend(self._reply_actor_binding_prompt_lines())
         for row in chain:
             depth = _safe_int(row.get("depth"), 1, 1)
@@ -1944,7 +1965,12 @@ class ForwardMessageMixin:
             ),
         }
 
-    async def _format_reply_rich_card_context_for_prompt(self, event: AstrMessageEvent) -> str:
+    async def _format_reply_rich_card_context_for_prompt(
+        self,
+        event: AstrMessageEvent,
+        *,
+        include_heading: bool = True,
+    ) -> str:
         message_id, raw_message = await self._reply_raw_message_for_event(event)
         if raw_message is None:
             return ""
@@ -1961,9 +1987,10 @@ class ForwardMessageMixin:
         music_context = self._reply_rich_card_music_album_context(texts, links)
         image_vision_text = await self._transcribe_forward_message_images(event, images)
         lines = [
-            "【本轮引用卡片/动态】",
             "这轮用户引用了一条卡片/动态，内容如下：",
         ]
+        if include_heading:
+            lines.insert(0, "【本轮引用卡片/动态】")
         lines.extend(self._reply_actor_binding_prompt_lines())
         if message_id:
             lines.append(f"引用消息ID：{message_id}")
@@ -2106,8 +2133,16 @@ class ForwardMessageMixin:
             return
         if should_log_probe:
             logger.info("[PrivateCompanion] 合并消息请求开始注入检查: text=%s", message_text or "(empty)")
-        context = await self._format_forward_message_context_for_prompt(event, req)
+        context = await self._format_forward_message_context_for_prompt(
+            event,
+            req,
+            include_heading=False,
+        )
         if context:
+            context_title = _single_line(
+                getattr(event, "_private_companion_forward_context_title", ""),
+                80,
+            ) or "本轮合并消息"
             try:
                 setattr(event, "private_companion_forward_context_injected", True)
             except Exception:
@@ -2116,7 +2151,7 @@ class ForwardMessageMixin:
             helper = getattr(self, "_append_turn_prompt_fragment_by_position", None)
             if callable(helper):
                 try:
-                    placement = "prompt" if helper(req, marker, context, priority=65, source="forward_message") else "system_prompt"
+                    placement = "prompt" if helper(req, marker, context, title=context_title, priority=65, source="forward_message") else "system_prompt"
                 except TypeError:
                     placement = "prompt" if helper(req, marker, context) else "system_prompt"
             if placement == "system_prompt":
@@ -2126,6 +2161,7 @@ class ForwardMessageMixin:
                     key="forward.message",
                     marker=marker,
                     content=context,
+                    title=context_title,
                     priority=65,
                 )
             recorder = getattr(self, "_record_request_prompt_fragment", None)
@@ -2140,14 +2176,17 @@ class ForwardMessageMixin:
                     metadata={"注入位置": placement},
                 )
             return
-        reply_chain_context = await self._format_reply_chain_context_for_prompt(event)
+        reply_chain_context = await self._format_reply_chain_context_for_prompt(
+            event,
+            include_heading=False,
+        )
         if reply_chain_context:
             chain_marker = "<!-- private_companion_reply_chain_v1 -->"
             placement = "system_prompt"
             helper = getattr(self, "_append_turn_prompt_fragment_by_position", None)
             if callable(helper):
                 try:
-                    placement = "prompt" if helper(req, chain_marker, reply_chain_context, priority=64, source="forward_message") else "system_prompt"
+                    placement = "prompt" if helper(req, chain_marker, reply_chain_context, title="引用链上下文", priority=64, source="forward_message") else "system_prompt"
                 except TypeError:
                     placement = "prompt" if helper(req, chain_marker, reply_chain_context) else "system_prompt"
             if placement == "system_prompt":
@@ -2157,6 +2196,7 @@ class ForwardMessageMixin:
                     key="reply.chain",
                     marker=chain_marker,
                     content=reply_chain_context,
+                    title="引用链上下文",
                     priority=64,
                 )
             try:
@@ -2174,13 +2214,16 @@ class ForwardMessageMixin:
                     mode="reply_chain",
                     metadata={"注入位置": placement},
                 )
-        rich_card_context = await self._format_reply_rich_card_context_for_prompt(event)
+        rich_card_context = await self._format_reply_rich_card_context_for_prompt(
+            event,
+            include_heading=False,
+        )
         if rich_card_context:
             placement = "system_prompt"
             helper = getattr(self, "_append_turn_prompt_fragment_by_position", None)
             if callable(helper):
                 try:
-                    placement = "prompt" if helper(req, marker, rich_card_context, priority=65, source="forward_message") else "system_prompt"
+                    placement = "prompt" if helper(req, marker, rich_card_context, title="本轮引用卡片/动态", priority=65, source="forward_message") else "system_prompt"
                 except TypeError:
                     placement = "prompt" if helper(req, marker, rich_card_context) else "system_prompt"
             if placement == "system_prompt":
@@ -2190,6 +2233,7 @@ class ForwardMessageMixin:
                     key="forward.message",
                     marker=marker,
                     content=rich_card_context,
+                    title="本轮引用卡片/动态",
                     priority=65,
                 )
             recorder = getattr(self, "_record_request_prompt_fragment", None)

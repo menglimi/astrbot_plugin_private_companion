@@ -74,15 +74,20 @@ class _FunctionalTtsPlanHarness(_TtsPlanHarness):
 
 class _ForwardPlanHarness(ForwardMessageMixin):
     @staticmethod
-    async def _format_forward_message_context_for_prompt(_event, _req) -> str:
+    async def _format_forward_message_context_for_prompt(
+        _event,
+        _req,
+        *,
+        include_heading=True,
+    ) -> str:
         return "FORWARD-CONTEXT"
 
     @staticmethod
-    async def _format_reply_chain_context_for_prompt(_event) -> str:
+    async def _format_reply_chain_context_for_prompt(_event, **_kwargs) -> str:
         return ""
 
     @staticmethod
-    async def _format_reply_rich_card_context_for_prompt(_event) -> str:
+    async def _format_reply_rich_card_context_for_prompt(_event, **_kwargs) -> str:
         return ""
 
 
@@ -93,6 +98,7 @@ class _DynamicForwardPlanHarness(_ForwardPlanHarness):
         marker,
         text,
         *,
+        title="",
         priority=50,
         source="",
     ) -> bool:
@@ -100,6 +106,7 @@ class _DynamicForwardPlanHarness(_ForwardPlanHarness):
         plan.add(
             marker=marker,
             content=text,
+            title=title,
             priority=priority,
             source=source,
             placement=PLACEMENT_TURN_TAIL,
@@ -139,7 +146,7 @@ class ModuleConversationInjectionPlanTests(unittest.IsolatedAsyncioTestCase):
         plan.render_into(request)
         self.assertEqual(expected, request.system_prompt)
 
-    async def test_dynamic_tts_fallback_is_registered_without_changing_legacy_text(self) -> None:
+    async def test_dynamic_tts_fallback_is_registered_and_rendered_as_xml(self) -> None:
         harness = _FunctionalTtsPlanHarness()
         event = SimpleNamespace(
             message_str="/help",
@@ -149,13 +156,15 @@ class ModuleConversationInjectionPlanTests(unittest.IsolatedAsyncioTestCase):
 
         await harness.apply_tts_enhancement_request(event, request)
 
-        self.assertTrue(request.system_prompt.startswith("base\n\n【功能性回复的语音取舍】"))
-        self.assertNotIn("private_companion_tts_functional_reply_v1", request.system_prompt)
         plan = get_conversation_injection_plan(request, create=False)
         block = plan.blocks()[0]
         self.assertEqual(PLACEMENT_DYNAMIC_SYSTEM, block.placement)
         self.assertTrue(block.materialized)
         self.assertFalse(block.opaque)
+        plan.render_into(request)
+        self.assertNotIn("<!-- private_companion_tts_functional_reply_v1 -->", request.system_prompt)
+        self.assertIn('<section title="功能性回复的语音取舍">', request.system_prompt)
+        self.assertIn("用户本轮发来的是指令或功能操作。", request.system_prompt)
 
     async def test_forward_context_fallback_is_materialized_and_not_duplicated(self) -> None:
         harness = _ForwardPlanHarness()
@@ -173,7 +182,8 @@ class ModuleConversationInjectionPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(["forward.message"], [block.key for block in plan.blocks()])
         self.assertTrue(plan.blocks()[0].materialized)
         plan.render_into(request)
-        self.assertEqual(expected, request.system_prompt)
+        self.assertNotIn("<!-- private_companion_forward_message_v1 -->", request.system_prompt)
+        self.assertIn('<section title="本轮合并消息">FORWARD-CONTEXT</section>', request.system_prompt)
 
     async def test_forward_dynamic_path_uses_plan_provenance_for_deduplication(self) -> None:
         harness = _DynamicForwardPlanHarness()
@@ -216,6 +226,7 @@ class ModuleConversationInjectionPlanTests(unittest.IsolatedAsyncioTestCase):
             key="private.image_reply_boundary",
             marker="",
             content="BOUNDARY",
+            title="本轮图片回复边界",
             priority=31,
         )
 
@@ -224,9 +235,14 @@ class ModuleConversationInjectionPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("private.image_reply_boundary", block.key)
         self.assertTrue(block.materialized)
         plan.render_into(request)
-        self.assertEqual("base\n\nBOUNDARY", request.system_prompt)
+        self.assertIn('<section title="本轮图片回复边界">BOUNDARY</section>', request.system_prompt)
         source = inspect.getsource(PrivateImageMixin._send_delayed_private_image_only_event)
         self.assertIn('key="private.image_reply_boundary"', source)
+        register_index = source.index('key="private.image_reply_boundary"')
+        render_index = source.index("request_plan.render_into(req)")
+        build_index = source.index("build_main_agent(")
+        self.assertLess(register_index, render_index)
+        self.assertLess(render_index, build_index)
 
 
 if __name__ == "__main__":

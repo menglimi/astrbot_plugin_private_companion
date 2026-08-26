@@ -71,6 +71,8 @@ from astrbot.core.star.star_handler import EventType, star_handlers_registry
 from astrbot.core.provider.entities import LLMResponse
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
+from .conversation_prompt_section import prompt_section
+
 try:
     import chinese_calendar as calendar_cn
 except Exception:
@@ -1435,7 +1437,12 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         lowered = text.lower()
         return any(token in lowered for token in ("web exploration", "recent search", "search history", "browsing history"))
 
-    def _format_recent_web_exploration_context_for_reply(self, inbound_text: str = "") -> str:
+    def _format_recent_web_exploration_context_for_reply(
+        self,
+        inbound_text: str = "",
+        *,
+        as_section: bool = False,
+    ) -> str | dict[str, Any]:
         if not runtime_persona_setting(self, "enable_web_exploration", False):
             return ""
         if not self._user_asks_web_exploration_context(inbound_text):
@@ -1445,10 +1452,10 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         notes = state.get("notes") if isinstance(state.get("notes"), list) else []
         latest_results = state.get("latest_results") if isinstance(state.get("latest_results"), list) else []
         if not digest and not notes and not latest_results:
-            return (
-                "【主动搜索上下文】\n"
+            body = (
                 "用户正在询问你最近主动搜索/上网探索过什么,但当前没有可用的主动搜索记录。请自然说明自己最近还没搜到能说的东西,不要编造搜索内容。"
             )
+            return prompt_section("主动搜索上下文", body) if as_section else "【主动搜索上下文】\n" + body
         rows: list[str] = []
         if digest:
             rows.append(
@@ -1484,14 +1491,19 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             if result_rows:
                 rows.append("最近一次结果摘录：")
                 rows.extend(result_rows)
-        return (
-            "【主动搜索上下文】\n"
+        body = (
             "用户正在询问你最近主动搜索/网页探索过什么。下面是真实搜索记录；回答只能基于这些内容,不要编造额外搜索、来源或结论。"
             "可以用第一人称自然概括“我刚查了/我之前搜到”,但不要说成后台系统日志。\n"
             + "\n".join(rows[:12])
         )
+        return prompt_section("主动搜索上下文", body) if as_section else "【主动搜索上下文】\n" + body
 
-    def _format_recent_ai_daily_context_for_reply(self, inbound_text: str = "") -> str:
+    def _format_recent_ai_daily_context_for_reply(
+        self,
+        inbound_text: str = "",
+        *,
+        as_section: bool = False,
+    ) -> str | dict[str, Any]:
         if not runtime_persona_setting(self, "enable_news_integration", False):
             return ""
         if not self._user_asks_ai_daily_context(inbound_text):
@@ -1513,10 +1525,10 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         text_readable = bool(text_readable_raw) if isinstance(text_readable_raw, bool) else bool(selected_item.get("article_readable") and selected_item.get("article_text"))
         subtitle_status = _single_line(ai_state.get("last_video_subtitle_status") or selected_item.get("video_subtitle_status"), 40)
         if not any((record_date, source_name, video_title, headline, impression, video_link, text_link)):
-            return (
-                "【新闻阅读上下文】\n"
+            body = (
                 "用户正在询问 AI 日报/早报,但当前没有可用的 AI 日报记录。请直接说明最近还没读到可确认的 AI 日报,不要编造。"
             )
+            return prompt_section("新闻阅读上下文", body) if as_section else "【新闻阅读上下文】\n" + body
         today = _today_key()
         rows: list[str] = []
         if record_date:
@@ -1541,17 +1553,25 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         rows.append(f"正文可读：{'是' if text_readable else '否'}")
         if subtitle_status:
             rows.append(f"字幕状态：{subtitle_status}")
-        return (
-            "【新闻阅读上下文】\n"
+        body = (
             "用户正在询问 AI 日报/早报。下面是最近一次真实读到的 AI 日报记录；如果日期不是今天，请明确说出具体日期，不要说成今天刚读到。"
             "回答只能基于这些内容，不要编造额外新闻。\n"
             + "\n".join(rows[:10])
         )
+        return prompt_section("新闻阅读上下文", body) if as_section else "【新闻阅读上下文】\n" + body
 
-    def _format_recent_news_context_for_reply(self, inbound_text: str = "") -> str:
+    def _format_recent_news_context_for_reply(
+        self,
+        inbound_text: str = "",
+        *,
+        as_section: bool = False,
+    ) -> str | dict[str, Any]:
         if not runtime_persona_setting(self, "enable_news_integration", False):
             return ""
-        ai_daily_context = self._format_recent_ai_daily_context_for_reply(inbound_text)
+        ai_daily_context = self._format_recent_ai_daily_context_for_reply(
+            inbound_text,
+            as_section=as_section,
+        )
         if ai_daily_context:
             return ai_daily_context
         if not self._user_asks_news_context(inbound_text):
@@ -1561,10 +1581,10 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         digests = state.get("digests") if isinstance(state.get("digests"), list) else []
         latest_items = state.get("latest_items") if isinstance(state.get("latest_items"), list) else []
         if not digest and not digests and not latest_items:
-            return (
-                "【新闻阅读上下文】\n"
+            body = (
                 "用户正在询问今天的新闻/AI 新闻,但当前还没有可用的新闻阅读记录。请自然说明自己还没读到今天的新闻,不要编造新闻。"
             )
+            return prompt_section("新闻阅读上下文", body) if as_section else "【新闻阅读上下文】\n" + body
         rows: list[str] = []
         if digest:
             rows.append(
@@ -1596,12 +1616,12 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
                 summary = _single_line(item.get("summary"), 160)
                 if title:
                     rows.append("- " + "｜".join(part for part in (title, source, summary) if part))
-        return (
-            "【新闻阅读上下文】\n"
+        body = (
             "用户正在询问今天的新闻/AI 新闻。下面是 Bot 近期真实读过或抓到的新闻记录；回答时只能基于这些内容,不要编造额外新闻。"
             "可以按人格自然概括,如果记录不够新或不完整,要直接说明。\n"
             + "\n".join(rows[:12])
         )
+        return prompt_section("新闻阅读上下文", body) if as_section else "【新闻阅读上下文】\n" + body
 
     def _format_news_digest_for_command(self) -> str:
         state = self.data.get("news_integration") if isinstance(self.data.get("news_integration"), dict) else {}

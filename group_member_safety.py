@@ -12,10 +12,7 @@ from astrbot.api import logger
 
 from .helpers import _safe_float, _safe_int, _single_line, _strip_group_member_safety_markers
 from .persona_config import runtime_persona_setting
-from .conversation_injection_plan import (
-    PLACEMENT_DYNAMIC_SYSTEM,
-    get_conversation_injection_plan,
-)
+from .conversation_injection_plan import PLACEMENT_TOOL_CONTRACT, get_conversation_injection_plan
 
 
 class GroupMemberSafetyMixin:
@@ -518,14 +515,18 @@ class GroupMemberSafetyMixin:
 """.strip()
         plan = get_conversation_injection_plan(req)
         if plan is not None:
-            plan.materialize_system_block(
-                req,
+            rendered = f"{marker}\n{instruction}"
+            req.system_prompt = f"{current_prompt}\n\n{rendered}".strip()
+            plan.add(
                 key="group.member_safety_hidden_marker",
                 marker=marker,
                 content=instruction,
                 priority=32,
                 source="group_member_safety",
-                placement=PLACEMENT_DYNAMIC_SYSTEM,
+                placement=PLACEMENT_TOOL_CONTRACT,
+                temporary=False,
+                materialized=True,
+                opaque=True,
             )
         else:
             req.system_prompt = f"{current_prompt}\n\n{marker}\n{instruction}".strip()

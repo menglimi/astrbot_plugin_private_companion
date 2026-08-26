@@ -11,9 +11,13 @@ from .conversation_injection_plan import (
     PLACEMENT_STABLE_SYSTEM,
     get_conversation_injection_plan,
 )
+from .conversation_prompt_section import prompt_section, render_prompt_sections
 from .helpers import _now_ts, _safe_float, _single_line
 from .persona_config import runtime_persona_setting
 from .prompt_surface import PromptSurface
+
+
+GROUP_CONTEXT_FINAL_PRIORITY = 10_000
 
 
 async def inject_humanized_state(
@@ -269,6 +273,7 @@ async def inject_humanized_state(
                         300,
                     ),
                     context_owner=group,
+                    include_heading=False,
                 )
                 expression_voice = str(group_expression_selection.get("prompt") or "")
                 semantic_expression_rules = group_expression_selection.get("rules")
@@ -288,6 +293,7 @@ async def inject_humanized_state(
                         req,
                         expression_marker,
                         expression_voice,
+                        title="已审核的表达学习规则",
                         priority=58,
                         source="expression",
                     ) else "system_prompt"
@@ -317,7 +323,7 @@ async def inject_humanized_state(
                 current_turn_prompt = str(getattr(req, "prompt", "") or "")
                 if marker not in current_prompt and marker not in current_turn_prompt:
                     combined_text = await self._consume_semantic_message_buffer_for_event(event, private_chat=False)
-                    extra = ""
+                    extra_sections: list[dict[str, Any]] = []
                     if combined_text:
                         high_intensity = getattr(event, "private_companion_group_high_intensity", None)
                         if isinstance(high_intensity, dict) and high_intensity.get("active"):
@@ -326,16 +332,22 @@ async def inject_humanized_state(
                                 max_chars=700,
                                 max_lines=8,
                             )
-                            extra = (
-                                "\n\n【本轮高强度合并消息】\n"
-                                "群里刚刚短时间内多次叫到你，下面这些消息已压缩为同一轮理解背景；只挑最相关的一点短答，不要逐条回应：\n"
-                                f"{combined_text}"
+                            extra_sections.append(
+                                prompt_section(
+                                    "本轮高强度合并消息",
+                                    "群里刚刚短时间内多次叫到你，下面这些消息已压缩为同一轮理解背景；"
+                                    "只挑最相关的一点短答，不要逐条回应：\n"
+                                    f"{combined_text}",
+                                )
                             )
                         else:
-                            extra = (
-                                "\n\n【本轮用户连续补充】\n"
-                                "用户刚刚在短时间内连续补充了几句,请把它们当作同一轮完整发言理解,不要逐条回复：\n"
-                                f"{combined_text}"
+                            extra_sections.append(
+                                prompt_section(
+                                    "本轮用户连续补充",
+                                    "用户刚刚在短时间内连续补充了几句,请把它们当作同一轮完整发言理解,"
+                                    "不要逐条回复：\n"
+                                    f"{combined_text}",
+                                )
                             )
                     wakeup_effect = getattr(event, "private_companion_group_wakeup_state_effect", None)
                     wakeup_state_text = ""
@@ -344,22 +356,40 @@ async def inject_humanized_state(
                             state = await self._ensure_daily_state()
                         except Exception:
                             state = self.data.get("daily_state", {})
-                        wakeup_state_text = "\n\n" + self._format_group_wakeup_humanized_prompt(wakeup_effect, state)
+                        wakeup_state_text = self._format_group_wakeup_humanized_prompt(
+                            wakeup_effect,
+                            state,
+                            include_heading=False,
+                        )
                     if self._user_asks_recalled_messages(text_for_mark):
-                        recall_context = self._format_recalled_messages_for_natural_query(event, limit=5)
+                        recall_context = self._format_recalled_messages_for_natural_query(
+                            event,
+                            limit=5,
+                            include_heading=False,
+                        )
                         if recall_context:
-                            extra = f"{extra}\n\n{recall_context}" if extra else f"\n\n{recall_context}"
+                            extra_sections.append(prompt_section("撤回消息查询", recall_context))
                     passive_group_formatter = getattr(self, "_format_group_passive_reply_context_for_prompt", None)
                     if callable(passive_group_formatter):
-                        group_context_text = passive_group_formatter(group, sender_id, str(event.message_str or ""))
+                        group_context = passive_group_formatter(group, sender_id, str(event.message_str or ""))
                     else:
-                        group_context_text = self._format_group_context_for_prompt(group, sender_id, str(event.message_str or ""))
+                        group_context = prompt_section(
+                            "群聊上下文",
+                            self._format_group_context_for_prompt(group, sender_id, str(event.message_str or "")),
+                        )
+                    group_context_section: dict[str, Any] | None = None
+                    if isinstance(group_context, dict) and set(group_context) == {"title", "content"}:
+                        group_context_section = group_context
+                    elif group_context:
+                        group_context_section = prompt_section("群聊上下文", str(group_context))
+                    group_sections: list[dict[str, Any]] = []
                     slang_embedding_builder = getattr(self, "_group_slang_embedding_context", None)
                     if callable(slang_embedding_builder):
                         try:
                             slang_embedding_text = await slang_embedding_builder(
                                 group,
                                 str(event.message_str or ""),
+                                include_heading=False,
                             )
                         except Exception as exc:
                             logger.debug(
@@ -368,49 +398,43 @@ async def inject_humanized_state(
                             )
                             slang_embedding_text = ""
                         if slang_embedding_text:
-                            group_context_text = f"{group_context_text}\n\n{slang_embedding_text}".strip()
+                            group_sections.append(
+                                prompt_section(
+                                    "群内黑话语义近似（仅作软参考）",
+                                    slang_embedding_text,
+                                )
+                            )
                     high_intensity_for_context = getattr(event, "private_companion_group_high_intensity", None)
-                    if isinstance(high_intensity_for_context, dict) and high_intensity_for_context.get("active"):
-                        group_context_text = self._compact_high_intensity_prompt_lines(
-                            group_context_text,
-                            max_chars=900,
-                            max_lines=14,
-                        )
                     recent_atrelay_context = self._format_recent_atrelay_context_for_prompt(
                         kind="group",
                         target=group_id,
                         sender_id=sender_id,
                         current_text=str(event.message_str or ""),
                         limit=2,
+                        include_heading=False,
                     )
                     if recent_atrelay_context:
-                        group_context_text = f"{group_context_text}\n\n{recent_atrelay_context}".strip()
-                    group_context_text = f"{group_context_text}{wakeup_state_text}{extra}"
-                    realtime_formatter = getattr(self, "_format_external_realtime_context_for_prompt", None)
+                        group_sections.append(prompt_section("刚刚的转述动作", recent_atrelay_context))
+                    if wakeup_state_text:
+                        group_sections.append(prompt_section("群聊唤醒与当前状态", wakeup_state_text))
+                    group_sections.extend(extra_sections)
+                    realtime_formatter = getattr(self, "_format_external_realtime_prompt_section", None)
                     if callable(realtime_formatter):
-                        realtime_context = realtime_formatter({}, public=True)
+                        realtime_section = realtime_formatter({}, public=True)
+                        realtime_context = str(realtime_section.get("content") or "")
                         if realtime_context:
-                            group_context_text = f"{realtime_context}\n\n{group_context_text}".strip()
-                    if isinstance(high_intensity_for_context, dict) and high_intensity_for_context.get("active"):
-                        before_compact_chars = len(group_context_text)
-                        group_context_text = self._compact_high_intensity_prompt_lines(
-                            group_context_text,
-                            max_chars=1600,
-                            max_lines=24,
-                        )
-                        if len(group_context_text) < before_compact_chars:
-                            logger.info(
-                                "[PrivateCompanion] 群聊高强度上下文已压缩: group=%s chars=%s->%s",
-                                _single_line(group_id, 40) or "-",
-                                before_compact_chars,
-                                len(group_context_text),
-                            )
+                            group_sections.insert(0, realtime_section)
+                    if group_context_section is not None:
+                        group_sections.append(group_context_section)
+                    group_context_text = render_prompt_sections(group_sections)
                     placement = "prompt" if self._append_turn_prompt_fragment_by_position(
                         req,
                         marker,
                         group_context_text,
-                        priority=60,
+                        title="群聊上下文",
+                        priority=GROUP_CONTEXT_FINAL_PRIORITY,
                         source="group",
+                        structured=True,
                     ) else "system_prompt"
                     if placement == "system_prompt":
                         req.system_prompt = (
@@ -441,12 +465,17 @@ async def inject_humanized_state(
             and recall_marker not in (req.system_prompt or "")
             and recall_marker not in str(getattr(req, "prompt", "") or "")
         ):
-            recall_context = self._format_recalled_messages_for_natural_query(event, limit=5)
+            recall_context = self._format_recalled_messages_for_natural_query(
+                event,
+                limit=5,
+                include_heading=False,
+            )
             if recall_context:
                 placement = "prompt" if self._append_turn_prompt_fragment_by_position(
                     req,
                     recall_marker,
                     recall_context,
+                    title="撤回消息查询",
                     priority=66,
                     source="recall",
                 ) else "system_prompt"
@@ -468,13 +497,18 @@ async def inject_humanized_state(
             self_timeline_context = (
                 ""
                 if self._memory_companion_should_defer_prompt_section("self_timeline", event, req)
-                else self._format_self_timeline_context_for_reply(group_recall_text, limit=timeline_limit)
+                else self._format_self_timeline_context_for_reply(
+                    group_recall_text,
+                    limit=timeline_limit,
+                    include_heading=False,
+                )
             )
             if self_timeline_context:
                 placement = "prompt" if self._append_turn_prompt_fragment_by_position(
                     req,
                     timeline_marker,
                     self_timeline_context,
+                    title="自我时间线检索",
                     priority=67,
                     source="self_timeline",
                 ) else "system_prompt"
@@ -539,52 +573,76 @@ async def inject_humanized_state(
             inbound_text,
         )
     prompt_surface = PromptSurface()
-    reply_style_prompt = self._format_reply_style_prompt()
+    reply_style_section = self._format_reply_style_prompt_section()
+    reply_style_prompt = str(reply_style_section.get("content") or "")
     if reply_style_prompt:
-        prompt_surface.add("reply.style", reply_style_prompt, priority=12, source="reply_style")
-    dialogue_outfit_continuity = self._format_dialogue_outfit_continuity_for_prompt(current_user)
+        prompt_surface.add(
+            "reply.style",
+            reply_style_prompt,
+            title=str(reply_style_section.get("title") or "回复风格约束"),
+            priority=12,
+            source="reply_style",
+        )
+    dialogue_outfit_continuity = self._format_dialogue_outfit_continuity_for_prompt(
+        current_user,
+        include_heading=False,
+    )
     if dialogue_outfit_continuity:
         prompt_surface.add(
             "dialogue.outfit_continuity",
             dialogue_outfit_continuity,
+            title="当前会话服装连续性",
             priority=13,
             source="daily_state",
         )
-    routine_check_boundary = self._format_private_routine_check_boundary(inbound_text)
+    routine_check_section = self._format_private_routine_check_boundary_section(inbound_text)
+    routine_check_boundary = str(routine_check_section.get("content") or "")
     if routine_check_boundary:
         prompt_surface.add(
             "turn.routine_check_boundary",
             routine_check_boundary,
+            title=str(routine_check_section.get("title") or "轻量例行检查边界"),
             priority=14,
             source="conversation",
         )
     if self._record_recent_private_fact_correction(current_user, inbound_text):
         self._schedule_data_save(sections={"users"})
-    fact_attribution_guard = self._format_private_fact_attribution_guard(current_user, inbound_text)
+    fact_attribution_guard = self._format_private_fact_attribution_guard(
+        current_user,
+        inbound_text,
+        include_heading=False,
+    )
     if fact_attribution_guard:
         prompt_surface.add(
             "identity.fact_attribution",
             fact_attribution_guard,
+            title="事实主语与归属边界",
             priority=11,
             source="identity",
         )
     emotion_inertia_getter = getattr(self, "_format_emotion_inertia_prompt", None)
     if callable(emotion_inertia_getter):
-        emotion_inertia = emotion_inertia_getter(current_user)
+        emotion_inertia = emotion_inertia_getter(current_user, include_heading=False)
         if emotion_inertia:
             prompt_surface.add(
                 "state.emotion_inertia",
                 emotion_inertia,
+                title="情绪惯性",
                 priority=29,
                 source="emotion_ledger",
             )
     reunion_getter = getattr(self, "_format_private_reunion_prompt", None)
     if callable(reunion_getter):
-        reunion_prompt = reunion_getter(current_user, inbound_text)
+        reunion_prompt = reunion_getter(
+            current_user,
+            inbound_text,
+            include_heading=False,
+        )
         if reunion_prompt:
             prompt_surface.add(
                 "conversation.reunion",
                 reunion_prompt,
+                title="久别重逢的时间感",
                 priority=27,
                 source="conversation",
             )
@@ -598,11 +656,16 @@ async def inject_humanized_state(
                 pass
     preference_getter = getattr(self, "_format_bot_self_preference_consistency", None)
     if callable(preference_getter):
-        preference_prompt = preference_getter(current_user, inbound_text)
+        preference_prompt = preference_getter(
+            current_user,
+            inbound_text,
+            include_heading=False,
+        )
         if preference_prompt:
             prompt_surface.add(
                 "persona.preference_continuity",
                 preference_prompt,
+                title="Bot 自身偏好连续性",
                 priority=16,
                 source="bot_self_history",
             )
@@ -610,57 +673,109 @@ async def inject_humanized_state(
     state_update_reason = "legacy"
     if bool(runtime_persona_setting(self, "enable_passive_state_delta_injection", True)):
         session_key = _single_line(getattr(event, "unified_msg_origin", ""), 160) or f"private:{user_id}"
-        state_update_text, state_changed, state_update_reason = self._private_passive_state_update_for_prompt(
+        state_update_sections, state_changed, state_update_reason = self._private_passive_state_update_for_prompt(
             session=session_key,
             state=state,
             current_user=current_user,
             inbound_text=inbound_text,
             lightweight=lightweight_passive,
+            as_sections=True,
         )
-        if state_update_text:
-            prompt_surface.add("state.session_update", state_update_text, priority=30, source="daily_state")
+        for index, state_update_section in enumerate(state_update_sections or []):
+            prompt_surface.add(
+                "state.session_update" if index == 0 else "state.reply_policy",
+                state_update_section,
+                title=str(state_update_section.get("title") or "Bot 自身模拟状态更新"),
+                priority=30 + index,
+                source="daily_state",
+            )
     elif lightweight_passive:
-        lightweight_injection = self._prepared_lightweight_state_injection(state)
+        lightweight_injection = self._prepared_lightweight_state_injection(
+            state,
+            include_heading=False,
+        )
         lightweight_injection = self._sanitize_schedule_context_for_private_user(lightweight_injection, current_user)
-        prompt_surface.add("state.lightweight", lightweight_injection, priority=30, source="daily_state")
+        prompt_surface.add(
+            "state.lightweight",
+            lightweight_injection,
+            title="Bot 自身模拟状态",
+            priority=30,
+            source="daily_state",
+        )
     else:
-        state_injection = self._format_state_injection(state)
+        state_injection = self._format_state_injection(state, include_heading=False)
         state_injection = self._sanitize_schedule_context_for_private_user(state_injection, current_user)
-        prompt_surface.add("state.full", state_injection, priority=30, source="daily_state")
-        life_context = self._format_life_context_injection()
+        prompt_surface.add(
+            "state.full",
+            state_injection,
+            title="Bot 自身模拟状态",
+            priority=30,
+            source="daily_state",
+        )
+        life_context = self._format_life_context_injection(include_heading=False)
         life_context = self._sanitize_schedule_context_for_private_user(life_context, current_user)
         if life_context:
-            prompt_surface.add("life.context", life_context, priority=35, source="daily_state")
-        important_dates = self._format_important_dates_injection()
-        if important_dates:
-            prompt_surface.add("important.dates", important_dates, priority=36, source="daily_state")
-        memo_notes = ""
-        if self._private_user_role(current_user, user_id) == "owner":
-            memo_notes = (
-                self._format_memo_notes_for_prompt(days=3650, include_pinned=True, limit=12)
-                if memo_query
-                else self._format_memo_notes_injection()
+            prompt_surface.add(
+                "life.context", life_context, title="Bot 模拟生活背景", priority=35, source="daily_state"
             )
+        important_dates = self._format_important_dates_injection(include_heading=False)
+        if important_dates:
+            prompt_surface.add(
+                "important.dates", important_dates, title="近期重要日期", priority=36, source="daily_state"
+            )
+        memo_section = prompt_section("备忘便签", "")
+        if self._private_user_role(current_user, user_id) == "owner":
+            memo_section = (
+                self._format_memo_notes_prompt_section(
+                    days=3650,
+                    include_pinned=True,
+                    limit=12,
+                )
+                if memo_query
+                else self._format_memo_notes_prompt_section(
+                    days=2,
+                    include_pinned=False,
+                    limit=4,
+                )
+            )
+            memo_notes = str(memo_section.get("content") or "")
             if memo_query and not memo_notes:
-                memo_notes = "【备忘便签】\n当前没有进行中的便签。不要编造便签内容。"
+                memo_notes = "当前没有进行中的便签。不要编造便签内容。"
+        else:
+            memo_notes = ""
         if memo_notes:
-            prompt_surface.add("memo.notes", memo_notes, priority=37, source="daily_state")
-        worldview_context = (
-            self._format_worldview_adaptation_prompt()
+            prompt_surface.add(
+                "memo.notes",
+                memo_notes,
+                title=str(memo_section.get("title") or "备忘便签"),
+                priority=37,
+                source="daily_state",
+            )
+        worldview_section = (
+            self._format_worldview_adaptation_prompt_section()
             if self._feature_enabled_or_temp_unlocked("enable_environment_perception")
             and runtime_persona_setting(self, "enable_worldview_perception", True)
-            else ""
+            else prompt_section("世界观适配", "")
         )
+        worldview_context = str(worldview_section.get("content") or "")
         worldview_context = self._sanitize_owner_environment_context_for_private_user(worldview_context, current_user)
         if worldview_context:
-            prompt_surface.add("worldview.adaptation", worldview_context, priority=37, source="worldview")
-    realtime_formatter = getattr(self, "_format_external_realtime_context_for_prompt", None)
+            prompt_surface.add(
+                "worldview.adaptation",
+                worldview_context,
+                title=str(worldview_section.get("title") or "世界观适配"),
+                priority=37,
+                source="worldview",
+            )
+    realtime_formatter = getattr(self, "_format_external_realtime_prompt_section", None)
     if callable(realtime_formatter):
-        realtime_context = realtime_formatter(current_user, public=False)
+        realtime_section = realtime_formatter(current_user, public=False)
+        realtime_context = str(realtime_section.get("content") or "")
         if realtime_context:
             prompt_surface.add(
                 "realtime.activity_continuity",
                 realtime_context,
+                title=str(realtime_section.get("title") or "实时共同活动与短期连续性"),
                 # Render after daily schedule and recall fragments so the
                 # current realtime fact is the last authoritative context.
                 priority=76,
@@ -668,37 +783,72 @@ async def inject_humanized_state(
             )
     departure_getter = getattr(self, "_format_conversation_departure_prompt", None)
     if callable(departure_getter):
-        departure_prompt = departure_getter(current_user, inbound_text, state)
+        departure_prompt = departure_getter(
+            current_user,
+            inbound_text,
+            state,
+            include_heading=False,
+        )
         if departure_prompt:
             prompt_surface.add(
                 "conversation.departure",
                 departure_prompt,
+                title="自然退场候选",
                 priority=28,
                 source="conversation",
             )
             self._schedule_data_save(sections={"users"})
-    identity_anchor = self._format_private_identity_anchor_for_prompt(user_id, current_user, event)
+    identity_anchor = self._format_private_identity_anchor_for_prompt(
+        user_id,
+        current_user,
+        event,
+        include_heading=False,
+    )
     if identity_anchor:
-        prompt_surface.add("identity.anchor", identity_anchor, priority=10, source="identity")
+        prompt_surface.add(
+            "identity.anchor", identity_anchor, title="私聊身份锚点", priority=10, source="identity"
+        )
     recent_atrelay_context = self._format_recent_atrelay_context_for_prompt(
         kind="private",
         target=user_id,
         sender_id=user_id,
         current_text=inbound_text,
         limit=2,
+        include_heading=False,
     )
     if recent_atrelay_context:
-        prompt_surface.add("atrelay.recent", recent_atrelay_context, priority=26, source="tools")
+        prompt_surface.add(
+            "atrelay.recent",
+            recent_atrelay_context,
+            title="刚刚的转述动作",
+            priority=26,
+            source="tools",
+        )
     if not self._format_atrelay_target_summary_for_prompt(inbound_text):
-        mentioned_worldbook = self._format_worldbook_private_mentions_for_prompt(inbound_text, limit=4)
+        mentioned_worldbook = self._format_worldbook_private_mentions_for_prompt(
+            inbound_text,
+            limit=4,
+            include_heading=False,
+        )
         if mentioned_worldbook:
-            prompt_surface.add("worldbook.mentions", mentioned_worldbook, priority=55, source="worldbook")
-    environment_fragment = await self._format_passive_environment_fragment(event, lightweight=lightweight_passive)
+            prompt_surface.add(
+                "worldbook.mentions",
+                mentioned_worldbook,
+                title="本轮提到的关系网对象",
+                priority=55,
+                source="worldbook",
+            )
+    environment_section = await self._format_passive_environment_prompt_section(
+        event,
+        lightweight=lightweight_passive,
+    )
+    environment_fragment = str(environment_section.get("content") or "")
     environment_fragment = self._sanitize_owner_environment_context_for_private_user(environment_fragment, current_user)
     if environment_fragment:
         prompt_surface.add(
             "environment.lightweight" if lightweight_passive else "environment.perception",
             environment_fragment,
+            title=str(environment_section.get("title") or "环境感知"),
             priority=20,
             source="environment",
         )
@@ -707,6 +857,7 @@ async def inject_humanized_state(
         prompt_surface.add(
             "rest.backlog",
             rest_backlog_prompt,
+            title="休息期间消息承接",
             priority=25,
             source="daily_state",
         )
@@ -717,25 +868,35 @@ async def inject_humanized_state(
             180,
         )
         busy_reply_boundary = (
-            "【忙碌中的回复节奏】\n"
             "当前日程正在专注处理事情，这轮消息已经自然晚了一点才看到。回复可以比平时更短、更聚焦，但必须完整回答用户真正问的内容。\n"
             "不要汇报延迟秒数，不要说系统排队、闸门、后台或提示词，也不要每次都机械道歉；除非用户追问，通常不必主动解释为什么晚回。"
             + (f"\n当前忙碌片段：{busy_schedule}" if busy_schedule else "")
         )
-        prompt_surface.add("busy.reply_boundary", busy_reply_boundary, priority=31, source="daily_state")
+        prompt_surface.add(
+            "busy.reply_boundary",
+            busy_reply_boundary,
+            title="忙碌中的回复节奏",
+            priority=31,
+            source="daily_state",
+        )
     try:
         sleeping, _sleep_runtime, _sleep_item, sleep_schedule_text = self._rest_reply_sleep_context()
     except Exception:
         sleeping, sleep_schedule_text = False, ""
     if sleeping:
         sleep_reply_boundary = (
-            "【休息中被叫醒回复边界】\n"
             "当前处于睡眠/休息延续。用户如果只是短句叫醒、查岗、例行检查、确认在不在，回复要短、迷糊、低打扰，通常 1 句即可。\n"
             "不要因为记忆里有相似旧话题就展开长段回忆、梦境、解释或连续追问；旧记忆只做语气底色，不要新编具体梦境内容。\n"
             "如果用户没有明确提出新请求，回复后应自然收住，表现为可以睡回去。"
             + (f"\n当前休息片段：{_single_line(sleep_schedule_text, 160)}" if sleep_schedule_text else "")
         )
-        prompt_surface.add("rest.sleep_reply_boundary", sleep_reply_boundary, priority=32, source="daily_state")
+        prompt_surface.add(
+            "rest.sleep_reply_boundary",
+            sleep_reply_boundary,
+            title="休息中被叫醒回复边界",
+            priority=32,
+            source="daily_state",
+        )
     is_wake_event = bool(getattr(event, "is_wake", False)) or bool(
         getattr(event, "is_at_or_wake_command", False)
     )
@@ -745,36 +906,69 @@ async def inject_humanized_state(
             current_user,
             inbound_text,
             event_umo=_single_line(getattr(event, "unified_msg_origin", ""), 180),
+            as_section=True,
         )
         if group_share_reply_context:
-            prompt_surface.add("group_share.reply_source", group_share_reply_context, priority=44, source="group_observation")
+            prompt_surface.add(
+                "group_share.reply_source",
+                group_share_reply_context,
+                priority=44,
+                source="group_observation",
+            )
     if not is_wake_event:
-        proactive_context = await self._format_proactive_reply_context(event)
-        if proactive_context:
-            prompt_surface.add("proactive.reply_context", proactive_context, priority=45, source="proactive")
-    short_reaction_context = self._format_short_reaction_context_for_prompt(current_user, inbound_text)
+        proactive_sections = await self._format_proactive_reply_context(
+            event,
+            as_sections=True,
+        )
+        for index, section in enumerate(proactive_sections or []):
+            prompt_surface.add(
+                f"proactive.reply_context.{index}",
+                section,
+                priority=45 + index,
+                source="proactive",
+            )
+    short_reaction_context = self._format_short_reaction_context_for_prompt(
+        current_user,
+        inbound_text,
+        include_heading=False,
+    )
     if short_reaction_context:
-        prompt_surface.add("turn.short_reaction", short_reaction_context, priority=48, source="conversation")
+        prompt_surface.add(
+            "turn.short_reaction",
+            short_reaction_context,
+            title="本轮短反应锚点",
+            priority=48,
+            source="conversation",
+        )
     if re.search(r"(说过|讲过|提过|聊过|发过|说了|讲了|提了).{0,4}(啦|了|呀|啊)?$", inbound_text):
         prompt_surface.add(
             "turn.repeat_correction_boundary",
             (
-                "【用户纠正重复话题】\n"
                 "用户是在提醒你刚才/前面已经说过。回复只需要短短认一下，不要编造“几小时前/几分钟前”等具体时间差，"
                 "也不要把回复写成“你希望我换个话题还是继续聊”的选项题。更自然的做法是：承认自己刚才没接稳，然后收住或自己轻轻换一个具体小切口。"
             ),
+            title="用户纠正重复话题",
             priority=49,
             source="conversation",
         )
     reply_chain_context_getter = getattr(self, "_format_reply_chain_context_for_prompt", None)
     if callable(reply_chain_context_getter) and not bool(getattr(event, "private_companion_reply_chain_context_injected", False)):
         try:
-            reply_chain_context = await reply_chain_context_getter(event)
+            reply_chain_context = await reply_chain_context_getter(
+                event,
+                include_heading=False,
+            )
         except Exception as exc:
             logger.debug("[PrivateCompanion] 引用链上下文读取失败: %s", _single_line(exc, 120))
             reply_chain_context = ""
         if reply_chain_context:
-            prompt_surface.add("reply.chain", reply_chain_context, priority=54, source="forward_message")
+            prompt_surface.add(
+                "reply.chain",
+                reply_chain_context,
+                title="引用链上下文",
+                priority=54,
+                source="forward_message",
+            )
     private_image_enhancement_enabled_for_request = self._feature_enabled_or_temp_unlocked(
         "enable_private_image_self_recognition"
     )
@@ -865,25 +1059,56 @@ async def inject_humanized_state(
     if combined_text:
         prompt_surface.add(
             "turn.continuation",
-            "【本轮用户连续补充】\n"
             "用户刚刚在短时间内连续补充了几句,请把它们当作同一轮完整发言理解,不要逐条回复,也不要表现得像用户重复催促：\n"
             f"{combined_text}",
+            title="本轮用户连续补充",
             priority=50,
             source="message_debounce",
         )
         inbound_text = _single_line(combined_text.replace("\n", " "), 260)
     if self._user_asks_recalled_messages(inbound_text):
-        prompt_surface.add("recall.query", self._format_recalled_messages_for_natural_query(event, limit=5), priority=52, source="recall")
+        prompt_surface.add(
+            "recall.query",
+            self._format_recalled_messages_for_natural_query(
+                event,
+                limit=5,
+                include_heading=False,
+            ),
+            title="撤回消息查询",
+            priority=52,
+            source="recall",
+        )
     food_menu_context = (
-        self._format_food_menu_for_reply(inbound_text, limit=3, user=current_user)
+        self._format_food_menu_for_reply(
+            inbound_text,
+            limit=3,
+            user=current_user,
+            include_heading=False,
+        )
         if self._feature_enabled_or_temp_unlocked("enable_food_menu_recommendation")
         else ""
     )
-    meal_care_reply_context = self._format_meal_care_reply_context(current_user, inbound_text)
+    meal_care_reply_context = self._format_meal_care_reply_context(
+        current_user,
+        inbound_text,
+        include_heading=False,
+    )
     if meal_care_reply_context:
-        prompt_surface.add("food.meal_care", meal_care_reply_context, priority=55, source="food")
+        prompt_surface.add(
+            "food.meal_care",
+            meal_care_reply_context,
+            title="吃饭关心承接",
+            priority=55,
+            source="food",
+        )
     if food_menu_context:
-        prompt_surface.add("food.menu", food_menu_context, priority=53, source="food")
+        prompt_surface.add(
+            "food.menu",
+            food_menu_context,
+            title="吃饭候选",
+            priority=53,
+            source="food",
+        )
     if (
         buffered_images
         and buffered_image_vision
@@ -943,11 +1168,14 @@ async def inject_humanized_state(
                     await self._refresh_default_persona_prompt(str(getattr(event, "unified_msg_origin", "") or ""))
                 except Exception as exc:
                     logger.debug("[PrivateCompanion] 图片直挂刷新人格缓存失败: %s", exc)
-                direct_role_hint = self._private_image_direct_role_appearance_prompt()
+                direct_role_hint = self._private_image_direct_role_appearance_prompt(
+                    include_heading=False,
+                )
                 if direct_role_hint:
                     prompt_surface.add(
                         "image.direct",
                         direct_role_hint,
+                        title="当前角色外貌",
                         priority=55,
                         source="private_image",
                     )
@@ -972,13 +1200,13 @@ async def inject_humanized_state(
             )
             prompt_surface.add(
                 "image.vision",
-                "【本轮延迟图片】\n"
                 f"{image_context_intro}下面是这张图的视觉摘要；请按摘要理解当前图片，不要说没看到图。"
                 "只回应本轮图片和用户文字，不要提模型、插件或路径。"
                 "如果最近对话里用户明确规定了这张/下一张图片的回复方式（例如只回复某句话、不要回复其他内容）,必须优先照做。\n"
                 f"{self._private_image_identity_disambiguation_instruction()}\n"
                 f"{reply_objective}\n"
                 f"{buffered_image_vision}",
+                title="本轮延迟图片",
                 priority=55,
                 source="private_image",
             )
@@ -998,10 +1226,10 @@ async def inject_humanized_state(
             )
             prompt_surface.add(
                 "image.fallback",
-                "【本轮延迟图片】\n"
                 f"{image_context_intro}图片已暂存，但暂无可靠视觉摘要；"
                 "如果用户问图片内容，请自然说暂时没看清，不要编造画面。\n"
                 + "\n".join(f"- {path}" for path in buffered_images),
+                title="本轮延迟图片",
                 priority=55,
                 source="private_image",
             )
@@ -1009,10 +1237,10 @@ async def inject_humanized_state(
         if buffered_image_vision:
             prompt_surface.add(
                 "image.only.vision",
-                "【本轮延迟图片】\n"
                 "用户只发了一张图片。下面是这张图的视觉摘要；请自然接住图片内容或表达意图，不要提处理过程。"
                 "如果最近对话里用户明确规定了这张/下一张图片的回复方式（例如只回复某句话、不要回复其他内容）,必须优先照做。\n"
                 f"{buffered_image_vision}",
+                title="本轮延迟图片",
                 priority=55,
                 source="private_image",
             )
@@ -1027,8 +1255,8 @@ async def inject_humanized_state(
         else:
             prompt_surface.add(
                 "image.only.fallback",
-                "【本轮延迟图片】\n"
                 "用户只发了一张图片，但当前没有可靠图片内容；请自然表示暂时没看清，可以请用户补一句，不要编造画面。",
+                title="本轮延迟图片",
                 priority=55,
                 source="private_image",
             )
@@ -1073,7 +1301,6 @@ async def inject_humanized_state(
                     _single_line(reply_image_vision, 220),
                 )
                 reply_image_prompt_anchor = (
-                    "【当前引用图片锚点】\n"
                     f"用户本轮是在问被引用图片：{inbound_text or '（空）'}。\n"
                     "下面摘要只属于这一次被引用的图片；请把它作为当前问题的主要依据。\n"
                     f"{reply_objective}\n"
@@ -1081,12 +1308,12 @@ async def inject_humanized_state(
                 )
                 prompt_surface.add(
                     "image.reply.vision",
-                    "【本轮引用图片】\n"
                     f"用户这轮引用/回复了一张图片,并发送文字：{inbound_text or '（空）'}。\n"
                     "下面是被引用图片的视觉摘要；请优先回答用户当前文字针对这张图提出的问题。\n"
                     f"{self._private_image_identity_disambiguation_instruction()}\n"
                     f"{reply_objective}\n"
                     f"{reply_image_vision}",
+                    title="本轮引用图片",
                     priority=55,
                     source="private_image",
                 )
@@ -1129,23 +1356,20 @@ async def inject_humanized_state(
             else:
                 prompt_surface.add(
                     "image.reply.fallback",
-                    "【本轮引用图片】\n"
                     f"用户这轮引用/回复了一张图片,并发送文字：{inbound_text or '（空）'}。"
                     "当前未能拿到可用视觉摘要；如果用户问图片内容，请自然说明暂时没看清，不要编造。",
+                    title="本轮引用图片",
                     priority=55,
                     source="private_image",
                 )
     if reply_image_prompt_anchor:
-        try:
-            current_req_prompt = str(getattr(req, "prompt", "") or "")
-            if "<!-- private_companion_reply_image_anchor_v1 -->" not in current_req_prompt:
-                req.prompt = (
-                    f"{current_req_prompt}\n\n"
-                    "<!-- private_companion_reply_image_anchor_v1 -->\n"
-                    f"{reply_image_prompt_anchor}"
-                ).strip()
-        except Exception as exc:
-            logger.debug("[PrivateCompanion] 私聊引用图片 prompt 锚点写入失败: %s", exc)
+        prompt_surface.add(
+            "image.reply.anchor",
+            reply_image_prompt_anchor,
+            title="当前引用图片锚点",
+            priority=4,
+            source="private_image",
+        )
     if lightweight_passive:
         log_bookshelf_secret_skip("lightweight_passive", current_user, inbound_text)
     if not lightweight_passive:
@@ -1201,11 +1425,13 @@ async def inject_humanized_state(
                 key="passive.static",
                 marker=static_marker,
                 content=static_injection,
+                title="稳定回复约束",
                 priority=12,
                 source="passive_state",
                 placement=PLACEMENT_STABLE_SYSTEM,
                 temporary=False,
                 materialized=True,
+                structured=True,
                 metadata={"batch": True},
                 children=static_prompt_modules,
             )
@@ -1214,8 +1440,10 @@ async def inject_humanized_state(
             req,
             marker,
             dynamic_injection,
+            title="本轮回复上下文",
             priority=40,
             source="passive_state",
+            structured=True,
         ):
             dynamic_placement = "system_prompt"
             current_prompt = req.system_prompt or ""

@@ -8,6 +8,7 @@ from astrbot.api import logger
 
 from .helpers import _safe_float, _single_line
 from .external_bridge_resolver import resolve_external_bridge
+from .conversation_prompt_section import prompt_section
 
 
 class RealityCompanionBridgeMixin:
@@ -67,7 +68,12 @@ class RealityCompanionBridgeMixin:
                 return {"recorded": False, "reason": "reality_companion_write_failed"}
         return {"recorded": False, "reason": "reality_companion_unavailable"}
 
-    def _format_reality_touch_continuity_context(self, user: dict[str, Any]) -> str:
+    def _format_reality_touch_continuity_context(
+        self,
+        user: dict[str, Any],
+        *,
+        as_section: bool = False,
+    ) -> str | dict[str, Any]:
         user_id = self._reality_bridge_user_id(user)
         api = self._reality_companion_api()
         reader = getattr(api, "recent_output", None) if api is not None else None
@@ -102,7 +108,6 @@ class RealityCompanionBridgeMixin:
         if not text or delivered_at <= 0 or age < -60 or age > 2 * 3600:
             return ""
         lines = [
-            "【刚刚发生的跨设备对话】",
             f"Bot 已通过现实音频设备对用户说：{text}",
         ]
         user_text = _single_line(continuity_user.get("last_user_message"), 300)
@@ -112,7 +117,8 @@ class RealityCompanionBridgeMixin:
         lines.append(
             "这是真实发生且与当前私聊连续的对话。自然承接用户此刻的回应；不要把它当作首次问候，也不要重复刚才已经说过的话。"
         )
-        return "\n".join(lines)
+        body = "\n".join(lines)
+        return prompt_section("刚刚发生的跨设备对话", body) if as_section else f"【刚刚发生的跨设备对话】\n{body}"
 
     def _reality_companion_enabled(self) -> bool:
         api = self._reality_companion_api()

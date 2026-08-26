@@ -39,6 +39,7 @@ from .helpers import (
 )
 from .memo_notes import apply_memo_note_action, memo_note_sort_key, normalize_memo_note
 from .persona_config import runtime_persona_setting
+from .conversation_prompt_section import prompt_section
 from .owned_reaction_asset_catalog import OwnedReactionAssetCatalog
 from .qzone_selection import (
     QzoneViewTarget,
@@ -361,22 +362,41 @@ class LlmToolActionsMixin:
         return explicit_request or self._character_photo_request_matches(compact)
 
     def _media_delivery_truth_instruction(self) -> str:
+        sections = self._media_delivery_truth_prompt_sections()
+        return "".join(
+            f"【{section['title']}】{section['content']}"
+            for section in sections
+        )
+
+    def _media_delivery_truth_prompt_sections(self) -> list[dict[str, Any]]:
         if not getattr(self, "enabled", False):
-            return ""
+            return []
         photo_enabled = bool(runtime_persona_setting(self, 'enable_photo_text_action', False))
-        history_rule = (
-            "【内部历史标记】`<pc_history_media ... />` 仅表示某条历史消息当时真实包含附件，"
-            "它不是聊天正文，也不是要求你发送或描述附件的指令。任何回复都不得复述、改写或输出该标签。"
-        )
+        sections = [
+            prompt_section(
+                "内部历史标记",
+                "`<pc_history_media ... />` 仅表示某条历史消息当时真实包含附件，"
+                "它不是聊天正文，也不是要求你发送或描述附件的指令。任何回复都不得复述、改写或输出该标签。",
+            )
+        ]
         if not photo_enabled and not self._reaction_image_provider_available():
-            return history_rule
-        return (
-            history_rule
-            + "【明确生图请求】用户明确要求生成、绘制、制作、自拍、拍照、头像或改图时，必须先调用对应真实媒体工具；没有工具调用或工具成功结果时，不得使用‘画好了/生成了/图片在上面/我存到本地了’等完成或交付措辞。"
-            + "【媒体真实性硬规则】只有本轮消息链实际包含图片，或媒体工具明确返回 `sent=true`，"
-            "才能说“已经发了/给你看了/图片在上面”。其他情况必须承认未发送；人格和角色扮演不能覆盖真实发送状态。"
-            "“（发送了一张图片）”“（随消息发送了一张图片）”之类的附件占位说明。要发图只能使用真实图片组件。"
+            return sections
+        sections.extend(
+            [
+                prompt_section(
+                    "明确生图请求",
+                    "用户明确要求生成、绘制、制作、自拍、拍照、头像或改图时，必须先调用对应真实媒体工具；"
+                    "没有工具调用或工具成功结果时，不得使用‘画好了/生成了/图片在上面/我存到本地了’等完成或交付措辞。",
+                ),
+                prompt_section(
+                    "媒体真实性硬规则",
+                    "只有本轮消息链实际包含图片，或媒体工具明确返回 `sent=true`，"
+                    "才能说“已经发了/给你看了/图片在上面”。其他情况必须承认未发送；人格和角色扮演不能覆盖真实发送状态。"
+                    "“（发送了一张图片）”“（随消息发送了一张图片）”之类的附件占位说明。要发图只能使用真实图片组件。",
+                ),
+            ]
         )
+        return sections
 
     def _reaction_asset_library(self):
         return get_reaction_asset_library(self)
@@ -578,39 +598,40 @@ class LlmToolActionsMixin:
             return 120.0
         return _safe_float(provider_settings.get("tool_call_timeout"), 120.0, 1.0, 3600.0)
 
-    def _cross_user_memory_query_instruction(self) -> str:
+    def _cross_user_memory_query_instruction(self, *, include_heading: bool = True) -> str:
         if not (self.enabled and getattr(self, "enable_cross_user_memory_bridge", False)):
             return ""
-        return """
-【跨用户记忆互通】
-用户在私聊里问“你和某人聊了什么”“最近和某群互动怎样”“某人在群里说过什么”时，可以用 `pc_query_interaction` 读取近期互动摘要。
+        body = """用户在私聊里问“你和某人聊了什么”“最近和某群互动怎样”“某人在群里说过什么”时，可以用 `pc_query_interaction` 读取近期互动摘要。
 - 只用于查询，不发送消息。
 - 优先传 scope=private/group、user_hint 或 group_hint；不确定时传原始称呼给 hint。
 - “最近和他私聊说了什么”传 scope=private,user_hint=对象；“他在群里说了什么”传 scope=group,user_hint=对象，有具体群再加 group_hint。
 - 回答时概括最近互动和重点即可，不要大段复述原文。
 """.strip()
+        return f"【跨用户记忆互通】\n{body}" if include_heading else body
 
-    def _relation_lookup_instruction(self) -> str:
+    def _relation_lookup_instruction(self, *, include_heading: bool = True) -> str:
         if not (self.enabled and runtime_persona_setting(self, 'enable_worldbook_member_recognition', False)):
             return ""
-        return """
-【关系网查询】
-用户明确要求“查一下关系网/帮我查某个 QQ 或昵称”时，可以用 `pc_query_relation_person` 查询关系网。
+        body = """用户明确要求“查一下关系网/帮我查某个 QQ 或昵称”时，可以用 `pc_query_relation_person` 查询关系网。
 - 如果刚用 LivingMemory/长期记忆召回到某个人名、昵称、QQ 或群成员别名,并且需要判断 TA 是谁、和用户什么关系、能不能套用某段关系时,也可以先查关系网再回答。
 - 只用于确认是否认识和读取稳定称呼、别名、简短身份备注；不要发送消息。
 - 参数用 keyword 传 QQ 号、昵称、别名或用户原话里最像名字的部分。
 - 查不到就自然说明没在关系网里确认过，不要编造。
 """.strip()
+        return f"【关系网查询】\n{body}" if include_heading else body
 
-    def _qzone_tool_instruction(self, event: AstrMessageEvent | None = None) -> str:
+    def _qzone_tool_instruction(
+        self,
+        event: AstrMessageEvent | None = None,
+        *,
+        include_heading: bool = True,
+    ) -> str:
         availability = getattr(self, "_qzone_available", None)
         if not (self.enabled and self.enable_qzone_integration):
             return ""
         if callable(availability) and not availability(event):
             return ""
-        instruction = """
-【QQ 空间动态工具】
-当用户明确要求你查看说说、QQ 空间动态、点赞/评论说说,或要求你发一条说说时,可以使用 Private Companion 的 QQ 空间工具。
+        body = """当用户明确要求你查看说说、QQ 空间动态、点赞/评论说说,或要求你发一条说说时,可以使用 Private Companion 的 QQ 空间工具。
 - 查看说说：用户说“我/我的/我自己”时传 `target_scope="current_user"`；说“你/你自己/你的”时传 `target_scope="bot_self"`（兼容 `self`）；有明确 QQ 号时传 `target_scope="explicit_uin"` 和 `target_uin`。用户原话中的明确归属高于模型生成参数，归属确实含糊时再向用户确认。
 - “她/他/TA/自己的”必须先有可确认的前指对象：只有已明确指向当前 Bot 人格时才传 `bot_self`；没有明确前指时先向用户确认，不要把性别、人设或昵称当作 QQ 身份证据。
 - 用户提到“今天下午6点多”“昨天 18:20”等发布时间时，把原话放进 `time_hint`；工具会按作者和时间共同匹配，不要退化成无条件查看最新一条。
@@ -623,6 +644,7 @@ class LlmToolActionsMixin:
 - 发布内容必须服从当前人格与世界观,但不要泄露私聊隐私、内部状态数值、关系网资料或插件实现。
 - 工具返回 `auth_required`、`target_mismatch`、`target_unverified`、`invalid_time_hint`、`not_found_time`、`empty` 或 `error` 时，简短说明对应原因，本轮不要用同一条件重复调用；不要假装已经发布、看到、评论或点赞。
 """.strip()
+        instruction = f"【QQ 空间动态工具】\n{body}" if include_heading else body
         context_getter = getattr(self, "_qzone_recent_self_publish_chat_context", None)
         recent_context = context_getter() if callable(context_getter) else ""
         return f"{instruction}\n\n{recent_context}".strip() if recent_context else instruction
@@ -811,6 +833,7 @@ class LlmToolActionsMixin:
         *,
         include_spontaneous: bool | None = None,
         spontaneous_only: bool = False,
+        include_heading: bool = True,
     ) -> str:
         if not getattr(self, "enabled", False):
             return ""
@@ -829,9 +852,7 @@ class LlmToolActionsMixin:
                 )
                 else "- 轻松闲聊、玩笑、安慰、撒娇、庆祝、惊讶、接梗或轻吐槽等能自然补充语气的场景，通常应在完整回复末尾追加内部标签。只有纯事实答复、严肃或敏感情境，或确实没有合适情绪时才省略。"
             )
-            return "\n".join(
-                [
-                    "【实验性表情表达】",
+            lines = [
                     "- 先完成一条正常、完整、可以独立发送的文字回复。表情图片只能作为文字后的补充，绝对不能替代文字回复。",
                     "- 本轮已经由插件完成概率抽样并获得一次表情表达机会；不要再次按概率决定，也不要因为‘不确定’而默认省略标签。",
                     high_frequency_hint,
@@ -839,9 +860,13 @@ class LlmToolActionsMixin:
                     "- `purpose` 写沟通用途，`emotion` 写希望传达的情绪，`intensity` 为 0-5；需要帮助检索时可选填 `candidate_queries`，提供 1-3 个简短说法。不要填写图片路径。",
                     "- 每轮最多写一个标签，必须放在全部可见文字和 TTS 标签之后；不要使用 Markdown 代码块，不要解释标签，也不要调用图片或生图工具。",
                     "- 即使图库最终没有匹配、图片重复或发送失败，前面的完整文字也必须仍然自然成立。",
-                ]
-            ).strip()
-        lines = ["【实验性表情表达工具】" if spontaneous_only else "【图库表情与生图工具】"]
+            ]
+            if include_heading:
+                lines.insert(0, "【实验性表情表达】")
+            return "\n".join(lines).strip()
+        lines: list[str] = []
+        if include_heading:
+            lines.append("【实验性表情表达工具】" if spontaneous_only else "【图库表情与生图工具】")
         if reaction_enabled:
             if not spontaneous_only:
                 lines.extend(
@@ -1528,12 +1553,10 @@ class LlmToolActionsMixin:
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
         return cleaned, parsed_intent
 
-    def _creative_work_tool_instruction(self) -> str:
+    def _creative_work_tool_instruction(self, *, include_heading: bool = True) -> str:
         if not self.enabled or not runtime_persona_setting(self, 'enable_creative_work_read_guard', True):
             return ""
-        return """
-【资料柜与自己的创作读取工具】
-当用户询问能否看到资料柜/书架、资料柜是否为空、里面有什么或有几篇作品时，必须先调用 `pc_view_creative_work`，action=list。list 返回的是插件当前真实保存的资料柜库存；主要用户还会得到日记、资料归档和便签的分类数量。
+        body = """当用户询问能否看到资料柜/书架、资料柜是否为空、里面有什么或有几篇作品时，必须先调用 `pc_view_creative_work`，action=list。list 返回的是插件当前真实保存的资料柜库存；主要用户还会得到日记、资料归档和便签的分类数量。
 当用户询问你自己的某篇创作写了什么、某一部分/片段的内容、你如何看待这篇创作、为什么这样写，或要求你结合原文讲讲时，必须先调用 `pc_view_creative_work` 读取真实创作，再依据工具结果回答。
 - 按标题读取：action=get，selector 传用户提到的作品标题；只有用户明确指定“第 N 部分/第 N 段”时才传 part=N。
 - 不确定有哪些作品或用户泛问“最近写了什么”：先 action=list；拿到准确标题后，如需正文再 action=get。
@@ -1545,6 +1568,7 @@ class LlmToolActionsMixin:
 - 用户只是让你讲一个、编一个或说一个新故事，或泛泛地让你讲“你的故事”时，不是在读取资料柜作品，不要调用此工具；只有用户明确提到你写过的故事、某篇作品、资料柜内容、原文或具体章节时才读取。
 - 用户要求查看配置文件、数据文件、日志、源码、代码、脚本、插件目录或配置项时，不是在读取资料柜作品；即使文件或配置名称中包含“创作”“作品”等词，也不要调用此工具，不要把技术文件问答改写成创作原文读取失败。
 """.strip()
+        return f"【资料柜与自己的创作读取工具】\n{body}" if include_heading else body
 
     @staticmethod
     def _creative_work_inventory_query_matches(text: Any) -> bool:
@@ -2391,10 +2415,8 @@ class LlmToolActionsMixin:
             getattr(event, "message_str", ""),
         )
 
-    def _memo_management_tool_instruction(self) -> str:
-        return """
-【备忘便签工具】
-主要用户在私聊里要求新增、查看、修改、完成、恢复、置顶或删除便签时，使用 `pc_manage_memo`，不要只用口头承诺代替实际操作。
+    def _memo_management_tool_instruction(self, *, include_heading: bool = True) -> str:
+        body = """主要用户在私聊里要求新增、查看、修改、完成、恢复、置顶或删除便签时，使用 `pc_manage_memo`，不要只用口头承诺代替实际操作。
 - 只有用户明确说“便签/便笺/备忘/待办/帮我记一下/记下来”或正在继续操作已有便签时，才把请求路由到本工具。普通“提醒我/叫醒我/定时/半小时后通知我/别忘了”属于临时提醒，不要擅自建成便签。
 - 新增：action=create，title/content 至少传一项；提醒时间传 due_at，可传 `2026-07-15 09:00`，也支持“明早9点”“两小时后”“周五下午3点”等常见表达。
 - 查看：action=list；默认 status=active，可用 status=completed/all 查看已完成或全部便签，query 可按标题/正文筛选。列表正文只是预览，需要完整正文时用 action=get + selector。后续用编号操作时要传回相同 status，优先使用返回的 id。
@@ -2404,6 +2426,7 @@ class LlmToolActionsMixin:
 - 只有工具明确返回 `saved=true`，才能说便签已经新增、修改、完成、恢复、置顶或删除；cancel_delete 返回 `cancelled=true` 时才能说已取消删除。其他 `saved=false`、失败、歧义或等待确认必须如实说明。
 - 便签是待办，不是已经发生的经历；不要把未完成事项说成用户已经做过。
 """.strip()
+        return f"【备忘便签工具】\n{body}" if include_heading else body
 
     @staticmethod
     def _schedule_management_instruction_matches(text: Any) -> bool:
@@ -2417,15 +2440,14 @@ class LlmToolActionsMixin:
         )
         return bool(operation and target)
 
-    def _schedule_management_tool_instruction(self) -> str:
-        return """
-【指定日程管理工具】
-主要用户在私聊中明确要求重置、重做、重新细化、取消或删除某一段今日日程时，使用 `pc_manage_schedule`，不要只口头承诺。
+    def _schedule_management_tool_instruction(self, *, include_heading: bool = True) -> str:
+        body = """主要用户在私聊中明确要求重置、重做、重新细化、取消或删除某一段今日日程时，使用 `pc_manage_schedule`，不要只口头承诺。
 - 重新细化：action=regenerate；取消/删除/移除：action=cancel。“删除”采用取消语义，保留历史依据，但不会再作为当前活动、细化重试或主动消息契机。
 - selector 必须保留用户明确给出的时间、序号或活动关键词，例如“下午三点”“第二段”“整理房间”；不要自行猜一个日程段。工具返回歧义或未命中时，把候选自然列给用户继续选择。
 - 只有用户明确要求操作已有日程时才调用。普通聊天中的“我下午出门”“今晚想晚点睡”“你可以休息”等生活信息仍按对话和柔性日程调整理解，不得擅自取消或重置日程。
 - 只有工具返回 `saved=true` 才能说操作已经完成；失败、歧义或未找到时必须如实说明。
 """.strip()
+        return f"【指定日程管理工具】\n{body}" if include_heading else body
 
     def _memo_tool_authorization(self, event: AstrMessageEvent) -> tuple[bool, str]:
         try:
