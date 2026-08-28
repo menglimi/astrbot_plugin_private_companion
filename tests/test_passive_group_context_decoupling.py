@@ -6,7 +6,20 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from xml.etree import ElementTree as ET
 
-from astrbot_plugin_private_companion.passive_state_pipeline import inject_humanized_state
+from astrbot_plugin_private_companion.passive_state_pipeline import (
+    _neutralize_stale_reaction_feedback_compat,
+    inject_humanized_state,
+)
+
+
+def test_reaction_history_compat_cleanup_handles_hot_loaded_plugin_without_method() -> None:
+    request = SimpleNamespace(
+        contexts=[{"role": "assistant", "content": "前文 <pc-reaction-expression>内部</pc-reaction-expression> 后文"}]
+    )
+
+    _neutralize_stale_reaction_feedback_compat(request)
+
+    assert request.contexts[0]["content"] == "前文  后文"
 
 
 class PassiveGroupContextDecouplingTests(unittest.IsolatedAsyncioTestCase):

@@ -192,6 +192,25 @@ class GroupIdentityAttributionTests(unittest.TestCase):
 
         self.assertEqual({}, claim)
 
+    def test_private_ambiguous_alias_is_not_attributed_to_either_user(self) -> None:
+        self.harness.data["worldbook_member_profiles"]["100000002"]["aliases"] = ["林林"]
+
+        selected = self.harness._select_worldbook_member_profiles_for_private_text("林林，你在吗")
+        rendered = self.harness._format_worldbook_private_mentions_for_prompt("林林，你在吗")
+
+        self.assertEqual([], selected)
+        self.assertIn("称呼线索存在多个稳定用户", rendered)
+        self.assertIn("不能仅凭这个称呼判断对象", rendered)
+        self.assertNotIn("100000001", rendered)
+        self.assertNotIn("100000002", rendered)
+
+    def test_private_observed_name_is_not_a_global_identity_alias(self) -> None:
+        self.harness.data["worldbook_member_profiles"]["100000001"]["observed_names"] = ["临时称呼"]
+
+        selected = self.harness._select_worldbook_member_profiles_for_private_text("临时称呼，你在吗")
+
+        self.assertEqual([], selected)
+
     def test_discourse_phrase_is_not_treated_as_self_registration(self) -> None:
         for text in (
             "我是说……",

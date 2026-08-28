@@ -964,8 +964,94 @@ class ProactiveMixin(UserRestGateMixin):
                 ids.append(user_id)
         return ids
 
+    def _proactive_identity_binding_is_verified(
+        self,
+        user_id: str,
+        user: dict[str, Any] | None,
+    ) -> bool:
+        """Require a concrete platform/account binding before active delivery."""
+        if not isinstance(user, dict):
+            return False
+        normalizer = getattr(self, "_normalize_private_identity_id", None)
+        canonicalizer = getattr(self, "_canonical_private_user_id", None)
+
+        def normalize(value: Any) -> str:
+            result = _single_line(value, 160)
+            if callable(normalizer):
+                try:
+                    result = _single_line(normalizer(result), 160) or result
+                except Exception:
+                    return ""
+            return result
+
+        def canonical(value: Any) -> str:
+            result = normalize(value)
+            if callable(canonicalizer):
+                try:
+                    result = _single_line(canonicalizer(result), 160)
+                except Exception:
+                    return ""
+            return result
+
+        subject = normalize(user.get("identity_subject_id"))
+        platform = _single_line(user.get("identity_platform_kind"), 40).lower()
+        adapter = _single_line(user.get("identity_adapter_instance_id"), 120)
+        bot_id = _single_line(user.get("identity_bot_id"), 120)
+        if not subject or not platform or platform == "generic" or not (adapter or bot_id):
+            return False
+
+        # Plain storage keys must agree with the stamped subject. Scoped
+        # transport keys (platform:subject:digest) keep the subject as source
+        # of truth and are intentionally allowed here.
+        storage_id = normalize(user.get("user_id") or user_id)
+        if storage_id and ":" not in storage_id and canonical(storage_id) != canonical(subject):
+            return False
+        return True
+
+    def _proactive_identity_binding_is_unique(
+        self,
+        user_id: str,
+        user: dict[str, Any],
+    ) -> bool:
+        """Reject duplicate active records for one exact platform identity."""
+        users = self.data.get("users") if isinstance(getattr(self, "data", None), dict) else {}
+        if not isinstance(users, dict):
+            return True
+
+        def binding(candidate: dict[str, Any]) -> tuple[str, str, str, str]:
+            return (
+                _single_line(candidate.get("identity_platform_kind"), 40).lower(),
+                _single_line(candidate.get("identity_subject_id"), 128),
+                _single_line(candidate.get("identity_adapter_instance_id"), 120),
+                _single_line(candidate.get("identity_bot_id"), 120),
+            )
+
+        current_binding = binding(user)
+        if not current_binding[0] or not current_binding[1] or not (current_binding[2] or current_binding[3]):
+            return False
+        current_key = _single_line(user_id, 160)
+        for stored_id, candidate in users.items():
+            if not isinstance(candidate, dict) or candidate is user or _single_line(stored_id, 160) == current_key:
+                continue
+            if not self._proactive_identity_binding_is_verified(str(stored_id), candidate):
+                continue
+            capabilities = candidate.get("unified_profile_capabilities")
+            active = bool(
+                candidate.get("manual_enabled")
+                or candidate.get("auto_enabled")
+                or candidate.get("proactive_private_enabled") is True
+                or (isinstance(capabilities, dict) and capabilities.get("proactive_private_enabled") is True)
+            )
+            if active and binding(candidate) == current_binding:
+                return False
+        return True
+
     def _user_enabled_for_proactive(self, user_id: str, user: dict[str, Any] | None = None) -> bool:
         if not isinstance(user, dict):
+            return False
+        if not self._proactive_identity_binding_is_verified(user_id, user):
+            return False
+        if not self._proactive_identity_binding_is_unique(user_id, user):
             return False
         req036_gate = getattr(self, "_req036_proactive_private_allowed", None)
         if callable(req036_gate):

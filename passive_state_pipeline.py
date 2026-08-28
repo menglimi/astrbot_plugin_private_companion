@@ -24,6 +24,54 @@ from .prompt_surface import PromptSurface
 GROUP_CONTEXT_FINAL_PRIORITY = 10_000
 
 
+def _neutralize_stale_reaction_feedback_compat(req: Any) -> None:
+    """Best-effort cleanup for plugin instances missing the newer hook."""
+    contexts = getattr(req, "contexts", None)
+    if not isinstance(contexts, list) or not contexts:
+        return
+    tag_pattern = re.compile(
+        r"(?:<|&lt;|\\<)\s*/?\s*pc[_-]?reaction[_-]?expression\b[^>]*?(?:>|&gt;|\\>)"
+        r".*?"
+        r"(?:<|&lt;|\\<)\s*/\s*pc[_-]?reaction[_-]?expression\s*(?:>|&gt;|\\>)",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    def clean(value: Any) -> tuple[Any, bool]:
+        if isinstance(value, str):
+            updated = tag_pattern.sub("", value)
+            updated = re.sub(r"\n{3,}", "\n\n", updated).strip()
+            return updated, updated != value
+        if isinstance(value, dict):
+            updated = dict(value)
+            changed = False
+            for key in ("content", "text", "value"):
+                if key in updated:
+                    updated[key], item_changed = clean(updated[key])
+                    changed = changed or item_changed
+            return updated, changed
+        if isinstance(value, list):
+            items = []
+            changed = False
+            for item in value:
+                cleaned, item_changed = clean(item)
+                items.append(cleaned)
+                changed = changed or item_changed
+            return items, changed
+        return value, False
+
+    sanitized = []
+    changed = False
+    for item in contexts:
+        cleaned, item_changed = clean(item)
+        sanitized.append(cleaned)
+        changed = changed or item_changed
+    if changed:
+        try:
+            req.contexts = sanitized
+        except Exception:
+            pass
+
+
 async def inject_humanized_state(
     self: Any,
     event: Any,
@@ -77,6 +125,17 @@ async def inject_humanized_state(
             # Historical cleanup must never prevent the provider request itself.
             logger.debug(
                 "[PrivateCompanion] 清理历史反应标签失败: %s",
+                _single_line(exc, 120),
+            )
+    else:
+        # Older hot-loaded plugin objects may not carry the method even though
+        # this pipeline module has been updated. Keep the request alive and
+        # retain the same historical-tag cleanup semantics.
+        try:
+            _neutralize_stale_reaction_feedback_compat(req)
+        except Exception as exc:
+            logger.debug(
+                "[PrivateCompanion] 兼容清理历史反应标签失败: %s",
                 _single_line(exc, 120),
             )
     self._append_deepseek_tool_protocol_guard(event, req)

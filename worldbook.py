@@ -1346,9 +1346,17 @@ class WorldbookMixin:
                     return self._group_member_identity_label(str(user_id), candidate, limit=24)
         return ""
 
-    def _worldbook_profile_tokens(self, profile: dict[str, Any]) -> list[str]:
+    def _worldbook_profile_tokens(
+        self,
+        profile: dict[str, Any],
+        *,
+        include_observed: bool = True,
+    ) -> list[str]:
         tokens: list[str] = []
-        for token in [profile.get("name"), *(profile.get("aliases") or []), *(profile.get("observed_names") or [])]:
+        raw_tokens = [profile.get("name"), *(profile.get("aliases") or [])]
+        if include_observed:
+            raw_tokens.extend(profile.get("observed_names") or [])
+        for token in raw_tokens:
             token = _single_line(token, 40)
             if token and token not in tokens:
                 tokens.append(token)
@@ -1381,7 +1389,11 @@ class WorldbookMixin:
             target_user_id = _single_line(profile_user_id, 40)
             if target_user_id == current_sender_id or not isinstance(profile, dict) or not profile.get("enabled", True):
                 continue
-            for token in sorted(self._worldbook_profile_tokens(profile), key=len, reverse=True):
+            for token in sorted(
+                self._worldbook_profile_tokens(profile, include_observed=False),
+                key=len,
+                reverse=True,
+            ):
                 token_key = re.sub(r"\s+", "", token).casefold()
                 if token_key and token_key == claimed_key:
                     return {
@@ -1445,6 +1457,25 @@ class WorldbookMixin:
         view["_match_scope"] = scope
         return view
 
+    def _worldbook_private_token_hits(
+        self,
+        text: str,
+    ) -> dict[str, list[tuple[str, dict[str, Any], str]]]:
+        """Return private-chat name/alias hits grouped by normalized token."""
+        profiles = self.data.get("worldbook_member_profiles")
+        if not isinstance(profiles, dict):
+            return {}
+        token_hits: dict[str, list[tuple[str, dict[str, Any], str]]] = {}
+        for user_id, profile in profiles.items():
+            if not isinstance(profile, dict) or not profile.get("enabled", True):
+                continue
+            for token in self._worldbook_profile_tokens(profile, include_observed=False):
+                if self._worldbook_token_mentioned_in_private_hint(token, text):
+                    token_key = re.sub(r"\s+", "", token).casefold()
+                    if token_key:
+                        token_hits.setdefault(token_key, []).append((str(user_id), profile, token))
+        return token_hits
+
     def _select_worldbook_member_profiles_for_private_text(self, text: str, *, limit: int | None = None) -> list[dict[str, Any]]:
         if not runtime_persona_setting(self, "enable_worldbook_member_recognition", True):
             return []
@@ -1465,21 +1496,23 @@ class WorldbookMixin:
                     match_reason="当前私聊消息提到 QQ 号",
                     confidence="mentioned",
                 )
-        for user_id, profile in profiles.items():
+        # A private message has no group roster to disambiguate a name.  Keep
+        # historical observed names out of this global lookup, and suppress a
+        # token entirely when it belongs to more than one stable user.
+        token_hits = self._worldbook_private_token_hits(text)
+        for token_key, hits in token_hits.items():
+            if len({item[0] for item in hits}) != 1:
+                continue
+            user_id, profile, token = hits[0]
             if len(selected) >= max_items:
                 break
-            if not isinstance(profile, dict) or not profile.get("enabled", True):
+            if user_id in selected:
                 continue
-            if str(user_id) in selected:
-                continue
-            for token in self._worldbook_profile_tokens(profile):
-                if self._worldbook_token_mentioned_in_private_hint(token, text):
-                    selected[str(user_id)] = self._worldbook_profile_view(
-                        profile,
-                        match_reason=f"当前私聊消息提到：{token}",
-                        confidence="mentioned",
-                    )
-                    break
+            selected[user_id] = self._worldbook_profile_view(
+                profile,
+                match_reason=f"当前私聊消息提到：{token}",
+                confidence="mentioned",
+            )
         ranked = sorted(
             selected.values(),
             key=lambda item: _safe_int(item.get("priority"), 120, -1000),
@@ -1495,14 +1528,30 @@ class WorldbookMixin:
         include_heading: bool = True,
     ) -> str:
         profiles = self._select_worldbook_member_profiles_for_private_text(text, limit=limit)
-        if not profiles:
+        token_hits = self._worldbook_private_token_hits(text)
+        ambiguous_tokens = sorted(
+            {hits[0][2] for hits in token_hits.values() if len({item[0] for item in hits}) > 1},
+            key=len,
+            reverse=True,
+        )[:8]
+        if not profiles and not ambiguous_tokens:
             return ""
         lines = ["【本轮提到的关系网对象】"] if include_heading else []
+        if ambiguous_tokens:
+            lines.append(
+                "- 称呼线索存在多个稳定用户："
+                + "、".join(str(token) for token in ambiguous_tokens)
+                + "。不能仅凭这个称呼判断对象；需要时先自然澄清，不要套用任何一人的关系、记忆或权限。"
+            )
         injected = []
         for profile in profiles:
             profile_uid = _single_line(profile.get("user_id"), 40)
             name = _single_line(profile.get("name"), 40) or profile_uid or "-"
-            aliases = "、".join(token for token in self._worldbook_profile_tokens(profile)[:6] if token != profile_uid and token != name)
+            aliases = "、".join(
+                token
+                for token in self._worldbook_profile_tokens(profile, include_observed=False)[:6]
+                if token != profile_uid and token != name
+            )
             identity = _single_line(profile.get("identity_note") or profile.get("note") or profile.get("content"), 140)
             boundary = _single_line(profile.get("boundary_note"), 80)
             parts = [f"{name}（QQ:{profile_uid or '-'}）"]

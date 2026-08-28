@@ -2053,6 +2053,34 @@ class PrivateCompanionPlugin(
         """Short explicit accessor for persona-aware runtime code."""
         return self.get_persona_setting(key, persona_id=persona_id, default=default)
 
+    # ------------------------------------------------------------------
+    # 手机端陪伴形象：Bot 称呼的唯一数据源在这里，终端只是远程入口
+    # ------------------------------------------------------------------
+
+    def mobile_persona_identity(self) -> dict[str, Any]:
+        """读取陪伴形象。主人格/单人格场景下 bot_name 即通用配置。"""
+        name = _single_line(self.persona_setting("bot_name", getattr(self, "bot_name", "")), 12)
+        return {"bot_name": name or "小星"}
+
+    async def mobile_set_persona_identity(self, bot_name: Any = "") -> dict[str, Any]:
+        """写入 Bot 称呼，复用与网页端一致的配置持久化路径。"""
+        name = _single_line(bot_name, 12).strip()
+        if not name:
+            return {"ok": False, "code": "identity_name_empty", "message": "称呼不能为空"}
+        before = _single_line(getattr(self, "bot_name", ""), 80)
+        try:
+            await self._flush_scheduled_data_save()
+            _set_into_config(self.config, "bot_name", name)
+            if not bool(await self._save_config_if_possible()):
+                _set_into_config(self.config, "bot_name", before)
+                return {"ok": False, "code": "identity_config_not_saved", "message": "配置未能持久化"}
+            # 运行时读取走实例属性，同步更新让新称呼立刻生效
+            self.bot_name = name
+        except Exception as exc:
+            _set_into_config(self.config, "bot_name", before)
+            return {"ok": False, "code": "identity_update_failed", "message": str(exc)[:200]}
+        return {"ok": True, "bot_name": name}
+
     def effective_persona_settings(self, persona_id: Any = "", *, include_common: bool = False) -> dict[str, Any]:
         active = self._sanitize_persona_id(persona_id or _ACTIVE_PERSONA_ID.get())
         if not active:
@@ -4387,22 +4415,25 @@ class PrivateCompanionPlugin(
         except Exception:
             return False
 
-        identity_candidates = {
-            candidate
-            for candidate in (
-                normalized_identity(user_id),
-                normalized_identity(user.get("user_id")),
-                normalized_identity(user.get("identity_subject_id")),
-            )
-            if candidate
-        }
-        aliases = user.get("alias_user_ids")
-        if isinstance(aliases, list):
-            identity_candidates.update(
+        stamped_subject = normalized_identity(user.get("identity_subject_id"))
+        if stamped_subject:
+            # Once a record has a stamped platform subject, its storage key
+            # and historical transport aliases are no longer authorization
+            # candidates. This prevents a target-named shadow row from
+            # inheriting the target's active capability for another person.
+            identity_candidates = {stamped_subject}
+        else:
+            identity_candidates = {
                 candidate
-                for candidate in (normalized_identity(alias) for alias in aliases[:32])
+                for candidate in (
+                    normalized_identity(user_id),
+                    normalized_identity(user.get("user_id")),
+                )
                 if candidate
-            )
+            }
+        # ``alias_user_ids`` are transport/history hints, never authorization
+        # credentials.  Using them here allowed a renamed or migrated identity
+        # to reopen active permission for another stable user.
         configured_match = bool(target_ids.intersection(identity_candidates))
 
         # A bare numeric/openid target must not grant the same identifier on a
@@ -4859,6 +4890,13 @@ class PrivateCompanionPlugin(
         ordinary_statement_patterns = (
             r"(?:^|[\s，,：:@])(?:自己|按自己|个人|各自)\s*(?:喜欢|爱)(?:吃|喝|玩|看|听)?什么\s*(?:就|便|吧|呀|喵|都|随便)",
             r"(?:喜欢|爱)(?:吃|喝|玩|看|听)?什么\s*(?:就|便|吧|呀|喵|都|随便)",
+            # Questions about choosing/feeding an item are ordinary chatter,
+            # not requests to summarize a person's preference profile.
+            r"(?:要|该|应该|可以|能|想|准备)?\s*(?:喂|选|挑|买|点|吃|喝|做|换).{0,8}(?:什么|啥|哪种|哪个)口味",
+            # Negative interest statements ("现在干啥都提不起兴趣" etc.) are
+            # ordinary venting chatter. Without this the stray 啥 in 干啥
+            # before 兴趣 false-positives as a third-party portrait probe.
+            r"(?:提不起|不感|没(?:有|啥|什么)?|毫无|失去|缺(?:乏)?)(?:任何的?\s*)?兴趣",
         )
         if any(re.search(pattern, value) for pattern in ordinary_statement_patterns):
             return ""
@@ -4909,7 +4947,10 @@ class PrivateCompanionPlugin(
 
     def _req036_group_portrait_query_is_directed(self, event: Any) -> bool:
         """Use adapter addressing metadata so ordinary group chatter never triggers this guard."""
-        if bool(getattr(event, "is_at_or_wake_command", False)) or bool(getattr(event, "is_wake", False)):
+        # ``is_wake`` only means that some handler accepted the event; it does
+        # not prove that the user addressed this Bot. Keep the more specific
+        # command flag and structured At/Reply evidence below.
+        if bool(getattr(event, "is_at_or_wake_command", False)):
             return True
         try:
             signals = self._event_scene_signals(event)
