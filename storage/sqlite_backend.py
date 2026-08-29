@@ -590,19 +590,24 @@ class SqliteStoreBackend(StoreBackendBase):
             for suffix in ("-wal", "-shm", "-journal")
         )
 
-        def assert_sidecars_absent() -> None:
+        def assert_sidecars_regular() -> None:
             for sidecar in sidecars:
                 try:
-                    sidecar.lstat()
+                    details = sidecar.lstat()
                 except FileNotFoundError:
                     continue
-                raise SqliteSchemaError(
-                    "read-only SQLite sidecar makes the snapshot unverifiable"
-                )
+                if not stat.S_ISREG(details.st_mode):
+                    raise SqliteSchemaError(
+                        "read-only SQLite sidecar path is not a regular file"
+                    )
 
-        assert_sidecars_absent()
+        # WAL and SHM files are normal for this backend: _connect() explicitly
+        # enables WAL. Opening the database as immutable would ignore committed
+        # frames that have not been checkpointed yet, while rejecting sidecars
+        # would make a healthy active database impossible to preflight.
+        assert_sidecars_regular()
 
-        uri = f"{self.db_path.absolute().as_uri()}?mode=ro&immutable=1"
+        uri = f"{self.db_path.absolute().as_uri()}?mode=ro"
         connection: sqlite3.Connection | None = None
         try:
             connection = sqlite3.connect(
@@ -757,7 +762,7 @@ class SqliteStoreBackend(StoreBackendBase):
             finally:
                 connection.close()
         finally:
-            assert_sidecars_absent()
+            assert_sidecars_regular()
             try:
                 after = self.db_path.lstat()
             except OSError as exc:

@@ -386,20 +386,31 @@ class PersonaSqliteStoreTests(unittest.TestCase):
             (sqlite_after.st_ino, sqlite_after.st_size, sqlite_after.st_mtime_ns),
         )
 
-    def test_read_only_snapshot_rejects_sqlite_sidecars_without_touching_them(self) -> None:
-        self._load()
-        sidecar = Path(f"{self.sqlite}-wal")
-        sidecar.write_bytes(b"pending-wal")
-        before = sidecar.read_bytes()
+    def test_read_only_snapshot_accepts_active_wal_without_changing_database(self) -> None:
+        handle = self._load()
+        expected = _ensure_defaults({"users": {"wal-user": {"name": "WAL 可见"}}})
+        anchor = handle.manager.backend._connect()
+        try:
+            anchor.execute("PRAGMA wal_autocheckpoint=0")
+            handle.manager.backend.save_store(expected)
+            self.assertTrue(Path(f"{self.sqlite}-wal").is_file())
+            self.assertTrue(Path(f"{self.sqlite}-shm").is_file())
+            before = self.sqlite.stat()
 
-        with self.assertRaisesRegex(PersonaSqliteStoreError, "read_only_snapshot"):
-            read_persona_store_snapshot_read_only(
+            snapshot = read_persona_store_snapshot_read_only(
                 persona_id="alt",
                 legacy_json_path=self.legacy,
                 sqlite_path=self.sqlite,
             )
 
-        self.assertEqual(before, sidecar.read_bytes())
+            after = self.sqlite.stat()
+            self.assertEqual(expected, snapshot)
+            self.assertEqual(
+                (before.st_ino, before.st_size, before.st_mtime_ns),
+                (after.st_ino, after.st_size, after.st_mtime_ns),
+            )
+        finally:
+            anchor.close()
 
     def test_read_only_snapshot_rejects_uninitialized_old_and_corrupt_sqlite(self) -> None:
         manager = self.registry.manager_for(
