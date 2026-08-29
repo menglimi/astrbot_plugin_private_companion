@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import inspect
+import importlib
 import json
 import unittest
 from pathlib import Path
@@ -107,8 +108,22 @@ class PhotoPromptFormatTests(unittest.TestCase):
         self.assertIn("自然语言描述", instruction)
         self.assertIn("连贯", instruction)
 
-    def test_all_generation_backends_receive_the_central_format_pass(self) -> None:
+    def test_companion_generation_entrypoint_only_delegates_to_optional_image(self) -> None:
         source = inspect.getsource(ProactiveMessageMixin._generate_photo_image)
+        self.assertIn("_image_companion_generate", source)
+        self.assertIn("独立生图服务", source)
+        self.assertNotIn("_apply_photo_generation_prompt_format", source)
+
+    def test_image_owner_applies_central_format_before_scene_presets(self) -> None:
+        try:
+            image_runtime = importlib.import_module(
+                "astrbot_plugin_image_companion.image_runtime"
+            )
+        except ImportError:
+            self.skipTest("optional Image Companion runtime is not installed")
+        source = inspect.getsource(
+            image_runtime.ProactiveMessageMixin._generate_photo_image_legacy
+        )
         format_index = source.index("_apply_photo_generation_prompt_format")
         preset_index = source.index("_apply_photo_generation_scene_presets")
         self.assertLess(format_index, preset_index)

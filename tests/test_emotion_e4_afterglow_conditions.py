@@ -133,7 +133,7 @@ class Host(MemoryCompanionAdapterMixin):
     def _compose_state_from_conditions(self, _weather: dict[str, Any]) -> dict[str, Any]:
         return {"energy": 79, "conditions": list(self.data["state_conditions"])}
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         self.saved += 1
 
 

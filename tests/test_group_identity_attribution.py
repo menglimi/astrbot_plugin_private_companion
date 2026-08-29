@@ -183,6 +183,8 @@ class GroupIdentityAttributionTests(unittest.TestCase):
         self.assertIn("当前群名片“主人”", prompt)
         self.assertIn("不是关系事实", prompt)
         self.assertIn("不要照着群名片叫", prompt)
+        self.assertIn("群聊玩笑边界", prompt)
+        self.assertIn("不要写进核心人物画像", prompt)
 
     def test_own_registered_name_is_not_treated_as_impersonation(self) -> None:
         claim = self.harness._worldbook_claimed_other_identity(

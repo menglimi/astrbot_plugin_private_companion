@@ -595,7 +595,7 @@ class IncrementalPersistenceWriterTests(unittest.IsolatedAsyncioTestCase):
                 "bookshelf_items": [{"id": "one"}],
                 "bookshelf_secret": {"token": "secret"},
                 "bookshelf_store_revision": 7,
-                "jm_cosmos_integration": {"enabled": True},
+                "reading_archive_integration": {"enabled": True},
                 "users": {},
             }
         )
@@ -608,7 +608,7 @@ class IncrementalPersistenceWriterTests(unittest.IsolatedAsyncioTestCase):
             "bookshelf_items",
             "bookshelf_secret",
             "bookshelf_store_revision",
-            "jm_cosmos_integration",
+            "reading_archive_integration",
         }
         self.assertEqual(expected, set(changed))
         self.assertFalse(deleted)

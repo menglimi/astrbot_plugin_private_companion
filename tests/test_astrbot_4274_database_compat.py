@@ -46,6 +46,7 @@ def test_wal_candidates_only_include_private_companion_owned_databases(
     profiles.mkdir()
     profile_db = profiles / "persona-a.db"
     profile_db.touch()
+    plugin.data_dir = str(tmp_path)
     plugin.storage_sqlite_effective_path = str(own_db)
     plugin._persona_profiles_dir = str(profiles)
     plugin.context = SimpleNamespace(conversation_manager=object())

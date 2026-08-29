@@ -40,7 +40,7 @@ class _AtmosphereApiPlugin(_AtmosphereHarness):
         return self.data["groups"][group_id]
 
     @staticmethod
-    def _save_data_sync() -> None:
+    def _save_data_sync(**_kwargs) -> None:
         return None
 
 

@@ -77,18 +77,18 @@ class ImageModelConfigUiTests(unittest.TestCase):
         self.assertNotIn("renderProviders(context);", toolbar_binding)
         self.assertIn('button.setAttribute("aria-pressed"', self.script)
         self.assertIn(
-            'loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-private-reading-capability-v1',
+            'loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1',
             self.script,
         )
 
-    def test_private_reading_provider_ui_follows_runtime_capability(self) -> None:
+    def test_reading_archive_provider_ui_follows_runtime_capability(self) -> None:
         summary = self.provider_tree.split("function renderProviderSummary", 1)[1].split(
             "function deepseekPeakProviderControl", 1
         )[0]
         flow = self.provider_tree.split("function renderProviderFlow", 1)[1].split(
             "function providerGroupMarkup", 1
         )[0]
-        capability_check = 'visibleConfigKey("PRIVATE_READING_VISION_PROVIDER_ID")'
+        capability_check = 'visibleConfigKey("READING_ARCHIVE_VISION_PROVIDER_ID")'
         self.assertIn(capability_check, summary)
         self.assertIn("readingVisionAvailable", summary)
         self.assertIn(capability_check, flow)
@@ -116,10 +116,11 @@ class ImageModelConfigUiTests(unittest.TestCase):
         self.assertIn("!== fingerprint", self.script)
         self.assertIn("custom_headers: item.custom_headers", self.script)
 
-    def test_image_api_has_dedicated_status_and_test_routes(self) -> None:
+    def test_image_api_routes_delegate_to_the_optional_image_owner(self) -> None:
         self.assertIn('("/image_api/status", self.get_image_api_status', self.api)
         self.assertIn('("/image_api/test", self.test_image_api_endpoint', self.api)
-        self.assertIn('"_run_external_photo_generation_with_endpoint"', self.api)
+        self.assertIn('"_image_companion_test_endpoint"', self.api)
+        self.assertNotIn('"_run_external_photo_generation_with_endpoint"', self.api)
         self.assertIn("不会尝试队列中的其他 API", self.api)
 
     def test_feature_detail_no_longer_owns_the_endpoint_editor(self) -> None:

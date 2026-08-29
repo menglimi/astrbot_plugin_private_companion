@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import stat
 import threading
 import time
 import uuid
@@ -74,6 +75,19 @@ def _canonical_json(value: Any) -> str:
 
 def _payload_checksum(payload_json: str) -> str:
     return hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON constant is not allowed: {value}")
+
+
+def _strict_json_value(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key is not allowed: {key}")
+        result[key] = value
+    return result
 
 
 def _section_name(value: Any) -> str:
@@ -548,6 +562,229 @@ class SqliteStoreBackend(StoreBackendBase):
                 exc,
             )
             raise
+
+    def load_store_read_only(
+        self,
+        *,
+        max_payload_bytes: int,
+        max_database_bytes: int,
+    ) -> dict[str, Any]:
+        """Load one current, legacy-v1, or empty snapshot without writes."""
+        if (
+            isinstance(max_payload_bytes, bool)
+            or not isinstance(max_payload_bytes, int)
+            or max_payload_bytes <= 0
+            or isinstance(max_database_bytes, bool)
+            or not isinstance(max_database_bytes, int)
+            or max_database_bytes <= 0
+        ):
+            raise ValueError("read-only SQLite byte limits must be positive")
+        before = self.db_path.lstat()
+        if not stat.S_ISREG(before.st_mode):
+            raise SqliteSchemaError("read-only SQLite path is not a regular file")
+        if before.st_size < 0 or before.st_size > max_database_bytes:
+            raise SqliteSchemaError("read-only SQLite database exceeds its byte limit")
+
+        sidecars = tuple(
+            Path(f"{self.db_path}{suffix}")
+            for suffix in ("-wal", "-shm", "-journal")
+        )
+
+        def assert_sidecars_absent() -> None:
+            for sidecar in sidecars:
+                try:
+                    sidecar.lstat()
+                except FileNotFoundError:
+                    continue
+                raise SqliteSchemaError(
+                    "read-only SQLite sidecar makes the snapshot unverifiable"
+                )
+
+        assert_sidecars_absent()
+
+        uri = f"{self.db_path.absolute().as_uri()}?mode=ro&immutable=1"
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = sqlite3.connect(
+                uri,
+                uri=True,
+                timeout=15.0,
+                isolation_level=None,
+            )
+            try:
+                connection.execute("PRAGMA query_only=ON")
+                query_only = connection.execute("PRAGMA query_only").fetchone()
+                if query_only != (1,):
+                    raise SqliteSchemaError("SQLite query-only mode is unavailable")
+                connection.execute("BEGIN")
+                version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+                tables = self._table_names(connection)
+                legacy = version in {0, 1} and tables == {"store_sections"}
+                if version == 0 and not tables:
+                    connection.rollback()
+                    return {}
+                if legacy:
+                    self._validate_v1_schema(connection)
+                    quick_check = connection.execute("PRAGMA quick_check").fetchall()
+                    if quick_check != [("ok",)]:
+                        raise SqliteSchemaError("SQLite read-only quick_check failed")
+                    encoded_size = connection.execute(
+                        "SELECT COALESCE(SUM(length(CAST(payload_json AS BLOB))),0) "
+                        "FROM store_sections"
+                    ).fetchone()
+                    if (
+                        encoded_size is None
+                        or isinstance(encoded_size[0], bool)
+                        or not isinstance(encoded_size[0], int)
+                        or encoded_size[0] < 0
+                        or encoded_size[0] > max_payload_bytes
+                    ):
+                        raise ValueError(
+                            "SQLite read-only snapshot exceeds its byte limit"
+                        )
+                    rows = connection.execute(
+                        "SELECT section_name,payload_json,updated_at,checksum,schema_version "
+                        "FROM store_sections ORDER BY section_name"
+                    )
+                    data: dict[str, Any] = {}
+                    for (
+                        raw_name,
+                        raw_payload,
+                        raw_updated_at,
+                        raw_checksum,
+                        raw_schema,
+                    ) in rows:
+                        name = _section_name(raw_name)
+                        if (
+                            not isinstance(raw_payload, str)
+                            or isinstance(raw_schema, bool)
+                            or not isinstance(raw_schema, int)
+                            or raw_schema != 1
+                        ):
+                            raise SqliteSchemaError(
+                                f"SQLite v1 section identity is invalid: {name}"
+                            )
+                        try:
+                            parsed = json.loads(raw_payload)
+                            float(raw_updated_at)
+                        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                            raise SqliteSchemaError(
+                                f"SQLite v1 section payload is invalid: {name}"
+                            ) from exc
+                        canonical = _canonical_json(parsed)
+                        checksum = str(raw_checksum or "")
+                        if checksum not in {
+                            "",
+                            _payload_checksum(raw_payload),
+                            _payload_checksum(canonical),
+                        }:
+                            raise SqliteSchemaError(
+                                f"SQLite v1 section checksum mismatch: {name}"
+                            )
+                        data[name] = parsed
+                    connection.rollback()
+                    return data
+
+                self._validate_v2_schema(connection)
+                if not self._initialized(connection):
+                    raise SqliteStoreNotInitializedError(
+                        f"SQLite store is not initialized: {self.db_path}"
+                    )
+                quick_check = connection.execute("PRAGMA quick_check").fetchall()
+                if quick_check != [("ok",)]:
+                    raise SqliteSchemaError("SQLite read-only quick_check failed")
+                encoded_size = connection.execute(
+                    "SELECT COALESCE(SUM(length(CAST(payload_json AS BLOB))),0) "
+                    "FROM store_sections"
+                ).fetchone()
+                if (
+                    encoded_size is None
+                    or isinstance(encoded_size[0], bool)
+                    or not isinstance(encoded_size[0], int)
+                    or encoded_size[0] < 0
+                    or encoded_size[0] > max_payload_bytes
+                ):
+                    raise ValueError(
+                        "SQLite read-only snapshot exceeds its byte limit"
+                    )
+                rows = connection.execute(
+                    "SELECT section_name,payload_json,checksum,schema_version,revision,is_deleted "
+                    "FROM store_sections ORDER BY section_name"
+                )
+                data: dict[str, Any] = {}
+                for (
+                    raw_name,
+                    raw_payload,
+                    raw_checksum,
+                    schema_version,
+                    revision,
+                    is_deleted,
+                ) in rows:
+                    name = _section_name(raw_name)
+                    if not isinstance(raw_payload, str):
+                        raise SqliteSchemaError(
+                            f"SQLite section payload type is invalid: {name}"
+                        )
+                    parsed = json.loads(
+                        raw_payload,
+                        parse_constant=_reject_json_constant,
+                        object_pairs_hook=_strict_json_value,
+                    )
+                    canonical = _canonical_json(parsed)
+                    checksum = str(raw_checksum or "")
+                    if (
+                        schema_version != _SCHEMA_VERSION
+                        or isinstance(revision, bool)
+                        or not isinstance(revision, int)
+                        or revision <= 0
+                        or checksum not in {"", _payload_checksum(canonical)}
+                    ):
+                        raise SqliteSchemaError(
+                            f"SQLite section identity is invalid: {name}"
+                        )
+                    if is_deleted == 1:
+                        if parsed is not None or raw_payload != "null":
+                            raise SqliteSchemaError(
+                                f"SQLite section tombstone is invalid: {name}"
+                            )
+                        continue
+                    if is_deleted != 0:
+                        raise SqliteSchemaError(
+                            f"SQLite section deletion flag is invalid: {name}"
+                        )
+                    data[name] = parsed
+                connection.rollback()
+            finally:
+                connection.close()
+        finally:
+            assert_sidecars_absent()
+            try:
+                after = self.db_path.lstat()
+            except OSError as exc:
+                raise SqliteSchemaError(
+                    "SQLite file changed during read-only snapshot"
+                ) from exc
+            if (
+                not stat.S_ISREG(after.st_mode)
+                or (
+                    before.st_dev,
+                    before.st_ino,
+                    before.st_size,
+                    before.st_mtime_ns,
+                    before.st_ctime_ns,
+                )
+                != (
+                    after.st_dev,
+                    after.st_ino,
+                    after.st_size,
+                    after.st_mtime_ns,
+                    after.st_ctime_ns,
+                )
+            ):
+                raise SqliteSchemaError(
+                    "SQLite file changed during read-only snapshot"
+                )
+        return data
 
     def load_sections(self, section_names: tuple[str, ...] | list[str]) -> dict[str, Any]:
         """Load a small subset without rebuilding the complete live store."""

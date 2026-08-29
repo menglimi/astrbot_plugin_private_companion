@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import io
+import os
 import tempfile
 import unittest
 import asyncio
@@ -119,6 +120,22 @@ class ReactionAssetLibraryTests(unittest.TestCase):
         self.assertEqual("你认真的？", analyzed["visible_text"])
         self.assertIn("吐槽", analyzed["intents"])
         self.assertEqual("vision-test", analyzed["analysis_provider"])
+
+    def test_catalog_cache_detects_atomic_rewrite_with_unchanged_mtime(self) -> None:
+        item = self.library.import_blobs(
+            [("停用自动识别.png", PNG_BYTES)],
+            metadata={"auto_analyze": False},
+        )["items"][0]
+        catalog_path = self.library.catalog_path
+        cached_mtime = catalog_path.stat().st_mtime_ns
+        self.assertEqual("unprocessed", self.library.list_items()["items"][0]["analysis_status"])
+
+        writer = ReactionAssetLibrary(self.temp_dir.name)
+        self.assertEqual(1, writer.queue_analysis([item["id"]])["queued"])
+        os.utime(catalog_path, ns=(cached_mtime, cached_mtime))
+
+        refreshed = self.library.list_items()["items"][0]
+        self.assertEqual("pending", refreshed["analysis_status"])
 
     def test_gif_analysis_uses_png_preview_but_preserves_original_asset(self) -> None:
         gif_data = _gif_bytes(animated=True)
@@ -526,7 +543,7 @@ class _RuntimeHarness(LlmToolActionsMixin):
         return self.data["users"].setdefault(user_id, {})
 
     @staticmethod
-    def _save_data_sync() -> None:
+    def _save_data_sync(**_kwargs) -> None:
         return None
 
 

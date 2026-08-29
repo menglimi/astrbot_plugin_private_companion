@@ -15,6 +15,7 @@ from astrbot_plugin_private_companion.core_store import (
     _FULL_SAVE_SCOPES,
 )
 from astrbot_plugin_private_companion.event_dispatch import EventDispatchMixin
+from astrbot_plugin_private_companion.story_handoff import STORY_MIGRATION_COMMIT_KEY
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +40,14 @@ def _save_calls(path: Path) -> list[ast.Call]:
         and isinstance(node.func, ast.Attribute)
         and node.func.attr in SAVE_METHODS
     ]
+
+
+def _is_official_no_arg_save_compatibility(path: Path, node: ast.Call) -> bool:
+    if path.name != "llm_tool_actions.py" or node.func.attr != "_save_data_sync":
+        return False
+    lines = path.read_text(encoding="utf-8").splitlines()
+    context = "\n".join(lines[max(0, node.lineno - 5) : node.lineno])
+    return "historical no-argument persistence hook" in context
 
 
 def _literal_durable_data_roots(path: Path) -> list[tuple[str, int]]:
@@ -134,16 +143,21 @@ class _SmartDebounceHarness(EventDispatchMixin):
 class IncrementalPersistenceCallsiteTests(unittest.TestCase):
     def test_production_save_calls_declare_a_contract(self) -> None:
         bare_calls: list[str] = []
+        compatibility_calls: list[str] = []
         for path in _production_python_paths():
             for node in _save_calls(path):
                 if not any(
                     keyword.arg in {"sections", "deleted_sections", "full_scope"}
                     for keyword in node.keywords
                 ):
+                    if _is_official_no_arg_save_compatibility(path, node):
+                        compatibility_calls.append(path.relative_to(ROOT).as_posix())
+                        continue
                     bare_calls.append(
                         f"{path.relative_to(ROOT).as_posix()}:{node.lineno}"
                     )
         self.assertEqual([], bare_calls)
+        self.assertEqual(["llm_tool_actions.py"], compatibility_calls)
 
     def test_literal_save_sections_are_registered(self) -> None:
         unknown: list[str] = []
@@ -194,9 +208,14 @@ class IncrementalPersistenceCallsiteTests(unittest.TestCase):
     def test_section_registry_matches_both_default_store_builders(self) -> None:
         new_store = CoreStoreMixin._new_store(object())
         ensured = CoreStoreMixin._ensure_store_defaults({})
+        default_sections = set(_DURABLE_SECTION_NAMES) - {
+            STORY_MIGRATION_COMMIT_KEY
+        }
 
-        self.assertEqual(set(_DURABLE_SECTION_NAMES), set(new_store))
-        self.assertEqual(set(_DURABLE_SECTION_NAMES), set(ensured))
+        self.assertEqual(default_sections, set(new_store))
+        self.assertEqual(default_sections, set(ensured))
+        self.assertNotIn(STORY_MIGRATION_COMMIT_KEY, new_store)
+        self.assertNotIn(STORY_MIGRATION_COMMIT_KEY, ensured)
 
     def test_literal_durable_data_roots_are_registered(self) -> None:
         unknown: list[str] = []

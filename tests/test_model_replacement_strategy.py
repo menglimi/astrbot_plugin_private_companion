@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import asyncio
 import unittest
 from unittest.mock import AsyncMock
 from types import SimpleNamespace
@@ -69,6 +70,29 @@ class ModelReplacementStrategyTests(unittest.TestCase):
             CURRENT_MODEL_REPLACEMENT_SOURCES.reset(token)
         conversation_only = _PluginRouteHarness("conversation")
         self.assertEqual("default-provider", conversation_only._task_provider("default-provider"))
+
+    def test_strict_task_provider_bypasses_keyword_and_peak_replacements(self) -> None:
+        harness = _PluginRouteHarness("plugin")
+        harness._apply_deepseek_peak_replacement = (
+            lambda _provider_id, **_kwargs: "peak-provider"
+        )
+        token = CURRENT_MODEL_REPLACEMENT_SOURCES.set(
+            (("wake_message", "请帮我写代码"),)
+        )
+        try:
+            self.assertEqual(
+                "peak-provider",
+                harness._task_provider("default-provider"),
+            )
+            self.assertEqual(
+                "default-provider",
+                harness._task_provider(
+                    "default-provider",
+                    allow_replacement=False,
+                ),
+            )
+        finally:
+            CURRENT_MODEL_REPLACEMENT_SOURCES.reset(token)
 
     def test_sensitive_refusal_matches_compact_variants(self) -> None:
         self.assertEqual(
@@ -140,7 +164,110 @@ class ModelReplacementStrategyTests(unittest.TestCase):
             plugin.context.llm_generate.assert_awaited_once()
             self.assertEqual("safe-provider", plugin.context.llm_generate.await_args.kwargs["chat_provider_id"])
 
-        import asyncio
+        asyncio.run(run())
+
+    def test_relationship_stage_route_pairs_provider_and_model_before_request(self) -> None:
+        async def run() -> None:
+            plugin = PrivateCompanionPlugin.__new__(PrivateCompanionPlugin)
+            plugin.enabled = True
+            plugin.model_replacement_scope = "plugin"
+            plugin.enable_relationship_stage_provider_routing = True
+            plugin.relationship_stage_provider_routes = {
+                "close": "test-lab-real-gemini",
+                "intimate": "test-lab-missing-provider-fixture",
+            }
+            plugin.relationship_stage_policy = None
+            plugin.data = {
+                "users": {
+                    "actor-a": {
+                        "relationship_score": 650,
+                        "relationship_mode": "normal",
+                    }
+                }
+            }
+            plugin._safe_event_is_private = lambda _event: True
+            plugin._safe_event_sender_id = lambda event: event.get_sender_id()
+            plugin._private_user_id_for_event = lambda event: event.get_sender_id()
+            plugin._lab_fixture_relationship_view = lambda _event, user: dict(user)
+            plugin.context = SimpleNamespace(
+                get_provider_by_id=lambda provider_id: (
+                    SimpleNamespace(get_model=lambda: "gemini-3.5-flash-low")
+                    if provider_id == "test-lab-real-gemini"
+                    else None
+                )
+            )
+
+            class Event:
+                unified_msg_origin = "test-lab:FriendMessage:actor-a"
+
+                def __init__(self) -> None:
+                    self.extras = {"selected_provider": "test-lab-real-deepseek"}
+
+                @staticmethod
+                def get_sender_id() -> str:
+                    return "actor-a"
+
+                def get_extra(self, key, default=None):
+                    return self.extras.get(key, default)
+
+                def set_extra(self, key, value) -> None:
+                    self.extras[key] = value
+
+            event = Event()
+            await plugin.route_model_replacement_before_agent(event)
+
+            self.assertEqual(
+                "test-lab-real-gemini",
+                event.extras["selected_provider"],
+            )
+            self.assertEqual(
+                "gemini-3.5-flash-low",
+                event.extras["selected_model"],
+            )
+            self.assertEqual(
+                {
+                    "stage_key": "close",
+                    "provider_id": "test-lab-real-gemini",
+                },
+                event.extras[
+                    "private_companion_relationship_stage_provider_route"
+                ],
+            )
+
+            request = SimpleNamespace(
+                provider_id="test-lab-real-deepseek",
+                model="deepseek-v4-flash",
+            )
+            await plugin.enforce_model_replacement_request(event, request)
+
+            self.assertEqual("test-lab-real-gemini", request.provider_id)
+            self.assertEqual("gemini-3.5-flash-low", request.model)
+
+            plugin.data["users"]["actor-a"]["relationship_score"] = 950
+            fallback_event = Event()
+            plugin._prepare_model_replacement_sources = AsyncMock(return_value=[])
+            plugin._model_replacement_rules_for_event = lambda: []
+            plugin._default_chat_provider_id = (
+                lambda _umo: "test-lab-real-deepseek"
+            )
+            await plugin.route_model_replacement_before_agent(fallback_event)
+            fallback_request = SimpleNamespace(
+                provider_id="test-lab-real-deepseek",
+                model="deepseek-v4-flash",
+            )
+            await plugin.enforce_model_replacement_request(
+                fallback_event,
+                fallback_request,
+            )
+
+            self.assertEqual(
+                "test-lab-real-deepseek", fallback_request.provider_id
+            )
+            self.assertEqual("deepseek-v4-flash", fallback_request.model)
+            self.assertNotIn(
+                "private_companion_relationship_stage_provider_route",
+                fallback_event.extras,
+            )
 
         asyncio.run(run())
 

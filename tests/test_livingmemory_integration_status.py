@@ -71,6 +71,8 @@ class LivingMemoryIntegrationStatusTests(unittest.TestCase):
         guidance = harness._format_livingmemory_guidance()
         self.assertIn("recall_long_term_memory", guidance)
         self.assertIn("当前工具列表确实提供该工具", guidance)
+        self.assertIn("群聊玩笑边界", guidance)
+        self.assertIn("不进入核心人物画像", guidance)
 
     def test_inactive_or_foreign_tool_is_not_available(self) -> None:
         inactive = SimpleNamespace(

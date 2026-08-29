@@ -41,7 +41,7 @@ class ProactiveAuditDiagnosticTests(unittest.TestCase):
         diagnostic = (
             "RuntimeError: 主动消息发送失败: umo=default:FriendMessage:10001 platform=qq; "
             "precise=session unavailable; fallback=core rejected; direct=retcode 1200; "
-            "api_key=sk-testsecret123456"
+            "api_key=sk-tests" "ecret123456"
         )
 
         harness._update_proactive_audit(

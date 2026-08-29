@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from companion_interaction_expression import (  # noqa: E402
+    CONTENT_TIERS,
     EXPRESSION_CONTRACT_VERSION,
     build_expression_decision,
     content_intent_from_text,
@@ -130,24 +131,17 @@ def test_0824_rest_gate_returns_not_sleeping_for_natural_wake_schedule() -> None
     assert reason == "not_sleeping"
 
 
-def _content_payload(**overrides: Any) -> dict[str, Any]:
+def _flirt_payload(**overrides: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "relationship_role": "owner",
-        "relationship_mode": "owner_exclusive",
-        "relationship_stage": "owner_exclusive",
-        "current_interaction": "affectionate",
-        "message_intent": {"requested_content_tier": "adult", "turn_consent": True},
+        "relationship_role": "friend",
+        "relationship_mode": "normal",
+        "relationship_stage": "intimate",
+        "current_interaction": "warm",
+        "message_intent": {"requested_content_tier": "flirt"},
         "content_policy": {
             "enabled": True,
             "flirt_enabled": True,
-            "adult_enabled": True,
-            "adult_owner_confirmed": True,
-            "require_turn_consent": True,
-            "require_exclusive": True,
-            "require_affectionate": True,
             "private_chat": True,
-            "local_provider_configured": True,
-            "local_provider_match": True,
         },
     }
     for key, value in overrides.items():
@@ -160,99 +154,79 @@ def _content_payload(**overrides: Any) -> dict[str, Any]:
 
 def test_content_tier_matrix_and_intent_are_deterministic() -> None:
     assert EXPRESSION_CONTRACT_VERSION == "companion_interaction_expression.v2"
+    assert CONTENT_TIERS == ("normal", "flirt")
     assert content_intent_from_text("我同意，开启成人模式并继续") == {
-        "requested_content_tier": "adult",
-        "turn_consent": True,
+        "requested_content_tier": "normal",
+        "turn_consent": False,
+    }
+    assert content_intent_from_text("请继续写露骨性描写") == {
+        "requested_content_tier": "flirt",
+        "turn_consent": False,
     }
     assert content_intent_from_text("请说得暧昧一点")["requested_content_tier"] == "flirt"
     assert build_expression_decision({}).content_tier == "normal"
 
-    flirt = build_expression_decision(
-        {
-            "relationship_role": "friend",
-            "relationship_stage": "intimate",
-            "current_interaction": "warm",
-            "message_intent": {"requested_content_tier": "flirt"},
-            "content_policy": {"enabled": True, "flirt_enabled": True, "private_chat": True},
-        }
-    )
+    flirt = build_expression_decision(_flirt_payload())
     assert flirt.content_tier == "flirt"
     assert flirt.content_provider_policy == "current_provider"
 
-    adult = build_expression_decision(_content_payload())
-    assert adult.content_tier == "adult"
-    assert adult.content_provider_policy == "configured_local_only"
-
-
-def test_adult_tier_fails_closed_when_any_required_condition_is_missing() -> None:
-    cases = {
-        "total switch": {"policy_enabled": False},
-        "adult switch": {"policy_adult_enabled": False},
-        "owner": {"relationship_role": "friend"},
-        "exclusive": {"relationship_mode": "normal"},
-        "affectionate": {"current_interaction": "warm"},
-        "private": {"policy_private_chat": False},
-        "age": {"policy_adult_owner_confirmed": False},
-        "consent": {"message_intent": {"requested_content_tier": "adult", "turn_consent": False}},
-        "provider configured": {"policy_local_provider_configured": False},
-        "provider match": {"policy_local_provider_match": False},
-    }
-    for label, override in cases.items():
-        decision = build_expression_decision(_content_payload(**override))
-        assert decision.content_tier != "adult", label
-        expected_policy = "unmanaged" if label == "total switch" else "current_provider"
-        assert decision.content_provider_policy == expected_policy, label
-
-
-def test_adult_tier_only_relaxes_relationship_expression_gates() -> None:
-    relaxed = {
-        "affectionate": build_expression_decision(
-            _content_payload(current_interaction="warm", policy_require_affectionate=False)
-        ),
-        "exclusive": build_expression_decision(
-            _content_payload(relationship_mode="normal", policy_require_exclusive=False)
-        ),
-    }
-    for label, decision in relaxed.items():
-        assert decision.content_tier == "adult", label
-        assert decision.content_provider_policy == "configured_local_only", label
-
-    # The global age confirmation only certifies the configured primary user,
-    # and a group request cannot establish consent for every audience member.
-    owner_boundary = build_expression_decision(
-        _content_payload(
-            relationship_role="friend",
-            policy_require_owner=False,
-            policy_require_exclusive=False,
-            policy_require_affectionate=False,
+    retired = build_expression_decision(
+        _flirt_payload(
+            message_intent={"requested_content_tier": "adult", "turn_consent": True},
+            policy_adult_enabled=True,
+            policy_local_provider_configured=True,
+            policy_local_provider_match=True,
         )
     )
-    private_boundary = build_expression_decision(
-        _content_payload(policy_private_chat=False, policy_require_private_chat=False)
+    assert retired.content_tier == "normal"
+    assert retired.content_provider_policy == "current_provider"
+
+
+def test_flirt_tier_fails_closed_when_any_required_condition_is_missing() -> None:
+    cases = {
+        "total switch": ({"policy_enabled": False}, None, "unmanaged"),
+        "flirt switch": ({"policy_flirt_enabled": False}, "flirt_disabled", "current_provider"),
+        "relationship stage": ({"relationship_stage": "familiar"}, "flirt_intimate_stage_required", "current_provider"),
+        "private chat": ({"policy_private_chat": False}, "flirt_private_required", "current_provider"),
+        "interaction": ({"current_interaction": "avoidant"}, "flirt_interaction_boundary", "current_provider"),
+    }
+    for label, (override, reason, provider_policy) in cases.items():
+        decision = build_expression_decision(_flirt_payload(**override))
+        assert decision.content_tier == "normal", label
+        assert decision.content_provider_policy == provider_policy, label
+        if reason:
+            assert reason in decision.reason_codes, label
+
+
+def test_response_review_rejects_retired_or_unknown_content_tiers() -> None:
+    resolver = _class_method(
+        "user_memory.py",
+        "UserMemoryMixin",
+        "_response_content_tier",
+        {"Any": Any},
     )
-    assert owner_boundary.content_tier != "adult"
-    assert "adult_owner_required" in owner_boundary.reason_codes
-    assert private_boundary.content_tier != "adult"
-    assert "adult_private_required" in private_boundary.reason_codes
-    avoidant_boundary = build_expression_decision(
-        _content_payload(current_interaction="avoidant", policy_require_affectionate=False)
-    )
-    assert avoidant_boundary.content_tier != "adult"
-    assert "adult_interaction_boundary" in avoidant_boundary.reason_codes
+    assert resolver(SimpleNamespace(
+        _private_companion_expression_decision={"content_tier": "flirt"}
+    )) == "flirt"
+    for retired in ("adult", "configured_local_only", "unknown"):
+        event = SimpleNamespace(
+            _private_companion_expression_decision={"content_tier": retired}
+        )
+        assert resolver(event) == "normal"
 
 
 def test_group_proactive_and_unconfigured_paths_remain_normal() -> None:
-    group = build_expression_decision(_content_payload(policy_private_chat=False))
+    group = build_expression_decision(_flirt_payload(policy_private_chat=False))
     proactive = build_expression_decision(
         {
             "relationship_role": "owner",
             "relationship_mode": "owner_exclusive",
             "current_interaction": "affectionate",
-            "message_intent": {"requested_content_tier": "adult", "turn_consent": True},
+            "message_intent": {"requested_content_tier": "flirt"},
             "proactive_candidate": {"eligible": True, "daily_allowance": 3},
         }
     )
-    assert group.content_tier != "adult"
+    assert group.content_tier == "normal"
     assert proactive.content_tier == "normal"
 
 
@@ -327,13 +301,13 @@ def test_strict_llm_provider_skips_peak_replacement_and_fallback() -> None:
     result = asyncio.run(
         host._llm_call(
             "review",
-            provider_id="local-adult",
+            provider_id="pinned-review",
             task="response_review",
             strict_provider=True,
         )
     )
     assert result == "ok"
-    assert host.called_provider == "local-adult"
+    assert host.called_provider == "pinned-review"
     assert host.peak_calls == 0
     assert host.fallback_calls == 0
 
@@ -342,16 +316,19 @@ def test_schema_and_settings_page_expose_fail_closed_content_controls() -> None:
     schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8-sig"))
     items = schema["basic_config"]["items"]
     assert items["enable_relationship_content_tiers"]["default"] is False
-    assert items["enable_adult_content_tier"]["default"] is False
-    assert items["adult_content_owner_confirmed"]["default"] is False
-    assert items["adult_content_require_turn_consent"]["default"] is True
-    assert items["adult_content_require_exclusive"]["default"] is True
-    assert items["adult_content_require_affectionate"]["default"] is True
-    assert items["ADULT_CONTENT_PROVIDER_ID"]["_special"] == "select_provider"
+    assert items["enable_flirt_content_tier"]["default"] is True
 
     source = (ROOT / "pages" / "陪伴面板" / "app.js").read_text(encoding="utf-8")
     assert 'enable_relationship_content_tiers: ["关系内容尺度"' in source
     assert 'data-feature-open="${escapeHtml(key)}"' in source
-    assert 'key === "ADULT_CONTENT_PROVIDER_ID" ? "未配置（成人档不可用）"' in source
-    assert "当前会话必须已经使用此 Provider 才能进入成人档" in source
-    assert "插件二次复核固定使用它" in source
+    assert "当轮明确请求 + 私聊 + 长期亲密及以上 + 当前互动非回避/受伤" in source
+    for retired_key in (
+        "enable_adult_content_tier",
+        "adult_content_owner_confirmed",
+        "adult_content_require_turn_consent",
+        "adult_content_require_exclusive",
+        "adult_content_require_affectionate",
+        "ADULT_CONTENT_PROVIDER_ID",
+    ):
+        assert retired_key not in items
+        assert retired_key not in source

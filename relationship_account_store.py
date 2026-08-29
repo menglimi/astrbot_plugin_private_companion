@@ -47,6 +47,7 @@ EVENT_ACTORS = frozenset({"private_pipeline", "group_pipeline", "administrator",
 PRIVATE_EVENT_REASONS = frozenset({
     "boundary_violation",
     "care_feedback",
+    "food_feedback",
     "friendly_exchange",
     "helpful_reply",
     "inbound",

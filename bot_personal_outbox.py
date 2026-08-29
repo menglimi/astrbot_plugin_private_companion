@@ -304,13 +304,17 @@ class BotPersonalOutbox:
                 existing.update({
                     "envelope": deepcopy(envelope),
                     "payload_fingerprint": envelope_fingerprint,
+                    "record_id": dto.record_id,
                     "version": dto.version,
                     "state": "pending",
                     "attempts": 0,
                     "next_attempt_at": current,
                     "last_error": "",
                     "updated_at": _now_iso(),
+                    "sent_at": "",
                     "dead_letter_at": "",
+                    "remote_record_id": "",
+                    "remote_version": 0,
                 })
                 entry = existing
             else:
@@ -372,6 +376,9 @@ class BotPersonalOutbox:
                 entry["updated_at"] = _now_iso()
                 envelope = deepcopy(entry.get("envelope") or {})
                 attempt = int(entry["attempts"])
+                sent_record_id = str(entry.get("record_id") or "")
+                sent_version = int(entry.get("version") or 0)
+                sent_fingerprint = str(entry.get("payload_fingerprint") or "")
                 self._persist()
             try:
                 response = self._normalise_sender_result(await sender(envelope))
@@ -386,6 +393,26 @@ class BotPersonalOutbox:
                     persona_id=envelope.get("persona_id", ""),
                 )
                 if current_entry is None:
+                    continue
+                if (
+                    str(current_entry.get("record_id") or "") != sent_record_id
+                    or int(current_entry.get("version") or 0) != sent_version
+                    or str(current_entry.get("payload_fingerprint") or "")
+                    != sent_fingerprint
+                ):
+                    # A newer revision replaced this logical outbox entry while
+                    # the old request was in flight. Its response must not
+                    # mutate the newer pending delivery.
+                    results.append({
+                        "ok": False,
+                        "state": "superseded",
+                        "idempotency_key": current_entry.get("idempotency_key", ""),
+                        "record_id": current_entry.get("record_id", ""),
+                        "deduplicated": False,
+                        "version": int(current_entry.get("version") or 0),
+                        "error_code": "superseded_in_flight_revision",
+                        "attempts": attempt,
+                    })
                     continue
                 current_entry["updated_at"] = _now_iso()
                 current_entry["last_error"] = str(response.get("error_code") or "")[:120]

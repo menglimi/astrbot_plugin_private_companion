@@ -122,7 +122,7 @@ class _ScopedRealityHost(RealityCompanionBridgeMixin):
     def _get_user(self, user_id: str) -> dict:
         return self.data["users"][user_id]
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         self.saved += 1
 
 

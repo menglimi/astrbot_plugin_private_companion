@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 import json
 import os
 import re
@@ -174,11 +175,61 @@ def migrate_flat_config_into_schema_groups(
     save: bool = True,
 ) -> int:
     """Copy legacy flat config values into the new AstrBot schema groups."""
+    root = _config_root_mapping(config)
+    if not isinstance(root, dict):
+        return 0
     try:
-        return _migrate_flat_config_into_schema_groups(config, schema_path=schema_path, logger=logger, save=save)
+        # ``AstrBotConfig`` is a dict subclass with runtime locks.  Snapshot
+        # only its JSON-like mapping payload, never the container internals.
+        before = deepcopy(dict(root))
     except Exception as exc:
         if logger is not None:
-            logger.warning("[PrivateCompanion] 配置分组迁移失败，已跳过且不影响插件加载: %s", _single_line(exc, 160))
+            logger.warning(
+                "[PrivateCompanion] 配置分组迁移无法建立回滚快照，已安全跳过: %s",
+                _single_line(exc, 160),
+            )
+        return 0
+
+    def restore() -> None:
+        root.clear()
+        root.update(deepcopy(before))
+
+    try:
+        changed = _migrate_flat_config_into_schema_groups(
+            config,
+            schema_path=schema_path,
+            logger=logger,
+            save=False,
+        )
+        if changed <= 0 or not save:
+            return changed
+        migrated = deepcopy(dict(root))
+
+        def restore_if_unchanged() -> None:
+            # An async saver may fail after a later administrator edit.  Never
+            # erase that newer edit; rollback only the exact migration image.
+            if root == migrated:
+                restore()
+            elif logger is not None:
+                logger.error(
+                    "[PrivateCompanion] 配置迁移异步保存失败，但配置已被后续修改，未覆盖新值"
+                )
+
+        if not _save_config_after_schema_migration(
+            config,
+            logger=logger,
+            on_async_failure=restore_if_unchanged,
+        ):
+            restore()
+            return 0
+        return changed
+    except Exception as exc:
+        restore()
+        if logger is not None:
+            logger.warning(
+                "[PrivateCompanion] 配置分组迁移失败，已回滚且不影响插件加载: %s",
+                _single_line(exc, 160),
+            )
         return 0
 
 
@@ -348,8 +399,8 @@ def _migrate_flat_config_into_schema_groups(
         return 0
     if logger is not None:
         logger.info("[PrivateCompanion] 已将旧版扁平配置迁移到新版分组配置: %s 项", len(changed))
-    if save:
-        _save_config_after_schema_migration(config, logger=logger)
+    if save and not _save_config_after_schema_migration(config, logger=logger):
+        raise RuntimeError("config_schema_migration_save_failed")
     return len(changed)
 
 
@@ -1192,7 +1243,12 @@ def _coerce_bool(value: Any) -> bool:
     return bool(value)
 
 
-def _save_config_after_schema_migration(config: Any, *, logger: Any | None = None) -> None:
+def _save_config_after_schema_migration(
+    config: Any,
+    *,
+    logger: Any | None = None,
+    on_async_failure: Any | None = None,
+) -> bool:
     def schedule(result: Any) -> bool:
         if not (asyncio.iscoroutine(result) or hasattr(result, "__await__")):
             return False
@@ -1204,7 +1260,7 @@ def _save_config_after_schema_migration(config: Any, *, logger: Any | None = Non
                 close()
             if logger is not None:
                 logger.debug("[PrivateCompanion] config migration async save skipped: no event loop")
-            return True
+            return False
         tasks = getattr(config, "_private_companion_config_save_tasks", None)
         if not isinstance(tasks, set):
             tasks = set()
@@ -1220,10 +1276,27 @@ def _save_config_after_schema_migration(config: Any, *, logger: Any | None = Non
             try:
                 done_task.result()
             except asyncio.CancelledError:
-                pass
+                if callable(on_async_failure):
+                    try:
+                        on_async_failure()
+                    except Exception as rollback_exc:
+                        if logger is not None:
+                            logger.error(
+                                "[PrivateCompanion] config migration async rollback failed: %s",
+                                _single_line(rollback_exc, 160),
+                            )
             except Exception as exc:
                 if logger is not None:
                     logger.warning("[PrivateCompanion] config migration async save failed: %s", _single_line(exc, 160))
+                if callable(on_async_failure):
+                    try:
+                        on_async_failure()
+                    except Exception as rollback_exc:
+                        if logger is not None:
+                            logger.error(
+                                "[PrivateCompanion] config migration async rollback failed: %s",
+                                _single_line(rollback_exc, 160),
+                            )
             finally:
                 if isinstance(tasks, set):
                     tasks.discard(done_task)
@@ -1239,15 +1312,8 @@ def _save_config_after_schema_migration(config: Any, *, logger: Any | None = Non
             _ensure_config_parent_dir(config, logger=logger)
             result = save()
             if asyncio.iscoroutine(result) or hasattr(result, "__await__"):
-                try:
-                    schedule(result)
-                except RuntimeError:
-                    close = getattr(result, "close", None)
-                    if callable(close):
-                        close()
-                    if logger is not None:
-                        logger.debug("[PrivateCompanion] 配置分组迁移已写入运行态，当前无事件循环可异步保存")
-            return
+                return schedule(result)
+            return result is not False
         except TypeError:
             continue
         except FileNotFoundError as exc:
@@ -1255,24 +1321,20 @@ def _save_config_after_schema_migration(config: Any, *, logger: Any | None = Non
                 try:
                     result = save()
                     if asyncio.iscoroutine(result) or hasattr(result, "__await__"):
-                        try:
-                            schedule(result)
-                        except RuntimeError:
-                            close = getattr(result, "close", None)
-                            if callable(close):
-                                close()
-                    return
+                        return schedule(result)
+                    return result is not False
                 except Exception as retry_exc:
                     if logger is not None:
                         logger.warning("[PrivateCompanion] 重试保存配置分组迁移结果失败: %s", _single_line(retry_exc, 160))
-                    return
+                    return False
             if logger is not None:
                 logger.warning("[PrivateCompanion] 保存配置分组迁移结果失败: %s", _single_line(exc, 160))
-            return
+            return False
         except Exception as exc:
             if logger is not None:
                 logger.warning("[PrivateCompanion] 保存配置分组迁移结果失败: %s", _single_line(exc, 160))
-            return
+            return False
+    return False
 
 
 def _ensure_config_parent_dir(

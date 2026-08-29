@@ -141,7 +141,7 @@ class _ScopedToolHarness(_PhotoToolHarness, CommandHandlersMixin):
     def _photo_generation_failure_counts_as_attempt(note: str) -> bool:
         return "HTTP" in str(note or "")
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         self.save_calls += 1
 
     def _photo_tool_call_timeout_seconds(self) -> float:

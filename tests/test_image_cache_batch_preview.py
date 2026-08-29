@@ -18,7 +18,7 @@ class ImageCachePluginStub:
         self._data_lock = asyncio.Lock()
         self.save_count = 0
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         self.save_count += 1
 
 

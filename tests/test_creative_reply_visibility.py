@@ -70,7 +70,7 @@ class CreativeReplyVisibilityTests(unittest.TestCase):
 
     def test_creative_question_exits_lightweight_path(self):
         self.assertFalse(self.harness._is_lightweight_private_passive_inbound("你写过书吗"))
-        self.assertFalse(self.harness._is_lightweight_private_passive_inbound("现在能看到书柜吗"))
+        self.assertFalse(self.harness._is_lightweight_private_passive_inbound("现在能看到资料柜吗"))
         self.assertTrue(self.harness._is_lightweight_private_passive_inbound("嗯嗯"))
 
     def test_creative_context_reports_inventory_and_publication_boundary(self):
@@ -83,18 +83,18 @@ class CreativeReplyVisibilityTests(unittest.TestCase):
         self.assertIn("楼梯尽头", context)
 
     def test_bookshelf_inventory_question_injects_real_titles(self):
-        context = self.harness._format_hidden_creative_context_for_reply("现在能看到书柜吗", {})
+        context = self.harness._format_hidden_creative_context_for_reply("现在能看到资料柜吗", {})
 
         self.assertIn("共有 3 个已有正文的文本作品", context)
-        self.assertIn("用户正在询问能否看到书柜", context)
+        self.assertIn("用户正在询问能否看到资料柜", context)
         self.assertIn("禁止用括号动作或假装翻找", context)
 
     def test_empty_bookshelf_inventory_is_explicit(self):
         self.harness.data["creative_projects"] = []
 
-        context = self.harness._format_hidden_creative_context_for_reply("书柜里有什么", {})
+        context = self.harness._format_hidden_creative_context_for_reply("资料柜里有什么", {})
 
-        self.assertIn("当前书柜创作区确实没有保存过正文的作品", context)
+        self.assertIn("当前资料柜创作区确实没有保存过正文的作品", context)
         self.assertIn("不要假装翻找", context)
 
     def test_structured_inventory_context_owns_its_branch_title(self):

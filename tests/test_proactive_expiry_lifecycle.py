@@ -18,6 +18,7 @@ TZ = ZoneInfo("Asia/Shanghai")
 class _LifecycleHarness(ProactiveMixin, ProactiveEngineMixin):
     def __init__(self) -> None:
         self.quiet_hours = ""
+        self.environment_perception_timezone = "Asia/Shanghai"
         self.data = {"users": {}, "proactive_candidate_pool": []}
 
     @staticmethod
@@ -231,6 +232,56 @@ class ProactiveExpiryLifecycleTests(unittest.TestCase):
         self.assertIsNone(prepared)
         self.assertEqual(note, "来源事件时间窗口无效")
         self.assertEqual(event["lifecycle_status"], "skipped")
+
+    def test_candidate_from_previous_timezone_is_terminally_skipped(self) -> None:
+        harness = _LifecycleHarness()
+        harness.environment_perception_timezone = "Asia/Tokyo"
+        now = datetime(2026, 7, 18, 12, 0, tzinfo=TZ).timestamp()
+        event = {
+            "reason": "check_in",
+            "source": "story",
+            "window_timezone": "Asia/Shanghai",
+            "window_start_at": now,
+            "preferred_ts": now + 60,
+            "best_until_at": now + 600,
+            "expire_at": now + 1200,
+        }
+
+        prepared, note = harness._prepare_proactive_candidate_window(
+            event,
+            reason="check_in",
+            source="story",
+            now=now,
+        )
+
+        self.assertIsNone(prepared)
+        self.assertEqual(note, "来源事件生成时区已变化")
+        self.assertEqual(event["lifecycle_status"], "skipped")
+
+    def test_explicit_timer_is_exempt_from_timezone_invalidation(self) -> None:
+        harness = _LifecycleHarness()
+        harness.environment_perception_timezone = "Asia/Tokyo"
+        now = datetime(2026, 7, 18, 12, 0, tzinfo=TZ).timestamp()
+        event = {
+            "reason": "timer",
+            "source": "timer",
+            "window_timezone": "Asia/Shanghai",
+            "window_start_at": now,
+            "preferred_ts": now + 60,
+            "best_until_at": now + 600,
+            "expire_at": now + 1200,
+        }
+
+        prepared, note = harness._prepare_proactive_candidate_window(
+            event,
+            reason="timer",
+            source="timer",
+            now=now,
+        )
+
+        self.assertEqual(note, "")
+        self.assertIsNotNone(prepared)
+        self.assertEqual(prepared["window_timezone"], "Asia/Shanghai")
 
     def test_stable_origin_id_prevents_terminal_source_from_requeueing(self) -> None:
         harness = _LifecycleHarness()

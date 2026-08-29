@@ -1,12 +1,25 @@
 from __future__ import annotations
 
 import json
+import re
 from copy import deepcopy
 from typing import Any
 
 
 RELATIONSHIP_SCORE_MIN = -1200
 RELATIONSHIP_SCORE_MAX = 1200
+RELATIONSHIP_STAGE_PROVIDER_ROUTE_KEYS = (
+    "deeply_distant",
+    "strongly_distant",
+    "distant",
+    "acquaintance",
+    "familiar",
+    "close",
+    "intimate",
+    "deeply_bonded",
+    "owner_exclusive",
+)
+_PROVIDER_ROUTE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 _DEFAULT_STAGES: tuple[dict[str, Any], ...] = (
     {
@@ -185,6 +198,49 @@ def normalize_relationship_stage_policy(value: Any) -> list[dict[str, Any]]:
                 stage[field] = item[field]
         normalized.append(stage)
     return normalized
+
+
+def normalize_relationship_stage_provider_routes(value: Any) -> dict[str, str]:
+    """Return the bounded stage-to-Provider mapping used by conversation routing."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value or "{}")
+        except (TypeError, ValueError):
+            value = {}
+    if not isinstance(value, dict):
+        return {}
+    routes: dict[str, str] = {}
+    for stage in RELATIONSHIP_STAGE_PROVIDER_ROUTE_KEYS:
+        provider_id = value.get(stage)
+        if not isinstance(provider_id, str):
+            continue
+        provider_id = provider_id.strip()
+        if _PROVIDER_ROUTE_ID.fullmatch(provider_id):
+            routes[stage] = provider_id
+    return routes
+
+
+def relationship_stage_provider_id(
+    routes: Any,
+    score: Any,
+    policy: Any = None,
+    *,
+    previous_stage_key: Any = "",
+    owner_exclusive: bool = False,
+) -> tuple[str, str]:
+    """Resolve one configured Provider ID without deciding whether it exists."""
+    stage_key = "owner_exclusive" if owner_exclusive else str(
+        relationship_stage_for_score(
+            score,
+            policy,
+            previous_stage_key=previous_stage_key,
+        )
+        .get("phase", {})
+        .get("key", "acquaintance")
+    )
+    return stage_key, normalize_relationship_stage_provider_routes(routes).get(
+        stage_key, ""
+    )
 
 
 def relationship_stage_for_score(

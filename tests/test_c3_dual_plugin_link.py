@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -11,6 +12,10 @@ from types import SimpleNamespace
 
 COMPANION_ROOT = Path(__file__).resolve().parents[1]
 _MEMORY_ROOT_CANDIDATES = (
+    Path(os.environ["ASTRBOT_MEMORY_PLUGIN_ROOT"])
+    if os.environ.get("ASTRBOT_MEMORY_PLUGIN_ROOT")
+    else COMPANION_ROOT / ".missing-memory-root",
+    COMPANION_ROOT.parent / "memory",
     COMPANION_ROOT.parents[1] / "astrbot_plugin_memory_companion-main",
     COMPANION_ROOT.parent / "astrbot_plugin_remember_you",
 )
@@ -92,19 +97,56 @@ def test_chat_outbox_delivers_structured_archive_to_memory_bridge_without_domain
                     envelope, producer_capability=capability,
                 ),
             )
+            revised_payload = {
+                **payload,
+                "summary": "C3 dual plugin archive revised",
+                "items": ["local revised", "bridge revised"],
+            }
+            revised = await outbox.enqueue(
+                memory_type="bot_schedule_plan",
+                payload=revised_payload,
+                idempotency_key="daily_plan:2026-07-30",
+                occurred_at="2026-07-30T19:30:00+08:00",
+                owner_bot_id="bot-1",
+                persona_id="persona-main",
+                canonical_schema_version=3,
+                version=2,
+                sender=lambda envelope: bridge.record_bot_personal_archive(
+                    envelope, producer_capability=capability,
+                ),
+            )
+            stored = await service.store.get_memory(revised["record_id"])
             profile = await service.read_bot_personal_profile(
                 limit=10,
                 owner_bot_id="bot-1",
                 persona_id="persona-main",
             )
-            return first, duplicate, profile
+            return (
+                first,
+                duplicate,
+                revised,
+                revised_payload,
+                outbox.entries[0],
+                stored,
+                profile,
+            )
 
         try:
-            first, duplicate, profile = asyncio.run(run())
+            first, duplicate, revised, local, queued, stored, profile = asyncio.run(run())
             assert first["ok"] and first["state"] == "sent", first.get("error_code")
             assert duplicate["deduplicated"] is True
+            assert revised["ok"] and revised["state"] == "sent", revised.get("error_code")
+            assert revised["record_id"] == first["record_id"]
+            assert queued["state"] == "sent"
+            assert queued["version"] == queued["envelope"]["version"] == 2
+            assert queued["envelope"]["payload"]["summary"] == local["summary"]
+            assert stored is not None
+            assert stored.metadata["version"] == 2
+            assert stored.metadata["payload"]["summary"] == local["summary"]
             assert profile["read_only"] is True
             assert len(profile["items"]) == 1
+            assert profile["items"][0]["record_id"] == revised["record_id"]
+            assert profile["items"][0]["version"] == 2
             assert all("payload" not in item and "content" not in item for item in profile["items"])
         finally:
             service.store.close()

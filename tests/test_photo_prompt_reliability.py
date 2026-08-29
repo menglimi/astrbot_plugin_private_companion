@@ -6,23 +6,40 @@ import json
 import tempfile
 import unittest
 from copy import deepcopy
+from importlib.util import find_spec
 from pathlib import Path
 from unittest.mock import AsyncMock
 
 from astrbot_plugin_private_companion.command_handlers import CommandHandlersMixin
-from astrbot_plugin_private_companion.proactive_message import (
-    PhotoGenerationResult,
-    PhotoWardrobeDecision,
-    ProactiveMessageMixin,
-)
-from astrbot_plugin_private_companion.photo_prompt_context import (
-    PhotoPromptSection,
-    resolve_photo_prompt_context,
-)
-from astrbot_plugin_private_companion.photo_wardrobe_decision import (
-    analyze_photo_wardrobe,
-    resolve_photo_wardrobe_decision,
-)
+
+if find_spec("astrbot_plugin_image_companion") is not None:
+    from astrbot_plugin_image_companion.image_runtime import (
+        PhotoGenerationResult,
+        PhotoWardrobeDecision,
+        ProactiveMessageMixin,
+    )
+    from astrbot_plugin_image_companion.photo_prompt_context import (
+        PhotoPromptSection,
+        resolve_photo_prompt_context,
+    )
+    from astrbot_plugin_image_companion.photo_wardrobe_decision import (
+        analyze_photo_wardrobe,
+        resolve_photo_wardrobe_decision,
+    )
+else:
+    from astrbot_plugin_private_companion.proactive_message import (
+        PhotoGenerationResult,
+        PhotoWardrobeDecision,
+        ProactiveMessageMixin,
+    )
+    from astrbot_plugin_private_companion.photo_prompt_context import (
+        PhotoPromptSection,
+        resolve_photo_prompt_context,
+    )
+    from astrbot_plugin_private_companion.photo_wardrobe_decision import (
+        analyze_photo_wardrobe,
+        resolve_photo_wardrobe_decision,
+    )
 
 
 class _PhotoReliabilityHarness(CommandHandlersMixin, ProactiveMessageMixin):
@@ -41,7 +58,7 @@ class _PhotoReliabilityHarness(CommandHandlersMixin, ProactiveMessageMixin):
         self.generated_path.write_bytes(b"generated image")
         self.external_calls: list[dict] = []
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         return None
 
     def _photo_generation_selfie_schedule_scene_hint(self) -> str:
@@ -280,7 +297,7 @@ class PhotoPromptReliabilityTests(unittest.IsolatedAsyncioTestCase):
                     },
                 ],
             )
-            harness._llm_call = AsyncMock(return_value="3")
+            harness._llm_call = AsyncMock(return_value="1")
             source_prompt = (
                 "Positive prompt: at a dorm desk after evening skincare, calm portrait. "
                 "Negative prompt: text, watermark, cropped head."
@@ -528,8 +545,19 @@ class PhotoPromptReliabilityTests(unittest.IsolatedAsyncioTestCase):
                 continuity_section="continuity detail " * 90,
             )
 
+            unbudgeted_length = sum(
+                len(value)
+                for value in (
+                    base_prompt,
+                    wardrobe.positive_instruction,
+                    wardrobe.negative_instruction,
+                    "宴会厅灯光和环境细节 " * 90,
+                    "Scene preset: formalwear portrait; " + "formal style detail " * 80,
+                    "continuity detail " * 90,
+                )
+            )
             self.assertGreater(len(final_prompt), 1800)
-            self.assertLessEqual(len(final_prompt), 6000)
+            self.assertLess(len(final_prompt), unbudgeted_length)
             self.assertIn("USER_TAIL_SENTINEL", final_prompt)
             self.assertIn("WARDROBE_LOCK_SENTINEL", final_prompt)
             self.assertIn("Negative prompt:", final_prompt)
@@ -872,10 +900,13 @@ class PhotoPromptReliabilityTests(unittest.IsolatedAsyncioTestCase):
             reference = {
                 "id": "library_sleepwear",
                 "path": str(reference_path),
+                "source": str(reference_path),
                 "kind": "library",
+                "note": "奶油色睡衣，卧室、睡前和居家休息时使用",
                 "reference_roles": ["identity", "outfit"],
                 "outfit_category": "sleepwear",
                 "outfit_lock_default": True,
+                "scene_categories": ["home", "bedroom"],
                 "preferred_preset": "居家睡衣",
             }
             for label in ("今日穿搭", "当天穿搭", "日常穿搭", "today's outfit", "daily outfit"):
@@ -885,17 +916,30 @@ class PhotoPromptReliabilityTests(unittest.IsolatedAsyncioTestCase):
                         lambda label=label: f"{label}：white shirt and navy blazer；当前位置：卧室"
                     )
 
-                    await harness._generate_photo_image(
+                    backend, image_path, note = await harness._generate_photo_image(
                         workflow_kind="selfie",
                         prompt_text="坐在床边拍一张自然自拍",
                         session_key=f"alias:{label}",
                     )
 
+                    self.assertEqual(
+                        (backend, image_path, note),
+                        ("在线图片 API", str(harness.generated_path), "backend completed"),
+                    )
+                    record = harness.data["recent_photo_generations"][0]
                     final_prompt = harness.external_calls[0]["prompt_text"]
                     self.assertNotIn("white shirt", final_prompt)
                     self.assertNotIn("navy blazer", final_prompt)
                     self.assertIn("当前位置：卧室", final_prompt)
-                    self.assertIn("daily_outfit_context_removed", harness.data["recent_photo_generations"][0]["removed_conflicts"])
+                    self.assertEqual(
+                        harness.external_calls[0]["reference_image_path"],
+                        str(reference_path),
+                    )
+                    self.assertFalse(record["reference_removed"])
+                    self.assertIn(
+                        "daily_outfit_context_removed",
+                        record["removed_conflicts"],
+                    )
 
     def test_prompt_debug_json_is_utf8_hashed_and_retains_only_latest_forty(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

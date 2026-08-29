@@ -8461,7 +8461,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
     def _response_content_tier(review_event: Any | None) -> str:
         decision = getattr(review_event, "_private_companion_expression_decision", None) if review_event is not None else None
         tier = str(decision.get("content_tier") or "normal").strip().lower() if isinstance(decision, dict) else "normal"
-        return tier if tier in {"normal", "flirt", "adult"} else "normal"
+        return tier if tier in {"normal", "flirt"} else "normal"
 
     @staticmethod
     def _response_contains_content_tier_review_candidate(value: Any) -> bool:
@@ -8660,11 +8660,6 @@ Character-specific bottom-line baseline (reference only; empty means use the con
                 runtime_persona_setting(self, "response_review_provider_id", ""),
                 runtime_persona_setting(self, "mai_style_provider_id", ""),
             )
-            if content_tier == "adult":
-                review_provider_id = _single_line(getattr(self, "adult_content_provider_id", ""), 160)
-                if not review_provider_id:
-                    logger.warning("[PrivateCompanion] 成人内容复核缺少指定 Provider，跳过二次模型调用")
-                    return response_text
             rewritten = await self._llm_call(
                 prompt,
                 max_tokens=260,
@@ -9489,13 +9484,18 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
         content_policy: dict[str, Any] | None = None,
         channel_scope: str = "private",
         now: float | None = None,
+        _authoritative_relationship_view: bool = False,
     ):
         if not bool(runtime_persona_setting(self, "enable_custom_relationship_stage_policy", False)):
             # Keep the caller contract stable without reading or projecting
             # archived affinity data when the master switch is off.
             return build_expression_decision({})
         view_getter = getattr(self, "_req041_relationship_snapshot_view", None)
-        if callable(view_getter) and channel_scope != "group":
+        if (
+            not _authoritative_relationship_view
+            and callable(view_getter)
+            and channel_scope != "group"
+        ):
             user = view_getter(user, source="expression_decision")
         decision_now = _now_ts() if now is None else _safe_float(now, _now_ts(), 0)
         role_getter = getattr(self, "_private_user_role", None)

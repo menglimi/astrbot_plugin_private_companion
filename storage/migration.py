@@ -45,11 +45,11 @@ def migrate_json_to_backend_if_needed(backend: Any, json_backend: Any, default_d
                     payload,
                     action="从 JSON 恢复未完成迁移的数据",
                 )
-            return _initialize_backend_from_payload(
-                backend,
-                default_data,
-                action="初始化空存储",
-            )
+            # An existing SQLite file is installation evidence, even when its
+            # schema is incomplete.  Without a JSON recovery source we cannot
+            # distinguish an interrupted migration from deliberate data loss,
+            # so never replace it with a valid-looking empty store.
+            raise
     if json_backend.exists():
         payload = json_backend.load_store()
         return _initialize_backend_from_payload(

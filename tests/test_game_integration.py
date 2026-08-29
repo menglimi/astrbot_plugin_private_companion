@@ -25,7 +25,7 @@ class GameHarness(GameIntegrationMixin):
     def _get_user(self, user_id: str) -> dict:
         return self.data["users"].setdefault(user_id, {"user_id": user_id})
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         self.saved += 1
 
     async def _resolve_proactive_persona_prompt(self, _user, *, umo="") -> str:
@@ -102,7 +102,7 @@ class ExternalAbilityHarness(ProactiveMessageMixin, ProactiveEngineMixin):
         }
         self.saved = 0
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         self.saved += 1
 
     def _get_current_plan_item(self, _plan) -> None:

@@ -60,7 +60,7 @@ class _CreativeCoverHarness(CreativeMixin):
         self.fail_generation = False
         self.reference_path = ""
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         self.save_count += 1
 
     @staticmethod

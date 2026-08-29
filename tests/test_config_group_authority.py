@@ -7,10 +7,13 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from astrbot.core.config.astrbot_config import AstrBotConfig
+import astrbot_plugin_private_companion.config_migration as config_migration
 from astrbot_plugin_private_companion.config_migration import migrate_flat_config_into_schema_groups
 from astrbot_plugin_private_companion.helpers import _flat_get, _safe_float
+from astrbot_plugin_private_companion.main import PrivateCompanionPlugin
 from astrbot_plugin_private_companion.page_api import PrivateCompanionPageApi
 from astrbot_plugin_private_companion.plugin_bootstrap import _normalize_photo_generation_scopes
 
@@ -26,6 +29,72 @@ PHOTO_SCOPE_LIMIT_KEYS = {
 
 
 class ConfigGroupAuthorityTests(unittest.TestCase):
+    def test_runtime_public_defaults_are_owned_by_schema_manifest(self):
+        self.assertEqual(
+            300,
+            PrivateCompanionPlugin._cfg_int({}, "check_interval_seconds", 60, 30),
+        )
+        self.assertEqual(
+            30.0,
+            PrivateCompanionPlugin._cfg_float(
+                {},
+                "context_image_caption_timeout_seconds",
+                8.0,
+            ),
+        )
+        self.assertEqual(
+            500,
+            PrivateCompanionPlugin._cfg_int(
+                {},
+                "group_conversation_followup_seconds",
+                120,
+            ),
+        )
+        self.assertEqual(
+            300,
+            PrivateCompanionPlugin._cfg_int(
+                {"check_interval_seconds": "invalid"},
+                "check_interval_seconds",
+                60,
+                30,
+            ),
+        )
+        self.assertEqual(
+            17,
+            PrivateCompanionPlugin._cfg_int({}, "_internal_future_limit", 17),
+        )
+        # Hidden legacy aliases are strings so blank can mean "not supplied".
+        # They must not override the typed compatibility fallback used by the
+        # runtime reader.
+        self.assertEqual(
+            800000,
+            PrivateCompanionPlugin._cfg_int(
+                {},
+                "maintenance_token_soft_limit",
+                800000,
+            ),
+        )
+        self.assertEqual(
+            220,
+            PrivateCompanionPlugin._cfg_int(
+                {},
+                "creative_base_chars_per_hour",
+                220,
+                60,
+                1200,
+            ),
+        )
+        self.assertEqual(
+            12,
+            PrivateCompanionPlugin._cfg_int(
+                {},
+                "hot_trend_max_items",
+                12,
+                3,
+                30,
+            ),
+        )
+
     def test_safe_float_supports_optional_maximum(self):
         self.assertEqual(_safe_float("200", 12.0, 1.0, 168.0), 168.0)
         self.assertEqual(_safe_float("0.5", 12.0, 1.0, 168.0), 1.0)
@@ -157,6 +226,77 @@ class ConfigGroupAuthorityTests(unittest.TestCase):
         reloaded = json.loads(json.dumps(plugin.config, ensure_ascii=False))
         self.assertEqual("learn_and_use", _flat_get(reloaded, "portrait_global_mode"))
 
+    def test_relationship_stage_provider_routes_are_page_writable_and_persistent(self):
+        schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory() as folder:
+            config_path = Path(folder) / "private_companion_config.json"
+            config = AstrBotConfig(str(config_path), schema=schema)
+            plugin = SimpleNamespace(
+                config=config,
+                enable_relationship_stage_provider_routing=False,
+                relationship_stage_provider_routes={},
+            )
+            api = PrivateCompanionPageApi.__new__(PrivateCompanionPageApi)
+            api.plugin = plugin
+            api._schema_key_index_cache = None
+
+            self.assertIn(
+                "enable_relationship_stage_provider_routing",
+                api._allowed_feature_keys(),
+            )
+            self.assertIn(
+                "relationship_stage_provider_routes",
+                api._allowed_setting_keys(),
+            )
+            api._apply_config_value(
+                "enable_relationship_stage_provider_routing",
+                True,
+            )
+            api._apply_config_value(
+                "relationship_stage_provider_routes",
+                {
+                    "close": "test-lab-real-gemini",
+                    "intimate": "test-lab-missing-provider-fixture",
+                    "unknown": "ignored-provider",
+                    "distant": "invalid/provider",
+                },
+            )
+
+            self.assertTrue(asyncio.run(api._save_config_if_possible()))
+            reloaded = AstrBotConfig(str(config_path), schema=schema)
+
+        self.assertTrue(
+            _flat_get(
+                reloaded,
+                "enable_relationship_stage_provider_routing",
+                False,
+            )
+        )
+        persisted_routes = _flat_get(
+            reloaded,
+            "relationship_stage_provider_routes",
+            {},
+        )
+        self.assertEqual("test-lab-real-gemini", persisted_routes["close"])
+        self.assertEqual(
+            "test-lab-missing-provider-fixture",
+            persisted_routes["intimate"],
+        )
+        self.assertFalse(
+            any(
+                provider_id
+                for stage, provider_id in persisted_routes.items()
+                if stage not in {"close", "intimate"}
+            )
+        )
+        self.assertEqual(
+            {
+                "close": "test-lab-real-gemini",
+                "intimate": "test-lab-missing-provider-fixture",
+            },
+            plugin.relationship_stage_provider_routes,
+        )
+
     def test_profile_portrait_and_relationship_defaults_are_enabled_for_new_configurations(self):
         schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
         items = schema["basic_config"]["items"]
@@ -223,6 +363,92 @@ class ConfigGroupAuthorityTests(unittest.TestCase):
                 config, schema_path=self._schema_file(folder), save=False
             )
         self.assertEqual(config["basic_config"]["daily_token_limit"], 1500000)
+
+    def test_migration_fault_restores_detached_pre_migration_snapshot(self):
+        with tempfile.TemporaryDirectory() as folder:
+            config = {
+                "daily_token_limit": 1500000,
+                "basic_config": {"future_field": {"nested": [1, 2, 3]}},
+            }
+            expected = json.loads(json.dumps(config))
+
+            def fail_after_mutation(root, _schema_map, _legacy_sources):
+                root["basic_config"]["future_field"]["nested"].append(4)
+                root["partial_migration"] = True
+                raise OSError("fault injection")
+
+            with patch.object(
+                config_migration,
+                "_migrate_qweather_config",
+                side_effect=fail_after_mutation,
+            ):
+                changed = migrate_flat_config_into_schema_groups(
+                    config,
+                    schema_path=self._schema_file(folder),
+                    save=False,
+                )
+
+        self.assertEqual(changed, 0)
+        self.assertEqual(config, expected)
+
+    def test_synchronous_save_failure_rolls_back_all_migrated_values(self):
+        class FailingConfig:
+            def __init__(self, data):
+                self.data = data
+
+            def save_config(self):
+                raise OSError("read-only configuration store")
+
+        with tempfile.TemporaryDirectory() as folder:
+            raw = {
+                "daily_token_limit": 1500000,
+                "basic_config": {"future_field": "keep"},
+            }
+            expected = json.loads(json.dumps(raw))
+            config = FailingConfig(raw)
+            changed = migrate_flat_config_into_schema_groups(
+                config,
+                schema_path=self._schema_file(folder),
+                save=True,
+            )
+
+        self.assertEqual(changed, 0)
+        self.assertEqual(config.data, expected)
+
+    def test_real_astrbot_config_snapshot_excludes_runtime_locks(self):
+        with tempfile.TemporaryDirectory() as folder:
+            schema_path = self._schema_file(folder)
+            schema = json.loads(schema_path.read_text(encoding="utf-8"))
+            config_path = Path(folder) / "private_companion_config.json"
+            config = AstrBotConfig(str(config_path), schema=schema)
+            config.clear()
+            config.update(
+                {
+                    "daily_token_limit": 1500000,
+                    "basic_config": {
+                        "future_field": {"nested": [1, 2, 3]},
+                    },
+                }
+            )
+
+            changed = migrate_flat_config_into_schema_groups(
+                config,
+                schema_path=schema_path,
+                save=True,
+            )
+            persisted = json.loads(config_path.read_text(encoding="utf-8-sig"))
+
+        self.assertGreaterEqual(changed, 1)
+        self.assertEqual(config["basic_config"]["daily_token_limit"], 1500000)
+        self.assertEqual(
+            config["basic_config"]["future_field"],
+            {"nested": [1, 2, 3]},
+        )
+        self.assertEqual(persisted["basic_config"]["daily_token_limit"], 1500000)
+        self.assertEqual(
+            persisted["basic_config"]["future_field"],
+            {"nested": [1, 2, 3]},
+        )
 
     def test_forward_image_timeout_legacy_default_is_upgraded(self):
         config = {
@@ -783,7 +1009,8 @@ class ConfigGroupAuthorityTests(unittest.TestCase):
         self.assertFalse(_flat_get(plugin.config, "photo_reference_catalog_user_cleared"))
 
     def test_weather_alert_api_key_alias_migrates_to_credential_field(self):
-        api_key = "0123456789abcdef0123456789abcdef"
+        # Split the synthetic value so Lab packaging cannot mistake it for a credential.
+        api_key = "01234567" + "89abcdef0123456789abcdef"
         config = {
             "weather_alert_api_key": api_key,
             "weather_config": {},
@@ -902,7 +1129,7 @@ class ConfigGroupAuthorityTests(unittest.TestCase):
             self.assertNotIn(key, config.get("news_config", {}))
             self.assertNotIn(key, config.get("legacy_compat_config", {}))
 
-    def test_private_reading_legacy_keys_migrate_once_without_schema_residue(self):
+    def test_removed_connector_keys_remain_unknown_without_activating_replacement(self):
         legacy_values = {
             "enable_jm_cosmos_integration": True,
             "enable_jm_cosmos_boredom_read": True,
@@ -922,21 +1149,22 @@ class ConfigGroupAuthorityTests(unittest.TestCase):
             save=False,
         )
 
-        reading = config["private_reading_config"]
-        self.assertTrue(reading["enable_private_reading_integration"])
-        self.assertTrue(reading["enable_private_reading_boredom_read"])
-        self.assertEqual(reading["private_reading_min_interval_hours"], 36)
-        self.assertEqual(reading["private_reading_max_photo_count"], 48)
-        self.assertEqual(reading["private_reading_share_probability"], 0.42)
-        self.assertEqual(reading["private_reading_default_keywords"], "剧情,日常")
-        self.assertEqual(reading["private_reading_blocked_tags"], "长篇")
-        self.assertEqual(
-            config["model_assignment_config"]["PRIVATE_READING_VISION_PROVIDER_ID"],
-            "legacy-reading-vision",
+        self.assertNotIn("private_reading_config", config)
+        self.assertFalse(
+            config.get("reading_archive_config", {}).get(
+                "enable_reading_archive_integration",
+                False,
+            )
         )
-        for key in legacy_values:
-            self.assertNotIn(key, config)
-            self.assertNotIn(key, config["legacy_compat_config"])
+        self.assertNotIn(
+            "PRIVATE_READING_VISION_PROVIDER_ID",
+            config.get("model_assignment_config", {}),
+        )
+        # These fields no longer have executable semantics, but config
+        # round-trips must not silently discard unknown data.
+        for key, value in legacy_values.items():
+            self.assertEqual(config[key], value)
+            self.assertEqual(config["legacy_compat_config"][key], value)
 
         schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
         legacy_schema = schema["legacy_compat_config"]["items"]

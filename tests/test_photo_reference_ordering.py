@@ -156,7 +156,7 @@ class _ContinuityHarness(ProactiveMessageMixin):
         self.data: dict[str, object] = {}
         self.saved = 0
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         self.saved += 1
 
 
@@ -928,6 +928,18 @@ class PhotoReferenceOrderingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan.primary_reference_id, "explicit_reference")
         self.assertEqual(len(plan.bindings), 1)
         self.assertNotEqual(plan.bindings[0].path, "C:/images/recent.png")
+
+    async def test_unclassified_explicit_image_is_resolved_without_image_mixin(self) -> None:
+        harness = _SelectionHarness([], llm_reply="1")
+
+        candidate = await harness._photo_reference_candidate_for_path_async(
+            "C:/images/current-request.png",
+            workflow_kind="selfie",
+        )
+
+        self.assertEqual(candidate["kind"], "explicit")
+        self.assertEqual(candidate["reference_roles"], ["identity"])
+        self.assertEqual(candidate["metadata_source"], "runtime")
 
     async def test_explicit_matching_outfit_metadata_restores_outfit_role(self) -> None:
         explicit = _candidate(

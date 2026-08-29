@@ -260,6 +260,7 @@ class CoreStoreFailureSafetyTests(unittest.IsolatedAsyncioTestCase):
     def test_store_manager_failure_does_not_fall_back_to_stale_json(self) -> None:
         harness = _CoreHarness()
         harness.store_manager = SimpleNamespace(
+            load_sections=lambda *_args, **_kwargs: {},
             load_initial_store=lambda: (_ for _ in ()).throw(OSError("database is locked"))
         )
         with tempfile.TemporaryDirectory() as temp_dir:

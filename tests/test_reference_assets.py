@@ -58,7 +58,7 @@ class _ReferenceAssetPagePlugin:
             path = Path(self.data_dir) / path
         return str(path)
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         return None
 
     def _format_timestamp_elapsed(self, _value: object) -> str:

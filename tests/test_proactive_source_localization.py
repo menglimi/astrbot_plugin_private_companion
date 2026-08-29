@@ -20,8 +20,7 @@ class ProactiveSourceLocalizationTests(unittest.TestCase):
             "meal_care": "饭点关心",
             "group_ignore_complaint": "群内冒泡关心",
             "post_goodnight_group_activity": "晚安后群聊活跃",
-            "bookshelf_reading": "私密阅读",
-            "jm_cosmos": "私密阅读",
+            "bookshelf_reading": "资料归档",
             "personal_goal": "个人目标",
         }
 
@@ -29,6 +28,7 @@ class ProactiveSourceLocalizationTests(unittest.TestCase):
             {key: api._proactive_source_label(key) for key in expected},
             expected,
         )
+        self.assertEqual(api._proactive_source_label("jm_cosmos"), "jm_cosmos")
 
     def test_candidate_summary_returns_labels_for_chart_keys(self) -> None:
         plugin = SimpleNamespace(_format_timestamp_elapsed=lambda _value: "刚刚")
@@ -69,10 +69,11 @@ class ProactiveSourceLocalizationTests(unittest.TestCase):
             "meal_care": "饭点关心",
             "group_ignore_complaint": "群内冒泡关心",
             "post_goodnight_group_activity": "晚安后群聊活跃",
-            "jm_cosmos": "私密阅读",
+            "bookshelf_reading": "资料归档",
             "personal_goal": "个人目标",
         }.items():
             self.assertIn(f'{key}: "{label}"', script)
+        self.assertNotIn('jm_cosmos: "私密阅读"', script)
 
 
 if __name__ == "__main__":

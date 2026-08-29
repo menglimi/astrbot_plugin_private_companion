@@ -59,19 +59,25 @@ class StorageBackendRecoveryTests(unittest.TestCase):
         )
 
     @staticmethod
-    def _bookshelf_payload(*album_ids: str, revision: int = 0, deleted_ids: list[str] | None = None) -> dict:
+    def _legacy_bookshelf_payload(
+        *album_ids: str,
+        revision: int = 0,
+        deleted_ids: list[str] | None = None,
+    ) -> dict:
         payload = _new_store()
         payload["bookshelf_items"] = [
             {
-                "key": f"jm_album:{album_id}",
-                "type": "jm_album",
+                "key": f"archive_item:{album_id}",
+                "type": "legacy_archive_item",
                 "album_id": album_id,
                 "title": f"album-{album_id}",
                 "pages": [],
             }
             for album_id in album_ids
         ]
-        payload["jm_cosmos_integration"] = {"deleted_album_ids": list(deleted_ids or [])}
+        payload["reading_archive_integration"] = {
+            "deleted_album_ids": list(deleted_ids or [])
+        }
         payload["bookshelf_secret"] = {"password": "kept-secret"}
         payload["bookshelf_store_revision"] = revision
         return payload
@@ -242,9 +248,20 @@ class StorageBackendRecoveryTests(unittest.TestCase):
         initialize.assert_not_called()
         self.assertEqual(self.json_backend.load_store(), json_payload)
 
-    def test_empty_sqlite_without_json_is_initialized_with_defaults(self) -> None:
+    def test_existing_empty_sqlite_without_json_fails_closed(self) -> None:
         sqlite3.connect(self.sqlite_path).close()
 
+        with self.assertRaises(SqliteStoreNotInitializedError):
+            migrate_json_to_backend_if_needed(
+                self.sqlite_backend,
+                self.json_backend,
+                _new_store(),
+            )
+
+        with self.assertRaises(SqliteStoreNotInitializedError):
+            self.sqlite_backend.load_store()
+
+    def test_missing_sqlite_and_json_still_allows_first_install(self) -> None:
         loaded = migrate_json_to_backend_if_needed(
             self.sqlite_backend,
             self.json_backend,
@@ -255,8 +272,8 @@ class StorageBackendRecoveryTests(unittest.TestCase):
         self.assertEqual(self.sqlite_backend.load_store(), _new_store())
 
     def test_empty_sqlite_section_recovers_nonempty_json_bookshelf(self) -> None:
-        self.sqlite_backend.save_store(self._bookshelf_payload())
-        self.json_backend.save_store(self._bookshelf_payload("1001"))
+        self.sqlite_backend.save_store(self._legacy_bookshelf_payload())
+        self.json_backend.save_store(self._legacy_bookshelf_payload("1001"))
 
         manager = self._store_manager("sqlite")
         loaded = manager.load_initial_store()
@@ -268,8 +285,8 @@ class StorageBackendRecoveryTests(unittest.TestCase):
         )
 
     def test_empty_json_recovers_nonempty_sqlite_bookshelf(self) -> None:
-        self.json_backend.save_store(self._bookshelf_payload())
-        self.sqlite_backend.save_store(self._bookshelf_payload("2002"))
+        self.json_backend.save_store(self._legacy_bookshelf_payload())
+        self.sqlite_backend.save_store(self._legacy_bookshelf_payload("2002"))
 
         manager = self._store_manager("json")
         loaded = manager.load_initial_store()
@@ -282,8 +299,8 @@ class StorageBackendRecoveryTests(unittest.TestCase):
 
     def test_empty_save_cannot_overwrite_existing_bookshelf_without_tombstone(self) -> None:
         manager = self._store_manager("json")
-        self.json_backend.save_store(self._bookshelf_payload("3003"))
-        incoming = self._bookshelf_payload()
+        self.json_backend.save_store(self._legacy_bookshelf_payload("3003"))
+        incoming = self._legacy_bookshelf_payload()
 
         manager.save_store(incoming)
 
@@ -293,71 +310,87 @@ class StorageBackendRecoveryTests(unittest.TestCase):
             ["3003"],
         )
 
-    def test_explicit_delete_tombstone_can_clear_last_bookshelf_item(self) -> None:
+    def test_legacy_delete_metadata_is_opaque_and_cannot_delete_items(self) -> None:
         manager = self._store_manager("json")
-        self.json_backend.save_store(self._bookshelf_payload("4004", revision=10))
-        incoming = self._bookshelf_payload(revision=11, deleted_ids=["4004"])
+        self.json_backend.save_store(
+            self._legacy_bookshelf_payload("4004", revision=10)
+        )
+        incoming = self._legacy_bookshelf_payload(revision=11, deleted_ids=["4004"])
 
         manager.save_store(incoming)
 
         stored = self.json_backend.load_store()
-        self.assertEqual(stored["bookshelf_items"], [])
-        self.assertEqual(stored["jm_cosmos_integration"]["deleted_album_ids"], ["4004"])
+        self.assertEqual([item["album_id"] for item in stored["bookshelf_items"]], ["4004"])
+        self.assertEqual(
+            stored["reading_archive_integration"]["deleted_album_ids"],
+            ["4004"],
+        )
 
-    def test_stale_shutdown_snapshot_cannot_restore_newer_deleted_bookshelf(self) -> None:
+    def test_snapshot_path_preserves_opaque_legacy_archive_payload(self) -> None:
         manager = self._store_manager("json")
-        self.json_backend.save_store(self._bookshelf_payload(revision=20, deleted_ids=["5005"]))
-        stale_snapshot = self._bookshelf_payload("5005", revision=19)
+        self.json_backend.save_store(
+            self._legacy_bookshelf_payload(revision=20, deleted_ids=["5005"])
+        )
+        stale_snapshot = self._legacy_bookshelf_payload("5005", revision=19)
 
         manager.save_snapshot(stale_snapshot)
 
         stored = self.json_backend.load_store()
-        self.assertEqual(stored["bookshelf_items"], [])
+        self.assertEqual([item["album_id"] for item in stored["bookshelf_items"]], ["5005"])
         self.assertEqual(stored["bookshelf_store_revision"], 20)
 
-    def test_equal_revision_tombstone_from_other_source_blocks_resurrection(self) -> None:
-        preferred = self._bookshelf_payload("6006", revision=30)
-        fallback = self._bookshelf_payload(revision=30, deleted_ids=["6006"])
+    def test_equal_revision_legacy_delete_metadata_is_preserved_not_executed(self) -> None:
+        preferred = self._legacy_bookshelf_payload("6006", revision=30)
+        fallback = self._legacy_bookshelf_payload(
+            revision=30,
+            deleted_ids=["6006"],
+        )
 
         reconciled, changed, _recovered = reconcile_bookshelf_payload(preferred, fallback)
 
         self.assertTrue(changed)
-        self.assertEqual(reconciled["bookshelf_items"], [])
-        self.assertEqual(reconciled["jm_cosmos_integration"]["deleted_album_ids"], ["6006"])
+        self.assertEqual(
+            [item["album_id"] for item in reconciled["bookshelf_items"]],
+            ["6006"],
+        )
+        self.assertEqual(
+            reconciled["reading_archive_integration"]["deleted_album_ids"],
+            ["6006"],
+        )
 
     def test_invalid_bookshelf_structures_are_not_coerced_to_empty_lists(self) -> None:
         manager = self._store_manager("json")
         existing = _new_store()
         existing["bookshelf_items"] = {"disk": "legacy"}
-        existing["jm_cosmos_integration"] = "legacy-state"
+        existing["reading_archive_integration"] = "legacy-state"
         self.json_backend.save_store(existing)
         incoming = _new_store()
         incoming["bookshelf_items"] = {"memory": "legacy"}
-        incoming["jm_cosmos_integration"] = "memory-state"
+        incoming["reading_archive_integration"] = "memory-state"
 
         manager.save_store(incoming)
 
         stored = self.json_backend.load_store()
         self.assertEqual(stored["bookshelf_items"], {"memory": "legacy"})
-        self.assertEqual(stored["jm_cosmos_integration"], "memory-state")
+        self.assertEqual(stored["reading_archive_integration"], "memory-state")
 
     def test_empty_fallback_does_not_replace_unknown_legacy_structures(self) -> None:
         preferred = _new_store()
         preferred["bookshelf_items"] = {"legacy": "keep"}
-        preferred["jm_cosmos_integration"] = "legacy-state"
+        preferred["reading_archive_integration"] = "legacy-state"
         fallback = _new_store()
         fallback["bookshelf_items"] = []
-        fallback["jm_cosmos_integration"] = {}
+        fallback["reading_archive_integration"] = {}
 
         reconciled, changed, recovered = reconcile_bookshelf_payload(preferred, fallback)
 
         self.assertFalse(changed)
         self.assertEqual(recovered, 0)
         self.assertEqual(reconciled["bookshelf_items"], {"legacy": "keep"})
-        self.assertEqual(reconciled["jm_cosmos_integration"], "legacy-state")
+        self.assertEqual(reconciled["reading_archive_integration"], "legacy-state")
 
-    def test_jm_tombstone_never_removes_explicit_non_jm_item(self) -> None:
-        preferred = self._bookshelf_payload(revision=35, deleted_ids=["same"])
+    def test_legacy_delete_metadata_never_removes_explicit_manual_item(self) -> None:
+        preferred = self._legacy_bookshelf_payload(revision=35, deleted_ids=["same"])
         preferred["bookshelf_items"] = [
             {
                 "type": "manual_album",
@@ -367,12 +400,15 @@ class StorageBackendRecoveryTests(unittest.TestCase):
             }
         ]
 
-        reconciled, _changed, _recovered = reconcile_bookshelf_payload(preferred, self._bookshelf_payload())
+        reconciled, _changed, _recovered = reconcile_bookshelf_payload(
+            preferred,
+            self._legacy_bookshelf_payload(),
+        )
 
         self.assertEqual(reconciled["bookshelf_items"], preferred["bookshelf_items"])
 
-    def test_deleted_title_only_blocks_idless_legacy_jm_item(self) -> None:
-        preferred = self._bookshelf_payload(revision=36)
+    def test_legacy_deleted_title_metadata_is_opaque(self) -> None:
+        preferred = self._legacy_bookshelf_payload(revision=36)
         preferred["bookshelf_items"] = [
             {
                 "key": "",
@@ -381,16 +417,27 @@ class StorageBackendRecoveryTests(unittest.TestCase):
                 "source": "bookshelf_upgrade_recovered",
             }
         ]
-        preferred["jm_cosmos_integration"] = {"deleted_titles": [" 旧书名 "]}
+        preferred["reading_archive_integration"] = {
+            "deleted_titles": [" 旧书名 "]
+        }
 
-        reconciled, changed, _recovered = reconcile_bookshelf_payload(preferred, self._bookshelf_payload())
+        reconciled, changed, _recovered = reconcile_bookshelf_payload(
+            preferred,
+            self._legacy_bookshelf_payload(),
+        )
 
         self.assertTrue(changed)
-        self.assertEqual(reconciled["bookshelf_items"], [])
+        self.assertEqual(reconciled["bookshelf_items"], preferred["bookshelf_items"])
 
     def test_fallback_items_never_displace_eighty_authoritative_items(self) -> None:
-        preferred = self._bookshelf_payload(*(f"p{index}" for index in range(80)), revision=40)
-        fallback = self._bookshelf_payload(*(f"old{index}" for index in range(5)), revision=40)
+        preferred = self._legacy_bookshelf_payload(
+            *(f"p{index}" for index in range(80)),
+            revision=40,
+        )
+        fallback = self._legacy_bookshelf_payload(
+            *(f"old{index}" for index in range(5)),
+            revision=40,
+        )
 
         reconciled, _changed, recovered = reconcile_bookshelf_payload(preferred, fallback)
 

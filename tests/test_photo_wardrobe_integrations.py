@@ -5,6 +5,7 @@ import re
 import sys
 import types
 import unittest
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
@@ -14,11 +15,22 @@ package = sys.modules.setdefault(PACKAGE_NAME, types.ModuleType(PACKAGE_NAME))
 package.__path__ = [str(PLUGIN_ROOT)]
 package.__package__ = PACKAGE_NAME
 
-from astrbot_plugin_private_companion.photo_wardrobe_decision import PhotoWardrobeIntent
+IMAGE_SPEC = find_spec("astrbot_plugin_image_companion")
+IMAGE_ROOT = Path(IMAGE_SPEC.origin).resolve().parent if IMAGE_SPEC and IMAGE_SPEC.origin else None
+
+if IMAGE_ROOT is not None:
+    from astrbot_plugin_image_companion.photo_wardrobe_decision import PhotoWardrobeIntent
 
 
 def _module_tree(name: str) -> ast.Module:
     return ast.parse((PLUGIN_ROOT / name).read_text(encoding="utf-8"), filename=name)
+
+
+def _image_owner_tree() -> ast.Module:
+    if IMAGE_ROOT is None:
+        raise unittest.SkipTest("optional Image Companion runtime is not installed")
+    name = "image_runtime.py"
+    return ast.parse((IMAGE_ROOT / name).read_text(encoding="utf-8"), filename=name)
 
 
 def _function(tree: ast.Module, name: str) -> ast.AsyncFunctionDef | ast.FunctionDef:
@@ -38,7 +50,10 @@ def _call_name(call: ast.Call) -> str:
 
 class PhotoWardrobeIntegrationTests(unittest.TestCase):
     def test_generation_chain_reuses_one_intent_for_plan_selection_and_resolution(self) -> None:
-        generate = _function(_module_tree("proactive_message.py"), "_generate_photo_image")
+        generate = _function(
+            _image_owner_tree(),
+            "_generate_photo_image_legacy",
+        )
         calls = [node for node in ast.walk(generate) if isinstance(node, ast.Call)]
 
         analyze_calls = [call for call in calls if _call_name(call) == "analyze_photo_wardrobe"]
@@ -61,7 +76,7 @@ class PhotoWardrobeIntegrationTests(unittest.TestCase):
 
     def test_selection_score_only_treats_outfit_roles_as_clothing_constraints(self) -> None:
         score_function = _function(
-            _module_tree("proactive_message.py"),
+            _image_owner_tree(),
             "_photo_reference_candidate_score",
         )
         harness = ast.ClassDef(
@@ -116,7 +131,10 @@ class PhotoWardrobeIntegrationTests(unittest.TestCase):
 
     def test_only_wardrobe_module_constructs_production_decisions(self) -> None:
         offenders: list[str] = []
-        for path in PLUGIN_ROOT.glob("*.py"):
+        if IMAGE_ROOT is None:
+            self.skipTest("optional Image Companion runtime is not installed")
+        owner_root = IMAGE_ROOT
+        for path in owner_root.glob("*.py"):
             if path.name == "photo_wardrobe_decision.py":
                 continue
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.name)
@@ -129,7 +147,11 @@ class PhotoWardrobeIntegrationTests(unittest.TestCase):
         self.assertEqual(offenders, [])
 
     def test_debug_schema_and_command_prompt_use_the_unified_decision_contract(self) -> None:
-        proactive = (PLUGIN_ROOT / "proactive_message.py").read_text(encoding="utf-8")
+        if IMAGE_ROOT is None:
+            self.skipTest("optional Image Companion runtime is not installed")
+        owner_root = IMAGE_ROOT
+        owner_runtime = "image_runtime.py"
+        proactive = (owner_root / owner_runtime).read_text(encoding="utf-8")
         commands = (PLUGIN_ROOT / "command_handlers.py").read_text(encoding="utf-8")
         page_api = (PLUGIN_ROOT / "page_api.py").read_text(encoding="utf-8")
 

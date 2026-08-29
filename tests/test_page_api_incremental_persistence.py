@@ -141,14 +141,26 @@ class PageApiIncrementalPersistenceTests(unittest.TestCase):
         self.assertIn("_save_data_sync(sections=save_sections)", source)
 
     def test_migration_import_saves_the_normalized_data_sections(self) -> None:
-        source = ast.unparse(_function(PAGE_API, "_apply_migration_normalized"))
-
-        self.assertIn("validator(set(data_payload), (), None)", source)
-        self.assertLess(
-            source.index("validator(set(data_payload), (), None)"),
-            source.index("before = await self._build_migration_package"),
+        entry_source = ast.unparse(
+            _function(PAGE_API, "_apply_migration_normalized")
         )
-        self.assertIn("_save_data_sync(sections=set(data_payload))", source)
+        commit_source = ast.unparse(
+            _function(PAGE_API, "_commit_migration_normalized")
+        )
+
+        self.assertIn("validator(set(data_payload), (), None)", entry_source)
+        self.assertLess(
+            entry_source.index("validator(set(data_payload), (), None)"),
+            entry_source.index("before = await self._build_migration_package"),
+        )
+        self.assertIn(
+            "_save_data_sync(sections=set(data_payload))",
+            commit_source,
+        )
+        self.assertLess(
+            commit_source.index("if not config_saved"),
+            commit_source.index("_save_data_sync(sections=set(data_payload))"),
+        )
 
     def test_setup_and_schedule_mutations_declare_their_owned_sections(self) -> None:
         expected = {

@@ -21,6 +21,7 @@ import time
 import unicodedata
 import uuid
 import zoneinfo
+from collections.abc import Mapping
 from copy import deepcopy
 from datetime import date, datetime, timedelta
 from email.utils import parsedate_to_datetime
@@ -1118,6 +1119,7 @@ class GroupWakeupMixin:
         self,
         group: dict[str, Any],
         *,
+        event: Any = None,
         scene: dict[str, Any],
         sender_id: str,
         sender_name: str,
@@ -1134,6 +1136,33 @@ class GroupWakeupMixin:
             return {}
         if str(scene.get("trigger") or "") in {"at_other", "reply_other", "at_all"}:
             return {}
+        fixture_group_settings: Mapping[str, Any] = {}
+        fixture_adapter = getattr(self, "_lab_fixture_adapter", None)
+        fixture_settings = getattr(fixture_adapter, "group_wakeup_settings", None)
+        if callable(fixture_settings):
+            try:
+                candidate_settings = fixture_settings(event)
+                if isinstance(candidate_settings, Mapping):
+                    fixture_group_settings = candidate_settings
+            except Exception as exc:
+                logger.warning(
+                    "[PrivateCompanion] LAB fixture 群唤醒投影失败，已使用生产配置: %s",
+                    type(exc).__name__,
+                )
+        fixture_interest_words = tuple(
+            str(item)
+            for item in fixture_group_settings.get("interest_words", ())
+            if str(item).strip()
+        )
+        interest_words = (
+            list(
+                dict.fromkeys(
+                    (*fixture_interest_words, *self._group_wakeup_interest_words(group))
+                )
+            )
+            if fixture_interest_words
+            else None
+        )
         now = _now_ts()
         if self._group_sender_is_primary_user(sender_id):
             owner_direct_words = self._configured_group_owner_direct_wakeup_words()
@@ -1165,7 +1194,15 @@ class GroupWakeupMixin:
         soft_signal_hit = bool(
             question_signal
             or cold_group_signal
-            or any(self._text_contains_wakeup_word(cleaned, word) for word in list(_persona_value(self, "group_wakeup_context_words", []) or []) + self._group_wakeup_interest_words(group))
+            or any(
+                self._text_contains_wakeup_word(cleaned, word)
+                for word in list(_persona_value(self, "group_wakeup_context_words", []) or [])
+                + (
+                    interest_words
+                    if interest_words is not None
+                    else self._group_wakeup_interest_words(group)
+                )
+            )
         )
         high_intensity = self._group_high_intensity_state(group)
         if high_intensity.get("active"):
@@ -1317,10 +1354,19 @@ class GroupWakeupMixin:
             if callable(probability_getter)
             else max(0.0, min(1.0, float(_persona_value(self, "group_wakeup_interest_probability", 0.0) or 0.0)))
         )
+        fixture_minimum_probability = max(
+            0.0,
+            min(1.0, _safe_float(fixture_group_settings.get("minimum_probability"), 0.0, 0.0)),
+        )
+        base_interest_probability = max(base_interest_probability, fixture_minimum_probability)
         if base_interest_probability <= 0:
             return {}
         probability_misses: list[dict[str, Any]] = []
-        for word in self._group_wakeup_interest_words(group):
+        for word in (
+            interest_words
+            if interest_words is not None
+            else self._group_wakeup_interest_words(group)
+        ):
             if not self._text_contains_wakeup_word(cleaned, word):
                 continue
             probability, fatigue = self._group_wakeup_probability_context(group, scene, base_interest_probability, "interest")
@@ -1332,7 +1378,11 @@ class GroupWakeupMixin:
                 group_id=group_id,
             )
             probability *= _safe_float(topic_weight.get("multiplier"), 1.0, 0.0)
-            probability = min(0.95, max(0.0, probability))
+            probability = max(probability, fixture_minimum_probability)
+            probability = min(
+                1.0 if fixture_minimum_probability >= 1.0 else 0.95,
+                max(0.0, probability),
+            )
             if random.random() <= probability:
                 strength = self._group_wakeup_strength("interest", group, scene)
                 return {

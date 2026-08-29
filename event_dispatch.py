@@ -108,6 +108,7 @@ from .dreaming import (
 from .helpers import _date_key, _now_ts, _safe_float, _safe_int, _single_line, _strip_internal_message_blocks, _today_key
 from .persona_config import runtime_persona_setting
 from .model_routing import CURRENT_MODEL_REPLACEMENT_SOURCES, build_rules, find_route, scope_allows
+from .relationship_policy import relationship_stage_provider_id
 
 _ON_WAITING_LLM_REQUEST = getattr(filter, "on_waiting_llm_request", None)
 if not callable(_ON_WAITING_LLM_REQUEST):
@@ -212,7 +213,7 @@ _SEGMENTED_WIDTH_VARIANT_GROUPS: tuple[tuple[str, ...], ...] = (
     ("\\", "＼"),
     ("|", "｜"),
     ("+", "＋"),
-    ("-", "－"),
+    ("-", "－", "—"),
     ("=", "＝"),
     ("*", "＊"),
     ("&", "＆"),
@@ -232,12 +233,17 @@ def _expand_segmented_width_variant_words(words: list[str]) -> list[str]:
     expanded = list(dict.fromkeys(str(word) for word in words if str(word) != ""))
     present = set(expanded)
     for variants in _SEGMENTED_WIDTH_VARIANT_GROUPS:
-        if not present.intersection(variants):
-            continue
-        for variant in variants:
-            if variant not in present:
-                expanded.append(variant)
-                present.add(variant)
+        configured_widths = {
+            len(word)
+            for word in tuple(expanded)
+            if word and word[0] in variants and word == word[0] * len(word)
+        }
+        for width in sorted(configured_widths):
+            for variant in variants:
+                candidate = variant * width
+                if candidate not in present:
+                    expanded.append(candidate)
+                    present.add(candidate)
     return expanded
 
 
@@ -443,7 +449,7 @@ _FINGERPRINT_FILLER_PATTERN = re.compile(
     r"[的了吧吗呢啊呀哦噢哈呵嘿诶嗯嘛喽唷哟哇咯嚯]"
     r"|(?<![A-Za-z])[啊哦噢嗯哈嘿诶](?![A-Za-z])"
     r"|(?<![A-Za-z0-9])[了][的]?(?![A-Za-z0-9])"
-    r"|[。，、！？…：；""''【】《》（）\-\–\—\~\s]+"
+    r"|[。，、！？…：；\"'【】《》（）\-–—~\s]+"
 )
 
 
@@ -1191,6 +1197,7 @@ class EventDispatchMixin:
 
     @staticmethod
     def _outbound_duplicate_sources_match(candidate: dict[str, str], previous: dict[str, Any]) -> bool:
+        """Trust distinct inbound IDs and use sender matching only as a fallback."""
         sender_id = _single_line(candidate.get("sender_id"), 80)
         self_id = _single_line(candidate.get("self_id"), 80)
         previous_sender = _single_line(previous.get("sender_id"), 80)
@@ -1199,10 +1206,26 @@ class EventDispatchMixin:
         from_self = bool(sender_id and self_id and sender_id == self_id)
         same_sender = bool(sender_id and previous_sender and sender_id == previous_sender)
         same_message = bool(message_id and previous_message_id and message_id == previous_message_id)
-        return from_self or same_sender or same_message
+        if from_self or same_message:
+            return True
+        if message_id and previous_message_id:
+            return False
+        return same_sender
+
+    @staticmethod
+    def _outbound_text_guard_key(candidate: dict[str, str]) -> str:
+        """Keep independent inbound turns without exposing their raw IDs in cache keys."""
+        signature = _single_line(candidate.get("signature"), 80)
+        message_id = _single_line(candidate.get("message_id"), 120)
+        if not signature or not message_id:
+            return signature
+        message_digest = hashlib.sha1(
+            message_id.encode("utf-8", errors="ignore")
+        ).hexdigest()
+        return f"{signature}:message:{message_digest}"
 
     def _reserve_outbound_text_candidate(self, candidate: dict[str, str], *, now: float | None = None) -> str:
-        """Reserve an outbound text and return the duplicate state when blocked."""
+        """Reserve one inbound turn and return the duplicate state when blocked."""
         signature = _single_line(candidate.get("signature"), 80)
         fingerprint = _single_line(candidate.get("fingerprint"), 80)
         if not signature:
@@ -1218,10 +1241,15 @@ class EventDispatchMixin:
             ts = _safe_float(value.get("ts"), 0) if isinstance(value, dict) else 0
             if ts <= 0 or now - ts > 300.0:
                 cache.pop(key, None)
-
-        # Check exact signature match first.
-        previous = cache.get(signature)
-        if isinstance(previous, dict) and self._outbound_duplicate_sources_match(candidate, previous):
+        # Check every exact-text entry because independent inbound message IDs
+        # have separate idempotency slots under the same reply signature.
+        for previous in cache.values():
+            if not isinstance(previous, dict):
+                continue
+            if _single_line(previous.get("signature"), 80) != signature:
+                continue
+            if not self._outbound_duplicate_sources_match(candidate, previous):
+                continue
             age = max(0.0, now - _safe_float(previous.get("ts"), 0))
             state = _single_line(previous.get("state"), 20) or "pending"
             message_id = _single_line(candidate.get("message_id"), 120)
@@ -1231,25 +1259,32 @@ class EventDispatchMixin:
                 and previous_message_id
                 and message_id == previous_message_id
             )
-            window = 120.0 if same_inbound_message else (60.0 if state == "sent" else 30.0)
+            window = 120.0 if same_inbound_message else (5.0 if state == "sent" else 2.0)
             if age <= window:
                 return state
         # Fall back to fuzzy fingerprint match for semantically-similar text
-        # that may differ in punctuation, filler words, or minor rewording.
+        # while preserving the same inbound-message ownership rules.
         if fingerprint:
-            for key, value in list(cache.items()):
-                if not isinstance(value, dict):
+            for previous in cache.values():
+                if not isinstance(previous, dict):
                     continue
-                prev_fp = _single_line(value.get("fingerprint"), 80)
-                if prev_fp and prev_fp == fingerprint:
-                    age = max(0.0, now - _safe_float(value.get("ts"), 0))
-                    state = _single_line(value.get("state"), 20) or "pending"
-                    window = 60.0 if state == "sent" else 30.0
-                    if age <= window:
-                        return state
-                    break  # only check the most recent matching entry
-
-        cache[signature] = {
+                if _single_line(previous.get("fingerprint"), 80) != fingerprint:
+                    continue
+                if not self._outbound_duplicate_sources_match(candidate, previous):
+                    continue
+                age = max(0.0, now - _safe_float(previous.get("ts"), 0))
+                state = _single_line(previous.get("state"), 20) or "pending"
+                message_id = _single_line(candidate.get("message_id"), 120)
+                previous_message_id = _single_line(previous.get("message_id"), 120)
+                same_inbound_message = bool(
+                    message_id
+                    and previous_message_id
+                    and message_id == previous_message_id
+                )
+                window = 120.0 if same_inbound_message else (5.0 if state == "sent" else 2.0)
+                if age <= window:
+                    return state
+        cache[self._outbound_text_guard_key(candidate)] = {
             **candidate,
             "ts": now,
             "state": "pending",
@@ -1264,7 +1299,7 @@ class EventDispatchMixin:
         if not isinstance(cache, dict):
             cache = {}
             self._recent_outbound_text_guard = cache
-        cache[signature] = {
+        cache[self._outbound_text_guard_key(candidate)] = {
             **candidate,
             "ts": _now_ts() if now is None else now,
             "state": "sent",
@@ -3595,6 +3630,20 @@ class EventDispatchMixin:
         except Exception:
             return False
 
+    def _model_replacement_provider_model(self, provider_id: str) -> str:
+        value = str(provider_id or "").strip()
+        getter = getattr(getattr(self, "context", None), "get_provider_by_id", None)
+        if not value or not callable(getter):
+            return ""
+        try:
+            provider = getter(value)
+            model_getter = getattr(provider, "get_model", None)
+            if not callable(model_getter):
+                return ""
+            return str(model_getter() or "").strip()[:160]
+        except Exception:
+            return ""
+
     async def _prepare_model_replacement_sources(self, event: AstrMessageEvent) -> list[tuple[str, str]]:
         sources: list[tuple[str, str]] = []
         message = getattr(event, "message_str", "")
@@ -3621,10 +3670,27 @@ class EventDispatchMixin:
                     logger.debug("[PrivateCompanion] 模型替换读取图片转述失败：%s", _single_line(exc, 120))
         return sources
 
-    @_ON_WAITING_LLM_REQUEST(priority=110000)
     async def route_model_replacement_before_agent(self, event: AstrMessageEvent, *args: Any, **kwargs: Any) -> None:
         """Select the conversation Provider before AstrBot builds its agent."""
         if not bool(getattr(self, "enabled", False)):
+            return
+        stage_key, stage_provider = self._relationship_stage_provider_for_event(event)
+        if stage_provider:
+            self._set_model_replacement_event_extra(
+                event,
+                "selected_provider",
+                stage_provider,
+            )
+            self._set_model_replacement_event_extra(
+                event,
+                "selected_model",
+                self._model_replacement_provider_model(stage_provider) or None,
+            )
+            self._set_model_replacement_event_extra(
+                event,
+                "private_companion_relationship_stage_provider_route",
+                {"stage_key": stage_key, "provider_id": stage_provider},
+            )
             return
         sources = await self._prepare_model_replacement_sources(event)
         try:
@@ -3668,7 +3734,6 @@ class EventDispatchMixin:
             },
         )
 
-    @filter.on_llm_response(priority=-100000)
     async def clear_model_replacement_context(self, event: AstrMessageEvent, resp: LLMResponse, *args: Any, **kwargs: Any) -> None:
         token = getattr(event, "private_companion_model_replacement_sources_token", None)
         if token is None:
@@ -3679,25 +3744,138 @@ class EventDispatchMixin:
         except Exception:
             pass
 
-    @filter.on_llm_request(priority=110000)
+    def _relationship_stage_provider_for_event(
+        self, event: AstrMessageEvent
+    ) -> tuple[str, str]:
+        if not bool(
+            getattr(self, "enable_relationship_stage_provider_routing", False)
+        ):
+            return "", ""
+        routes = getattr(self, "relationship_stage_provider_routes", {})
+        try:
+            is_private = self._safe_event_is_private(event)
+            raw_sender_id = self._safe_event_sender_id(event)
+            if is_private:
+                resolver = getattr(self, "_private_user_id_for_event", None)
+                sender_id = (
+                    resolver(event)
+                    if callable(resolver)
+                    else self._canonical_private_user_id(raw_sender_id)
+                )
+                users = (
+                    self.data.get("users", {})
+                    if isinstance(getattr(self, "data", None), dict)
+                    else {}
+                )
+                current_user = (
+                    users.get(sender_id)
+                    if sender_id and isinstance(users, dict)
+                    else None
+                )
+            else:
+                projection_getter = getattr(
+                    self, "_req039_group_observation_projection", None
+                )
+                current_user = (
+                    projection_getter(
+                        event,
+                        sender_id=raw_sender_id,
+                        sender_name=self._sender_display_name(event),
+                    )
+                    if callable(projection_getter)
+                    else None
+                )
+            if not isinstance(current_user, dict):
+                return "", ""
+            current_user = self._lab_fixture_relationship_view(event, current_user)
+            if not isinstance(current_user, dict):
+                return "", ""
+            stage_key, provider_id = relationship_stage_provider_id(
+                routes,
+                current_user.get("relationship_score", 0),
+                runtime_persona_setting(self, "relationship_stage_policy", None),
+                previous_stage_key=current_user.get("relationship_phase_key")
+                or current_user.get("relationship_stage_key"),
+                owner_exclusive=(
+                    str(current_user.get("relationship_mode") or "")
+                    == "owner_exclusive"
+                ),
+            )
+            if not provider_id or not self._model_replacement_provider_exists(
+                provider_id
+            ):
+                return stage_key, ""
+            return stage_key, provider_id
+        except Exception:
+            return "", ""
+
     async def enforce_model_replacement_request(self, event: AstrMessageEvent, req: ProviderRequest, *args: Any, **kwargs: Any) -> None:
         if req is None or not bool(getattr(self, "enabled", False)):
             return
         self._set_model_replacement_event_extra(event, "provider_request", req)
-        selected_provider = str(self._model_replacement_event_extra(event, "selected_provider", "") or "").strip()
-        selected_model = self._model_replacement_event_extra(event, "selected_model", None)
+        stage_route = self._model_replacement_event_extra(
+            event,
+            "private_companion_relationship_stage_provider_route",
+            {},
+        )
+        stage_provider = (
+            str(stage_route.get("provider_id") or "").strip()
+            if isinstance(stage_route, dict)
+            else ""
+        )
+        stage_key = (
+            str(stage_route.get("stage_key") or "").strip()
+            if isinstance(stage_route, dict)
+            else ""
+        )
+        # AstrBot versions without the pre-agent waiting hook still resolve
+        # the same stage route here before the request is dispatched.
+        if not stage_provider:
+            stage_key, stage_provider = self._relationship_stage_provider_for_event(event)
+        if stage_provider:
+            selected_provider = stage_provider
+            selected_model = self._model_replacement_provider_model(stage_provider)
+            self._set_model_replacement_event_extra(
+                event,
+                "selected_provider",
+                selected_provider,
+            )
+            self._set_model_replacement_event_extra(
+                event,
+                "selected_model",
+                selected_model or None,
+            )
+            self._set_model_replacement_event_extra(
+                event,
+                "private_companion_relationship_stage_provider_route",
+                {"stage_key": stage_key, "provider_id": selected_provider},
+            )
+        else:
+            selected_provider = str(
+                self._model_replacement_event_extra(
+                    event, "selected_provider", ""
+                )
+                or ""
+            ).strip()
+            selected_model = self._model_replacement_event_extra(
+                event, "selected_model", None
+            )
         if selected_provider:
             try:
                 setattr(req, "provider_id", selected_provider)
             except Exception:
                 pass
-        if selected_model:
+        if stage_provider:
+            try:
+                req.model = selected_model or None
+            except Exception:
+                pass
+        elif selected_model:
             try:
                 req.model = str(selected_model).strip()
             except Exception:
                 pass
 
-    @_ON_WAITING_LLM_REQUEST(priority=100000)
     async def guard_pending_message_debounce(self, event: AstrMessageEvent, *args: Any, **kwargs: Any) -> None:
         """在会话锁前收口补话，避免旧回复与新消息并发出站。"""
         if bool(getattr(event, "private_companion_debounce_pending_merged", False)):
@@ -3718,7 +3896,6 @@ class EventDispatchMixin:
         if text:
             self._message_debounce_absorb_pending_message(event, text)
 
-    @filter.on_llm_response(priority=100000)
     async def settle_pending_message_debounce(self, event: AstrMessageEvent, resp: LLMResponse, *args: Any, **kwargs: Any) -> None:
         key = self._message_debounce_pending_key(event)
         if not key:
@@ -4282,13 +4459,21 @@ class EventDispatchMixin:
         model_error = ""
         timeout_seconds = max(0.2, min(5.0, _safe_float(_persona_value(self, 'smart_message_debounce_model_timeout_seconds', 0.8), 0.8, 0.2)))
         provider_selector = getattr(self, "_task_provider", None)
+        configured_debounce_provider = _persona_value(
+            self,
+            "smart_message_debounce_provider_id",
+            "",
+        )
+        configured_default_provider = _persona_value(self, "llm_provider_id", "")
         if callable(provider_selector):
             debounce_provider_id = provider_selector(
-                getattr(self, "smart_message_debounce_provider_id", ""),
-                getattr(self, "llm_provider_id", ""),
+                configured_debounce_provider,
+                configured_default_provider,
             )
         else:
-            debounce_provider_id = str(getattr(self, "smart_message_debounce_provider_id", "") or getattr(self, "llm_provider_id", "") or "")
+            debounce_provider_id = str(
+                configured_debounce_provider or configured_default_provider or ""
+            )
         timeout_getter = getattr(self, "_model_timeout_seconds_for_call", None)
         timeout_override = (
             timeout_getter(
@@ -5599,6 +5784,18 @@ Bot 近期回复：
                                 delimiter += text_chunk[end]
                                 end += 1
                             current.append(delimiter)
+                            if delimiter == "." and end < len(text_chunk) and text_chunk[end].isdigit():
+                                index = end
+                                continue
+                            push_current()
+                            index = end
+                            continue
+                        if matched == ",":
+                            end = index + 1
+                            current.append(delimiter)
+                            if end < len(text_chunk) and text_chunk[end].isdigit():
+                                index = end
+                                continue
                             push_current()
                             index = end
                             continue
@@ -5608,6 +5805,18 @@ Bot 近期回复：
                                 delimiter += matched
                                 end += len(matched)
                             current.append(delimiter)
+                            if matched in {"~", "～"} and next_non_space_char(end).isdigit():
+                                index = end
+                                continue
+                            push_current()
+                            index = end
+                            continue
+                        if matched and all(char in {"-", "－", "—"} for char in matched):
+                            end = index + len(matched)
+                            current.append(delimiter)
+                            if next_non_space_char(end).isdigit():
+                                index = end
+                                continue
                             push_current()
                             index = end
                             continue

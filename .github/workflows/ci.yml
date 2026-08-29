@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core-only:
+    runs-on: ubuntu-latest
+    env:
+      ASTRBOT_CI_STUBS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test runner
+        run: python -m pip install pytest pytest-asyncio
+      - name: Collect core-only suite
+        run: python -m pytest --collect-only -q tests/test_c1_livingmemory_decoupling.py tests/test_extension_api_lifecycle_publication.py tests/test_external_bridge_resolver.py
+      - name: Run core-only suite
+        run: python -m pytest -q tests/test_c1_livingmemory_decoupling.py tests/test_extension_api_lifecycle_publication.py tests/test_external_bridge_resolver.py
+
+  contracts-and-migrations:
+    runs-on: ubuntu-latest
+    env:
+      ASTRBOT_CI_STUBS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test runner
+        run: python -m pip install pytest pytest-asyncio
+      - name: Collect contract and migration suite
+        run: python -m pytest --collect-only -q tests/test_content_story_negotiation.py tests/test_migration_transaction.py tests/test_runtime_config_dispatcher.py tests/test_mro_duplicate_guard.py
+      - name: Run contract and migration suite
+        run: python -m pytest -q tests/test_content_story_negotiation.py tests/test_migration_transaction.py tests/test_runtime_config_dispatcher.py tests/test_mro_duplicate_guard.py
+
+  architecture-and-artifact:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Check imports, duplicate symbols, MRO and artifact import
+        run: >-
+          python scripts/ci_static_checks.py
+          --package astrbot_plugin_private_companion
+          --import-module story_migration_contract
+      - name: Check patch whitespace
+        shell: bash
+        run: |
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [[ -z "$base" || "$base" =~ ^0+$ ]] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            base="$(git rev-parse HEAD^ 2>/dev/null || true)"
+          fi
+          if [[ -n "$base" ]]; then
+            git diff --check "$base" HEAD
+          else
+            git show --check --oneline HEAD
+          fi

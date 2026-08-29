@@ -395,7 +395,7 @@ class Req028ExpressionContractTests(unittest.TestCase):
             "proactive.py",
             "proactive_engine.py",
             "proactive_message.py",
-            "private_reading.py",
+            "reading_archive.py",
             "main.py",
             "user_memory.py",
         )

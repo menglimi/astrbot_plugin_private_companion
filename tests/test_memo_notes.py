@@ -26,7 +26,7 @@ class MemoHarness(DailyStateMixin):
             "users": {"owner": {"umo": "aiocqhttp:FriendMessage:10001", "enabled": True}},
         }
 
-    def _save_data_sync(self):
+    def _save_data_sync(self, **_kwargs):
         self.saved += 1
 
     def _environment_fromtimestamp(self, value):
@@ -156,7 +156,7 @@ class MemoNoteTests(unittest.IsolatedAsyncioTestCase):
         for value in ("/memo/list", "/memo/update", "data-memo-action", "renderMemoNotes", "updateMemoAction"):
             self.assertIn(value, script)
         self.assertIn("state.memoNotes", script)
-        self.assertIn('tabName === "bookshelf"', script)
+        self.assertIn('tabName === "creative"', script)
         self.assertIn(".memo-note-grid", css)
         self.assertIn(".memo-note.is-overdue", css)
 

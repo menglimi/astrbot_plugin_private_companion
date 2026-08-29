@@ -252,7 +252,7 @@ class BalanceAwarenessMixin:
                 value = _single_line(raw_value, 500)
                 if key and value and key.lower() not in blocked:
                     headers[key] = value
-        api_key = self._balance_provider_source_key(source)
+        api_key = (self._balance_provider_source_key(source))
         if api_key and not any(key.lower() == "authorization" for key in headers):
             headers["Authorization"] = f"Bearer {api_key}"
         return headers

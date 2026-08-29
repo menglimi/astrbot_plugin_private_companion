@@ -282,6 +282,22 @@ def test_registered_plugin_wins_over_stale_module_alias(monkeypatch):
     assert MemoryCompanionAdapterMixin._memory_companion_bridge_uncached(plugin) is active_bridge
 
 
+def test_registered_absence_never_resurrects_stale_memory_module(monkeypatch):
+    stale_bridge = _ProbeBridge()
+    module_name = "data.plugins.astrbot_plugin_memory_companion.main"
+    stale_module = types.ModuleType(module_name)
+    stale_module.PLUGIN_NAME = "astrbot_plugin_memory_companion"
+    stale_module.get_active_bridge = lambda: stale_bridge
+    monkeypatch.setitem(sys.modules, module_name, stale_module)
+    plugin = _Plugin(True, False, None)
+    plugin.context = SimpleNamespace(
+        get_all_stars=lambda: [],
+        get_registered_star=lambda _name: None,
+    )
+
+    assert MemoryCompanionAdapterMixin._memory_companion_bridge_uncached(plugin) is None
+
+
 def test_legacy_public_bridge_getter_is_supported(monkeypatch):
     bridge = _ProbeBridge()
     module_name = "data.plugins.astrbot_plugin_memory_companion.main"

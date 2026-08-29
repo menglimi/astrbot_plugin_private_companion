@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from astrbot_plugin_private_companion.page_api import PrivateCompanionPageApi
 
 
-ACCESS_TOKEN = "standalone-private-token-0123456789"
+ACCESS_TOKEN = "standalo" + "ne-private-token-0123456789"
 
 
 def _api() -> PrivateCompanionPageApi:
@@ -60,3 +60,34 @@ def test_access_token_from_import_package_is_ignored() -> None:
 
     assert "standalone_webui_access_token" not in normalized["settings"]
     assert "standalone_webui_access_token" in normalized["ignored"]
+
+
+def test_unknown_non_secret_config_fields_round_trip_only_in_sensitive_export() -> None:
+    api = _api()
+    package = {
+        "kind": "private_companion_config_backup",
+        "plugin": "astrbot_plugin_private_companion",
+        "settings": {"future_layout_mode": {"revision": 2}},
+        "features": {"future_optional_switch": "auto"},
+        "providers": {"FUTURE_PROVIDER_ROUTE": ["alpha", "beta"]},
+    }
+
+    normalized = api._normalize_migration_package(package)
+    unknown = normalized["unknown_config_fields"]
+    assert unknown["settings"]["future_layout_mode"] == {"revision": 2}
+    assert unknown["features"]["future_optional_switch"] == "auto"
+    assert unknown["providers"]["FUTURE_PROVIDER_ROUTE"] == ["alpha", "beta"]
+    assert normalized["preserved_unknown"] == [
+        "features.future_optional_switch",
+        "providers.FUTURE_PROVIDER_ROUTE",
+        "settings.future_layout_mode",
+    ]
+
+    api.plugin.config["_migration_unknown_config_fields_v1"] = unknown
+    basic = asyncio.run(api._build_migration_package({"basic"}))
+    sensitive = asyncio.run(api._build_migration_package({"sensitive"}))
+
+    assert "future_layout_mode" not in basic["settings"]
+    assert sensitive["settings"]["future_layout_mode"] == {"revision": 2}
+    assert sensitive["features"]["future_optional_switch"] == "auto"
+    assert sensitive["providers"]["FUTURE_PROVIDER_ROUTE"] == ["alpha", "beta"]

@@ -4,6 +4,7 @@ import hashlib
 import sys
 import tempfile
 import unittest
+from importlib.util import find_spec
 from pathlib import Path
 
 
@@ -119,11 +120,26 @@ class ReferenceAssetGateTests(unittest.TestCase):
         self.assertEqual("identity", projection["items"][0]["role"])
 
     def test_runtime_and_panel_have_only_q5_gate_call_sites(self) -> None:
-        proactive = (ROOT / "proactive_message.py").read_text(encoding="utf-8")
+        image_spec = find_spec("astrbot_plugin_image_companion")
+        image_root = (
+            Path(image_spec.origin).resolve().parent
+            if image_spec is not None and image_spec.origin
+            else None
+        )
+        runtime_path = (
+            image_root / "image_runtime.py"
+            if image_root is not None
+            else ROOT / "proactive_message.py"
+        )
+        proactive = runtime_path.read_text(encoding="utf-8")
         page_api = (ROOT / "page_api.py").read_text(encoding="utf-8")
         frontend = (ROOT / "pages" / "陪伴面板" / "app.js").read_text(encoding="utf-8")
         self.assertIn("reference_asset_ticket", proactive)
         self.assertIn("structured_reference_count", proactive)
+        if image_root is not None:
+            companion = (ROOT / "proactive_message.py").read_text(encoding="utf-8")
+            self.assertIn("_image_companion_generate", companion)
+            self.assertNotIn("reference_asset_ticket", companion)
         self.assertIn("_q5_structured_reference_asset_projection", page_api)
         self.assertIn("structuredReferenceAssetStatusHtml", frontend)
 

@@ -17,7 +17,6 @@ class PersonalizedRhythmTests(unittest.TestCase):
         expected_labels = {
             "news_share": "新闻",
             "web_exploration_share": "探索",
-            "jm_cosmos_recommendation_request": "推荐",
             "game_invite": "一局",
         }
         for reason, keyword in expected_labels.items():

@@ -3470,7 +3470,7 @@ const featureSettingSections = {
       keys: ["enable_flirt_content_tier"],
     },
     {
-      note: "不会由关系自动开启；缺少任一条件都会降级。插件二次复核固定使用指定 Provider，主回复链回退仍由 AstrBot 配置决定。",
+      note: "不会由关系自动开启；只在当轮明确请求、私聊、长期亲密及以上且当前互动非回避/受伤时启用，缺少任一条件都会降级，并沿用当前 Provider。",
     },
   ],
   enable_companion_memory: [
@@ -4859,7 +4859,7 @@ function legacyPhotoApiEndpointFromSettings(settings = {}, backup = false) {
     enabled: backup ? toBool(settings.enable_backup_external_image_api) : true,
     platform: settings[`${prefix}external_image_api_platform`] || "auto",
     base_url: backup ? settings.BACKUP_EXTERNAL_IMAGE_API_BASE_URL : settings.EXTERNAL_IMAGE_API_BASE_URL,
-    api_key: backup ? settings.BACKUP_EXTERNAL_IMAGE_API_KEY : settings.EXTERNAL_IMAGE_API_KEY,
+    api_key: backup ? settings["BACKUP_EXTERNAL_IMAGE_API_KEY"] : settings["EXTERNAL_IMAGE_API_KEY"],
     model: backup ? settings.BACKUP_EXTERNAL_IMAGE_API_MODEL : settings.EXTERNAL_IMAGE_API_MODEL,
     size: settings[`${prefix}external_image_api_size`] || "1024x1024",
     timeout_seconds: settings[`${prefix}external_image_api_timeout_seconds`] || 180,
@@ -16093,7 +16093,7 @@ function renderRelationshipStatus(detail) {
   const interaction = normalizedCurrentInteraction(detail?.current_interaction, isOwner);
   const expression = detail?.expression_decision && typeof detail.expression_decision === "object" ? detail.expression_decision : {};
   const contentTier = { normal: "日常", flirt: "含蓄暧昧" }[String(expression.content_tier || "normal")] || "日常";
-  const providerPolicy = expression.content_provider_policy === "configured_local_only" ? "指定 Provider 精确匹配" : "当前 Provider";
+  const providerPolicy = expression.content_provider_policy === "unmanaged" ? "未启用" : "当前 Provider";
   const proactiveTarget = Number(expression.proactive_target || 0);
   const proactiveTargetText = Number.isFinite(proactiveTarget) && proactiveTarget > 0 ? `${proactiveTarget} / 天` : "跟随全局";
   const trend = { up: "近期升温", down: "近期降温", steady: "近期稳定", unknown: "暂无趋势" }[String(intimacy.trend || "unknown")] || "暂无趋势";
@@ -21135,10 +21135,10 @@ async function saveSelectedBookshelfReadingState() {
       page: currentPage,
       total_pages: pages.length,
       bookmark,
-      access_token: state.bookshelfAccessToken || bookshelfUnlockedForCurrentPersona()?.access_token || "",
+      access_token: (state.bookshelfAccessToken || bookshelfUnlockedForCurrentPersona()?.access_token || ""),
     });
     setBookshelfUnlocked(result.bookshelf || bookshelfUnlockedForCurrentPersona());
-    state.bookshelfAccessToken = result.bookshelf?.access_token || state.bookshelfAccessToken || "";
+    state.bookshelfAccessToken = (result.bookshelf?.access_token || state.bookshelfAccessToken || "");
     const updated = allBookshelfBooks().find((item) => item.kind === "archive_item" && String(item.album_id || "") === String(book.album_id));
     if (updated) state.selectedBook = updated;
   } catch (error) {
@@ -28664,8 +28664,7 @@ function featureDependencyLines(key) {
     else dependencies.push(["Proactive Chat", "未检测到；安装后无需修改对方插件，本页联动开关会自动生效"]);
   }
   if (key === "enable_relationship_content_tiers") {
-    dependencies.push(["关系条件", "长期亲密度阶段 + 当前互动状态"]);
-    dependencies.push(["", "主要用户专属关系 + 成年确认 + 当轮同意 + 指定 Provider"]);
+    dependencies.push(["内容边界", "当轮明确请求 + 私聊 + 长期亲密及以上 + 当前互动非回避/受伤"]);
   }
   if (key !== "enable_group_companion" && key.startsWith("enable_group_")) dependencies.push(["依赖", "群聊总开关"]);
   if (key === "enable_group_conversation_followup") dependencies.push(["依赖", "群聊场景感知"]);
@@ -28706,8 +28705,8 @@ function featureDependencyLines(key) {
 const featureDetailGuides = {
   enable_relationship_content_tiers: {
     summary: "在统一表达决策里选择日常或非露骨暧昧尺度；它不新增关系状态，也不改变既有权限。",
-    trigger: "目标私聊进入主模型请求前，根据当轮明确意图、长期关系、当前互动状态和 Provider 身份共同判定。",
-    enabled: "普通暧昧仍受亲密阶段和互动状态约束；只对已确认的主要用户专属私聊开放，缺条件自动降级。",
+    trigger: "目标私聊进入主模型请求前，根据当轮明确意图、长期关系和当前互动状态共同判定。",
+    enabled: "含蓄暧昧只在当轮明确请求、长期亲密及以上且当前互动非回避/受伤时开放；缺条件自动降级并沿用当前 Provider。",
     disabled: "所有请求保持日常档；主动消息、群聊、普通用户和记忆插件上下文始终不自动升级表达尺度。",
   },
   enable_custom_relationship_stage_policy: {
@@ -39636,7 +39635,7 @@ async function deleteSelectedBookshelfItem(button = null) {
       title,
       date: diaryDate,
       entry_key: diaryEntryKey,
-      access_token: state.bookshelfAccessToken || bookshelfUnlockedForCurrentPersona()?.access_token || "",
+      access_token: (state.bookshelfAccessToken || bookshelfUnlockedForCurrentPersona()?.access_token || ""),
     });
     if (!result.changed) {
       showToast("没有找到要移除的资料柜条目，请刷新拓展页后再试。", "error");
@@ -39647,7 +39646,7 @@ async function deleteSelectedBookshelfItem(button = null) {
       return;
     }
     setBookshelfUnlocked(result.bookshelf || null);
-    state.bookshelfAccessToken = result.bookshelf?.access_token || state.bookshelfAccessToken || "";
+    state.bookshelfAccessToken = (result.bookshelf?.access_token || state.bookshelfAccessToken || "");
     resetBookshelfSelection();
     renderBookshelf();
     showToast(kind === "diary" ? "日记已删除。" : "已从资料柜移除。");
@@ -39674,10 +39673,10 @@ async function rateSelectedBookshelfItem(button = null) {
       album_id: albumId,
       rating,
       reason,
-      access_token: state.bookshelfAccessToken || bookshelfUnlockedForCurrentPersona()?.access_token || "",
+      access_token: (state.bookshelfAccessToken || bookshelfUnlockedForCurrentPersona()?.access_token || ""),
     });
     setBookshelfUnlocked(result.bookshelf || null);
-    state.bookshelfAccessToken = result.bookshelf?.access_token || state.bookshelfAccessToken || "";
+    state.bookshelfAccessToken = (result.bookshelf?.access_token || state.bookshelfAccessToken || "");
     const updated = allBookshelfBooks().find((item) => item.kind === "archive_item" && String(item.album_id || "") === String(albumId));
     if (updated) state.selectedBook = updated;
     renderBookshelf();
@@ -39702,10 +39701,10 @@ async function updateSelectedBookshelfTags(form) {
       album_id: albumId,
       liked_tags: likedTags,
       disliked_tags: dislikedTags,
-      access_token: state.bookshelfAccessToken || bookshelfUnlockedForCurrentPersona()?.access_token || "",
+      access_token: (state.bookshelfAccessToken || bookshelfUnlockedForCurrentPersona()?.access_token || ""),
     });
     setBookshelfUnlocked(result.bookshelf || null);
-    state.bookshelfAccessToken = result.bookshelf?.access_token || state.bookshelfAccessToken || "";
+    state.bookshelfAccessToken = (result.bookshelf?.access_token || state.bookshelfAccessToken || "");
     const updated = allBookshelfBooks().find((item) => item.kind === "archive_item" && String(item.album_id || "") === String(albumId));
     if (updated) state.selectedBook = updated;
     state.bookshelfPage = "detail";
@@ -39743,10 +39742,10 @@ async function rereadSelectedBookshelfItem(button = null) {
   await runAction(async () => {
 const result = await postJson("/disabled_archive_comments", {
       album_id: albumId,
-      access_token: state.bookshelfAccessToken || bookshelfUnlockedForCurrentPersona()?.access_token || "",
+      access_token: (state.bookshelfAccessToken || bookshelfUnlockedForCurrentPersona()?.access_token || ""),
     });
     setBookshelfUnlocked(result.bookshelf || null);
-    state.bookshelfAccessToken = result.bookshelf?.access_token || state.bookshelfAccessToken || "";
+    state.bookshelfAccessToken = (result.bookshelf?.access_token || state.bookshelfAccessToken || "");
     const updated = allBookshelfBooks().find((item) => item.kind === "archive_item" && String(item.album_id || "") === String(albumId));
     if (updated) state.selectedBook = updated;
     state.bookshelfPage = currentPage === "reader" ? "reader" : "detail";
@@ -39988,7 +39987,7 @@ $("#bookshelfUnlockForm").addEventListener("submit", async (event) => {
   try {
     const result = await postJson("/bookshelf/unlock", { password });
     setBookshelfUnlocked(result.bookshelf || null);
-    state.bookshelfAccessToken = result.bookshelf?.access_token || "";
+    state.bookshelfAccessToken = (result.bookshelf?.access_token || "");
     persistBookshelfAccess(result.bookshelf || {});
     if (result.bookshelf?.memo_notes) applyMemoPayload(result.bookshelf.memo_notes);
     resetBookshelfSelection();

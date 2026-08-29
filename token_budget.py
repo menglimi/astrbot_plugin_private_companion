@@ -1439,7 +1439,11 @@ class TokenBudgetMixin:
         candidates = ([fallback_provider] if token_routed else [selected_provider])
         if not token_routed and fallback_provider:
             candidates.append(fallback_provider)
-        sensitive_replacement = self._sensitive_model_replacement_provider(selected_provider)
+        sensitive_replacement = (
+            ""
+            if strict_provider
+            else self._sensitive_model_replacement_provider(selected_provider)
+        )
         sensitive_replacement_used = False
         for attempt_index, attempt_provider in enumerate(candidates):
             started_at = time.time()
@@ -1474,7 +1478,13 @@ class TokenBudgetMixin:
 
                 completion = str(getattr(response, "completion_text", "") or "").strip()
                 usage_completion = self._llm_tool_response_for_usage(response, completion)
-                sensitive_keyword = self._sensitive_model_replacement_keyword(completion)
+                response_role = _single_line(getattr(response, "role", ""), 20).lower()
+                semantic_provider_error = _looks_like_upstream_llm_error_response(completion)
+                sensitive_keyword = (
+                    ""
+                    if response_role == "err" or semantic_provider_error
+                    else self._sensitive_model_replacement_keyword(completion)
+                )
                 if sensitive_keyword:
                     if sensitive_replacement and not sensitive_replacement_used:
                         sensitive_replacement_used = True
@@ -1492,8 +1502,6 @@ class TokenBudgetMixin:
                         _single_line(sensitive_keyword, 80),
                     )
                     return None
-                response_role = _single_line(getattr(response, "role", ""), 20).lower()
-                semantic_provider_error = _looks_like_upstream_llm_error_response(completion)
                 if response_role == "err" or semantic_provider_error:
                     failure_code = (
                         "provider_error_role"
@@ -1639,7 +1647,11 @@ class TokenBudgetMixin:
         candidates = ([fallback_provider] if token_routed else [selected_provider])
         if not token_routed and fallback_provider:
             candidates.append(fallback_provider)
-        sensitive_replacement = self._sensitive_model_replacement_provider(selected_provider)
+        sensitive_replacement = (
+            ""
+            if strict_provider
+            else self._sensitive_model_replacement_provider(selected_provider)
+        )
         sensitive_replacement_used = False
         for attempt_index, attempt_provider in enumerate(candidates):
             start = time.time()
@@ -1669,7 +1681,15 @@ class TokenBudgetMixin:
                 if resp and resp.completion_text:
                     completion = resp.completion_text.strip()
                     if completion:
-                        sensitive_keyword = self._sensitive_model_replacement_keyword(completion)
+                        response_role = _single_line(getattr(resp, "role", ""), 20).lower()
+                        semantic_provider_error = _looks_like_upstream_llm_error_response(
+                            completion
+                        )
+                        sensitive_keyword = (
+                            ""
+                            if response_role == "err" or semantic_provider_error
+                            else self._sensitive_model_replacement_keyword(completion)
+                        )
                         if sensitive_keyword:
                             if sensitive_replacement and not sensitive_replacement_used:
                                 sensitive_replacement_used = True
@@ -1687,10 +1707,6 @@ class TokenBudgetMixin:
                                 _single_line(sensitive_keyword, 80),
                             )
                             return None
-                        response_role = _single_line(getattr(resp, "role", ""), 20).lower()
-                        semantic_provider_error = _looks_like_upstream_llm_error_response(
-                            completion
-                        )
                         if response_role == "err" or semantic_provider_error:
                             failure_code = (
                                 "provider_error_role"

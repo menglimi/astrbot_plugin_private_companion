@@ -48,34 +48,6 @@ class _ModelReferenceLibraryHarness(_ReferenceLibraryHarness):
         return self.model_response
 
 
-class _GenerationPromptHarness(_ReferenceLibraryHarness):
-    def __init__(self, root: Path) -> None:
-        super().__init__(root)
-        self.photo_generation_backend = "external"
-        self.photo_generation_prompt_format = "traditional"
-        self.photo_generation_scene_presets = []
-        self.photo_generation_fixed_prompt = ""
-        self.generated_path = root / "generated.png"
-        self.generated_path.write_bytes(b"generated")
-        self.external_calls: list[dict] = []
-
-    def _photo_generation_selfie_schedule_scene_hint(self) -> str:
-        return "当前位置：家里；当前场景：居家室内；今日穿搭：cream sweatshirt with a collared shirt"
-
-    def _photo_generation_backend_config_summary(self) -> str:
-        return "test"
-
-    def _external_photo_available(self) -> bool:
-        return True
-
-    def _save_data_sync(self) -> None:
-        return None
-
-    async def _run_external_photo_generation(self, prompt_text: str, **kwargs):
-        self.external_calls.append({"prompt_text": prompt_text, **kwargs})
-        return str(self.generated_path), "ok；已使用参考图"
-
-
 class _CommandReferenceHarness(CommandHandlersMixin):
     def __init__(self, root: Path, sources: list[str]) -> None:
         self.data_dir = str(root)
@@ -143,35 +115,6 @@ class PhotoReferenceLibraryTests(unittest.IsolatedAsyncioTestCase):
                 available_presets=harness._photo_generation_scene_presets().keys(),
             )
             self.assertEqual(decision.selected_presets, ())
-
-    async def test_edit_prompt_uses_source_as_sole_canvas_without_selfie_context(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            reference = root / "reference.png"
-            reference.write_bytes(b"image")
-            harness = _GenerationPromptHarness(root)
-
-            await harness._generate_photo_image(
-                workflow_kind="edit",
-                prompt_text="Positive prompt: change only the background to blue.",
-                session_key="edit-routing-test",
-                reference_image_path=str(reference),
-            )
-
-            self.assertEqual(len(harness.external_calls), 1)
-            prompt = harness.external_calls[0]["prompt_text"]
-            self.assertIn("Image edit contract", prompt)
-            self.assertIn("sole source canvas", prompt)
-            positive, separator, negative = prompt.partition("\n\nNegative prompt:\n")
-            self.assertTrue(separator)
-            self.assertIn("constrained edit of that supplied canvas", positive)
-            self.assertNotIn("This is,", positive)
-            self.assertIn("a selfie or a new character portrait", negative)
-            self.assertNotIn("当前位置：家里", prompt)
-            self.assertNotIn("角色自拍", prompt)
-            long_prompt = harness._apply_photo_generation_edit_guard("x" * 4000, "edit")
-            self.assertTrue(long_prompt.startswith("Image edit contract:"))
-            self.assertLessEqual(len(long_prompt), 1800)
 
     def test_page_save_preserves_spaces_and_annotations(self) -> None:
         api = PrivateCompanionPageApi.__new__(PrivateCompanionPageApi)
@@ -386,39 +329,6 @@ class PhotoReferenceLibraryTests(unittest.IsolatedAsyncioTestCase):
             )
 
             self.assertEqual(decision.selected_presets, ("居家睡衣",))
-
-    async def test_selected_sleepwear_reference_overrides_daily_outfit_prompt(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            sleepwear = root / "sleepwear.png"
-            daily = root / "daily.png"
-            sleepwear.write_bytes(b"image")
-            daily.write_bytes(b"image")
-            harness = _GenerationPromptHarness(root)
-            harness.photo_reference_library = [
-                f"{sleepwear} || 白色蕾丝吊带睡裙，卧室、睡前、睡眠和居家自拍时使用",
-            ]
-            harness.data["daily_outfit_photo"] = {
-                "date": _today_key(),
-                "path": str(daily),
-            }
-
-            _, image_path, _ = await harness._generate_photo_image(
-                workflow_kind="selfie",
-                prompt_text="A bedtime selfie wearing a white lace nightgown and sleepwear in the bedroom，明确穿睡衣。",
-                session_key="sleepwear_test",
-            )
-
-            self.assertEqual(image_path, str(harness.generated_path))
-            self.assertEqual(len(harness.external_calls), 1)
-            call = harness.external_calls[0]
-            self.assertEqual(call["reference_image_path"], str(sleepwear.resolve()))
-            self.assertIn("explicit clothing request in this prompt has highest priority", call["prompt_text"])
-            self.assertIn("outfit category=sleepwear", call["prompt_text"])
-            self.assertIn("Render one coherent sleepwear outfit exactly as requested", call["prompt_text"])
-            self.assertIn("Do not restore clothing from today's outfit", call["prompt_text"])
-            self.assertNotIn("use today's outfit reference image", call["prompt_text"])
-            self.assertNotIn("cream sweatshirt with a collared shirt", call["prompt_text"])
 
     def test_selected_daily_outfit_reference_keeps_daily_continuity_as_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

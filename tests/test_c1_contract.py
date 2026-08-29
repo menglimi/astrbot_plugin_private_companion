@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import os
 from pathlib import Path
 
 
@@ -9,6 +10,10 @@ COMPANION_ROOT = Path(__file__).resolve().parents[1]
 PEIBAN_ROOT = COMPANION_ROOT.parents[1]
 CONTRACT_PATH = COMPANION_ROOT / "bot_personal_contract.py"
 _MEMORY_CONTRACT_CANDIDATES = (
+    Path(os.environ["ASTRBOT_MEMORY_PLUGIN_ROOT"]) / "core" / "bot_personal_contract.py"
+    if os.environ.get("ASTRBOT_MEMORY_PLUGIN_ROOT")
+    else COMPANION_ROOT / ".missing-memory-root" / "core" / "bot_personal_contract.py",
+    COMPANION_ROOT.parent / "memory" / "core" / "bot_personal_contract.py",
     PEIBAN_ROOT / "astrbot_plugin_memory_companion-main" / "core" / "bot_personal_contract.py",
     COMPANION_ROOT.parent / "astrbot_plugin_remember_you" / "core" / "bot_personal_contract.py",
     COMPANION_ROOT.parent / "我会牢牢记住你" / "core" / "bot_personal_contract.py",

@@ -180,7 +180,7 @@ class _Plugin:
             user.pop("persona_relationship_prompts", None)
         return {"ok": True}
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         self.saved += 1
 
 
@@ -367,7 +367,7 @@ class Req028UserUpdateContractTests(unittest.TestCase):
         self.assertTrue(user["contact_preference"]["active"])
         self.assertEqual({"mode": "backoff", "mood_score": -99}, user["relationship_state"])
 
-    def test_explicit_reengagement_clears_contact_boundary_and_owner_may_be_close(self) -> None:
+    def test_explicit_reengagement_clears_boundary_and_recovers_gradually(self) -> None:
         user = {
             "relationship_role": "owner",
             "relationship_mode": "owner_exclusive",
@@ -381,7 +381,7 @@ class Req028UserUpdateContractTests(unittest.TestCase):
         )
         settled = host.plugin.data["users"]["10001"]
         self.assertFalse(settled["contact_preference"]["active"])
-        self.assertEqual("close", settled["current_interaction"]["expression_band"])
+        self.assertEqual("lively", settled["current_interaction"]["expression_band"])
 
     def test_manual_interaction_override_is_not_replaced_by_automatic_event(self) -> None:
         user = {

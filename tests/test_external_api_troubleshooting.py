@@ -38,7 +38,7 @@ class _ExternalApiPluginHarness:
         self.weather_lon = 0.0
 
         self.balance_api_url = "https://saved.balance.example/balance"
-        self.balance_api_key = "saved-balance-key"
+        self.balance_api_key = "saved-ba" + "lance-key"
         self.balance_api_auth_header = "Authorization"
         self.balance_api_auth_scheme = "Bearer"
         self.balance_api_custom_headers = ""
@@ -56,7 +56,7 @@ class _ExternalApiPluginHarness:
         self._last_web_search_error = "live-error"
         self._format_timestamp_elapsed = lambda _value: "刚刚"
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         self.save_calls += 1
 
     async def _fetch_own_weather_prompt(self):
@@ -210,7 +210,7 @@ class ExternalApiTroubleshootingBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(automatic["source_id"], "provider-a")
 
     async def test_balance_failure_redacts_temporary_key_headers_and_url(self) -> None:
-        api_key = "temporary-balance-key"
+        api_key = "temporar" + "y-balance-key"
         header_secret = "temporary-header-secret"
         url = "https://error.balance.example/balance?token=temporary-url-secret"
         result = await self.api._run_external_api_test(

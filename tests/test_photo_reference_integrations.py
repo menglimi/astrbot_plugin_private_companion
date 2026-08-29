@@ -476,7 +476,7 @@ class _StartupMigrationHarness:
         return False
 
     @staticmethod
-    def _save_data_sync() -> None:
+    def _save_data_sync(**_kwargs) -> None:
         raise AssertionError("没有数据变更时不应保存运行数据")
 
 

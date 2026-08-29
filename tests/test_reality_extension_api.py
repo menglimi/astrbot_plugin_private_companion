@@ -77,7 +77,7 @@ class _RecordingHost(RealityCompanionBridgeMixin):
     def _get_user(self, user_id: str) -> dict:
         return self.data["users"][user_id]
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         self.saved += 1
 
 
@@ -191,7 +191,7 @@ class _PreflightHost(RealityCompanionBridgeMixin):
     def _reality_companion_api(self) -> _PreflightRealityApi:
         return self._api
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         self.saves += 1
 
     async def _reply(self, event: _PreflightEvent, text: str, **_kwargs) -> None:

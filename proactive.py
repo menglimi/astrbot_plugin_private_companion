@@ -705,6 +705,7 @@ class ProactiveMixin(UserRestGateMixin):
             "window_start_at": user.get("planned_proactive_window_start_at"),
             "best_until_at": user.get("planned_proactive_best_until_at"),
             "expire_at": user.get("planned_proactive_expire_at"),
+            "window_timezone": user.get("planned_proactive_window_timezone"),
         }
 
     def _store_planned_proactive_route_fields(self, user: dict[str, Any], item: dict[str, Any]) -> None:
@@ -3306,6 +3307,177 @@ class ProactiveMixin(UserRestGateMixin):
             impulse["urgency"] = min(_safe_float(impulse.get("urgency"), 0.3), 0.22)
         return self._queue_proactive_impulse(user, impulse)
 
+    def _proactive_window_timezone(self) -> str:
+        return (
+            _single_line(
+                getattr(self, "environment_perception_timezone", ""),
+                64,
+            )
+            or "Asia/Shanghai"
+        )
+
+    def _invalidate_timezone_derived_state(
+        self,
+        previous_timezone: str = "",
+        current_timezone: str = "",
+        *,
+        schedule_save: bool = True,
+    ) -> dict[str, Any]:
+        """Invalidate derived wall-clock state without touching explicit timers."""
+
+        data = getattr(self, "data", None)
+        if not isinstance(data, dict):
+            return {"changed": False, "sections": []}
+        current = _single_line(
+            current_timezone or self._proactive_window_timezone(),
+            64,
+        ) or "Asia/Shanghai"
+        runtime = data.get("proactive_runtime")
+        if not isinstance(runtime, dict):
+            runtime = {}
+            data["proactive_runtime"] = runtime
+        stored = _single_line(runtime.get("window_timezone"), 64)
+        previous = _single_line(previous_timezone, 64) or stored
+        if not previous:
+            runtime["window_timezone"] = current
+            sections = {"proactive_runtime"}
+            if schedule_save:
+                saver = getattr(self, "_schedule_data_save", None)
+                if callable(saver):
+                    saver(sections=sections, delay=0.1)
+            return {
+                "changed": True,
+                "initialized": True,
+                "sections": sorted(sections),
+                "cleared_plans": 0,
+                "blocked_candidates": 0,
+            }
+        if previous == current:
+            runtime["window_timezone"] = current
+            return {"changed": False, "sections": []}
+
+        now = _now_ts()
+        exempt_sources = {"timer", "troubleshooting", "simulation"}
+        blocked_candidates = 0
+        pool = data.get("proactive_candidate_pool")
+        if isinstance(pool, list):
+            for candidate in pool:
+                if not isinstance(candidate, dict):
+                    continue
+                status = _single_line(candidate.get("status"), 24).lower()
+                lifecycle = _single_line(
+                    candidate.get("lifecycle_status"),
+                    24,
+                ).lower()
+                source = self._normalize_legacy_proactive_text(
+                    candidate.get("source"),
+                    limit=40,
+                )
+                if (
+                    source in exempt_sources
+                    or status in {"sent", "blocked", "skipped", "expired", "cancelled", "dropped"}
+                    or lifecycle in {"skipped", "expired"}
+                ):
+                    continue
+                candidate["status"] = "blocked"
+                candidate["lifecycle_status"] = "skipped"
+                candidate["note"] = "运行时区已变化，旧时间窗口已作废"
+                candidate["lifecycle_note"] = "运行时区已变化，旧时间窗口已作废"
+                candidate["updated_ts"] = now
+                candidate["lifecycle_updated_at"] = now
+                blocked_candidates += 1
+
+        cleared_plans = 0
+        users = data.get("users")
+        if isinstance(users, dict):
+            for user in users.values():
+                if not isinstance(user, dict):
+                    continue
+                impulses = user.get("proactive_impulses")
+                if isinstance(impulses, list):
+                    for impulse in impulses:
+                        if not isinstance(impulse, dict):
+                            continue
+                        source = self._normalize_legacy_proactive_text(
+                            impulse.get("source"),
+                            limit=40,
+                        )
+                        state = _single_line(impulse.get("state"), 24).lower()
+                        if source in exempt_sources or state not in {"", "queued", "deferred"}:
+                            continue
+                        impulse["state"] = "blocked"
+                        impulse["last_status"] = "blocked"
+                        impulse["last_note"] = "运行时区已变化，旧时间窗口已作废"
+                        impulse["updated_ts"] = now
+                planned_source = self._normalize_legacy_proactive_text(
+                    user.get("planned_proactive_source"),
+                    limit=40,
+                )
+                has_plan = bool(
+                    _safe_float(user.get("next_proactive_at"), 0)
+                    or planned_source
+                    or _single_line(user.get("planned_candidate_id"), 40)
+                )
+                if has_plan and planned_source not in exempt_sources:
+                    self._clear_pending_proactive_plan(user)
+                    user.pop("planned_weather_alert_context", None)
+                    user.pop("planned_environment_change_context", None)
+                    cleared_plans += 1
+
+        terminal_history: dict[str, Any] = {}
+        alert_state = data.get("weather_alert_awareness")
+        if isinstance(alert_state, dict) and isinstance(
+            alert_state.get("terminal_event_identities"),
+            dict,
+        ):
+            terminal_history = dict(alert_state["terminal_event_identities"])
+        data["weather_alert_awareness"] = {
+            "initialized": False,
+            "baseline_ids": [],
+            "pending_events": [],
+            "terminal_event_identities": terminal_history,
+            "next_check_at": 0,
+            "config_key": "",
+            "window_timezone": current,
+        }
+        data["environment_change_awareness"] = {
+            "initialized": False,
+            "next_check_at": 0,
+            "window_timezone": current,
+        }
+        data["daily_weather"] = {}
+        data["weather_alerts"] = {}
+        runtime["window_timezone"] = current
+        runtime["timezone_changed_at"] = now
+        runtime["previous_window_timezone"] = previous
+        sections = {
+            "users",
+            "proactive_candidate_pool",
+            "proactive_runtime",
+            "daily_weather",
+            "weather_alerts",
+            "weather_alert_awareness",
+            "environment_change_awareness",
+        }
+        if schedule_save:
+            saver = getattr(self, "_schedule_data_save", None)
+            if callable(saver):
+                saver(sections=sections, delay=0.1)
+        logger.info(
+            "[PrivateCompanion] 运行时区变化，已作废旧派生窗口: from=%s to=%s plans=%s candidates=%s",
+            previous,
+            current,
+            cleared_plans,
+            blocked_candidates,
+        )
+        return {
+            "changed": True,
+            "initialized": False,
+            "sections": sorted(sections),
+            "cleared_plans": cleared_plans,
+            "blocked_candidates": blocked_candidates,
+        }
+
     def _schedule_next_proactive(
         self,
         user: dict[str, Any],
@@ -3377,6 +3549,7 @@ class ProactiveMixin(UserRestGateMixin):
                 )
                 user["planned_proactive_impulse_id"] = ""
                 user["planned_proactive_window_start_at"] = timer_scheduled
+                user["planned_proactive_window_timezone"] = self._proactive_window_timezone()
                 active_span, grace_span = self._proactive_impulse_default_window_seconds(
                     user["planned_proactive_reason"],
                     source="timer",
@@ -3504,6 +3677,10 @@ class ProactiveMixin(UserRestGateMixin):
         user["planned_proactive_topic"] = _single_line(event.get("topic"), 60)
         user["planned_proactive_impulse_id"] = ""
         user["planned_proactive_window_start_at"] = _safe_float(event.get("window_start_at"), scheduled)
+        user["planned_proactive_window_timezone"] = _single_line(
+            event.get("window_timezone"),
+            64,
+        ) or self._proactive_window_timezone()
         user["planned_proactive_best_until_at"] = _safe_float(event.get("best_until_at"), scheduled)
         user["planned_proactive_expire_at"] = _safe_float(event.get("expire_at"), scheduled)
         # 该入口会替换当前计划，但不消费原念头；不能让新问候继续引用旧候选 ID。
@@ -3583,6 +3760,7 @@ class ProactiveMixin(UserRestGateMixin):
         user["planned_mobile_location_transition_key"] = ""
         user["planned_mobile_location_event_type"] = ""
         user["planned_proactive_window_start_at"] = 0
+        user["planned_proactive_window_timezone"] = ""
         user["planned_proactive_best_until_at"] = 0
         user["planned_proactive_expire_at"] = 0
         self._reset_planned_proactive_delivery_state(user)

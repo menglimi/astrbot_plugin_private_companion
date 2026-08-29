@@ -89,7 +89,7 @@ class _Host(TokenBudgetMixin):
         self.model_fallback_overrides = {}
         self.saved = 0
 
-    def _save_data_sync(self):
+    def _save_data_sync(self, **_kwargs):
         self.saved += 1
 
 

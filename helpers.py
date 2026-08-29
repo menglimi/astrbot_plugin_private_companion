@@ -1065,3 +1065,21 @@ def _set_into_config(config: Any, key: str, value: Any, *, allow_flat_fallback: 
         except Exception:
             pass
     return False
+
+
+def _memory_archive_warning(record: Any) -> str:
+    """Return a user-visible warning when local-first Memory delivery is incomplete."""
+
+    if not isinstance(record, dict):
+        return ""
+    result = record.get("memory_archive")
+    if not isinstance(result, dict):
+        return ""
+    state = _single_line(result.get("state"), 40).lower() or "degraded"
+    if bool(result.get("ok")) and state in {"sent", "deduplicated"}:
+        return ""
+    error = _single_line(result.get("error_code"), 80)
+    detail = f"，原因：{error}" if error else ""
+    if state in {"pending", "retry", "local_only"}:
+        return f"⚠ Memory 归档尚未完成（{state}{detail}）；本地内容已保存，将按 outbox 策略补投。"
+    return f"⚠ Memory 归档失败或降级（{state}{detail}）；本地内容已保存。"

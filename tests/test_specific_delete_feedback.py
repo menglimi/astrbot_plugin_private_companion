@@ -18,7 +18,7 @@ class DeleteFeedbackHarness:
         }
         self.saved = 0
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         self.saved += 1
 
     @staticmethod

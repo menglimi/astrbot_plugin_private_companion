@@ -29,6 +29,7 @@ from .photo_reference_catalog import (
 )
 from .photo_prompt_context import PhotoPromptSection
 from .persona_config import runtime_persona_setting
+from .runtime_config_dispatcher import dispatch_runtime_config_effects
 
 
 _PHOTO_REFERENCE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
@@ -2486,13 +2487,10 @@ class CommandHandlersMixin:
         old = self._companion_manual_current_config_value(key)
         old_semantic_debounce = runtime_persona_setting(self, 'enable_semantic_message_debounce', None)
         old_semantic_seconds = runtime_persona_setting(self, 'semantic_message_debounce_seconds', None)
-        setattr(self, key, normalized)
         extra_config_updates: dict[str, Any] = {}
         if key == "enable_message_debounce":
-            self.enable_semantic_message_debounce = bool(normalized)
             extra_config_updates["enable_semantic_message_debounce"] = bool(normalized)
         if key == "text_message_debounce_seconds":
-            self.semantic_message_debounce_seconds = normalized
             extra_config_updates["semantic_message_debounce_seconds"] = normalized
         config_value = normalized
         if key == "rest_reply_probability":
@@ -2512,26 +2510,61 @@ class CommandHandlersMixin:
                 except TypeError:
                     _set_into_config(config, extra_key, extra_value)
             if saved and not await self._save_config_if_possible():
-                setattr(self, key, old)
                 old_config_value = old
                 if key == "rest_reply_probability":
                     old_config_value = max(0, min(100, int(round(_safe_float(old, 0.0, 0.0) * 100))))
                 _set_into_config(config, key, old_config_value)
                 if key == "enable_message_debounce":
-                    self.enable_semantic_message_debounce = old_semantic_debounce
                     _set_into_config(config, "enable_semantic_message_debounce", old_semantic_debounce)
                 if key == "text_message_debounce_seconds":
-                    self.semantic_message_debounce_seconds = old_semantic_seconds
                     _set_into_config(config, "semantic_message_debounce_seconds", old_semantic_seconds)
+                await self._save_config_if_possible()
                 return False, "配置保存失败，已恢复修改前的运行配置。", old, old
         if not saved:
             logger.debug("[PrivateCompanion] 答疑设置只更新运行态,未找到可写配置项: key=%s", key)
-            setattr(self, key, old)
-            if key == "enable_message_debounce":
-                self.enable_semantic_message_debounce = old_semantic_debounce
-            if key == "text_message_debounce_seconds":
-                self.semantic_message_debounce_seconds = old_semantic_seconds
             return False, "配置项无法写入，已恢复修改前的运行配置。", old, old
+        try:
+            dispatch_runtime_config_effects(
+                self,
+                {key: normalized},
+                source="manual_command",
+                adapter=getattr(self, "page_api", None),
+                apply_plain_values=True,
+            )
+        except Exception as exc:
+            old_config_value = old
+            if key == "rest_reply_probability":
+                old_config_value = max(
+                    0,
+                    min(100, int(round(_safe_float(old, 0.0, 0.0) * 100))),
+                )
+            _set_into_config(config, key, old_config_value)
+            if key == "enable_message_debounce":
+                _set_into_config(
+                    config,
+                    "enable_semantic_message_debounce",
+                    old_semantic_debounce,
+                )
+            if key == "text_message_debounce_seconds":
+                _set_into_config(
+                    config,
+                    "semantic_message_debounce_seconds",
+                    old_semantic_seconds,
+                )
+            await self._save_config_if_possible()
+            dispatch_runtime_config_effects(
+                self,
+                {key: old},
+                source="manual_command_rollback",
+                adapter=getattr(self, "page_api", None),
+                apply_plain_values=True,
+            )
+            logger.warning(
+                "[PrivateCompanion] 答疑设置运行态应用失败: key=%s error_type=%s",
+                key,
+                type(exc).__name__,
+            )
+            return False, "配置运行态应用失败，已恢复修改前的配置。", old, old
         return True, "", old, normalized
 
     async def _companion_manual_apply_pending_config(self, event: AstrMessageEvent) -> str:
@@ -4894,9 +4927,18 @@ class CommandHandlersMixin:
         sections.append(
             PhotoPromptSection(
                 name="natural_language_contract",
-                source="edit_contract" if kind == "edit" and has_reference else "composition",
-                positive=", ".join(part for part in positive if _single_line(part, 520)),
-                negative=", ".join(negative),
+                # This is a trusted workflow contract, not caller-supplied
+                # visual memory.  Freeze it for this task so the N-1 resolver
+                # cannot trim safety/composition rules as ambient context.
+                source="fixed_prompt",
+                positive=_single_line(
+                    ", ".join(
+                        part for part in positive if _single_line(part, 520)
+                    ),
+                    1400,
+                ),
+                negative=_single_line(", ".join(negative), 760),
+                protected=True,
             )
         )
         if kind == "selfie":
@@ -4912,7 +4954,7 @@ class CommandHandlersMixin:
                 PhotoPromptSection(
                     name="visual_memory",
                     source="visual_memory",
-                    positive=f"visual continuity reference: {_single_line(visual_memory, 360)}",
+                    positive=f"visual continuity reference: {_single_line(visual_memory, 300)}",
                 )
             )
         if extra_prompt:

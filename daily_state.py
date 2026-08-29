@@ -108,9 +108,10 @@ from .dreaming import (
     recent_diary_tags,
     weighted_unique_fragment_sample,
 )
-from .helpers import _date_key, _normalize_outbound_punctuation_flow, _normalize_photo_subject_owner, _now_ts, _path_text, _photo_subject_owner_prompt_label, _safe_float, _safe_int, _single_line, _strip_internal_message_blocks, _today_key, normalize_legacy_tag_text
+from .helpers import _date_key, _memory_archive_warning, _normalize_outbound_punctuation_flow, _normalize_photo_subject_owner, _now_ts, _path_text, _photo_subject_owner_prompt_label, _safe_float, _safe_int, _single_line, _strip_internal_message_blocks, _today_key, normalize_legacy_tag_text
 from .model_routing import CURRENT_MODEL_REPLACEMENT_SOURCES, find_route, scope_allows
 from .persona_config import runtime_persona_setting
+from .story_authority import story_legacy_sync_operation
 from .conversation_injection_plan import (
     PLACEMENT_DYNAMIC_SYSTEM,
     PLACEMENT_TURN_TAIL,
@@ -851,9 +852,24 @@ class DailyStateMixin(DailyStateTickMixin):
         diary_recorder = getattr(self, "_memory_companion_record_daily_diary", None)
         if callable(diary_recorder):
             try:
-                await diary_recorder(diary)
+                archive_result = await diary_recorder(diary)
             except Exception as exc:
-                logger.debug("[PrivateCompanion] Bot Personal 日记归档失败: %s", _single_line(exc, 160))
+                archive_result = {
+                    "ok": False,
+                    "state": "degraded",
+                    "error_code": type(exc).__name__,
+                }
+                logger.warning("[PrivateCompanion] Bot Personal 日记归档失败: %s", _single_line(exc, 160))
+            if isinstance(diary, dict) and isinstance(archive_result, dict):
+                async with self._data_lock:
+                    diary["memory_archive"] = dict(archive_result)
+                    self._save_data_sync(
+                        sections={
+                            "bot_diaries",
+                            "bot_personal_outbox",
+                            "bot_personal_archive_revisions",
+                        }
+                    )
         if memory_payload:
             try:
                 await self._memory_companion_record_dream_fragment(**memory_payload)
@@ -5014,7 +5030,7 @@ class DailyStateMixin(DailyStateTickMixin):
         """Return a credential-free identity for the active weather place."""
 
         source = str(runtime_persona_setting(self, "weather_source", "qweather") or "qweather").strip().lower()
-        parts = [source]
+        parts = [source, self._weather_window_timezone()]
         if source == "qweather":
             parts.extend((self._qweather_weather_api_host(), self._qweather_location_identity()))
         elif source == "amap":
@@ -5030,6 +5046,22 @@ class DailyStateMixin(DailyStateTickMixin):
             parts.append("coordinates:" + repr(self._qweather_legacy_weather_location()))
         raw = "|".join(parts)
         return hashlib.sha256(raw.encode("utf-8", "ignore")).hexdigest()[:24]
+
+    def _weather_window_timezone(self) -> str:
+        """Resolve the effective timezone without requiring ProactiveMixin."""
+
+        resolver = getattr(self, "_proactive_window_timezone", None)
+        if callable(resolver):
+            try:
+                resolved = _single_line(resolver(), 64)
+            except Exception:
+                resolved = ""
+            if resolved:
+                return resolved
+        return _single_line(
+            getattr(self, "environment_perception_timezone", ""),
+            64,
+        ) or "Asia/Shanghai"
 
     async def _ensure_weather_context(self, force: bool = False) -> dict[str, Any]:
         today = _today_key()
@@ -6411,7 +6443,13 @@ class DailyStateMixin(DailyStateTickMixin):
                 location_text = ",".join(self._qweather_alert_coordinate_text(value) for value in location)
         # Token changes do not alter the data location. Omitting it prevents a
         # credential-derived value from being persisted in the cache key.
-        raw = "|".join((self._qweather_alert_api_host(), location_text))
+        raw = "|".join(
+            (
+                self._qweather_alert_api_host(),
+                location_text,
+                self._weather_window_timezone(),
+            )
+        )
         return hashlib.sha256(raw.encode("utf-8", "ignore")).hexdigest()[:24] if raw else ""
 
     def _weather_alert_cache_fresh(self, cache: Any, *, now: float | None = None) -> bool:
@@ -6979,6 +7017,7 @@ class DailyStateMixin(DailyStateTickMixin):
                     "source": "weather_alert",
                     "reason": "weather_alert",
                     "action": "message",
+                    "window_timezone": self._weather_window_timezone(),
                     "scheduled_ts": scheduled,
                     "window_start_at": scheduled,
                     "preferred_ts": scheduled,
@@ -7004,6 +7043,21 @@ class DailyStateMixin(DailyStateTickMixin):
                             if terminal_identity:
                                 terminal_history[terminal_identity] = now
                     offered += 1
+                elif candidate.get("lifecycle_status") in {"skipped", "expired"}:
+                    # Consume terminal candidates. Otherwise an old-timezone
+                    # terminal alert would be rebuilt on every refresh.
+                    delivered.append(user_id)
+                    lifecycle_note = _single_line(candidate.get("lifecycle_note"), 180)
+                    if lifecycle_note:
+                        skip_reasons = event.setdefault("terminal_skip_reasons", {})
+                        if isinstance(skip_reasons, dict):
+                            skip_reasons[user_id] = lifecycle_note
+                    if event.get("kind") in {"cancelled", "resolved", "expired"}:
+                        terminal_history = state.setdefault("terminal_event_identities", {})
+                        if isinstance(terminal_history, dict):
+                            terminal_identity = self._weather_alert_terminal_identity(alert)
+                            if terminal_identity:
+                                terminal_history[terminal_identity] = now
             if owner_ids and owner_ids.issubset(set(delivered)):
                 continue
             remaining.append(event)
@@ -16549,6 +16603,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 changed = True
         return changed
 
+    @story_legacy_sync_operation("daily-state.story-source-sanitize")
     def _cleanup_generated_relationship_history_inplace(self) -> bool:
         """Stop old Bot-authored relationship hallucinations from becoming new evidence."""
         data = getattr(self, "data", None)
@@ -17149,10 +17204,16 @@ class DailyStateMixin(DailyStateTickMixin):
             logger.info("[PrivateCompanion] DeepSeek 高价时段临时路由: %s -> %s (%s)", original, replacement, status.get("current_time"))
         return replacement
 
-    def _task_provider(self, *provider_ids: str | None) -> str:
+    def _task_provider(
+        self,
+        *provider_ids: str | None,
+        allow_replacement: bool = True,
+    ) -> str:
         for provider_id in provider_ids:
             value = str(provider_id or "").strip()
             if value:
+                if not allow_replacement:
+                    return value
                 routed = value
                 if scope_allows(getattr(self, "model_replacement_scope", "plugin"), "plugin"):
                     sources = CURRENT_MODEL_REPLACEMENT_SOURCES.get(())
@@ -17670,6 +17731,9 @@ class DailyStateMixin(DailyStateTickMixin):
             lifecycle = self._plan_item_display_status(plan, item, index)
             status = status_labels.get(lifecycle, "计划中")
             lines.append(f"{window}｜{status} {item.get('activity')}{mood}")
+        archive_warning = _memory_archive_warning(plan)
+        if archive_warning:
+            lines.append(archive_warning)
         return "\n".join(lines)
 
     @staticmethod
@@ -18019,6 +18083,7 @@ class DailyStateMixin(DailyStateTickMixin):
             "planned_opener_mode",
             "planned_followup_kind",
             "planned_proactive_quota_exempt",
+            "planned_proactive_window_timezone",
             "planned_birthday_event_context",
             "planned_special_day_context",
             "insomnia_night_context",

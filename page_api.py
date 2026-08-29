@@ -63,10 +63,16 @@ from .constants import (
     WORLDBOOK_PENDING_OBSERVATION_CAPACITY,
     _REASON_TEXT,
 )
-from .config_migration import _ensure_config_parent_dir
+from .config_migration import _config_root_mapping, _ensure_config_parent_dir
 from .diagnostic_envelope import DIAGNOSTIC_ENVELOPE_VERSION, diagnostic_test_id, normalize_diagnostic_result
-from .helpers import _MISSING, _flat_get, _normalize_timezone_name, _normalize_timezone_setting, _path_text, _redact_outbound_secrets, _safe_int, _set_into_config, _set_today_key_timezone, _strip_internal_message_blocks, _text_looks_garbled, _text_similarity, _today_key, normalize_bot_relationship_cards
+from .helpers import _MISSING, _flat_get, _normalize_timezone_name, _normalize_timezone_setting, _path_text, _redact_outbound_secrets, _safe_int, _set_into_config, _strip_internal_message_blocks, _text_looks_garbled, _text_similarity, _today_key, normalize_bot_relationship_cards
 from .persona_config import runtime_persona_setting
+from .story_authority import (
+    StoryAuthorityError,
+    story_authority_controller,
+    story_legacy_operation,
+    story_legacy_operation_if,
+)
 from .reference_asset_gate import ReferenceAssetGate
 from .owned_reaction_asset_catalog import MAX_ASSET_BYTES, OwnedReactionAssetCatalog
 from .companion_interaction_expression import current_interaction_projection, normalize_normal_interaction_band_cap
@@ -84,9 +90,14 @@ from .relationship_ledger import (
     relationship_ledger_summary,
 )
 from .relationship_policy import (
+    normalize_relationship_stage_provider_routes,
     normalize_relationship_stage_policy,
     relationship_stage_for_score,
     relationship_stage_policy_json,
+)
+from .runtime_config_dispatcher import (
+    TTS_RUNTIME_KEYS,
+    dispatch_runtime_config_effects,
 )
 from .page_api_qzone import PrivateCompanionPageApiQzoneMixin
 from .page_api_users_groups import PrivateCompanionPageApiUsersGroupsMixin
@@ -137,6 +148,14 @@ from .reaction_asset_library import get_reaction_asset_library
 
 PLUGIN_NAME = "astrbot_plugin_private_companion"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
+_MIGRATION_UNKNOWN_CONFIG_KEY = "_migration_unknown_config_fields_v1"
+_MIGRATION_UNKNOWN_NAMESPACES = ("settings", "features", "providers")
+_MIGRATION_UNKNOWN_MAX_BYTES = 256 * 1024
+_MIGRATION_UNKNOWN_MAX_FIELDS = 128
+_MIGRATION_UNKNOWN_SENSITIVE_NAME = re.compile(
+    r"(?:access[_-]?token|password|secret|cookie|api[_-]?key|storage[_-])",
+    flags=re.I,
+)
 EXTENSION_MIGRATION_NOTICE_VERSION = "6.2.2"
 IMAGE_CACHE_THUMBNAIL_MAX_EDGE = 160
 IMAGE_CACHE_THUMBNAIL_QUALITY = 78
@@ -379,49 +398,19 @@ class PrivateCompanionPageApi(
     def __init__(self, plugin: Any) -> None:
         self.plugin = plugin
         self._schema_key_index_cache: dict[str, Any] | None = None
-        self._troubleshooting_proactive_summary_lock: asyncio.Lock | None = None
-        self._troubleshooting_proactive_summary_cache: dict[str, Any] | None = None
-        self._troubleshooting_proactive_summary_cached_at = 0.0
+        self._proactive_task_summary_task: asyncio.Task[dict[str, Any]] | None = None
+        self._proactive_task_summary_cache: dict[str, Any] = {}
+        self._proactive_task_summary_cache_at = 0.0
+        self._proactive_task_summary_cache_ready = False
+        self._proactive_task_summary_generation = 0
 
-    def _troubleshooting_summary_lock(self) -> asyncio.Lock:
-        lock = self._troubleshooting_proactive_summary_lock
-        if lock is None:
-            lock = asyncio.Lock()
-            self._troubleshooting_proactive_summary_lock = lock
-        return lock
+    def _build_troubleshooting_proactive_summary(
+        self,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Resolve relationship snapshots once before rendering diagnostics."""
 
-    async def _cached_troubleshooting_proactive_summary(self, data: dict[str, Any]) -> dict[str, Any]:
-        now = time.monotonic()
-        cache = self._troubleshooting_proactive_summary_cache
-        ttl = max(1.0, float(self.TROUBLESHOOTING_PROACTIVE_SUMMARY_CACHE_SECONDS))
-        if cache is not None and now - self._troubleshooting_proactive_summary_cached_at < ttl:
-            return deepcopy(cache)
-        lock = self._troubleshooting_summary_lock()
-        # A diagnostics request must never queue behind a slow SQLite snapshot
-        # build when a last-good response is available.
-        if lock.locked() and cache is not None:
-            return deepcopy(cache)
-        async with lock:
-            now = time.monotonic()
-            cache = self._troubleshooting_proactive_summary_cache
-            if cache is not None and now - self._troubleshooting_proactive_summary_cached_at < ttl:
-                return deepcopy(cache)
-            try:
-                result = await asyncio.to_thread(self._build_troubleshooting_proactive_summary, data)
-            except Exception as exc:
-                if cache is not None:
-                    logger.warning("[PrivateCompanionPage] 排障主动摘要刷新失败，返回最近成功缓存: %s", exc)
-                    return deepcopy(cache)
-                raise
-            self._troubleshooting_proactive_summary_cache = deepcopy(result)
-            self._troubleshooting_proactive_summary_cached_at = time.monotonic()
-            return result
-
-    def _build_troubleshooting_proactive_summary(self, data: dict[str, Any]) -> dict[str, Any]:
         users = data.get("users") if isinstance(data.get("users"), dict) else {}
-        # Resolve each relationship snapshot once for this request.  The marker
-        # is request-local and lets downstream summary helpers reuse it without
-        # opening another synchronous REQ-041 SQLite transaction.
         resolved_users: dict[str, Any] = {}
         for user_id, raw_user in users.items():
             if not isinstance(raw_user, dict):
@@ -429,11 +418,16 @@ class PrivateCompanionPageApi(
                 continue
             user = dict(raw_user)
             try:
-                snapshot_getter = getattr(self.plugin, "_req041_relationship_snapshot_view", None)
-                snapshot = snapshot_getter(
-                    user,
-                    source="troubleshooting_summary",
-                ) if callable(snapshot_getter) else user
+                snapshot_getter = getattr(
+                    self.plugin,
+                    "_req041_relationship_snapshot_view",
+                    None,
+                )
+                snapshot = (
+                    snapshot_getter(user, source="troubleshooting_summary")
+                    if callable(snapshot_getter)
+                    else user
+                )
                 if isinstance(snapshot, dict):
                     user = dict(snapshot)
             except Exception:
@@ -1578,6 +1572,9 @@ class PrivateCompanionPageApi(
                     exc_info=True,
                 )
                 bookshelf = {"available": False, "degraded": True, "reason": "summary_unavailable"}
+            proactive_tasks = await self._proactive_task_summary_async(data)
+            if proactive_tasks.get("degraded"):
+                degraded_sections.append("proactive_tasks")
 
             payload = {
                 "plugin": {
@@ -1658,7 +1655,7 @@ class PrivateCompanionPageApi(
                 "knowledge": section("knowledge", self.plugin._roleplay_knowledge_summary, {}),
                 "worldbook": section("worldbook", lambda: self._worldbook_summary(data), {}),
                 "proactive_candidates": section("proactive_candidates", lambda: self._proactive_candidate_summary(data), {}),
-                "proactive_tasks": section("proactive_tasks", lambda: self._proactive_task_summary(data), {}),
+                "proactive_tasks": proactive_tasks,
                 "message_debounce": section("message_debounce", lambda: self._message_debounce_summary(data), {}),
                 "bilibili": section("bilibili", lambda: self._bilibili_summary(data), {}),
                 "news": section("news", lambda: self._news_summary(data), {}),
@@ -2005,6 +2002,7 @@ class PrivateCompanionPageApi(
             "planned_proactive_window_start_at",
             "planned_proactive_best_until_at",
             "planned_proactive_expire_at",
+            "planned_proactive_window_timezone",
             "planned_proactive_model_judge_at",
             "next_proactive_at",
             "proactive_sending",
@@ -5242,6 +5240,7 @@ class PrivateCompanionPageApi(
         payload = await request.get_json(silent=True) or {}
         mode_transition_snapshot: dict[str, Any] = {}
         mode_transition_committed = False
+        story_authority_identity: Any | None = None
         try:
             active_getter = getattr(self.plugin, "_active_persona_scope", None)
             active_persona = str(active_getter() if callable(active_getter) else "").strip()
@@ -5358,6 +5357,12 @@ class PrivateCompanionPageApi(
                 != bool(getattr(self.plugin, "enable_multi_persona_mode", False))
             )
             storage_changed = bool({"storage_backend", "storage_sqlite_path"} & set(changed))
+            if storage_changed or mode_transition_changed:
+                story_authority_identity = (
+                    story_authority_controller().enter_legacy_operation(
+                        "page.settings.store-persona-transaction"
+                    )
+                )
             req041_config_snapshot = self._req041_config_runtime_snapshot(changed)
             apply_overrides = dict(changed)
             apply_overrides["__defer_relationship_data_save"] = True
@@ -5486,6 +5491,8 @@ class PrivateCompanionPageApi(
                         if key in self._allowed_setting_keys():
                             settings[key] = value
             return overview
+        except StoryAuthorityError:
+            raise
         except CatalogValidationError as exc:
             detail = next(
                 (
@@ -5517,6 +5524,11 @@ class PrivateCompanionPageApi(
                     )
             logger.error(f"[PrivateCompanionPage] 更新设置失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
+        finally:
+            if story_authority_identity is not None:
+                story_authority_controller().exit_legacy_operation(
+                    story_authority_identity
+                )
 
     def _multi_persona_transition_snapshot(self) -> dict[str, Any]:
         """Capture every mutable boundary touched by a mode transition."""
@@ -5560,6 +5572,7 @@ class PrivateCompanionPageApi(
             "profile_database_names": sorted(profile_database_names),
         }
 
+    @story_legacy_operation("page.settings.persona-rollback")
     async def _rollback_multi_persona_transition(
         self,
         snapshot: dict[str, Any],
@@ -5907,13 +5920,17 @@ class PrivateCompanionPageApi(
             message = "已删除主动候选"
             if cleared_current_plan:
                 message += "，并重新安排了下一次主动检查"
+            proactive_tasks = await self._proactive_task_summary_async(
+                data,
+                force_refresh=True,
+            )
             return self._ok(
                 {
                     "message": message,
                     "removed": True,
                     "cleared_current_plan": cleared_current_plan,
                     "proactive_candidates": self._proactive_candidate_summary(data),
-                    "proactive_tasks": self._proactive_task_summary(data),
+                    "proactive_tasks": proactive_tasks,
                 }
             )
         except Exception as exc:
@@ -5934,13 +5951,17 @@ class PrivateCompanionPageApi(
                 removed = int(shrinker(user_id, pending_cap=keep, note="page_prune") or 0)
                 self.plugin._save_data_sync(sections={"proactive_candidate_pool"})
                 data = self._overview_data_snapshot_locked(self.plugin.data)
+            proactive_tasks = await self._proactive_task_summary_async(
+                data,
+                force_refresh=True,
+            )
             return self._ok(
                 {
                     "message": f"已为用户压缩 {removed} 条未发送候选",
                     "removed": removed,
                     "kept_limit": keep,
                     "proactive_candidates": self._proactive_candidate_summary(data),
-                    "proactive_tasks": self._proactive_task_summary(data),
+                    "proactive_tasks": proactive_tasks,
                 }
             )
         except Exception as exc:
@@ -6214,7 +6235,7 @@ class PrivateCompanionPageApi(
                 all_diagnostics.append(tune_item)
             all_diagnostics = self._troubleshooting_diagnostics_with_types(all_diagnostics)
             diagnostics = self._filter_suppressed_troubleshooting_warnings(all_diagnostics, suppressed_keys)
-            proactive_tasks = await self._cached_troubleshooting_proactive_summary(data)
+            proactive_tasks = await self._proactive_task_summary_async(data)
             proactive_candidates = self._proactive_candidate_summary(data)
             token_stats = self._token_stats_payload(data.get("token_usage", {}))
             cache = self._cache_summary(data)
@@ -7959,17 +7980,6 @@ class PrivateCompanionPageApi(
                 "error": configuration_note,
             }
         runner = getattr(self.plugin, "_image_companion_test_endpoint", None)
-        legacy_runner = getattr(self.plugin, "_run_external_photo_generation_with_endpoint", None)
-        use_legacy_runner = not callable(runner) and callable(legacy_runner)
-        if use_legacy_runner:
-            async def runner(endpoint_value: dict[str, Any], prompt_value: str) -> dict[str, Any]:
-                image_value, note_value = await legacy_runner(
-                    endpoint_value,
-                    prompt_value,
-                    session_key=f"private_companion_troubleshooting_{summary['test_key'][-12:]}",
-                    image_size=summary["size"],
-                )
-                return {"image_path": image_value, "message": note_value}
         if not callable(runner):
             return {
                 **base_result,
@@ -8988,6 +8998,7 @@ class PrivateCompanionPageApi(
             "planned_opener_mode",
             "planned_followup_kind",
             "planned_proactive_quota_exempt",
+            "planned_proactive_window_timezone",
             "planned_candidate_id",
             "planned_proactive_trigger_message_id",
             "planned_proactive_trigger_umo",
@@ -9088,6 +9099,15 @@ class PrivateCompanionPageApi(
             current["planned_proactive_topic"] = "主动来找对方一下"
             current["planned_proactive_impulse_id"] = ""
             current["planned_proactive_window_start_at"] = scheduled_ts
+            timezone_resolver = getattr(self.plugin, "_proactive_window_timezone", None)
+            current["planned_proactive_window_timezone"] = (
+                self._single_line(timezone_resolver(), 64)
+                if callable(timezone_resolver)
+                else self._single_line(
+                    getattr(self.plugin, "environment_perception_timezone", ""),
+                    64,
+                )
+            ) or "Asia/Shanghai"
             try:
                 active_span, grace_span = self.plugin._proactive_impulse_default_window_seconds(
                     "check_in",
@@ -11496,7 +11516,7 @@ class PrivateCompanionPageApi(
             async with self.plugin._data_lock:
                 if not self._bookshelf_password_matches(password, expected):
                     return self._error("密码不对。需要在聊天里自然向 Bot 询问。")
-                access_token = self._issue_bookshelf_access_token(persist=True)
+                access_token = (self._issue_bookshelf_access_token(persist=True))
                 saver = getattr(self.plugin, "_save_data_sync", None)
                 if callable(saver):
                     saver(sections={"bookshelf_secret"})
@@ -11514,7 +11534,7 @@ class PrivateCompanionPageApi(
         itself; the raw token remains available only in the current request/runtime map.
         """
         payload = await request.get_json(silent=True) or {}
-        access_token = self._bookshelf_request_token(payload)
+        access_token = (self._bookshelf_request_token(payload))
         if not self._bookshelf_access_token_valid(access_token):
             return self._error(self._bookshelf_access_error()["error"])
         try:
@@ -12034,7 +12054,7 @@ class PrivateCompanionPageApi(
 
     async def delete_bookshelf_item(self) -> dict[str, Any]:
         payload = await request.get_json(silent=True) or {}
-        access_token = self._bookshelf_request_token(payload)
+        access_token = (self._bookshelf_request_token(payload))
         if not self._bookshelf_access_token_valid(access_token):
             return self._error(self._bookshelf_access_error()["error"])
         kind = self._single_line(payload.get("kind"), 32)
@@ -12044,21 +12064,39 @@ class PrivateCompanionPageApi(
         date_key = self._single_line(payload.get("date"), 32)
         diary_date_key = self._bookshelf_diary_date_key(date_key)
         diary_entry_key = self._single_line(payload.get("entry_key") or payload.get("diary_key"), 80)
+        story_authority_identity: Any | None = None
+        if kind == "creative":
+            story_authority_identity = (
+                story_authority_controller().enter_legacy_operation(
+                    "page.bookshelf.creative-delete"
+                )
+            )
         try:
             async with self.plugin._data_lock:
                 changed = False
+                changed_sections: set[str]
                 if kind == "creative":
-                    projects = self.plugin.data.setdefault("creative_projects", [])
+                    changed_sections = {"creative_projects"}
+                    if not item_id:
+                        return self._error("缺少要删除的创作标识")
+                    projects = self.plugin.data.get("creative_projects", [])
                     if not isinstance(projects, list):
-                        projects = []
+                        return self._error("创作记录结构异常，已停止删除以避免覆盖原数据")
                     before = len(projects)
-                    self.plugin.data["creative_projects"] = [
+                    kept_projects = [
                         item
                         for item in projects
                         if not (isinstance(item, dict) and self._single_line(item.get("id"), 80) == item_id)
                     ]
-                    changed = len(self.plugin.data["creative_projects"]) != before
+                    changed = len(kept_projects) != before
+                    if changed:
+                        self.plugin.data["creative_projects"] = kept_projects
                 elif kind == "diary":
+                    changed_sections = {
+                        "bot_diaries",
+                        "daily_diary_deleted_days",
+                        "daily_diary_delete_revision",
+                    }
                     if not diary_entry_key and not diary_date_key:
                         return self._error("缺少要删除的日记标识")
                     diaries = self.plugin.data.get("bot_diaries", [])
@@ -12116,6 +12154,10 @@ class PrivateCompanionPageApi(
                         remaining,
                     )
                 elif kind == "archive_item":
+                    changed_sections = {
+                        "bookshelf_items",
+                        "reading_archive_integration",
+                    }
                     album_id = album_payload_id or item_id.removeprefix("archive-")
                     album_id = album_id.removeprefix("archive-").removeprefix("archive_item:")
                     match_keys = {
@@ -12184,7 +12226,7 @@ class PrivateCompanionPageApi(
                         if (data_root / "bookshelf_pages" / album_id).exists():
                             removed_album_ids.add(album_id)
                             changed = True
-                    if removed_album_ids or title_payload:
+                    if changed and (removed_album_ids or title_payload):
                         state = self.plugin.data.setdefault("reading_archive_integration", {})
                         if not isinstance(state, dict):
                             state = {}
@@ -12228,12 +12270,17 @@ class PrivateCompanionPageApi(
                 if changed:
                     if kind == "archive_item":
                         self._mark_bookshelf_data_changed()
-                    self.plugin._save_data_sync(sections={"bookshelf_items"})
+                    self.plugin._save_data_sync(sections=changed_sections)
                 data = deepcopy(self.plugin.data)
             return self._ok({"changed": changed, "bookshelf": await self._bookshelf_summary(data, unlocked=True, access_token=access_token)})
         except Exception as exc:
             logger.error(f"[PrivateCompanionPage] 删除资料柜项目失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
+        finally:
+            if story_authority_identity is not None:
+                story_authority_controller().exit_legacy_operation(
+                    story_authority_identity
+                )
 
     def _cleanup_bookshelf_page_files(self, pages: list[dict[str, Any]]) -> None:
         data_root = Path(str(getattr(self.plugin, "data_dir", ""))).resolve()
@@ -12283,7 +12330,7 @@ class PrivateCompanionPageApi(
 
     async def update_bookshelf_reading_state(self) -> dict[str, Any]:
         payload = await request.get_json(silent=True) or {}
-        access_token = self._bookshelf_request_token(payload)
+        access_token = (self._bookshelf_request_token(payload))
         if not self._bookshelf_access_token_valid(access_token):
             return self._error(self._bookshelf_access_error()["error"])
         album_id = self._single_line(payload.get("album_id") or payload.get("id"), 32)
@@ -12330,7 +12377,7 @@ class PrivateCompanionPageApi(
 
     async def rate_bookshelf_item(self) -> dict[str, Any]:
         payload = await request.get_json(silent=True) or {}
-        access_token = self._bookshelf_request_token(payload)
+        access_token = (self._bookshelf_request_token(payload))
         if not self._bookshelf_access_token_valid(access_token):
             return self._error(self._bookshelf_access_error()["error"])
         album_id = self._single_line(payload.get("album_id") or payload.get("id"), 32)
@@ -12440,7 +12487,7 @@ class PrivateCompanionPageApi(
 
     async def update_bookshelf_item_tags(self) -> dict[str, Any]:
         payload = await request.get_json(silent=True) or {}
-        access_token = self._bookshelf_request_token(payload)
+        access_token = (self._bookshelf_request_token(payload))
         if not self._bookshelf_access_token_valid(access_token):
             return self._error(self._bookshelf_access_error()["error"])
         album_id = self._single_line(payload.get("album_id") or payload.get("id"), 32)
@@ -12524,7 +12571,7 @@ class PrivateCompanionPageApi(
 
     async def update_bookshelf_item_comments(self) -> dict[str, Any]:
         payload = await request.get_json(silent=True) or {}
-        access_token = self._bookshelf_request_token(payload)
+        access_token = (self._bookshelf_request_token(payload))
         if not self._bookshelf_access_token_valid(access_token):
             return self._error(self._bookshelf_access_error()["error"])
         album_id = self._single_line(payload.get("album_id") or payload.get("id"), 32)
@@ -19889,6 +19936,7 @@ class PrivateCompanionPageApi(
             "enable_intent_emotion_analysis",
             "enable_passive_response_review",
             "enable_framework_error_leak_guard",
+            "enable_outbound_secret_redaction",
             "enable_proactive_message_review",
             "enable_smart_silence",
             "enable_llm_proactive_message",
@@ -20290,6 +20338,67 @@ class PrivateCompanionPageApi(
         selected = {item for item in options if item in allowed}
         return selected or {"basic", "relations", "food_skills"}
 
+    @staticmethod
+    def _migration_unknown_key_allowed(value: Any) -> bool:
+        return bool(
+            type(value) is str
+            and 0 < len(value) <= 120
+            and not value.startswith("__")
+            and _MIGRATION_UNKNOWN_SENSITIVE_NAME.search(value) is None
+        )
+
+    @classmethod
+    def _bounded_migration_unknown_fields(cls, value: Any) -> dict[str, dict[str, Any]]:
+        source = value if type(value) is dict else {}
+        result: dict[str, dict[str, Any]] = {}
+        total_bytes = 2
+        total_fields = 0
+        for namespace in _MIGRATION_UNKNOWN_NAMESPACES:
+            raw_fields = source.get(namespace)
+            if type(raw_fields) is not dict:
+                continue
+            kept: dict[str, Any] = {}
+            for key in sorted(key for key in raw_fields if type(key) is str):
+                if (
+                    total_fields >= _MIGRATION_UNKNOWN_MAX_FIELDS
+                    or not cls._migration_unknown_key_allowed(key)
+                ):
+                    continue
+                try:
+                    encoded = json.dumps(
+                        [namespace, key, raw_fields[key]],
+                        ensure_ascii=False,
+                        allow_nan=False,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                except (TypeError, ValueError, UnicodeError):
+                    continue
+                if total_bytes + len(encoded) > _MIGRATION_UNKNOWN_MAX_BYTES:
+                    continue
+                kept[key] = deepcopy(raw_fields[key])
+                total_bytes += len(encoded)
+                total_fields += 1
+            if kept:
+                result[namespace] = kept
+        return result
+
+    def _migration_unknown_config_fields(self) -> dict[str, dict[str, Any]]:
+        raw = self._config_get_raw(_MIGRATION_UNKNOWN_CONFIG_KEY, {})
+        if type(raw) is str:
+            try:
+                raw = json.loads(raw)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                raw = {}
+        return self._bounded_migration_unknown_fields(raw)
+
+    @story_legacy_operation_if(
+        "page.migration.story-apply",
+        lambda self, normalized, **kwargs: (
+            isinstance(normalized, dict)
+            and isinstance(normalized.get("data"), dict)
+            and "creative_projects" in normalized["data"]
+        ),
+    )
     async def _apply_migration_normalized(self, normalized: dict[str, Any], *, mode: str, conflict: str) -> dict[str, Any]:
         data_payload = normalized.get("data") if isinstance(normalized.get("data"), dict) else {}
         if data_payload:
@@ -20301,7 +20410,56 @@ class PrivateCompanionPageApi(
         before = await self._build_migration_package(include_all=True)
         backup_path = self._write_migration_backup(before)
 
+        config_root = _config_root_mapping(getattr(self.plugin, "config", None))
+        if not isinstance(config_root, dict):
+            raise RuntimeError("migration configuration store is unavailable")
+        config_snapshot = deepcopy(config_root)
+        async with self.plugin._data_lock:
+            data_snapshot = deepcopy(self.plugin.data)
+        try:
+            return await self._commit_migration_normalized(
+                normalized,
+                mode=mode,
+                conflict=conflict,
+                backup_path=backup_path,
+            )
+        except BaseException as exc:
+            rollback_error = await self._rollback_migration_normalized(
+                config_snapshot,
+                data_snapshot,
+                normalized,
+            )
+            if rollback_error:
+                raise RuntimeError(
+                    f"配置导入失败，且回滚未完整: {rollback_error}"
+                ) from exc
+            raise
+
+    async def _commit_migration_normalized(
+        self,
+        normalized: dict[str, Any],
+        *,
+        mode: str,
+        conflict: str,
+        backup_path: str,
+    ) -> dict[str, Any]:
+        data_payload = normalized.get("data") if isinstance(normalized.get("data"), dict) else {}
+
         changed_config: dict[str, Any] = {}
+        incoming_unknown = self._bounded_migration_unknown_fields(
+            normalized.get("unknown_config_fields")
+        )
+        if incoming_unknown:
+            current_unknown = self._migration_unknown_config_fields()
+            merged_unknown = deepcopy(current_unknown)
+            self._deep_merge_dict(
+                merged_unknown,
+                incoming_unknown,
+                conflict=conflict,
+            )
+            merged_unknown = self._bounded_migration_unknown_fields(merged_unknown)
+            if merged_unknown != current_unknown:
+                changed_config[_MIGRATION_UNKNOWN_CONFIG_KEY] = merged_unknown
         for key, value in normalized.get("features", {}).items():
             normalized_value = self._normalize_bool_value(value)
             current_value = self._normalize_bool_value(getattr(self.plugin, key, self._config_get(key)))
@@ -20327,6 +20485,14 @@ class PrivateCompanionPageApi(
                 changed_config[key] = normalized_value
         for key, value in changed_config.items():
             self._apply_config_value(key, value, changed_config)
+        if "enable_body_monitor_integration" in changed_config:
+            runtime_task = getattr(
+                self.plugin,
+                "_body_monitor_integration_toggle_task",
+                None,
+            )
+            if isinstance(runtime_task, asyncio.Task):
+                await runtime_task
         if any(key in self._allowed_provider_keys() for key in changed_config) or "provider_config_mode" in changed_config:
             apply_quick = getattr(self.plugin, "_apply_quick_provider_defaults", None)
             if callable(apply_quick):
@@ -20334,6 +20500,8 @@ class PrivateCompanionPageApi(
         config_saved = True
         if changed_config:
             config_saved = await self._save_config_if_possible()
+            if not config_saved:
+                raise RuntimeError("配置导入持久化失败")
 
         applied_sections: list[dict[str, Any]] = []
         if data_payload:
@@ -20373,6 +20541,71 @@ class PrivateCompanionPageApi(
         overview["data"] = data
         return overview
 
+    async def _rollback_migration_normalized(
+        self,
+        config_snapshot: dict[str, Any],
+        data_snapshot: dict[str, Any],
+        normalized: dict[str, Any],
+    ) -> str:
+        errors: list[str] = []
+        changed_keys = {
+            str(key)
+            for namespace in ("features", "providers", "settings")
+            for key in (
+                normalized.get(namespace).keys()
+                if isinstance(normalized.get(namespace), dict)
+                else ()
+            )
+        }
+        # Reapply old values to reverse runtime-only side effects, then replace
+        # the config root again so aliases/default projections cannot alter the
+        # exact pre-import image.
+        for key in sorted(changed_keys, reverse=True):
+            old_value = _flat_get(config_snapshot, key, _MISSING)
+            if old_value is _MISSING:
+                continue
+            try:
+                self._apply_config_value(key, deepcopy(old_value), {})
+            except Exception as rollback_exc:
+                errors.append(f"runtime:{key}:{type(rollback_exc).__name__}")
+        config_root = _config_root_mapping(getattr(self.plugin, "config", None))
+        if isinstance(config_root, dict):
+            try:
+                config_root.clear()
+                config_root.update(deepcopy(config_snapshot))
+            except Exception as rollback_exc:
+                errors.append(f"config-memory:{type(rollback_exc).__name__}")
+        else:
+            errors.append("config-memory:unavailable")
+
+        runtime_task = getattr(
+            self.plugin,
+            "_body_monitor_integration_toggle_task",
+            None,
+        )
+        if isinstance(runtime_task, asyncio.Task):
+            try:
+                await asyncio.shield(runtime_task)
+            except (asyncio.CancelledError, Exception) as rollback_exc:
+                errors.append(f"runtime-task:{type(rollback_exc).__name__}")
+
+        try:
+            async with self.plugin._data_lock:
+                self.plugin.data.clear()
+                self.plugin.data.update(deepcopy(data_snapshot))
+                writer = getattr(self.plugin, "_write_data_snapshot_sync", None)
+                if not callable(writer):
+                    raise RuntimeError("data snapshot writer unavailable")
+                writer(deepcopy(data_snapshot))
+        except Exception as rollback_exc:
+            errors.append(f"data:{type(rollback_exc).__name__}")
+        try:
+            if not await self._save_config_if_possible():
+                errors.append("config-persist:false")
+        except Exception as rollback_exc:
+            errors.append(f"config-persist:{type(rollback_exc).__name__}")
+        return ";".join(errors)
+
     async def _build_migration_package(self, options: set[str] | None = None, *, include_all: bool = False) -> dict[str, Any]:
         selected = {"basic", "relations", "food_skills", "providers", "sensitive"} if include_all else (options or {"basic", "relations", "food_skills"})
         async with self.plugin._data_lock:
@@ -20398,6 +20631,13 @@ class PrivateCompanionPageApi(
         }
         if "providers" in selected:
             package["providers"] = self._migration_provider_snapshot()
+        if "sensitive" in selected:
+            for namespace, fields in self._migration_unknown_config_fields().items():
+                target = package.setdefault(namespace, {})
+                if not isinstance(target, dict):
+                    continue
+                for key, value in fields.items():
+                    target.setdefault(key, deepcopy(value))
         package["checksum_algorithm"] = "sha256"
         package["checksum"] = self._migration_checksum(package)
         return package
@@ -20430,7 +20670,10 @@ class PrivateCompanionPageApi(
             qzone_cookie = self._config_get("QZONE_COOKIE") or str(getattr(self.plugin, "qzone_cookie", "") or "")
             if qzone_cookie:
                 settings["QZONE_COOKIE"] = qzone_cookie
-            search_api_key = self._config_get("WEB_EXPLORATION_API_KEY") or str(getattr(self.plugin, "web_exploration_api_key", "") or "")
+            search_api_key = (
+                self._config_get("WEB_EXPLORATION_API_KEY")
+                or str(getattr(self.plugin, "web_exploration_api_key", "") or "")
+            )
             if search_api_key:
                 settings["WEB_EXPLORATION_API_KEY"] = search_api_key
         return settings
@@ -20623,6 +20866,13 @@ class PrivateCompanionPageApi(
         features: dict[str, bool] = {}
         providers: dict[str, str] = {}
         ignored: list[str] = []
+        unknown_config_fields: dict[str, dict[str, Any]] = {}
+
+        def preserve_unknown(namespace: str, key: Any, value: Any) -> None:
+            if self._migration_unknown_key_allowed(key):
+                unknown_config_fields.setdefault(namespace, {})[str(key)] = deepcopy(value)
+            else:
+                ignored.append(str(key))
 
         raw_settings = package.get("settings") if isinstance(package.get("settings"), dict) else {}
         for key, value in raw_settings.items():
@@ -20640,21 +20890,21 @@ class PrivateCompanionPageApi(
             if key in self._allowed_setting_keys():
                 settings[key] = self._normalize_setting_value(key, value)
             else:
-                ignored.append(str(key))
+                preserve_unknown("settings", key, value)
 
         raw_features = package.get("features") if isinstance(package.get("features"), dict) else {}
         for key, value in raw_features.items():
             if key in self._allowed_feature_keys():
                 features[key] = self._normalize_bool_value(value)
             else:
-                ignored.append(str(key))
+                preserve_unknown("features", key, value)
 
         raw_providers = package.get("providers") if isinstance(package.get("providers"), dict) else {}
         for key, value in raw_providers.items():
             if key in self._allowed_provider_keys():
                 providers[key] = self._single_line(value, 160)
             else:
-                ignored.append(str(key))
+                preserve_unknown("providers", key, value)
 
         raw_data = package.get("data") if isinstance(package.get("data"), dict) else {}
         data: dict[str, Any] = {}
@@ -20669,6 +20919,14 @@ class PrivateCompanionPageApi(
             if section not in data:
                 ignored.append(str(section))
 
+        bounded_unknown = self._bounded_migration_unknown_fields(
+            unknown_config_fields
+        )
+        preserved_unknown = sorted(
+            f"{namespace}.{key}"
+            for namespace, fields in bounded_unknown.items()
+            for key in fields
+        )
         return {
             "version": package.get("version"),
             "exported_at": package.get("exported_at"),
@@ -20681,6 +20939,8 @@ class PrivateCompanionPageApi(
             "features": features,
             "providers": providers,
             "data": data,
+            "unknown_config_fields": bounded_unknown,
+            "preserved_unknown": preserved_unknown,
             "ignored": sorted(set(ignored))[:80],
         }
 
@@ -20718,6 +20978,10 @@ class PrivateCompanionPageApi(
             "settings_count": len(normalized.get("settings", {})),
             "features_count": len(normalized.get("features", {})),
             "providers_count": len(normalized.get("providers", {})),
+            "preserved_unknown": normalized.get("preserved_unknown", []),
+            "preserved_unknown_count": len(
+                normalized.get("preserved_unknown", [])
+            ),
             "sections": sections,
             "ignored": normalized.get("ignored", []),
             "excluded": [
@@ -24183,7 +24447,26 @@ class PrivateCompanionPageApi(
                 + "; ".join(profile_rollback_errors)
             )
 
+    def _forward_runtime_config_effects(
+        self,
+        key: str,
+        value: Any,
+        overrides: dict[str, Any] | None = None,
+    ) -> None:
+        dispatch_runtime_config_effects(
+            self.plugin,
+            {key: value},
+            source="page",
+            adapter=self,
+            overrides=overrides,
+        )
+
     def _apply_config_value(self, key: str, value: Any, overrides: dict[str, Any] | None = None) -> None:
+        if key == "relationship_stage_provider_routes":
+            normalized = normalize_relationship_stage_provider_routes(value)
+            self._set_config_value(key, normalized)
+            self.plugin.relationship_stage_provider_routes = normalized
+            return
         if key == "relationship_stage_policy":
             normalized = normalize_relationship_stage_policy(value)
             self._set_config_value(key, relationship_stage_policy_json(normalized))
@@ -24264,15 +24547,11 @@ class PrivateCompanionPageApi(
         self._set_config_value(key, value)
         if key == "enable_body_monitor_integration":
             enabled = self._normalize_bool_value(value)
-            self.plugin.enable_body_monitor_integration = enabled
-            self._schedule_body_monitor_integration_toggle(enabled)
+            self._forward_runtime_config_effects(key, enabled, overrides)
             return
         if key == "enable_multi_persona_mode":
             enabled = self._normalize_bool_value(value)
-            transition = getattr(self.plugin, "_prepare_multi_persona_transition", None)
-            if callable(transition):
-                transition(enabled)
-            self.plugin.enable_multi_persona_mode = enabled
+            self._forward_runtime_config_effects(key, enabled, overrides)
             primary_getter = getattr(self.plugin, "_primary_persona_id", None)
             primary = primary_getter() if callable(primary_getter) else ""
             if primary:
@@ -24370,12 +24649,21 @@ class PrivateCompanionPageApi(
             self.plugin.sensitive_replacement_keywords = str(value or "").strip()
             return
         if key == "environment_perception_timezone":
+            previous_timezone = str(
+                getattr(self.plugin, "environment_perception_timezone", "") or ""
+            )
             timezone_setting = _normalize_timezone_setting(value)
             resolver = getattr(self.plugin, "_resolve_environment_perception_timezone", None)
             timezone_name = resolver(timezone_setting) if callable(resolver) else _normalize_timezone_name(timezone_setting)
             self.plugin.environment_perception_timezone_setting = timezone_setting
             self.plugin.environment_perception_timezone = timezone_name
-            _set_today_key_timezone(timezone_name)
+            runtime_overrides = overrides if isinstance(overrides, dict) else {}
+            runtime_overrides["__previous_environment_perception_timezone"] = previous_timezone
+            self._forward_runtime_config_effects(
+                key,
+                timezone_setting,
+                runtime_overrides,
+            )
             return
         if key == "enable_deepseek_peak_replacement":
             self.plugin.enable_deepseek_peak_replacement = self._normalize_bool_value(value)
@@ -24393,12 +24681,11 @@ class PrivateCompanionPageApi(
             return
         if key == "max_daily_messages":
             self.plugin.max_daily_messages = max(0, self._int(value))
-            kicker = getattr(self.plugin, "_kick_proactive_loop_once", None)
-            if callable(kicker):
-                try:
-                    self._create_page_background_task(kicker(), label="max_daily_messages_wakeup")
-                except RuntimeError:
-                    pass
+            self._forward_runtime_config_effects(
+                key,
+                self.plugin.max_daily_messages,
+                overrides,
+            )
             return
         if key == "page_font_family":
             text = str(value or "original").strip().lower()
@@ -24411,15 +24698,19 @@ class PrivateCompanionPageApi(
         if key == "storage_backend":
             backend = str(value or "json").strip().lower() or "json"
             self.plugin.storage_backend = backend if backend in {"json", "sqlite"} else "json"
-            rebuild = getattr(self.plugin, "_rebuild_store_manager", None)
-            if callable(rebuild) and not bool((overrides or {}).get("__defer_storage_rebuild")):
-                rebuild(reload_data=True)
+            self._forward_runtime_config_effects(
+                key,
+                self.plugin.storage_backend,
+                overrides,
+            )
             return
         if key == "storage_sqlite_path":
             self.plugin.storage_sqlite_path = str(value or "").strip()
-            rebuild = getattr(self.plugin, "_rebuild_store_manager", None)
-            if callable(rebuild) and not bool((overrides or {}).get("__defer_storage_rebuild")):
-                rebuild(reload_data=True)
+            self._forward_runtime_config_effects(
+                key,
+                self.plugin.storage_sqlite_path,
+                overrides,
+            )
             return
         attr_map = {
             "FAST_RESPONSE_PROVIDER_ID": "fast_response_provider_id",
@@ -24569,55 +24860,8 @@ class PrivateCompanionPageApi(
             raw = float(value or 0)
             setattr(self.plugin, key, max(0.0, min(1.0, raw / 100.0 if raw > 1 else raw)))
             return
-        tts_runtime_keys = {
-            "tts_synthesis_backend",
-            "tts_provider_id_zh",
-            "tts_provider_id_ja",
-            "tts_provider_id_en",
-            "tts_mimo_tool_name",
-            "tts_mimo_voice_name",
-            "tts_mimo_style_prompt",
-            "tts_generation_mode",
-            "tts_voice_language",
-            "tts_fishaudio_model",
-            "tts_fishaudio_emotion_mode",
-            "tts_delivery_mode",
-            "tts_foreign_text_mode",
-            "tts_message_scope",
-            "tts_conversion_scope",
-            "tts_conversion_provider_id",
-            "tts_extra_prompt",
-            "tts_trigger_keywords",
-            "tts_frequency_control_mode",
-            "tts_constraint_mode",
-            "tts_session_min_interval_seconds",
-            "tts_private_min_interval_seconds",
-            "tts_group_min_interval_seconds",
-            "tts_trigger_probability",
-            "tts_private_trigger_probability",
-            "tts_group_trigger_probability",
-            "enable_tts_local_playback",
-            "enable_tts_local_playback_live_only",
-            "enable_tts_live_subtitle_sync",
-            "tts_live_subtitle_url",
-            "tts_local_playback_volume",
-            "tts_local_playback_min_interval_seconds",
-            "auto_voice_enabled",
-            "auto_voice_full_conversion_enabled",
-            "auto_voice_probability",
-            "auto_voice_max_chars",
-            "auto_voice_cooldown_seconds",
-            "main_user_voice_probability",
-            "main_user_mention_voice_keywords",
-            "main_user_mention_voice_probability",
-            "main_user_mention_voice_prompt",
-        }
-        if key == "enable_tts_enhancement" or key in tts_runtime_keys:
-            loader = getattr(self.plugin, "_load_tts_enhancement_config", None)
-            if callable(loader):
-                loader(self._config_overlay(overrides or {key: value}))
-            else:
-                setattr(self.plugin, key, value)
+        if key == "enable_tts_enhancement" or key in TTS_RUNTIME_KEYS:
+            self._forward_runtime_config_effects(key, value, overrides)
             if key == "tts_generation_mode":
                 # Keep the live value authoritative even when AstrBot's config wrapper
                 # still exposes a stale grouped/default value during the same request.
@@ -24637,13 +24881,7 @@ class PrivateCompanionPageApi(
         if key in self._allowed_feature_keys():
             normalized = self._normalize_bool_value(value)
             setattr(self.plugin, key, normalized)
-            if key == "enable_daily_case_review_experiment" and not normalized:
-                data = getattr(self.plugin, "data", None)
-                if isinstance(data, dict):
-                    data["daily_review_case_audit"] = []
-                    scheduler = getattr(self.plugin, "_schedule_data_save", None)
-                    if callable(scheduler):
-                        scheduler(sections={"daily_review_case_audit"})
+            self._forward_runtime_config_effects(key, normalized, overrides)
             return
         if key in self._allowed_setting_keys():
             setattr(self.plugin, key, value)
@@ -25072,6 +25310,7 @@ class PrivateCompanionPageApi(
             "enable_response_self_review",
             "enable_passive_response_review",
             "enable_framework_error_leak_guard",
+            "enable_outbound_secret_redaction",
             "enable_proactive_message_review",
             "enable_smart_silence",
             "enable_llm_proactive_message",
@@ -25084,6 +25323,7 @@ class PrivateCompanionPageApi(
             "enable_daily_case_review_experiment",
             "enable_passive_topic_suppression",
             "enable_custom_relationship_stage_policy",
+            "enable_relationship_stage_provider_routing",
             "enable_group_relationship_affinity",
             "enable_relationship_content_tiers",
             "enable_relationship_analysis",
@@ -25297,6 +25537,7 @@ class PrivateCompanionPageApi(
             "default_interaction_band",
             "enable_custom_relationship_stage_policy",
             "relationship_stage_policy",
+            "relationship_stage_provider_routes",
             "relationship_positive_stage_cap_key",
             "normal_interaction_band_cap",
             "owner_group_relationship_projection",
@@ -27005,23 +27246,6 @@ class PrivateCompanionPageApi(
             return ""
         # Legacy archive records are never rendered by the public package.
         return ""
-        if False and cover:
-            url += "&cover=1"
-        elif page_index > 0:
-            url += f"&page={page_index}"
-        if access_token:
-            url += f"&access_token={quote(str(access_token), safe='')}"
-        raw_path = self._single_line(path_value, 500)
-        if raw_path:
-            try:
-                path = Path(raw_path).resolve()
-                path.relative_to(data_root)
-                if path.exists() and path.is_file():
-                    stat = path.stat()
-                    url += f"&v={int(stat.st_mtime)}-{stat.st_size}"
-            except Exception:
-                pass
-        return url
 
     def _bookshelf_cover_url(
         self,
@@ -27908,6 +28132,83 @@ class PrivateCompanionPageApi(
             "arousal": part(value.get("arousal")),
         }
 
+    async def _proactive_task_summary_async(
+        self,
+        data: dict[str, Any],
+        *,
+        force_refresh: bool = False,
+    ) -> dict[str, Any]:
+        """Build the SQLite-backed summary off-loop with one shared flight."""
+
+        now = time.monotonic()
+        if force_refresh:
+            self._proactive_task_summary_generation += 1
+        if (
+            not force_refresh
+            and self._proactive_task_summary_cache_ready
+            and now - self._proactive_task_summary_cache_at
+            < max(
+                1.0,
+                float(self.TROUBLESHOOTING_PROACTIVE_SUMMARY_CACHE_SECONDS),
+            )
+        ):
+            return deepcopy(self._proactive_task_summary_cache)
+
+        task = None if force_refresh else self._proactive_task_summary_task
+        if task is None or task.done():
+            snapshot = deepcopy(data)
+            generation = self._proactive_task_summary_generation
+
+            async def compute() -> dict[str, Any]:
+                try:
+                    result = await asyncio.to_thread(
+                        self._build_troubleshooting_proactive_summary,
+                        snapshot,
+                    )
+                    if not isinstance(result, dict):
+                        raise TypeError("proactive task summary returned a non-object")
+                except Exception as exc:
+                    logger.warning(
+                        "[PrivateCompanionPage] 主动任务摘要已降级: error_type=%s",
+                        type(exc).__name__,
+                        exc_info=True,
+                    )
+                    fallback = (
+                        deepcopy(self._proactive_task_summary_cache)
+                        if self._proactive_task_summary_cache_ready
+                        else {
+                            "total": 0,
+                            "pending_total": 0,
+                            "items": [],
+                            "users": [],
+                        }
+                    )
+                    fallback["degraded"] = True
+                    fallback["diagnostic"] = {
+                        "code": "proactive_task_summary_unavailable",
+                        "error_type": type(exc).__name__,
+                        "using_last_good": self._proactive_task_summary_cache_ready,
+                    }
+                    return fallback
+                if generation == self._proactive_task_summary_generation:
+                    self._proactive_task_summary_cache = deepcopy(result)
+                    self._proactive_task_summary_cache_at = time.monotonic()
+                    self._proactive_task_summary_cache_ready = True
+                return result
+
+            task = asyncio.create_task(
+                compute(),
+                name="private-companion-proactive-task-summary",
+            )
+            self._proactive_task_summary_task = task
+
+            def clear_finished(completed: asyncio.Task[dict[str, Any]]) -> None:
+                if self._proactive_task_summary_task is completed:
+                    self._proactive_task_summary_task = None
+
+            task.add_done_callback(clear_finished)
+        return deepcopy(await asyncio.shield(task))
+
     def _proactive_task_summary(self, data: dict[str, Any]) -> dict[str, Any]:
         users = data.get("users") if isinstance(data.get("users"), dict) else {}
         now = time.time()
@@ -28605,6 +28906,7 @@ class PrivateCompanionPageApi(
             logger.error("[PrivateCompanionPage] 获取创作项目详情失败: %s", exc, exc_info=True)
             return self._exception_error("获取创作项目详情失败")
 
+    @story_legacy_operation("page.creative.project-update")
     async def update_creative_project(self) -> dict[str, Any]:
         payload = await request.get_json(silent=True) or {}
         project_id = str(payload.get("id", "")).strip()
@@ -28688,6 +28990,7 @@ class PrivateCompanionPageApi(
             logger.error("[PrivateCompanionPage] 更新创作项目失败: %s", exc, exc_info=True)
             return self._exception_error("更新创作项目失败")
 
+    @story_legacy_operation("page.creative.chunk-update")
     async def update_creative_chunk(self) -> dict[str, Any]:
         payload = await request.get_json(silent=True) or {}
         project_id = str(payload.get("id", "")).strip()
@@ -28711,6 +29014,7 @@ class PrivateCompanionPageApi(
             logger.error("[PrivateCompanionPage] 更新创作片段失败: %s", exc, exc_info=True)
             return self._exception_error("更新创作片段失败")
 
+    @story_legacy_operation("page.creative.outline-update")
     async def update_creative_outline(self) -> dict[str, Any]:
         payload = await request.get_json(silent=True) or {}
         project_id = str(payload.get("id", "")).strip()
@@ -28729,6 +29033,7 @@ class PrivateCompanionPageApi(
             logger.error("[PrivateCompanionPage] 更新创作大纲失败: %s", exc, exc_info=True)
             return self._exception_error("更新创作大纲失败")
 
+    @story_legacy_operation("page.creative.characters-update")
     async def update_creative_characters(self) -> dict[str, Any]:
         payload = await request.get_json(silent=True) or {}
         project_id = str(payload.get("id", "")).strip()
@@ -28756,6 +29061,7 @@ class PrivateCompanionPageApi(
             logger.error("[PrivateCompanionPage] 更新创作角色失败: %s", exc, exc_info=True)
             return self._exception_error("更新创作角色失败")
 
+    @story_legacy_operation("page.creative.reanalyze")
     async def reanalyze_creative_project(self) -> dict[str, Any]:
         payload = await request.get_json(silent=True) or {}
         project_id = str(payload.get("id", "")).strip()
@@ -28801,6 +29107,7 @@ class PrivateCompanionPageApi(
             logger.error("[PrivateCompanionPage] 创作项目质量分析失败: %s", exc, exc_info=True)
             return self._exception_error("创作项目质量分析失败")
 
+    @story_legacy_operation("page.creative.memory-rebuild")
     async def rebuild_creative_memory(self) -> dict[str, Any]:
         payload = await request.get_json(silent=True) or {}
         project_id = str(payload.get("id", "")).strip()
@@ -28818,6 +29125,7 @@ class PrivateCompanionPageApi(
             logger.error("[PrivateCompanionPage] 重建创作记忆失败: %s", exc, exc_info=True)
             return self._exception_error("重建创作记忆失败")
 
+    @story_legacy_operation("page.creative.project-delete")
     async def delete_creative_project(self) -> dict[str, Any]:
         payload = await request.get_json(silent=True) or {}
         project_id = str(payload.get("id", "")).strip()

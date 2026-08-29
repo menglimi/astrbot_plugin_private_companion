@@ -5,6 +5,8 @@ from __future__ import annotations
 import sys
 import uuid
 import asyncio
+import hashlib
+import json
 import re
 import time
 import types
@@ -397,12 +399,16 @@ class MemoryCompanionAdapterMixin:
         # stale bridge contract even though the active plugin is up to date.
         context = getattr(self, "context", None)
         get_all_stars = getattr(context, "get_all_stars", None)
+        get_registered_star = getattr(context, "get_registered_star", None)
+        registry_available = callable(get_all_stars) or callable(get_registered_star)
+        inspected_star_ids: set[int] = set()
         if callable(get_all_stars):
             try:
                 stars = list(get_all_stars() or [])
             except Exception:
                 stars = []
             for metadata in stars:
+                inspected_star_ids.add(id(metadata))
                 if not self._memory_companion_star_matches(metadata):
                     continue
                 bridge = self._memory_companion_bridge_from_star(metadata)
@@ -411,6 +417,30 @@ class MemoryCompanionAdapterMixin:
                 module = getattr(metadata, "module", None)
                 if module is not None:
                     inspected_module_ids.add(id(module))
+
+        if callable(get_registered_star):
+            for plugin_name in (
+                "astrbot_plugin_memory_companion",
+                "astrbot_plugin_remember_you",
+            ):
+                try:
+                    metadata = get_registered_star(plugin_name)
+                except Exception:
+                    metadata = None
+                if metadata is None or id(metadata) in inspected_star_ids:
+                    continue
+                inspected_star_ids.add(id(metadata))
+                bridge = self._memory_companion_bridge_from_star(metadata)
+                if bridge is None:
+                    bridge = self._memory_companion_bridge_from_object(metadata)
+                if bridge is not None:
+                    return bridge
+                module = getattr(metadata, "module", None)
+                if module is not None:
+                    inspected_module_ids.add(id(module))
+
+        if registry_available:
+            return None
 
         for module_name in (
             "data.plugins.astrbot_plugin_remember_you.main",
@@ -574,28 +604,145 @@ class MemoryCompanionAdapterMixin:
         return result
 
     def _memory_companion_outbox(self) -> BotPersonalOutbox | None:
-        current = getattr(self, "_bot_personal_outbox", None)
-        if isinstance(current, BotPersonalOutbox):
-            return current
         data = getattr(self, "data", None)
         if not isinstance(data, dict):
             return None
+        persona_id = self._memory_companion_archive_persona_id()
+        cache = getattr(self, "_bot_personal_outboxes", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            try:
+                setattr(self, "_bot_personal_outboxes", cache)
+            except Exception:
+                pass
+        current = cache.get(persona_id)
+        if isinstance(current, BotPersonalOutbox) and current.data is data:
+            return current
+
+        default_data = getattr(self, "_data_default", None)
+        is_default_backing = isinstance(default_data, dict) and data is default_data
+        persona_data_getter = getattr(self, "_persona_data_for_save", None)
+        try:
+            is_exact_persona_backing = bool(
+                callable(persona_data_getter)
+                and persona_id
+                and persona_data_getter(persona_id) is data
+            )
+        except Exception:
+            is_exact_persona_backing = False
+        secondary = bool(not is_default_backing and is_exact_persona_backing)
+
+        def save_bound_outbox() -> Any:
+            sections = {
+                "bot_personal_outbox",
+                "bot_personal_archive_revisions",
+            }
+            if secondary:
+                scheduler = getattr(self, "_schedule_persona_data_save", None)
+                if callable(scheduler):
+                    return scheduler(persona_id, sections=sections, delay=0.5)
+                return None
+            if not is_default_backing and not is_exact_persona_backing:
+                # Never guess a save target for an unrecognised backing dict.
+                return None
+            scheduler = getattr(self, "_schedule_default_data_save", None)
+            if callable(scheduler):
+                return scheduler(sections=sections, delay=0.5)
+            fallback = getattr(self, "_schedule_data_save", None)
+            if callable(fallback):
+                return fallback(sections=sections, delay=0.5)
+            return None
+
+        lifecycle_task = getattr(self, "_create_lifecycle_background_task", None)
         try:
             current = BotPersonalOutbox(
                 data,
-                save=lambda: self._schedule_data_save(
-                    sections={"bot_personal_outbox"},
-                    delay=0.5,
-                ),
+                save=save_bound_outbox,
+                background_task=(
+                    lambda operation, label: lifecycle_task(operation, label=label)
+                )
+                if callable(lifecycle_task)
+                else None,
             )
         except Exception as exc:
             logger.debug("[PrivateCompanion] Bot Personal outbox 初始化失败: %s", _single_line(exc, 120))
             return None
         try:
+            cache[persona_id] = current
             setattr(self, "_bot_personal_outbox", current)
         except Exception:
             pass
         return current
+
+    @staticmethod
+    def _memory_companion_archive_business_value(value: Any) -> Any:
+        ignored = {
+            "archive_result",
+            "archived_at",
+            "created_at",
+            "expires_at",
+            "generated_at",
+            "memory_archive",
+            "memory_archive_result",
+            "occurred_at",
+            "sent_at",
+            "updated_at",
+            "version",
+            "window",
+        }
+        if isinstance(value, dict):
+            return {
+                str(key): MemoryCompanionAdapterMixin._memory_companion_archive_business_value(item)
+                for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+                if str(key) not in ignored
+            }
+        if isinstance(value, (list, tuple)):
+            return [
+                MemoryCompanionAdapterMixin._memory_companion_archive_business_value(item)
+                for item in value
+            ]
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return value
+        return str(value)
+
+    def _memory_companion_archive_revision(
+        self,
+        *,
+        memory_type: str,
+        local_date: str,
+        business_payload: dict[str, Any],
+    ) -> int:
+        data = getattr(self, "data", None)
+        if not isinstance(data, dict):
+            return 1
+        registry = data.setdefault("bot_personal_archive_revisions", {})
+        if not isinstance(registry, dict):
+            registry = {}
+            data["bot_personal_archive_revisions"] = registry
+        record_key = f"{str(memory_type or '').strip()}:{str(local_date or '').strip()}"
+        canonical = self._memory_companion_archive_business_value(business_payload)
+        encoded = json.dumps(
+            canonical,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        fingerprint = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        previous = registry.get(record_key)
+        if isinstance(previous, dict) and previous.get("fingerprint") == fingerprint:
+            try:
+                return max(1, int(previous.get("revision") or 1))
+            except (TypeError, ValueError, OverflowError):
+                return 1
+        try:
+            revision = max(0, int(previous.get("revision") or 0)) + 1 if isinstance(previous, dict) else 1
+        except (TypeError, ValueError, OverflowError):
+            revision = 1
+        registry[record_key] = {
+            "revision": revision,
+            "fingerprint": fingerprint,
+        }
+        return revision
 
     def _memory_companion_bot_personal_sender(self) -> Any | None:
         bridge = self._memory_companion_bridge()
@@ -1080,6 +1227,9 @@ class MemoryCompanionAdapterMixin:
         if not callable(getter):
             return {**base, "error_code": "profile_method_missing"}
         try:
+            capability = self._memory_companion_emotion_producer_capability(bridge)
+            if capability is None:
+                return {**base, "error_code": "producer_capability_unavailable"}
             result = getter(
                 safe_profile,
                 query=_single_line(query, 240),
@@ -1087,6 +1237,7 @@ class MemoryCompanionAdapterMixin:
                 current_date=_single_line(current_date, 20),
                 current_window=_single_line(current_window, 40),
                 authorized=bool(authorized),
+                producer_capability=capability,
             )
             if asyncio.iscoroutine(result) or hasattr(result, "__await__"):
                 result = await result
@@ -2035,22 +2186,30 @@ class MemoryCompanionAdapterMixin:
             "tags": [_single_line(item, 60) for item in (diary.get("tags") or []) if _single_line(item, 60)][:12],
             "dream_summary": _single_line(diary.get("dream_summary") or diary.get("dream"), 160),
         }
-        return await self._memory_companion_record_bot_personal(
+        revision = self._memory_companion_archive_revision(
+            memory_type="bot_daily_diary",
+            local_date=date_text,
+            business_payload=payload,
+        )
+        diary["version"] = revision
+        result = await self._memory_companion_record_bot_personal(
             memory_type="bot_daily_diary",
             payload=payload,
             idempotency_key=f"diary:{date_text}",
             occurred_at=self._memory_companion_now_iso(),
-            version=int(diary.get("version") or 1),
+            version=revision,
             source_refs=[f"companion:diary:{date_text}"],
         )
+        diary["memory_archive"] = dict(result)
+        return result
 
-    async def _memory_companion_record_daily_plan(self, plan: dict[str, Any]) -> None:
+    async def _memory_companion_record_daily_plan(self, plan: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(plan, dict):
-            return
+            return {"ok": False, "state": "invalid", "error_code": "invalid_plan"}
         date_text = _single_line(plan.get("date"), 40)
         items = plan.get("items")
         if not date_text or not isinstance(items, list) or not items:
-            return
+            return {"ok": False, "state": "invalid", "error_code": "empty_plan"}
         lines: list[str] = []
         for item in items[:16]:
             if not isinstance(item, dict):
@@ -2071,35 +2230,43 @@ class MemoryCompanionAdapterMixin:
             if line:
                 lines.append(line)
         if not lines:
-            return
+            return {"ok": False, "state": "invalid", "error_code": "empty_plan"}
         try:
             now = self._environment_now()
             window = window_for_minutes(now.hour * 60 + now.minute)
         except Exception:
             window = ""
-        await self._memory_companion_record_bot_personal(
+        payload = {
+            "date": date_text,
+            "window": window,
+            "summary": f"{date_text} 的 Bot 当日生活日程已生成",
+            "items": lines,
+            "source": _single_line(plan.get("source"), 40),
+            "item_count": len(lines),
+            "subject_actor_id": "bot_self",
+            "actor_type": "bot",
+            "content_granularity": "day",
+            "materialization_state": "candidate",
+            "fact_eligibility": "none",
+            "expires_at": (datetime.now().astimezone() + timedelta(hours=24)).isoformat(timespec="seconds"),
+            "legacy_flags": ["short_ttl_plan", "unverified_plan"],
+        }
+        revision = self._memory_companion_archive_revision(
             memory_type="bot_schedule_plan",
-            payload={
-                "date": date_text,
-                "window": window,
-                "summary": f"{date_text} 的 Bot 当日生活日程已生成",
-                "items": lines,
-                "source": _single_line(plan.get("source"), 40),
-                "item_count": len(lines),
-                "subject_actor_id": "bot_self",
-                "actor_type": "bot",
-                "content_granularity": "day",
-                "materialization_state": "candidate",
-                "fact_eligibility": "none",
-                "expires_at": (datetime.now().astimezone() + timedelta(hours=24)).isoformat(timespec="seconds"),
-                "legacy_flags": ["short_ttl_plan", "unverified_plan"],
-            },
+            local_date=date_text,
+            business_payload={"date": date_text, "items": lines},
+        )
+        plan["version"] = revision
+        result = await self._memory_companion_record_bot_personal(
+            memory_type="bot_schedule_plan",
+            payload=payload,
             idempotency_key=f"daily_plan:{date_text}",
             occurred_at=_single_line(plan.get("generated_at"), 80) or self._memory_companion_now_iso(),
-            version=int(plan.get("version") or 1),
+            version=revision,
             source_refs=[f"companion:daily_plan:{date_text}"],
         )
-        return
+        plan["memory_archive"] = dict(result)
+        return result
 
     async def _memory_companion_record_detail_enhancement(
         self,

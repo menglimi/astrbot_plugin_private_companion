@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import stat
 import threading
 from collections.abc import Callable
 from copy import deepcopy
@@ -10,12 +12,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .storage.sqlite_backend import SqliteStoreNotInitializedError
+from .storage.sqlite_backend import SqliteStoreBackend, SqliteStoreNotInitializedError
 from .storage.store_manager import StoreManager
 
 
 _MIGRATION_LOCKS_GUARD = threading.Lock()
 _MIGRATION_LOCKS: dict[str, threading.RLock] = {}
+MAX_PERSONA_READ_ONLY_SNAPSHOT_BYTES = 64 * 1024 * 1024
+MAX_PERSONA_READ_ONLY_SQLITE_BYTES = 256 * 1024 * 1024
 
 
 def _path_marker(path: str | Path) -> str:
@@ -58,6 +62,66 @@ def _strict_load_json_object(path: Path) -> dict[str, Any]:
         object_pairs_hook=_strict_json_object,
     )
     if not isinstance(payload, dict):
+        raise TypeError("persona legacy JSON root must be an object")
+    return payload
+
+
+def _strict_load_json_object_read_only(
+    path: Path,
+    *,
+    max_bytes: int,
+) -> dict[str, Any]:
+    """Read one bounded regular JSON file without following its final symlink."""
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        raise RuntimeError("no-follow file reads are unavailable")
+    flags = os.O_RDONLY | no_follow
+    flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
+    descriptor = os.open(path, flags)
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("persona legacy JSON is not a regular file")
+        if before.st_size < 0 or before.st_size > max_bytes:
+            raise ValueError("persona legacy JSON exceeds its byte limit")
+        chunks: list[bytes] = []
+        remaining = max_bytes + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        if len(raw) > max_bytes:
+            raise ValueError("persona legacy JSON exceeds its byte limit")
+        after = os.fstat(descriptor)
+        if (
+            (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+                before.st_mtime_ns,
+                before.st_ctime_ns,
+            )
+            != (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            )
+            or len(raw) != after.st_size
+        ):
+            raise ValueError("persona legacy JSON changed during read-only snapshot")
+    finally:
+        os.close(descriptor)
+    payload = json.loads(
+        raw.decode("utf-8", errors="strict"),
+        parse_constant=_reject_json_constant,
+        object_pairs_hook=_strict_json_object,
+    )
+    if type(payload) is not dict:
         raise TypeError("persona legacy JSON root must be an object")
     return payload
 
@@ -238,7 +302,7 @@ def _load_persona_sqlite_store(
 ) -> PersonaSqliteStoreHandle:
     pid = str(persona_id or "").strip()
     if not pid:
-        raise ValueError("secondary persona_id is required")
+        raise ValueError("persona_id is required")
 
     with _migration_lock(sqlite_path):
         if legacy_json_path.exists():
@@ -358,9 +422,73 @@ def load_persona_sqlite_store(
     )
 
 
+def read_persona_store_snapshot_read_only(
+    *,
+    persona_id: str,
+    legacy_json_path: str | Path,
+    sqlite_path: str | Path,
+    max_bytes: int = MAX_PERSONA_READ_ONLY_SNAPSHOT_BYTES,
+) -> dict[str, Any] | None:
+    """Read one persisted persona without migration, initialization, or repair."""
+    pid = str(persona_id or "").strip()
+    if not pid:
+        raise ValueError("secondary persona_id is required")
+    if (
+        isinstance(max_bytes, bool)
+        or not isinstance(max_bytes, int)
+        or max_bytes <= 0
+    ):
+        raise ValueError("persona read-only snapshot limit must be positive")
+    legacy_path = Path(legacy_json_path)
+    database_path = Path(sqlite_path)
+
+    def regular_file_state(path: Path) -> bool:
+        try:
+            details = path.lstat()
+        except FileNotFoundError:
+            return False
+        if not stat.S_ISREG(details.st_mode):
+            raise ValueError("persona persisted source is not a regular file")
+        return True
+
+    try:
+        legacy_exists = regular_file_state(legacy_path)
+        sqlite_exists = regular_file_state(database_path)
+        if legacy_exists and sqlite_exists:
+            raise ValueError("persona persisted sources are ambiguous")
+        if legacy_exists:
+            return _strict_load_json_object_read_only(
+                legacy_path,
+                max_bytes=max_bytes,
+            )
+        if not sqlite_exists:
+            return None
+        backend = SqliteStoreBackend(
+            database_path,
+            ensure_defaults=lambda payload: payload,
+            new_store=dict,
+        )
+        snapshot = backend.load_store_read_only(
+            max_payload_bytes=max_bytes,
+            max_database_bytes=MAX_PERSONA_READ_ONLY_SQLITE_BYTES,
+        )
+        if type(snapshot) is not dict:
+            raise TypeError("persona SQLite snapshot root must be an object")
+        return snapshot
+    except Exception as exc:
+        raise PersonaSqliteStoreError(
+            persona_id=pid,
+            phase="read_only_snapshot",
+            cause=exc,
+        ) from exc
+
+
 __all__ = [
     "PersonaSqliteStoreError",
     "PersonaSqliteStoreHandle",
     "PersonaSqliteStoreRegistry",
+    "MAX_PERSONA_READ_ONLY_SNAPSHOT_BYTES",
+    "MAX_PERSONA_READ_ONLY_SQLITE_BYTES",
     "load_persona_sqlite_store",
+    "read_persona_store_snapshot_read_only",
 ]

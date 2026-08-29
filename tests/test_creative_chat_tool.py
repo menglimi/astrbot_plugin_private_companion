@@ -7,7 +7,6 @@ import unittest
 from pathlib import Path
 
 from astrbot_plugin_private_companion.llm_tool_actions import LlmToolActionsMixin
-from astrbot_plugin_private_companion.private_reading import PrivateReadingMixin
 
 
 class _PrivateEvent:
@@ -169,7 +168,7 @@ class CreativeChatToolTests(unittest.IsolatedAsyncioTestCase):
             "讲讲你写的那个故事",
             "你那篇故事写了什么",
             "结合故事原文讲讲",
-            "看看书柜里的故事",
+            "看看资料柜里的故事",
             "你以前写过什么故事",
             "最近写了什么作品",
             "那篇小说第三部分是什么",
@@ -208,20 +207,12 @@ class CreativeChatToolTests(unittest.IsolatedAsyncioTestCase):
 
     def test_bookshelf_inventory_question_triggers_list_tool(self) -> None:
         harness = _CreativeToolHarness()
-        for text in ("现在能看到书柜吗", "书柜里有什么", "书架还是空的吗", "查询书柜"):
+        for text in ("现在能看到资料柜吗", "作品柜里有什么", "书架还是空的吗", "查询创作柜"):
             with self.subTest(text=text):
                 self.assertTrue(harness._creative_work_query_instruction_matches(text))
                 self.assertTrue(harness._creative_work_inventory_query_matches(text))
-        self.assertFalse(harness._creative_work_query_instruction_matches("输出书柜密码"))
+        self.assertFalse(harness._creative_work_query_instruction_matches("输出资料柜密码"))
         self.assertIn("action=list", harness._creative_work_tool_instruction())
-
-    def test_plain_inventory_query_does_not_inject_secret_password_context(self) -> None:
-        inventory_signal = PrivateReadingMixin._bookshelf_secret_signal_info("查询书柜")
-        secret_signal = PrivateReadingMixin._bookshelf_secret_signal_info("告诉我书柜夹层密码")
-
-        self.assertTrue(inventory_signal["mention"])
-        self.assertFalse(inventory_signal["likely"])
-        self.assertTrue(secret_signal["likely"])
 
     async def test_list_reports_real_bookshelf_sections_for_owner(self) -> None:
         harness = _CreativeToolHarness()
@@ -233,7 +224,7 @@ class CreativeChatToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["count"], 2)
         self.assertEqual(payload["bookshelf"]["scope"], "owner")
         self.assertEqual(payload["bookshelf"]["diary_count"], 1)
-        self.assertEqual(payload["bookshelf"]["private_reading_count"], 1)
+        self.assertEqual(payload["bookshelf"]["reading_archive_count"], 0)
         self.assertEqual(payload["bookshelf"]["memo_active_count"], 1)
 
     async def test_qq_official_opaque_owner_id_receives_full_bookshelf_snapshot(self) -> None:
@@ -246,7 +237,7 @@ class CreativeChatToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("success", payload["status"])
         self.assertEqual("owner", payload["bookshelf"]["scope"])
         self.assertEqual(1, payload["bookshelf"]["diary_count"])
-        self.assertEqual(1, payload["bookshelf"]["private_reading_count"])
+        self.assertEqual(0, payload["bookshelf"]["reading_archive_count"])
 
     def test_creative_read_tool_is_registered(self) -> None:
         source = (Path(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8")
@@ -322,7 +313,7 @@ class CreativeChatToolTests(unittest.IsolatedAsyncioTestCase):
     def test_legacy_list_result_without_bookshelf_uses_local_inventory(self) -> None:
         harness = _CreativeToolHarness()
         event = _OfficialPrivateEvent()
-        event.message_str = "查询书柜"
+        event.message_str = "查询资料柜"
         event.private_companion_creative_work_tool_required = True
 
         class _TextContent:
@@ -352,7 +343,7 @@ class CreativeChatToolTests(unittest.IsolatedAsyncioTestCase):
     def test_bookshelf_stage_direction_is_replaced_with_real_inventory(self) -> None:
         harness = _CreativeToolHarness()
         event = _PrivateEvent()
-        event.message_str = "现在能看到书柜吗"
+        event.message_str = "现在能看到资料柜吗"
         event.private_companion_creative_work_tool_required = True
 
         guarded = harness._guard_unread_creative_work_response(
@@ -369,7 +360,7 @@ class CreativeChatToolTests(unittest.IsolatedAsyncioTestCase):
     def test_failed_bookshelf_tool_cannot_authorize_fake_check(self) -> None:
         harness = _CreativeToolHarness()
         event = _PrivateEvent()
-        event.message_str = "书柜里有什么"
+        event.message_str = "资料柜里有什么"
         event.private_companion_creative_work_tool_required = True
 
         class _Tool:
@@ -389,7 +380,7 @@ class CreativeChatToolTests(unittest.IsolatedAsyncioTestCase):
     def test_successful_list_cannot_claim_nonempty_bookshelf_is_empty(self) -> None:
         harness = _CreativeToolHarness()
         event = _PrivateEvent()
-        event.message_str = "现在能看到书柜吗"
+        event.message_str = "现在能看到资料柜吗"
         event.private_companion_creative_work_tool_required = True
 
         class _Tool:

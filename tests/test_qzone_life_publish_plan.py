@@ -76,7 +76,7 @@ class _CommentHarness(QzoneMixin):
         self.sent.append(reply)
         return reply
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         pass
 
 
@@ -201,14 +201,27 @@ class QzoneLifePublishPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNot(first, second)
         self.assertNotEqual(first["config_signature"], second["config_signature"])
 
-    def test_schedule_labels_are_backfilled_after_daily_plan_arrives(self) -> None:
+    def test_schedule_labels_are_backfilled_after_current_agenda_fact_arrives(self) -> None:
         harness = _PlanHarness()
         harness.data = {"daily_plan": {"date": _today_key(), "items": []}}
-        now = _day_start_ts(time.time()) + 8 * 60 * 60
+        day_start = _day_start_ts(time.time())
+        now = day_start + 8 * 60 * 60
         with patch("astrbot_plugin_private_companion.qzone_integration.random.random", return_value=0.0):
             plan = harness._qzone_life_publish_daily_plan({}, now=now)
         self.assertTrue(all(not item.get("schedule_label") for item in plan["items"]))
-        harness.data["daily_plan"]["items"] = [{"time": "18:00", "activity": "晚饭后散步"}]
+        harness._agenda_disclosure_view = lambda *_args, **_kwargs: SimpleNamespace(
+            entries=[
+                {
+                    "entry_id": "agenda-evening-walk",
+                    "title": "晚饭后散步",
+                    "start_at": day_start,
+                    "end_at": day_start + 24 * 60 * 60,
+                    "fact_eligibility": "current_internal",
+                    "temporal_phase": "current",
+                    "evidence_kind": "committed_schedule",
+                }
+            ]
+        )
         self.assertTrue(harness._qzone_backfill_plan_schedule_labels(plan))
         self.assertTrue(any(item.get("schedule_label") == "晚饭后散步" for item in plan["items"]))
 

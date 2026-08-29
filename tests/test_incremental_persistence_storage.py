@@ -1006,7 +1006,7 @@ class IncrementalPersistenceStorageTests(unittest.TestCase):
                 "bookshelf_items": [{"key": "stored"}],
                 "bookshelf_secret": {"password": "safe"},
                 "bookshelf_store_revision": 1,
-                "jm_cosmos_integration": {},
+                "reading_archive_integration": {},
             }
         )
         manager.save_sections({}, {"bookshelf_items": 2})
@@ -1036,7 +1036,7 @@ class IncrementalPersistenceStorageTests(unittest.TestCase):
                 "bookshelf_items": [],
                 "bookshelf_secret": {"password": "delete-me"},
                 "bookshelf_store_revision": 1,
-                "jm_cosmos_integration": {},
+                "reading_archive_integration": {},
             }
         )
         manager.save_sections({}, {"bookshelf_secret": 2})
@@ -1055,7 +1055,7 @@ class IncrementalPersistenceStorageTests(unittest.TestCase):
                 "bookshelf_items",
                 "bookshelf_secret",
                 "bookshelf_store_revision",
-                "jm_cosmos_integration",
+                "reading_archive_integration",
             )
         }
         self.assertEqual({3}, revisions)
@@ -1068,7 +1068,7 @@ class IncrementalPersistenceStorageTests(unittest.TestCase):
             "bookshelf_items": [],
             "bookshelf_secret": {},
             "bookshelf_store_revision": 1,
-            "jm_cosmos_integration": {},
+            "reading_archive_integration": {},
             "obsolete": {"must": "stay-deleted"},
         }
         fallback = deepcopy(selected)
@@ -1103,7 +1103,7 @@ class IncrementalPersistenceStorageTests(unittest.TestCase):
             "bookshelf_items": [],
             "bookshelf_secret": {"password": "delete-me"},
             "bookshelf_store_revision": 1,
-            "jm_cosmos_integration": {},
+            "reading_archive_integration": {},
         }
         fallback = deepcopy(selected)
         fallback["bookshelf_items"] = [

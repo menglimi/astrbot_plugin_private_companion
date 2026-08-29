@@ -273,6 +273,7 @@ _DATA_STORE_KEYS = (
     "daily_review_completed_day",
     "daily_review_case_audit",
     "bot_personal_outbox",
+    "bot_personal_archive_revisions",
 )
 
 # 触发原因 - 真人化表达
@@ -550,6 +551,7 @@ _DEFAULT_USER_TEMPLATE = {
     "planned_proactive_route_preflight_note": "",
     "planned_proactive_impulse_id": "",
     "planned_proactive_window_start_at": 0,
+    "planned_proactive_window_timezone": "",
     "planned_proactive_best_until_at": 0,
     "planned_proactive_expire_at": 0,
     "planned_proactive_origin_at": 0,

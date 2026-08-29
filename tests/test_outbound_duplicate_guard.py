@@ -69,25 +69,44 @@ class OutboundDuplicateGuardTests(unittest.IsolatedAsyncioTestCase):
         event._has_send_oper = True
         await self.plugin.remember_confirmed_outbound_text(event)
 
-    async def test_same_text_from_same_source_is_blocked_after_confirmed_send(self) -> None:
+    async def test_same_text_from_distinct_message_is_allowed_after_confirmed_send(self) -> None:
         first = _Event("晚安，睡个好觉哦。")
         await self._send_once(first)
 
-        duplicate = _Event("晚安，睡个好觉哦。", message_id="message-2")
-        await self.plugin.suppress_recent_duplicate_outbound_text(duplicate)
+        independent = _Event("晚安，睡个好觉哦。", message_id="message-2")
+        await self.plugin.suppress_recent_duplicate_outbound_text(independent)
 
-        self.assertTrue(duplicate.is_stopped())
-        self.assertEqual([], list(duplicate.get_result().chain or []))
+        self.assertFalse(independent.is_stopped())
+        self.assertTrue(list(independent.get_result().chain or []))
 
-    async def test_concurrent_same_text_is_blocked_while_first_send_is_pending(self) -> None:
+    async def test_concurrent_same_text_from_distinct_message_is_allowed(self) -> None:
         first = _Event("晚安，睡个好觉哦。")
         await self.plugin.suppress_recent_duplicate_outbound_text(first)
         self.assertFalse(first.is_stopped())
 
-        duplicate = _Event("晚安，睡个好觉哦。", message_id="message-2")
-        await self.plugin.suppress_recent_duplicate_outbound_text(duplicate)
+        independent = _Event("晚安，睡个好觉哦。", message_id="message-2")
+        await self.plugin.suppress_recent_duplicate_outbound_text(independent)
 
-        self.assertTrue(duplicate.is_stopped())
+        self.assertFalse(independent.is_stopped())
+
+    async def test_same_message_is_blocked_after_confirmed_send(self) -> None:
+        first = _Event("晚安，睡个好觉哦。")
+        await self._send_once(first)
+
+        retry = _Event("晚安，睡个好觉哦。")
+        await self.plugin.suppress_recent_duplicate_outbound_text(retry)
+
+        self.assertTrue(retry.is_stopped())
+        self.assertEqual([], list(retry.get_result().chain or []))
+
+    async def test_same_message_is_blocked_while_first_send_is_pending(self) -> None:
+        first = _Event("晚安，睡个好觉哦。")
+        await self.plugin.suppress_recent_duplicate_outbound_text(first)
+
+        concurrent_branch = _Event("晚安，睡个好觉哦。")
+        await self.plugin.suppress_recent_duplicate_outbound_text(concurrent_branch)
+
+        self.assertTrue(concurrent_branch.is_stopped())
 
     def test_same_inbound_duplicate_survives_slow_failed_tool_loop(self) -> None:
         first = _Event("唔，省流版：这是个 AstrBot 插件")
@@ -119,6 +138,94 @@ class OutboundDuplicateGuardTests(unittest.IsolatedAsyncioTestCase):
             self.plugin._reserve_outbound_text_candidate(later_candidate, now=126.0),
         )
 
+    def test_fuzzy_repeat_from_same_inbound_message_is_blocked(self) -> None:
+        first = self.plugin._outbound_text_duplicate_candidate(
+            _Event("今天天气真好呀！")
+        )
+        self.plugin._reserve_outbound_text_candidate(first, now=100.0)
+        self.plugin._confirm_outbound_text_candidate(first, now=101.0)
+
+        retry = self.plugin._outbound_text_duplicate_candidate(
+            _Event("今天天气真好")
+        )
+        self.assertEqual(
+            "sent",
+            self.plugin._reserve_outbound_text_candidate(retry, now=126.0),
+        )
+
+    def test_fuzzy_repeat_from_distinct_inbound_message_is_allowed(self) -> None:
+        first = self.plugin._outbound_text_duplicate_candidate(
+            _Event("今天天气真好呀！")
+        )
+        self.plugin._reserve_outbound_text_candidate(first, now=100.0)
+        self.plugin._confirm_outbound_text_candidate(first, now=101.0)
+
+        independent = self.plugin._outbound_text_duplicate_candidate(
+            _Event("今天天气真好", message_id="message-2")
+        )
+        self.assertEqual(
+            "",
+            self.plugin._reserve_outbound_text_candidate(independent, now=102.0),
+        )
+
+    def test_interleaved_messages_keep_independent_idempotency_state(self) -> None:
+        first = self.plugin._outbound_text_duplicate_candidate(_Event("相同回复"))
+        second = self.plugin._outbound_text_duplicate_candidate(
+            _Event("相同回复", message_id="message-2")
+        )
+
+        self.assertEqual("", self.plugin._reserve_outbound_text_candidate(first, now=100.0))
+        self.assertEqual("", self.plugin._reserve_outbound_text_candidate(second, now=100.1))
+        self.plugin._confirm_outbound_text_candidate(first, now=100.2)
+
+        self.assertEqual(
+            "pending",
+            self.plugin._reserve_outbound_text_candidate(second, now=100.3),
+        )
+        self.plugin._confirm_outbound_text_candidate(second, now=100.4)
+        self.assertEqual(
+            "sent",
+            self.plugin._reserve_outbound_text_candidate(first, now=100.5),
+        )
+
+    async def test_missing_message_id_keeps_same_sender_short_window_guard(self) -> None:
+        first = _Event("适配器没有消息编号", message_id="")
+        await self._send_once(first)
+
+        uncertain = _Event("适配器没有消息编号", message_id="message-2")
+        await self.plugin.suppress_recent_duplicate_outbound_text(uncertain)
+
+        self.assertTrue(uncertain.is_stopped())
+
+    def test_missing_message_id_fallback_expires_after_sent_window(self) -> None:
+        first = self.plugin._outbound_text_duplicate_candidate(
+            _Event("适配器没有消息编号", message_id="")
+        )
+        self.plugin._reserve_outbound_text_candidate(first, now=100.0)
+        self.plugin._confirm_outbound_text_candidate(first, now=101.0)
+
+        later = self.plugin._outbound_text_duplicate_candidate(
+            _Event("适配器没有消息编号", message_id="message-2")
+        )
+        self.assertEqual(
+            "",
+            self.plugin._reserve_outbound_text_candidate(later, now=106.1),
+        )
+
+    async def test_self_echo_with_distinct_message_id_is_still_blocked(self) -> None:
+        first = _Event("晚安，睡个好觉哦。")
+        await self._send_once(first)
+
+        echo = _Event(
+            "晚安，睡个好觉哦。",
+            sender_id="bot-1",
+            self_id="bot-1",
+            message_id="echo-message-2",
+        )
+        await self.plugin.suppress_recent_duplicate_outbound_text(echo)
+
+        self.assertTrue(echo.is_stopped())
+
     async def test_partial_primary_send_is_not_confirmed_as_complete_outbound_text(
         self,
     ) -> None:
@@ -135,9 +242,10 @@ class OutboundDuplicateGuardTests(unittest.IsolatedAsyncioTestCase):
 
         await self.plugin.remember_confirmed_outbound_text(event)
 
+        guard_key = self.plugin._outbound_text_guard_key(candidate)
         self.assertEqual(
             "pending",
-            self.plugin._recent_outbound_text_guard[candidate["signature"]]["state"],
+            self.plugin._recent_outbound_text_guard[guard_key]["state"],
         )
 
     async def test_same_group_text_for_different_sender_is_not_suppressed(self) -> None:

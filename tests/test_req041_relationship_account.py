@@ -332,6 +332,59 @@ class RelationshipAccountStoreTests(unittest.TestCase):
         self.assertEqual(first, replay)
         self.assertEqual(22, self.store.account(_context())["relationship_score"])
 
+    def test_legacy_event_replay_accepts_pipeline_reason_contract(self) -> None:
+        for index, reason in enumerate(("schedule_adjustment", "food_feedback"), start=1):
+            with self.subTest(reason=reason):
+                store = RelationshipAccountStore(
+                    self.path.parent / f"relationship-{reason}.db",
+                    active_migration_epoch=EPOCH,
+                    clock=lambda: 1_700_000_000.0,
+                )
+                store.create_account(
+                    _context(),
+                    operation_id=f"create-pipeline-{index}",
+                    actor="administrator",
+                    relationship_role="friend",
+                    score=10,
+                )
+                store.replay_legacy_event(
+                    _context(),
+                    event_id=f"legacy-pipeline-{index}",
+                    reason_code=reason,
+                    requested_delta=1,
+                    applied_delta=1,
+                    score_before=10,
+                    score_after=11,
+                    relationship_role="friend",
+                    relationship_mode="normal",
+                    positive_stage_cap_key="close",
+                    daily_totals={"day": "2026-08-27", "positive": 1, "negative": 0},
+                    last_effective_at=1_700_000_000,
+                )
+                account = store.account(_context())
+                self.assertEqual(
+                    reason,
+                    account["relationship_ledger"][-1]["reason_code"],
+                )
+
+    def test_legacy_event_replay_still_rejects_unknown_reason(self) -> None:
+        self._create(score=10)
+        with self.assertRaisesRegex(RelationshipStoreError, "relationship_legacy_event_invalid"):
+            self.store.replay_legacy_event(
+                _context(),
+                event_id="legacy-unknown-reason",
+                reason_code="future_unregistered_reason",
+                requested_delta=1,
+                applied_delta=1,
+                score_before=10,
+                score_after=11,
+                relationship_role="friend",
+                relationship_mode="normal",
+                positive_stage_cap_key="close",
+                daily_totals={"day": "2026-08-27", "positive": 1, "negative": 0},
+                last_effective_at=1_700_000_000,
+            )
+
     def test_legacy_snapshot_replay_preserves_owner_mode_runtime_and_revision(self) -> None:
         self._create(score=12)
         kwargs = {

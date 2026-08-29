@@ -51,7 +51,7 @@ class _Host:
         self.offered.append((user_id, candidate))
         return True
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, *, sections=None) -> None:
         self.save_count += 1
 
 

@@ -1704,6 +1704,7 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
         else:
             wakeup = self._evaluate_group_wakeup(
                 group,
+                event=event,
                 scene=scene,
                 sender_id=sender_id,
                 sender_name=sender_name,

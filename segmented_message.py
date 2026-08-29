@@ -631,7 +631,18 @@ def bind_reply_components_to_first_text(
         -1,
     )
     if target_index >= 0:
-        cleaned[target_index] = [*replies, *cleaned[target_index]]
+        target_chunk = cleaned[target_index]
+        insert_at = 0
+        while (
+            insert_at < len(target_chunk)
+            and classify(target_chunk[insert_at]) in {"voice", "image", "reaction"}
+        ):
+            insert_at += 1
+        cleaned[target_index] = [
+            *target_chunk[:insert_at],
+            *replies,
+            *target_chunk[insert_at:],
+        ]
     return cleaned, True
 
 

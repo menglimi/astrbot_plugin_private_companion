@@ -155,7 +155,7 @@ class _GroupImageHarness(PrivateImageMixin, GroupObservationMixin, GroupWakeupMi
         return None
 
     @staticmethod
-    def _save_data_sync():
+    def _save_data_sync(**_kwargs):
         return None
 
     @staticmethod

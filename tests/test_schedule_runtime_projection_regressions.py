@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import date, datetime, time
 from pathlib import Path
 
 from astrbot_plugin_private_companion.daily_state import DailyStateMixin
@@ -17,6 +17,11 @@ class _ScheduleHarness(DailyStateMixin):
 
     def __init__(self) -> None:
         today = _today_key()
+        self._now = datetime.combine(
+            date.fromisoformat(today),
+            time(10, 15),
+            tzinfo=datetime.now().astimezone().tzinfo,
+        )
         self.data = {
             "daily_state": {"date": today, "location": "家里"},
             "daily_plan": {
@@ -41,11 +46,13 @@ class _ScheduleHarness(DailyStateMixin):
     def _agenda_disclosure_view(self, *_args, **_kwargs):
         return {"entries": []}
 
-    @staticmethod
-    def _environment_now() -> datetime:
-        return datetime.now().astimezone()
+    def _environment_now(self) -> datetime:
+        return self._now
 
-    def _save_data_sync(self) -> None:
+    def _environment_now_minutes(self) -> int:
+        return self._now.hour * 60 + self._now.minute
+
+    def _save_data_sync(self, **_kwargs) -> None:
         self.saved += 1
 
 

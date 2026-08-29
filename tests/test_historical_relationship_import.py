@@ -33,7 +33,7 @@ class _PluginHarness:
             }
         }
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         self.saved += 1
 
 
@@ -380,7 +380,7 @@ class HistoricalRelationshipImportTests(unittest.IsolatedAsyncioTestCase):
         plugin.data["worldbook_member_profiles"]["u2"] = "invalid profile"
         before = deepcopy(plugin.data["worldbook_member_profiles"])
 
-        def fail_save() -> None:
+        def fail_save(**_kwargs) -> None:
             raise OSError("save failed")
 
         plugin._save_data_sync = fail_save

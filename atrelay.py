@@ -832,7 +832,10 @@ class AtRelayMixin:
         known: set[str] = set()
 
         def add(value: Any) -> None:
-            group_id = self._normalize_atrelay_group_target_id(value)
+            try:
+                group_id = self._normalize_atrelay_group_target_id(value)
+            except Exception:
+                return
             if group_id:
                 known.add(group_id)
 
@@ -843,12 +846,29 @@ class AtRelayMixin:
                     add(group_id)
             except Exception:
                 pass
-        data = self.data if isinstance(getattr(self, "data", None), dict) else {}
+        try:
+            raw_data = getattr(self, "data", None)
+        except Exception:
+            raw_data = None
+        data = raw_data if isinstance(raw_data, dict) else {}
         for key in ("groups", "worldbook_group_profiles"):
-            records = data.get(key) if isinstance(data.get(key), dict) else {}
-            for record_id, record in records.items():
-                add(record.get("group_id") if isinstance(record, dict) else record_id)
-                add(record_id)
+            try:
+                records = data.get(key)
+                if not isinstance(records, dict):
+                    continue
+                for record_id, record in records.items():
+                    try:
+                        record_group_id = (
+                            record.get("group_id")
+                            if isinstance(record, dict)
+                            else record_id
+                        )
+                    except Exception:
+                        record_group_id = record_id
+                    add(record_group_id)
+                    add(record_id)
+            except Exception:
+                continue
         return known
 
     def _atrelay_send_log(self) -> list[dict[str, Any]]:
@@ -1105,28 +1125,22 @@ class AtRelayMixin:
             )
         return allowed, requester_id
 
-    def _atrelay_known_group_ids(self) -> set[str]:
-        known: set[str] = set()
-        data = getattr(self, "data", None)
-        if not isinstance(data, dict):
-            return known
-        for key in ("groups", "worldbook_group_profiles"):
-            section = data.get(key)
-            if not isinstance(section, dict):
-                continue
-            for raw_id, item in section.items():
-                gid = _single_line(item.get("group_id"), 40) if isinstance(item, dict) else ""
-                gid = gid or _single_line(raw_id, 40)
-                if gid:
-                    known.add(gid)
-        return known
-
     def _atrelay_target_group_allowed(self, group_id: Any, event: AstrMessageEvent | None = None) -> str:
-        target = _single_line(group_id, 40)
+        try:
+            target = self._normalize_atrelay_group_target_id(group_id)
+        except Exception:
+            target = ""
         if not target:
             return "发送失败：群号格式不正确"
         blacklist_getter = getattr(self, "_configured_group_blacklist_ids", None)
         blacklist = set(blacklist_getter()) if callable(blacklist_getter) else set()
+        for blocked in tuple(blacklist):
+            try:
+                normalized_blocked = self._normalize_atrelay_group_target_id(blocked)
+            except Exception:
+                normalized_blocked = ""
+            if normalized_blocked:
+                blacklist.add(normalized_blocked)
         if target in blacklist:
             logger.info("[PrivateCompanion] relay group denied by blacklist: group=%s", target)
             return "发送失败：目标群不在允许转述范围内"
@@ -1136,7 +1150,9 @@ class AtRelayMixin:
         extractor = getattr(self, "_extract_group_id_from_event", None)
         if event is not None and callable(extractor):
             try:
-                current_group = _single_line(extractor(event), 40)
+                current_group = self._normalize_atrelay_group_target_id(
+                    extractor(event)
+                )
             except Exception:
                 current_group = ""
             if current_group:

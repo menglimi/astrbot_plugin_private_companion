@@ -29,6 +29,14 @@ class ReadingArchiveMixin:
     def _format_reading_archive_action_context(self, *args: Any, **kwargs: Any) -> str:
         return ""
 
+    def _format_bookshelf_reading_context_for_reply(
+        self,
+        *args: Any,
+        **kwargs: Any,
+    ) -> str:
+        """Keep the removed reader's context hook inert for old state."""
+        return ""
+
     def _self_timeline_from_reading_archive(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
         return []
 

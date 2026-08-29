@@ -51,7 +51,7 @@ class _MealCareHarness(ProactiveMixin, ProactiveEngineMixin, DailyStateMixin):
     def _window_from_delay_minutes(self, delay_minutes: int, *, width_minutes: int = 18) -> str:
         return f"delay-{delay_minutes}-{width_minutes}"
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         self.saved += 1
 
     def _normalize_legacy_proactive_text(self, value, *, limit: int = 40) -> str:

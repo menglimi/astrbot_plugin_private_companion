@@ -361,6 +361,24 @@ class LlmToolActionsMixin:
             return False
         return explicit_request or self._character_photo_request_matches(compact)
 
+    def _photo_generation_runtime_available(self) -> bool:
+        """Require the optional Image runtime only on the production host."""
+        required = getattr(self, "_image_companion_required", None)
+        if not callable(required):
+            return True
+        try:
+            if not bool(required()):
+                return True
+        except Exception:
+            return False
+        available = getattr(self, "_image_companion_available", None)
+        if not callable(available):
+            return False
+        try:
+            return bool(available())
+        except Exception:
+            return False
+
     def _media_delivery_truth_instruction(self) -> str:
         sections = self._media_delivery_truth_prompt_sections()
         return "".join(
@@ -371,7 +389,10 @@ class LlmToolActionsMixin:
     def _media_delivery_truth_prompt_sections(self) -> list[dict[str, Any]]:
         if not getattr(self, "enabled", False):
             return []
-        photo_enabled = bool(runtime_persona_setting(self, 'enable_photo_text_action', False))
+        photo_enabled = bool(
+            runtime_persona_setting(self, 'enable_photo_text_action', False)
+            and self._photo_generation_runtime_available()
+        )
         sections = [
             prompt_section(
                 "内部历史标记",
@@ -838,7 +859,10 @@ class LlmToolActionsMixin:
         if not getattr(self, "enabled", False):
             return ""
         reaction_enabled = self._reaction_image_provider_available()
-        photo_enabled = bool(runtime_persona_setting(self, 'enable_photo_text_action', False))
+        photo_enabled = bool(
+            runtime_persona_setting(self, 'enable_photo_text_action', False)
+            and self._photo_generation_runtime_available()
+        )
         mode = _single_line(runtime_persona_setting(self, 'natural_language_photo_generation_mode', "tool_first"), 40).lower()
         photo_enabled = photo_enabled and mode != "off" and not spontaneous_only
         if not reaction_enabled and not photo_enabled and spontaneous_only:
@@ -3102,6 +3126,21 @@ class LlmToolActionsMixin:
                     known_paths=known_paths,
                 ),
                 ensure_ascii=ensure_ascii,
+            )
+
+        if not self._photo_generation_runtime_available():
+            return public_receipt(
+                {
+                    "status": "unavailable",
+                    "success": False,
+                    "generated": False,
+                    "sent": False,
+                    "error_code": "image_extension_unavailable",
+                    "message": "生图扩展未安装、未启用或尚未就绪。",
+                    "must_not_claim_sent": True,
+                    "final_response_instruction": "自然说明当前不能生成图片，不要声称图片已经生成或发送，也不要在本轮重试。",
+                },
+                ensure_ascii=False,
             )
 
         tool_started_at = time.monotonic()

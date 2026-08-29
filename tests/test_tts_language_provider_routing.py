@@ -54,7 +54,7 @@ class _RoutingHarness(TtsEnhancementMixin):
     def persona_setting(self, key: str, default: object = None) -> object:
         return self.persona_values.get(key, getattr(self, key, default))
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         self.saved += 1
 
 

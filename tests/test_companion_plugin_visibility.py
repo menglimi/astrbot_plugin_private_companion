@@ -19,7 +19,10 @@ class CompanionPluginVisibilityTests(unittest.TestCase):
         self.assertEqual(summary["boundary_feedback"], {"installed": True, "enabled": True, "available": False})
         self.assertEqual(summary["temp_emotion"], {"installed": True, "enabled": True, "available": False})
         self.assertEqual(summary["content"], {"installed": False, "enabled": False, "available": False, "reason": "content_companion_unavailable"})
-        self.assertEqual(summary["image"], {"installed": False, "enabled": False, "available": False})
+        self.assertEqual(
+            summary["image"],
+            {"installed": False, "enabled": False, "available": False, "reason": ""},
+        )
         self.assertEqual(summary["reality"], {"installed": False, "enabled": False, "available": False})
 
     def test_loaded_plugins_remain_installed_when_disabled(self) -> None:
@@ -34,7 +37,7 @@ class CompanionPluginVisibilityTests(unittest.TestCase):
 
         self.assertEqual(
             summary["image"],
-            {"installed": True, "enabled": False, "available": True},
+            {"installed": True, "enabled": False, "available": True, "reason": ""},
         )
         self.assertEqual(
             summary["reality"],

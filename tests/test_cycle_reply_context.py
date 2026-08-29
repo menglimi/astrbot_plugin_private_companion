@@ -190,6 +190,9 @@ class CycleReplyContextTests(unittest.IsolatedAsyncioTestCase):
         plugin._append_daily_review_guidance_to_request = AsyncMock()
         plugin._ensure_daily_state = AsyncMock(return_value=_period_state())
         plugin._record_request_prompt_fragment = AsyncMock()
+        plugin._req036_preferred_address_from_portrait = AsyncMock(
+            return_value="画像称呼"
+        )
         event = SimpleNamespace(
             unified_msg_origin="official:FriendMessage:openid-user",
             message_str="今晚想和你做点更私密的事",
@@ -224,7 +227,10 @@ class CycleReplyContextTests(unittest.IsolatedAsyncioTestCase):
         prompt = plugin._request_prompt_context_surface(request)
         self.assertEqual(prompt.count('title="Bot 当前经期与互动边界"'), 1)
         self.assertEqual(prompt.count("自然、明确地拒绝或推迟这一次互动"), 1)
-        self.assertEqual(request._private_companion_preferred_address, "主要用户")
+        self.assertEqual(request._private_companion_preferred_address, "画像称呼")
+        self.assertEqual(
+            plugin._req036_preferred_address_from_portrait.await_count, 2
+        )
         self.assertEqual(plugin._ensure_daily_state.await_count, 2)
         plugin._record_request_prompt_fragment.assert_awaited_once()
 

@@ -54,7 +54,7 @@ class _JudgementHarness(UserMemoryMixin):
     def _update_relationship_state_from_intent(self, _user: dict, intent: dict) -> None:
         self.applied_intents.append(dict(intent))
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         self.saved += 1
 
 

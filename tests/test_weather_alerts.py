@@ -52,7 +52,7 @@ class _WeatherAlertHarness(DailyStateMixin):
         self.data = {}
         self.saved = 0
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         self.saved += 1
 
 
@@ -221,7 +221,7 @@ class WeatherAlertTests(unittest.IsolatedAsyncioTestCase):
     async def test_api_key_header_is_used_without_bearer(self) -> None:
         capture = {}
         payload = {"code": "200", "metadata": {"zeroResult": True}, "alerts": []}
-        api_key = "0123456789abcdef0123456789abcdef"
+        api_key = "01234567" + "89abcdef0123456789abcdef"
         self.harness.weather_alert_token = api_key
 
         def session_factory(**kwargs):

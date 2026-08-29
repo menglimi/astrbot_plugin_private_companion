@@ -21,7 +21,10 @@ from .photo_generation_scope import (
 )
 from .photo_reference_catalog import CatalogValidationError, validate_and_serialize
 from .relationship_ledger import normalize_relationship_positive_stage_cap_key
-from .relationship_policy import relationship_stage_policy_json
+from .relationship_policy import (
+    normalize_relationship_stage_provider_routes,
+    relationship_stage_policy_json,
+)
 from .segmented_message import normalize_component_order
 from .model_routing import normalize_rule_configs, normalize_scope
 
@@ -46,6 +49,8 @@ class PageSettingNormalizerMixin:
     def _normalize_page_core_setting(self, key: str, value: Any) -> Any:
         if key == "relationship_stage_policy":
             return relationship_stage_policy_json(value)
+        if key == "relationship_stage_provider_routes":
+            return normalize_relationship_stage_provider_routes(value)
         if key == "relationship_positive_stage_cap_key":
             return normalize_relationship_positive_stage_cap_key(value)
         if key == "normal_interaction_band_cap":
@@ -532,88 +537,7 @@ class PageSettingNormalizerMixin:
                 return normalizer(value)
             return normalize_bot_relationship_cards(value)
         if key == "photo_reference_library":
-            if isinstance(value, list):
-                raw_items = value
-            else:
-                raw_text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-                raw_items = []
-                parsed_array = False
-                if raw_text.startswith("[") and raw_text.endswith("]"):
-                    try:
-                        parsed_items = json.loads(raw_text)
-                        if isinstance(parsed_items, list):
-                            raw_items = parsed_items
-                            parsed_array = True
-                    except (TypeError, ValueError, json.JSONDecodeError):
-                        pass
-                if not parsed_array and raw_text:
-                    raw_items = raw_text.split("\n")
-            items: list[Any] = []
-            seen_sources: set[str] = set()
-            for raw_item in raw_items:
-                if isinstance(raw_item, dict):
-                    item = dict(raw_item)
-                else:
-                    text = str(raw_item or "").strip()
-                    if not text:
-                        continue
-                    item = {}
-                    if text.startswith("{") and text.endswith("}"):
-                        try:
-                            parsed_item = json.loads(text)
-                            if isinstance(parsed_item, dict):
-                                item = dict(parsed_item)
-                        except (TypeError, ValueError, json.JSONDecodeError):
-                            pass
-                    if not item:
-                        parts = re.split(r"\s*(?:\|\||｜｜)\s*", text, maxsplit=2)
-                        item = {
-                            "path": parts[0] if parts else "",
-                            "note": parts[1] if len(parts) > 1 else "",
-                        }
-                        if len(parts) > 2:
-                            metadata_text = str(parts[2] or "").strip()
-                            if metadata_text.startswith("{"):
-                                try:
-                                    metadata = json.loads(metadata_text)
-                                    if isinstance(metadata, dict):
-                                        item.update(
-                                            {
-                                                name: field_value
-                                                for name, field_value in metadata.items()
-                                                if name not in {"source", "path", "url", "note", "description"}
-                                            }
-                                        )
-                                    else:
-                                        item["note"] = f"{item['note']} || {metadata_text}".strip(" |")
-                                except (TypeError, ValueError, json.JSONDecodeError):
-                                    item["note"] = f"{item['note']} || {metadata_text}".strip(" |")
-                            else:
-                                item["note"] = f"{item['note']} || {metadata_text}".strip(" |")
-
-                source = _path_text(item.get("source") or item.get("path") or item.get("url"), 1000)
-                if not source or source in seen_sources:
-                    continue
-                seen_sources.add(source)
-                note = str(item.get("note") or item.get("description") or "")
-                note = note.replace("\r\n", "\n").replace("\r", "\n").strip()[:500]
-                item["path"] = source
-                item["note"] = note
-                for field in ("reference_roles", "scene_categories", "time_categories"):
-                    if field in item and not isinstance(item.get(field), list):
-                        item[field] = [
-                            part
-                            for part in re.split(r"[,，、/|\s]+", str(item.get(field) or ""))
-                            if part
-                        ]
-                if "outfit_lock_default" in item:
-                    raw_lock = item.get("outfit_lock_default")
-                    if raw_lock is None or (isinstance(raw_lock, str) and not raw_lock.strip()):
-                        item.pop("outfit_lock_default", None)
-                    else:
-                        item["outfit_lock_default"] = self._normalize_bool_value(raw_lock)
-                items.append(item)
-            return items[:24]
+            return self._normalize_photo_reference_library(value)
         if key == "external_image_api_endpoints":
             normalizer = getattr(self.plugin, "_normalize_external_image_api_endpoints", None)
             return normalizer(value) if callable(normalizer) else (value if isinstance(value, list) else [])
@@ -661,6 +585,90 @@ class PageSettingNormalizerMixin:
             mode = aliases.get(mode, mode)
             return mode if mode in {"auto", "openai", "openrouter", "agnes", "sensenova", "bailian", "modelscope", "doubao", "gemini", "minimax"} else "auto"
         return _SETTING_UNHANDLED
+
+    def _normalize_photo_reference_library(self, value: Any) -> list[dict[str, Any]]:
+        if isinstance(value, list):
+            raw_items = value
+        else:
+            raw_text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+            raw_items = []
+            parsed_array = False
+            if raw_text.startswith("[") and raw_text.endswith("]"):
+                try:
+                    parsed_items = json.loads(raw_text)
+                    if isinstance(parsed_items, list):
+                        raw_items = parsed_items
+                        parsed_array = True
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    pass
+            if not parsed_array and raw_text:
+                raw_items = raw_text.split("\n")
+        items: list[dict[str, Any]] = []
+        seen_sources: set[str] = set()
+        for raw_item in raw_items:
+            if isinstance(raw_item, dict):
+                item = dict(raw_item)
+            else:
+                text = str(raw_item or "").strip()
+                if not text:
+                    continue
+                item = {}
+                if text.startswith("{") and text.endswith("}"):
+                    try:
+                        parsed_item = json.loads(text)
+                        if isinstance(parsed_item, dict):
+                            item = dict(parsed_item)
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        pass
+                if not item:
+                    parts = re.split(r"\s*(?:\|\||｜｜)\s*", text, maxsplit=2)
+                    item = {
+                        "path": parts[0] if parts else "",
+                        "note": parts[1] if len(parts) > 1 else "",
+                    }
+                    if len(parts) > 2:
+                        metadata_text = str(parts[2] or "").strip()
+                        if metadata_text.startswith("{"):
+                            try:
+                                metadata = json.loads(metadata_text)
+                                if isinstance(metadata, dict):
+                                    item.update(
+                                        {
+                                            name: field_value
+                                            for name, field_value in metadata.items()
+                                            if name not in {"source", "path", "url", "note", "description"}
+                                        }
+                                    )
+                                else:
+                                    item["note"] = f"{item['note']} || {metadata_text}".strip(" |")
+                            except (TypeError, ValueError, json.JSONDecodeError):
+                                item["note"] = f"{item['note']} || {metadata_text}".strip(" |")
+                        else:
+                            item["note"] = f"{item['note']} || {metadata_text}".strip(" |")
+
+            source = _path_text(item.get("source") or item.get("path") or item.get("url"), 1000)
+            if not source or source in seen_sources:
+                continue
+            seen_sources.add(source)
+            note = str(item.get("note") or item.get("description") or "")
+            note = note.replace("\r\n", "\n").replace("\r", "\n").strip()[:500]
+            item["path"] = source
+            item["note"] = note
+            for field in ("reference_roles", "scene_categories", "time_categories"):
+                if field in item and not isinstance(item.get(field), list):
+                    item[field] = [
+                        part
+                        for part in re.split(r"[,，、/|\s]+", str(item.get(field) or ""))
+                        if part
+                    ]
+            if "outfit_lock_default" in item:
+                raw_lock = item.get("outfit_lock_default")
+                if raw_lock is None or (isinstance(raw_lock, str) and not raw_lock.strip()):
+                    item.pop("outfit_lock_default", None)
+                else:
+                    item["outfit_lock_default"] = self._normalize_bool_value(raw_lock)
+            items.append(item)
+        return items[:24]
 
     def _normalize_page_delivery_setting(self, key: str, value: Any) -> Any:
         if key == "segmented_proactive_component_order":

@@ -16,6 +16,7 @@ class _AlertLifecycleHarness(DailyStateMixin):
     weather_alert_min_severity = "blue"
     weather_lat = 39.9
     weather_lon = 116.4
+    environment_perception_timezone = "Asia/Shanghai"
 
     def __init__(self) -> None:
         self.data = {
@@ -37,6 +38,7 @@ class _AlertLifecycleHarness(DailyStateMixin):
         self.responses: list[dict] = []
         self.offered: list[tuple[str, dict]] = []
         self.generation_disabled = False
+        self.reject_as_terminal = False
 
     async def _fetch_qweather_alerts(self) -> dict:
         payload = self.responses.pop(0)
@@ -44,7 +46,7 @@ class _AlertLifecycleHarness(DailyStateMixin):
         parsed["source"] = "qweather"
         return parsed
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         return None
 
     def _private_user_role(self, user: dict, _user_id: str = "") -> str:
@@ -58,6 +60,10 @@ class _AlertLifecycleHarness(DailyStateMixin):
 
     def _offer_proactive_candidate(self, user_id: str, _user: dict, candidate: dict) -> bool:
         self.offered.append((user_id, candidate))
+        if self.reject_as_terminal:
+            candidate["lifecycle_status"] = "skipped"
+            candidate["lifecycle_note"] = "来源事件生成时区已变化"
+            return False
         return True
 
 
@@ -229,6 +235,32 @@ class WeatherAlertLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0, offered)
         self.assertEqual([], harness.offered)
         self.assertEqual([], harness.data["weather_alert_awareness"]["pending_events"])
+
+    async def test_terminally_skipped_alert_is_consumed_and_not_recreated(self) -> None:
+        harness = _AlertLifecycleHarness()
+        harness.reject_as_terminal = True
+        now = datetime.now(timezone.utc).timestamp()
+        alert = {"id": "terminal-alert", "color_code": "orange"}
+        event = {
+            "event_key": "resolved:terminal-alert:fingerprint",
+            "kind": "resolved",
+            "captured_at": now,
+            "alert": alert,
+        }
+        harness.data["weather_alert_awareness"]["pending_events"] = [event]
+
+        offered = harness._queue_weather_alert_pending_events(now=now)
+
+        self.assertEqual(offered, 0)
+        self.assertEqual(harness.data["weather_alert_awareness"]["pending_events"], [])
+        self.assertEqual(harness.offered[0][1]["window_timezone"], "Asia/Shanghai")
+        terminal_identity = harness._weather_alert_terminal_identity(alert)
+        self.assertIn(
+            terminal_identity,
+            harness.data["weather_alert_awareness"]["terminal_event_identities"],
+        )
+        harness._weather_alert_append_pending_events([event])
+        self.assertEqual(harness.data["weather_alert_awareness"]["pending_events"], [])
 
 
 if __name__ == "__main__":

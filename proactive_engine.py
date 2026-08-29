@@ -121,6 +121,26 @@ from .proactive_routes import PROACTIVE_ROUTE_REGISTRY
 from .persona_config import runtime_persona_setting
 
 
+def _engine_proactive_window_timezone(owner: Any) -> str:
+    """Resolve the scheduling timezone without requiring another mixin."""
+
+    getter = getattr(owner, "_proactive_window_timezone", None)
+    if callable(getter):
+        try:
+            value = _single_line(getter(), 64)
+        except Exception:
+            value = ""
+        if value:
+            return value
+    return (
+        _single_line(
+            getattr(owner, "environment_perception_timezone", ""),
+            64,
+        )
+        or "Asia/Shanghai"
+    )
+
+
 def _persona_provider_id(owner: Any, canonical_key: str, legacy_attr: str, quick_role: str) -> str:
     """Resolve canonical persona provider settings while preserving test harnesses."""
     fallback = str(getattr(owner, legacy_attr, "") or "").strip()
@@ -149,7 +169,6 @@ ABSENCE_MISS_PROBABILITY = 0.56
 MEMORY_ECHO_MIN_SILENCE_SECONDS = 8 * 3600
 MOOD_CHECKIN_MIN_SILENCE_SECONDS = 8 * 3600
 ABSENCE_MISS_MIN_PROACTIVE_SILENCE_SECONDS = 36 * 3600
-
 DEFAULT_NEWS_SOURCES = "\n".join(
     [
         "BBC中文|https://feeds.bbci.co.uk/zhongwen/simp/rss.xml",
@@ -862,6 +881,20 @@ class ProactiveEngineMixin:
         if not isinstance(candidate, dict):
             return None, "主动来源无效"
         prepared = dict(candidate)
+        current_timezone = _engine_proactive_window_timezone(self)
+        candidate_timezone = _single_line(candidate.get("window_timezone"), 64)
+        time_exempt = source in {"timer", "troubleshooting", "simulation"}
+        if (
+            candidate_timezone
+            and candidate_timezone != current_timezone
+            and not time_exempt
+        ):
+            candidate["lifecycle_status"] = "skipped"
+            candidate["lifecycle_updated_at"] = now
+            candidate["lifecycle_note"] = "来源事件生成时区已变化"
+            return None, "来源事件生成时区已变化"
+        prepared["window_timezone"] = candidate_timezone or current_timezone
+        candidate.setdefault("window_timezone", prepared["window_timezone"])
         origin_event_id = self._proactive_origin_event_id(candidate, source=source)
         prepared["origin_event_id"] = origin_event_id
         if origin_event_id and not _single_line(candidate.get("origin_event_id"), 80):
@@ -890,7 +923,7 @@ class ProactiveEngineMixin:
             ):
                 prepared.pop(key, None)
             prepared["timezone_rebased_from"] = stored_timezone
-        if effective_timezone:
+        if effective_timezone and not time_exempt:
             prepared["window_timezone"] = effective_timezone
         window_start_at = _safe_float(prepared.get("window_start_at"), 0)
         preferred_ts = _safe_float(prepared.get("preferred_ts"), 0)
@@ -907,7 +940,6 @@ class ProactiveEngineMixin:
             "birthday_celebration",
             "special_day_greeting",
         }
-        time_exempt = source in {"timer", "troubleshooting", "simulation"}
         quiet_hours_exempt = reason == "insomnia_night" or midnight_ritual
         if (
             reason == "morning_greeting"
@@ -1003,6 +1035,7 @@ class ProactiveEngineMixin:
         preferred_ts: float,
         best_until_at: float,
         expire_at: float,
+        window_timezone: str = "",
         chain: list[dict[str, Any]] | None = None,
         trigger_message_id: str = "",
         trigger_umo: str = "",
@@ -1084,6 +1117,8 @@ class ProactiveEngineMixin:
             "preferred_ts": max(0.0, float(preferred_ts or window_start_at or _now_ts())),
             "best_until_at": max(float(best_until_at or preferred_ts or _now_ts()), float(window_start_at or 0.0)),
             "expire_at": max(float(expire_at or best_until_at or preferred_ts or _now_ts()), float(best_until_at or 0.0)),
+            "window_timezone": _single_line(window_timezone, 64)
+            or _engine_proactive_window_timezone(self),
             "salience": max(0.0, min(1.0, salience)),
             "warmth": max(0.0, min(1.0, warmth)),
             "urgency": max(0.0, min(1.0, urgency)),
@@ -1440,6 +1475,7 @@ class ProactiveEngineMixin:
             preferred_ts=preferred_ts,
             best_until_at=best_until_at,
             expire_at=expire_at,
+            window_timezone=_single_line(prepared.get("window_timezone"), 64),
             chain=prepared.get("chain") if isinstance(prepared.get("chain"), list) else [],
             trigger_message_id=self._candidate_trigger_message_id(prepared),
             trigger_umo=_single_line(prepared.get("trigger_umo") or prepared.get("umo"), 160),
@@ -3335,6 +3371,8 @@ class ProactiveEngineMixin:
             "preferred_ts": _safe_float(selected.get("preferred_ts"), 0),
             "best_until_at": _safe_float(selected.get("best_until_at"), 0),
             "expire_at": _safe_float(selected.get("expire_at"), 0),
+            "window_timezone": _single_line(selected.get("window_timezone"), 64)
+            or _engine_proactive_window_timezone(self),
         }
         for key in ("_mobile_location_transition_key", "_mobile_location_priority", "mobile_location_event_type"):
             if key in selected:
@@ -3365,6 +3403,10 @@ class ProactiveEngineMixin:
             selected.get("mobile_location_event_type"), 32
         )
         user["planned_proactive_window_start_at"] = _safe_float(selected.get("window_start_at"), 0)
+        user["planned_proactive_window_timezone"] = _single_line(
+            selected.get("window_timezone"),
+            64,
+        ) or _engine_proactive_window_timezone(self)
         user["planned_proactive_best_until_at"] = _safe_float(selected.get("best_until_at"), 0)
         user["planned_proactive_expire_at"] = _safe_float(selected.get("expire_at"), 0)
         user["planned_proactive_semantic_kind"] = _single_line(selected.get("semantic_kind"), 40)
@@ -3975,6 +4017,11 @@ class ProactiveEngineMixin:
             impulse.get("window_start_at"),
             scheduled,
         ) if isinstance(impulse, dict) else scheduled
+        user["planned_proactive_window_timezone"] = (
+            _single_line(impulse.get("window_timezone"), 64)
+            if isinstance(impulse, dict)
+            else ""
+        ) or _engine_proactive_window_timezone(self)
         user["planned_proactive_best_until_at"] = _safe_float(
             impulse.get("best_until_at"),
             scheduled,
@@ -4131,6 +4178,7 @@ class ProactiveEngineMixin:
         user["planned_mobile_location_transition_key"] = ""
         user["planned_mobile_location_event_type"] = ""
         user["planned_proactive_window_start_at"] = scheduled_ts
+        user["planned_proactive_window_timezone"] = _engine_proactive_window_timezone(self)
         active_span, grace_span = self._proactive_impulse_default_window_seconds(
             user["planned_proactive_reason"],
             source="timer",
@@ -4194,6 +4242,7 @@ class ProactiveEngineMixin:
         user["planned_mobile_location_transition_key"] = ""
         user["planned_mobile_location_event_type"] = ""
         user["planned_proactive_window_start_at"] = scheduled_ts
+        user["planned_proactive_window_timezone"] = _engine_proactive_window_timezone(self)
         active_span, grace_span = self._proactive_impulse_default_window_seconds(
             user["planned_proactive_reason"],
             source="timer",
@@ -4265,6 +4314,25 @@ class ProactiveEngineMixin:
             return self._should_send_simulation(user)
         now = _now_ts()
         due_timer_active = self._has_due_llm_timer(user, now=now)
+        planned_timezone = _single_line(
+            user.get("planned_proactive_window_timezone"),
+            64,
+        )
+        current_timezone = _engine_proactive_window_timezone(self)
+        if (
+            planned_timezone
+            and planned_timezone != current_timezone
+            and planned_source not in {"timer", "troubleshooting", "simulation"}
+            and not due_timer_active
+        ):
+            self._mark_planned_candidate_status(
+                user,
+                "blocked",
+                "运行时区已变化，旧主动窗口已作废",
+            )
+            self._clear_pending_proactive_plan(user)
+            self._schedule_next_proactive(user, now=now)
+            return False, "运行时区已变化，已重新安排主动窗口"
         timeliness = self._planned_proactive_timeliness_level(user)
         if not is_troubleshooting:
             route_preflight_getter = getattr(self, "_planned_proactive_route_preflight", None)
@@ -5955,6 +6023,7 @@ class ProactiveEngineMixin:
         scheduled_ts = _safe_float(user.get("next_proactive_at"), now)
         user["planned_proactive_impulse_id"] = ""
         user["planned_proactive_window_start_at"] = scheduled_ts
+        user["planned_proactive_window_timezone"] = _engine_proactive_window_timezone(self)
         active_span, grace_span = self._proactive_impulse_default_window_seconds(
             user["planned_proactive_reason"],
             source="simulation",
@@ -5999,6 +6068,7 @@ class ProactiveEngineMixin:
         user["planned_proactive_topic"] = ""
         user["planned_proactive_impulse_id"] = ""
         user["planned_proactive_window_start_at"] = 0
+        user["planned_proactive_window_timezone"] = ""
         user["planned_proactive_best_until_at"] = 0
         user["planned_proactive_expire_at"] = 0
         user["planned_proactive_semantic_kind"] = ""

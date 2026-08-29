@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import os
 import tempfile
 import time
@@ -167,6 +168,19 @@ class _PrivateImageHarness(PrivateImageMixin):
 
 
 class PhotoFollowupFixTests(unittest.IsolatedAsyncioTestCase):
+    def _optional_image_download_target(self, value: str):
+        try:
+            image_runtime = importlib.import_module(
+                "astrbot_plugin_image_companion.image_runtime"
+            )
+        except ImportError:
+            self.skipTest("optional Image Companion runtime is not installed")
+        runtime_type = image_runtime.ProactiveMessageMixin
+        return runtime_type._external_image_download_target(
+            object.__new__(runtime_type),
+            value,
+        )
+
     def test_reference_metadata_accepts_confirmed_submission_without_pre_resolved_path(self) -> None:
         self.assertTrue(
             PrivateCompanionPageApi._image_generation_result_used_reference(
@@ -186,20 +200,18 @@ class PhotoFollowupFixTests(unittest.IsolatedAsyncioTestCase):
         )
 
     def test_signed_image_download_url_keeps_original_encoding(self) -> None:
-        harness = _FrameworkHarness()
         signed_url = (
             "https://aoss.example/image/a%2Fb.png?"
             "X-Amz-Credential=AK%2F20260711%2Fcn-sh-01%2Fs3%2Faws4_request&"
             "X-Amz-Signature=abc%2Bdef%2F123"
         )
-        request_target, preserved = harness._external_image_download_target(signed_url)
+        request_target, preserved = self._optional_image_download_target(signed_url)
         self.assertTrue(preserved)
         self.assertEqual(str(request_target), signed_url)
 
     def test_plain_image_download_url_stays_a_string(self) -> None:
-        harness = _FrameworkHarness()
         image_url = "https://cdn.example/image.png?width=1024"
-        request_target, preserved = harness._external_image_download_target(image_url)
+        request_target, preserved = self._optional_image_download_target(image_url)
         self.assertFalse(preserved)
         self.assertIsInstance(request_target, str)
         self.assertEqual(request_target, image_url)
@@ -236,6 +248,40 @@ class PhotoFollowupFixTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("multiple outfits", prompt)
         self.assertIn("side-by-side panels", prompt)
         self.assertNotIn("make at least two visible outfit changes", prompt)
+
+    def test_daily_outfit_structured_contract_is_fixed_and_field_bounded(self) -> None:
+        harness = _PhotoActionHarness()
+        harness.data = {"daily_state": {}}
+        harness.daily_outfit_photo_prompt = ""
+        harness._daily_outfit_role_appearance_text = lambda: "silver hair, green eyes"
+        harness._get_photo_style_instruction = lambda: ("二次元", "")
+        harness._photo_style_prompt_en = lambda *_args: "anime illustration"
+        harness._format_weather_for_prompt = lambda: "cool windy weather"
+        harness._daily_outfit_schedule_text = lambda: "school and evening commute"
+        harness._daily_outfit_visual_state_text = lambda _state: "bright expression"
+        harness._normalize_daily_outfit_profile = lambda profile: profile or {}
+        harness._daily_outfit_outfit_hint = lambda **_kwargs: "layered school outfit"
+        harness._daily_outfit_rotation_reference = lambda: "blue jacket and black skirt"
+        harness._daily_outfit_scene_hint = lambda *_args, **_kwargs: "classroom window"
+
+        sections = harness._build_daily_outfit_photo_prompt(
+            {},
+            memory_context=("发色银白；绿色眼睛；教室窗边；自然微笑；" * 20),
+            outfit_profile={"palette": "gray"},
+            structured=True,
+        )
+
+        by_name = {section.name: section for section in sections}
+        self.assertEqual(by_name["daily_outfit_contract"].source, "fixed_prompt")
+        self.assertTrue(by_name["daily_outfit_contract"].protected)
+        self.assertLessEqual(len(by_name["user_request"].positive), 1400)
+        self.assertLessEqual(len(by_name["daily_outfit_contract"].negative), 760)
+        visual_chars = sum(
+            len(section.positive) + len(section.negative)
+            for section in sections
+            if section.source not in {"user_request", "fixed_prompt"}
+        )
+        self.assertLessEqual(visual_chars, 500)
 
     def test_anime_daily_outfit_prompt_does_not_inject_real_person_style(self) -> None:
         harness = _PhotoActionHarness()

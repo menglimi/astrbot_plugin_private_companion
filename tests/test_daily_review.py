@@ -172,7 +172,7 @@ class _DailyReviewHarness(DailyReviewMixin):
         self.llm_calls += 1
         return self.llm_result
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         self.saved += 1
 
     async def _record_request_prompt_fragment(self, *_args, **_kwargs) -> None:
@@ -469,7 +469,7 @@ class DailyReviewTests(unittest.IsolatedAsyncioTestCase):
         await self.harness._ensure_daily_review(target_date=target_date)
         request = SimpleNamespace(system_prompt="原系统提示", prompt="当前问题")
         await self.harness._append_daily_review_guidance_to_request(object(), request)
-        self.assertIn("private_companion_daily_review_guidance_v1", request.system_prompt)
+        self.assertIn('<section title="每日巡视柔性纠偏">', request.system_prompt)
         self.assertIn("不能覆盖当前用户意图", request.system_prompt)
         self.assertNotIn("黑名单", request.system_prompt)
 

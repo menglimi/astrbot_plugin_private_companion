@@ -10240,15 +10240,24 @@ Output:
             PhotoPromptSection(
                 name="user_request",
                 source="user_request",
-                positive=", ".join(
-                    _single_line(part, 400) for part in positive if _single_line(part, 400)
+                positive=_single_line(
+                    ", ".join(
+                        _single_line(part, 400)
+                        for part in positive
+                        if _single_line(part, 400)
+                    ),
+                    1400,
                 ),
                 protected=True,
             ),
             PhotoPromptSection(
                 name="daily_outfit_contract",
-                source="composition",
-                negative=", ".join(negative),
+                # These are resolved workflow exclusions rather than ambient
+                # visual context.  Freeze them for this task so the N-1
+                # resolver preserves safety and wardrobe-rotation rules.
+                source="fixed_prompt",
+                negative=_single_line(", ".join(negative), 760),
+                protected=True,
             ),
         ]
         if visual_memory:
@@ -10643,6 +10652,7 @@ Output:
         status: str = "ok",
         data: dict[str, Any] | None = None,
         context: dict[str, Any] | None = None,
+        payloads: dict[str, Any] | None = None,
     ) -> None:
         try:
             max_bytes = self._photo_generation_trace_max_bytes()
@@ -12536,76 +12546,11 @@ Output:
         bridge = getattr(self, "_image_companion_generate", None)
         if callable(bridge):
             return await bridge(**kwargs)
-        # Standalone mixin users (tests and third-party integrations) may call
-        # this method without constructing ``PrivateCompanionPlugin``. The
-        # production plugin always mixes in ImageCompanionBridgeMixin, so this
-        # branch is compatibility-only and is never the host runtime path.
-        legacy = getattr(self, "_generate_photo_image_legacy", None)
-        if callable(legacy):
-            return await legacy(**kwargs)
         return (
             "独立生图服务",
             "",
             "生图能力已拆分，请安装并启用“我会画给你看”插件 astrbot_plugin_image_companion。",
         )
-
-    async def _generate_photo_image_legacy(self, **kwargs: Any) -> tuple[str, str, str]:
-        """Compatibility alias backed by Image Companion's external runtime."""
-        bridge = getattr(self, "_image_companion_generate", None)
-        if callable(bridge):
-            return await bridge(**kwargs)
-        for module_name in (
-            "data.plugins.astrbot_plugin_image_companion.image_runtime",
-            "astrbot_plugin_image_companion.image_runtime",
-        ):
-            try:
-                module = importlib.import_module(module_name)
-                runtime_type = getattr(module, "ProactiveMessageMixin", None)
-                executor = getattr(runtime_type, "_generate_photo_image_legacy", None)
-                if callable(executor):
-                    return await executor(self, **kwargs)
-            except (ImportError, AttributeError):
-                continue
-        return (
-            "独立生图服务",
-            "",
-            "生图能力已拆分，请安装并启用“我会画给你看”插件 astrbot_plugin_image_companion。",
-        )
-
-    async def _materialize_external_image_value(self, *args: Any, **kwargs: Any) -> tuple[str, str]:
-        """Compatibility proxy for integrations that used the old private helper."""
-        for module_name in (
-            "data.plugins.astrbot_plugin_image_companion.image_runtime",
-            "astrbot_plugin_image_companion.image_runtime",
-        ):
-            try:
-                module = importlib.import_module(module_name)
-                if "_EXTERNAL_IMAGE_MAX_BYTES" in globals():
-                    setattr(module, "_EXTERNAL_IMAGE_MAX_BYTES", globals()["_EXTERNAL_IMAGE_MAX_BYTES"])
-                executor = getattr(getattr(module, "ProactiveMessageMixin", None), "_materialize_external_image_value", None)
-                if callable(executor):
-                    return await executor(self, *args, **kwargs)
-            except (ImportError, AttributeError):
-                continue
-        return "", "独立生图运行时不可用"
-
-    def _external_image_download_target(self, target_url: str) -> tuple[Any, bool]:
-        """Keep signed object-storage URLs byte-for-byte compatible with aiohttp."""
-        target = str(target_url or "").strip()
-        signed_markers = (
-            "x-amz-algorithm=",
-            "x-amz-credential=",
-            "x-amz-signature=",
-            "x-oss-signature=",
-        )
-        if not any(marker in target.lower() for marker in signed_markers):
-            return target, False
-        try:
-            from yarl import URL
-
-            return URL(target, encoded=True), True
-        except Exception:
-            return target, False
 
     async def _generate_photo_image_result(self, **kwargs: Any) -> PhotoGenerationResult:
         backend, image_path, note = await self._generate_photo_image(**kwargs)
@@ -14508,24 +14453,52 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         )
         return str(selected.get("path") or "") if isinstance(selected, dict) else ""
 
-    async def _photo_persona_reference_image_for_kind_async(
+    async def _photo_reference_candidate_for_path_async(
         self,
-        workflow_kind: str,
+        reference_image_path: str,
         *,
+        workflow_kind: str,
         allow_daily_outfit: bool = True,
-        request_text: str = "",
-        ambient_context: str = "",
-        selection_context: str = "",
-        suggested_scene_preset: str = "",
-    ) -> str:
-        """Compatibility facade used by extension bridges and legacy workflows."""
-        return await self._select_photo_reference_image_async(
-            workflow_kind,
+        continuity_key: str = "",
+    ) -> dict[str, Any]:
+        """Resolve transient reference metadata without an Image implementation mixin."""
+        path = _path_text(reference_image_path, 1000)
+        if not path:
+            return {}
+        normalized_kind = str(workflow_kind or "").strip().lower()
+        if normalized_kind in {"edit", "改图", "修图", "重绘", "p图"}:
+            return self._normalize_photo_reference_candidate_metadata(
+                {
+                    "id": "explicit_reference",
+                    "path": path,
+                    "source": path,
+                    "kind": "source",
+                    "note": "用户本轮明确提供或引用的改图原图",
+                    "reference_roles": ["source"],
+                    "outfit_lock_default": False,
+                    "metadata_source": "runtime",
+                }
+            )
+        candidates = await self._photo_reference_candidates_async(
             allow_daily_outfit=allow_daily_outfit,
-            request_text=request_text,
-            ambient_context=ambient_context,
-            selection_context=selection_context,
-            suggested_scene_preset=suggested_scene_preset,
+        )
+        recent = self._recent_sent_photo_continuity_candidate(continuity_key)
+        if recent:
+            candidates.insert(0, recent)
+        for candidate in candidates:
+            if self._photo_reference_paths_equal(path, candidate.get("path", "")):
+                return self._normalize_photo_reference_candidate_metadata(candidate)
+        return self._normalize_photo_reference_candidate_metadata(
+            {
+                "id": "explicit_reference",
+                "path": path,
+                "source": path,
+                "kind": "explicit",
+                "note": "用户本轮明确提供或引用的参考图",
+                "reference_roles": ["identity"],
+                "outfit_lock_default": False,
+                "metadata_source": "runtime",
+            }
         )
 
     async def _select_photo_reference_plan_async(
@@ -17827,39 +17800,3 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         )
         style_hint = f"；参考语气偏好：{style}" if style else ""
         return "check_in", f"无明确来源时的轻量开场{style_hint}；优先贴近关系事实、当前状态或当前日程，不使用固定模板。"
-
-
-def _install_external_image_runtime_compatibility() -> None:
-    """Expose historical private methods from the split runtime.
-
-    No image implementation is copied into the host package. This adapter only
-    preserves imports used by older integrations and the existing regression
-    suite while production generation continues through the extension API.
-    """
-    runtime_type: Any = None
-    for module_name in (
-        "data.plugins.astrbot_plugin_image_companion.image_runtime",
-        "astrbot_plugin_image_companion.image_runtime",
-    ):
-        try:
-            module = importlib.import_module(module_name)
-            runtime_type = getattr(module, "ProactiveMessageMixin", None)
-            if runtime_type is not None:
-                break
-        except ImportError:
-            continue
-    if runtime_type is None:
-        return
-    protected = {
-        "_generate_photo_image",
-        "_generate_photo_image_legacy",
-        "_generate_photo_image_result",
-    }
-    for name, value in vars(runtime_type).items():
-        if name in protected or name.startswith("__"):
-            continue
-        if not hasattr(ProactiveMessageMixin, name):
-            setattr(ProactiveMessageMixin, name, value)
-
-
-_install_external_image_runtime_compatibility()

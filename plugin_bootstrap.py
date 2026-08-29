@@ -13,7 +13,6 @@ from astrbot.api.star import StarTools
 
 from .body_monitor_integration import BodyMonitorIntegration
 from .bot_personal_contract import capability_descriptor, contract_self_check
-from .bot_personal_outbox import BotPersonalOutbox
 from .config_migration import migrate_flat_config_into_schema_groups
 from .constants import (
     DEFAULT_NATURAL_LANGUAGE_PHOTO_EXTRA_PROMPT,
@@ -37,12 +36,16 @@ from .photo_reference_catalog import load_catalog, validate_and_serialize
 from .proactive_chat_runtime_bridge import ProactiveChatRuntimeBridge
 from .relationship_ledger import normalize_relationship_positive_stage_cap_key
 from .relationship_affinity_runtime import normalize_group_allowlist
-from .relationship_policy import normalize_relationship_stage_policy
+from .relationship_policy import (
+    normalize_relationship_stage_policy,
+    normalize_relationship_stage_provider_routes,
+)
 from .runtime_compat import probe_runtime_capabilities
 from .migration_coordinator import MigrationCoordinator
 from .migration_outbox import MigrationOutbox
 from .model_routing import DEFAULT_SENSITIVE_REPLACEMENT_KEYWORDS, build_rules, normalize_scope
 from .segmented_message import normalize_component_order, normalize_component_strategy
+from .story_authority import story_startup_sync_operation
 from .unified_person_registry import UnifiedPersonRegistry
 
 DEFAULT_AI_DAILY_MORNING_UID = "3706929260006322"
@@ -230,6 +233,9 @@ def initialize_plugin_entrypoint_state(
     extension_api_factory: Any,
 ) -> None:
     self.extension_api = extension_api_factory(self)
+    self._persistence_owner_token = str(
+        getattr(self.extension_api, "_story_migration_generation", "") or f"instance-{id(self)}"
+    )
     self._external_proactive_abilities: dict[str, dict[str, Any]] = {}
     self._external_realtime_activities: dict[str, dict[str, Any]] = {}
     # Short-lived continuity from realtime extensions. This is deliberately
@@ -519,6 +525,14 @@ def _initialize_core_and_relationship_config(self: Any, c: Any) -> None:
     self.enable_custom_relationship_stage_policy = self._cfg_bool(c, "enable_custom_relationship_stage_policy", True)
     self.relationship_stage_policy = normalize_relationship_stage_policy(
         self._cfg_raw(c, "relationship_stage_policy", [])
+    )
+    self.enable_relationship_stage_provider_routing = self._cfg_bool(
+        c,
+        "enable_relationship_stage_provider_routing",
+        False,
+    )
+    self.relationship_stage_provider_routes = normalize_relationship_stage_provider_routes(
+        self._cfg_raw(c, "relationship_stage_provider_routes", {})
     )
     self.relationship_positive_stage_cap_key = normalize_relationship_positive_stage_cap_key(
         self._cfg_raw(c, "relationship_positive_stage_cap_key", "close")
@@ -1400,7 +1414,9 @@ def _initialize_photo_and_expression_config(self: Any, c: Any) -> None:
     self.weather_alert_token = configured_alert_token or configured_weather_token or legacy_weather_alert_token
     # Expose the old attribute as a runtime alias for integrations written
     # against the early api_key draft; the persisted field remains token.
-    self.weather_alert_api_key = legacy_weather_alert_token or self.weather_alert_token
+    self.weather_alert_api_key = (
+        legacy_weather_alert_token or self.weather_alert_token
+    )
     self.weather_alert_refresh_minutes = self._cfg_int(c, "weather_alert_refresh_minutes", 10, 5, 60)
     self.weather_alert_min_severity = self._normalize_weather_alert_min_severity(
         self._cfg_str(c, "weather_alert_min_severity", "blue", "blue")
@@ -2031,6 +2047,7 @@ def _initialize_group_and_provider_config(self: Any, c: Any) -> None:
     self.allow_poke_action = self.enable_poke_action
     self.allow_voice_action = self.enable_voice_action
 
+@story_startup_sync_operation("startup.store-persona-load")
 def initialize_plugin_runtime(self: Any) -> None:
     # These references are process-local capabilities. Never inherit them from
     # mixin class attributes or a previous hot-reloaded plugin instance.
@@ -2098,6 +2115,21 @@ def initialize_plugin_runtime(self: Any) -> None:
     self._qzone_last_bot = None
     startup_load_started = time.perf_counter()
     self.data = self._load_data_sync()
+    timezone_reconciler = getattr(self, "_invalidate_timezone_derived_state", None)
+    if callable(timezone_reconciler):
+        runtime_state = (
+            self.data.get("proactive_runtime")
+            if isinstance(self.data.get("proactive_runtime"), dict)
+            else {}
+        )
+        timezone_result = timezone_reconciler(
+            str(runtime_state.get("window_timezone") or ""),
+            str(getattr(self, "environment_perception_timezone", "") or ""),
+            schedule_save=False,
+        )
+        timezone_sections = set(timezone_result.get("sections") or [])
+        if timezone_result.get("changed") and timezone_sections:
+            self._save_data_sync(sections=timezone_sections)
     manager = getattr(self, "store_manager", None)
     next_revision = getattr(manager, "next_revision", None)
     if callable(next_revision):
@@ -2150,14 +2182,11 @@ def initialize_plugin_post_runtime_state(self: Any, config: Any) -> None:
     self.enable_p5_b1_recall_gate = self._cfg_bool(config, "enable_p5_b1_recall_gate", False)
     self.enable_p5_b1_bridge_gate = self._cfg_bool(config, "enable_p5_b1_bridge_gate", False)
     self.p5_attestation_registry = P5AttestationRegistry()
-    self._bot_personal_outbox = BotPersonalOutbox(
-        self.data,
-        save=lambda: self._schedule_data_save(sections={"bot_personal_outbox"}, delay=0.5),
-        background_task=lambda operation, label: self._create_lifecycle_background_task(
-            operation,
-            label=label,
-        ),
-    )
+    self._bot_personal_outboxes = {}
+    self._bot_personal_outbox = None
+    outbox_getter = getattr(self, "_memory_companion_outbox", None)
+    if callable(outbox_getter):
+        self._bot_personal_outbox = outbox_getter()
     self.unified_person_registry = UnifiedPersonRegistry(self.data)
     self.req041_migration_coordinator = MigrationCoordinator(self.data_dir)
     self.req041_migration_outbox = MigrationOutbox(

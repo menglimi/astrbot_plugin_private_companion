@@ -63,7 +63,7 @@ class _ZeroLimitHarness(ProactiveMixin, ProactiveEngineMixin, DailyStateMixin):
         user["planned_proactive_trigger_umo"] = ""
         user["planned_proactive_trigger_ts"] = 0
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         self.saved += 1
 
     async def _maybe_settle_skill_growth(self):
@@ -171,6 +171,7 @@ class ZeroDailyProactiveGateTests(unittest.IsolatedAsyncioTestCase):
 
         await asyncio.wait_for(kicked.wait(), timeout=1.0)
         self.assertEqual(plugin.max_daily_messages, 4)
+
 
 if __name__ == "__main__":
     unittest.main()

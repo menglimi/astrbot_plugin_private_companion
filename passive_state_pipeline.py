@@ -174,8 +174,23 @@ async def inject_humanized_state(
             scoped_getter = getattr(self, "_req041_scoped_private_read_view", None)
             if callable(scoped_getter):
                 private_user = scoped_getter(event, private_user)
-            preferred_address = _single_line(
-                private_user.get("nickname") or runtime_persona_setting(self, "default_nickname", "你"),
+            portrait_preferred_address = ""
+            portrait_address_reader = getattr(
+                self, "_req036_preferred_address_from_portrait", None
+            )
+            if callable(portrait_address_reader):
+                try:
+                    portrait_preferred_address = _single_line(
+                        await portrait_address_reader(private_user), 24
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "[PrivateCompanion] 当前对象画像称呼读取失败，保留既有称呼: %s",
+                        _single_line(exc, 120),
+                    )
+            preferred_address = portrait_preferred_address or _single_line(
+                private_user.get("nickname")
+                or runtime_persona_setting(self, "default_nickname", "你"),
                 24,
             )
             if preferred_address:

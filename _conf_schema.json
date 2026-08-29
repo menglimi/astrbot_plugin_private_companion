@@ -343,6 +343,29 @@
         "default": "",
         "invisible": true
       },
+      "enable_relationship_stage_provider_routing": {
+        "description": "按亲密度阶段选择对话模型",
+        "type": "bool",
+        "hint": "兼容配置项；仅在目标 Provider 存在时切换，缺失或无效配置会保留当前会话 Provider。",
+        "default": false,
+        "invisible": true
+      },
+      "relationship_stage_provider_routes": {
+        "description": "亲密度阶段对话模型映射",
+        "type": "object",
+        "invisible": true,
+        "items": {
+          "deeply_distant": {"description": "极度疏离", "type": "string", "default": "", "invisible": true},
+          "strongly_distant": {"description": "强烈疏离", "type": "string", "default": "", "invisible": true},
+          "distant": {"description": "疏离", "type": "string", "default": "", "invisible": true},
+          "acquaintance": {"description": "初识", "type": "string", "default": "", "invisible": true},
+          "familiar": {"description": "熟悉", "type": "string", "default": "", "invisible": true},
+          "close": {"description": "亲近", "type": "string", "default": "", "invisible": true},
+          "intimate": {"description": "亲密", "type": "string", "default": "", "invisible": true},
+          "deeply_bonded": {"description": "深度联结", "type": "string", "default": "", "invisible": true},
+          "owner_exclusive": {"description": "专属联结", "type": "string", "default": "", "invisible": true}
+        }
+      },
       "relationship_positive_stage_cap_key": {
         "description": "普通用户正向亲密度阶段上限",
         "type": "string",

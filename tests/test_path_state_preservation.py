@@ -9,7 +9,6 @@ from types import SimpleNamespace
 
 from astrbot_plugin_private_companion.daily_state import DailyStateMixin
 from astrbot_plugin_private_companion.page_api import PrivateCompanionPageApi
-from astrbot_plugin_private_companion.private_reading import PrivateReadingMixin
 from astrbot_plugin_private_companion.proactive_engine import ProactiveEngineMixin
 from astrbot_plugin_private_companion.qzone_integration import QzoneMixin
 
@@ -109,25 +108,6 @@ class PathStatePreservationTests(unittest.TestCase):
 
         self.assertEqual(state["last_life_publish_generated_image_path"], image_path)
         self.assertEqual(state["last_life_publish_generated_image_reference"], reference_path)
-
-    def test_private_reading_record_keeps_cover_and_download_paths(self) -> None:
-        harness = PrivateReadingMixin()
-        harness.data = {}
-        cover_path = _long_image_path("album  cover.png")
-        download_path = _long_image_path("album  download")
-
-        harness._remember_bookshelf_jm_album(
-            {
-                "id": "10001",
-                "title": "测试画册",
-                "cover_path": cover_path,
-                "download_path": download_path,
-            }
-        )
-
-        record = harness.data["bookshelf_items"][0]
-        self.assertEqual(record["cover_path"], cover_path)
-        self.assertEqual(record["download_path"], download_path)
 
     def test_page_path_resolvers_accept_legal_internal_spaces(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

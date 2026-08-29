@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import asyncio
+import os
 import sys
 import types
 from pathlib import Path
@@ -9,11 +10,23 @@ from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MEMORY_ROOT = ROOT.parent / "memory-official"
-if not MEMORY_ROOT.exists():
-    MEMORY_ROOT = ROOT.parents[1] / "astrbot_plugin_memory_companion-main"
-if not MEMORY_ROOT.exists():
-    MEMORY_ROOT = ROOT.parent / "astrbot_plugin_remember_you"
+_MEMORY_ROOT_CANDIDATES = (
+    Path(os.environ["ASTRBOT_MEMORY_PLUGIN_ROOT"])
+    if os.environ.get("ASTRBOT_MEMORY_PLUGIN_ROOT")
+    else ROOT / ".missing-memory-root",
+    ROOT.parent / "memory",
+    ROOT.parent / "memory-official",
+    ROOT.parents[1] / "astrbot_plugin_memory_companion-main",
+    ROOT.parent / "astrbot_plugin_remember_you",
+)
+MEMORY_ROOT = next(
+    (
+        path
+        for path in _MEMORY_ROOT_CANDIDATES
+        if (path / "core" / "bridge.py").is_file()
+    ),
+    _MEMORY_ROOT_CANDIDATES[0],
+)
 
 try:
     import astrbot.api  # noqa: F401

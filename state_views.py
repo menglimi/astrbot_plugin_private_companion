@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .helpers import _now_ts, _safe_float, _single_line, _today_key
+from .helpers import _memory_archive_warning, _now_ts, _safe_float, _single_line, _today_key
 from .persona_config import runtime_persona_setting
 
 
@@ -41,6 +41,9 @@ class StateViewsMixin:
             parts.append(f"题眼：{title}")
         if tag_text:
             parts.append(f"标签：{tag_text}")
+        archive_warning = _memory_archive_warning(diary)
+        if archive_warning:
+            parts.append(archive_warning)
         return "\n".join(parts)
 
     def _format_diary_story_plan(self, diary: dict[str, Any]) -> str:

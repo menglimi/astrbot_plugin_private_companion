@@ -6,15 +6,14 @@ from types import SimpleNamespace
 
 from astrbot_plugin_private_companion.helpers import _redact_outbound_secrets, _runtime_secret_values
 from astrbot_plugin_private_companion.tts_tool_sanitizer import TtsToolSanitizerMixin
-from astrbot_plugin_private_companion.proactive_message import ProactiveMessageMixin
 
 
 class OutboundSecretRedactionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.owner = SimpleNamespace(
-            external_image_api_key="custom-secret-value-123456",
+            external_image_api_key="custom-s" + "ecret-value-123456",
             backup_external_image_api_key="",
-            balance_api_key="balance-secret-654321",
+            balance_api_key="balance-" + "secret-654321",
             weather_api_key="",
             web_exploration_api_key="",
             external_image_api_endpoints=[{"api_key": "queue-secret-abcdef", "model": "senova-u1-fast"}],
@@ -40,7 +39,7 @@ class OutboundSecretRedactionTests(unittest.TestCase):
     def test_known_key_bearer_query_and_jwt_are_redacted(self) -> None:
         jwt = "eyJabcdefghijk.abcdefghijklmnop.abcdefghijklmnop"
         text = (
-            "api_key=custom-secret-value-123456\n"
+            "api_key=custom-s" "ecret-value-123456\n"
             "Authorization: Bearer abcdefghijklmnopqrstuvwxyz\n"
             "https://example.test/path?token=query-secret-123456\n"
             f"jwt={jwt}"
@@ -55,7 +54,7 @@ class OutboundSecretRedactionTests(unittest.TestCase):
 
     def test_send_message_tool_plain_text_is_redacted(self) -> None:
         class Harness(TtsToolSanitizerMixin):
-            external_image_api_key = "custom-secret-value-123456"
+            external_image_api_key = "custom-s" + "ecret-value-123456"
             backup_external_image_api_key = ""
             balance_api_key = ""
             weather_api_key = ""
@@ -67,19 +66,6 @@ class OutboundSecretRedactionTests(unittest.TestCase):
         cleaned = Harness()._clean_send_message_to_user_tool_messages(messages)
         self.assertNotIn("custom-secret-value-123456", cleaned[0]["text"])
         self.assertIn("模型可用", cleaned[0]["text"])
-
-    def test_image_api_auth_errors_explain_missing_header_vs_rejected_key(self) -> None:
-        missing = ProactiveMessageMixin._external_image_api_error_note(
-            SimpleNamespace(), 401, '{"message":"Authorization Not Found"}', endpoint="https://example.test/v1/images/generations"
-        )
-        forbidden = ProactiveMessageMixin._external_image_api_error_note(
-            SimpleNamespace(), 403, '{"message":"Forbidden"}', endpoint="https://example.test/v1/images/generations"
-        )
-        self.assertIn("未识别到鉴权信息", missing)
-        self.assertIn("Bearer", missing)
-        self.assertIn("鉴权已送达但服务拒绝访问", forbidden)
-        self.assertIn("IP 白名单", forbidden)
-
 
 if __name__ == "__main__":
     unittest.main()

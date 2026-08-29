@@ -225,7 +225,7 @@ class DailyPlanRetryHarness(DailyStateMixin):
     def _refresh_daily_state_location_from_plan(self, **_kwargs):
         return None
 
-    def _save_data_sync(self):
+    def _save_data_sync(self, **_kwargs):
         return None
 
     async def _generate_daily_plan(self):

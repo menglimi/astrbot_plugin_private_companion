@@ -86,6 +86,37 @@ class NaturalPhotoWardrobePromptTests(unittest.TestCase):
         self.assertNotIn("keep today's outfit and character appearance", prompt)
         self.assertIn("preserve character identity and stable appearance", prompt)
 
+    def test_structured_contract_is_fixed_and_visual_context_stays_bounded(self) -> None:
+        sections = self.harness._build_natural_language_photo_prompt(
+            prompt="在卧室穿睡衣和朋友拍一张合影",
+            kind="selfie",
+            has_reference=True,
+            memory_context=(
+                "发色：银白；眼睛：绿色；穿搭：奶油色睡衣；"
+                "地点：卧室窗边；背景：暖色床头灯；表情：自然微笑；"
+            )
+            * 8,
+            structured=True,
+        )
+
+        by_name = {section.name: section for section in sections}
+        self.assertEqual(by_name["natural_language_contract"].source, "fixed_prompt")
+        self.assertTrue(by_name["natural_language_contract"].protected)
+        visual_chars = sum(
+            len(section.positive) + len(section.negative)
+            for section in sections
+            if section.source not in {"user_request", "fixed_prompt"}
+        )
+        self.assertLessEqual(visual_chars, 500)
+        self.assertLessEqual(
+            len(by_name["natural_language_contract"].positive),
+            1400,
+        )
+        self.assertLessEqual(
+            len(by_name["natural_language_contract"].negative),
+            760,
+        )
+
     def test_cos_marker_does_not_match_an_unrelated_english_word(self) -> None:
         prompt = self._selfie_prompt("use cosine-shaped window light for a portrait")
 

@@ -62,6 +62,36 @@ class _StorePathHost(CoreStoreMixin):
 
 
 class StoragePathValidationTests(unittest.TestCase):
+    def test_missing_primary_stores_with_backend_marker_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            host = _StorePathHost(root, "")
+            manager = host.manager("sqlite", root / "companions.db")
+            host._write_storage_backend_state("sqlite", str(manager.sqlite_path))
+
+            with self.assertRaisesRegex(RuntimeError, "既有安装证据"):
+                host._assert_primary_store_startup_safe(manager)
+
+    def test_missing_primary_stores_with_plugin_artifact_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            host = _StorePathHost(root, "")
+            manager = host.manager("json", root / "companions.db")
+            (root / "req041_relationship.db").touch()
+
+            with self.assertRaisesRegex(RuntimeError, "req041_relationship.db"):
+                host._assert_primary_store_startup_safe(manager)
+
+    def test_empty_data_directory_remains_valid_first_install(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            host = _StorePathHost(root, "")
+            manager = host.manager("sqlite", root / "companions.db")
+
+            host._assert_primary_store_startup_safe(manager)
+            self.assertFalse(manager.json_backend.exists())
+            self.assertFalse(manager.sqlite_backend.exists())
+
     def test_primary_json_store_keeps_only_restart_tail_with_store_manager(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -277,10 +307,23 @@ class StoragePathValidationTests(unittest.TestCase):
             old_manager = host.install_manager("sqlite", source_path, source_data)
             host.storage_backend = "json"
             host.storage_sqlite_path = str(root / "attempted.db")
+            original_load_store = JsonStoreBackend.load_store
+            target_reads = 0
+
+            def fail_target_readback(backend: JsonStoreBackend) -> dict:
+                nonlocal target_reads
+                if backend.data_file == target_path:
+                    target_reads += 1
+                    if target_reads > 1:
+                        raise OSError("read failed")
+                return original_load_store(backend)
 
             with (
                 patch.object(
-                    JsonStoreBackend, "load_store", side_effect=OSError("read failed")
+                    JsonStoreBackend,
+                    "load_store",
+                    autospec=True,
+                    side_effect=fail_target_readback,
                 ),
                 self.assertRaises(OSError),
             ):
@@ -307,9 +350,24 @@ class StoragePathValidationTests(unittest.TestCase):
             old_manager = host.install_manager("sqlite", source_path, source_data)
             host.storage_backend = "json"
             host.storage_sqlite_path = str(root / "attempted.db")
+            original_load_store = JsonStoreBackend.load_store
+            target_reads = 0
+
+            def return_non_object_on_readback(backend: JsonStoreBackend) -> object:
+                nonlocal target_reads
+                if backend.data_file == target_path:
+                    target_reads += 1
+                    if target_reads > 1:
+                        return []
+                return original_load_store(backend)
 
             with (
-                patch.object(JsonStoreBackend, "load_store", return_value=[]),
+                patch.object(
+                    JsonStoreBackend,
+                    "load_store",
+                    autospec=True,
+                    side_effect=return_non_object_on_readback,
+                ),
                 self.assertRaisesRegex(RuntimeError, "non-object store"),
             ):
                 host._rebuild_store_manager(reload_data=True)

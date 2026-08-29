@@ -202,7 +202,18 @@ def test_self_state_is_current_only_and_cannot_claim_external_results() -> None:
 
 def test_self_state_ttl_and_user_turn_override() -> None:
     resolver = RuntimeSceneResolver(bot_id="bot-1", clock=lambda: NOW, default_ttl_seconds=60)
-    resting = resolver.resolve_now([], conversation_state=False, now=NOW)
+    assert resolver.resolve_now([], conversation_state=False, now=NOW) is None
+    resting = resolver.resolve_now(
+        [
+            {
+                "actor_type": "bot",
+                "subject_actor_id": "bot-1",
+                "state": "在休息",
+            }
+        ],
+        conversation_state=False,
+        now=NOW,
+    )
     assert resting is not None
     assert resolver.get_current(now=NOW + timedelta(seconds=61)) is None
     interrupted = resolver.resolve_now([], conversation_state={"last_user_message": "hello"}, now=NOW)

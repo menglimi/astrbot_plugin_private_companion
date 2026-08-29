@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,7 +12,9 @@ from astrbot_plugin_private_companion.persona_sqlite_store import (
     PersonaSqliteStoreError,
     PersonaSqliteStoreRegistry,
     load_persona_sqlite_store,
+    read_persona_store_snapshot_read_only,
 )
+from astrbot_plugin_private_companion.storage.sqlite_backend import SqliteStoreBackend
 
 
 def _new_store() -> dict:
@@ -293,6 +296,146 @@ class PersonaSqliteStoreTests(unittest.TestCase):
                 sqlite_path=self.sqlite,
                 ensure_defaults=_ensure_defaults,
                 new_store=_new_store,
+            )
+
+    def test_read_only_legacy_snapshot_is_bounded_no_follow_and_non_migrating(self) -> None:
+        payload = {"creative_projects": [{"id": "legacy-story"}]}
+        self._write_legacy(payload)
+
+        snapshot = read_persona_store_snapshot_read_only(
+            persona_id="alt",
+            legacy_json_path=self.legacy,
+            sqlite_path=self.sqlite,
+        )
+
+        self.assertEqual(payload, snapshot)
+        self.assertTrue(self.legacy.exists())
+        self.assertFalse(self.sqlite.exists())
+        with self.assertRaisesRegex(PersonaSqliteStoreError, "read_only_snapshot"):
+            read_persona_store_snapshot_read_only(
+                persona_id="alt",
+                legacy_json_path=self.legacy,
+                sqlite_path=self.sqlite,
+                max_bytes=4,
+            )
+
+        target = self.root / "target.json"
+        target.write_text("{}", encoding="utf-8")
+        symlink = self.root / "symlink.json"
+        symlink.symlink_to(target)
+        with self.assertRaisesRegex(PersonaSqliteStoreError, "read_only_snapshot"):
+            read_persona_store_snapshot_read_only(
+                persona_id="alt",
+                legacy_json_path=symlink,
+                sqlite_path=self.root / "missing.db",
+            )
+
+    def test_read_only_sqlite_uses_current_initialized_schema_without_manager_load(self) -> None:
+        handle = self._load()
+        expected = _ensure_defaults(
+            {"creative_projects": [{"id": "sqlite-story"}]}
+        )
+        handle.manager.backend.save_store(expected)
+        before = self.sqlite.stat()
+
+        with (
+            patch.object(
+                SqliteStoreBackend,
+                "_connect",
+                side_effect=AssertionError("mutable connection path used"),
+            ),
+            patch.object(
+                SqliteStoreBackend,
+                "_ensure_schema",
+                side_effect=AssertionError("schema migration path used"),
+            ),
+        ):
+            snapshot = read_persona_store_snapshot_read_only(
+                persona_id="alt",
+                legacy_json_path=self.legacy,
+                sqlite_path=self.sqlite,
+            )
+
+        after = self.sqlite.stat()
+        self.assertEqual(expected, snapshot)
+        self.assertEqual(
+            (before.st_ino, before.st_size, before.st_mtime_ns),
+            (after.st_ino, after.st_size, after.st_mtime_ns),
+        )
+
+    def test_read_only_snapshot_rejects_dual_sources_without_changing_either(self) -> None:
+        handle = self._load()
+        handle.manager.backend.save_store(
+            _ensure_defaults({"creative_projects": []})
+        )
+        self._write_legacy({"creative_projects": [{"id": "ambiguous"}]})
+        legacy_before = self.legacy.read_bytes()
+        sqlite_before = self.sqlite.stat()
+
+        with self.assertRaisesRegex(PersonaSqliteStoreError, "read_only_snapshot"):
+            read_persona_store_snapshot_read_only(
+                persona_id="alt",
+                legacy_json_path=self.legacy,
+                sqlite_path=self.sqlite,
+            )
+
+        self.assertEqual(legacy_before, self.legacy.read_bytes())
+        sqlite_after = self.sqlite.stat()
+        self.assertEqual(
+            (sqlite_before.st_ino, sqlite_before.st_size, sqlite_before.st_mtime_ns),
+            (sqlite_after.st_ino, sqlite_after.st_size, sqlite_after.st_mtime_ns),
+        )
+
+    def test_read_only_snapshot_rejects_sqlite_sidecars_without_touching_them(self) -> None:
+        self._load()
+        sidecar = Path(f"{self.sqlite}-wal")
+        sidecar.write_bytes(b"pending-wal")
+        before = sidecar.read_bytes()
+
+        with self.assertRaisesRegex(PersonaSqliteStoreError, "read_only_snapshot"):
+            read_persona_store_snapshot_read_only(
+                persona_id="alt",
+                legacy_json_path=self.legacy,
+                sqlite_path=self.sqlite,
+            )
+
+        self.assertEqual(before, sidecar.read_bytes())
+
+    def test_read_only_snapshot_rejects_uninitialized_old_and_corrupt_sqlite(self) -> None:
+        manager = self.registry.manager_for(
+            legacy_json_path=self.legacy,
+            sqlite_path=self.sqlite,
+            ensure_defaults=_ensure_defaults,
+            new_store=_new_store,
+        )
+        connection = manager.backend._connect()
+        connection.close()
+        with self.assertRaisesRegex(PersonaSqliteStoreError, "read_only_snapshot"):
+            read_persona_store_snapshot_read_only(
+                persona_id="alt",
+                legacy_json_path=self.legacy,
+                sqlite_path=self.sqlite,
+            )
+
+        old_sqlite = self.root / "old.db"
+        connection = sqlite3.connect(old_sqlite)
+        connection.execute("PRAGMA user_version=1")
+        connection.commit()
+        connection.close()
+        with self.assertRaisesRegex(PersonaSqliteStoreError, "read_only_snapshot"):
+            read_persona_store_snapshot_read_only(
+                persona_id="old",
+                legacy_json_path=self.root / "old.json",
+                sqlite_path=old_sqlite,
+            )
+
+        corrupt_sqlite = self.root / "corrupt.db"
+        corrupt_sqlite.write_bytes(b"not a sqlite database")
+        with self.assertRaisesRegex(PersonaSqliteStoreError, "read_only_snapshot"):
+            read_persona_store_snapshot_read_only(
+                persona_id="corrupt",
+                legacy_json_path=self.root / "corrupt.json",
+                sqlite_path=corrupt_sqlite,
             )
 
 

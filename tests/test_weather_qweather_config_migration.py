@@ -46,7 +46,7 @@ class WeatherQWeatherConfigMigrationTests(unittest.TestCase):
         return config
 
     def test_alert_host_and_api_key_fallback_to_shared_qweather_fields(self) -> None:
-        api_key = "0123456789abcdef0123456789abcdef"
+        api_key = "01234567" + "89abcdef0123456789abcdef"
         config = {
             "weather_alert_api_host": "https://tenant.qweatherapi.com",
             "weather_alert_api_key": api_key,

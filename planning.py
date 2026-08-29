@@ -835,7 +835,16 @@ async def generate_daily_plan(plugin) -> dict[str, Any]:
     plugin._remember_daily_plan_history(plan)
     memory_companion_recorder = getattr(plugin, "_memory_companion_record_daily_plan", None)
     if callable(memory_companion_recorder):
-        await memory_companion_recorder(plan)
+        try:
+            archive_result = await memory_companion_recorder(plan)
+        except Exception as exc:
+            archive_result = {
+                "ok": False,
+                "state": "degraded",
+                "error_code": type(exc).__name__,
+            }
+        if isinstance(archive_result, dict):
+            plan["memory_archive"] = dict(archive_result)
     return plan
 
 

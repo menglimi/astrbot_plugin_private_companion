@@ -51,6 +51,10 @@ class _QuotaHarness(CommandHandlersMixin):
     def _environment_now(self) -> datetime:
         return TODAY
 
+    @staticmethod
+    def _cycle_status_text() -> str:
+        return "六阶段周期：未开启"
+
 
 class _ToolQuotaHarness(LlmToolActionsMixin, CommandHandlersMixin):
     def __init__(self, limit: int, *, used: int) -> None:

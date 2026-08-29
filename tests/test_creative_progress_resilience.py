@@ -120,7 +120,7 @@ class _CreativeAdvanceHarness(CreativeMixin):
     def _creative_cover_candidate_id(self) -> str:
         return ""
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         return None
 
 

@@ -174,9 +174,9 @@ class ReactionAssetLibrary:
         self._lookup_revision_checked_at = 0.0
         self._selection_revision = 0
         # Memory cache for catalog: avoids re-parsing catalog.json on every
-        # read operation.  Invalidated on file mtime change or after _save().
+        # read operation. Invalidated on file identity changes or after _save().
         self._cached_catalog: dict[str, Any] | None = None
-        self._cached_catalog_mtime: int = 0
+        self._cached_catalog_stamp: tuple[int, int, int, int] | None = None
         # Lightweight flag for has_enabled_assets(), updated in _load(), _save() and
         # lookup_revision() so the hot path avoids a full catalog walk.
         self._cached_has_enabled_assets: bool = False
@@ -187,15 +187,23 @@ class ReactionAssetLibrary:
     def _empty_catalog(self) -> dict[str, Any]:
         return {"version": CATALOG_VERSION, "updated_at": 0.0, "items": []}
 
+    def _catalog_cache_stamp(self) -> tuple[int, int, int, int]:
+        try:
+            stat_result = self.catalog_path.stat()
+        except OSError:
+            return (0, 0, 0, 0)
+        return (
+            int(stat_result.st_mtime_ns),
+            int(stat_result.st_ctime_ns),
+            int(stat_result.st_size),
+            int(stat_result.st_ino),
+        )
+
     def _load(self) -> dict[str, Any]:
         if not self.catalog_path.is_file():
             return self._empty_catalog()
-        # Return cached catalog if file mtime hasn't changed.
-        try:
-            current_mtime = self.catalog_path.stat().st_mtime_ns
-        except OSError:
-            current_mtime = 0
-        if self._cached_catalog is not None and current_mtime == self._cached_catalog_mtime:
+        current_stamp = self._catalog_cache_stamp()
+        if self._cached_catalog is not None and current_stamp == self._cached_catalog_stamp:
             return self._cached_catalog
         try:
             raw = json.loads(self.catalog_path.read_text(encoding="utf-8"))
@@ -236,7 +244,7 @@ class ReactionAssetLibrary:
         raw["items"] = migrated_items
         # Update memory cache.
         self._cached_catalog = raw
-        self._cached_catalog_mtime = current_mtime
+        self._cached_catalog_stamp = current_stamp
         self._cached_summary = None  # invalidate summary cache
         self._cached_has_enabled_assets = any(
             isinstance(item, dict) and bool(item.get("enabled", True))
@@ -269,10 +277,7 @@ class ReactionAssetLibrary:
         )
         os.replace(temporary, self.catalog_path)
         # Update memory cache after successful write.
-        try:
-            self._cached_catalog_mtime = self.catalog_path.stat().st_mtime_ns
-        except OSError:
-            self._cached_catalog_mtime = 0
+        self._cached_catalog_stamp = self._catalog_cache_stamp()
         self._cached_catalog = catalog
         self._cached_summary = None
         # Update lightweight enabled-assets flag.

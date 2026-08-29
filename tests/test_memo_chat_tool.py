@@ -53,7 +53,7 @@ class MemoToolHarness(LlmToolActionsMixin):
     def _environment_fromtimestamp(value: float) -> datetime:
         return datetime.fromtimestamp(float(value), TZ)
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         if self.fail_save:
             raise OSError("disk unavailable")
         self.saved += 1

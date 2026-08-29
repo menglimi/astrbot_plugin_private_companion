@@ -24,7 +24,17 @@ def _tool(name: str, description: str, *, active: bool = True) -> FunctionTool:
 class PhotoToolPromptFormatAnnotationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.plugin = object.__new__(PrivateCompanionPlugin)
+        self.plugin.enabled = True
         self.plugin.photo_generation_prompt_format = "nai"
+        self.plugin._image_companion_required = lambda: True
+        self.plugin._image_companion_available = lambda: True
+
+        def prompt_format_instruction() -> str:
+            if self.plugin.photo_generation_prompt_format == "natural_language":
+                return "使用连贯具体的英文句子描述画面"
+            return "使用 NAI 4/4.5 标签格式：{tag}"
+
+        self.plugin._photo_tool_prompt_format_instruction = prompt_format_instruction
 
     def test_request_tool_is_annotated_without_mutating_registered_tool(self) -> None:
         original = _tool("pc_generate_photo", "生成图片")
@@ -71,15 +81,30 @@ class PhotoToolPromptFormatAnnotationTests(unittest.TestCase):
         )
         self.assertEqual("生成图片", inactive_tool.description)
 
-    def test_tool_hint_is_compact_without_weakening_full_nai_rules(self) -> None:
-        compact = self.plugin._photo_tool_prompt_format_instruction()
-        detailed = self.plugin._photo_generation_prompt_format_instruction()
+    def test_unavailable_image_extension_is_removed_only_from_current_request(self) -> None:
+        original = _tool("pc_generate_photo", "生成图片")
+        other = _tool("other_tool", "其他工具")
+        registered = ToolSet([other, original])
+        req = SimpleNamespace(func_tool=registered)
+        self.plugin._image_companion_available = lambda: False
 
-        self.assertLess(len(compact), len(detailed))
-        self.assertIn("ntags", detailed)
-        self.assertIn("{位置中}", detailed)
-        self.assertIn("Text: 内容", detailed)
-        self.assertNotIn("ntags", compact)
+        changed = self.plugin._scope_photo_generation_tool_for_request(req)
+
+        self.assertTrue(changed)
+        self.assertIsNot(req.func_tool, registered)
+        self.assertIsNone(req.func_tool.get_tool("pc_generate_photo"))
+        self.assertIs(req.func_tool.get_tool("other_tool"), other)
+        self.assertEqual([other, original], registered.tools)
+        self.assertFalse(self.plugin._annotate_photo_tool_prompt_format_for_request(req))
+
+    def test_missing_owner_format_helper_skips_annotation(self) -> None:
+        original = _tool("pc_generate_photo", "生成图片")
+        req = SimpleNamespace(func_tool=ToolSet([original]))
+        self.plugin._photo_tool_prompt_format_instruction = None
+
+        self.assertFalse(self.plugin._annotate_photo_tool_prompt_format_for_request(req))
+        self.assertIs(req.func_tool.get_tool("pc_generate_photo"), original)
+        self.assertEqual("生成图片", original.description)
 
 
 if __name__ == "__main__":

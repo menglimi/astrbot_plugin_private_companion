@@ -198,10 +198,13 @@ class MemoryCompanionScheduleFastContextTests(unittest.IsolatedAsyncioTestCase):
             response="桌边是妈妈洗的青提，穿着蓝色外套。",
         )
         harness = _Harness(bridge)
+        user_id, user = harness._memory_companion_schedule_owner_context()
 
         result = await harness._memory_companion_compose_feature_context(
             kind="proactive_generation",
             query="当前日程和主动消息",
+            user=user,
+            user_id=user_id,
         )
 
         self.assertNotIn("妈妈", result)
@@ -213,10 +216,13 @@ class MemoryCompanionScheduleFastContextTests(unittest.IsolatedAsyncioTestCase):
             response="用户：我妈妈最近有点忙，回应时只按用户家庭理解。",
         )
         harness = _Harness(bridge)
+        user_id, user = harness._memory_companion_schedule_owner_context()
 
         result = await harness._memory_companion_compose_feature_context(
             kind="proactive_generation",
             query="当前日程和主动消息",
+            user=user,
+            user_id=user_id,
         )
 
         self.assertIn("我妈妈最近有点忙", result)
@@ -233,10 +239,13 @@ class MemoryCompanionScheduleFastContextTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
         harness = _Harness(bridge)
+        user_id, user = harness._memory_companion_schedule_owner_context()
 
         result = await harness._memory_companion_compose_feature_context(
             kind="proactive_generation",
             query="当前日程和主动消息",
+            user=user,
+            user_id=user_id,
         )
 
         self.assertNotIn("prompt", result.lower())

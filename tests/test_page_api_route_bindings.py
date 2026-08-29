@@ -90,7 +90,7 @@ class PageAssetPrefixTests(unittest.IsolatedAsyncioTestCase):
                     data_root=Path.cwd(),
                     page_index=2,
                 ),
-                "/api/v1/bookshelf/image?album_id=album%201&page=2",
+                "",
             )
 
         async with app.test_request_context(f"{PAGE_API_PREFIX}/overview"):
@@ -101,7 +101,7 @@ class PageAssetPrefixTests(unittest.IsolatedAsyncioTestCase):
                     data_root=Path.cwd(),
                     page_index=2,
                 ),
-                f"{PAGE_API_PREFIX}/bookshelf/image?album_id=album%201&page=2",
+                "",
             )
 
 

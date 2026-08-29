@@ -188,6 +188,8 @@ class PromptCacheAndParallelContextTests(unittest.IsolatedAsyncioTestCase):
         plugin = PrivateCompanionPlugin.__new__(PrivateCompanionPlugin)
         plugin.enabled = True
         plugin.enable_photo_text_action = True
+        plugin._image_companion_required = lambda: True
+        plugin._image_companion_available = lambda: True
         plugin.passive_injection_position = "prompt"
         plugin._record_request_prompt_fragment = _no_record
         event = _PrivateEvent()

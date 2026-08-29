@@ -542,7 +542,9 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
     async def test_lightweight_passive_state_cache_is_scoped_by_persona(self):
         with tempfile.TemporaryDirectory() as root:
             plugin = _plugin_harness(root)
-            plugin._format_lightweight_state_injection = lambda state: state["text"]
+            plugin._format_lightweight_state_injection = (
+                lambda state, *, include_heading=True: state["text"]
+            )
 
             token = plugin._activate_persona_id("main")
             try:

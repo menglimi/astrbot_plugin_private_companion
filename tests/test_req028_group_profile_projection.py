@@ -59,6 +59,8 @@ GROUP_METHODS = _load_methods(
         "_update_group_observation",
         "_capture_group_observation_once",
         "_group_observation_marker_matches",
+        "_effective_group_history_limit",
+        "_trim_group_history_lists",
     },
 )
 

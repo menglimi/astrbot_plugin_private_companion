@@ -714,14 +714,8 @@ class OfficialTtsSegmentingCompatibilityTests(unittest.IsolatedAsyncioTestCase):
                     lambda key: key == "enable_segmented_proactive_reply"
                 )
                 plugin._segmented_scope_allows_event = lambda _event: True
-                plugin._segmented_setting = (
-                    lambda *_a, **_k: "proactive_only"
-                )
+                plugin._segmented_setting = lambda *_a, **_k: "proactive_only"
                 configure(plugin)
-                # The thinking chain is split across Plain components, so
-                # per-component cleaning could never remove it; only joining
-                # all Plain text and stripping before the scope early return
-                # keeps it from leaking outbound on passive turns.
                 result = _llm_result(
                     Plain("  thinking"),
                     Plain("推理内容被拆分\n  /response"),
@@ -745,9 +739,8 @@ class OfficialTtsSegmentingCompatibilityTests(unittest.IsolatedAsyncioTestCase):
                 plain_texts = [
                     str(getattr(component, "text", "") or "").strip()
                     for component in result.chain
-                    if isinstance(component, Plain) and str(
-                        getattr(component, "text", "") or ""
-                    ).strip()
+                    if isinstance(component, Plain)
+                    and str(getattr(component, "text", "") or "").strip()
                 ]
                 self.assertEqual(["正文可见"], plain_texts)
 

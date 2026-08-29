@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import threading
 import time
 from collections.abc import Callable, Collection, Mapping
 from copy import deepcopy
@@ -14,6 +13,7 @@ from . import cleanup_storage_bytecode_cache
 from .factory import build_store_backend
 from .json_backend import JsonStoreBackend
 from .migration import migrate_json_to_backend_if_needed
+from .path_generation import activate_persistence_owner, shared_prepare_lock
 from .sqlite_backend import SqliteStoreNotInitializedError
 
 _BOOKSHELF_SECTIONS = (
@@ -23,21 +23,8 @@ _BOOKSHELF_SECTIONS = (
     "bookshelf_store_revision",
 )
 
-_STORE_LOCKS_GUARD = threading.Lock()
-_STORE_LOCKS: dict[str, threading.RLock] = {}
-
-
-def _shared_store_lock(path: str | Path) -> threading.RLock:
-    try:
-        marker = str(Path(path).resolve()).casefold()
-    except Exception:
-        marker = str(path).casefold()
-    with _STORE_LOCKS_GUARD:
-        lock = _STORE_LOCKS.get(marker)
-        if lock is None:
-            lock = threading.RLock()
-            _STORE_LOCKS[marker] = lock
-        return lock
+def _shared_store_lock(path: str | Path):
+    return shared_prepare_lock(path)
 
 
 def _bookshelf_revision(data: Any) -> int:
@@ -69,38 +56,6 @@ def _bookshelf_item_identity(item: Any) -> str:
     if album_id:
         return f"{item_type or 'archive_item'}:{album_id}"
     return key
-
-
-def _is_legacy_archive_item(item: Any) -> bool:
-    # Keep legacy records untouched, but exclude them from public recovery and
-    # deletion reconciliation.
-    return False
-
-
-def _bookshelf_item_album_id(item: Any) -> str:
-    identity = _bookshelf_item_identity(item)
-    if not identity:
-        return ""
-    return identity.split(":", 1)[1] if ":" in identity else ""
-
-
-def _bookshelf_title_marker(value: Any) -> str:
-    return " ".join(str(value or "").split()).casefold()
-
-
-def _bookshelf_item_is_blocked(
-    item: Any,
-    *,
-    deleted_ids: set[str],
-    deleted_titles: set[str],
-) -> bool:
-    if not _is_legacy_archive_item(item):
-        return False
-    album_id = _bookshelf_item_album_id(item)
-    if album_id:
-        return album_id in deleted_ids
-    title = _bookshelf_title_marker(item.get("title") if isinstance(item, dict) else "")
-    return bool(title and title in deleted_titles)
 
 
 def _merge_string_history(
@@ -171,26 +126,6 @@ def reconcile_bookshelf_payload(
         if deleted_titles:
             merged_state["deleted_titles"] = deleted_titles
 
-    blocked_ids = (
-        {
-            str(value).strip()
-            for value in merged_state.get("deleted_album_ids", [])
-            if str(value).strip()
-        }
-        if isinstance(merged_state, dict)
-        and isinstance(merged_state.get("deleted_album_ids"), list)
-        else set()
-    )
-    blocked_titles = (
-        {
-            marker
-            for value in merged_state.get("deleted_titles", [])
-            if (marker := _bookshelf_title_marker(value))
-        }
-        if isinstance(merged_state, dict)
-        and isinstance(merged_state.get("deleted_titles"), list)
-        else set()
-    )
     primary_items_raw = primary.get("bookshelf_items")
     secondary_items_raw = secondary.get("bookshelf_items")
     primary_items = primary_items_raw if isinstance(primary_items_raw, list) else []
@@ -205,12 +140,6 @@ def reconcile_bookshelf_payload(
     merged_entries: list[tuple[bool, Any]] = []
     seen_secondary: set[str] = set()
     for raw_item in secondary_items:
-        if _bookshelf_item_is_blocked(
-            raw_item,
-            deleted_ids=blocked_ids,
-            deleted_titles=blocked_titles,
-        ):
-            continue
         identity = _bookshelf_item_identity(raw_item)
         if identity and (identity in primary_identities or identity in seen_secondary):
             continue
@@ -219,12 +148,6 @@ def reconcile_bookshelf_payload(
         merged_entries.append((True, deepcopy(raw_item)))
     seen_primary: set[str] = set()
     for raw_item in primary_items:
-        if _bookshelf_item_is_blocked(
-            raw_item,
-            deleted_ids=blocked_ids,
-            deleted_titles=blocked_titles,
-        ):
-            continue
         identity = _bookshelf_item_identity(raw_item)
         if identity and identity in seen_primary:
             continue
@@ -277,6 +200,7 @@ class StoreManager:
         sqlite_path: str | Path,
         ensure_defaults: Callable[[dict[str, Any]], dict[str, Any]],
         new_store: Callable[[], dict[str, Any]],
+        persistence_owner_token: str = "",
     ) -> None:
         cleanup_storage_bytecode_cache()
         self.backend_name = str(backend_name or "json").strip().lower() or "json"
@@ -284,7 +208,13 @@ class StoreManager:
         self.sqlite_path = Path(sqlite_path)
         self.ensure_defaults = ensure_defaults
         self.new_store = new_store
-        self.json_backend = JsonStoreBackend(self.data_file, ensure_defaults, new_store)
+        self.persistence_owner_token = str(persistence_owner_token or "").strip()
+        self.json_backend = JsonStoreBackend(
+            self.data_file,
+            ensure_defaults,
+            new_store,
+            persistence_owner_token=self.persistence_owner_token,
+        )
         self.sqlite_backend = build_store_backend(
             backend_name="sqlite",
             data_file=self.data_file,
@@ -301,6 +231,27 @@ class StoreManager:
         self._store_lock = _shared_store_lock(active_path)
         self._json_store_lock = _shared_store_lock(self.data_file)
         self._last_json_export_at = 0.0
+        self._last_persistence_status: dict[str, Any] = {
+            "accepted": None,
+            "state": "idle",
+            "path": str(active_path),
+        }
+
+    def activate_persistence_generation(self) -> dict[str, int]:
+        if not self.persistence_owner_token:
+            return {}
+        return activate_persistence_owner(
+            self.persistence_owner_token,
+            [self.data_file],
+        )
+
+    def persistence_status(self) -> dict[str, Any]:
+        return dict(self._last_persistence_status)
+
+    def _record_json_write_status(self) -> bool:
+        status = dict(getattr(self.json_backend, "last_write_status", {}) or {})
+        self._last_persistence_status = status
+        return status.get("accepted") is not False
 
     @staticmethod
     def _load_optional_store(
@@ -398,6 +349,76 @@ class StoreManager:
                 persist=True,
             )
 
+    def load_sections(
+        self,
+        section_names: Collection[str],
+        *,
+        backend_name: str | None = None,
+        read_only: bool = False,
+    ) -> dict[str, Any]:
+        """Read exact durable roots; ``read_only`` forbids schema/store writes."""
+
+        names = tuple(
+            dict.fromkeys(
+                str(name).strip()
+                for name in section_names
+                if str(name).strip()
+            )
+        )
+        if not names:
+            return {}
+        selected = str(backend_name or self.backend_name).strip().lower()
+        if selected == "json":
+            backend = self.json_backend
+            lock = self._json_store_lock
+        elif selected == "sqlite":
+            backend = self.sqlite_backend
+            lock = _shared_store_lock(self.sqlite_path)
+        else:
+            raise ValueError(f"unknown store backend: {selected}")
+        with lock:
+            if not backend.exists():
+                return {}
+            try:
+                readonly_loader = getattr(backend, "load_store_read_only", None)
+                loader = getattr(backend, "load_sections", None)
+                if read_only and callable(readonly_loader):
+                    # Reuse the backend's immutable/query-only reader.  The
+                    # existing file size is also a natural upper bound for
+                    # both encoded payload and database bytes, so preflight
+                    # does not impose a new startup size limit.
+                    database_bytes = max(
+                        1,
+                        int(backend.db_path.lstat().st_size),
+                    )
+                    store = readonly_loader(
+                        max_payload_bytes=database_bytes,
+                        max_database_bytes=database_bytes,
+                    )
+                    loaded = {
+                        name: deepcopy(store[name])
+                        for name in names
+                        if name in store
+                    }
+                elif callable(loader):
+                    loaded = loader(names)
+                else:
+                    store = backend.load_store()
+                    loaded = {
+                        name: deepcopy(store[name])
+                        for name in names
+                        if name in store
+                    }
+            except SqliteStoreNotInitializedError:
+                return {}
+        if not isinstance(loaded, dict):
+            raise RuntimeError("store section reader returned a non-object result")
+        return {
+            name: deepcopy(loaded[name])
+            for name in names
+            if name in loaded
+        }
+
     def _prepare_store_for_save(self, data: dict[str, Any]) -> dict[str, Any]:
         section_loader = getattr(self.backend, "load_sections", None)
         if callable(section_loader):
@@ -420,22 +441,30 @@ class StoreManager:
         return data
 
     def save_store(self, data: dict[str, Any]) -> None:
+        if self.backend.backend_name() == "json":
+            ticket = self.json_backend.capture_write_ticket()
+            with self._store_lock:
+                data = self._prepare_store_for_save(data)
+                if not data.get("worldbook_entries") and self.json_backend.exists():
+                    existing = self.json_backend.load_store()
+                    if isinstance(existing, dict) and existing.get("worldbook_entries"):
+                        for key in (
+                            "worldbook_entries",
+                            "worldbook_member_profiles",
+                            "worldbook_group_profiles",
+                            "worldbook_import_state",
+                        ):
+                            data[key] = existing.get(key, data.get(key))
+            # JSON encoding/fsync is intentionally outside the shared prepare
+            # lock.  The backend's reload-stable path lock validates generation
+            # and sequence immediately before the atomic replace.
+            try:
+                self.json_backend.save_store(data, write_ticket=ticket)
+            finally:
+                self._record_json_write_status()
+            return
         with self._store_lock:
             data = self._prepare_store_for_save(data)
-            if (
-                self.backend.backend_name() == "json"
-                and not data.get("worldbook_entries")
-                and self.json_backend.exists()
-            ):
-                existing = self.json_backend.load_store()
-                if isinstance(existing, dict) and existing.get("worldbook_entries"):
-                    for key in (
-                        "worldbook_entries",
-                        "worldbook_member_profiles",
-                        "worldbook_group_profiles",
-                        "worldbook_import_state",
-                    ):
-                        data[key] = existing.get(key, data.get(key))
             self.backend.save_store(data)
 
     def save_snapshot(
@@ -446,6 +475,21 @@ class StoreManager:
         deleted_sections: Mapping[str, int] | None = None,
         preserve_tombstones: bool = False,
     ) -> int | None:
+        if self.backend.backend_name() == "json":
+            ticket = self.json_backend.capture_write_ticket()
+            with self._store_lock:
+                prepared = self._prepare_store_for_save(data)
+            try:
+                result = self.json_backend.save_snapshot(
+                    prepared,
+                    minimum_revision=minimum_revision,
+                    deleted_sections=deleted_sections,
+                    preserve_tombstones=preserve_tombstones,
+                    write_ticket=ticket,
+                )
+            finally:
+                self._record_json_write_status()
+            return result
         with self._store_lock:
             return self.backend.save_snapshot(
                 self._prepare_store_for_save(data),
@@ -484,9 +528,21 @@ class StoreManager:
         with self._json_store_lock:
             if not force and now - self._last_json_export_at < max(1.0, float(min_interval_seconds)):
                 return False
-            self.json_backend.save_store(deepcopy(data))
             self._last_json_export_at = now
-            return True
+            ticket = self.json_backend.capture_write_ticket()
+        try:
+            self.json_backend.save_store(deepcopy(data), write_ticket=ticket)
+            accepted = self._record_json_write_status()
+        except Exception:
+            with self._json_store_lock:
+                if self._last_json_export_at == now:
+                    self._last_json_export_at = 0.0
+            raise
+        if not accepted:
+            with self._json_store_lock:
+                if self._last_json_export_at == now:
+                    self._last_json_export_at = 0.0
+        return accepted
 
     def health_check(self, *, raise_on_error: bool = False) -> dict[str, Any]:
         return self.backend.health_check(raise_on_error=raise_on_error)

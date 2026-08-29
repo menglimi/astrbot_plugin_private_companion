@@ -129,7 +129,6 @@ def _module_candidates(
             any(name.endswith(suffix) for suffix in suffixes)
             or _safe_identity_text(star_name).casefold().replace("-", "_")
             in _identity_segments(module_identity)
-            or callable(_static_module_field(module, getter_name))
         ):
             candidates.append(module)
             seen.add(id(module))
@@ -176,24 +175,38 @@ def _uncached_resolve(
 ) -> Any | None:
     # Prefer AstrBot's current registry. A stale module alias may survive a hot
     # reload, while get_all_stars() points at the active instance and module.
+    context = getattr(owner, "context", None)
+    registry_available = callable(getattr(context, "get_all_stars", None)) or callable(
+        getattr(context, "get_registered_star", None)
+    )
     for metadata, exact_registry_match in _registered_star_candidates(owner, star_name):
         if not bool(getattr(metadata, "activated", True)):
+            continue
+        if not exact_registry_match and not _metadata_matches_star(metadata, star_name):
             continue
         module = getattr(metadata, "module", None)
         api = _api_from_module(module, getter_name)
         if api is not None and api is not owner and _lifecycle_active(api):
             return api
-        if not exact_registry_match and not _metadata_matches_star(metadata, star_name):
-            continue
+        # AstrBot releases have returned either plugin metadata or the live
+        # plugin object from get_registered_star().  The exact-name lookup is
+        # authoritative in both shapes, so accept a direct instance only for
+        # that path; get_all_stars() entries must still pass identity matching.
         instance = getattr(metadata, "star_cls", None)
+        if instance is None and exact_registry_match and hasattr(metadata, "extension_api"):
+            instance = metadata
         api = getattr(instance, "extension_api", None) if instance is not None else None
         if api is not None and api is not owner and _lifecycle_active(api):
             return api
 
-    # Fixed names remain the fast compatibility path. The candidate scan also
-    # accepts the plugin's canonical PLUGIN_NAME or its unique getter, covering
-    # custom directory names and hot-reload module aliases without broad fuzzy
-    # matching against unrelated plugin descriptions.
+    # Once AstrBot exposes an active-plugin registry, its absence result is
+    # authoritative. Falling through to sys.modules would resurrect unloaded
+    # generations that the framework no longer owns.
+    if registry_available:
+        return None
+
+    # Old AstrBot builds without a registry retain one narrow compatibility
+    # path: fixed names or an exact canonical PLUGIN_NAME only.
     for module in _module_candidates(
         module_names,
         getter_name=getter_name,

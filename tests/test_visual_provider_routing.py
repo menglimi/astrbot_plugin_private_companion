@@ -8,7 +8,6 @@ from unittest.mock import patch
 from astrbot_plugin_private_companion.forward_message import ForwardMessageMixin
 from astrbot_plugin_private_companion.page_api import PrivateCompanionPageApi
 from astrbot_plugin_private_companion.private_image import PrivateImageMixin
-from astrbot_plugin_private_companion.private_reading import PrivateReadingMixin
 
 
 class _FallbackRouteMixin:
@@ -44,12 +43,6 @@ class _PrivateImageRouteHarness(_FallbackRouteMixin, PrivateImageMixin):
     def _model_timeout_seconds_for_call(self, **kwargs):
         self.timeout_call = dict(kwargs)
         return 17
-
-
-class _PrivateReadingRouteHarness(_FallbackRouteMixin, PrivateReadingMixin):
-    def __init__(self, mode: str, fallbacks: dict[str, str]) -> None:
-        super().__init__(mode, fallbacks)
-        self.private_reading_vision_provider_id = "reading-vision"
 
 
 class _FakeVisionProvider:
@@ -652,42 +645,6 @@ class VisualProviderRoutingTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("precision-vision", [provider_id for provider_id, _source, _prompt in candidates])
         self.assertNotIn("narration-backup", [provider_id for provider_id, _source, _prompt in candidates])
-
-    def test_reading_vision_always_uses_its_dedicated_card(self) -> None:
-        quick = _PrivateReadingRouteHarness(
-            "quick",
-            {"PLUGIN_VISION_PROVIDER_ID": "quick-reading-backup"},
-        )
-        precision = _PrivateReadingRouteHarness(
-            "precision",
-            {"PRIVATE_READING_VISION_PROVIDER_ID": "precision-reading-backup"},
-        )
-        self.assertEqual(
-            quick._private_reading_visual_provider_route(),
-            ("PRIVATE_READING_VISION_PROVIDER_ID", "reading-vision", ""),
-        )
-        self.assertEqual(
-            precision._private_reading_visual_provider_route(),
-            ("PRIVATE_READING_VISION_PROVIDER_ID", "reading-vision", "precision-reading-backup"),
-        )
-
-    def test_reading_outputs_follow_independent_switches(self) -> None:
-        harness = _PrivateReadingRouteHarness("quick", {})
-        harness.enable_private_reading_vision = True
-        harness.enable_private_reading_page_comments = False
-        harness.enable_private_reading_rating = False
-        parsed = harness._parse_jm_cosmos_vision_result(
-            '{"impression":"保留读后感","rating":9,"rating_reason":"很喜欢","preference_tags":["节奏"],"page_comments":[{"page":2,"comment":"保留批注"}]}',
-            [2],
-        )
-        self.assertEqual(parsed["impression"], "保留读后感")
-        self.assertEqual(parsed["page_comments"], [])
-        self.assertEqual(parsed["rating"], 0)
-        self.assertEqual(parsed["rating_reason"], "")
-        self.assertEqual(parsed["preference_tags"], [])
-
-        harness.enable_private_reading_vision = False
-        self.assertEqual(harness._private_reading_vision_switches(), (False, False, False))
 
     async def test_forward_image_empty_primary_uses_next_visual_provider(self) -> None:
         harness = _ForwardVisionHarness()

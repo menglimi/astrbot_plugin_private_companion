@@ -313,6 +313,23 @@ class ConversationInjectionPlan:
         marker_text = _clean_key(marker, "")
         return bool(marker_text) and any(block.marker == marker_text for block in self._blocks)
 
+    def remove_markers(self, markers: Iterable[str]) -> int:
+        """Remove owned blocks before the plan is frozen for a narrower scope."""
+        if self._frozen:
+            raise RuntimeError("conversation injection plan is frozen")
+        wanted = {_clean_key(marker, "") for marker in markers}
+        wanted.discard("")
+        removed_ids = {id(block) for block in self._blocks if block.marker in wanted}
+        if not removed_ids:
+            return 0
+        self._blocks = [block for block in self._blocks if id(block) not in removed_ids]
+        self._by_key = {
+            key: block
+            for key, block in self._by_key.items()
+            if id(block) not in removed_ids
+        }
+        return len(removed_ids)
+
     def blocks(self, *, placement: str | None = None, include_materialized: bool = True) -> list[ConversationInjectionBlock]:
         selected = self._blocks
         if placement is not None:

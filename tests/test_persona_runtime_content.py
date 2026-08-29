@@ -4,10 +4,10 @@ import unittest
 
 from astrbot_plugin_private_companion import creative
 from astrbot_plugin_private_companion import news_exploration
-from astrbot_plugin_private_companion import private_reading
 from astrbot_plugin_private_companion import proactive_engine
 from astrbot_plugin_private_companion import proactive_message
 from astrbot_plugin_private_companion import qzone_schedule
+from astrbot_plugin_private_companion.reading_archive import ReadingArchiveMixin
 
 
 class _ScopedSettings:
@@ -26,12 +26,8 @@ class _CreativeHarness(creative.CreativeMixin, _ScopedSettings):
         self.data = {"daily_state": {"energy": 70}}
 
 
-class _ReadingHarness(private_reading.PrivateReadingMixin, _ScopedSettings):
-    def _private_user_role(self, _user=None) -> str:
-        return "owner"
-
-    def _jm_cosmos_available(self) -> bool:
-        return True
+class _ReadingHarness(ReadingArchiveMixin, _ScopedSettings):
+    pass
 
 
 class _EngineHarness(proactive_engine.ProactiveEngineMixin, _ScopedSettings):
@@ -66,13 +62,18 @@ class PersonaContentRuntimeTests(unittest.TestCase):
 
         reading_harness = _ReadingHarness(
             {
-                "enable_private_reading_integration": True,
-                "enable_private_reading_boredom_read": True,
+                "enable_reading_archive_integration": True,
+                "enable_reading_archive_boredom_read": True,
             }
         )
-        self.assertTrue(reading_harness._jm_cosmos_read_available())
-        reading_harness.values["enable_private_reading_boredom_read"] = False
-        self.assertFalse(reading_harness._jm_cosmos_read_available())
+        self.assertFalse(reading_harness._reading_archive_available())
+        self.assertFalse(reading_harness._reading_archive_read_available())
+        self.assertEqual(
+            "",
+            reading_harness._format_bookshelf_reading_context_for_reply(
+                "你最近读了什么"
+            ),
+        )
 
         engine_harness = _EngineHarness({"enable_photo_text_action": False})
         self.assertFalse(engine_harness._comfyui_photo_available())
@@ -104,7 +105,6 @@ class PersonaContentRuntimeTests(unittest.TestCase):
             proactive_message._persona_provider_id,
             proactive_engine._persona_provider_id,
             news_exploration._persona_provider_id,
-            private_reading._persona_provider_id,
             creative._persona_provider_id,
             qzone_schedule._persona_provider_id,
         )

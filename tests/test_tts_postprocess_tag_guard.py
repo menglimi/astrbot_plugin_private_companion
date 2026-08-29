@@ -1373,7 +1373,7 @@ class TtsPostprocessTagGuardTests(unittest.IsolatedAsyncioTestCase):
             [[type(item).__name__ for item in chunk] for chunk in chunks],
         )
 
-    def test_voice_reply_drops_quote_but_keeps_at_with_visible_text(self):
+    def test_voice_reply_moves_quote_and_at_to_visible_text(self):
         harness = _TtsHarness()
         reply = Reply(id="quoted-message")
         chunks = harness._split_tts_chain_for_ordered_send(
@@ -1381,7 +1381,7 @@ class TtsPostprocessTagGuardTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(
-            [["Record"], ["At", "Plain"]],
+            [["Record"], ["Reply", "At", "Plain"]],
             [[type(item).__name__ for item in chunk] for chunk in chunks],
         )
 

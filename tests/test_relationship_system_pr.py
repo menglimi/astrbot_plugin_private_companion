@@ -32,6 +32,11 @@ from relationship_ledger import (
 )
 from relationship_policy import relationship_stage_for_score
 from persona_config import runtime_persona_setting
+from astrbot_plugin_private_companion.story_handoff import (
+    StoryAuthorityError,
+    story_authority_controller,
+)
+from astrbot_plugin_private_companion.runtime_config_dispatcher import TTS_RUNTIME_KEYS
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -197,6 +202,7 @@ APPLY_CONFIG_VALUE = _class_method(
     "_apply_config_value",
     {
         "Any": Any,
+        "TTS_RUNTIME_KEYS": TTS_RUNTIME_KEYS,
         "current_interaction_projection": current_interaction_projection,
         "deepcopy": copy.deepcopy,
         "migrate_relationship_positive_stage_cap": migrate_relationship_positive_stage_cap,
@@ -259,9 +265,11 @@ UPDATE_SETTINGS = _class_method(
     {
         "Any": Any,
         "CatalogValidationError": ValueError,
+        "StoryAuthorityError": StoryAuthorityError,
         "asyncio": asyncio,
         "logger": _Logger(),
         "request": REQUEST,
+        "story_authority_controller": story_authority_controller,
     },
 )
 REQ041_CONFIG_RUNTIME_SNAPSHOT = _class_method(
@@ -324,7 +332,7 @@ class _Plugin:
         role = str(value or "").strip().lower()
         return role if role in {"owner", "friend"} else ""
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         self.saved += 1
 
 
@@ -384,7 +392,7 @@ class _SettingsPlugin:
         self.saved = 0
         self.persisted_default = copy.deepcopy(self.data)
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         self.saved += 1
 
     async def _flush_scheduled_data_save(self) -> None:
@@ -413,6 +421,14 @@ class _SettingsApiHost:
 
     def _set_config_value(self, key: str, value: Any) -> None:
         self.config_values[key] = value
+
+    @staticmethod
+    def _forward_runtime_config_effects(
+        _key: str,
+        _value: Any,
+        _overrides: dict[str, Any] | None = None,
+    ) -> None:
+        return None
 
     @staticmethod
     def _single_line(value: Any, limit: int) -> str:
@@ -596,8 +612,8 @@ def test_relationship_ledger_uses_sliding_dedupe_and_configured_timezone() -> No
 def test_content_intent_requires_explicit_mode_request_and_disabled_policy_is_neutral() -> None:
     for text in ("咖啡再甜一点", "这段剧情有点暧昧", "做爱会怀孕吗？我想要了解避孕风险"):
         assert content_intent_from_text(text) == {"requested_content_tier": "normal", "turn_consent": False}
-    explicit = content_intent_from_text("请进入成人模式，我同意继续")
-    assert explicit == {"requested_content_tier": "adult", "turn_consent": True}
+    explicit = content_intent_from_text("请进入亲密模式，说得暧昧一点")
+    assert explicit == {"requested_content_tier": "flirt", "turn_consent": False}
 
     decision = build_expression_decision(
         {"message_intent": explicit, "content_policy": {"enabled": False}}
@@ -1047,49 +1063,41 @@ def test_all_seven_interaction_bands_are_owner_only_where_required() -> None:
     assert "owner_role_required" in ordinary["reason_codes"]
 
 
-def _adult_input() -> dict:
+def _flirt_input() -> dict:
     return {
         "relationship_score": 1200,
         "relationship_stage": "deeply_bonded",
-        "relationship_role": "owner",
-        "relationship_mode": "owner_exclusive",
-        "current_interaction": {"expression_band": "affectionate"},
-        "message_intent": {"requested_content_tier": "adult", "turn_consent": True},
+        "relationship_role": "friend",
+        "relationship_mode": "normal",
+        "current_interaction": {"expression_band": "warm"},
+        "message_intent": {"requested_content_tier": "flirt", "turn_consent": False},
         "content_policy": {
             "enabled": True,
             "flirt_enabled": True,
-            "adult_enabled": True,
             "private_chat": True,
-            "adult_owner_confirmed": True,
-            "require_turn_consent": True,
-            "local_provider_configured": True,
-            "local_provider_match": True,
         },
     }
 
 
-def test_adult_tier_is_fail_closed_for_every_required_condition() -> None:
-    baseline = _adult_input()
-    assert build_expression_decision(baseline).content_tier == "adult"
+def test_flirt_tier_is_fail_closed_for_every_required_condition() -> None:
+    baseline = _flirt_input()
+    assert build_expression_decision(baseline).content_tier == "flirt"
 
     mutations = (
-        ("role", lambda value: value.update(relationship_role="friend")),
-        ("mode", lambda value: value.update(relationship_mode="normal")),
-        ("interaction", lambda value: value.update(current_interaction={"expression_band": "warm"})),
+        ("master", lambda value: value["content_policy"].update(enabled=False)),
+        ("switch", lambda value: value["content_policy"].update(flirt_enabled=False)),
+        ("stage", lambda value: value.update(relationship_stage="familiar")),
+        ("interaction", lambda value: value.update(current_interaction={"expression_band": "avoidant"})),
         ("group", lambda value: value["content_policy"].update(private_chat=False)),
-        ("age", lambda value: value["content_policy"].update(adult_owner_confirmed=False)),
-        ("consent", lambda value: value["message_intent"].update(turn_consent=False)),
-        ("provider_config", lambda value: value["content_policy"].update(local_provider_configured=False)),
-        ("provider_match", lambda value: value["content_policy"].update(local_provider_match=False)),
     )
     for label, mutate in mutations:
-        value = _adult_input()
+        value = _flirt_input()
         mutate(value)
-        assert build_expression_decision(value).content_tier != "adult", label
+        assert build_expression_decision(value).content_tier == "normal", label
 
 
-def test_proactive_path_never_uses_adult_tier() -> None:
-    value = _adult_input()
+def test_proactive_path_never_infers_a_flirt_tier() -> None:
+    value = _flirt_input()
     value["message_intent"]["requested_content_tier"] = "normal"
     value["proactive_candidate"] = {"eligible": True, "budget": 3}
     decision = build_expression_decision(value)
@@ -1181,7 +1189,8 @@ def test_private_intent_settles_boundary_reengagement_and_hurt_without_legacy_au
         {"intent": "intimacy", "confidence": 0.9, "emotion_event": "neutral"},
     )
     assert owner["contact_preference"]["active"] is False
-    assert owner["current_interaction"]["expression_band"] == "close"
+    assert owner["current_interaction"]["expression_band"] == "lively"
+    assert owner["current_interaction"]["reason"] == "intimate_interaction"
 
     hurt = {"user_id": "friend", "relationship_role": "friend", "relationship_mode": "normal"}
     host._settle_current_interaction_from_intent(
@@ -1254,26 +1263,10 @@ def test_user_update_enforces_owner_freeze_role_and_interaction_caps() -> None:
     assert interaction["manual_override"] is True
 
 
-def test_adult_provider_identity_requires_exact_configured_match() -> None:
-    matcher = _class_method(
-        "main.py",
-        "PrivateCompanionPlugin",
-        "_adult_content_provider_matches",
-        {"Any": Any, "_single_line": _single_line},
-    )
-
-    class Host:
-        adult_content_provider_id = "local-adult"
-
-        @staticmethod
-        def _llm_request_provider_identity_parts(_event: Any, req: Any) -> list[str]:
-            return list(req)
-
-    Host._adult_content_provider_matches = matcher
-    host = Host()
-    assert host._adult_content_provider_matches(None, ["local-adult"]) is True
-    assert host._adult_content_provider_matches(None, ["prefix-local-adult-suffix"]) is False
-    assert host._adult_content_provider_matches(None, ["LOCAL-ADULT"]) is True
+def test_retired_adult_provider_route_cannot_be_resurrected() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    assert "def _adult_content_provider_matches" not in source
+    assert "ADULT_CONTENT_PROVIDER_ID" not in source
 
 
 def test_strict_llm_provider_skips_peak_replacement_and_fallback() -> None:
@@ -1344,18 +1337,26 @@ def test_strict_llm_provider_skips_peak_replacement_and_fallback() -> None:
         def _record_llm_usage(**_kwargs: Any) -> None:
             return None
 
+        @staticmethod
+        def _sensitive_model_replacement_provider(_provider_id: str = "") -> str:
+            return ""
+
+        @staticmethod
+        def _sensitive_model_replacement_keyword(_completion: str) -> str:
+            return ""
+
     Host._llm_call = llm_call
     host = Host()
     result = asyncio.run(
         host._llm_call(
             "review",
-            provider_id="local-adult",
+            provider_id="pinned-review",
             task="response_review",
             strict_provider=True,
         )
     )
     assert result == "ok"
-    assert host.called_provider == "local-adult"
+    assert host.called_provider == "pinned-review"
     assert host.peak_calls == 0
     assert host.fallback_calls == 0
 
@@ -1463,14 +1464,6 @@ def test_legacy_relationship_state_has_no_parallel_expression_consumers() -> Non
     assert "relationship_state" not in tool_source
     assert "_build_expression_decision_for_user" in tool_source
 
-    reading_source = method_source(
-        "private_reading.py",
-        "PrivateReadingMixin",
-        "_bookshelf_secret_relationship_policy",
-    )
-    assert "relationship_state" not in reading_source
-    assert "_build_expression_decision_for_user" in reading_source
-
     main_source = (ROOT / "main.py").read_text(encoding="utf-8")
     assert main_source.count("expression_decision_prompt(projection)") == 1
 
@@ -1523,14 +1516,11 @@ def test_active_panel_exposes_relationship_cards() -> None:
     assert 'id="relationshipStageForm"' in source
     assert 'id="currentInteractionForm"' in source
     assert "专属联结只允许主要用户使用" in source
-    assert "主回复链回退仍由 AstrBot 配置决定" in source
+    assert "当轮明确请求 + 私聊 + 长期亲密及以上 + 当前互动非回避/受伤" in source
 
     schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8-sig"))
     items = schema["basic_config"]["items"]
     assert items["enable_relationship_content_tiers"]["default"] is False
-    assert items["enable_adult_content_tier"]["default"] is False
-    assert items["adult_content_owner_confirmed"]["default"] is False
-    assert items["adult_content_require_turn_consent"]["default"] is True
-    assert items["adult_content_require_exclusive"]["default"] is True
-    assert items["adult_content_require_affectionate"]["default"] is True
-    assert items["ADULT_CONTENT_PROVIDER_ID"]["_special"] == "select_provider"
+    assert items["enable_flirt_content_tier"]["default"] is True
+    assert "enable_adult_content_tier" not in items
+    assert "ADULT_CONTENT_PROVIDER_ID" not in items

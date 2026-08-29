@@ -105,6 +105,18 @@ class SegmentedComponentPlannerTests(unittest.TestCase):
             [[type(item).__name__ for item in chunk] for chunk in chunks],
         )
 
+    def test_reply_binding_stays_after_leading_voice_in_mixed_chunk(self):
+        chunks, changed = bind_reply_components_to_first_text(
+            [[Reply(id="message-2"), Record(file="voice.wav"), At(qq="10001"), Plain("正文")]],
+            plain_type=Plain,
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(
+            [["Record", "Reply", "At", "Plain"]],
+            [[type(item).__name__ for item in chunk] for chunk in chunks],
+        )
+
     def test_reply_binding_drops_quote_when_voice_has_no_text_companion(self):
         chunks, changed = bind_reply_components_to_first_text(
             [[Reply(id="message-voice"), Record(file="voice.wav")]],

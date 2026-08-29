@@ -18,6 +18,9 @@ import random
 import re
 import shutil
 import sqlite3
+import stat
+import sys
+import threading
 import time
 import unicodedata
 import uuid
@@ -27,7 +30,7 @@ from datetime import date, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from http.cookies import SimpleCookie
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Any
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlparse, urlunparse
 from xml.etree import ElementTree as ET
@@ -67,6 +70,11 @@ from astrbot.core.platform.platform_metadata import PlatformMetadata
 from astrbot.core.star.star_handler import EventType, star_handlers_registry
 from astrbot.core.provider.entities import LLMResponse
 
+from .private_scope_isolation import (
+    GROUP_SCOPE_MARKERS,
+    sanitize_private_request_group_artifacts,
+)
+
 try:
     import chinese_calendar as calendar_cn
 except Exception:
@@ -91,8 +99,6 @@ from .constants import (
     VOICE_FALLBACK_TEMPLATES,
     TIMER_TAG_PATTERN,
     SUPPORTED_TIMER_FORMATS,
-    WORLDBOOK_IMPORTANT_MEMORY_CAPACITY,
-    WORLDBOOK_PENDING_OBSERVATION_CAPACITY,
     _ACTION_TEXT,
     _DATA_STORE_KEYS,
     _DEFAULT_GROUP_TEMPLATE,
@@ -164,6 +170,7 @@ from .persona_sqlite_store import (
     PersonaSqliteStoreError,
     PersonaSqliteStoreRegistry,
     load_persona_sqlite_store,
+    read_persona_store_snapshot_read_only,
 )
 from .model_routing import contains_sensitive_refusal, scope_allows
 from .person_context_contract import (
@@ -214,16 +221,33 @@ from .p4_shadow import build_p4_shadow
 from .p4_affinity_confinement import apply_legacy_relationship_delta
 from .p4_live_runtime import decide_live_request
 from .p4_runtime_gate import SAFE_CONFINEMENT_REPLY
-from .p6_readonly_projection import build_p6_readonly_status
+from .extension_api_content import _ContentCapabilityFamily
+from .extension_api_diagnostics import _DiagnosticsCapabilityFamily
+from .extension_api_identity import _IdentityCapabilityFamily
+from .extension_api_image import _ImageCapabilityFamily
+from .extension_api_memory import _MemoryCapabilityFamily
+from .extension_api_qzone import _QzoneCapabilityFamily
+from .extension_api_relationship import _RelationshipCapabilityFamily
+from .extension_api_scheduler import _SchedulerCapabilityFamily
+from .memory_page_snapshot import MemoryPageSnapshotService
+from .story_authority import (
+    StoryAuthorityError,
+    story_authority_controller,
+    story_legacy_operation,
+    story_legacy_sync_operation,
+)
+from .story_handoff import resume_story_handoff
 from .domains.affect.reply_temperature import compose_reply_temperature
 from .plugin_identity import (
     PLUGIN_ID,
     is_module_path_for_package,
 )
+from .lab_fixture_adapter import register_companion_lab_fixture_adapter
 from .companion_interaction_expression import build_expression_decision, content_intent_from_text, expression_decision_prompt
 from .photo_reference_catalog import CATALOG_VERSION, load_catalog, validate_and_serialize
 from .relationship_ledger import normalize_relationship_positive_stage_cap_key
 from .relationship_policy import normalize_relationship_stage_policy
+from .runtime_config_dispatcher import dispatch_runtime_config_effects
 
 
 _ACTIVE_PERSONA_ID = contextvars.ContextVar("private_companion_active_persona_id", default="")
@@ -393,7 +417,7 @@ except ModuleNotFoundError as exc:
         "[PrivateCompanion] 发布包缺少 group_member_safety.py，群成员风控已停用；插件其余功能继续加载。"
         "请重新安装包含该文件的完整版本。"
     )
-from .event_dispatch import EventDispatchMixin
+from .event_dispatch import EventDispatchMixin, _ON_WAITING_LLM_REQUEST
 from .reading_archive import ReadingArchiveMixin
 from .news_exploration import NewsExplorationMixin
 try:
@@ -410,6 +434,7 @@ except ModuleNotFoundError as exc:
 
     logger.warning("[PrivateCompanion] self_timeline.py 缺失，已跳过 Bot 自身时间线注入能力。请重新安装完整版本。")
 from .core_store import CoreStoreMixin
+from .storage.path_generation import activate_persistence_owner
 from .platform_compat import PlatformCompatibilityMixin
 from .integration_status import IntegrationStatusMixin
 from .astrbot_knowledge import AstrBotKnowledgeMixin
@@ -457,7 +482,21 @@ from .planning import (
     pick_detail_segment,
 )
 
-_private_companion_plugin: Any | None = None
+_PRIVATE_COMPANION_RUNTIME_KEY = "_astrbot_private_companion_runtime_v1"
+
+
+def _new_private_companion_runtime() -> ModuleType:
+    runtime = ModuleType(_PRIVATE_COMPANION_RUNTIME_KEY)
+    runtime.lock = threading.RLock()
+    runtime.active_plugin = None
+    return runtime
+
+
+_private_companion_runtime = sys.modules.setdefault(
+    _PRIVATE_COMPANION_RUNTIME_KEY,
+    _new_private_companion_runtime(),
+)
+_private_companion_plugin: Any | None = _private_companion_runtime.active_plugin
 
 
 class _OneBotReactionImage(BaseMessageComponent):
@@ -497,10 +536,19 @@ class _OneBotReactionImage(BaseMessageComponent):
 
 
 def get_private_companion_api() -> Any | None:
-    plugin = _private_companion_plugin
-    if plugin is None:
-        return None
-    return getattr(plugin, "extension_api", None)
+    with _private_companion_runtime.lock:
+        plugin = _private_companion_runtime.active_plugin
+        api = getattr(plugin, "extension_api", None) if plugin is not None else None
+        lifecycle = getattr(api, "bridge_lifecycle_status", None)
+        if not callable(lifecycle):
+            return None
+        try:
+            status = lifecycle()
+        except Exception:
+            return None
+        if not isinstance(status, dict) or status.get("active") is not True:
+            return None
+        return api
 
 
 class PrivateCompanionExtensionAPI:
@@ -508,23 +556,201 @@ class PrivateCompanionExtensionAPI:
 
     def __init__(self, plugin: "PrivateCompanionPlugin") -> None:
         self._plugin = plugin
+        self._story_migration_generation = uuid.uuid4().hex
+        self._story_migration_state = "created"
+        self._qzone_reference_lock = threading.RLock()
+        self._qzone_references: dict[str, tuple[float, Any]] = {}
+        story_authority_controller().stage_generation(
+            self._story_migration_generation
+        )
+        self._memory_page_service = MemoryPageSnapshotService(self)
+        self._identity_family = _IdentityCapabilityFamily(self)
+        self._relationship_family = _RelationshipCapabilityFamily(self)
+        self._scheduler_family = _SchedulerCapabilityFamily(self)
+        self._memory_family = _MemoryCapabilityFamily(self)
+        self._content_family = _ContentCapabilityFamily(self)
+        self._diagnostics_family = _DiagnosticsCapabilityFamily(self)
+        self._image_family = _ImageCapabilityFamily(self)
+        self._qzone_family = _QzoneCapabilityFamily(self)
+
+    def _story_migration_instance_generation(self) -> str:
+        return self._story_migration_generation
+
+    def _story_migration_lifecycle_state(self) -> str:
+        return self._story_migration_state
+
+    def _extension_instance_generation(self) -> str:
+        return self._story_migration_generation
+
+    def _extension_lifecycle_state(self) -> str:
+        return self._story_migration_state
+
+    def bridge_lifecycle_status(self) -> dict[str, Any]:
+        """Expose whether this published cross-plugin generation is callable."""
+        state = self._story_migration_state
+        published = _private_companion_runtime.active_plugin is self._plugin
+        return {
+            "active": state == "ready" and published,
+            "state": state,
+            "instance_generation": self._story_migration_generation,
+        }
+
+    def _activate_story_migration_api(self) -> bool:
+        if self._story_migration_state != "created":
+            return False
+        story_authority_controller().activate_generation(
+            self._story_migration_generation
+        )
+        self._story_migration_state = "ready"
+        return True
+
+    def _supersede_story_migration_api(self) -> None:
+        if self._story_migration_state in {"created", "ready"}:
+            self._story_migration_state = "superseded"
+            self._memory_page_service.clear_references()
+            with self._qzone_reference_lock:
+                self._qzone_references.clear()
+            story_authority_controller().supersede_generation(
+                self._story_migration_generation
+            )
+
+    def _close_story_migration_api(self) -> None:
+        self._memory_page_service.clear_references()
+        with self._qzone_reference_lock:
+            self._qzone_references.clear()
+        if self._story_migration_state != "superseded":
+            self._story_migration_state = "closed"
+            story_authority_controller().close_generation(
+                self._story_migration_generation
+            )
 
     def register_proactive_ability(self, spec: dict[str, Any]) -> bool:
-        return self._plugin.register_external_proactive_ability(spec)
+        return self._scheduler_family.register_proactive_ability(
+            spec,
+        )
 
     def unregister_proactive_ability(self, name: str) -> bool:
-        return self._plugin.unregister_external_proactive_ability(name)
+        return self._scheduler_family.unregister_proactive_ability(
+            name,
+        )
 
     def list_proactive_abilities(self) -> list[dict[str, Any]]:
-        return self._plugin.external_proactive_abilities()
+        return self._scheduler_family.list_proactive_abilities()
 
     async def record_game_event(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Apply one idempotent, per-user game event to companion afterglow."""
-        return await self._plugin._record_external_game_event(payload)
+        return await self._memory_family.record_game_event(
+            payload,
+        )
+
+    def memory_page_capabilities(self) -> dict[str, Any]:
+        """Describe the versioned, read-only Memory Page producer API."""
+        return self._memory_family.memory_page_capabilities()
+
+    async def export_memory_page_snapshot(
+        self,
+        *,
+        target_plugin_id: str,
+        selected_date: str = "",
+    ) -> dict[str, Any]:
+        """Export a bounded, path-free Memory Page snapshot."""
+        return await self._memory_family.export_memory_page_snapshot(
+            target_plugin_id=target_plugin_id,
+            selected_date=selected_date,
+        )
+
+    async def read_memory_page_photo(
+        self,
+        *,
+        target_plugin_id: str,
+        photo_ref: str,
+    ) -> dict[str, Any]:
+        """Read one generation-bound photo reference after strict revalidation."""
+        return await self._memory_family.read_memory_page_photo(
+            target_plugin_id=target_plugin_id,
+            photo_ref=photo_ref,
+        )
 
     def get_realtime_voice_config(self) -> dict[str, Any]:
         """Expose the active companion voice language to realtime plugins."""
-        return self._plugin._realtime_voice_config()
+        return self._content_family.get_realtime_voice_config()
+
+    def story_migration_capabilities(self) -> dict[str, Any]:
+        """Describe the versioned, read-only Story migration snapshot API."""
+        return self._content_family.story_migration_capabilities()
+
+    async def export_story_migration_snapshot(
+        self,
+        *,
+        lease_token: str = "",
+    ) -> dict[str, Any]:
+        """Export a detached Story snapshot without exposing local paths."""
+        return await self._content_family.export_story_migration_snapshot(
+            lease_token=lease_token,
+        )
+
+    async def prepare_story_handoff(
+        self,
+        *,
+        target_plugin_id: str,
+        owner_id: str,
+    ) -> dict[str, Any]:
+        """Drain legacy Story writers and prepare an ephemeral handoff lease."""
+        return await self._content_family.prepare_story_handoff(
+            target_plugin_id=target_plugin_id,
+            owner_id=owner_id,
+        )
+
+    async def abort_story_handoff(
+        self,
+        *,
+        lease_token: str,
+    ) -> dict[str, Any]:
+        """Abort the exact active Story handoff lease."""
+        return await self._content_family.abort_story_handoff(
+            lease_token=lease_token,
+        )
+
+    async def commit_story_handoff(
+        self,
+        *,
+        lease_token: str = "",
+    ) -> dict[str, Any]:
+        """Commit a live lease or replay an already durable handoff marker."""
+
+        return await self._content_family.commit_story_handoff(
+            lease_token=lease_token,
+        )
+
+    def qzone_capabilities(self) -> dict[str, Any]:
+        """Describe the generation-bound Companion-owned QZone contract."""
+
+        return self._qzone_family.qzone_capabilities()
+
+    def qzone_status_snapshot(self) -> dict[str, Any]:
+        """Return a path-free, credential-free QZone status snapshot."""
+
+        return self._qzone_family.qzone_status_snapshot()
+
+    def export_qzone_config_snapshot(
+        self,
+        *,
+        target_plugin_id: str,
+    ) -> dict[str, Any]:
+        """Export only non-secret owner settings plus credential state."""
+
+        return self._qzone_family.export_qzone_config_snapshot(
+            target_plugin_id=target_plugin_id,
+        )
+
+    async def execute_qzone_operation(
+        self,
+        operation: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Execute one exact QZone operation without exposing the host/Page API."""
+
+        return await self._qzone_family.execute_qzone_operation(operation, payload)
 
     async def synthesize_realtime_voice(
         self,
@@ -546,76 +772,19 @@ class PrivateCompanionExtensionAPI:
 
     def get_reality_touch_authorized_user_ids(self) -> list[str]:
         """Return host administrators and primary users eligible for device consent."""
-        plugin = self._plugin
-        owner_getter = getattr(plugin, "_relationship_owner_user_ids", None)
-        owners = set(owner_getter() if callable(owner_getter) else ())
-        target_getter = getattr(plugin, "_configured_target_ids", None)
-        targets = set(target_getter() if callable(target_getter) else ())
-        admins = {
-            _single_line(item, 120)
-            for item in getattr(plugin, "admin_user_ids", ())
-            if _single_line(item, 120)
-        }
-        return sorted(
-            {
-                _single_line(item, 120)
-                for item in owners | targets | admins
-                if _single_line(item, 120)
-            }
-        )
+        return self._identity_family.get_reality_touch_authorized_user_ids()
 
     async def notify_mobile_location_update(self, user_id: str) -> dict[str, Any]:
         """Let the mobile gateway wake location-aware proactive planning promptly."""
-        return await self._plugin._handle_mobile_location_update(user_id)
+        return await self._scheduler_family.notify_mobile_location_update(
+            user_id,
+        )
 
     def get_reality_touch_host_context(self, user_id: str) -> dict[str, Any]:
         """Expose bounded identity and relationship context to the device plugin."""
-        plugin = self._plugin
-        normalized = _single_line(user_id, 120)
-        binder = getattr(plugin, "_req041_reality_private_binding", None)
-        binding = binder(normalized, purpose="memory_read") if callable(binder) else None
-        if callable(binder):
-            user = binding.get("user") if isinstance(binding, dict) and binding.get("ok") is True else {}
-            identity_ready = bool(user)
-        else:
-            users = plugin.data.get("users") if isinstance(plugin.data, dict) else None
-            user = users.get(normalized) if isinstance(users, dict) else None
-            user = user if isinstance(user, dict) else {}
-            identity_ready = bool(user)
-        admin_checker = getattr(plugin, "_is_configured_admin_user_id", None)
-        owner_getter = getattr(plugin, "_relationship_owner_user_ids", None)
-        owners = set(owner_getter() if callable(owner_getter) else ())
-        target_getter = getattr(plugin, "_configured_target_ids", None)
-        targets = set(target_getter() if callable(target_getter) else ())
-        is_primary_user = normalized in owners or normalized in targets
-        quota_getter = getattr(plugin, "_proactive_quota_policy", None)
-        quota = quota_getter(user) if callable(quota_getter) and user else {}
-        relationship_formatter = getattr(plugin, "_format_proactive_relationship_fact", None)
-        relationship = relationship_formatter(user) if callable(relationship_formatter) and user else ""
-        return {
-            "user_id": normalized,
-            "exists": bool(user),
-            "identity_ready": identity_ready,
-            "reality_subject_ref": _single_line(binding.get("subject_ref"), 160)
-            if isinstance(binding, dict) and binding.get("ok") is True
-            else normalized,
-            "is_admin": bool(callable(admin_checker) and admin_checker(normalized)),
-            "is_primary_user": is_primary_user,
-            "eligible": bool(
-                normalized
-                and (
-                    is_primary_user
-                    or (callable(admin_checker) and admin_checker(normalized))
-                )
-            ),
-            "proactive_tier": _safe_int(quota.get("tier"), 1, 1, 5) if isinstance(quota, dict) else 1,
-            "relationship": _single_line(relationship, 500),
-            "umo": _single_line(user.get("umo"), 180),
-            "display_name": _single_line(
-                user.get("nickname") or user.get("last_display_name") or user.get("display_name"),
-                80,
-            ),
-        }
+        return self._relationship_family.get_reality_touch_host_context(
+            user_id,
+        )
 
     def export_reality_touch_legacy_state(self) -> dict[str, Any]:
         """Return a detached one-time migration payload for Reality Companion."""
@@ -692,10 +861,10 @@ class PrivateCompanionExtensionAPI:
         return str(await caller(prompt, **kwargs) or "")
 
     async def send_reality_touch_chat(self, umo: str, text: str) -> bool:
-        sender = getattr(self._plugin, "_send_chain_components", None)
-        if not callable(sender) or not _single_line(umo, 180) or not _single_line(text, 1000):
-            return False
-        return bool(await sender(umo, [Plain(str(text))]))
+        return await self._content_family.send_reality_touch_chat(
+            umo,
+            text,
+        )
 
     async def record_reality_touch_output(
         self,
@@ -706,10 +875,7 @@ class PrivateCompanionExtensionAPI:
         delivered_at: float | None = None,
     ) -> dict[str, Any]:
         """Record speech delivered outside chat so the next reply can continue it."""
-        recorder = getattr(self._plugin, "_record_reality_touch_output", None)
-        if not callable(recorder):
-            return {"recorded": False, "reason": "recorder_unavailable"}
-        return await recorder(
+        return await self._content_family.record_reality_touch_output(
             user_id,
             text,
             source=source,
@@ -717,50 +883,24 @@ class PrivateCompanionExtensionAPI:
         )
 
     def get_reality_touch_cron_manager(self) -> Any | None:
-        getter = getattr(self._plugin, "_official_cron_manager", None)
-        return getter() if callable(getter) else None
+        return self._scheduler_family.get_reality_touch_cron_manager()
 
     async def delete_reality_touch_cron_job(self, job_id: str) -> tuple[bool, str]:
-        deleter = getattr(self._plugin, "_delete_official_llm_timer_job", None)
-        if not callable(deleter):
-            return False, "AstrBot 官方 Cron 不可用"
-        return await deleter(job_id)
+        return await self._scheduler_family.delete_reality_touch_cron_job(
+            job_id,
+        )
 
     def get_bot_identity(self) -> dict[str, Any]:
         """Return a stable Bot identity without guessing between multiple accounts."""
-        plugin = self._plugin
-        self_ids = sorted(
-            {
-                _single_line(item, 80)
-                for item in getattr(plugin, "_known_bot_self_ids", lambda: set())()
-                if _single_line(item, 80)
-            }
-        )
-        qq_ids = [item for item in self_ids if re.fullmatch(r"[1-9]\d{4,14}", item)]
-        selected_id = self_ids[0] if len(self_ids) == 1 else ""
-        qq_id = qq_ids[0] if len(qq_ids) == 1 else ""
-        bot_name = _single_line(getattr(plugin, "bot_name", ""), 80)
-        return {
-            "available": True,
-            "name": bot_name,
-            "aliases": [bot_name] if bot_name else [],
-            "platform": _single_line(getattr(plugin, "target_platform", ""), 80),
-            "self_ids": self_ids,
-            "selected_id": selected_id,
-            "qq_id": qq_id,
-            "ambiguous": len(self_ids) > 1 or len(qq_ids) > 1,
-            "avatar": {
-                "kind": "qq" if qq_id else "fallback",
-                "qq_id": qq_id,
-                "remote_url": f"https://q1.qlogo.cn/g?b=qq&nk={qq_id}&s=640" if qq_id else "",
-            },
-        }
+        return self._identity_family.get_bot_identity()
 
     def get_unified_person_contract(self) -> dict[str, Any]:
-        return self._plugin.unified_person_contract_status()
+        return self._identity_family.get_unified_person_contract()
 
     def resolve_unified_person(self, identity: dict[str, Any]) -> dict[str, Any]:
-        return self._plugin.resolve_unified_person_identity(identity)
+        return self._identity_family.resolve_unified_person(
+            identity,
+        )
 
     def create_unified_person(
         self,
@@ -769,62 +909,38 @@ class PrivateCompanionExtensionAPI:
         profile: dict[str, Any] | None = None,
         operation_id: str = "",
     ) -> dict[str, Any]:
-        return self._plugin.create_unified_person(identity, profile=profile, operation_id=operation_id)
+        return self._identity_family.create_unified_person(
+            identity,
+            profile=profile,
+            operation_id=operation_id,
+        )
 
     def get_unified_person_projection(self, person_id: str) -> dict[str, Any] | None:
-        return self._plugin.get_unified_person_projection(person_id)
+        return self._identity_family.get_unified_person_projection(
+            person_id,
+        )
 
     def get_p6_readonly_status(self) -> dict[str, Any]:
         """Expose bounded Unified Person counts without an authority surface."""
-        try:
-            return build_p6_readonly_status(self._plugin._unified_person_registry_status())
-        except Exception:
-            return build_p6_readonly_status(None)
+        return self._diagnostics_family.get_p6_readonly_status()
 
     def get_unified_person_context(self, event: Any | None = None) -> dict[str, Any]:
-        return self._plugin.build_unified_person_context(event)
+        return self._identity_family.get_unified_person_context(
+            event,
+        )
 
     def get_scene_context(self, user_id: str = "") -> dict[str, Any]:
         """Return the current structured Bot-life context for plugin integrations."""
-        plugin = self._plugin
-        users = plugin.data.get("users") if isinstance(plugin.data.get("users"), dict) else {}
-        normalized_user_id = _single_line(user_id, 80)
-        user = users.get(normalized_user_id) if normalized_user_id else None
-        if not isinstance(user, dict):
-            user = None
-        else:
-            user = dict(user)
-            user.setdefault("user_id", normalized_user_id)
-        return plugin._build_companion_scene_snapshot(user)
+        return self._diagnostics_family.get_scene_context(
+            user_id,
+        )
 
     def get_realtime_context(self, user_id: str = "", purpose: str = "together") -> dict[str, Any]:
         """Return the full structured scene and its canonical prompt representation."""
-        snapshot = self.get_scene_context(user_id)
-        normalized_purpose = _single_line(purpose, 40) or "together"
-        prompt = self._plugin._format_companion_scene_snapshot(
-            snapshot,
-            purpose=normalized_purpose,
+        return self._diagnostics_family.get_realtime_context(
+            user_id,
+            purpose,
         )
-        activity = self.get_external_activity(user_id=user_id)
-        if activity:
-            label = _single_line(activity.get("label"), 100) or {
-                "shared_call": "正在和主要用户通话",
-                "shared_watch": "正在和主要用户一起看视频",
-            }.get(_single_line(activity.get("kind"), 40), "正在进行共同活动")
-            prompt = f"{prompt}\n实时共同活动（高于固定日程）：{label}" if prompt else f"实时共同活动（高于固定日程）：{label}"
-        continuity = self.get_external_realtime_continuity(user_id=user_id, public=False)
-        if continuity:
-            continuity_text = _single_line(continuity.get("summary"), 1800)
-            if continuity_text:
-                prompt = f"{prompt}\n短期实时连续性（优先于旧日程和旧记忆）：{continuity_text}" if prompt else continuity_text
-        return {
-            "snapshot": snapshot,
-            "prompt": prompt,
-            "purpose": normalized_purpose,
-            "bot": self.get_bot_identity(),
-            "external_activity": activity,
-            "realtime_continuity": continuity,
-        }
 
     def record_external_realtime_continuity(
         self,
@@ -837,50 +953,20 @@ class PrivateCompanionExtensionAPI:
         activity_id: str = "",
     ) -> dict[str, Any]:
         """Store bounded post-call continuity without writing long-term memory."""
-        key = _single_line(user_id, 80)
-        text = _single_line(summary, 2200)
-        if not key or not text:
-            return {}
-        registry = getattr(self._plugin, "_external_realtime_continuity", None)
-        if not isinstance(registry, dict):
-            registry = {}
-            self._plugin._external_realtime_continuity = registry
-        now = time.time()
-        ttl = _safe_int(ttl_seconds, 21600, 300, 86400)
-        bounded_facts = [
-            _single_line(item, 240)
-            for item in (facts or [])
-            if _single_line(item, 240)
-        ][:8]
-        item = {
-            "user_id": key,
-            "summary": text,
-            "public_summary": _single_line(public_summary, 360),
-            "facts": bounded_facts,
-            "activity_id": _single_line(activity_id, 120),
-            "updated_at": now,
-            "expires_at": now + ttl,
-        }
-        registry[key] = item
-        return dict(item)
+        return self._memory_family.record_external_realtime_continuity(
+            user_id,
+            summary=summary,
+            public_summary=public_summary,
+            facts=facts,
+            ttl_seconds=ttl_seconds,
+            activity_id=activity_id,
+        )
 
     def get_external_realtime_continuity(self, *, user_id: str = "", public: bool = False) -> dict[str, Any]:
-        registry = getattr(self._plugin, "_external_realtime_continuity", None)
-        if not isinstance(registry, dict):
-            return {}
-        now = time.time()
-        for key, item in list(registry.items()):
-            if not isinstance(item, dict) or _safe_float(item.get("expires_at"), 0.0) <= now:
-                registry.pop(key, None)
-        key = _single_line(user_id, 80)
-        item = registry.get(key) if key else None
-        if not isinstance(item, dict):
-            return {}
-        result = dict(item)
-        if public:
-            result["summary"] = _single_line(result.get("public_summary"), 360)
-            result["facts"] = []
-        return result if _single_line(result.get("summary"), 2200) else {}
+        return self._memory_family.get_external_realtime_continuity(
+            user_id=user_id,
+            public=public,
+        )
 
     def notify_external_activity_started(
         self,
@@ -893,7 +979,7 @@ class PrivateCompanionExtensionAPI:
         ttl_seconds: int = 240,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return self._upsert_external_activity(
+        return self._scheduler_family.notify_external_activity_started(
             activity_id,
             user_id=user_id,
             kind=kind,
@@ -901,7 +987,6 @@ class PrivateCompanionExtensionAPI:
             source_plugin=source_plugin,
             ttl_seconds=ttl_seconds,
             metadata=metadata,
-            preserve_started_at=False,
         )
 
     def notify_external_activity_updated(
@@ -915,7 +1000,7 @@ class PrivateCompanionExtensionAPI:
         ttl_seconds: int = 240,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return self._upsert_external_activity(
+        return self._scheduler_family.notify_external_activity_updated(
             activity_id,
             user_id=user_id,
             kind=kind,
@@ -923,79 +1008,18 @@ class PrivateCompanionExtensionAPI:
             source_plugin=source_plugin,
             ttl_seconds=ttl_seconds,
             metadata=metadata,
-            preserve_started_at=True,
         )
 
     def notify_external_activity_ended(self, activity_id: str) -> bool:
-        activity_key = _single_line(activity_id, 120)
-        registry = getattr(self._plugin, "_external_realtime_activities", None)
-        return bool(activity_key and isinstance(registry, dict) and registry.pop(activity_key, None))
+        return self._scheduler_family.notify_external_activity_ended(
+            activity_id,
+        )
 
     def get_external_activity(self, *, user_id: str = "", activity_id: str = "") -> dict[str, Any]:
-        registry = getattr(self._plugin, "_external_realtime_activities", None)
-        if not isinstance(registry, dict):
-            return {}
-        now = time.time()
-        expired = [
-            key
-            for key, item in registry.items()
-            if not isinstance(item, dict) or _safe_float(item.get("expires_at"), 0.0) <= now
-        ]
-        for key in expired:
-            registry.pop(key, None)
-        activity_key = _single_line(activity_id, 120)
-        if activity_key:
-            item = registry.get(activity_key)
-            return dict(item) if isinstance(item, dict) else {}
-        normalized_user_id = _single_line(user_id, 80)
-        matches = [
-            item
-            for item in registry.values()
-            if isinstance(item, dict)
-            and (not normalized_user_id or not item.get("user_id") or item.get("user_id") == normalized_user_id)
-        ]
-        if not matches:
-            return {}
-        return dict(max(matches, key=lambda item: _safe_float(item.get("updated_at"), 0.0)))
-
-    def _upsert_external_activity(
-        self,
-        activity_id: str,
-        *,
-        user_id: str,
-        kind: str,
-        label: str,
-        source_plugin: str,
-        ttl_seconds: int,
-        metadata: dict[str, Any] | None,
-        preserve_started_at: bool,
-    ) -> dict[str, Any]:
-        activity_key = _single_line(activity_id, 120)
-        if not activity_key:
-            return {}
-        registry = getattr(self._plugin, "_external_realtime_activities", None)
-        if not isinstance(registry, dict):
-            registry = {}
-            self._plugin._external_realtime_activities = registry
-        existing = registry.get(activity_key) if preserve_started_at else None
-        existing = existing if isinstance(existing, dict) else {}
-        now = time.time()
-        ttl = _safe_int(ttl_seconds, 240, 30, 3600)
-        item = {
-            "activity_id": activity_key,
-            "user_id": _single_line(user_id, 80) or _single_line(existing.get("user_id"), 80),
-            "kind": _single_line(kind, 40) or _single_line(existing.get("kind"), 40) or "external",
-            "label": _single_line(label, 100) or _single_line(existing.get("label"), 100),
-            "source_plugin": _single_line(source_plugin, 100)
-            or _single_line(existing.get("source_plugin"), 100)
-            or "external",
-            "started_at": _safe_float(existing.get("started_at"), now) if existing else now,
-            "updated_at": now,
-            "expires_at": now + ttl,
-            "metadata": dict(metadata) if isinstance(metadata, dict) else dict(existing.get("metadata") or {}),
-        }
-        registry[activity_key] = item
-        return dict(item)
+        return self._scheduler_family.get_external_activity(
+            user_id=user_id,
+            activity_id=activity_id,
+        )
 
     async def prepare_proactive_chat(
         self,
@@ -1046,77 +1070,9 @@ class PrivateCompanionExtensionAPI:
         )
 
     def resolve_historical_chat_identities(self, speakers: list[str]) -> dict[str, Any]:
-        plugin = self._plugin
-        labels = [_single_line(item, 80) for item in speakers if _single_line(item, 80)]
-        matches: dict[str, list[dict[str, Any]]] = {}
-        resolver = getattr(plugin, "_resolve_worldbook_member_by_name", None)
-        for label in labels:
-            candidates = resolver(label) if callable(resolver) else []
-            matches[label] = [
-                {
-                    "user_id": _single_line(item.get("user_id"), 80),
-                    "name": _single_line(item.get("name"), 80),
-                    "aliases": [
-                        _single_line(alias, 40)
-                        for alias in (item.get("aliases") or [])
-                        if _single_line(alias, 40)
-                    ][:12],
-                    "observed_names": [
-                        _single_line(alias, 40)
-                        for alias in (item.get("observed_names") or [])
-                        if _single_line(alias, 40)
-                    ][:12],
-                    "identity_note": _single_line(item.get("identity_note"), 240),
-                }
-                for item in (candidates or [])
-                if isinstance(item, dict)
-            ][:8]
-        users = plugin.data.get("users") if isinstance(plugin.data.get("users"), dict) else {}
-        configured_targets = getattr(plugin, "_configured_target_ids", None)
-        target_ids = set(str(item) for item in (configured_targets() if callable(configured_targets) else []) or [])
-        target_users: list[dict[str, Any]] = []
-        for user_id, raw in users.items():
-            if not isinstance(raw, dict):
-                continue
-            if target_ids and str(user_id) not in target_ids:
-                continue
-            target_users.append(
-                {
-                    "user_id": _single_line(user_id, 80),
-                    "name": _single_line(raw.get("nickname") or raw.get("display_name") or user_id, 80),
-                }
-            )
-        bot_identity = self.get_bot_identity()
-        return {
-            "available": True,
-            "matches": matches,
-            "bot": {
-                "name": bot_identity.get("name", ""),
-                "aliases": bot_identity.get("aliases", []),
-                "self_ids": bot_identity.get("self_ids", []),
-                "selected_id": bot_identity.get("selected_id", ""),
-                "qq_id": bot_identity.get("qq_id", ""),
-            },
-            "target_users": target_users[:30],
-        }
-
-    @staticmethod
-    def _new_historical_member_profile(user_id: str, user_name: str) -> dict[str, Any]:
-        return {
-            "user_id": user_id,
-            "identity_type": "qq" if user_id.isdigit() else "external",
-            "name": _single_line(user_name, 80) or user_id,
-            "aliases": [],
-            "observed_names": [],
-            "content": "",
-            "identity_note": "",
-            "boundary_note": "",
-            "important_memories": [],
-            "pending_observations": [],
-            "enabled": True,
-            "priority": 120,
-            "source_entries": ["MemoryCompanion 历史对话导入"],
-        }
+        return self._identity_family.resolve_historical_chat_identities(
+            speakers,
+        )
 
     async def stage_historical_relationship_observations(
         self,
@@ -1126,92 +1082,12 @@ class PrivateCompanionExtensionAPI:
         batch_id: str,
         observations: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        plugin = self._plugin
-        normalized_user_id = _single_line(user_id, 80)
-        normalized_batch_id = _single_line(batch_id, 120)
-        if not normalized_user_id or not normalized_batch_id:
-            return {"staged": 0, "reason": "missing_identity_or_batch"}
-        staged = 0
-        async with plugin._data_lock:
-            profiles = plugin.data.setdefault("worldbook_member_profiles", {})
-            if not isinstance(profiles, dict):
-                profiles = {}
-                plugin.data["worldbook_member_profiles"] = profiles
-            profile = profiles.get(normalized_user_id)
-            if not isinstance(profile, dict):
-                profile = self._new_historical_member_profile(normalized_user_id, user_name)
-                profiles[normalized_user_id] = profile
-            pending = profile.setdefault("pending_observations", [])
-            if not isinstance(pending, list):
-                pending = []
-                profile["pending_observations"] = pending
-            existing_keys = {
-                (
-                    _single_line(item.get("import_batch_id"), 120),
-                    _single_line(item.get("content"), 500),
-                )
-                for item in pending
-                if isinstance(item, dict)
-            }
-            # 调用方按置信度排好优先级；只接收容量内的候选，避免后部低优先候选
-            # 因 insert(0) 反而挤掉前部高优先候选。
-            for raw in observations[:WORLDBOOK_PENDING_OBSERVATION_CAPACITY]:
-                if not isinstance(raw, dict):
-                    continue
-                content = _single_line(raw.get("content"), 500)
-                if not content or (normalized_batch_id, content) in existing_keys:
-                    continue
-                try:
-                    confidence = max(0.0, min(1.0, float(raw.get("confidence") or 0.6)))
-                except Exception:
-                    confidence = 0.6
-                pending.insert(
-                    0,
-                    {
-                        "id": hashlib.sha1(
-                            f"{normalized_batch_id}|{content}".encode("utf-8", errors="ignore")
-                        ).hexdigest()[:12],
-                        "title": _single_line(raw.get("title"), 80) or "历史对话关系观察",
-                        "content": content,
-                        "evidence": _single_line("；".join(raw.get("source_message_ids") or raw.get("segment_ids") or []), 500),
-                        "source_event_ids": [
-                            _single_line(item, 120)
-                            for item in (raw.get("source_message_ids") or [])
-                            if _single_line(item, 120)
-                        ][:16],
-                        "source": "memory_companion_historical_chat",
-                        "import_batch_id": normalized_batch_id,
-                        "observed_at": _single_line(raw.get("observed_at"), 80),
-                        "weight": max(35, min(95, int(round(confidence * 100)))),
-                        "confidence": confidence,
-                        "count": 1,
-                        "created_at": time.time(),
-                        "updated_at": time.time(),
-                    },
-                )
-                existing_keys.add((normalized_batch_id, content))
-                staged += 1
-            # 历史批次只保留容量内的候选，但不能为了导入历史而删除原有的普通待确认观察。
-            # 新历史观察放在前面便于审核；超过上限时只裁掉历史来源自身。
-            ordinary_pending: list[dict[str, Any]] = []
-            historical_pending: list[dict[str, Any]] = []
-            historical_count = 0
-            for item in pending:
-                if not isinstance(item, dict):
-                    continue
-                if _single_line(item.get("source"), 80) == "memory_companion_historical_chat":
-                    historical_count += 1
-                    if historical_count > WORLDBOOK_PENDING_OBSERVATION_CAPACITY:
-                        continue
-                    historical_pending.append(item)
-                    continue
-                ordinary_pending.append(item)
-            # 普通实时观察先展示；历史观察随后逐条审核，不会把既有候选挤出页面。
-            profile["pending_observations"] = ordinary_pending + historical_pending
-            if staged:
-                profile["last_pending_observation_at"] = time.time()
-                plugin._save_data_sync(sections={"worldbook_member_profiles"})
-        return {"staged": staged, "batch_id": normalized_batch_id}
+        return await self._relationship_family.stage_historical_relationship_observations(
+            user_id=user_id,
+            user_name=user_name,
+            batch_id=batch_id,
+            observations=observations,
+        )
 
     async def rebind_historical_relationship_observations(
         self,
@@ -1222,255 +1098,17 @@ class PrivateCompanionExtensionAPI:
         user_name: str = "",
     ) -> dict[str, Any]:
         """Move one imported batch of traceable pending and confirmed relationship observations."""
-        plugin = self._plugin
-        normalized_batch_id = _single_line(batch_id, 120)
-        normalized_old_user_id = _single_line(old_user_id, 80)
-        normalized_user_id = _single_line(user_id, 80)
-        base_result = {
-            "batch_id": normalized_batch_id,
-            "old_user_id": normalized_old_user_id,
-            "user_id": normalized_user_id,
-            "matched": 0,
-            "moved": 0,
-            "deduplicated": 0,
-            "trimmed": 0,
-            "target_batch_count": 0,
-            "confirmed_matched": 0,
-            "confirmed_moved": 0,
-            "confirmed_deduplicated": 0,
-            "confirmed_trimmed": 0,
-            "target_confirmed_batch_count": 0,
-            "untraceable_confirmed": 0,
-        }
-        if not normalized_batch_id or not normalized_old_user_id or not normalized_user_id:
-            return {**base_result, "reason": "missing_identity_or_batch"}
-        if normalized_old_user_id == normalized_user_id:
-            return {**base_result, "reason": "same_identity"}
-
-        def is_historical(item: Any) -> bool:
-            return (
-                isinstance(item, dict)
-                and _single_line(item.get("source"), 80) == "memory_companion_historical_chat"
-            )
-
-        def observation_key(item: dict[str, Any]) -> tuple[str, str, str]:
-            item_batch_id = _single_line(item.get("import_batch_id"), 120)
-            content = _single_line(item.get("content"), 500)
-            if content:
-                return item_batch_id, "content", content
-            return item_batch_id, "id", _single_line(item.get("id"), 120)
-
-        def transfer_batch_items(
-            source_items: list[Any],
-            target_items: list[Any],
-            *,
-            available_slots: int,
-        ) -> tuple[list[Any], list[Any], int, int, int, int]:
-            """Append this batch without rewriting target data or dropping deferred source data."""
-            retained_source: list[Any] = []
-            updated_target = deepcopy(target_items)
-            target_batch_keys = {
-                observation_key(item)
-                for item in target_items
-                if is_historical(item)
-                and _single_line(item.get("import_batch_id"), 120) == normalized_batch_id
-            }
-            matched = 0
-            moved = 0
-            deduplicated = 0
-            deferred = 0
-            slots = max(0, int(available_slots))
-
-            for item in source_items:
-                if not (
-                    is_historical(item)
-                    and _single_line(item.get("import_batch_id"), 120) == normalized_batch_id
-                ):
-                    retained_source.append(deepcopy(item))
-                    continue
-
-                matched += 1
-                key = observation_key(item)
-                if key in target_batch_keys:
-                    # 目标中已有同批同内容，源端副本可以安全移除。
-                    deduplicated += 1
-                    continue
-                if moved < slots:
-                    updated_target.append(deepcopy(item))
-                    target_batch_keys.add(key)
-                    moved += 1
-                    continue
-
-                # `trimmed` 是既有返回字段；这里表示延期迁入，记录仍保留在源端。
-                retained_source.append(deepcopy(item))
-                deferred += 1
-
-            return (
-                retained_source,
-                updated_target,
-                matched,
-                moved,
-                deduplicated,
-                deferred,
-            )
-
-        async with plugin._data_lock:
-            profiles = plugin.data.get("worldbook_member_profiles")
-            if not isinstance(profiles, dict):
-                return {**base_result, "reason": "source_profile_not_found"}
-            original_source = profiles.get(normalized_old_user_id)
-            if not isinstance(original_source, dict):
-                return {**base_result, "reason": "source_profile_not_found"}
-            source_pending = original_source.get("pending_observations")
-            if not isinstance(source_pending, list):
-                source_pending = []
-            source_important = original_source.get("important_memories")
-            if not isinstance(source_important, list):
-                source_important = []
-
-            pending_match_count = sum(
-                1
-                for item in source_pending
-                if is_historical(item)
-                and _single_line(item.get("import_batch_id"), 120) == normalized_batch_id
-            )
-            confirmed_match_count = sum(
-                1
-                for item in source_important
-                if is_historical(item)
-                and _single_line(item.get("import_batch_id"), 120) == normalized_batch_id
-            )
-            untraceable_confirmed = sum(
-                1
-                for item in source_important
-                if is_historical(item) and not _single_line(item.get("import_batch_id"), 120)
-            )
-            if not pending_match_count and not confirmed_match_count:
-                return {
-                    **base_result,
-                    "untraceable_confirmed": untraceable_confirmed,
-                    "reason": "batch_not_found",
-                }
-
-            source_profile = deepcopy(original_source)
-
-            target_had_entry = normalized_user_id in profiles
-            original_target = profiles.get(normalized_user_id)
-            target_profile = (
-                deepcopy(original_target)
-                if isinstance(original_target, dict)
-                else self._new_historical_member_profile(normalized_user_id, user_name)
-            )
-            target_pending = target_profile.get("pending_observations")
-            if not isinstance(target_pending, list):
-                target_pending = []
-
-            existing_historical_count = sum(1 for item in target_pending if is_historical(item))
-            (
-                retained_source_pending,
-                updated_target_pending,
-                matched,
-                moved,
-                duplicate_count,
-                trimmed,
-            ) = transfer_batch_items(
-                source_pending,
-                target_pending,
-                available_slots=(
-                    WORLDBOOK_PENDING_OBSERVATION_CAPACITY - existing_historical_count
-                ),
-            )
-            if pending_match_count:
-                source_profile["pending_observations"] = retained_source_pending
-                target_profile["pending_observations"] = updated_target_pending
-                if moved:
-                    target_profile["last_pending_observation_at"] = time.time()
-
-            target_important = target_profile.get("important_memories")
-            if not isinstance(target_important, list):
-                target_important = []
-            (
-                retained_source_important,
-                updated_target_important,
-                confirmed_matched,
-                confirmed_moved,
-                confirmed_duplicate_count,
-                confirmed_trimmed,
-            ) = transfer_batch_items(
-                source_important,
-                target_important,
-                available_slots=(
-                    WORLDBOOK_IMPORTANT_MEMORY_CAPACITY - len(target_important)
-                ),
-            )
-            if confirmed_match_count:
-                source_profile["important_memories"] = retained_source_important
-                target_profile["important_memories"] = updated_target_important
-
-            profiles[normalized_old_user_id] = source_profile
-            profiles[normalized_user_id] = target_profile
-            try:
-                plugin._save_data_sync(sections={"worldbook_member_profiles"})
-            except Exception:
-                profiles[normalized_old_user_id] = original_source
-                if target_had_entry:
-                    profiles[normalized_user_id] = original_target
-                else:
-                    profiles.pop(normalized_user_id, None)
-                raise
-
-        return {
-            **base_result,
-            "matched": matched,
-            "moved": moved,
-            "deduplicated": duplicate_count,
-            "trimmed": trimmed,
-            "target_batch_count": sum(
-                1
-                for item in updated_target_pending
-                if is_historical(item)
-                and _single_line(item.get("import_batch_id"), 120) == normalized_batch_id
-            ),
-            "confirmed_matched": confirmed_matched,
-            "confirmed_moved": confirmed_moved,
-            "confirmed_deduplicated": confirmed_duplicate_count,
-            "confirmed_trimmed": confirmed_trimmed,
-            "target_confirmed_batch_count": sum(
-                1
-                for item in updated_target_important
-                if is_historical(item)
-                and _single_line(item.get("import_batch_id"), 120) == normalized_batch_id
-            ),
-            "untraceable_confirmed": untraceable_confirmed,
-        }
+        return await self._relationship_family.rebind_historical_relationship_observations(
+            batch_id=batch_id,
+            old_user_id=old_user_id,
+            user_id=user_id,
+            user_name=user_name,
+        )
 
     async def rollback_historical_relationship_observations(self, batch_id: str) -> dict[str, Any]:
-        plugin = self._plugin
-        normalized_batch_id = _single_line(batch_id, 120)
-        removed = 0
-        if not normalized_batch_id:
-            return {"removed": 0}
-        async with plugin._data_lock:
-            profiles = plugin.data.get("worldbook_member_profiles")
-            if not isinstance(profiles, dict):
-                return {"removed": 0}
-            for profile in profiles.values():
-                if not isinstance(profile, dict):
-                    continue
-                pending = profile.get("pending_observations")
-                if not isinstance(pending, list):
-                    continue
-                kept = [
-                    item
-                    for item in pending
-                    if not isinstance(item, dict)
-                    or _single_line(item.get("import_batch_id"), 120) != normalized_batch_id
-                ]
-                removed += len(pending) - len(kept)
-                profile["pending_observations"] = kept
-            if removed:
-                plugin._save_data_sync(sections={"worldbook_member_profiles"})
-        return {"removed": removed, "batch_id": normalized_batch_id}
+        return await self._relationship_family.rollback_historical_relationship_observations(
+            batch_id,
+        )
 
 _LUNAR_MONTH_NAMES = [
     "正月",
@@ -1730,17 +1368,133 @@ class PrivateCompanionPlugin(
     AtRelayMixin,
     Star,
 ):
+    # AstrBot registers handlers from their exact defining module.  Keep the
+    # implementations in EventDispatchMixin, but expose the decorated entry
+    # points here so waiting/request/response form one complete pipeline.
+    @_ON_WAITING_LLM_REQUEST(priority=110000)
+    @_multi_persona_event_context
+    async def route_model_replacement_before_agent_hook(
+        self,
+        event: AstrMessageEvent,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        await EventDispatchMixin.route_model_replacement_before_agent(
+            self,
+            event,
+            *args,
+            **kwargs,
+        )
+
+    @filter.on_llm_request(priority=110000)
+    @_multi_persona_event_context
+    async def enforce_model_replacement_request_hook(
+        self,
+        event: AstrMessageEvent,
+        req: ProviderRequest,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        await EventDispatchMixin.enforce_model_replacement_request(
+            self,
+            event,
+            req,
+            *args,
+            **kwargs,
+        )
+
+    @filter.on_llm_response(priority=-100000)
+    @_multi_persona_event_context
+    async def clear_model_replacement_context_hook(
+        self,
+        event: AstrMessageEvent,
+        resp: LLMResponse,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        await EventDispatchMixin.clear_model_replacement_context(
+            self,
+            event,
+            resp,
+            *args,
+            **kwargs,
+        )
+
+    @_ON_WAITING_LLM_REQUEST(priority=100000)
+    @_multi_persona_event_context
+    async def guard_pending_message_debounce_hook(
+        self,
+        event: AstrMessageEvent,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        await EventDispatchMixin.guard_pending_message_debounce(
+            self,
+            event,
+            *args,
+            **kwargs,
+        )
+
+    @filter.on_llm_response(priority=100000)
+    @_multi_persona_event_context
+    async def settle_pending_message_debounce_hook(
+        self,
+        event: AstrMessageEvent,
+        resp: LLMResponse,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        await EventDispatchMixin.settle_pending_message_debounce(
+            self,
+            event,
+            resp,
+            *args,
+            **kwargs,
+        )
+
     # 与 astrbot_plugin_reality_companion 的 capability 契约一致；仅用于识别
     # 拆分前版本遗留在本插件用户数据中的摄像头待授权记录。
     _REALITY_TOUCH_CAMERA_CAPABILITY = "camera_single_frame"
 
     @staticmethod
+    def _schema_runtime_default(
+        key: str,
+        fallback: Any,
+        *,
+        schema_types: frozenset[str] | None = None,
+    ) -> Any:
+        entry = _PERSONA_SETTING_MANIFEST.get(key)
+        if (
+            isinstance(entry, dict)
+            and "default" in entry
+            and (
+                schema_types is None
+                or str(entry.get("type") or "") in schema_types
+            )
+        ):
+            return deepcopy(entry["default"])
+        return deepcopy(fallback)
+
+    @staticmethod
     def _cfg_raw(config: AstrBotConfig, key: str, default: Any = None) -> Any:
-        return _flat_get(config, key, default)
+        # ``None`` is retained as the explicit missing-value probe used by
+        # compatibility migrations. All ordinary public defaults come from
+        # the schema manifest, not from call-site literals.
+        effective = (
+            default
+            if default is None
+            else PrivateCompanionPlugin._schema_runtime_default(key, default)
+        )
+        return _flat_get(config, key, effective)
 
     @staticmethod
     def _cfg_bool(config: AstrBotConfig, key: str, default: bool = True) -> bool:
-        value = _flat_get(config, key, default)
+        effective = PrivateCompanionPlugin._schema_runtime_default(
+            key,
+            default,
+            schema_types=frozenset({"bool"}),
+        )
+        value = _flat_get(config, key, effective)
         if isinstance(value, str):
             text = value.strip().lower()
             parsed: bool | None = None
@@ -1755,11 +1509,26 @@ class PrivateCompanionPlugin(
 
     @staticmethod
     def _cfg_str(config: AstrBotConfig, key: str, default: str = "", fallback: str = "") -> str:
-        return str(_flat_get(config, key, default)).strip() or fallback
+        effective = PrivateCompanionPlugin._schema_runtime_default(
+            key,
+            default,
+            schema_types=frozenset({"string", "text"}),
+        )
+        return str(_flat_get(config, key, effective)).strip() or fallback
 
     @staticmethod
     def _cfg_int(config: AstrBotConfig, key: str, default: int, minimum: int = 0, maximum: int | None = None) -> int:
-        return _safe_int(_flat_get(config, key, default), default, minimum, maximum)
+        effective = PrivateCompanionPlugin._schema_runtime_default(
+            key,
+            default,
+            schema_types=frozenset({"int"}),
+        )
+        return _safe_int(
+            _flat_get(config, key, effective),
+            effective,
+            minimum,
+            maximum,
+        )
 
     @staticmethod
     def _cfg_float(
@@ -1769,11 +1538,30 @@ class PrivateCompanionPlugin(
         minimum: float = 0.0,
         maximum: float | None = None,
     ) -> float:
-        return _safe_float(_flat_get(config, key, default), default, minimum, maximum)
+        effective = PrivateCompanionPlugin._schema_runtime_default(
+            key,
+            default,
+            schema_types=frozenset({"float", "int"}),
+        )
+        return _safe_float(
+            _flat_get(config, key, effective),
+            effective,
+            minimum,
+            maximum,
+        )
 
     @staticmethod
     def _cfg_unit_interval(config: AstrBotConfig, key: str, default: float, minimum: float = 0.0) -> float:
-        original = _safe_float(_flat_get(config, key, default), default, minimum)
+        effective = PrivateCompanionPlugin._schema_runtime_default(
+            key,
+            default,
+            schema_types=frozenset({"float", "int"}),
+        )
+        original = _safe_float(
+            _flat_get(config, key, effective),
+            effective,
+            minimum,
+        )
         value = original / 100.0 if original > 1.0 else original
         value = max(minimum, min(1.0, value))
         if value != original:
@@ -2107,6 +1895,7 @@ class PrivateCompanionPlugin(
             include_identity=True,
         )
 
+    @story_legacy_sync_operation("persona.profiles.startup-migrate")
     def _migrate_persona_profiles_sync(self) -> dict[str, Any]:
         """Migrate legacy persona JSON into SQLite and upgrade sparse settings."""
         result = {"ok": True, "migrated": [], "degraded": [], "skipped": []}
@@ -2252,18 +2041,34 @@ class PrivateCompanionPlugin(
             return ""
         return self._sanitize_persona_id(decoded)
 
-    def _configured_multi_persona_ids(self) -> list[str]:
+    def _configured_multi_persona_ids(self, *, strict: bool = False) -> list[str]:
         raw = self._cfg_raw(getattr(self, "config", {}), "multi_persona_ids", [])
         if isinstance(raw, str):
             raw = re.split(r"[\s,，、]+", raw)
+        elif strict and not isinstance(raw, list):
+            raise PersonaConfigError(
+                "multi_persona_ids has an unverifiable container"
+            )
         if not isinstance(raw, (list, tuple, set)):
             raw = []
         result: list[str] = []
         for value in raw:
+            if strict and not isinstance(value, str):
+                raise PersonaConfigError(
+                    "multi_persona_ids contains a non-text persona id"
+                )
             pid = self._sanitize_persona_id(value)
+            if strict and str(value or "").strip() not in {"", pid}:
+                raise PersonaConfigError(
+                    "multi_persona_ids contains a non-canonical persona id"
+                )
             if pid and pid not in result:
                 result.append(pid)
         primary = self._primary_persona_id()
+        if strict and not primary:
+            raise PersonaConfigError(
+                "multi-persona primary id cannot be verified"
+            )
         if primary:
             result = [primary, *(pid for pid in result if pid != primary)]
         return result
@@ -2312,6 +2117,7 @@ class PrivateCompanionPlugin(
             self._persona_sqlite_store_registry = registry
         return registry
 
+    @story_legacy_sync_operation("persona.store.load")
     def _load_secondary_persona_store_sync(
         self,
         persona_id: Any,
@@ -2517,6 +2323,7 @@ class PrivateCompanionPlugin(
                 pass
         return path
 
+    @story_legacy_operation("persona.store.reset")
     async def _reset_current_persona_store(
         self,
         persona_id: Any = "",
@@ -2709,23 +2516,86 @@ class PrivateCompanionPlugin(
             if token is not None:
                 self._deactivate_persona_for_event(token)
 
-    def _persona_profile_ids(self) -> list[str]:
-        ids = self._configured_multi_persona_ids()
+    def _persona_profile_ids(self, *, strict: bool = False) -> list[str]:
+        ids = self._configured_multi_persona_ids(strict=strict)
         profiles = getattr(self, "_persona_data_profiles", {})
+        if strict and not isinstance(profiles, dict):
+            raise PersonaConfigError(
+                "persona profile cache cannot be enumerated"
+            )
         if isinstance(profiles, dict):
             for pid in profiles:
+                if strict and not isinstance(pid, str):
+                    raise PersonaConfigError(
+                        "persona profile cache contains a non-text id"
+                    )
                 clean = self._sanitize_persona_id(pid)
+                if strict and pid.strip() not in {"", clean}:
+                    raise PersonaConfigError(
+                        "persona profile cache contains a non-canonical id"
+                    )
                 if clean and clean not in ids:
                     ids.append(clean)
+                elif strict and not clean:
+                    raise PersonaConfigError(
+                        "persona profile enumeration contains an invalid id"
+                    )
         try:
             profiles_dir = Path(self._persona_profiles_dir)
-            for pattern in ("*.db", "*.json"):
-                for path in profiles_dir.glob(pattern):
-                    clean = self._persona_id_from_profile_path(path)
-                    if clean and clean not in ids:
-                        ids.append(clean)
+            if strict:
+                try:
+                    root_stat = profiles_dir.lstat()
+                except FileNotFoundError:
+                    paths = []
+                else:
+                    if not stat.S_ISDIR(root_stat.st_mode):
+                        raise PersonaConfigError(
+                            "persona profile root is not a regular directory"
+                        )
+                    paths = sorted(
+                        profiles_dir.iterdir(),
+                        key=lambda item: item.name,
+                    )
+                candidates = [
+                    path
+                    for path in paths
+                    if path.suffix.lower() in {".db", ".json"}
+                ]
+            else:
+                candidates = [
+                    path
+                    for pattern in ("*.db", "*.json")
+                    for path in profiles_dir.glob(pattern)
+                ]
+            for path in candidates:
+                if strict:
+                    entry_stat = path.lstat()
+                    if not stat.S_ISREG(entry_stat.st_mode):
+                        raise PersonaConfigError(
+                            "persona profile entry is not a regular file"
+                        )
+                clean = self._persona_id_from_profile_path(path)
+                if strict and not clean:
+                    raise PersonaConfigError(
+                        "persona profile entry cannot be identified"
+                    )
+                if strict:
+                    expected_name = (
+                        self._persona_profile_db_filename(clean)
+                        if path.suffix == ".db"
+                        else self._persona_profile_filename(clean)
+                    )
+                    if path.name != expected_name:
+                        raise PersonaConfigError(
+                            "persona profile entry is not canonical"
+                        )
+                if clean and clean not in ids:
+                    ids.append(clean)
         except Exception:
-            pass
+            if strict:
+                raise PersonaConfigError(
+                    "persona profile enumeration is unavailable"
+                ) from None
         return ids
 
     def _persona_profile_snapshot_if_exists(self, persona_id: Any) -> dict[str, Any] | None:
@@ -2743,6 +2613,23 @@ class PrivateCompanionPlugin(
         except Exception:
             return None
         return payload if isinstance(payload, dict) else None
+
+    def _persona_profile_snapshot_read_only(
+        self,
+        persona_id: Any,
+    ) -> dict[str, Any] | None:
+        """Inspect persisted profile state without migration or initialization."""
+        pid = self._sanitize_persona_id(persona_id)
+        if not pid:
+            raise PersonaConfigError(
+                "read-only persisted profile requires a persona id"
+            )
+        legacy_path, database_path = self._persona_profile_store_paths(pid)
+        return read_persona_store_snapshot_read_only(
+            persona_id=pid,
+            legacy_json_path=legacy_path,
+            sqlite_path=database_path,
+        )
 
     def _persona_config_exists(self, persona_id: Any) -> bool:
         pid = self._sanitize_persona_id(persona_id)
@@ -3423,6 +3310,7 @@ class PrivateCompanionPlugin(
             next_cache.pop(pid, None)
         self._passive_light_injection_cache = next_cache
 
+    @story_legacy_sync_operation("persona.profile.migrate")
     def _migrate_persona_profile(self, source_persona_id: Any, target_persona_id: Any, keys: list[Any]) -> dict[str, Any]:
         source = self._sanitize_persona_id(source_persona_id)
         target = self._sanitize_persona_id(target_persona_id)
@@ -3548,6 +3436,7 @@ class PrivateCompanionPlugin(
         self._reset_persona_prompt_caches(source, target)
         return {"ok": True, "source_persona_id": source, "target_persona_id": target, "keys": migration_keys, "cache_cleared": True}
 
+    @story_legacy_operation("persona.profile.migrate-transaction")
     async def _migrate_persona_profile_async(
         self,
         source_persona_id: Any,
@@ -3684,6 +3573,7 @@ class PrivateCompanionPlugin(
             "sources": sources,
         }
 
+    @story_legacy_sync_operation("persona.mode.transition")
     def _prepare_multi_persona_transition(self, enabled: bool) -> None:
         """Keep the canonical single store authoritative across mode changes."""
         current = bool(getattr(self, "enable_multi_persona_mode", False))
@@ -3897,80 +3787,14 @@ class PrivateCompanionPlugin(
         persona_id: str,
         changed_keys: list[str],
     ) -> None:
-        """Apply target-scoped cache, projection, and scheduler side effects."""
-        pid = self._sanitize_persona_id(persona_id)
-        if not pid:
-            return
-        self._reset_persona_prompt_caches(pid)
-        token = self._activate_persona_id(pid, allow_inactive=True)
-        try:
-            expression_changed = any(
-                key.startswith("expression_")
-                or key in {"bot_name", "default_style", "reply_style_prompt"}
-                for key in changed_keys
-            )
-            if expression_changed:
-                refresher = getattr(self, "_refresh_expression_voice_profile", None)
-                if callable(refresher):
-                    refresher()
-            worldbook_changed = bool(
-                {"worldbook_config_paths", "roleplay_knowledge_source_ids"}
-                & set(changed_keys)
-            )
-            if worldbook_changed and bool(
-                runtime_persona_setting(self, "worldbook_auto_import", True)
-            ):
-                importer = getattr(self, "_import_worldbook_entries_from_sources", None)
-                if callable(importer) and importer():
-                    self._schedule_data_save(
-                        sections={
-                            "worldbook_entries",
-                            "worldbook_member_profiles",
-                            "worldbook_group_profiles",
-                            "worldbook_import_state",
-                            "worldbook_deleted_member_ids",
-                            "worldbook_deleted_group_ids",
-                        },
-                        delay=0.1,
-                    )
-        finally:
-            self._deactivate_persona_for_event(token)
-
-        proactive_changed = any(
-            key.startswith("proactive_")
-            or key.startswith("enable_proactive")
-            or key
-            in {
-                "max_daily_messages",
-                "idle_minutes",
-                "min_interval_minutes",
-                "quiet_hours",
-                "enable_daily_review",
-                "daily_review_time",
-                "daily_review_provider_id",
-            }
-            for key in changed_keys
+        """Compatibility adapter to the sole runtime side-effect dispatcher."""
+        dispatch_runtime_config_effects(
+            self,
+            {str(key): None for key in changed_keys},
+            scope="persona",
+            persona_id=persona_id,
+            source="persona",
         )
-        kicker = getattr(self, "_kick_proactive_loop_once", None)
-        if not proactive_changed or not callable(kicker):
-            return
-
-        async def kick_target_persona() -> None:
-            active_token = self._activate_persona_id(pid, allow_inactive=True)
-            try:
-                await kicker()
-            finally:
-                self._deactivate_persona_for_event(active_token)
-
-        task = self._create_lifecycle_background_task(
-            kick_target_persona(),
-            label=f"persona_setting_hot_apply:{pid}",
-        )
-        if task is None:
-            logger.warning(
-                "[PrivateCompanion] 人格配置已保存，但主动调度即时唤醒未启动: persona=%s",
-                pid,
-            )
 
     def _persona_detach_preview(self, persona_id: Any) -> dict[str, Any]:
         pid = self._sanitize_persona_id(persona_id)
@@ -4039,8 +3863,6 @@ class PrivateCompanionPlugin(
 
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
-        global _private_companion_plugin
-        _private_companion_plugin = self
         initialize_plugin_entrypoint_state(
             self,
             context,
@@ -4050,8 +3872,33 @@ class PrivateCompanionPlugin(
         initialize_plugin_config(self, config)
         initialize_plugin_runtime(self)
         initialize_plugin_post_runtime_state(self, config)
+        getattr(self, "_initialize_lab_fixture_adapter", lambda: None)()
         self.req041_observability = Req041Observability()
         self._req041_runtime_boot_ref = f"boot-{id(self)}"
+
+    def _initialize_lab_fixture_adapter(self) -> None:
+        try:
+            self._lab_fixture_adapter = register_companion_lab_fixture_adapter()
+        except Exception as exc:
+            self._lab_fixture_adapter = None
+            logger.warning(
+                "[PrivateCompanion] LAB fixture 门控注册失败，已保持生产路径关闭: %s",
+                type(exc).__name__,
+            )
+
+    def _lab_fixture_relationship_view(self, event: Any, user: Any) -> Any:
+        adapter = getattr(self, "_lab_fixture_adapter", None)
+        overlay = getattr(adapter, "overlay_relationship_view", None)
+        if not callable(overlay):
+            return user
+        try:
+            return overlay(event, user)
+        except Exception as exc:
+            logger.warning(
+                "[PrivateCompanion] LAB fixture 关系投影失败，已放行原始生产视图: %s",
+                type(exc).__name__,
+            )
+            return user
 
     async def _pull_body_monitor_candidates(self) -> dict[str, Any]:
         integration = getattr(self, "_body_monitor_integration", None)
@@ -5047,6 +4894,60 @@ class PrivateCompanionPlugin(
             response["summaries"] = []
         return response
 
+    async def _req036_preferred_address_from_portrait(self, user: Any) -> str:
+        """Resolve this exact private subject's latest explicit address hint."""
+        source = user if isinstance(user, dict) else {}
+        capabilities = self._req036_capability_summary_for_user(source)
+        if capabilities.get("portrait_usage_enabled") is not True:
+            return ""
+        person_id = _single_line(source.get("unified_person_id"), 80)
+        if not person_id:
+            return ""
+        projection = self.get_unified_person_projection(person_id)
+        if not isinstance(projection, dict):
+            return ""
+        bridge = self._memory_companion_bridge()
+        reader = (
+            getattr(bridge, "read_unified_profile_portrait", None)
+            if bridge is not None
+            else None
+        )
+        if not callable(reader):
+            return ""
+        request = req036_build_portrait_request(
+            person_ref=req036_build_person_ref(projection),
+            requester_person_id=person_id,
+            target_person_id=person_id,
+            scope="private",
+            purpose="summarize_to_subject",
+        )
+        namespace_getter = getattr(self, "_req041_scoped_context_for_user", None)
+        if callable(namespace_getter):
+            namespace_context = namespace_getter(
+                source, kind="private", purpose="profile_read"
+            )
+            if (
+                isinstance(namespace_context, NamespaceContext)
+                and not namespace_context.errors()
+            ):
+                request["namespace_context"] = namespace_context.to_dict()
+        result = reader(request, limit=8)
+        if asyncio.iscoroutine(result) or hasattr(result, "__await__"):
+            result = await result
+        if not isinstance(result, dict) or not result.get("ok"):
+            return ""
+        for item in result.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            if _single_line(item.get("dimension"), 80) != "preferred_address":
+                continue
+            summary = _single_line(item.get("summary"), 180)
+            match = re.fullmatch(r"希望被称为\s+(.+)", summary)
+            preferred = _single_line(match.group(1) if match else "", 24)
+            if preferred:
+                return preferred
+        return ""
+
     def read_p4_effect_state(self, person_id: str) -> dict[str, Any]:
         return self._active_unified_person_registry().read_p4_effect_state(person_id)
 
@@ -5266,55 +5167,65 @@ class PrivateCompanionPlugin(
             "group_scope": group_scope,
         }
 
+    def _companion_owned_sqlite_path(self, db_path: Any) -> Path | None:
+        """Resolve an existing SQLite file only when Companion owns its path."""
+        data_dir = str(getattr(self, "data_dir", "") or "").strip()
+        if not data_dir or db_path in (None, ""):
+            return None
+        try:
+            data_root = Path(data_dir).resolve(strict=True)
+            resolved = Path(str(db_path)).resolve(strict=True)
+            resolved.relative_to(data_root)
+        except (OSError, RuntimeError, ValueError):
+            return None
+        if not data_root.is_dir() or not resolved.is_file():
+            return None
+        return resolved
+
     def _sqlite_wal_candidate_paths(self) -> list[Path]:
         # AstrBot 4.27.x configures its own database and knowledge-base engines.
-        # A plugin must not change PRAGMAs for those shared connections: doing so
-        # races the async pool and the 4.27.4 synchronous preference reader.
-        candidates: list[Path] = []
+        # Only explicitly registered files below this plugin's data directory
+        # may be tuned; shared AstrBot or sibling-plugin databases stay untouched.
+        candidates: list[Any] = []
         effective_store_text = str(
             getattr(self, "storage_sqlite_effective_path", "") or ""
         ).strip()
         if effective_store_text:
-            candidates.append(Path(effective_store_text))
+            candidates.append(effective_store_text)
+        if str(getattr(self, "storage_backend", "json") or "json").lower() == "sqlite":
+            store_manager = getattr(self, "store_manager", None)
+            candidates.append(
+                getattr(getattr(store_manager, "backend", None), "db_path", None)
+            )
         profiles_dir_text = str(getattr(self, "_persona_profiles_dir", "") or "").strip()
         profiles_dir = Path(profiles_dir_text) if profiles_dir_text else None
         if profiles_dir is not None and profiles_dir.is_dir():
             candidates.extend(sorted(profiles_dir.glob("*.db")))
-        data_dir_text = str(getattr(self, "data_dir", "") or "").strip()
-        protected: set[str] = set()
-        if data_dir_text:
-            data_root = Path(data_dir_text).resolve().parent.parent
-            protected.update(
-                {
-                    str((data_root / "data_v4.db").resolve()),
-                    str((data_root / "knowledge_base" / "kb.db").resolve()),
-                }
-            )
-            plugin_data = data_root / "plugin_data"
-            if plugin_data.is_dir():
-                protected.update(
-                    str(path.resolve())
-                    for path in plugin_data.glob("astrbot_plugin_*/**/*.db")
-                    if path.is_file()
-                    and not str(path.resolve()).startswith(
-                        str(Path(data_dir_text).resolve()) + "\\"
-                    )
-                )
+        for owner_name in (
+            "req041_migration_coordinator",
+            "req041_migration_outbox",
+            "req041_relationship_store",
+        ):
+            candidates.append(getattr(getattr(self, owner_name, None), "path", None))
+
         seen: set[str] = set()
         paths: list[Path] = []
-        for path in candidates:
-            try:
-                resolved = str(path.resolve())
-            except Exception:
-                resolved = str(path)
-            if resolved in seen or resolved in protected or not path.exists() or not path.is_file():
+        for candidate in candidates:
+            path = self._companion_owned_sqlite_path(candidate)
+            if path is None:
                 continue
-            seen.add(resolved)
+            canonical = str(path)
+            if canonical in seen:
+                continue
+            seen.add(canonical)
             paths.append(path)
         return paths
 
     def _apply_sqlite_wal_to_file(self, db_path: Path) -> str:
-        conn = sqlite3.connect(str(db_path), timeout=15.0)
+        owned_path = self._companion_owned_sqlite_path(db_path)
+        if owned_path is None:
+            raise ValueError("sqlite_path_not_companion_owned")
+        conn = sqlite3.connect(str(owned_path), timeout=15.0)
         try:
             conn.execute("PRAGMA busy_timeout=15000")
             mode_row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
@@ -6792,18 +6703,26 @@ class PrivateCompanionPlugin(
         if isinstance(existing, dict):
             return existing
         router = getattr(self, "req041_relationship_read_router", None)
-        if router is None or not isinstance(user, dict):
+        if not isinstance(user, dict):
             return user
-        event_ref = self._event_message_id(event)
-        if not event_ref:
-            event_ref = f"{getattr(event, 'unified_msg_origin', '')}:{uuid.uuid4().hex}"
-        result = router.begin(user, event_ref=event_ref, kind=kind, group_id=group_id)
-        view = result.get("user") if isinstance(result.get("user"), dict) else user
+        result: dict[str, Any] = {}
+        view = user
+        if router is not None:
+            event_ref = self._event_message_id(event)
+            if not event_ref:
+                event_ref = f"{getattr(event, 'unified_msg_origin', '')}:{uuid.uuid4().hex}"
+            result = router.begin(user, event_ref=event_ref, kind=kind, group_id=group_id)
+            view = result.get("user") if isinstance(result.get("user"), dict) else user
+        production_view = view
+        view = self._lab_fixture_relationship_view(event, view)
+        if router is None and view is production_view:
+            return user
         try:
             setattr(event, "req041_relationship_read_view", view)
-            setattr(event, "req041_read_chain_id", str(result.get("chain_id") or ""))
-            setattr(event, "req041_read_generation", str(result.get("generation") or "legacy"))
-            setattr(event, "req041_read_identity_id", str(result.get("identity_id") or ""))
+            if router is not None:
+                setattr(event, "req041_read_chain_id", str(result.get("chain_id") or ""))
+                setattr(event, "req041_read_generation", str(result.get("generation") or "legacy"))
+                setattr(event, "req041_read_identity_id", str(result.get("identity_id") or ""))
         except Exception:
             pass
         return view
@@ -7524,6 +7443,59 @@ class PrivateCompanionPlugin(
         }
 
     async def initialize(self):
+        global _private_companion_plugin
+        await self._initialize_before_publication()
+        try:
+            await resume_story_handoff(self)
+        except asyncio.CancelledError:
+            raise
+        except StoryAuthorityError as exc:
+            # A durable marker is irreversible, but Content may legitimately
+            # load later. Keep the Companion core available while Story stays
+            # fenced and a later startup/API call replays the same marker.
+            logger.warning(
+                "[PrivateCompanion] Story handoff replay pending: code=%s",
+                exc.code,
+            )
+        except Exception:
+            logger.warning(
+                "[PrivateCompanion] Story handoff replay pending: "
+                "code=story_handoff_replay_failed"
+            )
+        # Keep the prior ready instance visible until every startup step succeeds.
+        activate = getattr(self.extension_api, "_activate_story_migration_api", None)
+        if not callable(activate) or not activate():
+            return
+        # No await may split activation, supersession, and global publication.
+        with _private_companion_runtime.lock:
+            store_manager = getattr(self, "store_manager", None)
+            activate_persistence = getattr(
+                store_manager, "activate_persistence_generation", None
+            )
+            if store_manager is not None and not callable(activate_persistence):
+                raise RuntimeError("persistence generation activation is unavailable")
+            if callable(activate_persistence):
+                activate_persistence()
+            else:
+                owner_token = str(
+                    getattr(self, "_persistence_owner_token", "") or ""
+                ).strip()
+                data_file = getattr(self, "data_file", None)
+                if not owner_token or data_file is None or not str(data_file).strip():
+                    raise RuntimeError(
+                        "direct persistence generation activation is unavailable"
+                    )
+                activate_persistence_owner(owner_token, [data_file])
+            previous = _private_companion_runtime.active_plugin
+            if previous is not None and previous is not self:
+                previous_api = getattr(previous, "extension_api", None)
+                supersede = getattr(previous_api, "_supersede_story_migration_api", None)
+                if callable(supersede):
+                    supersede()
+            _private_companion_runtime.active_plugin = self
+        _private_companion_plugin = self
+
+    async def _initialize_before_publication(self):
         self._repair_private_companion_handler_bindings()
         if getattr(self, "_legacy_enabled_config_disabled", False):
             logger.warning(
@@ -7796,6 +7768,7 @@ class PrivateCompanionPlugin(
         if missing:
             logger.warning("[PrivateCompanion] AstrBot 指令注册诊断未找到: %s", "；".join(missing))
 
+    @story_legacy_sync_operation("startup.story-maintenance")
     def _run_startup_data_maintenance_locked(self) -> bool:
         changed = False
 
@@ -7898,6 +7871,24 @@ class PrivateCompanionPlugin(
 
     async def terminate(self):
         global _private_companion_plugin
+        lab_fixture_adapter = getattr(self, "_lab_fixture_adapter", None)
+        close_lab_fixture = getattr(lab_fixture_adapter, "close", None)
+        if callable(close_lab_fixture):
+            try:
+                close_lab_fixture()
+            except Exception as exc:
+                logger.warning(
+                    "[PrivateCompanion] LAB fixture 门控清理失败，继续关闭插件: %s",
+                    type(exc).__name__,
+                )
+        self._lab_fixture_adapter = None
+        close_extension = getattr(
+            getattr(self, "extension_api", None),
+            "_close_story_migration_api",
+            None,
+        )
+        if callable(close_extension):
+            close_extension()
         self._stop_event.set()
         standalone_webui = getattr(self, "standalone_webui", None)
         if standalone_webui is not None:
@@ -8001,30 +7992,70 @@ class PrivateCompanionPlugin(
                 logger.debug("[PrivateCompanion] 终止时关闭在线图片下载会话失败: %s", _single_line(exc, 160))
         final_save_task = asyncio.create_task(self._save_data_on_terminate())
         self._termination_save_task = final_save_task
+        self._termination_save_status = {
+            "state": "running",
+            "started_at": asyncio.get_running_loop().time(),
+            "task_id": id(final_save_task),
+        }
 
         def observe_final_save(task: asyncio.Task) -> None:
-            if getattr(self, "_termination_save_task", None) is task:
-                self._termination_save_task = None
             if task.cancelled():
+                self._termination_save_status = {
+                    **getattr(self, "_termination_save_status", {}),
+                    "state": "cancelled",
+                    "completed_at": asyncio.get_running_loop().time(),
+                }
+                if getattr(self, "_termination_save_task", None) is task:
+                    self._termination_save_task = None
                 return
             try:
                 error = task.exception()
             except (asyncio.CancelledError, asyncio.InvalidStateError):
                 return
             if error is not None:
+                self._termination_save_status = {
+                    **getattr(self, "_termination_save_status", {}),
+                    "state": "failed",
+                    "completed_at": asyncio.get_running_loop().time(),
+                    "error": _single_line(error, 160),
+                }
                 logger.warning(
                     "[PrivateCompanion] Final shutdown persistence failed: %s",
                     _single_line(error, 160),
                 )
+            else:
+                persistence = dict(
+                    getattr(self, "_last_persistence_write_status", {}) or {}
+                )
+                self._termination_save_status = {
+                    **getattr(self, "_termination_save_status", {}),
+                    "state": (
+                        "superseded"
+                        if persistence.get("accepted") is False
+                        else "completed"
+                    ),
+                    "completed_at": asyncio.get_running_loop().time(),
+                    "persistence": persistence,
+                }
+            if getattr(self, "_termination_save_task", None) is task:
+                self._termination_save_task = None
 
         final_save_task.add_done_callback(observe_final_save)
         try:
             await asyncio.wait_for(asyncio.shield(final_save_task), timeout=3.0)
         except asyncio.TimeoutError:
+            self._termination_save_status = {
+                **getattr(self, "_termination_save_status", {}),
+                "state": "timed_out_background",
+                "timed_out_at": asyncio.get_running_loop().time(),
+            }
             logger.warning(
                 "[PrivateCompanion] Final shutdown persistence timed out; the "
                 "shielded task will continue in the background"
             )
+        with _private_companion_runtime.lock:
+            if _private_companion_runtime.active_plugin is self:
+                _private_companion_runtime.active_plugin = None
         if _private_companion_plugin is self:
             _private_companion_plugin = None
 
@@ -11518,31 +11549,6 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         if not chain:
             return
 
-        official_tts_checker = getattr(
-            self,
-            "_should_defer_segmenting_to_astrbot_tts",
-            None,
-        )
-        if callable(official_tts_checker):
-            try:
-                official_tts_owns_result = bool(
-                    await official_tts_checker(event, result, chain)
-                )
-            except Exception as exc:
-                logger.debug(
-                    "[PrivateCompanion] 群聊引用检查官方 TTS 状态失败: %s",
-                    _single_line(exc, 120),
-                )
-                official_tts_owns_result = False
-            if official_tts_owns_result:
-                quote_free_chain = self._without_reply_components(chain)
-                if quote_free_chain != chain:
-                    try:
-                        result.chain = quote_free_chain
-                    except Exception:
-                        event.set_result(self._build_result_from_chain(quote_free_chain))
-                return
-
         delivery_chunks: list[list[Any]] = [chain]
         for attr_name in (
             "_private_companion_tts_reply_remainder",
@@ -11570,7 +11576,25 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         # Keep quotes whenever a visible text companion exists. A voice
         # component must not erase a quote needed by image/forward/vision
         # consumers or by a delayed text chunk from this reply.
-        if has_voice and not has_visible_text:
+        suppress_reply_reason = "voice_component" if has_voice and not has_visible_text else ""
+        if not has_voice:
+            official_tts_checker = getattr(
+                self,
+                "_should_defer_segmenting_to_astrbot_tts",
+                None,
+            )
+            if callable(official_tts_checker):
+                try:
+                    if await official_tts_checker(event, result, chain):
+                        suppress_reply_reason = "framework_tts"
+                except Exception as exc:
+                    logger.debug(
+                        "[PrivateCompanion] 官方 TTS 引用预判失败: session=%s error=%s",
+                        _single_line(getattr(event, "unified_msg_origin", ""), 120)
+                        or "unknown",
+                        _single_line(exc, 120),
+                    )
+        if suppress_reply_reason:
             cleaned_chunks = [
                 self._without_reply_components(chunk) for chunk in delivery_chunks
             ]
@@ -11601,9 +11625,10 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             except Exception:
                 event.set_result(self._build_result_from_chain(primary_chunk))
             logger.info(
-                "[PrivateCompanion] 纯语音回复已移除孤立消息引用: session=%s removed=%s",
+                "[PrivateCompanion] 语音回复已移除孤立消息引用: session=%s reason=%s removed=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120)
                 or "unknown",
+                suppress_reply_reason,
                 removed_count,
             )
             return
@@ -13363,9 +13388,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
 
     def _sanitize_private_companion_prompt_artifacts_in_request(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
         contexts = getattr(req, "contexts", None)
-        if not isinstance(contexts, list) or not contexts:
-            return
-        changed = 0
+        changed = sanitize_private_request_group_artifacts(event, req)
 
         def clean_content(value: Any) -> tuple[Any, bool]:
             if isinstance(value, str):
@@ -13391,28 +13414,29 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 return new_items, dirty
             return value, False
 
-        sanitized: list[Any] = []
-        for item in contexts:
-            if isinstance(item, dict):
-                updated = dict(item)
-                cleaned_content, dirty = clean_content(updated.get("content"))
-                if dirty:
-                    updated["content"] = cleaned_content
-                    changed += 1
-                sanitized.append(updated)
-            else:
-                cleaned_item, dirty = clean_content(item)
-                if dirty:
-                    changed += 1
-                sanitized.append(cleaned_item)
+        if isinstance(contexts, list) and contexts:
+            sanitized: list[Any] = []
+            for item in contexts:
+                if isinstance(item, dict):
+                    updated = dict(item)
+                    cleaned_content, dirty = clean_content(updated.get("content"))
+                    if dirty:
+                        updated["content"] = cleaned_content
+                        changed += 1
+                    sanitized.append(updated)
+                else:
+                    cleaned_item, dirty = clean_content(item)
+                    if dirty:
+                        changed += 1
+                    sanitized.append(cleaned_item)
+            try:
+                req.contexts = sanitized
+            except Exception:
+                return
         if changed <= 0:
             return
-        try:
-            req.contexts = sanitized
-        except Exception:
-            return
         logger.info(
-            "[PrivateCompanion] 已清理请求历史里的插件动态注入残留: session=%s contexts_changed=%s",
+            "[PrivateCompanion] 已清理请求中的跨轮/跨作用域动态注入残留: session=%s surfaces_changed=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             changed,
         )
@@ -17306,25 +17330,30 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 )
         if not isinstance(current_user, dict):
             return
+        fixture_user = self._lab_fixture_relationship_view(event, current_user)
+        fixture_relationship_applied = fixture_user is not current_user
+        current_user = fixture_user
         expression_builder = getattr(self, "_build_expression_decision_for_user", None)
         if not callable(expression_builder):
             return
         try:
-            expression = expression_builder(
-                current_user,
-                passive_reengagement=True,
-                bot_state={
+            expression_args = {
+                "passive_reengagement": True,
+                "bot_state": {
                     "energy": current_user.get("bot_energy", 70),
                     "mood": current_user.get("bot_mood", ""),
                 },
-                message_intent=content_intent_from_text(getattr(event, "message_str", "")),
-                content_policy={
+                "message_intent": content_intent_from_text(getattr(event, "message_str", "")),
+                "content_policy": {
                     "enabled": bool(runtime_persona_setting(self, 'enable_relationship_content_tiers', False)),
                     "flirt_enabled": bool(runtime_persona_setting(self, 'enable_flirt_content_tier', True)),
                     "private_chat": is_private,
                 },
-                channel_scope="private" if is_private else "group",
-            )
+                "channel_scope": "private" if is_private else "group",
+            }
+            if fixture_relationship_applied:
+                expression_args["_authoritative_relationship_view"] = True
+            expression = expression_builder(current_user, **expression_args)
             projection = expression.to_dict() if hasattr(expression, "to_dict") else dict(expression or {})
             if is_private:
                 violation_hint_getter = getattr(self, "_relationship_violation_prompt_hint", None)
@@ -17656,8 +17685,53 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             )
 
+    def _scope_photo_generation_tool_for_request(self, req: ProviderRequest) -> bool:
+        """Remove the optional Image tool from this request when it is not ready."""
+        if req is None or self._photo_generation_runtime_available():
+            return False
+        tool_set = getattr(req, "func_tool", None)
+        if tool_set is None:
+            return False
+        tools = getattr(tool_set, "tools", None)
+        if isinstance(tools, list):
+            filtered = [
+                tool
+                for tool in tools
+                if _single_line(getattr(tool, "name", ""), 120) != "pc_generate_photo"
+            ]
+            if len(filtered) == len(tools):
+                return False
+            try:
+                request_tool_set = copy(tool_set)
+                request_tool_set.tools = filtered
+                req.func_tool = request_tool_set
+                return True
+            except Exception as exc:
+                logger.debug(
+                    "[PrivateCompanion] 请求级移除未就绪生图工具失败: %s",
+                    _single_line(exc, 120),
+                )
+                return False
+
+        try:
+            request_tool_set = copy(tool_set)
+            remove_tool = getattr(request_tool_set, "remove_tool", None)
+            if not callable(remove_tool):
+                return False
+            remove_tool("pc_generate_photo")
+            req.func_tool = request_tool_set
+            return True
+        except Exception as exc:
+            logger.debug(
+                "[PrivateCompanion] 兼容请求级移除未就绪生图工具失败: %s",
+                _single_line(exc, 120),
+            )
+            return False
+
     def _annotate_photo_tool_prompt_format_for_request(self, req: ProviderRequest) -> bool:
         """Attach the selected prompt syntax to this request's photo tool schema."""
+        if not self._photo_generation_runtime_available():
+            return False
         tool_set = getattr(req, "func_tool", None) if req is not None else None
         get_tool = getattr(tool_set, "get_tool", None) if tool_set is not None else None
         if not callable(get_tool):
@@ -17669,10 +17743,13 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         if tool is None or not bool(getattr(tool, "active", True)):
             return False
 
+        instruction_getter = getattr(self, "_photo_tool_prompt_format_instruction", None)
+        if not callable(instruction_getter):
+            return False
         instruction = re.sub(
             r"\s+",
             " ",
-            str(self._photo_tool_prompt_format_instruction() or ""),
+            str(instruction_getter() or ""),
         ).strip()
         if not instruction:
             return False
@@ -17754,6 +17831,8 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         if self is None or req is None or not bool(getattr(self, "enabled", False)):
             return
         try:
+            if self._scope_photo_generation_tool_for_request(req):
+                return
             self._annotate_photo_tool_prompt_format_for_request(req)
         except Exception as exc:
             logger.debug(
@@ -17789,6 +17868,43 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             result.get("history_messages", 0),
             result.get("group_icl_removed", 0),
         )
+
+    @filter.on_llm_request(priority=-259000)
+    @_multi_persona_event_context
+    async def enforce_private_request_scope_isolation(
+        self,
+        event: AstrMessageEvent,
+        req: ProviderRequest,
+        *args,
+        **kwargs,
+    ):
+        """Prune group-only plan blocks and residues before private dispatch."""
+        if self is None or req is None or not bool(getattr(self, "enabled", False)):
+            return
+        try:
+            if not bool(getattr(event, "is_private_chat", lambda: False)()):
+                return
+        except Exception:
+            if ":FriendMessage:" not in str(
+                getattr(event, "unified_msg_origin", "") or ""
+            ):
+                return
+
+        plan = get_conversation_injection_plan(req, create=False)
+        if plan is not None:
+            try:
+                if plan.remove_markers(
+                    f"<!-- {marker} -->" for marker in GROUP_SCOPE_MARKERS
+                ):
+                    plan.render_into(req)
+            except Exception as exc:
+                logger.warning(
+                    "[PrivateCompanion] 私聊请求的群作用域注入计划裁剪失败: session=%s error=%s",
+                    _single_line(getattr(event, "unified_msg_origin", ""), 120)
+                    or "unknown",
+                    _single_line(exc, 160),
+                )
+        self._sanitize_private_companion_prompt_artifacts_in_request(event, req)
 
     @filter.on_llm_request(priority=-260000)
     @_multi_persona_event_context
@@ -19634,12 +19750,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                         user = users.get(user_id) if isinstance(users, dict) else None
                         if isinstance(user, dict):
                             user.pop("reality_touch_pending_consent", None)
-                            try:
-                                self._save_data_sync(sections={"users"})
-                            except TypeError:
-                                # Keep lightweight integration harnesses and older
-                                # hosts compatible with the section-aware call.
-                                self._save_data_sync()
+                            self._save_data_sync(sections={"users"})
                     confirmation_reply = "主机摄像头只允许 AstrBot 管理员或主要用户本人授权和使用。"
             elif isinstance(user, dict) and isinstance(
                 user.get("reality_touch_pending_consent"), dict

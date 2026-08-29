@@ -155,6 +155,17 @@ COMMON_KEYS = frozenset(
         "relationship_decay_early_per_day",
         "relationship_decay_middle_per_day",
         "relationship_decay_late_per_day",
+        "enable_relationship_stage_provider_routing",
+        "relationship_stage_provider_routes",
+        "deeply_distant",
+        "strongly_distant",
+        "distant",
+        "acquaintance",
+        "familiar",
+        "close",
+        "intimate",
+        "deeply_bonded",
+        "owner_exclusive",
         # Model replacement policy is shared; provider selection remains a
         # persona setting so different personas can choose different tasks.
         "provider_config_mode",

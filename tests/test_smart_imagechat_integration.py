@@ -250,7 +250,7 @@ class _ReactionHarness(SceneContextMixin, LlmToolActionsMixin):
     def _remember_recent_photo_share_snapshot(user, **kwargs) -> None:
         user["last_photo_share_snapshot"] = dict(kwargs)
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         self.saved = True
 
     @staticmethod

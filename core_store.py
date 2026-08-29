@@ -24,7 +24,7 @@ import time
 import unicodedata
 import uuid
 import zoneinfo
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from contextvars import ContextVar
 from copy import deepcopy
 from datetime import date, datetime, timedelta
@@ -130,6 +130,7 @@ from .relationship_ledger import (
     normalize_relationship_positive_stage_cap_key,
 )
 from .storage.store_manager import StoreManager
+from .storage.path_generation import capture_write_ticket, replace_if_ticket_current
 from .person_context_contract import empty_person_store, ensure_person_store
 from .photo_generation_scope import (
     PHOTO_GENERATION_SCOPE_LABELS,
@@ -138,6 +139,17 @@ from .photo_generation_scope import (
     normalize_photo_generation_scope_limit,
 )
 from .persona_config import runtime_persona_setting
+from .story_authority import (
+    StoryAuthorityError,
+    story_authority_controller,
+    story_legacy_operation,
+    story_legacy_sync_operation,
+    story_startup_sync_operation,
+)
+from .story_handoff import (
+    STORY_MIGRATION_COMMIT_KEY,
+    preflight_story_handoff_sections,
+)
 from .unified_profile_service import (
     DEFAULT_CLOSED_REPAIR_OPERATION_ID,
     ensure_legacy_profile_capabilities,
@@ -326,6 +338,7 @@ _DURABLE_SECTION_NAMES = frozenset(
         "daily_story_plan",
         "daily_story_plan_history",
         "bot_personal_outbox",
+        "bot_personal_archive_revisions",
         "skill_growth",
         "detail_enhanced_day",
         "detail_enhanced_segments",
@@ -347,6 +360,7 @@ _DURABLE_SECTION_NAMES = frozenset(
         "memo_notes",
         "creative_projects",
         "creative_memory_pool",
+        STORY_MIGRATION_COMMIT_KEY,
         "proactive_candidate_pool",
         "proactive_runtime",
         "proactive_review_runtime",
@@ -675,6 +689,47 @@ class CoreStoreMixin:
             except OSError:
                 pass
 
+    def _assert_primary_store_startup_safe(self, manager: Any) -> None:
+        """Reject ambiguous empty startup while preserving true first install."""
+
+        json_backend = getattr(manager, "json_backend", None)
+        sqlite_backend = getattr(manager, "sqlite_backend", None)
+        json_exists = getattr(json_backend, "exists", None)
+        sqlite_exists = getattr(sqlite_backend, "exists", None)
+        if not callable(json_exists) or not callable(sqlite_exists):
+            # Lightweight test/downgrade managers are validated by their own
+            # loader.  Production StoreManager always exposes both backends.
+            return
+        if bool(json_exists()) or bool(sqlite_exists()):
+            return
+
+        data_dir = Path(getattr(self, "data_dir", "") or self._storage_backend_state_path().parent)
+        evidence: list[str] = []
+        marker = self._storage_backend_state_path()
+        if marker.exists() or marker.is_symlink():
+            evidence.append(marker.name)
+        try:
+            for entry in data_dir.iterdir():
+                if entry == marker:
+                    continue
+                name = entry.name
+                if not name or name.startswith(".nfs"):
+                    continue
+                evidence.append(name)
+                if len(evidence) >= 8:
+                    break
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise RuntimeError(
+                "无法确认陪伴数据目录是否为首次安装；为避免空状态覆盖，已中止启动"
+            ) from exc
+        if evidence:
+            raise RuntimeError(
+                "陪伴主状态 JSON 与 SQLite 同时缺失，但检测到既有安装证据 "
+                f"({', '.join(sorted(set(evidence)))}); 请恢复数据文件或显式清空数据目录后重试"
+            )
+
     def _legacy_json_is_newer_than_sqlite(self, sqlite_path: Path) -> bool:
         """Detect a pre-marker JSON->SQLite switch without trusting a stale mirror."""
         try:
@@ -684,6 +739,74 @@ class CoreStoreMixin:
             return False
         return json_mtime - sqlite_mtime > 1_000_000_000
 
+    def _preflight_story_handoff_store_managers(
+        self,
+        *managers: Any,
+        extra_sections: Collection[Mapping[str, Any]] = (),
+    ) -> None:
+        """Validate every plausible startup source before any store write."""
+
+        candidates: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        try:
+            for manager in managers:
+                if manager is None:
+                    continue
+                backend = str(getattr(manager, "backend_name", "") or "").lower()
+                path = str(
+                    getattr(
+                        manager,
+                        "sqlite_path" if backend == "sqlite" else "data_file",
+                        "",
+                    )
+                    or ""
+                )
+                identity = (backend, path)
+                if identity not in seen:
+                    candidates.append(
+                        manager.load_sections(
+                            (STORY_MIGRATION_COMMIT_KEY,),
+                            read_only=True,
+                        )
+                    )
+                    seen.add(identity)
+                # An uninitialized SQLite target imports the JSON source during
+                # load_initial_store. Validate that source before migration writes.
+                if backend == "sqlite":
+                    json_path = str(getattr(manager, "data_file", "") or "")
+                    json_identity = ("json", json_path)
+                    if json_identity not in seen:
+                        candidates.append(
+                            manager.load_sections(
+                                (STORY_MIGRATION_COMMIT_KEY,),
+                                backend_name="json",
+                                read_only=True,
+                            )
+                        )
+                        seen.add(json_identity)
+            candidates.extend(dict(value) for value in extra_sections)
+            preflight_story_handoff_sections(*candidates)
+        except StoryAuthorityError:
+            raise
+        except Exception:
+            controller = story_authority_controller()
+            controller.block("story_handoff_marker_preflight_unavailable")
+            raise StoryAuthorityError(
+                "story_handoff_marker_preflight_unavailable"
+            ) from None
+
+    @staticmethod
+    def _restore_committed_story_roots(
+        data: dict[str, Any],
+        baseline: dict[str, tuple[bool, Any]],
+    ) -> None:
+        for section, (present, value) in baseline.items():
+            if present:
+                data[section] = value
+            else:
+                data.pop(section, None)
+
+    @story_startup_sync_operation("store.manager.rebuild")
     def _rebuild_store_manager(self, *, reload_data: bool = False) -> None:
         backend = str(getattr(self, "storage_backend", "json") or "json").strip().lower() or "json"
         if backend not in {"json", "sqlite"}:
@@ -779,7 +902,11 @@ class CoreStoreMixin:
                 sqlite_path=sqlite_path,
                 ensure_defaults=self._ensure_store_defaults,
                 new_store=self._new_store,
+                persistence_owner_token=str(
+                    getattr(self, "_persistence_owner_token", "") or ""
+                ),
             )
+            source_manager = None
             if not reload_data and migration_source_backend:
                 source_sqlite_path = migration_source_sqlite_path or default_sqlite_path
                 source_manager = StoreManager(
@@ -788,7 +915,16 @@ class CoreStoreMixin:
                     sqlite_path=source_sqlite_path,
                     ensure_defaults=self._ensure_store_defaults,
                     new_store=self._new_store,
+                    persistence_owner_token=str(
+                        getattr(self, "_persistence_owner_token", "") or ""
+                    ),
                 )
+            self._preflight_story_handoff_store_managers(
+                next_manager,
+                source_manager,
+                extra_sections=(previous_data,) if isinstance(previous_data, dict) else (),
+            )
+            if source_manager is not None:
                 source_backend = (
                     source_manager.sqlite_backend
                     if migration_source_backend == "sqlite"
@@ -1000,6 +1136,7 @@ class CoreStoreMixin:
             "daily_story_plan": {},
             "daily_story_plan_history": [],
             "bot_personal_outbox": [],
+            "bot_personal_archive_revisions": {},
             "skill_growth": {},
             "detail_enhanced_day": "",
             "detail_enhanced_segments": {},
@@ -1154,6 +1291,7 @@ class CoreStoreMixin:
         data.setdefault("daily_story_plan", {})
         data.setdefault("daily_story_plan_history", [])
         data.setdefault("bot_personal_outbox", [])
+        data.setdefault("bot_personal_archive_revisions", {})
         data.setdefault("skill_growth", {})
         data.setdefault("detail_enhanced_day", "")
         data.setdefault("detail_enhanced_segments", {})
@@ -1726,7 +1864,10 @@ class CoreStoreMixin:
         manager = getattr(self, "store_manager", None)
         if manager is not None:
             try:
+                self._assert_primary_store_startup_safe(manager)
+                self._preflight_story_handoff_store_managers(manager)
                 data = manager.load_initial_store()
+                preflight_story_handoff_sections(data)
                 manager_backend = str(
                     getattr(manager, "backend_name", "") or ""
                 ).lower()
@@ -1744,10 +1885,16 @@ class CoreStoreMixin:
                         )
                     )
                 before_maintenance = deepcopy(data)
+                story_baseline = {
+                    section: (section in data, deepcopy(data.get(section)))
+                    for section in ("creative_projects", "creative_memory_pool")
+                }
                 changed = self._sanitize_store_control_tags_inplace(data)
                 repeat_changed = self._sanitize_proactive_candidate_repeat_counts_inplace(data)
                 compacted = self._compact_store_history_inplace(data)
                 bookshelf_recovered = self._recover_bookshelf_after_load(data)
+                if story_authority_controller().authority_state() == "committed":
+                    self._restore_committed_story_roots(data, story_baseline)
                 if changed:
                     logger.warning("[PrivateCompanion] 启动读取数据时清理非标准控制标签: fields=%s", changed)
                 if repeat_changed:
@@ -1779,10 +1926,17 @@ class CoreStoreMixin:
             if not isinstance(data, dict):
                 raise ValueError("数据文件根节点必须是 JSON 对象")
             data = self._ensure_store_defaults(data)
+            preflight_story_handoff_sections(data)
+            story_baseline = {
+                section: (section in data, deepcopy(data.get(section)))
+                for section in ("creative_projects", "creative_memory_pool")
+            }
             changed = self._sanitize_store_control_tags_inplace(data)
             repeat_changed = self._sanitize_proactive_candidate_repeat_counts_inplace(data)
             compacted = self._compact_store_history_inplace(data)
             self._recover_bookshelf_after_load(data)
+            if story_authority_controller().authority_state() == "committed":
+                self._restore_committed_story_roots(data, story_baseline)
             if changed:
                 logger.warning("[PrivateCompanion] 启动读取 JSON 时清理非标准控制标签: fields=%s", changed)
             if repeat_changed:
@@ -1796,6 +1950,92 @@ class CoreStoreMixin:
                 _single_line(exc, 200),
             )
             raise
+
+    def _read_story_migration_commit_persisted_sync(
+        self,
+    ) -> tuple[bool, Any]:
+        """Read only the durable Story marker from the active primary store."""
+
+        manager = getattr(self, "store_manager", None)
+        if manager is not None:
+            sections = manager.load_sections((STORY_MIGRATION_COMMIT_KEY,))
+        else:
+            path = Path(str(getattr(self, "data_file", "") or ""))
+            if not path.is_file():
+                return False, None
+            with path.open("r", encoding="utf-8") as stream:
+                root = json.load(stream)
+            if type(root) is not dict:
+                raise RuntimeError("Story marker store root is not an object")
+            sections = root
+        if STORY_MIGRATION_COMMIT_KEY not in sections:
+            return False, None
+        return True, deepcopy(sections[STORY_MIGRATION_COMMIT_KEY])
+
+    def _save_story_migration_commit_confirmed_sync(
+        self,
+        marker: Mapping[str, Any],
+    ) -> None:
+        """Synchronously persist and read back the exact marker section."""
+
+        expected = deepcopy(dict(marker))
+        data = getattr(self, "_data_default", None)
+        if type(data) is not dict:
+            data = getattr(self, "data", None)
+        if (
+            type(data) is not dict
+            or data.get(STORY_MIGRATION_COMMIT_KEY) != expected
+        ):
+            raise RuntimeError("Story marker memory baseline changed before save")
+        tracked_maps = (
+            "_data_save_dirty",
+            "_data_save_deleted",
+            "_data_save_dirty_since",
+            "_data_save_section_revisions",
+        )
+        tracking = {
+            name: (
+                STORY_MIGRATION_COMMIT_KEY in value,
+                deepcopy(value.get(STORY_MIGRATION_COMMIT_KEY)),
+            )
+            for name in tracked_maps
+            if isinstance((value := getattr(self, name, None)), dict)
+        }
+
+        def clear_confirmed_marker_tracking() -> None:
+            for name in ("_data_save_dirty", "_data_save_deleted", "_data_save_dirty_since"):
+                value = getattr(self, name, None)
+                if isinstance(value, dict):
+                    value.pop(STORY_MIGRATION_COMMIT_KEY, None)
+
+        def restore_marker_tracking() -> None:
+            for name, (present, value) in tracking.items():
+                current = getattr(self, name, None)
+                if not isinstance(current, dict):
+                    continue
+                if present:
+                    current[STORY_MIGRATION_COMMIT_KEY] = value
+                else:
+                    current.pop(STORY_MIGRATION_COMMIT_KEY, None)
+
+        last_error: BaseException | None = None
+        for _attempt in range(3):
+            try:
+                self._save_data_now_sync(sections={STORY_MIGRATION_COMMIT_KEY})
+            except BaseException as exc:
+                last_error = exc
+            try:
+                present, persisted = self._read_story_migration_commit_persisted_sync()
+            except BaseException as exc:
+                last_error = exc
+                continue
+            if present and persisted == expected:
+                clear_confirmed_marker_tracking()
+                return
+        restore_marker_tracking()
+        if last_error is not None:
+            raise RuntimeError("Story marker durable save failed") from last_error
+        raise RuntimeError("Story marker durable readback mismatch")
 
     def _save_data_sync(
         self,
@@ -1975,15 +2215,24 @@ class CoreStoreMixin:
                     mirror = deepcopy(data)
                     self._strip_ephemeral_group_transcripts_inplace(mirror)
                     manager.save_snapshot(mirror)
-                self._refresh_data_save_revision_from_manager()
-                if advance_generation:
-                    self._advance_data_save_write_generation()
+                status_getter = getattr(manager, "persistence_status", None)
+                status = (
+                    {"accepted": True, "state": "saved", "backend": "sqlite"}
+                    if getattr(self, "storage_backend", "json") == "sqlite"
+                    else status_getter() if callable(status_getter) else {}
+                )
+                self._last_persistence_write_status = dict(status or {})
+                accepted = status.get("accepted") is not False
+                if accepted:
+                    self._refresh_data_save_revision_from_manager()
+                    if advance_generation:
+                        self._advance_data_save_write_generation()
             return changed
         with self._data_save_io_lock():
             mirror = deepcopy(data)
             self._strip_ephemeral_group_transcripts_inplace(mirror)
-            self._atomic_write_data_file_sync(mirror)
-            if advance_generation:
+            accepted = self._atomic_write_data_file_sync(mirror)
+            if accepted and advance_generation:
                 self._advance_data_save_write_generation()
         return changed
 
@@ -2008,8 +2257,12 @@ class CoreStoreMixin:
             return writer(snapshot, advance_generation=advance_generation)
         return writer(snapshot)
 
-    def _atomic_write_data_file_sync(self, data: dict[str, Any]) -> None:
+    def _atomic_write_data_file_sync(self, data: dict[str, Any]) -> bool:
         base = self.data_file
+        ticket = capture_write_ticket(
+            base,
+            str(getattr(self, "_persistence_owner_token", "") or ""),
+        )
         tmp_file = f"{base}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp"
         try:
             with open(tmp_file, "w", encoding="utf-8") as f:
@@ -2019,21 +2272,26 @@ class CoreStoreMixin:
                     os.fsync(f.fileno())
                 except OSError:
                     pass
-            last_exc: Exception | None = None
-            for attempt in range(6):
-                try:
-                    os.replace(tmp_file, base)
-                    return
-                except PermissionError as exc:
-                    last_exc = exc
-                    time.sleep(0.05 * (attempt + 1))
-                except OSError as exc:
-                    last_exc = exc
-                    if getattr(exc, "winerror", 0) not in {32, 33, 5}:
-                        raise
-                    time.sleep(0.05 * (attempt + 1))
-            if last_exc:
-                raise last_exc
+            accepted = replace_if_ticket_current(tmp_file, base, ticket)
+            self._last_persistence_write_status = {
+                "accepted": accepted,
+                "state": "saved" if accepted else "superseded",
+                "path": str(base),
+                "owner": str(ticket.get("owner") or ""),
+                "generation": int(ticket.get("generation") or 0),
+                "sequence": int(ticket.get("sequence") or 0),
+            }
+            return accepted
+        except Exception:
+            self._last_persistence_write_status = {
+                "accepted": False,
+                "state": "failed",
+                "path": str(base),
+                "owner": str(ticket.get("owner") or ""),
+                "generation": int(ticket.get("generation") or 0),
+                "sequence": int(ticket.get("sequence") or 0),
+            }
+            raise
         finally:
             try:
                 if os.path.exists(tmp_file):
@@ -2165,6 +2423,15 @@ class CoreStoreMixin:
             self._data_save_write_generation = generation
         return generation
 
+    def _default_data_for_save(self) -> dict[str, Any]:
+        """Return the primary store independently of the event persona context."""
+
+        data = getattr(self, "_data_default", None)
+        if type(data) is dict:
+            return data
+        fallback = getattr(self, "data", None)
+        return fallback if type(fallback) is dict else {}
+
     def _ensure_default_save_state(self) -> None:
         legacy_dirty = getattr(self, "_data_save_dirty", None) is True
         if not isinstance(getattr(self, "_data_save_dirty", None), dict):
@@ -2194,7 +2461,7 @@ class CoreStoreMixin:
         if legacy_dirty and not self._data_save_dirty and not self._data_save_deleted:
             revision = self._next_data_save_revision()
             now = time.monotonic()
-            live_data = getattr(self, "data", {})
+            live_data = self._default_data_for_save()
             for section in live_data if isinstance(live_data, dict) else ():
                 self._data_save_dirty[str(section)] = revision
                 self._data_save_dirty_since[str(section)] = now
@@ -2299,12 +2566,17 @@ class CoreStoreMixin:
         )
         full = changed is None
         if changed is None:
-            changed = {str(name) for name in self.data}
+            changed = {str(name) for name in self._default_data_for_save()}
         if changed & deleted:
             raise ValueError("changed and deleted sections must be disjoint")
         if not changed and not deleted and not full:
             return False
-        self._expand_bookshelf_save_sections(self.data, changed, deleted, self._data_save_deleted)
+        self._expand_bookshelf_save_sections(
+            self._default_data_for_save(),
+            changed,
+            deleted,
+            self._data_save_deleted,
+        )
         revision = self._next_data_save_revision()
         now = time.monotonic()
         for section in changed:
@@ -2467,7 +2739,7 @@ class CoreStoreMixin:
             and not full_replacement
         )
         batch = self._capture_data_save_batch(
-            self.data,
+            self._default_data_for_save(),
             self._data_save_dirty,
             self._data_save_deleted,
             self._data_save_full_revision,
@@ -2658,13 +2930,21 @@ class CoreStoreMixin:
                         primary_snapshot = deepcopy(snapshot)
                         self._strip_ephemeral_group_transcripts_inplace(primary_snapshot)
                         manager.save_snapshot(primary_snapshot)
+                        status_getter = getattr(manager, "persistence_status", None)
+                        status = status_getter() if callable(status_getter) else {}
+                        self._last_persistence_write_status = dict(status or {})
+                        if status.get("accepted") is False:
+                            superseded = True
                     else:
                         # Keep the compatibility path behind the overridable
                         # snapshot writer used by JSON/test harnesses.
+                        self._last_persistence_write_status = {"accepted": None, "state": "writing"}
                         self._invoke_data_snapshot_writer_sync(
                             snapshot,
                             advance_generation=False,
                         )
+                        if getattr(self, "_last_persistence_write_status", {}).get("accepted") is False:
+                            superseded = True
                     if not superseded:
                         if advance_generation:
                             self._advance_data_save_write_generation()
@@ -2841,7 +3121,7 @@ class CoreStoreMixin:
         if result.get("superseded"):
             return
         complete = self._finish_data_save_batch(
-            self.data,
+            self._default_data_for_save(),
             batch,
             result,
             self._data_save_dirty,
@@ -2964,7 +3244,7 @@ class CoreStoreMixin:
         try:
             self._data_save_task = asyncio.create_task(_runner())
         except RuntimeError:
-            snapshot = deepcopy(self.data)
+            snapshot = deepcopy(self._default_data_for_save())
             self._write_data_snapshot_sync(snapshot)
             self._clear_default_data_save_dirty()
 
@@ -3177,6 +3457,7 @@ class CoreStoreMixin:
             if self._default_data_save_is_dirty():
                 self._start_default_data_save_writer(0.0)
 
+    @story_legacy_operation("store.plugin.reset")
     async def _reset_plugin_store(self) -> None:
         async with self._data_lock:
             self.data = self._new_store()

@@ -151,6 +151,27 @@ class ModelFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(harness.context.calls, [])
         self.assertEqual(skips[0]["provider_id"], "primary")
 
+    async def test_tool_semantic_provider_error_uses_card_fallback(self) -> None:
+        harness = _FallbackHarness(
+            {
+                "primary": "The prompt could not be submitted.",
+                "backup": "tool fallback",
+            }
+        )
+        harness.model_fallback_overrides = {"PHOTO_PROMPT_PROVIDER_ID": "backup"}
+
+        result = await harness._llm_tool_call(
+            "take a photo",
+            tools=_UsageToolSet(),
+            provider_id="primary",
+            task="photo_reference_selection_trial",
+            timeout_key="PHOTO_PROMPT_PROVIDER_ID",
+        )
+
+        self.assertEqual(result.completion_text, "tool fallback")
+        self.assertEqual(harness.context.calls, ["primary", "backup"])
+        self.assertEqual(harness.usage[0]["error"], "semantic_provider_error")
+
     async def test_primary_failure_uses_card_fallback_once(self) -> None:
         harness = _FallbackHarness({"primary": RuntimeError("primary down"), "backup": "ok"})
         harness.model_fallback_overrides = {"DAILY_PLAN_PROVIDER_ID": "backup"}
@@ -698,7 +719,6 @@ process.stdout.write(JSON.stringify({{ precision, quick }}));
         plugin = PrivateCompanionPlugin.__new__(PrivateCompanionPlugin)
         plugin.config = {
             "model_assignment_config": {
-                "ADULT_CONTENT_PROVIDER_ID": "adult-new",
                 "GROUP_MEMBER_SAFETY_PROVIDER_ID": "safety-new",
                 "REACTION_EXPRESSION_EMBEDDING_PROVIDER_ID": "embedding-new",
                 "DEEPSEEK_PEAK_REPLACEMENT_PROVIDER_ID": "peak-new",
@@ -711,7 +731,6 @@ process.stdout.write(JSON.stringify({{ precision, quick }}));
         plugin.creative_model_provider_id = "creative"
         plugin.plugin_vision_provider_id = "vision"
         plugin.private_reading_vision_provider_id = "reading"
-        plugin.adult_content_provider_id = "adult-old"
         plugin.group_member_safety_provider_id = "safety-old"
         plugin.reaction_expression_embedding_provider_id = "embedding-old"
         plugin.deepseek_peak_replacement_provider_id = "peak-old"
@@ -719,7 +738,6 @@ process.stdout.write(JSON.stringify({{ precision, quick }}));
 
         plugin._apply_quick_provider_defaults()
 
-        self.assertEqual(plugin.adult_content_provider_id, "adult-new")
         self.assertEqual(plugin.group_member_safety_provider_id, "safety-new")
         self.assertEqual(plugin.reaction_expression_embedding_provider_id, "embedding-new")
         self.assertEqual(plugin.deepseek_peak_replacement_provider_id, "peak-new")

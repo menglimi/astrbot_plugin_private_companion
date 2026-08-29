@@ -50,6 +50,11 @@ async def _call(api, app, path, method, payload=None):
         raise AssertionError(f"unsupported test route: {route}")
 
 
+def _persisted_persona_profile(plugin, persona_id: str) -> dict:
+    handle = plugin._load_secondary_persona_store_sync(persona_id)
+    return handle.manager.backend.load_store()
+
+
 def test_persona_config_api_lifecycle_and_sparse_following():
     async def run():
         with tempfile.TemporaryDirectory() as root:
@@ -87,7 +92,9 @@ def test_persona_config_api_lifecycle_and_sparse_following():
             assert updated["success"]
             assert updated["data"]["raw_settings"]["enable_proactive_burst"] is False
             assert updated["data"]["raw_settings"]["segmented_proactive_content_cleanup_words"] == ["。", "\n"]
-            saved_profile = json.loads(plugin._persona_profile_path("alt").read_text(encoding="utf-8"))
+            assert plugin._persona_profile_db_path("alt").is_file()
+            assert not plugin._persona_profile_path("alt").exists()
+            saved_profile = _persisted_persona_profile(plugin, "alt")
             assert saved_profile["persona_settings"]["segmented_proactive_content_cleanup_words"] == ["。", "\n"]
             reloaded = await _call(api, app, "/persona/config-state?persona_id=alt", "GET")
             assert reloaded["data"]["raw_settings"]["segmented_proactive_content_cleanup_words"] == ["。", "\n"]
@@ -198,7 +205,7 @@ def test_persona_api_preserves_structured_assets_and_spaced_vent_targets():
             assert raw["photo_structured_reference_assets"] == [structured_asset]
             assert raw["owned_reaction_assets"] == [reaction_asset]
             assert raw["relationship_boundary_vent_targets"] == ["小 林", "姐姐"]
-            saved = json.loads(plugin._persona_profile_path("alt").read_text(encoding="utf-8"))
+            saved = _persisted_persona_profile(plugin, "alt")
             assert saved["persona_settings"]["photo_structured_reference_assets"] == [structured_asset]
             assert saved["persona_settings"]["owned_reaction_assets"] == [reaction_asset]
             reloaded = await _call(api, app, "/persona/config-state?persona_id=alt", "GET")

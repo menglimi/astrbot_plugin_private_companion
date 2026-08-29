@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import os
 import threading
-import time
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
@@ -13,6 +12,7 @@ from typing import Any, Callable
 from astrbot.api import logger
 
 from .backend_base import StoreBackendBase
+from .path_generation import capture_write_ticket, replace_if_ticket_current
 
 
 class JsonStoreBackend(StoreBackendBase):
@@ -21,10 +21,18 @@ class JsonStoreBackend(StoreBackendBase):
         data_file: str | Path,
         ensure_defaults: Callable[[dict[str, Any]], dict[str, Any]],
         new_store: Callable[[], dict[str, Any]],
+        *,
+        persistence_owner_token: str = "",
     ) -> None:
         self.data_file = Path(data_file)
         self.ensure_defaults = ensure_defaults
         self.new_store = new_store
+        self.persistence_owner_token = str(persistence_owner_token or "").strip()
+        self.last_write_status: dict[str, Any] = {
+            "accepted": None,
+            "state": "idle",
+            "path": str(self.data_file),
+        }
 
     def backend_name(self) -> str:
         return "json"
@@ -48,8 +56,16 @@ class JsonStoreBackend(StoreBackendBase):
             )
             raise
 
-    def save_store(self, data: dict[str, Any]) -> None:
-        self._atomic_write_data_file_sync(data)
+    def capture_write_ticket(self) -> dict[str, Any]:
+        return capture_write_ticket(self.data_file, self.persistence_owner_token)
+
+    def save_store(
+        self,
+        data: dict[str, Any],
+        *,
+        write_ticket: dict[str, Any] | None = None,
+    ) -> None:
+        self._atomic_write_data_file_sync(data, write_ticket=write_ticket)
 
     def save_snapshot(
         self,
@@ -58,8 +74,9 @@ class JsonStoreBackend(StoreBackendBase):
         minimum_revision: int | None = None,
         deleted_sections: Mapping[str, int] | None = None,
         preserve_tombstones: bool = False,
+        write_ticket: dict[str, Any] | None = None,
     ) -> int | None:
-        self._atomic_write_data_file_sync(data)
+        self._atomic_write_data_file_sync(data, write_ticket=write_ticket)
         return None
 
     def health_check(self, *, raise_on_error: bool = False) -> dict[str, Any]:
@@ -70,8 +87,14 @@ class JsonStoreBackend(StoreBackendBase):
             "writable": self.data_file.parent.exists(),
         }
 
-    def _atomic_write_data_file_sync(self, data: dict[str, Any]) -> None:
+    def _atomic_write_data_file_sync(
+        self,
+        data: dict[str, Any],
+        *,
+        write_ticket: dict[str, Any] | None = None,
+    ) -> bool:
         base = str(self.data_file)
+        ticket = write_ticket or self.capture_write_ticket()
         tmp_file = (
             f"{base}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp"
         )
@@ -83,21 +106,31 @@ class JsonStoreBackend(StoreBackendBase):
                     os.fsync(f.fileno())
                 except OSError:
                     pass
-            last_exc: Exception | None = None
-            for attempt in range(6):
-                try:
-                    os.replace(tmp_file, base)
-                    return
-                except PermissionError as exc:
-                    last_exc = exc
-                    time.sleep(0.05 * (attempt + 1))
-                except OSError as exc:
-                    last_exc = exc
-                    if getattr(exc, "winerror", 0) not in {32, 33, 5}:
-                        raise
-                    time.sleep(0.05 * (attempt + 1))
-            if last_exc:
-                raise last_exc
+            accepted = replace_if_ticket_current(tmp_file, base, ticket)
+            self.last_write_status = {
+                "accepted": accepted,
+                "state": "saved" if accepted else "superseded",
+                "path": str(self.data_file),
+                "owner": str(ticket.get("owner") or ""),
+                "generation": int(ticket.get("generation") or 0),
+                "sequence": int(ticket.get("sequence") or 0),
+            }
+            if not accepted:
+                logger.info(
+                    "[PrivateCompanion] JSON persistence skipped because its generation was superseded: path=%s",
+                    self.data_file,
+                )
+            return accepted
+        except Exception:
+            self.last_write_status = {
+                "accepted": False,
+                "state": "failed",
+                "path": str(self.data_file),
+                "owner": str(ticket.get("owner") or ""),
+                "generation": int(ticket.get("generation") or 0),
+                "sequence": int(ticket.get("sequence") or 0),
+            }
+            raise
         finally:
             try:
                 if os.path.exists(tmp_file):

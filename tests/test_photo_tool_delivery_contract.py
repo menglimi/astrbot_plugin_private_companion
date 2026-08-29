@@ -304,6 +304,30 @@ class PhotoToolDeliveryContractTests(unittest.IsolatedAsyncioTestCase):
             os.unlink(self.image_path)
         self.temp_dir.cleanup()
 
+    async def test_production_host_without_image_extension_fails_before_backend_checks(self) -> None:
+        harness = _PhotoToolHarness()
+        backend_checks: list[str] = []
+        harness._image_companion_required = lambda: True
+        harness._image_companion_available = lambda: False
+        harness._photo_text_available = lambda: backend_checks.append("availability") or True
+
+        payload = json.loads(
+            await harness._pc_generate_photo_impl(
+                _FakeEvent(),
+                prompt="画一颗星星",
+                kind="text2img",
+            )
+        )
+
+        self.assertEqual("unavailable", payload["status"])
+        self.assertEqual("image_extension_unavailable", payload["error_code"])
+        self.assertFalse(payload["success"])
+        self.assertFalse(payload["generated"])
+        self.assertFalse(payload["sent"])
+        self.assertEqual([], backend_checks)
+        self.assertEqual({}, harness.generation_kwargs)
+        self.assertEqual(0, harness.delivery_calls)
+
     async def test_ambiguous_send_error_does_not_retry_same_image(self) -> None:
         harness = _DirectPhotoDeliveryHarness()
         event = _AmbiguousSendEvent()

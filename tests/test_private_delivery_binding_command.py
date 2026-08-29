@@ -93,7 +93,7 @@ class _Harness(InteractionUtilsMixin):
         user.pop("bound_delivery_umo", None)
         return True, "已取消人工绑定"
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         self.save_count += 1
 
     async def _reply(self, event, text: str, **kwargs) -> None:

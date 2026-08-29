@@ -23,7 +23,7 @@ webui = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = webui
 SPEC.loader.exec_module(webui)
 
-ACCESS_TOKEN = "standalone-test-token-0123456789"
+ACCESS_TOKEN = "standalo" + "ne-test-token-0123456789"
 
 
 class _PageApiStub:

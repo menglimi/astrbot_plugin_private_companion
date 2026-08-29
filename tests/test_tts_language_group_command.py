@@ -95,7 +95,7 @@ class _Harness(InteractionUtilsMixin, TtsEnhancementMixin):
     def _note_private_user_umo(user_id: str, user: dict, umo: str) -> None:
         return None
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         self.save_count += 1
 
     async def _reply(self, event, text: str, **kwargs) -> None:

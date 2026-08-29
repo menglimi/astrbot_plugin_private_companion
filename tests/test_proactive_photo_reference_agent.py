@@ -7,7 +7,7 @@ import tempfile
 import types
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 
 class _AstrBotStub:
@@ -76,8 +76,15 @@ _package = types.ModuleType("astrbot_plugin_private_companion")
 _package.__path__ = [str(_root)]
 _package.__package__ = "astrbot_plugin_private_companion"
 sys.modules.setdefault("astrbot_plugin_private_companion", _package)
-sys.modules.update(_astrbot_stubs())
-from astrbot_plugin_private_companion.proactive_message import ProactiveMessageMixin
+try:
+    from astrbot_plugin_private_companion.proactive_message import ProactiveMessageMixin
+except ImportError:
+    # Keep the fallback local to this import.  Updating sys.modules globally
+    # poisons later full-suite collection when the real AstrBot is installed.
+    with patch.dict(sys.modules, _astrbot_stubs()):
+        from astrbot_plugin_private_companion.proactive_message import (
+            ProactiveMessageMixin,
+        )
 
 
 class _ScenePromptHarness(ProactiveMessageMixin):
@@ -166,7 +173,7 @@ class _ActionHarness(ProactiveMessageMixin):
     def _note_photo_generation_attempt(self, *_args: Any, **_kwargs: Any) -> None:
         return None
 
-    def _save_data_sync(self) -> None:
+    def _save_data_sync(self, **_kwargs) -> None:
         return None
 
 
