@@ -34,7 +34,7 @@ from typing import Any, Iterable
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 from xml.etree import ElementTree as ET
 
-from astrbot.api import AstrBotConfig, logger
+from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 try:
     from astrbot.api.message_components import At, Image, Plain, Record, Reply
@@ -134,6 +134,9 @@ from .planning import (
     normalize_story_plan,
     pick_detail_segment,
 )
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 DEFAULT_AI_DAILY_NEWS_SOURCE = "B站 AI早报|bilibili:285286947"
@@ -654,7 +657,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 await outfit_generator()
             except Exception as exc:
                 logger.warning(
-                    "[PrivateCompanion] 今日日程已保存,但每日穿搭照片生成失败: %s",
+                    "今日日程已保存,但每日穿搭照片生成失败: %s",
                     _single_line(exc, 180),
                 )
         await self._ensure_daily_news_reading(force=force)
@@ -713,7 +716,7 @@ class DailyStateMixin(DailyStateTickMixin):
             if force:
                 raise
             logger.warning(
-                "[PrivateCompanion] 生成今日日记失败,已进入30分钟冷却避免重复请求: %s",
+                "生成今日日记失败,已进入30分钟冷却避免重复请求: %s",
                 _single_line(exc, 180),
             )
             return None
@@ -735,7 +738,7 @@ class DailyStateMixin(DailyStateTickMixin):
             )
             if deleted_now and (not force or deleted_during_generation):
                 logger.info(
-                    "[PrivateCompanion] 日记生成期间该日期被手动删除，已丢弃生成结果: request_day=%s diary_day=%s force=%s",
+                    "日记生成期间该日期被手动删除，已丢弃生成结果: request_day=%s diary_day=%s force=%s",
                     request_day,
                     diary_day,
                     force,
@@ -763,12 +766,12 @@ class DailyStateMixin(DailyStateTickMixin):
                 diaries = migrated_diaries
                 self.data["bot_diaries"] = diaries
                 logger.info(
-                    "[PrivateCompanion] 已无损迁移旧字典日记存储: entries=%s",
+                    "已无损迁移旧字典日记存储: entries=%s",
                     len(diaries),
                 )
             elif not isinstance(diaries, list):
                 logger.error(
-                    "[PrivateCompanion] 日记记录结构异常，已保留原数据并放弃写入本次生成结果: storage=%s",
+                    "日记记录结构异常，已保留原数据并放弃写入本次生成结果: storage=%s",
                     type(diaries).__name__,
                 )
                 return None
@@ -820,7 +823,7 @@ class DailyStateMixin(DailyStateTickMixin):
             except Exception as exc:
                 self.data["daily_diary_postprocess_error"] = _single_line(exc, 180)
                 logger.warning(
-                    "[PrivateCompanion] 今日日记已保存,但梦境碎片合并失败: %s",
+                    "今日日记已保存,但梦境碎片合并失败: %s",
                     _single_line(exc, 180),
                 )
             dream_fragments = diary.get("dream_fragments", []) if isinstance(diary, dict) else []
@@ -859,7 +862,7 @@ class DailyStateMixin(DailyStateTickMixin):
                     "state": "degraded",
                     "error_code": type(exc).__name__,
                 }
-                logger.warning("[PrivateCompanion] Bot Personal 日记归档失败: %s", _single_line(exc, 160))
+                logger.warning("Bot Personal 日记归档失败: %s", _single_line(exc, 160))
             if isinstance(diary, dict) and isinstance(archive_result, dict):
                 async with self._data_lock:
                     diary["memory_archive"] = dict(archive_result)
@@ -955,14 +958,14 @@ class DailyStateMixin(DailyStateTickMixin):
                         retry_after = ""
                 if failure_is_current:
                     logger.warning(
-                        "[PrivateCompanion] 日程细化生成失败,已标记为可重试: segment=%s retry_after=%s error=%s",
+                        "日程细化生成失败,已标记为可重试: segment=%s retry_after=%s error=%s",
                         _single_line(segment.get("key"), 80),
                         retry_after,
                         _single_line(exc, 180),
                     )
                 else:
                     logger.info(
-                        "[PrivateCompanion] 日程细化失败结果已过期,不再回写: segment=%s error=%s",
+                        "日程细化失败结果已过期,不再回写: segment=%s error=%s",
                         _single_line(segment.get("key"), 80),
                         _single_line(exc, 180),
                     )
@@ -1236,7 +1239,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 occurred_at=_single_line(entry.get("occurred_at"), 80),
             )
         except Exception as exc:
-            logger.debug("[PrivateCompanion] MemoryCompanion 进食记忆写入失败: %s", _single_line(exc, 120))
+            logger.debug("MemoryCompanion 进食记忆写入失败: %s", _single_line(exc, 120))
             return
         entry["memory_recorded"] = True
         entry["memory_id"] = _single_line(memory_id, 120)
@@ -1651,7 +1654,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 label = self._schedule_segment_label(segment)
             return True, f"已重新细化：{label}", detail
         except Exception as exc:
-            logger.warning("[PrivateCompanion] 聊天命令局部重生成日程细化失败: %s", exc, exc_info=True)
+            logger.warning("聊天命令局部重生成日程细化失败: %s", exc, exc_info=True)
             async with self._data_lock:
                 enhanced = self.data.setdefault("detail_enhanced_segments", {})
                 if isinstance(enhanced, dict) and key and generation_id and self._detail_generation_is_current(segment, generation_id):
@@ -2849,7 +2852,7 @@ class DailyStateMixin(DailyStateTickMixin):
         if callable(meta_leak_checker) and (
             meta_leak_checker(text) or meta_leak_checker(topic) or meta_leak_checker(motive)
         ):
-            logger.warning("[PrivateCompanion] 跳过记录疑似工具循环摘要的主动话题记忆")
+            logger.warning("跳过记录疑似工具循环摘要的主动话题记忆")
             return
         signature = self._proactive_topic_signature(text, topic, motive)
         if not signature:
@@ -5020,7 +5023,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 )
             if offered:
                 logger.info(
-                    "[PrivateCompanion] 环境突变已进入即时主动候选: kind=%s targets=%s topic=%s",
+                    "环境突变已进入即时主动候选: kind=%s targets=%s topic=%s",
                     _single_line(change.get("kind"), 40),
                     offered,
                     _single_line(change.get("topic"), 80),
@@ -5100,7 +5103,7 @@ class DailyStateMixin(DailyStateTickMixin):
                         prompt = text
                         source = "screen_companion"
                 except Exception as e:
-                    logger.debug(f"[PrivateCompanion] 获取天气信息失败: {e}")
+                    logger.debug(f"获取天气信息失败: {e}")
         weather = {
             "date": today,
             "prompt": prompt,
@@ -5297,7 +5300,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 metadata={"注入位置": placement, "获取成功": valid},
             )
         logger.info(
-            "[PrivateCompanion] 当前天气查询已处理: session=%s success=%s source=%s location_visible=%s",
+            "当前天气查询已处理: session=%s success=%s source=%s location_visible=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             valid,
             _single_line(weather.get("source"), 40) if isinstance(weather, dict) else "none",
@@ -5364,7 +5367,7 @@ class DailyStateMixin(DailyStateTickMixin):
                         summary = raw_summary
                         source = "screen_companion_api"
                 except Exception as exc:
-                    logger.debug("[PrivateCompanion] 读取屏幕昨日结构化日记失败: %s", exc)
+                    logger.debug("读取屏幕昨日结构化日记失败: %s", exc)
             if not summary:
                 diary_storage = str(getattr(plugin, "diary_storage", "") or "").strip()
                 summary = self._load_screen_diary_summary_file(target_date, diary_storage)
@@ -5413,7 +5416,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 data = json.load(f)
             return data if isinstance(data, dict) else {}
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 读取屏幕日记摘要文件失败: %s", exc)
+            logger.debug("读取屏幕日记摘要文件失败: %s", exc)
             return {}
 
     def _load_screen_diary_markdown_file(self, target_date: date, diary_dir: str = "") -> str:
@@ -5425,7 +5428,7 @@ class DailyStateMixin(DailyStateTickMixin):
         try:
             return path.read_text(encoding="utf-8")[:4000]
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 读取屏幕日记正文失败: %s", exc)
+            logger.debug("读取屏幕日记正文失败: %s", exc)
             return ""
 
     def _screen_diary_activity_label(self, text: Any) -> str:
@@ -5906,17 +5909,17 @@ class DailyStateMixin(DailyStateTickMixin):
                     allow_redirects=False,
                 ) as response:
                     if response.status != 200:
-                        logger.debug("[PrivateCompanion] 和风天气地点解析请求失败: %s", response.status)
+                        logger.debug("和风天气地点解析请求失败: %s", response.status)
                         return {}
                     try:
                         payload = await response.json()
                     except TypeError:
                         payload = await response.json(content_type=None)
         except asyncio.TimeoutError:
-            logger.debug("[PrivateCompanion] 和风天气地点解析请求超时")
+            logger.warning("和风天气地点解析请求超时")
             return {}
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 和风天气地点解析失败: %s", _single_line(exc, 160))
+            logger.debug("和风天气地点解析失败: %s", _single_line(exc, 160))
             return {}
         return self._parse_qweather_location_payload(payload)
 
@@ -5965,7 +5968,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 try:
                     saver(sections={"qweather_location"})
                 except Exception as exc:
-                    logger.debug("[PrivateCompanion] 保存和风天气地点缓存失败: %s", _single_line(exc, 160))
+                    logger.debug("保存和风天气地点缓存失败: %s", _single_line(exc, 160))
 
         data_lock = getattr(self, "_data_lock", None)
         if isinstance(data_lock, asyncio.Lock):
@@ -6510,7 +6513,7 @@ class DailyStateMixin(DailyStateTickMixin):
                             "source": "qweather",
                         }
                     if response.status != 200:
-                        logger.debug("[PrivateCompanion] 和风天气预警请求失败: %s", response.status)
+                        logger.debug("和风天气预警请求失败: %s", response.status)
                         return {
                             "ok": False,
                             "alerts": [],
@@ -6524,10 +6527,10 @@ class DailyStateMixin(DailyStateTickMixin):
                         # not expose a content type; allow the documented JSON.
                         payload = await response.json(content_type=None)
         except asyncio.TimeoutError:
-            logger.debug("[PrivateCompanion] 和风天气预警请求超时")
+            logger.warning("和风天气预警请求超时")
             return {"ok": False, "alerts": [], "error": "timeout", "source": "qweather"}
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 和风天气预警获取失败: %s", _single_line(exc, 160))
+            logger.debug("和风天气预警获取失败: %s", _single_line(exc, 160))
             return {"ok": False, "alerts": [], "error": "request_failed", "source": "qweather"}
         parsed = self._parse_qweather_alert_payload(payload)
         parsed["source"] = "qweather"
@@ -6609,7 +6612,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 try:
                     saver(sections={"weather_alerts"})
                 except Exception as exc:
-                    logger.debug("[PrivateCompanion] 保存天气预警缓存失败: %s", _single_line(exc, 160))
+                    logger.debug("保存天气预警缓存失败: %s", _single_line(exc, 160))
         return result
 
     def _weather_alert_time_ts(self, value: Any) -> float:
@@ -7308,17 +7311,17 @@ class DailyStateMixin(DailyStateTickMixin):
                     allow_redirects=False,
                 ) as response:
                     if response.status != 200:
-                        logger.debug("[PrivateCompanion] QWeather 实时天气请求失败: %s", response.status)
+                        logger.debug("QWeather 实时天气请求失败: %s", response.status)
                         return {"prompt": "", "source": ""}
                     try:
                         payload = await response.json()
                     except TypeError:
                         payload = await response.json(content_type=None)
         except asyncio.TimeoutError:
-            logger.debug("[PrivateCompanion] QWeather 实时天气请求超时")
+            logger.warning("QWeather 实时天气请求超时")
             return {"prompt": "", "source": ""}
         except Exception as exc:
-            logger.debug("[PrivateCompanion] QWeather 实时天气获取失败: %s", _single_line(exc, 160))
+            logger.debug("QWeather 实时天气获取失败: %s", _single_line(exc, 160))
             return {"prompt": "", "source": ""}
         parsed = self._parse_qweather_weather_payload(payload)
         if parsed.get("prompt"):
@@ -7356,11 +7359,11 @@ class DailyStateMixin(DailyStateTickMixin):
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(url) as response:
                     if response.status != 200:
-                        logger.debug(f"[PrivateCompanion] Open-Meteo 天气请求失败: {response.status}")
+                        logger.debug(f"Open-Meteo 天气请求失败: {response.status}")
                         return {"prompt": "", "source": ""}
                     weather_data = await response.json()
         except Exception as e:
-            logger.debug(f"[PrivateCompanion] Open-Meteo 天气获取失败: {e}")
+            logger.debug(f"Open-Meteo 天气获取失败: {e}")
             return {"prompt": "", "source": ""}
         try:
             if not isinstance(weather_data, dict):
@@ -7394,11 +7397,11 @@ class DailyStateMixin(DailyStateTickMixin):
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
                 async with session.get(url) as response:
                     if response.status != 200:
-                        logger.debug(f"[PrivateCompanion] 高德天气请求失败: {response.status}")
+                        logger.debug(f"高德天气请求失败: {response.status}")
                         return {"prompt": "", "source": ""}
                     weather_data = await response.json()
         except Exception as e:
-            logger.debug(f"[PrivateCompanion] 高德天气获取失败: {e}")
+            logger.debug(f"高德天气获取失败: {e}")
             return {"prompt": "", "source": ""}
         try:
             if not isinstance(weather_data, dict) or str(weather_data.get("status")) != "1":
@@ -7436,11 +7439,11 @@ class DailyStateMixin(DailyStateTickMixin):
             async with aiohttp.ClientSession() as session:
                 async with session.get(url) as response:
                     if response.status != 200:
-                        logger.debug(f"[PrivateCompanion] 天气请求失败: {response.status}")
+                        logger.debug(f"天气请求失败: {response.status}")
                         return {"prompt": "", "source": ""}
                     weather_data = await response.json()
         except Exception as e:
-            logger.debug(f"[PrivateCompanion] 私有天气获取失败: {e}")
+            logger.debug(f"私有天气获取失败: {e}")
             return {"prompt": "", "source": ""}
         try:
             weather_desc = weather_data.get("weather", [{}])[0].get("description", "")
@@ -9553,7 +9556,7 @@ class DailyStateMixin(DailyStateTickMixin):
             if not keep_continuous_state:
                 self.data.pop("body_cycle_state", None)
             logger.info(
-                "[PrivateCompanion] 周期策略切换，已清理不兼容旧状态: mode=%s removed=%s",
+                "周期策略切换，已清理不兼容旧状态: mode=%s removed=%s",
                 desired_mode,
                 removed,
             )
@@ -9582,7 +9585,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 )
                 kept.append(condition)
                 self._record_body_cycle_episode(condition)
-                logger.info("[PrivateCompanion] 六阶段周期策略首次启用，已从月经期第 1 天开始推进")
+                logger.info("六阶段周期策略首次启用，已从月经期第 1 天开始推进")
             return kept
 
         signature = self._advanced_cycle_offset_signature(offset)
@@ -9617,7 +9620,7 @@ class DailyStateMixin(DailyStateTickMixin):
         )
         self.data["body_cycle_state"] = meta
         logger.info(
-            "[PrivateCompanion] 已应用六阶段周期起始日: offset=%s phase=%s phase_day=%s previous_mode=%s",
+            "已应用六阶段周期起始日: offset=%s phase=%s phase_day=%s previous_mode=%s",
             offset,
             phase,
             day_in_phase,
@@ -9642,7 +9645,7 @@ class DailyStateMixin(DailyStateTickMixin):
             removed_count = before_count - len(conditions)
             if removed_count:
                 self.data.pop("body_cycle_state", None)
-                logger.info("[PrivateCompanion] 生理期模拟已关闭，清理旧周期状态: removed=%s", removed_count)
+                logger.info("生理期模拟已关闭，清理旧周期状态: removed=%s", removed_count)
         else:
             conditions = self._synchronize_body_cycle_strategy(conditions, now)
             conditions = self._repair_body_cycle_conditions(conditions, now)
@@ -9657,7 +9660,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 ]
                 if len(conditions) < before_count:
                     logger.info(
-                        "[PrivateCompanion] 不适模拟已关闭，清理残留经期不适状态: removed=%s",
+                        "不适模拟已关闭，清理残留经期不适状态: removed=%s",
                         before_count - len(conditions),
                     )
         active = []
@@ -9694,7 +9697,7 @@ class DailyStateMixin(DailyStateTickMixin):
             if isinstance(cond, dict) and str(cond.get("kind") or "") == "hunger" and cond.get("id") != keep_id:
                 continue
             pruned.append(cond)
-        logger.info("[PrivateCompanion] 已清理重复饥饿状态: kept=%s removed=%s", keep_id or "-", len(hunger_items) - 1)
+        logger.info("已清理重复饥饿状态: kept=%s removed=%s", keep_id or "-", len(hunger_items) - 1)
         return pruned
 
     def _repair_body_cycle_conditions(self, conditions: list[Any], now: float) -> list[dict[str, Any]]:
@@ -9817,7 +9820,7 @@ class DailyStateMixin(DailyStateTickMixin):
         kept.append(condition)
         self._record_body_cycle_episode(condition)
         logger.info(
-            "[PrivateCompanion] 已对齐六阶段周期状态: phase=%s phase_start=%s day_in_phase=%s",
+            "已对齐六阶段周期状态: phase=%s phase_start=%s day_in_phase=%s",
             expected_phase,
             self._environment_fromtimestamp(phase_start).strftime("%Y-%m-%d %H:%M"),
             day_in_phase,
@@ -10496,7 +10499,7 @@ class DailyStateMixin(DailyStateTickMixin):
                         continue
                     conv = await self.context.conversation_manager.get_conversation(umo, conv_id)
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 读取昨日对话失败: user=%s err=%s", user_id, exc)
+                logger.debug("读取昨日对话失败: user=%s err=%s", user_id, exc)
                 continue
             if not conv:
                 continue
@@ -10774,7 +10777,7 @@ class DailyStateMixin(DailyStateTickMixin):
         result = "；".join(part for part in kept if part).strip("；; ")
         if changed:
             logger.info(
-                "[PrivateCompanion] 已降级日程饮食参考: field=%s before=%s after=%s",
+                "已降级日程饮食参考: field=%s before=%s after=%s",
                 field or "-",
                 _single_line(source, 120),
                 _single_line(result, 120),
@@ -10914,22 +10917,22 @@ class DailyStateMixin(DailyStateTickMixin):
                     if _cancel_requested():
                         raise
                     logger.debug(
-                        "[PrivateCompanion] 指定人格查询被管理器取消(ID: %s),本轮使用缓存人格",
+                        "指定人格查询被管理器取消(ID: %s),本轮使用缓存人格",
                         specific_id,
                     )
                     return cached or self._get_default_persona_prompt(umo)
                 except (sqlite3.OperationalError, sqlite3.ProgrammingError) as exc:
                     logger.debug(
-                        "[PrivateCompanion] 指定人格数据库暂不可用(ID: %s),本轮使用缓存人格: %s",
+                        "指定人格数据库暂不可用(ID: %s),本轮使用缓存人格: %s",
                         specific_id,
                         _single_line(exc, 160),
                     )
                     return cached or self._get_default_persona_prompt(umo)
                 except asyncio.TimeoutError:
-                    logger.warning("[PrivateCompanion] 读取插件指定人格超时(ID: %s),本轮使用缓存人格", specific_id)
+                    logger.warning("读取插件指定人格超时(ID: %s),本轮使用缓存人格", specific_id)
                     return cached or self._get_default_persona_prompt(umo)
                 except Exception as e:
-                    logger.warning(f"[PrivateCompanion] 读取插件指定人格失败(ID: {specific_id}): {e}")
+                    logger.warning(f"读取插件指定人格失败(ID: {specific_id}): {e}")
             getter = getattr(manager, "get_default_persona_v3", None) if manager else None
             if not callable(getter):
                 return cached or self._get_default_persona_prompt(umo)
@@ -10953,16 +10956,16 @@ class DailyStateMixin(DailyStateTickMixin):
         except asyncio.CancelledError:
             if _cancel_requested():
                 raise
-            logger.debug("[PrivateCompanion] 默认人格查询被管理器取消,本轮使用缓存人格")
+            logger.debug("默认人格查询被管理器取消,本轮使用缓存人格")
         except (sqlite3.OperationalError, sqlite3.ProgrammingError) as exc:
             logger.debug(
-                "[PrivateCompanion] 默认人格数据库暂不可用,本轮使用缓存人格: %s",
+                "默认人格数据库暂不可用,本轮使用缓存人格: %s",
                 _single_line(exc, 160),
             )
         except asyncio.TimeoutError:
-            logger.warning("[PrivateCompanion] 读取 AstrBot 默认人格超时,本轮使用缓存人格")
+            logger.warning("读取 AstrBot 默认人格超时,本轮使用缓存人格")
         except Exception as e:
-            logger.warning(f"[PrivateCompanion] 读取 AstrBot 默认人格失败: {e}")
+            logger.warning(f"读取 AstrBot 默认人格失败: {e}")
         return self._get_default_persona_prompt(umo)
 
     async def _await_framework_db_query(
@@ -11040,7 +11043,7 @@ class DailyStateMixin(DailyStateTickMixin):
                             pass
                         except Exception as exc:
                             logger.warning(
-                                "[PrivateCompanion] 默认人格后台刷新失败: %s",
+                                "默认人格后台刷新失败: %s",
                                 _single_line(exc, 160),
                             )
 
@@ -12224,7 +12227,7 @@ class DailyStateMixin(DailyStateTickMixin):
                     )
                     changed = True
         if changed:
-            logger.info("[PrivateCompanion] 已清理普通休闲段的错误睡眠唤醒记录")
+            logger.info("已清理普通休闲段的错误睡眠唤醒记录")
         return changed
 
     def _invalidate_detail_after_interaction(self, *, now: float | None = None) -> None:
@@ -13052,7 +13055,7 @@ class DailyStateMixin(DailyStateTickMixin):
             state = await self._ensure_daily_state(skip_conversation_summary=True, passive_fast=True)
             self._prepared_lightweight_state_injection(state, force=True)
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 预热轻量被动注入失败: %s", _single_line(exc, 120))
+            logger.debug("预热轻量被动注入失败: %s", _single_line(exc, 120))
 
     def _user_asks_recent_bot_activity(self, text: str) -> bool:
         normalized = _single_line(text, 180)
@@ -14446,13 +14449,13 @@ class DailyStateMixin(DailyStateTickMixin):
     ) -> str:
         if bool(getattr(event, "private_companion_memo_reminder_saved", False)):
             logger.info(
-                "[PrivateCompanion] 跳过对话临时预约转写: 本轮已保存带提醒的便签 session=%s",
+                "跳过对话临时预约转写: 本轮已保存带提醒的便签 session=%s",
                 _single_line(trigger_umo, 120) or "unknown",
             )
             return "memo_reminder"
         if bool(getattr(event, "private_companion_future_task_succeeded", False)):
             logger.info(
-                "[PrivateCompanion] 跳过对话临时预约转写: 本轮 AstrBot future_task 已执行成功 session=%s",
+                "跳过对话临时预约转写: 本轮 AstrBot future_task 已执行成功 session=%s",
                 _single_line(trigger_umo, 120) or "unknown",
             )
             return "official_task"
@@ -14461,14 +14464,14 @@ class DailyStateMixin(DailyStateTickMixin):
         )
         if not future_task_result_observed and self._should_skip_timer_capture_for_official_task(resp, visible_text):
             logger.info(
-                "[PrivateCompanion] 跳过对话临时预约转写: 本轮疑似已由 AstrBot 官方定时计划处理 session=%s",
+                "跳过对话临时预约转写: 本轮疑似已由 AstrBot 官方定时计划处理 session=%s",
                 _single_line(trigger_umo, 120) or "unknown",
             )
             return "official_task"
         if _single_line(payload.get("delivery"), 32).lower() == "reality_touch":
             scheduler = getattr(self, "_schedule_reality_touch_official_reminder", None)
             if not callable(scheduler):
-                logger.warning("[PrivateCompanion] 当前实例不支持现实触及官方提醒")
+                logger.warning("当前实例不支持现实触及官方提醒")
                 return "reality_touch_unavailable"
             scheduled = await scheduler(
                 user_id,
@@ -14922,7 +14925,7 @@ class DailyStateMixin(DailyStateTickMixin):
             job = await getter(normalized_job_id)
         except Exception as exc:
             logger.debug(
-                "[PrivateCompanion] 查询官方定时任务状态失败: job=%s error=%s",
+                "查询官方定时任务状态失败: job=%s error=%s",
                 normalized_job_id,
                 _single_line(exc, 160),
             )
@@ -14985,7 +14988,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 self._clear_llm_timer_internal_plan_fields(current_user)
                 self._save_data_sync(sections={"users"})
         logger.info(
-            "[PrivateCompanion] 官方临时预约开始执行: user=%s timer=%s job=%s",
+            "官方临时预约开始执行: user=%s timer=%s job=%s",
             user_id,
             metadata["timer_id"],
             metadata.get("job_id") or "-",
@@ -15263,7 +15266,7 @@ class DailyStateMixin(DailyStateTickMixin):
                     user["llm_timer_event"] = restored
                 self._save_data_sync(sections={"users"})
             logger.info(
-                "[PrivateCompanion] 对话临时预约取消%s: user=%s job=%s error=%s",
+                "对话临时预约取消%s: user=%s job=%s error=%s",
                 "完成" if ok else "失败",
                 normalized_user_id,
                 existing_job_id,
@@ -15478,7 +15481,7 @@ class DailyStateMixin(DailyStateTickMixin):
                 and _single_line(existing.get("reason"), 40) != "activity_followup"
             ):
                 logger.info(
-                    "[PrivateCompanion] 保留已有明确预约,跳过自动动作查岗: user=%s existing=%s topic=%s",
+                    "保留已有明确预约,跳过自动动作查岗: user=%s existing=%s topic=%s",
                     user_id,
                     _single_line(existing.get("reason"), 40) or "appointment",
                     _single_line(existing.get("topic"), 80) or "-",
@@ -15576,7 +15579,7 @@ class DailyStateMixin(DailyStateTickMixin):
                         user["llm_timer_event"] = timer_event
                     self._save_data_sync(sections={"users"})
             logger.warning(
-                "[PrivateCompanion] LLM 临时预约登记失败,已保留原任务: user=%s old_job=%s error=%s",
+                "LLM 临时预约登记失败,已保留原任务: user=%s old_job=%s error=%s",
                 user_id,
                 replaced_job_id or previous_running_job_id or "-",
                 error or "官方定时计划登记失败",
@@ -15597,7 +15600,7 @@ class DailyStateMixin(DailyStateTickMixin):
         if not reservation_current:
             await self._delete_official_llm_timer_job(job_id)
             logger.warning(
-                "[PrivateCompanion] LLM 临时预约预留已失效,已回收新官方任务: user=%s job=%s",
+                "LLM 临时预约预留已失效,已回收新官方任务: user=%s job=%s",
                 user_id,
                 job_id,
             )
@@ -15630,7 +15633,7 @@ class DailyStateMixin(DailyStateTickMixin):
                             current["rollback_error"] = rollback_error or "新官方任务回滚失败"
                         self._save_data_sync(sections={"users"})
                 logger.warning(
-                    "[PrivateCompanion] LLM 临时预约替换失败,新任务回滚%s: user=%s old_job=%s new_job=%s error=%s rollback_error=%s",
+                    "LLM 临时预约替换失败,新任务回滚%s: user=%s old_job=%s new_job=%s error=%s rollback_error=%s",
                     "完成" if rollback_ok else "失败",
                     user_id,
                     replaced_job_id,
@@ -15664,7 +15667,7 @@ class DailyStateMixin(DailyStateTickMixin):
             await self._delete_official_llm_timer_job(job_id)
             return
         logger.info(
-            "[PrivateCompanion] LLM 临时预约已转写到官方定时计划: user=%s time=%s reason=%s action=%s topic=%s job=%s replaced=%s error=%s replace_error=%s",
+            "LLM 临时预约已转写到官方定时计划: user=%s time=%s reason=%s action=%s topic=%s job=%s replaced=%s error=%s replace_error=%s",
             user_id,
             self._environment_fromtimestamp(scheduled_ts).strftime("%m-%d %H:%M:%S"),
             reason,
@@ -16169,7 +16172,7 @@ class DailyStateMixin(DailyStateTickMixin):
             setattr(self, "_recent_relationship_context_sanitize_logs", recent_logs)
         if now - _safe_float(recent_logs.get(log_key), 0) >= 1800:
             logger.info(
-                "[PrivateCompanion] 生成前已剔除未声明关系上下文: source=%s relations=%s",
+                "生成前已剔除未声明关系上下文: source=%s relations=%s",
                 source or "-",
                 ",".join(initial_hits[:8]),
             )
@@ -16353,7 +16356,7 @@ class DailyStateMixin(DailyStateTickMixin):
         last_logged = _safe_float(recent_logs.get(log_key), 0)
         if now - last_logged >= 1800:
             logger.info(
-                "[PrivateCompanion] 已清理日程中的未授权社交事实: field=%s before=%s after=%s",
+                "已清理日程中的未授权社交事实: field=%s before=%s after=%s",
                 field or "-",
                 _single_line(source, 120),
                 _single_line(cleaned, 120),
@@ -16691,7 +16694,7 @@ class DailyStateMixin(DailyStateTickMixin):
                     counts["qzone_integration.text_fields"] = counts.get("qzone_integration.text_fields", 0) + 1
 
         if changed:
-            logger.info("[PrivateCompanion] 已清理未声明关系的生成历史: %s", counts)
+            logger.info("已清理未声明关系的生成历史: %s", counts)
         return changed
 
     def _sanitize_runtime_social_facts_inplace(self) -> bool:
@@ -16827,7 +16830,7 @@ class DailyStateMixin(DailyStateTickMixin):
                     changed = True
 
         if changed:
-            logger.info("[PrivateCompanion] 已清理框架工具循环摘要污染记录: %s", removed_counts)
+            logger.info("已清理框架工具循环摘要污染记录: %s", removed_counts)
         return changed
 
     def _sanitize_story_plan_social_facts_inplace(self, story_plan: dict[str, Any]) -> bool:
@@ -17201,7 +17204,7 @@ class DailyStateMixin(DailyStateTickMixin):
         log_key = f"{local_day if (local_day := status.get('current_time', '')[:10]) else ''}|{original}|{replacement}"
         if getattr(self, "_deepseek_peak_last_log_key", "") != log_key:
             self._deepseek_peak_last_log_key = log_key
-            logger.info("[PrivateCompanion] DeepSeek 高价时段临时路由: %s -> %s (%s)", original, replacement, status.get("current_time"))
+            logger.info("DeepSeek 高价时段临时路由: %s -> %s (%s)", original, replacement, status.get("current_time"))
         return replacement
 
     def _task_provider(
@@ -18029,7 +18032,7 @@ class DailyStateMixin(DailyStateTickMixin):
             for old_key, ts in list(cache.items()):
                 if _safe_float(ts, 0) < cutoff:
                     cache.pop(old_key, None)
-        logger.debug(f"[PrivateCompanion] {prefix} {user_id}: {reason_text}")
+        logger.debug(f"{prefix} {user_id}: {reason_text}")
 
     def _sync_live_user_proactive_schedule(self, user_id: str, source: dict[str, Any]) -> bool:
         """Mirror proactive-plan mutations from a tick snapshot back to the live user record."""
@@ -18184,7 +18187,7 @@ class DailyStateMixin(DailyStateTickMixin):
                         )
                     )
                 except Exception as exc:
-                    logger.debug("[PrivateCompanion] 刚聊完主动换念头失败,回退延后: %s", _single_line(exc, 120))
+                    logger.debug("刚聊完主动换念头失败,回退延后: %s", _single_line(exc, 120))
                     replaced = False
                     handled_by_replacer = False
             if not replaced:
@@ -18360,7 +18363,7 @@ class DailyStateMixin(DailyStateTickMixin):
             try:
                 await task_factory()
             except Exception as exc:
-                logger.warning("[PrivateCompanion] 主动维护任务失败,不阻塞私聊主动: %s error=%s", label, _single_line(exc, 160))
+                logger.warning("主动维护任务失败,不阻塞私聊主动: %s error=%s", label, _single_line(exc, 160))
 
     @staticmethod
     def _proactive_send_disables_segmenting(reason: str, *, friend_proactive: bool = False) -> bool:
@@ -18375,7 +18378,7 @@ class DailyStateMixin(DailyStateTickMixin):
             await self._pull_body_monitor_candidates()
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] Body Monitor 事件拉取失败，本轮继续执行其他主动任务: %s",
+                "Body Monitor 事件拉取失败，本轮继续执行其他主动任务: %s",
                 _single_line(exc, 160),
             )
         async with self._data_lock:

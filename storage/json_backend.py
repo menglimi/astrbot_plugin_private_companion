@@ -9,7 +9,6 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable
 
-from astrbot.api import logger
 
 from .backend_base import StoreBackendBase
 from .path_generation import capture_write_ticket, replace_if_ticket_current
@@ -51,7 +50,7 @@ class JsonStoreBackend(StoreBackendBase):
             return self.ensure_defaults(data)
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 读取 JSON 数据失败,已保留原文件并中止加载: %s",
+                "读取 JSON 数据失败,已保留原文件并中止加载: %s",
                 exc,
             )
             raise
@@ -117,7 +116,7 @@ class JsonStoreBackend(StoreBackendBase):
             }
             if not accepted:
                 logger.info(
-                    "[PrivateCompanion] JSON persistence skipped because its generation was superseded: path=%s",
+                    "JSON persistence skipped because its generation was superseded: path=%s",
                     self.data_file,
                 )
             return accepted

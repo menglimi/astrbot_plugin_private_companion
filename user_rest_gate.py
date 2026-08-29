@@ -7,9 +7,11 @@ import zoneinfo
 from datetime import datetime, timedelta
 from typing import Any
 
-from astrbot.api import logger
 
 from .helpers import _now_ts, _safe_float, _single_line
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 class UserRestGateMixin:
@@ -115,7 +117,7 @@ class UserRestGateMixin:
             user["user_rest_reason"] = ""
             user["user_rest_set_at"] = 0
             user["user_rest_kind"] = ""
-            logger.info("[PrivateCompanion] 已清理误判的用户休息静默: user=%s", user.get("user_id") or user.get("id") or "")
+            logger.info("已清理误判的用户休息静默: user=%s", user.get("user_id") or user.get("id") or "")
             return 0.0
         if rest_until <= check_now:
             user["user_rest_until"] = 0
@@ -139,7 +141,7 @@ class UserRestGateMixin:
             user["user_rest_set_at"] = 0
             user["user_rest_kind"] = ""
             logger.info(
-                "[PrivateCompanion] 检测到休息后用户再次活动,已解除休息静默: user=%s kind=%s activity_at=%.3f",
+                "检测到休息后用户再次活动,已解除休息静默: user=%s kind=%s activity_at=%.3f",
                 user.get("user_id") or user.get("id") or "",
                 rest_kind,
                 last_activity_at,
@@ -290,7 +292,7 @@ class UserRestGateMixin:
                 user["user_rest_reason"] = ""
                 user["user_rest_set_at"] = 0
                 user["user_rest_kind"] = ""
-                logger.info("[PrivateCompanion] 用户休息静默已解除: user=%s", user.get("user_id") or user.get("id") or "")
+                logger.info("用户休息静默已解除: user=%s", user.get("user_id") or user.get("id") or "")
                 return True
             return False
         if rest_until <= check_now:
@@ -302,7 +304,7 @@ class UserRestGateMixin:
         if str(user.get("planned_proactive_source") or "") != "timer":
             self._clear_user_rest_pending_plan_fallback(user)
         logger.info(
-            "[PrivateCompanion] 已记录用户休息静默: user=%s until=%s reason=%s",
+            "已记录用户休息静默: user=%s until=%s reason=%s",
             user.get("user_id") or user.get("id") or "",
             self._environment_fromtimestamp(rest_until).strftime("%m-%d %H:%M"),
             _single_line(text, 80),

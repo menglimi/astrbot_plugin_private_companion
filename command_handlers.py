@@ -12,7 +12,6 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
 from .constants import DEFAULT_NATURAL_LANGUAGE_PHOTO_EXTRA_PROMPT
@@ -1292,7 +1291,7 @@ class CommandHandlersMixin:
             event.stop_event()
         except Exception:
             pass
-        logger.info("[PrivateCompanion] 自然语言插件权限答疑已接管: text=%s", _single_line(question, 120))
+        logger.info("自然语言插件权限答疑已接管: text=%s", _single_line(question, 120))
         return True
 
     def _companion_manual_entry_tags(self, entry: dict[str, Any]) -> set[str]:
@@ -1452,7 +1451,7 @@ class CommandHandlersMixin:
             return
         ok, normalized, error = self._companion_manual_normalize_config_value(key, value)
         if not ok:
-            logger.debug("[PrivateCompanion] 答疑可执行建议被跳过: key=%s error=%s", key, _single_line(error, 120))
+            logger.debug("答疑可执行建议被跳过: key=%s error=%s", key, _single_line(error, 120))
             return
         old = self._companion_manual_current_config_value(key)
         if self._companion_manual_values_equal(old, normalized):
@@ -2163,21 +2162,21 @@ class CommandHandlersMixin:
                 for source in await current_getter(event, sender_id):
                     add(source, "随消息携带图片")
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 答疑携带图片提取失败: %s", _single_line(exc, 120))
+                logger.debug("答疑携带图片提取失败: %s", _single_line(exc, 120))
         reply_cache_getter = getattr(self, "_photo_reference_sources_from_reply_cache", None)
         if callable(reply_cache_getter):
             try:
                 for source in reply_cache_getter(event):
                     add(source, "引用撤回/缓存图片")
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 答疑引用缓存图片提取失败: %s", _single_line(exc, 120))
+                logger.debug("答疑引用缓存图片提取失败: %s", _single_line(exc, 120))
         reply_getter = getattr(self, "_photo_reference_sources_from_reply_event", None)
         if callable(reply_getter):
             try:
                 for source in await reply_getter(event):
                     add(source, "引用消息图片")
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 答疑引用图片提取失败: %s", _single_line(exc, 120))
+                logger.debug("答疑引用图片提取失败: %s", _single_line(exc, 120))
         if not sources:
             return ""
 
@@ -2201,7 +2200,7 @@ class CommandHandlersMixin:
                 limit = limit_getter(len(source_values)) if callable(limit_getter) else 1200
                 vision_text = _single_line(raw_vision, _safe_int(limit, 1200, 240, 2400))
             except Exception as exc:
-                logger.info("[PrivateCompanion] 答疑图片视觉摘要失败: %s", _single_line(exc, 120))
+                logger.info("答疑图片视觉摘要失败: %s", _single_line(exc, 120))
                 vision_text = ""
 
         lines = [
@@ -2521,7 +2520,7 @@ class CommandHandlersMixin:
                 await self._save_config_if_possible()
                 return False, "配置保存失败，已恢复修改前的运行配置。", old, old
         if not saved:
-            logger.debug("[PrivateCompanion] 答疑设置只更新运行态,未找到可写配置项: key=%s", key)
+            logger.debug("答疑设置只更新运行态,未找到可写配置项: key=%s", key)
             return False, "配置项无法写入，已恢复修改前的运行配置。", old, old
         try:
             dispatch_runtime_config_effects(
@@ -2560,7 +2559,7 @@ class CommandHandlersMixin:
                 apply_plain_values=True,
             )
             logger.warning(
-                "[PrivateCompanion] 答疑设置运行态应用失败: key=%s error_type=%s",
+                "答疑设置运行态应用失败: key=%s error_type=%s",
                 key,
                 type(exc).__name__,
             )
@@ -3468,7 +3467,7 @@ class CommandHandlersMixin:
                     timeout_seconds=2.0,
                 )
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 答疑 我会牢牢记住你 上下文读取失败: %s", _single_line(exc, 120))
+                logger.debug("答疑 我会牢牢记住你 上下文读取失败: %s", _single_line(exc, 120))
         prompt = f"""
 你是 PrivateCompanion 的插件专家答疑助手。你理解插件的功能边界、模块协作、配置、运行状态和关键实现，目标是像熟悉整个项目的维护者一样回答，而不是把问题套进关键词规则。
 
@@ -3551,10 +3550,10 @@ class CommandHandlersMixin:
                 timeout=answer_timeout + 3.0,
             )
         except asyncio.TimeoutError:
-            logger.info("[PrivateCompanion] 陪伴答疑模型诊断超时,回退本地说明: question=%s", _single_line(question, 120))
+            logger.warning("陪伴答疑模型诊断超时,回退本地说明: question=%s", _single_line(question, 120))
             return ""
         except Exception as exc:
-            logger.info("[PrivateCompanion] 陪伴答疑模型诊断失败,回退本地说明: %s", _single_line(exc, 120))
+            logger.warning("陪伴答疑模型诊断失败,回退本地说明: %s", _single_line(exc, 120))
             return ""
         return self._companion_manual_clean_multiline(raw, limit=1800)
 
@@ -3688,7 +3687,7 @@ class CommandHandlersMixin:
             resolved = source_path
         if not trusted and not self._photo_reference_path_within_data_dir(resolved):
             logger.warning(
-                "[PrivateCompanion] 参考图越权本地路径已拒绝: %s",
+                "参考图越权本地路径已拒绝: %s",
                 _single_line(str(resolved), 200),
             )
             return ""
@@ -4119,12 +4118,12 @@ class CommandHandlersMixin:
                 updated = catalog
             return await self._set_photo_reference_catalog_config(updated)
         except (CatalogValidationError, KeyError, TypeError, ValueError) as exc:
-            logger.warning("[PrivateCompanion] 保存 persona 参考图失败: %s", _single_line(exc, 160))
+            logger.warning("保存 persona 参考图失败: %s", _single_line(exc, 160))
             return False
 
     async def _set_photo_reference_catalog_config(self, items: Any) -> bool:
         if bool(getattr(self, "photo_reference_catalog_read_only", False)):
-            logger.warning("[PrivateCompanion] 参考图目录当前为只读状态，拒绝覆盖原配置；请在管理页校验并保存目录")
+            logger.warning("参考图目录当前为只读状态，拒绝覆盖原配置；请在管理页校验并保存目录")
             return False
         previous = tuple(runtime_persona_setting(self, 'photo_reference_catalog', ()) or ())
         previous_version = _safe_int(runtime_persona_setting(self, 'photo_reference_catalog_version', 0), 0, 0)
@@ -4167,7 +4166,7 @@ class CommandHandlersMixin:
                 _set_into_config(self.config, "photo_reference_catalog_user_cleared", previous_user_cleared)
             except Exception:
                 pass
-            logger.warning("[PrivateCompanion] 保存规范参考图目录失败: %s", _single_line(exc, 180))
+            logger.warning("保存规范参考图目录失败: %s", _single_line(exc, 180))
             return False
 
     async def _set_photo_reference_library_config(self, items: list[Any]) -> bool:
@@ -4219,7 +4218,7 @@ class CommandHandlersMixin:
             )
             return await self._set_photo_reference_catalog_config((*kept, *loaded.references))
         except (CatalogValidationError, TypeError, ValueError) as exc:
-            logger.warning("[PrivateCompanion] 保存兼容参考图库失败: %s", _single_line(exc, 160))
+            logger.warning("保存兼容参考图库失败: %s", _single_line(exc, 160))
             return False
 
     async def _photo_reference_library_command_payload(
@@ -4457,7 +4456,7 @@ class CommandHandlersMixin:
                     try:
                         resolved = _path_text(await async_resolver(), 1000)
                     except Exception as exc:
-                        logger.info("[PrivateCompanion] 参考图查看时 URL 下载失败: %s", _single_line(exc, 120))
+                        logger.info("参考图查看时 URL 下载失败: %s", _single_line(exc, 120))
                         resolved = ""
             status = "可用" if resolved else "URL 待首次使用时下载" if re.match(r"^https?://", configured.strip(), flags=re.I) else "路径不可用或格式不支持"
             return (
@@ -5171,7 +5170,7 @@ class CommandHandlersMixin:
         if mode in {"tool_first", "off"}:
             if explicit_plugin_request:
                 logger.info(
-                    "[PrivateCompanion] 非指令生图交给主链工具处理: mode=%s user=%s text=%s",
+                    "非指令生图交给主链工具处理: mode=%s user=%s text=%s",
                     mode,
                     _single_line(user_id, 40),
                     _single_line(text, 160),
@@ -5198,7 +5197,7 @@ class CommandHandlersMixin:
             if not missing:
                 raise
             logger.warning(
-                "[PrivateCompanion] 自然语言生图参考图检测缺少可选模型依赖，已按无参考图继续: module=%s err=%s",
+                "自然语言生图参考图检测缺少可选模型依赖，已按无参考图继续: module=%s err=%s",
                 missing,
                 _single_line(exc, 160),
             )
@@ -5207,7 +5206,7 @@ class CommandHandlersMixin:
         if not intent:
             if directed:
                 logger.info(
-                    "[PrivateCompanion] 定向自然语言生图未命中意图: user=%s has_reference=%s text=%s",
+                    "定向自然语言生图未命中意图: user=%s has_reference=%s text=%s",
                     _single_line(user_id, 40),
                     has_reference,
                     _single_line(text, 180),
@@ -5219,7 +5218,7 @@ class CommandHandlersMixin:
         if group_photo_requested and intent.get("kind") != "edit":
             intent["kind"] = "selfie"
         logger.info(
-            "[PrivateCompanion] 自然语言生图命中: user=%s kind=%s has_reference=%s prompt=%s raw=%s",
+            "自然语言生图命中: user=%s kind=%s has_reference=%s prompt=%s raw=%s",
             _single_line(user_id, 40),
             _single_line(intent.get("kind"), 30),
             has_reference,
@@ -5286,7 +5285,7 @@ class CommandHandlersMixin:
                 if not missing:
                     raise
                 logger.warning(
-                    "[PrivateCompanion] 自然语言生图引用来源解析缺少可选模型依赖: module=%s err=%s",
+                    "自然语言生图引用来源解析缺少可选模型依赖: module=%s err=%s",
                     missing,
                     _single_line(exc, 160),
                 )
@@ -5302,7 +5301,7 @@ class CommandHandlersMixin:
                 event.stop_event()
                 return True
             logger.info(
-                "[PrivateCompanion] 自然语言生图引用来源解析: user=%s kind=%s saw_image=%s label=%s path=%s exists=%s",
+                "自然语言生图引用来源解析: user=%s kind=%s saw_image=%s label=%s path=%s exists=%s",
                 _single_line(user_id, 40),
                 _single_line(reference_kind, 30),
                 saw_image,
@@ -5384,7 +5383,7 @@ class CommandHandlersMixin:
             if not missing:
                 raise
             logger.warning(
-                "[PrivateCompanion] 自然语言生图后端缺少可选模型依赖: module=%s err=%s",
+                "自然语言生图后端缺少可选模型依赖: module=%s err=%s",
                 missing,
                 _single_line(exc, 160),
             )
@@ -5392,7 +5391,7 @@ class CommandHandlersMixin:
             event.stop_event()
             return True
         logger.info(
-            "[PrivateCompanion] 自然语言生图结果: user=%s backend=%s ok=%s note=%s image=%s",
+            "自然语言生图结果: user=%s backend=%s ok=%s note=%s image=%s",
             _single_line(user_id, 40),
             _single_line(backend_name, 80),
             bool(image_path),
@@ -5510,7 +5509,7 @@ class CommandHandlersMixin:
             if not missing:
                 raise
             logger.warning(
-                "[PrivateCompanion] 指令生图参考图检测缺少可选模型依赖，已按无参考图继续: module=%s err=%s",
+                "指令生图参考图检测缺少可选模型依赖，已按无参考图继续: module=%s err=%s",
                 missing,
                 _single_line(exc, 160),
             )
@@ -5594,7 +5593,7 @@ class CommandHandlersMixin:
                 if not missing:
                     raise
                 logger.warning(
-                    "[PrivateCompanion] 指令生图引用来源解析缺少可选模型依赖: module=%s err=%s",
+                    "指令生图引用来源解析缺少可选模型依赖: module=%s err=%s",
                     missing,
                     _single_line(exc, 160),
                 )
@@ -5610,7 +5609,7 @@ class CommandHandlersMixin:
                 event.stop_event()
                 return True
             logger.info(
-                "[PrivateCompanion] 指令生图引用来源解析: user=%s kind=%s saw_image=%s label=%s path=%s exists=%s",
+                "指令生图引用来源解析: user=%s kind=%s saw_image=%s label=%s path=%s exists=%s",
                 _single_line(user_id, 40),
                 _single_line(forced_kind, 30),
                 saw_image,
@@ -5696,7 +5695,7 @@ class CommandHandlersMixin:
             if not missing:
                 raise
             logger.warning(
-                "[PrivateCompanion] 指令生图后端缺少可选模型依赖: module=%s err=%s",
+                "指令生图后端缺少可选模型依赖: module=%s err=%s",
                 missing,
                 _single_line(exc, 160),
             )
@@ -5704,7 +5703,7 @@ class CommandHandlersMixin:
             event.stop_event()
             return True
         logger.info(
-            "[PrivateCompanion] 指令生图结果: user=%s action=%s backend=%s ok=%s note=%s image=%s",
+            "指令生图结果: user=%s action=%s backend=%s ok=%s note=%s image=%s",
             _single_line(user_id, 40),
             action_text,
             _single_line(backend_name, 80),
@@ -5833,7 +5832,7 @@ class CommandHandlersMixin:
                         await refresher(event, group_id, force=False)
                     except Exception as exc:
                         logger.debug(
-                            "[PrivateCompanion] 刷新群权限快照失败: group=%s error=%s",
+                            "刷新群权限快照失败: group=%s error=%s",
                             _single_line(group_id, 80),
                             _single_line(exc, 160),
                         )

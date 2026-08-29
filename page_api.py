@@ -27,7 +27,6 @@ from types import SimpleNamespace
 from typing import Any, Mapping
 from urllib.parse import quote, urlparse
 
-from astrbot.api import logger
 from astrbot.api.event import MessageChain
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 from quart import request, send_file
@@ -145,6 +144,9 @@ from .reference_assets import (
     normalize_reference_owner_id,
 )
 from .reaction_asset_library import get_reaction_asset_library
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 PLUGIN_NAME = "astrbot_plugin_private_companion"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
@@ -583,7 +585,7 @@ class PrivateCompanionPageApi(
             presets = preset_provider()
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanionPage] 读取生图场景预设失败，参考图目录将跳过预设关联校验: %s",
+                "读取生图场景预设失败，参考图目录将跳过预设关联校验: %s",
                 self._single_line(exc, 160),
             )
             return ()
@@ -671,7 +673,7 @@ class PrivateCompanionPageApi(
                 pass
             except Exception as exc:
                 logger.warning(
-                    "[PrivateCompanionPage] background task failed: label=%s error=%s",
+                    "background task failed: label=%s error=%s",
                     label,
                     self._single_line(exc, 160),
                 )
@@ -716,7 +718,7 @@ class PrivateCompanionPageApi(
                 raise
             except Exception as exc:
                 logger.warning(
-                    "[PrivateCompanionPage] 主动消息链路测试到点唤醒失败: user=%s error=%s",
+                    "主动消息链路测试到点唤醒失败: user=%s error=%s",
                     self._single_line(user_key, 80),
                     self._single_line(exc, 160),
                 )
@@ -1041,7 +1043,7 @@ class PrivateCompanionPageApi(
         except (ValueError, AgendaContractError) as exc:
             return self._error(str(exc))
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 确认日历候选失败: %s", self._single_line(exc, 180), exc_info=True)
+            logger.error("确认日历候选失败: %s", self._single_line(exc, 180), exc_info=True)
             return self._exception_error("确认候选失败")
 
     async def reject_calendar_candidate(self) -> dict[str, Any]:
@@ -1063,7 +1065,7 @@ class PrivateCompanionPageApi(
         except (ValueError, AgendaContractError) as exc:
             return self._error(str(exc))
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 忽略日历候选失败: %s", self._single_line(exc, 180), exc_info=True)
+            logger.error("忽略日历候选失败: %s", self._single_line(exc, 180), exc_info=True)
             return self._exception_error("忽略候选失败")
 
     async def get_calendar(self) -> dict[str, Any]:
@@ -1079,7 +1081,7 @@ class PrivateCompanionPageApi(
         except ValueError as exc:
             return self._error(str(exc))
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 获取日历失败: %s", self._single_line(exc, 180), exc_info=True)
+            logger.error("获取日历失败: %s", self._single_line(exc, 180), exc_info=True)
             return self._exception_error("获取日历失败")
 
     async def get_calendar_conflicts(self) -> dict[str, Any]:
@@ -1119,7 +1121,7 @@ class PrivateCompanionPageApi(
         except (ValueError, AgendaContractError) as exc:
             return self._error(str(exc))
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 预览日历失败: %s", self._single_line(exc, 180), exc_info=True)
+            logger.error("预览日历失败: %s", self._single_line(exc, 180), exc_info=True)
             return self._exception_error("预览日历失败")
 
     async def upsert_calendar(self) -> dict[str, Any]:
@@ -1141,7 +1143,7 @@ class PrivateCompanionPageApi(
         except (ValueError, AgendaContractError) as exc:
             return self._error(str(exc))
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 保存日历失败: %s", self._single_line(exc, 180), exc_info=True)
+            logger.error("保存日历失败: %s", self._single_line(exc, 180), exc_info=True)
             return self._exception_error("保存日历失败")
 
     async def cancel_calendar(self) -> dict[str, Any]:
@@ -1164,7 +1166,7 @@ class PrivateCompanionPageApi(
                 return self._error("未找到对应日历记录", status_code=404)
             return self._ok({"calendar_id": calendar_id, "cancelled": True})
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 取消日历失败: %s", self._single_line(exc, 180), exc_info=True)
+            logger.error("取消日历失败: %s", self._single_line(exc, 180), exc_info=True)
             return self._exception_error("取消日历失败")
 
     def route_bindings(self) -> list[tuple[str, Any, list[str], str]]:
@@ -1386,7 +1388,7 @@ class PrivateCompanionPageApi(
                 dismissed = bool(record.get("dismissed")) if isinstance(record, dict) else False
             return self._ok({"version": version, "dismissed": dismissed})
         except Exception as exc:
-            logger.debug("[PrivateCompanionPage] 读取拓展迁移提示偏好失败: %s", self._single_line(exc, 160))
+            logger.debug("读取拓展迁移提示偏好失败: %s", self._single_line(exc, 160))
             return self._ok({"version": version, "dismissed": False, "persistent": False})
 
     async def update_extension_migration_notice(self) -> dict[str, Any]:
@@ -1414,7 +1416,7 @@ class PrivateCompanionPageApi(
                 self.plugin._save_data_sync(sections={"extension_migration_notice_preferences"})
             return self._ok({"version": version, "dismissed": dismissed, "persistent": True})
         except Exception as exc:
-            logger.warning("[PrivateCompanionPage] 保存拓展迁移提示偏好失败: %s", self._single_line(exc, 160))
+            logger.warning("保存拓展迁移提示偏好失败: %s", self._single_line(exc, 160))
             return self._exception_error("保存迁移提示偏好失败")
 
     def _overview_section_value(
@@ -1433,7 +1435,7 @@ class PrivateCompanionPageApi(
             if isinstance(degraded_sections, list) and section_name not in degraded_sections:
                 degraded_sections.append(section_name)
             logger.warning(
-                "[PrivateCompanionPage] 总览区块读取失败: section=%s error=%s",
+                "总览区块读取失败: section=%s error=%s",
                 section_name,
                 self._single_line(exc, 200),
                 exc_info=True,
@@ -1567,7 +1569,7 @@ class PrivateCompanionPageApi(
             except Exception as exc:
                 degraded_sections.append("bookshelf")
                 logger.warning(
-                    "[PrivateCompanionPage] 总览区块读取失败: section=bookshelf error=%s",
+                    "总览区块读取失败: section=bookshelf error=%s",
                     self._single_line(exc, 200),
                     exc_info=True,
                 )
@@ -1689,14 +1691,14 @@ class PrivateCompanionPageApi(
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             if elapsed_ms > 1200:
                 logger.warning(
-                    "[PrivateCompanionPage] 总览接口耗时较高: elapsed=%sms users=%s groups=%s",
+                    "总览接口耗时较高: elapsed=%sms users=%s groups=%s",
                     elapsed_ms,
                     len(users),
                     len(visible_groups),
                 )
             return self._ok(payload)
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 获取总览失败: {exc}", exc_info=True)
+            logger.error(f"获取总览失败: {exc}", exc_info=True)
             return self._exception_error("获取总览失败")
 
     def _companion_plugins_summary(self) -> dict[str, dict[str, bool]]:
@@ -1744,7 +1746,7 @@ class PrivateCompanionPageApi(
             content_status = content_status_getter() if callable(content_status_getter) else {}
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanionPage] 创作扩展状态读取失败: %s",
+                "创作扩展状态读取失败: %s",
                 self._single_line(exc, 160),
             )
             content_status = {}
@@ -1938,7 +1940,7 @@ class PrivateCompanionPageApi(
                     "recent": summary.get("recent", [])[:20],
                 }
             except Exception as exc:
-                logger.debug("[PrivateCompanionPage] 多人格 Token 分类读取失败 persona=%s error=%s", persona_id, exc)
+                logger.debug("多人格 Token 分类读取失败 persona=%s error=%s", persona_id, exc)
         payload["multi_persona"] = {"enabled": True, "by_persona": by_persona}
 
     def _overview_data_snapshot_locked(self, raw_data: Any) -> dict[str, Any]:
@@ -2329,7 +2331,7 @@ class PrivateCompanionPageApi(
                 }
             )
         except Exception as exc:
-            logger.warning("[PrivateCompanionPage] 读取每日穿搭图片失败: %s", self._single_line(exc, 160))
+            logger.warning("读取每日穿搭图片失败: %s", self._single_line(exc, 160))
             return self._exception_error("读取每日穿搭图片失败")
 
     def _cache_summary(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -2753,7 +2755,7 @@ class PrivateCompanionPageApi(
                         budget_exempt=False,
                     )
                 logger.info(
-                    "[PrivateCompanionPage] 表情包自动识别尝试下一个视觉模型: provider=%s images=%s exception=%s error=%s",
+                    "表情包自动识别尝试下一个视觉模型: provider=%s images=%s exception=%s error=%s",
                     provider_id,
                     len(image_urls),
                     exc.__class__.__name__,
@@ -2860,7 +2862,7 @@ class PrivateCompanionPageApi(
                 self._schedule_reaction_library_analysis()
             return self._ok(data)
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 读取表情包素材库失败: %s", exc, exc_info=True)
+            logger.error("读取表情包素材库失败: %s", exc, exc_info=True)
             return self._error(str(exc))
 
     async def get_reaction_library_image_data(self) -> dict[str, Any]:
@@ -2871,7 +2873,7 @@ class PrivateCompanionPageApi(
             result = await asyncio.to_thread(self._reaction_library().get_image_data, item_id)
             return self._ok(result) if result else self._error("表情包不存在或图片文件已丢失")
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 读取表情包图片失败: %s", exc, exc_info=True)
+            logger.error("读取表情包图片失败: %s", exc, exc_info=True)
             return self._error(str(exc))
 
     async def import_reaction_library(self) -> dict[str, Any]:
@@ -2894,7 +2896,7 @@ class PrivateCompanionPageApi(
                 result["message"] += f"；{result.get('analysis_queued', 0)} 张已进入自动识别"
             return self._ok(result)
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 导入表情包失败: %s", exc, exc_info=True)
+            logger.error("导入表情包失败: %s", exc, exc_info=True)
             return self._error(str(exc))
 
     async def analyze_reaction_library(self) -> dict[str, Any]:
@@ -2913,7 +2915,7 @@ class PrivateCompanionPageApi(
             result["message"] = f"已将 {result.get('queued', 0)} 张素材加入识别队列"
             return self._ok(result)
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 表情包自动识别排队失败: %s", exc, exc_info=True)
+            logger.error("表情包自动识别排队失败: %s", exc, exc_info=True)
             return self._error(str(exc))
 
     async def update_reaction_library(self) -> dict[str, Any]:
@@ -2928,7 +2930,7 @@ class PrivateCompanionPageApi(
             result = await asyncio.to_thread(self._reaction_library().update_items, ids, changes)
             return self._ok(result)
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 更新表情包失败: %s", exc, exc_info=True)
+            logger.error("更新表情包失败: %s", exc, exc_info=True)
             return self._error(str(exc))
 
     async def delete_reaction_library(self) -> dict[str, Any]:
@@ -2941,7 +2943,7 @@ class PrivateCompanionPageApi(
         try:
             return self._ok(await asyncio.to_thread(self._reaction_library().delete_items, ids))
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 删除表情包失败: %s", exc, exc_info=True)
+            logger.error("删除表情包失败: %s", exc, exc_info=True)
             return self._error(str(exc))
 
     async def rescan_reaction_library(self) -> dict[str, Any]:
@@ -2954,7 +2956,7 @@ class PrivateCompanionPageApi(
                 result["message"] = f"已重建索引；发现 {duplicate_count} 个重复文件，未重复导入"
             return self._ok(result)
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 重建表情包索引失败: %s", exc, exc_info=True)
+            logger.error("重建表情包索引失败: %s", exc, exc_info=True)
             return self._error(str(exc))
 
     async def list_image_cache(self) -> dict[str, Any]:
@@ -3015,7 +3017,7 @@ class PrivateCompanionPageApi(
                 }
             )
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 获取图片缓存失败: {exc}", exc_info=True)
+            logger.error(f"获取图片缓存失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def update_image_cache_item(self) -> dict[str, Any]:
@@ -3046,7 +3048,7 @@ class PrivateCompanionPageApi(
                 updated = deepcopy(item)
             return self._ok(self._image_cache_item_summary(key, updated))
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 更新图片缓存失败: {exc}", exc_info=True)
+            logger.error(f"更新图片缓存失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     def _image_cache_preview_dir(self) -> Path:
@@ -3127,7 +3129,7 @@ class PrivateCompanionPageApi(
             return target
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanionPage] 生成图片缓存缩略图失败: key=%s error=%s",
+                "生成图片缓存缩略图失败: key=%s error=%s",
                 self._single_line(key, 80),
                 self._single_line(exc, 160),
             )
@@ -3225,7 +3227,7 @@ class PrivateCompanionPageApi(
             )
         except CatalogValidationError as exc:
             logger.warning(
-                "[PrivateCompanionPage] 已保存的参考图目录读取失败: %s",
+                "已保存的参考图目录读取失败: %s",
                 self._single_line(exc, 180),
             )
             return runtime_catalog
@@ -3236,7 +3238,7 @@ class PrivateCompanionPageApi(
             self.plugin.photo_reference_catalog_read_only = loaded.read_only
             self.plugin.photo_reference_catalog_user_cleared = False
             logger.info(
-                "[PrivateCompanionPage] 已从保存配置恢复运行时参考图目录: %s 项",
+                "已从保存配置恢复运行时参考图目录: %s 项",
                 len(loaded.references),
             )
         return loaded.references
@@ -3436,7 +3438,7 @@ class PrivateCompanionPageApi(
                 },
             })
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 获取参考图库失败: {exc}", exc_info=True)
+            logger.error(f"获取参考图库失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     @staticmethod
@@ -3464,7 +3466,7 @@ class PrivateCompanionPageApi(
                     return "图片声明类型与实际格式不一致"
                 image.load()
         except Exception as exc:
-            logger.info("[PrivateCompanionPage] 参考图库上传图片解码失败: type=%s", type(exc).__name__)
+            logger.info("参考图库上传图片解码失败: type=%s", type(exc).__name__)
             return "图片内容损坏或无法解码，请选择完整的 PNG、JPEG 或 WebP 文件"
         return ""
 
@@ -3648,7 +3650,7 @@ class PrivateCompanionPageApi(
                 )
             )
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 获取参考图预览失败: {exc}", exc_info=True)
+            logger.error(f"获取参考图预览失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     def _owned_reaction_asset_catalog(self) -> OwnedReactionAssetCatalog:
@@ -3677,7 +3679,7 @@ class PrivateCompanionPageApi(
                 }
             )
         except Exception:
-            logger.error("[PrivateCompanionPage] owned reaction asset status failed")
+            logger.error("owned reaction asset status failed")
             return self._exception_error("无法读取自有反应图素材状态")
 
     async def get_owned_reaction_asset_image_data(self) -> dict[str, Any]:
@@ -3702,7 +3704,7 @@ class PrivateCompanionPageApi(
                 )
             )
         except Exception:
-            logger.error("[PrivateCompanionPage] owned reaction asset preview failed")
+            logger.error("owned reaction asset preview failed")
             return self._exception_error("无法读取自有反应图预览")
 
     async def compile_photo_reference_metadata(self) -> dict[str, Any]:
@@ -3719,7 +3721,7 @@ class PrivateCompanionPageApi(
             result = compile_reference_metadata(intent, presets, saved=saved)
             return self._ok(result.to_dict())
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 编译参考图元数据失败: {exc}", exc_info=True)
+            logger.error(f"编译参考图元数据失败: {exc}", exc_info=True)
             return self._exception_error("编译参考图元数据失败")
 
     async def _photo_reference_selection_trial_model_runner(
@@ -3781,7 +3783,7 @@ class PrivateCompanionPageApi(
                 timeout_key="LLM_PROVIDER_ID",
             )
         except Exception as exc:
-            logger.info("[PrivateCompanionPage] 参考图试跑主模型工具判断失败: %s", exc)
+            logger.info("参考图试跑主模型工具判断失败: %s", exc)
             return {
                 "tool_name": "",
                 "arguments": {},
@@ -3828,7 +3830,7 @@ class PrivateCompanionPageApi(
                 return []
             conversation = await manager.get_conversation(umo, conversation_id)
         except Exception as exc:
-            logger.debug("[PrivateCompanionPage] 参考图试跑读取会话失败: %s", self._single_line(exc, 120))
+            logger.debug("参考图试跑读取会话失败: %s", self._single_line(exc, 120))
             return []
         raw_history = getattr(conversation, "history", "") if conversation is not None else ""
         if isinstance(raw_history, str):
@@ -3920,7 +3922,7 @@ class PrivateCompanionPageApi(
         try:
             persona_prompt, effective_persona_id = await self._roleplay_persona_prompt_for_id(persona_id, umo)
         except Exception as exc:
-            logger.debug("[PrivateCompanionPage] 参考图试跑读取人格失败: %s", self._single_line(exc, 120))
+            logger.debug("参考图试跑读取人格失败: %s", self._single_line(exc, 120))
             persona_prompt, effective_persona_id = "", persona_id
         daily_state = data.get("daily_state") if isinstance(data.get("daily_state"), Mapping) else {}
         daily_plan = data.get("daily_plan") if isinstance(data.get("daily_plan"), Mapping) else {}
@@ -3975,7 +3977,7 @@ class PrivateCompanionPageApi(
             if isinstance(selected, SelectionResult):
                 return selected
         except Exception as exc:
-            logger.info("[PrivateCompanionPage] 参考图试跑正式选图失败，使用规则兜底: %s", exc)
+            logger.info("参考图试跑正式选图失败，使用规则兜底: %s", exc)
             return SelectionResult(
                 selected=rule_selection.selected,
                 candidates=rule_selection.candidates,
@@ -4068,13 +4070,13 @@ class PrivateCompanionPageApi(
                     f"模型审批超时（超过 {review_timeout:.0f} 秒未返回），已使用本地证据合并。"
                 )
                 logger.warning(
-                    "[PrivateCompanionPage] 参考图问答模型审批超时: provider=%s timeout=%.1fs",
+                    "参考图问答模型审批超时: provider=%s timeout=%.1fs",
                     self._single_line(provider_id, 160),
                     review_timeout,
                 )
             except Exception as exc:
                 review_warning = f"模型审批失败，已使用本地证据合并：{self._single_line(exc, 180)}"
-                logger.warning("[PrivateCompanionPage] 参考图问答模型审批失败: %s", exc, exc_info=True)
+                logger.warning("参考图问答模型审批失败: %s", exc, exc_info=True)
         elif not use_model:
             review_warning = "本次请求关闭了模型审批，已使用本地证据合并。"
         elif not provider_id:
@@ -4110,7 +4112,7 @@ class PrivateCompanionPageApi(
             }
             return self._ok(result)
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 审批后编译参考图元数据失败: {exc}", exc_info=True)
+            logger.error(f"审批后编译参考图元数据失败: {exc}", exc_info=True)
             return self._exception_error("审批后编译参考图元数据失败")
 
     async def run_photo_reference_selection_trial(self) -> dict[str, Any]:
@@ -4192,7 +4194,7 @@ class PrivateCompanionPageApi(
             )
             return self._ok(report.to_dict())
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 参考图选图试跑失败: {exc}", exc_info=True)
+            logger.error(f"参考图选图试跑失败: {exc}", exc_info=True)
             return self._exception_error("参考图选图试跑失败")
 
     def _reference_asset_records(self) -> list[dict[str, Any]]:
@@ -4322,7 +4324,7 @@ class PrivateCompanionPageApi(
                     result = await result
                 return _path_text(result, 1200)
             except Exception as exc:
-                logger.info("[PrivateCompanionPage] 参考资产稳定落盘失败: type=%s", type(exc).__name__)
+                logger.info("参考资产稳定落盘失败: type=%s", type(exc).__name__)
                 return ""
         writer = getattr(self.plugin, "_photo_reference_write_data_image", None)
         if callable(writer) and (str(source).startswith("data:") or str(source).startswith("base64://")):
@@ -4433,7 +4435,7 @@ class PrivateCompanionPageApi(
         try:
             return self._ok(await self._encode_image_cache_file_data_url(path, mime, max_bytes=PHOTO_REFERENCE_PREVIEW_MAX_BYTES))
         except Exception as exc:
-            logger.info("[PrivateCompanionPage] 参考资产预览失败: type=%s", type(exc).__name__)
+            logger.info("参考资产预览失败: type=%s", type(exc).__name__)
             return self._error("参考资产预览失败")
 
     async def upload_reference_asset(self) -> dict[str, Any]:
@@ -4782,7 +4784,7 @@ class PrivateCompanionPageApi(
                 "scopes": sorted(PHOTO_REFERENCE_ASSET_SCOPES),
             })
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 获取参考资产列表失败: %s", exc, exc_info=True)
+            logger.error("获取参考资产列表失败: %s", exc, exc_info=True)
             return self._error(str(exc))
 
     async def get_photo_reference_asset_image_data(self) -> dict[str, Any]:
@@ -4809,7 +4811,7 @@ class PrivateCompanionPageApi(
                 return self._error("参考资产文件类型不受支持")
             return self._ok(await self._encode_image_cache_file_data_url(path, mime, max_bytes=PHOTO_REFERENCE_ASSET_MAX_BYTES))
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 获取参考资产预览失败: %s", exc, exc_info=True)
+            logger.error("获取参考资产预览失败: %s", exc, exc_info=True)
             return self._error(str(exc))
 
     async def upload_photo_reference_asset(self) -> dict[str, Any]:
@@ -4975,7 +4977,7 @@ class PrivateCompanionPageApi(
             response.headers["Cache-Control"] = "no-store, max-age=0"
             return response
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 获取图片缓存预览失败: {exc}", exc_info=True)
+            logger.error(f"获取图片缓存预览失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def get_image_cache_preview_data(self) -> dict[str, Any]:
@@ -4986,7 +4988,7 @@ class PrivateCompanionPageApi(
             _key, path = resolved
             return self._ok(await self._encode_image_cache_file_data_url(path))
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 获取图片缓存预览数据失败: {exc}", exc_info=True)
+            logger.error(f"获取图片缓存预览数据失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def get_image_cache_thumbnail_data(self) -> dict[str, Any]:
@@ -5000,7 +5002,7 @@ class PrivateCompanionPageApi(
                 return self._ok(await self._encode_image_cache_file_data_url(thumbnail, "image/webp"))
             return self._ok(await self._encode_image_cache_file_data_url(source))
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 获取图片缓存缩略图失败: {exc}", exc_info=True)
+            logger.error(f"获取图片缓存缩略图失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def delete_image_cache_item(self) -> dict[str, Any]:
@@ -5022,7 +5024,7 @@ class PrivateCompanionPageApi(
             self._remove_image_cache_preview_file(preview_path, key)
             return self._ok({"key": key, "remaining": remaining})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 删除图片缓存失败: {exc}", exc_info=True)
+            logger.error(f"删除图片缓存失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def bulk_delete_image_cache_items(self) -> dict[str, Any]:
@@ -5073,7 +5075,7 @@ class PrivateCompanionPageApi(
                 }
             )
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 批量删除图片缓存失败: {exc}", exc_info=True)
+            logger.error(f"批量删除图片缓存失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     def _remove_image_cache_preview_file(self, preview_path: str, key: str = "") -> None:
@@ -5179,7 +5181,7 @@ class PrivateCompanionPageApi(
             try:
                 return self._ok(self._normalize_reality_touch_snapshot(linked_snapshotter()))
             except Exception as exc:
-                logger.error("[PrivateCompanionPage] 获取现实触及联动状态失败: %s", exc, exc_info=True)
+                logger.error("获取现实触及联动状态失败: %s", exc, exc_info=True)
                 return self._exception_error("获取现实触及联动状态失败")
         return self._error(
             "现实触及已由“我会来到你身边”管理，请先安装并启用 astrbot_plugin_reality_companion。",
@@ -5207,7 +5209,7 @@ class PrivateCompanionPageApi(
                 snapshot["message"] = self._single_line(result.get("message"), 240) or "现实触及联动操作已完成"
                 return self._ok(snapshot)
             except Exception as exc:
-                logger.error("[PrivateCompanionPage] 更新现实触及联动失败: %s", exc, exc_info=True)
+                logger.error("更新现实触及联动失败: %s", exc, exc_info=True)
                 return self._exception_error("更新现实触及联动失败")
         return self._error(
             "现实触及已由“我会来到你身边”管理，请先安装并启用 astrbot_plugin_reality_companion。",
@@ -5502,7 +5504,7 @@ class PrivateCompanionPageApi(
                 ),
                 "",
             )
-            logger.warning("[PrivateCompanionPage] 参考图目录字段校验失败: %s", self._single_line(exc, 240))
+            logger.warning("参考图目录字段校验失败: %s", self._single_line(exc, 240))
             return {
                 "success": False,
                 "error": f"参考图目录存在无效字段：{detail}" if detail else "参考图目录存在无效字段",
@@ -5515,14 +5517,14 @@ class PrivateCompanionPageApi(
                     await self._rollback_multi_persona_transition(mode_transition_snapshot)
                 except Exception as rollback_exc:
                     logger.error(
-                        "[PrivateCompanionPage] 多人格模式切换回滚失败: %s",
+                        "多人格模式切换回滚失败: %s",
                         rollback_exc,
                         exc_info=True,
                     )
                     return self._exception_error(
                         f"{exc}；多人格模式切换回滚失败: {rollback_exc}"
                     )
-            logger.error(f"[PrivateCompanionPage] 更新设置失败: {exc}", exc_info=True)
+            logger.error(f"更新设置失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
         finally:
             if story_authority_identity is not None:
@@ -5675,7 +5677,7 @@ class PrivateCompanionPageApi(
             return bool(await self._save_config_if_possible())
         except Exception as exc:
             logger.error(
-                "[PrivateCompanionPage] REQ-041 配置回滚持久化失败: %s",
+                "REQ-041 配置回滚持久化失败: %s",
                 self._single_line(exc, 160),
             )
             return False
@@ -5775,7 +5777,7 @@ class PrivateCompanionPageApi(
                 overview["data"] = data
             return overview
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 切换在线生图 API 失败: {exc}", exc_info=True)
+            logger.error(f"切换在线生图 API 失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def export_migration_config(self) -> dict[str, Any]:
@@ -5783,14 +5785,14 @@ class PrivateCompanionPageApi(
             package = await self._build_migration_package(self._migration_export_options_from_request())
             return self._ok(package)
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 导出配置备份失败: {exc}", exc_info=True)
+            logger.error(f"导出配置备份失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def list_migration_backups(self) -> dict[str, Any]:
         try:
             return self._ok({"items": self._list_migration_backup_items(limit=8)})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 读取配置备份列表失败: {exc}", exc_info=True)
+            logger.error(f"读取配置备份列表失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def restore_migration_backup(self) -> dict[str, Any]:
@@ -5810,7 +5812,7 @@ class PrivateCompanionPageApi(
             overview["data"] = data
             return overview
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 恢复配置备份失败: {exc}", exc_info=True)
+            logger.error(f"恢复配置备份失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def preview_migration_config_import(self) -> dict[str, Any]:
@@ -5825,7 +5827,7 @@ class PrivateCompanionPageApi(
             summary["message"] = "已读取备份，确认后才会写入。"
             return self._ok(summary)
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 预览配置导入失败: {exc}", exc_info=True)
+            logger.error(f"预览配置导入失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def apply_migration_config_import(self) -> dict[str, Any]:
@@ -5846,7 +5848,7 @@ class PrivateCompanionPageApi(
                 mode = "merge"
             return await self._apply_migration_normalized(normalized, mode=mode, conflict=conflict)
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 应用配置导入失败: {exc}", exc_info=True)
+            logger.error(f"应用配置导入失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def update_proactive_only_unlock(self) -> dict[str, Any]:
@@ -5871,7 +5873,7 @@ class PrivateCompanionPageApi(
                 }
             )
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 更新主动专用临时放行失败: {exc}", exc_info=True)
+            logger.error(f"更新主动专用临时放行失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def delete_proactive_candidate(self) -> dict[str, Any]:
@@ -5934,7 +5936,7 @@ class PrivateCompanionPageApi(
                 }
             )
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 删除主动候选失败: {exc}", exc_info=True)
+            logger.error(f"删除主动候选失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def prune_proactive_candidates(self) -> dict[str, Any]:
@@ -5965,7 +5967,7 @@ class PrivateCompanionPageApi(
                 }
             )
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 压缩主动候选失败: {exc}", exc_info=True)
+            logger.error(f"压缩主动候选失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     def _troubleshooting_warning_type(self, scope: str, *parts: Any) -> str:
@@ -6187,7 +6189,7 @@ class PrivateCompanionPageApi(
                 }
             )
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 更新排障警告屏蔽失败: %s", self._single_line(exc, 160), exc_info=True)
+            logger.error("更新排障警告屏蔽失败: %s", self._single_line(exc, 160), exc_info=True)
             return self._exception_error(str(exc))
 
     async def get_diagnostics(self) -> dict[str, Any]:
@@ -6215,7 +6217,7 @@ class PrivateCompanionPageApi(
                 }
             )
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 获取诊断失败: {exc}", exc_info=True)
+            logger.error(f"获取诊断失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def get_troubleshooting(self) -> dict[str, Any]:
@@ -6339,7 +6341,7 @@ class PrivateCompanionPageApi(
                 }
             )
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 获取排障信息失败: {exc}", exc_info=True)
+            logger.error(f"获取排障信息失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def get_daily_review(self) -> dict[str, Any]:
@@ -6351,7 +6353,7 @@ class PrivateCompanionPageApi(
                 payload = payload_getter()
             return self._ok(payload)
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 获取每日巡视报告失败: %s", self._single_line(exc, 180), exc_info=True)
+            logger.error("获取每日巡视报告失败: %s", self._single_line(exc, 180), exc_info=True)
             return self._error(str(exc))
 
     async def run_daily_review(self) -> dict[str, Any]:
@@ -6370,7 +6372,7 @@ class PrivateCompanionPageApi(
                 status = self.plugin._daily_review_status_payload()
             return self._ok({"report": report, **status})
         except Exception as exc:
-            logger.warning("[PrivateCompanionPage] 手动执行每日巡视失败: %s", self._single_line(exc, 180))
+            logger.warning("手动执行每日巡视失败: %s", self._single_line(exc, 180))
             return self._error(str(exc))
 
     async def update_daily_review_guidance(self) -> dict[str, Any]:
@@ -6389,7 +6391,7 @@ class PrivateCompanionPageApi(
                 status = self.plugin._daily_review_status_payload()
             return self._ok(status)
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 更新每日巡视指导失败: %s", self._single_line(exc, 180), exc_info=True)
+            logger.error("更新每日巡视指导失败: %s", self._single_line(exc, 180), exc_info=True)
             return self._error(str(exc))
 
     async def _recover_stale_troubleshooting_proactive_test(self, *, max_age_seconds: int = 120) -> int:
@@ -7076,7 +7078,7 @@ class PrivateCompanionPageApi(
         result_key = test_type
         start = time.time()
         logger.info(
-            "[PrivateCompanionPage][test:%s][type:%s] 开始执行测试",
+            "[test:%s][type:%s] 开始执行测试",
             request_id,
             test_type or "unknown",
         )
@@ -7117,14 +7119,14 @@ class PrivateCompanionPageApi(
                     limit=1600,
                 )
                 logger.warning(
-                    "[PrivateCompanionPage] 外部接口排障测试失败: type=%s err=%s",
+                    "外部接口排障测试失败: type=%s err=%s",
                     test_type,
                     self._single_line(safe_error, 160),
                 )
             else:
                 safe_error = self._safe_test_diagnostic_text(exc, 1600)
                 logger.warning(
-                    "[PrivateCompanionPage] 排障链路测试失败: %s",
+                    "排障链路测试失败: %s",
                     self._single_line(exc, 160),
                     exc_info=True,
                 )
@@ -7149,7 +7151,7 @@ class PrivateCompanionPageApi(
         )
         await self._remember_troubleshooting_test_result(result_key, result)
         logger.info(
-            "[PrivateCompanionPage][test:%s][type:%s] 测试结束: status=%s elapsed_ms=%s",
+            "[test:%s][type:%s] 测试结束: status=%s elapsed_ms=%s",
             result.get("request_id"),
             test_type,
             result.get("test_status"),
@@ -7235,7 +7237,7 @@ class PrivateCompanionPageApi(
             return True
         except OSError as exc:
             logger.warning(
-                "[PrivateCompanionPage] 清理生图 API 测试图片失败: path=%s error=%s",
+                "清理生图 API 测试图片失败: path=%s error=%s",
                 self._single_line(path, 180),
                 self._single_line(exc, 160),
             )
@@ -7773,7 +7775,7 @@ class PrivateCompanionPageApi(
             api = getter() if callable(getter) else None
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanionPage] 生图扩展发现失败: %s",
+                "生图扩展发现失败: %s",
                 self._single_line(exc, 160),
                 exc_info=True,
             )
@@ -7811,7 +7813,7 @@ class PrivateCompanionPageApi(
             value = status_getter()
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanionPage] 获取生图扩展状态失败: %s",
+                "获取生图扩展状态失败: %s",
                 self._single_line(exc, 160),
                 exc_info=True,
             )
@@ -7854,7 +7856,7 @@ class PrivateCompanionPageApi(
             return self._ok(payload)
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanionPage] 读取生图 debug 失败: %s",
+                "读取生图 debug 失败: %s",
                 self._single_line(exc, 180),
                 exc_info=True,
             )
@@ -7876,20 +7878,20 @@ class PrivateCompanionPageApi(
                 }
             )
         except Exception as exc:
-            logger.warning("[PrivateCompanionPage] 获取生图 API 状态失败: %s", self._single_line(exc, 160), exc_info=True)
+            logger.warning("获取生图 API 状态失败: %s", self._single_line(exc, 160), exc_info=True)
             return self._exception_error(str(exc))
 
     async def test_image_api_endpoint(self) -> dict[str, Any]:
         payload = await request.get_json(silent=True) or {}
         request_id = secrets.token_hex(6)
         started = time.time()
-        logger.info("[PrivateCompanionPage][test:%s][type:image_api_endpoint] 开始执行测试", request_id)
+        logger.info("[test:%s][type:image_api_endpoint] 开始执行测试", request_id)
         try:
             result = await self._run_image_api_endpoint_test(payload)
         except Exception as exc:
             endpoint = payload.get("endpoint") if isinstance(payload.get("endpoint"), dict) else {}
             safe_error = self._redact_image_api_test_text(exc, endpoint, 220)
-            logger.warning("[PrivateCompanionPage] 生图 API 单独测试失败: %s", safe_error)
+            logger.warning("生图 API 单独测试失败: %s", safe_error)
             result = {
                 "ok": False,
                 "title": "在线图片 API 单独测试",
@@ -7917,7 +7919,7 @@ class PrivateCompanionPageApi(
         result_key = self._single_line(result.get("test_key"), 80) or "image_api_endpoint"
         await self._remember_troubleshooting_test_result(result_key, result)
         logger.info(
-            "[PrivateCompanionPage][test:%s][type:image_api_endpoint] 测试结束: status=%s elapsed_ms=%s",
+            "[test:%s][type:image_api_endpoint] 测试结束: status=%s elapsed_ms=%s",
             result.get("request_id"),
             result.get("test_status"),
             result.get("elapsed_ms"),
@@ -8046,7 +8048,7 @@ class PrivateCompanionPageApi(
                 elapsed_ms = int((time.time() - started) * 1000)
                 safe_error = self._redact_image_api_test_text(exc, endpoint, 220)
                 logger.warning(
-                    "[PrivateCompanionPage] 在线图片 API 单端点测试失败: endpoint=%s error=%s",
+                    "在线图片 API 单端点测试失败: endpoint=%s error=%s",
                     self._single_line(summary["name"], 80),
                     safe_error,
                 )
@@ -8133,7 +8135,7 @@ class PrivateCompanionPageApi(
                     )
                 except Exception as exc:
                     logger.info(
-                        "[PrivateCompanionPage] 自拍排障参考图解析失败: %s",
+                        "自拍排障参考图解析失败: %s",
                         self._single_line(exc, 160),
                     )
         prompt_text = self._single_line(payload.get("prompt"), 600)
@@ -8169,7 +8171,7 @@ class PrivateCompanionPageApi(
             reference_image_path=reference_image_path,
         )
         logger.info(
-            "[PrivateCompanionPage] 图片生成排障测试开始: workflow_kind=%s prompt_chars=%s reference=%s timeout=%ss estimated=%ss prompt=%s",
+            "图片生成排障测试开始: workflow_kind=%s prompt_chars=%s reference=%s timeout=%ss estimated=%ss prompt=%s",
             self._single_line(workflow_kind, 40),
             len(str(prompt_text or "")),
             has_reference_source,
@@ -8248,7 +8250,7 @@ class PrivateCompanionPageApi(
             except Exception:
                 exists = False
         logger.info(
-            "[PrivateCompanionPage] 图片生成排障测试结束: ok=%s backend=%s elapsed=%sms path=%s exists=%s size=%s note=%s",
+            "图片生成排障测试结束: ok=%s backend=%s elapsed=%sms path=%s exists=%s size=%s note=%s",
             bool(image_path and exists),
             self._single_line(backend_name, 80),
             elapsed_ms,
@@ -8518,7 +8520,7 @@ class PrivateCompanionPageApi(
                 event = screen_plugin._create_virtual_event(umo)
             except Exception as exc:
                 logger.info(
-                    "[PrivateCompanionPage] 窥屏排障虚拟事件创建失败,将无事件调用: umo=%s error=%s",
+                    "窥屏排障虚拟事件创建失败,将无事件调用: umo=%s error=%s",
                     self._single_line(umo, 120),
                     self._single_line(exc, 120),
                 )
@@ -8540,7 +8542,7 @@ class PrivateCompanionPageApi(
         except Exception as exc:
             elapsed_ms = int((time.time() - started) * 1000)
             error = self._single_line(exc, 220)
-            logger.warning("[PrivateCompanionPage] 窥屏排障测试失败: %s", error, exc_info=True)
+            logger.warning("窥屏排障测试失败: %s", error, exc_info=True)
             return {
                 "ok": False,
                 "title": "窥屏链路测试",
@@ -8554,7 +8556,7 @@ class PrivateCompanionPageApi(
         unusable = bool(unusable_checker(context)) if callable(unusable_checker) else not bool(raw_result)
         preview = self._single_line(raw_result, 220)
         logger.info(
-            "[PrivateCompanionPage] 窥屏排障测试结束: ok=%s elapsed=%sms umo=%s preview=%s",
+            "窥屏排障测试结束: ok=%s elapsed=%sms umo=%s preview=%s",
             not unusable,
             elapsed_ms,
             self._single_line(umo, 120),
@@ -8744,7 +8746,7 @@ class PrivateCompanionPageApi(
         requested_umo = self._single_line(payload.get("umo"), 180)
         if requested_umo and requested_umo != umo:
             logger.info(
-                "[PrivateCompanionPage] TTS 排障测试忽略非主要用户目标: requested=%s owner=%s",
+                "TTS 排障测试忽略非主要用户目标: requested=%s owner=%s",
                 requested_umo,
                 umo,
             )
@@ -8833,12 +8835,12 @@ class PrivateCompanionPageApi(
             )
             if delivered:
                 logger.info(
-                    "[PrivateCompanionPage] TTS 排障测试语音投递成功: umo=%s",
+                    "TTS 排障测试语音投递成功: umo=%s",
                     self._single_line(umo, 140),
                 )
             else:
                 logger.warning(
-                    "[PrivateCompanionPage] TTS 排障测试语音投递失败: umo=%s error=%s",
+                    "TTS 排障测试语音投递失败: umo=%s error=%s",
                     self._single_line(umo, 140),
                     self._single_line(delivery_error, 180),
                 )
@@ -8935,7 +8937,7 @@ class PrivateCompanionPageApi(
             resolved_umo = self._single_line(route_resolver(target_user_id), 180) if callable(route_resolver) else ""
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanionPage] 主动消息链路测试解析当前投递会话失败: user=%s error=%s",
+                "主动消息链路测试解析当前投递会话失败: user=%s error=%s",
                 self._single_line(target_user_id, 80),
                 self._single_line(exc, 160),
             )
@@ -9167,7 +9169,7 @@ class PrivateCompanionPageApi(
         wakeup_task = self._schedule_troubleshooting_proactive_wakeup(target_user_id, scheduled_ts)
         if wakeup_task is None:
             logger.info(
-                "[PrivateCompanionPage] 主动消息链路测试未建立单独唤醒任务，将继续等待常驻主动循环: user=%s",
+                "主动消息链路测试未建立单独唤醒任务，将继续等待常驻主动循环: user=%s",
                 self._single_line(target_user_id, 80),
             )
         add_step("临时任务", "ok", f"已预约 {delay_seconds} 秒后由主动循环执行")
@@ -9210,7 +9212,7 @@ class PrivateCompanionPageApi(
                         candidates.append(self._single_line(route_resolver(resolved_user_id), 180))
                     except Exception as exc:
                         logger.warning(
-                            "[PrivateCompanionPage] TTS 排障测试解析主要用户投递会话失败: user=%s error=%s",
+                            "TTS 排障测试解析主要用户投递会话失败: user=%s error=%s",
                             self._single_line(resolved_user_id, 80),
                             self._single_line(exc, 160),
                         )
@@ -10191,7 +10193,7 @@ class PrivateCompanionPageApi(
                         raw.pop(stale_key, None)
                 self.plugin._save_data_sync(sections={"troubleshooting_test_results"})
         except Exception as exc:
-            logger.warning("[PrivateCompanionPage] 保存排障测试结果失败: %s", self._single_line(exc, 120))
+            logger.warning("保存排障测试结果失败: %s", self._single_line(exc, 120))
 
     def _troubleshooting_test_results(self, data: dict[str, Any]) -> dict[str, Any]:
         raw = data.get("troubleshooting_test_results")
@@ -11493,7 +11495,7 @@ class PrivateCompanionPageApi(
             self._attach_multi_persona_token_stats(stats)
             return self._ok(stats)
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 获取 Token 统计失败: {exc}", exc_info=True)
+            logger.error(f"获取 Token 统计失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     @_multi_persona_page_context
@@ -11505,7 +11507,7 @@ class PrivateCompanionPageApi(
                 self.plugin._save_data_sync(sections={"token_usage"})
             return self._ok(self._token_stats_payload({}, balance_state))
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 重置 Token 统计失败: {exc}", exc_info=True)
+            logger.error(f"重置 Token 统计失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def unlock_bookshelf(self) -> dict[str, Any]:
@@ -11523,7 +11525,7 @@ class PrivateCompanionPageApi(
                 data = deepcopy(self.plugin.data)
             return self._ok({"bookshelf": await self._bookshelf_summary(data, unlocked=True, access_token=access_token)})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 解锁资料柜夹层失败: {exc}", exc_info=True)
+            logger.error(f"解锁资料柜夹层失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def get_bookshelf_session(self) -> dict[str, Any]:
@@ -11545,7 +11547,7 @@ class PrivateCompanionPageApi(
             bookshelf["access_expires_at"] = int(expires_at) if expires_at > 0 else 0
             return self._ok({"bookshelf": bookshelf})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 恢复资料柜夹层会话失败: {exc}", exc_info=True)
+            logger.error(f"恢复资料柜夹层会话失败: {exc}", exc_info=True)
             return self._error(str(exc))
 
     def _memo_notes_payload(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -11590,7 +11592,7 @@ class PrivateCompanionPageApi(
                 data = deepcopy(self.plugin.data)
             return self._ok({"memo_notes": self._memo_notes_payload(data)})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 获取备忘便签失败: {exc}", exc_info=True)
+            logger.error(f"获取备忘便签失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def update_memo_note(self) -> dict[str, Any]:
@@ -11611,7 +11613,7 @@ class PrivateCompanionPageApi(
         except ValueError as exc:
             return self._exception_error(str(exc))
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 更新备忘便签失败: {exc}", exc_info=True)
+            logger.error(f"更新备忘便签失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     @staticmethod
@@ -11971,7 +11973,7 @@ class PrivateCompanionPageApi(
             response.headers["Cache-Control"] = "no-store, max-age=0"
             return response
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 读取资料柜图片失败: {exc}", exc_info=True)
+            logger.error(f"读取资料柜图片失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def get_bookshelf_image_data(self) -> dict[str, Any]:
@@ -11993,7 +11995,7 @@ class PrivateCompanionPageApi(
                 }
             )
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 读取资料柜图片数据失败: {exc}", exc_info=True)
+            logger.error(f"读取资料柜图片数据失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def _read_file_base64(self, path: Path) -> str:
@@ -12049,7 +12051,7 @@ class PrivateCompanionPageApi(
                 return {"error": "图片文件不存在"}
             return path
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 读取资料柜图片失败: {exc}", exc_info=True)
+            logger.error(f"读取资料柜图片失败: {exc}", exc_info=True)
             return {"error": str(exc)}
 
     async def delete_bookshelf_item(self) -> dict[str, Any]:
@@ -12146,7 +12148,7 @@ class PrivateCompanionPageApi(
                             self._remember_deleted_diary_day(deleted_date)
                     remaining = len(self.plugin.data.get("bot_diaries", []))
                     logger.info(
-                        "[PrivateCompanionPage] 日记删除: changed=%s date=%s entry=%s storage=%s remaining=%s",
+                        "日记删除: changed=%s date=%s entry=%s storage=%s remaining=%s",
                         changed,
                         diary_date_key,
                         diary_entry_key,
@@ -12258,7 +12260,7 @@ class PrivateCompanionPageApi(
                     self._cleanup_bookshelf_page_files(removed_pages)
                     self._cleanup_bookshelf_album_dirs(removed_album_ids)
                     logger.info(
-                        "[PrivateCompanionPage] 资料柜夹层移除: changed=%s id=%s album_id=%s title=%s removed=%s",
+                        "资料柜夹层移除: changed=%s id=%s album_id=%s title=%s removed=%s",
                         changed,
                         item_id,
                         album_id,
@@ -12274,7 +12276,7 @@ class PrivateCompanionPageApi(
                 data = deepcopy(self.plugin.data)
             return self._ok({"changed": changed, "bookshelf": await self._bookshelf_summary(data, unlocked=True, access_token=access_token)})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 删除资料柜项目失败: {exc}", exc_info=True)
+            logger.error(f"删除资料柜项目失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
         finally:
             if story_authority_identity is not None:
@@ -12372,7 +12374,7 @@ class PrivateCompanionPageApi(
                 data = deepcopy(self.plugin.data)
             return self._ok({"bookshelf": await self._bookshelf_summary(data, unlocked=True, access_token=access_token)})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 更新资料柜阅读进度失败: {exc}", exc_info=True)
+            logger.error(f"更新资料柜阅读进度失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def rate_bookshelf_item(self) -> dict[str, Any]:
@@ -12421,7 +12423,7 @@ class PrivateCompanionPageApi(
                 data = deepcopy(self.plugin.data)
             return self._ok({"bookshelf": await self._bookshelf_summary(data, unlocked=True, access_token=access_token)})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 保存资料归档评分失败: {exc}", exc_info=True)
+            logger.error(f"保存资料归档评分失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     def _normalize_bookshelf_tag_list(self, value: Any, *, limit: int = 8) -> list[str]:
@@ -12531,7 +12533,7 @@ class PrivateCompanionPageApi(
                 data = deepcopy(self.plugin.data)
             return self._ok({"bookshelf": await self._bookshelf_summary(data, unlocked=True, access_token=access_token)})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 保存资料归档标签失败: {exc}", exc_info=True)
+            logger.error(f"保存资料归档标签失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     def _resolve_bookshelf_data_file(self, value: Any) -> Path | None:
@@ -12676,7 +12678,7 @@ class PrivateCompanionPageApi(
                 data = deepcopy(self.plugin.data)
             return self._ok({"message": "Bot 已重新读过并更新读后感", "bookshelf": await self._bookshelf_summary(data, unlocked=True, access_token=access_token)})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 更新资料归档批注失败: {exc}", exc_info=True)
+            logger.error(f"更新资料归档批注失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def import_worldbook(self) -> dict[str, Any]:
@@ -12696,7 +12698,7 @@ class PrivateCompanionPageApi(
                 data = deepcopy(self.plugin.data)
             return self._ok({"changed": changed, "worldbook": self._worldbook_summary(data)})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 导入世界书失败: {exc}", exc_info=True)
+            logger.error(f"导入世界书失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def update_worldbook_member(self) -> dict[str, Any]:
@@ -12850,7 +12852,7 @@ class PrivateCompanionPageApi(
                 response["bind"] = bind_result
             return self._ok(response)
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 更新关系节点失败: {exc}", exc_info=True)
+            logger.error(f"更新关系节点失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def get_worldbook_member_livingmemory(self) -> dict[str, Any]:
@@ -12997,10 +12999,10 @@ class PrivateCompanionPageApi(
                 }
             )
         except sqlite3.OperationalError as exc:
-            logger.warning(f"[PrivateCompanionPage] 查询 LivingMemory 失败: {exc}")
+            logger.warning(f"查询 LivingMemory 失败: {exc}")
             return self._exception_error("LivingMemory 数据库暂时不可读")
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 查询关系节点 LivingMemory 失败: {exc}", exc_info=True)
+            logger.error(f"查询关系节点 LivingMemory 失败: {exc}", exc_info=True)
             return self._exception_error(str(exc))
 
     async def clear_worldbook_pending_observations(self) -> dict[str, Any]:
@@ -13034,7 +13036,7 @@ class PrivateCompanionPageApi(
             message = f"已清理 {cleared} 条待确认观察" if cleared else "没有待确认观察需要清理"
             return self._ok({"message": message, "cleared": cleared, "worldbook": self._worldbook_summary(data)})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 清理待确认观察失败: {exc}", exc_info=True)
+            logger.error(f"清理待确认观察失败: {exc}", exc_info=True)
             return self._exception_error("清理待确认观察失败")
 
     async def update_worldbook_group(self) -> dict[str, Any]:
@@ -13090,7 +13092,7 @@ class PrivateCompanionPageApi(
                 data = deepcopy(self.plugin.data)
             return self._ok({"message": "已保存群资料", "worldbook": self._worldbook_summary(data)})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 更新群资料失败: {exc}", exc_info=True)
+            logger.error(f"更新群资料失败: {exc}", exc_info=True)
             return self._exception_error("更新群资料失败")
 
     async def apply_preset(self) -> dict[str, Any]:
@@ -13118,7 +13120,7 @@ class PrivateCompanionPageApi(
                 overview["data"]["config_saved"] = config_saved
             return overview
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 应用预设失败: {exc}", exc_info=True)
+            logger.error(f"应用预设失败: {exc}", exc_info=True)
             return self._exception_error("应用预设失败")
 
     async def update_skill_growth(self) -> dict[str, Any]:
@@ -13220,7 +13222,7 @@ class PrivateCompanionPageApi(
                 self.plugin._save_data_sync(sections={"skill_growth"})
                 return self._ok({"message": "已保存技能", "skill_growth": self._skill_growth_summary(self.plugin.data)})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 更新技能失败: {exc}", exc_info=True)
+            logger.error(f"更新技能失败: {exc}", exc_info=True)
             return self._exception_error("更新技能失败")
 
     async def update_personal_goal(self) -> dict[str, Any]:
@@ -13320,7 +13322,7 @@ class PrivateCompanionPageApi(
                 self.plugin._save_data_sync(sections={"personal_goals"})
                 return self._ok({"message": "已保存个人目标", "personal_goals": self._personal_goal_summary(self.plugin.data)})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 更新个人目标失败: {exc}", exc_info=True)
+            logger.error(f"更新个人目标失败: {exc}", exc_info=True)
             return self._exception_error("更新个人目标失败")
 
     @staticmethod
@@ -13554,7 +13556,7 @@ class PrivateCompanionPageApi(
                 self.plugin._save_data_sync(sections={"food_menu"})
                 return self._ok({"message": "已保存候选", "food_menu": self._food_menu_summary(self.plugin.data)})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 更新吃什么候选失败: {exc}", exc_info=True)
+            logger.error(f"更新吃什么候选失败: {exc}", exc_info=True)
             return self._exception_error("更新吃什么候选失败")
 
     async def bulk_update_food_menu(self) -> dict[str, Any]:
@@ -13649,7 +13651,7 @@ class PrivateCompanionPageApi(
                     }
                 )
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 批量更新吃什么候选失败: {exc}", exc_info=True)
+            logger.error(f"批量更新吃什么候选失败: {exc}", exc_info=True)
             return self._exception_error("批量更新吃什么候选失败")
 
     async def bulk_delete_food_menu(self) -> dict[str, Any]:
@@ -13696,7 +13698,7 @@ class PrivateCompanionPageApi(
                     }
                 )
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 批量删除吃什么候选失败: {exc}", exc_info=True)
+            logger.error(f"批量删除吃什么候选失败: {exc}", exc_info=True)
             return self._exception_error("批量删除吃什么候选失败")
 
     async def update_external_ability(self) -> dict[str, Any]:
@@ -13734,7 +13736,7 @@ class PrivateCompanionPageApi(
                 data = deepcopy(self.plugin.data)
             return self._ok({"message": "已保存外部主动能力", "external_abilities": self._external_ability_summary(data)})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 更新外部主动能力失败: {exc}", exc_info=True)
+            logger.error(f"更新外部主动能力失败: {exc}", exc_info=True)
             return self._exception_error("更新外部主动能力失败")
 
     async def list_roleplay_personas(self) -> dict[str, Any]:
@@ -13780,7 +13782,7 @@ class PrivateCompanionPageApi(
                 response["multi_persona"]["current"] = current or default_id
             return self._ok(response)
         except Exception as exc:
-            logger.warning(f"[PrivateCompanionPage] 获取人格列表失败: {exc}", exc_info=True)
+            logger.warning(f"获取人格列表失败: {exc}", exc_info=True)
             return self._ok({"items": self._fallback_roleplay_persona_items(), "current": "", "default": ""})
 
     async def get_persona_config_state(self) -> dict[str, Any]:
@@ -13871,7 +13873,7 @@ class PrivateCompanionPageApi(
             result = await resetter(persona_id, rebuild_today=True)
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanionPage] 重置当前人格失败 persona=%s error=%s",
+                "重置当前人格失败 persona=%s error=%s",
                 persona_id or "single",
                 self._single_line(exc, 180),
                 exc_info=True,
@@ -14184,7 +14186,7 @@ class PrivateCompanionPageApi(
                 system_prompt=system_prompt,
             )
             if raw is None:
-                logger.warning("[PrivateCompanionPage] 人格草稿生成：LLM 返回 None（可能预算受限或 Provider 不可用），使用兜底草稿")
+                logger.warning("人格草稿生成：LLM 返回 None（可能预算受限或 Provider 不可用），使用兜底草稿")
                 parsed = self._fallback_roleplay_draft_result(persona_prompt, scopes, "模型调用返回空结果（可能预算受限或 Provider 不可用）")
                 draft = self._normalize_roleplay_draft_result(parsed, scopes)
                 return self._ok(
@@ -14226,7 +14228,7 @@ class PrivateCompanionPageApi(
                         parse_note = f"初次返回无法解析，已使用 {repair_provider_id} 修复为 JSON。"
                     except Exception as repair_exc:
                         logger.warning(
-                            "[PrivateCompanionPage] 人格草稿 JSON 修复失败: %s；初次错误: %s",
+                            "人格草稿 JSON 修复失败: %s；初次错误: %s",
                             self._single_line(repair_exc, 160),
                             self._single_line(parse_exc, 160),
                             exc_info=True,
@@ -14258,7 +14260,7 @@ class PrivateCompanionPageApi(
                 }
             )
         except Exception as exc:
-            logger.warning(f"[PrivateCompanionPage] 根据主回复人格生成设定草稿失败: {exc}", exc_info=True)
+            logger.warning(f"根据主回复人格生成设定草稿失败: {exc}", exc_info=True)
             return self._exception_error("生成草稿失败")
 
     async def apply_setup_guide(self) -> dict[str, Any]:
@@ -14483,7 +14485,7 @@ class PrivateCompanionPageApi(
                 data["config_saved"] = config_saved
             return overview
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 首次配置落地失败: {exc}", exc_info=True)
+            logger.error(f"首次配置落地失败: {exc}", exc_info=True)
             return self._exception_error("首次配置落地失败")
 
     def _setup_guide_fallback_daily_plan(self, reason: str = "timeout") -> dict[str, Any]:
@@ -14557,7 +14559,7 @@ class PrivateCompanionPageApi(
                     pass
                 except Exception as exc:
                     logger.warning(
-                        "[PrivateCompanionPage] 首次配置后台日程生成失败: %s",
+                        "首次配置后台日程生成失败: %s",
                         self._single_line(exc, 180),
                         exc_info=True,
                     )
@@ -14576,7 +14578,7 @@ class PrivateCompanionPageApi(
                 return fallback, "fallback_timeout", True
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanionPage] 首次配置快速日程生成失败，使用兜底日程: %s",
+                "首次配置快速日程生成失败，使用兜底日程: %s",
                 self._single_line(exc, 180),
                 exc_info=True,
             )
@@ -14633,7 +14635,7 @@ class PrivateCompanionPageApi(
                             pass
                         except Exception as exc:
                             logger.warning(
-                                "[PrivateCompanionPage] 首次配置后台日程细化失败: %s",
+                                "首次配置后台日程细化失败: %s",
                                 self._single_line(exc, 180),
                                 exc_info=True,
                             )
@@ -14650,7 +14652,7 @@ class PrivateCompanionPageApi(
                     except Exception as exc:
                         detail_error = f"当前细化失败：{self._single_line(exc, 160)}"
                         logger.warning(
-                            "[PrivateCompanionPage] 首次配置日程细化失败: %s",
+                            "首次配置日程细化失败: %s",
                             self._single_line(exc, 180),
                             exc_info=True,
                         )
@@ -14685,7 +14687,7 @@ class PrivateCompanionPageApi(
                 }
             )
         except Exception as exc:
-            logger.warning(f"[PrivateCompanionPage] 首次配置日程生成失败: {exc}", exc_info=True)
+            logger.warning(f"首次配置日程生成失败: {exc}", exc_info=True)
             return self._ok({"ok": False, "error": self._single_line(exc, 220)})
 
     async def regenerate_daily_detail_segment(self) -> dict[str, Any]:
@@ -14858,7 +14860,7 @@ class PrivateCompanionPageApi(
                 data = self._overview_data_snapshot_locked(self.plugin.data)
             return self._ok({"key": key, "detail": detail, "daily_timeline": self._daily_timeline_summary(data)})
         except Exception as exc:
-            logger.warning("[PrivateCompanionPage] 局部重生成日程细化失败: %s", exc, exc_info=True)
+            logger.warning("局部重生成日程细化失败: %s", exc, exc_info=True)
             async with self.plugin._data_lock:
                 enhanced = self.plugin.data.setdefault("detail_enhanced_segments", {})
                 if isinstance(enhanced, dict) and key and generation_id and self.plugin._detail_generation_is_current(segment, generation_id):
@@ -15063,7 +15065,7 @@ class PrivateCompanionPageApi(
                             parse_note = f"初次返回无法解析，已使用 {repair_provider_id} 修复为 JSON。"
                         except Exception as repair_exc:
                             logger.warning(
-                                "[PrivateCompanionPage] 人格标准化 JSON 修复失败: %s；初次错误: %s",
+                                "人格标准化 JSON 修复失败: %s；初次错误: %s",
                                 self._single_line(repair_exc, 160),
                                 self._single_line(parse_exc, 160),
                                 exc_info=True,
@@ -15125,7 +15127,7 @@ class PrivateCompanionPageApi(
                                 parse_note = f"{parse_note} 初稿偏短，已尝试扩写；请重点审核参考资料是否被充分吸收。".strip()
                     except Exception as expand_exc:
                         logger.warning(
-                            "[PrivateCompanionPage] 人格标准化薄稿扩写失败: %s",
+                            "人格标准化薄稿扩写失败: %s",
                             self._single_line(expand_exc, 180),
                             exc_info=True,
                         )
@@ -15151,7 +15153,7 @@ class PrivateCompanionPageApi(
                 }
             )
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 人格标准化问卷生成失败: {exc}", exc_info=True)
+            logger.error(f"人格标准化问卷生成失败: {exc}", exc_info=True)
             return self._exception_error("人格标准化问卷生成失败")
 
     async def generate_persona_style_scenarios(self) -> dict[str, Any]:
@@ -15275,7 +15277,7 @@ class PrivateCompanionPageApi(
                     }
                 except Exception as batch_exc:
                     logger.warning(
-                        "[PrivateCompanionPage] 人格风格试答第 %s 批失败: %s",
+                        "人格风格试答第 %s 批失败: %s",
                         batch_index,
                         self._single_line(batch_exc, 180),
                         exc_info=True,
@@ -15342,7 +15344,7 @@ class PrivateCompanionPageApi(
                 }
             )
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 人格风格试答生成失败: {exc}", exc_info=True)
+            logger.error(f"人格风格试答生成失败: {exc}", exc_info=True)
             return self._exception_error("人格风格试答生成失败")
 
     async def retry_persona_style_scenario(self) -> dict[str, Any]:
@@ -15397,7 +15399,7 @@ class PrivateCompanionPageApi(
                 }
             )
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 人格风格单情景重生成失败: {exc}", exc_info=True)
+            logger.error(f"人格风格单情景重生成失败: {exc}", exc_info=True)
             return self._exception_error("人格风格单情景重生成失败")
 
     async def generate_persona_style_summary(self) -> dict[str, Any]:
@@ -15450,7 +15452,7 @@ class PrivateCompanionPageApi(
                 }
             )
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 人格风格规则归纳失败: {exc}", exc_info=True)
+            logger.error(f"人格风格规则归纳失败: {exc}", exc_info=True)
             return self._exception_error("人格风格规则归纳失败")
 
     def _standardize_persona_provider_id(self) -> str:
@@ -16580,7 +16582,7 @@ class PrivateCompanionPageApi(
                 }
             )
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 获取 Provider 列表失败: {exc}", exc_info=True)
+            logger.error(f"获取 Provider 列表失败: {exc}", exc_info=True)
             return self._exception_error("获取 Provider 列表失败")
 
     async def test_provider(self) -> dict[str, Any]:
@@ -16595,7 +16597,7 @@ class PrivateCompanionPageApi(
             timeout_seconds = self._float(timeout_raw, 0.0, 5.0, 600.0)
         request_id = secrets.token_hex(6)
         start = time.time()
-        logger.info("[PrivateCompanionPage][test:%s][type:provider_connection] 开始执行测试", request_id)
+        logger.info("[test:%s][type:provider_connection] 开始执行测试", request_id)
         try:
             if key in {"EMBEDDING_PROVIDER_ID", "REACTION_EXPRESSION_EMBEDDING_PROVIDER_ID"}:
                 provider = await self._embedding_provider_for_test(provider_id)
@@ -16688,7 +16690,7 @@ class PrivateCompanionPageApi(
             test_id=diagnostic_test_id("provider"),
         )
         logger.info(
-            "[PrivateCompanionPage][test:%s][type:provider_connection] 测试结束: status=%s elapsed_ms=%s",
+            "[test:%s][type:provider_connection] 测试结束: status=%s elapsed_ms=%s",
             request_id,
             result.get("test_status"),
             result.get("elapsed_ms"),
@@ -18051,7 +18053,7 @@ class PrivateCompanionPageApi(
             }
             return self._ok({"package": pack, "group_count": len(groups), "rule_count": sum(len(item["rules"]) for item in groups)})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 生成表达分享包失败: {exc}", exc_info=True)
+            logger.error(f"生成表达分享包失败: {exc}", exc_info=True)
             return self._exception_error("生成表达分享包失败")
 
     async def preview_expression_library_import(self) -> dict[str, Any]:
@@ -18085,7 +18087,7 @@ class PrivateCompanionPageApi(
         except ValueError as exc:
             return self._error(str(exc))
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 预览表达导入失败: {exc}", exc_info=True)
+            logger.error(f"预览表达导入失败: {exc}", exc_info=True)
             return self._exception_error("预览表达导入失败")
 
     async def apply_expression_library_import(self) -> dict[str, Any]:
@@ -18185,7 +18187,7 @@ class PrivateCompanionPageApi(
         except ValueError as exc:
             return self._error(str(exc))
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 导入表达分享包失败: {exc}", exc_info=True)
+            logger.error(f"导入表达分享包失败: {exc}", exc_info=True)
             return self._exception_error("导入表达分享包失败")
 
     def _expression_admin_scope_context(
@@ -18484,7 +18486,7 @@ class PrivateCompanionPageApi(
                             pass
             return self._ok(self._expression_library_summary(snapshot))
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 获取统一表达学习库失败: {exc}", exc_info=True)
+            logger.error(f"获取统一表达学习库失败: {exc}", exc_info=True)
             return self._exception_error("获取统一表达学习库失败")
 
     async def update_expression_library(self) -> dict[str, Any]:
@@ -18599,7 +18601,7 @@ class PrivateCompanionPageApi(
             except (ExpressionScopeError, ValueError) as exc:
                 return self._error(str(exc))
             except Exception as exc:
-                logger.error("[PrivateCompanionPage] 提升人格全局表达规则失败: %s", exc, exc_info=True)
+                logger.error("提升人格全局表达规则失败: %s", exc, exc_info=True)
                 return self._exception_error("提升人格全局表达规则失败")
         if action in {"batch_approve_rule_groups", "batch_reject_rule_groups"}:
             raw_items = payload.get("items")
@@ -18703,7 +18705,7 @@ class PrivateCompanionPageApi(
                 }
                 return self._ok(result)
             except Exception as exc:
-                logger.error(f"[PrivateCompanionPage] 批量审核表达规则失败: {exc}", exc_info=True)
+                logger.error(f"批量审核表达规则失败: {exc}", exc_info=True)
                 return self._error(str(exc))
         if action == "clear_all_pending":
             try:
@@ -18752,7 +18754,7 @@ class PrivateCompanionPageApi(
                 result["message"] = f"已清空 {cleared} 条待审核表达资料"
                 return self._ok(result)
             except Exception as exc:
-                logger.error(f"[PrivateCompanionPage] 清空统一表达待审样本失败: {exc}", exc_info=True)
+                logger.error(f"清空统一表达待审样本失败: {exc}", exc_info=True)
                 return self._exception_error("清空统一表达待审样本失败")
         if source_type not in {"private", "group", "persona"} or not source_id:
             return self._error("缺少有效的表达样本来源")
@@ -18827,7 +18829,7 @@ class PrivateCompanionPageApi(
         except ValueError as exc:
             return self._error(str(exc))
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 更新统一表达学习库失败: {exc}", exc_info=True)
+            logger.error(f"更新统一表达学习库失败: {exc}", exc_info=True)
             return self._exception_error("更新统一表达学习库失败")
 
     def _apply_expression_profile_action(self, user: dict[str, Any], payload: dict[str, Any]) -> str:
@@ -21648,7 +21650,7 @@ class PrivateCompanionPageApi(
             field_metadata = deepcopy(provider_metadata.get("items", {}) or {})
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanionPage] 读取 AstrBot TTS Provider 模板失败，将使用运行态字段: %s",
+                "读取 AstrBot TTS Provider 模板失败，将使用运行态字段: %s",
                 self._single_line(exc, 160),
             )
 
@@ -21909,7 +21911,7 @@ class PrivateCompanionPageApi(
         try:
             return self._ok(self._tts_provider_management_payload())
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 获取 TTS Provider 配置失败: %s", exc, exc_info=True)
+            logger.error("获取 TTS Provider 配置失败: %s", exc, exc_info=True)
             return self._error(self._single_line(exc, 240))
 
     async def create_tts_provider_config(self) -> dict[str, Any]:
@@ -22004,7 +22006,7 @@ class PrivateCompanionPageApi(
                 }
             )
             logger.info(
-                "[PrivateCompanionPage] 已复制语种专用 TTS Provider: language=%s source=%s clone=%s",
+                "已复制语种专用 TTS Provider: language=%s source=%s clone=%s",
                 language,
                 source_provider_id,
                 clone_id,
@@ -22012,7 +22014,7 @@ class PrivateCompanionPageApi(
             return self._ok(result)
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanionPage] 复制语种专用 TTS Provider 失败: language=%s source=%s error=%s",
+                "复制语种专用 TTS Provider 失败: language=%s source=%s error=%s",
                 language,
                 source_provider_id,
                 self._single_line(_redact_outbound_secrets(str(exc)), 240),
@@ -22045,7 +22047,7 @@ class PrivateCompanionPageApi(
             return self._ok(self._tts_provider_management_payload())
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanionPage] TTS Provider 保存失败: provider=%s error=%s",
+                "TTS Provider 保存失败: provider=%s error=%s",
                 provider_id,
                 self._single_line(_redact_outbound_secrets(str(exc)), 240),
             )
@@ -22056,7 +22058,7 @@ class PrivateCompanionPageApi(
         provider_id = self._single_line(payload.get("provider_id"), 160)
         request_id = secrets.token_hex(6)
         start = time.time()
-        logger.info("[PrivateCompanionPage][test:%s][type:tts_provider_connection] 开始执行测试", request_id)
+        logger.info("[test:%s][type:tts_provider_connection] 开始执行测试", request_id)
         try:
             manager = self._tts_provider_manager()
             config_getter = getattr(manager, "get_provider_config_by_id", None)
@@ -22128,7 +22130,7 @@ class PrivateCompanionPageApi(
             title="TTS Provider 连接测试",
         )
         logger.info(
-            "[PrivateCompanionPage][test:%s][type:tts_provider_connection] 测试结束: status=%s elapsed_ms=%s",
+            "[test:%s][type:tts_provider_connection] 测试结束: status=%s elapsed_ms=%s",
             request_id,
             result.get("test_status"),
             result.get("elapsed_ms"),
@@ -22842,7 +22844,7 @@ class PrivateCompanionPageApi(
                 )
             except CatalogValidationError as exc:
                 logger.warning(
-                    "[PrivateCompanionPage] 总览参考图目录序列化失败: %s",
+                    "总览参考图目录序列化失败: %s",
                     self._single_line(exc, 180),
                 )
                 persisted_catalog = self._config_get_raw("photo_reference_catalog", [])
@@ -23277,7 +23279,7 @@ class PrivateCompanionPageApi(
         await self._remember_personality_auto_tune_status(result)
         if changes:
             logger.info(
-                "[PrivateCompanionPage] 角色贴合校准已自主调节参数: %s",
+                "角色贴合校准已自主调节参数: %s",
                 "; ".join(f"{item['key']}={item['from']}->{item['to']}" for item in changes),
             )
         return result
@@ -23392,7 +23394,7 @@ class PrivateCompanionPageApi(
             self._save_plugin_sections(self.plugin, {"personality_iteration_auto_tune"})
         if changes:
             logger.info(
-                "[PrivateCompanionPage] 角色贴合校准已恢复用户手动参数: %s",
+                "角色贴合校准已恢复用户手动参数: %s",
                 "; ".join(f"{item['key']}={item['from']}->{item['to']}" for item in changes),
             )
         return {
@@ -24371,7 +24373,7 @@ class PrivateCompanionPageApi(
                             f"{profile_id or 'default'}: {self._single_line(rollback_exc, 160)}"
                         )
                         logger.error(
-                            "[PrivateCompanionPage] 关系配置人格资料回滚失败: persona=%s error=%s",
+                            "关系配置人格资料回滚失败: persona=%s error=%s",
                             profile_id or "default",
                             self._single_line(rollback_exc, 160),
                         )
@@ -24426,7 +24428,7 @@ class PrivateCompanionPageApi(
                                     f"{profile_id or 'default'}: {self._single_line(exc, 160)}"
                                 )
                                 logger.error(
-                                    "[PrivateCompanionPage] 配置保存失败后人格资料回滚失败: persona=%s error=%s",
+                                    "配置保存失败后人格资料回滚失败: persona=%s error=%s",
                                     profile_id or "default",
                                     self._single_line(exc, 160),
                                 )
@@ -24436,11 +24438,11 @@ class PrivateCompanionPageApi(
         except Exception as exc:
             rollback_config_saved = False
             logger.error(
-                "[PrivateCompanionPage] 关系配置回滚后旧配置重新保存失败: %s",
+                "关系配置回滚后旧配置重新保存失败: %s",
                 self._single_line(exc, 160),
             )
         if not rollback_config_saved:
-            logger.warning("[PrivateCompanionPage] 关系配置已恢复到运行态，但旧配置未能重新保存")
+            logger.warning("关系配置已恢复到运行态，但旧配置未能重新保存")
         if profile_rollback_errors:
             raise RuntimeError(
                 "配置保存失败，且人格资料回滚未完整完成: "
@@ -24640,7 +24642,7 @@ class PrivateCompanionPageApi(
             rules, warnings = build_rules(value)
             self.plugin.model_replacement_rules = rules
             for warning in warnings:
-                logger.warning("[PrivateCompanionPage] 模型替换规则：%s", self._single_line(warning, 180))
+                logger.warning("模型替换规则：%s", self._single_line(warning, 180))
             return
         if key == "enable_sensitive_model_replacement":
             self.plugin.enable_sensitive_model_replacement = self._normalize_bool_value(value)
@@ -24896,7 +24898,7 @@ class PrivateCompanionPageApi(
                     await result
             except Exception as exc:
                 logger.warning(
-                    "[PrivateCompanionPage] Body Monitor 联动运行态切换失败: enabled=%s error=%s",
+                    "Body Monitor 联动运行态切换失败: enabled=%s error=%s",
                     enabled,
                     self._single_line(exc, 160),
                 )
@@ -24920,14 +24922,14 @@ class PrivateCompanionPageApi(
                                 pass
                             except Exception as exc:
                                 logger.warning(
-                                    "[PrivateCompanionPage] Body Monitor 联动即时拉取失败: %s",
+                                    "Body Monitor 联动即时拉取失败: %s",
                                     self._single_line(exc, 160),
                                 )
 
                         task.add_done_callback(_consume_kick_result)
                 except Exception as exc:
                     logger.warning(
-                        "[PrivateCompanionPage] Body Monitor 联动即时拉取触发失败: %s",
+                        "Body Monitor 联动即时拉取触发失败: %s",
                         self._single_line(exc, 160),
                     )
 
@@ -25073,7 +25075,7 @@ class PrivateCompanionPageApi(
                     self.plugin.photo_reference_catalog_version = CATALOG_VERSION
                     self.plugin.photo_reference_catalog_read_only = loaded_catalog.read_only
                 except CatalogValidationError as exc:
-                    logger.warning("[PrivateCompanionPage] 忽略无效的运行时参考图目录同步: %s", self._single_line(exc, 180))
+                    logger.warning("忽略无效的运行时参考图目录同步: %s", self._single_line(exc, 180))
                 continue
             if key == "photo_reference_library":
                 normalized_library = self._normalize_setting_value(key, value)
@@ -25285,14 +25287,14 @@ class PrivateCompanionPageApi(
                                 await result
                             return True
                         except Exception as retry_exc:
-                            logger.warning("[PrivateCompanionPage] 配置保存重试失败(%s): %s", method_name, self._single_line(retry_exc, 160))
+                            logger.warning("配置保存重试失败(%s): %s", method_name, self._single_line(retry_exc, 160))
                             return False
-                    logger.warning("[PrivateCompanionPage] 配置保存失败(%s): %s", method_name, self._single_line(exc, 160))
+                    logger.warning("配置保存失败(%s): %s", method_name, self._single_line(exc, 160))
                     return False
                 except Exception as exc:
-                    logger.warning("[PrivateCompanionPage] 配置保存失败(%s): %s", method_name, self._single_line(exc, 160))
+                    logger.warning("配置保存失败(%s): %s", method_name, self._single_line(exc, 160))
                     return False
-        logger.warning("[PrivateCompanionPage] 当前配置对象没有可用保存方法,本次改动可能只在运行态生效")
+        logger.warning("当前配置对象没有可用保存方法,本次改动可能只在运行态生效")
         return False
 
     def _can_save_config(self) -> bool:
@@ -26158,7 +26160,7 @@ class PrivateCompanionPageApi(
             if isinstance(raw, dict):
                 visit(raw)
         except Exception as exc:
-            logger.debug("[PrivateCompanionPage] 读取配置 schema 索引失败: %s", exc)
+            logger.debug("读取配置 schema 索引失败: %s", exc)
         self._schema_key_index_cache = index
         return index
 
@@ -27277,7 +27279,7 @@ class PrivateCompanionPageApi(
                 try:
                     recoverer(data)
                 except Exception as exc:
-                    logger.debug("[PrivateCompanionPage] 夹层响应内本地书页恢复失败: %s", self._single_line(exc, 160))
+                    logger.debug("夹层响应内本地书页恢复失败: %s", self._single_line(exc, 160))
         projects = data.get("creative_projects") if isinstance(data.get("creative_projects"), list) else []
         diaries = self._bookshelf_diary_entries(data.get("bot_diaries"))
         shelf_items = data.get("bookshelf_items") if isinstance(data.get("bookshelf_items"), list) else []
@@ -27380,7 +27382,7 @@ class PrivateCompanionPageApi(
                     )
                 except Exception as exc:
                     logger.debug(
-                        "[PrivateCompanionPage] 跳过无法读取的夹层目录: album=%s error=%s",
+                        "跳过无法读取的夹层目录: album=%s error=%s",
                         album_id,
                         self._single_line(exc, 120),
                     )
@@ -28887,7 +28889,7 @@ class PrivateCompanionPageApi(
                 }
             )
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 读取创作封面数据失败: %s", exc, exc_info=True)
+            logger.error("读取创作封面数据失败: %s", exc, exc_info=True)
             return self._exception_error("读取创作封面数据失败")
 
     async def get_creative_project(self) -> dict[str, Any]:
@@ -28903,7 +28905,7 @@ class PrivateCompanionPageApi(
                 snapshot = deepcopy(project)
             return self._ok(self._creative_project_payload(snapshot))
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 获取创作项目详情失败: %s", exc, exc_info=True)
+            logger.error("获取创作项目详情失败: %s", exc, exc_info=True)
             return self._exception_error("获取创作项目详情失败")
 
     @story_legacy_operation("page.creative.project-update")
@@ -28987,7 +28989,7 @@ class PrivateCompanionPageApi(
                 self.plugin._save_data_sync(sections={"creative_projects"})
             return self._ok({"project_id": project_id, "changed": bool(changed_notes), "message": "作品已更新"})
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 更新创作项目失败: %s", exc, exc_info=True)
+            logger.error("更新创作项目失败: %s", exc, exc_info=True)
             return self._exception_error("更新创作项目失败")
 
     @story_legacy_operation("page.creative.chunk-update")
@@ -29011,7 +29013,7 @@ class PrivateCompanionPageApi(
                 return self._error(result.get("error") or "片段更新失败")
             return self._ok({"project_id": project_id, "chunk_index": chunk_index, "message": "片段已更新"})
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 更新创作片段失败: %s", exc, exc_info=True)
+            logger.error("更新创作片段失败: %s", exc, exc_info=True)
             return self._exception_error("更新创作片段失败")
 
     @story_legacy_operation("page.creative.outline-update")
@@ -29030,7 +29032,7 @@ class PrivateCompanionPageApi(
                 return self._error(result.get("error") or "大纲更新失败")
             return self._ok({"project_id": project_id, "message": "大纲已更新"})
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 更新创作大纲失败: %s", exc, exc_info=True)
+            logger.error("更新创作大纲失败: %s", exc, exc_info=True)
             return self._exception_error("更新创作大纲失败")
 
     @story_legacy_operation("page.creative.characters-update")
@@ -29058,7 +29060,7 @@ class PrivateCompanionPageApi(
                 return self._error(result.get("error") or "角色更新失败")
             return self._ok({"project_id": project_id, "message": "角色已更新"})
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 更新创作角色失败: %s", exc, exc_info=True)
+            logger.error("更新创作角色失败: %s", exc, exc_info=True)
             return self._exception_error("更新创作角色失败")
 
     @story_legacy_operation("page.creative.reanalyze")
@@ -29104,7 +29106,7 @@ class PrivateCompanionPageApi(
                 self.plugin._save_data_sync(sections={"creative_projects"})
             return self._ok({"project_id": project_id, "review": review})
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 创作项目质量分析失败: %s", exc, exc_info=True)
+            logger.error("创作项目质量分析失败: %s", exc, exc_info=True)
             return self._exception_error("创作项目质量分析失败")
 
     @story_legacy_operation("page.creative.memory-rebuild")
@@ -29122,7 +29124,7 @@ class PrivateCompanionPageApi(
                 return self._error(result.get("error") or "重建失败")
             return self._ok(result)
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 重建创作记忆失败: %s", exc, exc_info=True)
+            logger.error("重建创作记忆失败: %s", exc, exc_info=True)
             return self._exception_error("重建创作记忆失败")
 
     @story_legacy_operation("page.creative.project-delete")
@@ -29142,7 +29144,7 @@ class PrivateCompanionPageApi(
                 self.plugin._save_data_sync(sections={"creative_projects"})
             return self._ok({"project_id": project_id, "removed": removed})
         except Exception as exc:
-            logger.error("[PrivateCompanionPage] 删除创作项目失败: %s", exc, exc_info=True)
+            logger.error("删除创作项目失败: %s", exc, exc_info=True)
             return self._exception_error("删除创作项目失败")
 
     def _creative_summary(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -29598,7 +29600,7 @@ class PrivateCompanionPageApi(
             if getattr(self, "_together_token_usage_warning_key", "") != warning_key:
                 self._together_token_usage_warning_key = warning_key
                 logger.warning(
-                    "[PrivateCompanionPage] 一起插件 Token 统计暂不可用，已跳过该可选来源: %s",
+                    "一起插件 Token 统计暂不可用，已跳过该可选来源: %s",
                     reason,
                 )
             return {

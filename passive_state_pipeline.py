@@ -5,7 +5,6 @@ import asyncio
 import re
 from typing import Any
 
-from astrbot.api import logger
 
 from .conversation_injection_plan import (
     PLACEMENT_STABLE_SYSTEM,
@@ -19,6 +18,9 @@ from .group_prompt_context import (
 from .helpers import _now_ts, _safe_float, _single_line
 from .persona_config import runtime_persona_setting
 from .prompt_surface import PromptSurface
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 GROUP_CONTEXT_FINAL_PRIORITY = 10_000
@@ -104,7 +106,7 @@ async def inject_humanized_state(
             feedback_recorder(event)
         except Exception as exc:
             logger.debug(
-                "[PrivateCompanion] 记录参考图效果反馈失败: %s",
+                "记录参考图效果反馈失败: %s",
                 _single_line(exc, 120),
             )
     if self._stop_group_llm_reply_if_blocked(event, source="llm_request"):
@@ -124,7 +126,7 @@ async def inject_humanized_state(
         except Exception as exc:
             # Historical cleanup must never prevent the provider request itself.
             logger.debug(
-                "[PrivateCompanion] 清理历史反应标签失败: %s",
+                "清理历史反应标签失败: %s",
                 _single_line(exc, 120),
             )
     else:
@@ -135,7 +137,7 @@ async def inject_humanized_state(
             _neutralize_stale_reaction_feedback_compat(req)
         except Exception as exc:
             logger.debug(
-                "[PrivateCompanion] 兼容清理历史反应标签失败: %s",
+                "兼容清理历史反应标签失败: %s",
                 _single_line(exc, 120),
             )
     self._append_deepseek_tool_protocol_guard(event, req)
@@ -185,7 +187,7 @@ async def inject_humanized_state(
                     )
                 except Exception as exc:
                     logger.debug(
-                        "[PrivateCompanion] 当前对象画像称呼读取失败，保留既有称呼: %s",
+                        "当前对象画像称呼读取失败，保留既有称呼: %s",
                         _single_line(exc, 120),
                     )
             preferred_address = portrait_preferred_address or _single_line(
@@ -201,7 +203,7 @@ async def inject_humanized_state(
             reason = "private_user_missing" if not isinstance(private_user, dict) else "private_user_disabled"
             log_bookshelf_secret_skip(reason, private_user if isinstance(private_user, dict) else None)
             logger.info(
-                "[PrivateCompanion] 非目标/未启用私聊跳过陪伴被动增强: user=%s reason=%s",
+                "非目标/未启用私聊跳过陪伴被动增强: user=%s reason=%s",
                 _single_line(private_user_id, 40) or "unknown",
                 reason,
             )
@@ -216,7 +218,7 @@ async def inject_humanized_state(
         except Exception:
             pass
         logger.info(
-            "[PrivateCompanion] 睡眠/休息回复闸门放行本轮被动回复: session=%s reason=%s",
+            "睡眠/休息回复闸门放行本轮被动回复: session=%s reason=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             _single_line(rest_reason, 120),
         )
@@ -487,7 +489,7 @@ async def inject_humanized_state(
                             )
                         except Exception as exc:
                             logger.debug(
-                                "[PrivateCompanion] 群黑话嵌入上下文生成失败: %s",
+                                "群黑话嵌入上下文生成失败: %s",
                                 _single_line(exc, 120),
                             )
                             slang_embedding_text = ""
@@ -664,7 +666,7 @@ async def inject_humanized_state(
     if lightweight_passive and isinstance(bookshelf_signal, dict) and bookshelf_signal.get("likely"):
         lightweight_passive = False
         logger.info(
-            "[PrivateCompanion] 夹层密码请求退出轻量被动链路: user=%s direct=%s context=%s access=%s text=%s",
+            "夹层密码请求退出轻量被动链路: user=%s direct=%s context=%s access=%s text=%s",
             user_id,
             ",".join(bookshelf_signal.get("direct_matches") or []) or "-",
             ",".join(bookshelf_signal.get("context_matches") or []) or "-",
@@ -1075,7 +1077,7 @@ async def inject_humanized_state(
                 include_heading=False,
             )
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 引用链上下文读取失败: %s", _single_line(exc, 120))
+            logger.debug("引用链上下文读取失败: %s", _single_line(exc, 120))
             reply_chain_context = ""
         if reply_chain_context:
             prompt_surface.add(
@@ -1126,9 +1128,9 @@ async def inject_humanized_state(
             if vision_wait_timeout > 0:
                 buffered_image_vision = _single_line(await asyncio.wait_for(asyncio.shield(vision_task), timeout=vision_wait_timeout), buffered_image_vision_limit)
         except asyncio.TimeoutError:
-            logger.info("[PrivateCompanion] 私聊图片视觉转述仍在进行,本轮先注入路径兜底: timeout=%.1fs", vision_wait_timeout)
+            logger.warning("私聊图片视觉转述仍在进行,本轮先注入路径兜底: timeout=%.1fs", vision_wait_timeout)
         except Exception as exc:
-            logger.info("[PrivateCompanion] 私聊图片视觉转述获取失败: %s", _single_line(exc, 120))
+            logger.warning("私聊图片视觉转述获取失败: %s", _single_line(exc, 120))
     buffered_images_include_gif = (
         bool(runtime_persona_setting(self, "enable_private_image_gif_enhancement", True))
         and self._private_image_sources_include_gif(buffered_images)
@@ -1257,7 +1259,7 @@ async def inject_humanized_state(
                         image_refs.append(request_ref)
             if not image_refs:
                 logger.info(
-                    "[PrivateCompanion] 私聊延迟图片无模型可读源,跳过直接挂图: user=%s images=%s",
+                    "私聊延迟图片无模型可读源,跳过直接挂图: user=%s images=%s",
                     user_id,
                     len(buffered_images),
                 )
@@ -1275,7 +1277,7 @@ async def inject_humanized_state(
                         existing.append(image_ref)
                 req.image_urls = existing
                 logger.info(
-                    "[PrivateCompanion] 私聊延迟图片已挂回视觉主模型: user=%s images=%s mounted=%s",
+                    "私聊延迟图片已挂回视觉主模型: user=%s images=%s mounted=%s",
                     user_id,
                     len(buffered_images),
                     len(image_refs),
@@ -1283,7 +1285,7 @@ async def inject_humanized_state(
                 try:
                     await self._refresh_default_persona_prompt(str(getattr(event, "unified_msg_origin", "") or ""))
                 except Exception as exc:
-                    logger.debug("[PrivateCompanion] 图片直挂刷新人格缓存失败: %s", exc)
+                    logger.debug("图片直挂刷新人格缓存失败: %s", exc)
                 direct_role_hint = self._private_image_direct_role_appearance_prompt(
                     include_heading=False,
                 )
@@ -1301,7 +1303,7 @@ async def inject_humanized_state(
             ownership_line = self._private_image_ownership_line(buffered_image_vision)
             reply_objective = self._private_image_reply_objective(ownership_line, vision_text=buffered_image_vision, user_text=inbound_text)
             logger.info(
-                "[PrivateCompanion] 私聊延迟图片已注入视觉摘要: user=%s chars=%s intent=%s ownership=%s objective=%s preview=%s",
+                "私聊延迟图片已注入视觉摘要: user=%s chars=%s intent=%s ownership=%s objective=%s preview=%s",
                 user_id,
                 len(buffered_image_vision),
                 intent_line or "无",
@@ -1380,7 +1382,7 @@ async def inject_humanized_state(
     reply_image_prompt_anchor = ""
     skip_reply_image_for_forward_context = bool(getattr(event, "private_companion_forward_context_injected", False))
     if skip_reply_image_for_forward_context:
-        logger.info("[PrivateCompanion] 本轮已注入合并消息上下文,跳过引用图片重复视觉: user=%s", user_id)
+        logger.info("本轮已注入合并消息上下文,跳过引用图片重复视觉: user=%s", user_id)
     if (
         not skip_reply_image_for_forward_context
         and not buffered_images
@@ -1408,7 +1410,7 @@ async def inject_humanized_state(
                 ownership_line = self._private_image_ownership_line(reply_image_vision)
                 reply_objective = self._private_image_reply_objective(ownership_line, vision_text=reply_image_vision, user_text=inbound_text)
                 logger.info(
-                    "[PrivateCompanion] 私聊引用图片已注入视觉摘要: user=%s images=%s intent=%s ownership=%s objective=%s preview=%s",
+                    "私聊引用图片已注入视觉摘要: user=%s images=%s intent=%s ownership=%s objective=%s preview=%s",
                     user_id,
                     len(reply_image_sources),
                     intent_line or "无",
@@ -1457,7 +1459,7 @@ async def inject_humanized_state(
                             }
                             self._save_data_sync(sections={"users"})
                     except Exception as exc:
-                        logger.debug("[PrivateCompanion] 私聊引用图片视觉反馈目标记录失败: %s", exc)
+                        logger.debug("私聊引用图片视觉反馈目标记录失败: %s", exc)
                 try:
                     setattr(event, "private_companion_reply_image_vision_text", _single_line(reply_image_vision, reply_image_limit))
                     setattr(event, "private_companion_reply_image_count", len(reply_image_sources))
@@ -1525,7 +1527,7 @@ async def inject_humanized_state(
         await self._append_conditional_tool_instructions_to_request(event, req)
         return
     if not injection:
-        logger.debug("[PrivateCompanion] 被动状态提示词片段为空,跳过状态 marker 注入")
+        logger.debug("被动状态提示词片段为空,跳过状态 marker 注入")
         log_bookshelf_secret_skip("empty_passive_injection", current_user, inbound_text)
         await self._append_conditional_tool_instructions_to_request(event, req)
         return
@@ -1617,7 +1619,7 @@ async def inject_humanized_state(
             },
         )
     logger.info(
-        "[PrivateCompanion] 已注入被动状态提示词到 %s: mode=%s state_mode=%s reason=%s placement=%s chars=%s 状态=%s；当前日程=%s",
+        "已注入被动状态提示词到 %s: mode=%s state_mode=%s reason=%s placement=%s chars=%s 状态=%s；当前日程=%s",
         _single_line(getattr(event, "unified_msg_origin", ""), 80) or "unknown_session",
         "light" if lightweight_passive else "full",
         "delta" if bool(runtime_persona_setting(self, "enable_passive_state_delta_injection", True)) else "legacy",

@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from astrbot.api import logger
 try:
     from astrbot.api.message_components import Plain, Record
 except ImportError:
@@ -48,6 +47,9 @@ from .segmented_message import (
     component_strategies_from_owner,
     plan_component_chunks,
 )
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 TTS_BLOCK_PATTERN = re.compile(r"<t{2,}s\b[^>]*>.*?</t{2,}s>", re.IGNORECASE | re.DOTALL)
@@ -383,7 +385,7 @@ class TtsEnhancementMixin:
                 pass
             except Exception as exc:
                 logger.warning(
-                    "[PrivateCompanion] TTS background task failed: label=%s error=%s",
+                    "TTS background task failed: label=%s error=%s",
                     label,
                     _single_line(exc, 160),
                 )
@@ -591,7 +593,7 @@ class TtsEnhancementMixin:
         try:
             manager = self.context.get_llm_tool_manager()
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 读取 MiMo TTS 工具管理器失败: %s", _single_line(exc, 120))
+            logger.debug("读取 MiMo TTS 工具管理器失败: %s", _single_line(exc, 120))
             return None
         if manager is None:
             return None
@@ -620,7 +622,7 @@ class TtsEnhancementMixin:
             if getattr(self, "_tts_mimo_bridge_handler_warning_key", "") != warning_key:
                 self._tts_mimo_bridge_handler_warning_key = warning_key
                 logger.warning(
-                    "[PrivateCompanion] 已找到 MiMo TTS 工具但无法取得插件公开合成服务: tool=%s",
+                    "已找到 MiMo TTS 工具但无法取得插件公开合成服务: tool=%s",
                     tool_name,
                 )
             return None
@@ -628,7 +630,7 @@ class TtsEnhancementMixin:
         if getattr(self, "_tts_mimo_bridge_key", "") != bridge_key:
             self._tts_mimo_bridge_key = bridge_key
             logger.info(
-                "[PrivateCompanion] 已发现 MiMo TTS Voice Clone: tool=%s service=%s",
+                "已发现 MiMo TTS Voice Clone: tool=%s service=%s",
                 tool_name,
                 plugin.__class__.__name__,
             )
@@ -686,7 +688,7 @@ class TtsEnhancementMixin:
         if getattr(self, "_tts_language_provider_warning_key", "") != warning_key:
             self._tts_language_provider_warning_key = warning_key
             logger.warning(
-                "[PrivateCompanion] 当前语种配置的 TTS Provider 不可用,已回退现有合成链路: language=%s provider=%s",
+                "当前语种配置的 TTS Provider 不可用,已回退现有合成链路: language=%s provider=%s",
                 language,
                 provider_id,
             )
@@ -718,7 +720,7 @@ class TtsEnhancementMixin:
                             "voice_not_found": "指定音色不存在或已停用",
                         }.get(reason, reason)
                         logger.info(
-                            "[PrivateCompanion] 自动识别到 MiMo TTS Voice Clone,但暂不接管合成: reason=%s fallback=%s",
+                            "自动识别到 MiMo TTS Voice Clone,但暂不接管合成: reason=%s fallback=%s",
                             reason_label,
                             "AstrBot TTS provider" if astrbot_provider is not None else "文字/浏览器朗读",
                         )
@@ -727,7 +729,7 @@ class TtsEnhancementMixin:
                 if getattr(self, "_tts_mimo_auto_ready_log_key", "") != ready_key:
                     self._tts_mimo_auto_ready_log_key = ready_key
                     logger.info(
-                        "[PrivateCompanion] MiMo TTS Voice Clone 已自动识别并接管语音合成: tool=%s",
+                        "MiMo TTS Voice Clone 已自动识别并接管语音合成: tool=%s",
                         mimo_adapter.tool_name,
                     )
             return mimo_adapter
@@ -736,7 +738,7 @@ class TtsEnhancementMixin:
             if getattr(self, "_tts_mimo_bridge_fallback_warning_key", "") != fallback_key:
                 self._tts_mimo_bridge_fallback_warning_key = fallback_key
                 logger.warning(
-                    "[PrivateCompanion] MiMo TTS Voice Clone 联动不可用,本次回退 AstrBot TTS provider: tool=%s",
+                    "MiMo TTS Voice Clone 联动不可用,本次回退 AstrBot TTS provider: tool=%s",
                     fallback_key,
                 )
         return astrbot_provider
@@ -1046,7 +1048,7 @@ class TtsEnhancementMixin:
         except Exception:
             return ""
         logger.info(
-            "[PrivateCompanion] 已识别本轮 TTS 语种要求: session=%s language=%s match=%s",
+            "已识别本轮 TTS 语种要求: session=%s language=%s match=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             language,
             matched,
@@ -1514,7 +1516,7 @@ class TtsEnhancementMixin:
             normalized.append(normalized_segment)
         if removed_cues:
             logger.info(
-                "[PrivateCompanion] FishAudio 自动控制已移除高风险或堆叠标签: mode=%s cues=%s",
+                "FishAudio 自动控制已移除高风险或堆叠标签: mode=%s cues=%s",
                 mode,
                 ",".join(removed_cues[:8]),
             )
@@ -2058,7 +2060,7 @@ class TtsEnhancementMixin:
             return True
         if probability <= 0.0:
             logger.info(
-                "[PrivateCompanion] TTS全局触发概率为0,本轮不注入TTS提示词: reason=%s session=%s",
+                "TTS全局触发概率为0,本轮不注入TTS提示词: reason=%s session=%s",
                 reason,
                 _single_line(self._tts_session_key(event), 80) or "unknown",
             )
@@ -2074,7 +2076,7 @@ class TtsEnhancementMixin:
             pass
         if not allowed:
             logger.info(
-                "[PrivateCompanion] TTS全局触发概率未命中,本轮不注入TTS提示词: reason=%s probability=%.2f session=%s",
+                "TTS全局触发概率未命中,本轮不注入TTS提示词: reason=%s probability=%.2f session=%s",
                 reason,
                 probability,
                 _single_line(self._tts_session_key(event), 80) or "unknown",
@@ -2252,12 +2254,12 @@ TTS 朗读文本：
                     return translated
                 if translated:
                     logger.warning(
-                        "[PrivateCompanion] TTS中文释义结果不像中文,已丢弃: source=%s result=%s",
+                        "TTS中文释义结果不像中文,已丢弃: source=%s result=%s",
                         _single_line(spoken, 80),
                         _single_line(translated, 80),
                     )
         except Exception as exc:
-            logger.warning("[PrivateCompanion] TTS中文释义生成失败: %s", _single_line(exc, 120))
+            logger.warning("TTS中文释义生成失败: %s", _single_line(exc, 120))
         return ""
 
     async def _ensure_tts_blocks_have_visible_chinese(self, text: str, event: Any, *, provider_kind: str) -> str:
@@ -2297,13 +2299,13 @@ TTS 朗读文本：
                     pieces.append(f"{separator}{visible_translation}")
                     changed = True
                     logger.info(
-                        "[PrivateCompanion] TTS记录文本已补中文释义: 语音=%s 中文=%s",
+                        "TTS记录文本已补中文释义: 语音=%s 中文=%s",
                         _single_line(spoken, 80),
                         _single_line(visible_translation, 80),
                     )
                 else:
                     logger.warning(
-                        "[PrivateCompanion] TTS记录文本缺少中文释义且自动补充失败: 语音=%s",
+                        "TTS记录文本缺少中文释义且自动补充失败: 语音=%s",
                         _single_line(spoken, 100),
                     )
             pieces.append(visible_after_this_block)
@@ -2532,7 +2534,7 @@ TTS 朗读文本：
             try:
                 persona = str(await refresher(umo) or "").strip()
             except Exception as exc:
-                logger.debug("[PrivateCompanion] TTS读取人格上下文失败,使用缓存: %s", _single_line(exc, 120))
+                logger.debug("TTS读取人格上下文失败,使用缓存: %s", _single_line(exc, 120))
         if not persona:
             getter = getattr(self, "_get_default_persona_prompt", None)
             if callable(getter):
@@ -2562,7 +2564,7 @@ TTS 朗读文本：
         setter = getattr(event, "set_extra", None)
         if not callable(setter):
             logger.debug(
-                "[PrivateCompanion] TTS 回合无法关闭流式：事件不支持 set_extra session=%s",
+                "TTS 回合无法关闭流式：事件不支持 set_extra session=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             )
             return False
@@ -2579,13 +2581,13 @@ TTS 朗读文本：
             setattr(event, "_private_companion_tts_streaming_previous", previous)
         except Exception as exc:
             logger.debug(
-                "[PrivateCompanion] TTS 回合关闭流式失败 session=%s error=%s",
+                "TTS 回合关闭流式失败 session=%s error=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                 _single_line(exc, 160),
             )
             return False
         logger.info(
-            "[PrivateCompanion] TTS 已预留本回合完整消息链并关闭流式输出: session=%s previous=%s",
+            "TTS 已预留本回合完整消息链并关闭流式输出: session=%s previous=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             previous,
         )
@@ -2640,7 +2642,7 @@ TTS 朗读文本：
             return
         if not hasattr(req, "system_prompt"):
             logger.info(
-                "[PrivateCompanion] TTS请求注入跳过: req无system_prompt session=%s",
+                "TTS请求注入跳过: req无system_prompt session=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             )
             return
@@ -2702,7 +2704,7 @@ TTS 朗读文本：
                     if helper(req, fragment_marker, text):
                         return "prompt"
                 except Exception as exc:
-                    logger.debug("[PrivateCompanion] TTS 指定位置动态注入失败,回退 system_prompt: %s", _single_line(exc, 120))
+                    logger.debug("TTS 指定位置动态注入失败,回退 system_prompt: %s", _single_line(exc, 120))
             req.system_prompt = (
                 f"{getattr(req, 'system_prompt', '') or ''}\n\n{fragment_marker}\n{text}"
             ).strip()
@@ -2953,7 +2955,7 @@ TTS 朗读文本：
             if re.search(r"</?(?:pc[_-]?tts|t{2,}s)\b", text, flags=re.IGNORECASE):
                 resp.completion_text = _normalize_outbound_punctuation_flow(self._strip_any_tts_markup(text))
                 logger.info(
-                    "[PrivateCompanion] TTS强化未开启,已从模型回复中移除 TTS 标签: session=%s preview=%s",
+                    "TTS强化未开启,已从模型回复中移除 TTS 标签: session=%s preview=%s",
                     _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                     _single_line(resp.completion_text, 160),
                 )
@@ -2966,7 +2968,7 @@ TTS 朗读文本：
                 text = self._tts_plain_markup_fallback_text(text_before_safety_drop)
             resp.completion_text = _normalize_outbound_punctuation_flow(text)
             logger.warning(
-                "[PrivateCompanion] 已从模型回复中移除提供商安全回执语音块: session=%s remaining=%s",
+                "已从模型回复中移除提供商安全回执语音块: session=%s remaining=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                 _single_line(text, 160) or "empty",
             )
@@ -2983,7 +2985,7 @@ TTS 朗读文本：
                     )
                     resp.completion_text = _normalize_outbound_punctuation_flow(cleaned)
                     logger.info(
-                        "[PrivateCompanion] TTS后处理模式已移除主模型自写语音标签,改由发送前后处理判断: session=%s preview=%s",
+                        "TTS后处理模式已移除主模型自写语音标签,改由发送前后处理判断: session=%s preview=%s",
                         _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                         _single_line(cleaned, 160),
                     )
@@ -3000,7 +3002,7 @@ TTS 朗读文本：
                 visible_fallback = self._tts_unwrapped_foreign_translation_fallback(text, event)
                 if visible_fallback:
                     logger.warning(
-                        "[PrivateCompanion] 快速标签回复漏写语音标记，已仅保留中文可见正文: session=%s original=%s visible=%s",
+                        "快速标签回复漏写语音标记，已仅保留中文可见正文: session=%s original=%s visible=%s",
                         _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                         _single_line(text, 160),
                         _single_line(visible_fallback, 160),
@@ -3016,7 +3018,7 @@ TTS 朗读文本：
             return
         if not bool(getattr(event, "_private_companion_tts_request_applied", False)):
             logger.debug(
-                "[PrivateCompanion] TTS 强化跳过未经过主回复链的发送结果: session=%s",
+                "TTS 强化跳过未经过主回复链的发送结果: session=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             )
             return
@@ -3032,7 +3034,7 @@ TTS 朗读文本：
             skip_reason = "proactive_prebuilt_voice"
         if skip_reason:
             logger.info(
-                "[PrivateCompanion] 主动正文已有预生成语音,跳过二次 TTS 转换: session=%s reason=%s",
+                "主动正文已有预生成语音,跳过二次 TTS 转换: session=%s reason=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                 skip_reason,
             )
@@ -3055,7 +3057,7 @@ TTS 朗读文本：
                     if str(item or "").strip()
                 ]
             except Exception as exc:
-                logger.debug("[PrivateCompanion] TTS 前自主分段解析失败: %s", _single_line(exc, 120))
+                logger.debug("TTS 前自主分段解析失败: %s", _single_line(exc, 120))
                 planned_segments = []
             if len(planned_segments) > 1:
                 source_segments = planned_segments
@@ -3084,7 +3086,7 @@ TTS 朗读文本：
             cleaned_text, leaked_calls = tool_cleaner(text)
             if leaked_calls:
                 logger.warning(
-                    "[PrivateCompanion] TTS 发送前已移除明文工具调用: session=%s tools=%s",
+                    "TTS 发送前已移除明文工具调用: session=%s tools=%s",
                     _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                     ",".join(str(item.get("name") or "") for item in leaked_calls),
                 )
@@ -3097,7 +3099,7 @@ TTS 朗读文本：
         normalized, dropped_safety_voice = self._drop_tts_provider_safety_blocks(normalized)
         if dropped_safety_voice:
             logger.warning(
-                "[PrivateCompanion] TTS发送前已移除提供商安全回执语音块: session=%s remaining=%s",
+                "TTS发送前已移除提供商安全回执语音块: session=%s remaining=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                 _single_line(normalized, 160) or "empty",
             )
@@ -3162,7 +3164,7 @@ TTS 朗读文本：
                 )
                 event.set_result(self._build_result_from_chain(primary_chain))
                 logger.info(
-                    "[PrivateCompanion] 表情表达先发送完整正文,自动 TTS 延后生成: session=%s chars=%s",
+                    "表情表达先发送完整正文,自动 TTS 延后生成: session=%s chars=%s",
                     _single_line(getattr(event, "unified_msg_origin", ""), 120)
                     or "unknown",
                     len(visible_text),
@@ -3180,7 +3182,7 @@ TTS 朗读文本：
             )
             if full_scope_fallback:
                 logger.info(
-                    "[PrivateCompanion] TTS全量转换已在发送前覆盖整条回复: session=%s chars=%s preview=%s",
+                    "TTS全量转换已在发送前覆盖整条回复: session=%s chars=%s preview=%s",
                     _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                     len(full_scope_fallback),
                     _single_line(full_scope_fallback, 140),
@@ -3198,7 +3200,7 @@ TTS 朗读文本：
                 if translated:
                     normalized = translated
                     logger.info(
-                        "[PrivateCompanion] TTS后处理纯文本检测到未包装外语,已转为可见中文: session=%s",
+                        "TTS后处理纯文本检测到未包装外语,已转为可见中文: session=%s",
                         _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                     )
                 event.set_result(self._build_result_from_chain([Plain(normalized)]))
@@ -3223,7 +3225,7 @@ TTS 朗读文本：
                     [Plain(translated)],
                 )
                 logger.info(
-                    "[PrivateCompanion] TTS后处理可见组件检测到未包装外语,已转为可见中文: session=%s",
+                    "TTS后处理可见组件检测到未包装外语,已转为可见中文: session=%s",
                     _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                 )
         new_chain = self._tts_record_first_visible_last_chain(new_chain)
@@ -3360,7 +3362,7 @@ TTS 朗读文本：
             pass
         except Exception as exc:
             logger.debug(
-                "[PrivateCompanion] 查询 AstrBot 官方 TTS 会话状态失败，保留插件分段: session=%s error=%s",
+                "查询 AstrBot 官方 TTS 会话状态失败，保留插件分段: session=%s error=%s",
                 _single_line(umo, 120) or "unknown",
                 _single_line(exc, 120),
             )
@@ -3378,7 +3380,7 @@ TTS 朗读文本：
             if result is not None and bool(result.is_llm_result()):
                 result.set_result_content_type(ResultContentType.GENERAL_RESULT)
                 logger.debug(
-                    "[PrivateCompanion] 插件已接管本轮 TTS，阻止 AstrBot 官方 TTS 二次处理: session=%s",
+                    "插件已接管本轮 TTS，阻止 AstrBot 官方 TTS 二次处理: session=%s",
                     _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                 )
         except Exception:
@@ -3418,7 +3420,7 @@ TTS 朗读文本：
                 )
             )
             logger.warning(
-                "[PrivateCompanion] 发送前终检已丢弃仅包含提供商安全回执的语音块: session=%s",
+                "发送前终检已丢弃仅包含提供商安全回执的语音块: session=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             )
             return
@@ -3451,7 +3453,7 @@ TTS 朗读文本：
                 new_chain = list(new_chain) + non_plain_tail
         new_chain = self._tts_record_first_visible_last_chain(new_chain)
         logger.warning(
-            "[PrivateCompanion] 发送前终检拦截残留 TTS 标签: session=%s preview=%s",
+            "发送前终检拦截残留 TTS 标签: session=%s preview=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             _single_line(self._tts_chain_log_text(new_chain), 160),
         )
@@ -3494,7 +3496,7 @@ TTS 朗读文本：
                 cleaned_chain.append(Plain(fallback_text))
         if changed:
             logger.warning(
-                "[PrivateCompanion] 外发兜底清理残留内部控制标记: umo=%s preview=%s",
+                "外发兜底清理残留内部控制标记: umo=%s preview=%s",
                 _single_line(umo, 120) or "unknown",
                 _single_line(self._tts_chain_log_text(cleaned_chain), 160),
             )
@@ -3655,7 +3657,7 @@ TTS 朗读文本：
                 and visible_signature("".join(cleaned_segments)) == visible_signature(cleaned_visible)
             ):
                 logger.info(
-                    "[PrivateCompanion] TTS 完整合成后恢复上游正文分段: session=%s segments=%s first=%s",
+                    "TTS 完整合成后恢复上游正文分段: session=%s segments=%s first=%s",
                     _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                     len(cleaned_segments),
                     _single_line(cleaned_segments[0], 100),
@@ -3699,7 +3701,7 @@ TTS 朗读文本：
             cleaned_text, leaked_calls = tool_cleaner(text)
             if leaked_calls:
                 logger.warning(
-                    "[PrivateCompanion] TTS 分块前已移除明文工具调用: session=%s tools=%s",
+                    "TTS 分块前已移除明文工具调用: session=%s tools=%s",
                     _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                     ",".join(str(item.get("name") or "") for item in leaked_calls),
                 )
@@ -3720,14 +3722,14 @@ TTS 朗读文本：
             chinese_text = self._tts_chinese_visible_fallback_from_mixed(text)
             if chinese_text:
                 logger.warning(
-                    "[PrivateCompanion] TTS 后置文本混有朗读语种,已仅保留中文释义: session=%s text=%s",
+                    "TTS 后置文本混有朗读语种,已仅保留中文释义: session=%s text=%s",
                     _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                     _single_line(chinese_text, 120),
                 )
                 text = chinese_text
             else:
                 logger.warning(
-                    "[PrivateCompanion] TTS 后置文本不是中文释义,已跳过发送: session=%s text=%s",
+                    "TTS 后置文本不是中文释义,已跳过发送: session=%s text=%s",
                     _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                     _single_line(text, 120),
                 )
@@ -3756,7 +3758,7 @@ TTS 朗读文本：
                 split_result = splitter(text)
             segments = [item for item in split_result if str(item or "").strip()]
         except Exception as exc:
-            logger.debug("[PrivateCompanion] TTS 后置文本分段失败,保持原样: %s", _single_line(exc, 120))
+            logger.debug("TTS 后置文本分段失败,保持原样: %s", _single_line(exc, 120))
             return [chunk]
         if len(segments) <= 1:
             cleaned = segments[0] if segments else text
@@ -3767,7 +3769,7 @@ TTS 朗读文本：
                 return [[visible_part]] if visible_part is not None else []
             return [[Plain(cleaned)]] if cleaned != text or text != original_text else [chunk]
         logger.info(
-            "[PrivateCompanion] TTS 后置文本按分段规则拆分: session=%s segments=%s first=%s",
+            "TTS 后置文本按分段规则拆分: session=%s segments=%s first=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             len(segments),
             _single_line(segments[0], 100),
@@ -3819,7 +3821,7 @@ TTS 朗读文本：
             source_had_plain = any(isinstance(component, Plain) for component in chunk)
             if source_had_plain and not has_visible_plain and not has_delivery_component:
                 logger.warning(
-                    "[PrivateCompanion] TTS 尾段清理后仅剩孤立上下文组件,已跳过: session=%s",
+                    "TTS 尾段清理后仅剩孤立上下文组件,已跳过: session=%s",
                     outbound_umo,
                 )
                 continue
@@ -3829,7 +3831,7 @@ TTS 朗读文本：
         case_updater = getattr(self, "_update_daily_review_case", None)
         if not expanded_chunks:
             logger.info(
-                "[PrivateCompanion] TTS 尾段清理后无可发送内容: session=%s",
+                "TTS 尾段清理后无可发送内容: session=%s",
                 outbound_umo,
             )
             if case_id and callable(case_updater):
@@ -3873,7 +3875,7 @@ TTS 朗读文本：
                     and not generation_checker(scope, turn_generation)
                 ):
                     logger.info(
-                        "[PrivateCompanion] 新回合已到达，停止旧 TTS 尾段: session=%s sent=%s/%s",
+                        "新回合已到达，停止旧 TTS 尾段: session=%s sent=%s/%s",
                         _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                         sent_chunks,
                         total_chunks,
@@ -3898,7 +3900,7 @@ TTS 朗读文本：
                     and not generation_checker(scope, turn_generation)
                 ):
                     logger.info(
-                        "[PrivateCompanion] 等待期间收到新回合，停止旧 TTS 尾段: session=%s",
+                        "等待期间收到新回合，停止旧 TTS 尾段: session=%s",
                         _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                     )
                     return
@@ -3917,7 +3919,7 @@ TTS 朗读文本：
                     else:
                         await event.send(event.chain_result(chunk))
                     logger.info(
-                        "[PrivateCompanion] TTS 分块后台补发完成: session=%s %s",
+                        "TTS 分块后台补发完成: session=%s %s",
                         _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                         self._tts_chain_log_text(chunk),
                     )
@@ -3942,7 +3944,7 @@ TTS 朗读文本：
                                 signals={"segments_expected": total_chunks, "segments_sent": sent_chunks},
                             )
                         logger.warning(
-                            "[PrivateCompanion] TTS 主动消息中文正文补发失败: session=%s error=%s %s",
+                            "TTS 主动消息中文正文补发失败: session=%s error=%s %s",
                             proactive_umo,
                             _single_line(exc, 160),
                             self._tts_chain_log_text(chunk),
@@ -3951,7 +3953,7 @@ TTS 朗读文本：
                     try:
                         await event.send(self._build_result_from_chain(chunk))
                         logger.info(
-                            "[PrivateCompanion] TTS 分块后台补发完成: session=%s %s",
+                            "TTS 分块后台补发完成: session=%s %s",
                             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                             self._tts_chain_log_text(chunk),
                         )
@@ -3978,7 +3980,7 @@ TTS 朗读文本：
                                     "visible_text_complete": False,
                                 },
                             )
-                        logger.warning("[PrivateCompanion] TTS 分块后台补发失败: %s", _single_line(exc, 120))
+                        logger.warning("TTS 分块后台补发失败: %s", _single_line(exc, 120))
                         return
                 previous_text = " ".join(
                     str(getattr(comp, "text", "") or "").strip()
@@ -4005,7 +4007,7 @@ TTS 朗读文本：
             pending.get("turn_generation", 0),
         ):
             logger.info(
-                "[PrivateCompanion] 新回合已到达，跳过旧表情 TTS: session=%s",
+                "新回合已到达，跳过旧表情 TTS: session=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             )
             return
@@ -4054,7 +4056,7 @@ TTS 朗读文本：
         records = [component for component in generated if isinstance(component, Record)]
         if not records:
             logger.info(
-                "[PrivateCompanion] 表情表达后台 TTS 未生成语音,正文与表情已保持送达: session=%s",
+                "表情表达后台 TTS 未生成语音,正文与表情已保持送达: session=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120)
                 or "unknown",
             )
@@ -4081,7 +4083,7 @@ TTS 朗读文本：
                 return
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 表情表达后台语音投递失败: error_type=%s",
+                "表情表达后台语音投递失败: error_type=%s",
                 type(exc).__name__,
             )
             return
@@ -4095,7 +4097,7 @@ TTS 朗读文本：
                 self._tts_auto_voice_last_at = state
             state[session] = time.time()
         logger.info(
-            "[PrivateCompanion] 表情表达后台语音已在正文和图片后单独送达: session=%s records=%s",
+            "表情表达后台语音已在正文和图片后单独送达: session=%s records=%s",
             _single_line(session, 120) or "unknown",
             len(records),
         )
@@ -4104,7 +4106,7 @@ TTS 朗读文本：
         mode = self._tts_setting("tts_generation_mode", "fast_tag")
         if self._tts_text_is_provider_safety_refusal(text):
             logger.info(
-                "[PrivateCompanion] 提供商安全回执保持纯文字,不进入 TTS: session=%s preview=%s",
+                "提供商安全回执保持纯文字,不进入 TTS: session=%s preview=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                 _single_line(text, 140),
             )
@@ -4112,7 +4114,7 @@ TTS 朗读文本：
         visible_override, suppress_visible, conversion_source, skip_conversion = self._tts_proactive_segment_visible_policy(event)
         if skip_conversion:
             logger.info(
-                "[PrivateCompanion] 主动分段 TTS 只在首段判定,后续分段保持文字: session=%s text=%s",
+                "主动分段 TTS 只在首段判定,后续分段保持文字: session=%s text=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                 _single_line(text, 100),
             )
@@ -4200,7 +4202,7 @@ TTS 朗读文本：
             ):
                 self._tts_auto_voice_last_at[session] = time.time()
             logger.info(
-                "[PrivateCompanion] TTS强化已转换纯文本回复: reason=%s session=%s %s",
+                "TTS强化已转换纯文本回复: reason=%s session=%s %s",
                 reason,
                 _single_line(session, 80),
                 self._tts_chain_log_text(chain),
@@ -4438,7 +4440,7 @@ Provider 规则：{emotion_rule}
             else:
                 converted = f"<tts>{source}</tts>"
         except Exception as exc:
-            logger.warning("[PrivateCompanion] TTS强化转换模型失败: %s", _single_line(exc, 120))
+            logger.warning("TTS强化转换模型失败: %s", _single_line(exc, 120))
             converted = f"<tts>{source}</tts>"
         converted = self._normalize_tts_tags(converted)
         if "<tts>" not in converted.lower():
@@ -4582,7 +4584,7 @@ Provider 规则：{emotion_rule}
             reason = _single_line(payload.get("reason"), 120)
             if not use_tts or not voice:
                 logger.info(
-                    "[PrivateCompanion] TTS 后处理判定不使用语音: session=%s reason=%s",
+                    "TTS 后处理判定不使用语音: session=%s reason=%s",
                     _single_line(getattr(event, "unified_msg_origin", ""), 100) or "unknown",
                     reason or "no_voice",
                 )
@@ -4590,7 +4592,7 @@ Provider 规则：{emotion_rule}
             if self._tts_voice_language_for_event(event) != "zh" and not self._tts_visible_text_is_allowed_after_voice(visible):
                 visible = source
             logger.info(
-                "[PrivateCompanion] TTS 后处理判定使用语音: session=%s reason=%s voice=%s",
+                "TTS 后处理判定使用语音: session=%s reason=%s voice=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 100) or "unknown",
                 reason or "use_voice",
                 _single_line(voice, 80),
@@ -4600,9 +4602,9 @@ Provider 规则：{emotion_rule}
             return f"<tts>{voice}</tts>\n{visible}"
         except Exception as exc:
             if bool(getattr(exc, "_private_companion_tts_provider_logged", False)):
-                logger.info("[PrivateCompanion] TTS 后处理已回退纯文本: %s", _single_line(exc, 120))
+                logger.info("TTS 后处理已回退纯文本: %s", _single_line(exc, 120))
             else:
-                logger.warning("[PrivateCompanion] TTS 后处理判断失败,已保持纯文本: %s", _single_line(exc, 120))
+                logger.warning("TTS 后处理判断失败,已保持纯文本: %s", _single_line(exc, 120))
             return ""
 
     async def _get_tts_conversion_provider(self, event: Any) -> Any:
@@ -4702,7 +4704,7 @@ Provider 规则：{emotion_rule}
                     error="model_token_limit_exceeded",
                 )
             logger.info(
-                "[PrivateCompanion] TTS主模型预估超出 Token 上限，跳过并切换备用模型: primary=%s fallback=%s",
+                "TTS主模型预估超出 Token 上限，跳过并切换备用模型: primary=%s fallback=%s",
                 _single_line(provider_id, 80) or "default",
                 _single_line(fallback_id, 80),
             )
@@ -4754,7 +4756,7 @@ Provider 规则：{emotion_rule}
             elapsed_ms = int((time.time() - start) * 1000)
             completion = str(getattr(resp, "completion_text", resp) or "")
             logger.info(
-                "[PrivateCompanion] TTS文本模型完成: task=%s provider=%s elapsed=%sms prompt_chars=%s completion_chars=%s",
+                "TTS文本模型完成: task=%s provider=%s elapsed=%sms prompt_chars=%s completion_chars=%s",
                 task,
                 _single_line(provider_id, 80) or "default",
                 elapsed_ms,
@@ -4779,14 +4781,14 @@ Provider 规则：{emotion_rule}
                 )
             if safety_refusal:
                 logger.warning(
-                    "[PrivateCompanion] TTS语种转换模型返回安全拒绝话术,不作为朗读文本: provider=%s preview=%s",
+                    "TTS语种转换模型返回安全拒绝话术,不作为朗读文本: provider=%s preview=%s",
                     _single_line(provider_id, 80) or "default",
                     _single_line(completion, 160),
                 )
             if (not completion.strip() or safety_refusal) and allow_fallback:
                 if fallback_provider is not None:
                     logger.warning(
-                        "[PrivateCompanion] TTS文本主模型%s,尝试卡片备用模型: primary=%s fallback=%s",
+                        "TTS文本主模型%s,尝试卡片备用模型: primary=%s fallback=%s",
                         "返回安全拒绝话术" if safety_refusal else "返回空结果",
                         _single_line(provider_id, 80) or "default",
                         _single_line(fallback_id, 80),
@@ -4803,7 +4805,7 @@ Provider 规则：{emotion_rule}
         except Exception as exc:
             elapsed_ms = int((time.time() - start) * 1000)
             logger.warning(
-                "[PrivateCompanion] TTS文本模型失败: task=%s provider=%s elapsed=%sms prompt_chars=%s error=%s",
+                "TTS文本模型失败: task=%s provider=%s elapsed=%sms prompt_chars=%s error=%s",
                 task,
                 _single_line(provider_id, 80) or "default",
                 elapsed_ms,
@@ -4827,7 +4829,7 @@ Provider 规则：{emotion_rule}
             if allow_fallback:
                 if fallback_provider is not None:
                     logger.warning(
-                        "[PrivateCompanion] TTS文本主模型失败,尝试卡片备用模型: primary=%s fallback=%s",
+                        "TTS文本主模型失败,尝试卡片备用模型: primary=%s fallback=%s",
                         _single_line(provider_id, 80) or "default",
                         _single_line(fallback_id, 80),
                     )
@@ -4895,7 +4897,7 @@ Provider 规则：{emotion_rule}
                     playback.unlink(missing_ok=True)
                 except Exception as exc:
                     logger.debug(
-                        "[PrivateCompanion] 清理 TTS 播放修复文件失败: %s",
+                        "清理 TTS 播放修复文件失败: %s",
                         _single_line(exc, 120),
                     )
 
@@ -4946,7 +4948,7 @@ Provider 规则：{emotion_rule}
                 f.write(payload)
             return str(fixed)
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 修正 WAV 播放头失败，使用原文件: %s", _single_line(exc, 120))
+            logger.debug("修正 WAV 播放头失败，使用原文件: %s", _single_line(exc, 120))
             return path
 
     def _run_windows_media_player_script(
@@ -5009,7 +5011,7 @@ Provider 规则：{emotion_rule}
         if result.returncode == 0:
             return True
         logger.debug(
-            "[PrivateCompanion] Windows 静默播放方式失败: mode=%s code=%s err=%s",
+            "Windows 静默播放方式失败: mode=%s code=%s err=%s",
             "wpf" if use_wpf else "wmp",
             result.returncode,
             _single_line(result.stderr or result.stdout, 160),
@@ -5037,9 +5039,9 @@ Provider 规则：{emotion_rule}
 
         try:
             await asyncio.to_thread(_post)
-            logger.info("[PrivateCompanion] 已同步 TTS 文本到直播打字机字幕: %s", _single_line(cleaned, 80))
+            logger.info("已同步 TTS 文本到直播打字机字幕: %s", _single_line(cleaned, 80))
         except Exception as exc:
-            logger.debug("[PrivateCompanion] TTS 直播字幕同步失败: %s", _single_line(exc, 120))
+            logger.debug("TTS 直播字幕同步失败: %s", _single_line(exc, 120))
 
     async def _after_tts_audio_generated(
         self,
@@ -5073,7 +5075,7 @@ Provider 规则：{emotion_rule}
             retry_after = float(getattr(self, "_tts_local_playback_retry_after", 0.0) or 0.0)
             if retry_after > now:
                 logger.debug(
-                    "[PrivateCompanion] TTS 本机播放处于失败退避: remain=%.1fs failures=%s",
+                    "TTS 本机播放处于失败退避: remain=%.1fs failures=%s",
                     retry_after - now,
                     int(getattr(self, "_tts_local_playback_failures", 0) or 0),
                 )
@@ -5087,7 +5089,7 @@ Provider 规则：{emotion_rule}
                     self._tts_local_playback_failures = 0
                     self._tts_local_playback_retry_after = 0.0
                     logger.info(
-                        "[PrivateCompanion] 已触发 TTS 本机播放: source=%s live_only=%s path=%s",
+                        "已触发 TTS 本机播放: source=%s live_only=%s path=%s",
                         source or "unknown",
                         live_only,
                         _single_line(audio_path, 160),
@@ -5098,7 +5100,7 @@ Provider 规则：{emotion_rule}
                     self._tts_local_playback_failures = failures
                     self._tts_local_playback_retry_after = now + retry_seconds
                     logger.warning(
-                        "[PrivateCompanion] TTS 本机播放失败,已进入退避: failures=%s retry=%.0fs error=%s",
+                        "TTS 本机播放失败,已进入退避: failures=%s retry=%.0fs error=%s",
                         failures,
                         retry_seconds,
                         _single_line(exc, 120),
@@ -5214,7 +5216,7 @@ Provider 规则：{emotion_rule}
                     and self._tts_visible_text_is_allowed_after_voice(visible_after)
                 ):
                     logger.info(
-                        "[PrivateCompanion] TTS全量快速标签已保留主模型外语块,中文仅作可见译文: voice=%s visible=%s",
+                        "TTS全量快速标签已保留主模型外语块,中文仅作可见译文: voice=%s visible=%s",
                         _single_line(spoken, 80),
                         _single_line(visible_after, 80),
                     )
@@ -5335,7 +5337,7 @@ Provider 规则：{emotion_rule}
                 event=event,
             ) or self._tts_plain_markup_fallback_text(normalized)
             logger.info(
-                "[PrivateCompanion] TTS强约束已阻止语音生成: session=%s reason=%s text=%s",
+                "TTS强约束已阻止语音生成: session=%s reason=%s text=%s",
                 _single_line(self._tts_session_key(event), 80) or "unknown",
                 hard_block,
                 _single_line(fallback_text or normalized, 120),
@@ -5353,7 +5355,7 @@ Provider 规则：{emotion_rule}
                 fallback_text = "我这边暂时没有可用的语音通道，先用文字陪你说。"
             if fallback_text:
                 logger.warning(
-                    "[PrivateCompanion] TTS强化检测到标签但当前没有可用合成后端,已隐藏朗读文本并按普通文本发送: backend=%s text=%s",
+                    "TTS强化检测到标签但当前没有可用合成后端,已隐藏朗读文本并按普通文本发送: backend=%s text=%s",
                     _single_line(self._tts_setting("tts_synthesis_backend", "astrbot_provider"), 40),
                     _single_line(fallback_text, 160),
                 )
@@ -5397,7 +5399,7 @@ Provider 规则：{emotion_rule}
                 if self._tts_text_is_provider_safety_refusal(source_spoken):
                     record_failed = True
                     logger.warning(
-                        "[PrivateCompanion] TTS转换结果命中提供商安全回执,已跳过合成并保留原回复: session=%s preview=%s",
+                        "TTS转换结果命中提供商安全回执,已跳过合成并保留原回复: session=%s preview=%s",
                         _single_line(self._tts_session_key(event), 80) or "unknown",
                         _single_line(source_spoken, 140),
                     )
@@ -5406,7 +5408,7 @@ Provider 规则：{emotion_rule}
             remaining = self._tts_session_interval_remaining(event)
             if remaining > 0:
                 logger.info(
-                    "[PrivateCompanion] TTS会话级节流生效,已隐藏朗读文本并保留可见文本: session=%s remain=%.1fs text=%s",
+                    "TTS会话级节流生效,已隐藏朗读文本并保留可见文本: session=%s remain=%.1fs text=%s",
                     _single_line(self._tts_session_key(event), 80) or "unknown",
                     remaining,
                     _single_line(spoken, 80),
@@ -5422,7 +5424,7 @@ Provider 规则：{emotion_rule}
                 spoken = await self._convert_text_to_spoken_language(spoken, event, provider_kind=provider_kind)
                 if spoken != before_convert:
                     logger.info(
-                        "[PrivateCompanion] TTS语音块已按目标语种修正: '%s' -> '%s'",
+                        "TTS语音块已按目标语种修正: '%s' -> '%s'",
                         _single_line(before_convert, 80),
                         _single_line(spoken, 80),
                     )
@@ -5463,20 +5465,20 @@ Provider 规则：{emotion_rule}
                             if visible_plain is not None:
                                 output.append(visible_plain)
                             logger.info(
-                                "[PrivateCompanion] TTS语音块已补中文释义: 语音=%s 中文=%s",
+                                "TTS语音块已补中文释义: 语音=%s 中文=%s",
                                 _single_line(spoken, 80),
                                 _single_line(visible_translation, 80),
                             )
                         else:
                             logger.warning(
-                                "[PrivateCompanion] TTS语音块缺少中文释义且自动补充失败: 语音=%s",
+                                "TTS语音块缺少中文释义且自动补充失败: 语音=%s",
                                 _single_line(spoken, 100),
                             )
             else:
                 record_failed = True
                 if fallback_plain:
                     logger.warning(
-                        "[PrivateCompanion] TTS语音组件生成失败,已隐藏朗读文本并保留可见中文: %s",
+                        "TTS语音组件生成失败,已隐藏朗读文本并保留可见中文: %s",
                         _single_line(spoken, 120),
                     )
                 elif voice_language != "zh":
@@ -5484,7 +5486,7 @@ Provider 规则：{emotion_rule}
                     visible_after_this_block = normalized[match.end():next_start]
                     if self._tts_visible_text_is_allowed_after_voice(visible_after_this_block):
                         logger.warning(
-                            "[PrivateCompanion] TTS语音组件生成失败,已隐藏朗读文本并保留后置中文: %s",
+                            "TTS语音组件生成失败,已隐藏朗读文本并保留后置中文: %s",
                             _single_line(spoken, 120),
                         )
                     elif not complete_chinese_before_voice:
@@ -5498,12 +5500,12 @@ Provider 规则：{emotion_rule}
                             if visible_plain is not None:
                                 output.append(visible_plain)
                             logger.warning(
-                                "[PrivateCompanion] TTS语音组件生成失败,已改用中文释义文本: %s",
+                                "TTS语音组件生成失败,已改用中文释义文本: %s",
                                 _single_line(visible_translation, 120),
                             )
                         else:
                             logger.warning(
-                                "[PrivateCompanion] TTS语音组件生成失败且无法得到中文释义,已隐藏朗读文本: %s",
+                                "TTS语音组件生成失败且无法得到中文释义,已隐藏朗读文本: %s",
                                 _single_line(spoken, 120),
                             )
                 else:
@@ -5523,13 +5525,13 @@ Provider 规则：{emotion_rule}
             chinese_after = self._tts_chinese_visible_fallback_from_mixed(after)
             if chinese_after:
                 logger.warning(
-                    "[PrivateCompanion] TTS语音块后置可见文本混有朗读语种,已仅保留中文释义: text=%s",
+                    "TTS语音块后置可见文本混有朗读语种,已仅保留中文释义: text=%s",
                     _single_line(chinese_after, 120),
                 )
                 after = chinese_after
             else:
                 logger.warning(
-                    "[PrivateCompanion] TTS语音块后置可见文本不是中文释义,已丢弃: text=%s",
+                    "TTS语音块后置可见文本不是中文释义,已丢弃: text=%s",
                     _single_line(after, 120),
                 )
                 after = ""
@@ -5615,7 +5617,7 @@ Provider 规则：{emotion_rule}
                 normalized = self._normalize_tts_spoken_text(converted, provider_kind=provider_kind)
                 if normalized and self._tts_text_is_provider_safety_refusal(normalized):
                     logger.warning(
-                        "[PrivateCompanion] TTS语种转换最终结果仍为安全拒绝话术,已回退原回复: session=%s preview=%s",
+                        "TTS语种转换最终结果仍为安全拒绝话术,已回退原回复: session=%s preview=%s",
                         _single_line(self._tts_session_key(event), 80) or "unknown",
                         _single_line(normalized, 160),
                     )
@@ -5683,7 +5685,7 @@ Provider 规则：{emotion_rule}
                     break
                 if attempt == 0:
                     logger.info(
-                        "[PrivateCompanion] 外部实时 TTS 语种转换结果不合格,正在重试: target=%s",
+                        "外部实时 TTS 语种转换结果不合格,正在重试: target=%s",
                         self._tts_language_label(),
                     )
             if not converted or self._tts_text_needs_language_conversion(
@@ -5693,7 +5695,7 @@ Provider 规则：{emotion_rule}
                 result["fallback_text"] = ""
                 result["reason"] = "language_conversion_failed"
                 logger.warning(
-                    "[PrivateCompanion] 外部实时 TTS 语种转换失败,已阻止原文送入%s声线或浏览器朗读: text=%s",
+                    "外部实时 TTS 语种转换失败,已阻止原文送入%s声线或浏览器朗读: text=%s",
                     self._tts_language_label(),
                     _single_line(source_text, 120),
                 )
@@ -5728,7 +5730,7 @@ Provider 规则：{emotion_rule}
             audio_path = await self._tts_generate_audio_path(tts_provider, sanitized)
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 外部实时 TTS 合成失败: provider=%s error=%s",
+                "外部实时 TTS 合成失败: provider=%s error=%s",
                 provider_kind,
                 _single_line(exc, 120),
             )
@@ -5808,7 +5810,7 @@ Provider 规则：{emotion_rule}
             if getattr(self, "_tts_fishaudio_provider_copy_warning_key", "") != warning_key:
                 self._tts_fishaudio_provider_copy_warning_key = warning_key
                 logger.warning(
-                    "[PrivateCompanion] FishAudio Provider 无法隔离本次模型参数，已保留 AstrBot 原配置: "
+                    "FishAudio Provider 无法隔离本次模型参数，已保留 AstrBot 原配置: "
                     "provider=%s model=%s error_type=%s",
                     tts_provider.__class__.__name__,
                     model,
@@ -5826,7 +5828,7 @@ Provider 规则：{emotion_rule}
         if getattr(self, "_tts_fishaudio_request_model_log_key", "") != log_key:
             self._tts_fishaudio_request_model_log_key = log_key
             logger.info(
-                "[PrivateCompanion] FishAudio TTS 已在隔离请求副本应用模型参数: model=%s",
+                "FishAudio TTS 已在隔离请求副本应用模型参数: model=%s",
                 model,
             )
         return request_provider, model
@@ -5896,7 +5898,7 @@ Provider 规则：{emotion_rule}
             return None
         if sanitized != spoken:
             logger.info(
-                "[PrivateCompanion] TTS强化朗读文本已清洗: '%s' -> '%s'",
+                "TTS强化朗读文本已清洗: '%s' -> '%s'",
                 _single_line(spoken, 80),
                 _single_line(sanitized, 80),
             )
@@ -5913,7 +5915,7 @@ Provider 规则：{emotion_rule}
                     for cue in applied_cues
                 )
                 logger.info(
-                    "[PrivateCompanion] FishAudio 专用情绪控制已应用: model=%s mode=%s cues=%s",
+                    "FishAudio 专用情绪控制已应用: model=%s mode=%s cues=%s",
                     fish_model or ("s1" if s1 else "s2-compatible"),
                     self._fishaudio_emotion_mode(),
                     rendered_cues,
@@ -5935,14 +5937,14 @@ Provider 规则：{emotion_rule}
                 )
                 if can_retry:
                     logger.info(
-                        "[PrivateCompanion] 后台 TTS 瞬时连接失败,准备重试一次: provider=%s error_type=%s",
+                        "后台 TTS 瞬时连接失败,准备重试一次: provider=%s error_type=%s",
                         provider_kind or "unknown",
                         exc.__class__.__name__,
                     )
                     await asyncio.sleep(0.2)
                     continue
                 logger.warning(
-                    "[PrivateCompanion] TTS强化生成语音失败: provider=%s error_type=%s error=%s text=%s",
+                    "TTS强化生成语音失败: provider=%s error_type=%s error=%s text=%s",
                     provider_kind or "unknown",
                     exc.__class__.__name__,
                     _single_line(repr(exc), 160),
@@ -5956,10 +5958,10 @@ Provider 规则：{emotion_rule}
             audio_file = Path(audio_path).resolve()
             expected_dir = Path(get_astrbot_data_path()).resolve()
             if not audio_file.is_relative_to(expected_dir):
-                logger.warning("[PrivateCompanion] TTS强化拒绝不安全语音路径: %s", _single_line(audio_path, 160))
+                logger.warning("TTS强化拒绝不安全语音路径: %s", _single_line(audio_path, 160))
                 return None
         except Exception as exc:
-            logger.warning("[PrivateCompanion] TTS强化检查语音路径失败: %s", _single_line(exc, 120))
+            logger.warning("TTS强化检查语音路径失败: %s", _single_line(exc, 120))
             return None
         final_ref = str(audio_path)
         if not defer_delivery_effects:
@@ -5978,7 +5980,7 @@ Provider 规则：{emotion_rule}
                     token = await file_token_service.register_file(str(audio_path))
                     final_ref = f"{callback_api_base}/api/file/{token}"
                 except Exception as exc:
-                    logger.warning("[PrivateCompanion] TTS强化注册语音文件失败: %s", _single_line(exc, 120))
+                    logger.warning("TTS强化注册语音文件失败: %s", _single_line(exc, 120))
         record_text = source_text or sanitized
         try:
             component = Record(file=final_ref, url=final_ref, text=record_text)
@@ -5988,5 +5990,5 @@ Provider 规则：{emotion_rule}
             except TypeError:
                 component = Record.fromFileSystem(str(audio_path), text=record_text)
         self._annotate_tts_record_component(component, sanitized, source_text=source_text or spoken)
-        logger.info("[PrivateCompanion] TTS语音组件已生成: %s", self._tts_component_log_note(component))
+        logger.info("TTS语音组件已生成: %s", self._tts_component_log_note(component))
         return component

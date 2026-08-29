@@ -13,9 +13,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from astrbot.api import logger
 
 from .backend_base import StoreBackendBase
+from ..logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 _SCHEMA_VERSION = 2
 _SQLITE_INTEGER_MAX = (1 << 63) - 1
@@ -452,7 +454,7 @@ class SqliteStoreBackend(StoreBackendBase):
                 raise SqliteSchemaError("SQLite v1 to v2 integrity check failed")
             connection.commit()
             logger.info(
-                "[PrivateCompanion] Migrated SQLite store schema to v2 after creating backup: %s",
+                "Migrated SQLite store schema to v2 after creating backup: %s",
                 backup_path,
             )
         except Exception:
@@ -558,7 +560,7 @@ class SqliteStoreBackend(StoreBackendBase):
             raise
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 读取 SQLite 数据失败,已保留原数据库并中止加载: %s",
+                "读取 SQLite 数据失败,已保留原数据库并中止加载: %s",
                 exc,
             )
             raise

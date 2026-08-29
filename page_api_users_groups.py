@@ -11,7 +11,6 @@ from copy import deepcopy
 from datetime import datetime
 from typing import Any
 
-from astrbot.api import logger
 from quart import request
 
 from .helpers import _safe_int
@@ -23,6 +22,9 @@ from .relationship_ledger import (
     relationship_positive_score_cap,
 )
 from .migration_backfill import legacy_pending_reference
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 class PrivateCompanionPageApiUsersGroupsMixin:
@@ -290,7 +292,7 @@ class PrivateCompanionPageApiUsersGroupsMixin:
                 }
             })
         except Exception as exc:
-            logger.warning("[PrivateCompanionPage] 更新待确认身份状态失败: %s", exc)
+            logger.warning("更新待确认身份状态失败: %s", exc)
             return self._error("更新待确认身份状态失败")
 
     def _identity_admin_summary(
@@ -415,10 +417,10 @@ class PrivateCompanionPageApiUsersGroupsMixin:
             items.sort(key=lambda item: item.get("last_seen_ts") or 0, reverse=True)
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             if elapsed_ms > 1200:
-                logger.warning("[PrivateCompanionPage] 用户列表接口耗时较高: elapsed=%sms users=%s", elapsed_ms, len(items))
+                logger.warning("用户列表接口耗时较高: elapsed=%sms users=%s", elapsed_ms, len(items))
             return self._ok({"items": items[:limit], "total": len(items)})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 获取用户列表失败: {exc}", exc_info=True)
+            logger.error(f"获取用户列表失败: {exc}", exc_info=True)
             return self._error(str(exc))
     async def get_user(self) -> dict[str, Any]:
         user_id = str(request.args.get("user_id", "")).strip()
@@ -495,7 +497,7 @@ class PrivateCompanionPageApiUsersGroupsMixin:
             )
             return self._ok(detail)
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 获取用户详情失败: {exc}", exc_info=True)
+            logger.error(f"获取用户详情失败: {exc}", exc_info=True)
             return self._error(str(exc))
     async def link_unified_identity(self) -> dict[str, Any]:
         payload = await request.get_json(silent=True)
@@ -582,7 +584,7 @@ class PrivateCompanionPageApiUsersGroupsMixin:
                 return self._error(str(result.get("code") or "统一身份重新关联失败"))
             return self._ok({"result": result})
         except Exception as exc:
-            logger.warning("[PrivateCompanionPage] 统一身份重新关联失败: %s", exc)
+            logger.warning("统一身份重新关联失败: %s", exc)
             return self._error("统一身份重新关联失败")
 
     async def unlink_unified_identity(self) -> dict[str, Any]:
@@ -655,7 +657,7 @@ class PrivateCompanionPageApiUsersGroupsMixin:
                 safe_result["confirmation_token"] = expected_confirmation
             return self._ok({"result": safe_result})
         except Exception as exc:
-            logger.warning("[PrivateCompanionPage] 统一身份解绑失败: %s", exc)
+            logger.warning("统一身份解绑失败: %s", exc)
             return self._error("统一身份解绑失败")
 
     async def archive_unified_person(self) -> dict[str, Any]:
@@ -688,7 +690,7 @@ class PrivateCompanionPageApiUsersGroupsMixin:
                 return self._error(code)
             return self._ok({"result": self._safe_person_lifecycle_result(result, "archive")})
         except Exception as exc:
-            logger.warning("[PrivateCompanionPage] 人物归档失败: %s", exc)
+            logger.warning("人物归档失败: %s", exc)
             return self._error("人物归档失败")
 
     async def delete_unified_person(self) -> dict[str, Any]:
@@ -719,7 +721,7 @@ class PrivateCompanionPageApiUsersGroupsMixin:
                 return self._error(str(result.get("code") or "人物删除失败"))
             return self._ok({"result": safe_result})
         except Exception as exc:
-            logger.warning("[PrivateCompanionPage] 人物删除失败: %s", exc)
+            logger.warning("人物删除失败: %s", exc)
             return self._error("人物删除失败")
 
     async def preview_unified_identity_merge(self) -> dict[str, Any]:
@@ -742,7 +744,7 @@ class PrivateCompanionPageApiUsersGroupsMixin:
                 return self._error(str(result.get("code") or "统一人物合并预览失败"))
             return self._ok({"result": result})
         except Exception as exc:
-            logger.warning("[PrivateCompanionPage] 统一人物合并预览失败: %s", exc)
+            logger.warning("统一人物合并预览失败: %s", exc)
             return self._error("统一人物合并预览失败")
 
     async def update_user(self) -> dict[str, Any]:
@@ -1147,7 +1149,7 @@ class PrivateCompanionPageApiUsersGroupsMixin:
                 result["message"] = action_message
             return self._ok(result)
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 更新用户失败: {exc}", exc_info=True)
+            logger.error(f"更新用户失败: {exc}", exc_info=True)
             return self._error(str(exc))
 
     async def delete_user(self) -> dict[str, Any]:
@@ -1289,7 +1291,7 @@ class PrivateCompanionPageApiUsersGroupsMixin:
                 }
             )
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 删除用户失败: {exc}", exc_info=True)
+            logger.error(f"删除用户失败: {exc}", exc_info=True)
             return self._error(str(exc))
 
     @staticmethod
@@ -1328,10 +1330,10 @@ class PrivateCompanionPageApiUsersGroupsMixin:
             items.sort(key=lambda item: item.get("last_seen_ts") or 0, reverse=True)
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             if elapsed_ms > 1200:
-                logger.warning("[PrivateCompanionPage] 群列表接口耗时较高: elapsed=%sms groups=%s", elapsed_ms, len(items))
+                logger.warning("群列表接口耗时较高: elapsed=%sms groups=%s", elapsed_ms, len(items))
             return self._ok({"items": items[:limit], "total": len(items), "shadow_total": shadow_count})
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 获取群列表失败: {exc}", exc_info=True)
+            logger.error(f"获取群列表失败: {exc}", exc_info=True)
             return self._error(str(exc))
 
     def _refresh_group_atmosphere_for_page(self, group: dict[str, Any]) -> dict[str, Any]:
@@ -1341,7 +1343,7 @@ class PrivateCompanionPageApiUsersGroupsMixin:
                 updater(group)
             except Exception as exc:
                 logger.info(
-                    "[PrivateCompanionPage] 群气氛读取时重算失败: %s",
+                    "群气氛读取时重算失败: %s",
                     self._single_line(exc, 120),
                 )
         return group
@@ -1633,7 +1635,7 @@ class PrivateCompanionPageApiUsersGroupsMixin:
                     if name:
                         found[group_id] = name
         except Exception as exc:
-            logger.info("[PrivateCompanionPage] 群列表名称刷新失败: %s", self._single_line(exc, 120))
+            logger.info("群列表名称刷新失败: %s", self._single_line(exc, 120))
         if len(found) < len(target_ids) and platform_target_ids:
             for group_id, _ in [item for item in missing if item[0] in platform_target_ids][:30]:
                 if group_id in found:
@@ -1713,7 +1715,7 @@ class PrivateCompanionPageApiUsersGroupsMixin:
             )
             return self._ok(detail)
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 获取群详情失败: {exc}", exc_info=True)
+            logger.error(f"获取群详情失败: {exc}", exc_info=True)
             return self._error(str(exc))
 
     async def get_group_member_safety(self) -> dict[str, Any]:
@@ -1736,7 +1738,7 @@ class PrivateCompanionPageApiUsersGroupsMixin:
             )
             return self._ok(summary)
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 获取成员风控失败: {exc}", exc_info=True)
+            logger.error(f"获取成员风控失败: {exc}", exc_info=True)
             return self._error(str(exc))
 
     async def update_group_member_safety(self) -> dict[str, Any]:
@@ -1767,7 +1769,7 @@ class PrivateCompanionPageApiUsersGroupsMixin:
         except ValueError as exc:
             return self._error(str(exc))
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 更新成员风控失败: {exc}", exc_info=True)
+            logger.error(f"更新成员风控失败: {exc}", exc_info=True)
             return self._error(str(exc))
 
     async def update_group(self) -> dict[str, Any]:
@@ -1871,7 +1873,7 @@ class PrivateCompanionPageApiUsersGroupsMixin:
                 snapshot = deepcopy(group)
             return self._ok(self._group_summary(group_id, snapshot))
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 更新群失败: {exc}", exc_info=True)
+            logger.error(f"更新群失败: {exc}", exc_info=True)
             return self._error(str(exc))
 
     async def delete_group(self) -> dict[str, Any]:
@@ -1988,7 +1990,7 @@ class PrivateCompanionPageApiUsersGroupsMixin:
                 }
             )
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 删除群失败: {exc}", exc_info=True)
+            logger.error(f"删除群失败: {exc}", exc_info=True)
             return self._error(str(exc))
 
     async def update_group_slang(self) -> dict[str, Any]:
@@ -2051,5 +2053,5 @@ class PrivateCompanionPageApiUsersGroupsMixin:
             detail["slang_items"] = self._group_slang_items(snapshot)
             return self._ok(detail)
         except Exception as exc:
-            logger.error(f"[PrivateCompanionPage] 更新群黑话失败: {exc}", exc_info=True)
+            logger.error(f"更新群黑话失败: {exc}", exc_info=True)
             return self._error(str(exc))

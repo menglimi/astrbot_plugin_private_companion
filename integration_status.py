@@ -31,7 +31,7 @@ from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 from xml.etree import ElementTree as ET
 
-from astrbot.api import AstrBotConfig, logger
+from astrbot.api import AstrBotConfig
 from .conversation_prompt_section import prompt_section
 from .persona_config import runtime_persona_setting
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
@@ -120,6 +120,9 @@ from .planning import (
     normalize_story_plan,
     pick_detail_segment,
 )
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 DEFAULT_AI_DAILY_NEWS_SOURCE = "B站 AI早报|bilibili:285286947"
@@ -274,7 +277,7 @@ class IntegrationStatusMixin:
                 setattr(service_mod, "PLUGIN_PAGE_ASSET_TOKEN_TTL_SECONDS", target_ttl_seconds)
                 changed.append(f"service_ttl={current}->{target_ttl_seconds}")
         except Exception as exc:
-            logger.debug("[PrivateCompanion] AstrBot 插件页 token TTL 兼容补丁跳过: %s", _single_line(exc, 120))
+            logger.debug("AstrBot 插件页 token TTL 兼容补丁跳过: %s", _single_line(exc, 120))
 
         try:
             from astrbot.dashboard.routes import plugin as legacy_route_mod
@@ -284,7 +287,7 @@ class IntegrationStatusMixin:
                 setattr(legacy_route_mod, "_PLUGIN_PAGE_ASSET_TOKEN_TTL_SECONDS", target_ttl_seconds)
                 changed.append(f"legacy_ttl={current}->{target_ttl_seconds}")
         except Exception as exc:
-            logger.debug("[PrivateCompanion] AstrBot 旧插件页 token TTL 兼容补丁跳过: %s", _single_line(exc, 120))
+            logger.debug("AstrBot 旧插件页 token TTL 兼容补丁跳过: %s", _single_line(exc, 120))
 
         try:
             from astrbot.dashboard.plugin_page_auth import PluginPageAuth
@@ -317,7 +320,7 @@ class IntegrationStatusMixin:
                 PluginPageAuth.is_scope_valid = classmethod(_is_scope_valid)
                 changed.append("private_companion_page_alias_scope")
         except Exception as exc:
-            logger.debug("[PrivateCompanion] AstrBot 插件页别名鉴权兼容补丁跳过: %s", _single_line(exc, 120))
+            logger.debug("AstrBot 插件页别名鉴权兼容补丁跳过: %s", _single_line(exc, 120))
 
         # A hot-reload can leave a StarMetadata object whose root_dir_name still
         # points at a temporary/old checkout.  The page and README routers use
@@ -360,7 +363,7 @@ class IntegrationStatusMixin:
                 service_mod.PluginPageService.get_plugin_root_dir = _get_plugin_root_with_fallback
                 changed.append("page_root_fallback")
         except Exception as exc:
-            logger.debug("[PrivateCompanion] AstrBot 新插件页目录兼容补丁跳过: %s", _single_line(exc, 120))
+            logger.debug("AstrBot 新插件页目录兼容补丁跳过: %s", _single_line(exc, 120))
 
         try:
             from astrbot.dashboard.routes import plugin as legacy_route_mod
@@ -451,7 +454,7 @@ class IntegrationStatusMixin:
                     setattr(legacy_route_mod.PluginRoute, method_name, _read_document_with_fallback)
                 changed.append("legacy_readme_root_fallback")
         except Exception as exc:
-            logger.debug("[PrivateCompanion] AstrBot 旧插件页目录兼容补丁跳过: %s", _single_line(exc, 120))
+            logger.debug("AstrBot 旧插件页目录兼容补丁跳过: %s", _single_line(exc, 120))
 
         try:
             from astrbot.dashboard.services import plugin_service as service_mod
@@ -496,10 +499,10 @@ class IntegrationStatusMixin:
                 service_mod.PluginService.resolve_plugin_logo_url = _resolve_logo_url_with_fallback
                 changed.append("logo_root_fallback")
         except Exception as exc:
-            logger.debug("[PrivateCompanion] AstrBot README目录兼容补丁跳过: %s", _single_line(exc, 120))
+            logger.debug("AstrBot README目录兼容补丁跳过: %s", _single_line(exc, 120))
 
         if changed:
-            logger.info("[PrivateCompanion] AstrBot 插件页入口兼容已应用: %s", ", ".join(changed))
+            logger.info("AstrBot 插件页入口兼容已应用: %s", ", ".join(changed))
 
     def _register_page_api_if_available(self) -> None:
         try:
@@ -507,17 +510,17 @@ class IntegrationStatusMixin:
 
             self.page_api = PrivateCompanionPageApi(self)
         except Exception as e:
-            logger.warning(f"[PrivateCompanion] 插件拓展页面 API 初始化失败: {e}", exc_info=True)
+            logger.warning(f"插件拓展页面 API 初始化失败: {e}", exc_info=True)
             return
 
         if hasattr(self.context, "register_web_api"):
             try:
                 self.page_api.register_routes()
-                logger.info("[PrivateCompanion] 插件拓展页面 API 已注册")
+                logger.info("插件拓展页面 API 已注册")
             except Exception as e:
-                logger.warning(f"[PrivateCompanion] 插件拓展页面 API 注册失败: {e}", exc_info=True)
+                logger.warning(f"插件拓展页面 API 注册失败: {e}", exc_info=True)
         else:
-            logger.debug("[PrivateCompanion] 当前 AstrBot 版本未提供 register_web_api,跳过插件拓展页面 API 注册")
+            logger.debug("当前 AstrBot 版本未提供 register_web_api,跳过插件拓展页面 API 注册")
 
         try:
             from .standalone_webui import StandaloneWebUIServer
@@ -525,7 +528,7 @@ class IntegrationStatusMixin:
             self.standalone_webui = StandaloneWebUIServer(self, self.page_api)
         except Exception as e:
             self.standalone_webui = None
-            logger.warning(f"[PrivateCompanion] 独立陪伴 WebUI 初始化失败: {e}", exc_info=True)
+            logger.warning(f"独立陪伴 WebUI 初始化失败: {e}", exc_info=True)
 
     def _patch_livingmemory_processor_compat(self) -> None:
         """Work around LivingMemory versions whose MemoryProcessor lacks config."""
@@ -542,9 +545,9 @@ class IntegrationStatusMixin:
             return
         try:
             setattr(processor_cls, "config", {"atom_enabled": True})
-            logger.info("[PrivateCompanion] 已为 LivingMemory MemoryProcessor 添加 config 兼容兜底")
+            logger.info("已为 LivingMemory MemoryProcessor 添加 config 兼容兜底")
         except Exception as exc:
-            logger.debug("[PrivateCompanion] LivingMemory 兼容补丁应用失败: %s", _single_line(exc, 120))
+            logger.debug("LivingMemory 兼容补丁应用失败: %s", _single_line(exc, 120))
 
     def _integrated_plugin_installed(self, *names: str) -> bool:
         roots = [
@@ -582,12 +585,12 @@ class IntegrationStatusMixin:
         for key, plugin_names, message in rules:
             if self._integrated_plugin_installed(*plugin_names):
                 state = "开启" if bool(getattr(self, key, False)) else "关闭"
-                logger.info("[PrivateCompanion] %s", message % state)
+                logger.info("%s", message % state)
         if self._integrated_plugin_installed("astrbot_plugin_proactive_chat"):
             enabled = bool(runtime_persona_setting(self, 'enable_proactive_chat_integration', True))
             review_mode = str(runtime_persona_setting(self, 'proactive_chat_bridge_review_mode', "local") or "local")
             logger.info(
-                "[PrivateCompanion] 已检测到 Proactive Chat，私聊主动发送联动%s（复核模式=%s）；不会修改对方调度配置。",
+                "已检测到 Proactive Chat，私聊主动发送联动%s（复核模式=%s）；不会修改对方调度配置。",
                 "开启" if enabled else "关闭",
                 review_mode,
             )

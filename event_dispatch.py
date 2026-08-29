@@ -33,7 +33,7 @@ from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 from xml.etree import ElementTree as ET
 
-from astrbot.api import AstrBotConfig, logger
+from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 try:
     from astrbot.api.message_components import At, Image, Plain, Record, Reply
@@ -128,6 +128,9 @@ from .planning import (
     normalize_story_plan,
     pick_detail_segment,
 )
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 DEFAULT_AI_DAILY_NEWS_SOURCE = "B站 AI早报|bilibili:285286947"
 
@@ -829,7 +832,7 @@ class EventDispatchMixin:
             if message_id and not prior_message_id:
                 entry["echo_message_id"] = message_id
             logger.info(
-                "[PrivateCompanion] 已拦截未授权私聊拒绝回流: scope=%s mode=%s duplicate=%s",
+                "已拦截未授权私聊拒绝回流: scope=%s mode=%s duplicate=%s",
                 _single_line(scope, 240),
                 match_mode,
                 bool(matched_at),
@@ -1879,7 +1882,7 @@ class EventDispatchMixin:
                     if converted:
                         return converted
                 except Exception as exc:
-                    logger.debug("[PrivateCompanion] 撤回图片组件转换失败: %s", exc)
+                    logger.debug("撤回图片组件转换失败: %s", exc)
             return source
 
         for comp in self._event_components(event):
@@ -1933,7 +1936,7 @@ class EventDispatchMixin:
                 target.write_bytes(raw)
                 return str(target)
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 撤回图片 data url 暂存失败: %s", exc)
+                logger.debug("撤回图片 data url 暂存失败: %s", exc)
                 return ""
 
         for index, source in enumerate(raw_sources[: max(1, limit)], 1):
@@ -1950,7 +1953,7 @@ class EventDispatchMixin:
                     try:
                         downloaded = await asyncio.wait_for(downloader(text, target_dir, f"{now_ms}_{index}"), timeout=8.0)
                     except Exception as exc:
-                        logger.debug("[PrivateCompanion] 撤回图片远程暂存失败: %s", exc)
+                        logger.debug("撤回图片远程暂存失败: %s", exc)
                         downloaded = ""
                     if downloaded:
                         add_persisted(downloaded, "local")
@@ -1971,7 +1974,7 @@ class EventDispatchMixin:
                     add_persisted(str(target), "local")
                     continue
                 except Exception as exc:
-                    logger.debug("[PrivateCompanion] 撤回图片本地暂存失败: %s", exc)
+                    logger.debug("撤回图片本地暂存失败: %s", exc)
             if not re.match(r"^(?:[A-Za-z]:[\\/]|/|\\\\|file://)", text):
                 # OneBot/NapCat may expose only a platform-side image file id.
                 # Keep it as a best-effort sendable Image(file=...) reference.
@@ -2114,7 +2117,7 @@ class EventDispatchMixin:
         try:
             iterator = list(root_resolved.rglob("*"))
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 撤回图片缓存扫描失败: %s", exc)
+            logger.debug("撤回图片缓存扫描失败: %s", exc)
             return False
 
         for path in iterator:
@@ -2130,11 +2133,11 @@ class EventDispatchMixin:
                         removed_count += 1
                         removed_bytes += size
                     except Exception as exc:
-                        logger.debug("[PrivateCompanion] 撤回图片过期缓存删除失败: path=%s error=%s", path, exc)
+                        logger.debug("撤回图片过期缓存删除失败: path=%s error=%s", path, exc)
                     continue
                 files.append((mtime, size, path))
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 撤回图片缓存条目读取失败: path=%s error=%s", path, exc)
+                logger.debug("撤回图片缓存条目读取失败: path=%s error=%s", path, exc)
 
         total_bytes = sum(size for _, size, _ in files)
         if max_bytes and total_bytes > max_bytes:
@@ -2147,7 +2150,7 @@ class EventDispatchMixin:
                     removed_count += 1
                     removed_bytes += size
                 except Exception as exc:
-                    logger.debug("[PrivateCompanion] 撤回图片容量缓存删除失败: path=%s error=%s", path, exc)
+                    logger.debug("撤回图片容量缓存删除失败: path=%s error=%s", path, exc)
 
         for directory in sorted((p for p in iterator if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
             try:
@@ -2155,11 +2158,11 @@ class EventDispatchMixin:
             except OSError:
                 pass
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 撤回图片空目录清理失败: path=%s error=%s", directory, exc)
+                logger.debug("撤回图片空目录清理失败: path=%s error=%s", directory, exc)
 
         if removed_count:
             logger.info(
-                "[PrivateCompanion] 已清理撤回图片缓存: files=%s size=%.1fMB ttl=%.0fs max=%.1fMB",
+                "已清理撤回图片缓存: files=%s size=%.1fMB ttl=%.0fs max=%.1fMB",
                 removed_count,
                 removed_bytes / 1024 / 1024,
                 ttl,
@@ -2319,7 +2322,7 @@ class EventDispatchMixin:
                 "cache_miss": True,
             }
             logger.info(
-                "[PrivateCompanion] 撤回消息快照未命中: scope=%s message_id=%s notice=%s",
+                "撤回消息快照未命中: scope=%s message_id=%s notice=%s",
                 _single_line(scope, 160) or "-",
                 message_id,
                 _single_line(notice_type, 40) or "-",
@@ -2445,7 +2448,7 @@ class EventDispatchMixin:
                 raw = await call_action("get_msg", message_id=value)
             except Exception as exc:
                 logger.debug(
-                    "[PrivateCompanion] 触发消息存在性检查失败: message_id=%s error=%s",
+                    "触发消息存在性检查失败: message_id=%s error=%s",
                     message_id,
                     _single_line(exc, 120),
                 )
@@ -2688,7 +2691,7 @@ class EventDispatchMixin:
                 40,
             ) or self._quote_cache_key(event)
             logger.debug(
-                "[PrivateCompanion] 当前平台不支持原生撤回，已跳过: platform=%s message_id=%s",
+                "当前平台不支持原生撤回，已跳过: platform=%s message_id=%s",
                 platform_label,
                 message_id,
             )
@@ -2704,10 +2707,10 @@ class EventDispatchMixin:
         for value in attempts:
             try:
                 await call(event, "delete_msg", message_id=value)
-                logger.info("[PrivateCompanion] 已尝试撤回消息: message_id=%s reason=%s", message_id, _single_line(reason, 80))
+                logger.info("已尝试撤回消息: message_id=%s reason=%s", message_id, _single_line(reason, 80))
                 return True
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 撤回消息失败: message_id=%s error=%s", message_id, _single_line(exc, 120))
+                logger.debug("撤回消息失败: message_id=%s error=%s", message_id, _single_line(exc, 120))
         return False
 
     def _candidate_trigger_message_id(self, candidate: dict[str, Any]) -> str:
@@ -2788,12 +2791,12 @@ class EventDispatchMixin:
         platform_supports = getattr(self, "_platform_supports", None)
         if event is not None and callable(platform_supports) and not platform_supports("reply_quote", event=event):
             logger.debug(
-                "[PrivateCompanion] 当前平台不支持指定消息引用，已降级为普通发送: platform=%s",
+                "当前平台不支持指定消息引用，已降级为普通发送: platform=%s",
                 self._quote_cache_key(event),
             )
             return None
         if Reply is None:
-            logger.debug("[PrivateCompanion] 当前 AstrBot 运行环境缺少 Reply 组件，引用触发消息已降级。")
+            logger.debug("当前 AstrBot 运行环境缺少 Reply 组件，引用触发消息已降级。")
             return None
         message_id = _single_line(message_id, 120)
         if not message_id:
@@ -2836,7 +2839,7 @@ class EventDispatchMixin:
             except Exception:
                 continue
         logger.info(
-            "[PrivateCompanion] 当前平台未能构造 Reply 引用组件，已降级为普通发送: platform=%s message_id=%s",
+            "当前平台未能构造 Reply 引用组件，已降级为普通发送: platform=%s message_id=%s",
             cache_key,
             message_id,
         )
@@ -3167,7 +3170,7 @@ class EventDispatchMixin:
             if last <= 0 or now - last > window:
                 continue
             logger.info(
-                "[PrivateCompanion] 用户消息防抖拦截: kind=%s scope=%s sender=%s msg_id=%s text=%s",
+                "用户消息防抖拦截: kind=%s scope=%s sender=%s msg_id=%s text=%s",
                 kind,
                 scope,
                 sender_id,
@@ -3296,7 +3299,7 @@ class EventDispatchMixin:
                     messages.append({"ts": now, "text": cleaned, "sender_name": _single_line(sender_name, 40)})
                 current["deadline_ts"] = now
                 logger.info(
-                    "[PrivateCompanion] 消息收口固定窗口已到,准备立刻收口: kind=%s scope=%s sender=%s count=%s text=%s",
+                    "消息收口固定窗口已到,准备立刻收口: kind=%s scope=%s sender=%s count=%s text=%s",
                     buffer_kind,
                     scope,
                     sender_id,
@@ -3315,7 +3318,7 @@ class EventDispatchMixin:
                 current["deadline_ts"] = now
                 current["max_wait_reached"] = True
                 logger.info(
-                    "[PrivateCompanion] 消息收口达到最长等待,准备立刻收口: kind=%s scope=%s sender=%s max_wait=%.1fs count=%s text=%s",
+                    "消息收口达到最长等待,准备立刻收口: kind=%s scope=%s sender=%s max_wait=%.1fs count=%s text=%s",
                     buffer_kind,
                     scope,
                     sender_id,
@@ -3348,7 +3351,7 @@ class EventDispatchMixin:
                 current["deadline_ts"] = now
                 current["max_merge_reached"] = True
                 logger.info(
-                    "[PrivateCompanion] 消息收口达到最大合并条数,准备立刻收口: kind=%s scope=%s sender=%s max=%s text=%s",
+                    "消息收口达到最大合并条数,准备立刻收口: kind=%s scope=%s sender=%s max=%s text=%s",
                     buffer_kind,
                     scope,
                     sender_id,
@@ -3356,7 +3359,7 @@ class EventDispatchMixin:
                     _single_line(cleaned, 80),
                 )
             logger.info(
-                "[PrivateCompanion] 消息收口合并补话: kind=%s mode=%s scope=%s sender=%s wait=%.1fs count=%s appended=%s text=%s",
+                "消息收口合并补话: kind=%s mode=%s scope=%s sender=%s wait=%.1fs count=%s appended=%s text=%s",
                 buffer_kind,
                 debounce_mode,
                 scope,
@@ -3384,7 +3387,7 @@ class EventDispatchMixin:
         if smart_debounce:
             buffers[key]["smart_debounce"] = dict(smart_debounce)
         logger.info(
-            "[PrivateCompanion] 消息收口创建缓冲: kind=%s mode=%s scope=%s sender=%s wait=%.1fs text=%s",
+            "消息收口创建缓冲: kind=%s mode=%s scope=%s sender=%s wait=%.1fs text=%s",
             buffer_kind,
             debounce_mode,
             scope,
@@ -3552,7 +3555,7 @@ class EventDispatchMixin:
         except Exception:
             pass
         logger.info(
-            "[PrivateCompanion] LLM 处理中收到补话，旧回复标记过期并合并等待: key=%s count=%s text=%s",
+            "LLM 处理中收到补话，旧回复标记过期并合并等待: key=%s count=%s text=%s",
             key,
             len(messages),
             _single_line(cleaned, 80),
@@ -3591,7 +3594,7 @@ class EventDispatchMixin:
         raw_rules = legacy.get("route_rules", []) if isinstance(legacy, dict) else []
         parsed, warnings = build_rules(raw_rules)
         for warning in warnings:
-            logger.warning("[PrivateCompanion] 兼容旧关键词换模规则：%s", warning)
+            logger.warning("兼容旧关键词换模规则：%s", warning)
         return parsed
 
     @staticmethod
@@ -3667,7 +3670,7 @@ class EventDispatchMixin:
                     if isinstance(caption, str) and caption.strip():
                         sources.append(("companion_image_caption", caption))
                 except Exception as exc:
-                    logger.debug("[PrivateCompanion] 模型替换读取图片转述失败：%s", _single_line(exc, 120))
+                    logger.debug("模型替换读取图片转述失败：%s", _single_line(exc, 120))
         return sources
 
     async def route_model_replacement_before_agent(self, event: AstrMessageEvent, *args: Any, **kwargs: Any) -> None:
@@ -3707,7 +3710,7 @@ class EventDispatchMixin:
             provider_id = str(match.rule.provider_id or "").strip()
             model = str(match.rule.model or "").strip()
             if not self._model_replacement_provider_exists(provider_id):
-                logger.warning("[PrivateCompanion] 模型替换规则目标 Provider 不存在，保留原路由：%s", provider_id)
+                logger.warning("模型替换规则目标 Provider 不存在，保留原路由：%s", provider_id)
                 provider_id = ""
         if not provider_id:
             getter = getattr(self, "_default_chat_provider_id", None)
@@ -3920,7 +3923,7 @@ class EventDispatchMixin:
                 pass
             pending["updated_ts"] = _now_ts()
             logger.info(
-                "[PrivateCompanion] 已丢弃消息收口中过期 LLM 回复: key=%s event=%s",
+                "已丢弃消息收口中过期 LLM 回复: key=%s event=%s",
                 key,
                 message_id,
             )
@@ -4028,7 +4031,7 @@ class EventDispatchMixin:
         )
         del examples[:- max(20, _safe_int(_persona_value(self, 'smart_message_debounce_examples_limit', 8), 8, 0) * 4 or 20)]
         logger.info(
-            "[PrivateCompanion] 智能防抖学习样本已记录: kind=%s scope=%s messages=%s note=%s",
+            "智能防抖学习样本已记录: kind=%s scope=%s messages=%s note=%s",
             kind,
             scope,
             len(cleaned),
@@ -4234,7 +4237,7 @@ class EventDispatchMixin:
         except Exception:
             pass
         logger.info(
-            "[PrivateCompanion] 群聊短唤醒进入补话等待: wait=%.1fs trigger=%s text=%s",
+            "群聊短唤醒进入补话等待: wait=%.1fs trigger=%s text=%s",
             wait,
             trigger,
             _single_line(cleaned, 40),
@@ -4329,7 +4332,7 @@ class EventDispatchMixin:
                 private_chat=private_chat,
             )
             logger.info(
-                "[PrivateCompanion] 智能防抖沿用等待缓冲: scope=%s sender=%s wait=%.1fs text=%s",
+                "智能防抖沿用等待缓冲: scope=%s sender=%s wait=%.1fs text=%s",
                 scope,
                 sender_id,
                 wait,
@@ -4370,7 +4373,7 @@ class EventDispatchMixin:
                 reason=suspense_reason,
             )
             logger.info(
-                "[PrivateCompanion] 智能防抖本地判定等待补话: scope=%s sender=%s elapsed=%sms reason=%s wait=%.1fs text=%s",
+                "智能防抖本地判定等待补话: scope=%s sender=%s elapsed=%sms reason=%s wait=%.1fs text=%s",
                 scope,
                 sender_id,
                 elapsed_ms,
@@ -4412,7 +4415,7 @@ class EventDispatchMixin:
                 reason=fast_complete_reason,
             )
             logger.info(
-                "[PrivateCompanion] 智能防抖本地快判放行: scope=%s sender=%s elapsed=%sms reason=%s text=%s",
+                "智能防抖本地快判放行: scope=%s sender=%s elapsed=%sms reason=%s text=%s",
                 scope,
                 sender_id,
                 elapsed_ms,
@@ -4497,8 +4500,8 @@ class EventDispatchMixin:
                 timeout=timeout_seconds,
             ) or ""
         except asyncio.TimeoutError:
-            logger.info(
-                "[PrivateCompanion] 智能防抖模型判断超时,使用启发式: scope=%s sender=%s timeout=%.1fs text=%s",
+            logger.warning(
+                "智能防抖模型判断超时,使用启发式: scope=%s sender=%s timeout=%.1fs text=%s",
                 scope,
                 sender_id,
                 timeout_seconds,
@@ -4506,7 +4509,7 @@ class EventDispatchMixin:
             )
             model_error = f"timeout>{timeout_seconds:.1f}s"
         except Exception as exc:
-            logger.info("[PrivateCompanion] 智能防抖模型判断失败,使用启发式: %s", _single_line(exc, 120))
+            logger.warning("智能防抖模型判断失败,使用启发式: %s", _single_line(exc, 120))
             model_error = _single_line(exc, 120)
         decision, confidence, reason = self._parse_smart_message_debounce_decision(raw)
         source = "model" if raw else "heuristic"
@@ -4546,7 +4549,7 @@ class EventDispatchMixin:
                 reason=reason,
             )
             logger.info(
-                "[PrivateCompanion] 智能防抖判定放行: scope=%s sender=%s elapsed=%sms source=%s confidence=%.2f reason=%s text=%s",
+                "智能防抖判定放行: scope=%s sender=%s elapsed=%sms source=%s confidence=%.2f reason=%s text=%s",
                 scope,
                 sender_id,
                 elapsed_ms,
@@ -4590,7 +4593,7 @@ class EventDispatchMixin:
             reason=reason,
         )
         logger.info(
-            "[PrivateCompanion] 智能防抖判定等待补话: scope=%s sender=%s elapsed=%sms source=%s wait=%.1fs remaining=%.1fs confidence=%.2f reason=%s text=%s",
+            "智能防抖判定等待补话: scope=%s sender=%s elapsed=%sms source=%s wait=%.1fs remaining=%.1fs confidence=%.2f reason=%s text=%s",
             scope,
             sender_id,
             elapsed_ms,
@@ -4713,7 +4716,7 @@ Bot 近期回复：
         try:
             raw = await self._llm_call(prompt, max_tokens=8, provider_id=provider_id, task="group_air_reply_guard")
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 群聊读空气判断失败: %s", _single_line(exc, 120))
+            logger.debug("群聊读空气判断失败: %s", _single_line(exc, 120))
             return {"block": False, "reason": "judge_failed"}
         answer = str(raw or "").strip().upper()
         if answer.startswith("SILENCE") or answer.startswith("NO") or answer.startswith("否") or answer.startswith("沉默"):
@@ -4962,7 +4965,7 @@ Bot 近期回复：
                 self._save_data_sync(sections={"groups"})
         if refreshed:
             logger.info(
-                "[PrivateCompanion] Bot 回复已确认发送，群聊续接窗口从实际回复时间重新计时: group=%s sender=%s window=%.1fs",
+                "Bot 回复已确认发送，群聊续接窗口从实际回复时间重新计时: group=%s sender=%s window=%.1fs",
                 group_id,
                 sender_id,
                 expires_in,
@@ -5255,7 +5258,7 @@ Bot 近期回复：
                 24,
             )
             logger.info(
-                "[PrivateCompanion] 群聊 @ 休息用户提醒: group=%s sender=%s target=%s until=%s",
+                "群聊 @ 休息用户提醒: group=%s sender=%s target=%s until=%s",
                 self._extract_group_id_from_event(event),
                 sender_id,
                 target_id,
@@ -5596,7 +5599,7 @@ Bot 近期回复：
             if candidate:
                 normalized = candidate
             else:
-                logger.warning("[PrivateCompanion] 主动分段内容替换会清空整条文本，已保留原文")
+                logger.warning("主动分段内容替换会清空整条文本，已保留原文")
         threshold = max(20, _safe_int(setting("threshold", 500), 500, 20, 1024))
         min_segment_chars = max(1, _safe_int(setting("min_segment_chars", 8), 8, 1, 40))
         max_segments = max(
@@ -5647,7 +5650,7 @@ Bot 近期回复：
                 try:
                     cleanup_pattern = re.compile(setting("content_cleanup_rule", '[\\n]'))
                 except re.error as e:
-                    logger.warning("[PrivateCompanion] 主动分段内容清理正则无效,跳过清理: %s", e)
+                    logger.warning("主动分段内容清理正则无效,跳过清理: %s", e)
 
         def _protected_cleanup_chunks(value: str) -> list[tuple[str, bool]]:
             bracket_pairs = {
@@ -6109,7 +6112,7 @@ Bot 近期回复：
                 re.DOTALL | re.MULTILINE,
             )
         except re.error as e:
-            logger.warning("[PrivateCompanion] 主动分段正则无效,使用默认规则: %s", e)
+            logger.warning("主动分段正则无效,使用默认规则: %s", e)
             raw_segments = re.findall(r".*?[。？！~…\n]+|.+$", protected_normalized, re.DOTALL | re.MULTILINE)
 
         segments = []

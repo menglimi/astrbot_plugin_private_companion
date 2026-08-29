@@ -31,7 +31,7 @@ from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 from xml.etree import ElementTree as ET
 
-from astrbot.api import AstrBotConfig, logger
+from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 try:
     from astrbot.api.message_components import At, Image, Plain, Record, Reply
@@ -117,6 +117,9 @@ from .planning import (
     normalize_story_plan,
     pick_detail_segment,
 )
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 DEFAULT_AI_DAILY_NEWS_SOURCE = "B站 AI早报|bilibili:285286947"
@@ -430,7 +433,7 @@ class AtRelayMixin:
             return {}
         chosen = candidates[0]
         logger.info(
-            "[PrivateCompanion] 跨群转述按收话人活跃群自动选群: recipient=%s user=%s group=%s candidates=%s",
+            "跨群转述按收话人活跃群自动选群: recipient=%s user=%s group=%s candidates=%s",
             recipient,
             user_id,
             chosen.get("group_id"),
@@ -614,7 +617,7 @@ class AtRelayMixin:
                 task="atrelay_rewrite",
             )
         except Exception as exc:
-            logger.info("[PrivateCompanion] 转述正文 LLM 转译失败: %s", _single_line(exc, 120))
+            logger.info("转述正文 LLM 转译失败: %s", _single_line(exc, 120))
             return original
         cleaned = self._clean_atrelay_llm_text(rewritten)
         if not cleaned:
@@ -632,12 +635,12 @@ class AtRelayMixin:
             recipient_name=recipient_name,
         ):
             logger.info(
-                "[PrivateCompanion] 转述正文 LLM 转译疑似扩写污染,使用原文: before=%s after=%s",
+                "转述正文 LLM 转译疑似扩写污染,使用原文: before=%s after=%s",
                 _single_line(original, 80),
                 _single_line(cleaned, 120),
             )
             return original
-        logger.info("[PrivateCompanion] 转述正文已 LLM 转译: before=%s after=%s", _single_line(original, 80), _single_line(cleaned, 120))
+        logger.info("转述正文已 LLM 转译: before=%s after=%s", _single_line(original, 80), _single_line(cleaned, 120))
         return cleaned
 
     @filter.on_llm_response()
@@ -687,7 +690,7 @@ class AtRelayMixin:
         )
         if should_compact:
             logger.info(
-                "[PrivateCompanion] 转述工具回执已收敛: before=%s after=%s",
+                "转述工具回执已收敛: before=%s after=%s",
                 _single_line(compact, 160),
                 final_reply,
             )
@@ -957,7 +960,7 @@ class AtRelayMixin:
         if len(cached_matches) == 1:
             match = cached_matches[0]
             logger.info(
-                "[PrivateCompanion] 跨群转述群名命中本地缓存: hint=%s group=%s source=%s",
+                "跨群转述群名命中本地缓存: hint=%s group=%s source=%s",
                 hint,
                 match.get("group_id"),
                 match.get("source"),
@@ -1119,7 +1122,7 @@ class AtRelayMixin:
         allowed = bool(requester_id and callable(checker) and checker(requester_id))
         if not allowed:
             logger.info(
-                "[PrivateCompanion] relay authorization denied: sender=%s umo=%s",
+                "relay authorization denied: sender=%s umo=%s",
                 requester_id or "-",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120),
             )
@@ -1142,7 +1145,7 @@ class AtRelayMixin:
             if normalized_blocked:
                 blacklist.add(normalized_blocked)
         if target in blacklist:
-            logger.info("[PrivateCompanion] relay group denied by blacklist: group=%s", target)
+            logger.info("relay group denied by blacklist: group=%s", target)
             return "发送失败：目标群不在允许转述范围内"
         whitelist_getter = getattr(self, "_configured_group_ids", None)
         allowed = set(whitelist_getter()) if callable(whitelist_getter) else set()
@@ -1158,10 +1161,10 @@ class AtRelayMixin:
             if current_group:
                 allowed.add(current_group)
         if not allowed:
-            logger.warning("[PrivateCompanion] relay group allow-set empty; compatibility pass: group=%s", target)
+            logger.warning("relay group allow-set empty; compatibility pass: group=%s", target)
             return ""
         if target not in allowed:
-            logger.info("[PrivateCompanion] relay group denied: group=%s", target)
+            logger.info("relay group denied: group=%s", target)
             return "发送失败：目标群不在允许转述范围内"
         return ""
 
@@ -1415,7 +1418,7 @@ class AtRelayMixin:
                 continue
             duplicate = self._atrelay_duplicate_guard("group", group_id, text, sender_id)
             if duplicate:
-                logger.info("[PrivateCompanion] 延迟转述重复拦截: group=%s user=%s", group_id, sender_id)
+                logger.info("延迟转述重复拦截: group=%s user=%s", group_id, sender_id)
                 continue
             try:
                 await self.context.send_message(target_umo, MessageChain([At(qq=sender_id), Plain(" "), Plain(text)]))
@@ -1429,5 +1432,5 @@ class AtRelayMixin:
                 )
                 self._save_data_sync(sections={"groups", "recent_atrelay_contexts", "atrelay_send_log"})
             except Exception as exc:
-                logger.warning("[PrivateCompanion] 延迟转述发送失败: group=%s user=%s err=%s", group_id, sender_id, _single_line(exc, 160))
+                logger.warning("延迟转述发送失败: group=%s user=%s err=%s", group_id, sender_id, _single_line(exc, 160))
 

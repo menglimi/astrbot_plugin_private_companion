@@ -13,7 +13,6 @@ import re
 import stat
 from typing import Any
 
-from astrbot.api import logger
 
 from .helpers import _single_line
 from .external_bridge_resolver import (
@@ -714,7 +713,7 @@ class ImageCompanionBridgeMixin:
                     api.release_reference_import(lease_id)
                 except Exception as exc:
                     logger.warning(
-                        "[PrivateCompanion] Image 临时参考租约撤权失败: error_type=%s",
+                        "Image 临时参考租约撤权失败: error_type=%s",
                         type(exc).__name__,
                     )
 
@@ -838,13 +837,13 @@ class ImageCompanionBridgeMixin:
             self._image_require_compat_api(api, generation)
         except _ImageCurrentContractError as exc:
             logger.warning(
-                "[PrivateCompanion] Image 兼容维护路径已变更: code=%s",
+                "Image 兼容维护路径已变更: code=%s",
                 exc.code,
             )
             return {}
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 独立生图后台维护失败: error_type=%s",
+                "独立生图后台维护失败: error_type=%s",
                 type(exc).__name__,
             )
             return {}
@@ -870,7 +869,7 @@ class ImageCompanionBridgeMixin:
                 raise
             except _ImageCurrentContractError as exc:
                 logger.warning(
-                    "[PrivateCompanion] Image current contract 拒绝请求: workflow=%s code=%s",
+                    "Image current contract 拒绝请求: workflow=%s code=%s",
                     _single_line(request.get("workflow_kind"), 40),
                     exc.code,
                 )
@@ -881,7 +880,7 @@ class ImageCompanionBridgeMixin:
                 )
             except Exception as exc:
                 logger.warning(
-                    "[PrivateCompanion] Image current contract 调用异常: workflow=%s error_type=%s",
+                    "Image current contract 调用异常: workflow=%s error_type=%s",
                     _single_line(request.get("workflow_kind"), 40),
                     type(exc).__name__,
                 )
@@ -915,7 +914,7 @@ class ImageCompanionBridgeMixin:
             raise
         except _ImageCurrentContractError as exc:
             logger.warning(
-                "[PrivateCompanion] Image 兼容生成路径已变更: workflow=%s code=%s",
+                "Image 兼容生成路径已变更: workflow=%s code=%s",
                 _single_line(request.get("workflow_kind"), 40),
                 exc.code,
             )
@@ -926,7 +925,7 @@ class ImageCompanionBridgeMixin:
             )
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 独立生图插件调用异常: workflow=%s error_type=%s",
+                "独立生图插件调用异常: workflow=%s error_type=%s",
                 _single_line(request.get("workflow_kind"), 40),
                 type(exc).__name__,
             )

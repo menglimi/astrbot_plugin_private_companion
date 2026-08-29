@@ -9,7 +9,6 @@ import time
 from copy import deepcopy
 from typing import Any
 
-from astrbot.api import logger
 
 from .creative import _persona_provider_id
 from .helpers import _safe_float, _single_line
@@ -617,7 +616,7 @@ class ContentCompanionBridgeMixin:
             raise
         except StoryAuthorityError as exc:
             logger.warning(
-                "[PrivateCompanion] Story handoff 未能证明唯一写者: code=%s",
+                "Story handoff 未能证明唯一写者: code=%s",
                 exc.code,
             )
             return True, None
@@ -628,7 +627,7 @@ class ContentCompanionBridgeMixin:
         )
         if mode != "current" or api is None:
             logger.warning(
-                "[PrivateCompanion] 独立创作合同不可用，拒绝降级 owner 注入: reason=%s",
+                "独立创作合同不可用，拒绝降级 owner 注入: reason=%s",
                 reason,
             )
             return True, None
@@ -661,14 +660,14 @@ class ContentCompanionBridgeMixin:
             raise
         except StoryAuthorityError as exc:
             logger.warning(
-                "[PrivateCompanion] 独立创作实例在执行边界失效: operation=%s code=%s",
+                "独立创作实例在执行边界失效: operation=%s code=%s",
                 operation,
                 exc.code,
             )
             return True, None
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 独立创作任务拒绝: operation=%s error_type=%s",
+                "独立创作任务拒绝: operation=%s error_type=%s",
                 operation,
                 type(exc).__name__,
             )
@@ -680,14 +679,14 @@ class ContentCompanionBridgeMixin:
         )
         if post_mode != "current" or post_api is not api:
             logger.warning(
-                "[PrivateCompanion] 独立创作实例执行后合同失效: operation=%s reason=%s",
+                "独立创作实例执行后合同失效: operation=%s reason=%s",
                 operation,
                 post_reason,
             )
             return True, None
         if type(result) is not dict:
             logger.warning(
-                "[PrivateCompanion] 独立创作任务返回畸形: operation=%s",
+                "独立创作任务返回畸形: operation=%s",
                 operation,
             )
             return True, None
@@ -701,7 +700,7 @@ class ContentCompanionBridgeMixin:
         try:
             value = getter()
         except Exception as exc:
-            logger.warning("[PrivateCompanion] 独立创作能力查询失败: %s", _single_line(exc, 160))
+            logger.warning("独立创作能力查询失败: %s", _single_line(exc, 160))
             return {"installed": True, "enabled": False, "available": False, "reason": "status_query_failed"}
         return dict(value) if isinstance(value, dict) else {"installed": True, "enabled": False, "available": False}
 
@@ -728,7 +727,7 @@ class ContentCompanionBridgeMixin:
             self._content_companion_delegating = True
             return await handler(self, *args, **kwargs)
         except Exception as exc:
-            logger.warning("[PrivateCompanion] 独立创作操作失败: operation=%s error=%s", operation, _single_line(exc, 160))
+            logger.warning("独立创作操作失败: operation=%s error=%s", operation, _single_line(exc, 160))
             return None
         finally:
             self._content_companion_delegating = False

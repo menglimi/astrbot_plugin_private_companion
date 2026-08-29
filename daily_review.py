@@ -15,13 +15,15 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from astrbot.api import logger
 
 from .helpers import _redact_outbound_secrets, _safe_float, _safe_int, _single_line
 from .conversation_injection_plan import (
     PLACEMENT_DYNAMIC_SYSTEM,
     get_conversation_injection_plan,
 )
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 class DailyReviewMixin:
@@ -90,7 +92,7 @@ class DailyReviewMixin:
                 visit(group_node)
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 每日巡视读取配置 Schema 失败: %s",
+                "每日巡视读取配置 Schema 失败: %s",
                 _single_line(exc, 180),
             )
         self._daily_review_schema_index_cache = index
@@ -1366,7 +1368,7 @@ class DailyReviewMixin:
                     self._save_data_sync(sections={"daily_review_last_attempt"})
                 if force:
                     raise
-                logger.warning("[PrivateCompanion] 每日终盘巡视失败，将在冷却后重试: %s", safe_error)
+                logger.warning("每日终盘巡视失败，将在冷却后重试: %s", safe_error)
                 return None
 
             async with self._data_lock:
@@ -1389,7 +1391,7 @@ class DailyReviewMixin:
                 }
                 self._save_data_sync(sections={"daily_review_reports", "daily_review_active_guidance", "daily_review_last_attempt", "daily_review_completed_day"})
             logger.info(
-                "[PrivateCompanion] 每日终盘巡视完成: date=%s score=%s findings=%s guidance=%s",
+                "每日终盘巡视完成: date=%s score=%s findings=%s guidance=%s",
                 date_key,
                 report.get("health_score"),
                 len(report.get("findings", [])),
@@ -1472,7 +1474,7 @@ class DailyReviewMixin:
                 raise
             except Exception as exc:
                 logger.warning(
-                    "[PrivateCompanion] 每日终盘巡视循环异常，将在 30 分钟后重试: %s",
+                    "每日终盘巡视循环异常，将在 30 分钟后重试: %s",
                     self._daily_review_safe_text(exc, 180),
                 )
                 await asyncio.sleep(30 * 60)

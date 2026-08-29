@@ -6,10 +6,12 @@ from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any
 
-from astrbot.api import logger
 from quart import request
 
 from .qzone_recent_parser import parse_recent_feeds
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 class PrivateCompanionPageApiQzoneMixin:
@@ -90,7 +92,7 @@ class PrivateCompanionPageApiQzoneMixin:
                         posts = parse_recent_feeds(h5_payload, h5_diagnostics)
                     except Exception as exc:
                         logger.info(
-                            "[PrivateCompanionPage] QQ 空间 H5 好友动态读取失败，准备使用旧接口: %s",
+                            "QQ 空间 H5 好友动态读取失败，准备使用旧接口: %s",
                             self._single_line(exc, 120),
                         )
 
@@ -151,7 +153,7 @@ class PrivateCompanionPageApiQzoneMixin:
 
                 final_own_only = bool(posts) and all(int(getattr(post, "uin", 0) or 0) == viewer_uin for post in posts)
                 logger.info(
-                    "[PrivateCompanionPage] QQ 空间好友动态读取: source=%s page=%s token=%s "
+                    "QQ 空间好友动态读取: source=%s page=%s token=%s "
                     "h5_candidates=%s h5_parsed=%s h5_official_skipped=%s "
                     "legacy_candidates=%s legacy_parsed=%s legacy_official_skipped=%s final=%s own_only=%s",
                     source,

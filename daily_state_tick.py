@@ -5,7 +5,6 @@ import asyncio
 import re
 from typing import Any
 
-from astrbot.api import logger
 
 from .constants import _REASON_TEXT
 from .helpers import (
@@ -20,6 +19,9 @@ from .helpers import (
     normalize_legacy_tag_text,
 )
 from .persona_config import runtime_persona_setting
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 class DailyStateTickMixin:
@@ -174,7 +176,7 @@ class DailyStateTickMixin:
                             self._sync_live_user_proactive_schedule(user_id, current_for_quiet)
                             self._save_data_sync(sections={"users"})
                             logger.info(
-                                "[PrivateCompanion] 免打扰主动任务已一次性改期: user=%s next=%s note=%s",
+                                "免打扰主动任务已一次性改期: user=%s next=%s note=%s",
                                 user_id,
                                 int(max(0, _safe_float(current_for_quiet.get("next_proactive_at"), now) - now)),
                                 _single_line(quiet_note, 120),
@@ -204,7 +206,7 @@ class DailyStateTickMixin:
                             user["planned_proactive_delivery_state"] = current_for_guard.get("planned_proactive_delivery_state", "")
                             self._save_data_sync(sections={"users"})
                             logger.info(
-                                "[PrivateCompanion] 主动发送检查未通过且无未来调度,已兜底延后: user=%s reason=%s delay=%ss",
+                                "主动发送检查未通过且无未来调度,已兜底延后: user=%s reason=%s delay=%ss",
                                 user_id,
                                 guard_reason,
                                 int(max(0, _safe_float(current_for_guard.get("next_proactive_at"), now) - now)),
@@ -232,7 +234,7 @@ class DailyStateTickMixin:
                 model_judgement = await self._review_planned_proactive_with_model(user, now=now)
             except Exception as e:
                 logger.warning(
-                    "[PrivateCompanion] 主动模型人格判定异常,降级本地判定: user=%s error=%s",
+                    "主动模型人格判定异常,降级本地判定: user=%s error=%s",
                     user_id,
                     _single_line(e, 160),
                 )
@@ -270,7 +272,7 @@ class DailyStateTickMixin:
                                 "模型人格判定改写计划: " + _single_line(model_judgement.get("reason"), 120),
                             )
                             logger.info(
-                                "[PrivateCompanion] 模型人格判定已改写主动计划: user=%s reason=%s",
+                                "模型人格判定已改写主动计划: user=%s reason=%s",
                                 user_id,
                                 _single_line(model_judgement.get("reason"), 120),
                             )
@@ -453,7 +455,7 @@ class DailyStateTickMixin:
                 )
                 self._save_data_sync(sections={"users", "proactive_candidate_pool"})
                 logger.info(
-                    "[PrivateCompanion] 刚聊完,延后本轮普通主动: user=%s reason=%s planned=%s/%s",
+                    "刚聊完,延后本轮普通主动: user=%s reason=%s planned=%s/%s",
                     user_id,
                     _single_line(recent_chat_guard_reason, 120),
                     _single_line(current_reason, 40),
@@ -527,7 +529,7 @@ class DailyStateTickMixin:
                     self._schedule_next_proactive(current_for_duplicate_cooldown, now=_now_ts(), delay_hours=(2.0, 5.0))
                     self._save_data_sync(sections={"users", "proactive_candidate_pool", "proactive_audit_log"})
                 logger.info(
-                    "[PrivateCompanion] 活动分享去重冷却中,跳过本轮主动: user=%s remain=%.0fs note=%s",
+                    "活动分享去重冷却中,跳过本轮主动: user=%s remain=%.0fs note=%s",
                     user_id,
                     duplicate_block_remaining,
                     note,
@@ -538,7 +540,7 @@ class DailyStateTickMixin:
             fallback_action = self._fallback_action_for_unavailable(planned_action_for_send, user)
             if fallback_action != planned_action_for_send:
                 logger.info(
-                    "[PrivateCompanion] 主动发图能力不可用,发送前已降级: user=%s requested=%s fallback=%s",
+                    "主动发图能力不可用,发送前已降级: user=%s requested=%s fallback=%s",
                     user_id,
                     planned_action_for_send,
                     fallback_action,
@@ -581,7 +583,7 @@ class DailyStateTickMixin:
                     self._save_data_sync(sections={"users", "proactive_candidate_pool", "proactive_audit_log"})
             if group_share_block_reason:
                 logger.info(
-                    "[PrivateCompanion] 群聊分享主动发送前复核取消: user=%s reason=%s",
+                    "群聊分享主动发送前复核取消: user=%s reason=%s",
                     user_id,
                     group_share_block_reason,
                 )
@@ -603,7 +605,7 @@ class DailyStateTickMixin:
             )
             effective_action_for_send = _single_line(pending_send_retry.get("action"), 40) or planned_action_for_send or "message"
             logger.info(
-                "[PrivateCompanion] 复用待重发主动消息: user=%s retry=%s text=%s image=%s",
+                "复用待重发主动消息: user=%s retry=%s text=%s image=%s",
                 user_id,
                 _safe_int(pending_send_retry.get("retry_count"), 0, 0, 10),
                 _single_line(text, 100),
@@ -616,7 +618,7 @@ class DailyStateTickMixin:
                     user.pop("_proactive_photo_subject_owner", "")
                 )
             except Exception as e:
-                logger.warning("[PrivateCompanion] 主动消息生成失败: user=%s error=%s", user_id, _single_line(e, 160), exc_info=True)
+                logger.warning("主动消息生成失败: user=%s error=%s", user_id, _single_line(e, 160), exc_info=True)
                 async with self._data_lock:
                     current_after_render_failure = self._get_user(user_id)
                     current_after_render_failure["proactive_sending"] = False
@@ -738,14 +740,14 @@ class DailyStateTickMixin:
                         )
                         if review_strength == "strict":
                             logger.warning(
-                                "[PrivateCompanion] 主动消息发送前价值复核连续失败,严格模式放弃本条候选避免反复调用: count=%s error=%s",
+                                "主动消息发送前价值复核连续失败,严格模式放弃本条候选避免反复调用: count=%s error=%s",
                                 failure_count,
                                 _single_line(exc, 120),
                             )
                             review_decision = {"decision": "drop", "reason": "发送前价值复核连续失败，已放弃本条候选"}
                         else:
                             logger.warning(
-                                "[PrivateCompanion] 主动消息发送前价值复核连续失败,按%s强度放行原候选避免主动归零: count=%s error=%s",
+                                "主动消息发送前价值复核连续失败,按%s强度放行原候选避免主动归零: count=%s error=%s",
                                 review_strength or "lenient",
                                 failure_count,
                                 _single_line(exc, 120),
@@ -759,7 +761,7 @@ class DailyStateTickMixin:
                     else:
                         delay_minutes = min(240, 45 * (2 ** max(0, failure_count - 1)))
                         logger.warning(
-                            "[PrivateCompanion] 主动消息发送前价值复核失败,本轮延后重试: count=%s delay=%s error=%s",
+                            "主动消息发送前价值复核失败,本轮延后重试: count=%s delay=%s error=%s",
                             failure_count,
                             delay_minutes,
                             _single_line(exc, 120),
@@ -770,7 +772,7 @@ class DailyStateTickMixin:
                             "reason": f"发送前价值复核失败，稍后重试（第 {failure_count} 次）",
                         }
                 else:
-                    logger.debug("[PrivateCompanion] 主动消息发送前本地复核失败,按原文继续: %s", _single_line(exc, 120))
+                    logger.debug("主动消息发送前本地复核失败,按原文继续: %s", _single_line(exc, 120))
                     review_decision = {"decision": "send"}
             decision = str(review_decision.get("decision") or "send").lower() if isinstance(review_decision, dict) else "send"
             review_fallback_release = bool(
@@ -794,7 +796,7 @@ class DailyStateTickMixin:
                     self._save_data_sync(sections={"proactive_review_runtime"})
                 if release_count == 10 or release_count % 10 == 0:
                     logger.warning(
-                        "[PrivateCompanion] 主动复核模型已连续放行 %s 条原文，请检查 RESPONSE_REVIEW_PROVIDER_ID",
+                        "主动复核模型已连续放行 %s 条原文，请检查 RESPONSE_REVIEW_PROVIDER_ID",
                         release_count,
                     )
             review_model_ok = bool(
@@ -866,7 +868,7 @@ class DailyStateTickMixin:
                                 )
                             except Exception as exc:
                                 replacer_called = False
-                                logger.debug("[PrivateCompanion] 复核延后更新候选失败，回退直接排程: %s", _single_line(exc, 120))
+                                logger.debug("复核延后更新候选失败，回退直接排程: %s", _single_line(exc, 120))
                         if stale_candidate and not replacer_called:
                             self._mark_planned_candidate_status(current_for_review_defer, "cancelled", note)
                             self._clear_pending_proactive_plan(current_for_review_defer)
@@ -887,7 +889,7 @@ class DailyStateTickMixin:
                     )
                     self._save_data_sync(sections={"users", "proactive_candidate_pool", "proactive_audit_log"})
                 logger.info(
-                    "[PrivateCompanion] 主动消息发送前复核%s: user=%s delay=%s reason=%s",
+                    "主动消息发送前复核%s: user=%s delay=%s reason=%s",
                     "作废过期候选" if stale_candidate else "延后",
                     user_id,
                     delay_minutes,
@@ -901,7 +903,7 @@ class DailyStateTickMixin:
                     rewritten_text = _normalize_outbound_punctuation_flow(rewritten_text).strip()
                     original_text_before_rewrite = str(text or review_candidate_text or "").strip()
                     logger.info(
-                        "[PrivateCompanion] 主动消息发送前已润色: user=%s before=%s after=%s",
+                        "主动消息发送前已润色: user=%s before=%s after=%s",
                         user_id,
                         _single_line(original_text_before_rewrite, 100),
                         _single_line(rewritten_text, 100),
@@ -985,7 +987,7 @@ class DailyStateTickMixin:
                             "troubleshooting_test_results",
                         }
                     )
-                logger.info("[PrivateCompanion] Proactive final content gate dropped: user=%s reason=%s text=%s", user_id, note, _single_line(text, 120))
+                logger.info("Proactive final content gate dropped: user=%s reason=%s text=%s", user_id, note, _single_line(text, 120))
                 self._debug_tick_skip(user_id, note, prefix="dropped")
                 return
         outbound_validator = getattr(self, "_validate_proactive_outbound_candidate", None)
@@ -1045,7 +1047,7 @@ class DailyStateTickMixin:
                         }
                     )
                 logger.warning(
-                    "[PrivateCompanion] 主动消息发送前统一校验拦截: user=%s reason=%s text=%s",
+                    "主动消息发送前统一校验拦截: user=%s reason=%s text=%s",
                     user_id,
                     note,
                     _single_line(text, 180),
@@ -1057,7 +1059,7 @@ class DailyStateTickMixin:
                 if validated_text != text:
                     text_before_validation_rewrite = text
                     logger.warning(
-                        "[PrivateCompanion] 主动消息发送前统一校验改写: user=%s reason=%s before=%s after=%s",
+                        "主动消息发送前统一校验改写: user=%s reason=%s before=%s after=%s",
                         user_id,
                         _single_line(outbound_validation.get("reason"), 120),
                         _single_line(text, 160),
@@ -1091,7 +1093,7 @@ class DailyStateTickMixin:
                 self._schedule_next_proactive(current_for_meta_leak, now=_now_ts(), delay_hours=(1.5, 4.0))
                 self._save_data_sync(sections={"users", "proactive_candidate_pool", "proactive_audit_log"})
             logger.warning(
-                "[PrivateCompanion] 主动消息发送前硬拦截元叙述泄漏: user=%s text=%s",
+                "主动消息发送前硬拦截元叙述泄漏: user=%s text=%s",
                 user_id,
                 _single_line(text, 180),
             )
@@ -1102,7 +1104,7 @@ class DailyStateTickMixin:
             cleaned_text = placeholder_cleaner(text)
             if cleaned_text != text:
                 logger.warning(
-                    "[PrivateCompanion] 主动消息清理到孤儿 TTS 占位符: user=%s before=%s after=%s",
+                    "主动消息清理到孤儿 TTS 占位符: user=%s before=%s after=%s",
                     user_id,
                     _single_line(text, 120),
                     _single_line(cleaned_text, 120),
@@ -1146,7 +1148,7 @@ class DailyStateTickMixin:
                     )
             if duplicate_note:
                 logger.info(
-                    "[PrivateCompanion] 取消重复活动分享: user=%s duplicate=%s",
+                    "取消重复活动分享: user=%s duplicate=%s",
                     user_id,
                     _single_line(duplicate_note, 100),
                 )
@@ -1162,11 +1164,11 @@ class DailyStateTickMixin:
                     action=effective_action_for_send or planned_action_for_send or "message",
                 )
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 主动消息时间一致性复核失败: %s", _single_line(exc, 120))
+                logger.debug("主动消息时间一致性复核失败: %s", _single_line(exc, 120))
                 time_mismatch_reason = ""
         if time_mismatch_reason:
             logger.info(
-                "[PrivateCompanion] 主动消息时间不一致,已取消发送: user=%s reason=%s",
+                "主动消息时间不一致,已取消发送: user=%s reason=%s",
                 user_id,
                 _single_line(time_mismatch_reason, 160),
             )
@@ -1239,7 +1241,7 @@ class DailyStateTickMixin:
                     self._save_data_sync(sections={"users", "proactive_candidate_pool", "proactive_audit_log"})
             if similar_note:
                 logger.info(
-                    "[PrivateCompanion] 主动消息正文近似重复,已取消: user=%s reason=%s text=%s",
+                    "主动消息正文近似重复,已取消: user=%s reason=%s text=%s",
                     user_id,
                     _single_line(similar_note, 120),
                     _single_line(text, 120),
@@ -1268,7 +1270,7 @@ class DailyStateTickMixin:
                     self._save_data_sync(sections={"users", "proactive_candidate_pool", "proactive_audit_log"})
             if textual_greeting_note:
                 logger.info(
-                    "[PrivateCompanion] 主动消息正文命中重复问候,已取消: user=%s reason=%s text=%s",
+                    "主动消息正文命中重复问候,已取消: user=%s reason=%s text=%s",
                     user_id,
                     _single_line(textual_greeting_note, 120),
                     _single_line(text, 120),
@@ -1301,7 +1303,7 @@ class DailyStateTickMixin:
         if has_new_user_message:
             if is_troubleshooting_for_send:
                 logger.info(
-                    "[PrivateCompanion] 排障临时主动检测到生成期间有新消息,继续发送以验证链路: %s",
+                    "排障临时主动检测到生成期间有新消息,继续发送以验证链路: %s",
                     user_id,
                 )
                 async with self._data_lock:
@@ -1327,13 +1329,13 @@ class DailyStateTickMixin:
                     self._save_data_sync(sections={"users", "troubleshooting_test_results"})
             elif not bool(route_options_for_send.get("cancel_if_new_inbound", True)):
                 logger.info(
-                    "[PrivateCompanion] 生成期间收到新消息，但 %s 路线保留独立投递: user=%s",
+                    "生成期间收到新消息，但 %s 路线保留独立投递: user=%s",
                     route_key_for_send,
                     user_id,
                 )
             else:
                 logger.info(
-                    "[PrivateCompanion] 用户在主动消息生成期间已有新消息,%s 路线取消本次发送: %s",
+                    "用户在主动消息生成期间已有新消息,%s 路线取消本次发送: %s",
                     route_key_for_send,
                     user_id,
                 )
@@ -1364,7 +1366,7 @@ class DailyStateTickMixin:
                     self._save_data_sync(sections={"users", "proactive_candidate_pool", "proactive_audit_log"})
         if delivery_freshness_reason:
             logger.info(
-                "[PrivateCompanion] 主动候选在生成期间失效,已取消发送: user=%s reason=%s",
+                "主动候选在生成期间失效,已取消发送: user=%s reason=%s",
                 user_id,
                 _single_line(delivery_freshness_reason, 120),
             )
@@ -1419,7 +1421,7 @@ class DailyStateTickMixin:
                 )
         if recent_chat_guard_reason:
             logger.info(
-                "[PrivateCompanion] 发送前发现刚聊完,延后普通主动: user=%s reason=%s",
+                "发送前发现刚聊完,延后普通主动: user=%s reason=%s",
                 user_id,
                 _single_line(recent_chat_guard_reason, 120),
             )
@@ -1428,7 +1430,7 @@ class DailyStateTickMixin:
         if text and self._is_proactive_delivery_receipt_text(text):
             note = "主动正文是工具/执行状态回执，已取消发送"
             logger.warning(
-                "[PrivateCompanion] 主动消息发送前拦截执行回执: user=%s text=%s",
+                "主动消息发送前拦截执行回执: user=%s text=%s",
                 user_id,
                 _single_line(text, 160),
             )
@@ -1521,7 +1523,7 @@ class DailyStateTickMixin:
                 if item
             )
             logger.info(
-                "[PrivateCompanion] 准备主动发送给 %s: reason=%s(%s) action=%s quote=%s umo=%s text=%s image=%s extra=%s%s",
+                "准备主动发送给 %s: reason=%s(%s) action=%s quote=%s umo=%s text=%s image=%s extra=%s%s",
                 user_id,
                 reason,
                 reason_label,
@@ -1553,7 +1555,7 @@ class DailyStateTickMixin:
                 if outcome_note:
                     cancel_note = f"{cancel_note}：{outcome_note}"
                 logger.info(
-                    "[PrivateCompanion] 主动消息未实际投递: user=%s reason=%s action=%s",
+                    "主动消息未实际投递: user=%s reason=%s action=%s",
                     user_id,
                     reason,
                     effective_action_for_send or planned_action_for_send or "message",
@@ -1639,7 +1641,7 @@ class DailyStateTickMixin:
                 delivered_has_photo = bool(image_path) or self._proactive_components_contain_image(extra_components)
             if not delivery_complete:
                 logger.warning(
-                    "[PrivateCompanion] 主动消息仅部分投递，后续只按真实送达内容归档: user=%s reason=%s note=%s",
+                    "主动消息仅部分投递，后续只按真实送达内容归档: user=%s reason=%s note=%s",
                     user_id,
                     reason,
                     delivery_note or "部分组件被取消或发送失败",
@@ -1730,7 +1732,7 @@ class DailyStateTickMixin:
                     )
                     self._save_data_sync(sections={"users", "troubleshooting_test_results"})
             logger.info(
-                "[PrivateCompanion] 主动发送完成: user=%s reason=%s action=%s complete=%s",
+                "主动发送完成: user=%s reason=%s action=%s complete=%s",
                 user_id,
                 reason,
                 planned_action_for_send or "message",
@@ -1780,7 +1782,7 @@ class DailyStateTickMixin:
             formatter = getattr(self, "_format_send_exception", None)
             error_text = formatter(e) if callable(formatter) else (_single_line(str(e), 180) or repr(e))
             diagnostic_detail = f"{e.__class__.__name__}: {_single_line(str(e) or repr(e), 2300)}"
-            logger.warning("[PrivateCompanion] 发送给 %s 失败: %s", user_id, error_text)
+            logger.warning("发送给 %s 失败: %s", user_id, error_text)
             async with self._data_lock:
                 current_after_failure = self._get_user(user_id)
                 delivery_failure_recorder = getattr(self, "_note_private_delivery_failure", None)

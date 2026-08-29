@@ -9,11 +9,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from astrbot.api import logger
 
 from .helpers import _single_line
 from .external_bridge_resolver import resolve_external_bridge
 from .persona_config import runtime_persona_setting
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 class NAIImageBridgeMixin:
@@ -51,7 +53,7 @@ class NAIImageBridgeMixin:
                     return False
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 查询统一 NAI 路线所有权失败，保留官方直连: error=%s",
+                "查询统一 NAI 路线所有权失败，保留官方直连: error=%s",
                 _single_line(exc, 120),
             )
         return True
@@ -71,7 +73,7 @@ class NAIImageBridgeMixin:
             status = getter(self)
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] NAI 生图能力查询失败: error=%s",
+                "NAI 生图能力查询失败: error=%s",
                 _single_line(exc, 160),
             )
             return {
@@ -101,7 +103,7 @@ class NAIImageBridgeMixin:
             result = await maintainer(self)
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] NAI 生图后台维护失败: error=%s",
+                "NAI 生图后台维护失败: error=%s",
                 _single_line(exc, 160),
             )
             return {}
@@ -126,7 +128,7 @@ class NAIImageBridgeMixin:
             response = await generator(self, dict(request))
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] NAI 生图插件调用异常: workflow=%s error=%s",
+                "NAI 生图插件调用异常: workflow=%s error=%s",
                 _single_line(request.get("workflow_kind"), 40),
                 _single_line(exc, 160),
             )

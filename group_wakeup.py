@@ -32,7 +32,7 @@ from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 from xml.etree import ElementTree as ET
 
-from astrbot.api import AstrBotConfig, logger
+from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 try:
     from astrbot.api.message_components import At, Image, Plain, Record, Reply
@@ -117,6 +117,9 @@ from .planning import (
     normalize_story_plan,
     pick_detail_segment,
 )
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 DEFAULT_AI_DAILY_NEWS_SOURCE = "B站 AI早报|bilibili:285286947"
 
@@ -1146,7 +1149,7 @@ class GroupWakeupMixin:
                     fixture_group_settings = candidate_settings
             except Exception as exc:
                 logger.warning(
-                    "[PrivateCompanion] LAB fixture 群唤醒投影失败，已使用生产配置: %s",
+                    "LAB fixture 群唤醒投影失败，已使用生产配置: %s",
                     type(exc).__name__,
                 )
         fixture_interest_words = tuple(
@@ -1206,6 +1209,22 @@ class GroupWakeupMixin:
         )
         high_intensity = self._group_high_intensity_state(group)
         if high_intensity.get("active"):
+            if soft_signal_hit:
+                self._record_group_wakeup_log(
+                    group,
+                    scene=scene,
+                    sender_id=sender_id,
+                    sender_name=sender_name,
+                    text=cleaned,
+                    wakeup={"type": "high_intensity", "word": "", "reason": "high_intensity", "probability": 0.0},
+                    result="blocked",
+                    strength="",
+                    note="群聊处于高强度收口模式,暂停弱相关、解惑、冷群和兴趣唤醒,优先合并处理明确叫到 Bot 的消息。",
+                )
+            return {}
+        cooldown_getter = getattr(self, "_effective_group_wakeup_cooldown_seconds", None)
+        group_wakeup_cooldown = cooldown_getter() if callable(cooldown_getter) else _safe_int(_persona_value(self, "group_wakeup_cooldown_seconds", 0), 0, 0)
+        if group_wakeup_cooldown > 0 and now - _safe_float(group.get("last_group_wakeup_at"), 0) < group_wakeup_cooldown:
             if soft_signal_hit:
                 self._record_group_wakeup_log(
                     group,

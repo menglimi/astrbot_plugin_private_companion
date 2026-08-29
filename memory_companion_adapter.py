@@ -14,7 +14,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from astrbot.api import logger
 
 from .bot_personal_contract import (
     BOT_PERSONAL_CAPABILITY_SCHEMA_VERSION,
@@ -36,6 +35,9 @@ from .namespace_capability import negotiate_namespace_capability
 from .identity_namespace import validate_namespace_context
 from .persona_config import runtime_persona_setting
 from .conversation_prompt_section import prompt_section
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 # The v2 contract was published by the previous Memory Companion release.
@@ -147,7 +149,7 @@ class MemoryCompanionAdapterMixin:
             except Exception as exc:
                 if self._memory_companion_optional_dependency_failed(exc, where="register_emotion_producer"):
                     return None
-                logger.debug("[PrivateCompanion] emotion producer registration failed: %s", _single_line(exc, 120))
+                logger.debug("emotion producer registration failed: %s", _single_line(exc, 120))
                 continue
             if capability is not None:
                 break
@@ -190,7 +192,7 @@ class MemoryCompanionAdapterMixin:
         except Exception as exc:
             if self._memory_companion_optional_dependency_failed(exc, where="create_emotion_producer_context"):
                 return None
-            logger.debug("[PrivateCompanion] emotion producer context failed: %s", _single_line(exc, 120))
+            logger.debug("emotion producer context failed: %s", _single_line(exc, 120))
             return None
 
     def _memory_companion_emotion_delivery_context(
@@ -260,7 +262,7 @@ class MemoryCompanionAdapterMixin:
         except Exception as exc:
             if self._memory_companion_optional_dependency_failed(exc, where="create_emotion_delivery_context"):
                 return None
-            logger.debug("[PrivateCompanion] emotion delivery context failed: %s", _single_line(exc, 120))
+            logger.debug("emotion delivery context failed: %s", _single_line(exc, 120))
             return None
 
     async def _memory_companion_record_emotion_event(self, event: dict[str, Any]) -> None:
@@ -274,7 +276,7 @@ class MemoryCompanionAdapterMixin:
         except Exception as exc:
             if self._memory_companion_optional_dependency_failed(exc, where="record_emotion_event"):
                 return
-            logger.debug("[PrivateCompanion] emotion event mirror failed: %s", _single_line(exc, 120))
+            logger.debug("emotion event mirror failed: %s", _single_line(exc, 120))
 
     def _memory_companion_degraded_status(self, reason: str, **extra: Any) -> dict[str, Any]:
         status = {
@@ -337,7 +339,7 @@ class MemoryCompanionAdapterMixin:
             where=_single_line(where, 80) or "-",
         )
         logger.warning(
-            "[PrivateCompanion] 记忆插件可选模型依赖缺失，已临时降级 MemoryCompanion 桥接: module=%s where=%s err=%s",
+            "记忆插件可选模型依赖缺失，已临时降级 MemoryCompanion 桥接: module=%s where=%s err=%s",
             module,
             _single_line(where, 80) or "-",
             _single_line(exc, 160),
@@ -665,7 +667,7 @@ class MemoryCompanionAdapterMixin:
                 else None,
             )
         except Exception as exc:
-            logger.debug("[PrivateCompanion] Bot Personal outbox 初始化失败: %s", _single_line(exc, 120))
+            logger.debug("Bot Personal outbox 初始化失败: %s", _single_line(exc, 120))
             return None
         try:
             cache[persona_id] = current
@@ -821,7 +823,7 @@ class MemoryCompanionAdapterMixin:
             }
             return result
         except Exception as exc:
-            logger.debug("[PrivateCompanion] Bot Personal 本地归档失败: %s", _single_line(exc, 160))
+            logger.debug("Bot Personal 本地归档失败: %s", _single_line(exc, 160))
             return {
                 "ok": False,
                 "state": "local_only",
@@ -844,7 +846,7 @@ class MemoryCompanionAdapterMixin:
             }
             return results
         except Exception as exc:
-            logger.debug("[PrivateCompanion] Bot Personal outbox 补投失败: %s", _single_line(exc, 160))
+            logger.debug("Bot Personal outbox 补投失败: %s", _single_line(exc, 160))
             return []
 
     async def _memory_companion_record_observed_activity(self, activity: dict[str, Any]) -> dict[str, Any]:
@@ -1298,7 +1300,7 @@ class MemoryCompanionAdapterMixin:
         except Exception as exc:
             if self._memory_companion_optional_dependency_failed(exc, where="coordination_status"):
                 return dict(self._bridge_last_status)
-            logger.debug("[PrivateCompanion] MemoryCompanion 协同状态读取失败: %s", _single_line(exc, 120))
+            logger.debug("MemoryCompanion 协同状态读取失败: %s", _single_line(exc, 120))
             return self._memory_companion_degraded_status("bridge_exception", error=_single_line(exc, 120))
         if not isinstance(status, dict):
             return self._memory_companion_degraded_status("invalid_status", status_type=type(status).__name__)
@@ -1331,7 +1333,7 @@ class MemoryCompanionAdapterMixin:
         except Exception as exc:
             if self._memory_companion_optional_dependency_failed(exc, where="token_usage"):
                 return {"available": False, "display_name": "我会牢牢记住你", "reason": f"缺少可选依赖 {self._bridge_dependency_failure_module}"}
-            logger.debug("[PrivateCompanion] 记忆插件 Token 统计读取失败: %s", _single_line(exc, 120))
+            logger.debug("记忆插件 Token 统计读取失败: %s", _single_line(exc, 120))
             return {"available": False, "display_name": "我会牢牢记住你", "reason": _single_line(exc, 120)}
         if not isinstance(usage, dict):
             return {"available": False, "display_name": "我会牢牢记住你", "reason": "记忆插件返回的 Token 统计格式无效"}
@@ -1382,11 +1384,11 @@ class MemoryCompanionAdapterMixin:
         except Exception as exc:
             if self._memory_companion_optional_dependency_failed(exc, where="should_defer"):
                 return False
-            logger.debug("[PrivateCompanion] MemoryCompanion 协同状态读取失败: %s", _single_line(exc, 120))
+            logger.debug("MemoryCompanion 协同状态读取失败: %s", _single_line(exc, 120))
             return False
         if should_defer:
             self._memory_companion_mark_deferred_section(section, event, req)
-            logger.info("[PrivateCompanion] MemoryCompanion 已接管提示词片段，跳过本地注入: section=%s", _single_line(section, 80))
+            logger.info("MemoryCompanion 已接管提示词片段，跳过本地注入: section=%s", _single_line(section, 80))
         return should_defer
 
     def _memory_companion_bot_emotional_state(self) -> tuple[str, float]:
@@ -1693,8 +1695,8 @@ class MemoryCompanionAdapterMixin:
                 timeout=timeout,
             )
         except asyncio.TimeoutError:
-            logger.info(
-                "[PrivateCompanion] MemoryCompanion 日程上下文读取超时,已跳过: kind=%s timeout=%.2fs",
+            logger.warning(
+                "MemoryCompanion 日程上下文读取超时,已跳过: kind=%s timeout=%.2fs",
                 _single_line(kind, 60),
                 max(0.2, min(6.0, _memory_companion_safe_float(getattr(self, "memory_companion_context_timeout_seconds", 1.2), 1.2, 0.2))),
             )
@@ -1702,7 +1704,7 @@ class MemoryCompanionAdapterMixin:
         except Exception as exc:
             if self._memory_companion_optional_dependency_failed(exc, where="compose_schedule_context"):
                 return ""
-            logger.debug("[PrivateCompanion] MemoryCompanion 日程上下文读取失败: %s", _single_line(exc, 120))
+            logger.debug("MemoryCompanion 日程上下文读取失败: %s", _single_line(exc, 120))
             return ""
         text = str(text or "").strip()
         if not text:
@@ -1843,8 +1845,8 @@ class MemoryCompanionAdapterMixin:
                 timeout=max(0.2, min(6.0, min(configured_timeout, _memory_companion_safe_float(timeout_seconds, configured_timeout, 0.2)))),
             )
         except asyncio.TimeoutError:
-            logger.info(
-                "[PrivateCompanion] MemoryCompanion 功能上下文读取超时,已跳过: kind=%s timeout=%.2fs",
+            logger.warning(
+                "MemoryCompanion 功能上下文读取超时,已跳过: kind=%s timeout=%.2fs",
                 _single_line(kind, 60),
                 max(0.2, min(6.0, min(_memory_companion_safe_float(getattr(self, "memory_companion_context_timeout_seconds", 1.2), 1.2, 0.2), _memory_companion_safe_float(timeout_seconds, 1.2, 0.2)))),
             )
@@ -1852,7 +1854,7 @@ class MemoryCompanionAdapterMixin:
         except Exception as exc:
             if self._memory_companion_optional_dependency_failed(exc, where=f"compose_feature_context:{kind}"):
                 return ""
-            logger.debug("[PrivateCompanion] MemoryCompanion 功能上下文读取失败: kind=%s err=%s", _single_line(kind, 60), _single_line(exc, 120))
+            logger.debug("MemoryCompanion 功能上下文读取失败: kind=%s err=%s", _single_line(kind, 60), _single_line(exc, 120))
             return ""
         text = str(text or "").strip()
         if not text:
@@ -1952,7 +1954,7 @@ class MemoryCompanionAdapterMixin:
         except Exception as exc:
             if self._memory_companion_optional_dependency_failed(exc, where="compose_private_recall"):
                 return ""
-            logger.debug("[PrivateCompanion] MemoryCompanion 私聊选择性召回失败: %s", _single_line(exc, 120))
+            logger.debug("MemoryCompanion 私聊选择性召回失败: %s", _single_line(exc, 120))
             return ""
         recalled = _single_line(recalled, 620)
         if not recalled:
@@ -2445,7 +2447,7 @@ class MemoryCompanionAdapterMixin:
                 payload = merged
             setattr(event, "private_companion_context", payload)
         except Exception as exc:
-            logger.debug("[PrivateCompanion] MemoryCompanion 上下文线索挂载失败: %s", _single_line(exc, 120))
+            logger.debug("MemoryCompanion 上下文线索挂载失败: %s", _single_line(exc, 120))
 
     def _memory_companion_attach_private_context(
         self,
@@ -2539,7 +2541,7 @@ class MemoryCompanionAdapterMixin:
         try:
             context = builder(event)
         except Exception as exc:
-            logger.debug("[PrivateCompanion] Unified Person 上下文生成失败: %s", _single_line(exc, 160))
+            logger.debug("Unified Person 上下文生成失败: %s", _single_line(exc, 160))
             return
         if not isinstance(context, dict):
             return
@@ -2659,7 +2661,7 @@ class MemoryCompanionAdapterMixin:
         except Exception as exc:
             if self._memory_companion_optional_dependency_failed(exc, where="record_proactive_message"):
                 return
-            logger.debug("[PrivateCompanion] MemoryCompanion 主动消息桥接写入失败: %s", _single_line(exc, 120))
+            logger.debug("MemoryCompanion 主动消息桥接写入失败: %s", _single_line(exc, 120))
 
     async def _memory_companion_record_image_observation(
         self,
@@ -2726,7 +2728,7 @@ class MemoryCompanionAdapterMixin:
         except Exception as exc:
             if self._memory_companion_optional_dependency_failed(exc, where="record_image_observation"):
                 return
-            logger.debug("[PrivateCompanion] MemoryCompanion 图片观察写入失败: %s", _single_line(exc, 120))
+            logger.debug("MemoryCompanion 图片观察写入失败: %s", _single_line(exc, 120))
 
     async def _memory_companion_record_photo_generation(
         self,
@@ -2857,7 +2859,7 @@ class MemoryCompanionAdapterMixin:
         except Exception as exc:
             if self._memory_companion_optional_dependency_failed(exc, where="record_photo_generation"):
                 return
-            logger.debug("[PrivateCompanion] MemoryCompanion 生图记录写入失败: %s", _single_line(exc, 120))
+            logger.debug("MemoryCompanion 生图记录写入失败: %s", _single_line(exc, 120))
 
     async def _memory_companion_record_user_habit(
         self,
@@ -2955,7 +2957,7 @@ class MemoryCompanionAdapterMixin:
         except Exception as exc:
             if self._memory_companion_optional_dependency_failed(exc, where="record_user_habit"):
                 return
-            logger.debug("[PrivateCompanion] MemoryCompanion 用户习惯写入失败: %s", _single_line(exc, 120))
+            logger.debug("MemoryCompanion 用户习惯写入失败: %s", _single_line(exc, 120))
 
     async def _memory_companion_record_daily_outfit(self, item: dict[str, Any]) -> None:
         if not isinstance(item, dict) or not _path_text(item.get("path"), 1000):
@@ -3006,7 +3008,7 @@ class MemoryCompanionAdapterMixin:
         except Exception as exc:
             if self._memory_companion_optional_dependency_failed(exc, where="record_daily_outfit"):
                 return
-            logger.debug("[PrivateCompanion] MemoryCompanion 每日穿搭写入失败: %s", _single_line(exc, 120))
+            logger.debug("MemoryCompanion 每日穿搭写入失败: %s", _single_line(exc, 120))
 
     async def _memory_companion_record_creative_progress(
         self,
@@ -3085,7 +3087,7 @@ class MemoryCompanionAdapterMixin:
         except Exception as exc:
             if self._memory_companion_optional_dependency_failed(exc, where="record_creative_progress"):
                 return
-            logger.debug("[PrivateCompanion] MemoryCompanion 创作进展写入失败: %s", _single_line(exc, 120))
+            logger.debug("MemoryCompanion 创作进展写入失败: %s", _single_line(exc, 120))
 
     def _memory_companion_now_iso(self) -> str:
         try:
@@ -3175,7 +3177,7 @@ class MemoryCompanionAdapterMixin:
         except Exception as exc:
             if self._memory_companion_optional_dependency_failed(exc, where="record_qzone_publish"):
                 return
-            logger.debug("[PrivateCompanion] MemoryCompanion QQ 空间发布写入失败: %s", _single_line(exc, 120))
+            logger.debug("MemoryCompanion QQ 空间发布写入失败: %s", _single_line(exc, 120))
 
     async def _memory_companion_apply_emotional_drift(
         self,
@@ -3211,7 +3213,7 @@ class MemoryCompanionAdapterMixin:
         except Exception as exc:
             if self._memory_companion_optional_dependency_failed(exc, where="list_emotion_events"):
                 return
-            logger.debug("[PrivateCompanion] 情绪余波拉取失败: %s", _single_line(exc, 120))
+            logger.debug("情绪余波拉取失败: %s", _single_line(exc, 120))
             return
         events = delivery.get("events", []) if isinstance(delivery, dict) else []
         if not isinstance(events, list) or not events:
@@ -3258,7 +3260,7 @@ class MemoryCompanionAdapterMixin:
         except Exception as exc:
             self._memory_companion_optional_dependency_failed(exc, where="ack_emotion_events")
             return
-        logger.debug("[PrivateCompanion] 已应用并确认记忆情绪余波: count=%s", len(applied_refs))
+        logger.debug("已应用并确认记忆情绪余波: count=%s", len(applied_refs))
 
     def _memory_companion_afterglow_condition(self, event: dict[str, Any], *, now: float) -> dict[str, Any] | None:
         event_id = _single_line(event.get("event_id"), 96)
@@ -3333,7 +3335,7 @@ class MemoryCompanionAdapterMixin:
         except Exception as exc:
             if self._memory_companion_optional_dependency_failed(exc, where="search_open_loops"):
                 return []
-            logger.debug("[PrivateCompanion] open-loop 搜索失败: %s", _single_line(exc, 120))
+            logger.debug("open-loop 搜索失败: %s", _single_line(exc, 120))
             return []
 
     async def _memory_companion_record_dream_fragment(
@@ -3381,7 +3383,7 @@ class MemoryCompanionAdapterMixin:
         except Exception as exc:
             if self._memory_companion_optional_dependency_failed(exc, where="record_dream_fragment"):
                 return
-            logger.debug("[PrivateCompanion] 梦境碎片写入失败: %s", _single_line(exc, 120))
+            logger.debug("梦境碎片写入失败: %s", _single_line(exc, 120))
 
     def _memory_companion_get_relationship_phase(self, *, session_id: str = "") -> dict[str, Any]:
         """Get current relationship phase from the memory plugin."""
@@ -3498,7 +3500,7 @@ class MemoryCompanionAdapterMixin:
             if error_code == "requester_context_required" and context_failure_reason:
                 error_code = context_failure_reason
             logger.warning(
-                "[PrivateCompanion] 用户记忆摘要读取失败: state=%s reason=%s context_creator=%s "
+                "用户记忆摘要读取失败: state=%s reason=%s context_creator=%s "
                 "capability=%s requester_context=%s bot_id=%s platform=%s session=%s",
                 state or "degraded",
                 error_code or "summary_unavailable",

@@ -31,7 +31,7 @@ from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 from xml.etree import ElementTree as ET
 
-from astrbot.api import AstrBotConfig, logger
+from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 try:
     from astrbot.api.message_components import At, Image, Plain, Record, Reply
@@ -137,6 +137,9 @@ from .planning import (
     normalize_story_plan,
     pick_detail_segment,
 )
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 DEFAULT_AI_DAILY_NEWS_SOURCE = "B站 AI早报|bilibili:285286947"
 OWNER_EXCLUSIVE_RELATIONSHIP_PROMPT_MAX_CHARS = 2400
@@ -3494,7 +3497,7 @@ class UserMemoryMixin:
             return int(record.get("revision") or 0) or None
         except (AuthoritativePrivateMemoryError, TypeError, ValueError) as exc:
             logger.warning(
-                "[PrivateCompanion] REQ-041 权威私聊记忆准备失败: %s",
+                "REQ-041 权威私聊记忆准备失败: %s",
                 _single_line(exc, 120),
             )
             return None
@@ -3524,13 +3527,13 @@ class UserMemoryMixin:
             if isinstance(record, dict) and isinstance(record.get("content"), dict):
                 apply_private_memory_content(user, record["content"])
             logger.warning(
-                "[PrivateCompanion] REQ-041 权威私聊记忆写入拒绝: code=%s",
+                "REQ-041 权威私聊记忆写入拒绝: code=%s",
                 _single_line(result.get("code"), 80),
             )
             return False
         except (AuthoritativePrivateMemoryError, TypeError, ValueError) as exc:
             logger.warning(
-                "[PrivateCompanion] REQ-041 权威私聊记忆写入失败: %s",
+                "REQ-041 权威私聊记忆写入失败: %s",
                 _single_line(exc, 120),
             )
             return False
@@ -5229,7 +5232,7 @@ class UserMemoryMixin:
                         pass
                     except Exception as exc:
                         logger.warning(
-                            "[PrivateCompanion] 用户习惯记忆同步后台任务失败: %s",
+                            "用户习惯记忆同步后台任务失败: %s",
                             _single_line(exc, 160),
                         )
 
@@ -6204,7 +6207,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
             refined = None
             request_failed = True
             logger.debug(
-                "[PrivateCompanion] Emotion judgement request failed: error_type=%s",
+                "Emotion judgement request failed: error_type=%s",
                 type(exc).__name__,
             )
         async with self._data_lock:
@@ -6262,7 +6265,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
             if refined:
                 user.pop("last_emotion_judgement_error", None)
                 logger.info(
-                    "[PrivateCompanion] Emotion judgement completed: user=%s event=%s target=%s intensity=%s confidence=%s reason=%s",
+                    "Emotion judgement completed: user=%s event=%s target=%s intensity=%s confidence=%s reason=%s",
                     user_id,
                     refined.get("emotion_event"),
                     refined.get("emotion_target"),
@@ -6273,7 +6276,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
             elif normalized:
                 user.pop("last_emotion_judgement_error", None)
                 logger.info(
-                    "[PrivateCompanion] Emotion judgement retained local result: user=%s outcome=%s event=%s confidence=%s",
+                    "Emotion judgement retained local result: user=%s outcome=%s event=%s confidence=%s",
                     user_id,
                     review_outcome,
                     normalized.get("event"),
@@ -6508,7 +6511,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
             if value not in (None, "")
         )
         logger.info(
-            "[PrivateCompanion][BoundaryFeedback] user=%s decision=%s%s",
+            "[BoundaryFeedback] user=%s decision=%s%s",
             _single_line(user.get("user_id"), 80),
             _single_line(decision, 32),
             f" {details}" if details else "",
@@ -7113,7 +7116,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
             events.append(event)
             story["today_events"] = events[-16:]
         logger.info(
-            "[PrivateCompanion] 关系边界事件已融入生活叙事: user=%s target=%s level=%s",
+            "关系边界事件已融入生活叙事: user=%s target=%s level=%s",
             _single_line(user.get("user_id"), 80),
             target,
             level,
@@ -7209,7 +7212,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
                 sent = True
             except Exception as exc:
                 logger.warning(
-                    "[PrivateCompanion] 关系边界转达发送失败: target=%s error=%s",
+                    "关系边界转达发送失败: target=%s error=%s",
                     _single_line(route, 100),
                     _single_line(exc, 160),
                 )
@@ -7544,7 +7547,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
             now=now,
         )
         logger.info(
-            "[PrivateCompanion] 互动状态已统一结算: band=%s reason=%s expires=%s",
+            "互动状态已统一结算: band=%s reason=%s expires=%s",
             band,
             reason_code,
             int(expires_at) if expires_at else 0,
@@ -7823,8 +7826,8 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         except asyncio.TimeoutError:
             result = {"decision": "send", "reason": f"timeout>{timeout_seconds:.1f}s", "confidence": 0.0, "source": "timeout"}
             cache[cache_key] = {"ts": now, "result": result}
-            logger.info(
-                "[PrivateCompanion] 智能沉默判定超时,默认放行: trigger=%s timeout=%.1fs text=%s",
+            logger.warning(
+                "智能沉默判定超时,默认放行: trigger=%s timeout=%.1fs text=%s",
                 trigger,
                 timeout_seconds,
                 _single_line(inbound, 100),
@@ -7833,7 +7836,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         except Exception as exc:
             result = {"decision": "send", "reason": _single_line(exc, 80), "confidence": 0.0, "source": "error"}
             cache[cache_key] = {"ts": now, "result": result}
-            logger.info("[PrivateCompanion] 智能沉默判定失败,默认放行: %s", _single_line(exc, 120))
+            logger.warning("智能沉默判定失败,默认放行: %s", _single_line(exc, 120))
             return result
 
         payload = self._extract_json_payload(raw or "")
@@ -7866,7 +7869,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         }
         cache[cache_key] = {"ts": now, "result": result}
         logger.info(
-            "[PrivateCompanion] 智能沉默判定: decision=%s confidence=%.2f trigger=%s elapsed=%dms reason=%s user=%s reply=%s",
+            "智能沉默判定: decision=%s confidence=%.2f trigger=%s elapsed=%dms reason=%s user=%s reply=%s",
             decision,
             confidence,
             trigger,
@@ -8514,7 +8517,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
                 fallback_builder = getattr(self, "_fallback_unexecuted_relay_reply", None)
                 fallback = fallback_builder(inbound_text) if callable(fallback_builder) else ""
                 logger.info(
-                    "[PrivateCompanion] 被动回复含未执行转述承诺,已改为诚实边界: reason=%s before=%s after=%s",
+                    "被动回复含未执行转述承诺,已改为诚实边界: reason=%s before=%s after=%s",
                     relay_claim_note,
                     _single_line(response_text, 120),
                     _single_line(fallback, 120),
@@ -8524,7 +8527,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
             fallback = self._music_album_reply_from_context(music_album_context, user_text=inbound_text)
             if fallback:
                 logger.info(
-                    "[PrivateCompanion] 音乐专辑回复已按卡片上下文纠偏: before=%s after=%s",
+                    "音乐专辑回复已按卡片上下文纠偏: before=%s after=%s",
                     _single_line(response_text, 120),
                     _single_line(fallback, 160),
                 )
@@ -8669,7 +8672,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
             )
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 被动回复模型自检失败,保留原回复: flags=%s error=%s",
+                "被动回复模型自检失败,保留原回复: flags=%s error=%s",
                 ",".join(effective_flags),
                 _single_line(exc, 160),
             )
@@ -8680,7 +8683,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
                 user=user,
             ) or response_text
         logger.info(
-            "[PrivateCompanion] 被动回复模型自检完成: mode=%s flags=%s elapsed=%dms",
+            "被动回复模型自检完成: mode=%s flags=%s elapsed=%dms",
             review_mode,
             ",".join(effective_flags),
             int((time.perf_counter() - started) * 1000),
@@ -8691,12 +8694,12 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         if self._is_response_review_drop_marker(cleaned):
             if review_strength == "lenient":
                 logger.info(
-                    "[PrivateCompanion] 被动回复宽松复核忽略取消判定,保留原回复: flags=%s",
+                    "被动回复宽松复核忽略取消判定,保留原回复: flags=%s",
                     ",".join(effective_flags),
                 )
                 return response_text
             logger.info(
-                "[PrivateCompanion] 被动回复模型自检判定重复,已标记丢弃: flags=%s before=%s",
+                "被动回复模型自检判定重复,已标记丢弃: flags=%s before=%s",
                 ",".join(effective_flags),
                 _single_line(response_text, 120),
             )
@@ -8704,7 +8707,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         meta_leak_reason = self._response_review_meta_leak_reason(cleaned)
         if meta_leak_reason:
             logger.error(
-                "[PrivateCompanion] 被动回复复核模型返回内部判断，已回退复核前正文: reason=%s output=%s",
+                "被动回复复核模型返回内部判断，已回退复核前正文: reason=%s output=%s",
                 meta_leak_reason,
                 _single_line(cleaned, 180),
             )
@@ -8731,7 +8734,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
             if review_strength == "lenient":
                 return response_text
             logger.info(
-                "[PrivateCompanion] 被动回复模型自检后仍复读,已标记丢弃: before=%s",
+                "被动回复模型自检后仍复读,已标记丢弃: before=%s",
                 _single_line(cleaned, 120),
             )
             return self._response_review_drop_marker()
@@ -10178,7 +10181,7 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
             current[running_key] = 0
             self._save_data_sync(sections={"users"})
         logger.warning(
-            "[PrivateCompanion] 私聊后台整理失败,已进入短冷却避免重复请求: user=%s task=%s retry=%ss error=%s",
+            "私聊后台整理失败,已进入短冷却避免重复请求: user=%s task=%s retry=%ss error=%s",
             user_id,
             task,
             int(delay),

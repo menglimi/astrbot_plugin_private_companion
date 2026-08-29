@@ -265,7 +265,7 @@ class _ReactionHarness(SceneContextMixin, LlmToolActionsMixin):
 
 
 def _reaction_log_payloads(log_info) -> list[dict[str, object]]:
-    prefix = "[PrivateCompanion][ReactionExpression] %s"
+    prefix = "[ReactionExpression] %s"
     payloads: list[dict[str, object]] = []
     for call in log_info.call_args_list:
         if len(call.args) < 2 or call.args[0] != prefix:

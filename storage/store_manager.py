@@ -7,7 +7,6 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from astrbot.api import logger
 
 from . import cleanup_storage_bytecode_cache
 from .factory import build_store_backend
@@ -15,6 +14,9 @@ from .json_backend import JsonStoreBackend
 from .migration import migrate_json_to_backend_if_needed
 from .path_generation import activate_persistence_owner, shared_prepare_lock
 from .sqlite_backend import SqliteStoreNotInitializedError
+from ..logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 _BOOKSHELF_SECTIONS = (
     "bookshelf_items",
@@ -267,7 +269,7 @@ class StoreManager:
             if strict:
                 raise
             logger.warning(
-                "[PrivateCompanion] 备用 %s 存储读取失败，跳过夹层恢复: %s",
+                "备用 %s 存储读取失败，跳过夹层恢复: %s",
                 backend.backend_name(),
                 exc,
             )
@@ -301,7 +303,7 @@ class StoreManager:
         if not changed:
             return selected
         logger.warning(
-            "[PrivateCompanion] 检测到夹层存储来源不完整，已从 %s 保守恢复: items=%s revision=%s",
+            "检测到夹层存储来源不完整，已从 %s 保守恢复: items=%s revision=%s",
             fallback_name,
             recovered,
             _bookshelf_revision(reconciled),
@@ -321,7 +323,7 @@ class StoreManager:
                     self.backend.save_store(reconciled)
             except Exception as exc:
                 logger.warning(
-                    "[PrivateCompanion] 夹层恢复结果暂未写回 %s，本进程继续使用已恢复数据: %s",
+                    "夹层恢复结果暂未写回 %s，本进程继续使用已恢复数据: %s",
                     self.backend.backend_name(),
                     exc,
                 )
@@ -434,7 +436,7 @@ class StoreManager:
             if key in reconciled:
                 data[key] = deepcopy(reconciled[key])
         logger.warning(
-            "[PrivateCompanion] 拦截到可能清空夹层的旧快照，已保留现有存储内容: items=%s revision=%s",
+            "拦截到可能清空夹层的旧快照，已保留现有存储内容: items=%s revision=%s",
             recovered,
             _bookshelf_revision(reconciled),
         )

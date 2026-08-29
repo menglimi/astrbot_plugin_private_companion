@@ -31,7 +31,7 @@ from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 from xml.etree import ElementTree as ET
 
-from astrbot.api import AstrBotConfig, logger
+from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 try:
     from astrbot.api.message_components import At, Image, Plain, Record, Reply
@@ -129,6 +129,9 @@ from .planning import (
     normalize_story_plan,
     pick_detail_segment,
 )
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 DEFAULT_AI_DAILY_NEWS_SOURCE = "B站 AI早报|bilibili:285286947"
 
@@ -1938,7 +1941,7 @@ class ProactiveMixin(UserRestGateMixin):
                     impulse["last_note"] = safe_note
                     impulse["updated_ts"] = check_now
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 清理次要用户未回应主动念头失败: %s", _single_line(exc, 120))
+                logger.debug("清理次要用户未回应主动念头失败: %s", _single_line(exc, 120))
         pool_cleaner = getattr(self, "_cleanup_proactive_candidate_pool", None)
         pending_checker = getattr(self, "_pending_candidate_status", None)
         candidate_user_getter = getattr(self, "_candidate_user_id", None)
@@ -1959,7 +1962,7 @@ class ProactiveMixin(UserRestGateMixin):
                     candidate["note"] = safe_note
                     candidate["updated_ts"] = check_now
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 清理次要用户未回应主动候选失败: %s", _single_line(exc, 120))
+                logger.debug("清理次要用户未回应主动候选失败: %s", _single_line(exc, 120))
 
     @staticmethod
     def _friend_unanswered_should_remove_action(action: str) -> bool:
@@ -3464,7 +3467,7 @@ class ProactiveMixin(UserRestGateMixin):
             if callable(saver):
                 saver(sections=sections, delay=0.1)
         logger.info(
-            "[PrivateCompanion] 运行时区变化，已作废旧派生窗口: from=%s to=%s plans=%s candidates=%s",
+            "运行时区变化，已作废旧派生窗口: from=%s to=%s plans=%s candidates=%s",
             previous,
             current,
             cleared_plans,
@@ -3501,7 +3504,7 @@ class ProactiveMixin(UserRestGateMixin):
                 self._block_friend_unanswered_pending_proactive(user, note=silence_reason, now=now)
                 self._clear_pending_proactive_plan(user)
                 logger.info(
-                    "[PrivateCompanion] 次要用户连续未回应,停止安排普通主动: user=%s ignored=%s reason=%s",
+                    "次要用户连续未回应,停止安排普通主动: user=%s ignored=%s reason=%s",
                     _single_line(user_id, 40) or "unknown",
                     _safe_int(user.get("ignored_streak"), 0, 0),
                     _single_line(silence_reason, 120),
@@ -3873,7 +3876,7 @@ class ProactiveMixin(UserRestGateMixin):
                 try:
                     await snapshot_recorder(snapshot)
                 except Exception as exc:
-                    logger.debug("[PrivateCompanion] C3 agenda snapshot archival failed: %s", _single_line(exc, 160))
+                    logger.debug("C3 agenda snapshot archival failed: %s", _single_line(exc, 160))
             if callable(reconciliation_recorder) and isinstance(history, list):
                 snapshot_id = _single_line(snapshot.get("snapshot_id"), 160)
                 for reconciliation in reversed(history):
@@ -3885,14 +3888,14 @@ class ProactiveMixin(UserRestGateMixin):
                     try:
                         await reconciliation_recorder(reconciliation)
                     except Exception as exc:
-                        logger.debug("[PrivateCompanion] C3 agenda reconciliation archival failed: %s", _single_line(exc, 160))
+                        logger.debug("C3 agenda reconciliation archival failed: %s", _single_line(exc, 160))
                     break
         flusher = getattr(self, "_memory_companion_flush_bot_personal_outbox", None)
         if callable(flusher):
             try:
                 await flusher(limit=24)
             except Exception as exc:
-                logger.debug("[PrivateCompanion] C3 Bot Personal outbox delivery failed: %s", _single_line(exc, 160))
+                logger.debug("C3 Bot Personal outbox delivery failed: %s", _single_line(exc, 160))
         if snapshots and callable(getattr(self, "_schedule_data_save", None)):
             self._schedule_data_save(
                 sections={"window_snapshots", "agenda_reconciliation_history"},
@@ -3940,7 +3943,7 @@ class ProactiveMixin(UserRestGateMixin):
                     except Exception as exc:
                         self._record_maintenance_task_failure(label, exc)
                         logger.warning(
-                            "[PrivateCompanion] %s维护步骤失败,已跳过: persona=%s task=%s error=%s",
+                            "%s维护步骤失败,已跳过: persona=%s task=%s error=%s",
                             "主动链即时" if immediate else "主动循环",
                             persona_id or "single",
                             label,
@@ -3964,7 +3967,7 @@ class ProactiveMixin(UserRestGateMixin):
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.error(f"[PrivateCompanion] 主动消息循环异常: {e}", exc_info=True)
+                logger.error(f"主动消息循环异常: {e}", exc_info=True)
 
     def _mobile_location_watch_user_ids(self) -> list[str]:
         users = self.data.get("users") if isinstance(getattr(self, "data", None), dict) else {}
@@ -4261,7 +4264,7 @@ class ProactiveMixin(UserRestGateMixin):
                 user_ids={normalized},
             )
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 手机位置事件处理暂时失败: %s", _single_line(exc, 160))
+            logger.debug("手机位置事件处理暂时失败: %s", _single_line(exc, 160))
             return {"handled": False, "reason": "watch_failed"}
         return {"handled": True, "triggered": bool(triggered)}
 
@@ -4272,7 +4275,7 @@ class ProactiveMixin(UserRestGateMixin):
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 移动位置主动监视暂时失败: %s", _single_line(exc, 160))
+                logger.debug("移动位置主动监视暂时失败: %s", _single_line(exc, 160))
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=15.0)
             except asyncio.TimeoutError:
@@ -4282,7 +4285,7 @@ class ProactiveMixin(UserRestGateMixin):
         try:
             await self._run_scheduler_cycle(immediate=True)
         except Exception as e:
-            logger.warning(f"[PrivateCompanion] 主动链即时唤醒失败: {e}", exc_info=True)
+            logger.warning(f"主动链即时唤醒失败: {e}", exc_info=True)
 
     def _next_scheduler_timeout(self) -> float:
         active_getter = getattr(self, "_active_persona_scope", None)

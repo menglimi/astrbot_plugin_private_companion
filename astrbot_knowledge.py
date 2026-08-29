@@ -8,12 +8,14 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
-from astrbot.api import logger
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from .helpers import _single_line
 from .persona_config import runtime_persona_setting
 from .reference_assets import normalize_reference_asset
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 class AstrBotKnowledgeMixin:
@@ -69,7 +71,7 @@ class AstrBotKnowledgeMixin:
             ).fetchall()
             conn.close()
         except Exception as exc:
-            logger.warning(f"[PrivateCompanion] 读取 AstrBot 知识库列表失败: {exc}")
+            logger.warning(f"读取 AstrBot 知识库列表失败: {exc}")
             return []
 
         docs_by_kb: dict[str, list[dict[str, Any]]] = {}
@@ -415,7 +417,7 @@ class AstrBotKnowledgeMixin:
             rows = conn.execute("select text, metadata from documents order by id asc").fetchall()
             conn.close()
         except Exception as exc:
-            logger.warning(f"[PrivateCompanion] 读取 AstrBot 知识库片段失败 {kb_id}: {exc}")
+            logger.warning(f"读取 AstrBot 知识库片段失败 {kb_id}: {exc}")
             return []
 
         chunks: list[dict[str, Any]] = []

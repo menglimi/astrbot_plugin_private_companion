@@ -15,7 +15,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from astrbot.api import logger
 
 from .constants import (
     CREATIVE_MEMORY_MAX_ENTRIES,
@@ -398,7 +397,7 @@ class CreativeMixin:
             cleaned_projects += 1
         if removed_chunks:
             logger.info(
-                "[PrivateCompanion] 已清理资料柜旧版固定兜底片段: projects=%s chunks=%s memories=%s",
+                "已清理资料柜旧版固定兜底片段: projects=%s chunks=%s memories=%s",
                 cleaned_projects,
                 removed_chunks,
                 removed_memories,
@@ -724,7 +723,7 @@ class CreativeMixin:
                     max_chars=900,
                 )
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 创作立项 我会牢牢记住你 上下文读取失败: %s", _single_line(exc, 120))
+                logger.debug("创作立项 我会牢牢记住你 上下文读取失败: %s", _single_line(exc, 120))
         prompt = f"""
  你是一个拟人化 Bot 的私人创作状态生成器。这个 Bot/角色会因为一个生活小事、日记碎片或梦境灵感,突然想开一个自己的创作项目。
 
@@ -862,7 +861,7 @@ class CreativeMixin:
                     max_chars=850,
                 )
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 创作大纲 我会牢牢记住你 上下文读取失败: %s", _single_line(exc, 120))
+                logger.debug("创作大纲 我会牢牢记住你 上下文读取失败: %s", _single_line(exc, 120))
         prompt = f"""
 你在为一个私人创作项目安排本次要写的一小段,先给出简短大纲。
 
@@ -946,7 +945,7 @@ class CreativeMixin:
                     max_chars=850,
                 )
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 创作审稿 我会牢牢记住你 上下文读取失败: %s", _single_line(exc, 120))
+                logger.debug("创作审稿 我会牢牢记住你 上下文读取失败: %s", _single_line(exc, 120))
         prompt = f"""
 你是一个严格但懂文风的审稿人。检查这段私人创作片段是否满足：贴合人格、推进作品、避免重复。
 
@@ -1035,7 +1034,7 @@ class CreativeMixin:
                     max_chars=700,
                 )
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 创作抽取 我会牢牢记住你 上下文读取失败: %s", _single_line(exc, 120))
+                logger.debug("创作抽取 我会牢牢记住你 上下文读取失败: %s", _single_line(exc, 120))
         prompt = f"""
 整理一个长期创作项目刚写出的新片段,提取对后续续写最有用的结构化信息。
 
@@ -1349,7 +1348,7 @@ class CreativeMixin:
                     max_chars=1000,
                 )
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 创作续写 我会牢牢记住你 上下文读取失败: %s", _single_line(exc, 120))
+                logger.debug("创作续写 我会牢牢记住你 上下文读取失败: %s", _single_line(exc, 120))
 
         async def _do_generate(extra_notice: str = "") -> str:
             story_time = _single_line(story_bible.get("story_time"), 60)
@@ -1514,7 +1513,7 @@ class CreativeMixin:
             del projects[:-20]
             self.data["creative_projects"] = projects
             self._save_data_sync(sections={"creative_projects"})
-        logger.info("[PrivateCompanion] 新增创作项目: %s / %s", project.get("work_type"), project.get("title"))
+        logger.info("新增创作项目: %s / %s", project.get("work_type"), project.get("title"))
         return True
 
     @staticmethod
@@ -1839,7 +1838,7 @@ class CreativeMixin:
                 await asyncio.to_thread(shutil.copy2, source, target)
             return str(target)
         except Exception as exc:
-            logger.warning("[PrivateCompanion] 创作封面保存失败: project=%s error=%s", project_id, _single_line(exc, 160))
+            logger.warning("创作封面保存失败: project=%s error=%s", project_id, _single_line(exc, 160))
             return ""
 
     @story_legacy_operation("creative.cover.generate")
@@ -1920,7 +1919,7 @@ class CreativeMixin:
                         )
                     except Exception as exc:
                         logger.warning(
-                            "[PrivateCompanion] 创作封面读取人物参考图失败: project=%s error=%s",
+                            "创作封面读取人物参考图失败: project=%s error=%s",
                             project_id,
                             _single_line(exc, 160),
                         )
@@ -1990,12 +1989,12 @@ class CreativeMixin:
                     project["cover_generation_status"] = "ready"
                     project["cover_generation_error"] = ""
                     project["cover_generation_next_retry_at"] = 0
-                    logger.info("[PrivateCompanion] 创作封面已生成: project=%s backend=%s path=%s", project_id, _single_line(backend, 80), _single_line(stored_path, 180))
+                    logger.info("创作封面已生成: project=%s backend=%s path=%s", project_id, _single_line(backend, 80), _single_line(stored_path, 180))
                 else:
                     project["cover_generation_status"] = "failed"
                     project["cover_generation_error"] = _single_line(note, 220) or "生图失败"
                     project["cover_generation_next_retry_at"] = now + min(24, max(3, attempt_number * 3)) * 3600
-                    logger.info("[PrivateCompanion] 创作封面未生成: project=%s attempt=%s error=%s", project_id, attempt_number, _single_line(note, 180))
+                    logger.info("创作封面未生成: project=%s attempt=%s error=%s", project_id, attempt_number, _single_line(note, 180))
                 self._save_data_sync(sections={"creative_projects"})
                 return dict(project)
 
@@ -2035,7 +2034,7 @@ class CreativeMixin:
                     reason=f"创作生成失败: {_single_line(exc, 140)}",
                 )
                 logger.warning(
-                    "[PrivateCompanion] 创作推进失败,已保留项目并退避: project=%s failures=%s delay=%sm error=%s",
+                    "创作推进失败,已保留项目并退避: project=%s failures=%s delay=%sm error=%s",
                     _single_line(project.get("id"), 32),
                     _safe_int(project.get("advance_failure_count"), 1, 1),
                     delay_minutes,
@@ -2050,7 +2049,7 @@ class CreativeMixin:
                     reason="生成结果为空、重复或未通过质量复核",
                 )
                 logger.info(
-                    "[PrivateCompanion] 创作片段未通过质量门,本轮不写入资料柜: project=%s failures=%s delay=%sm",
+                    "创作片段未通过质量门,本轮不写入资料柜: project=%s failures=%s delay=%sm",
                     _single_line(project.get("id"), 32),
                     _safe_int(project.get("advance_failure_count"), 1, 1),
                     delay_minutes,

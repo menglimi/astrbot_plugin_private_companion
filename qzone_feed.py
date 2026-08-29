@@ -10,12 +10,14 @@ import time
 from types import SimpleNamespace
 from typing import Any
 
-from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
 from .helpers import _safe_float, _safe_int, _single_line
 from .persona_config import runtime_persona_setting
 from .qzone_recent_parser import is_official_qzone_promotion
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 __all__ = ("QzoneFeedMixin",)
 
@@ -408,7 +410,7 @@ class QzoneFeedMixin:
         code = self._qzone_response_code(payload)
         if code not in {0, "0"}:
             logger.warning(
-                "[PrivateCompanion] QQ 空间点赞失败: code=%s message=%s uin=%s tid=%s appid=%s typeid=%s fid=%s http=%s",
+                "QQ 空间点赞失败: code=%s message=%s uin=%s tid=%s appid=%s typeid=%s fid=%s http=%s",
                 code,
                 _single_line(payload.get("message") or payload.get("msg") or payload.get("_raw_message"), 100),
                 uin,
@@ -426,7 +428,7 @@ class QzoneFeedMixin:
             )
         verification = await self._qzone_verify_like_post(event, post, cookie_header=cookie_header, target_liked=True)
         logger.info(
-            "[PrivateCompanion] QQ 空间点赞成功: uin=%s tid=%s appid=%s typeid=%s fid=%s verified=%s",
+            "QQ 空间点赞成功: uin=%s tid=%s appid=%s typeid=%s fid=%s verified=%s",
             uin,
             tid,
             appid,
@@ -500,7 +502,7 @@ class QzoneFeedMixin:
         code = self._qzone_response_code(payload)
         if code not in {0, "0"}:
             logger.warning(
-                "[PrivateCompanion] QQ 空间删除说说失败: code=%s message=%s uin=%s tid=%s http=%s",
+                "QQ 空间删除说说失败: code=%s message=%s uin=%s tid=%s http=%s",
                 code,
                 _single_line(payload.get("message") or payload.get("msg") or payload.get("_raw_message"), 100),
                 uin,
@@ -508,7 +510,7 @@ class QzoneFeedMixin:
                 payload.get("_http_status"),
             )
             raise RuntimeError(_single_line(payload.get("message") or payload.get("msg") or f"删除失败 code={code}", 160))
-        logger.info("[PrivateCompanion] QQ 空间删除说说成功: uin=%s tid=%s", uin, tid)
+        logger.info("QQ 空间删除说说成功: uin=%s tid=%s", uin, tid)
 
     async def _qzone_generate_comment(self, post: Any) -> str:
         prompt = f"""

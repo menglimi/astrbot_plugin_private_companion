@@ -9,11 +9,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
 from .helpers import _now_ts, _path_text, _safe_float, _safe_int, _single_line
 from .persona_config import runtime_persona_setting
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 __all__ = ("QzonePublishMixin",)
 
@@ -255,7 +257,7 @@ class QzonePublishMixin:
         try:
             self._save_data_sync(sections={"qzone_integration"})
         except Exception as exc:
-            logger.debug("[PrivateCompanion] QQ 空间发布记录保存失败: %s", _single_line(exc, 120))
+            logger.debug("QQ 空间发布记录保存失败: %s", _single_line(exc, 120))
 
     def _qzone_append_publish_to_current_detail(
         self,
@@ -405,7 +407,7 @@ class QzonePublishMixin:
         )
         if relationship_cleaned != cleaned:
             logger.warning(
-                "[PrivateCompanion] QQ 空间说说草稿含未声明关系,已移除污染片段: %s",
+                "QQ 空间说说草稿含未声明关系,已移除污染片段: %s",
                 _single_line(cleaned, 160),
             )
             cleaned = relationship_cleaned
@@ -415,7 +417,7 @@ class QzonePublishMixin:
             return cleaned
         stripped = self._strip_qzone_internal_state_fragments(cleaned)
         if stripped and not self._qzone_text_leaks_internal_state(stripped) and len(stripped) >= 12:
-            logger.warning("[PrivateCompanion] QQ 空间说说草稿含内部状态,已净化: %s", _single_line(cleaned, 160))
+            logger.warning("QQ 空间说说草稿含内部状态,已净化: %s", _single_line(cleaned, 160))
             return stripped
         rewrite_prompt = f"""
 下面是一条 QQ 空间说说草稿,里面泄露了内部状态/数值。请重写成自然生活动态。
@@ -446,11 +448,11 @@ class QzonePublishMixin:
                 180,
             )
             if rewritten and not self._qzone_text_leaks_internal_state(rewritten):
-                logger.warning("[PrivateCompanion] QQ 空间说说草稿含内部状态,已重写: %s", _single_line(cleaned, 160))
+                logger.warning("QQ 空间说说草稿含内部状态,已重写: %s", _single_line(cleaned, 160))
                 return rewritten
         except Exception as exc:
-            logger.warning("[PrivateCompanion] QQ 空间说说内部状态重写失败: %s", _single_line(exc, 120))
-        logger.warning("[PrivateCompanion] QQ 空间说说草稿含内部状态且重写失败,已取消本次发布")
+            logger.warning("QQ 空间说说内部状态重写失败: %s", _single_line(exc, 120))
+        logger.warning("QQ 空间说说草稿含内部状态且重写失败,已取消本次发布")
         return ""
 
     async def _test_qzone_publish_tool_chain(self, event: AstrMessageEvent | None = None) -> str:
@@ -851,7 +853,7 @@ class QzonePublishMixin:
             return []
         if not re.match(r"^(?:https?://|file://|data:)", image_path, flags=re.I) and not Path(image_path).exists():
             return []
-        logger.info("[PrivateCompanion] QQ 空间复用待发布配图: reason=%s path=%s", reason, _single_line(image_path, 160))
+        logger.info("QQ 空间复用待发布配图: reason=%s path=%s", reason, _single_line(image_path, 160))
         return [image_path]
 
     def _qzone_note_publish_image_status(
@@ -933,12 +935,12 @@ class QzonePublishMixin:
             self._qzone_note_publish_image_status(state, reason, "skipped:probability", f"未命中配图概率 {probability:.0%}")
             return []
         if callable(getattr(self, "_daily_token_soft_limit_should_defer", None)) and self._daily_token_soft_limit_should_defer("photo_prompt"):
-            logger.info("[PrivateCompanion] QQ 空间主动配图跳过: token_soft_limit")
+            logger.info("QQ 空间主动配图跳过: token_soft_limit")
             self._qzone_note_publish_image_status(state, reason, "skipped:token_budget", "token 软上限保护")
             return []
         generator = getattr(self, "_generate_photo_image", None)
         if not callable(generator):
-            logger.info("[PrivateCompanion] QQ 空间主动配图跳过: image_generator_unavailable")
+            logger.info("QQ 空间主动配图跳过: image_generator_unavailable")
             self._qzone_note_publish_image_status(state, reason, "skipped:no_generator", "缺少 _generate_photo_image 生图入口")
             return []
 
@@ -979,7 +981,7 @@ class QzonePublishMixin:
                 )
             except Exception as ref_exc:
                 logger.info(
-                    "[PrivateCompanion] QQ 空间自拍参考图预检失败: reason=%s error=%s",
+                    "QQ 空间自拍参考图预检失败: reason=%s error=%s",
                     _single_line(reason, 40),
                     _single_line(ref_exc, 120),
                 )
@@ -1104,7 +1106,7 @@ class QzonePublishMixin:
             reference_image_path = qzone_selfie_reference_path if workflow_kind == "selfie" else ""
             reference_exists = qzone_selfie_reference_exists if workflow_kind == "selfie" else False
             logger.info(
-                "[PrivateCompanion] QQ 空间配图生图开始: reason=%s kind=%s anchor=%s composition=%s reference=%s reference_exists=%s post=%s prompt=%s",
+                "QQ 空间配图生图开始: reason=%s kind=%s anchor=%s composition=%s reference=%s reference_exists=%s post=%s prompt=%s",
                 _single_line(reason, 40),
                 _single_line(workflow_kind, 30),
                 _single_line(visual_anchor, 80) or "-",
@@ -1121,7 +1123,7 @@ class QzonePublishMixin:
                 reference_image_path=reference_image_path,
             )
         except Exception as exc:
-            logger.info("[PrivateCompanion] QQ 空间主动配图失败: %s", _single_line(exc, 120))
+            logger.info("QQ 空间主动配图失败: %s", _single_line(exc, 120))
             self._qzone_note_publish_image_status(
                 state,
                 reason,
@@ -1132,7 +1134,7 @@ class QzonePublishMixin:
             )
             return []
         if not image_path:
-            logger.info("[PrivateCompanion] QQ 空间主动配图跳过: %s", _single_line(workflow_note, 160))
+            logger.info("QQ 空间主动配图跳过: %s", _single_line(workflow_note, 160))
             self._qzone_note_publish_image_status(
                 state,
                 reason,
@@ -1146,7 +1148,7 @@ class QzonePublishMixin:
             )
             return []
         if not re.match(r"^(?:https?://|file://|data:)", str(image_path), flags=re.I) and not Path(str(image_path)).exists():
-            logger.info("[PrivateCompanion] QQ 空间主动配图跳过: image_path_missing path=%s", _single_line(image_path, 160))
+            logger.info("QQ 空间主动配图跳过: image_path_missing path=%s", _single_line(image_path, 160))
             self._qzone_note_publish_image_status(
                 state,
                 reason,
@@ -1197,7 +1199,7 @@ class QzonePublishMixin:
                 composition=composition,
             )
         logger.info(
-            "[PrivateCompanion] QQ 空间主动配图完成: reason=%s backend=%s reference=%s reference_exists=%s path=%s",
+            "QQ 空间主动配图完成: reason=%s backend=%s reference=%s reference_exists=%s path=%s",
             reason,
             _single_line(backend_name, 40),
             bool(reference_image_path),

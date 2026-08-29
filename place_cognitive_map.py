@@ -8,10 +8,12 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from astrbot.api import logger
 
 from .helpers import _safe_float, _single_line
 from .scoped_domain_contract import build_scoped_domain_payload
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 _MAP_STORE_KEY = "place_cognitive_maps"
@@ -163,7 +165,7 @@ class PlaceCognitiveMapMixin:
             )
             if not isinstance(result, dict) or result.get("ok") is not True:
                 logger.debug(
-                    "[PrivateCompanion] 地点认知 scoped memory 写入被拒绝: code=%s",
+                    "地点认知 scoped memory 写入被拒绝: code=%s",
                     _single_line(result.get("code"), 120) if isinstance(result, dict) else "invalid_result",
                 )
             return
@@ -175,7 +177,7 @@ class PlaceCognitiveMapMixin:
             try:
                 await recorder(event)
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 地点认知活动归档失败: %s", _single_line(exc, 160))
+                logger.debug("地点认知活动归档失败: %s", _single_line(exc, 160))
 
         try:
             task = asyncio.create_task(_record())

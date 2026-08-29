@@ -38,7 +38,7 @@ from xml.etree import ElementTree as ET
 
 _PHOTO_GENERATION_TRACE_FILE_LOCK = threading.Lock()
 
-from astrbot.api import AstrBotConfig, logger
+from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 try:
     from astrbot.api.message_components import At, Image, Plain, Record, Reply
@@ -232,6 +232,9 @@ _EXTERNAL_IMAGE_DOWNLOAD_TIMEOUT_OVERRIDE: ContextVar[float | None] = ContextVar
 )
 from .proactive_routes import PROACTIVE_ROUTE_REGISTRY
 from .persona_config import runtime_persona_setting
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 def _persona_provider_id(owner: Any, canonical_key: str, legacy_attr: str, quick_role: str) -> str:
@@ -943,7 +946,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
                 )
             except Exception as exc:
                 logger.warning(
-                    "[PrivateCompanion] Proactive Chat 联动终审失败，已回退本地检查: %s",
+                    "Proactive Chat 联动终审失败，已回退本地检查: %s",
                     _single_line(exc, 160),
                 )
 
@@ -1053,7 +1056,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
                     topic_recorder(current, text=visible or text, topic="Proactive Chat", motive="即时主动触发")
                 self._save_data_sync(sections={"users"})
         logger.info(
-            "[PrivateCompanion] 已同步 Proactive Chat 主动发送: user=%s session=%s text=%s",
+            "已同步 Proactive Chat 主动发送: user=%s session=%s text=%s",
             user_id,
             _single_line(session_id, 120),
             _single_line(visible, 120),
@@ -2506,7 +2509,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
                 if text:
                     return text
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 主动链解析会话人格失败: session=%s error=%s", _single_line(session, 100), _single_line(exc, 120))
+                logger.debug("主动链解析会话人格失败: session=%s error=%s", _single_line(session, 100), _single_line(exc, 120))
         getter = getattr(self, "_get_default_persona_prompt", None)
         if callable(getter):
             try:
@@ -3424,7 +3427,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             try:
                 semantics = semantic_getter(user)
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 主动生成语义提示读取失败: %s", _single_line(exc, 120))
+                logger.debug("主动生成语义提示读取失败: %s", _single_line(exc, 120))
                 semantics = {}
         readiness: dict[str, Any] = {}
         readiness_getter = getattr(self, "_proactive_inner_readiness", None)
@@ -3432,7 +3435,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             try:
                 readiness = readiness_getter(user)
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 主动生成内在状态提示读取失败: %s", _single_line(exc, 120))
+                logger.debug("主动生成内在状态提示读取失败: %s", _single_line(exc, 120))
                 readiness = {}
 
         kind = _single_line(semantics.get("kind"), 40)
@@ -3744,7 +3747,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             if session_text == target_session and isinstance(messages, list):
                 captured.append(_CapturedSendMessageCall(session_text, messages))
                 logger.info(
-                    "[PrivateCompanion] 已拦截框架内 send_message_to_user 工具调用: session=%s components=%s",
+                    "已拦截框架内 send_message_to_user 工具调用: session=%s components=%s",
                     session_text,
                     len(messages),
                 )
@@ -3761,7 +3764,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
                         pass
                 except (_CapturedFrameworkSendMessage, _ToolExecutionInterrupted):
                     logger.info(
-                        "[PrivateCompanion] 主动主链工具发送已捕获,提前结束工具循环: session=%s captured=%s",
+                        "主动主链工具发送已捕获,提前结束工具循环: session=%s captured=%s",
                         target_session,
                         len(captured),
                     )
@@ -3806,7 +3809,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             remove_tool(name)
         if removed:
             logger.info(
-                "[PrivateCompanion] 主动主链已隔离不兼容全局工具: %s",
+                "主动主链已隔离不兼容全局工具: %s",
                 ",".join(removed),
             )
         return removed
@@ -3872,7 +3875,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
                         completion_text.encode("utf-8", errors="replace")
                     ).hexdigest()[:12]
                     logger.warning(
-                        "[PrivateCompanion] 主动主链识别到 Provider 错误响应,已交给 AstrBot 原生回退链: label=%s provider=%s kind=%s response_ref=%s",
+                        "主动主链识别到 Provider 错误响应,已交给 AstrBot 原生回退链: label=%s provider=%s kind=%s response_ref=%s",
                         _single_line(label, 80),
                         provider_id or type(provider).__name__,
                         "native_error" if is_native_provider_error else "semantic_error",
@@ -3909,7 +3912,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             setattr(runner, installed_marker, True)
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 主动主链无法安装 Provider 语义错误回退适配器: label=%s error_type=%s",
+                "主动主链无法安装 Provider 语义错误回退适配器: label=%s error_type=%s",
                 _single_line(label, 80),
                 type(exc).__name__,
             )
@@ -4002,7 +4005,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
                 if locked and attempt < 4:
                     await asyncio.sleep(0.2 * (attempt + 1))
                     continue
-                logger.debug("[PrivateCompanion] 会话数据库操作失败: %s error=%s", label, exc)
+                logger.debug("会话数据库操作失败: %s error=%s", label, exc)
                 raise
 
     def _is_sqlite_locked_error(self, exc: Exception) -> bool:
@@ -4039,7 +4042,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
                 conv_id = await conv_mgr.new_conversation(umo)
         if conv_id:
             logger.info(
-                "[PrivateCompanion] 已为主动消息存档创建 AstrBot 会话: umo=%s cid=%s",
+                "已为主动消息存档创建 AstrBot 会话: umo=%s cid=%s",
                 _single_line(umo, 140),
                 _single_line(conv_id, 80),
             )
@@ -4111,7 +4114,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             return scoped
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 无法为主动主链应用插件指定人格,继续使用会话人格: persona=%s error=%s",
+                "无法为主动主链应用插件指定人格,继续使用会话人格: persona=%s error=%s",
                 _single_line(specific_id, 80),
                 _single_line(exc, 120),
             )
@@ -4143,7 +4146,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             if getattr(self, "_proactive_framework_context_warning_key", "") != warning_key:
                 self._proactive_framework_context_warning_key = warning_key
                 logger.warning(
-                    "[PrivateCompanion] 主动主链未取得 AstrBot 原生 Context,已直接转入人格化兜底: input_type=%s；请重载插件或重启 AstrBot",
+                    "主动主链未取得 AstrBot 原生 Context,已直接转入人格化兜底: input_type=%s；请重载插件或重启 AstrBot",
                     context_type,
                 )
             return ""
@@ -4224,7 +4227,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
                     if self._is_sqlite_locked_error(exc) and attempt < 2:
                         wait_seconds = 0.35 * (attempt + 1)
                         logger.info(
-                            "[PrivateCompanion] 主动主链遇到会话库锁,稍后重试: label=%s session=%s retry=%s",
+                            "主动主链遇到会话库锁,稍后重试: label=%s session=%s retry=%s",
                             label,
                             _single_line(umo, 120),
                             attempt + 1,
@@ -4265,7 +4268,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
                 self._framework_captured_send_cache.pop(cache_key, None)
                 getattr(self, "_framework_captured_send_cache_at", {}).pop(cache_key, None)
                 logger.info(
-                    "[PrivateCompanion] 主动主链已接收 pc_generate_photo 成图，等待统一发送: label=%s session=%s",
+                    "主动主链已接收 pc_generate_photo 成图，等待统一发送: label=%s session=%s",
                     label,
                     _single_line(cache_key, 120),
                 )
@@ -4278,7 +4281,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         if captured_text:
             if text and self._framework_agent_meta_summary_leak(text):
                 logger.warning(
-                    "[PrivateCompanion] 主动主链 final 疑似工具循环摘要或 Provider 失败,改用已捕获发送文本: label=%s final=%s captured=%s",
+                    "主动主链 final 疑似工具循环摘要或 Provider 失败,改用已捕获发送文本: label=%s final=%s captured=%s",
                     label,
                     _single_line(text, 160),
                     _single_line(captured_text, 160),
@@ -4288,7 +4291,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             text and self._framework_agent_meta_summary_leak(text)
         ):
             logger.warning(
-                "[PrivateCompanion] 主动主链 final 疑似工具循环摘要或 Provider 失败且无可用捕获文本,已丢弃: label=%s text=%s",
+                "主动主链 final 疑似工具循环摘要或 Provider 失败且无可用捕获文本,已丢弃: label=%s text=%s",
                 label,
                 _single_line(text, 180),
             )
@@ -4365,15 +4368,15 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             cleaned_text, payloads = self._extract_timer_directives(raw_text)
             if payloads:
                 logger.info(
-                    "[PrivateCompanion] 主动消息中清理到对话临时预约标签,不再由主动链路登记: user=%s",
+                    "主动消息中清理到对话临时预约标签,不再由主动链路登记: user=%s",
                     _single_line(user.get("user_id"), 40),
                 )
             return cleaned_text
         except Exception as exc:
             if self._is_sqlite_locked_error(exc):
-                logger.warning("[PrivateCompanion] 主动消息主链被会话数据库锁住,本轮跳过并等待下次调度: %s", _single_line(umo, 120))
+                logger.warning("主动消息主链被会话数据库锁住,本轮跳过并等待下次调度: %s", _single_line(umo, 120))
             else:
-                logger.warning("[PrivateCompanion] 主动消息主链生成失败: %s", exc)
+                logger.warning("主动消息主链生成失败: %s", exc)
             return ""
 
     def _proactive_history_limit(self, stage: str) -> int:
@@ -4477,7 +4480,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
                     if line:
                         lines.append(line)
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 主动润色读取私聊历史失败: %s", _single_line(exc, 120))
+                logger.debug("主动润色读取私聊历史失败: %s", _single_line(exc, 120))
         if not lines:
             last_user = _single_line(user.get("last_user_message"), 180)
             last_bot = _single_line(user.get("last_companion_message"), 180)
@@ -4621,11 +4624,11 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
                 task=task,
             )
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 人格参考意图改写失败: %s", _single_line(exc, 120))
+            logger.debug("人格参考意图改写失败: %s", _single_line(exc, 120))
             raw = ""
         if self._looks_like_internal_provider_error_text(raw):
             logger.warning(
-                "[PrivateCompanion] 人格参考意图改写收到 Provider 错误正文，已丢弃: task=%s",
+                "人格参考意图改写收到 Provider 错误正文，已丢弃: task=%s",
                 _single_line(task, 80) or "persona_reference_rewrite",
             )
             raw = ""
@@ -5774,7 +5777,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
                     )
                     if accepted_reference:
                         logger.info(
-                            "[PrivateCompanion] 主动外界分享人格润色未通过统一验收，已使用确定性来源文本: reason=%s",
+                            "主动外界分享人格润色未通过统一验收，已使用确定性来源文本: reason=%s",
                             reason,
                         )
                 rewritten_reference = accepted_reference or ""
@@ -5960,7 +5963,7 @@ Output:
             if now - last_log_at >= 600:
                 self._proactive_review_fallback_log_at = now
                 logger.info(
-                    "[PrivateCompanion] 主动最终内容复核模型暂不可用，已安全回退本地复核（同类日志 10 分钟内不重复）: %s",
+                    "主动最终内容复核模型暂不可用，已安全回退本地复核（同类日志 10 分钟内不重复）: %s",
                     self._format_send_exception(exc),
                 )
             return local_model_fallback(self._format_send_exception(exc))
@@ -6102,7 +6105,7 @@ Output:
             reviewed_text = ""
             note = "主动候选疑似工具循环/内部发送摘要泄漏"
         logger.info(
-            "[PrivateCompanion] Proactive final content gate: decision=%s raw=%s strength=%s elapsed=%dms reason=%s",
+            "Proactive final content gate: decision=%s raw=%s strength=%s elapsed=%dms reason=%s",
             decision,
             original_decision,
             strength,
@@ -6303,9 +6306,9 @@ Output:
             return str(raw_text or "").strip()
         except Exception as exc:
             if self._is_sqlite_locked_error(exc):
-                logger.warning("[PrivateCompanion] 主动语音主链被会话数据库锁住,本轮跳过并等待下次调度: %s", _single_line(umo, 120))
+                logger.warning("主动语音主链被会话数据库锁住,本轮跳过并等待下次调度: %s", _single_line(umo, 120))
             else:
-                logger.warning("[PrivateCompanion] 主动语音主链内容生成失败: %s", exc)
+                logger.warning("主动语音主链内容生成失败: %s", exc)
             return ""
 
     async def _generate_proactive_message_with_llm(
@@ -6334,7 +6337,7 @@ Output:
         deferred_photo_cache = getattr(self, "_framework_deferred_photo_cache", None)
         if isinstance(deferred_photo_cache, dict) and umo in deferred_photo_cache:
             logger.info(
-                "[PrivateCompanion] 主动正文已由 pc_generate_photo caption/纯图承载，跳过文本兜底: user=%s",
+                "主动正文已由 pc_generate_photo caption/纯图承载，跳过文本兜底: user=%s",
                 _single_line(user.get("user_id"), 40),
             )
             return str(raw_text or "")
@@ -6359,7 +6362,7 @@ Output:
                         )
                     except Exception as exc:
                         logger.debug(
-                            "[PrivateCompanion] 高频主动表情兜底构建失败: error_type=%s",
+                            "高频主动表情兜底构建失败: error_type=%s",
                             type(exc).__name__,
                         )
             finalized, failure_stage = await self._finalize_proactive_generated_text(
@@ -6400,7 +6403,7 @@ Output:
             finalized, failure_stage = await finalize_candidate(fallback_text)
             if finalized:
                 logger.info(
-                    "[PrivateCompanion] 主动框架主链为空后已由直接人格化兜底恢复: user=%s reason=%s",
+                    "主动框架主链为空后已由直接人格化兜底恢复: user=%s reason=%s",
                     _single_line(user.get("user_id"), 40),
                     reason,
                 )
@@ -6412,7 +6415,7 @@ Output:
         failure_detail = "；".join(failure_stages)[:240]
         user["_proactive_render_failure_stage"] = failure_detail
         logger.warning(
-            "[PrivateCompanion] 主动正文两级生成均未产出: user=%s reason=%s stage=%s",
+            "主动正文两级生成均未产出: user=%s reason=%s stage=%s",
             _single_line(user.get("user_id"), 40),
             reason,
             failure_detail,
@@ -6601,7 +6604,7 @@ Output:
             ) if bounded_segments else ("", "自主分段正文处理后为空")
         if self._looks_like_internal_provider_error_text(raw_text):
             logger.warning(
-                "[PrivateCompanion] 主动正文生成收到 Provider 错误正文，跳过清洗并进入回退: user=%s reason=%s",
+                "主动正文生成收到 Provider 错误正文，跳过清洗并进入回退: user=%s reason=%s",
                 _single_line(user.get("user_id"), 40),
                 _single_line(reason, 60) or "check_in",
             )
@@ -6618,7 +6621,7 @@ Output:
         cleaned, repaired_address = self._repair_proactive_recipient_address(cleaned, user, name)
         if repaired_address:
             logger.warning(
-                "[PrivateCompanion] 主动消息已纠正串用户句首称呼: user=%s wrong=%s replacement=%s",
+                "主动消息已纠正串用户句首称呼: user=%s wrong=%s replacement=%s",
                 _single_line(user.get("user_id"), 40),
                 repaired_address,
                 _single_line(name or user.get("nickname"), 40) or "你",
@@ -6644,7 +6647,7 @@ Output:
         relay_claim_note = self._unexecuted_relay_claim_reason(cleaned, action_context=action_context)
         if relay_claim_note:
             logger.info(
-                "[PrivateCompanion] 主动消息含未执行转述承诺,已丢弃: reason=%s text=%s",
+                "主动消息含未执行转述承诺,已丢弃: reason=%s text=%s",
                 relay_claim_note,
                 _single_line(cleaned, 120),
             )
@@ -6659,7 +6662,7 @@ Output:
             # 连续未回应时的泛泛措辞是表达质量问题，不是安全问题。
             # 交给主动生成提示词收短、降压，避免在终审关闭时被本地规则直接吞掉。
             logger.debug(
-                "[PrivateCompanion] 泛化主动由提示词收敛，不再直接拦截: user=%s text=%s",
+                "泛化主动由提示词收敛，不再直接拦截: user=%s text=%s",
                 _single_line(user.get("user_id") or user.get("umo"), 80),
                 _single_line(cleaned, 140),
             )
@@ -6678,7 +6681,7 @@ Output:
         reviewed, repaired_review_address = self._repair_proactive_recipient_address(reviewed, user, name)
         if repaired_review_address:
             logger.warning(
-                "[PrivateCompanion] 主动复核结果已纠正串用户称呼: user=%s wrong=%s",
+                "主动复核结果已纠正串用户称呼: user=%s wrong=%s",
                 _single_line(user.get("user_id"), 40),
                 repaired_review_address,
             )
@@ -6837,7 +6840,7 @@ Output:
                 cleaned = "\n".join(safe_units).strip()
                 if not cleaned:
                     logger.info(
-                        "[PrivateCompanion] 主动消息仅剩不可用动作/内部回执,本地安全检查已丢弃: flags=%s",
+                        "主动消息仅剩不可用动作/内部回执,本地安全检查已丢弃: flags=%s",
                         ",".join(flags),
                     )
                     return ""
@@ -6856,14 +6859,14 @@ Output:
             ) if repaired else flags
             if repaired and not remaining_flags:
                 logger.info(
-                    "[PrivateCompanion] 主动消息疑似回复空气,已用本地轻量规则修正: flags=%s before=%s after=%s",
+                    "主动消息疑似回复空气,已用本地轻量规则修正: flags=%s before=%s after=%s",
                     ",".join(flags),
                     _single_line(cleaned, 100),
                     _single_line(repaired, 100),
                 )
                 return repaired
             logger.warning(
-                "[PrivateCompanion] 主动消息疑似回复空气但终审未启用,本地无法可靠改写，保留原文并交由生成提示词约束: flags=%s text=%s",
+                "主动消息疑似回复空气但终审未启用,本地无法可靠改写，保留原文并交由生成提示词约束: flags=%s text=%s",
                 ",".join(flags),
                 _single_line(cleaned, 120),
             )
@@ -6984,18 +6987,18 @@ Output:
         )
         if self._looks_like_internal_provider_error_text(candidate):
             logger.warning(
-                "[PrivateCompanion] 回复/主动复核返回 Provider 错误正文，已丢弃: task=response_review"
+                "回复/主动复核返回 Provider 错误正文，已丢弃: task=response_review"
             )
             return ""
         meta_leak_checker = getattr(self, "_response_review_meta_leak_reason", None)
         if callable(meta_leak_checker) and meta_leak_checker(candidate):
             logger.error(
-                "[PrivateCompanion] 回复/主动复核返回内部判断，已丢弃: output=%s",
+                "回复/主动复核返回内部判断，已丢弃: output=%s",
                 _single_line(candidate, 180),
             )
             return ""
         logger.info(
-            "[PrivateCompanion] 回复/主动复核完成: mode=%s flags=%s elapsed=%dms before=%s after=%s",
+            "回复/主动复核完成: mode=%s flags=%s elapsed=%dms before=%s after=%s",
             mode,
             ",".join(flags),
             int((time.perf_counter() - started) * 1000),
@@ -7016,7 +7019,7 @@ Output:
         )
         if remaining_flags:
             logger.info(
-                "[PrivateCompanion] 回复/主动复核后仍疑似回复空气,已丢弃: flags=%s text=%s",
+                "回复/主动复核后仍疑似回复空气,已丢弃: flags=%s text=%s",
                 ",".join(remaining_flags),
                 _single_line(candidate, 120),
             )
@@ -7063,14 +7066,14 @@ Output:
         repaired = re.sub(r"\s+", " ", repaired).strip(" ，,。！？!?、")
         if repaired:
             logger.info(
-                "[PrivateCompanion] 主动消息修正主客体错位问句: reason=%s before=%s after=%s",
+                "主动消息修正主客体错位问句: reason=%s before=%s after=%s",
                 reason,
                 _single_line(cleaned, 120),
                 _single_line(repaired, 120),
             )
             return repaired
         logger.info(
-            "[PrivateCompanion] 主动消息主客体错位且无剩余自然内容,已丢弃本轮生成: reason=%s text=%s",
+            "主动消息主客体错位且无剩余自然内容,已丢弃本轮生成: reason=%s text=%s",
             reason,
             _single_line(cleaned, 120),
         )
@@ -7090,7 +7093,7 @@ Output:
         )
         if reason in {"morning_greeting", "noon_greeting", "evening_greeting"} and cleaned.startswith(reply_openers) and any(token in cleaned for token in old_invite_markers):
             logger.info(
-                "[PrivateCompanion] 主动消息疑似把旧邀约当成当前回复,已丢弃: reason=%s text=%s",
+                "主动消息疑似把旧邀约当成当前回复,已丢弃: reason=%s text=%s",
                 reason,
                 cleaned,
             )
@@ -7106,7 +7109,7 @@ Output:
             )
             if any(re.search(pattern, cleaned) for pattern in stale_reply_patterns):
                 logger.info(
-                    "[PrivateCompanion] 主动消息疑似接续旧对话而非主动开口,已丢弃: reason=%s text=%s",
+                    "主动消息疑似接续旧对话而非主动开口,已丢弃: reason=%s text=%s",
                     reason,
                     cleaned,
                 )
@@ -7151,7 +7154,7 @@ Output:
             if len(collapsed_lines) < len(lines):
                 result = "\n".join(collapsed_lines).strip()
                 logger.info(
-                    "[PrivateCompanion] 主动消息已合并同轮近似候选: before=%s after=%s",
+                    "主动消息已合并同轮近似候选: before=%s after=%s",
                     _single_line(cleaned, 180),
                     _single_line(result, 160),
                 )
@@ -7565,7 +7568,7 @@ Output:
         fallback_action = self._fallback_action_for_unavailable(action, user)
         if fallback_action != action:
             logger.info(
-                "[PrivateCompanion] 主动行为依赖不可用,已回退: requested=%s fallback=%s user=%s",
+                "主动行为依赖不可用,已回退: requested=%s fallback=%s user=%s",
                 action,
                 fallback_action,
                 str(user.get("user_id") or ""),
@@ -7715,7 +7718,7 @@ Output:
             if hasattr(result, "__await__"):
                 result = await result
         except Exception as exc:
-            logger.warning("[PrivateCompanion] 外部主动能力执行失败: %s: %s", name, exc, exc_info=True)
+            logger.warning("外部主动能力执行失败: %s: %s", name, exc, exc_info=True)
             self._note_external_ability_execution(
                 name,
                 user=user,
@@ -7999,7 +8002,7 @@ Output:
             try:
                 event = plugin._create_virtual_event(target)
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 创建晚安识屏虚拟事件失败: %s", _single_line(exc, 160))
+                logger.debug("创建晚安识屏虚拟事件失败: %s", _single_line(exc, 160))
         prompt = (
             "这是一次用户已授权的晚安后单次状态确认，只用于决定是否需要轻声提醒休息。"
             "请只判断当前画面是否能明确证明用户仍在主动使用电脑，不要转述或摘录任何屏幕内容。"
@@ -8017,7 +8020,7 @@ Output:
             )
         except Exception as exc:
             context = f"goodnight_screen_check：失败,{_single_line(exc, 240)}"
-            logger.warning("[PrivateCompanion] 晚安识屏判断失败: %s", _single_line(exc, 180))
+            logger.warning("晚安识屏判断失败: %s", _single_line(exc, 180))
             if self._is_screen_peek_provider_failure(context):
                 self._note_screen_peek_failure(user, context)
             return "uncertain"
@@ -8232,7 +8235,7 @@ Output:
             try:
                 event = plugin._create_virtual_event(target)
             except Exception as e:
-                logger.debug(f"[PrivateCompanion] 创建屏幕虚拟事件失败: {e}")
+                logger.debug(f"创建屏幕虚拟事件失败: {e}")
         prompt = (
             f"这是一次用户已授权的主动陪伴行为。请只做视觉观察,"
             f"用很短的话描述用户电脑当前大概在看什么、做什么、是不是像在忙。"
@@ -8252,7 +8255,7 @@ Output:
             return context
         except Exception as e:
             error_text = _single_line(e, 240)
-            logger.warning(f"[PrivateCompanion] screen_peek 主动行为失败: {error_text}")
+            logger.warning(f"screen_peek 主动行为失败: {error_text}")
             context = f"screen_peek：失败,{error_text}"
             if self._is_screen_peek_provider_failure(context):
                 self._note_screen_peek_failure(user, context)
@@ -8367,7 +8370,7 @@ Output:
                         self._save_data_sync(sections={"users"})
                 except Exception:
                     pass
-            logger.warning(f"[PrivateCompanion] poke 主动行为失败: {e}")
+            logger.warning(f"poke 主动行为失败: {e}")
             return f"poke：失败,{e}"
 
     def _choose_poke_repeat_count(self, user: dict[str, Any], reason: str) -> int:
@@ -8575,7 +8578,7 @@ Output:
 
     def _log_uncertain_onebot_submission(self, action: str, error: Any) -> None:
         logger.warning(
-            "[PrivateCompanion] OneBot 动作回执不确定，为避免同一内容被别名立即重复提交，本次按已提交处理: action=%s error=%s",
+            "OneBot 动作回执不确定，为避免同一内容被别名立即重复提交，本次按已提交处理: action=%s error=%s",
             action,
             self._format_send_exception(error),
         )
@@ -8740,7 +8743,7 @@ Output:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 私聊输入状态刷新失败: %s", _single_line(exc, 120))
+                logger.debug("私聊输入状态刷新失败: %s", _single_line(exc, 120))
                 return
             await asyncio.sleep(random.uniform(3.2, 4.8))
 
@@ -8854,7 +8857,7 @@ Output:
         try:
             await self._ensure_current_detail_presence_status()
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 启动同步当前 QQ 状态失败: %s", exc)
+            logger.debug("启动同步当前 QQ 状态失败: %s", exc)
         async with self._data_lock:
             state = self.data.get("qq_presence_state", {})
             if not isinstance(state, dict) or str(state.get("date") or "") == _today_key():
@@ -8910,7 +8913,7 @@ Output:
             spoken = str(framework_text).strip()
             if requirement["strict"] and not self._voice_text_matches_requirement(spoken, requirement):
                 logger.info(
-                    "[PrivateCompanion] 主动语音未命中格式要求,进行框架严格重试: target=%s summary=%s",
+                    "主动语音未命中格式要求,进行框架严格重试: target=%s summary=%s",
                     target,
                     requirement["summary"],
                 )
@@ -8948,14 +8951,14 @@ Output:
                         spoken = re.sub(r"[“”\"'`]", "", spoken).strip()
             if requirement["strict"] and not self._voice_text_matches_requirement(spoken, requirement):
                 logger.warning(
-                    "[PrivateCompanion] 主动语音仍未完全命中格式要求,保留当前结果: target=%s summary=%s text=%s",
+                    "主动语音仍未完全命中格式要求,保留当前结果: target=%s summary=%s text=%s",
                     target,
                     requirement["summary"],
                     self._strip_tts_markup(spoken),
                 )
             else:
                 logger.info(
-                    "[PrivateCompanion] 主动语音最终文本已命中格式要求: target=%s text=%s",
+                    "主动语音最终文本已命中格式要求: target=%s text=%s",
                     target,
                     self._strip_tts_markup(spoken),
                 )
@@ -9050,7 +9053,7 @@ Output:
         try:
             astrbot_provider = self.context.get_using_tts_provider(target)
         except Exception as e:
-            logger.debug("[PrivateCompanion] 主动语音读取 AstrBot TTS provider 失败: %s", _single_line(e, 120))
+            logger.debug("主动语音读取 AstrBot TTS provider 失败: %s", _single_line(e, 120))
         resolver = getattr(self, "_resolve_tts_synthesis_provider", None)
         if callable(resolver):
             try:
@@ -9106,7 +9109,7 @@ Output:
         try:
             audio_path = await tts_provider.get_audio(spoken_text)
         except Exception as e:
-            logger.warning(f"[PrivateCompanion] voice 主动行为生成失败: {e}")
+            logger.warning(f"voice 主动行为生成失败: {e}")
             return [], str(e)
         if not audio_path:
             return [], "TTS 没有返回音频文件"
@@ -9125,7 +9128,7 @@ Output:
                     token = await file_token_service.register_file(str(audio_path))
                     final_ref = f"{callback_api_base}/api/file/{token}"
                 except Exception as e:
-                    logger.warning(f"[PrivateCompanion] 注册语音文件失败,将回退到本地路径: {e}")
+                    logger.warning(f"注册语音文件失败,将回退到本地路径: {e}")
         try:
             component = Record(file=final_ref, url=final_ref)
         except TypeError:
@@ -9231,7 +9234,7 @@ Output:
                 config,
             )
         except Exception as e:
-            logger.warning(f"[PrivateCompanion] TTS强化处理主动语音失败: {e}")
+            logger.warning(f"TTS强化处理主动语音失败: {e}")
             return [], str(e)
         audio_note = self._extract_record_note(components)
         return components or [], audio_note or "已通过 TTS强化生成语音"
@@ -9412,7 +9415,7 @@ Output:
                         reference_selection_source = "selected_reference"
                 except Exception as exc:
                     logger.debug(
-                        "[PrivateCompanion] proactive photo reference selection failed: %s",
+                        "proactive photo reference selection failed: %s",
                         _single_line(exc, 160),
                     )
             if not reference_image_path:
@@ -9428,7 +9431,7 @@ Output:
                         )
                     except Exception as exc:
                         logger.debug(
-                            "[PrivateCompanion] proactive photo identity fallback failed: %s",
+                            "proactive photo identity fallback failed: %s",
                             _single_line(exc, 160),
                         )
                 if not reference_image_path:
@@ -9444,7 +9447,7 @@ Output:
                             )
                         except Exception as exc:
                             logger.debug(
-                                "[PrivateCompanion] proactive photo identity path fallback failed: %s",
+                                "proactive photo identity path fallback failed: %s",
                                 _single_line(exc, 160),
                             )
                 if reference_image_path:
@@ -9629,7 +9632,7 @@ Output:
                     max_chars=900,
                 )
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 每日穿搭 我会牢牢记住你 上下文读取失败: %s", _single_line(exc, 120))
+                logger.debug("每日穿搭 我会牢牢记住你 上下文读取失败: %s", _single_line(exc, 120))
         schedule_hint = self._daily_outfit_schedule_text()
         weather = self._format_weather_for_prompt() if callable(getattr(self, "_format_weather_for_prompt", None)) else ""
         outfit_profile = self._select_daily_outfit_profile(
@@ -9710,12 +9713,12 @@ Output:
         if image_path:
             await self._memory_companion_record_daily_outfit(item)
             logger.info(
-                "[PrivateCompanion] 每日穿搭照片已生成: backend=%s path=%s",
+                "每日穿搭照片已生成: backend=%s path=%s",
                 _single_line(backend, 80) or "-",
                 _single_line(image_path, 160),
             )
         else:
-            logger.info("[PrivateCompanion] 每日穿搭照片未生成: %s", _single_line(error or note, 180))
+            logger.info("每日穿搭照片未生成: %s", _single_line(error or note, 180))
         return item
 
     def _daily_outfit_schedule_text(self) -> str:
@@ -10714,7 +10717,7 @@ Output:
                 states.pop(normalized_trace, None)
         except Exception as exc:
             logger.debug(
-                "[PrivateCompanion] 记录生图可观测 trace 失败: %s",
+                "记录生图可观测 trace 失败: %s",
                 _single_line(exc, 120),
             )
 
@@ -10944,7 +10947,7 @@ Output:
             del raw[48:]
             self._save_data_sync(sections={"recent_photo_generations"})
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 记录最近生图提示词失败: %s", _single_line(exc, 120))
+            logger.debug("记录最近生图提示词失败: %s", _single_line(exc, 120))
 
     def _record_photo_reference_feedback(
         self,
@@ -11194,7 +11197,7 @@ Output:
             return str(path), prompt_hash
         except Exception as exc:
             logger.debug(
-                "[PrivateCompanion] 写入完整生图提示词调试文件失败: trace=%s error=%s",
+                "写入完整生图提示词调试文件失败: trace=%s error=%s",
                 _single_line(trace_id, 40),
                 _single_line(exc, 160),
             )
@@ -11425,7 +11428,7 @@ Output:
                 self._save_data_sync(sections=save_sections)
                 return
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 标注最近生图记录失败: %s", _single_line(exc, 120))
+            logger.debug("标注最近生图记录失败: %s", _single_line(exc, 120))
 
     def _apply_photo_generation_fixed_prompt(self, prompt_text: str) -> str:
         prompt = str(prompt_text or "").strip()
@@ -11859,7 +11862,7 @@ Output:
                     return snapshot_text
             except Exception as exc:
                 logger.debug(
-                    "[PrivateCompanion] 自拍场景读取统一情境快照失败，已回退旧路径: %s",
+                    "自拍场景读取统一情境快照失败，已回退旧路径: %s",
                     _single_line(exc, 160),
                 )
         plan = self.data.get("daily_plan", {}) if isinstance(getattr(self, "data", {}), dict) else {}
@@ -12729,7 +12732,7 @@ Output:
                 scene_snapshot = {}
                 scene_context = ""
                 logger.debug(
-                    "[PrivateCompanion] 主动照片读取统一情境快照失败，已回退旧路径: %s",
+                    "主动照片读取统一情境快照失败，已回退旧路径: %s",
                     _single_line(exc, 160),
                 )
         if not scene_context:
@@ -12829,7 +12832,7 @@ Output:
             )
         except Exception as exc:
             logger.debug(
-                "[PrivateCompanion] proactive photo prompt model failed; using deterministic fallback: %s",
+                "proactive photo prompt model failed; using deterministic fallback: %s",
                 _single_line(exc, 160),
             )
         payload = self._extract_json_payload(text or "")
@@ -13005,7 +13008,7 @@ Output:
         )
         if not plan:
             logger.info(
-                "[PrivateCompanion] Q5 受管参考素材未进入图片输入汇: trace=%s status=%s",
+                "Q5 受管参考素材未进入图片输入汇: trace=%s status=%s",
                 _single_line(generation_id, 80),
                 status,
             )
@@ -13405,10 +13408,10 @@ Output:
         try:
             stable_path = await resolver(raw, stem="config_url_reference")
         except Exception as exc:
-            logger.info("[PrivateCompanion] 配置页人设参考图 URL 下载失败: %s url=%s", _single_line(exc, 120), _single_line(raw, 120))
+            logger.info("配置页人设参考图 URL 下载失败: %s url=%s", _single_line(exc, 120), _single_line(raw, 120))
             return ""
         if not stable_path:
-            logger.info("[PrivateCompanion] 配置页人设参考图 URL 未能转为本地参考图: url=%s", _single_line(raw, 120))
+            logger.info("配置页人设参考图 URL 未能转为本地参考图: url=%s", _single_line(raw, 120))
             return ""
         setter = getattr(self, "_set_photo_reference_config_path", None)
         if callable(setter):
@@ -13418,12 +13421,12 @@ Output:
                     result = await result
                 if result is False:
                     logger.info(
-                        "[PrivateCompanion] 配置页人设参考图 URL 已下载但配置保存返回失败: path=%s",
+                        "配置页人设参考图 URL 已下载但配置保存返回失败: path=%s",
                         _single_line(stable_path, 160),
                     )
             except Exception as exc:
-                logger.info("[PrivateCompanion] 配置页人设参考图 URL 已下载但回写失败: %s path=%s", _single_line(exc, 120), _single_line(stable_path, 160))
-        logger.info("[PrivateCompanion] 配置页人设参考图 URL 已缓存为本地文件: path=%s", _single_line(stable_path, 160))
+                logger.info("配置页人设参考图 URL 已下载但回写失败: %s path=%s", _single_line(exc, 120), _single_line(stable_path, 160))
+        logger.info("配置页人设参考图 URL 已缓存为本地文件: path=%s", _single_line(stable_path, 160))
         return stable_path
 
     def _photo_reference_config_value(self, item: dict[str, Any], source: str = "") -> Any:
@@ -13686,7 +13689,7 @@ Output:
                     path = await resolver(source, stem=item.id)
                 except Exception as exc:
                     logger.info(
-                        "[PrivateCompanion] 参考图库远程图片下载失败: item=%s error=%s",
+                        "参考图库远程图片下载失败: item=%s error=%s",
                         item.id,
                         _single_line(exc, 120),
                     )
@@ -13722,10 +13725,10 @@ Output:
                     if hasattr(result, "__await__"):
                         result = await result
                     if result is False:
-                        logger.info("[PrivateCompanion] 参考图库远程图片已下载但配置保存返回失败")
+                        logger.info("参考图库远程图片已下载但配置保存返回失败")
                 except Exception as exc:
                     logger.info(
-                        "[PrivateCompanion] 参考图库远程图片已下载但回写失败: %s",
+                        "参考图库远程图片已下载但回写失败: %s",
                         _single_line(exc, 120),
                     )
 
@@ -14237,7 +14240,7 @@ Output:
             except Exception as exc:
                 selection_reason = f"model_error:{type(exc).__name__}"
                 logger.info(
-                    "[PrivateCompanion] 参考图库模型选图失败，使用规则兜底: error=%s",
+                    "参考图库模型选图失败，使用规则兜底: error=%s",
                     _single_line(exc, 120),
                 )
         elif len(candidates) == 1 and not specialized_candidate:
@@ -14253,14 +14256,14 @@ Output:
             for item, score in scored_candidates
         )
         logger.info(
-            "[PrivateCompanion] 参考图库候选评分: fallback=%s scores=%s request=%s ambient=%s",
+            "参考图库候选评分: fallback=%s scores=%s request=%s ambient=%s",
             fallback.get("id") if isinstance(fallback, dict) else "none",
             score_summary,
             _single_line(request_text, 180),
             _single_line(ambient_context, 120),
         )
         logger.info(
-            "[PrivateCompanion] 参考图库已选图: source=%s reason=%s id=%s kind=%s fallback=%s "
+            "参考图库已选图: source=%s reason=%s id=%s kind=%s fallback=%s "
             "model_reply=%s path=%s note=%s candidates=%s",
             selection_source,
             selection_reason,
@@ -14424,7 +14427,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
             confidence = _safe_float(payload.get("confidence"), 0.0, 0.0, 1.0)
         except Exception as exc:
             logger.debug(
-                "[PrivateCompanion] 参考职责模型解析失败，使用保守规则: %s",
+                "参考职责模型解析失败，使用保守规则: %s",
                 _single_line(exc, 120),
             )
             return rule_intent
@@ -15048,7 +15051,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
             setattr(event, "_private_companion_proactive_delivery_umo", umo)
             if self._apply_proactive_tts_message_scope(event, chain):
                 logger.info(
-                    "[PrivateCompanion] 主动消息按 TTS 生效范围进入强化链: session=%s",
+                    "主动消息按 TTS 生效范围进入强化链: session=%s",
                     _single_line(umo, 120) or "unknown",
                 )
             for component in chain:
@@ -15073,21 +15076,21 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
             ):
                 setattr(event, "_private_companion_skip_tts_enhancement", "proactive_prebuilt_voice")
         except Exception as e:
-            logger.debug("[PrivateCompanion] 构造主动消息装饰事件失败,跳过 hooks: %s", e)
+            logger.debug("构造主动消息装饰事件失败,跳过 hooks: %s", e)
             return chain
         try:
             handlers = star_handlers_registry.get_handlers_by_event_type(
                 EventType.OnDecoratingResultEvent
             )
         except Exception as e:
-            logger.debug("[PrivateCompanion] 获取装饰 hooks 失败: %s", e)
+            logger.debug("获取装饰 hooks 失败: %s", e)
             return chain
         for handler in handlers:
             try:
                 await handler.handler(event)
             except Exception as e:
                 logger.warning(
-                    "[PrivateCompanion] 主动消息装饰 hook 失败: %s: %s",
+                    "主动消息装饰 hook 失败: %s: %s",
                     getattr(handler, "handler_full_name", "unknown"),
                     e,
                 )
@@ -15574,7 +15577,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         if runtime_persona_setting(self, "enable_tts_enhancement", False) and any(
             re.search(r"</?t{2,}s\b", item, flags=re.IGNORECASE) for item in raw_segments
         ):
-            logger.info("[PrivateCompanion] 分段合并消息跳过 TTS 内容: source=%s target=%s:%s", source or "unknown", target_type, target_id)
+            logger.info("分段合并消息跳过 TTS 内容: source=%s target=%s:%s", source or "unknown", target_type, target_id)
             return False
         cleaned_segments = self._clean_forward_segment_texts(raw_segments)
         if len(cleaned_segments) <= 1:
@@ -15582,7 +15585,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         hit = self._forbidden_recall_hit("\n".join(cleaned_segments))
         if hit:
             logger.warning(
-                "[PrivateCompanion] 分段合并消息命中违禁词，已拦截发送: source=%s target=%s:%s word=%s",
+                "分段合并消息命中违禁词，已拦截发送: source=%s target=%s:%s word=%s",
                 source or "unknown",
                 target_type,
                 target_id,
@@ -15621,7 +15624,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
                     [Plain(segment) for segment in cleaned_segments],
                 )
                 logger.info(
-                    "[PrivateCompanion] 分段消息已合并转发发送: source=%s target=%s:%s segments=%s",
+                    "分段消息已合并转发发送: source=%s target=%s:%s segments=%s",
                     source or "unknown",
                     target_type,
                     target_id,
@@ -15629,7 +15632,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
                 )
                 return True
         logger.info(
-            "[PrivateCompanion] 分段合并转发发送不可用，回退普通分段: source=%s target=%s:%s segments=%s",
+            "分段合并转发发送不可用，回退普通分段: source=%s target=%s:%s segments=%s",
             source or "unknown",
             target_type,
             target_id,
@@ -15809,7 +15812,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         )
         if ok:
             logger.info(
-                "[PrivateCompanion] 主动消息已通过 OneBot 原生兜底发送: action=%s target=%s segments=%s umo=%s",
+                "主动消息已通过 OneBot 原生兜底发送: action=%s target=%s segments=%s umo=%s",
                 action,
                 target_id,
                 len(messages),
@@ -15828,7 +15831,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         bot_scope_checker = getattr(self, "_bot_scope_allows_umo", None)
         if callable(bot_scope_checker) and not bot_scope_checker(umo):
             logger.info(
-                "[PrivateCompanion] Bot 作用域已跳过后台投递: umo=%s",
+                "Bot 作用域已跳过后台投递: umo=%s",
                 _single_line(umo, 140),
             )
             return False
@@ -15848,11 +15851,11 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         if callable(chain_redactor):
             chain, redacted = chain_redactor(chain)
             if redacted:
-                logger.error("[PrivateCompanion] 主动发送前检测到敏感凭据并已脱敏: umo=%s stage=before_hooks", _single_line(umo, 120))
+                logger.error("主动发送前检测到敏感凭据并已脱敏: umo=%s stage=before_hooks", _single_line(umo, 120))
         hit = self._forbidden_recall_hit(self._chain_text_for_forbidden_recall(chain))
         if hit:
             logger.warning(
-                "[PrivateCompanion] 主动待发送消息命中违禁词，已拦截发送: umo=%s word=%s",
+                "主动待发送消息命中违禁词，已拦截发送: umo=%s word=%s",
                 umo,
                 _single_line(hit, 40),
             )
@@ -15885,7 +15888,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         if callable(chain_redactor):
             processed_chain, redacted = chain_redactor(processed_chain)
             if redacted:
-                logger.error("[PrivateCompanion] 主动装饰后检测到敏感凭据并已脱敏: umo=%s stage=after_hooks", _single_line(umo, 120))
+                logger.error("主动装饰后检测到敏感凭据并已脱敏: umo=%s stage=after_hooks", _single_line(umo, 120))
         tts_chain_guard = getattr(self, "_sanitize_outbound_tts_chain_without_event", None)
         if callable(tts_chain_guard):
             processed_chain = await tts_chain_guard(processed_chain, umo=umo)
@@ -15897,7 +15900,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         hit = self._forbidden_recall_hit(self._chain_text_for_forbidden_recall(processed_chain))
         if hit:
             logger.warning(
-                "[PrivateCompanion] 主动装饰后消息命中违禁词，已拦截发送: umo=%s word=%s",
+                "主动装饰后消息命中违禁词，已拦截发送: umo=%s word=%s",
                 umo,
                 _single_line(hit, 40),
             )
@@ -15917,7 +15920,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         if runtime_persona_setting(self, "enable_precise_platform_send", True) and session and platform:
             status = getattr(platform, "status", None)
             if status is not None and status != PlatformStatus.RUNNING:
-                logger.warning("[PrivateCompanion] 目标平台未运行,跳过主动发送: %s", umo)
+                logger.warning("目标平台未运行,跳过主动发送: %s", umo)
                 notifier = getattr(self, "_schedule_reply_interception_forward", None)
                 if callable(notifier):
                     notifier(
@@ -15936,7 +15939,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
                     return True
                 precise_error = RuntimeError("精确平台发送返回 False（平台未接受消息）")
                 logger.warning(
-                    "[PrivateCompanion] 精确平台发送未被目标平台接受,回退核心发送: target=%s",
+                    "精确平台发送未被目标平台接受,回退核心发送: target=%s",
                     self._describe_send_target(umo, session, platform),
                 )
             except Exception as e:
@@ -15944,20 +15947,20 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
                 if self._is_onebot_event_checker_send_rejection(e):
                     summary = self._onebot_event_checker_rejection_summary()
                     logger.info(
-                        "[PrivateCompanion] 主动发送被 QQ/NTQQ 底层拒绝，停止对同一 sendMsg 链路的立即重复尝试: target=%s",
+                        "主动发送被 QQ/NTQQ 底层拒绝，停止对同一 sendMsg 链路的立即重复尝试: target=%s",
                         self._describe_send_target(umo, session, platform),
                     )
                     raise RuntimeError(summary) from e
                 if self._delivery_outcome_is_uncertain(e):
                     logger.warning(
-                        "[PrivateCompanion] 精确平台发送回执不确定，为避免同一主动消息立即重复发送，本次按已提交处理: target=%s error=%s",
+                        "精确平台发送回执不确定，为避免同一主动消息立即重复发送，本次按已提交处理: target=%s error=%s",
                         self._describe_send_target(umo, session, platform),
                         self._format_send_exception(e),
                     )
                     self._confirm_outbound_delivery(umo, processed_chain)
                     return True
                 logger.warning(
-                    "[PrivateCompanion] 精确平台发送失败,回退核心发送: target=%s error=%s",
+                    "精确平台发送失败,回退核心发送: target=%s error=%s",
                     self._describe_send_target(umo, session, platform),
                     self._format_send_exception(e),
                 )
@@ -15974,25 +15977,25 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
             platform_supports = getattr(self, "_platform_supports", None)
             if not callable(platform_supports) or platform_supports("onebot_actions", umo=umo):
                 logger.warning(
-                    "[PrivateCompanion] 主动核心发送未找到匹配平台,尝试 OneBot 原生兜底: target=%s",
+                    "主动核心发送未找到匹配平台,尝试 OneBot 原生兜底: target=%s",
                     self._describe_send_target(umo, session, platform),
                 )
             else:
                 logger.warning(
-                    "[PrivateCompanion] 主动核心发送未被官方平台接受,不使用 OneBot 原生兜底: target=%s",
+                    "主动核心发送未被官方平台接受,不使用 OneBot 原生兜底: target=%s",
                     self._describe_send_target(umo, session, platform),
                 )
         except Exception as e:
             core_error = e
             if self._is_onebot_event_checker_send_rejection(e):
                 logger.info(
-                    "[PrivateCompanion] 主动核心发送被 QQ/NTQQ 底层拒绝，停止同链立即重试: target=%s",
+                    "主动核心发送被 QQ/NTQQ 底层拒绝，停止同链立即重试: target=%s",
                     self._describe_send_target(umo, session, platform),
                 )
                 raise RuntimeError(self._onebot_event_checker_rejection_summary()) from e
             if self._delivery_outcome_is_uncertain(e):
                 logger.warning(
-                    "[PrivateCompanion] 主动核心发送回执不确定，为避免 OneBot 兜底重复发送，本次按已提交处理: target=%s error=%s",
+                    "主动核心发送回执不确定，为避免 OneBot 兜底重复发送，本次按已提交处理: target=%s error=%s",
                     self._describe_send_target(umo, session, platform),
                     self._format_send_exception(e),
                 )
@@ -16002,7 +16005,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
             precise_text = self._format_send_exception(precise_error) or "未尝试或未失败"
             fallback_text = self._format_send_exception(e)
             logger.warning(
-                "[PrivateCompanion] 主动核心发送失败: target=%s precise_error=%s fallback_error=%s",
+                "主动核心发送失败: target=%s precise_error=%s fallback_error=%s",
                 target,
                 precise_text,
                 fallback_text,
@@ -16032,7 +16035,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         else:
             fallback_text = "未尝试或未失败"
         logger.warning(
-            "[PrivateCompanion] 主动发送兜底也失败: target=%s precise_error=%s fallback_error=%s direct_error=%s",
+            "主动发送兜底也失败: target=%s precise_error=%s fallback_error=%s direct_error=%s",
             target,
             precise_text,
             fallback_text,
@@ -16095,7 +16098,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
             )
             if quote_message_id and not platform_quote:
                 logger.info(
-                    "[PrivateCompanion] 当前平台不支持主动引用，正文与表情同链发送已降级为普通发送: umo=%s",
+                    "当前平台不支持主动引用，正文与表情同链发送已降级为普通发送: umo=%s",
                     _single_line(umo, 140),
                 )
                 quote_message_id = ""
@@ -16104,7 +16107,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
             )
             if recalled_message_id:
                 logger.info(
-                    "[PrivateCompanion] 触发消息已撤回，取消主动正文与表情同链发送: umo=%s message_id=%s",
+                    "触发消息已撤回，取消主动正文与表情同链发送: umo=%s message_id=%s",
                     umo,
                     recalled_message_id,
                 )
@@ -16135,7 +16138,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         platform_quote = not callable(platform_supports) or platform_supports("reply_quote", umo=umo)
         if quote_message_id and not platform_quote:
             logger.info(
-                "[PrivateCompanion] 当前平台不支持主动引用，已降级为普通发送: umo=%s",
+                "当前平台不支持主动引用，已降级为普通发送: umo=%s",
                 _single_line(umo, 140),
             )
             quote_message_id = ""
@@ -16158,7 +16161,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
             )
         if len(segments) > 1:
             logger.info(
-                "[PrivateCompanion] 主动媒体文本已分段: umo=%s segments=%s lengths=%s",
+                "主动媒体文本已分段: umo=%s segments=%s lengths=%s",
                 _single_line(umo, 140),
                 len(segments),
                 [len(segment) for segment in segments],
@@ -16233,7 +16236,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         has_media = bool(outbound_components or image_exists)
         if has_media:
             logger.info(
-                "[PrivateCompanion] 主动媒体已按组件策略规划: text_segments=%s chunks=%s image=%s extra_components=%s strategies=%s",
+                "主动媒体已按组件策略规划: text_segments=%s chunks=%s image=%s extra_components=%s strategies=%s",
                 len(segments),
                 len(chunks),
                 image_exists,
@@ -16283,7 +16286,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
             )
             if recalled_message_id:
                 logger.info(
-                    "[PrivateCompanion] 触发消息已撤回，停止主动组件发送: umo=%s message_id=%s chunk=%s/%s",
+                    "触发消息已撤回，停止主动组件发送: umo=%s message_id=%s chunk=%s/%s",
                     umo,
                     recalled_message_id,
                     chunk_index + 1,
@@ -16308,7 +16311,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
                         f"第 {chunk_index + 1} 条组件发送失败：{_single_line(exc, 160)}"
                     )
                     logger.warning(
-                        "[PrivateCompanion] 主动前置组件发送失败，继续发送正文: umo=%s chunk=%s error=%s",
+                        "主动前置组件发送失败，继续发送正文: umo=%s chunk=%s error=%s",
                         _single_line(umo, 140),
                         chunk_index + 1,
                         _single_line(exc, 180),
@@ -16318,7 +16321,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
                     raise
                 complete = False
                 logger.warning(
-                    "[PrivateCompanion] 主动组件部分送达后后续发送失败，不再整条重试: umo=%s chunk=%s error=%s",
+                    "主动组件部分送达后后续发送失败，不再整条重试: umo=%s chunk=%s error=%s",
                     _single_line(umo, 140),
                     chunk_index + 1,
                     _single_line(exc, 180),
@@ -16460,7 +16463,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
             if isinstance(pending, dict):
                 await settle(pending, sent=False, reason="attachment_prepare_failed")
             logger.warning(
-                "[PrivateCompanion] 主动表情附件准备失败,继续发送纯文字: error_type=%s",
+                "主动表情附件准备失败,继续发送纯文字: error_type=%s",
                 type(exc).__name__,
             )
             return None, None
@@ -16489,7 +16492,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         except Exception as exc:
             await settle(pending, sent=False, reason="attachment_component_failed")
             logger.warning(
-                "[PrivateCompanion] 主动表情图片组件构建失败,继续发送纯文字: error_type=%s",
+                "主动表情图片组件构建失败,继续发送纯文字: error_type=%s",
                 type(exc).__name__,
             )
             return None, None
@@ -16532,7 +16535,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
             # Delivery state is authoritative. A bookkeeping failure must not
             # make the caller retry content that the platform already received.
             logger.warning(
-                "[PrivateCompanion] 主动表情发送结算失败,不改变消息投递结果: "
+                "主动表情发送结算失败,不改变消息投递结果: "
                 "sent=%s reason=%s error_type=%s",
                 bool(sent),
                 _single_line(reason, 80),
@@ -16578,7 +16581,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
             allowed = bool(result.get("ok")) if isinstance(result, dict) else bool(result)
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 主动消息最终人格一致性校验失败: multi=%s persona=%s umo=%s error=%s",
+                "主动消息最终人格一致性校验失败: multi=%s persona=%s umo=%s error=%s",
                 multi_persona,
                 _single_line(scheduled_persona_id, 96) or "-",
                 _single_line(target_umo, 140) or "-",
@@ -16591,7 +16594,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         reason_code = _single_line(result.get("reason_code"), 80) if isinstance(result, dict) else ""
         action = _single_line(result.get("action"), 40) if isinstance(result, dict) else ""
         logger.warning(
-            "[PrivateCompanion] 主动投递因人格不一致被取消: multi=%s persona=%s umo=%s action=%s reason=%s",
+            "主动投递因人格不一致被取消: multi=%s persona=%s umo=%s action=%s reason=%s",
             multi_persona,
             _single_line(scheduled_persona_id, 96) or "-",
             _single_line(target_umo, 140) or "-",
@@ -16625,7 +16628,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
                 busy_context = {}
             if isinstance(busy_context, dict) and busy_context.get("kind") == "external_realtime":
                 logger.info(
-                    "[PrivateCompanion] 实时共同活动期间在最终发送边界取消主动消息: umo=%s",
+                    "实时共同活动期间在最终发送边界取消主动消息: umo=%s",
                     _single_line(umo, 140),
                 )
                 return _ProactiveSendOutcome(False, False, note="实时共同活动期间已取消主动消息")
@@ -16635,7 +16638,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
             cleaned_text = placeholder_cleaner(text)
             if cleaned_text != text:
                 logger.warning(
-                    "[PrivateCompanion] 主动发送前清理孤儿 TTS 占位符: umo=%s before=%s after=%s",
+                    "主动发送前清理孤儿 TTS 占位符: umo=%s before=%s after=%s",
                     _single_line(umo, 120),
                     _single_line(text, 120),
                     _single_line(cleaned_text, 120),
@@ -16679,7 +16682,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
                     except Exception as exc:
                         reaction_sent = False
                         logger.warning(
-                            "[PrivateCompanion] 主动表情先行发送失败，继续发送正文: "
+                            "主动表情先行发送失败，继续发送正文: "
                             "umo=%s error_type=%s",
                             _single_line(umo, 140),
                             type(exc).__name__,
@@ -16764,7 +16767,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
             )
         if len(segments) > 1:
             logger.info(
-                "[PrivateCompanion] 主动文本已分段: umo=%s segments=%s lengths=%s",
+                "主动文本已分段: umo=%s segments=%s lengths=%s",
                 _single_line(umo, 140),
                 len(segments),
                 [len(segment) for segment in segments],
@@ -16777,7 +16780,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
                 quote_message_id = ""
             recalled_message_id = self._should_cancel_reply_for_recalled_message_ids(trigger_message_id)
             if recalled_message_id:
-                logger.info("[PrivateCompanion] 触发消息已撤回，取消主动消息发送: umo=%s message_id=%s", umo, recalled_message_id)
+                logger.info("触发消息已撤回，取消主动消息发送: umo=%s message_id=%s", umo, recalled_message_id)
                 return _ProactiveSendOutcome(False, False, note="触发消息已撤回")
             sent = await self._send_chain_components(
                 umo,
@@ -16796,7 +16799,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
             )
         recalled_message_id = self._should_cancel_reply_for_recalled_message_ids(trigger_message_id)
         if recalled_message_id:
-            logger.info("[PrivateCompanion] 触发消息已撤回，取消主动合并分段发送: umo=%s message_id=%s", umo, recalled_message_id)
+            logger.info("触发消息已撤回，取消主动合并分段发送: umo=%s message_id=%s", umo, recalled_message_id)
             return _ProactiveSendOutcome(False, False, note="触发消息已撤回")
         if await self._send_segmented_proactive_forward_message(umo, segments, source="proactive_text"):
             return _ProactiveSendOutcome(True, True, delivered_text="\n".join(segments).strip())
@@ -16807,7 +16810,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
                 quote_message_id = ""
             recalled_message_id = self._should_cancel_reply_for_recalled_message_ids(trigger_message_id)
             if recalled_message_id:
-                logger.info("[PrivateCompanion] 触发消息已撤回，停止主动消息分段发送: umo=%s message_id=%s index=%s", umo, recalled_message_id, index + 1)
+                logger.info("触发消息已撤回，停止主动消息分段发送: umo=%s message_id=%s index=%s", umo, recalled_message_id, index + 1)
                 return _ProactiveSendOutcome(
                     bool(delivered_segments),
                     False,
@@ -16822,7 +16825,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
                 if not delivered_segments:
                     raise
                 logger.warning(
-                    "[PrivateCompanion] 主动文本部分送达后后续分段失败，不再整条重试: umo=%s index=%s error=%s",
+                    "主动文本部分送达后后续分段失败，不再整条重试: umo=%s index=%s error=%s",
                     _single_line(umo, 140),
                     index + 1,
                     _single_line(exc, 180),
@@ -17072,19 +17075,19 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
 
                 written = await self._conversation_db_operation("archive_proactive_message", _write)
                 if not written:
-                    logger.warning("[PrivateCompanion] 主动消息存档失败: 无法获取或创建 AstrBot 会话 history umo=%s", _single_line(umo, 140))
+                    logger.warning("主动消息存档失败: 无法获取或创建 AstrBot 会话 history umo=%s", _single_line(umo, 140))
                     return False
                 if attempt > 0:
-                    logger.info("[PrivateCompanion] 主动消息写入 AstrBot 会话历史成功: %s retry=%s", umo, attempt)
+                    logger.info("主动消息写入 AstrBot 会话历史成功: %s retry=%s", umo, attempt)
                 else:
-                    logger.info("[PrivateCompanion] 已将主动消息写入 AstrBot 会话历史: %s", umo)
+                    logger.info("已将主动消息写入 AstrBot 会话历史: %s", umo)
                 return True
             except Exception as e:
                 text = str(e or "").lower()
                 if ("database is locked" in text or "sqlite3.operationalerror" in text) and attempt < 3:
                     await asyncio.sleep(0.25 * (attempt + 1))
                     continue
-                logger.warning("[PrivateCompanion] 主动消息写入会话历史失败: %s", e)
+                logger.warning("主动消息写入会话历史失败: %s", e)
                 return False
         return False
 
@@ -17372,7 +17375,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
             if kept:
                 result = self._finish_trimmed_proactive_text(kept)
                 logger.info(
-                    "[PrivateCompanion] 主动消息已去除刻意状态尾巴: before=%s after=%s",
+                    "主动消息已去除刻意状态尾巴: before=%s after=%s",
                     _single_line(cleaned, 160),
                     _single_line(result, 160),
                 )
@@ -17411,7 +17414,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         result = result.strip()
         if result:
             logger.info(
-                "[PrivateCompanion] 主动消息已去除刻意状态尾巴: before=%s after=%s",
+                "主动消息已去除刻意状态尾巴: before=%s after=%s",
                 _single_line(cleaned, 160),
                 _single_line(result, 160),
             )
@@ -17502,7 +17505,7 @@ continuity_mode 只能是 continuation、edit、new_topic、ambiguous。
         chosen = self._ensure_chat_sentence_punctuation(chosen)
         if chosen and chosen != cleaned:
             logger.info(
-                "[PrivateCompanion] 主动消息已收束状态清单: before=%s after=%s",
+                "主动消息已收束状态清单: before=%s after=%s",
                 _single_line(cleaned, 180),
                 _single_line(chosen, 160),
             )

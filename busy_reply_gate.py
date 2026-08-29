@@ -6,10 +6,12 @@ import random
 import re
 from typing import Any
 
-from astrbot.api import logger
 
 from .helpers import _safe_float, _safe_int, _single_line
 from .persona_config import runtime_persona_setting
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 class BusyReplyGateMixin:
@@ -304,7 +306,7 @@ class BusyReplyGateMixin:
         except Exception:
             pass
         logger.info(
-            "[PrivateCompanion] 繁忙回复闸门延迟本轮被动回复: session=%s delay=%.1fs private=%s schedule=%s",
+            "繁忙回复闸门延迟本轮被动回复: session=%s delay=%.1fs private=%s schedule=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             delay,
             is_private_chat,
@@ -314,7 +316,7 @@ class BusyReplyGateMixin:
         if is_private_chat and self._busy_reply_event_is_superseded(event):
             self._busy_reply_stop_superseded_event(event)
             logger.info(
-                "[PrivateCompanion] 繁忙等待期间收到更新私聊，已取消陈旧回复: session=%s delay=%.1fs text=%s",
+                "繁忙等待期间收到更新私聊，已取消陈旧回复: session=%s delay=%.1fs text=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                 delay,
                 _single_line(getattr(event, "message_str", ""), 100),

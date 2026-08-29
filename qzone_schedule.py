@@ -11,10 +11,12 @@ import time
 from datetime import datetime
 from typing import Any
 
-from astrbot.api import logger
 
 from .helpers import _day_start_ts, _now_ts, _safe_float, _safe_int, _single_line, _today_key
 from .persona_config import runtime_persona_setting
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 def _persona_provider_id(owner: Any, canonical_key: str, legacy_attr: str, quick_role: str) -> str:
@@ -743,7 +745,7 @@ class QzoneScheduleMixin:
                 task="qzone_publish_length",
             )
         except Exception as exc:
-            logger.warning("[PrivateCompanion] QQ 空间说说字数重写失败: %s", _single_line(exc, 120))
+            logger.warning("QQ 空间说说字数重写失败: %s", _single_line(exc, 120))
             return ""
         # A rewrite bypasses the original sanitizer, so re-run it here.
         return await self._sanitize_qzone_life_post_text(rewritten, prompt=rewrite_prompt)
@@ -823,7 +825,7 @@ class QzoneScheduleMixin:
                 task="qzone_publish_deduplicate",
             )
         except Exception as exc:
-            logger.warning("[PrivateCompanion] QQ 空间说说去重重写失败: %s", _single_line(exc, 120))
+            logger.warning("QQ 空间说说去重重写失败: %s", _single_line(exc, 120))
             return ""
         # A rewrite bypasses the original sanitizer, so re-run it here.
         return await self._sanitize_qzone_life_post_text(rewritten, prompt=rewrite_prompt)
@@ -861,7 +863,7 @@ class QzoneScheduleMixin:
                 try:
                     await ensure_daily_plan()
                 except Exception as exc:
-                    logger.warning("[PrivateCompanion] QQ 空间建计划前确保今日日程失败，继续使用当下状态: %s", _single_line(exc, 120))
+                    logger.warning("QQ 空间建计划前确保今日日程失败，继续使用当下状态: %s", _single_line(exc, 120))
         plan = self._qzone_life_publish_daily_plan(state, now=now)
         plan_changed = self._qzone_backfill_plan_schedule_labels(plan)
         # The cross-day gap is applied while building the first slot. Once that
@@ -974,7 +976,7 @@ class QzoneScheduleMixin:
         if reusable_text:
             text = reusable_text
             logger.info(
-                "[PrivateCompanion] QQ 空间复用待发布生活说说草稿: age=%ds",
+                "QQ 空间复用待发布生活说说草稿: age=%ds",
                 int(now - _safe_float(state.get("last_life_publish_draft_at"), now)),
             )
         else:
@@ -1048,7 +1050,7 @@ class QzoneScheduleMixin:
                 state["last_life_publish_checked_at"] = now
                 self._qzone_plan_item_finish(plan, plan_item, "cancelled", now=now)
                 self._save_data_sync(sections={"qzone_integration"})
-                logger.warning("[PrivateCompanion] QQ 空间生活动态草稿为空或不安全,已跳过发布")
+                logger.warning("QQ 空间生活动态草稿为空或不安全,已跳过发布")
                 return
             if not self._qzone_text_length_ok(text, length_profile):
                 relengthed = await self._qzone_life_publish_rewrite_to_length(
@@ -1065,7 +1067,7 @@ class QzoneScheduleMixin:
                     self._qzone_plan_item_finish(plan, plan_item, "cancelled", now=now)
                     self._save_data_sync(sections={"qzone_integration"})
                     logger.info(
-                        "[PrivateCompanion] QQ 空间说说字数不合要求且重写失败,已取消: profile=%s len=%s",
+                        "QQ 空间说说字数不合要求且重写失败,已取消: profile=%s len=%s",
                         length_profile,
                         len(re.sub(r"\s+", "", text or "")),
                     )
@@ -1081,7 +1083,7 @@ class QzoneScheduleMixin:
                 self._qzone_clear_pending_publish_assets(state, "life_publish")
                 self._qzone_plan_item_finish(plan, plan_item, "cancelled", now=now)
                 self._save_data_sync(sections={"qzone_integration"})
-                logger.info("[PrivateCompanion] QQ 空间复用草稿与近期说说重复,已取消发布")
+                logger.info("QQ 空间复用草稿与近期说说重复,已取消发布")
                 return
             rewritten = await self._qzone_life_publish_rewrite_deduplicated(
                 text,
@@ -1096,14 +1098,14 @@ class QzoneScheduleMixin:
                 text = rewritten
                 state["last_life_publish_draft"] = _single_line(text, 300)
                 state["last_life_publish_draft_at"] = now
-                logger.info("[PrivateCompanion] QQ 空间草稿与近期说说重复,已重写避开: %s", _single_line(text, 120))
+                logger.info("QQ 空间草稿与近期说说重复,已重写避开: %s", _single_line(text, 120))
             else:
                 state["last_life_publish_failed_at"] = now
                 state["last_life_publish_status"] = "cancelled:duplicate_after_retry"
                 state["last_life_publish_checked_at"] = now
                 self._qzone_plan_item_finish(plan, plan_item, "cancelled", now=now)
                 self._save_data_sync(sections={"qzone_integration"})
-                logger.info("[PrivateCompanion] QQ 空间草稿重写后仍与近期说说重复,已取消发布")
+                logger.info("QQ 空间草稿重写后仍与近期说说重复,已取消发布")
                 return
         if reusable_text:
             image_sources = self._qzone_reusable_generated_image(state, "life_publish", text, now=now)
@@ -1197,7 +1199,7 @@ class QzoneScheduleMixin:
                 role = ""
             if role != "owner":
                 logger.info(
-                    "[PrivateCompanion] 公开心情动态跳过: user_role=%s intensity=%s",
+                    "公开心情动态跳过: user_role=%s intensity=%s",
                     role or "friend",
                     event_intensity,
                 )
@@ -1217,7 +1219,7 @@ class QzoneScheduleMixin:
             ),
         ) * 3600
         if now - _safe_float(state.get("last_emotional_vent_at"), 0) < cooldown:
-            logger.info("[PrivateCompanion] 公开心情动态跳过: cooldown intensity=%s", event_intensity)
+            logger.info("公开心情动态跳过: cooldown intensity=%s", event_intensity)
             return
         block_reason = self._qzone_auto_publish_block_reason(state, now=now)
         if block_reason:
@@ -1300,7 +1302,7 @@ class QzoneScheduleMixin:
             if reusable_text:
                 text = reusable_text
                 logger.info(
-                    "[PrivateCompanion] QQ 空间复用待发布心情动态草稿: age=%ds",
+                    "QQ 空间复用待发布心情动态草稿: age=%ds",
                     int(now - _safe_float(state.get("last_emotional_vent_draft_at"), now)),
                 )
             else:
@@ -1321,7 +1323,7 @@ class QzoneScheduleMixin:
                     state["last_emotional_vent_status"] = "cancelled:empty_or_unsafe_draft"
                     state["last_emotional_vent_checked_at"] = now
                     self._save_data_sync(sections={"qzone_integration"})
-                    logger.warning("[PrivateCompanion] 公开心情动态草稿为空或不安全,已跳过发布")
+                    logger.warning("公开心情动态草稿为空或不安全,已跳过发布")
                     return
                 state["last_emotional_vent_draft"] = _single_line(text, 240)
                 state["last_emotional_vent_draft_at"] = now
@@ -1356,11 +1358,11 @@ class QzoneScheduleMixin:
                 else:
                     state.pop("last_emotional_vent_image_fallback", None)
                 self._qzone_clear_pending_publish_assets(state, "emotional_vent")
-                logger.info("[PrivateCompanion] 公开心情动态已发布: intensity=%s text=%s", event_intensity, _single_line(result.get("text") or text, 120))
+                logger.info("公开心情动态已发布: intensity=%s text=%s", event_intensity, _single_line(result.get("text") or text, 120))
             else:
                 state["last_emotional_vent_failed_at"] = now
                 state["last_emotional_vent_status"] = f"failed:{_single_line(result.get('message'), 80)}"
-                logger.warning("[PrivateCompanion] 公开心情动态发布失败: %s", _single_line(result.get("message"), 120))
+                logger.warning("公开心情动态发布失败: %s", _single_line(result.get("message"), 120))
             state["last_emotional_vent_checked_at"] = now
             state["last_emotional_vent_text"] = _single_line(result.get("text") or text, 180)
             state["last_emotional_vent_images"] = _safe_int(result.get("image_count"), len(result.get("images") or []), 0, 99) if result.get("success") else 0
@@ -1370,4 +1372,4 @@ class QzoneScheduleMixin:
             state["last_emotional_vent_status"] = f"failed:{_single_line(exc, 80)}"
             state["last_emotional_vent_checked_at"] = now
             self._save_data_sync(sections={"qzone_integration"})
-            logger.warning("[PrivateCompanion] 公开心情动态异常: %s", _single_line(exc, 160), exc_info=True)
+            logger.warning("公开心情动态异常: %s", _single_line(exc, 160), exc_info=True)

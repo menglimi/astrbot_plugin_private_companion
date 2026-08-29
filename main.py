@@ -35,7 +35,7 @@ from typing import Any
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlparse, urlunparse
 from xml.etree import ElementTree as ET
 
-from astrbot.api import AstrBotConfig, logger
+from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 try:
     from astrbot.api.message_components import (
@@ -414,7 +414,7 @@ except ModuleNotFoundError as exc:
             return {"reviewed": False, "counted": False, "blocked": False, "reason": "module_missing"}
 
     logger.error(
-        "[PrivateCompanion] 发布包缺少 group_member_safety.py，群成员风控已停用；插件其余功能继续加载。"
+        "发布包缺少 group_member_safety.py，群成员风控已停用；插件其余功能继续加载。"
         "请重新安装包含该文件的完整版本。"
     )
 from .event_dispatch import EventDispatchMixin, _ON_WAITING_LLM_REQUEST
@@ -432,7 +432,7 @@ except ModuleNotFoundError as exc:
         def _format_self_timeline_context_for_reply(self, *args: Any, **kwargs: Any) -> str:
             return ""
 
-    logger.warning("[PrivateCompanion] self_timeline.py 缺失，已跳过 Bot 自身时间线注入能力。请重新安装完整版本。")
+    logger.warning("self_timeline.py 缺失，已跳过 Bot 自身时间线注入能力。请重新安装完整版本。")
 from .core_store import CoreStoreMixin
 from .storage.path_generation import activate_persistence_owner
 from .platform_compat import PlatformCompatibilityMixin
@@ -481,6 +481,9 @@ from .planning import (
     normalize_story_plan,
     pick_detail_segment,
 )
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 _PRIVATE_COMPANION_RUNTIME_KEY = "_astrbot_private_companion_runtime_v1"
 
@@ -1963,7 +1966,7 @@ class PrivateCompanionPlugin(
                 if backup is not None:
                     result.setdefault("backups", {})[pid] = str(backup)
                 logger.warning(
-                    "[PrivateCompanion] 人格配置迁移降级: persona=%s error=%s",
+                    "人格配置迁移降级: persona=%s error=%s",
                     pid,
                     _single_line(exc, 180),
                 )
@@ -2181,7 +2184,7 @@ class PrivateCompanionPlugin(
         try:
             shutil.copy2(path, backup)
             logger.error(
-                "[PrivateCompanion] 已隔离损坏人格 profile: source=%s backup=%s reason=%s",
+                "已隔离损坏人格 profile: source=%s backup=%s reason=%s",
                 path,
                 backup,
                 _single_line(reason, 160),
@@ -2189,7 +2192,7 @@ class PrivateCompanionPlugin(
             return backup
         except Exception as exc:
             logger.error(
-                "[PrivateCompanion] 人格 profile 备份失败: source=%s error=%s",
+                "人格 profile 备份失败: source=%s error=%s",
                 path,
                 _single_line(exc, 160),
             )
@@ -2238,7 +2241,7 @@ class PrivateCompanionPlugin(
             if legacy_path.is_file():
                 self._backup_corrupt_persona_profile_sync(legacy_path, reason=str(exc))
             profile_errors[pid] = str(exc)
-            logger.warning("[PrivateCompanion] 人格资料读取失败 persona=%s error=%s", pid, _single_line(exc, 160))
+            logger.warning("人格资料读取失败 persona=%s error=%s", pid, _single_line(exc, 160))
         if loaded is not None:
             profile = loaded
         else:
@@ -2265,7 +2268,7 @@ class PrivateCompanionPlugin(
                 self._save_persona_profile_sync(pid, profile)
             except Exception as exc:
                 logger.warning(
-                    "[PrivateCompanion] 旧人格身份配置初始化落盘失败: persona=%s error=%s",
+                    "旧人格身份配置初始化落盘失败: persona=%s error=%s",
                     pid,
                     _single_line(exc, 160),
                 )
@@ -2494,7 +2497,7 @@ class PrivateCompanionPlugin(
                 except Exception as exc:
                     rebuild_error = _single_line(exc, 180)
                     logger.warning(
-                        "[PrivateCompanion] 当前人格资料已重置，但今日数据重建失败: persona=%s error=%s",
+                        "当前人格资料已重置，但今日数据重建失败: persona=%s error=%s",
                         pid or "single",
                         rebuild_error,
                         exc_info=True,
@@ -2780,7 +2783,7 @@ class PrivateCompanionPlugin(
         self._legacy_persona_routing_status = status
         if status["ignored"]:
             logger.warning(
-                "[PrivateCompanion] 已停用插件窗口人格路由，AstrBot 为唯一权威: count=%s backup=%s error=%s",
+                "已停用插件窗口人格路由，AstrBot 为唯一权威: count=%s backup=%s error=%s",
                 len(merged),
                 status["backup_path"] or "-",
                 file_error or "-",
@@ -3137,7 +3140,7 @@ class PrivateCompanionPlugin(
         if now - float(log_marks.get(record_id) or 0) >= 300:
             log_marks[record_id] = now
             logger.warning(
-                "[PrivateCompanion] 人格路由告警 code=%s reason=%s umo=%s astrbot=%s plugin=%s action=%s",
+                "人格路由告警 code=%s reason=%s umo=%s astrbot=%s plugin=%s action=%s",
                 code,
                 reason,
                 window or "-",
@@ -3882,7 +3885,7 @@ class PrivateCompanionPlugin(
         except Exception as exc:
             self._lab_fixture_adapter = None
             logger.warning(
-                "[PrivateCompanion] LAB fixture 门控注册失败，已保持生产路径关闭: %s",
+                "LAB fixture 门控注册失败，已保持生产路径关闭: %s",
                 type(exc).__name__,
             )
 
@@ -3895,7 +3898,7 @@ class PrivateCompanionPlugin(
             return overlay(event, user)
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] LAB fixture 关系投影失败，已放行原始生产视图: %s",
+                "LAB fixture 关系投影失败，已放行原始生产视图: %s",
                 type(exc).__name__,
             )
             return user
@@ -4173,7 +4176,7 @@ class PrivateCompanionPlugin(
                     "dual_write": "failed",
                 })
             logger.warning(
-                "[PrivateCompanion] REQ-041 身份双写失败，已暂停新读切换并保留 legacy 写入: %s",
+                "REQ-041 身份双写失败，已暂停新读切换并保留 legacy 写入: %s",
                 _single_line(exc, 160),
             )
             return {"status": "failed", "code": "identity_dual_write_failed"}
@@ -4213,7 +4216,7 @@ class PrivateCompanionPlugin(
                     "dual_write": "failed",
                 })
             logger.warning(
-                "[PrivateCompanion] REQ-041 关系快照双写失败，已暂停新读切换并保留 legacy 写入: %s",
+                "REQ-041 关系快照双写失败，已暂停新读切换并保留 legacy 写入: %s",
                 _single_line(exc, 160),
             )
             return {"status": "failed", "code": "relationship_snapshot_dual_write_failed"}
@@ -4682,7 +4685,7 @@ class PrivateCompanionPlugin(
                     denial_cache.pop(cache_key, None)
             if denial_cache_key in denial_cache:
                 logger.debug(
-                    "[PrivateCompanion] 已忽略重复的未授权私聊拒绝: sender=%s message_id=%s",
+                    "已忽略重复的未授权私聊拒绝: sender=%s message_id=%s",
                     sender_id or "-",
                     message_id,
                 )
@@ -4714,7 +4717,7 @@ class PrivateCompanionPlugin(
             raise
         if reply_result is False:
             release_reply_reservations()
-            logger.debug("[PrivateCompanion] 未授权私聊拒绝未发送，已释放回流与消息去重占位")
+            logger.debug("未授权私聊拒绝未发送，已释放回流与消息去重占位")
             return
         echo_confirm = getattr(self, "_confirm_req036_denial_echo", None)
         if callable(echo_confirm) and echo_entry is not None:
@@ -5248,11 +5251,11 @@ class PrivateCompanionPlugin(
                 failed.append(f"{path.name}:{_single_line(exc, 80)}")
         if applied:
             logger.info(
-                "[PrivateCompanion] 插件自有 SQLite WAL 优化已应用: files=%s",
+                "插件自有 SQLite WAL 优化已应用: files=%s",
                 "，".join(applied),
             )
         if failed:
-            logger.warning("[PrivateCompanion] SQLite WAL 并发优化部分失败: %s", "；".join(failed))
+            logger.warning("SQLite WAL 并发优化部分失败: %s", "；".join(failed))
 
     def _repair_private_companion_handler_bindings(self) -> None:
         """热更新后强制把残留 handler 重新绑定到当前插件实例。"""
@@ -5275,9 +5278,9 @@ class PrivateCompanionPlugin(
                 handler.handler = functools.partial(current_func, self)
                 repaired += 1
             if repaired:
-                logger.info("[PrivateCompanion] 已修复热更新残留回调绑定: handlers=%s", repaired)
+                logger.info("已修复热更新残留回调绑定: handlers=%s", repaired)
         except Exception as exc:
-            logger.warning("[PrivateCompanion] 修复热更新残留回调绑定失败: %s", _single_line(exc, 160))
+            logger.warning("修复热更新残留回调绑定失败: %s", _single_line(exc, 160))
 
     def _req041_migration_source_files(self) -> list[Path]:
         # Once a migration has a verified backup, its manifest is the authority
@@ -5989,7 +5992,7 @@ class PrivateCompanionPlugin(
             status = getattr(self, "req041_migration_status", None)
             if self._req041_group_remote_cleanup_required():
                 logger.warning(
-                    "[PrivateCompanion] 群聊删除因远端分域不可用而保留: group=%s state=%s code=%s memory_bound=%s scoped_required=%s",
+                    "群聊删除因远端分域不可用而保留: group=%s state=%s code=%s memory_bound=%s scoped_required=%s",
                     clean_group,
                     _single_line((status or {}).get("state"), 32),
                     _single_line((status or {}).get("code"), 96),
@@ -5998,7 +6001,7 @@ class PrivateCompanionPlugin(
                 )
                 return {"ok": False, "state": "degraded", "code": "scoped_group_erase_unavailable"}
             logger.info(
-                "[PrivateCompanion] MemoryCompanion 从未绑定，群聊删除仅清理本地分域: group=%s",
+                "MemoryCompanion 从未绑定，群聊删除仅清理本地分域: group=%s",
                 clean_group,
             )
             return {"ok": True, "state": "not_required", "code": "scoped_group_erase_not_required"}
@@ -6922,7 +6925,7 @@ class PrivateCompanionPlugin(
             if isinstance(status, dict):
                 status.update({"state": "degraded", "code": "group_affinity_settlement_failed"})
             logger.warning(
-                "[PrivateCompanion] REQ-041 群好感度结算失败，已保持事件可重放: %s",
+                "REQ-041 群好感度结算失败，已保持事件可重放: %s",
                 _single_line(exc, 160),
             )
 
@@ -6935,7 +6938,7 @@ class PrivateCompanionPlugin(
             try:
                 await asyncio.to_thread(router.finish, chain_id)
             except Exception as exc:
-                logger.debug("[PrivateCompanion] REQ-041 读链清理失败: %s", _single_line(exc, 120))
+                logger.debug("REQ-041 读链清理失败: %s", _single_line(exc, 120))
             try:
                 setattr(event, "req041_read_chain_id", "")
             except Exception:
@@ -7116,7 +7119,7 @@ class PrivateCompanionPlugin(
                         "code": _single_line(backfill_exc, 120) or "s4_backfill_failed",
                     }
                     logger.warning(
-                        "[PrivateCompanion] REQ-041 S4 Shadow 回填失败，继续使用 legacy 路径: %s",
+                        "REQ-041 S4 Shadow 回填失败，继续使用 legacy 路径: %s",
                         _single_line(backfill_exc, 160),
                     )
 
@@ -7322,7 +7325,7 @@ class PrivateCompanionPlugin(
                 "phase": status.get("phase", "S0") if status else "S0",
             }
             logger.warning(
-                "[PrivateCompanion] REQ-041 自动迁移启动失败，继续使用官方 legacy 路径: %s",
+                "REQ-041 自动迁移启动失败，继续使用官方 legacy 路径: %s",
                 _single_line(exc, 160),
             )
 
@@ -7454,12 +7457,12 @@ class PrivateCompanionPlugin(
             # load later. Keep the Companion core available while Story stays
             # fenced and a later startup/API call replays the same marker.
             logger.warning(
-                "[PrivateCompanion] Story handoff replay pending: code=%s",
+                "Story handoff replay pending: code=%s",
                 exc.code,
             )
         except Exception:
             logger.warning(
-                "[PrivateCompanion] Story handoff replay pending: "
+                "Story handoff replay pending: "
                 "code=story_handoff_replay_failed"
             )
         # Keep the prior ready instance visible until every startup step succeeds.
@@ -7499,7 +7502,7 @@ class PrivateCompanionPlugin(
         self._repair_private_companion_handler_bindings()
         if getattr(self, "_legacy_enabled_config_disabled", False):
             logger.warning(
-                "[PrivateCompanion] 检测到旧版配置 enabled=false；该字段已废弃并被忽略。"
+                "检测到旧版配置 enabled=false；该字段已废弃并被忽略。"
                 "如需停用插件，请在 AstrBot 官方插件管理页关闭本插件。"
             )
         self._log_registered_command_handlers()
@@ -7528,7 +7531,7 @@ class PrivateCompanionPlugin(
                 if cleaned_habit_users:
                     changed = True
                     logger.info(
-                        "[PrivateCompanion] 已清理旧版低质量用户习惯记录: users=%s",
+                        "已清理旧版低质量用户习惯记录: users=%s",
                         cleaned_habit_users,
                     )
             if runtime_persona_setting(self, 'default_enable_configured_targets', True):
@@ -7536,7 +7539,7 @@ class PrivateCompanionPlugin(
                 changed = True
             recovered_troubleshooting = self._recover_stale_troubleshooting_proactive_plans()
             if recovered_troubleshooting:
-                logger.info("[PrivateCompanion] 已恢复未完成的排障临时主动任务: %s", recovered_troubleshooting)
+                logger.info("已恢复未完成的排障临时主动任务: %s", recovered_troubleshooting)
             if self._prime_enabled_user_schedules():
                 changed = True
             if recovered_troubleshooting:
@@ -7563,7 +7566,7 @@ class PrivateCompanionPlugin(
         )
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._scheduler_loop())
-            logger.info("[PrivateCompanion] 主动消息循环已启动")
+            logger.info("主动消息循环已启动")
         self._create_startup_background_task(
             "mobile_location_watch",
             self._mobile_location_watch_loop,
@@ -7595,7 +7598,7 @@ class PrivateCompanionPlugin(
                 await standalone_webui.start()
             except Exception as exc:
                 logger.warning(
-                    "[PrivateCompanion] 独立陪伴 WebUI 启动失败: %s",
+                    "独立陪伴 WebUI 启动失败: %s",
                     _single_line(exc, 160),
                     exc_info=True,
                 )
@@ -7618,7 +7621,7 @@ class PrivateCompanionPlugin(
                 return
             if error is not None:
                 logger.warning(
-                    "[PrivateCompanion] startup background task failed: task=%s error=%s",
+                    "startup background task failed: task=%s error=%s",
                     _single_line(label, 100) or "startup",
                     _single_line(error, 180),
                     exc_info=(type(error), error, error.__traceback__),
@@ -7661,7 +7664,7 @@ class PrivateCompanionPlugin(
             if callable(closer):
                 closer()
             logger.debug(
-                "[PrivateCompanion] 插件已进入终止流程，跳过创建后台任务: task=%s",
+                "插件已进入终止流程，跳过创建后台任务: task=%s",
                 _single_line(label, 100) or "background",
             )
             return None
@@ -7672,7 +7675,7 @@ class PrivateCompanionPlugin(
             if callable(closer):
                 closer()
             logger.warning(
-                "[PrivateCompanion] 后台任务无法启动：当前没有运行中的事件循环 task=%s",
+                "后台任务无法启动：当前没有运行中的事件循环 task=%s",
                 _single_line(label, 100) or "background",
             )
             return None
@@ -7695,7 +7698,7 @@ class PrivateCompanionPlugin(
                 return
             if error is not None:
                 logger.warning(
-                    "[PrivateCompanion] 后台任务异常结束: task=%s error=%s",
+                    "后台任务异常结束: task=%s error=%s",
                     _single_line(task_label, 100) or "background",
                     _single_line(error, 180),
                     exc_info=(type(error), error, error.__traceback__),
@@ -7737,7 +7740,7 @@ class PrivateCompanionPlugin(
                     }
                 )
                 logger.warning(
-                    "[PrivateCompanion] 终止后台任务超时,继续卸载: tasks=%s",
+                    "终止后台任务超时,继续卸载: tasks=%s",
                     "，".join(labels),
                 )
         registry.clear()
@@ -7759,14 +7762,14 @@ class PrivateCompanionPlugin(
                 if handler_name in expected:
                     found.add(handler_name)
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 指令注册诊断失败: %s", _single_line(exc, 120))
+            logger.debug("指令注册诊断失败: %s", _single_line(exc, 120))
             return
         registered = [expected[name] for name in expected if name in found]
         missing = [expected[name] for name in expected if name not in found]
         if registered:
-            logger.info("[PrivateCompanion] AstrBot 指令已注册: %s", "；".join(registered))
+            logger.info("AstrBot 指令已注册: %s", "；".join(registered))
         if missing:
-            logger.warning("[PrivateCompanion] AstrBot 指令注册诊断未找到: %s", "；".join(missing))
+            logger.warning("AstrBot 指令注册诊断未找到: %s", "；".join(missing))
 
     @story_legacy_sync_operation("startup.story-maintenance")
     def _run_startup_data_maintenance_locked(self) -> bool:
@@ -7779,10 +7782,10 @@ class PrivateCompanionPlugin(
                 if callable(func) and func():
                     changed = True
             except Exception as exc:
-                logger.warning("[PrivateCompanion] 启动后台维护步骤失败: %s error=%s", label, _single_line(exc, 160))
+                logger.warning("启动后台维护步骤失败: %s error=%s", label, _single_line(exc, 160))
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             if elapsed_ms > 1200:
-                logger.warning("[PrivateCompanion] 启动后台维护步骤耗时较高: step=%s elapsed=%sms", label, elapsed_ms)
+                logger.warning("启动后台维护步骤耗时较高: step=%s elapsed=%sms", label, elapsed_ms)
 
         run_step("legacy_prompt_trace_cleanup", self._cleanup_legacy_proactive_prompt_traces)
         run_step("framework_meta_leak_cleanup", self._cleanup_framework_meta_leak_records)
@@ -7830,29 +7833,29 @@ class PrivateCompanionPlugin(
                         self._startup_photo_reference_catalog_migration_pending = False
                         self.photo_reference_catalog_read_only = False
                         logger.info(
-                            "[PrivateCompanion] 参考图目录迁移完成: version=%s references=%s",
+                            "参考图目录迁移完成: version=%s references=%s",
                             CATALOG_VERSION,
                             len(runtime_persona_setting(self, 'photo_reference_catalog', ()) or ()),
                         )
                     else:
-                        logger.error("[PrivateCompanion] 参考图目录已保存，但迁移版本号保存失败；下次启动会安全重试")
+                        logger.error("参考图目录已保存，但迁移版本号保存失败；下次启动会安全重试")
                 elif not catalog_saved:
-                    logger.error("[PrivateCompanion] 参考图目录迁移保存失败，当前进程继续使用只读内存投影")
+                    logger.error("参考图目录迁移保存失败，当前进程继续使用只读内存投影")
                 else:
-                    logger.error("[PrivateCompanion] 参考图目录已保存，但迁移版本号无法写入；当前进程继续使用只读内存投影")
+                    logger.error("参考图目录已保存，但迁移版本号无法写入；当前进程继续使用只读内存投影")
                 elapsed_ms = int((time.perf_counter() - config_started) * 1000)
                 if elapsed_ms > 1200:
-                    logger.warning("[PrivateCompanion] 启动后台配置保存耗时较高: elapsed=%sms", elapsed_ms)
+                    logger.warning("启动后台配置保存耗时较高: elapsed=%sms", elapsed_ms)
             elif _safe_int(getattr(self, "_startup_config_migration_changes", 0), 0, 0) > 0:
                 config_started = time.perf_counter()
                 await self._save_config_if_possible()
                 elapsed_ms = int((time.perf_counter() - config_started) * 1000)
                 if elapsed_ms > 1200:
-                    logger.warning("[PrivateCompanion] 启动后台配置保存耗时较高: elapsed=%sms", elapsed_ms)
+                    logger.warning("启动后台配置保存耗时较高: elapsed=%sms", elapsed_ms)
             try:
                 await asyncio.wait_for(self._apply_sqlite_wal_optimizations(), timeout=20)
             except asyncio.TimeoutError:
-                logger.warning("[PrivateCompanion] SQLite WAL 后台优化超时,已跳过本轮启动优化")
+                logger.warning("SQLite WAL 后台优化超时,已跳过本轮启动优化")
             await self._image_companion_maintenance()
             if self._nai_image_selected():
                 await self._nai_image_maintenance()
@@ -7863,11 +7866,11 @@ class PrivateCompanionPlugin(
                     self._save_data_sync(full_scope="startup_maintenance")
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             if elapsed_ms > 1200:
-                logger.info("[PrivateCompanion] 启动后台维护完成: elapsed=%sms", elapsed_ms)
+                logger.info("启动后台维护完成: elapsed=%sms", elapsed_ms)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.warning("[PrivateCompanion] 启动后台维护失败: %s", _single_line(exc, 160), exc_info=True)
+            logger.warning("启动后台维护失败: %s", _single_line(exc, 160), exc_info=True)
 
     async def terminate(self):
         global _private_companion_plugin
@@ -7878,7 +7881,7 @@ class PrivateCompanionPlugin(
                 close_lab_fixture()
             except Exception as exc:
                 logger.warning(
-                    "[PrivateCompanion] LAB fixture 门控清理失败，继续关闭插件: %s",
+                    "LAB fixture 门控清理失败，继续关闭插件: %s",
                     type(exc).__name__,
                 )
         self._lab_fixture_adapter = None
@@ -7896,7 +7899,7 @@ class PrivateCompanionPlugin(
                 await standalone_webui.stop()
             except Exception as exc:
                 logger.warning(
-                    "[PrivateCompanion] 独立陪伴 WebUI 停止失败: %s",
+                    "独立陪伴 WebUI 停止失败: %s",
                     _single_line(exc, 160),
                 )
         cleanup_delivery_caches = getattr(self, "_cleanup_framework_delivery_caches", None)
@@ -7919,7 +7922,7 @@ class PrivateCompanionPlugin(
                 await runtime_bridge.stop()
             except Exception as exc:
                 logger.warning(
-                    "[PrivateCompanion] 终止 Proactive Chat 深度联动失败: %s",
+                    "终止 Proactive Chat 深度联动失败: %s",
                     _single_line(exc, 160),
                 )
 
@@ -7929,7 +7932,7 @@ class PrivateCompanionPlugin(
             task.cancel()
             done, pending = await asyncio.wait({task}, timeout=timeout)
             if pending:
-                logger.warning("[PrivateCompanion] 终止后台任务超时,继续卸载: task=%s", label)
+                logger.warning("终止后台任务超时,继续卸载: task=%s", label)
                 return
             for finished in done:
                 try:
@@ -7937,7 +7940,7 @@ class PrivateCompanionPlugin(
                 except asyncio.CancelledError:
                     pass
                 except Exception as exc:
-                    logger.debug("[PrivateCompanion] 终止后台任务时收到异常: task=%s error=%s", label, _single_line(exc, 160))
+                    logger.debug("终止后台任务时收到异常: task=%s error=%s", label, _single_line(exc, 160))
 
         if self._task:
             await cancel_task(self._task, "proactive_scheduler")
@@ -7970,14 +7973,14 @@ class PrivateCompanionPlugin(
             await asyncio.wait_for(self._flush_scheduled_data_save(), timeout=3.0)
         except asyncio.TimeoutError:
             logger.warning(
-                "[PrivateCompanion] Scheduled persistence did not drain before "
+                "Scheduled persistence did not drain before "
                 "shutdown; final persistence will continue in the background"
             )
         except asyncio.CancelledError:
             pass
         except Exception as exc:
             logger.debug(
-                "[PrivateCompanion] Waiting for scheduled persistence during "
+                "Waiting for scheduled persistence during "
                 "shutdown failed: %s",
                 _single_line(exc, 160),
             )
@@ -7987,9 +7990,9 @@ class PrivateCompanionPlugin(
             try:
                 await asyncio.wait_for(close_image_download_session(), timeout=3.0)
             except asyncio.TimeoutError:
-                logger.warning("[PrivateCompanion] 终止时关闭在线图片下载会话超时")
+                logger.warning("终止时关闭在线图片下载会话超时")
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 终止时关闭在线图片下载会话失败: %s", _single_line(exc, 160))
+                logger.debug("终止时关闭在线图片下载会话失败: %s", _single_line(exc, 160))
         final_save_task = asyncio.create_task(self._save_data_on_terminate())
         self._termination_save_task = final_save_task
         self._termination_save_status = {
@@ -8020,7 +8023,7 @@ class PrivateCompanionPlugin(
                     "error": _single_line(error, 160),
                 }
                 logger.warning(
-                    "[PrivateCompanion] Final shutdown persistence failed: %s",
+                    "Final shutdown persistence failed: %s",
                     _single_line(error, 160),
                 )
             else:
@@ -8050,7 +8053,7 @@ class PrivateCompanionPlugin(
                 "timed_out_at": asyncio.get_running_loop().time(),
             }
             logger.warning(
-                "[PrivateCompanion] Final shutdown persistence timed out; the "
+                "Final shutdown persistence timed out; the "
                 "shielded task will continue in the background"
             )
         with _private_companion_runtime.lock:
@@ -8084,7 +8087,7 @@ class PrivateCompanionPlugin(
                     pass
                 except Exception as exc:
                     logger.debug(
-                        "[PrivateCompanion] Waiting for the default JSON writer "
+                        "Waiting for the default JSON writer "
                         "during shutdown failed: %s",
                         _single_line(exc, 160),
                     )
@@ -8113,7 +8116,7 @@ class PrivateCompanionPlugin(
                         pass
                     except Exception as exc:
                         logger.debug(
-                            "[PrivateCompanion] Waiting for a persona writer during "
+                            "Waiting for a persona writer during "
                             "shutdown failed: persona=%s error=%s",
                             persona_id,
                             _single_line(exc, 160),
@@ -8144,7 +8147,7 @@ class PrivateCompanionPlugin(
                 disable(event)
         except Exception as exc:
             logger.debug(
-                "[PrivateCompanion] TTS 流式预判失败，保留默认流式行为: session=%s error=%s",
+                "TTS 流式预判失败，保留默认流式行为: session=%s error=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                 _single_line(exc, 160),
             )
@@ -8158,7 +8161,7 @@ class PrivateCompanionPlugin(
         if self._is_onebot_poke_notice_event(event):
             # OneBot 把戳一戳同时映射为消息事件。它由专用插件处理，不能参与
             # 陪伴的活动、繁忙闸门或撤回缓存链路。
-            logger.debug("[PrivateCompanion] 放行 OneBot 戳一戳 notice 给专用插件")
+            logger.debug("放行 OneBot 戳一戳 notice 给专用插件")
             return
         self._qzone_note_event_bot(event)
         if not self.enabled:
@@ -8192,12 +8195,12 @@ class PrivateCompanionPlugin(
                 if recall_user_id:
                     self._stop_passive_input_status_loop(recall_user_id)
                     logger.info(
-                        "[PrivateCompanion] 用户撤回消息，已停止私聊输入状态: user=%s message_id=%s",
+                        "用户撤回消息，已停止私聊输入状态: user=%s message_id=%s",
                         recall_user_id,
                         message_id,
                     )
             logger.info(
-                "[PrivateCompanion] 已记录消息撤回: notice=%s scope=%s message_id=%s",
+                "已记录消息撤回: notice=%s scope=%s message_id=%s",
                 notice_type,
                 scope or "-",
                 message_id,
@@ -8225,7 +8228,7 @@ class PrivateCompanionPlugin(
             return
         ok = await self._try_delete_message(event, message_id, reason=f"forbidden:{hit}")
         logger.info(
-            "[PrivateCompanion] 违禁词撤回检查命中: scope=%s self=%s group=%s ok=%s word=%s message_id=%s",
+            "违禁词撤回检查命中: scope=%s self=%s group=%s ok=%s word=%s message_id=%s",
             scope,
             is_self,
             is_group,
@@ -8277,7 +8280,7 @@ class PrivateCompanionPlugin(
             event.set_result(self._build_result_from_chain([]))
             event.stop_event()
             logger.info(
-                "[PrivateCompanion] 已跳过 Proactive Chat 改写后的重复文本分支: session=%s attempt=%s",
+                "已跳过 Proactive Chat 改写后的重复文本分支: session=%s attempt=%s",
                 _single_line(session_id, 120),
                 attempt_id,
             )
@@ -8308,7 +8311,7 @@ class PrivateCompanionPlugin(
             if token:
                 await self._cancel_proactive_chat_bridge(session_id, token=token)
             logger.info(
-                "[PrivateCompanion] 已拦截 Proactive Chat 主动候选: session=%s decision=%s reason=%s",
+                "已拦截 Proactive Chat 主动候选: session=%s decision=%s reason=%s",
                 _single_line(session_id, 120),
                 _single_line(review.get("decision"), 24) or "drop",
                 _single_line(review.get("reason"), 160),
@@ -8342,7 +8345,7 @@ class PrivateCompanionPlugin(
         if bool(bridge_context.get("tts_sent")) and not should_replace_full_attempt:
             setattr(event, "_private_companion_skip_tts_enhancement", "proactive_chat_prebuilt_tts")
         logger.info(
-            "[PrivateCompanion] 已接入 Proactive Chat 发送前链路: session=%s segment=%s/%s upstream_tts=%s text=%s",
+            "已接入 Proactive Chat 发送前链路: session=%s segment=%s/%s upstream_tts=%s text=%s",
             _single_line(session_id, 120),
             segment_index + 1,
             segment_count,
@@ -8406,7 +8409,7 @@ class PrivateCompanionPlugin(
             or not bool(getattr(event, "_private_companion_member_safety_hidden_marker_expected", False))
         ):
             logger.warning(
-                "[PrivateCompanion] 已清理未授权的群成员风控隐性标签，未计数: session=%s",
+                "已清理未授权的群成员风控隐性标签，未计数: session=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             )
             return
@@ -8433,7 +8436,7 @@ class PrivateCompanionPlugin(
             source="reply_hidden_marker",
         )
         logger.info(
-            "[PrivateCompanion] 已消费群成员风控隐性标签: group=%s sender=%s counted=%s blocked=%s reason=%s",
+            "已消费群成员风控隐性标签: group=%s sender=%s counted=%s blocked=%s reason=%s",
             group_id,
             sender_id,
             bool(recorded.get("counted")),
@@ -8459,7 +8462,7 @@ class PrivateCompanionPlugin(
                 except (AttributeError, TypeError):
                     pass
             logger.debug(
-                "[PrivateCompanion] 本轮已有真实生图，跳过追加表情附件: session=%s",
+                "本轮已有真实生图，跳过追加表情附件: session=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             )
             return
@@ -8589,7 +8592,7 @@ class PrivateCompanionPlugin(
                 reason="attachment_component_failed",
             )
             logger.warning(
-                "[PrivateCompanion] 表情图片附件构建失败: error_type=%s",
+                "表情图片附件构建失败: error_type=%s",
                 type(exc).__name__,
             )
             return
@@ -8698,7 +8701,7 @@ class PrivateCompanionPlugin(
                 return _OneBotReactionImage(image_path)
             except Exception as exc:
                 logger.warning(
-                    "[PrivateCompanion] QQ表情格式组件构建失败,回退普通图片: error_type=%s",
+                    "QQ表情格式组件构建失败,回退普通图片: error_type=%s",
                     type(exc).__name__,
                 )
         try:
@@ -8729,7 +8732,7 @@ class PrivateCompanionPlugin(
             return send_result is not False
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 表情图片单独投递失败: mode=%s error_type=%s",
+                "表情图片单独投递失败: mode=%s error_type=%s",
                 self._reaction_expression_delivery_mode(),
                 type(exc).__name__,
             )
@@ -9000,7 +9003,7 @@ class PrivateCompanionPlugin(
         )
         if recorded.get("recorded"):
             logger.info(
-                "[PrivateCompanion] 已同步 Proactive Chat 最终发送状态: session=%s text=%s",
+                "已同步 Proactive Chat 最终发送状态: session=%s text=%s",
                 _single_line(session_id, 120),
                 _single_line(source_text, 160),
             )
@@ -9028,7 +9031,7 @@ class PrivateCompanionPlugin(
             setattr(event, "_private_companion_outbound_text_candidate", candidate)
             return
         logger.warning(
-            "[PrivateCompanion] 发送前拦截短时间重复正文: scope=%s sender=%s previous=%s text=%s",
+            "发送前拦截短时间重复正文: scope=%s sender=%s previous=%s text=%s",
             candidate.get("scope") or "unknown",
             candidate.get("sender_id") or "-",
             duplicate_state,
@@ -9182,7 +9185,7 @@ class PrivateCompanionPlugin(
         except Exception as exc:
             pending["completed"] = False
             logger.warning(
-                "[PrivateCompanion] 表情正文分段补发失败: session=%s error=%s",
+                "表情正文分段补发失败: session=%s error=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120)
                 or "unknown",
                 _single_line(exc, 160),
@@ -9311,13 +9314,13 @@ class PrivateCompanionPlugin(
         result = restore_astrbot_group_history(event, run_context)
         if result.get("failed"):
             logger.error(
-                "[PrivateCompanion] AstrBot 群聊历史恢复失败，已阻止本轮覆盖旧会话: session=%s reason=%s",
+                "AstrBot 群聊历史恢复失败，已阻止本轮覆盖旧会话: session=%s reason=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 140) or "unknown",
                 _single_line(result.get("reason"), 80) or "unknown",
             )
         elif result.get("restored"):
             logger.debug(
-                "[PrivateCompanion] 已在核心保存前恢复 AstrBot 群聊历史: session=%s messages=%s",
+                "已在核心保存前恢复 AstrBot 群聊历史: session=%s messages=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 140) or "unknown",
                 result.get("history_messages", 0),
             )
@@ -9393,7 +9396,7 @@ class PrivateCompanionPlugin(
                     pass
         if changed:
             logger.warning(
-                "[PrivateCompanion] 发送前已清理内部控制标签: session=%s",
+                "发送前已清理内部控制标签: session=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             )
 
@@ -9445,7 +9448,7 @@ class PrivateCompanionPlugin(
         except Exception:
             event.set_result(self._build_result_from_chain(cleaned_chain))
         logger.warning(
-            "[PrivateCompanion] 最终发送前已清理内部控制标签: session=%s",
+            "最终发送前已清理内部控制标签: session=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
         )
 
@@ -9486,7 +9489,7 @@ class PrivateCompanionPlugin(
         except Exception:
             event.set_result(self._build_result_from_chain(cleaned_chain))
         logger.warning(
-            "[PrivateCompanion] 发送前终检已移除明文工具调用: session=%s tools=%s",
+            "发送前终检已移除明文工具调用: session=%s tools=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             ",".join(leaked_names),
         )
@@ -9503,7 +9506,7 @@ class PrivateCompanionPlugin(
         if not recalled_message_id:
             return
         logger.info(
-            "[PrivateCompanion] 触发消息已撤回或发送前不可见，取消本次发送: session=%s message_id=%s",
+            "触发消息已撤回或发送前不可见，取消本次发送: session=%s message_id=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             recalled_message_id,
         )
@@ -9543,7 +9546,7 @@ class PrivateCompanionPlugin(
         if not hit:
             return
         logger.warning(
-            "[PrivateCompanion] 待发送消息命中违禁词，已拦截发送: word=%s session=%s",
+            "待发送消息命中违禁词，已拦截发送: word=%s session=%s",
             _single_line(hit, 40),
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
         )
@@ -9583,7 +9586,7 @@ class PrivateCompanionPlugin(
             flags=re.IGNORECASE,
         ):
             logger.warning(
-                "[PrivateCompanion] 已拦截插件日志来源位置外发: session=%s text=%s",
+                "已拦截插件日志来源位置外发: session=%s text=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                 _single_line(text, 180),
             )
@@ -9655,7 +9658,7 @@ class PrivateCompanionPlugin(
                     if rewritten:
                         final_reply = rewritten
                 logger.info(
-                    "[PrivateCompanion] 工具发送回执已改为自然短句: before=%s after=%s",
+                    "工具发送回执已改为自然短句: before=%s after=%s",
                     _single_line(text, 120),
                     final_reply,
                 )
@@ -9666,13 +9669,13 @@ class PrivateCompanionPlugin(
             )
             if not companion_receipt:
                 logger.debug(
-                    "[PrivateCompanion] 放行非陪伴插件工具回执: session=%s text=%s",
+                    "放行非陪伴插件工具回执: session=%s text=%s",
                     _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                     _single_line(text, 120),
                 )
                 return
             logger.warning(
-                "[PrivateCompanion] 已拦截孤立工具发送回执外发: session=%s text=%s",
+                "已拦截孤立工具发送回执外发: session=%s text=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                 _single_line(text, 120),
             )
@@ -9717,7 +9720,7 @@ class PrivateCompanionPlugin(
         if not marker_kind:
             return
         logger.warning(
-            "[PrivateCompanion] 已拦截框架异常文本外发: kind=%s session=%s",
+            "已拦截框架异常文本外发: kind=%s session=%s",
             marker_kind,
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
         )
@@ -9749,7 +9752,7 @@ class PrivateCompanionPlugin(
             replacement = ""
         setattr(event, "_private_companion_response_review_guard_active", False)
         logger.error(
-            "[PrivateCompanion] 发送前拦截到回复复核内部判断: session=%s reason=%s before=%s after=%s",
+            "发送前拦截到回复复核内部判断: session=%s reason=%s before=%s after=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             reason,
             _single_line(outbound, 180),
@@ -9827,14 +9830,14 @@ class PrivateCompanionPlugin(
             review = await self._review_group_question_wakeup_reply_before_send(event, reply_text=reply_text)
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 群聊答疑回复发送前复核失败,默认放行: %s",
+                "群聊答疑回复发送前复核失败,默认放行: %s",
                 _single_line(exc, 160),
             )
             return
         if str(review.get("decision") or "") != "drop":
             return
         logger.info(
-            "[PrivateCompanion] 已拦截群聊答疑碰瓷回复: group=%s reason=%s text=%s",
+            "已拦截群聊答疑碰瓷回复: group=%s reason=%s text=%s",
             group_id,
             _single_line(review.get("reason"), 120),
             _single_line(reply_text, 160),
@@ -9864,7 +9867,7 @@ class PrivateCompanionPlugin(
             self._passive_response_review_enabled()
             and bool(getattr(event, "_private_companion_response_review_drop", False))
         ):
-            logger.info("[PrivateCompanion] 回复复核去重发送前兜底拦截")
+            logger.info("回复复核去重发送前兜底拦截")
             self._record_passive_no_reply(
                 event,
                 source="回复复核去重",
@@ -9881,7 +9884,7 @@ class PrivateCompanionPlugin(
             return
         if bool(getattr(event, "_private_companion_smart_silence_drop", False)):
             logger.info(
-                "[PrivateCompanion] 智能沉默发送前兜底拦截: reason=%s",
+                "智能沉默发送前兜底拦截: reason=%s",
                 _single_line(getattr(event, "_private_companion_smart_silence_reason", ""), 120),
             )
             self._record_passive_no_reply(
@@ -9961,12 +9964,12 @@ class PrivateCompanionPlugin(
                 recent_context=recent_context,
             )
         except Exception as exc:
-            logger.info("[PrivateCompanion] 智能沉默发送前判定失败,默认放行: %s", _single_line(exc, 120))
+            logger.warning("智能沉默发送前判定失败,默认放行: %s", _single_line(exc, 120))
             return
         if str(decision.get("decision") or "") != "silent":
             return
         logger.info(
-            "[PrivateCompanion] 智能沉默已取消本轮群聊回复: group=%s reason=%s inbound=%s reply=%s",
+            "智能沉默已取消本轮群聊回复: group=%s reason=%s inbound=%s reply=%s",
             group_id or "-",
             _single_line(decision.get("reason"), 120),
             _single_line(inbound_text, 120),
@@ -10053,7 +10056,7 @@ class PrivateCompanionPlugin(
         event.set_result(empty_result)
         event.stop_event()
         logger.info(
-            "[PrivateCompanion] 已阻止图片工具成功发送后的尾随消息: session=%s components=%s visible=%s",
+            "已阻止图片工具成功发送后的尾随消息: session=%s components=%s visible=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             len(chain),
             had_visible_content,
@@ -10115,7 +10118,7 @@ class PrivateCompanionPlugin(
         text = "".join(str(getattr(comp, "text", "") or "") for comp in chain).strip()
         if not self._is_silent_control_reply_text(text):
             return
-        logger.info("[PrivateCompanion] 已静默吞掉群聊不回复控制语: %s", _single_line(text, 120))
+        logger.info("已静默吞掉群聊不回复控制语: %s", _single_line(text, 120))
         self._record_passive_no_reply(
             event,
             source="群聊静默",
@@ -10210,7 +10213,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             decision = "send"
             reason = reason or "复核输出不可解析，默认放行"
         logger.info(
-            "[PrivateCompanion] 群聊答疑回复发送前复核: decision=%s elapsed=%dms reason=%s trigger=%s text=%s",
+            "群聊答疑回复发送前复核: decision=%s elapsed=%dms reason=%s trigger=%s text=%s",
             decision,
             int((time.perf_counter() - started) * 1000),
             reason,
@@ -10219,7 +10222,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         )
         if recent_flow:
             logger.info(
-                "[PrivateCompanion] 群聊答疑复核已附带真实群聊上下文: group=%s lines=%s chars=%s",
+                "群聊答疑复核已附带真实群聊上下文: group=%s lines=%s chars=%s",
                 group_id or "-",
                 len([line for line in recent_flow.splitlines() if line.strip()]),
                 len(recent_flow),
@@ -10273,7 +10276,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         except Exception:
             event.set_result(self._build_result_from_chain(cleaned_chain))
         logger.info(
-            "[PrivateCompanion] 已移除私聊被动主链中的跨目标引用组件: session=%s current=%s removed=%s targets=%s",
+            "已移除私聊被动主链中的跨目标引用组件: session=%s current=%s removed=%s targets=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "-",
             ",".join(sorted(current_message_ids)) or "-",
             len(chain) - len(cleaned_chain),
@@ -10353,7 +10356,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                     provider_error = False
                 if provider_error:
                     logger.warning(
-                        "[PrivateCompanion] 分段前丢弃 Provider 错误正文: session=%s preview=%s",
+                        "分段前丢弃 Provider 错误正文: session=%s preview=%s",
                         _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                         _single_line(outbound_text, 180),
                     )
@@ -10396,7 +10399,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         )
         if is_llm_result and await self._should_defer_segmenting_to_astrbot_tts(event, result, chain):
             logger.debug(
-                "[PrivateCompanion] 当前 LLM 结果交由 AstrBot 官方 TTS 与原生分段处理: session=%s",
+                "当前 LLM 结果交由 AstrBot 官方 TTS 与原生分段处理: session=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             )
             return
@@ -10427,13 +10430,13 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             return
         llm_segment_count = max(0, _safe_int(getattr(event, "_private_companion_llm_segment_count", 0), 0, 0))
         logger.debug(
-            "[PrivateCompanion] 按分段计划整理 LLM 回复: chars=%s segments=%s llm_segments=%s",
+            "按分段计划整理 LLM 回复: chars=%s segments=%s llm_segments=%s",
             len(text),
             len(chunks),
             llm_segment_count,
         )
         logger.info(
-            "[PrivateCompanion] 已按分段计划发送 LLM 回复: segments=%s llm_segments=%s first=%s full=%s",
+            "已按分段计划发送 LLM 回复: segments=%s llm_segments=%s first=%s full=%s",
             len(chunks),
             llm_segment_count,
             _single_line(self._segmented_chunk_log_text(chunks[0]), 120),
@@ -10482,7 +10485,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                     },
                 )
                 logger.info(
-                    "[PrivateCompanion] 表情正文启用有序分段: session=%s segments=%s",
+                    "表情正文启用有序分段: session=%s segments=%s",
                     _single_line(getattr(event, "unified_msg_origin", ""), 120)
                     or "unknown",
                     len(chunks),
@@ -10699,7 +10702,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 cleaned_chunks.append(cleaned_chunk)
         if removed_internal_control:
             logger.warning(
-                "[PrivateCompanion] 分段前已移除内部控制标记: session=%s",
+                "分段前已移除内部控制标记: session=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             )
         return cleaned_chunks
@@ -11230,7 +11233,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                                 signals={"stop_reason": drift_reason, "segments_expected": total + 1, "segments_sent": sent_index},
                             )
                         logger.info(
-                            "[PrivateCompanion] 分段剩余组件疑似上下文割裂，停止发送: source=%s reason=%s sent=%s/%s prev=%s next=%s",
+                            "分段剩余组件疑似上下文割裂，停止发送: source=%s reason=%s sent=%s/%s prev=%s next=%s",
                             source or "unknown",
                             drift_reason,
                             max(0, sent_index - 1),
@@ -11252,7 +11255,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                                 signals={"stop_reason": "trigger_recalled", "segments_expected": total + 1, "segments_sent": sent_index},
                             )
                         logger.info(
-                            "[PrivateCompanion] 触发消息已撤回或发送前不可见，停止发送分段剩余组件: source=%s message_id=%s sent=%s/%s",
+                            "触发消息已撤回或发送前不可见，停止发送分段剩余组件: source=%s message_id=%s sent=%s/%s",
                             source or "unknown",
                             recalled_message_id,
                             max(0, sent_index - 1),
@@ -11269,7 +11272,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                             try:
                                 if normalized_segment and provider_error_checker(normalized_segment):
                                     logger.warning(
-                                        "[PrivateCompanion] 分段剩余组件命中 Provider 错误正文，停止补发: source=%s preview=%s",
+                                        "分段剩余组件命中 Provider 错误正文，停止补发: source=%s preview=%s",
                                         source or "unknown",
                                         _single_line(normalized_segment, 180),
                                     )
@@ -11316,7 +11319,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                             )
                     if leaked_tools:
                         logger.warning(
-                            "[PrivateCompanion] 分段组件发送前已移除明文工具调用: tools=%s",
+                            "分段组件发送前已移除明文工具调用: tools=%s",
                             ",".join(leaked_tools),
                         )
                     outbound_chunk = sanitized_chunk
@@ -11330,7 +11333,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                                 outcome="incomplete",
                                 signals={"stop_reason": "forbidden_recall", "segments_expected": total + 1, "segments_sent": sent_index},
                             )
-                        logger.warning("[PrivateCompanion] 分段剩余组件命中违禁词，停止发送: word=%s", _single_line(hit, 40))
+                        logger.warning("分段剩余组件命中违禁词，停止发送: word=%s", _single_line(hit, 40))
                         return
                     delivery_path = await self._send_segmented_remainder_chain(
                         event,
@@ -11344,7 +11347,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                             signals={"segments_expected": total + 1, "segments_sent": sent_index + 1},
                         )
                     logger.info(
-                        "[PrivateCompanion] 分段 LLM 剩余组件已发送: source=%s delivery=%s index=%s/%s preview=%s",
+                        "分段 LLM 剩余组件已发送: source=%s delivery=%s index=%s/%s preview=%s",
                         source or "unknown",
                         delivery_path,
                         sent_index,
@@ -11373,7 +11376,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                                 signals={"segments_expected": total + 1, "segments_sent": sent_index},
                             )
                         logger.warning(
-                            "[PrivateCompanion] 主动分段 LLM 剩余组件发送失败: source=%s error=%s",
+                            "主动分段 LLM 剩余组件发送失败: source=%s error=%s",
                             source or "unknown",
                             _single_line(exc, 160),
                             exc_info=True,
@@ -11389,7 +11392,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                                 signals={"segments_expected": total + 1, "segments_sent": sent_index + 1},
                             )
                         logger.info(
-                            "[PrivateCompanion] 分段 LLM 剩余组件已发送: source=%s index=%s/%s preview=%s",
+                            "分段 LLM 剩余组件已发送: source=%s index=%s/%s preview=%s",
                             source or "unknown",
                             sent_index,
                             total,
@@ -11404,7 +11407,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                                 signals={"segments_expected": total + 1, "segments_sent": sent_index},
                             )
                         logger.warning(
-                            "[PrivateCompanion] 分段 LLM 剩余组件发送失败: source=%s error=%s",
+                            "分段 LLM 剩余组件发送失败: source=%s error=%s",
                             source or "unknown",
                             _single_line(exc, 160),
                             exc_info=True,
@@ -11431,7 +11434,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             segment, leaked_calls = self._strip_plaintext_tool_call_envelopes(segment)
             if leaked_calls:
                 logger.warning(
-                    "[PrivateCompanion] 分段文本发送前已移除明文工具调用: tools=%s",
+                    "分段文本发送前已移除明文工具调用: tools=%s",
                     ",".join(str(item.get("name") or "") for item in leaked_calls),
                 )
             if not segment:
@@ -11446,7 +11449,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 )
                 if drift_reason:
                     logger.info(
-                        "[PrivateCompanion] 分段剩余片段疑似上下文割裂，停止发送: source=%s reason=%s sent=%s/%s prev=%s next=%s",
+                        "分段剩余片段疑似上下文割裂，停止发送: source=%s reason=%s sent=%s/%s prev=%s next=%s",
                         source or "unknown",
                         drift_reason,
                         max(0, sent_index - 1),
@@ -11462,7 +11465,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 recalled_message_id = await self._should_cancel_reply_for_missing_or_recalled_trigger(event)
                 if recalled_message_id:
                     logger.info(
-                        "[PrivateCompanion] 触发消息已撤回或发送前不可见，停止发送分段剩余片段: source=%s message_id=%s sent=%s/%s",
+                        "触发消息已撤回或发送前不可见，停止发送分段剩余片段: source=%s message_id=%s sent=%s/%s",
                         source or "unknown",
                         recalled_message_id,
                         max(0, sent_index - 1),
@@ -11488,7 +11491,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                             if chain:
                                 hit = self._forbidden_recall_hit(self._chain_text_for_forbidden_recall(chain))
                                 if hit:
-                                    logger.warning("[PrivateCompanion] 分段 TTS 剩余片段命中违禁词，停止发送: word=%s", _single_line(hit, 40))
+                                    logger.warning("分段 TTS 剩余片段命中违禁词，停止发送: word=%s", _single_line(hit, 40))
                                     return
                                 try:
                                     await event.send(event.chain_result(chain))
@@ -11499,11 +11502,11 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                     outbound = re.sub(r"</?(?:pc[_-]?tts|t{2,}s)\b[^>]*>", "", normalized_segment, flags=re.IGNORECASE).strip() or segment
                     hit = self._forbidden_recall_hit(outbound)
                     if hit:
-                        logger.warning("[PrivateCompanion] 分段剩余片段命中违禁词，停止发送: word=%s", _single_line(hit, 40))
+                        logger.warning("分段剩余片段命中违禁词，停止发送: word=%s", _single_line(hit, 40))
                         return
                     await event.send(event.plain_result(outbound))
                 logger.info(
-                    "[PrivateCompanion] 分段 LLM 剩余片段已发送: source=%s index=%s/%s preview=%s",
+                    "分段 LLM 剩余片段已发送: source=%s index=%s/%s preview=%s",
                     source or "unknown",
                     sent_index,
                     total,
@@ -11514,7 +11517,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 raise
             except Exception as exc:
                 logger.warning(
-                    "[PrivateCompanion] 分段 LLM 剩余片段发送失败: source=%s error=%s",
+                    "分段 LLM 剩余片段发送失败: source=%s error=%s",
                     source or "unknown",
                     _single_line(exc, 160),
                     exc_info=True,
@@ -11532,7 +11535,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         try:
             result = event.get_result()
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 群聊补引用读取结果失败: %s", _single_line(exc, 120))
+            logger.debug("群聊补引用读取结果失败: %s", _single_line(exc, 120))
             return
         if result is None:
             return
@@ -11544,7 +11547,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         try:
             chain = list(getattr(result, "chain", []) or [])
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 群聊补引用读取消息链失败: %s", _single_line(exc, 120))
+            logger.debug("群聊补引用读取消息链失败: %s", _single_line(exc, 120))
             return
         if not chain:
             return
@@ -11589,7 +11592,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                         suppress_reply_reason = "framework_tts"
                 except Exception as exc:
                     logger.debug(
-                        "[PrivateCompanion] 官方 TTS 引用预判失败: session=%s error=%s",
+                        "官方 TTS 引用预判失败: session=%s error=%s",
                         _single_line(getattr(event, "unified_msg_origin", ""), 120)
                         or "unknown",
                         _single_line(exc, 120),
@@ -11625,7 +11628,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             except Exception:
                 event.set_result(self._build_result_from_chain(primary_chunk))
             logger.info(
-                "[PrivateCompanion] 语音回复已移除孤立消息引用: session=%s reason=%s removed=%s",
+                "语音回复已移除孤立消息引用: session=%s reason=%s removed=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120)
                 or "unknown",
                 suppress_reply_reason,
@@ -11652,14 +11655,14 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                     text_or_chain=flatten_component_chunks(delivery_chunks),
                 )
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 群聊补引用计算引用目标失败: %s", _single_line(exc, 120))
+                logger.debug("群聊补引用计算引用目标失败: %s", _single_line(exc, 120))
                 return
             if not quote_message_id:
                 return
             try:
                 reply = self._make_reply_component(quote_message_id, event=event)
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 群聊补引用构建消息链失败: %s", _single_line(exc, 120))
+                logger.debug("群聊补引用构建消息链失败: %s", _single_line(exc, 120))
                 return
             if reply is None:
                 return
@@ -13243,7 +13246,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             plan.render_into(req, prefer_extra_user_content=True)
             return True
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 指定位置 prompt 注入失败,回退 system_prompt: %s", _single_line(exc, 120))
+            logger.debug("指定位置 prompt 注入失败,回退 system_prompt: %s", _single_line(exc, 120))
             return False
 
     def _materialize_conversation_system_block(
@@ -13436,7 +13439,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         if changed <= 0:
             return
         logger.info(
-            "[PrivateCompanion] 已清理请求中的跨轮/跨作用域动态注入残留: session=%s surfaces_changed=%s",
+            "已清理请求中的跨轮/跨作用域动态注入残留: session=%s surfaces_changed=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             changed,
         )
@@ -13503,7 +13506,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         except Exception:
             return
         logger.info(
-            "[PrivateCompanion] 已清理请求历史里的残留反应协议标签: session=%s contexts_changed=%s",
+            "已清理请求历史里的残留反应协议标签: session=%s contexts_changed=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             changed,
         )
@@ -13597,7 +13600,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         except Exception:
             return
         logger.warning(
-            "[PrivateCompanion] 已修复不完整工具调用历史: session=%s groups=%s messages=%s contexts=%s->%s",
+            "已修复不完整工具调用历史: session=%s groups=%s messages=%s contexts=%s->%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             removed_groups,
             removed_messages,
@@ -13645,7 +13648,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             setattr(req, "_private_companion_turn_prompt_placement", "extra_user_content_parts")
             return True
         except Exception as exc:
-            logger.debug("[PrivateCompanion] extra_user_content_parts 注入失败,回退 prompt: %s", _single_line(exc, 120))
+            logger.debug("extra_user_content_parts 注入失败,回退 prompt: %s", _single_line(exc, 120))
             return False
 
     def _render_turn_prompt_fragments(self, req: ProviderRequest, *, prefer_extra_user_content: bool = False) -> bool:
@@ -13782,8 +13785,8 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         except asyncio.TimeoutError:
             elapsed_ms = int((time.time() - started) * 1000)
             metadata.update({"耗时ms": elapsed_ms, "状态": "超时"})
-            logger.info(
-                "[PrivateCompanion] 请求上下文收集超时: key=%s source=%s timeout=%.2fs",
+            logger.warning(
+                "请求上下文收集超时: key=%s source=%s timeout=%.2fs",
                 key or "-",
                 source or "-",
                 timeout,
@@ -13801,7 +13804,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             elapsed_ms = int((time.time() - started) * 1000)
             metadata.update({"耗时ms": elapsed_ms, "状态": "失败", "错误": _single_line(exc, 120)})
             logger.debug(
-                "[PrivateCompanion] 请求上下文收集失败: key=%s source=%s error=%s",
+                "请求上下文收集失败: key=%s source=%s error=%s",
                 key or "-",
                 source or "-",
                 _single_line(exc, 120),
@@ -13826,7 +13829,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             if isinstance(result, dict):
                 collected.append(result)
             elif isinstance(result, Exception):
-                logger.debug("[PrivateCompanion] 请求上下文并行收集出现未捕获异常: %s", _single_line(result, 120))
+                logger.debug("请求上下文并行收集出现未捕获异常: %s", _single_line(result, 120))
         return collected
 
     def _add_collected_prompt_contexts(self, prompt_surface: PromptSurface, collected: list[dict[str, Any]]) -> None:
@@ -14378,7 +14381,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             self._mark_memo_request_tool_boundary(event, req)
             if self._remove_future_task_for_memo_request(req, message_text):
                 logger.debug(
-                    "[PrivateCompanion] 明确便签请求已从初始工具集移除 future_task: session=%s",
+                    "明确便签请求已从初始工具集移除 future_task: session=%s",
                     _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                 )
         if (
@@ -14464,7 +14467,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                     referenced_media_edit_request = bool(await finder(event))
                 except Exception as exc:
                     logger.debug(
-                        "[PrivateCompanion] 引用图片编辑意图确认失败: session=%s error=%s",
+                        "引用图片编辑意图确认失败: session=%s error=%s",
                         _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                         _single_line(exc, 160),
                     )
@@ -14583,7 +14586,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         self._finalize_passive_reply_tool_boundary(event)
         if self._finalize_memo_request_tool_boundary(event):
             logger.info(
-                "[PrivateCompanion] 明确便签请求已从最终工具集移除 future_task,避免重复提醒: session=%s",
+                "明确便签请求已从最终工具集移除 future_task,避免重复提醒: session=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             )
 
@@ -14604,13 +14607,13 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         await self._record_official_llm_timer_tool_result(event, tool, tool_result)
         if self._record_future_task_result(event, tool, tool_args, tool_result):
             logger.info(
-                "[PrivateCompanion] 已记录本轮 future_task 成功: action=%s session=%s",
+                "已记录本轮 future_task 成功: action=%s session=%s",
                 _single_line((tool_args or {}).get("action"), 20) or "unknown",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             )
         if self._record_creative_work_tool_result(event, tool, tool_args, tool_result):
             logger.info(
-                "[PrivateCompanion] 已记录本轮创作读取工具结果: action=%s status=%s inventory_complete=%s session=%s",
+                "已记录本轮创作读取工具结果: action=%s status=%s inventory_complete=%s session=%s",
                 _single_line((tool_args or {}).get("action") if isinstance(tool_args, dict) else "", 20) or "get",
                 _single_line(getattr(event, "private_companion_creative_work_tool_status", ""), 24) or "unknown",
                 bool(getattr(event, "private_companion_bookshelf_inventory_complete", False)),
@@ -15165,7 +15168,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             )
         except Exception as exc:
             logger.debug(
-                "[PrivateCompanion] 群聊读取经期互动边界失败，已跳过: group=%s error=%s",
+                "群聊读取经期互动边界失败，已跳过: group=%s error=%s",
                 _single_line(group_id, 40) or "-",
                 _single_line(exc, 120),
             )
@@ -15624,7 +15627,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         }
         self._save_data_sync(sections={"pending_atrelay_requests"})
         logger.info(
-            "[PrivateCompanion] 转述请求等待补群: user=%s target=%s text=%s reason=%s",
+            "转述请求等待补群: user=%s target=%s text=%s reason=%s",
             uid,
             _single_line(payload.get("recipient_hint"), 80),
             _single_line(payload.get("message"), 80),
@@ -15733,7 +15736,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         pending.pop(uid, None)
         self._save_data_sync(sections={"pending_atrelay_requests"})
         logger.info(
-            "[PrivateCompanion] 已用补充群名续发转述: user=%s group=%s status=%s target=%s",
+            "已用补充群名续发转述: user=%s group=%s status=%s target=%s",
             uid,
             _single_line(group_result.get("group_id"), 40),
             _single_line(result.get("status"), 40),
@@ -15762,7 +15765,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             )
             self._store_pending_atrelay_request(pending_user_id, payload, _single_line(result.get("message"), 120))
         logger.info(
-            "[PrivateCompanion] 明确转述请求已本地直通: status=%s destination=%s target=%s text=%s",
+            "明确转述请求已本地直通: status=%s destination=%s target=%s text=%s",
             status or "-",
             _single_line(payload.get("destination"), 20),
             _single_line(payload.get("recipient_hint"), 40),
@@ -15809,14 +15812,14 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         try:
             message_id, raw_message = await self._reply_raw_message_for_event(event)
         except Exception as exc:
-            logger.info("[PrivateCompanion] 私聊引用关系网问题预读取失败: %s", _single_line(exc, 120))
+            logger.info("私聊引用关系网问题预读取失败: %s", _single_line(exc, 120))
             return ""
         if raw_message is None:
             return ""
         try:
             info = self._extract_reply_rich_card_info(raw_message)
         except Exception as exc:
-            logger.info("[PrivateCompanion] 私聊引用关系网问题解析失败: message_id=%s error=%s", message_id or "-", _single_line(exc, 120))
+            logger.info("私聊引用关系网问题解析失败: message_id=%s error=%s", message_id or "-", _single_line(exc, 120))
             return ""
         texts = [_single_line(item, 120) for item in info.get("texts", []) if _single_line(item, 120)]
         if not texts:
@@ -15825,7 +15828,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         if not self._text_looks_like_relation_lookup_question(quoted_text):
             return ""
         logger.info(
-            "[PrivateCompanion] 私聊纯引用关系网问题已补触发文本: message_id=%s text=%s",
+            "私聊纯引用关系网问题已补触发文本: message_id=%s text=%s",
             message_id or "-",
             _single_line(quoted_text, 120),
         )
@@ -15999,7 +16002,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         except Exception:
             return
         logger.info(
-            "[PrivateCompanion] 私聊超长上下文已启用轻量护栏: session=%s contexts=%s->%s approx_tokens=%s",
+            "私聊超长上下文已启用轻量护栏: session=%s contexts=%s->%s approx_tokens=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             len(contexts),
             len(trimmed),
@@ -16043,7 +16046,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         except Exception:
             return
         logger.info(
-            "[PrivateCompanion] 已按新会话边界裁剪 AstrBot 上下文: session=%s contexts=%s->%s boundary_index=%s",
+            "已按新会话边界裁剪 AstrBot 上下文: session=%s contexts=%s->%s boundary_index=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             len(contexts),
             len(trimmed),
@@ -16269,7 +16272,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         user["rest_reply_backlog_updated_at"] = now
         self._schedule_data_save(sections={"users"})
         logger.info(
-            "[PrivateCompanion] 已记录休息中未回复私聊: user=%s count=%s reason=%s text=%s",
+            "已记录休息中未回复私聊: user=%s count=%s reason=%s text=%s",
             user_id,
             len(user["rest_reply_backlog"]),
             _single_line(reason, 80),
@@ -16342,7 +16345,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
     def _stop_reply_for_rest_gate(self, event: AstrMessageEvent, reason: str) -> None:
         self._record_rest_reply_backlog(event, reason)
         logger.info(
-            "[PrivateCompanion] 睡眠/休息回复闸门拦截本轮被动回复: session=%s reason=%s",
+            "睡眠/休息回复闸门拦截本轮被动回复: session=%s reason=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             _single_line(reason, 120),
         )
@@ -16362,7 +16365,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
 
     def _stop_private_reply_after_user_rest_signal(self, event: AstrMessageEvent, user_id: str, text: str) -> None:
         logger.info(
-            "[PrivateCompanion] 用户明确勿扰/不用回复,已前置拦截本轮私聊回复: user=%s text=%s",
+            "用户明确勿扰/不用回复,已前置拦截本轮私聊回复: user=%s text=%s",
             _single_line(user_id, 80),
             _single_line(text, 120),
         )
@@ -16417,7 +16420,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             return True
         group_id = _single_line(item.get("group_id"), 80) or self._extract_group_id_from_event(event)
         logger.info(
-            "[PrivateCompanion] 本群 LLM 回复已被单独关闭,拦截本轮回复: group=%s source=%s",
+            "本群 LLM 回复已被单独关闭,拦截本轮回复: group=%s source=%s",
             group_id or "-",
             _single_line(source, 40),
         )
@@ -16558,7 +16561,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             except Exception:
                 pass
         logger.info(
-            "[PrivateCompanion] 已记录被动未回复: source=%s reason=%s count=%s session=%s inbound=%s",
+            "已记录被动未回复: source=%s reason=%s count=%s session=%s inbound=%s",
             source_text,
             reason_text,
             target.get("count"),
@@ -16641,7 +16644,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             )
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 回复拦截转发无法启动: %s",
+                "回复拦截转发无法启动: %s",
                 _single_line(exc, 160),
             )
 
@@ -16649,10 +16652,10 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         try:
             safe_text = _redact_outbound_secrets(text, self)
             await self.context.send_message(target_umo, MessageChain([Plain(safe_text)]))
-            logger.info("[PrivateCompanion] 已转发回复拦截情况: target=%s", _single_line(target_umo, 120))
+            logger.info("已转发回复拦截情况: target=%s", _single_line(target_umo, 120))
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 回复拦截转发失败: target=%s error=%s",
+                "回复拦截转发失败: target=%s error=%s",
                 _single_line(target_umo, 120),
                 _single_line(exc, 180),
             )
@@ -16686,7 +16689,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         _, changed = self._redact_outbound_chain_secrets(chain)
         if changed:
             logger.error(
-                "[PrivateCompanion] 发送前检测到敏感凭据并已脱敏: session=%s",
+                "发送前检测到敏感凭据并已脱敏: session=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             )
 
@@ -16852,7 +16855,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             if not self._private_passive_profile_available(user_id, user):
                 return
             if self._is_recent_poke_echo(user, text):
-                logger.info("[PrivateCompanion] 主动专用模式忽略 poke 回流事件: user=%s", user_id)
+                logger.info("主动专用模式忽略 poke 回流事件: user=%s", user_id)
                 return
             if self._is_duplicate_inbound_message(event, scope=f"private:{user_id}", sender_id=user_id, text=text):
                 self._schedule_data_save(sections={"inbound_debounce_stats"})
@@ -16870,7 +16873,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 user_id=user_id,
                 trigger_umo=str(getattr(event, "unified_msg_origin", "") or ""),
             ):
-                logger.info("[PrivateCompanion] 用户已在当前问候时段自然来聊,已请求取消冲突问候候选: %s", user_id)
+                logger.info("用户已在当前问候时段自然来聊,已请求取消冲突问候候选: %s", user_id)
                 if not self._simulation_active(user) and _safe_float(user.get("next_proactive_at"), 0) <= 0:
                     self._schedule_next_proactive(user, now=received_ts)
             if text:
@@ -16920,7 +16923,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 save_sections.add("food_menu")
             self._schedule_data_save(sections=save_sections)
         logger.info(
-            "[PrivateCompanion] 主动消息专用模式已跳过私聊被动增强: user=%s text=%s",
+            "主动消息专用模式已跳过私聊被动增强: user=%s text=%s",
             user_id,
             _single_line(text, 80) or "非文本消息",
         )
@@ -17123,7 +17126,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                     )
             if self._tool_set_has_named_tool(getattr(req, "func_tool", None), "send_message_to_user"):
                 logger.info(
-                    "[PrivateCompanion] 已约束被动回复的 send_message_to_user 仅用于媒体投递: session=%s",
+                    "已约束被动回复的 send_message_to_user 仅用于媒体投递: session=%s",
                     umo,
                 )
         return []
@@ -17362,7 +17365,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                     if hint:
                         projection["relationship_violation_hint"] = hint
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 统一表达决策生成失败，使用日常保守默认值: %s", _single_line(exc, 120))
+            logger.debug("统一表达决策生成失败，使用日常保守默认值: %s", _single_line(exc, 120))
             projection = build_expression_decision({}).to_dict()
         try:
             setattr(req, "_private_companion_expression_decision", projection)
@@ -17409,7 +17412,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 removed.append(name)
             except Exception as exc:
                 logger.warning(
-                    "[PrivateCompanion] 移除敏感屏幕工具失败: tool=%s session=%s error=%s",
+                    "移除敏感屏幕工具失败: tool=%s session=%s error=%s",
                     name,
                     _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                     _single_line(exc, 160),
@@ -17420,7 +17423,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             except Exception:
                 pass
             logger.info(
-                "[PrivateCompanion] 已移除非主人私聊场景的敏感屏幕工具: session=%s sender=%s tools=%s",
+                "已移除非主人私聊场景的敏感屏幕工具: session=%s sender=%s tools=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                 self._safe_event_sender_id(event) or "-",
                 ",".join(removed),
@@ -17485,7 +17488,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             )
             setattr(event, "private_companion_p5_status", self.p5_source_observer_status())
         except Exception:
-            logger.debug("[PrivateCompanion] P5 request carrier attach failed")
+            logger.debug("P5 request carrier attach failed")
 
     @filter.on_llm_request(priority=-21000)
     @_multi_persona_event_context
@@ -17520,7 +17523,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         except Exception:
             return
         logger.info(
-            "[PrivateCompanion] Cleaned malformed DeepSeek tool history: groups=%s assistants=%s tool_results=%s orphans=%s",
+            "Cleaned malformed DeepSeek tool history: groups=%s assistants=%s tool_results=%s orphans=%s",
             stats.get("removed_groups", 0),
             stats.get("removed_assistants", 0),
             stats.get("removed_tool_results", 0),
@@ -17595,7 +17598,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         try:
             remove_tool("AIsearch")
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 移除不兼容 AIsearch 工具失败: %s", _single_line(exc, 160))
+            logger.debug("移除不兼容 AIsearch 工具失败: %s", _single_line(exc, 160))
             return
         settings = self._llm_request_provider_settings_for_event(event)
         provider_label = " / ".join(self._llm_request_provider_identity_parts(event, req)[:3]) or "unknown"
@@ -17608,7 +17611,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         if log_key not in logged:
             logged.add(log_key)
             logger.warning(
-                "[PrivateCompanion] 已移除本轮 Gemini 不兼容的 AIsearch 搜索工具，避免请求 400: provider=%s websearch_provider=%s session=%s",
+                "已移除本轮 Gemini 不兼容的 AIsearch 搜索工具，避免请求 400: provider=%s websearch_provider=%s session=%s",
                 _single_line(provider_label, 200),
                 _single_line(settings.get("websearch_provider"), 80) or "unknown",
                 umo or "unknown",
@@ -17633,7 +17636,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             plan.render_into(req)
         except Exception as exc:
             logger.error(
-                "[PrivateCompanion] 主对话注入计划最终渲染失败: session=%s error=%s",
+                "主对话注入计划最终渲染失败: session=%s error=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                 _single_line(exc, 180),
             )
@@ -17658,7 +17661,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         except Exception:
             return
         logger.info(
-            "[PrivateCompanion] 已兼容化历史图片消息: session=%s messages=%s image_blocks=%s",
+            "已兼容化历史图片消息: session=%s messages=%s image_blocks=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             stats.get("messages_changed", 0),
             stats.get("image_blocks_replaced", 0),
@@ -17679,7 +17682,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         replaced, dropped = self._sanitize_provider_request_gif_inputs(req)
         if replaced or dropped:
             logger.info(
-                "[PrivateCompanion] Provider 请求中的 GIF 已兼容化: converted=%s dropped=%s session=%s",
+                "Provider 请求中的 GIF 已兼容化: converted=%s dropped=%s session=%s",
                 replaced,
                 dropped,
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
@@ -17708,7 +17711,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 return True
             except Exception as exc:
                 logger.debug(
-                    "[PrivateCompanion] 请求级移除未就绪生图工具失败: %s",
+                    "请求级移除未就绪生图工具失败: %s",
                     _single_line(exc, 120),
                 )
                 return False
@@ -17723,7 +17726,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             return True
         except Exception as exc:
             logger.debug(
-                "[PrivateCompanion] 兼容请求级移除未就绪生图工具失败: %s",
+                "兼容请求级移除未就绪生图工具失败: %s",
                 _single_line(exc, 120),
             )
             return False
@@ -17800,7 +17803,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                         return True
             except Exception as exc:
                 logger.debug(
-                    "[PrivateCompanion] pc_generate_photo 请求工具描述标注失败: %s",
+                    "pc_generate_photo 请求工具描述标注失败: %s",
                     _single_line(exc, 120),
                 )
                 return False
@@ -17813,7 +17816,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 return True
             except Exception as exc:
                 logger.debug(
-                    "[PrivateCompanion] pc_generate_photo 兼容工具描述标注失败: %s",
+                    "pc_generate_photo 兼容工具描述标注失败: %s",
                     _single_line(exc, 120),
                 )
         return False
@@ -17836,7 +17839,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             self._annotate_photo_tool_prompt_format_for_request(req)
         except Exception as exc:
             logger.debug(
-                "[PrivateCompanion] pc_generate_photo 工具提示词格式标注失败: %s",
+                "pc_generate_photo 工具提示词格式标注失败: %s",
                 _single_line(exc, 120),
             )
 
@@ -17863,7 +17866,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             return
         result = intercept_astrbot_group_context(event, req)
         logger.info(
-            "[PrivateCompanion] 已拦截 AstrBot 群聊对话注入: session=%s history=%s icl=%s",
+            "已拦截 AstrBot 群聊对话注入: session=%s history=%s icl=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 140) or "unknown",
             result.get("history_messages", 0),
             result.get("group_icl_removed", 0),
@@ -17899,7 +17902,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                     plan.render_into(req)
             except Exception as exc:
                 logger.warning(
-                    "[PrivateCompanion] 私聊请求的群作用域注入计划裁剪失败: session=%s error=%s",
+                "私聊请求的群作用域注入计划裁剪失败: session=%s error=%s",
                     _single_line(getattr(event, "unified_msg_origin", ""), 120)
                     or "unknown",
                     _single_line(exc, 160),
@@ -17931,7 +17934,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             plan.freeze()
         except Exception as exc:
             logger.error(
-                "[PrivateCompanion] 主对话注入计划冻结失败: session=%s error=%s",
+                "主对话注入计划冻结失败: session=%s error=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120)
                 or "unknown",
                 _single_line(exc, 180),
@@ -17975,7 +17978,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             return
         try:
             if getter(target_provider) is None:
-                logger.warning("[PrivateCompanion] 敏感拒答替换模型不存在：%s", target_provider)
+                logger.warning("敏感拒答替换模型不存在：%s", target_provider)
                 return
         except Exception:
             return
@@ -18008,7 +18011,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 except Exception:
                     pass
                 logger.warning(
-                    "[PrivateCompanion] 敏感拒答替换模型仍拒答，已阻断原回复: original=%s target=%s keyword=%s",
+                    "敏感拒答替换模型仍拒答，已阻断原回复: original=%s target=%s keyword=%s",
                     _single_line(current_provider, 120) or "unknown",
                     target_provider,
                     _single_line(fallback_keyword or keyword, 80),
@@ -18021,14 +18024,14 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             except Exception:
                 pass
             logger.info(
-                "[PrivateCompanion] 检测到模型敏感拒答，已改用指定对话模型: original=%s target=%s keyword=%s",
+                "检测到模型敏感拒答，已改用指定对话模型: original=%s target=%s keyword=%s",
                 _single_line(current_provider, 120) or "unknown",
                 target_provider,
                 _single_line(keyword, 80),
             )
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 敏感拒答替换模型调用失败，已阻断原回复: target=%s error=%s",
+                "敏感拒答替换模型调用失败，已阻断原回复: target=%s error=%s",
                 target_provider,
                 _single_line(exc, 180),
             )
@@ -18052,7 +18055,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 same_session_tool_call, _ = same_session_tool(event, resp)
             except Exception as exc:
                 logger.debug(
-                    "[PrivateCompanion] 同会话工具回复去重准备失败: %s",
+                    "同会话工具回复去重准备失败: %s",
                     _single_line(exc, 120),
                 )
         if same_session_tool_call:
@@ -18089,7 +18092,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             resp.completion_text = ""
             original_text = ""
             logger.info(
-                "[PrivateCompanion] 已隐藏媒体工具调用前的中间正文: tools=%s session=%s",
+                "已隐藏媒体工具调用前的中间正文: tools=%s session=%s",
                 ",".join(sorted(normalized_tool_names)),
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             )
@@ -18115,7 +18118,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 except (AttributeError, TypeError):
                     pass
             logger.info(
-                "[PrivateCompanion] 图片已发送，已丢弃同轮尾随模型正文: session=%s chars=%s",
+                "图片已发送，已丢弃同轮尾随模型正文: session=%s chars=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                 len(recovered_text or ""),
             )
@@ -18276,7 +18279,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             original_text = ""
             recovered_text = ""
             logger.info(
-                "[PrivateCompanion] 已清除图片工具成功发送后的内部静默标记: session=%s",
+                "已清除图片工具成功发送后的内部静默标记: session=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             )
         if (
@@ -18291,7 +18294,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             original_text = ""
             recovered_text = ""
             logger.info(
-                "[PrivateCompanion] 已移除生图工具成功发送后的重复承接正文: session=%s caption=%s",
+                "已移除生图工具成功发送后的重复承接正文: session=%s caption=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                 _single_line(sent_photo_caption, 120),
             )
@@ -18320,7 +18323,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             except Exception:
                 pass
             logger.info(
-                "[PrivateCompanion] 已将同会话工具文本恢复为唯一最终回复: session=%s text=%s",
+                "已将同会话工具文本恢复为唯一最终回复: session=%s text=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                 _single_line(pending_tool_text, 160),
             )
@@ -18514,7 +18517,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 )
                 if corrected:
                     logger.info(
-                        "[PrivateCompanion] 私聊引用图片回复疑似被历史话题污染,已按视觉摘要纠偏: user=%s before=%s after=%s",
+                        "私聊引用图片回复疑似被历史话题污染,已按视觉摘要纠偏: user=%s before=%s after=%s",
                         user_id,
                         _single_line(working_text, 120),
                         _single_line(corrected, 160),
@@ -18551,7 +18554,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             )
             if sanitized_elapsed_text != working_text:
                 logger.info(
-                    "[PrivateCompanion] 已清理重复纠正后的生硬回复: user=%s before=%s after=%s",
+                    "已清理重复纠正后的生硬回复: user=%s before=%s after=%s",
                     user_id,
                     _single_line(working_text, 120),
                     _single_line(sanitized_elapsed_text, 120),
@@ -18579,7 +18582,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                     stats["last_smart_silence_at"] = self._environment_now().strftime("%Y-%m-%d %H:%M")
                     self._save_data_sync(sections={"users"})
                 logger.info(
-                    "[PrivateCompanion] 智能沉默已取消本轮私聊回复: user=%s reason=%s inbound=%s reply=%s",
+                    "智能沉默已取消本轮私聊回复: user=%s reason=%s inbound=%s reply=%s",
                     user_id,
                     _single_line(silence_decision.get("reason"), 120),
                     _single_line(inbound_text, 120),
@@ -18616,7 +18619,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                     stats["last_duplicate_dropped_at"] = self._environment_now().strftime("%Y-%m-%d %H:%M")
                     self._save_data_sync(sections={"users"})
                 logger.info(
-                    "[PrivateCompanion] 回复复核已取消重复私聊回复: user=%s inbound=%s reply=%s",
+                    "回复复核已取消重复私聊回复: user=%s inbound=%s reply=%s",
                     user_id,
                     _single_line(inbound_text, 120),
                     _single_line(working_text, 160),
@@ -18663,7 +18666,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                     stats["last_duplicate_dropped_at"] = self._environment_now().strftime("%Y-%m-%d %H:%M")
                     self._save_data_sync(sections={"users"})
                 logger.info(
-                    "[PrivateCompanion] 发送前去重已取消重复私聊回复: user=%s reason=%s inbound=%s reply=%s",
+                    "发送前去重已取消重复私聊回复: user=%s reason=%s inbound=%s reply=%s",
                     user_id,
                     _single_line(duplicate_reason, 120),
                     _single_line(inbound_text, 120),
@@ -18883,7 +18886,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         last_at = _safe_float(cache.get(signature), 0.0)
         if last_at and now - last_at <= ttl:
             logger.info(
-                "[PrivateCompanion] 已跳过重复的每日穿搭命令发图: scope=%s image=%s age=%.1fs",
+                "已跳过重复的每日穿搭命令发图: scope=%s image=%s age=%.1fs",
                 _single_line(scope, 120),
                 _single_line(image_path, 160),
                 now - last_at,
@@ -19422,7 +19425,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 )
             except Exception as exc:
                 logger.warning(
-                    "[PrivateCompanion] 摄像头单帧读取异常: %s",
+                    "摄像头单帧读取异常: %s",
                     _single_line(exc, 160),
                 )
                 result = {"status": "error", "message": "摄像头单帧读取失败，请稍后再试或检查设备连接。"}
@@ -19599,7 +19602,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                         await self._reply_with_optional_media(event, caption, image_path)
                     except Exception as exc:
                         logger.warning(
-                            "[PrivateCompanion] 每日穿搭命令发图异常,为避免重复发送已不再兜底补发: image=%s err=%s",
+                            "每日穿搭命令发图异常,为避免重复发送已不再兜底补发: image=%s err=%s",
                             _single_line(image_path, 160),
                             _single_line(exc, 180),
                         )
@@ -19679,7 +19682,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             return
         inbound_checker = getattr(self, "_event_is_inbound_chat_message", None)
         if callable(inbound_checker) and not inbound_checker(event):
-            logger.debug("[PrivateCompanion] 非入站聊天事件跳过私聊档案预建")
+            logger.debug("非入站聊天事件跳过私聊档案预建")
             return
         try:
             user_id = str(event.get_sender_id())
@@ -19704,7 +19707,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 self._schedule_data_save(sections={"users"})
         if auto_profile_created:
             logger.info(
-                "[PrivateCompanion] 已建立最小用户档案: user=%s platform=%s",
+                "已建立最小用户档案: user=%s platform=%s",
                 _single_line(self._canonical_private_user_id(user_id), 80),
                 _single_line(self._platform_kind_for_event(event), 40),
             )
@@ -19741,7 +19744,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                         confirmation_reply = pending_confirmation_handler(user, feedback_text)
                     except Exception as exc:
                         logger.warning(
-                            "[PrivateCompanion] 现实触及待授权确认处理失败: %s",
+                            "现实触及待授权确认处理失败: %s",
                             _single_line(exc, 160),
                         )
                 else:
@@ -19759,7 +19762,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                     confirmation_reply = pending_confirmation_handler(user, feedback_text)
                 except Exception as exc:
                     logger.warning(
-                        "[PrivateCompanion] 现实触及待授权确认处理失败: %s",
+                        "现实触及待授权确认处理失败: %s",
                         _single_line(exc, 160),
                     )
             if confirmation_reply:
@@ -19832,7 +19835,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             return result
         except Exception as exc:
             logger.debug(
-                "[PrivateCompanion] C3 activity capture skipped: scope=%s id=%s error=%s",
+                "C3 activity capture skipped: scope=%s id=%s error=%s",
                 scope,
                 subject_id or "-",
                 _single_line(exc, 160),
@@ -19934,7 +19937,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 self._save_data_sync(sections={"groups"})
         if blocked:
             logger.info(
-                "[PrivateCompanion] 已静默群成员消息: group=%s sender=%s",
+                "已静默群成员消息: group=%s sender=%s",
                 group_id,
                 sender_id,
             )
@@ -20067,7 +20070,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         )
         if result.get("blocked"):
             logger.warning(
-                "[PrivateCompanion] 群成员风险次数达到阈值，已静默当前消息: group=%s sender=%s",
+                "群成员风险次数达到阈值，已静默当前消息: group=%s sender=%s",
                 group_id,
                 sender_id,
             )
@@ -20095,7 +20098,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             return
         if kind == "third_party":
             logger.info(
-                "[PrivateCompanion] 群聊第三方画像查询已拦截: reason=explicit_third_party_query group_hash=%s text_hash=%s text_len=%s",
+                "群聊第三方画像查询已拦截: reason=explicit_third_party_query group_hash=%s text_hash=%s text_len=%s",
                 hashlib.sha256(str(group_id).encode("utf-8", errors="ignore")).hexdigest()[:12],
                 hashlib.sha256(str(text).encode("utf-8", errors="ignore")).hexdigest()[:12],
                 len(str(text)),

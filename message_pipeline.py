@@ -7,7 +7,6 @@ from copy import deepcopy
 from functools import wraps
 from typing import Any
 
-from astrbot.api import logger
 
 from .companion_interaction_expression import current_interaction_projection
 from .helpers import (
@@ -18,6 +17,9 @@ from .helpers import (
     _safe_int,
     _single_line,
 )
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 def _coalesce_event_data_saves(handler: Any) -> Any:
@@ -108,13 +110,13 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
         return
     inbound_checker = getattr(self, "_event_is_inbound_chat_message", None)
     if callable(inbound_checker) and not inbound_checker(event):
-        logger.debug("[PrivateCompanion] 非入站聊天事件跳过私聊陪伴链路")
+        logger.debug("非入站聊天事件跳过私聊陪伴链路")
         return
     received_ts = _now_ts()
     user_id = str(event.get_sender_id())
     self_id = self._event_self_id(event)
     if user_id and self_id and user_id == self_id:
-        logger.info("[PrivateCompanion] 忽略 Bot 自己的私聊回流事件: user=%s", user_id)
+        logger.info("忽略 Bot 自己的私聊回流事件: user=%s", user_id)
         return
     sender_display_name = _single_line(self._sender_display_name(event), 40)
     text = _single_line(event.message_str, 120)
@@ -142,13 +144,13 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
         self._schedule_data_save(sections={"users", "unified_person"})
     if auto_profile_created:
         logger.info(
-            "[PrivateCompanion] 已建立最小用户档案: user=%s platform=%s",
+            "已建立最小用户档案: user=%s platform=%s",
             _single_line(self._canonical_private_user_id(user_id), 80),
             _single_line(self._platform_kind_for_event(event), 40),
         )
     if self._is_onebot_poke_notice_event(event):
         # 戳一戳会以私聊空文本事件进入 AstrBot；交给专用插件处理。
-        logger.debug("[PrivateCompanion] 私聊戳一戳 notice 交给专用插件")
+        logger.debug("私聊戳一戳 notice 交给专用插件")
         return
     self._qzone_note_event_bot(event)
     if text.startswith(("陪伴", "/陪伴", "私聊陪伴", "主动陪伴")):
@@ -174,7 +176,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
                 source_text=text,
             )
         logger.info(
-            "[PrivateCompanion] 已有其他链路回复,跳过私聊被动接管: user=%s text=%s result=%s",
+            "已有其他链路回复,跳过私聊被动接管: user=%s text=%s result=%s",
             user_id,
             _single_line(text, 80),
             _single_line(existing_reply_preview, 120),
@@ -189,7 +191,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
     )
     if not private_profile_available:
         logger.info(
-            "[PrivateCompanion] 非目标/未启用私聊放行默认主链: user=%s text=%s reason=%s",
+            "非目标/未启用私聊放行默认主链: user=%s text=%s reason=%s",
             _single_line(canonical_user_id or user_id, 80),
             _single_line(text, 120),
             "not_profile",
@@ -221,7 +223,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
             if not missing:
                 raise
             logger.warning(
-                "[PrivateCompanion] 私聊自然语言生图前置处理缺少可选模型依赖，已降级放行普通私聊: user=%s module=%s err=%s",
+                "私聊自然语言生图前置处理缺少可选模型依赖，已降级放行普通私聊: user=%s module=%s err=%s",
                 user_id,
                 missing,
                 _single_line(exc, 160),
@@ -244,7 +246,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
             forward_id, forward_payload = await self._find_forward_descriptor_for_event(event)
         except Exception as exc:
             forward_id, forward_payload = "", {}
-            logger.info("[PrivateCompanion] 私聊合并消息预解析失败: user=%s error=%s", user_id, _single_line(exc, 120))
+            logger.info("私聊合并消息预解析失败: user=%s error=%s", user_id, _single_line(exc, 120))
         if forward_id or forward_payload:
             forward_only_prompt = "我转发了一段聊天记录,你看看里面在说什么。"
             text = forward_only_prompt
@@ -256,7 +258,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
             except Exception:
                 pass
             logger.info(
-                "[PrivateCompanion] 私聊纯合并消息已补触发文本: user=%s id=%s inline=%s",
+                "私聊纯合并消息已补触发文本: user=%s id=%s inline=%s",
                 user_id,
                 _single_line(forward_id, 40) or "inline",
                 bool(forward_payload),
@@ -286,7 +288,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
         except Exception:
             component_types = []
         logger.info(
-            "[PrivateCompanion] 忽略空私聊事件,避免阻止默认 LLM 空跑: user=%s components=%s",
+            "忽略空私聊事件,避免阻止默认 LLM 空跑: user=%s components=%s",
             user_id,
             ",".join([item for item in component_types if item]) or "-",
         )
@@ -314,7 +316,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
             if not missing:
                 raise
             logger.warning(
-                "[PrivateCompanion] 私聊引用媒体检测缺少可选模型依赖，已按普通文本继续: user=%s module=%s err=%s",
+                "私聊引用媒体检测缺少可选模型依赖，已按普通文本继续: user=%s module=%s err=%s",
                 user_id,
                 missing,
                 _single_line(exc, 160),
@@ -322,7 +324,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
             reference_media_with_text = False
         if reference_media_with_text:
             logger.info(
-                "[PrivateCompanion] 私聊引用媒体/合并消息附带文字,跳过文本收口等待: user=%s text=%s",
+                "私聊引用媒体/合并消息附带文字,跳过文本收口等待: user=%s text=%s",
                 user_id,
                 _single_line(text, 80),
             )
@@ -357,7 +359,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
         and not self._is_private_image_only_message(event, text)
     ):
         if self._is_recent_poke_echo(fast_user, text):
-            logger.info("[PrivateCompanion] 忽略 poke 回流事件,不计入用户新消息: %s", user_id)
+            logger.info("忽略 poke 回流事件,不计入用户新消息: %s", user_id)
             return
         if self._is_duplicate_inbound_message(event, scope=f"private:{user_id}", sender_id=user_id, text=text):
             self._record_passive_no_reply(
@@ -382,7 +384,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
             user_id=user_id,
             trigger_umo=str(getattr(event, "unified_msg_origin", "") or ""),
         ):
-            logger.info("[PrivateCompanion] 用户已在当前问候时段自然来聊,已请求取消冲突问候候选: %s", user_id)
+            logger.info("用户已在当前问候时段自然来聊,已请求取消冲突问候候选: %s", user_id)
             if not self._simulation_active(fast_user) and _safe_float(fast_user.get("next_proactive_at"), 0) <= 0:
                 self._schedule_next_proactive(fast_user, now=received_ts)
         safe_text = self._sanitize_orphan_tts_placeholders(text)
@@ -430,7 +432,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
             if not missing:
                 raise
             logger.warning(
-                "[PrivateCompanion] 私聊轻量链路记忆桥缺少可选模型依赖，已跳过记忆增强: user=%s module=%s err=%s",
+                "私聊轻量链路记忆桥缺少可选模型依赖，已跳过记忆增强: user=%s module=%s err=%s",
                 user_id,
                 missing,
                 _single_line(exc, 160),
@@ -502,7 +504,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
                 ) or {}
             except Exception as exc:
                 logger.warning(
-                    "[PrivateCompanion] 轻量私聊日历候选观察失败，已放行当前回复: user=%s error=%s",
+                    "轻量私聊日历候选观察失败，已放行当前回复: user=%s error=%s",
                     user_id,
                     _single_line(exc, 160),
                 )
@@ -541,14 +543,14 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
         )
         if not is_target_user:
             logger.info(
-                "[PrivateCompanion] 非目标/未启用私聊不记录陪伴资料: user=%s text=%s",
+                "非目标/未启用私聊不记录陪伴资料: user=%s text=%s",
                 _single_line(user_id, 80),
                 _single_line(text, 120),
             )
             return
         user = self._get_user(user_id)
         if self._is_recent_poke_echo(user, text):
-            logger.info("[PrivateCompanion] 忽略 poke 回流事件,不计入用户新消息: %s", user_id)
+            logger.info("忽略 poke 回流事件,不计入用户新消息: %s", user_id)
             return
         if self._is_duplicate_inbound_message(event, scope=f"private:{user_id}", sender_id=user_id, text=text):
             self._schedule_data_save(sections={"inbound_debounce_stats"})
@@ -596,7 +598,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
                 if not missing:
                     raise
                 logger.warning(
-                    "[PrivateCompanion] 私聊图文图片预处理缺少可选模型依赖，已按纯文本继续: user=%s module=%s err=%s",
+                    "私聊图文图片预处理缺少可选模型依赖，已按纯文本继续: user=%s module=%s err=%s",
                     user_id,
                     missing,
                     _single_line(exc, 160),
@@ -612,7 +614,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
                     if not missing:
                         raise
                     logger.warning(
-                        "[PrivateCompanion] 私聊图文视觉 provider 检测缺少可选模型依赖，已关闭本轮识图: user=%s module=%s err=%s",
+                        "私聊图文视觉 provider 检测缺少可选模型依赖，已关闭本轮识图: user=%s module=%s err=%s",
                         user_id,
                         missing,
                         _single_line(exc, 160),
@@ -646,7 +648,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
                         if not missing:
                             raise
                         logger.warning(
-                            "[PrivateCompanion] 私聊图文视觉摘要缺少可选模型依赖，已按无视觉摘要继续: user=%s module=%s err=%s",
+                            "私聊图文视觉摘要缺少可选模型依赖，已按无视觉摘要继续: user=%s module=%s err=%s",
                             user_id,
                             missing,
                             _single_line(exc, 160),
@@ -655,7 +657,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
                     if vision_text:
                         setattr(event, "private_companion_delayed_image_vision_text", vision_text)
                 logger.info(
-                    "[PrivateCompanion] 私聊文本图片混合消息已接入图片上下文: user=%s images=%s mode=%s gif=%s combo=%s vision=%s text=%s",
+                    "私聊文本图片混合消息已接入图片上下文: user=%s images=%s mode=%s gif=%s combo=%s vision=%s text=%s",
                     user_id,
                     len(usable_images),
                     image_mode,
@@ -666,7 +668,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
                 )
             else:
                 logger.info(
-                    "[PrivateCompanion] 私聊文本图片混合消息未解析到可用图片源: user=%s sources=%s text=%s",
+                    "私聊文本图片混合消息未解析到可用图片源: user=%s sources=%s text=%s",
                     user_id,
                     len(persisted_images),
                     _single_line(text, 80),
@@ -703,7 +705,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
                     buffers.pop(key, None)
                     setattr(event, "private_companion_deferred_private_image_only", False)
                     logger.info(
-                        "[PrivateCompanion] 私聊单图未解析到可用图片源,放行原始事件: user=%s sources=%s",
+                        "私聊单图未解析到可用图片源,放行原始事件: user=%s sources=%s",
                         user_id,
                         len(persisted_images),
                     )
@@ -712,7 +714,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
                     return
                 if not has_model_usable_image:
                     logger.info(
-                        "[PrivateCompanion] 私聊单图已保存但不可直供模型,仍进入防抖等待补充: user=%s sources=%s",
+                        "私聊单图已保存但不可直供模型,仍进入防抖等待补充: user=%s sources=%s",
                         user_id,
                         len(persisted_images),
                     )
@@ -739,7 +741,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
                         label="private_image_debounce_vision",
                     )
                 logger.info(
-                    "[PrivateCompanion] 私聊单图已进入防抖缓冲: user=%s images=%s mode=%s vision=%s",
+                    "私聊单图已进入防抖缓冲: user=%s images=%s mode=%s vision=%s",
                     user_id,
                     len(persisted_images),
                     image_mode,
@@ -783,7 +785,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
                     first_ts = _safe_float(existing_buffer.get("first_ts"), received_ts, received_ts)
                     existing_buffer["deadline_ts"] = first_ts + self._message_debounce_seconds("image")
                 logger.info(
-                    "[PrivateCompanion] 消息收口合并补话: kind=image mode=fixed scope=private:%s sender=%s wait=%.1fs count=%s text=%s",
+                    "消息收口合并补话: kind=image mode=fixed scope=private:%s sender=%s wait=%.1fs count=%s text=%s",
                     user_id,
                     user_id,
                     self._message_debounce_seconds("image"),
@@ -806,7 +808,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
                     if not missing:
                         raise
                     logger.warning(
-                        "[PrivateCompanion] 私聊智能收口模型缺少可选依赖，已回退固定等待: user=%s module=%s err=%s",
+                        "私聊智能收口模型缺少可选依赖，已回退固定等待: user=%s module=%s err=%s",
                         user_id,
                         missing,
                         _single_line(exc, 160),
@@ -934,7 +936,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
             )
             if expression_feedback:
                 logger.info(
-                    "[PrivateCompanion] 表达规则收到用户反馈: user=%s signal=%s updated=%s demoted=%s",
+                    "表达规则收到用户反馈: user=%s signal=%s updated=%s demoted=%s",
                     user_id,
                     _single_line(expression_feedback.get("signal"), 16),
                     _safe_int(expression_feedback.get("updated_rules"), 0, 0),
@@ -963,7 +965,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
                         ) or {}
                     except Exception as exc:
                         logger.warning(
-                            "[PrivateCompanion] 日历候选观察失败，已放行当前回复: user=%s error=%s",
+                            "日历候选观察失败，已放行当前回复: user=%s error=%s",
                             user_id,
                             _single_line(exc, 160),
                         )
@@ -1047,7 +1049,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
                 user_id=user_id,
                 trigger_umo=str(getattr(event, "unified_msg_origin", "") or ""),
             ):
-                logger.info("[PrivateCompanion] 用户已在当前问候时段自然来聊,已请求取消冲突问候候选: %s", user_id)
+                logger.info("用户已在当前问候时段自然来聊,已请求取消冲突问候候选: %s", user_id)
                 if not self._simulation_active(user) and _safe_float(user.get("next_proactive_at"), 0) <= 0:
                     self._schedule_next_proactive(user, now=_now_ts())
         user_is_owner = self._private_user_role(user, user_id) == "owner"
@@ -1155,7 +1157,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
                 if not missing:
                     raise
                 logger.warning(
-                    "[PrivateCompanion] 私聊记忆上下文挂载缺少可选模型依赖，已跳过记忆增强: user=%s module=%s err=%s",
+                    "私聊记忆上下文挂载缺少可选模型依赖，已跳过记忆增强: user=%s module=%s err=%s",
                     user_id,
                     missing,
                     _single_line(exc, 160),
@@ -1214,7 +1216,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
 
     if not is_target_user:
         logger.info(
-            "[PrivateCompanion] 非目标/未启用私聊放行默认主链: user=%s text=%s",
+            "非目标/未启用私聊放行默认主链: user=%s text=%s",
             _single_line(user_id, 80),
             _single_line(text, 120),
         )
@@ -1249,7 +1251,7 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
         return
     if self._is_onebot_poke_notice_event(event):
         # 同样避免群聊观察链将戳一戳误作空消息或普通上下文。
-        logger.debug("[PrivateCompanion] 群聊戳一戳 notice 已放行给专用插件")
+        logger.debug("群聊戳一戳 notice 已放行给专用插件")
         return
     self._qzone_note_event_bot(event)
     if not _persona_feature_enabled(self, "enable_group_companion"):
@@ -1264,7 +1266,7 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
     self_id = self._event_self_id(event)
     if sender_id and self_id and sender_id == self_id:
         logger.info(
-            "[PrivateCompanion] 已终止 Bot 自己的群聊回流事件: group=%s self=%s text=%s",
+            "已终止 Bot 自己的群聊回流事件: group=%s self=%s text=%s",
             group_id,
             self_id,
             _single_line(getattr(event, "message_str", ""), 80),
@@ -1329,7 +1331,7 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
     )
     existing_reply_preview = self._event_existing_reply_result_preview(event)
     if self._proactive_only_blocks_passive_event(event, "group_event_pipeline"):
-        logger.debug("[PrivateCompanion] 主动消息专用模式已保留群聊观察,跳过回复增强")
+        logger.debug("主动消息专用模式已保留群聊观察,跳过回复增强")
         return
     if existing_reply_preview:
         async with self._data_lock:
@@ -1352,7 +1354,7 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
             self._save_data_sync(sections={"groups"})
             group_snapshot = deepcopy(group)
         logger.info(
-            "[PrivateCompanion] 已有其他链路回复,仅记录群聊观察: group=%s sender=%s text=%s result=%s",
+            "已有其他链路回复,仅记录群聊观察: group=%s sender=%s text=%s result=%s",
             group_id,
             sender_id,
             _single_line(text, 80),
@@ -1369,7 +1371,7 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
         return
     if self._group_llm_reply_blocked(group_id):
         logger.debug(
-            "[PrivateCompanion] 本群 LLM 回复已关闭,已保留观察并跳过回复增强: group=%s text=%s",
+            "本群 LLM 回复已关闭,已保留观察并跳过回复增强: group=%s text=%s",
             group_id,
             _single_line(text, 80),
         )
@@ -1392,7 +1394,7 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
         try:
             quoted_link_payload = await self._event_reply_contains_link_payload(event)
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 群聊引用链接守卫读取失败: %s", _single_line(exc, 120))
+            logger.debug("群聊引用链接守卫读取失败: %s", _single_line(exc, 120))
         if quoted_link_payload:
             setattr(event, "private_companion_group_quoted_link_payload", True)
     current_link_payload = _group_link_message_context(text, limit=260)[1]
@@ -1493,7 +1495,7 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
                     user_id=scoped_sender_id,
                     trigger_umo=str(getattr(event, "unified_msg_origin", "") or ""),
                 ):
-                    logger.info("[PrivateCompanion] 目标用户已在群内交流,已请求取消冲突问候候选: group=%s user=%s", group_id, scoped_sender_id)
+                    logger.info("目标用户已在群内交流,已请求取消冲突问候候选: group=%s user=%s", group_id, scoped_sender_id)
                     if not self._simulation_active(target_user) and _safe_float(target_user.get("next_proactive_at"), 0) <= 0:
                         self._schedule_next_proactive(target_user, now=received_ts)
                 self._maybe_schedule_post_goodnight_group_activity(
@@ -1695,7 +1697,7 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
                 note=_single_line(image_wakeup.get("note"), 180),
             )
             logger.info(
-                "[PrivateCompanion] 群聊图片内容命中唤醒词: group=%s sender=%s word=%s strength=%s",
+                "群聊图片内容命中唤醒词: group=%s sender=%s word=%s strength=%s",
                 group_id,
                 sender_id,
                 image_wakeup.get("word"),
@@ -1765,7 +1767,7 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
                     note=_single_line(wakeup.get("note"), 180),
                 )
                 logger.info(
-                    "[PrivateCompanion] 群聊增强唤醒命中: group=%s sender=%s type=%s word=%s strength=%s fatigue=%s reason=%s detail=%s",
+                    "群聊增强唤醒命中: group=%s sender=%s type=%s word=%s strength=%s fatigue=%s reason=%s detail=%s",
                     group_id,
                     sender_id,
                     wakeup.get("type"),
@@ -1856,7 +1858,7 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
                 group_reference_media_with_text = await self._event_references_media_or_forward_with_text(event, text)
             if group_reference_media_with_text:
                 logger.info(
-                    "[PrivateCompanion] 群聊引用媒体/合并消息附带文字,跳过群聊收口等待: group=%s sender=%s text=%s",
+                    "群聊引用媒体/合并消息附带文字,跳过群聊收口等待: group=%s sender=%s text=%s",
                     group_id,
                     sender_id,
                     _single_line(text, 80),
@@ -1883,7 +1885,7 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
                 )
                 self._save_data_sync(sections={"groups"})
                 logger.info(
-                    "[PrivateCompanion] 群聊高强度消息已合并等待: group=%s sender=%s scope=%s recent_wakeups=%s floor=%s reason=%s wait=%ss text=%s",
+                    "群聊高强度消息已合并等待: group=%s sender=%s scope=%s recent_wakeups=%s floor=%s reason=%s wait=%ss text=%s",
                     group_id,
                     sender_id,
                     _persona_value(self, "group_high_intensity_merge_scope", "group"),
@@ -1927,7 +1929,7 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
                 }
                 self._save_data_sync(sections={"groups"})
                 logger.info(
-                    "[PrivateCompanion] 群聊读空气拦截回复: group=%s sender=%s reason=%s text=%s",
+                    "群聊读空气拦截回复: group=%s sender=%s reason=%s text=%s",
                     group_id,
                     sender_id,
                     air_guard.get("reason"),
@@ -2075,7 +2077,7 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
         )
     else:
         logger.info(
-            "[PrivateCompanion] 群聊高强度收口生效: group=%s recent_wakeups=%s threshold=%s merge_active=%s floor=%s reason=%s merge_scope=%s merge_wait=%ss skip=followup-refresh/general-interject repeat=enabled",
+            "群聊高强度收口生效: group=%s recent_wakeups=%s threshold=%s merge_active=%s floor=%s reason=%s merge_scope=%s merge_wait=%ss skip=followup-refresh/general-interject repeat=enabled",
             group_id,
             group_snapshot_high_intensity.get("recent_wakeups"),
             group_snapshot_high_intensity.get("threshold"),

@@ -32,7 +32,7 @@ from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 from xml.etree import ElementTree as ET
 
-from astrbot.api import AstrBotConfig, logger
+from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 try:
     from astrbot.api.message_components import At, Image, Plain, Record, Reply
@@ -136,6 +136,9 @@ from .planning import (
     normalize_story_plan,
     pick_detail_segment,
 )
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 DEFAULT_AI_DAILY_MORNING_UID = "3706929260006322"
 DEFAULT_AI_DAILY_JUYA_UID = "285286947"
@@ -555,7 +558,7 @@ class NewsExplorationMixin:
             result["cache_hit"] = True
             result["cache_key"] = key
             logger.info(
-                "[PrivateCompanion] 外界信息自我关联命中缓存: source=%s key=%s hit=%s",
+                "外界信息自我关联命中缓存: source=%s key=%s hit=%s",
                 source_type,
                 key,
                 item["hit_count"],
@@ -1174,7 +1177,7 @@ class NewsExplorationMixin:
             if isinstance(raw, list):
                 return [item for item in raw if isinstance(item, dict)]
         except Exception as e:
-            logger.debug(f"[PrivateCompanion] 读取 B 站观看日志失败: {e}")
+            logger.debug(f"读取 B 站观看日志失败: {e}")
         return []
 
     def _load_bilibili_recent_video_memories(self, *, hours: int = 72, limit: int = 12) -> list[dict[str, Any]]:
@@ -1191,7 +1194,7 @@ class NewsExplorationMixin:
             if isinstance(memories, list):
                 return [item for item in memories if isinstance(item, dict)]
         except Exception as e:
-            logger.debug(f"[PrivateCompanion] 读取 BiliBot 视频记忆失败: {e}")
+            logger.debug(f"读取 BiliBot 视频记忆失败: {e}")
         return []
 
     def _bilibili_memory_bvid(self, item: dict[str, Any]) -> str:
@@ -1331,7 +1334,7 @@ class NewsExplorationMixin:
                     extra={"bvid": bvid, "video_title": title},
                 )
             except Exception as e:
-                logger.debug(f"[PrivateCompanion] 写入 BiliBot 分享记忆失败: {e}")
+                logger.debug(f"写入 BiliBot 分享记忆失败: {e}")
         operation = _record()
         creator = getattr(self, "_create_lifecycle_background_task", None)
         try:
@@ -1351,7 +1354,7 @@ class NewsExplorationMixin:
                         pass
                     except Exception as exc:
                         logger.warning(
-                            "[PrivateCompanion] B站分享记忆后台任务失败: %s",
+                            "B站分享记忆后台任务失败: %s",
                             _single_line(exc, 160),
                         )
 
@@ -1429,7 +1432,7 @@ class NewsExplorationMixin:
                         pass
                     except Exception as exc:
                         logger.warning(
-                            "[PrivateCompanion] B站无聊刷视频后台任务失败: %s",
+                            "B站无聊刷视频后台任务失败: %s",
                             _single_line(exc, 160),
                         )
 
@@ -1437,11 +1440,11 @@ class NewsExplorationMixin:
             state["last_boredom_watch_at"] = now
             state["last_boredom_watch_status"] = "triggered"
             self._save_data_sync(sections={"bilibili_integration"})
-            logger.info("[PrivateCompanion] 已触发 B站 AI Bot 无聊刷视频联动")
+            logger.info("已触发 B站 AI Bot 无聊刷视频联动")
         except Exception as e:
             state["last_boredom_watch_status"] = f"failed:{_single_line(str(e), 80)}"
             self._save_data_sync(sections={"bilibili_integration"})
-            logger.debug(f"[PrivateCompanion] 触发 B站 AI Bot 刷视频失败: {e}")
+            logger.debug(f"触发 B站 AI Bot 刷视频失败: {e}")
 
     def _maybe_schedule_bilibili_video_share(self) -> bool:
         if not runtime_persona_setting(self, "enable_bilibili_integration", True):
@@ -1915,7 +1918,7 @@ class NewsExplorationMixin:
                         if len(items) >= max(1, runtime_persona_setting(self, "news_max_items_per_source", 5)):
                             break
         except Exception as exc:
-            logger.debug("[PrivateCompanion] B站搜索 API 兜底失败: %s", exc)
+            logger.debug("B站搜索 API 兜底失败: %s", exc)
         items.sort(key=lambda item: (_safe_float(item.get("published_ts"), 0), _safe_float(item.get("fetched_ts"), 0)), reverse=True)
         return items[: max(1, runtime_persona_setting(self, "news_max_items_per_source", 5))]
 
@@ -2077,7 +2080,7 @@ class NewsExplorationMixin:
                     content_type = resp.headers.get("Content-Type", "")
                     if _news_response_looks_binary(raw_bytes, content_type=content_type):
                         logger.debug(
-                            "[PrivateCompanion] 新闻文字版跳过非文本响应 %s content-type=%s",
+                            "新闻文字版跳过非文本响应 %s content-type=%s",
                             _single_line(safe_url, 120),
                             _single_line(content_type, 80),
                         )
@@ -2090,7 +2093,7 @@ class NewsExplorationMixin:
                     if not raw.strip():
                         return {}
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 新闻文字版抓取失败 %s: %s", _single_line(safe_url, 120), exc)
+            logger.debug("新闻文字版抓取失败 %s: %s", _single_line(safe_url, 120), exc)
             return {}
 
         text = html.unescape(raw or "")
@@ -2186,7 +2189,7 @@ class NewsExplorationMixin:
                         return {"cid": safe_cid, "available": False, "count": len(subtitles), "subtitle_url": subtitle_url}
                     subtitle_payload = await resp.json(content_type=None)
         except Exception as exc:
-            logger.debug("[PrivateCompanion] B站字幕读取失败 bvid=%s: %s", safe_bvid, exc)
+            logger.debug("B站字幕读取失败 bvid=%s: %s", safe_bvid, exc)
             return {}
 
         body = subtitle_payload.get("body") if isinstance(subtitle_payload, dict) and isinstance(subtitle_payload.get("body"), list) else []
@@ -2268,7 +2271,7 @@ class NewsExplorationMixin:
                 if context.get("title") or context.get("tags") or context.get("hot_comments"):
                     break
             except Exception as exc:
-                logger.debug("[PrivateCompanion] BiliBot 视频上下文联动失败 bvid=%s: %s", safe_bvid, exc)
+                logger.debug("BiliBot 视频上下文联动失败 bvid=%s: %s", safe_bvid, exc)
 
         try:
             import aiohttp
@@ -2329,7 +2332,7 @@ class NewsExplorationMixin:
                                             comments.append(message)
                                     context["hot_comments"] = comments[:6]
         except Exception as exc:
-            logger.debug("[PrivateCompanion] B站视频公开上下文抓取失败 bvid=%s: %s", safe_bvid, exc)
+            logger.debug("B站视频公开上下文抓取失败 bvid=%s: %s", safe_bvid, exc)
 
         parts: list[str] = []
         owner = _single_line(context.get("owner_name"), 60)
@@ -2470,7 +2473,7 @@ class NewsExplorationMixin:
                         payload = await payload
                     normalized = self._normalize_bilibili_video_payload(payload, safe_bvid)
                     if normalized.get("title"):
-                        logger.info("[PrivateCompanion] 已通过 B站插件客户端读取视频信息: %s", safe_bvid)
+                        logger.info("已通过 B站插件客户端读取视频信息: %s", safe_bvid)
                         return normalized
                 http_get = getattr(obj, "_http_get", None)
                 if callable(http_get):
@@ -2484,10 +2487,10 @@ class NewsExplorationMixin:
                     if isinstance(data, dict) and int(data.get("code") or 0) == 0:
                         normalized = self._normalize_bilibili_video_payload(data, safe_bvid)
                         if normalized.get("title"):
-                            logger.info("[PrivateCompanion] 已通过 BiliBot HTTP 客户端读取视频信息: %s", safe_bvid)
+                            logger.info("已通过 BiliBot HTTP 客户端读取视频信息: %s", safe_bvid)
                             return normalized
             except Exception as exc:
-                logger.debug("[PrivateCompanion] B站插件视频信息联动失败 bvid=%s: %s", safe_bvid, exc)
+                logger.debug("B站插件视频信息联动失败 bvid=%s: %s", safe_bvid, exc)
         return {}
 
     async def _fetch_bilibili_space_payloads_via_integration(self, mid: str) -> list[dict[str, Any]]:
@@ -2507,7 +2510,7 @@ class NewsExplorationMixin:
                         payload = await payload
                     if isinstance(payload, dict):
                         payloads.append(payload)
-                        logger.info("[PrivateCompanion] 已通过 B站插件客户端读取 UP 最新动态: mid=%s", safe_mid)
+                        logger.info("已通过 B站插件客户端读取 UP 最新动态: mid=%s", safe_mid)
                         continue
                 http_get = getattr(obj, "_http_get", None)
                 if callable(http_get):
@@ -2525,10 +2528,10 @@ class NewsExplorationMixin:
                     data = payload[0] if isinstance(payload, (list, tuple)) and payload else payload
                     if isinstance(data, dict) and int(data.get("code") or 0) == 0:
                         payloads.append(data)
-                        logger.info("[PrivateCompanion] 已通过 BiliBot HTTP 客户端读取 UP 最新动态: mid=%s", safe_mid)
+                        logger.info("已通过 BiliBot HTTP 客户端读取 UP 最新动态: mid=%s", safe_mid)
                         continue
             except Exception as exc:
-                logger.debug("[PrivateCompanion] B站插件 UP 动态联动失败 mid=%s: %s", safe_mid, exc)
+                logger.debug("B站插件 UP 动态联动失败 mid=%s: %s", safe_mid, exc)
         return payloads
 
     async def _fetch_bilibili_video_news_source(self, source: dict[str, str]) -> list[dict[str, Any]]:
@@ -2565,7 +2568,7 @@ class NewsExplorationMixin:
                         return await self._fetch_bilibili_news_search_fallback(source)
                     payload = await resp.json(content_type=None)
         except Exception as exc:
-            logger.debug("[PrivateCompanion] B站单视频新闻源抓取失败 bvid=%s: %s", bvid, exc)
+            logger.debug("B站单视频新闻源抓取失败 bvid=%s: %s", bvid, exc)
             return await self._fetch_bilibili_news_search_fallback(source)
         data = payload.get("data") if isinstance(payload, dict) else {}
         if not isinstance(data, dict):
@@ -2662,7 +2665,7 @@ class NewsExplorationMixin:
                     except Exception:
                         continue
         except Exception as exc:
-            logger.debug("[PrivateCompanion] B站新闻源抓取失败 mid=%s: %s", mid, exc)
+            logger.debug("B站新闻源抓取失败 mid=%s: %s", mid, exc)
             if not payloads:
                 return []
 
@@ -2737,12 +2740,12 @@ class NewsExplorationMixin:
                         return []
                     raw = await resp.text(errors="ignore")
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 新闻源抓取失败 %s: %s", _single_line(url, 120), exc)
+            logger.debug("新闻源抓取失败 %s: %s", _single_line(url, 120), exc)
             return []
         try:
             root = ET.fromstring(raw.encode("utf-8", errors="ignore"))
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 新闻源 XML 解析失败 %s: %s", _single_line(url, 120), exc)
+            logger.debug("新闻源 XML 解析失败 %s: %s", _single_line(url, 120), exc)
             return []
 
         source_name = _single_line(source.get("name"), 40) or "新闻源"
@@ -3298,7 +3301,7 @@ class NewsExplorationMixin:
             digest["share_skip_reason"] = "本次新闻阅读不允许主动分享，且自我关联未通过"
             _sync_digest_share_status()
             self._save_data_sync(sections={"news_integration"})
-            logger.info("[PrivateCompanion] 已完成一次新闻阅读: %s", reason)
+            logger.info("已完成一次新闻阅读: %s", reason)
             return
         users = self.data.get("users")
         accepted_any = False
@@ -3496,7 +3499,7 @@ class NewsExplorationMixin:
             digest["share_skip_reason"] = "没有可用的目标私聊用户"
         _sync_digest_share_status()
         self._save_data_sync(sections={"news_integration", "users", "proactive_candidate_pool", "external_event_pool", "external_event_self_link_cache"})
-        logger.info("[PrivateCompanion] 已完成一次新闻阅读: %s", reason)
+        logger.info("已完成一次新闻阅读: %s", reason)
 
     def _ai_daily_state(self) -> dict[str, Any]:
         state = self.data.setdefault("news_integration", {})
@@ -3710,7 +3713,7 @@ class NewsExplorationMixin:
         source_state.update(result_state)
         ai_state.update({"date": today, **result_state})
         logger.info(
-            "[PrivateCompanion] 已读取今日 %s: %s text_readable=%s text_chars=%s basis=%s",
+            "已读取今日 %s: %s text_readable=%s text_chars=%s basis=%s",
             source_name,
             _single_line(item.get("title"), 120),
             bool(item.get("article_readable") and item.get("article_text")),
@@ -3986,7 +3989,7 @@ class NewsExplorationMixin:
         except Exception:
             pass
         logger.warning(
-            "[PrivateCompanion] 网页搜索进入冷却: provider=%s reason=%s retry=%ss error=%s",
+            "网页搜索进入冷却: provider=%s reason=%s retry=%ss error=%s",
             provider,
             reason,
             int(seconds),
@@ -4143,7 +4146,7 @@ class NewsExplorationMixin:
         if cooldown > 0:
             self._last_web_search_error = f"custom_web_exploration_cooldown:{int(cooldown)}s"
             logger.info(
-                "[PrivateCompanion] 自定义主动搜索冷却中,跳过请求: retry=%ss query=%s",
+                "自定义主动搜索冷却中,跳过请求: retry=%ss query=%s",
                 int(cooldown),
                 cleaned_query,
             )
@@ -4208,13 +4211,13 @@ class NewsExplorationMixin:
             detail = "请求超时"
             self._last_web_search_error = f"custom_web_exploration:{detail}"
             self._mark_web_search_cooldown("custom_web_exploration", detail)
-            logger.warning("[PrivateCompanion] 自定义主动搜索失败: query=%s err=%s", cleaned_query, detail)
+            logger.warning("自定义主动搜索失败: query=%s err=%s", cleaned_query, detail)
             return []
         except Exception as exc:
             detail = _single_line(exc, 220) or exc.__class__.__name__
             self._last_web_search_error = f"custom_web_exploration:{detail}"
             self._mark_web_search_cooldown("custom_web_exploration", exc)
-            logger.warning("[PrivateCompanion] 自定义主动搜索失败: query=%s err=%s", cleaned_query, exc)
+            logger.warning("自定义主动搜索失败: query=%s err=%s", cleaned_query, exc)
             return []
 
         results = self._normalize_custom_web_search_results(raw_payload, cleaned_query)
@@ -4239,7 +4242,7 @@ class NewsExplorationMixin:
         if cooldown > 0:
             self._last_web_search_error = f"web_search_cooldown:{provider}:{int(cooldown)}s"
             logger.info(
-                "[PrivateCompanion] AstrBot 网页搜索冷却中,跳过请求: provider=%s retry=%ss query=%s",
+                "AstrBot 网页搜索冷却中,跳过请求: provider=%s retry=%ss query=%s",
                 provider,
                 int(cooldown),
                 cleaned_query,
@@ -4339,7 +4342,7 @@ class NewsExplorationMixin:
         except Exception as exc:
             self._last_web_search_error = _single_line(str(exc), 240)
             self._mark_web_search_cooldown(provider, exc)
-            logger.warning("[PrivateCompanion] AstrBot 网页搜索失败: provider=%s query=%s err=%s", provider, cleaned_query, exc)
+            logger.warning("AstrBot 网页搜索失败: provider=%s query=%s err=%s", provider, cleaned_query, exc)
             return []
         results: list[dict[str, Any]] = []
         for item in raw_results or []:
@@ -4430,7 +4433,7 @@ class NewsExplorationMixin:
                         return []
                     data = await resp.json(content_type=None)
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 微博热搜抓取失败: %s", exc)
+            logger.debug("微博热搜抓取失败: %s", exc)
             return []
         rows = (((data or {}).get("data") or {}).get("realtime") or []) if isinstance(data, dict) else []
         items: list[dict[str, Any]] = []
@@ -4479,7 +4482,7 @@ class NewsExplorationMixin:
                         return []
                     data = await resp.json(content_type=None)
         except Exception as exc:
-            logger.debug("[PrivateCompanion] Hacker News 热点抓取失败: %s", exc)
+            logger.debug("Hacker News 热点抓取失败: %s", exc)
             return []
         hits = data.get("hits") if isinstance(data, dict) else []
         items: list[dict[str, Any]] = []
@@ -4895,4 +4898,4 @@ class NewsExplorationMixin:
                     self._remember_external_event(digest, source_type="web_exploration", reason="web_exploration_share")
                     break
         self._save_data_sync(sections={"web_exploration", "users", "proactive_candidate_pool", "external_event_pool", "external_event_self_link_cache"})
-        logger.info("[PrivateCompanion] 已完成一次网页探索: %s", _single_line(digest.get("topic"), 80))
+        logger.info("已完成一次网页探索: %s", _single_line(digest.get("topic"), 80))

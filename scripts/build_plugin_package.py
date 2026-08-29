@@ -28,6 +28,7 @@ RUNTIME_DIRECTORIES = (
 )
 REQUIRED_ARCHIVE_FILES = (
     "main.py",
+    "logging_util.py",
     "metadata.yaml",
     "_conf_schema.json",
     "requirements.txt",

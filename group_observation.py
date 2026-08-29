@@ -31,7 +31,7 @@ from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 from xml.etree import ElementTree as ET
 
-from astrbot.api import AstrBotConfig, logger
+from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 try:
     from astrbot.api.message_components import At, Image, Plain, Record, Reply
@@ -136,6 +136,9 @@ from .planning import (
     normalize_story_plan,
     pick_detail_segment,
 )
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 def build_group_episode_cache_prompts(
@@ -670,7 +673,7 @@ class GroupObservationMixin:
         try:
             raw_members = await getter(event, group_id, force_refresh=force)
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 群权限身份刷新失败: group=%s error=%s", group_id, _single_line(exc, 160))
+            logger.debug("群权限身份刷新失败: group=%s error=%s", group_id, _single_line(exc, 160))
             return False
         if not isinstance(raw_members, list) or not raw_members:
             return False
@@ -1213,7 +1216,7 @@ class GroupObservationMixin:
 
         if blocked_by_guard:
             logger.info(
-                "[PrivateCompanion] 群聊防注入已阻断学习链路: group=%s sender=%s score=%s reasons=%s text=%s",
+                "群聊防注入已阻断学习链路: group=%s sender=%s score=%s reasons=%s text=%s",
                 group.get("group_id") or group_id or "",
                 sender_id,
                 _safe_int(injection_guard.get("score"), 0, 0),
@@ -2675,7 +2678,7 @@ class GroupObservationMixin:
         try:
             provider, provider_id = await provider_getter()
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 群黑话嵌入模型解析失败: %s", _single_line(exc, 120))
+            logger.debug("群黑话嵌入模型解析失败: %s", _single_line(exc, 120))
             return ""
         if provider is None or not provider_id:
             return ""
@@ -2741,7 +2744,7 @@ class GroupObservationMixin:
                 if score >= 0.68:
                     ranked.append((score, term, meaning_text))
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 群黑话向量软召回失败: %s", _single_line(exc, 120))
+            logger.debug("群黑话向量软召回失败: %s", _single_line(exc, 120))
             return ""
         if not ranked:
             return ""
@@ -4055,7 +4058,7 @@ class GroupObservationMixin:
                     timeout_seconds=1.2,
                 )
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 群聊插话 我会牢牢记住你 上下文读取失败: %s", _single_line(exc, 120))
+                logger.debug("群聊插话 我会牢牢记住你 上下文读取失败: %s", _single_line(exc, 120))
         prompt = f"""
 你在一个群聊里,系统认为现在也许可以非常轻地接一句,但你必须先判断这句会不会显得硬插话。
 只输出 JSON,不要解释,不要 Markdown。
@@ -4102,7 +4105,7 @@ class GroupObservationMixin:
         if not should_reply or not reply:
             if skip_reason:
                 logger.debug(
-                    "[PrivateCompanion] 群聊主动插话模型决定不发言: group=%s reason=%s raw=%s",
+                    "群聊主动插话模型决定不发言: group=%s reason=%s raw=%s",
                     group.get("group_id") or "",
                     _single_line(skip_reason, 80),
                     _single_line(generated, 120),
@@ -4137,7 +4140,7 @@ class GroupObservationMixin:
             "topic_signature": self._group_topic_signature(text),
         }
         logger.info(
-            "[PrivateCompanion] 群聊主动插话已发送: group=%s reason=%s trigger=%s reply=%s",
+            "群聊主动插话已发送: group=%s reason=%s trigger=%s reply=%s",
             group.get("group_id") or "",
             _single_line(reason, 80),
             _single_line(text, 80),
@@ -4501,7 +4504,7 @@ class GroupObservationMixin:
             current["group_slang_last_error"] = ""
             current["group_slang_running_at"] = 0
             if removed_uncertain:
-                logger.info("[PrivateCompanion] 已清理低置信度群黑话释义: group=%s removed=%s", group_id, removed_uncertain)
+                logger.info("已清理低置信度群黑话释义: group=%s removed=%s", group_id, removed_uncertain)
             self._save_data_sync(sections={"groups"})
 
     async def _try_acquire_group_background_task(
@@ -4542,7 +4545,7 @@ class GroupObservationMixin:
                 current[running_key] = 0
                 self._save_data_sync(sections={"groups"})
             logger.debug(
-                "[PrivateCompanion] 群黑话释义 JSON 解析失败,已跳过本轮刷新: group=%s",
+                "群黑话释义 JSON 解析失败,已跳过本轮刷新: group=%s",
                 group_id,
             )
             return
@@ -4558,7 +4561,7 @@ class GroupObservationMixin:
             current[running_key] = 0
             self._save_data_sync(sections={"groups"})
         logger.warning(
-            "[PrivateCompanion] 群聊后台整理失败,已进入短冷却避免重复请求: group=%s task=%s retry=%ss error=%s",
+            "群聊后台整理失败,已进入短冷却避免重复请求: group=%s task=%s retry=%ss error=%s",
             group_id,
             task,
             int(delay),
@@ -4629,7 +4632,7 @@ class GroupObservationMixin:
         except Exception as exc:
             results = []
             self._last_web_search_error = _single_line(exc, 240)
-            logger.debug("[PrivateCompanion] 群黑话联网参考搜索失败: group=%s term=%s err=%s", group_id, term, _single_line(exc, 120))
+            logger.debug("群黑话联网参考搜索失败: group=%s term=%s err=%s", group_id, term, _single_line(exc, 120))
         error_text = _single_line(getattr(self, "_last_web_search_error", ""), 240)
         if error_text and not results:
             async with self._data_lock:
@@ -4650,7 +4653,7 @@ class GroupObservationMixin:
                     web_state["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 self._save_data_sync(sections={"groups"})
             logger.info(
-                "[PrivateCompanion] 群黑话联网参考单词搜索失败并冷却: group=%s term=%s error=%s",
+                "群黑话联网参考单词搜索失败并冷却: group=%s term=%s error=%s",
                 group_id,
                 term,
                 error_text,
@@ -4688,5 +4691,5 @@ class GroupObservationMixin:
                 web_state["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self._save_data_sync(sections={"groups"})
         if lines:
-            logger.info("[PrivateCompanion] 群黑话联网参考已收集: group=%s term=%s", group_id, term)
+            logger.info("群黑话联网参考已收集: group=%s term=%s", group_id, term)
         return "\n".join(lines)[:1800]

@@ -9,7 +9,6 @@ from dataclasses import dataclass, field, is_dataclass, replace
 from functools import wraps
 from typing import Any, Awaitable, Callable
 
-from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.message_components import Image, Plain, Record
 from astrbot.core.agent.message import AssistantMessageSegment, TextPart
@@ -29,6 +28,9 @@ from .helpers import (
 from .llm_tool_actions import PHOTO_TOOL_SILENT_SENTINEL
 from .persona_config import runtime_persona_setting
 from .segmented_message import sanitize_llm_segment_control_tokens
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 _DELIVERY_TASK_LABELS = frozenset({"segmented_llm_remainder"})
@@ -233,7 +235,7 @@ class FinalResponsePersistenceCoordinator:
     def install_send_tracking(self, event: AstrMessageEvent) -> None:
         if not bool(getattr(event, "_private_companion_persistence_managed", False)):
             logger.info(
-                "[PrivateCompanion][SendTracking] _private_companion_persistence_managed not set, calling begin_passive: event=%s",
+                "[SendTracking] _private_companion_persistence_managed not set, calling begin_passive: event=%s",
                 id(event),
             )
             self.begin_passive(event)
@@ -263,7 +265,7 @@ class FinalResponsePersistenceCoordinator:
                                 text = str(getattr(component, "text", "") or "")
                                 if PHOTO_TOOL_SILENT_SENTINEL in text:
                                     logger.info(
-                                        "[PrivateCompanion][SendTracking] tracked_send STRIPPING chain: event=%s text_len=%d",
+                                        "[SendTracking] tracked_send STRIPPING chain: event=%s text_len=%d",
                                         id(event),
                                         len(text),
                                     )
@@ -273,7 +275,7 @@ class FinalResponsePersistenceCoordinator:
                                         pass
                     elif isinstance(message, str) and PHOTO_TOOL_SILENT_SENTINEL in message:
                         logger.info(
-                            "[PrivateCompanion][SendTracking] tracked_send STRIPPING str: event=%s text_len=%d",
+                            "[SendTracking] tracked_send STRIPPING str: event=%s text_len=%d",
                             id(event),
                             len(message),
                         )
@@ -287,7 +289,7 @@ class FinalResponsePersistenceCoordinator:
                 setattr(event, "_private_companion_original_send", original_send)
                 event.send = tracked_send
                 logger.info(
-                    "[PrivateCompanion][SendTracking] send wrapper installed: event=%s",
+                    "[SendTracking] send wrapper installed: event=%s",
                     id(event),
                 )
 
@@ -318,7 +320,7 @@ class FinalResponsePersistenceCoordinator:
                                         text = str(getattr(component, "text", "") or "")
                                         if PHOTO_TOOL_SILENT_SENTINEL in text:
                                             logger.info(
-                                                "[PrivateCompanion][SendTracking] tracked_send_streaming STRIPPING chain: event=%s text_len=%d",
+                                                "[SendTracking] tracked_send_streaming STRIPPING chain: event=%s text_len=%d",
                                                 id(event),
                                                 len(text),
                                             )
@@ -333,7 +335,7 @@ class FinalResponsePersistenceCoordinator:
                                 content = str(getattr(message, "content", "") or "")
                                 if PHOTO_TOOL_SILENT_SENTINEL in content:
                                     logger.info(
-                                        "[PrivateCompanion][SendTracking] tracked_send_streaming STRIPPING content: event=%s text_len=%d",
+                                        "[SendTracking] tracked_send_streaming STRIPPING content: event=%s text_len=%d",
                                         id(event),
                                         len(content),
                                     )
@@ -360,7 +362,7 @@ class FinalResponsePersistenceCoordinator:
                 ledger.original_send_streaming = original_streaming
                 event.send_streaming = tracked_send_streaming
                 logger.info(
-                    "[PrivateCompanion][SendTracking] send_streaming wrapper installed: event=%s",
+                    "[SendTracking] send_streaming wrapper installed: event=%s",
                     id(event),
                 )
 
@@ -1054,13 +1056,13 @@ class FinalResponsePersistenceMixin:
                 message._no_save = False
             except Exception as exc:
                 logger.warning(
-                    "[PrivateCompanion] 纯媒体回复恢复 AstrBot 核心保存失败: session=%s error=%s",
+                    "纯媒体回复恢复 AstrBot 核心保存失败: session=%s error=%s",
                     _single_line(getattr(event, "unified_msg_origin", ""), 140),
                     _single_line(exc, 160),
                 )
                 return False
             logger.info(
-                "[PrivateCompanion] 纯媒体回复已保留转码前正文供 AstrBot 核心保存: %s",
+                "纯媒体回复已保留转码前正文供 AstrBot 核心保存: %s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 140),
             )
             return True
@@ -1079,13 +1081,13 @@ class FinalResponsePersistenceMixin:
             message._no_save = False
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 实际回复暂存到 AstrBot 会话上下文失败: session=%s error=%s",
+                "实际回复暂存到 AstrBot 会话上下文失败: session=%s error=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 140),
                 _single_line(exc, 160),
             )
             return False
         logger.info(
-            "[PrivateCompanion] 已将实际发送回复交给 AstrBot 核心保存: %s",
+            "已将实际发送回复交给 AstrBot 核心保存: %s",
             _single_line(getattr(event, "unified_msg_origin", ""), 140),
         )
         return True
@@ -1136,14 +1138,14 @@ class FinalResponsePersistenceMixin:
             )
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 实际回复写入 AstrBot 会话历史失败: session=%s error=%s",
+                "实际回复写入 AstrBot 会话历史失败: session=%s error=%s",
                 _single_line(umo, 140),
                 _single_line(exc, 160),
             )
             return False
         if written:
             logger.info(
-                "[PrivateCompanion] 已将实际发送回复写入 AstrBot 会话历史: %s",
+                "已将实际发送回复写入 AstrBot 会话历史: %s",
                 _single_line(umo, 140),
             )
         return written
@@ -1216,7 +1218,7 @@ class FinalResponsePersistenceMixin:
                 delivered = True
             except Exception as exc:
                 logger.warning(
-                    "[PrivateCompanion] LivingMemory 最终回复写入失败: session=%s handler=%s error=%s",
+                    "LivingMemory 最终回复写入失败: session=%s handler=%s error=%s",
                     _single_line(umo, 140),
                     _single_line(getattr(handler, "handler_name", ""), 80),
                     _single_line(exc, 160),
@@ -1229,7 +1231,7 @@ class FinalResponsePersistenceMixin:
                 )[:-384]:
                     recorded.pop(old_key, None)
             logger.info(
-                "[PrivateCompanion] 已将实际发送回复交给 LivingMemory 记录: %s",
+                "已将实际发送回复交给 LivingMemory 记录: %s",
                 _single_line(umo, 140),
             )
         return delivered
@@ -1291,7 +1293,7 @@ class FinalResponsePersistenceMixin:
             ):
                 return False
             logger.debug(
-                "[PrivateCompanion] MemoryCompanion 实际回复写入失败: %s",
+                "MemoryCompanion 实际回复写入失败: %s",
                 _single_line(exc, 120),
             )
             return False
@@ -1592,7 +1594,7 @@ class FinalResponsePersistenceMixin:
                 return record()
         except Exception as exc:
             logger.debug(
-                "[PrivateCompanion] Confirmed delivery state commit failed: %s",
+                "Confirmed delivery state commit failed: %s",
                 _single_line(exc, 120),
             )
             return False, set()

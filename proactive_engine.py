@@ -31,7 +31,7 @@ from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 from xml.etree import ElementTree as ET
 
-from astrbot.api import AstrBotConfig, logger
+from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 try:
     from astrbot.api.message_components import At, Image, Plain, Record, Reply
@@ -119,6 +119,9 @@ from .planning import (
 )
 from .proactive_routes import PROACTIVE_ROUTE_REGISTRY
 from .persona_config import runtime_persona_setting
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 def _engine_proactive_window_timezone(owner: Any) -> str:
@@ -494,7 +497,7 @@ class ProactiveEngineMixin:
         if removed > 0:
             self.data["proactive_candidate_pool"] = kept
             logger.info(
-                "[PrivateCompanion] 主动候选自动收缩: user=%s removed=%s cap=%s note=%s",
+                "主动候选自动收缩: user=%s removed=%s cap=%s note=%s",
                 target_user_id,
                 removed,
                 pending_cap or "default",
@@ -729,7 +732,7 @@ class ProactiveEngineMixin:
                 changed = True
         if changed:
             logger.info(
-                "[PrivateCompanion] 用户已询问当前状态,已清理状态分享主动念头: user=%s text=%s",
+                "用户已询问当前状态,已清理状态分享主动念头: user=%s text=%s",
                 target_user_id or "unknown",
                 _single_line(text, 80),
             )
@@ -2692,13 +2695,13 @@ class ProactiveEngineMixin:
         parsed = self._parse_json_object(raw)
         result = self._normalize_proactive_model_judgement(parsed)
         if not isinstance(result, dict):
-            logger.info("[PrivateCompanion] 模型人格判定无有效 JSON,降级本地判定")
+            logger.info("模型人格判定无有效 JSON,降级本地判定")
             return {"decision": "send", "score": 0, "reason": "模型判定失败,降级本地"}
         result["signature"] = signature
         result = self._apply_proactive_model_judgement_policy(user, result)
         result["elapsed_ms"] = int((time.perf_counter() - started) * 1000)
         logger.info(
-            "[PrivateCompanion] 主动模型人格判定: decision=%s score=%s reason=%s elapsed=%sms",
+            "主动模型人格判定: decision=%s score=%s reason=%s elapsed=%sms",
             result.get("decision"),
             result.get("score"),
             _single_line(result.get("reason"), 100),
@@ -3343,7 +3346,7 @@ class ProactiveEngineMixin:
             selected["last_note"] = "同一来源短时间重复物化已熔断"
             selected["updated_ts"] = check_now
             logger.warning(
-                "[PrivateCompanion] 主动念头重复物化熔断: user=%s origin=%s count=%s",
+                "主动念头重复物化熔断: user=%s origin=%s count=%s",
                 _single_line(user_id, 40),
                 _single_line(selected.get("origin_event_id"), 80) or _single_line(selected.get("id"), 20),
                 materialized_count,
@@ -3791,7 +3794,7 @@ class ProactiveEngineMixin:
                     reason=invalid_window_reason,
                 )
             logger.info(
-                "[PrivateCompanion] 主动来源在入队前终止: user=%s source=%s reason=%s note=%s",
+                "主动来源在入队前终止: user=%s source=%s reason=%s note=%s",
                 _single_line(user_id, 40),
                 source,
                 _single_line(candidate.get("reason"), 40),
@@ -4300,7 +4303,7 @@ class ProactiveEngineMixin:
             return False, "缺少私聊会话"
         if umo_filled:
             logger.info(
-                "[PrivateCompanion] 已为主动私聊对象补全 UMO: user=%s umo=%s",
+                "已为主动私聊对象补全 UMO: user=%s umo=%s",
                 _single_line(user_id, 40),
                 _single_line(user.get("umo"), 120),
             )
@@ -4480,7 +4483,7 @@ class ProactiveEngineMixin:
                 if callable(schedule_save):
                     schedule_save(sections={"users"})
                 logger.info(
-                    "[PrivateCompanion] %s已顺延主动消息: user=%s until=%s reason=%s source=%s detail=%s",
+                    "%s已顺延主动消息: user=%s until=%s reason=%s source=%s detail=%s",
                     "实时共处期间" if external_realtime else "繁忙回复闸门",
                     _single_line(user.get("user_id") or user.get("umo") or user.get("nickname"), 80),
                     int(busy_until),
@@ -4550,7 +4553,7 @@ class ProactiveEngineMixin:
                 user["planned_proactive_best_until_at"] = after_next_at + 45 * 60
                 user["planned_proactive_expire_at"] = after_next_at + 90 * 60
             logger.info(
-                "[PrivateCompanion] 统一互动/联系边界闸门拦截主动: mode=%s gate_until=%s reason=%s",
+                "统一互动/联系边界闸门拦截主动: mode=%s gate_until=%s reason=%s",
                 relationship_mode or emotion_mode,
                 int(gate_until),
                 _single_line(interaction.get("reason"), 80),
@@ -4636,7 +4639,7 @@ class ProactiveEngineMixin:
             and timeliness == "routine"
         ):
             logger.debug(
-                "[PrivateCompanion] Bot 表达温度偏低，交由正文提示收敛为短句而不延后: user=%s detail=%s",
+                "Bot 表达温度偏低，交由正文提示收敛为短句而不延后: user=%s detail=%s",
                 _single_line(user.get("user_id") or user.get("umo"), 80),
                 _single_line(inner_readiness.get("detail"), 120),
             )
@@ -4830,7 +4833,7 @@ class ProactiveEngineMixin:
             return False, "候选语义不够自然,已重新挑选"
         if semantic_score < 0.32 and semantic_pressure >= 0.58:
             logger.debug(
-                "[PrivateCompanion] 候选由头偏弱且压力偏高，交由正文提示改成低压短句: user=%s note=%s",
+                "候选由头偏弱且压力偏高，交由正文提示改成低压短句: user=%s note=%s",
                 _single_line(user.get("user_id") or user.get("umo"), 80),
                 _single_line(planned_semantics.get("note"), 120),
             )
@@ -4856,7 +4859,7 @@ class ProactiveEngineMixin:
             return False, "人格/世界观贴合度不足,已重新挑选"
         if persona_fit < persona_threshold:
             logger.debug(
-                "[PrivateCompanion] 人格贴合度偏低，交由人格判定/正文生成修正而不延后: user=%s fit=%.2f note=%s",
+                "人格贴合度偏低，交由人格判定/正文生成修正而不延后: user=%s fit=%.2f note=%s",
                 _single_line(user.get("user_id") or user.get("umo"), 80),
                 persona_fit,
                 _single_line(persona_alignment.get("note"), 120),
@@ -4871,7 +4874,7 @@ class ProactiveEngineMixin:
             and timeliness == "routine"
         ):
             logger.debug(
-                "[PrivateCompanion] 连续未回应时保留低压候选，由提示词缩短且禁止追问: user=%s ignored=%s value=%.2f",
+                "连续未回应时保留低压候选，由提示词缩短且禁止追问: user=%s ignored=%s value=%.2f",
                 _single_line(user.get("user_id") or user.get("umo"), 80),
                 ignored_streak,
                 impulse_value,
@@ -5049,7 +5052,7 @@ class ProactiveEngineMixin:
                 try:
                     outcome_recorder(user, status=status, note=note)
                 except Exception as exc:
-                    logger.debug("[PrivateCompanion] 主动结果余韵记录失败: %s", _single_line(exc, 120))
+                    logger.debug("主动结果余韵记录失败: %s", _single_line(exc, 120))
             candidate_id = str(user.get("planned_candidate_id") or "")
             user_id = str(user.get("user_id") or user.get("id") or "")
             if candidate_id:
@@ -5871,7 +5874,7 @@ class ProactiveEngineMixin:
         user["proactive_sending"] = False
         user["proactive_sending_started_at"] = 0
         logger.warning(
-            "[PrivateCompanion] 检测到残留的主动发送标记,已自动清理: user=%s started_at=%s",
+            "检测到残留的主动发送标记,已自动清理: user=%s started_at=%s",
             user.get("user_id") or user.get("id") or "unknown",
             self._environment_fromtimestamp(started_at).strftime("%m-%d %H:%M:%S") if started_at > 0 else "unknown",
         )
@@ -6116,7 +6119,7 @@ class ProactiveEngineMixin:
         executor = spec.get("executor")
         availability = spec.get("availability")
         if not name or not callable(executor):
-            logger.warning("[PrivateCompanion] 外部主动能力注册失败: name/executor 无效")
+            logger.warning("外部主动能力注册失败: name/executor 无效")
             return False
         default_config = spec.get("default_config") if isinstance(spec.get("default_config"), dict) else {}
         config_schema = spec.get("config_schema") if isinstance(spec.get("config_schema"), dict) else {}
@@ -6163,8 +6166,8 @@ class ProactiveEngineMixin:
             store[name] = item
             self._save_data_sync(sections={"external_proactive_abilities"})
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 外部主动能力状态保存失败: %s", exc)
-        logger.info("[PrivateCompanion] 已注册外部主动能力: %s", name)
+            logger.debug("外部主动能力状态保存失败: %s", exc)
+        logger.info("已注册外部主动能力: %s", name)
         return True
 
     def unregister_external_proactive_ability(self, name: str) -> bool:
@@ -6268,7 +6271,7 @@ class ProactiveEngineMixin:
                         continue
                 except Exception as exc:
                     logger.debug(
-                        "[PrivateCompanion] 外部主动能力可用性检查失败: %s: %s",
+                        "外部主动能力可用性检查失败: %s: %s",
                         name,
                         _single_line(exc, 120),
                     )
@@ -7875,7 +7878,7 @@ class ProactiveEngineMixin:
             lunar = Converter.Solar2Lunar(Solar(current.year, current.month, current.day))
             return int(lunar.month) == month and int(lunar.day) == day and not bool(getattr(lunar, "isleap", False))
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 农历生日匹配失败: %s", _single_line(exc, 120))
+            logger.debug("农历生日匹配失败: %s", _single_line(exc, 120))
             return False
 
     def _birthday_stage_for_date(self, user: dict[str, Any], current: datetime) -> str:
@@ -9478,7 +9481,7 @@ class ProactiveEngineMixin:
         try:
             return bool(self._photo_text_available(user))
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 主动生图规划可用性检查失败: %s", _single_line(exc, 120))
+            logger.debug("主动生图规划可用性检查失败: %s", _single_line(exc, 120))
             return False
 
     def _poke_available(self) -> bool:
@@ -10250,7 +10253,7 @@ class ProactiveEngineMixin:
                 sleep_block = self._proactive_sleep_phase_block_reason(reason)
                 if sleep_block:
                     logger.debug(
-                        "[PrivateCompanion] 主动消息被 Bot 睡眠相位拦下: reason=%s phase=%s",
+                        "主动消息被 Bot 睡眠相位拦下: reason=%s phase=%s",
                         reason,
                         sleep_block,
                     )
@@ -10477,7 +10480,7 @@ class ProactiveEngineMixin:
         if not bool(action_payload.get("success", True)):
             if "photo_text" in {planned_action, effective_action}:
                 logger.info(
-                    "[PrivateCompanion] 主动图片动作未产出,降级为纯文字分享: user=%s reason=%s topic=%s",
+                    "主动图片动作未产出,降级为纯文字分享: user=%s reason=%s topic=%s",
                     _single_line(user.get("user_id"), 40),
                     reason,
                     _single_line(user.get("planned_proactive_topic"), 80),
@@ -10526,7 +10529,7 @@ class ProactiveEngineMixin:
                 else "unknown"
             )
             logger.info(
-                "[PrivateCompanion] 主动消息采用 pc_generate_photo 成图并进入统一发送链: user=%s kind=%s",
+                "主动消息采用 pc_generate_photo 成图并进入统一发送链: user=%s kind=%s",
                 _single_line(user.get("user_id"), 40),
                 deferred_intent_kind or "unknown",
             )
@@ -10571,7 +10574,7 @@ class ProactiveEngineMixin:
             motive=planned_motive,
         )
         if pre_poke_context and not pre_poke_context.startswith("poke：已"):
-            logger.info("[PrivateCompanion] 消息前置戳一戳失败,跳过本次前置戳: %s", _single_line(pre_poke_context, 120))
+            logger.info("消息前置戳一戳失败,跳过本次前置戳: %s", _single_line(pre_poke_context, 120))
         if pre_poke_count > 0:
             action_summary = f"先戳了 {pre_poke_count} 下 + {action_summary}"
             effective_action = f"poke+{effective_action}" if effective_action != "poke" else "poke"

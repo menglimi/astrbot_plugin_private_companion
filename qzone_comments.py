@@ -8,11 +8,13 @@ import re
 import time
 from typing import Any
 
-from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
 from .helpers import _now_ts, _safe_float, _safe_int, _single_line
 from .persona_config import runtime_persona_setting
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 __all__ = ("QzoneCommentMixin",)
 
@@ -674,7 +676,7 @@ class QzoneCommentMixin:
                 state["last_comment_inbox_checked_at"] = now
                 state["last_comment_inbox_status"] = f"seeded:{len(observed_ids)}"
                 self._save_data_sync(sections={"qzone_integration"})
-                logger.info("[PrivateCompanion] QQ 空间评论收件箱首次启用,已记录现有评论: count=%s", len(observed_ids))
+                logger.info("QQ 空间评论收件箱首次启用,已记录现有评论: count=%s", len(observed_ids))
                 return
             history_lost_after_init = bool(
                 state.get("comment_inbox_initialized_at")
@@ -691,7 +693,7 @@ class QzoneCommentMixin:
                 state["last_comment_inbox_status"] = f"reseeded:history_lost:{len(observed_ids)}"
                 self._save_data_sync(sections={"qzone_integration"})
                 logger.warning(
-                    "[PrivateCompanion] QQ 空间评论收件箱历史 key 为空,已重新播种当前可见评论并跳过本轮回复: count=%s",
+                    "QQ 空间评论收件箱历史 key 为空,已重新播种当前可见评论并跳过本轮回复: count=%s",
                     len(observed_ids),
                 )
                 return
@@ -766,7 +768,7 @@ class QzoneCommentMixin:
                     state["last_comment_inbox_reason"] = _single_line(exc, 120)
                     self._save_data_sync(sections={"qzone_integration"})
                     logger.warning(
-                        "[PrivateCompanion] QQ 空间评论回复失败: retryable=%s error=%s",
+                        "QQ 空间评论回复失败: retryable=%s error=%s",
                         retryable,
                         _single_line(exc, 120),
                     )
@@ -809,7 +811,7 @@ class QzoneCommentMixin:
                 state["last_comment_inbox_reply_text"] = _single_line(sent_text, 120)
                 self._save_data_sync(sections={"qzone_integration"})
                 logger.info(
-                    "[PrivateCompanion] QQ 空间评论收件箱已追加评论回复: post=%s type=%s comment=%s key=%s author=%s text=%s",
+                    "QQ 空间评论收件箱已追加评论回复: post=%s type=%s comment=%s key=%s author=%s text=%s",
                     state["last_comment_inbox_reply_post_tid"] or "-",
                     post_type,
                     comment_id,
@@ -860,6 +862,6 @@ class QzoneCommentMixin:
             state["last_comment_inbox_status"] = f"failed:{_single_line(reason, 80)}"
             self._save_data_sync(sections={"qzone_integration"})
             if any(token in reason for token in ("没有可用的 OneBot 连接", "获取 QQ 空间 Cookie 失败", "Cookie")):
-                logger.warning("[PrivateCompanion] QQ 空间评论收件箱处理失败: %s", reason)
+                logger.warning("QQ 空间评论收件箱处理失败: %s", reason)
             else:
-                logger.warning("[PrivateCompanion] QQ 空间评论收件箱处理失败: %s", reason, exc_info=True)
+                logger.warning("QQ 空间评论收件箱处理失败: %s", reason, exc_info=True)

@@ -4,11 +4,13 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from astrbot.api import logger
 
 from .helpers import _safe_float, _single_line
 from .external_bridge_resolver import resolve_external_bridge
 from .conversation_prompt_section import prompt_section
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 class RealityCompanionBridgeMixin:
@@ -64,7 +66,7 @@ class RealityCompanionBridgeMixin:
                     delivered_at=delivered_at,
                 )
             except Exception as exc:
-                logger.warning("[PrivateCompanion] 外部现实触及输出写入失败: %s", _single_line(exc, 160))
+                logger.warning("外部现实触及输出写入失败: %s", _single_line(exc, 160))
                 return {"recorded": False, "reason": "reality_companion_write_failed"}
         return {"recorded": False, "reason": "reality_companion_unavailable"}
 
@@ -197,7 +199,7 @@ class RealityCompanionBridgeMixin:
         api = self._reality_companion_api()
         scheduler = getattr(api, "schedule_reminder", None) if api is not None else None
         if not callable(scheduler):
-            logger.info("[PrivateCompanion] 未安装或未启用“我会来到你身边”，现实提醒未创建")
+            logger.info("未安装或未启用“我会来到你身边”，现实提醒未创建")
             return False
         return bool(
             await scheduler(

@@ -16,7 +16,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.event import MessageChain
 from astrbot.core.platform.message_session import MessageSession
@@ -76,6 +75,9 @@ from .reaction_expression import (
     reserve_reaction_expression_intent,
 )
 from .reaction_asset_library import ReactionAssetLibrary, get_reaction_asset_library
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 PHOTO_TOOL_SILENT_SENTINEL = "[[PC_PHOTO_SENT_NO_FOLLOWUP]]"
@@ -440,7 +442,7 @@ class LlmToolActionsMixin:
         )
         if asset is None:
             logger.debug(
-                "[PrivateCompanion] Q6 自有反应图未命中: status=%s",
+                "Q6 自有反应图未命中: status=%s",
                 status,
             )
             return None
@@ -1317,7 +1319,7 @@ class LlmToolActionsMixin:
             except Exception:
                 pass
             logger.warning(
-                "[PrivateCompanion] 当前媒体扩展名规范化失败: file=%s error=%s",
+                "当前媒体扩展名规范化失败: file=%s error=%s",
                 path.name,
                 _single_line(exc, 160),
             )
@@ -1925,7 +1927,7 @@ class LlmToolActionsMixin:
             return cleaned
         if inventory_query:
             logger.warning(
-                "[PrivateCompanion] 资料柜查询未形成可信正文，已按本地真实库存回答: attempted=%s status=%s inventory_complete=%s session=%s",
+                "资料柜查询未形成可信正文，已按本地真实库存回答: attempted=%s status=%s inventory_complete=%s session=%s",
                 bool(getattr(event, "private_companion_creative_work_tool_attempted", False)),
                 _single_line(getattr(event, "private_companion_creative_work_tool_status", ""), 24) or "none",
                 inventory_complete,
@@ -1935,7 +1937,7 @@ class LlmToolActionsMixin:
         if bool(getattr(event, "private_companion_creative_work_tool_attempted", False)):
             return "我这次没能实际读取到对应的创作原文，先不凭印象乱讲。你可以再告诉我准确标题或第几部分，我读到后再认真和你说。"
         logger.warning(
-            "[PrivateCompanion] 指定创作问答未实际调用读取工具，已阻止凭片段作答: session=%s",
+            "指定创作问答未实际调用读取工具，已阻止凭片段作答: session=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
         )
         return "我这次还没能实际读取到对应的创作原文，先不凭印象乱讲。你可以再告诉我准确标题或第几部分，我读到后再认真和你说。"
@@ -2245,7 +2247,7 @@ class LlmToolActionsMixin:
             return raw, None
         setattr(event, "_private_companion_plaintext_tool_checked", True)
         logger.warning(
-            "[PrivateCompanion] 检测到模型将工具调用写入普通正文，已阻止外发: session=%s tools=%s",
+            "检测到模型将工具调用写入普通正文，已阻止外发: session=%s tools=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             ",".join(call.get("name", "") for call in calls),
         )
@@ -2297,7 +2299,7 @@ class LlmToolActionsMixin:
                 result = {"status": "error", "sent": False, "message": "生图工具返回无法解析"}
         except Exception as exc:
             logger.error(
-                "[PrivateCompanion] 明文生图工具调用恢复失败: session=%s error=%s",
+                "明文生图工具调用恢复失败: session=%s error=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                 _single_line(exc, 160),
                 exc_info=True,
@@ -2309,7 +2311,7 @@ class LlmToolActionsMixin:
         if sent:
             setattr(event, "_private_companion_plaintext_photo_sent", True)
             logger.info(
-                "[PrivateCompanion] 已恢复并执行明文生图工具调用: session=%s",
+                "已恢复并执行明文生图工具调用: session=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             )
             return cleaned, recovery
@@ -2369,7 +2371,7 @@ class LlmToolActionsMixin:
             else:
                 return False
         except Exception as exc:
-            logger.warning("[PrivateCompanion] 便签请求移除 future_task 失败: %s", _single_line(exc, 160))
+            logger.warning("便签请求移除 future_task 失败: %s", _single_line(exc, 160))
             return False
         return True
 
@@ -2431,7 +2433,7 @@ class LlmToolActionsMixin:
                 removed.append(name)
             except Exception as exc:
                 logger.debug(
-                    "[PrivateCompanion] 裁剪实验性表情工具失败: tool=%s error=%s",
+                    "裁剪实验性表情工具失败: tool=%s error=%s",
                     name,
                     _single_line(exc, 160),
                 )
@@ -2516,7 +2518,7 @@ class LlmToolActionsMixin:
         allowed = bool(is_private and requester_id and self._is_private_companion_owner_user_id(requester_id))
         if not allowed:
             logger.info(
-                "[PrivateCompanion] 便签管理权限未通过: private=%s sender=%s umo=%s",
+                "便签管理权限未通过: private=%s sender=%s umo=%s",
                 is_private,
                 requester_id or "-",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120),
@@ -3016,13 +3018,13 @@ class LlmToolActionsMixin:
                     setattr(event, "private_companion_memo_reminder_saved", True)
                 except Exception as exc:
                     logger.warning(
-                        "[PrivateCompanion] 便签提醒已保存但无法写入本轮去重标记: user=%s error=%s",
+                        "便签提醒已保存但无法写入本轮去重标记: user=%s error=%s",
                         requester_id,
                         _single_line(exc, 160),
                     )
                 else:
                     logger.info(
-                        "[PrivateCompanion] 便签提醒已保存,本轮将抑制重复临时定时: user=%s note=%s action=%s",
+                        "便签提醒已保存,本轮将抑制重复临时定时: user=%s note=%s action=%s",
                         requester_id,
                         _single_line(affected.get("id"), 64) or "-",
                         action_key,
@@ -3048,7 +3050,7 @@ class LlmToolActionsMixin:
         except ValueError as exc:
             return json.dumps({"status": "invalid", "saved": False, "message": str(exc)}, ensure_ascii=False)
         except Exception as exc:
-            logger.error("[PrivateCompanion] 聊天便签操作失败: %s", _single_line(exc, 160), exc_info=True)
+            logger.error("聊天便签操作失败: %s", _single_line(exc, 160), exc_info=True)
             return json.dumps({"status": "error", "saved": False, "message": f"便签操作失败: {_single_line(exc, 120)}"}, ensure_ascii=False)
 
     async def _note_photo_tool_quota_attempt(
@@ -3531,7 +3533,7 @@ class LlmToolActionsMixin:
                         ]
                 except Exception as exc:
                     logger.info(
-                        "[PrivateCompanion] 合影关系网角色参考图解析失败，继续检查本轮图片: %s",
+                        "合影关系网角色参考图解析失败，继续检查本轮图片: %s",
                         _single_line(exc, 160),
                     )
             has_named_role_reference = bool(role_reference_candidates)
@@ -3595,7 +3597,7 @@ class LlmToolActionsMixin:
                     stable = await resolver(source, stem=f"tool_{index + 1}", event=event, trusted=False)
                 except Exception as exc:
                     logger.info(
-                        "[PrivateCompanion] tool reference %s rejected: %s",
+                        "tool reference %s rejected: %s",
                         index + 1,
                         _single_line(exc, 160),
                     )
@@ -3609,18 +3611,18 @@ class LlmToolActionsMixin:
                     )
                 except Exception as exc:
                     logger.info(
-                        "[PrivateCompanion] current-event reference %s could not be persisted: %s",
+                        "current-event reference %s could not be persisted: %s",
                         index + 1,
                         _single_line(exc, 160),
                     )
                 if stable:
                     logger.info(
-                        "[PrivateCompanion] accepted model reference after exact current-event source verification: index=%s",
+                        "accepted model reference after exact current-event source verification: index=%s",
                         index + 1,
                     )
             if not stable:
                 logger.warning(
-                    "[PrivateCompanion] model-controlled image reference rejected: source=%s",
+                    "model-controlled image reference rejected: source=%s",
                     _single_line(source, 200),
                 )
                 return public_receipt(
@@ -3758,7 +3760,7 @@ class LlmToolActionsMixin:
                 )
             except Exception as exc:
                 logger.debug(
-                    "[PrivateCompanion] tool 生图读取提示词格式失败，保留原始提示词: %s",
+                    "tool 生图读取提示词格式失败，保留原始提示词: %s",
                     _single_line(exc, 160),
                 )
                 prompt_format_mode = "traditional"
@@ -3833,7 +3835,7 @@ class LlmToolActionsMixin:
                 "本次工具调用没有生成或发送图片。"
             )
             logger.warning(
-                "[PrivateCompanion] pc_generate_photo 在外层工具超时前主动结束: session=%s timeout=%.1fs budget=%.1fs",
+                "pc_generate_photo 在外层工具超时前主动结束: session=%s timeout=%.1fs budget=%.1fs",
                 session_key,
                 outer_timeout,
                 generation_timeout,
@@ -3986,7 +3988,7 @@ class LlmToolActionsMixin:
                 except Exception:
                     pass
                 logger.info(
-                    "[PrivateCompanion] pc_generate_photo 成图已交由主动发送链统一投递: session=%s kind=%s",
+                    "pc_generate_photo 成图已交由主动发送链统一投递: session=%s kind=%s",
                     session_key,
                     intent_kind,
                 )
@@ -4004,7 +4006,7 @@ class LlmToolActionsMixin:
                         "message": f"图片发送失败：{_single_line(exc, 180) or '未知错误'}",
                     }
                     logger.warning(
-                        "[PrivateCompanion] pc_generate_photo 图片投递异常: session=%s err=%s",
+                        "pc_generate_photo 图片投递异常: session=%s err=%s",
                         session_key,
                         _single_line(exc, 180),
                     )
@@ -4169,7 +4171,7 @@ class LlmToolActionsMixin:
             if policy_refusal:
                 public_error = "图片服务拒绝了这次画面描述，本次没有生成或发送图片。"
                 logger.warning(
-                    "[PrivateCompanion] pc_generate_photo 被图片服务策略拒绝: backend=%s error=%s",
+                    "pc_generate_photo 被图片服务策略拒绝: backend=%s error=%s",
                     _single_line(backend_name, 80),
                     note_text,
                 )
@@ -4542,7 +4544,7 @@ class LlmToolActionsMixin:
                         digits,
                     )
             logger.info(
-                "[PrivateCompanion][ReactionExpression] %s",
+                "[ReactionExpression] %s",
                 json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
             )
         except Exception:
@@ -5293,7 +5295,7 @@ class LlmToolActionsMixin:
                 ):
                     return provider, configured
             logger.warning(
-                "[PrivateCompanion] Embedding Provider 不可用，回退本地语义与关键词: provider_id=%s",
+                "Embedding Provider 不可用，回退本地语义与关键词: provider_id=%s",
                 configured,
             )
             return None, configured
@@ -5413,7 +5415,7 @@ class LlmToolActionsMixin:
                 payload = await wait_result(get_embeddings(cleaned))
             except Exception as exc:
                 logger.debug(
-                    "[PrivateCompanion] 批量表情向量请求失败，回退逐条生成: error_type=%s",
+                    "批量表情向量请求失败，回退逐条生成: error_type=%s",
                     type(exc).__name__,
                 )
                 return await asyncio.gather(
@@ -5429,7 +5431,7 @@ class LlmToolActionsMixin:
                     payload = await wait_result(get_batch(cleaned))
                 except Exception as exc:
                     logger.debug(
-                        "[PrivateCompanion] 批量表情向量请求失败，回退逐条生成: error_type=%s",
+                        "批量表情向量请求失败，回退逐条生成: error_type=%s",
                         type(exc).__name__,
                     )
                     return await asyncio.gather(
@@ -5437,7 +5439,7 @@ class LlmToolActionsMixin:
                     )
             except Exception as exc:
                 logger.debug(
-                    "[PrivateCompanion] 批量表情向量请求失败，回退逐条生成: error_type=%s",
+                    "批量表情向量请求失败，回退逐条生成: error_type=%s",
                     type(exc).__name__,
                 )
                 return await asyncio.gather(
@@ -5474,13 +5476,13 @@ class LlmToolActionsMixin:
                 try:
                     vector = await self._reaction_embedding_vector(provider, library.embedding_text(item))
                 except Exception as exc:
-                    logger.debug("[PrivateCompanion] 表情向量补齐失败: provider=%s error_type=%s", provider_id, type(exc).__name__)
+                    logger.debug("表情向量补齐失败: provider=%s error_type=%s", provider_id, type(exc).__name__)
                     continue
                 if vector:
                     updates.append({"id": item.get("id"), "text_hash": text_hash, "vector": vector})
             if updates:
                 await asyncio.to_thread(library.upsert_embeddings, provider_id, updates)
-                logger.info("[PrivateCompanion] 已补齐表情语义向量: provider=%s count=%s", provider_id, len(updates))
+                logger.info("已补齐表情语义向量: provider=%s count=%s", provider_id, len(updates))
         finally:
             inflight = getattr(self, "_reaction_embedding_backfill_inflight", set())
             inflight.discard(provider_id)
@@ -6805,7 +6807,7 @@ class LlmToolActionsMixin:
                     )
             except Exception as exc:
                 logger.debug(
-                    "[PrivateCompanion] 表情查询向量生成失败，回退关键词: provider=%s error_type=%s",
+                    "表情查询向量生成失败，回退关键词: provider=%s error_type=%s",
                     embedding_provider_id or "<auto>",
                     type(exc).__name__,
                 )
@@ -6868,7 +6870,7 @@ class LlmToolActionsMixin:
             except Exception as exc:
                 lookup_error_type = type(exc).__name__
                 logger.warning(
-                    "[PrivateCompanion] 自有表情包素材库检索失败: error_type=%s",
+                    "自有表情包素材库检索失败: error_type=%s",
                     lookup_error_type,
                 )
                 lookup = {
@@ -8111,7 +8113,7 @@ class LlmToolActionsMixin:
         forbidden_message = "只有配置的主要用户可以查询 Bot 与其他人的互动。" if owner_only else "只有配置的主要用户或 AstrBot 全局管理员可以查询 Bot 与其他人的互动。"
         if not is_private or not allowed:
             logger.info(
-                "[PrivateCompanion] 跨用户互动查询权限未通过: sender=%s owner=%s admin=%s owner_only=%s umo=%s",
+                "跨用户互动查询权限未通过: sender=%s owner=%s admin=%s owner_only=%s umo=%s",
                 requester_id or "-",
                 owner_allowed,
                 admin_allowed,
@@ -8266,7 +8268,7 @@ class LlmToolActionsMixin:
         allowed = owner_allowed or admin_allowed
         if not allowed:
             logger.info(
-                "[PrivateCompanion] 关系网查询权限未通过: private=%s sender=%s owner=%s admin=%s umo=%s",
+                "关系网查询权限未通过: private=%s sender=%s owner=%s admin=%s umo=%s",
                 is_private,
                 requester_id or "-",
                 owner_allowed,
@@ -8329,10 +8331,10 @@ class LlmToolActionsMixin:
                     existing_ids.add(uid)
 
         if not matches:
-            logger.info("[PrivateCompanion] 关系网查询未命中: keyword=%s", keyword)
+            logger.info("关系网查询未命中: keyword=%s", keyword)
             return json.dumps({"status": "not_found", "keyword": keyword, "message": "关系网里没有确认匹配对象"}, ensure_ascii=False)
         status = "success" if len(matches) == 1 else "ambiguous"
-        logger.info("[PrivateCompanion] 关系网查询命中: keyword=%s count=%s", keyword, len(matches))
+        logger.info("关系网查询命中: keyword=%s count=%s", keyword, len(matches))
         return json.dumps(
             {
                 "status": status,
@@ -8479,14 +8481,14 @@ class LlmToolActionsMixin:
                         session_id=str(getattr(session, "session_id", "") or ""),
                     )
                     await platform.send_by_session(session_obj, MessageChain(chain))
-                    logger.info("[PrivateCompanion] 转述已通过精确平台发送: umo=%s", _single_line(umo, 160))
+                    logger.info("转述已通过精确平台发送: umo=%s", _single_line(umo, 160))
                     return True, "", umo
                 except Exception as exc:
                     errors.append(f"{umo}: 精确发送失败 {self._format_send_exception(exc)}")
                 try:
                     result = await self.context.send_message(umo, MessageChain(chain))
                     if result is not False:
-                        logger.info("[PrivateCompanion] 转述已通过 AstrBot 核心发送: umo=%s", _single_line(umo, 160))
+                        logger.info("转述已通过 AstrBot 核心发送: umo=%s", _single_line(umo, 160))
                         return True, "", umo
                     errors.append(f"{umo}: 核心发送返回 False")
                 except Exception as exc:
@@ -8810,7 +8812,7 @@ class LlmToolActionsMixin:
         )
         if not ok:
             logger.warning(
-                "[PrivateCompanion] 跨群转述发送失败: group=%s at=%s error=%s",
+                "跨群转述发送失败: group=%s at=%s error=%s",
                 target_group,
                 at_qq or at_user or "-",
                 _single_line(error, 240),
@@ -8819,7 +8821,7 @@ class LlmToolActionsMixin:
         self._note_atrelay_send("group", target_group, text, at_qq or at_user, event=event)
         self._save_data_sync(sections={"recent_atrelay_contexts", "atrelay_send_log"})
         logger.info(
-            "[PrivateCompanion] 跨群转述发送完成: group=%s at=%s umo=%s",
+            "跨群转述发送完成: group=%s at=%s umo=%s",
             target_group,
             at_qq or at_user or "-",
             _single_line(used_umo, 160),
@@ -8874,7 +8876,7 @@ class LlmToolActionsMixin:
         )
         if not ok:
             logger.warning(
-                "[PrivateCompanion] 私聊转述发送失败: user=%s error=%s",
+                "私聊转述发送失败: user=%s error=%s",
                 target_user,
                 _single_line(error, 240),
             )
@@ -8891,7 +8893,7 @@ class LlmToolActionsMixin:
             )
         self._save_data_sync(sections={"pending_atrelay_receipts", "recent_atrelay_contexts", "atrelay_send_log"})
         logger.info(
-            "[PrivateCompanion] 私聊转述发送完成: user=%s umo=%s",
+            "私聊转述发送完成: user=%s umo=%s",
             target_user,
             _single_line(used_umo, 160),
         )

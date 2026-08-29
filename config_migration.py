@@ -10,13 +10,15 @@ import re
 from pathlib import Path
 from typing import Any
 
-from astrbot.api import logger
 
 from .photo_generation_scope import (
     PHOTO_GENERATION_SCOPE_LIMIT_KEYS,
     legacy_photo_generation_scope_limits,
     normalize_photo_generation_scope_limit,
 )
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 LEGACY_PROACTIVE_ACTIONS_KEY = "enabled_proactive_actions"
 
@@ -185,7 +187,7 @@ def migrate_flat_config_into_schema_groups(
     except Exception as exc:
         if logger is not None:
             logger.warning(
-                "[PrivateCompanion] 配置分组迁移无法建立回滚快照，已安全跳过: %s",
+                "配置分组迁移无法建立回滚快照，已安全跳过: %s",
                 _single_line(exc, 160),
             )
         return 0
@@ -212,7 +214,7 @@ def migrate_flat_config_into_schema_groups(
                 restore()
             elif logger is not None:
                 logger.error(
-                    "[PrivateCompanion] 配置迁移异步保存失败，但配置已被后续修改，未覆盖新值"
+                    "配置迁移异步保存失败，但配置已被后续修改，未覆盖新值"
                 )
 
         if not _save_config_after_schema_migration(
@@ -227,7 +229,7 @@ def migrate_flat_config_into_schema_groups(
         restore()
         if logger is not None:
             logger.warning(
-                "[PrivateCompanion] 配置分组迁移失败，已回滚且不影响插件加载: %s",
+                "配置分组迁移失败，已回滚且不影响插件加载: %s",
                 _single_line(exc, 160),
             )
         return 0
@@ -398,7 +400,7 @@ def _migrate_flat_config_into_schema_groups(
     if not changed:
         return 0
     if logger is not None:
-        logger.info("[PrivateCompanion] 已将旧版扁平配置迁移到新版分组配置: %s 项", len(changed))
+        logger.info("已将旧版扁平配置迁移到新版分组配置: %s 项", len(changed))
     if save and not _save_config_after_schema_migration(config, logger=logger):
         raise RuntimeError("config_schema_migration_save_failed")
     return len(changed)
@@ -1180,7 +1182,7 @@ def _schema_group_items(schema_path: Path, *, logger: Any | None = None) -> dict
         raw = json.loads(schema_path.read_text(encoding="utf-8"))
     except Exception as exc:
         if logger is not None:
-            logger.debug("[PrivateCompanion] 读取配置 schema 用于分组迁移失败: %s", exc)
+            logger.debug("读取配置 schema 用于分组迁移失败: %s", exc)
         return mapping
     if not isinstance(raw, dict):
         return mapping
@@ -1259,7 +1261,7 @@ def _save_config_after_schema_migration(
             if callable(close):
                 close()
             if logger is not None:
-                logger.debug("[PrivateCompanion] config migration async save skipped: no event loop")
+                logger.debug("config migration async save skipped: no event loop")
             return False
         tasks = getattr(config, "_private_companion_config_save_tasks", None)
         if not isinstance(tasks, set):
@@ -1282,19 +1284,19 @@ def _save_config_after_schema_migration(
                     except Exception as rollback_exc:
                         if logger is not None:
                             logger.error(
-                                "[PrivateCompanion] config migration async rollback failed: %s",
+                                "config migration async rollback failed: %s",
                                 _single_line(rollback_exc, 160),
                             )
             except Exception as exc:
                 if logger is not None:
-                    logger.warning("[PrivateCompanion] config migration async save failed: %s", _single_line(exc, 160))
+                    logger.warning("config migration async save failed: %s", _single_line(exc, 160))
                 if callable(on_async_failure):
                     try:
                         on_async_failure()
                     except Exception as rollback_exc:
                         if logger is not None:
                             logger.error(
-                                "[PrivateCompanion] config migration async rollback failed: %s",
+                                "config migration async rollback failed: %s",
                                 _single_line(rollback_exc, 160),
                             )
             finally:
@@ -1325,14 +1327,14 @@ def _save_config_after_schema_migration(
                     return result is not False
                 except Exception as retry_exc:
                     if logger is not None:
-                        logger.warning("[PrivateCompanion] 重试保存配置分组迁移结果失败: %s", _single_line(retry_exc, 160))
+                        logger.warning("重试保存配置分组迁移结果失败: %s", _single_line(retry_exc, 160))
                     return False
             if logger is not None:
-                logger.warning("[PrivateCompanion] 保存配置分组迁移结果失败: %s", _single_line(exc, 160))
+                logger.warning("保存配置分组迁移结果失败: %s", _single_line(exc, 160))
             return False
         except Exception as exc:
             if logger is not None:
-                logger.warning("[PrivateCompanion] 保存配置分组迁移结果失败: %s", _single_line(exc, 160))
+                logger.warning("保存配置分组迁移结果失败: %s", _single_line(exc, 160))
             return False
     return False
 
@@ -1388,7 +1390,7 @@ def _ensure_config_parent_dir(
             changed = True
         except Exception as exc:
             if logger is not None:
-                logger.debug("[PrivateCompanion] 创建配置目录失败: %s", _single_line(exc, 160))
+                logger.debug("创建配置目录失败: %s", _single_line(exc, 160))
     return changed
 
 

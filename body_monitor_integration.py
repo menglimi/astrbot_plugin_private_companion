@@ -672,7 +672,7 @@ class BodyMonitorIntegration:
     def _record_error(self, state: dict[str, Any], status: str, exc: Exception) -> dict[str, Any]:
         state["status"] = status
         state["last_error"] = _error_text(exc, 180) or exc.__class__.__name__
-        logger.warning("[PrivateCompanion] Body Monitor 联动失败: %s", state["last_error"])
+        logger.warning("[身体监测联动] Body Monitor 联动失败: %s", state["last_error"])
         self._save()
         return self.status_view()
 

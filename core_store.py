@@ -36,7 +36,7 @@ from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 from xml.etree import ElementTree as ET
 
-from astrbot.api import AstrBotConfig, logger
+from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 try:
     from astrbot.api.message_components import At, Image, Plain, Record, Reply
@@ -169,6 +169,9 @@ from .planning import (
     normalize_story_plan,
     pick_detail_segment,
 )
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 DEFAULT_AI_DAILY_NEWS_SOURCE = "B站 AI早报|bilibili:285286947"
@@ -680,7 +683,7 @@ class CoreStoreMixin:
             os.replace(temporary, path)
         except OSError as exc:
             logger.warning(
-                "[PrivateCompanion] 后端状态标记写入失败，不影响当前存储: %s",
+                "后端状态标记写入失败，不影响当前存储: %s",
                 _single_line(exc, 160),
             )
         finally:
@@ -829,7 +832,7 @@ class CoreStoreMixin:
             if invalid_reason:
                 sqlite_path = default_sqlite_path
                 logger.warning(
-                    "[PrivateCompanion] SQLite 数据文件路径无效，已回退默认路径: configured=%s reason=%s fallback=%s",
+                    "SQLite 数据文件路径无效，已回退默认路径: configured=%s reason=%s fallback=%s",
                     configured_sqlite_path,
                     invalid_reason,
                     default_sqlite_path,
@@ -939,7 +942,7 @@ class CoreStoreMixin:
                             next_manager.backend.save_store(deepcopy(source_data))
                         self._advance_data_save_write_generation()
                     logger.info(
-                        "[PrivateCompanion] 已从 %s 后端迁移到 %s 后端",
+                        "已从 %s 后端迁移到 %s 后端",
                         migration_source_backend,
                         backend,
                     )
@@ -970,7 +973,7 @@ class CoreStoreMixin:
                     )
                 except Exception as restore_exc:
                     logger.error(
-                        "[PrivateCompanion] Failed to restore storage switch target: %s",
+                        "Failed to restore storage switch target: %s",
                         _single_line(restore_exc, 200),
                     )
             if reload_data and previous_manager is not None:
@@ -1013,14 +1016,14 @@ class CoreStoreMixin:
                             await result
                         return True
                     except Exception as retry_exc:
-                        logger.warning("[PrivateCompanion] 自动保存配置重试失败: %s", _single_line(retry_exc, 120))
+                        logger.warning("自动保存配置重试失败: %s", _single_line(retry_exc, 120))
                         return False
-                logger.warning("[PrivateCompanion] 自动保存配置失败: %s", _single_line(exc, 120))
+                logger.warning("自动保存配置失败: %s", _single_line(exc, 120))
                 return False
             except Exception as exc:
-                logger.warning("[PrivateCompanion] 自动保存配置失败: %s", _single_line(exc, 120))
+                logger.warning("自动保存配置失败: %s", _single_line(exc, 120))
                 return False
-        logger.warning("[PrivateCompanion] 当前配置对象没有可用保存方法，本次修改未落盘")
+        logger.warning("当前配置对象没有可用保存方法，本次修改未落盘")
         return False
 
     def _set_runtime_bool_config(self, key: str, value: bool) -> None:
@@ -1051,7 +1054,7 @@ class CoreStoreMixin:
                     token = getattr(self, "_activate_persona_id", lambda _pid: None)(persona_id)
                     if token is None:
                         logger.info(
-                            "[PrivateCompanion] 跳过尚未创建独立配置的人格启动任务: persona=%s",
+                            "跳过尚未创建独立配置的人格启动任务: persona=%s",
                             _single_line(persona_id, 96),
                         )
                         continue
@@ -1063,7 +1066,7 @@ class CoreStoreMixin:
                             await self._maybe_settle_skill_growth()
                         except Exception as exc:
                             logger.warning(
-                                "[PrivateCompanion] 启动初始化人格失败，继续处理其他人格: persona=%s error=%s",
+                                "启动初始化人格失败，继续处理其他人格: persona=%s error=%s",
                                 _single_line(persona_id, 96),
                                 _single_line(exc, 160),
                             )
@@ -1079,7 +1082,7 @@ class CoreStoreMixin:
             await self._ensure_daily_diary()
             await self._maybe_settle_skill_growth()
         except Exception as e:
-            logger.warning(f"[PrivateCompanion] 启动时生成今日日志失败: {e}", exc_info=True)
+            logger.warning(f"启动时生成今日日志失败: {e}", exc_info=True)
 
     def _has_today_diary(self) -> bool:
         diaries = self.data.get("bot_diaries", [])
@@ -1523,7 +1526,7 @@ class CoreStoreMixin:
             else ""
         )
         logger.info(
-            "[PrivateCompanion] Store safety cleanup: stage=%s fields=%s%s",
+            "Store safety cleanup: stage=%s fields=%s%s",
             key,
             changed,
             suffix,
@@ -1781,12 +1784,12 @@ class CoreStoreMixin:
             recovered = max(0, int(recoverer(data) or 0))
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 启动恢复夹层本地书页失败，已保留现有存储: %s",
+                "启动恢复夹层本地书页失败，已保留现有存储: %s",
                 _single_line(exc, 160),
             )
             return 0
         if recovered:
-            logger.warning("[PrivateCompanion] 已根据本地书页和删除记录校准夹层书库: changed=%s", recovered)
+            logger.warning("已根据本地书页和删除记录校准夹层书库: changed=%s", recovered)
         return recovered
 
     def _persist_startup_maintenance_sync(
@@ -1896,11 +1899,11 @@ class CoreStoreMixin:
                 if story_authority_controller().authority_state() == "committed":
                     self._restore_committed_story_roots(data, story_baseline)
                 if changed:
-                    logger.warning("[PrivateCompanion] 启动读取数据时清理非标准控制标签: fields=%s", changed)
+                    logger.warning("启动读取数据时清理非标准控制标签: fields=%s", changed)
                 if repeat_changed:
-                    logger.warning("[PrivateCompanion] 启动读取数据时压缩主动候选重复计数: items=%s", repeat_changed)
+                    logger.warning("启动读取数据时压缩主动候选重复计数: items=%s", repeat_changed)
                 if compacted:
-                    logger.info("[PrivateCompanion] 启动读取数据时压缩历史存储: %s", compacted)
+                    logger.info("启动读取数据时压缩历史存储: %s", compacted)
                 self._persist_startup_maintenance_sync(
                     manager,
                     before_maintenance,
@@ -1914,7 +1917,7 @@ class CoreStoreMixin:
                 return data
             except Exception as exc:
                 logger.error(
-                    "[PrivateCompanion] StoreManager 读取失败，为避免用空数据覆盖原存储，已中止加载: %s",
+                    "StoreManager 读取失败，为避免用空数据覆盖原存储，已中止加载: %s",
                     _single_line(exc, 200),
                 )
                 raise
@@ -1938,15 +1941,15 @@ class CoreStoreMixin:
             if story_authority_controller().authority_state() == "committed":
                 self._restore_committed_story_roots(data, story_baseline)
             if changed:
-                logger.warning("[PrivateCompanion] 启动读取 JSON 时清理非标准控制标签: fields=%s", changed)
+                logger.warning("启动读取 JSON 时清理非标准控制标签: fields=%s", changed)
             if repeat_changed:
-                logger.warning("[PrivateCompanion] 启动读取 JSON 时压缩主动候选重复计数: items=%s", repeat_changed)
+                logger.warning("启动读取 JSON 时压缩主动候选重复计数: items=%s", repeat_changed)
             if compacted:
-                logger.info("[PrivateCompanion] 启动读取 JSON 时压缩历史存储: %s", compacted)
+                logger.info("启动读取 JSON 时压缩历史存储: %s", compacted)
             return data
         except Exception as exc:
             logger.error(
-                "[PrivateCompanion] 读取已有 JSON 数据失败，为避免覆盖原文件，已中止加载: %s",
+                "读取已有 JSON 数据失败，为避免覆盖原文件，已中止加载: %s",
                 _single_line(exc, 200),
             )
             raise
@@ -2204,7 +2207,7 @@ class CoreStoreMixin:
                         manager.export_current_to_json(mirror)
                     except Exception as exc:
                         logger.debug(
-                            "[PrivateCompanion] SQLite 快照镜像 JSON 写出失败: %s",
+                            "SQLite 快照镜像 JSON 写出失败: %s",
                             _single_line(exc, 160),
                         )
                 else:
@@ -2772,7 +2775,7 @@ class CoreStoreMixin:
                 pass
             except Exception as exc:
                 logger.debug(
-                    "[PrivateCompanion] Waiting for the default incremental writer "
+                    "Waiting for the default incremental writer "
                     "during shutdown failed: %s",
                     _single_line(exc, 160),
                 )
@@ -3225,7 +3228,7 @@ class CoreStoreMixin:
                     except Exception as exc:
                         failures += 1
                         logger.warning(
-                            "[PrivateCompanion] Delayed data save failed: %s",
+                            "Delayed data save failed: %s",
                             _single_line(exc, 160),
                         )
                         if self._save_is_stopping():
@@ -3273,7 +3276,7 @@ class CoreStoreMixin:
                     except Exception as exc:
                         failures += 1
                         logger.warning(
-                            "[PrivateCompanion] Delayed persona data save failed: "
+                            "Delayed persona data save failed: "
                             "persona=%s error=%s",
                             persona_id,
                             _single_line(exc, 160),
@@ -3500,7 +3503,7 @@ class CoreStoreMixin:
                 except Exception as exc:
                     self.data["daily_diary_postprocess_error"] = _single_line(exc, 180)
                     logger.warning(
-                        "[PrivateCompanion] 重建今日日记已保存,但梦境碎片合并失败: %s",
+                        "重建今日日记已保存,但梦境碎片合并失败: %s",
                         _single_line(exc, 180),
                     )
                 story_plan = diary.get("story_plan") if isinstance(diary, dict) else None
@@ -3521,7 +3524,7 @@ class CoreStoreMixin:
                     await outfit_generator(diary)
                 except Exception as exc:
                     logger.warning(
-                        "[PrivateCompanion] 重建今日日记已保存,但每日穿搭照片生成失败: %s",
+                        "重建今日日记已保存,但每日穿搭照片生成失败: %s",
                         _single_line(exc, 180),
                     )
         return state, plan, diary
@@ -4202,7 +4205,7 @@ class CoreStoreMixin:
                 users.pop(raw_user_id, None)
                 transport_changed = True
                 logger.info(
-                    "[PrivateCompanion] 已归一旧私聊 UMO 用户键: old=%s user=%s",
+                    "已归一旧私聊 UMO 用户键: old=%s user=%s",
                     _single_line(raw_id, 120),
                     _single_line(canonical_id, 80),
                 )
@@ -4577,7 +4580,7 @@ class CoreStoreMixin:
 
         if removed:
             logger.info(
-                "[PrivateCompanion] 已清理群聊链路遗留的私聊占位记录: count=%s ids=%s",
+                "已清理群聊链路遗留的私聊占位记录: count=%s ids=%s",
                 len(removed),
                 ",".join(removed[:12]),
             )
@@ -4879,7 +4882,7 @@ class CoreStoreMixin:
                         "dual_write": "failed",
                     })
                 logger.warning(
-                    "[PrivateCompanion] REQ-041 关系双写失败，已暂停新读切换并保留 legacy 写入: %s",
+                    "REQ-041 关系双写失败，已暂停新读切换并保留 legacy 写入: %s",
                     _single_line(exc, 160),
                 )
         if result.get("changed") or score_migration.get("changed"):
@@ -5566,7 +5569,7 @@ class CoreStoreMixin:
                 if not bool(getattr(self, "_empty_group_whitelist_warning_logged", False)):
                     self._empty_group_whitelist_warning_logged = True
                     logger.warning(
-                        "[PrivateCompanion] 群聊观察已开启但白名单为空,当前不会观察任何群；"
+                        "群聊观察已开启但白名单为空,当前不会观察任何群；"
                         "请在群聊观测页把目标群加入白名单,或改用黑名单模式: first_group=%s",
                         _single_line(group_id, 80) or "-",
                     )
