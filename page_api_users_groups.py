@@ -439,6 +439,16 @@ class PrivateCompanionPageApiUsersGroupsMixin:
                 }
             if not isinstance(user, dict):
                 return self._error("用户不存在")
+            # A page read can arrive before the background retry observes a
+            # late-loaded MemoryCompanion. Trigger one immediate bind attempt
+            # so the identity panel reflects the current connection state.
+            if getattr(self.plugin, "req041_scoped_projection_sync", None) is None:
+                rebind = getattr(self.plugin, "_req041_rebind_memory_scope_if_available", None)
+                if callable(rebind):
+                    try:
+                        await rebind()
+                    except Exception as exc:
+                        logger.debug("[PrivateCompanionPage] 读取用户详情时补绑定记忆作用域失败: %s", exc)
             relationship_view_getter = getattr(
                 self.plugin, "_req041_relationship_snapshot_view", None
             )

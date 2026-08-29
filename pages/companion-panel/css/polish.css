@@ -5218,3 +5218,94 @@ code,
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* Mobile containment for the world knowledge editor.
+   The persona header has a third, wide preset group on desktop; keep it on
+   its own row so the description never collapses into a vertical strip. */
+@media (max-width: 760px) {
+  html,
+  body {
+    max-width: 100%;
+    overflow-x: clip;
+  }
+
+  .shell,
+  .layout,
+  .panel,
+  #panel-roleplay,
+  .world-workspace,
+  .world-editor,
+  .world-editor > [data-world-panel],
+  .world-editor .persona-card,
+  .world-editor .persona-card-head {
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+
+  .world-workspace {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+    padding-right: 12px;
+  }
+
+  .world-outline {
+    display: flex;
+    min-height: 0;
+    gap: 6px;
+    overflow-x: auto;
+    padding: 8px;
+    border-radius: var(--radius-sm);
+    scrollbar-width: thin;
+  }
+
+  .world-outline-label {
+    flex: 0 0 auto;
+    align-self: center;
+  }
+
+  .world-outline-item {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .world-editor .persona-card-head {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .world-editor .persona-card-head .roleplay-example-presets {
+    display: flex;
+    grid-column: 1 / -1;
+    flex-wrap: wrap;
+    align-items: center;
+    width: 100%;
+    min-width: 0;
+    gap: 6px;
+  }
+
+  .world-editor .persona-card-head .roleplay-example-presets > span {
+    flex: 0 0 100%;
+  }
+
+  .world-editor .persona-card-head .roleplay-example-presets .roleplay-example-btn {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .world-editor .persona-card-head h3,
+  .world-editor .persona-card-head p {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+}
+
+@media (max-width: 480px) {
+  .world-workspace {
+    padding-right: 8px;
+  }
+
+  .world-editor .persona-card-head .roleplay-example-presets .roleplay-example-btn {
+    flex-basis: calc(50% - 3px);
+  }
+}

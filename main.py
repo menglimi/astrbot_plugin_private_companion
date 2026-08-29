@@ -5651,6 +5651,151 @@ class PrivateCompanionPlugin(
         self.req041_scoped_projection_status = summary
         return summary
 
+    async def _req041_rebind_memory_scope_if_available(self) -> dict[str, Any]:
+        """Bind the scoped memory API after a late MemoryCompanion startup."""
+        enabled = getattr(self, "_memory_companion_bridge_enabled", None)
+        if callable(enabled) and not enabled():
+            return {"ok": False, "code": "memory_bridge_disabled"}
+        coordinator = getattr(self, "req041_migration_coordinator", None)
+        binder = getattr(self, "_memory_companion_bind_namespace_epoch", None)
+        bridge_getter = getattr(self, "_memory_companion_bridge", None)
+        if coordinator is None or not callable(binder) or not callable(bridge_getter):
+            return {"ok": False, "code": "memory_scope_runtime_unavailable"}
+        lock = getattr(self, "_req041_memory_bind_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._req041_memory_bind_lock = lock
+        async with lock:
+            status_reader = getattr(coordinator, "status", None)
+            try:
+                control = status_reader() if callable(status_reader) else {}
+            except Exception:
+                control = {}
+            if not isinstance(control, dict):
+                control = {}
+            epoch = _single_line(control.get("migration_epoch"), 128)
+            policy = _single_line(control.get("policy_version"), 64)
+            if not epoch or not policy:
+                return {"ok": False, "code": "migration_epoch_unavailable"}
+            try:
+                bridge = bridge_getter()
+            except Exception as exc:
+                return {"ok": False, "code": _single_line(exc, 120) or "memory_bridge_lookup_failed"}
+            if bridge is None:
+                return {"ok": False, "code": "memory_bridge_unavailable"}
+            synchronizer = getattr(self, "req041_scoped_projection_sync", None)
+            bound_bridge = getattr(self, "_req041_scoped_bridge", None)
+            # A synchronizer without an explicit bridge marker may have been
+            # created by an older hot-loaded plugin instance. Do not reuse
+            # its closures against a newly discovered bridge.
+            if synchronizer is not None and bound_bridge is bridge:
+                scoped_result = await self._req041_sync_scoped_now()
+                if scoped_result.get("ok"):
+                    self._req041_mark_memory_scope_bound()
+                    runtime = getattr(self, "req041_migration_status", None)
+                    if isinstance(runtime, dict):
+                        runtime.update({"memory_bound": True, "scoped": scoped_result})
+                return scoped_result
+            if synchronizer is not None:
+                mark_dirty = getattr(synchronizer, "mark_dirty", None)
+                if callable(mark_dirty):
+                    mark_dirty()
+            try:
+                remote = binder(
+                    bridge,
+                    operation_id=f"req041-bind-{epoch}",
+                    migration_epoch=epoch,
+                    policy_version=policy,
+                )
+            except Exception as exc:
+                return {"ok": False, "code": _single_line(exc, 120) or "namespace_epoch_bind_exception"}
+            if not isinstance(remote, dict) or not remote.get("ok"):
+                return dict(remote) if isinstance(remote, dict) else {
+                    "ok": False, "code": "namespace_epoch_bind_invalid"
+                }
+            self._req041_mark_memory_scope_bound()
+            self.req041_scoped_projection_sync = ScopedProjectionSynchronizer(
+                read=lambda namespace, **kwargs: self._memory_companion_read_scoped_record(
+                    bridge, namespace, **kwargs
+                ),
+                list_records=lambda namespace, **kwargs: self._memory_companion_list_scoped_records(
+                    bridge, namespace, **kwargs
+                ),
+                upsert=lambda namespace, **kwargs: self._memory_companion_upsert_scoped_record(
+                    bridge, namespace, **kwargs
+                ),
+                tombstone=lambda namespace, **kwargs: self._memory_companion_tombstone_scoped_record(
+                    bridge, namespace, **kwargs
+                ),
+                tombstone_identity_scopes=lambda namespace, **kwargs: self._memory_companion_tombstone_scoped_identity_scopes(
+                    bridge, namespace, **kwargs
+                ),
+                erase_group_scopes=lambda namespace, **kwargs: self._memory_companion_erase_scoped_group_scopes(
+                    bridge, namespace, **kwargs
+                ),
+                erase_persona_scopes=lambda namespace, **kwargs: self._memory_companion_erase_scoped_persona_scopes(
+                    bridge, namespace, **kwargs
+                ),
+                migration_epoch=epoch,
+                policy_version=policy,
+                observability=getattr(self, "req041_observability", None),
+            )
+            self._req041_scoped_bridge = bridge
+            scoped_result = await self._req041_sync_scoped_now()
+            runtime = getattr(self, "req041_migration_status", None)
+            if isinstance(runtime, dict):
+                runtime.update({"memory_bound": True, "scoped": scoped_result})
+            return scoped_result
+
+    async def _req041_run_memory_scope_rebind(self) -> None:
+        """Retry late memory binding until the scoped runtime becomes usable."""
+        stop_event = getattr(self, "_stop_event", None)
+        startup_tasks = getattr(self, "_startup_background_tasks", {})
+        migration_task = startup_tasks.get("req041_automatic_migration") if isinstance(startup_tasks, dict) else None
+        if isinstance(migration_task, asyncio.Task) and migration_task is not asyncio.current_task():
+            try:
+                await asyncio.shield(migration_task)
+            except Exception:
+                pass
+        while True:
+            if isinstance(stop_event, asyncio.Event) and stop_event.is_set():
+                return
+            enabled = getattr(self, "_memory_companion_bridge_enabled", None)
+            if callable(enabled) and not enabled():
+                return
+            status = getattr(self, "req041_migration_status", None)
+            if not isinstance(status, dict):
+                await asyncio.sleep(2.0)
+                continue
+            try:
+                result = await self._req041_rebind_memory_scope_if_available()
+            except Exception as exc:
+                logger.warning(
+                    "[PrivateCompanion] 记忆作用域补绑定暂未完成，将重试: %s",
+                    _single_line(exc, 160),
+                )
+                await asyncio.sleep(2.0)
+                continue
+            if result.get("ok"):
+                status = getattr(self, "req041_migration_status", None)
+                if isinstance(status, dict):
+                    status.update({"memory_bound": True, "scoped": result})
+                    paused = status.get("state") == "paused"
+                    replay_ready = (
+                        not status.get("required")
+                        or (status.get("s5") or {}).get("status") == "ok"
+                    )
+                    if paused or not replay_ready:
+                        return
+                    if status.get("required"):
+                        status.update({"state": "active", "code": "migration_shadow_active"})
+                    else:
+                        status.update({"state": "active", "code": "fresh_scoped_runtime_active"})
+                    return
+                elif status is None:
+                    return
+            await asyncio.sleep(2.0)
+
     async def _req041_run_scoped_sync(self) -> None:
         while bool(getattr(self, "_req041_scoped_sync_requested", False)):
             self._req041_scoped_sync_requested = False
@@ -7314,6 +7459,7 @@ class PrivateCompanionPlugin(
             }
             if remote.get("ok") and bridge is not None:
                 self._req041_mark_memory_scope_bound()
+                self._req041_scoped_bridge = bridge
                 self.req041_scoped_projection_sync = ScopedProjectionSynchronizer(
                     read=lambda namespace, **kwargs: self._memory_companion_read_scoped_record(
                         bridge, namespace, **kwargs
@@ -7489,6 +7635,7 @@ class PrivateCompanionPlugin(
         }
         if remote.get("ok") and bridge is not None:
             self._req041_mark_memory_scope_bound()
+            self._req041_scoped_bridge = bridge
             self.req041_scoped_projection_sync = ScopedProjectionSynchronizer(
                 read=lambda namespace, **kwargs: self._memory_companion_read_scoped_record(
                     bridge, namespace, **kwargs
@@ -7604,6 +7751,10 @@ class PrivateCompanionPlugin(
         self._create_startup_background_task(
             "req041_automatic_migration",
             self._req041_initialize_automatic_migration,
+        )
+        self._create_startup_background_task(
+            "req041_memory_scope_rebind",
+            self._req041_run_memory_scope_rebind,
         )
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._scheduler_loop())
@@ -7937,6 +8088,7 @@ class PrivateCompanionPlugin(
             if callable(mark_dirty):
                 mark_dirty()
         self.req041_scoped_projection_sync = None
+        self._req041_scoped_bridge = None
 
         runtime_bridge = getattr(self, "_proactive_chat_runtime_bridge", None)
         if runtime_bridge is not None:
@@ -10368,6 +10520,17 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             bool(getattr(event, "_private_companion_tts_request_applied", False))
             and bool(self._plain_result_body_text(chain))
         )
+        owned_non_llm_result = bool(
+            getattr(result, "_private_companion_owned_result", False)
+        )
+        legacy_plain_result_allowed = False
+        if not is_llm_result and not owned_non_llm_result:
+            try:
+                legacy_plain_result_allowed = bool(
+                    self._private_plain_result_allows_segmenting(event, chain)
+                )
+            except Exception:
+                legacy_plain_result_allowed = False
         if is_llm_result and await self._should_defer_segmenting_to_astrbot_tts(event, result, chain):
             logger.debug(
                 "[PrivateCompanion] 当前 LLM 结果交由 AstrBot 官方 TTS 与原生分段处理: session=%s",
@@ -10377,10 +10540,15 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         if (
             not is_llm_result
             and not external_proactive
+            and not owned_non_llm_result
             and not plugin_owned_reaction_text
             and not plugin_tts_plain_fallback
-            and not self._private_plain_result_allows_segmenting(event, chain)
+            and not legacy_plain_result_allowed
         ):
+            # A general/plain result has no reliable producer information in
+            # AstrBot. Only results explicitly built by this plugin (or its
+            # TTS/reaction paths) may enter the optional splitter; otherwise a
+            # response from an unrelated plugin would be rewritten here.
             return
         if getattr(result, "use_t2i_", None) or getattr(result, "use_markdown_", None):
             return
@@ -10496,6 +10664,21 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
     ) -> bool:
         """Allow plugin text replies while leaving functional command output intact."""
         if not self._plain_result_body_text(chain):
+            return False
+        # Results produced before the ownership marker was introduced have no
+        # reliable producer metadata. Restrict the compatibility path to the
+        # two contexts where this plugin historically emits plain fallbacks:
+        # private chats and quoted replies. A bare group text may belong to an
+        # unrelated plugin and must not be rewritten by this global hook.
+        is_private_chat = False
+        checker = getattr(event, "is_private_chat", None)
+        if callable(checker):
+            try:
+                is_private_chat = bool(checker())
+            except Exception:
+                is_private_chat = False
+        has_reply_quote = any(self._is_reply_component(comp) for comp in list(chain or []))
+        if not is_private_chat and not has_reply_quote:
             return False
         command_reason = getattr(self, "_tts_functional_command_reason", None)
         if callable(command_reason):

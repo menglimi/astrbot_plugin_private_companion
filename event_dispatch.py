@@ -5141,6 +5141,13 @@ Bot 近期回复：
             except TypeError:
                 result = MessageEventResult().chain_result(chain)
         result = self._disable_result_t2i(result)
+        # Decorating hooks are global in AstrBot. Keep an explicit ownership
+        # marker on results built by this plugin so its optional segmentation
+        # stage cannot rewrite another plugin's plain-text result.
+        try:
+            setattr(result, "_private_companion_owned_result", True)
+        except Exception:
+            pass
         return result
 
     def _disable_result_t2i(self, result: Any) -> Any:

@@ -85,6 +85,8 @@ METHODS = _load_methods(
     "_req041_schedule_replay",
     "_req041_legacy_snapshots_locked",
     "_req041_sync_scoped_now",
+    "_req041_rebind_memory_scope_if_available",
+    "_req041_run_memory_scope_rebind",
     "_req041_scoped_context_for_user",
     "_req041_persona_global_context",
     "_req041_scoped_private_read_view",
@@ -106,6 +108,8 @@ class Harness:
     _req041_schedule_replay = METHODS["_req041_schedule_replay"]
     _req041_legacy_snapshots_locked = METHODS["_req041_legacy_snapshots_locked"]
     _req041_sync_scoped_now = METHODS["_req041_sync_scoped_now"]
+    _req041_rebind_memory_scope_if_available = METHODS["_req041_rebind_memory_scope_if_available"]
+    _req041_run_memory_scope_rebind = METHODS["_req041_run_memory_scope_rebind"]
     _req041_scoped_context_for_user = METHODS["_req041_scoped_context_for_user"]
     _req041_persona_global_context = METHODS["_req041_persona_global_context"]
     _req041_scoped_private_read_view = METHODS["_req041_scoped_private_read_view"]
@@ -223,6 +227,37 @@ class MigrationStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(getattr(host, "req041_scoped_projection_sync", None))
         self.assertFalse((host.data.get("_req041_memory_scope_state") or {}).get("ever_bound", False))
         self.assertFalse((self.data_dir / "req041_backups").exists())
+
+    async def test_late_memory_startup_rebinds_scoped_runtime(self) -> None:
+        host = self._host(source=False, bind=False)
+        host._memory_companion_bridge_enabled = lambda: True
+        await host._req041_initialize_automatic_migration()
+        self.assertEqual("degraded", host.req041_migration_status["state"])
+        self.assertIsNone(getattr(host, "req041_scoped_projection_sync", None))
+
+        host._memory_companion_bridge = lambda: object()
+        result = await host._req041_rebind_memory_scope_if_available()
+
+        self.assertTrue(result["ok"])
+        self.assertIsInstance(host.req041_scoped_projection_sync, ScopedProjectionSynchronizer)
+        self.assertTrue(host.req041_migration_status["memory_bound"])
+        self.assertTrue((host.data.get("_req041_memory_scope_state") or {}).get("ever_bound"))
+
+    async def test_memory_bridge_replacement_rebinds_existing_scoped_runtime(self) -> None:
+        host = self._host(source=False)
+        bridges = {"current": object()}
+        host._memory_companion_bridge = lambda: bridges["current"]
+        await host._req041_initialize_automatic_migration()
+        original_sync = host.req041_scoped_projection_sync
+        original_bridge = host._req041_scoped_bridge
+
+        bridges["current"] = object()
+        result = await host._req041_rebind_memory_scope_if_available()
+
+        self.assertTrue(result["ok"])
+        self.assertIsNot(original_sync, host.req041_scoped_projection_sync)
+        self.assertIsNot(original_bridge, host._req041_scoped_bridge)
+        self.assertEqual(2, len(host.bind_calls))
 
     async def test_new_install_first_exact_identity_reaches_new_read_through_outbox(self) -> None:
         host = self._host(source=False)
