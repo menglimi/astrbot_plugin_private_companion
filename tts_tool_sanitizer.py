@@ -6,7 +6,6 @@ import os
 import re
 from typing import Any
 
-from astrbot.api import logger
 
 from .helpers import (
     _redact_outbound_secrets,
@@ -16,6 +15,9 @@ from .helpers import (
 )
 from .persona_config import runtime_persona_setting
 from .segmented_message import sanitize_llm_segment_control_tokens
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 class TtsToolSanitizerMixin:
@@ -159,7 +161,7 @@ class TtsToolSanitizerMixin:
         except Exception:
             pass
         logger.info(
-            "[PrivateCompanion] 同会话 send_message_to_user 文本延后到最终回复: session=%s text=%s",
+            "同会话 send_message_to_user 文本延后到最终回复: session=%s text=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             _single_line(text, 160),
         )
@@ -177,7 +179,7 @@ class TtsToolSanitizerMixin:
         )
         if cleaned_outbound != text:
             logger.info(
-                "[PrivateCompanion] 已清理工具直发文本中的内部控制标记: before=%s after=%s",
+                "已清理工具直发文本中的内部控制标记: before=%s after=%s",
                 _single_line(text, 120),
                 _single_line(cleaned_outbound, 120),
             )
@@ -187,7 +189,7 @@ class TtsToolSanitizerMixin:
         cleaned_control = _strip_nonstandard_chat_control_tags(text)
         if cleaned_control != text:
             logger.info(
-                "[PrivateCompanion] 已清理工具直发文本中的非标准控制标签: before=%s after=%s",
+                "已清理工具直发文本中的非标准控制标签: before=%s after=%s",
                 _single_line(text, 120),
                 _single_line(cleaned_control, 120),
             )
@@ -207,7 +209,7 @@ class TtsToolSanitizerMixin:
         visible = re.sub(r"\n{3,}", "\n\n", str(visible or "").strip())
         if visible and visible != text:
             logger.info(
-                "[PrivateCompanion] 已清理工具直发文本中的 TTS 标签: before=%s after=%s",
+                "已清理工具直发文本中的 TTS 标签: before=%s after=%s",
                 _single_line(text, 120),
                 _single_line(visible, 120),
             )
@@ -283,7 +285,7 @@ class TtsToolSanitizerMixin:
                 and self._same_session_tool_has_only_empty_plain(event, kwargs)
             ):
                 logger.info(
-                    "[PrivateCompanion] 已忽略同会话 send_message_to_user 空文本，等待 Agent 输出最终回复: session=%s",
+                    "已忽略同会话 send_message_to_user 空文本，等待 Agent 输出最终回复: session=%s",
                     _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                 )
                 return (
@@ -320,7 +322,7 @@ class TtsToolSanitizerMixin:
             from astrbot.core.message.message_event_result import MessageChain as CoreMessageChain
             from astrbot.core.platform.message_session import MessageSession
         except Exception as exc:
-            logger.debug("[PrivateCompanion] send_message_to_user TTS 接管不可用: %s", _single_line(exc, 120))
+            logger.debug("send_message_to_user TTS 接管不可用: %s", _single_line(exc, 120))
             return None
 
         components: list[Any] = []
@@ -380,14 +382,14 @@ class TtsToolSanitizerMixin:
                         if tts_components:
                             components.extend(tts_components)
                             logger.info(
-                                "[PrivateCompanion] 已接管 send_message_to_user 的 record 文本并转为插件 TTS: session=%s text=%s",
+                                "已接管 send_message_to_user 的 record 文本并转为插件 TTS: session=%s text=%s",
                                 _single_line(session, 120),
                                 _single_line(text, 120),
                             )
                         else:
                             components.append(Comp.Plain(text=text))
                             logger.warning(
-                                "[PrivateCompanion] send_message_to_user 的 record 文本无法生成语音,已改为普通文字: session=%s text=%s",
+                                "send_message_to_user 的 record 文本无法生成语音,已改为普通文字: session=%s text=%s",
                                 _single_line(session, 120),
                                 _single_line(text, 120),
                             )
@@ -438,7 +440,7 @@ class TtsToolSanitizerMixin:
             return f"error: invalid session: {session}"
         await context.context.context.send_message(target_session, CoreMessageChain(chain=components))
         logger.info(
-            "[PrivateCompanion] send_message_to_user 工具文本已接管 TTS 处理: session=%s components=%s",
+            "send_message_to_user 工具文本已接管 TTS 处理: session=%s components=%s",
             _single_line(session, 120),
             len(components),
         )
@@ -448,7 +450,7 @@ class TtsToolSanitizerMixin:
         try:
             from astrbot.core.tools.message_tools import SendMessageToUserTool
         except Exception as exc:
-            logger.debug("[PrivateCompanion] send_message_to_user 工具清理包装未安装: %s", _single_line(exc, 120))
+            logger.debug("send_message_to_user 工具清理包装未安装: %s", _single_line(exc, 120))
             return
         original_call = getattr(SendMessageToUserTool, "_private_companion_tts_sanitizer_original_call", None)
         if original_call is None:
@@ -464,7 +466,7 @@ class TtsToolSanitizerMixin:
                         return processed
                     kwargs["messages"] = plugin._clean_send_message_to_user_tool_messages(kwargs.get("messages"))
                 except Exception as exc:
-                    logger.debug("[PrivateCompanion] send_message_to_user 文本清理失败: %s", _single_line(exc, 120))
+                    logger.debug("send_message_to_user 文本清理失败: %s", _single_line(exc, 120))
                     try:
                         kwargs = dict(kwargs)
                         kwargs["messages"] = plugin._clean_send_message_to_user_tool_messages(kwargs.get("messages"))
@@ -476,4 +478,4 @@ class TtsToolSanitizerMixin:
         setattr(SendMessageToUserTool, "_private_companion_tts_sanitizer_plugin", self)
         SendMessageToUserTool.call = _private_companion_sanitized_call
         setattr(SendMessageToUserTool, "_private_companion_tts_sanitizer_installed", True)
-        logger.info("[PrivateCompanion] send_message_to_user 工具 TTS 标签处理已安装/刷新")
+        logger.info("send_message_to_user 工具 TTS 标签处理已安装/刷新")

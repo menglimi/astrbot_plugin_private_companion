@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from astrbot.api import logger
 
 from .helpers import _single_line
 from .external_bridge_resolver import resolve_external_bridge
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 class ContentCompanionBridgeMixin:
@@ -31,7 +33,7 @@ class ContentCompanionBridgeMixin:
         try:
             value = getter()
         except Exception as exc:
-            logger.warning("[PrivateCompanion] 独立创作能力查询失败: %s", _single_line(exc, 160))
+            logger.warning("独立创作能力查询失败: %s", _single_line(exc, 160))
             return {"installed": True, "enabled": False, "available": False, "reason": "status_query_failed"}
         return dict(value) if isinstance(value, dict) else {"installed": True, "enabled": False, "available": False}
 
@@ -51,7 +53,7 @@ class ContentCompanionBridgeMixin:
             self._content_companion_delegating = True
             return await handler(self, *args, **kwargs)
         except Exception as exc:
-            logger.warning("[PrivateCompanion] 独立创作操作失败: operation=%s error=%s", operation, _single_line(exc, 160))
+            logger.warning("独立创作操作失败: operation=%s error=%s", operation, _single_line(exc, 160))
             return None
         finally:
             self._content_companion_delegating = False

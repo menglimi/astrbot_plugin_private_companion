@@ -8,13 +8,15 @@ import uuid
 from types import MethodType
 from typing import Any, Awaitable, Callable
 
-from astrbot.api import logger
 try:
     from astrbot.core.message.message_event_result import MessageChain
 except ImportError:
     from astrbot.api.event import MessageChain
 from astrbot.core.platform.message_type import MessageType
 from astrbot.core.platform.platform import PlatformStatus
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 try:
     from astrbot.core.platform.astr_message_event import MessageSession
 except ImportError:
@@ -185,7 +187,7 @@ class ProactiveChatRuntimeBridge:
         self._last_event = "生成前、终审、平台发送与结算链路已接管"
         self._last_event_at = self._attached_at
         logger.info(
-            "[PrivateCompanion] Proactive Chat 深度联动已接入: version=%s methods=%s",
+            "Proactive Chat 深度联动已接入: version=%s methods=%s",
             self.version,
             ",".join(self.REQUIRED_METHODS),
         )
@@ -203,7 +205,7 @@ class ProactiveChatRuntimeBridge:
                         setattr(instance, name, original)
                     except Exception as exc:
                         logger.debug(
-                            "[PrivateCompanion] 恢复 Proactive Chat 方法失败: method=%s error=%s",
+                            "恢复 Proactive Chat 方法失败: method=%s error=%s",
                             name,
                             _short(exc),
                         )
@@ -222,7 +224,7 @@ class ProactiveChatRuntimeBridge:
             self._last_event = reason
             self._last_event_at = time.time()
         if was_attached:
-            logger.info("[PrivateCompanion] Proactive Chat 深度联动已卸载: %s", reason or "正常释放")
+            logger.info("Proactive Chat 深度联动已卸载: %s", reason or "正常释放")
 
     def _is_intact(self) -> bool:
         instance = self.instance
@@ -336,7 +338,7 @@ class ProactiveChatRuntimeBridge:
             self._last_event = "生成前已阻断: " + _short(prepared.get("reason"), 120)
             self._last_event_at = time.time()
             logger.info(
-                "[PrivateCompanion] Proactive Chat 生成前已阻断: session=%s reason=%s",
+                "Proactive Chat 生成前已阻断: session=%s reason=%s",
                 _short(session_id, 120),
                 _short(prepared.get("reason"), 160),
             )
@@ -468,7 +470,7 @@ class ProactiveChatRuntimeBridge:
         self._last_event = f"平台发送已确认，逻辑消息 1 条，物理发送 {physical_count}/{total_count} 条成功"
         self._last_event_at = time.time()
         logger.info(
-            "[PrivateCompanion] Proactive Chat 深度联动发送结算: session=%s success=%s/%s recorded=%s",
+            "Proactive Chat 深度联动发送结算: session=%s success=%s/%s recorded=%s",
             _short(session_id, 120),
             physical_count,
             total_count,
@@ -545,7 +547,7 @@ class ProactiveChatRuntimeBridge:
             }
         except Exception as exc:
             logger.error(
-                "[PrivateCompanion] Proactive Chat 平台发送失败: session=%s error=%s",
+                "Proactive Chat 平台发送失败: session=%s error=%s",
                 _short(session_id, 120),
                 _short(exc, 200),
             )
@@ -565,7 +567,7 @@ class ProactiveChatRuntimeBridge:
         if callable(scheduler):
             await scheduler(session_id)
         logger.info(
-            "[PrivateCompanion] Proactive Chat 本轮无已确认发送，已跳过成功历史与未回复计数: session=%s",
+            "Proactive Chat 本轮无已确认发送，已跳过成功历史与未回复计数: session=%s",
             _short(session_id, 120),
         )
         return None
@@ -665,4 +667,4 @@ class ProactiveChatRuntimeBridge:
         self._last_error = f"{label}: {_short(exc, 180)}"
         self._last_event = label
         self._last_event_at = time.time()
-        logger.warning("[PrivateCompanion] %s: %s", label, _short(exc, 180))
+        logger.warning("%s: %s", label, _short(exc, 180))

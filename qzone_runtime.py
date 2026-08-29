@@ -10,12 +10,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
 from .helpers import _now_ts, _single_line
 from .qzone_json import load_qzone_json
 from .qzone_errors import QzoneIntegrationError
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 __all__ = ("QzoneRuntimeMixin",)
 
@@ -597,7 +599,7 @@ class QzoneRuntimeMixin:
             if callable(getattr(self, "_save_data_sync", None)):
                 self._save_data_sync(sections={"qzone_integration"})
         except Exception:
-            logger.debug("[PrivateCompanion] QQ 空间 Cookie 状态记录失败", exc_info=True)
+            logger.debug("QQ 空间 Cookie 状态记录失败", exc_info=True)
 
     async def _qzone_fetch_login_uin(self, bot: Any) -> int:
         for action in self._QZONE_LOGIN_INFO_ACTIONS:
@@ -671,7 +673,7 @@ class QzoneRuntimeMixin:
                     f"{_single_line(exc, 120)}；"
                     "需包含 uin/p_uin 与 p_skey 或 skey，可从已登录 QQ 空间的浏览器请求头 Cookie 复制"
                 ) from exc
-            logger.debug("[PrivateCompanion] QQ 空间使用手动 QZONE_COOKIE: uin=%s", ctx.get("uin"))
+            logger.debug("QQ 空间使用手动 QZONE_COOKIE: uin=%s", ctx.get("uin"))
             self._qzone_note_cookie_fetch_status("manual_ok", ctx=ctx)
             return ctx["cookie_header"]
         bot = getattr(event, "bot", None) if event is not None else None
@@ -696,7 +698,7 @@ class QzoneRuntimeMixin:
         if self._qzone_cookie_has_identity_and_secret(merged):
             cookie_text = self._qzone_cookie_header(self._qzone_normalize_cookie_fields(merged))
             ctx = self._qzone_context_from_cookies(cookie_text)
-            logger.debug("[PrivateCompanion] QQ 空间自动获取 Cookie 成功: uin=%s", ctx.get("uin"))
+            logger.debug("QQ 空间自动获取 Cookie 成功: uin=%s", ctx.get("uin"))
             self._qzone_note_cookie_fetch_status("ok", ctx=ctx)
             return ctx["cookie_header"]
         self._qzone_note_cookie_fetch_status("failed", cookies=merged)

@@ -312,25 +312,25 @@ class StandaloneWebUIServer:
         if self.is_running:
             return True
         if not self.enabled:
-            logger.debug("[PrivateCompanion] 独立 WebUI 未启用")
+            logger.debug("[独立WebUI] 独立 WebUI 未启用")
             return False
         if not self._has_access_token or self._access_token_length < 16:
             logger.warning(
-                "[PrivateCompanion] 独立 WebUI 未启动: 访问令牌至少需要 16 个字符"
+                "[独立WebUI] 独立 WebUI 未启动: 访问令牌至少需要 16 个字符"
             )
             return False
         if self.page_api is None:
-            logger.warning("[PrivateCompanion] 独立 WebUI 未启动: Page API 不可用")
+            logger.warning("[独立WebUI] 独立 WebUI 未启动: Page API 不可用")
             return False
         if not self.dependencies_available():
             logger.warning(
-                "[PrivateCompanion] 独立 WebUI 未启动: 缺少 Quart/Hypercorn 运行依赖 (quart=%s hypercorn=%s)",
+                "[独立WebUI] 独立 WebUI 未启动: 缺少 Quart/Hypercorn 运行依赖 (quart=%s hypercorn=%s)",
                 _QUART_IMPORT_ERROR or "ok",
                 _HYPERCORN_IMPORT_ERROR or "ok",
             )
             return False
         if not self._resolve_static_path("index.html"):
-            logger.warning("[PrivateCompanion] 独立 WebUI 未启动: 面板静态文件不存在")
+            logger.warning("[独立WebUI] 独立 WebUI 未启动: 面板静态文件不存在")
             return False
 
         try:
@@ -356,12 +356,12 @@ class StandaloneWebUIServer:
             self._serve_task = None
             self._shutdown_event = None
             logger.warning(
-                "[PrivateCompanion] 独立 WebUI 启动失败: error_type=%s",
+                "[独立WebUI] 独立 WebUI 启动失败: error_type=%s",
                 type(exc).__name__,
             )
             return False
 
-        logger.info("[PrivateCompanion] 独立 WebUI 已启动: %s", self.url)
+        logger.info("[独立WebUI] 独立 WebUI 已启动: %s", self.url)
         return True
 
     async def stop(self) -> None:
@@ -374,7 +374,7 @@ class StandaloneWebUIServer:
                 await asyncio.wait_for(asyncio.shield(task), timeout=10.0)
             except asyncio.TimeoutError:
                 logger.warning(
-                    "[PrivateCompanion] 独立 WebUI 优雅停止超时,正在取消服务任务"
+                    "[独立WebUI] 独立 WebUI 优雅停止超时,正在取消服务任务"
                 )
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
@@ -464,7 +464,7 @@ class StandaloneWebUIServer:
         @app.errorhandler(500)
         async def standalone_internal_error(_error: Any) -> Any:
             logger.warning(
-                "[PrivateCompanion] 独立 WebUI 请求失败: path=%s reason=internal_error",
+                "[独立WebUI] 独立 WebUI 请求失败: path=%s reason=internal_error",
                 str(_request.path or "")[:160],
             )
             if str(_request.path or "").startswith(API_PREFIX):
@@ -565,7 +565,7 @@ class StandaloneWebUIServer:
             rule = f"{API_PREFIX}{suffix}"
             if rule.startswith(f"{API_PREFIX}/auth/"):
                 logger.warning(
-                    "[PrivateCompanion] 独立 WebUI 跳过冲突的 Page API 路由: %s", rule
+                    "[独立WebUI] 独立 WebUI 跳过冲突的 Page API 路由: %s", rule
                 )
                 continue
             app.add_url_rule(
@@ -898,7 +898,7 @@ class StandaloneWebUIServer:
 
     def _log_auth_rejection(self, reason: str, client_key: str | None = None) -> None:
         logger.warning(
-            "[PrivateCompanion] 独立 WebUI 鉴权拒绝: ip=%s reason=%s",
+            "[独立WebUI] 独立 WebUI 鉴权拒绝: ip=%s reason=%s",
             client_key or self._client_key(),
             re.sub(r"[^a-z0-9_-]", "_", str(reason or "unknown").casefold())[:48],
         )
@@ -918,7 +918,7 @@ class StandaloneWebUIServer:
             return
         if error is not None:
             logger.warning(
-                "[PrivateCompanion] 独立 WebUI 服务任务已结束: error_type=%s",
+                "[独立WebUI] 独立 WebUI 服务任务已结束: error_type=%s",
                 type(error).__name__,
             )
 

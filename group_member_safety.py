@@ -8,11 +8,13 @@ import time
 from copy import deepcopy
 from typing import Any
 
-from astrbot.api import logger
 
 from .helpers import _safe_float, _safe_int, _single_line, _strip_group_member_safety_markers
 from .persona_config import runtime_persona_setting
 from .conversation_injection_plan import PLACEMENT_TOOL_CONTRACT, get_conversation_injection_plan
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 class GroupMemberSafetyMixin:
@@ -730,7 +732,7 @@ evidence.target 只能是 bot、group_member、third_party、unclear；evidence.
                 task="group_member_safety",
             )
         except Exception as exc:
-            logger.warning("[PrivateCompanion] 群成员风控判定失败: %s", _single_line(exc, 160))
+            logger.warning("群成员风控判定失败: %s", _single_line(exc, 160))
             return {"malicious": False, "reason": "判定模型调用失败", "source": "judge_failed"}
         payload = self._group_member_safety_parse_json(raw)
         malicious_raw = payload.get("malicious", False)

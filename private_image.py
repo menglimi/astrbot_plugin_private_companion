@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlparse, urlsplit, urlunparse, urlunsplit
 
-from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 try:
     from astrbot.api.message_components import Image, Plain
@@ -43,6 +42,9 @@ from .segmented_message import (
     plan_component_chunks,
     sanitize_llm_segment_control_tokens,
 )
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 PREPARED_IMAGE_MAX_AGE_SECONDS = 30 * 60
@@ -55,7 +57,7 @@ class _PublicOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
         if not _url_host_is_public(newurl):
             logger.warning(
-                "[PrivateCompanion] remote image redirect rejected: url=%s",
+                "remote image redirect rejected: url=%s",
                 _single_line(newurl, 160),
             )
             return None
@@ -116,14 +118,14 @@ class PrivateImageMixin:
             missing = _missing_optional_model_dependency(exc)
             if missing:
                 logger.warning(
-                    "[PrivateCompanion] 私聊图片存在性检测缺少可选模型依赖，已按无图片继续: label=%s module=%s err=%s",
+                    "私聊图片存在性检测缺少可选模型依赖，已按无图片继续: label=%s module=%s err=%s",
                     _single_line(label, 40) or "-",
                     missing,
                     _single_line(exc, 160),
                 )
                 return False
             logger.warning(
-                "[PrivateCompanion] 私聊图片存在性检测失败，已按无图片继续: label=%s err=%s",
+                "私聊图片存在性检测失败，已按无图片继续: label=%s err=%s",
                 _single_line(label, 40) or "-",
                 _single_line(exc, 160),
             )
@@ -348,7 +350,7 @@ class PrivateImageMixin:
                     maybe = converter()
                     return str(await maybe if hasattr(maybe, "__await__") else maybe or "").strip()
                 except Exception as exc:
-                    logger.debug("[PrivateCompanion] 私聊图片组件转换失败: %s", exc)
+                    logger.debug("私聊图片组件转换失败: %s", exc)
             return ""
 
         for index, comp in enumerate(self._event_components(event), 1):
@@ -362,7 +364,7 @@ class PrivateImageMixin:
                 data = getattr(comp, "data", None)
                 data_keys = ",".join(sorted(str(key) for key in data.keys())) if isinstance(data, dict) else ""
                 logger.info(
-                    "[PrivateCompanion] 私聊图片组件未能解析出文件路径: class=%s data_keys=%s",
+                    "私聊图片组件未能解析出文件路径: class=%s data_keys=%s",
                     comp.__class__.__name__,
                     data_keys or "-",
                 )
@@ -371,7 +373,7 @@ class PrivateImageMixin:
             if source_path.exists() and source_path.is_file():
                 if not self._private_image_local_path_is_allowed(source_path):
                     logger.warning(
-                        "[PrivateCompanion] private image local path rejected: path=%s",
+                        "private image local path rejected: path=%s",
                         _single_line(source, 200),
                     )
                     continue
@@ -382,7 +384,7 @@ class PrivateImageMixin:
                     result.append(str(target))
                     continue
                 except Exception as exc:
-                    logger.debug("[PrivateCompanion] 私聊图片暂存失败: %s", exc)
+                    logger.debug("私聊图片暂存失败: %s", exc)
             if re.match(r"^https?://", source, flags=re.I):
                 persisted = await self._persist_private_remote_image_source(
                     source,
@@ -427,7 +429,7 @@ class PrivateImageMixin:
             return ""
         if public_hosts_only and not await asyncio.to_thread(_url_host_is_public, text):
             logger.warning(
-                "[PrivateCompanion] remote image host rejected: url=%s",
+                "remote image host rejected: url=%s",
                 _single_line(text, 160),
             )
             return ""
@@ -452,7 +454,7 @@ class PrivateImageMixin:
                     length = _safe_int(response.headers.get("Content-Length"), 0, 0)
                     max_bytes = 12 * 1024 * 1024
                     if length and length > max_bytes:
-                        logger.info("[PrivateCompanion] 私聊远程图片过大,跳过下载: size=%s url=%s", length, _single_line(text, 120))
+                        logger.info("私聊远程图片过大,跳过下载: size=%s url=%s", length, _single_line(text, 120))
                         return ""
                     chunks: list[bytes] = []
                     total = 0
@@ -462,12 +464,12 @@ class PrivateImageMixin:
                             break
                         total += len(chunk)
                         if total > max_bytes:
-                            logger.info("[PrivateCompanion] 私聊远程图片下载超过限制,已中止: url=%s", _single_line(text, 120))
+                            logger.info("私聊远程图片下载超过限制,已中止: url=%s", _single_line(text, 120))
                             return ""
                         chunks.append(chunk)
                 data = b"".join(chunks)
                 if not data:
-                    logger.info("[PrivateCompanion] 私聊远程图片响应为空,跳过: url=%s", _single_line(text, 120))
+                    logger.info("私聊远程图片响应为空,跳过: url=%s", _single_line(text, 120))
                     return ""
                 prefix = data[:16]
                 suffix = ".jpg"
@@ -480,13 +482,13 @@ class PrivateImageMixin:
                 elif prefix.startswith(b"\xff\xd8\xff") or "jpeg" in content_type or "jpg" in content_type:
                     suffix = ".jpg"
                 elif "image/" not in content_type:
-                    logger.info("[PrivateCompanion] 私聊远程图片响应不是图片,跳过: content_type=%s url=%s", content_type or "-", _single_line(text, 120))
+                    logger.info("私聊远程图片响应不是图片,跳过: content_type=%s url=%s", content_type or "-", _single_line(text, 120))
                     return ""
                 target = target_dir / f"{re.sub(r'[^0-9A-Za-z_.-]+', '_', stem)}{suffix}"
                 target.write_bytes(data)
                 return str(target)
             except Exception as exc:
-                logger.warning("[PrivateCompanion] 私聊远程图片下载失败: %s url=%s", _single_line(exc, 120), _single_line(text, 120))
+                logger.warning("私聊远程图片下载失败: %s url=%s", _single_line(exc, 120), _single_line(text, 120))
                 return ""
 
         return await asyncio.to_thread(download)
@@ -546,7 +548,7 @@ class PrivateImageMixin:
             normalized_source = str(local_path) if local_path is not None else source
             if not self._private_image_source_to_model_url(normalized_source):
                 logger.info(
-                    "[PrivateCompanion] 本地图片源不可读,已跳过: namespace=%s source=%s",
+                    "本地图片源不可读,已跳过: namespace=%s source=%s",
                     namespace,
                     _single_line(source, 160),
                 )
@@ -570,7 +572,7 @@ class PrivateImageMixin:
         except Exception:
             return removed
         if removed:
-            logger.info("[PrivateCompanion] stale prepared images removed: dir=%s removed=%s", target_dir.name, removed)
+            logger.info("stale prepared images removed: dir=%s removed=%s", target_dir.name, removed)
         return removed
 
     def _cleanup_prepared_image_sources(self, sources: list[str], *, namespace: str) -> None:
@@ -634,7 +636,7 @@ class PrivateImageMixin:
         try:
             return f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 私聊图片转 data url 失败: %s", exc)
+            logger.debug("私聊图片转 data url 失败: %s", exc)
             return ""
 
     def _private_image_source_cache_key(self, source: str) -> str:
@@ -655,7 +657,7 @@ class PrivateImageMixin:
             if path.exists() and path.is_file() and self._private_image_local_path_is_allowed(path):
                 return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 私聊图片缓存键生成失败: %s", exc)
+            logger.debug("私聊图片缓存键生成失败: %s", exc)
         if re.match(r"^https?://", text, flags=re.I):
             return self._private_image_normalized_url_cache_key(text)
         return ""
@@ -735,7 +737,7 @@ class PrivateImageMixin:
             if path.exists() and path.is_file() and self._private_image_local_path_is_allowed(path):
                 return path.read_bytes()
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 私聊图片缓存别名字节读取失败: %s", exc)
+            logger.debug("私聊图片缓存别名字节读取失败: %s", exc)
         return b""
 
     def _private_image_visual_cache_aliases_from_bytes(self, raw: bytes) -> list[str]:
@@ -772,7 +774,7 @@ class PrivateImageMixin:
                 aspect_bucket = max(1, min(999, int(round((width / max(1, height)) * 100))))
                 return [f"pxhash:v1:a{aspect_bucket}:ah{ahash}:dh{dhash}"]
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 私聊图片视觉指纹生成失败: %s", exc)
+            logger.debug("私聊图片视觉指纹生成失败: %s", exc)
         return []
 
     def _private_image_cache_preview_dir(self) -> Path:
@@ -834,7 +836,7 @@ class PrivateImageMixin:
                         "preview_size": int(file_size),
                     }
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 图片缓存预览生成失败: %s", exc)
+                logger.debug("图片缓存预览生成失败: %s", exc)
         return {}
 
     def _private_image_cache_aliases_for_sources(self, sources: list[str]) -> list[str]:
@@ -1075,7 +1077,7 @@ class PrivateImageMixin:
         try:
             self._save_data_sync(sections={"private_image_vision_cache"})
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 私聊图片视觉缓存保存失败: %s", exc)
+            logger.debug("私聊图片视觉缓存保存失败: %s", exc)
 
     def _invalidate_private_image_vision_cache_by_image_keys(self, image_keys: list[str], *, image_aliases: list[str] | None = None, reason: str = "") -> int:
         targets = {str(item) for item in image_keys or [] if str(item or "").strip()}
@@ -1097,11 +1099,11 @@ class PrivateImageMixin:
                     )
                 removed += 1
         if removed:
-            logger.info("[PrivateCompanion] 私聊图片视觉缓存已因负反馈失效: removed=%s reason=%s", removed, _single_line(reason, 120))
+            logger.info("私聊图片视觉缓存已因负反馈失效: removed=%s reason=%s", removed, _single_line(reason, 120))
             try:
                 self._save_data_sync(sections={"private_image_vision_cache"})
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 私聊图片视觉缓存失效保存失败: %s", exc)
+                logger.debug("私聊图片视觉缓存失效保存失败: %s", exc)
         return removed
 
     def _is_private_image_vision_negative_feedback(self, text: str) -> bool:
@@ -1132,7 +1134,7 @@ class PrivateImageMixin:
         target["negative_feedback_text"] = _single_line(text, 160)
         target["invalidated_cache_items"] = removed
         logger.info(
-            "[PrivateCompanion] 私聊图片视觉负反馈记录: user_image_keys=%s removed=%s text=%s",
+            "私聊图片视觉负反馈记录: user_image_keys=%s removed=%s text=%s",
             len(image_keys),
             removed,
             _single_line(text, 120),
@@ -1320,7 +1322,7 @@ class PrivateImageMixin:
             else:
                 self._save_data_sync(sections={"private_image_visual_provider_state"})
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 私聊图片视觉成功 provider 状态保存失败: %s", exc)
+            logger.debug("私聊图片视觉成功 provider 状态保存失败: %s", exc)
 
     def _private_image_visual_provider_candidates(self, umo: str = "") -> list[tuple[str, str, str]]:
         base = self._private_image_base_visual_provider_candidates(umo)
@@ -1442,7 +1444,7 @@ class PrivateImageMixin:
         if cooldown <= 0:
             self._private_image_provider_failure_cache().pop(key, None)
             logger.debug(
-                "[PrivateCompanion] 图片视觉 provider 本轮失败但未启用跨轮冷却: provider=%s source=%s task=%s error=%s",
+                "图片视觉 provider 本轮失败但未启用跨轮冷却: provider=%s source=%s task=%s error=%s",
                 provider_id,
                 provider_source,
                 task,
@@ -1457,7 +1459,7 @@ class PrivateImageMixin:
             "error": _single_line(exc, 180),
         }
         logger.info(
-            "[PrivateCompanion] 图片视觉 provider 临时降权: provider=%s source=%s task=%s cooldown=%ss error=%s",
+            "图片视觉 provider 临时降权: provider=%s source=%s task=%s cooldown=%ss error=%s",
             provider_id,
             provider_source,
             task,
@@ -1640,7 +1642,7 @@ class PrivateImageMixin:
                     prepared.append(str(target))
             except Exception as exc:
                 logger.debug(
-                    "[PrivateCompanion] 群聊成图审核缩放失败，使用原图: image=%s error=%s",
+                    "群聊成图审核缩放失败，使用原图: image=%s error=%s",
                     _single_line(source, 160),
                     _single_line(exc, 120),
                 )
@@ -1916,7 +1918,7 @@ class PrivateImageMixin:
                 # A transport timeout can happen after the platform accepted the
                 # message. Retrying here would send the same image twice.
                 logger.warning(
-                    "[PrivateCompanion] 图片发送返回异常，为避免平台已接收后重复发送，本轮不再重试: session=%s image=%s error=%s",
+                    "图片发送返回异常，为避免平台已接收后重复发送，本轮不再重试: session=%s image=%s error=%s",
                     _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                     _single_line(image_path, 180),
                     _single_line(send_error, 180),
@@ -1949,7 +1951,7 @@ class PrivateImageMixin:
         review = await self._review_group_generated_image_for_delivery(event, image_path)
         label = _single_line(review.get("label"), 40) or "unavailable"
         logger.info(
-            "[PrivateCompanion] 群聊成图安全审核: group=%s label=%s provider=%s",
+            "群聊成图安全审核: group=%s label=%s provider=%s",
             group_id,
             label,
             _single_line(review.get("provider_id"), 120) or "-",
@@ -2089,7 +2091,7 @@ class PrivateImageMixin:
                         break
                 else:
                     logger.warning(
-                        "[PrivateCompanion] GIF 无法转换为兼容的 PNG 帧,已跳过该视觉输入: source=%s",
+                        "GIF 无法转换为兼容的 PNG 帧,已跳过该视觉输入: source=%s",
                         _single_line(source, 120),
                     )
                 # Some Gemini-compatible gateways reject image/gif even when
@@ -2128,7 +2130,7 @@ class PrivateImageMixin:
         try:
             from PIL import Image as PILImage, ImageSequence
         except Exception:
-            logger.warning("[PrivateCompanion] Pillow 不可用,GIF 无法转换为模型兼容的 PNG 帧")
+            logger.warning("Pillow 不可用,GIF 无法转换为模型兼容的 PNG 帧")
             return []
         try:
             with PILImage.open(io.BytesIO(raw)) as image:
@@ -2154,10 +2156,10 @@ class PrivateImageMixin:
                         break
                 if not frames:
                     return []
-                logger.info("[PrivateCompanion] GIF 已转换为 PNG 帧供视觉识别: frames=%s/%s source=%s", len(frames), frame_total, _single_line(source, 120))
+                logger.info("GIF 已转换为 PNG 帧供视觉识别: frames=%s/%s source=%s", len(frames), frame_total, _single_line(source, 120))
                 return frames
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 动态 GIF 抽帧失败: %s", exc)
+            logger.debug("动态 GIF 抽帧失败: %s", exc)
         return []
 
     def _sanitize_provider_request_gif_inputs(self, req: Any) -> tuple[int, int]:
@@ -2246,7 +2248,7 @@ class PrivateImageMixin:
                 raw = path.read_bytes()
             return raw if raw.startswith((b"GIF87a", b"GIF89a")) else b""
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 动态 GIF 字节读取失败: %s", exc)
+            logger.debug("动态 GIF 字节读取失败: %s", exc)
             return b""
 
     def _private_image_sources_include_gif(self, image_sources: list[str]) -> bool:
@@ -2295,7 +2297,7 @@ class PrivateImageMixin:
             image_caption_provider_id = ""
         if selected and image_caption_provider_id and selected == image_caption_provider_id:
             logger.info(
-                "[PrivateCompanion] 私聊图片 selected_provider 是图片转述模型,不按主视觉模型直挂: provider=%s",
+                "私聊图片 selected_provider 是图片转述模型,不按主视觉模型直挂: provider=%s",
                 selected,
             )
             selected = ""
@@ -2656,7 +2658,7 @@ class PrivateImageMixin:
         else:
             corrected = f"{text} {new_line}".strip()
         logger.info(
-            "[PrivateCompanion] 图片归属自我识别因外观冲突降级: reason=%s before=%s after=%s",
+            "图片归属自我识别因外观冲突降级: reason=%s before=%s after=%s",
             _single_line(reason, 120),
             old_line or "无",
             new_line,
@@ -2943,7 +2945,7 @@ class PrivateImageMixin:
             missing = _missing_optional_model_dependency(exc)
             if missing:
                 logger.warning(
-                    "[PrivateCompanion] %s预处理缺少可选模型依赖，已跳过本轮识图: module=%s err=%s",
+                    "%s预处理缺少可选模型依赖，已跳过本轮识图: module=%s err=%s",
                     clean_log_subject,
                     missing,
                     _single_line(exc, 160),
@@ -2958,7 +2960,7 @@ class PrivateImageMixin:
             missing = _missing_optional_model_dependency(exc)
             if missing:
                 logger.warning(
-                    "[PrivateCompanion] %s模型输入构造缺少可选模型依赖，已跳过本轮识图: module=%s err=%s",
+                    "%s模型输入构造缺少可选模型依赖，已跳过本轮识图: module=%s err=%s",
                     clean_log_subject,
                     missing,
                     _single_line(exc, 160),
@@ -2982,7 +2984,7 @@ class PrivateImageMixin:
                 if hasattr(result, "__await__"):
                     await asyncio.wait_for(result, timeout=2.0)
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 图片自我识别刷新人格缓存失败: %s", exc)
+                logger.debug("图片自我识别刷新人格缓存失败: %s", exc)
         image_aliases = self._private_image_cache_aliases_for_sources([*original_sources, *sources])
         original_image_keys = self._private_image_cache_image_keys(original_sources or sources)
         if original_image_keys and not group_mode:
@@ -3100,7 +3102,7 @@ class PrivateImageMixin:
                 intent_line = self._private_image_intent_line(cached_text)
                 ownership_line = self._private_image_ownership_line(cached_text)
                 logger.info(
-                    "[PrivateCompanion] %s视觉转述命中缓存: provider=%s scope=%s images=%s intent=%s ownership=%s preview=%s",
+                    "%s视觉转述命中缓存: provider=%s scope=%s images=%s intent=%s ownership=%s preview=%s",
                     clean_log_subject,
                     provider_id,
                     scope,
@@ -3139,7 +3141,7 @@ class PrivateImageMixin:
                         budget_exempt=True,
                     )
                     logger.info(
-                        "[PrivateCompanion] %s主视觉模型预估超出 Token 上限，跳过并继续备用模型: primary=%s fallback=%s",
+                        "%s主视觉模型预估超出 Token 上限，跳过并继续备用模型: primary=%s fallback=%s",
                         clean_log_subject,
                         provider_id,
                         fallback_visual_id,
@@ -3174,7 +3176,7 @@ class PrivateImageMixin:
                     )
                     self._mark_private_image_provider_failure(provider_id, provider_source, empty_note, task=clean_task_name)
                     logger.info(
-                        "[PrivateCompanion] %s视觉转述返回不可用摘要,已尝试下一个 provider: provider=%s source=%s reason=%s preview=%s",
+                        "%s视觉转述返回不可用摘要,已尝试下一个 provider: provider=%s source=%s reason=%s preview=%s",
                         clean_log_subject,
                         provider_id,
                         provider_source,
@@ -3196,7 +3198,7 @@ class PrivateImageMixin:
                 )
                 self._clear_private_image_provider_failure(provider_id, provider_source)
                 logger.info(
-                    "[PrivateCompanion] %s视觉转述完成: provider=%s source=%s scope=%s images=%s chars=%s intent=%s ownership=%s preview=%s",
+                    "%s视觉转述完成: provider=%s source=%s scope=%s images=%s chars=%s intent=%s ownership=%s preview=%s",
                     clean_log_subject,
                     provider_id,
                     provider_source,
@@ -3245,8 +3247,8 @@ class PrivateImageMixin:
                     error=timeout_note,
                     budget_exempt=True,
                 )
-                logger.info(
-                    "[PrivateCompanion] %s视觉转述超时,本轮尝试下一个 provider；不会因此禁用后续图片调用: provider=%s source=%s timeout=%.1fs",
+                logger.warning(
+                    "%s视觉转述超时,本轮尝试下一个 provider；不会因此禁用后续图片调用: provider=%s source=%s timeout=%.1fs",
                     clean_log_subject,
                     provider_id,
                     provider_source,
@@ -3257,7 +3259,7 @@ class PrivateImageMixin:
                 missing = _missing_optional_model_dependency(exc)
                 if missing:
                     logger.warning(
-                        "[PrivateCompanion] %s视觉 provider 缺少可选模型依赖，已降级跳过该 provider: provider=%s module=%s err=%s",
+                        "%s视觉 provider 缺少可选模型依赖，已降级跳过该 provider: provider=%s module=%s err=%s",
                         clean_log_subject,
                         provider_id,
                         missing,
@@ -3279,7 +3281,7 @@ class PrivateImageMixin:
                 continue
         if group_mode:
             self._cleanup_prepared_image_sources(sources, namespace=clean_namespace)
-        logger.warning("[PrivateCompanion] %s视觉转述失败: 所有候选 provider 均不可用或失败 attempts=%s", clean_log_subject, attempts)
+        logger.warning("%s视觉转述失败: 所有候选 provider 均不可用或失败 attempts=%s", clean_log_subject, attempts)
         return ""
 
     def _group_image_sources_from_event(self, event: AstrMessageEvent) -> list[str]:
@@ -3294,7 +3296,7 @@ class PrivateImageMixin:
             for source in self._raw_private_image_sources(event):
                 add(source)
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 群聊图片原始来源提取失败: %s", _single_line(exc, 120))
+            logger.debug("群聊图片原始来源提取失败: %s", _single_line(exc, 120))
         component_getter = getattr(self, "_event_components", None)
         try:
             components = component_getter(event) if callable(component_getter) else []
@@ -3450,7 +3452,7 @@ class PrivateImageMixin:
             raise
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 群聊图片后台理解失败: group=%s message=%s error=%s",
+                "群聊图片后台理解失败: group=%s message=%s error=%s",
                 _single_line(group_id, 80),
                 _single_line(message_id, 120) or "-",
                 _single_line(exc, 160),
@@ -3545,7 +3547,7 @@ class PrivateImageMixin:
         except Exception:
             pass
         logger.info(
-            "[PrivateCompanion] 群聊图片已进入后台理解: group=%s message=%s images=%s",
+            "群聊图片已进入后台理解: group=%s message=%s images=%s",
             group_id,
             message_id or "-",
             len(sources),
@@ -3669,7 +3671,7 @@ class PrivateImageMixin:
                     summary=cached_summary,
                 )
                 logger.info(
-                    "[PrivateCompanion] 群聊图片理解已关闭，复用缓存语义: group=%s message=%s images=%s",
+                    "群聊图片理解已关闭，复用缓存语义: group=%s message=%s images=%s",
                     group_id,
                     message_id or "-",
                     len(sources),
@@ -3707,8 +3709,8 @@ class PrivateImageMixin:
                 summary = await asyncio.wait_for(asyncio.shield(task), timeout=wait_seconds)
             return _single_line(summary, self._private_image_vision_text_limit(1))
         except asyncio.TimeoutError:
-            logger.info(
-                "[PrivateCompanion] 群聊回复等待图片理解超时，主链继续且后台任务保留: group=%s message=%s timeout=%.1fs",
+            logger.warning(
+                "群聊回复等待图片理解超时，主链继续且后台任务保留: group=%s message=%s timeout=%.1fs",
                 group_id,
                 message_id or "-",
             _safe_float(self._private_image_setting("group_image_vision_wait_seconds", 8.0), 8.0, 0.0, 60.0),
@@ -3717,7 +3719,7 @@ class PrivateImageMixin:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.warning("[PrivateCompanion] 群聊回复读取图片理解结果失败: %s", _single_line(exc, 160))
+            logger.warning("群聊回复读取图片理解结果失败: %s", _single_line(exc, 160))
             return ""
 
     async def _maybe_group_image_wakeup(self, event: AstrMessageEvent, *, sender_id: str = "") -> dict[str, Any]:
@@ -3820,7 +3822,7 @@ class PrivateImageMixin:
         try:
             sources = [str(item).strip() for item in (await finder(event) or []) if str(item or "").strip()][:5]
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 群聊引用图片来源读取失败: %s", _single_line(exc, 120))
+            logger.debug("群聊引用图片来源读取失败: %s", _single_line(exc, 120))
             return "", False
         if not sources:
             return "", False
@@ -3869,11 +3871,11 @@ class PrivateImageMixin:
                 namespace="group_reply_vision",
             )
         except Exception as exc:
-            logger.warning("[PrivateCompanion] 群聊引用图片识别失败: %s", _single_line(exc, 160))
+            logger.warning("群聊引用图片识别失败: %s", _single_line(exc, 160))
             return "", False
         if summary:
             logger.info(
-                "[PrivateCompanion] 群聊引用图片已注入视觉摘要: group=%s images=%s",
+                "群聊引用图片已注入视觉摘要: group=%s images=%s",
                 group_id or "unknown",
                 len(sources),
             )
@@ -4183,11 +4185,11 @@ class PrivateImageMixin:
             return caption
         except asyncio.TimeoutError:
             failure_cache[cache_key] = _now_ts() + CONTEXT_IMAGE_FAILURE_COOLDOWN_SECONDS
-            logger.warning("[PrivateCompanion] 上下文图片补全等待超时: images=%s timeout=%.1fs", len(clean_sources), wait_seconds)
+            logger.warning("上下文图片补全等待超时: images=%s timeout=%.1fs", len(clean_sources), wait_seconds)
             return ""
         except Exception as exc:
             failure_cache[cache_key] = _now_ts() + CONTEXT_IMAGE_FAILURE_COOLDOWN_SECONDS
-            logger.warning("[PrivateCompanion] 上下文图片补全失败: images=%s error=%s", len(clean_sources), _single_line(exc, 120))
+            logger.warning("上下文图片补全失败: images=%s error=%s", len(clean_sources), _single_line(exc, 120))
             return ""
 
     async def _enrich_request_context_image_placeholders(self, event: AstrMessageEvent, req: ProviderRequest) -> dict[str, int]:
@@ -4267,7 +4269,7 @@ class PrivateImageMixin:
             except Exception:
                 return {"contexts": len(contexts), "replaced": 0, "missed": missed}
             logger.info(
-                "[PrivateCompanion] 已将历史上下文图片占位替换为视觉摘要: contexts=%s replaced=%s missed=%s",
+                "已将历史上下文图片占位替换为视觉摘要: contexts=%s replaced=%s missed=%s",
                 len(contexts),
                 replaced,
                 missed,
@@ -4360,7 +4362,7 @@ class PrivateImageMixin:
             initial_target_ts = min(initial_target_ts, max_deadline_ts)
         already_due = initial_target_ts > 0 and _now_ts() >= initial_target_ts
         logger.info(
-            "[PrivateCompanion] 消息收口等待开始: kind=%s scope=%s sender=%s wait=%.1fs count=%s deadline=%s",
+            "消息收口等待开始: kind=%s scope=%s sender=%s wait=%.1fs count=%s deadline=%s",
             buffer_kind,
             log_scope,
             log_sender,
@@ -4421,7 +4423,7 @@ class PrivateImageMixin:
                         message_count=len(learned_messages),
                     )
                 logger.info(
-                    "[PrivateCompanion] 智能防抖等待结束未等到补话: scope=%s sender=%s messages=%s",
+                    "智能防抖等待结束未等到补话: scope=%s sender=%s messages=%s",
                     scope,
                     sender_id,
                     len(learned_messages),
@@ -4441,7 +4443,7 @@ class PrivateImageMixin:
                         message_count=len(learned_messages),
                     )
                 logger.info(
-                    "[PrivateCompanion] 智能防抖等待命中补话: scope=%s sender=%s messages=%s",
+                    "智能防抖等待命中补话: scope=%s sender=%s messages=%s",
                     scope,
                     sender_id,
                     len(learned_messages),
@@ -4462,7 +4464,7 @@ class PrivateImageMixin:
                     lines.append(text)
         if len(lines) <= 1:
             logger.info(
-                "[PrivateCompanion] 消息收口等待结束: kind=%s scope=%s sender=%s count=%s result=single",
+                "消息收口等待结束: kind=%s scope=%s sender=%s count=%s result=single",
                 buffer_kind,
                 log_scope,
                 log_sender,
@@ -4471,7 +4473,7 @@ class PrivateImageMixin:
             return ""
         merged = "\n".join(f"{idx + 1}. {line}" for idx, line in enumerate(lines))
         logger.info(
-            "[PrivateCompanion] 消息收口等待结束: kind=%s scope=%s sender=%s count=%s result=merged preview=%s",
+            "消息收口等待结束: kind=%s scope=%s sender=%s count=%s result=merged preview=%s",
             buffer_kind,
             log_scope,
             log_sender,
@@ -4490,7 +4492,7 @@ class PrivateImageMixin:
         try:
             return _single_line(vision_task.result(), 1400)
         except Exception as exc:
-            logger.warning("[PrivateCompanion] 私聊单图后台视觉任务结果读取失败: %s", _single_line(exc, 120))
+            logger.warning("私聊单图后台视觉任务结果读取失败: %s", _single_line(exc, 120))
             return ""
 
     def _private_image_vision_handoff_ttl_seconds(self) -> float:
@@ -4581,7 +4583,7 @@ class PrivateImageMixin:
             return str(restorer(source, framework_event) or source).strip()
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 私聊单图主链 TTS 占位符恢复失败: %s",
+                "私聊单图主链 TTS 占位符恢复失败: %s",
                 _single_line(exc, 120),
             )
             return source
@@ -4656,7 +4658,7 @@ class PrivateImageMixin:
         reply = _single_line(_strip_internal_message_blocks(raw_reply or ""), max_chars)
         if reply and self._private_image_reply_is_internal_error(reply):
             logger.warning(
-                "[PrivateCompanion] 私聊单图兜底 LLM 返回内部错误文本,已丢弃: user=%s source=%s preview=%s",
+                "私聊单图兜底 LLM 返回内部错误文本,已丢弃: user=%s source=%s preview=%s",
                 user_id,
                 source,
                 _single_line(reply, 180),
@@ -4703,7 +4705,7 @@ class PrivateImageMixin:
             raise
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 私聊单图强约束重试失败: user=%s error=%s",
+                "私聊单图强约束重试失败: user=%s error=%s",
                 user_id,
                 _single_line(exc, 160),
             )
@@ -4711,7 +4713,7 @@ class PrivateImageMixin:
         reply = _single_line(_strip_internal_message_blocks(raw_reply or ""), 300)
         if reply and self._private_image_reply_is_internal_error(reply):
             logger.warning(
-                "[PrivateCompanion] 私聊单图强约束重试返回内部错误文本,已丢弃: user=%s preview=%s",
+                "私聊单图强约束重试返回内部错误文本,已丢弃: user=%s preview=%s",
                 user_id,
                 _single_line(reply, 180),
             )
@@ -4756,7 +4758,7 @@ class PrivateImageMixin:
             self._record_llm_usage(**kwargs)
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 私聊单图用量统计失败,不影响回复发送: %s",
+                "私聊单图用量统计失败,不影响回复发送: %s",
                 _single_line(exc, 160),
             )
 
@@ -4920,7 +4922,7 @@ class PrivateImageMixin:
         if len(outbound_chains) <= 1:
             await self._send_private_image_reply_chain(event, outbound_chains[0])
             return self._private_image_chain_text(outbound_chains[0]) or self._private_image_context_assistant_message(text)
-        logger.info("[PrivateCompanion] 私聊单图回复按手动链路分段发送: segments=%s", len(outbound_chains))
+        logger.info("私聊单图回复按手动链路分段发送: segments=%s", len(outbound_chains))
         remainder_started_at = _now_ts()
         await self._send_private_image_reply_chain(event, outbound_chains[0])
         first_text = self._private_image_chain_text(outbound_chains[0])
@@ -4952,7 +4954,7 @@ class PrivateImageMixin:
                     pass
                 except Exception as exc:
                     logger.warning(
-                        "[PrivateCompanion] private image remainder task failed: %s",
+                        "private image remainder task failed: %s",
                         _single_line(exc, 160),
                     )
                 finally:
@@ -4974,7 +4976,7 @@ class PrivateImageMixin:
             cleaned = placeholder_cleaner(normalized)
             if cleaned != normalized:
                 logger.warning(
-                    "[PrivateCompanion] 私聊单图发送前清理孤儿 TTS 占位符: before=%s after=%s",
+                    "私聊单图发送前清理孤儿 TTS 占位符: before=%s after=%s",
                     _single_line(normalized, 120),
                     _single_line(cleaned, 120),
                 )
@@ -4993,7 +4995,7 @@ class PrivateImageMixin:
                 try:
                     chain = await processor(normalized, event, fallback_plain=fallback_plain)
                 except Exception as exc:
-                    logger.warning("[PrivateCompanion] 私聊单图 TTS 组件生成失败,回退文本发送: %s", _single_line(exc, 120))
+                    logger.warning("私聊单图 TTS 组件生成失败,回退文本发送: %s", _single_line(exc, 120))
                     chain = []
                 cleaned_chain = self._private_image_clean_reply_chain(chain)
                 if cleaned_chain:
@@ -5057,7 +5059,7 @@ class PrivateImageMixin:
             await event.send(result)
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 图片回复发送返回异常，为避免平台已接收后重复发送，本轮不再重试: session=%s error=%s",
+                "图片回复发送返回异常，为避免平台已接收后重复发送，本轮不再重试: session=%s error=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
                 _single_line(exc, 180),
             )
@@ -5101,7 +5103,7 @@ class PrivateImageMixin:
                     if sent_text:
                         sent_texts.append(sent_text)
                     logger.info(
-                        "[PrivateCompanion] 私聊单图剩余片段已发送: index=%s/%s preview=%s",
+                        "私聊单图剩余片段已发送: index=%s/%s preview=%s",
                         sent_index,
                         total,
                         self._private_image_chain_text(chain) or chain[0].__class__.__name__,
@@ -5111,7 +5113,7 @@ class PrivateImageMixin:
                     raise
                 except Exception as exc:
                     logger.warning(
-                        "[PrivateCompanion] 私聊单图剩余片段发送失败: error=%s",
+                        "私聊单图剩余片段发送失败: error=%s",
                         _single_line(exc, 160),
                         exc_info=True,
                     )
@@ -5201,13 +5203,13 @@ class PrivateImageMixin:
                                     image_limit,
                                 )
                     except asyncio.TimeoutError:
-                        logger.debug(
-                            "[PrivateCompanion] 关键词模型路由等待图片转述超时: user=%s",
+                        logger.warning(
+                            "关键词模型路由等待图片转述超时: user=%s",
                             user_id,
                         )
                     except Exception as exc:
                         logger.debug(
-                            "[PrivateCompanion] 关键词模型路由读取图片转述失败: user=%s error=%s",
+                            "关键词模型路由读取图片转述失败: user=%s error=%s",
                             user_id,
                             _single_line(exc, 120),
                         )
@@ -5244,7 +5246,7 @@ class PrivateImageMixin:
                         source_field = "private_companion_reply_image_vision_text"
                 except Exception as exc:
                     logger.debug(
-                        "[PrivateCompanion] 关键词模型路由预取引用图片转述失败: user=%s error=%s",
+                        "关键词模型路由预取引用图片转述失败: user=%s error=%s",
                         user_id,
                         _single_line(exc, 120),
                     )
@@ -5254,7 +5256,7 @@ class PrivateImageMixin:
         setattr(event, source_field, vision_text)
         setattr(event, "private_companion_image_caption_route_text", vision_text)
         logger.info(
-            "[PrivateCompanion] 图片转述已提供给关键词模型路由: user=%s source=%s preview=%s",
+            "图片转述已提供给关键词模型路由: user=%s source=%s preview=%s",
             user_id,
             source_field,
             _single_line(vision_text, 160),
@@ -5282,7 +5284,7 @@ class PrivateImageMixin:
             return bool(route(event, caption))
         except Exception as exc:
             logger.debug(
-                "[PrivateCompanion] 调用关键词模型路由失败，保留原 Provider: %s",
+                "调用关键词模型路由失败，保留原 Provider: %s",
                 _single_line(exc, 120),
             )
             return False
@@ -5332,7 +5334,7 @@ class PrivateImageMixin:
         current_session = self._private_image_vision_handoff_session(event)
         if stored_session != current_session:
             logger.info(
-                "[PrivateCompanion] 私聊图片视觉交接会话不匹配,保留给原会话: sender=%s stored=%s current=%s",
+                "私聊图片视觉交接会话不匹配,保留给原会话: sender=%s stored=%s current=%s",
                 sender_id,
                 stored_session,
                 current_session or "-",
@@ -5349,7 +5351,7 @@ class PrivateImageMixin:
                 image_limit,
             )
         logger.info(
-            "[PrivateCompanion] 私聊补充文字已领取延迟图片视觉交接: sender=%s images=%s has_vision=%s pending=%s",
+            "私聊补充文字已领取延迟图片视觉交接: sender=%s images=%s has_vision=%s pending=%s",
             sender_id,
             len(images),
             bool(vision_text),
@@ -5432,16 +5434,16 @@ class PrivateImageMixin:
 
                 written = await db_operation("archive_private_image_turn", _write) if callable(db_operation) else await _write()
                 if written:
-                    logger.info("[PrivateCompanion] 已将私聊图片回复写入 AstrBot 会话历史: %s", umo)
+                    logger.info("已将私聊图片回复写入 AstrBot 会话历史: %s", umo)
                 else:
-                    logger.warning("[PrivateCompanion] 私聊图片回复写入会话历史失败: 无法获取或创建 AstrBot 会话 history umo=%s", umo)
+                    logger.warning("私聊图片回复写入会话历史失败: 无法获取或创建 AstrBot 会话 history umo=%s", umo)
                 return
             except Exception as exc:
                 text = str(exc or "").lower()
                 if ("database is locked" in text or "sqlite3.operationalerror" in text) and attempt < 3:
                     await asyncio.sleep(0.25 * (attempt + 1))
                     continue
-                logger.warning("[PrivateCompanion] 私聊图片回复写入会话历史失败: %s", _single_line(exc, 160))
+                logger.warning("私聊图片回复写入会话历史失败: %s", _single_line(exc, 160))
                 return
 
     async def _memory_companion_record_private_image_visible_turn(
@@ -5461,7 +5463,7 @@ class PrivateImageMixin:
             optional_failed = getattr(self, "_memory_companion_optional_dependency_failed", None)
             if callable(optional_failed) and optional_failed(exc, where="private_image_visible_turn_bridge"):
                 return
-            logger.debug("[PrivateCompanion] MemoryCompanion 桥接读取失败，跳过私聊图片可见上下文写入: %s", _single_line(exc, 120))
+            logger.debug("MemoryCompanion 桥接读取失败，跳过私聊图片可见上下文写入: %s", _single_line(exc, 120))
             return
         recorder = getattr(bridge, "record_visible_turn", None) if bridge is not None else None
         if not callable(recorder) or not user_message or not assistant_message:
@@ -5508,12 +5510,12 @@ class PrivateImageMixin:
                 source="private_companion_private_image_turn",
                 metadata={**base_metadata, "turn_role": "assistant"},
             )
-            logger.info("[PrivateCompanion] 已将私聊图片回复同步为 MemoryCompanion 可见上下文: session=%s", session_id)
+            logger.info("已将私聊图片回复同步为 MemoryCompanion 可见上下文: session=%s", session_id)
         except Exception as exc:
             optional_failed = getattr(self, "_memory_companion_optional_dependency_failed", None)
             if callable(optional_failed) and optional_failed(exc, where="record_private_image_visible_turn"):
                 return
-            logger.debug("[PrivateCompanion] MemoryCompanion 私聊图片可见上下文写入失败: %s", _single_line(exc, 120))
+            logger.debug("MemoryCompanion 私聊图片可见上下文写入失败: %s", _single_line(exc, 120))
 
     async def _archive_private_image_turn_context(
         self,
@@ -5592,7 +5594,7 @@ class PrivateImageMixin:
                 }
                 self._save_data_sync(sections={"users"})
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 私聊图片视觉反馈目标记录失败: %s", exc)
+            logger.debug("私聊图片视觉反馈目标记录失败: %s", exc)
 
     async def _send_delayed_private_image_only_event(
         self,
@@ -5608,7 +5610,7 @@ class PrivateImageMixin:
         )
         if not feature_enabled:
             logger.info(
-                "[PrivateCompanion] 私聊单图处理期间图片转述增强已关闭,但原事件已接管,继续完成本轮回复: user=%s",
+                "私聊单图处理期间图片转述增强已关闭,但原事件已接管,继续完成本轮回复: user=%s",
                 user_id,
             )
         images = buffer.get("images") if isinstance(buffer.get("images"), list) else []
@@ -5620,13 +5622,13 @@ class PrivateImageMixin:
             timeout = self._private_image_vision_wait_budget_seconds()
             try:
                 if timeout > 0:
-                    logger.info("[PrivateCompanion] 私聊单图等待视觉转述完成: user=%s timeout=%.1fs", user_id, timeout)
+                    logger.info("私聊单图等待视觉转述完成: user=%s timeout=%.1fs", user_id, timeout)
                     vision_text = _single_line(await asyncio.wait_for(asyncio.shield(vision_task), timeout=timeout), image_limit)
             except asyncio.TimeoutError:
                 vision_wait_timed_out = True
-                logger.info("[PrivateCompanion] 私聊单图延迟处理时视觉转述仍未完成: user=%s timeout=%.1fs", user_id, timeout)
+                logger.warning("私聊单图延迟处理时视觉转述仍未完成: user=%s timeout=%.1fs", user_id, timeout)
             except Exception as exc:
-                logger.warning("[PrivateCompanion] 私聊单图延迟视觉转述失败: user=%s error=%s", user_id, _single_line(exc, 120))
+                logger.warning("私聊单图延迟视觉转述失败: user=%s error=%s", user_id, _single_line(exc, 120))
         ownership_line = self._private_image_ownership_line(vision_text)
         intent_line = self._private_image_intent_line(vision_text)
         reply_objective = self._private_image_reply_objective(ownership_line, vision_text=vision_text)
@@ -5646,7 +5648,7 @@ class PrivateImageMixin:
                 )
             )
         logger.info(
-            "[PrivateCompanion] 私聊单图准备进入主链: user=%s images=%s has_vision=%s intent=%s ownership=%s objective=%s vision_preview=%s",
+            "私聊单图准备进入主链: user=%s images=%s has_vision=%s intent=%s ownership=%s objective=%s vision_preview=%s",
             user_id,
             len(images),
             bool(vision_text),
@@ -5686,13 +5688,13 @@ class PrivateImageMixin:
                             framework_event.set_extra("selected_provider", selected_provider)
                     except Exception:
                         pass
-                    logger.info("[PrivateCompanion] 私聊单图主链使用合成私聊事件执行: user=%s session=%s", user_id, umo)
+                    logger.info("私聊单图主链使用合成私聊事件执行: user=%s session=%s", user_id, umo)
                 except Exception as exc:
                     framework_event = event
-                    logger.info("[PrivateCompanion] 私聊单图合成私聊事件创建失败,回退原事件: user=%s error=%s", user_id, _single_line(exc, 160))
+                    logger.info("私聊单图合成私聊事件创建失败,回退原事件: user=%s error=%s", user_id, _single_line(exc, 160))
             elif umo:
                 logger.warning(
-                    "[PrivateCompanion] 私聊单图主链未取得 AstrBot 原生 Context,已直接转入视觉摘要兜底: user=%s",
+                    "私聊单图主链未取得 AstrBot 原生 Context,已直接转入视觉摘要兜底: user=%s",
                     user_id,
                 )
             setattr(framework_event, "private_companion_deferred_private_image_only_ready", True)
@@ -5738,14 +5740,14 @@ class PrivateImageMixin:
                 if completed_vision:
                     vision_text = _single_line(completed_vision, self._private_image_vision_text_limit(len(images)))
                     logger.info(
-                        "[PrivateCompanion] 私聊单图主链前取到后台视觉摘要: user=%s preview=%s",
+                        "私聊单图主链前取到后台视觉摘要: user=%s preview=%s",
                         user_id,
                         _single_line(vision_text, 220),
                     )
                 elif not vision_wait_timed_out:
                     vision_text = _single_line(await self._transcribe_private_inbound_images(images, umo=umo), self._private_image_vision_text_limit(len(images)))
                 else:
-                    logger.info("[PrivateCompanion] 私聊单图识图等待已超时,主链不再重复发起视觉转述: user=%s", user_id)
+                    logger.warning("私聊单图识图等待已超时,主链不再重复发起视觉转述: user=%s", user_id)
                     setattr(framework_event, "private_companion_delayed_image_mode", "no_vision")
                 if vision_text:
                     setattr(framework_event, "private_companion_delayed_image_vision_text", vision_text)
@@ -5757,7 +5759,7 @@ class PrivateImageMixin:
                     reply_objective = self._private_image_reply_objective(ownership_line, vision_text=vision_text)
             if has_dynamic_gif_sources and request_image_refs:
                 logger.info(
-                    "[PrivateCompanion] 私聊单图检测到动态 GIF,已改用抽帧视觉摘要链路: user=%s has_vision=%s",
+                    "私聊单图检测到动态 GIF,已改用抽帧视觉摘要链路: user=%s has_vision=%s",
                     user_id,
                     bool(vision_text),
             )
@@ -5834,7 +5836,7 @@ class PrivateImageMixin:
                     await segmenting_injector(framework_event, req)
                 except Exception as exc:
                     logger.debug(
-                        "[PrivateCompanion] 私聊单图分段说明注入失败，继续生成正文: %s",
+                        "私聊单图分段说明注入失败，继续生成正文: %s",
                         _single_line(exc, 120),
                     )
             request_plan = get_conversation_injection_plan(req, create=False)
@@ -5849,7 +5851,7 @@ class PrivateImageMixin:
                         existing.append(image_ref)
                 req.image_urls = existing
                 logger.info(
-                    "[PrivateCompanion] 私聊单图主链已挂载图片: user=%s provider=%s source=%s images=%s has_vision=%s",
+                    "私聊单图主链已挂载图片: user=%s provider=%s source=%s images=%s has_vision=%s",
                     user_id,
                     direct_provider_id,
                     direct_provider_source,
@@ -5884,7 +5886,7 @@ class PrivateImageMixin:
                         )
                         if captured_tool_sends:
                             logger.info(
-                                "[PrivateCompanion] 私聊单图主链拦截到框架工具直发: user=%s count=%s",
+                                "私聊单图主链拦截到框架工具直发: user=%s count=%s",
                                 user_id,
                                 len(captured_tool_sends),
                             )
@@ -5897,7 +5899,7 @@ class PrivateImageMixin:
             except Exception as exc:
                 if direct_image_mode and self._exception_indicates_image_input_unsupported(exc):
                     logger.warning(
-                        "[PrivateCompanion] 私聊单图主链模型不支持图片输入,已降级为视觉摘要兜底: user=%s provider=%s error=%s",
+                        "私聊单图主链模型不支持图片输入,已降级为视觉摘要兜底: user=%s provider=%s error=%s",
                         user_id,
                         direct_provider_id,
                         _single_line(exc, 180),
@@ -5908,7 +5910,7 @@ class PrivateImageMixin:
                     result = None
                 elif self._exception_indicates_tool_schema_invalid(exc):
                     logger.warning(
-                        "[PrivateCompanion] 私聊单图主链工具 schema 不兼容,已转入兜底回复: user=%s error=%s",
+                        "私聊单图主链工具 schema 不兼容,已转入兜底回复: user=%s error=%s",
                         user_id,
                         _single_line(exc, 180),
                     )
@@ -5918,7 +5920,7 @@ class PrivateImageMixin:
                     result = None
                 else:
                     logger.warning(
-                        "[PrivateCompanion] 私聊单图主链异常,已转入人格兜底: user=%s error=%s",
+                        "私聊单图主链异常,已转入人格兜底: user=%s error=%s",
                         user_id,
                         _single_line(exc, 180),
                         exc_info=True,
@@ -5940,7 +5942,7 @@ class PrivateImageMixin:
                 reply = self._private_image_framework_response_text(llm_resp)
                 if reply and not str(getattr(llm_resp, "completion_text", "") or "").strip():
                     logger.info(
-                        "[PrivateCompanion] 私聊单图主链 completion_text 为空,已从 result_chain 恢复可见文本: user=%s preview=%s",
+                        "私聊单图主链 completion_text 为空,已从 result_chain 恢复可见文本: user=%s preview=%s",
                         user_id,
                         _single_line(reply, 180),
                     )
@@ -5952,7 +5954,7 @@ class PrivateImageMixin:
             )
             if reply and self._private_image_reply_is_internal_error(reply):
                 logger.warning(
-                    "[PrivateCompanion] 私聊单图主链返回内部错误文本,已拦截转入兜底: user=%s preview=%s",
+                    "私聊单图主链返回内部错误文本,已拦截转入兜底: user=%s preview=%s",
                     user_id,
                     _single_line(reply, 180),
                 )
@@ -5960,7 +5962,7 @@ class PrivateImageMixin:
                 reply_source = "internal_error_fallback"
             if reply and direct_image_mode and self._private_image_reply_denies_image_capability(reply):
                 logger.warning(
-                    "[PrivateCompanion] 私聊单图主链返回无法看图声明,已转视觉摘要兜底: user=%s provider=%s preview=%s",
+                    "私聊单图主链返回无法看图声明,已转视觉摘要兜底: user=%s provider=%s preview=%s",
                     user_id,
                     direct_provider_id,
                     _single_line(reply, 180),
@@ -5990,14 +5992,14 @@ class PrivateImageMixin:
                 if reply:
                     reply_source = "main_chain_tool_capture"
                     logger.info(
-                        "[PrivateCompanion] 私聊单图主链工具直发文本已转为普通回复: user=%s chars=%s reply_preview=%s",
+                        "私聊单图主链工具直发文本已转为普通回复: user=%s chars=%s reply_preview=%s",
                         user_id,
                         len(reply),
                         _single_line(reply, 180),
                     )
             if reply and vision_text and self._private_image_reply_ignores_vision_summary(reply):
                 logger.info(
-                    "[PrivateCompanion] 私聊单图主链疑似忽略视觉摘要,转入兜底回复: user=%s reply_preview=%s",
+                    "私聊单图主链疑似忽略视觉摘要,转入兜底回复: user=%s reply_preview=%s",
                     user_id,
                     _single_line(reply, 180),
                 )
@@ -6006,7 +6008,7 @@ class PrivateImageMixin:
                 trimmed_reply = self._trim_private_image_stale_context_tail(reply)
                 if trimmed_reply and trimmed_reply != reply and not self._private_image_reply_drifts_to_stale_context(trimmed_reply):
                     logger.info(
-                        "[PrivateCompanion] 私聊单图主链回复夹带旧上下文,已裁剪: user=%s before=%s after=%s",
+                        "私聊单图主链回复夹带旧上下文,已裁剪: user=%s before=%s after=%s",
                         user_id,
                         _single_line(reply, 180),
                         _single_line(trimmed_reply, 180),
@@ -6014,7 +6016,7 @@ class PrivateImageMixin:
                     reply = trimmed_reply
                 else:
                     logger.info(
-                        "[PrivateCompanion] 私聊单图主链回复夹带旧上下文,转入兜底回复: user=%s reply_preview=%s",
+                        "私聊单图主链回复夹带旧上下文,转入兜底回复: user=%s reply_preview=%s",
                         user_id,
                         _single_line(reply, 180),
                     )
@@ -6028,7 +6030,7 @@ class PrivateImageMixin:
                     except Exception:
                         reply_preview = reply
                 logger.info(
-                    "[PrivateCompanion] 私聊单图主链回复生成: user=%s chars=%s intent=%s ownership=%s reply_preview=%s",
+                    "私聊单图主链回复生成: user=%s chars=%s intent=%s ownership=%s reply_preview=%s",
                     user_id,
                     len(reply),
                     intent_line or "无",
@@ -6040,14 +6042,14 @@ class PrivateImageMixin:
                     vision_text = self._completed_private_image_vision_task_text(vision_task)
                     if vision_text:
                         logger.info(
-                            "[PrivateCompanion] 私聊单图兜底前取到后台视觉摘要: user=%s preview=%s",
+                            "私聊单图兜底前取到后台视觉摘要: user=%s preview=%s",
                             user_id,
                             _single_line(vision_text, 220),
                         )
                     elif not vision_wait_timed_out:
                         vision_text = _single_line(await self._transcribe_private_inbound_images(images, umo=umo), self._private_image_vision_text_limit(len(images)))
                     else:
-                        logger.info("[PrivateCompanion] 私聊单图兜底阶段跳过重复视觉转述: user=%s", user_id)
+                        logger.info("私聊单图兜底阶段跳过重复视觉转述: user=%s", user_id)
                     setattr(event, "private_companion_delayed_image_vision_text", vision_text)
                     ownership_line = self._private_image_ownership_line(vision_text)
                     intent_line = self._private_image_intent_line(vision_text)
@@ -6061,14 +6063,14 @@ class PrivateImageMixin:
                 )
                 if not vision_text:
                     logger.info(
-                        "[PrivateCompanion] 私聊单图无可靠视觉摘要,已尝试人格兜底回复: user=%s chars=%s reply_preview=%s",
+                        "私聊单图无可靠视觉摘要,已尝试人格兜底回复: user=%s chars=%s reply_preview=%s",
                         user_id,
                         len(reply),
                         _single_line(reply, 180),
                     )
                 else:
                     logger.info(
-                        "[PrivateCompanion] 私聊单图兜底回复生成: user=%s chars=%s intent=%s ownership=%s objective=%s reply_preview=%s",
+                        "私聊单图兜底回复生成: user=%s chars=%s intent=%s ownership=%s objective=%s reply_preview=%s",
                         user_id,
                         len(reply),
                         intent_line or "无",
@@ -6078,7 +6080,7 @@ class PrivateImageMixin:
                     )
                 if not reply:
                     logger.warning(
-                        "[PrivateCompanion] 私聊单图原生链路与兜底 LLM 均未生成有效回复,不启用本地静态兜底: user=%s images=%s has_vision=%s",
+                        "私聊单图原生链路与兜底 LLM 均未生成有效回复,不启用本地静态兜底: user=%s images=%s has_vision=%s",
                         user_id,
                         len(images),
                         bool(vision_text),
@@ -6094,7 +6096,7 @@ class PrivateImageMixin:
                         budget_exempt=True,
                     )
                     return
-                logger.info("[PrivateCompanion] 私聊单图原生链路回复为空,已使用兜底 LLM 回复: user=%s images=%s", user_id, len(images))
+                logger.info("私聊单图原生链路回复为空,已使用兜底 LLM 回复: user=%s images=%s", user_id, len(images))
             self._record_llm_usage(
                 provider_id="framework",
                 task="private_image_only_framework",
@@ -6125,16 +6127,16 @@ class PrivateImageMixin:
                     image_count=len(images),
                 )
             if reply_source == "main_chain":
-                logger.info("[PrivateCompanion] 私聊单图无补充说明,已由原生 LLM 链路回复: user=%s images=%s", user_id, len(images))
+                logger.info("私聊单图无补充说明,已由原生 LLM 链路回复: user=%s images=%s", user_id, len(images))
             else:
                 logger.info(
-                    "[PrivateCompanion] 私聊单图无补充说明,原生链路为空,已由兜底回复发送: user=%s images=%s source=%s",
+                    "私聊单图无补充说明,原生链路为空,已由兜底回复发送: user=%s images=%s source=%s",
                     user_id,
                     len(images),
                     reply_source,
                 )
         except Exception as exc:
-            logger.warning("[PrivateCompanion] 私聊单图延迟回复失败: user=%s error=%s", user_id, _single_line(exc, 180), exc_info=True)
+            logger.warning("私聊单图延迟回复失败: user=%s error=%s", user_id, _single_line(exc, 180), exc_info=True)
 
     async def _finalize_private_image_buffer_after_wait(self, key: str, user_id: str, first_ts: float) -> None:
         wait = self._message_debounce_seconds("image")
@@ -6154,12 +6156,12 @@ class PrivateImageMixin:
             for item in messages
         )
         if has_followup:
-            logger.info("[PrivateCompanion] 私聊单图已由补充消息接管: user=%s", user_id)
+            logger.info("私聊单图已由补充消息接管: user=%s", user_id)
             return
         claimed_ts = _safe_float(buffer.get("vision_context_claimed_ts"), 0.0)
         if claimed_ts > 0:
             logger.info(
-                "[PrivateCompanion] 私聊单图上下文已由补充文字请求认领,跳过延迟派发: user=%s claimed_ago=%.1fs",
+                "私聊单图上下文已由补充文字请求认领,跳过延迟派发: user=%s claimed_ago=%.1fs",
                 user_id,
                 max(0.0, _now_ts() - claimed_ts),
             )
@@ -6196,5 +6198,5 @@ class PrivateImageMixin:
         vision_task = delayed_buffer.get("vision_task")
         if isinstance(vision_task, asyncio.Task) and not vision_task.done():
             vision_task.cancel()
-        logger.info("[PrivateCompanion] 私聊单图等待补充后无文字指示,但原事件不可用: user=%s", user_id)
+        logger.info("私聊单图等待补充后无文字指示,但原事件不可用: user=%s", user_id)
 

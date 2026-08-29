@@ -9,13 +9,15 @@ import re
 from pathlib import Path
 from typing import Any
 
-from astrbot.api import logger
 
 from .photo_generation_scope import (
     PHOTO_GENERATION_SCOPE_LIMIT_KEYS,
     legacy_photo_generation_scope_limits,
     normalize_photo_generation_scope_limit,
 )
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 LEGACY_PROACTIVE_ACTIONS_KEY = "enabled_proactive_actions"
 
@@ -178,7 +180,7 @@ def migrate_flat_config_into_schema_groups(
         return _migrate_flat_config_into_schema_groups(config, schema_path=schema_path, logger=logger, save=save)
     except Exception as exc:
         if logger is not None:
-            logger.warning("[PrivateCompanion] 配置分组迁移失败，已跳过且不影响插件加载: %s", _single_line(exc, 160))
+            logger.warning("配置分组迁移失败，已跳过且不影响插件加载: %s", _single_line(exc, 160))
         return 0
 
 
@@ -347,7 +349,7 @@ def _migrate_flat_config_into_schema_groups(
     if not changed:
         return 0
     if logger is not None:
-        logger.info("[PrivateCompanion] 已将旧版扁平配置迁移到新版分组配置: %s 项", len(changed))
+        logger.info("已将旧版扁平配置迁移到新版分组配置: %s 项", len(changed))
     if save:
         _save_config_after_schema_migration(config, logger=logger)
     return len(changed)
@@ -1129,7 +1131,7 @@ def _schema_group_items(schema_path: Path, *, logger: Any | None = None) -> dict
         raw = json.loads(schema_path.read_text(encoding="utf-8"))
     except Exception as exc:
         if logger is not None:
-            logger.debug("[PrivateCompanion] 读取配置 schema 用于分组迁移失败: %s", exc)
+            logger.debug("读取配置 schema 用于分组迁移失败: %s", exc)
         return mapping
     if not isinstance(raw, dict):
         return mapping
@@ -1203,7 +1205,7 @@ def _save_config_after_schema_migration(config: Any, *, logger: Any | None = Non
             if callable(close):
                 close()
             if logger is not None:
-                logger.debug("[PrivateCompanion] config migration async save skipped: no event loop")
+                logger.debug("config migration async save skipped: no event loop")
             return True
         tasks = getattr(config, "_private_companion_config_save_tasks", None)
         if not isinstance(tasks, set):
@@ -1223,7 +1225,7 @@ def _save_config_after_schema_migration(config: Any, *, logger: Any | None = Non
                 pass
             except Exception as exc:
                 if logger is not None:
-                    logger.warning("[PrivateCompanion] config migration async save failed: %s", _single_line(exc, 160))
+                    logger.warning("config migration async save failed: %s", _single_line(exc, 160))
             finally:
                 if isinstance(tasks, set):
                     tasks.discard(done_task)
@@ -1246,7 +1248,7 @@ def _save_config_after_schema_migration(config: Any, *, logger: Any | None = Non
                     if callable(close):
                         close()
                     if logger is not None:
-                        logger.debug("[PrivateCompanion] 配置分组迁移已写入运行态，当前无事件循环可异步保存")
+                        logger.debug("配置分组迁移已写入运行态，当前无事件循环可异步保存")
             return
         except TypeError:
             continue
@@ -1264,14 +1266,14 @@ def _save_config_after_schema_migration(config: Any, *, logger: Any | None = Non
                     return
                 except Exception as retry_exc:
                     if logger is not None:
-                        logger.warning("[PrivateCompanion] 重试保存配置分组迁移结果失败: %s", _single_line(retry_exc, 160))
+                        logger.warning("重试保存配置分组迁移结果失败: %s", _single_line(retry_exc, 160))
                     return
             if logger is not None:
-                logger.warning("[PrivateCompanion] 保存配置分组迁移结果失败: %s", _single_line(exc, 160))
+                logger.warning("保存配置分组迁移结果失败: %s", _single_line(exc, 160))
             return
         except Exception as exc:
             if logger is not None:
-                logger.warning("[PrivateCompanion] 保存配置分组迁移结果失败: %s", _single_line(exc, 160))
+                logger.warning("保存配置分组迁移结果失败: %s", _single_line(exc, 160))
             return
 
 
@@ -1326,7 +1328,7 @@ def _ensure_config_parent_dir(
             changed = True
         except Exception as exc:
             if logger is not None:
-                logger.debug("[PrivateCompanion] 创建配置目录失败: %s", _single_line(exc, 160))
+                logger.debug("创建配置目录失败: %s", _single_line(exc, 160))
     return changed
 
 

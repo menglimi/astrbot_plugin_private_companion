@@ -11,7 +11,6 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
 
-from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 try:
     from astrbot.api.message_components import Plain
@@ -25,6 +24,9 @@ from .conversation_injection_plan import (
 )
 from .helpers import _group_link_message_context, _safe_float, _safe_int, _single_line, _strip_internal_message_blocks
 from .persona_config import runtime_persona_setting
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 class ForwardMessageMixin:
     """Forward-message parsing and prompt-context helpers."""
@@ -488,24 +490,24 @@ class ForwardMessageMixin:
                 continue
             if raw:
                 logger.info(
-                    "[PrivateCompanion] 合并消息平台接口返回: action=%s args=%s shape=%s",
+                    "合并消息平台接口返回: action=%s args=%s shape=%s",
                     action,
                     ",".join(kwargs.keys()),
                     self._forward_payload_shape(raw),
                 )
                 return raw
         if last_error:
-            logger.info("[PrivateCompanion] 合并消息平台接口全部失败: id=%s error=%s", _single_line(safe_id, 80), last_error)
+            logger.info("合并消息平台接口全部失败: id=%s error=%s", _single_line(safe_id, 80), last_error)
         return None
 
     async def _extract_forward_from_reply(self, event: AstrMessageEvent, reply_seg: Any) -> tuple[str, dict[str, Any]]:
         message_id = self._extract_reply_message_id(reply_seg)
         if not message_id:
-            logger.info("[PrivateCompanion] 引用合并消息读取跳过: Reply 段没有 message_id")
+            logger.info("引用合并消息读取跳过: Reply 段没有 message_id")
             return "", {}
         recalled_message_id = await self._should_cancel_reply_for_missing_or_recalled_trigger(event, message_id)
         if recalled_message_id:
-            logger.info("[PrivateCompanion] 引用合并消息读取跳过: 被引用消息已撤回或不可见 message_id=%s", recalled_message_id)
+            logger.info("引用合并消息读取跳过: 被引用消息已撤回或不可见 message_id=%s", recalled_message_id)
             return "", {}
         message_obj = None
         try:
@@ -516,7 +518,7 @@ class ForwardMessageMixin:
             except Exception:
                 message_obj = None
         if not message_obj:
-            logger.info("[PrivateCompanion] 引用合并消息读取失败: get_msg 无返回 message_id=%s", message_id)
+            logger.info("引用合并消息读取失败: get_msg 无返回 message_id=%s", message_id)
             return "", {}
         raw_message = message_obj.get("message") if isinstance(message_obj, dict) else message_obj
         try:
@@ -528,14 +530,14 @@ class ForwardMessageMixin:
         forward_payload = self._extract_forward_payload_from_message_obj(raw_message)
         if forward_id or forward_payload:
             logger.info(
-                "[PrivateCompanion] 引用合并消息已解析: message_id=%s id=%s inline=%s",
+                "引用合并消息已解析: message_id=%s id=%s inline=%s",
                 message_id,
                 _single_line(forward_id, 40) or "inline",
                 bool(forward_payload),
             )
         else:
             logger.info(
-                "[PrivateCompanion] 引用消息未解析到合并转发: message_id=%s shape=%s",
+                "引用消息未解析到合并转发: message_id=%s shape=%s",
                 message_id,
                 self._forward_payload_shape(raw_message),
             )
@@ -547,7 +549,7 @@ class ForwardMessageMixin:
             return []
         recalled_message_id = await self._should_cancel_reply_for_missing_or_recalled_trigger(event, message_id)
         if recalled_message_id:
-            logger.info("[PrivateCompanion] 引用图片读取跳过: 被引用消息已撤回或不可见 message_id=%s", recalled_message_id)
+            logger.info("引用图片读取跳过: 被引用消息已撤回或不可见 message_id=%s", recalled_message_id)
             return []
         message_obj = None
         try:
@@ -556,7 +558,7 @@ class ForwardMessageMixin:
             try:
                 message_obj = await self._call_platform_action(event, "get_msg", message_id=message_id)
             except Exception as exc:
-                logger.info("[PrivateCompanion] 引用图片读取失败: message_id=%s error=%s", message_id, _single_line(exc, 120))
+                logger.info("引用图片读取失败: message_id=%s error=%s", message_id, _single_line(exc, 120))
                 return []
         if isinstance(message_obj, dict):
             raw_message = message_obj.get("message") or message_obj.get("raw_message") or message_obj.get("content")
@@ -564,7 +566,7 @@ class ForwardMessageMixin:
             raw_message = message_obj
         sources = self._extract_image_sources_from_message_obj(raw_message)
         if sources:
-            logger.info("[PrivateCompanion] 引用消息图片已解析: message_id=%s images=%s", message_id, len(sources))
+            logger.info("引用消息图片已解析: message_id=%s images=%s", message_id, len(sources))
         return sources[:5]
 
     async def _find_reply_image_sources_for_event(self, event: AstrMessageEvent) -> list[str]:
@@ -573,7 +575,7 @@ class ForwardMessageMixin:
             sources = self._extract_image_sources_from_message_obj(row.get("raw_message"))
             if sources:
                 logger.info(
-                    "[PrivateCompanion] 引用链图片已解析: depth=%s message_id=%s images=%s",
+                    "引用链图片已解析: depth=%s message_id=%s images=%s",
                     _safe_int(row.get("depth"), 1, 1),
                     _single_line(row.get("message_id"), 120),
                     len(sources),
@@ -709,7 +711,7 @@ class ForwardMessageMixin:
             messages = self._extract_messages_from_forward_data(raw)
             if raw and not messages:
                 logger.info(
-                    "[PrivateCompanion] 合并消息接口返回未解析出节点: id=%s shape=%s",
+                    "合并消息接口返回未解析出节点: id=%s shape=%s",
                     _single_line(forward_id, 80),
                     self._forward_payload_shape(raw),
                 )
@@ -873,12 +875,12 @@ class ForwardMessageMixin:
         forward_id, payload = await self._find_forward_descriptor_for_event(event)
         if not (forward_id or payload):
             if should_log_probe:
-                logger.info("[PrivateCompanion] 合并消息请求未找到描述符: text=%s", message_text or "(empty)")
+                logger.info("合并消息请求未找到描述符: text=%s", message_text or "(empty)")
             setattr(event, "_private_companion_forward_context", "")
             return ""
         if should_log_probe:
             logger.info(
-                "[PrivateCompanion] 合并消息请求命中描述符: id=%s inline=%s text=%s",
+                "合并消息请求命中描述符: id=%s inline=%s text=%s",
                 _single_line(forward_id, 40) or "inline",
                 bool(payload),
                 message_text or "(empty)",
@@ -886,7 +888,7 @@ class ForwardMessageMixin:
         try:
             rows, image_urls, nested_count = await self._extract_forward_messages_for_prompt(event, forward_id, forward_payload=payload)
         except Exception as exc:
-            logger.info("[PrivateCompanion] 合并消息读取失败: %s", exc)
+            logger.info("合并消息读取失败: %s", exc)
             setattr(event, "_private_companion_forward_context", "")
             return ""
         preview = " | ".join(
@@ -894,7 +896,7 @@ class ForwardMessageMixin:
             for index, row in enumerate(rows[:5])
         )
         logger.info(
-            "[PrivateCompanion] 合并消息解析结果: id=%s messages=%s images=%s nested=%s preview=%s",
+            "合并消息解析结果: id=%s messages=%s images=%s nested=%s preview=%s",
             _single_line(forward_id, 40) or "inline",
             len(rows),
             len(image_urls),
@@ -924,7 +926,7 @@ class ForwardMessageMixin:
                 setattr(event, "_private_companion_forward_context_body", context_body)
                 setattr(event, "_private_companion_forward_context_title", "本轮合并消息转述")
                 logger.info(
-                    "[PrivateCompanion] 已注入合并消息转述: messages=%s images=%s provider=%s",
+                    "已注入合并消息转述: messages=%s images=%s provider=%s",
                     len(rows),
                     len(image_urls),
                     self._task_provider(
@@ -981,20 +983,20 @@ class ForwardMessageMixin:
         setattr(event, "_private_companion_forward_context", context)
         setattr(event, "_private_companion_forward_context_body", context_body)
         setattr(event, "_private_companion_forward_context_title", "本轮合并消息")
-        logger.info("[PrivateCompanion] 已注入合并消息上下文: id=%s messages=%s images=%s", _single_line(forward_id, 40) or "inline", len(rows), len(image_urls))
+        logger.info("已注入合并消息上下文: id=%s messages=%s images=%s", _single_line(forward_id, 40) or "inline", len(rows), len(image_urls))
         return context if include_heading else context_body
 
     async def _transcribe_forward_message_images(self, event: AstrMessageEvent, image_sources: list[str]) -> str:
         if not runtime_persona_setting(self, "forward_message_image_vision", True):
-            logger.info("[PrivateCompanion] 合并/引用图片视觉跳过: forward_message_image_vision=false")
+            logger.info("合并/引用图片视觉跳过: forward_message_image_vision=false")
             return ""
         limit = max(0, _safe_int(runtime_persona_setting(self, "forward_message_image_limit", 4), 4, 0))
         if limit <= 0:
-            logger.info("[PrivateCompanion] 合并/引用图片视觉跳过: forward_message_image_limit=%s", limit)
+            logger.info("合并/引用图片视觉跳过: forward_message_image_limit=%s", limit)
             return ""
         original_sources = [str(item).strip() for item in (image_sources or []) if str(item or "").strip()][:limit]
         if not original_sources:
-            logger.info("[PrivateCompanion] 合并/引用图片视觉跳过: 未抽取到图片源")
+            logger.info("合并/引用图片视觉跳过: 未抽取到图片源")
             return ""
         sources = await self._prepare_private_image_sources_for_model(
             original_sources,
@@ -1002,7 +1004,7 @@ class ForwardMessageMixin:
         )
         if not sources:
             logger.info(
-                "[PrivateCompanion] 合并/引用图片视觉跳过: 图片源无法转为模型可读源 original=%s",
+                "合并/引用图片视觉跳过: 图片源无法转为模型可读源 original=%s",
                 len(original_sources),
             )
             return ""
@@ -1012,7 +1014,7 @@ class ForwardMessageMixin:
         image_urls = [url for _, url in image_items]
         if not image_urls:
             logger.info(
-                "[PrivateCompanion] 合并/引用图片视觉跳过: 已准备图片但无模型可用 URL sources=%s prepared=%s",
+                "合并/引用图片视觉跳过: 已准备图片但无模型可用 URL sources=%s prepared=%s",
                 len(original_sources),
                 len(sources),
             )
@@ -1083,7 +1085,7 @@ class ForwardMessageMixin:
             )
             if cached_text:
                 logger.info(
-                    "[PrivateCompanion] 合并消息图片视觉命中缓存: provider=%s images=%s preview=%s",
+                    "合并消息图片视觉命中缓存: provider=%s images=%s preview=%s",
                     provider_id,
                     len(image_urls),
                     _single_line(cached_text, 220),
@@ -1168,7 +1170,7 @@ class ForwardMessageMixin:
                         task="forward_message_image_vision",
                     )
                     logger.info(
-                        "[PrivateCompanion] 合并消息图片视觉返回空摘要,已尝试下一个 provider: provider=%s source=%s",
+                        "合并消息图片视觉返回空摘要,已尝试下一个 provider: provider=%s source=%s",
                         provider_id,
                         provider_source,
                     )
@@ -1185,7 +1187,7 @@ class ForwardMessageMixin:
                 )
                 self._clear_private_image_provider_failure(provider_id, provider_source)
                 logger.info(
-                    "[PrivateCompanion] 合并消息图片视觉完成: provider=%s source=%s images=%s chars=%s preview=%s",
+                    "合并消息图片视觉完成: provider=%s source=%s images=%s chars=%s preview=%s",
                     provider_id,
                     provider_source,
                     len(image_urls),
@@ -1215,8 +1217,8 @@ class ForwardMessageMixin:
                     error=f"timeout after {timeout:.1f}s",
                     budget_exempt=True,
                 )
-                logger.info(
-                    "[PrivateCompanion] 合并消息图片视觉超时,本轮尝试下一个 provider；不会禁用后续图片调用: provider=%s source=%s timeout=%.1fs timeout_source=%s",
+                logger.warning(
+                    "合并消息图片视觉超时,本轮尝试下一个 provider；不会禁用后续图片调用: provider=%s source=%s timeout=%.1fs timeout_source=%s",
                     provider_id,
                     provider_source,
                     timeout,
@@ -1236,8 +1238,8 @@ class ForwardMessageMixin:
                 )
                 self._mark_private_image_provider_failure(provider_id, provider_source, exc, task="forward_message_image_vision")
                 continue
-        logger.info(
-            "[PrivateCompanion] 合并消息图片视觉失败: 所有候选 provider 均不可用或失败 attempts=%s skipped=%s images=%s",
+        logger.warning(
+            "合并消息图片视觉失败: 所有候选 provider 均不可用或失败 attempts=%s skipped=%s images=%s",
             attempts,
             ",".join(skipped_providers[:8]) or "-",
             len(image_urls),
@@ -1637,7 +1639,7 @@ class ForwardMessageMixin:
             seen.add(message_id)
             recalled_message_id = await self._should_cancel_reply_for_missing_or_recalled_trigger(event, message_id)
             if recalled_message_id:
-                logger.info("[PrivateCompanion] 引用链读取跳过: 被引用消息已撤回或不可见 message_id=%s", recalled_message_id)
+                logger.info("引用链读取跳过: 被引用消息已撤回或不可见 message_id=%s", recalled_message_id)
                 continue
             message_obj = await self._get_message_obj_by_id(event, message_id)
             if not message_obj:
@@ -1783,7 +1785,7 @@ class ForwardMessageMixin:
                 continue
             recalled_message_id = await self._should_cancel_reply_for_missing_or_recalled_trigger(event, message_id)
             if recalled_message_id:
-                logger.info("[PrivateCompanion] 引用原消息读取跳过: 被引用消息已撤回或不可见 message_id=%s", recalled_message_id)
+                logger.info("引用原消息读取跳过: 被引用消息已撤回或不可见 message_id=%s", recalled_message_id)
                 return message_id, None
             message_obj = None
             try:
@@ -1976,7 +1978,7 @@ class ForwardMessageMixin:
             return ""
         recalled_message_id = await self._should_cancel_reply_for_missing_or_recalled_trigger(event, message_id)
         if recalled_message_id:
-            logger.info("[PrivateCompanion] 引用卡片上下文跳过: 被引用消息已撤回或不可见 message_id=%s", recalled_message_id)
+            logger.info("引用卡片上下文跳过: 被引用消息已撤回或不可见 message_id=%s", recalled_message_id)
             return ""
         info = self._extract_reply_rich_card_info(raw_message)
         texts = [item for item in info.get("texts", []) if item]
@@ -2027,13 +2029,13 @@ class ForwardMessageMixin:
             lines.append("引用卡片中的图片：")
             lines.append(image_vision_text)
             logger.info(
-                "[PrivateCompanion] 引用卡片图片视觉摘要完成: message_id=%s images=%s preview=%s",
+                "引用卡片图片视觉摘要完成: message_id=%s images=%s preview=%s",
                 message_id or "-",
                 len(images),
                 _single_line(image_vision_text, 240),
             )
         logger.info(
-            "[PrivateCompanion] 已注入引用卡片上下文: message_id=%s texts=%s links=%s images=%s vision=%s preview=%s vision_preview=%s",
+            "已注入引用卡片上下文: message_id=%s texts=%s links=%s images=%s vision=%s preview=%s vision_preview=%s",
             message_id or "-",
             len(texts),
             len(links),
@@ -2129,10 +2131,10 @@ class ForwardMessageMixin:
             or (existing_plan is not None and existing_plan.contains_marker(marker))
         ):
             if should_log_probe:
-                logger.info("[PrivateCompanion] 合并消息请求注入跳过: 已存在 marker text=%s", message_text or "(empty)")
+                logger.info("合并消息请求注入跳过: 已存在 marker text=%s", message_text or "(empty)")
             return
         if should_log_probe:
-            logger.info("[PrivateCompanion] 合并消息请求开始注入检查: text=%s", message_text or "(empty)")
+            logger.info("合并消息请求开始注入检查: text=%s", message_text or "(empty)")
         context = await self._format_forward_message_context_for_prompt(
             event,
             req,
@@ -2248,5 +2250,5 @@ class ForwardMessageMixin:
                     metadata={"注入位置": placement},
                 )
         elif should_log_probe:
-            logger.info("[PrivateCompanion] 合并消息请求未生成上下文: text=%s", message_text or "(empty)")
+            logger.info("合并消息请求未生成上下文: text=%s", message_text or "(empty)")
 

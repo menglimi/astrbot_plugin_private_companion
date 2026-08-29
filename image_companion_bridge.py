@@ -9,10 +9,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from astrbot.api import logger
 
 from .helpers import _single_line
 from .external_bridge_resolver import resolve_external_bridge
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 class ImageCompanionBridgeMixin:
@@ -52,7 +54,7 @@ class ImageCompanionBridgeMixin:
             status = getter(self)
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 独立生图能力查询失败: error=%s",
+                "独立生图能力查询失败: error=%s",
                 _single_line(exc, 160),
             )
             return {
@@ -89,7 +91,7 @@ class ImageCompanionBridgeMixin:
             state = getter(self, force_refresh=force_refresh)
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 独立生图负载查询失败: error=%s",
+                "独立生图负载查询失败: error=%s",
                 _single_line(exc, 160),
             )
             return {"enabled": False, "available": False, "busy": False, "reason": "负载状态查询失败"}
@@ -104,7 +106,7 @@ class ImageCompanionBridgeMixin:
             result = await maintainer(self)
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 独立生图后台维护失败: error=%s",
+                "独立生图后台维护失败: error=%s",
                 _single_line(exc, 160),
             )
             return {}
@@ -129,7 +131,7 @@ class ImageCompanionBridgeMixin:
             response = await generator(self, dict(request))
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 独立生图插件调用异常: workflow=%s error=%s",
+                "独立生图插件调用异常: workflow=%s error=%s",
                 _single_line(request.get("workflow_kind"), 40),
                 _single_line(exc, 160),
             )

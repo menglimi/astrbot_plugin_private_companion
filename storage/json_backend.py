@@ -10,9 +10,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable
 
-from astrbot.api import logger
 
 from .backend_base import StoreBackendBase
+from ..logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 class JsonStoreBackend(StoreBackendBase):
@@ -43,7 +45,7 @@ class JsonStoreBackend(StoreBackendBase):
             return self.ensure_defaults(data)
         except Exception as exc:
             logger.warning(
-                "[PrivateCompanion] 读取 JSON 数据失败,已保留原文件并中止加载: %s",
+                "读取 JSON 数据失败,已保留原文件并中止加载: %s",
                 exc,
             )
             raise

@@ -15,12 +15,14 @@ from types import SimpleNamespace
 from typing import Any
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
-from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
 from .helpers import _safe_int, _single_line
 from .qzone_auth import QzoneAuthMixin
 from .qzone_errors import QzoneIntegrationError
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 __all__ = (
     "QZONE_IMAGE_UPLOAD_URL",
@@ -416,7 +418,7 @@ class QzoneMediaMixin(QzoneAuthMixin):
                 for source in await reply_image_getter(event):
                     add(source)
             except Exception as exc:
-                logger.info("[PrivateCompanion] QQ 空间引用图片读取失败: %s", _single_line(exc, 120))
+                logger.info("QQ 空间引用图片读取失败: %s", _single_line(exc, 120))
         normalized: list[str] = []
         for source in sources:
             resolved = await self._qzone_resolve_onebot_image_source(event, source)
@@ -436,7 +438,7 @@ class QzoneMediaMixin(QzoneAuthMixin):
                 return (0, len(text))
 
             best = sorted(normalized, key=rank, reverse=True)[0]
-            logger.info("[PrivateCompanion] QQ 空间单图消息解析到多个来源,已选择一个: candidates=%s chosen=%s", len(normalized), _single_line(best, 120))
+            logger.info("QQ 空间单图消息解析到多个来源,已选择一个: candidates=%s chosen=%s", len(normalized), _single_line(best, 120))
             return [best]
         return normalized[:9]
 
@@ -575,7 +577,7 @@ class QzoneMediaMixin(QzoneAuthMixin):
             if str(code) not in message:
                 message = _single_line(f"code={code} {message}", 160)
             logger.info(
-                "[PrivateCompanion] QQ 空间发布失败: endpoint=%s code=%s msg=%s",
+                "QQ 空间发布失败: endpoint=%s code=%s msg=%s",
                 urlparse(endpoint).netloc,
                 code,
                 message,
@@ -583,7 +585,7 @@ class QzoneMediaMixin(QzoneAuthMixin):
             stage = "Cookie/g_tk" if self._qzone_auth_failure_message(message) else "发布失败"
             raise QzoneIntegrationError(stage, message)
         logger.info(
-            "[PrivateCompanion] QQ 空间说说发布成功: endpoint=%s images=%s",
+            "QQ 空间说说发布成功: endpoint=%s images=%s",
             urlparse(endpoint).netloc,
             len(richvals),
         )
@@ -669,7 +671,7 @@ class QzoneMediaMixin(QzoneAuthMixin):
                     image_list = [str(item).strip() for item in list(generated or []) if str(item or "").strip()]
                 except Exception as exc:
                     logger.info(
-                        "[PrivateCompanion] QQ 空间手动发说说自动配图失败,继续纯文字发布: %s",
+                        "QQ 空间手动发说说自动配图失败,继续纯文字发布: %s",
                         _single_line(exc, 160),
                     )
         if not content and not image_list:
@@ -713,7 +715,7 @@ class QzoneMediaMixin(QzoneAuthMixin):
                         event=event,
                     )
                 except Exception as record_exc:
-                    logger.debug("[PrivateCompanion] QQ 空间发布后自我记录失败: %s", _single_line(record_exc, 120))
+                    logger.debug("QQ 空间发布后自我记录失败: %s", _single_line(record_exc, 120))
             return result
 
         try:
@@ -725,7 +727,7 @@ class QzoneMediaMixin(QzoneAuthMixin):
                     self._qzone_mark_auth_failure(message, source="publish", save=True)
                 if content and image_list and exc.stage in {"图片读取失败", "图片校验失败", "图片上传失败"}:
                     logger.warning(
-                        "[PrivateCompanion] QQ 空间图片发布失败,尝试降级纯文字: stage=%s msg=%s",
+                        "QQ 空间图片发布失败,尝试降级纯文字: stage=%s msg=%s",
                         exc.stage,
                         message,
                     )

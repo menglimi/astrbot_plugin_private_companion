@@ -11,8 +11,10 @@ import unicodedata
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from typing import Any, AsyncIterator
+from .logging_util import get_module_logger
 
-from astrbot.api import logger
+logger = get_module_logger(__name__)
+
 
 
 GAME_EVENT_TYPES = frozenset({"round_finished", "rematch_requested"})
@@ -715,7 +717,7 @@ class GameIntegrationMixin:
                 value = resolver(user_snapshot, umo=self._game_clean_text(event.get("session_id"), 200))
                 persona = str(await value if inspect.isawaitable(value) else value or "")
             except Exception as exc:
-                logger.debug("[PrivateCompanion] 游戏余韵读取人格失败: %s", self._game_clean_text(exc, 120))
+                logger.debug("游戏余韵读取人格失败: %s", self._game_clean_text(exc, 120))
         if not persona:
             getter = getattr(self, "_get_default_persona_prompt", None)
             if callable(getter):
@@ -819,7 +821,7 @@ class GameIntegrationMixin:
             parsed = self._game_json_object(raw)
             assessment = self._game_normalize_assessment(parsed, fallback) if parsed else fallback
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 游戏余韵模型判断失败: %s", self._game_clean_text(exc, 120))
+            logger.debug("游戏余韵模型判断失败: %s", self._game_clean_text(exc, 120))
             assessment = fallback
         if cache_key:
             try:
@@ -980,7 +982,7 @@ class GameIntegrationMixin:
                 event["occurred_at"] = min(event["occurred_at"], now)
             event_id = self._game_clean_text(event.get("event_id"), 180)
         except Exception as exc:
-            logger.debug("[PrivateCompanion] 游戏事件归一化失败: %s", self._game_clean_text(exc, 120))
+            logger.debug("游戏事件归一化失败: %s", self._game_clean_text(exc, 120))
             return {"ok": False, "reason": "invalid_game_event"}
 
         return await self._game_run_in_persona(
@@ -1036,7 +1038,7 @@ class GameIntegrationMixin:
                         self._save_data_sync(sections={"users"})
                     except Exception as exc:
                         persisted = False
-                        logger.warning("[PrivateCompanion] 游戏旧事件回执保存失败: %s", self._game_clean_text(exc, 120))
+                        logger.warning("游戏旧事件回执保存失败: %s", self._game_clean_text(exc, 120))
                     return self._game_public_result(previous, stale=True, persisted=persisted)
 
             streak_result, streak_count = self._game_afterglow_streak(previous, event, now=now)
@@ -1171,10 +1173,10 @@ class GameIntegrationMixin:
                     self._save_data_sync(sections={"users"})
                 except Exception as exc:
                     persisted = False
-                    logger.warning("[PrivateCompanion] 游戏余韵保存失败: %s", self._game_clean_text(exc, 120))
+                    logger.warning("游戏余韵保存失败: %s", self._game_clean_text(exc, 120))
 
             logger.info(
-                "[PrivateCompanion] 游戏余韵已结算: user=%s scope=%s game=%s result=%s streak=%s competition=%s companionship=%s",
+                "游戏余韵已结算: user=%s scope=%s game=%s result=%s streak=%s competition=%s companionship=%s",
                 event["user_id"],
                 descriptor["scope_key"],
                 event["game"],

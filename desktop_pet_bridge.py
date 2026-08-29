@@ -10,8 +10,10 @@ import urllib.error
 import urllib.request
 import uuid
 from typing import Any
+from .logging_util import get_module_logger
 
-from astrbot.api import logger
+logger = get_module_logger(__name__)
+
 
 
 def _clean_text(value: Any, limit: int = 4000) -> str:
@@ -131,7 +133,7 @@ class DesktopPetBridge:
             self._last_status = "桌宠未连接"
             self._last_error = str(exc)[:240]
             logger.debug(
-                "[PrivateCompanion] 桌宠消息镜像跳过（桌宠未运行或接口不可用）: %s",
+                "桌宠消息镜像跳过（桌宠未运行或接口不可用）: %s",
                 self._last_error,
             )
             return

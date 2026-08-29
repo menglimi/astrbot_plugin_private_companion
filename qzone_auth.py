@@ -5,11 +5,13 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
 from .helpers import _now_ts, _safe_float, _safe_int, _single_line
 from .qzone_recent_parser import parse_qzone_h5_index_html
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 __all__ = ("QzoneAuthMixin",)
 
@@ -120,7 +122,7 @@ class QzoneAuthMixin:
         state["last_auth_status"] = status
         if status == "stopped":
             logger.warning(
-                "[PrivateCompanion] QQ 空间认证连续失败,自动说说进入保守等待: count=%s until=%s reason=%s",
+                "QQ 空间认证连续失败,自动说说进入保守等待: count=%s until=%s reason=%s",
                 failure_count,
                 self._qzone_format_block_until(state["auth_block_until"]),
                 clean_reason,
@@ -178,7 +180,7 @@ class QzoneAuthMixin:
             token = ctx.get("qzonetoken") or await self._qzone_ensure_qzonetoken(event, cookie_header=cookie_header, ctx=ctx)
             if not str(token or "").strip():
                 state["last_qzonetoken_status"] = "missing:h5_index"
-                logger.info("[PrivateCompanion] QQ 空间自动发布预检继续: qzonetoken 未找到,纯文字发布仍可使用 g_tk")
+                logger.info("QQ 空间自动发布预检继续: qzonetoken 未找到,纯文字发布仍可使用 g_tk")
             else:
                 state["last_qzonetoken_status"] = "ok"
         except Exception as exc:
@@ -230,10 +232,10 @@ class QzoneAuthMixin:
                 async with session.get(url) as response:
                     text = await response.text()
                     if response.status >= 400:
-                        logger.info("[PrivateCompanion] QQ 空间 qzonetoken 获取失败: HTTP %s", response.status)
+                        logger.info("QQ 空间 qzonetoken 获取失败: HTTP %s", response.status)
                         return {"token": "", "payload": {}, "cached": False, "http_status": response.status}
         except Exception as exc:
-            logger.info("[PrivateCompanion] QQ 空间 qzonetoken 获取失败: %s", _single_line(exc, 120))
+            logger.info("QQ 空间 qzonetoken 获取失败: %s", _single_line(exc, 120))
             return {"token": "", "payload": {}, "cached": False, "http_status": 0}
         parsed = parse_qzone_h5_index_html(text)
         parsed_token = str(parsed.get("token") or "").strip()
@@ -251,9 +253,9 @@ class QzoneAuthMixin:
             "http_status": response.status,
         }
         if not parsed_token:
-            logger.info("[PrivateCompanion] QQ 空间 qzonetoken 未在 H5 首页中找到")
+            logger.info("QQ 空间 qzonetoken 未在 H5 首页中找到")
         else:
-            logger.info("[PrivateCompanion] QQ 空间 qzonetoken 已自动获取: uin=%s", ctx.get("uin"))
+            logger.info("QQ 空间 qzonetoken 已自动获取: uin=%s", ctx.get("uin"))
         return {
             "token": token,
             "payload": payload,

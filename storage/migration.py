@@ -4,9 +4,11 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from astrbot.api import logger
 
 from .sqlite_backend import SqliteStoreNotInitializedError
+from ..logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 
 def _initialize_backend_from_payload(
@@ -18,14 +20,14 @@ def _initialize_backend_from_payload(
     try:
         backend.initialize_empty_store(deepcopy(payload))
         logger.info(
-            "[PrivateCompanion] 已%s到 %s 后端",
+            "已%s到 %s 后端",
             action,
             backend.backend_name(),
         )
         return backend.load_store()
     except Exception as exc:
         logger.warning(
-            "[PrivateCompanion] %s到 %s 后端失败,本次继续使用来源数据: %s",
+            "%s到 %s 后端失败,本次继续使用来源数据: %s",
             action,
             backend.backend_name(),
             exc,

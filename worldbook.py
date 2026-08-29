@@ -31,7 +31,7 @@ from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 from xml.etree import ElementTree as ET
 
-from astrbot.api import AstrBotConfig, logger
+from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 try:
     from astrbot.api.message_components import At, Image, Plain, Record, Reply
@@ -117,6 +117,9 @@ from .planning import (
     normalize_story_plan,
     pick_detail_segment,
 )
+from .logging_util import get_module_logger
+
+logger = get_module_logger(__name__)
 
 DEFAULT_AI_DAILY_NEWS_SOURCE = "B站 AI早报|bilibili:285286947"
 
@@ -319,7 +322,7 @@ class WorldbookMixin:
             try:
                 payload = json.loads(path.read_text(encoding="utf-8-sig"))
             except Exception as e:
-                logger.warning(f"[PrivateCompanion] 读取关系网配置失败: {path} ({e})")
+                logger.warning(f"读取关系网配置失败: {path} ({e})")
                 continue
             raw_entries = payload.get("entry_storage") if isinstance(payload, dict) else None
             if not isinstance(raw_entries, list):
@@ -993,7 +996,7 @@ class WorldbookMixin:
         profiles[sender_id] = profile
         recent = group.get("recent_messages") if isinstance(group.get("recent_messages"), list) else []
         logger.info(
-            "[PrivateCompanion] 群聊关系网自登记节点: group=%s user=%s name=%s aliases=%s",
+            "群聊关系网自登记节点: group=%s user=%s name=%s aliases=%s",
             group_id or "-",
             sender_id,
             name,
@@ -1135,7 +1138,7 @@ class WorldbookMixin:
                 if block_word:
                     pending.pop(sender_id, None)
                     logger.info(
-                        "[PrivateCompanion] 群聊关系网自登记确认时拒绝: group=%s user=%s name=%s reason=命中自登记屏蔽词 %s",
+                        "群聊关系网自登记确认时拒绝: group=%s user=%s name=%s reason=命中自登记屏蔽词 %s",
                         group_id or "-",
                         sender_id,
                         name,
@@ -1146,7 +1149,7 @@ class WorldbookMixin:
                 if conflict:
                     pending.pop(sender_id, None)
                     logger.info(
-                        "[PrivateCompanion] 群聊关系网自登记确认时拒绝: group=%s user=%s name=%s reason=名称疑似冒领已有节点 %s",
+                        "群聊关系网自登记确认时拒绝: group=%s user=%s name=%s reason=名称疑似冒领已有节点 %s",
                         group_id or "-",
                         sender_id,
                         name,
@@ -1176,7 +1179,7 @@ class WorldbookMixin:
             return None
         if intro.get("blocked"):
             logger.info(
-                "[PrivateCompanion] 群聊关系网自登记已拒绝: group=%s user=%s reason=称呼不合规或超过六字",
+                "群聊关系网自登记已拒绝: group=%s user=%s reason=称呼不合规或超过六字",
                 group_id or "-",
                 sender_id,
             )
@@ -1190,7 +1193,7 @@ class WorldbookMixin:
         block_word = self._worldbook_self_registration_block_word_hit(name, *aliases, text)
         if block_word:
             logger.info(
-                "[PrivateCompanion] 群聊关系网自登记已拒绝: group=%s user=%s name=%s reason=命中自登记屏蔽词 %s",
+                "群聊关系网自登记已拒绝: group=%s user=%s name=%s reason=命中自登记屏蔽词 %s",
                 group_id or "-",
                 sender_id,
                 name,
@@ -1200,7 +1203,7 @@ class WorldbookMixin:
         conflict = self._worldbook_self_registration_conflict(sender_id, [name, *aliases])
         if conflict:
             logger.info(
-                "[PrivateCompanion] 群聊关系网自登记已拒绝: group=%s user=%s name=%s reason=名称疑似冒领已有节点 %s",
+                "群聊关系网自登记已拒绝: group=%s user=%s name=%s reason=名称疑似冒领已有节点 %s",
                 group_id or "-",
                 sender_id,
                 name,
@@ -1227,7 +1230,7 @@ class WorldbookMixin:
             "created_ts": _now_ts(),
         }
         logger.info(
-            "[PrivateCompanion] 群聊关系网自登记待确认: group=%s user=%s name=%s aliases=%s",
+            "群聊关系网自登记待确认: group=%s user=%s name=%s aliases=%s",
             group_id or "-",
             sender_id,
             name,
@@ -1320,7 +1323,7 @@ class WorldbookMixin:
             profile["auto_registration_pending"] = False
             profile["auto_impression_ts"] = _now_ts()
             self._save_data_sync(sections={"worldbook_member_profiles"})
-        logger.info("[PrivateCompanion] 群聊关系网自登记印象已生成: user=%s name=%s", user_id, name)
+        logger.info("群聊关系网自登记印象已生成: user=%s name=%s", user_id, name)
 
     def _group_member_identity_label_for_token(self, group: dict[str, Any], token: str) -> str:
         query = re.sub(r"\s+", "", _single_line(token, 40))
@@ -1514,7 +1517,7 @@ class WorldbookMixin:
                 parts.append(f"边界：{boundary}")
             lines.append("- " + "｜".join(parts))
             injected.append(f"{profile_uid}:{name}")
-        logger.info("[PrivateCompanion] 本轮提及关系网对象注入: users=%s", "；".join(injected))
+        logger.info("本轮提及关系网对象注入: users=%s", "；".join(injected))
         return "\n".join(lines)
 
     def _select_worldbook_member_profiles_for_group(
@@ -1628,7 +1631,7 @@ class WorldbookMixin:
                     f"/{_single_line(profile.get('_match_reason'), 80) or '-'}]"
                 )
             logger.info(
-                "[PrivateCompanion] 群聊关系网注入用户信息: group=%s sender=%s users=%s",
+                "群聊关系网注入用户信息: group=%s sender=%s users=%s",
                 group_id or "-",
                 _single_line(sender_id, 40) or "-",
                 "；".join(injected),
