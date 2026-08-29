@@ -6,7 +6,7 @@ from typing import Any
 
 PLUGIN_ID = "astrbot_plugin_private_companion"
 PLUGIN_DISPLAY_NAME = "我会永远陪着你"
-PLUGIN_VERSION = "6.4.3"
+PLUGIN_VERSION = "6.4.3a"
 PLUGIN_DATA_DIRECTORY_KEY = PLUGIN_ID
 
 _IDENTITY_SEPARATORS = re.compile(r"[.:/\\]+")

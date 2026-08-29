@@ -139,7 +139,20 @@ def _module_candidates(
 def _registered_star_candidates(owner: Any, star_name: str) -> list[tuple[Any, bool]]:
     context = getattr(owner, "context", None)
     candidates: list[tuple[Any, bool]] = []
-    positions: dict[int, int] = {}
+
+    # Ask for the exact registry entry first. Custom AstrBot-compatible
+    # contexts may expose historical entries through get_all_stars() while
+    # get_registered_star() still identifies the instance currently in use.
+    get_one = getattr(context, "get_registered_star", None)
+    if callable(get_one):
+        try:
+            metadata = get_one(star_name)
+        except Exception:
+            metadata = None
+        if metadata is not None:
+            candidates.append((metadata, True))
+
+    seen = {id(metadata) for metadata, _exact in candidates}
 
     get_all = getattr(context, "get_all_stars", None)
     if callable(get_all):
@@ -148,22 +161,9 @@ def _registered_star_candidates(owner: Any, star_name: str) -> list[tuple[Any, b
         except Exception:
             stars = []
         for metadata in stars:
-            if metadata is not None and id(metadata) not in positions:
-                positions[id(metadata)] = len(candidates)
+            if metadata is not None and id(metadata) not in seen:
                 candidates.append((metadata, False))
-
-    get_one = getattr(context, "get_registered_star", None)
-    if callable(get_one):
-        try:
-            metadata = get_one(star_name)
-        except Exception:
-            metadata = None
-        if metadata is not None:
-            position = positions.get(id(metadata))
-            if position is None:
-                candidates.append((metadata, True))
-            else:
-                candidates[position] = (metadata, True)
+                seen.add(id(metadata))
     return candidates
 
 
@@ -179,14 +179,17 @@ def _uncached_resolve(
     for metadata, exact_registry_match in _registered_star_candidates(owner, star_name):
         if not bool(getattr(metadata, "activated", True)):
             continue
-        module = getattr(metadata, "module", None)
-        api = _api_from_module(module, getter_name)
-        if api is not None and api is not owner and _lifecycle_active(api):
-            return api
         if not exact_registry_match and not _metadata_matches_star(metadata, star_name):
             continue
         instance = getattr(metadata, "star_cls", None)
         api = getattr(instance, "extension_api", None) if instance is not None else None
+        if api is not None and api is not owner and _lifecycle_active(api):
+            return api
+        # The module-level getter is a compatibility fallback. During hot
+        # reload its global can still point at an older instance, whereas the
+        # registry's star_cls is the instance AstrBot is currently dispatching.
+        module = getattr(metadata, "module", None)
+        api = _api_from_module(module, getter_name)
         if api is not None and api is not owner and _lifecycle_active(api):
             return api
 

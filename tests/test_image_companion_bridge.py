@@ -528,6 +528,52 @@ def test_image_companion_status_is_unavailable_without_external_plugin() -> None
 
 
 @pytest.mark.asyncio
+async def test_endpoint_test_refreshes_stale_extension_api() -> None:
+    calls = 0
+
+    class CurrentApi:
+        async def test_endpoint(self, owner, endpoint, prompt):
+            return {"ok": True, "image_path": "result.png", "message": prompt}
+
+    stale_api = SimpleNamespace()
+    current_api = CurrentApi()
+    harness = _BridgeHarness()
+
+    def resolve_api():
+        nonlocal calls
+        calls += 1
+        return stale_api if calls == 1 else current_api
+
+    harness._image_companion_api = resolve_api
+    result = await harness._image_companion_test_endpoint(
+        {"base_url": "https://example.test/v1"},
+        "endpoint probe",
+    )
+
+    assert calls == 2
+    assert result == {
+        "ok": True,
+        "image_path": "result.png",
+        "message": "endpoint probe",
+    }
+
+
+@pytest.mark.asyncio
+async def test_endpoint_test_uses_refreshed_missing_result_for_diagnosis() -> None:
+    stale_api = SimpleNamespace()
+    harness = _BridgeHarness()
+    resolved = iter((stale_api, None))
+    harness._image_companion_api = lambda: next(resolved)
+
+    result = await harness._image_companion_test_endpoint({}, "endpoint probe")
+
+    assert result == {
+        "ok": False,
+        "message": "请安装并启用“我会画给你看”后再测试在线图片 API。",
+    }
+
+
+@pytest.mark.asyncio
 async def test_image_companion_status_and_maintenance_delegate_to_external_api() -> (
     None
 ):

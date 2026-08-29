@@ -31,6 +31,35 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ConversationInjectionPlanTests(unittest.TestCase):
+    def test_materialize_system_block_tolerates_plan_frozen_by_late_hook(self) -> None:
+        plugin = PrivateCompanionPlugin.__new__(PrivateCompanionPlugin)
+        request = SimpleNamespace(
+            system_prompt="persona",
+            prompt="hello",
+            extra_user_content_parts=[],
+        )
+        plan = get_conversation_injection_plan(request)
+        assert plan is not None
+        plan.freeze()
+
+        added = plugin._materialize_conversation_system_block(
+            request,
+            key="tools.passive_reply_boundary",
+            marker="<!-- frozen-boundary -->",
+            content="boundary",
+        )
+
+        self.assertTrue(added)
+        self.assertIn("<!-- frozen-boundary -->", request.system_prompt)
+        self.assertFalse(
+            plugin._materialize_conversation_system_block(
+                request,
+                key="tools.passive_reply_boundary",
+                marker="<!-- frozen-boundary -->",
+                content="boundary",
+            )
+        )
+
     def test_key_merge_and_stable_priority_order(self) -> None:
         plan = ConversationInjectionPlan()
         first = plan.add(

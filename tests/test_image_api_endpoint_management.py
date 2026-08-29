@@ -53,9 +53,16 @@ class RecordingLock:
 
 
 class SequenceResponse:
-    def __init__(self, status: int, payload: object) -> None:
+    def __init__(
+        self,
+        status: int,
+        payload: object,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self.status = status
         self.payload = payload
+        self.headers = dict(headers or {})
 
     async def __aenter__(self):
         return self
@@ -584,7 +591,7 @@ class ImageApiEndpointManagementTests(unittest.IsolatedAsyncioTestCase):
     async def test_endpoint_test_history_is_capped(self) -> None:
         save_calls = 0
 
-        def save() -> None:
+        def save(**_kwargs) -> None:
             nonlocal save_calls
             save_calls += 1
 

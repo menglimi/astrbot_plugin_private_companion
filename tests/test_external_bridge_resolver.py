@@ -251,6 +251,70 @@ def test_module_scan_ignores_unstringifiable_plugin_name() -> None:
             sys.modules[module_name] = previous
 
 
+def test_resolver_prefers_registered_instance_over_its_stale_module_global() -> None:
+    stale_api = SimpleNamespace(status=lambda: {"enabled": True})
+    current_api = SimpleNamespace(status=lambda: {"enabled": True})
+    module = types.ModuleType("data.plugins.astrbot_plugin_instance_bridge.main")
+    module.get_instance_api = lambda: stale_api
+    metadata = SimpleNamespace(
+        activated=True,
+        name="astrbot_plugin_instance_bridge",
+        root_dir_name="astrbot_plugin_instance_bridge",
+        module_path=module.__name__,
+        module=module,
+        star_cls=SimpleNamespace(extension_api=current_api),
+    )
+    owner = SimpleNamespace(
+        context=SimpleNamespace(
+            get_all_stars=lambda: [metadata],
+            get_registered_star=lambda _name: metadata,
+        )
+    )
+
+    assert resolve_external_bridge(
+        owner,
+        cache_key="instance",
+        module_names=(module.__name__,),
+        getter_name="get_instance_api",
+        star_name="astrbot_plugin_instance_bridge",
+    ) is current_api
+
+
+def test_resolver_prefers_exact_registry_entry_over_older_matching_candidate() -> None:
+    stale_api = SimpleNamespace(status=lambda: {"enabled": True})
+    current_api = SimpleNamespace(status=lambda: {"enabled": True})
+    stale_metadata = SimpleNamespace(
+        activated=True,
+        name="astrbot_plugin_duplicate_bridge",
+        root_dir_name="astrbot_plugin_duplicate_bridge",
+        module_path="data.plugins.astrbot_plugin_duplicate_bridge.old",
+        module=None,
+        star_cls=SimpleNamespace(extension_api=stale_api),
+    )
+    current_metadata = SimpleNamespace(
+        activated=True,
+        name="astrbot_plugin_duplicate_bridge",
+        root_dir_name="astrbot_plugin_duplicate_bridge",
+        module_path="data.plugins.astrbot_plugin_duplicate_bridge.main",
+        module=None,
+        star_cls=SimpleNamespace(extension_api=current_api),
+    )
+    owner = SimpleNamespace(
+        context=SimpleNamespace(
+            get_all_stars=lambda: [stale_metadata, current_metadata],
+            get_registered_star=lambda _name: current_metadata,
+        )
+    )
+
+    assert resolve_external_bridge(
+        owner,
+        cache_key="duplicate",
+        module_names=(),
+        getter_name="get_duplicate_api",
+        star_name="astrbot_plugin_duplicate_bridge",
+    ) is current_api
+
+
 def test_module_scan_does_not_trigger_unrelated_lazy_imports() -> None:
     module_name = "transformers.lazy_torch_probe"
 

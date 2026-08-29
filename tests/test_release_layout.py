@@ -53,13 +53,12 @@ def test_ascii_plugin_page_has_localized_title() -> None:
     assert en_us["pages"]["companion-panel"]["title"] == "Companion Panel"
 
 
-def test_metadata_declares_ascii_plugin_page_alias_first() -> None:
+def test_metadata_declares_only_the_ascii_plugin_page_alias() -> None:
     metadata = (ROOT / "metadata.yaml").read_text(encoding="utf-8")
 
     assert "pages:" in metadata
-    ascii_index = metadata.index("  - name: companion-panel")
-    utf8_index = metadata.index("  - name: 陪伴面板")
-    assert ascii_index < utf8_index
+    assert metadata.count("  - name: companion-panel") == 1
+    assert "  - name: 陪伴面板" not in metadata
     assert "    title: 陪伴面板" in metadata
 
 

@@ -12,7 +12,10 @@ from typing import Any
 from astrbot.api import logger
 
 from .helpers import _single_line
-from .external_bridge_resolver import resolve_external_bridge
+from .external_bridge_resolver import (
+    invalidate_external_bridge_cache,
+    resolve_external_bridge,
+)
 
 
 class ImageCompanionBridgeMixin:
@@ -166,5 +169,24 @@ class ImageCompanionBridgeMixin:
         api = self._image_companion_api()
         tester = getattr(api, "test_endpoint", None) if api is not None else None
         if not callable(tester):
+            # Plugin updates can leave a valid-looking older API object in the
+            # module cache. Re-resolve once from AstrBot's live registry before
+            # reporting the extension as unavailable.
+            invalidate_external_bridge_cache(self, "image_companion")
+            refreshed_api = self._image_companion_api()
+            refreshed_tester = (
+                getattr(refreshed_api, "test_endpoint", None)
+                if refreshed_api is not None
+                else None
+            )
+            api = refreshed_api
+            if callable(refreshed_tester):
+                tester = refreshed_tester
+        if not callable(tester):
+            if api is not None:
+                return {
+                    "ok": False,
+                    "message": "已检测到“我会画给你看”，但当前运行实例缺少在线 API 测试接口；请分别重载两个插件或完整重启 AstrBot。",
+                }
             return {"ok": False, "message": "请安装并启用“我会画给你看”后再测试在线图片 API。"}
         return await tester(self, dict(endpoint or {}), str(prompt or ""))
