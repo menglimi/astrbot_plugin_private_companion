@@ -216,7 +216,10 @@ class TestDiagnosticUiTests(unittest.TestCase):
         self.assertIn('data-test-result-source="troubleshooting"', script)
         self.assertIn('data-test-result-source="image-api"', script)
         self.assertIn('data-test-result-source="tts-provider"', script)
+        self.assertIn('class="proactive-diagnostic-value"', script)
         self.assertIn(".test-diagnostic-dialog", styles)
+        self.assertIn(".proactive-diagnostic dl {\n  display: grid;\n  grid-template-columns: minmax(0, 1fr);", styles)
+        self.assertIn("word-break: break-word;", styles)
         self.assertIn('button.dataset.testResultSource = "provider"', provider_tree)
 
 

@@ -7315,6 +7315,31 @@ async function loadAll(options = {}) {
   }
 }
 
+async function refreshCompanionPluginTerminal(button) {
+  setActionBusy(button, true);
+  try {
+    const [overview, imageStatus, troubleshooting] = await Promise.all([
+      fetchJson("/overview", { dedupe: false }),
+      fetchJson("/extensions/image/status", { dedupe: false }).catch(() => null),
+      fetchJson("/troubleshooting", { dedupe: false }).catch(() => null),
+    ]);
+    applyOverviewData(overview);
+    if (imageStatus && typeof imageStatus === "object") {
+      state.imageExtensionStatus = imageStatus;
+      state.lazyLoaded.imageExtensionStatus = true;
+      state.imageExtensionError = "";
+    }
+    if (troubleshooting) state.troubleshooting = troubleshooting;
+    state.overviewRefreshedAt = Date.now();
+    renderAll();
+    showToast("陪伴系插件状态已重新检查");
+  } catch (error) {
+    showToast(`检查失败：${error.message}`, "error");
+  } finally {
+    setActionBusy(button, false);
+  }
+}
+
 function hydrateTokenStatsFromOverview(overview) {
   const tokenStats = overview?.token_stats;
   if (!tokenStats || typeof tokenStats !== "object") return;
@@ -11407,6 +11432,7 @@ function renderDashboard() {
   renderNewsInsightPanel();
   renderWebExplorationPanel();
   renderActivityHeatmap();
+  renderCompanionPluginTerminal();
 }
 
 function renderStrategyOverview() {
@@ -11438,6 +11464,130 @@ function dashboardLifeText(value, fallback = "暂无数据") {
   }
   const text = String(value ?? "").trim();
   return text || fallback;
+}
+
+function companionTerminalStatus(status) {
+  const item = status && typeof status === "object" ? status : {};
+  if (item.conflict) return { tone: "warn", label: "存在冲突" };
+  if (!item.installed) return { tone: "muted", label: "未安装" };
+  if (item.enabled === false) return { tone: "warn", label: "已停用" };
+  if (item.available === false) return { tone: "error", label: "检测异常" };
+  if (item.detected && item.loaded === false) return { tone: "warn", label: "已发现 · 未加载" };
+  return { tone: "ready", label: "已连接" };
+}
+
+function companionTerminalReason(status, fallback) {
+  const item = status && typeof status === "object" ? status : {};
+  return dashboardLifeText(item.reason || item.status || fallback, fallback);
+}
+
+function renderCompanionPluginTerminal() {
+  const listRoot = $("#dashboardCompanionTerminalList");
+  const summaryRoot = $("#dashboardCompanionTerminalSummary");
+  const updatedRoot = $("#dashboardCompanionTerminalUpdated");
+  if (!listRoot) return;
+
+  const overview = state.overview || {};
+  const companion = overview.companion_plugins || {};
+  const livingmemory = overview.livingmemory || {};
+  const plugin = overview.plugin || {};
+  const image = {
+    ...(companion.image || {}),
+    ...(state.imageExtensionStatus && typeof state.imageExtensionStatus === "object" ? state.imageExtensionStatus : {}),
+  };
+  const memory = {
+    installed: Boolean(livingmemory.memory_companion_detected || livingmemory.memory_companion_active || livingmemory.available),
+    enabled: livingmemory.enabled !== false,
+    available: Boolean(livingmemory.compatible_available || livingmemory.available),
+    detected: Boolean(livingmemory.memory_companion_detected),
+    loaded: livingmemory.memory_companion_loaded,
+    conflict: Boolean(livingmemory.conflict),
+    reason: livingmemory.conflict_warning || livingmemory.memory_companion_reason || livingmemory.status,
+  };
+  const entries = [
+    {
+      key: "core",
+      name: "主陪伴插件",
+      detail: "页面 API 与核心陪伴能力",
+      status: { installed: true, enabled: plugin.enabled !== false, available: Boolean(overview.plugin) },
+      note: plugin.enabled === false ? "主插件当前未启用" : "总览数据已从主插件读取",
+      tab: "config",
+      action: "打开配置",
+    },
+    {
+      key: "memory",
+      name: livingmemory.memory_companion_display_name || "记忆协同",
+      detail: "长期记忆召回与提示词桥接",
+      status: memory,
+      note: companionTerminalReason(memory, memory.installed ? "记忆扩展已被发现" : "未发现可协同的记忆插件"),
+      tab: "memory",
+      action: "打开观察",
+    },
+    {
+      key: "image",
+      name: "生图扩展",
+      detail: "图片生成与参考图能力",
+      status: image,
+      note: companionTerminalReason(image, image.installed ? "生图扩展已被发现" : "未安装生图扩展"),
+      tab: "image",
+      action: "打开生图",
+    },
+    {
+      key: "content",
+      name: "创作扩展",
+      detail: "长线创作、阅读与资料柜",
+      status: companion.content || {},
+      note: companionTerminalReason(companion.content, "未发现创作扩展"),
+      tab: "creative",
+      action: "打开创作",
+    },
+    {
+      key: "reality",
+      name: "现实触及扩展",
+      detail: "现实设备与环境触达",
+      status: companion.reality || {},
+      note: companionTerminalReason(companion.reality, "未发现现实触及扩展"),
+      tab: "reality",
+      action: "打开现实触及",
+    },
+    {
+      key: "nai",
+      name: "NAI 生图扩展",
+      detail: "NovelAI 图像生成通道",
+      status: companion.nai || {},
+      note: companionTerminalReason(companion.nai, "未发现 NAI 生图扩展"),
+      tab: "image",
+      action: "打开生图",
+    },
+  ];
+  const normalized = entries.map((entry) => ({ ...entry, state: companionTerminalStatus(entry.status) }));
+  const readyCount = normalized.filter((entry) => entry.state.tone === "ready").length;
+  const attentionCount = normalized.filter((entry) => ["warn", "error"].includes(entry.state.tone)).length;
+  const missingCount = normalized.filter((entry) => entry.state.tone === "muted").length;
+  if (summaryRoot) {
+    const attentionMarkup = attentionCount
+      ? `<span class="dashboard-companion-summary-attention">${attentionCount} 项需要留意</span>`
+      : `<span class="dashboard-companion-summary-ok">当前没有异常项</span>`;
+    const missingMarkup = missingCount
+      ? `<span class="dashboard-companion-summary-missing">${missingCount} 项未安装</span>`
+      : "";
+    summaryRoot.innerHTML = `<span class="dashboard-companion-summary-count"><b>${readyCount}</b> / ${normalized.length} 已连接</span>${attentionMarkup}${missingMarkup}`;
+  }
+  if (updatedRoot) updatedRoot.textContent = dashboardRefreshLabel();
+  listRoot.innerHTML = normalized.map((entry) => `
+    <article class="dashboard-companion-plugin is-${escapeHtml(entry.state.tone)}">
+      <div class="dashboard-companion-plugin-main">
+        <div class="dashboard-companion-plugin-title">
+          <span class="dashboard-companion-plugin-dot" aria-hidden="true"></span>
+          <h3>${escapeHtml(entry.name)}</h3>
+          <span class="dashboard-companion-plugin-status is-${escapeHtml(entry.state.tone)}">${escapeHtml(entry.state.label)}</span>
+        </div>
+        <p>${escapeHtml(entry.detail)}</p>
+        <small>${escapeHtml(entry.note)}</small>
+      </div>
+      <button type="button" class="dashboard-companion-plugin-action" data-jump-tab="${escapeHtml(entry.tab)}" ${entry.key === "image" && !entry.status.installed ? "disabled" : ""}>${escapeHtml(entry.action)}</button>
+    </article>
+  `).join("");
 }
 
 function cycleBodyText(daily) {
@@ -22797,8 +22947,8 @@ function proactiveDiagnosticDetailsMarkup(rawDetail) {
       <dl>
         ${rows.map((row) => `
           <div>
-            <dt>${escapeHtml(row.label)}</dt>
-            <dd>${escapeHtml(row.value)}</dd>
+            <dt class="proactive-diagnostic-label">${escapeHtml(row.label)}</dt>
+            <dd class="proactive-diagnostic-value">${escapeHtml(row.value)}</dd>
           </div>
         `).join("")}
       </dl>
@@ -39888,6 +40038,9 @@ document.addEventListener("change", (event) => {
 });
 
 $("#refreshBtn").addEventListener("click", loadAll);
+$("#dashboardCompanionTerminalRefresh")?.addEventListener("click", (event) => {
+  void refreshCompanionPluginTerminal(event.currentTarget);
+});
 
 document.querySelectorAll("[data-page-font-select]").forEach((select) => {
   select.addEventListener("change", (event) => {
