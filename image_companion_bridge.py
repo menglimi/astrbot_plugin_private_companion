@@ -29,6 +29,7 @@ class ImageCompanionBridgeMixin:
             ),
             getter_name="get_image_companion_api",
             star_name="astrbot_plugin_image_companion",
+            prefer_module_getter=True,
         )
 
     def _image_companion_required(self) -> bool:

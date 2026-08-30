@@ -28,6 +28,7 @@ class RealityCompanionBridgeMixin:
             ),
             getter_name="get_reality_companion_api",
             star_name="astrbot_plugin_reality_companion",
+            prefer_module_getter=True,
         )
 
     @staticmethod

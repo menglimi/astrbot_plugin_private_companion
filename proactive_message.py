@@ -8270,6 +8270,21 @@ Output:
             return context
 
     def _get_screen_companion_plugin(self) -> Any:
+        # During a hot reload the registry may already contain the current
+        # ScreenCompanion instance while the module singleton still points to
+        # the previous one. Prefer the instance AstrBot dispatches, then keep
+        # the module lookup as a compatibility fallback for older hosts.
+        context = getattr(self, "context", None)
+        get_one = getattr(context, "get_registered_star", None)
+        if callable(get_one):
+            try:
+                metadata = get_one("astrbot_plugin_screen_companion")
+            except Exception:
+                metadata = None
+            if metadata is not None and bool(getattr(metadata, "activated", True)):
+                instance = getattr(metadata, "star_cls", None)
+                if instance is not None and callable(getattr(instance, "_invoke_screen_skill", None)):
+                    return instance
         for module_name in ("astrbot_plugin_screen_companion.main", "data.plugins.astrbot_plugin_screen_companion.main"):
             try:
                 module = importlib.import_module(module_name)

@@ -27,6 +27,7 @@ class NAIImageBridgeMixin:
             ),
             getter_name="get_nai_image_api",
             star_name="astrbot_plugin_nai_image",
+            prefer_module_getter=True,
         )
 
     def _nai_image_selected(self, operation: str = "") -> bool:

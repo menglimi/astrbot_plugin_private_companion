@@ -173,6 +173,7 @@ def _uncached_resolve(
     module_names: tuple[str, ...],
     getter_name: str,
     star_name: str,
+    prefer_module_getter: bool = False,
 ) -> Any | None:
     # Prefer AstrBot's current registry. A stale module alias may survive a hot
     # reload, while get_all_stars() points at the active instance and module.
@@ -181,17 +182,26 @@ def _uncached_resolve(
             continue
         if not exact_registry_match and not _metadata_matches_star(metadata, star_name):
             continue
-        instance = getattr(metadata, "star_cls", None)
-        api = getattr(instance, "extension_api", None) if instance is not None else None
-        if api is not None and api is not owner and _lifecycle_active(api):
-            return api
-        # The module-level getter is a compatibility fallback. During hot
-        # reload its global can still point at an older instance, whereas the
-        # registry's star_cls is the instance AstrBot is currently dispatching.
         module = getattr(metadata, "module", None)
-        api = _api_from_module(module, getter_name)
-        if api is not None and api is not owner and _lifecycle_active(api):
-            return api
+        instance = getattr(metadata, "star_cls", None)
+
+        # A few extensions keep their active API in a module-level singleton.
+        # During a hot reload AstrBot can briefly expose a newer module getter
+        # alongside an older registry instance. Those extensions can opt into
+        # the legacy ordering so the live singleton remains usable.
+        if prefer_module_getter:
+            candidates = (
+                _api_from_module(module, getter_name),
+                getattr(instance, "extension_api", None) if instance is not None else None,
+            )
+        else:
+            candidates = (
+                getattr(instance, "extension_api", None) if instance is not None else None,
+                _api_from_module(module, getter_name),
+            )
+        for api in candidates:
+            if api is not None and api is not owner and _lifecycle_active(api):
+                return api
 
     # Fixed names remain the fast compatibility path. The candidate scan also
     # accepts the plugin's canonical PLUGIN_NAME or its unique getter, covering
@@ -215,6 +225,7 @@ def resolve_external_bridge(
     module_names: tuple[str, ...],
     getter_name: str,
     star_name: str,
+    prefer_module_getter: bool = False,
 ) -> Any | None:
     """Resolve an optional plugin API with bounded positive/negative caching."""
     cache = getattr(owner, "_external_bridge_resolver_cache", None)
@@ -234,6 +245,7 @@ def resolve_external_bridge(
         module_names=module_names,
         getter_name=getter_name,
         star_name=star_name,
+        prefer_module_getter=prefer_module_getter,
     )
     cache[cache_key] = {
         "api": api,

@@ -280,6 +280,36 @@ def test_resolver_prefers_registered_instance_over_its_stale_module_global() -> 
     ) is current_api
 
 
+def test_resolver_can_prefer_live_module_getter_for_singleton_extensions() -> None:
+    stale_api = SimpleNamespace(status=lambda: {"enabled": True})
+    current_api = SimpleNamespace(status=lambda: {"enabled": True})
+    module = types.ModuleType("data.plugins.astrbot_plugin_image_companion.main")
+    module.get_image_api = lambda: current_api
+    metadata = SimpleNamespace(
+        activated=True,
+        name="astrbot_plugin_image_companion",
+        root_dir_name="astrbot_plugin_image_companion",
+        module_path=module.__name__,
+        module=module,
+        star_cls=SimpleNamespace(extension_api=stale_api),
+    )
+    owner = SimpleNamespace(
+        context=SimpleNamespace(
+            get_all_stars=lambda: [metadata],
+            get_registered_star=lambda _name: metadata,
+        )
+    )
+
+    assert resolve_external_bridge(
+        owner,
+        cache_key="image",
+        module_names=(module.__name__,),
+        getter_name="get_image_api",
+        star_name="astrbot_plugin_image_companion",
+        prefer_module_getter=True,
+    ) is current_api
+
+
 def test_resolver_prefers_exact_registry_entry_over_older_matching_candidate() -> None:
     stale_api = SimpleNamespace(status=lambda: {"enabled": True})
     current_api = SimpleNamespace(status=lambda: {"enabled": True})
