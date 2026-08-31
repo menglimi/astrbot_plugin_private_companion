@@ -1172,6 +1172,15 @@ class PrivateCompanionPageApi(
     def route_bindings(self) -> list[tuple[str, Any, list[str], str]]:
         """Return the wrapped page handlers used by every transport."""
         routes = [
+            ("/bookshelf/unlock", self.unlock_bookshelf, ["POST"], "Private Companion Page unlock bookshelf secret drawer"),
+            ("/bookshelf/session", self.get_bookshelf_session, ["POST"], "Private Companion Page restore bookshelf session"),
+            ("/bookshelf/image", self.get_bookshelf_image, ["GET"], "Private Companion Page bookshelf image asset"),
+            ("/bookshelf/image_data", self.get_bookshelf_image_data, ["GET"], "Private Companion Page bookshelf image data url"),
+            ("/bookshelf/delete", self.delete_bookshelf_item, ["POST"], "Private Companion Page delete bookshelf item"),
+            ("/bookshelf/reading_state", self.update_bookshelf_reading_state, ["POST"], "Private Companion Page update bookshelf reading state"),
+            ("/bookshelf/rate", self.rate_bookshelf_item, ["POST"], "Private Companion Page rate bookshelf item"),
+            ("/bookshelf/tags", self.update_bookshelf_item_tags, ["POST"], "Private Companion Page update bookshelf item tags"),
+            ("/bookshelf/comments", self.update_bookshelf_item_comments, ["POST"], "Private Companion Page update bookshelf item comments"),
             ("/overview", self.get_overview, ["GET"], "Private Companion Page overview"),
             ("/calendar", self.get_calendar, ["GET"], "Private Companion Page long-lived calendar"),
             ("/calendar/conflicts", self.get_calendar_conflicts, ["GET"], "Private Companion Page calendar conflicts"),
