@@ -15,7 +15,7 @@ from .group_prompt_context import (
     GROUP_HISTORY_INJECTED_ATTR,
     group_prompt_context_history_count,
 )
-from .helpers import _now_ts, _safe_float, _single_line
+from .helpers import _now_ts, _safe_float, _single_address, _single_line
 from .persona_config import runtime_persona_setting
 from .prompt_surface import PromptSurface
 from .logging_util import get_module_logger
@@ -190,7 +190,7 @@ async def inject_humanized_state(
                         "当前对象画像称呼读取失败，保留既有称呼: %s",
                         _single_line(exc, 120),
                     )
-            preferred_address = portrait_preferred_address or _single_line(
+            preferred_address = portrait_preferred_address or _single_address(
                 private_user.get("nickname")
                 or runtime_persona_setting(self, "default_nickname", "你"),
                 24,

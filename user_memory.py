@@ -105,7 +105,7 @@ from .dreaming import (
     recent_diary_tags,
     weighted_unique_fragment_sample,
 )
-from .helpers import _date_key, _normalize_photo_subject_owner, _now_ts, _photo_subject_owner_prompt_label, _safe_float, _safe_int, _single_line, _strip_internal_message_blocks, _today_key
+from .helpers import _date_key, _normalize_photo_subject_owner, _now_ts, _photo_subject_owner_prompt_label, _safe_float, _safe_int, _single_address, _single_line, _strip_internal_message_blocks, _today_key
 from .relationship_policy import relationship_stage_for_score
 from .expression_scope_ownership import (
     bind_expression_item,
@@ -9942,7 +9942,7 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
     ) -> str:
         # The unified archive is the only person authority.  Retired
         # Worldbook identities and text must never enter a private prompt.
-        stable_name = _single_line(
+        stable_name = _single_address(
             user.get("nickname") or runtime_persona_setting(self, "default_nickname", "你"),
             24,
         )

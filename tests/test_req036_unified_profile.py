@@ -694,7 +694,7 @@ class Req036CompanionTests(unittest.TestCase):
         rendered = ast.unparse(function)
         self.assertIn("await portrait_address_reader(private_user)", rendered)
         self.assertIn(
-            "preferred_address = portrait_preferred_address or _single_line",
+            "preferred_address = portrait_preferred_address or _single_address",
             rendered,
         )
 

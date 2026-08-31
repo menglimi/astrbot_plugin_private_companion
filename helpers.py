@@ -138,6 +138,49 @@ def _single_line(text: Any, limit: int = 80) -> str:
     return normalized[:limit]
 
 
+_ADDRESS_SEPARATOR_PATTERN = re.compile(r"[/／、,，;；|]+")
+_ADDRESS_TERM_STRIP_CHARS = " -*`_【】[]（）()<>《》\"'“”‘’"
+_ADDRESS_TERM_TAIL_PATTERN = re.compile(r"[：:，,。.!！?？~～…]+$")
+
+
+def _clean_address_term(value: Any) -> str:
+    """Normalize a single display name or address alias."""
+    token = unicodedata.normalize("NFKC", str(value or "")).strip()
+    token = re.sub(r"\s+", " ", token)
+    token = token.strip(_ADDRESS_TERM_STRIP_CHARS)
+    token = token.lstrip("：:")
+    token = _ADDRESS_TERM_TAIL_PATTERN.sub("", token).strip()
+    return token
+
+
+def _split_address_terms(text: Any, limit: int = 8) -> list[str]:
+    """Split slash/separator-delimited aliases into stable, unique terms.
+
+    Users can configure several accepted addresses at once, for example
+    "诗岸/宝宝" or "老板，Sir".  Treating such a value as one token makes
+    every consumer that matches or injects an address fall back to the first
+    entry only, so callers share a single splitting rule here.
+    """
+    normalized = unicodedata.normalize("NFKC", str(text or "")).strip()
+    if not normalized:
+        return []
+    normalized = re.sub(r"\s+", " ", normalized)
+    terms: list[str] = []
+    for part in _ADDRESS_SEPARATOR_PATTERN.split(normalized):
+        token = _clean_address_term(part)
+        if not token or token.isdigit() or len(token) > 40:
+            continue
+        if token not in terms:
+            terms.append(token)
+    return terms[:limit]
+
+
+def _single_address(text: Any, limit: int = 40) -> str:
+    """Collapse delimited aliases into one joined display address."""
+    terms = _split_address_terms(text, limit)
+    return "、".join(terms)[:limit]
+
+
 def _url_host_is_public(url: Any) -> bool:
     """Accept only HTTP(S) URLs whose DNS results are all public addresses."""
     text = str(url or "").strip()

@@ -27,7 +27,7 @@ from .bot_personal_contract import (
     window_for_minutes,
 )
 from .bot_personal_outbox import BotPersonalOutbox
-from .helpers import _missing_optional_model_dependency, _now_ts, _path_text, _safe_float, _safe_int, _single_line
+from .helpers import _missing_optional_model_dependency, _now_ts, _path_text, _safe_float, _safe_int, _single_address, _single_line
 from .companion_interaction_expression import current_interaction_projection
 from .relationship_ledger import normalize_relationship_mode
 from .relationship_policy import relationship_projection_for_bridge
@@ -1616,7 +1616,7 @@ class MemoryCompanionAdapterMixin:
             (user.get("nickname") or user.get("display_name") or user_id) if isinstance(user, dict) else user_id,
             80,
         )
-        preferred_address = _single_line(user.get("nickname"), 24) if isinstance(user, dict) else ""
+        preferred_address = _single_address(user.get("nickname"), 24) if isinstance(user, dict) else ""
         return {
             "session_id": umo or f"private_companion:schedule:{user_id or 'bot_self'}",
             "scope": "private" if user_id else "unknown",
@@ -1787,7 +1787,7 @@ class MemoryCompanionAdapterMixin:
                 user_name = _single_line(self._sender_display_name(event), 80)
             except Exception:
                 user_name = ""
-            preferred_address = _single_line(user.get("nickname"), 24) if isinstance(user, dict) else ""
+            preferred_address = _single_address(user.get("nickname"), 24) if isinstance(user, dict) else ""
             session_context = {
                 "session_id": session_id,
                 "scope": scope,
@@ -1803,7 +1803,7 @@ class MemoryCompanionAdapterMixin:
             }
         elif isinstance(user, dict):
             umo = _single_line(user.get("umo"), 200)
-            preferred_address = _single_line(user.get("nickname"), 24)
+            preferred_address = _single_address(user.get("nickname"), 24)
             if not user_id and not umo:
                 # 无用户标识：无法在 memory 插件侧隔离会话作用域，宁可召回为空也不跨用户串线。
                 return ""

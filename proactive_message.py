@@ -135,6 +135,7 @@ from .helpers import (
     _safe_float,
     _safe_int,
     _single_line,
+    _split_address_terms,
     _strip_internal_message_blocks,
     _strip_outbound_control_blocks,
     _today_key,
@@ -2415,9 +2416,9 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
                 raw_names.extend(values[:12])
         names: list[str] = []
         for value in raw_names:
-            token = self._normalize_proactive_address_token(value)
-            if token and not token.isdigit() and token not in names:
-                names.append(token)
+            for token in _split_address_terms(value, 8):
+                if len(token) <= 24 and token not in names:
+                    names.append(token)
         return names[:16]
 
     def _proactive_persona_address_candidates(self) -> list[str]:
@@ -7166,11 +7167,14 @@ Output:
         if len(units) <= 2:
             return cleaned
 
-        opener_tokens = [
-            _single_line(name, 16),
-            _single_line(user.get("nickname") if isinstance(user, dict) else "", 16),
-            _single_line(runtime_persona_setting(self, "default_nickname", ""), 16),
-        ]
+        opener_tokens: list[str] = []
+        for value in (
+            name,
+            user.get("nickname") if isinstance(user, dict) else "",
+            runtime_persona_setting(self, "default_nickname", ""),
+        ):
+            for token in _split_address_terms(value, 8):
+                opener_tokens.append(_single_line(token, 16))
         first_opener = ""
         match = re.match(r"^([\w\u4e00-\u9fffぁ-んァ-ヶー]{1,8})[，,、\s]", units[0])
         if match:
