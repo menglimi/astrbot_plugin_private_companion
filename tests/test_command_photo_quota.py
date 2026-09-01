@@ -142,7 +142,7 @@ class CommandPhotoQuotaTests(unittest.IsolatedAsyncioTestCase):
                     harness._companion_manual_format_config_item_value(key, 6),
                 )
                 self.assertIn(
-                    "用户请求生图",
+                    "生图数量限制",
                     harness._companion_manual_config_location(key),
                 )
         self.assertEqual(
@@ -303,13 +303,14 @@ class CommandPhotoQuotaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(setting["slider"]["min"], -1)
         self.assertIn("-1 表示不限量", setting["hint"])
         self.assertIn("0 表示不允许", setting["hint"])
-        section_start = script.index('title: "用户请求生图"')
+        section_start = script.index('title: "生图数量限制"')
         section_end = script.index("\n    },", section_start)
         user_photo_section = script[section_start:section_end]
         self.assertNotIn('"photo_generation_allowed_scopes"', user_photo_section)
         for key in PHOTO_GENERATION_SCOPE_LIMIT_KEYS.values():
             self.assertIn(f'"{key}"', user_photo_section)
         self.assertIn('"command_photo_generation_max_daily"', user_photo_section)
+        self.assertIn('"enable_user_requested_photo_generation"', user_photo_section)
         self.assertGreaterEqual(
             (page_api + page_api_settings).count('"command_photo_generation_max_daily"'),
             3,

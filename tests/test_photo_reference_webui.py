@@ -27,7 +27,7 @@ class PhotoReferenceWebUiTests(unittest.TestCase):
                 html = (PLUGIN_ROOT / "pages" / page_name / "index.html").read_text(encoding="utf-8")
                 scripts.append(script_path.read_bytes())
 
-                section_start = script.index('title: "用户请求生图"')
+                section_start = script.index('title: "生图数量限制"')
                 section_end = script.index("\n    },", section_start)
                 user_photo_section = script[section_start:section_end]
                 for key in quota_keys:

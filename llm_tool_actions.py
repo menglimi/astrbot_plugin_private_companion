@@ -851,8 +851,61 @@ class LlmToolActionsMixin:
         )
         del observations[:-8]
 
+    def _user_photo_generation_prompt_enabled(
+        self,
+        event: AstrMessageEvent | None = None,
+        *,
+        spontaneous_only: bool = False,
+    ) -> bool:
+        if spontaneous_only or not getattr(self, "enabled", False):
+            return False
+        if not runtime_persona_setting(self, "enable_photo_text_action", False):
+            return False
+        if not self._photo_generation_runtime_available():
+            return False
+        scope_getter = getattr(self, "_photo_generation_scope", None)
+        scope = ""
+        if callable(scope_getter):
+            try:
+                scope = _single_line(scope_getter(event), 40).lower()
+            except Exception:
+                scope = ""
+        if not scope and bool(
+            getattr(event, "private_companion_proactive_framework", False)
+        ):
+            scope = "proactive"
+        if scope == "proactive":
+            return True
+        permission_getter = getattr(
+            self,
+            "_user_requested_photo_generation_allowed",
+            None,
+        )
+        if callable(permission_getter):
+            try:
+                if not bool(permission_getter(event)):
+                    return False
+            except Exception:
+                return False
+        elif not runtime_persona_setting(
+            self,
+            "enable_user_requested_photo_generation",
+            True,
+        ):
+            return False
+        mode = _single_line(
+            runtime_persona_setting(
+                self,
+                "natural_language_photo_generation_mode",
+                "tool_first",
+            ),
+            40,
+        ).lower()
+        return mode != "off"
+
     def _photo_generation_tool_instruction(
         self,
+        event: AstrMessageEvent | None = None,
         *,
         include_spontaneous: bool | None = None,
         spontaneous_only: bool = False,
@@ -861,13 +914,11 @@ class LlmToolActionsMixin:
         if not getattr(self, "enabled", False):
             return ""
         reaction_enabled = self._reaction_image_provider_available()
-        photo_enabled = bool(
-            runtime_persona_setting(self, 'enable_photo_text_action', False)
-            and self._photo_generation_runtime_available()
+        photo_enabled = self._user_photo_generation_prompt_enabled(
+            event,
+            spontaneous_only=spontaneous_only,
         )
-        mode = _single_line(runtime_persona_setting(self, 'natural_language_photo_generation_mode', "tool_first"), 40).lower()
-        photo_enabled = photo_enabled and mode != "off" and not spontaneous_only
-        if not reaction_enabled and not photo_enabled and spontaneous_only:
+        if not reaction_enabled and not photo_enabled:
             return ""
         if spontaneous_only:
             high_frequency_hint = (
@@ -878,9 +929,7 @@ class LlmToolActionsMixin:
                 )
                 else "- 轻松闲聊、玩笑、安慰、撒娇、庆祝、惊讶、接梗或轻吐槽等能自然补充语气的场景，通常应在完整回复末尾追加内部标签。只有纯事实答复、严肃或敏感情境，或确实没有合适情绪时才省略。"
             )
-            return "\n".join(
-                [
-                    "【实验性表情表达】",
+            spontaneous_lines = [
                     "- 先完成一条正常、完整、可以独立发送的文字回复。表情图片只能作为文字后的补充，绝对不能替代文字回复。",
                     "- 本轮已经由插件完成概率抽样并获得一次表情表达机会；不要再次按概率决定，也不要因为‘不确定’而默认省略标签。",
                     high_frequency_hint,
@@ -889,10 +938,22 @@ class LlmToolActionsMixin:
                     "- 每轮最多写一个标签，必须放在全部可见文字和 TTS 标签之后；不要使用 Markdown 代码块，不要解释标签，也不要调用图片或生图工具。",
                     "- 即使图库最终没有匹配、图片重复或发送失败，前面的完整文字也必须仍然自然成立。",
                 ]
-            ).strip()
-        lines = ["【实验性表情表达工具】" if spontaneous_only else "【图库表情与生图工具】"]
-        # pc_find_reaction_image 工具始终注册，所以指令应始终注入（与 reaction_enabled 解耦）
-        if not spontaneous_only:
+            if include_heading:
+                spontaneous_lines.insert(0, "【实验性表情表达】")
+            return "\n".join(spontaneous_lines).strip()
+        lines: list[str] = []
+        if include_heading:
+            lines.append(
+                "【图库表情与生图工具】"
+                if photo_enabled and reaction_enabled
+                else (
+                    "【生图工具】"
+                    if photo_enabled
+                    else "【图库表情工具】"
+                )
+            )
+        # Only describe the gallery when its runtime provider is actually usable.
+        if reaction_enabled and not spontaneous_only:
             reaction_availability = (
                 "- 表情包素材库当前已有可用素材，用户请求现成表情包或反应图时可直接调用 `pc_find_reaction_image` 检索。"
                 if reaction_enabled
@@ -969,8 +1030,9 @@ class LlmToolActionsMixin:
                     lines.append(
                         f"- `prompt` 参数必须按“提示词表达方式”书写（与主动拍照一致）：{format_text}"
                     )
-        lines.extend(
-            [
+        if photo_enabled:
+            lines.extend(
+                [
                 "- 默认 `send=true`；如果只想拿路径再决定，可传 `send=false`。",
                 "- 每个用户请求本轮最多调用一次 `pc_generate_photo`。工具返回失败、结果取回失败或发送回执未确认后，不要在同一轮再次调用生图工具；按工具的 `message/actual_error/final_response_instruction` 回复，用户下一轮明确要求时再重试。",
                 "- 如果工具返回 `generation_completed=true` 且 `failure_stage=result_materialization`，说明上游已经完成生图但图片结果没有取回或保存成功；不要说成上游生图失败，也不要重复提交同一画面。",
@@ -978,8 +1040,8 @@ class LlmToolActionsMixin:
                 f"- `caption` 只用于随图发送用户应当直接看到、可独立成立的自然正文；不得填写“图生好了/生成成功/图片已发送/给你看”等状态回执。确实有与画面、当下感受或对话相关的内容才填写，否则留空让图片独立回复。不要写 `&&shy&&`、`[shy]`、TTS 情绪标签或任何内部控制标记。只有工具返回 `sent=true` 时才表示图片已经发出；成功后不要把最终回复留空，必须只输出内部静默标记 `{PHOTO_TOOL_SILENT_SENTINEL}`。插件会在发送前移除它；不要再写承接句、重复 caption 或额外表情。",
                 "- 工具返回 `sent=false` 时，必须按 `message/actual_error` 如实说明，绝对不能说已经发送。",
                 "- 如果工具返回 `error_code=provider_policy_refusal`，不要复述或翻译 Provider 的英文原文、政策名称、敏感词判断和链接；只用符合当前人格的一句简短中文说明这次没有生成出来，再自然询问是否换一种画面描述重试。",
-            ]
-        )
+                ]
+            )
         return "\n".join(lines)
 
     @staticmethod
@@ -3146,8 +3208,50 @@ class LlmToolActionsMixin:
             )
 
         tool_started_at = time.monotonic()
+        scope_getter = getattr(self, "_photo_generation_scope", None)
+        initial_scope = ""
+        if callable(scope_getter):
+            try:
+                initial_scope = _single_line(scope_getter(event), 40).lower()
+            except Exception:
+                initial_scope = ""
+        proactive_request = bool(
+            initial_scope == "proactive"
+            or getattr(event, "private_companion_proactive_framework", False)
+        )
+        permission_getter = getattr(
+            self,
+            "_user_requested_photo_generation_allowed",
+            None,
+        )
+        if callable(permission_getter):
+            try:
+                user_request_allowed = bool(permission_getter(event))
+            except Exception:
+                user_request_allowed = False
+        else:
+            user_request_allowed = bool(
+                runtime_persona_setting(
+                    self,
+                    "enable_user_requested_photo_generation",
+                    True,
+                )
+            )
+        if not proactive_request and not user_request_allowed:
+            return public_receipt(
+                {
+                    "status": "disabled",
+                    "success": False,
+                    "generated": False,
+                    "sent": False,
+                    "message": "管理员已关闭用户请求生图/改图。",
+                    "must_not_claim_sent": True,
+                    "retryable": False,
+                },
+                ensure_ascii=False,
+            )
         mode = _single_line(runtime_persona_setting(self, 'natural_language_photo_generation_mode', "tool_first"), 40).lower()
-        if mode == "off":
+        if mode == "off" and not proactive_request:
             return public_receipt({"status": "disabled", "message": "非指令生图/改图已关闭；显式指令仍可使用“陪伴 生图/自拍/改图”。"}, ensure_ascii=False)
         if not runtime_persona_setting(self, 'enable_photo_text_action', False):
             return public_receipt({"status": "disabled", "message": "主动拍照/生图能力未启用"}, ensure_ascii=False)

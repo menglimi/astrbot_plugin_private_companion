@@ -405,6 +405,7 @@ def test_existing_sparse_profile_is_repaired_without_materializing_old_keys():
             "group_scene_recent_max_chars": 4000,
             "enable_llm_controlled_segmenting": False,
             "enable_segmented_plugin_rules": True,
+            "enable_user_requested_photo_generation": True,
         }
         assert "quiet_hours" not in profile["persona_settings"]
 

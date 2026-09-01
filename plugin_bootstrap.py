@@ -1367,6 +1367,11 @@ def _initialize_photo_and_expression_config(self: Any, c: Any) -> None:
     ).strip().lower()
     if self.natural_language_photo_generation_mode not in {"tool_first", "rule_fast", "off"}:
         self.natural_language_photo_generation_mode = "tool_first"
+    self.enable_user_requested_photo_generation = self._cfg_bool(
+        c,
+        "enable_user_requested_photo_generation",
+        True,
+    )
     self.command_photo_generation_max_daily = self._cfg_int(c, "command_photo_generation_max_daily", -1, -1, 100)
     self.photo_generation_trace_max_size_kb = self._cfg_int(
         c,

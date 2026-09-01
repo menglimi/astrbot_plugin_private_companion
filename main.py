@@ -14753,7 +14753,10 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 reason="media_tools_scoped",
                 scope=self._reaction_expression_scope(event),
             )
+        user_photo_prompt_enabled = self._user_photo_generation_prompt_enabled(event)
+        reaction_photo_prompt_enabled = self._reaction_image_provider_available()
         photo_instruction = self._photo_generation_tool_instruction(
+            event,
             include_spontaneous=reaction_expression_authorized,
             spontaneous_only=reaction_expression_authorized and not explicit_media_request,
             include_heading=False,
@@ -14770,7 +14773,15 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                     title=(
                         "实验性表情表达"
                         if reaction_expression_authorized and not explicit_media_request
-                        else "图库表情与生图工具"
+                        else (
+                            "图库表情与生图工具"
+                            if user_photo_prompt_enabled and reaction_photo_prompt_enabled
+                            else (
+                                "生图工具"
+                                if user_photo_prompt_enabled
+                                else "图库表情工具"
+                            )
+                        )
                     ),
                     priority=88,
                     source="tools",
@@ -18024,9 +18035,13 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             )
 
-    def _scope_photo_generation_tool_for_request(self, req: ProviderRequest) -> bool:
-        """Remove the optional Image tool from this request when it is not ready."""
-        if req is None or self._photo_generation_runtime_available():
+    def _scope_photo_generation_tool_for_request(
+        self,
+        req: ProviderRequest,
+        event: AstrMessageEvent | None = None,
+    ) -> bool:
+        """Remove the Image tool when this request lacks runtime permission."""
+        if req is None or self._user_photo_generation_prompt_enabled(event):
             return False
         tool_set = getattr(req, "func_tool", None)
         if tool_set is None:
@@ -18170,7 +18185,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         if self is None or req is None or not bool(getattr(self, "enabled", False)):
             return
         try:
-            if self._scope_photo_generation_tool_for_request(req):
+            if self._scope_photo_generation_tool_for_request(req, event):
                 return
             self._annotate_photo_tool_prompt_format_for_request(req)
         except Exception as exc:

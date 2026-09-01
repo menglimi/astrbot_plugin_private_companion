@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping
 
 
-PERSONA_SETTINGS_SCHEMA_VERSION = 4
+PERSONA_SETTINGS_SCHEMA_VERSION = 5
 PERSONA_CONFIG_SCHEMA_VERSION = PERSONA_SETTINGS_SCHEMA_VERSION
 SCOPE_MANIFEST_VERSION = 1
 PERSONA_SETTINGS_KEY = "persona_settings"
@@ -33,6 +33,7 @@ PERSONA_SETTINGS_NEW_KEYS_BY_VERSION: dict[int, tuple[str, ...]] = {
         "enable_llm_controlled_segmenting",
         "enable_segmented_plugin_rules",
     ),
+    5: ("enable_user_requested_photo_generation",),
 }
 
 MODE_FOLLOW_PRIMARY = "follow_primary"

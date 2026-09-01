@@ -5330,6 +5330,24 @@ class CoreStoreMixin:
         role = role_getter(user, resolved_id) if callable(role_getter) else str((user or {}).get("relationship_role") or "friend")
         return "private_owner" if role == "owner" else "private_friend"
 
+    def _user_requested_photo_generation_allowed(
+        self,
+        event: Any = None,
+        *,
+        proactive: bool = False,
+    ) -> bool:
+        """Keep user-request permissions separate from Bot-initiated photos."""
+        scope = self._photo_generation_scope(event, proactive=proactive)
+        if scope == "proactive":
+            return True
+        return bool(
+            runtime_persona_setting(
+                self,
+                "enable_user_requested_photo_generation",
+                True,
+            )
+        )
+
     def _photo_generation_scope_daily_limit(self, scope: str) -> int:
         scope = str(scope or "").strip().lower()
         key = PHOTO_GENERATION_SCOPE_LIMIT_KEYS.get(scope)

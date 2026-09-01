@@ -29,10 +29,10 @@ class PersonaConfigTests(unittest.TestCase):
         cls.schema = load_schema(ROOT / "_conf_schema.json")
         cls.manifest = build_scope_manifest(cls.schema)
 
-    def test_manifest_covers_canonical_grouped_942_leaves(self) -> None:
-        self.assertEqual(4, PERSONA_SETTINGS_SCHEMA_VERSION)
+    def test_manifest_covers_canonical_grouped_944_leaves(self) -> None:
+        self.assertEqual(5, PERSONA_SETTINGS_SCHEMA_VERSION)
         leaves = discover_grouped_schema_leaves(self.schema)
-        self.assertEqual(len(leaves), 942)
+        self.assertEqual(len(leaves), 944)
         self.assertEqual(set(leaves), set(self.manifest))
         required_fields = {
             "scope",
@@ -98,6 +98,13 @@ class PersonaConfigTests(unittest.TestCase):
         self.assertFalse(self.manifest["enable_qq_official_segmented_reply"]["default"])
         self.assertEqual(self.manifest["intercept_astrbot_group_context"]["scope"], "persona")
         self.assertTrue(self.manifest["intercept_astrbot_group_context"]["default"])
+        self.assertEqual(
+            "persona",
+            self.manifest["enable_user_requested_photo_generation"]["scope"],
+        )
+        self.assertTrue(
+            self.manifest["enable_user_requested_photo_generation"]["default"]
+        )
         self.assertEqual(
             self.manifest["enable_relationship_stage_provider_routing"]["scope"],
             "common",
@@ -285,6 +292,7 @@ class PersonaConfigTests(unittest.TestCase):
                 "group_scene_recent_max_chars": 4000,
                 "enable_llm_controlled_segmenting": False,
                 "enable_segmented_plugin_rules": True,
+                "enable_user_requested_photo_generation": True,
             },
         )
         self.assertEqual(
@@ -293,17 +301,17 @@ class PersonaConfigTests(unittest.TestCase):
         self.assertEqual(migrated["persona_settings_revision"], 0)
         # A future version explicitly lists new keys; only those keys are
         # materialized, while old missing keys retain follow-primary semantics.
-        migrated_v5 = migrate_persona_profile(
+        migrated_v6 = migrate_persona_profile(
             migrated,
             manifest=self.manifest,
-            target_version=5,
-            new_keys_by_version={5: ["quiet_hours"]},
+            target_version=6,
+            new_keys_by_version={6: ["quiet_hours"]},
         )
         self.assertEqual(
-            migrated_v5["persona_settings"]["quiet_hours"],
+            migrated_v6["persona_settings"]["quiet_hours"],
             self.manifest["quiet_hours"]["new_key_default"],
         )
-        self.assertNotIn("max_daily_messages", migrated_v5["persona_settings"])
+        self.assertNotIn("max_daily_messages", migrated_v6["persona_settings"])
 
     def test_v1_profile_materializes_new_defaults_during_current_migration(self) -> None:
         migrated = migrate_persona_profile(
@@ -357,8 +365,41 @@ class PersonaConfigTests(unittest.TestCase):
         self.assertEqual(4000, migrated["persona_settings"]["group_scene_recent_max_chars"])
         self.assertFalse(migrated["persona_settings"]["enable_llm_controlled_segmenting"])
         self.assertTrue(migrated["persona_settings"]["enable_segmented_plugin_rules"])
-        self.assertEqual(4, migrated["persona_settings_schema_version"])
+        self.assertEqual(PERSONA_SETTINGS_SCHEMA_VERSION, migrated["persona_settings_schema_version"])
         self.assertEqual(6, migrated["persona_settings_revision"])
+
+    def test_v4_profile_materializes_user_requested_photo_switch(self) -> None:
+        migrated = migrate_persona_profile(
+            {
+                "persona_settings": {"bot_name": "次人格"},
+                "persona_settings_schema_version": 4,
+                "persona_settings_revision": 7,
+            },
+            manifest=self.manifest,
+        )
+
+        self.assertTrue(
+            migrated["persona_settings"]["enable_user_requested_photo_generation"]
+        )
+        self.assertEqual(
+            PERSONA_SETTINGS_SCHEMA_VERSION,
+            migrated["persona_settings_schema_version"],
+        )
+        self.assertEqual(7, migrated["persona_settings_revision"])
+
+        explicit_off = migrate_persona_profile(
+            {
+                "persona_settings": {
+                    "bot_name": "次人格",
+                    "enable_user_requested_photo_generation": False,
+                },
+                "persona_settings_schema_version": 4,
+            },
+            manifest=self.manifest,
+        )
+        self.assertFalse(
+            explicit_off["persona_settings"]["enable_user_requested_photo_generation"]
+        )
 
     def test_existing_empty_persona_settings_gets_identity_and_new_v2_key(self) -> None:
         migrated = migrate_persona_profile(
@@ -376,6 +417,7 @@ class PersonaConfigTests(unittest.TestCase):
                 "group_scene_recent_max_chars": 4000,
                 "enable_llm_controlled_segmenting": False,
                 "enable_segmented_plugin_rules": True,
+                "enable_user_requested_photo_generation": True,
             },
         )
         self.assertEqual(

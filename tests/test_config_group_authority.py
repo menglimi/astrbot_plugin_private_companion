@@ -832,7 +832,7 @@ class ConfigGroupAuthorityTests(unittest.TestCase):
         ]
         for script in scripts:
             self.assertIn(
-                'keys: ["photo_generation_private_owner_max_daily", "photo_generation_private_friend_max_daily", "photo_generation_group_max_daily", "photo_generation_proactive_max_daily", "command_photo_generation_max_daily"]',
+                'keys: ["enable_user_requested_photo_generation", "photo_generation_private_owner_max_daily", "photo_generation_private_friend_max_daily", "photo_generation_group_max_daily", "command_photo_generation_max_daily", "photo_generation_proactive_max_daily"]',
                 script,
             )
             self.assertNotIn('photo_generation_allowed_scopes: { type: "photo-scopes" }', script)

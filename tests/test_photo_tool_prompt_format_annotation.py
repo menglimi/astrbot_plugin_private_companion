@@ -26,6 +26,9 @@ class PhotoToolPromptFormatAnnotationTests(unittest.TestCase):
         self.plugin = object.__new__(PrivateCompanionPlugin)
         self.plugin.enabled = True
         self.plugin.photo_generation_prompt_format = "nai"
+        self.plugin.enable_photo_text_action = True
+        self.plugin.enable_user_requested_photo_generation = True
+        self.plugin.natural_language_photo_generation_mode = "tool_first"
         self.plugin._image_companion_required = lambda: True
         self.plugin._image_companion_available = lambda: True
 

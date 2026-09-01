@@ -175,6 +175,7 @@ class ImageModelConfigUiTests(unittest.TestCase):
             "enable_daily_outfit_photo",
             "enable_creative_cover_generation",
             "enable_natural_language_photo_generation",
+            "enable_user_requested_photo_generation",
             "enable_local_photo_load_guard",
         ):
             self.assertIn(f'{key}: "enable_photo_text_action"', self.script)
@@ -191,6 +192,7 @@ class ImageModelConfigUiTests(unittest.TestCase):
             "enable_daily_outfit_photo",
             "natural_language_photo_generation_mode",
             "enable_natural_language_photo_generation",
+            "enable_user_requested_photo_generation",
             "enable_local_photo_load_guard",
             "photo_generation_style",
         ):
@@ -205,6 +207,7 @@ class ImageModelConfigUiTests(unittest.TestCase):
             "enable_daily_outfit_photo",
             "enable_creative_cover_generation",
             "enable_natural_language_photo_generation",
+            "enable_user_requested_photo_generation",
             "enable_local_photo_load_guard",
         ):
             self.assertIn(f'key: "{key}", type: "bool", kind: "setting"', photo_card)

@@ -10565,6 +10565,15 @@
           "enable_photo_text_action": true
         }
       },
+      "enable_user_requested_photo_generation": {
+        "description": "允许用户请求生图",
+        "type": "bool",
+        "hint": "开启后，用户可以通过显式指令、规则快判或主链 pc_generate_photo 工具请求生图/改图。关闭后仅禁止用户发起的生图，不影响 Bot 主动生图、每日穿搭、创作封面或其他主动图片行为。",
+        "default": true,
+        "condition": {
+          "enable_photo_text_action": true
+        }
+      },
       "photo_generation_private_owner_max_daily": {
         "description": "主要用户私聊生图每日上限",
         "type": "int",
@@ -10576,7 +10585,8 @@
         },
         "default": -1,
         "condition": {
-          "enable_photo_text_action": true
+          "enable_photo_text_action": true,
+          "enable_user_requested_photo_generation": true
         }
       },
       "photo_generation_private_friend_max_daily": {
@@ -10590,7 +10600,8 @@
         },
         "default": -1,
         "condition": {
-          "enable_photo_text_action": true
+          "enable_photo_text_action": true,
+          "enable_user_requested_photo_generation": true
         }
       },
       "photo_generation_group_max_daily": {
@@ -10604,7 +10615,8 @@
         },
         "default": -1,
         "condition": {
-          "enable_photo_text_action": true
+          "enable_photo_text_action": true,
+          "enable_user_requested_photo_generation": true
         }
       },
       "photo_generation_proactive_max_daily": {
@@ -11022,7 +11034,8 @@
         },
         "default": -1,
         "condition": {
-          "enable_photo_text_action": true
+          "enable_photo_text_action": true,
+          "enable_user_requested_photo_generation": true
         }
       },
       "photo_generation_trace_max_size_kb": {
