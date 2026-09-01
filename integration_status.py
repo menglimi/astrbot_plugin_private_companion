@@ -663,6 +663,7 @@ class IntegrationStatusMixin:
         self,
         *,
         include_heading: bool = True,
+        include_knowledge: bool = True,
     ) -> str:
         mode = self._worldview_mode_effective()
         if mode == "off":
@@ -682,7 +683,7 @@ class IntegrationStatusMixin:
         if custom:
             base.append(f"自定义适配：{custom}")
         knowledge_formatter = getattr(self, "_format_roleplay_knowledge_context", None)
-        if callable(knowledge_formatter):
+        if include_knowledge and callable(knowledge_formatter):
             knowledge_context = knowledge_formatter(purpose="worldview", max_chars=1800, max_chunks=10)
             if knowledge_context:
                 base.append(knowledge_context)
@@ -691,8 +692,34 @@ class IntegrationStatusMixin:
     def _format_worldview_adaptation_prompt_section(self) -> dict[str, Any]:
         return prompt_section(
             "世界观适配",
-            self._format_worldview_adaptation_prompt(include_heading=False),
+            self._format_worldview_adaptation_prompt(
+                include_heading=False,
+                include_knowledge=False,
+            ),
         )
+
+    def _format_worldview_adaptation_prompt_sections(self) -> list[dict[str, Any]]:
+        section = self._format_worldview_adaptation_prompt_section()
+        if not str(section.get("content") or "").strip():
+            return []
+        sections = [section]
+        knowledge_formatter = getattr(
+            self,
+            "_format_roleplay_knowledge_context_section",
+            None,
+        )
+        if callable(knowledge_formatter):
+            knowledge_section = knowledge_formatter(
+                purpose="worldview",
+                max_chars=1800,
+                max_chunks=10,
+            )
+            if (
+                isinstance(knowledge_section, dict)
+                and str(knowledge_section.get("content") or "").strip()
+            ):
+                sections.append(knowledge_section)
+        return sections
 
     def _livingmemory_plugin_dir(self) -> Path:
         candidates = [
@@ -788,14 +815,56 @@ class IntegrationStatusMixin:
             boundary = "群聊只查当前群可公开使用的旧事。"
         else:
             boundary = "私聊可查当前用户相关的旧约定、偏好和共同经历。"
+        guidance, joke_boundary = self._livingmemory_guidance_parts(
+            tool_name=tool_name,
+            boundary=boundary,
+        )
         return (
             ("【长期记忆检索】\n" if include_heading else "")
-            +
+            + guidance
+            + "\n【群聊玩笑边界】"
+            + joke_boundary
+        )
+
+    @staticmethod
+    def _livingmemory_guidance_parts(
+        *,
+        tool_name: str,
+        boundary: str,
+    ) -> tuple[str, str]:
+        guidance = (
             f"上下文不够时可用 `{tool_name}` 查记忆。只有当前工具列表确实提供该工具时才调用；工具未出现时不要猜测、重试或输出工具调用。{boundary}结果只作接话背景。\n"
             "召回结果里出现人名、昵称、QQ 或群成员别名时,不要直接当作稳定身份；能查关系网时先用关系网确认,不能确认就按召回文本里的具体说话人原样转述。\n"
-            "如果召回到 Bot 曾说自己在吃饭、整理、犯困、路上、创作等状态/日程，只能理解为当时 Bot 的拟人化表达或历史自称；不要写成用户事实、现实证据或持续状态。\n"
-            "【群聊玩笑边界】群里“记住了/记下某人是XX”这类话（尤其把某人当对象、或带主观评价、攻击、贬损、色情、侮辱标签）通常只是群友之间的玩笑或随口一说。顺应玩笑节奏调侃接梗即可；这类玩笑记录可以另开为旁线补充，但不进入核心人物画像（主要用户画像、关系画像、稳定偏好），落到记忆中只能标为低置信的玩笑性质；只把可验证的客观事实当作主体画像内容。"
+            "如果召回到 Bot 曾说自己在吃饭、整理、犯困、路上、创作等状态/日程，只能理解为当时 Bot 的拟人化表达或历史自称；不要写成用户事实、现实证据或持续状态。"
         )
+        joke_boundary = (
+            "群里“记住了/记下某人是XX”这类话（尤其把某人当对象、或带主观评价、攻击、贬损、色情、侮辱标签）通常只是群友之间的玩笑或随口一说。"
+            "顺应玩笑节奏调侃接梗即可；这类玩笑记录可以另开为旁线补充，但不进入核心人物画像（主要用户画像、关系画像、稳定偏好），"
+            "落到记忆中只能标为低置信的玩笑性质；只把可验证的客观事实当作主体画像内容。"
+        )
+        return guidance, joke_boundary
+
+    def _format_livingmemory_guidance_sections(
+        self,
+        *,
+        scope: str = "private",
+    ) -> list[dict[str, Any]]:
+        if not self.enable_livingmemory_integration or not self._livingmemory_available():
+            return []
+        tool_name = _single_line(self.livingmemory_tool_name, 60) or "recall_long_term_memory"
+        boundary = (
+            "群聊只查当前群可公开使用的旧事。"
+            if scope == "group"
+            else "私聊可查当前用户相关的旧约定、偏好和共同经历。"
+        )
+        guidance, joke_boundary = self._livingmemory_guidance_parts(
+            tool_name=tool_name,
+            boundary=boundary,
+        )
+        return [
+            prompt_section("长期记忆检索", guidance),
+            prompt_section("群聊玩笑边界", joke_boundary),
+        ]
 
     def _format_livingmemory_status(self) -> str:
         # Check for "我会牢牢记住你" (RememberYou) bridge first

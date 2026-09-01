@@ -14012,10 +14012,28 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             result = func()
             if asyncio.iscoroutine(result):
                 result = await asyncio.wait_for(result, timeout=timeout)
+            sections = []
+            if isinstance(result, (list, tuple)):
+                for raw_section in result:
+                    resolved_section = coerce_prompt_section(raw_section)
+                    if resolved_section is None:
+                        continue
+                    section_content = str(resolved_section.content or "").strip()
+                    if section_content:
+                        sections.append(
+                            {
+                                "title": resolved_section.title,
+                                "content": section_content,
+                            }
+                        )
             section = coerce_prompt_section(result)
             if section is not None:
                 title = section.title
                 content = str(section.content or "").strip()
+            elif sections:
+                content = "\n\n".join(
+                    str(item.get("content") or "") for item in sections
+                )
             else:
                 content = str(result or "").strip()
             elapsed_ms = int((time.time() - started) * 1000)
@@ -14032,6 +14050,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 "source": source,
                 "priority": priority,
                 "content": content,
+                "sections": sections,
                 "metadata": metadata,
                 "status": "hit" if content else "empty",
             }
@@ -14088,6 +14107,21 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
     def _add_collected_prompt_contexts(self, prompt_surface: PromptSurface, collected: list[dict[str, Any]]) -> None:
         for item in collected:
             if not isinstance(item, dict):
+                continue
+            sections = item.get("sections")
+            if isinstance(sections, list) and sections:
+                for index, raw_section in enumerate(sections):
+                    section = coerce_prompt_section(raw_section)
+                    if section is None or not str(section.content or "").strip():
+                        continue
+                    prompt_surface.add(
+                        f"{_single_line(item.get('key'), 80)}.{index}",
+                        section.content,
+                        title=section.title,
+                        priority=_safe_int(item.get("priority"), 100, 0) + index,
+                        source=_single_line(item.get("source"), 80),
+                        metadata=item.get("metadata") if isinstance(item.get("metadata"), dict) else {},
+                    )
                 continue
             content = str(item.get("content") or "").strip()
             if not content:
@@ -14249,7 +14283,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             "资料柜夹层",
             "bookshelf",
             61,
-            lambda: self._format_bookshelf_secret_for_prompt(inbound_text, current_user),
+            lambda: self._format_bookshelf_secret_prompt_section(inbound_text, current_user),
             timeout=1.2,
         )
         add_spec("bookshelf.reading", "资料柜阅读连续性", "bookshelf", 62, lambda: self._format_bookshelf_reading_context_for_reply(inbound_text, current_user))
@@ -14312,7 +14346,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             )
         add_spec("companion.planner", "私聊互动补充", "companion", 80, lambda: self._format_companion_planner_injection(prompt_user, include_heading=False))
         if not self._memory_companion_should_defer_prompt_section("livingmemory_guidance", event, req):
-            add_spec("livingmemory.guidance", "长期记忆检索", "livingmemory", 90, lambda: self._format_livingmemory_guidance(scope="private" if is_private_chat else "group", include_heading=False))
+            add_spec("livingmemory.guidance", "长期记忆检索", "livingmemory", 90, lambda: self._format_livingmemory_guidance_sections(scope="private" if is_private_chat else "group"))
         add_spec("detail.injection", "Bot 模拟当前片段", "daily_detail", 40, lambda: section_call(self._format_detail_injection))
 
         if is_private_chat:
@@ -14422,11 +14456,18 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             "没有可用工具且没有实际执行结果时,不要承诺“我这就拉你/我帮你操作/我已经处理/我去修/我给你弄好”。"
             "遇到拉人、开房间、修网、重启、登录、下载、现实代办等请求,只能自然说明自己做不到实际操作,可以提醒、陪用户确认、建议对方找能操作的人,或在确有工具时调用工具后再描述结果。"
         )
-        platform_boundary_getter = getattr(self, "_platform_capability_prompt", None)
+        boundary_sections = [prompt_section("能力边界", boundary)]
+        platform_boundary_getter = getattr(
+            self,
+            "_platform_capability_prompt_section",
+            None,
+        )
         if callable(platform_boundary_getter):
             platform_boundary = platform_boundary_getter(event)
-            if platform_boundary:
-                boundary = f"{boundary}\n\n{platform_boundary}"
+            resolved_boundary = coerce_prompt_section(platform_boundary)
+            if resolved_boundary is not None and str(resolved_boundary.content or "").strip():
+                boundary_sections.append(platform_boundary)
+        boundary = render_prompt_sections(boundary_sections)
         self._materialize_conversation_system_block(
             req,
             key="guard.capability_boundary",
@@ -14436,6 +14477,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             priority=30,
             source="guard",
             placement=PLACEMENT_DYNAMIC_SYSTEM,
+            structured=True,
         )
         await self._record_request_prompt_fragment(
             event,
@@ -14546,7 +14588,8 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                 mode="conditional",
                 metadata={"注入位置": placement, "触发原因": "livingmemory" if livingmemory_relation_context and not relation_query else "query"},
             )
-        qzone_instruction = self._qzone_tool_instruction(event, include_heading=False)
+        qzone_sections = self._qzone_tool_prompt_sections(event)
+        qzone_instruction = render_prompt_sections(qzone_sections)
         current_prompt = req.system_prompt or ""
         current_turn_prompt = str(getattr(req, "prompt", "") or "")
         qzone_marker = "<!-- private_companion_qzone_tools_v1 -->"
@@ -14559,6 +14602,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
                     title="QQ 空间动态工具",
                     priority=88,
                     source="tools",
+                    structured=True,
                 ) else "system_prompt"
                 if placement == "system_prompt":
                     current_prompt = f"{current_prompt}\n\n{qzone_marker}\n{qzone_instruction}".strip()
@@ -15602,6 +15646,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
         event: AstrMessageEvent | None = None,
         *,
         include_heading: bool = True,
+        include_joke_boundary: bool = True,
     ) -> str:
         if not bool(runtime_persona_setting(self, 'enable_group_persona_denoise', True)):
             return ""
@@ -15649,11 +15694,15 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             "群聊里的身份优先按平台稳定 ID 理解；昵称、群名片、角色名、别名和“通常是谁”这类设定，更适合作为称呼线索，不直接当成身份结论。",
             "提到群聊旧消息、群梗、记忆召回或最近群聊时，尽量保留具体成员名或 QQ 标签，例如“A[QQ:...] 说过/起哄过”；只有确实缺少成员线索时，再概括成“群里有人”。除非当前消息或引用明确就是这位发言者，尽量不要顺手改写成“你说过”“主要用户说过”这类直接归到当前对象身上的表达。",
             "群成员画像只用于自然理解当前对话：当前发言者明确询问自己时，最多概括可公开的低敏偏好；不要替任何人整理、推断或披露第三方画像。普通群聊提到某人的爱好、习惯或偏好只是聊天内容，不要把它误当成对你的查询。",
-            "【群聊玩笑边界】群聊里“记住了/记下某人是XX”这类话（尤其把某人当对象、或带主观评价、攻击、贬损、色情、侮辱标签），通常只是群友之间的玩笑或随口一说。把它当作玩笑正面应和，顺着调侃接一下就好；这类玩笑性记录可以作为旁线补充，但不要写进核心人物画像（主要用户画像、关系画像、稳定偏好等），落库时只能标为低置信的玩笑性质，不能混入可验证事实。涉及他人名誉、隐私或主观定性的说法，调侃可以，别替别人正式贴标签、下结论。",
             "状态、日程、情绪和私聊关系更适合只留在语气底色里；如果没有人明确问到，就不必主动展开能量、天气、日程、心情或插件状态。",
             "表达上尽量自然一点，不需要刻意堆动作描写、撒娇、长解释或关系总结；一句能说清，就简单说一句。",
             "如果只是被轻轻提到，或者话题本身并不需要你展开，宁可短一点、轻一点、贴着当前梗回应，也不用顺势写成主动陪伴式长回复。",
         ]
+        if include_joke_boundary:
+            lines.insert(
+                4,
+                "【群聊玩笑边界】" + self._group_persona_denoise_joke_boundary(),
+            )
         if include_heading:
             lines.insert(0, "【群聊人格降噪】")
         if sender_id:
@@ -15678,18 +15727,40 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             lines.append("群里刚才比较密集，这轮回复更适合收一点：抓住一个重点回应就好，不必逐条点名展开。")
         return "\n".join(lines)
 
+    @staticmethod
+    def _group_persona_denoise_joke_boundary() -> str:
+        return (
+            "群聊里“记住了/记下某人是XX”这类话（尤其把某人当对象、或带主观评价、攻击、贬损、色情、侮辱标签），通常只是群友之间的玩笑或随口一说。"
+            "把它当作玩笑正面应和，顺着调侃接一下就好；这类玩笑性记录可以作为旁线补充，但不要写进核心人物画像（主要用户画像、关系画像、稳定偏好等），"
+            "落库时只能标为低置信的玩笑性质，不能混入可验证事实。涉及他人名誉、隐私或主观定性的说法，调侃可以，别替别人正式贴标签、下结论。"
+        )
+
+    def _format_group_persona_denoise_prompt_sections(
+        self,
+        event: AstrMessageEvent | None = None,
+    ) -> list[dict[str, Any]]:
+        body = self._format_group_persona_denoise_prompt(
+            event,
+            include_heading=False,
+            include_joke_boundary=False,
+        )
+        if not body:
+            return []
+        return [
+            prompt_section("群聊人格降噪", body),
+            prompt_section("群聊玩笑边界", self._group_persona_denoise_joke_boundary()),
+        ]
+
     async def _append_group_persona_denoise_to_request(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
         if not bool(runtime_persona_setting(self, 'enable_group_companion', True)):
             return
         group_id = self._extract_group_id_from_event(event)
         if not group_id or not self._group_enabled_for_event(group_id):
             return
-        denoise_text = self._format_group_persona_denoise_prompt(
-            event,
-            include_heading=False,
-        )
-        if not denoise_text:
+        denoise_sections = self._format_group_persona_denoise_prompt_sections(event)
+        if not denoise_sections:
             return
+        denoise_text = render_prompt_sections(denoise_sections)
         marker = "<!-- private_companion_group_persona_denoise_v1 -->"
         current_prompt = req.system_prompt or ""
         current_turn_prompt = str(getattr(req, "prompt", "") or "")
@@ -15702,6 +15773,7 @@ wakeup_type={_single_line(wakeup.get('type'), 40)} score={_single_line(wakeup.ge
             title="群聊人格降噪",
             priority=32,
             source="group",
+            structured=True,
         ) else "system_prompt"
         if placement == "system_prompt":
             req.system_prompt = f"{current_prompt}\n\n{marker}\n{denoise_text}".strip()

@@ -4,6 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from .conversation_prompt_section import prompt_section
 from .helpers import _single_line
 from .persona_config import runtime_persona_setting
 
@@ -344,17 +345,26 @@ class PlatformCompatibilityMixin:
         target_kind = self._platform_kind_for_umo(getattr(self, "target_platform", ""))
         return target_kind == desired
 
-    def _platform_capability_prompt(self, event: Any | None) -> str:
+    def _platform_capability_prompt_body(self, event: Any | None) -> str:
         profile = self._platform_profile(event=event)
         if profile.get("kind") != "qq_official":
             return ""
         return (
-            "【QQ 官方机器人平台边界】\n"
             "当前用户身份是 openid/平台用户ID，可以正常作为稳定私聊身份使用，不要要求用户提供数字 QQ 号。\n"
             "可以通过当前 AstrBot 会话发送普通文字、图片和已配置的语音；只有实际工具/发送结果成功后才能说已发送。\n"
             "当前平台不支持 OneBot 戳一戳、输入状态、原生撤回、指定消息引用或合并转发；不要承诺执行这些动作，应自然改用普通文字。\n"
             "QQ 官方机器人不支持 QQ 空间读取、发布、点赞或评论；不要调用或承诺使用 QQ 空间能力。\n"
             "主动私聊还受 QQ 官方额度、会话时间窗和审核限制，发送失败时如实说明，不能假装已经触达。"
+        )
+
+    def _platform_capability_prompt(self, event: Any | None) -> str:
+        body = self._platform_capability_prompt_body(event)
+        return f"【QQ 官方机器人平台边界】\n{body}" if body else ""
+
+    def _platform_capability_prompt_section(self, event: Any | None) -> dict[str, Any]:
+        return prompt_section(
+            "QQ 官方机器人平台边界",
+            self._platform_capability_prompt_body(event),
         )
 
     def _platform_adaptation_overview(self) -> dict[str, Any]:

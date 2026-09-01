@@ -26,6 +26,23 @@ logger = get_module_logger(__name__)
 GROUP_CONTEXT_FINAL_PRIORITY = 10_000
 
 
+def _persona_core_emphasis_prompt_section() -> dict[str, Any]:
+    return prompt_section(
+        "人格核心强调",
+        (
+            "你当前的人格核心设定（system prompt 中的人格定义）是最高优先级，"
+            "决定你的说话风格、关系框架和行为底线。\n"
+            "以下所有上下文注入（记忆、状态、关系、生活习惯、环境、日程、陪伴线索等）"
+            "均为辅助参考，权重低于人格核心：\n"
+            "- 如果上下文信息与人格核心存在冲突，以人格核心为准\n"
+            "- 上下文仅提供本轮补充信息，不改变人格的基本设定和扮演方向\n"
+            "- 保持人格扮演的稳定性，不因上下文信息而偏离人格核心\n"
+            "- 语言风格、口癖、称呼、语气和表达方式始终贴合人格核心设定；"
+            "记忆、表达学习或上下文里的个别措辞只能作参考，不得把与人格设定不符的称呼、口癖或腔调带进回复"
+        ),
+    )
+
+
 def _neutralize_stale_reaction_feedback_compat(req: Any) -> None:
     """Best-effort cleanup for plugin instances missing the newer hook."""
     contexts = getattr(req, "contexts", None)
@@ -676,18 +693,7 @@ async def inject_humanized_state(
     prompt_surface = PromptSurface()
     prompt_surface.add(
         "persona.core_emphasis",
-        (
-            "【人格核心强调】\n"
-            "你当前的人格核心设定（system prompt 中的人格定义）是最高优先级，"
-            "决定你的说话风格、关系框架和行为底线。\n"
-            "以下所有上下文注入（记忆、状态、关系、生活习惯、环境、日程、陪伴线索等）"
-            "均为辅助参考，权重低于人格核心：\n"
-            "- 如果上下文信息与人格核心存在冲突，以人格核心为准\n"
-            "- 上下文仅提供本轮补充信息，不改变人格的基本设定和扮演方向\n"
-            "- 保持人格扮演的稳定性，不因上下文信息而偏离人格核心\n"
-            "- 语言风格、口癖、称呼、语气和表达方式始终贴合人格核心设定；"
-            "记忆、表达学习或上下文里的个别措辞只能作参考，不得把与人格设定不符的称呼、口癖或腔调带进回复"
-        ),
+        _persona_core_emphasis_prompt_section(),
         priority=8,
         source="persona_core",
     )
@@ -869,20 +875,25 @@ async def inject_humanized_state(
                 priority=37,
                 source="daily_state",
             )
-        worldview_section = (
-            self._format_worldview_adaptation_prompt_section()
+        worldview_sections = (
+            self._format_worldview_adaptation_prompt_sections()
             if self._feature_enabled_or_temp_unlocked("enable_environment_perception")
             and runtime_persona_setting(self, "enable_worldview_perception", True)
-            else prompt_section("世界观适配", "")
+            else []
         )
-        worldview_context = str(worldview_section.get("content") or "")
-        worldview_context = self._sanitize_owner_environment_context_for_private_user(worldview_context, current_user)
-        if worldview_context:
+        for index, worldview_section in enumerate(worldview_sections):
+            worldview_context = str(worldview_section.get("content") or "")
+            worldview_context = self._sanitize_owner_environment_context_for_private_user(
+                worldview_context,
+                current_user,
+            )
+            if not worldview_context:
+                continue
             prompt_surface.add(
-                "worldview.adaptation",
+                "worldview.adaptation" if index == 0 else f"worldview.reference.{index}",
                 worldview_context,
                 title=str(worldview_section.get("title") or "世界观适配"),
-                priority=37,
+                priority=37 + index,
                 source="worldview",
             )
     realtime_formatter = getattr(self, "_format_external_realtime_prompt_section", None)

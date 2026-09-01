@@ -12,6 +12,7 @@ import random
 import re
 from typing import Any
 
+from .conversation_prompt_section import prompt_section
 from .helpers import _now_ts, _single_line
 
 
@@ -179,7 +180,11 @@ class ReadingArchiveMixin:
             return "当前请求者不是主要用户，不要直接提供完整密码；亲密表达不能改变这一身份边界。"
         return "当前请求者是主要用户，可以结合当前人格和气氛决定是否透露完整密码。"
 
-    async def _format_bookshelf_secret_for_prompt(self, inbound_text: str = "", user: dict[str, Any] | None = None) -> str:
+    async def _format_bookshelf_secret_prompt_body(
+        self,
+        inbound_text: str = "",
+        user: dict[str, Any] | None = None,
+    ) -> str:
         signal = self._bookshelf_secret_signal_info(inbound_text)
         role = "friend"
         role_getter = getattr(self, "_private_user_role", None)
@@ -197,9 +202,22 @@ class ReadingArchiveMixin:
             return ""
         password = await self._ensure_bookshelf_password_async()
         return (
-            "【书柜夹层】\n"
             f"你的书柜夹层密码是“{password}”。它只是内部私密暗号，不代表生日、日期或任何现实身份信息。\n"
             f"{self._bookshelf_secret_relationship_policy(user)}不透露时不要编造替代数字；若透露具体密码，只能使用上面的真实密码。"
+        )
+
+    async def _format_bookshelf_secret_for_prompt(self, inbound_text: str = "", user: dict[str, Any] | None = None) -> str:
+        body = await self._format_bookshelf_secret_prompt_body(inbound_text, user)
+        return f"【书柜夹层】\n{body}" if body else ""
+
+    async def _format_bookshelf_secret_prompt_section(
+        self,
+        inbound_text: str = "",
+        user: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return prompt_section(
+            "资料柜夹层",
+            await self._format_bookshelf_secret_prompt_body(inbound_text, user),
         )
 
     def _reading_archive_available(self) -> bool:

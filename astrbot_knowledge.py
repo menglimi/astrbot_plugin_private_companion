@@ -10,6 +10,7 @@ from typing import Any
 
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
+from .conversation_prompt_section import prompt_section
 from .helpers import _single_line
 from .persona_config import runtime_persona_setting
 from .reference_assets import normalize_reference_asset
@@ -163,7 +164,7 @@ class AstrBotKnowledgeMixin:
             "reference_asset_count": len(asset_view),
         }
 
-    def _format_roleplay_knowledge_context(
+    def _format_roleplay_knowledge_context_body(
         self,
         *,
         query: str = "",
@@ -236,11 +237,44 @@ class AstrBotKnowledgeMixin:
             body = body[:char_budget].rstrip() + "..."
         mode_text = "按当前用途检索匹配片段" if used_search else "未命中检索词，回退为文档代表性取样"
         return (
-            "【AstrBot 知识库世界观参考】\n"
             "以下内容来自拓展页角色设定中勾选的 AstrBot 知识库/文档，只作为日程模拟、生活背景和世界观适配参考；"
             "不要复述“知识库/文档/片段”等后台来源，不要把小说叙事逐字当成当前现实发言。\n"
             f"选取方式：{mode_text}；用途：{_single_line(purpose, 40) or 'roleplay'}。\n"
             f"{body}"
+        )
+
+    def _format_roleplay_knowledge_context(
+        self,
+        *,
+        purpose: str = "roleplay",
+        query: str = "",
+        max_chars: int = 3200,
+        max_chunks: int = 18,
+    ) -> str:
+        body = self._format_roleplay_knowledge_context_body(
+            purpose=purpose,
+            query=query,
+            max_chars=max_chars,
+            max_chunks=max_chunks,
+        )
+        return f"【AstrBot 知识库世界观参考】\n{body}" if body else ""
+
+    def _format_roleplay_knowledge_context_section(
+        self,
+        *,
+        purpose: str = "roleplay",
+        query: str = "",
+        max_chars: int = 3200,
+        max_chunks: int = 18,
+    ) -> dict[str, Any]:
+        return prompt_section(
+            "AstrBot 知识库世界观参考",
+            self._format_roleplay_knowledge_context_body(
+                purpose=purpose,
+                query=query,
+                max_chars=max_chars,
+                max_chunks=max_chunks,
+            ),
         )
 
     def _build_roleplay_knowledge_query(self, *, purpose: str = "roleplay") -> str:

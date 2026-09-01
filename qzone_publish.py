@@ -11,6 +11,7 @@ from typing import Any
 
 from astrbot.api.event import AstrMessageEvent
 
+from .conversation_prompt_section import prompt_section
 from .helpers import _now_ts, _path_text, _safe_float, _safe_int, _single_line
 from .persona_config import runtime_persona_setting
 from .logging_util import get_module_logger
@@ -122,7 +123,7 @@ class QzonePublishMixin:
             return ""
         return "最近已发说说：\n" + "\n".join(lines) + "\n本次请换一个场景、情绪或观察角度，不要重复同一类表达。"
 
-    def _qzone_recent_self_publish_chat_context(self, *, limit: int = 3) -> str:
+    def _qzone_recent_self_publish_chat_context_body(self, *, limit: int = 3) -> str:
         """Expose recent successful Bot posts to Qzone-related chat turns."""
         state = self.data.get("qzone_integration") if isinstance(getattr(self, "data", None), dict) else {}
         items = state.get("recent_life_publish_texts") if isinstance(state, dict) else []
@@ -149,9 +150,22 @@ class QzonePublishMixin:
         if not records:
             return ""
         return (
-            "【Bot 自己最近成功发布的 QQ 空间记录】\n"
-            + "\n".join(records)
+            "\n".join(records)
             + "\n这些正文是 Bot 自己发出的公开动态，不是当前用户发的内容。"
+        )
+
+    def _qzone_recent_self_publish_chat_context(self, *, limit: int = 3) -> str:
+        body = self._qzone_recent_self_publish_chat_context_body(limit=limit)
+        return f"【Bot 自己最近成功发布的 QQ 空间记录】\n{body}" if body else ""
+
+    def _qzone_recent_self_publish_chat_prompt_section(
+        self,
+        *,
+        limit: int = 3,
+    ) -> dict[str, Any]:
+        return prompt_section(
+            "Bot 自己最近成功发布的 QQ 空间记录",
+            self._qzone_recent_self_publish_chat_context_body(limit=limit),
         )
 
     def _qzone_note_recent_publish(

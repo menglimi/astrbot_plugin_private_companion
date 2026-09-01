@@ -33,6 +33,7 @@ from .conversation_injection_plan import (
     PLACEMENT_DYNAMIC_SYSTEM,
     get_conversation_injection_plan,
 )
+from .conversation_prompt_section import prompt_section, render_prompt_sections
 from .helpers import _missing_optional_model_dependency, _now_ts, _safe_float, _safe_int, _single_line, _strip_internal_message_blocks, _strip_outbound_control_blocks, _today_key, _url_host_is_public
 from .persona_config import runtime_persona_setting
 from .segmented_message import (
@@ -80,6 +81,7 @@ class PrivateImageMixin:
         content: str,
         title: str,
         priority: int,
+        structured: bool = False,
     ) -> None:
         plan = get_conversation_injection_plan(req)
         if plan is None or (marker and plan.contains_marker(marker)):
@@ -94,6 +96,7 @@ class PrivateImageMixin:
             placement=PLACEMENT_DYNAMIC_SYSTEM,
             temporary=False,
             materialized=True,
+            structured=structured,
         )
 
     def _private_image_framework_context(self) -> Any | None:
@@ -4806,7 +4809,7 @@ class PrivateImageMixin:
         ]
         user["recent_group_messages"] = kept[-8:]
 
-    def _format_recent_group_messages_for_private_image_prompt(self, user_id: str) -> str:
+    def _format_recent_group_messages_for_private_image_prompt_body(self, user_id: str) -> str:
         if not user_id:
             return ""
         try:
@@ -4823,17 +4826,30 @@ class PrivateImageMixin:
         ][-4:]
         if not items:
             return ""
-        lines = ["【用户刚刚在群里的近况】"]
+        lines: list[str] = []
         for item in items:
             elapsed = self._format_elapsed(max(0, now - _safe_float(item.get("ts"), 0)))
             group_id = _single_line(item.get("group_id"), 40)
             text = _single_line(item.get("text"), 160)
             if text:
                 lines.append(f"- {elapsed}前｜群 {group_id}｜{text}")
-        if len(lines) <= 1:
+        if not lines:
             return ""
         lines.append("使用方式：这比私聊压缩历史更新，只作为当前用户近况和语气背景；当前回复仍然优先回应这张图片。")
         return "\n".join(lines)
+
+    def _format_recent_group_messages_for_private_image_prompt(self, user_id: str) -> str:
+        body = self._format_recent_group_messages_for_private_image_prompt_body(user_id)
+        return f"【用户刚刚在群里的近况】\n{body}" if body else ""
+
+    def _format_recent_group_messages_for_private_image_prompt_section(
+        self,
+        user_id: str,
+    ) -> dict[str, Any]:
+        return prompt_section(
+            "用户刚刚在群里的近况",
+            self._format_recent_group_messages_for_private_image_prompt_body(user_id),
+        )
 
     def _trim_private_image_stale_context_tail(self, text: str) -> str:
         cleaned = str(text or "").strip()
@@ -5636,7 +5652,7 @@ class PrivateImageMixin:
         if not prompt or prompt == "[图片]":
             prompt = (
                 "用户刚刚只发了一张图片,没有补充文字。"
-                "图片内容已在系统提示的【本轮延迟图片】视觉摘要中给出；请直接回应那张图,不要说没看到图片。"
+                "图片内容已在系统提示的本轮图片视觉摘要中给出；请直接回应那张图,不要说没看到图片。"
                 "本轮只回应当前图片和用户发图可能表达的态度/梗/疑问；"
                 "但如果最近对话里用户明确规定了这张/下一张图片的回复方式（例如只回复某句话、不要回复其他内容）,必须优先照做。"
                 "除此之外,聊天历史只作语气背景,不要续写、答应或安排旧话题。"
@@ -5813,9 +5829,13 @@ class PrivateImageMixin:
                 "不要把聊天历史、长期记忆、主动消息、旧 TTS 文本或压缩摘要里的邀约当成当前输入；"
                 "不要顺便提下午、五点、放学、出去走走、陪你、到时候叫我等旧约定。"
             )
-            recent_group_context = self._format_recent_group_messages_for_private_image_prompt(user_id)
-            if recent_group_context:
-                boundary_prompt = f"{boundary_prompt}\n\n{recent_group_context}"
+            boundary_sections = [prompt_section("本轮图片回复边界", boundary_prompt)]
+            recent_group_context = self._format_recent_group_messages_for_private_image_prompt_section(
+                user_id
+            )
+            if str(recent_group_context.get("content") or "").strip():
+                boundary_sections.append(recent_group_context)
+            boundary_prompt = render_prompt_sections(boundary_sections)
             current_prompt = str(getattr(req, "system_prompt", "") or "")
             req.system_prompt = f"{current_prompt}\n\n{boundary_prompt}".strip() if current_prompt else boundary_prompt
             self._register_materialized_private_image_context(
@@ -5825,6 +5845,7 @@ class PrivateImageMixin:
                 content=boundary_prompt,
                 title="本轮图片回复边界",
                 priority=31,
+                structured=True,
             )
             segmenting_injector = getattr(
                 self,

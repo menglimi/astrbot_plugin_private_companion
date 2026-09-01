@@ -648,6 +648,7 @@ class LlmToolActionsMixin:
         event: AstrMessageEvent | None = None,
         *,
         include_heading: bool = True,
+        include_recent_context: bool = True,
     ) -> str:
         availability = getattr(self, "_qzone_available", None)
         if not (self.enabled and self.enable_qzone_integration):
@@ -669,8 +670,38 @@ class LlmToolActionsMixin:
 """.strip()
         instruction = f"【QQ 空间动态工具】\n{body}" if include_heading else body
         context_getter = getattr(self, "_qzone_recent_self_publish_chat_context", None)
-        recent_context = context_getter() if callable(context_getter) else ""
+        recent_context = (
+            context_getter()
+            if include_recent_context and callable(context_getter)
+            else ""
+        )
         return f"{instruction}\n\n{recent_context}".strip() if recent_context else instruction
+
+    def _qzone_tool_prompt_sections(
+        self,
+        event: AstrMessageEvent | None = None,
+    ) -> list[dict[str, Any]]:
+        instruction = self._qzone_tool_instruction(
+            event,
+            include_heading=False,
+            include_recent_context=False,
+        )
+        if not instruction:
+            return []
+        sections = [prompt_section("QQ 空间动态工具", instruction)]
+        context_getter = getattr(
+            self,
+            "_qzone_recent_self_publish_chat_prompt_section",
+            None,
+        )
+        if callable(context_getter):
+            recent_context = context_getter()
+            if (
+                isinstance(recent_context, dict)
+                and str(recent_context.get("content") or "").strip()
+            ):
+                sections.append(recent_context)
+        return sections
 
     @staticmethod
     def _qzone_view_target_error_message(error: str) -> str:
