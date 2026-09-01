@@ -6923,22 +6923,60 @@ async function goToImageCachePage(targetPage) {
   $("#imageCacheList")?.scrollTo({ top: 0, behavior: "smooth" });
 }
 
+let troubleshootingLoadPromise = null;
+let troubleshootingRefreshTimer = null;
+const TROUBLESHOOTING_REFRESH_INTERVAL_MS = 45 * 1000;
+
 async function loadTroubleshooting(options = {}) {
   const { silent = false, skipExperimentalRender = false } = options;
-  const [data, overview] = await Promise.all([
-    fetchJson("/troubleshooting"),
-    fetchJson("/overview").catch(() => null),
-  ]);
-  state.troubleshooting = data || null;
-  if (overview) {
-    state.overview = overview;
-    syncExternalCompanionVisibility();
-    syncFeatureDraftFromOverview(overview);
+  if (!troubleshootingLoadPromise) {
+    troubleshootingLoadPromise = (async () => {
+      const [data, overview] = await Promise.all([
+        fetchJson("/troubleshooting"),
+        fetchJson("/overview").catch(() => null),
+      ]);
+      state.troubleshooting = data || null;
+      if (overview) {
+        state.overview = overview;
+        syncExternalCompanionVisibility();
+        syncFeatureDraftFromOverview(overview);
+      }
+      return data;
+    })();
+  }
+  const request = troubleshootingLoadPromise;
+  let data;
+  try {
+    data = await request;
+  } finally {
+    if (troubleshootingLoadPromise === request) troubleshootingLoadPromise = null;
   }
   if (!silent) renderTroubleshooting();
   if (state.activeTab === "experimental" && !skipExperimentalRender) renderExperimentalPage();
   return data;
 }
+
+function stopTroubleshootingRefreshTimer() {
+  if (troubleshootingRefreshTimer !== null) {
+    window.clearInterval(troubleshootingRefreshTimer);
+    troubleshootingRefreshTimer = null;
+  }
+}
+
+function syncTroubleshootingRefreshTimer() {
+  stopTroubleshootingRefreshTimer();
+  if (state.activeTab !== "troubleshooting" || document.visibilityState !== "visible") return;
+  troubleshootingRefreshTimer = window.setInterval(() => {
+    if (state.activeTab !== "troubleshooting" || document.visibilityState !== "visible") {
+      stopTroubleshootingRefreshTimer();
+      return;
+    }
+    loadTroubleshooting({ skipExperimentalRender: true }).catch(() => null);
+  }, TROUBLESHOOTING_REFRESH_INTERVAL_MS);
+}
+
+document.addEventListener("visibilitychange", syncTroubleshootingRefreshTimer);
+window.addEventListener("pagehide", stopTroubleshootingRefreshTimer);
 
 async function loadDailyReview(force = false) {
   if (state.lazyLoaded.dailyReview && !force && state.dailyReview) return state.dailyReview;
@@ -38776,6 +38814,7 @@ function switchTab(tabName) {
       });
     }
     state.activeTab = tabName;
+    syncTroubleshootingRefreshTimer();
     tabs.forEach((item) => item.classList.toggle("is-active", item.dataset.tab === tabName));
     revealActiveTab(tabs.find((item) => item.dataset.tab === tabName), reduceMotion);
     document.querySelectorAll(".panel").forEach((item) => {

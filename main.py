@@ -3028,6 +3028,11 @@ class PrivateCompanionPlugin(
                 reason = readiness_reason
 
         if not reason:
+            await self._resolve_persona_routing_warnings(
+                channel="proactive",
+                window_key=umo,
+                warning_families={"proactive_delivery"},
+            )
             return {
                 "ok": True,
                 "action": "matched",
@@ -3106,7 +3111,13 @@ class PrivateCompanionPlugin(
         resolved = self._sanitize_persona_id(resolved_persona_id)
         active = self._sanitize_persona_id(active_persona_id)
         reason = _single_line(reason_code, 80) or "unknown"
-        signature = "|".join((code, reason, window, requested, resolved, active))
+        normalized_code = _single_line(code, 100)
+        normalized_channel = _single_line(channel, 24)
+        warning_family = self._persona_routing_warning_family(
+            normalized_code,
+            normalized_channel,
+        )
+        signature = "|".join((normalized_code, reason, normalized_channel, window))
         record_id = hashlib.sha256(signature.encode("utf-8")).hexdigest()[:20]
         should_schedule = False
         lock = getattr(self, "_data_lock", None)
@@ -3118,26 +3129,79 @@ class PrivateCompanionPlugin(
                 return
             root = store.get("persona_routing_warnings")
             if not isinstance(root, dict):
-                root = {"schema_version": 1, "items": []}
+                root = {"schema_version": 2, "items": []}
                 store["persona_routing_warnings"] = root
+            root["schema_version"] = 2
             items = root.get("items")
             if not isinstance(items, list):
                 items = []
                 root["items"] = items
             item = next(
-                (candidate for candidate in items if isinstance(candidate, dict) and candidate.get("id") == record_id),
+                (
+                    candidate
+                    for candidate in items
+                    if isinstance(candidate, dict)
+                    and (
+                        candidate.get("id") == record_id
+                        or (
+                            _single_line(candidate.get("code"), 100) == normalized_code
+                            and _single_line(candidate.get("reason_code"), 80) == reason
+                            and _single_line(candidate.get("channel"), 24) == normalized_channel
+                            and _single_line(candidate.get("window_key"), 180) == window
+                        )
+                    )
+                ),
                 None,
             )
             if item is None:
-                item = {"id": record_id, "first_ts": now, "count": 0}
+                item = next(
+                    (
+                        candidate
+                        for candidate in items
+                        if isinstance(candidate, dict)
+                        and not self._persona_routing_warning_is_active(candidate)
+                        and _single_line(candidate.get("channel"), 24) == normalized_channel
+                        and _single_line(candidate.get("window_key"), 180) == window
+                        and (
+                            _single_line(candidate.get("warning_family"), 80)
+                            or self._persona_routing_warning_family(
+                                candidate.get("code"),
+                                candidate.get("channel"),
+                            )
+                        )
+                        == warning_family
+                    ),
+                    None,
+                )
+            if item is None:
+                item = {
+                    "id": record_id,
+                    "first_ts": now,
+                    "count": 0,
+                    "lifetime_count": 0,
+                }
                 items.append(item)
+                should_schedule = True
+            previous_last_ts = float(item.get("last_ts") or 0)
+            was_active = self._persona_routing_warning_is_active(item) and (
+                previous_last_ts > 0 and now - previous_last_ts <= 2 * 60 * 60
+            )
+            previous_episode_count = max(0, int(item.get("count") or 0))
+            previous_lifetime_count = max(
+                previous_episode_count,
+                int(item.get("lifetime_count") or 0),
+            )
+            if not was_active:
+                item["first_ts"] = now
+                item["count"] = 0
                 should_schedule = True
             item.update(
                 {
-                    "schema_version": 1,
-                    "code": _single_line(code, 100),
+                    "schema_version": 2,
+                    "code": normalized_code,
                     "level": "error" if disposition == "blocked" else "warn",
-                    "channel": _single_line(channel, 24),
+                    "channel": normalized_channel,
+                    "warning_family": warning_family,
                     "disposition": _single_line(disposition, 24),
                     "reason_code": reason,
                     "source": "persona_router",
@@ -3147,8 +3211,11 @@ class PrivateCompanionPlugin(
                     "active_persona_id": active,
                     "primary_persona_id": self._primary_persona_id(),
                     "multi_persona": bool(getattr(self, "enable_multi_persona_mode", False)),
+                    "status": "active",
+                    "resolved_ts": 0,
                     "last_ts": now,
                     "count": int(item.get("count") or 0) + 1,
+                    "lifetime_count": previous_lifetime_count + 1,
                 }
             )
             items.sort(key=lambda candidate: float((candidate or {}).get("last_ts") or 0), reverse=True)
@@ -3191,6 +3258,99 @@ class PrivateCompanionPlugin(
                 disposition,
             )
 
+    @staticmethod
+    def _persona_routing_warning_is_active(item: Any) -> bool:
+        if not isinstance(item, dict):
+            return False
+        status = _single_line(item.get("status"), 16).lower()
+        return not status or status == "active"
+
+    @staticmethod
+    def _persona_routing_warning_family(code: Any, channel: Any = "") -> str:
+        normalized_code = _single_line(code, 100).lower()
+        normalized_channel = _single_line(channel, 24).lower()
+        if normalized_code == "persona.route.legacy_binding_ignored":
+            return "legacy_binding"
+        if normalized_channel == "passive" or normalized_code in {
+            "persona.route.passive_primary_fallback",
+        }:
+            return "passive_delivery"
+        if normalized_channel == "proactive" or normalized_code.startswith("persona.route.proactive_"):
+            return "proactive_delivery"
+        if normalized_code == "persona.route.plugin_persona_unspecified":
+            return f"{normalized_channel or 'unknown'}_delivery"
+        return normalized_code or "unknown"
+
+    async def _resolve_persona_routing_warnings(
+        self,
+        *,
+        channel: str,
+        window_key: Any,
+        warning_families: set[str],
+    ) -> int:
+        """Resolve active routing warnings after the same route becomes healthy."""
+        now = time.time()
+        normalized_channel = _single_line(channel, 24)
+        window = _single_line(window_key, 180)
+        families = {
+            _single_line(value, 80)
+            for value in warning_families
+            if _single_line(value, 80)
+        }
+        if not normalized_channel or not families:
+            return 0
+        resolved_count = 0
+        lock = getattr(self, "_data_lock", None)
+
+        async def update() -> None:
+            nonlocal resolved_count
+            store = getattr(self, "_data_default", None)
+            if not isinstance(store, dict):
+                return
+            root = store.get("persona_routing_warnings")
+            if not isinstance(root, dict):
+                return
+            items = root.get("items")
+            if not isinstance(items, list):
+                return
+            for item in items:
+                if not self._persona_routing_warning_is_active(item):
+                    continue
+                item_channel = _single_line(item.get("channel"), 24)
+                item_window = _single_line(item.get("window_key"), 180)
+                family = _single_line(item.get("warning_family"), 80) or self._persona_routing_warning_family(
+                    item.get("code"),
+                    item_channel,
+                )
+                if item_channel != normalized_channel or item_window != window or family not in families:
+                    continue
+                item.update(
+                    {
+                        "schema_version": 2,
+                        "warning_family": family,
+                        "status": "resolved",
+                        "resolved_ts": now,
+                    }
+                )
+                resolved_count += 1
+            if resolved_count:
+                root["schema_version"] = 2
+
+        if isinstance(lock, asyncio.Lock):
+            async with lock:
+                await update()
+        else:
+            await update()
+        if resolved_count:
+            scheduler = getattr(self, "_schedule_default_data_save", None)
+            if callable(scheduler):
+                clear_token = _ACTIVE_PERSONA_ID.set("")
+                try:
+                    scheduler(sections={"persona_routing_warnings"}, delay=0.2)
+                finally:
+                    _ACTIVE_PERSONA_ID.reset(clear_token)
+        return resolved_count
+
     async def _activate_persona_for_event_context(self, event: Any) -> tuple[Any, str]:
         if not bool(getattr(self, "enable_multi_persona_mode", False)):
             if not self._primary_persona_id():
@@ -3200,6 +3360,12 @@ class PrivateCompanionPlugin(
                     disposition="sent_with_warning",
                     reason_code="plugin_persona_unspecified",
                     window_key=getattr(event, "unified_msg_origin", ""),
+                )
+            else:
+                await self._resolve_persona_routing_warnings(
+                    channel="passive",
+                    window_key=getattr(event, "unified_msg_origin", ""),
+                    warning_families={"passive_delivery"},
                 )
             return None, ""
         active = _ACTIVE_PERSONA_ID.get()
@@ -3288,6 +3454,12 @@ class PrivateCompanionPlugin(
                 requested_persona_id=astrbot_persona,
                 resolved_persona_id=primary,
                 active_persona_id=pid,
+            )
+        else:
+            await self._resolve_persona_routing_warnings(
+                channel="passive",
+                window_key=resolved.get("umo"),
+                warning_families={"passive_delivery"},
             )
         self._ensure_persona_profile(pid)
         return _ACTIVE_PERSONA_ID.set(pid), pid

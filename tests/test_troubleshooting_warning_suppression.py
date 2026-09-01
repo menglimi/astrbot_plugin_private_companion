@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
+import time
 import unittest
 from types import SimpleNamespace
 
@@ -65,7 +67,7 @@ class TroubleshootingWarningSuppressionTests(unittest.TestCase):
                     "requested_persona_id": "alt",
                     "active_persona_id": "main",
                     "window_key": "QBot123:GroupMessage:opaque",
-                    "last_ts": 1,
+                    "last_ts": time.time(),
                     "count": 3,
                 }
             ],
@@ -98,7 +100,7 @@ class TroubleshootingWarningSuppressionTests(unittest.TestCase):
                     "disposition": "sent_with_warning",
                     "reason_code": "plugin_persona_unspecified",
                     "window_key": "onebot:FriendMessage:1",
-                    "last_ts": 1,
+                    "last_ts": time.time(),
                     "count": 1,
                 }
             ],
@@ -108,6 +110,55 @@ class TroubleshootingWarningSuppressionTests(unittest.TestCase):
         self.assertEqual(
             "persona.route.plugin_persona_unspecified", events[0]["warning_code"]
         )
+
+    def test_persona_routing_projection_keeps_only_fresh_active_items(self) -> None:
+        now = 100_000.0
+        items = [
+            {"id": "fresh-v2", "status": "active", "last_ts": now - 10},
+            {"id": "fresh-v1", "last_ts": now - 20},
+            {"id": "resolved", "status": "resolved", "last_ts": now - 5},
+            {"id": "stale-v2", "status": "active", "last_ts": now - 7201},
+            {"id": "stale-v1", "last_ts": now - 7201},
+            {"id": "missing-time", "status": "active"},
+        ]
+        original = deepcopy(items)
+
+        active = self.api._active_persona_routing_warnings(items, now=now)
+
+        self.assertEqual(["fresh-v2", "fresh-v1"], [item["id"] for item in active])
+        self.assertEqual(original, items)
+
+    def test_stale_and_resolved_routes_do_not_affect_current_suppression_count(self) -> None:
+        now = time.time()
+        self.api.plugin = SimpleNamespace(
+            _format_timestamp_elapsed=lambda _ts: "刚刚"
+        )
+        code = "persona.route.passive_primary_fallback"
+        warning_type = self.api._troubleshooting_semantic_warning_type(code)
+        records = [
+            {
+                "key": warning_type,
+                "title": "被动消息已回退主人格",
+                "source": "人格路由",
+                "suppressed_at": now,
+            }
+        ]
+        events = self.api._troubleshooting_recent_events(
+            diagnostics=[],
+            proactive_tasks={},
+            proactive_candidates={},
+            token_stats={"recent": []},
+            persona_routing_warnings=[
+                {"code": code, "level": "warn", "status": "active", "last_ts": now},
+                {"code": code, "level": "warn", "status": "resolved", "last_ts": now},
+                {"code": code, "level": "warn", "last_ts": now - 7201},
+            ],
+        )
+
+        payload = self.api._troubleshooting_suppression_payload(records, events)
+
+        self.assertEqual(1, len(events))
+        self.assertEqual(1, payload[0]["current_count"])
 
     def test_only_warning_level_items_are_suppressed(self) -> None:
         key = self.api._troubleshooting_warning_type("check", "测试警告")

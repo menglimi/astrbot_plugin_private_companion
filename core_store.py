@@ -1106,7 +1106,7 @@ class CoreStoreMixin:
             "users": {},
             "private_user_alias_merge_backups": {},
             "groups": {},
-            "persona_routing_warnings": {"schema_version": 1, "items": []},
+            "persona_routing_warnings": {"schema_version": 2, "items": []},
             "daily_plan": {},
             "daily_plan_history": [],
             "agenda_version": 1,
@@ -1277,7 +1277,7 @@ class CoreStoreMixin:
         data.setdefault("users", {})
         data.setdefault("private_user_alias_merge_backups", {})
         data.setdefault("groups", {})
-        data.setdefault("persona_routing_warnings", {"schema_version": 1, "items": []})
+        data.setdefault("persona_routing_warnings", {"schema_version": 2, "items": []})
         data.setdefault("daily_plan", {})
         data.setdefault("daily_plan_history", [])
         data.setdefault("agenda_version", 1)
