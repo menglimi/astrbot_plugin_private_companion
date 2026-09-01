@@ -346,6 +346,43 @@ class PersonaRoutingAuthorityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(8, warning["lifetime_count"])
             self.assertEqual(warning["last_ts"], warning["first_ts"])
 
+    async def test_malformed_legacy_warning_counters_do_not_break_recording(self):
+        with tempfile.TemporaryDirectory() as root:
+            plugin = _routing_harness(root, conversation_persona="disabled")
+            umo = "onebot:FriendMessage:malformed-legacy"
+            warning = {
+                "id": "legacy-malformed",
+                "schema_version": 1,
+                "code": "persona.route.passive_primary_fallback",
+                "channel": "passive",
+                "window_key": umo,
+                "reason_code": "persona_not_enabled",
+                "last_ts": "not-a-timestamp",
+                "count": "not-a-count",
+                "lifetime_count": None,
+            }
+            plugin._data_default["persona_routing_warnings"] = {
+                "schema_version": 1,
+                "items": [warning],
+            }
+            plugin._persona_routing_warning_save_marks = {"legacy-malformed": "bad"}
+            plugin._persona_routing_warning_log_marks = {"legacy-malformed": "bad"}
+
+            await plugin._record_persona_routing_warning(
+                code=warning["code"],
+                channel="passive",
+                disposition="fallback",
+                reason_code=warning["reason_code"],
+                window_key=umo,
+                requested_persona_id="disabled",
+                resolved_persona_id="main",
+                active_persona_id="main",
+            )
+
+            self.assertEqual(1, warning["count"])
+            self.assertEqual(1, warning["lifetime_count"])
+            self.assertEqual("active", warning["status"])
+
     async def test_resolved_warning_state_is_persisted(self):
         with tempfile.TemporaryDirectory() as root:
             plugin = _routing_harness(root, conversation_persona="disabled")

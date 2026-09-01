@@ -3182,14 +3182,14 @@ class PrivateCompanionPlugin(
                 }
                 items.append(item)
                 should_schedule = True
-            previous_last_ts = float(item.get("last_ts") or 0)
+            previous_last_ts = _safe_float(item.get("last_ts"), 0.0)
             was_active = self._persona_routing_warning_is_active(item) and (
                 previous_last_ts > 0 and now - previous_last_ts <= 2 * 60 * 60
             )
-            previous_episode_count = max(0, int(item.get("count") or 0))
+            previous_episode_count = _safe_int(item.get("count"), 0, 0)
             previous_lifetime_count = max(
                 previous_episode_count,
-                int(item.get("lifetime_count") or 0),
+                _safe_int(item.get("lifetime_count"), 0, 0),
             )
             if not was_active:
                 item["first_ts"] = now
@@ -3214,17 +3214,23 @@ class PrivateCompanionPlugin(
                     "status": "active",
                     "resolved_ts": 0,
                     "last_ts": now,
-                    "count": int(item.get("count") or 0) + 1,
+                    "count": previous_episode_count + 1,
                     "lifetime_count": previous_lifetime_count + 1,
                 }
             )
-            items.sort(key=lambda candidate: float((candidate or {}).get("last_ts") or 0), reverse=True)
+            items.sort(
+                key=lambda candidate: _safe_float(
+                    candidate.get("last_ts") if isinstance(candidate, dict) else 0,
+                    0.0,
+                ),
+                reverse=True,
+            )
             del items[120:]
             save_marks = getattr(self, "_persona_routing_warning_save_marks", None)
             if not isinstance(save_marks, dict):
                 save_marks = {}
                 self._persona_routing_warning_save_marks = save_marks
-            previous_save = float(save_marks.get(record_id) or 0)
+            previous_save = _safe_float(save_marks.get(record_id), 0.0)
             if now - previous_save >= 60:
                 save_marks[record_id] = now
                 should_schedule = True
@@ -3246,7 +3252,7 @@ class PrivateCompanionPlugin(
         if not isinstance(log_marks, dict):
             log_marks = {}
             self._persona_routing_warning_log_marks = log_marks
-        if now - float(log_marks.get(record_id) or 0) >= 300:
+        if now - _safe_float(log_marks.get(record_id), 0.0) >= 300:
             log_marks[record_id] = now
             logger.warning(
                 "人格路由告警 code=%s reason=%s umo=%s astrbot=%s plugin=%s action=%s",
