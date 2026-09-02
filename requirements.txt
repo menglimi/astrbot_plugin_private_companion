@@ -4,3 +4,4 @@ aiohttp>=3.9,<4
 Pillow>=10,<13
 chinese-calendar>=1.9.2
 lunarcalendar>=0.0.9
+markdown-it-py>=3,<5

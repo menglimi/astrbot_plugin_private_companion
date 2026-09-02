@@ -106,6 +106,10 @@ from .dreaming import (
     weighted_unique_fragment_sample,
 )
 from .helpers import _date_key, _now_ts, _safe_float, _safe_int, _single_line, _strip_internal_message_blocks, _today_key
+from .markdown_segment_guard import (
+    MARKDOWN_BLOCK_TOKEN_PATTERN,
+    protect_markdown_blocks,
+)
 from .persona_config import runtime_persona_setting
 from .model_routing import CURRENT_MODEL_REPLACEMENT_SOURCES, build_rules, find_route, scope_allows
 from .relationship_policy import relationship_stage_provider_id
@@ -191,6 +195,7 @@ _SEGMENTED_PROTECTED_LITERAL_PATTERN = re.compile(
     + _SEGMENTED_COMMON_FILE_SUFFIXES
     + r"(?![\w]))"
     r"|(?<![\d.])\d+(?:\.\d+)+(?!\d|\.\d)"
+    r"|" + MARKDOWN_BLOCK_TOKEN_PATTERN
 )
 
 
@@ -5595,6 +5600,22 @@ Bot 近期回复：
                 default=default,
             )
 
+        markdown = protect_markdown_blocks(normalized)
+        source_length = len(normalized)
+        if markdown.active:
+            normalized = markdown.protected_text
+            if event is not None:
+                try:
+                    setattr(event, "_private_companion_segmented_markdown_detected", True)
+                except Exception:
+                    pass
+
+        def restore_markdown(value: Any) -> str:
+            return markdown.restore(value)
+
+        def contains_markdown(value: Any) -> bool:
+            return markdown.contains_token(value)
+
         replaced_text, replacement_count = self._apply_segmented_content_replacements(
             normalized,
             event=event,
@@ -5620,8 +5641,8 @@ Bot 近期回复：
                 8,
             ),
         )
-        if len(normalized) > threshold and not common_transforms_only:
-            return [normalized]
+        if source_length > threshold and not common_transforms_only:
+            return [restore_markdown(normalized)]
 
         cleanup_pattern: re.Pattern[str] | None = None
         cleanup_words: list[str] = []
@@ -5929,7 +5950,7 @@ Bot 近期回复：
             return _normalize_cjk_chat_spaces(cleaned)
 
         def _visible_len(value: str) -> int:
-            visible = str(value or "").replace(
+            visible = restore_markdown(value).replace(
                 _SEGMENTED_GENERATED_PUNCTUATION_MARKER,
                 "",
             )
@@ -5985,6 +6006,7 @@ Bot 近期回复：
 
         if common_transforms_only:
             cleaned = _clean_segment(normalized)
+            cleaned = restore_markdown(cleaned)
             return [cleaned] if cleaned else []
 
         def _is_soft_short_segment(value: str) -> bool:
@@ -6021,6 +6043,8 @@ Bot 近期回复：
                 return right
             if not right:
                 return left
+            if contains_markdown(left) or contains_markdown(right):
+                return f"{left.rstrip()}\n\n{right.lstrip()}"
             if right.startswith(("（", "(")):
                 return _normalize_cjk_chat_spaces(f"{left}{right}")
             visible_left = _strip_generated_punctuation_markers(left)
@@ -6098,7 +6122,7 @@ Bot 近期回复：
             if "\n" not in split_words:
                 split_words.append("\n")
             if not split_words:
-                return [normalized]
+                return [restore_markdown(normalized)]
             raw_segments = _split_words_outside_protected(normalized, split_words)
             segments: list[str] = []
             for segment in raw_segments:
@@ -6110,7 +6134,8 @@ Bot 近期回复：
                     if cleaned:
                         segments.append(cleaned)
             segments = _merge_segments(segments)
-            return segments if segments and (len(segments) > 1 or cleanup_enabled) else [normalized]
+            segments = [restore_markdown(segment) for segment in segments]
+            return segments if segments and (len(segments) > 1 or cleanup_enabled) else [restore_markdown(normalized)]
 
         try:
             raw_segments = re.findall(
@@ -6133,7 +6158,8 @@ Bot 近期回复：
                 if cleaned:
                     segments.append(cleaned)
         segments = _merge_segments(segments)
-        return segments if segments and (len(segments) > 1 or cleanup_enabled) else [normalized]
+        segments = [restore_markdown(segment) for segment in segments]
+        return segments if segments and (len(segments) > 1 or cleanup_enabled) else [restore_markdown(normalized)]
 
     async def _calc_segmented_proactive_interval(
         self,
