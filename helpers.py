@@ -610,7 +610,8 @@ def _strip_personality_sync_blocks(text: Any) -> str:
 
 
 def _strip_internal_message_blocks(text: Any) -> str:
-    normalized = str(text or "")
+    original = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    normalized = original
     normalized = _strip_personality_sync_blocks(normalized)
     normalized = _strip_group_member_safety_markers(normalized)
     # Strip reasoning/thinking chain content BEFORE _strip_history_media_markers,
@@ -665,14 +666,26 @@ def _strip_internal_message_blocks(text: Any) -> str:
         flags=re.IGNORECASE,
     )
     normalized = re.sub(r"<reasoning\b[^>]*>.*?</reasoning>", "", normalized, flags=re.IGNORECASE | re.DOTALL)
-    normalized = _strip_history_media_markers(normalized)
+    normalized = _strip_history_media_markers(normalized, preserve_whitespace=True)
+    normalized = re.sub(
+        rf"(?m)^[ \t]*{_PHOTO_TOOL_SILENT_SENTINEL_PATTERN.pattern}[ \t]*(?:\n|$)",
+        "",
+        normalized,
+        flags=_PHOTO_TOOL_SILENT_SENTINEL_PATTERN.flags | re.MULTILINE,
+    )
     normalized = _PHOTO_TOOL_SILENT_SENTINEL_PATTERN.sub("", normalized)
     normalized = re.sub(r"\[\[TTSBLOCK:[^\]]*\]\]", "", normalized)
     normalized = re.sub(r"\[\[PCTTS:[^\]]*\]\]", "", normalized)
     normalized = re.sub(r"<timer\b[^>]*>.*?</timer>", "", normalized, flags=re.IGNORECASE | re.DOTALL)
     normalized = re.sub(r"<tts\b[^>]*>.*?</tts>", "", normalized, flags=re.IGNORECASE | re.DOTALL)
-    normalized = _strip_nonstandard_chat_control_tags(normalized)
-    normalized = re.sub(r"\s+", " ", normalized).strip()
+    normalized = _strip_nonstandard_chat_control_tags(
+        normalized,
+        preserve_whitespace=True,
+    )
+    if not original.startswith("\n"):
+        normalized = normalized.lstrip("\n")
+    if not original.endswith("\n"):
+        normalized = normalized.rstrip("\n")
     return normalized
 
 
@@ -713,23 +726,59 @@ def _has_history_media_marker(text: Any) -> bool:
     )
 
 
-def _strip_history_media_markers(text: Any) -> str:
+def _strip_history_media_markers(
+    text: Any,
+    *,
+    preserve_whitespace: bool = False,
+) -> str:
     """Remove internal media metadata and legacy chat-like attachment notes."""
     normalized = str(text or "")
     had_marker = _has_history_media_marker(normalized)
+    legacy_pattern = re.compile(
+        r"[（(]\s*(?:(?:随消息)?发送(?:了)?\s*(?:(?:一张|\d+\s*张)\s*图片|"
+        r"(?:一条|\d+\s*条)\s*语音)\s*(?:[，,]\s*)?)+[）)]"
+    )
+    for pattern in (
+        _HISTORY_MEDIA_MARKER_PATTERN,
+        _ESCAPED_HISTORY_MEDIA_MARKER_PATTERN,
+        legacy_pattern,
+    ):
+        flags = pattern.flags | re.MULTILINE
+        normalized = re.sub(
+            rf"(?<=[^\s])[ \t]+(?:{pattern.pattern})[ \t]+(?=[^\s])",
+            " ",
+            normalized,
+            flags=flags,
+        )
+    standalone_patterns = "|".join(
+        f"(?:{pattern.pattern})"
+        for pattern in (
+            _HISTORY_MEDIA_MARKER_PATTERN,
+            _ESCAPED_HISTORY_MEDIA_MARKER_PATTERN,
+            legacy_pattern,
+        )
+    )
+    standalone_block = re.compile(
+        rf"^(?:[ \t]*(?:{standalone_patterns})[ \t]*(?:\n|$))+",
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+
+    def remove_standalone_block(match: re.Match[str]) -> str:
+        has_visible_before = bool(normalized[: match.start()].rstrip("\n"))
+        has_visible_after = bool(normalized[match.end() :].lstrip("\n"))
+        return "\n" if has_visible_before and has_visible_after else ""
+
+    normalized = standalone_block.sub(remove_standalone_block, normalized)
     normalized = _HISTORY_MEDIA_MARKER_PATTERN.sub("", normalized)
     normalized = _ESCAPED_HISTORY_MEDIA_MARKER_PATTERN.sub("", normalized)
-    normalized = re.sub(
-        r"[（(]\s*(?:(?:随消息)?发送(?:了)?\s*(?:(?:一张|\d+\s*张)\s*图片|"
-        r"(?:一条|\d+\s*条)\s*语音)\s*(?:[，,]\s*)?)+[）)]",
-        "",
-        normalized,
-    )
+    normalized = legacy_pattern.sub("", normalized)
+    if had_marker:
+        normalized = re.sub(r"(?<!\w)[（(]\s*[）)]", "", normalized)
+    if preserve_whitespace:
+        return normalized
     normalized = re.sub(r"[ \t]+([，,。！？!?；;：:、~～…])", r"\1", normalized)
     normalized = re.sub(r"\n[ \t]+", "\n", normalized)
     normalized = re.sub(r"\n{3,}", "\n\n", normalized)
-    if had_marker:
-        normalized = re.sub(r"(?<!\w)[（(]\s*[）)]", "", normalized)
     return normalized.strip()
 
 
@@ -790,7 +839,11 @@ def _strip_group_member_safety_markers(text: Any) -> str:
     return normalized
 
 
-def _strip_nonstandard_chat_control_tags(text: Any) -> str:
+def _strip_nonstandard_chat_control_tags(
+    text: Any,
+    *,
+    preserve_whitespace: bool = False,
+) -> str:
     """Remove leaked pseudo-control tags such as <bubble/> without touching media blocks."""
     normalized = str(text or "")
     if not normalized:
@@ -803,10 +856,11 @@ def _strip_nonstandard_chat_control_tags(text: Any) -> str:
     normalized = _NONSTANDARD_SELF_CLOSING_TAG_PATTERN.sub("", normalized)
     normalized = _ESCAPED_NONSTANDARD_SELF_CLOSING_TAG_PATTERN.sub("", normalized)
     normalized = _LEAKED_CHAT_EMOTION_CONTROL_PATTERN.sub("", normalized)
-    normalized = re.sub(r"\s+([，,。！？!?；;：:、~～…])", r"\1", normalized)
-    normalized = re.sub(r"([（(【\[])\s+", r"\1", normalized)
-    normalized = re.sub(r"\s+([）)】\]])", r"\1", normalized)
-    normalized = re.sub(r"[ \t]{2,}", " ", normalized)
+    if not preserve_whitespace:
+        normalized = re.sub(r"\s+([，,。！？!?；;：:、~～…])", r"\1", normalized)
+        normalized = re.sub(r"([（(【\[])\s+", r"\1", normalized)
+        normalized = re.sub(r"\s+([）)】\]])", r"\1", normalized)
+        normalized = re.sub(r"[ \t]{2,}", " ", normalized)
     return normalized
 
 
@@ -827,7 +881,8 @@ def _strip_outbound_control_blocks(
     preserve_private_tts_tokens: bool = False,
     allowed_private_tts_tokens: set[str] | None = None,
 ) -> str:
-    normalized = str(text or "")
+    original = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    normalized = original
     normalized = _strip_personality_sync_blocks(normalized)
     normalized = _strip_group_member_safety_markers(normalized)
     # Strip reasoning/thinking chain content BEFORE _strip_history_media_markers,
@@ -880,7 +935,13 @@ def _strip_outbound_control_blocks(
         flags=re.IGNORECASE,
     )
     normalized = re.sub(r"<reasoning[^>]*>.*?</reasoning>", "", normalized, flags=re.IGNORECASE | re.DOTALL)
-    normalized = _strip_history_media_markers(normalized)
+    normalized = _strip_history_media_markers(normalized, preserve_whitespace=True)
+    normalized = re.sub(
+        rf"(?m)^[ \t]*{_PHOTO_TOOL_SILENT_SENTINEL_PATTERN.pattern}[ \t]*(?:\n|$)",
+        "",
+        normalized,
+        flags=_PHOTO_TOOL_SILENT_SENTINEL_PATTERN.flags | re.MULTILINE,
+    )
     normalized = _PHOTO_TOOL_SILENT_SENTINEL_PATTERN.sub("", normalized)
     normalized = re.sub(r"\[\[TTSBLOCK:[^\]]*\]\]", "", normalized)
     if preserve_private_tts_tokens and allowed_private_tts_tokens:
@@ -894,8 +955,14 @@ def _strip_outbound_control_blocks(
     elif not preserve_private_tts_tokens:
         normalized = re.sub(r"\[\[PCTTS:[^\]]*\]\]", "", normalized)
     normalized = re.sub(r"<timer\b[^>]*>.*?</timer>", "", normalized, flags=re.IGNORECASE | re.DOTALL)
-    normalized = _strip_nonstandard_chat_control_tags(normalized)
-    normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
+    normalized = _strip_nonstandard_chat_control_tags(
+        normalized,
+        preserve_whitespace=True,
+    )
+    if not original.startswith("\n"):
+        normalized = normalized.lstrip("\n")
+    if not original.endswith("\n"):
+        normalized = normalized.rstrip("\n")
     return normalized
 
 

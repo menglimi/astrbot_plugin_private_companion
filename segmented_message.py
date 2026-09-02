@@ -120,11 +120,12 @@ def split_llm_controlled_text(text: Any, *, marker: str = LLM_SEGMENT_MARKER) ->
 
 def _replace_reserved_tokens(value: str, *, marker: str) -> tuple[str, dict[str, int]]:
     counts = {"escaped": 0, "placeholder": 0, "marker": 0}
+    replacement_token = "\x00PRIVATE_COMPANION_SEGMENT_TOKEN\x00"
 
     def replace(pattern: re.Pattern[str], key: str, source: str) -> str:
         def repl(_match: re.Match[str]) -> str:
             counts[key] += 1
-            return " "
+            return replacement_token
 
         return pattern.sub(repl, source)
 
@@ -141,7 +142,18 @@ def _replace_reserved_tokens(value: str, *, marker: str) -> tuple[str, dict[str,
         else re.compile(re.escape(marker), flags=re.IGNORECASE)
     )
     cleaned = replace(marker_pattern, "marker", cleaned)
-    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    if any(counts.values()):
+        token_pattern = re.escape(replacement_token)
+        cleaned = re.sub(
+            rf"(?<=[^\s])[ \t]*(?:{token_pattern}[ \t]*)+(?=[^\s])",
+            " ",
+            cleaned,
+        )
+        cleaned = re.sub(
+            rf"[ \t]*(?:{token_pattern}[ \t]*)+",
+            "",
+            cleaned,
+        )
     return cleaned, counts
 
 
@@ -160,10 +172,28 @@ def parse_llm_segment_control(
     normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
     marker = str(marker or LLM_SEGMENT_MARKER).strip()
     if not normalized or not marker:
-        cleaned = normalized.strip()
         return LlmSegmentParseResult(
-            segments=(cleaned,) if cleaned else (),
-            sanitized_text=cleaned,
+            segments=(normalized,) if normalized else (),
+            sanitized_text=normalized,
+            boundary_kinds=(),
+        )
+    marker_pattern = (
+        _SPACED_LLM_SEGMENT_MARKER_PATTERN
+        if marker == LLM_SEGMENT_MARKER
+        else re.compile(re.escape(marker), flags=re.IGNORECASE)
+    )
+    if not any(
+        pattern.search(normalized)
+        for pattern in (
+            _ESCAPED_LLM_SEGMENT_MARKER_PATTERN,
+            _MARKDOWN_ESCAPED_LLM_SEGMENT_MARKER_PATTERN,
+            _PLACEHOLDER_PATTERN,
+            marker_pattern,
+        )
+    ):
+        return LlmSegmentParseResult(
+            segments=(normalized,),
+            sanitized_text=normalized,
             boundary_kinds=(),
         )
 
@@ -182,9 +212,9 @@ def parse_llm_segment_control(
 
     def append_current() -> bool:
         nonlocal pending_boundary, exact_count, recovered_count
-        body = "\n".join(current).strip()
+        body = "\n".join(current).strip("\n")
         current.clear()
-        if not body:
+        if not body.strip():
             return False
         if segments and pending_boundary:
             boundary_kinds.append(pending_boundary)
@@ -233,7 +263,7 @@ def parse_llm_segment_control(
             quoted_count += token_count
             if token_count and not cleaned.lstrip("> ").strip():
                 cleaned = ""
-        current.append(cleaned.rstrip())
+        current.append(cleaned)
         fence_state = next_fence_state
 
     appended_final = append_current()
@@ -247,8 +277,7 @@ def parse_llm_segment_control(
         recovered_count = 0
         boundary_kinds = []
 
-    sanitized = "\n".join(segments).strip()
-    sanitized = re.sub(r"\n{3,}", "\n\n", sanitized)
+    sanitized = "\n".join(segments).strip("\n")
     return LlmSegmentParseResult(
         segments=tuple(segments) if controlled else ((sanitized,) if sanitized else ()),
         sanitized_text=sanitized,
