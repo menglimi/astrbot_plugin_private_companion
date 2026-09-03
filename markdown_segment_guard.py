@@ -87,12 +87,14 @@ def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
 
 
 def _exclude_trailing_line_ending(text: str, start: int, end: int) -> int:
-    if end <= start:
-        return end
-    if text[max(start, end - 2) : end] == "\r\n":
-        return end - 2
-    if text[end - 1 : end] in {"\n", "\r"}:
-        return end - 1
+    while end > start:
+        if text[max(start, end - 2) : end] == "\r\n":
+            end -= 2
+            continue
+        if text[end - 1 : end] in {"\n", "\r"}:
+            end -= 1
+            continue
+        break
     return end
 
 

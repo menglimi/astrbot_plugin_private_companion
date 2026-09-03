@@ -119,6 +119,16 @@ class MarkdownSafeSegmentingTests(unittest.TestCase):
                 self.assertIn(renderer.render(self.quote), renderer.render(quote_segment))
                 self.assertIn(renderer.render(self.quote_list), renderer.render(list_segment))
 
+    def test_budget_merge_uses_one_markdown_paragraph_boundary(self) -> None:
+        harness = _Harness()
+        harness.segmented_proactive_max_segments = 3
+
+        segments = harness._split_proactive_text(self.source, event=_Event())
+
+        self.assertEqual(3, len(segments))
+        self.assertIn(f"{self.quote_list}\n\n别得意太早", segments[-1])
+        self.assertNotIn(f"{self.quote_list}\n\n\n", segments[-1])
+
     def test_fenced_and_unclosed_code_blocks_are_atomic(self) -> None:
         for closing in ("```\n\n结尾。", ""):
             with self.subTest(closed=bool(closing)):
