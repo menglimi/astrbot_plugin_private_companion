@@ -5,7 +5,7 @@ import asyncio
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from astrbot_plugin_private_companion.conversation_prompt_section import ExactText, PromptSection
 
@@ -192,6 +192,34 @@ def _plugin_harness() -> PrivateCompanionPlugin:
 
 
 class ProactiveChatIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_disabled_schedule_is_not_read_or_injected(self):
+        harness = _BridgeHarness()
+        harness.include_schedule_in_messages = False
+        harness._format_schedule_context_for_prompt = Mock(return_value="日程候选")
+        harness._sanitize_schedule_context_for_private_user = Mock(return_value="日程候选")
+
+        prepared = await harness._prepare_proactive_chat_bridge(SESSION_ID)
+
+        self.assertTrue(prepared["allowed"])
+        self.assertNotIn("当前生活片段候选", prepared["prompt_fragment"])
+        self.assertNotIn("日程候选", prepared["prompt_fragment"])
+        self.assertIn("当前收件人是小明", prepared["prompt_fragment"])
+        harness._format_schedule_context_for_prompt.assert_not_called()
+        harness._sanitize_schedule_context_for_private_user.assert_not_called()
+
+    async def test_schedule_gate_uses_active_persona_setting(self):
+        for configured, effective in ((True, False), (False, True)):
+            with self.subTest(configured=configured, effective=effective):
+                harness = _BridgeHarness()
+                harness.include_schedule_in_messages = configured
+                harness.persona_setting = lambda key, default: (
+                    effective if key == "include_schedule_in_messages" else getattr(harness, key, default)
+                )
+                prepared = await harness._prepare_proactive_chat_bridge(SESSION_ID)
+                self.assertTrue(prepared["allowed"])
+                self.assertEqual(effective, "当前生活片段候选" in prepared["prompt_fragment"])
+                self.assertEqual(effective, "刚收好手边的东西" in prepared["prompt_fragment"])
+
     async def test_stack_detection_reads_proactive_chat_send_context(self):
         namespace = {"__name__": "astrbot_plugin_proactive_chat.core.message_sender"}
         exec(

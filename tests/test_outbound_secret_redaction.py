@@ -76,5 +76,55 @@ class OutboundSecretRedactionTests(unittest.TestCase):
         self.assertNotIn("custom-secret-value-123456", cleaned[0]["text"])
         self.assertIn("模型可用", cleaned[0]["text"])
 
+    def test_trusted_domains_match_host_and_subdomains_not_lookalikes(self) -> None:
+        self.owner.outbound_secret_redaction_trusted_domains = [" PANEL.EXAMPLE.COM. "]
+        allowed = [
+            "https://panel.example.com/jump?access_token=subscription-only",
+            "https://sub.panel.example.com:8443/jump?token=subscription-only",
+        ]
+        blocked = [
+            "https://panel.example.com.evil.test/jump?token=subscription-only",
+            "https://evilpanel.example.com/jump?token=subscription-only",
+            "https://panel.example.com@evil.test/jump?token=subscription-only",
+            "https://user@panel.example.com/jump?token=subscription-only",
+            "https://panel.example.com:invalid/jump?token=subscription-only",
+            "https://panel.example.com\\@evil.test/jump?token=subscription-only",
+        ]
+        for url in allowed:
+            with self.subTest(url=url):
+                self.assertEqual(url, _redact_outbound_secrets(url, self.owner))
+        for url in blocked:
+            with self.subTest(url=url):
+                self.assertNotIn("subscription-only", _redact_outbound_secrets(url, self.owner))
+
+    def test_trusted_url_keeps_query_bytes_and_other_credentials_are_redacted(self) -> None:
+        self.owner.outbound_secret_redaction_trusted_domains = ["panel.example.com"]
+        url = "https://panel.example.com/sub?token=a%2Bb%3D%3D&key=value-123&key=second-456#anchor"
+        text = f"[订阅]({url})，password=outside-password\nBearer abcdefghijklmnop\nsk-testonly1234567890"
+        cleaned = _redact_outbound_secrets(text, self.owner)
+        self.assertIn(f"[订阅]({url})", cleaned)
+        for secret in ("outside-password", "abcdefghijklmnop", "sk-testonly1234567890"):
+            self.assertNotIn(secret, cleaned)
+
+    def test_known_configured_key_is_still_hidden_in_trusted_url(self) -> None:
+        self.owner.outbound_secret_redaction_trusted_domains = ["panel.example.com"]
+        url = "https://panel.example.com/sub?token=provider-secret-xyz987"
+        self.assertNotIn("provider-secret-xyz987", _redact_outbound_secrets(url, self.owner))
+
+    def test_nested_config_and_placeholder_like_text_do_not_change_matching(self) -> None:
+        self.owner.config["basic_config"] = {
+            "outbound_secret_redaction_trusted_domains": ["panel.example.com"]
+        }
+        url = "https://panel.example.com/sub?token=subscription-only"
+        text = f"__TRUSTED_OUTBOUND_URL_0__ {url}"
+        self.assertEqual(text, _redact_outbound_secrets(text, self.owner))
+
+    def test_trusted_domain_defaults_and_invalid_list_are_not_exempted(self) -> None:
+        url = "https://panel.example.com/sub?token=subscription-only"
+        for value in ([], "panel.example.com", ["*.example.com"], ["https://panel.example.com"]):
+            with self.subTest(value=value):
+                self.owner.outbound_secret_redaction_trusted_domains = value
+                self.assertNotIn("subscription-only", _redact_outbound_secrets(url, self.owner))
+
 if __name__ == "__main__":
     unittest.main()

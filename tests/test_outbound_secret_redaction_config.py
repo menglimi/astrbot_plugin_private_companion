@@ -15,6 +15,9 @@ class OutboundSecretRedactionConfigTests(unittest.TestCase):
         item = schema["basic_config"]["items"]["enable_outbound_secret_redaction"]
         self.assertEqual(item["type"], "bool")
         self.assertTrue(item["default"])
+        domains = schema["basic_config"]["items"]["outbound_secret_redaction_trusted_domains"]
+        self.assertEqual("list", domains["type"])
+        self.assertEqual([], domains["default"])
 
     def test_final_send_guard_is_configurable_in_both_panels(self) -> None:
         source = (ROOT / "main.py").read_text(encoding="utf-8")

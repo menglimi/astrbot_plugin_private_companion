@@ -485,34 +485,14 @@ def _redact_outbound_secrets(text: Any, owner: Any = None) -> str:
     if not cleaned:
         return ""
 
-    # A user may explicitly trust a private dashboard or subscription host.
-    # Protect those complete URLs while applying the general credential rules.
     trusted_domains = getattr(owner, "outbound_secret_redaction_trusted_domains", None)
     if trusted_domains is None and owner is not None:
-        config = getattr(owner, "config", {})
-        trusted_domains = config.get("outbound_secret_redaction_trusted_domains", []) if isinstance(config, dict) else []
+        trusted_domains = _flat_get(getattr(owner, "config", {}), "outbound_secret_redaction_trusted_domains", [])
     trusted = {
         str(domain or "").strip().lower().rstrip(".")
         for domain in (trusted_domains if isinstance(trusted_domains, (list, tuple, set)) else [])
         if str(domain or "").strip()
     }
-    protected_urls: dict[str, str] = {}
-    if trusted:
-        def protect_url(match: re.Match[str]) -> str:
-            raw = match.group(0)
-            try:
-                parsed = urlparse(raw)
-                hostname = (parsed.hostname or "").lower().rstrip(".")
-            except Exception:
-                hostname = ""
-            if not hostname or not any(hostname == domain or hostname.endswith("." + domain) for domain in trusted):
-                return raw
-            token = f"__TRUSTED_OUTBOUND_URL_{len(protected_urls)}__"
-            protected_urls[token] = raw
-            return token
-        cleaned = re.sub(r"https?://[^\s<>\"'“”‘’]+", protect_url, cleaned, flags=re.IGNORECASE)
-    for secret in _runtime_secret_values(owner) if owner is not None else []:
-        cleaned = cleaned.replace(secret, "[密钥已隐藏]")
     patterns = (
         (r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}", "Bearer [密钥已隐藏]"),
         (r"(?i)\b(?:sk|pk|rk|ghp|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{10,}", "[密钥已隐藏]"),
@@ -524,10 +504,36 @@ def _redact_outbound_secrets(text: Any, owner: Any = None) -> str:
             r"\1[密钥已隐藏]",
         ),
     )
-    for pattern, replacement in patterns:
-        cleaned = re.sub(pattern, replacement, cleaned)
-    for token, url in protected_urls.items():
-        cleaned = cleaned.replace(token, url)
+    def redact_fragment(value: str) -> str:
+        for pattern, replacement in patterns:
+            value = re.sub(pattern, replacement, value)
+        return value
+
+    if trusted:
+        # Process spans directly so user text cannot collide with placeholders.
+        fragments: list[str] = []
+        start = 0
+        for match in re.finditer(r"https?://[^\s<>\"'“”‘’，。；！？）)\]`]+", cleaned, re.IGNORECASE):
+            raw = match.group(0)
+            try:
+                parsed = urlparse(raw)
+                hostname = (parsed.hostname or "").lower().rstrip(".")
+                parsed.port  # Validate malformed ports before trusting the URL.
+                allowed = bool(hostname) and parsed.username is None and "\\" not in raw and any(
+                    hostname == domain or hostname.endswith("." + domain) for domain in trusted
+                )
+            except ValueError:
+                allowed = False
+            if allowed:
+                fragments.extend((redact_fragment(cleaned[start:match.start()]), raw))
+                start = match.end()
+        fragments.append(redact_fragment(cleaned[start:]))
+        cleaned = "".join(fragments)
+    else:
+        cleaned = redact_fragment(cleaned)
+    # A trusted link never exempts a credential already present in plugin config.
+    for secret in _runtime_secret_values(owner) if owner is not None else []:
+        cleaned = cleaned.replace(secret, "[密钥已隐藏]")
     return cleaned
 
 
