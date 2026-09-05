@@ -14676,6 +14676,7 @@ class PrivateCompanionPageApi(
 
         settings: dict[str, Any] = {
             "provider_config_mode": "quick",
+            "enable_llm_streaming": bool_value("enable_llm_streaming", False),
             "target_user_ids": target_ids,
             "target_platform": target_platform,
             "quiet_hours": text_value("quietHours", 80) or "23:00-08:30",
@@ -22754,6 +22755,7 @@ class PrivateCompanionPageApi(
             "enable_sensitive_model_replacement",
             "sensitive_replacement_keywords",
             "enable_deepseek_peak_replacement",
+            "enable_llm_streaming",
             "enable_body_monitor_integration",
             "deepseek_peak_windows",
             "deepseek_peak_timezone",
@@ -25025,6 +25027,9 @@ class PrivateCompanionPageApi(
             setattr(self.plugin, key, normalized)
             return
         self._set_config_value(key, value)
+        if key == "enable_llm_streaming":
+            self.plugin.enable_llm_streaming = self._normalize_bool_value(value)
+            return
         if key == "enable_body_monitor_integration":
             enabled = self._normalize_bool_value(value)
             self._forward_runtime_config_effects(key, enabled, overrides)
@@ -25147,6 +25152,9 @@ class PrivateCompanionPageApi(
             return
         if key == "enable_deepseek_peak_replacement":
             self.plugin.enable_deepseek_peak_replacement = self._normalize_bool_value(value)
+            return
+        if key == "enable_llm_streaming":
+            self.plugin.enable_llm_streaming = self._normalize_bool_value(value)
             return
         if key in {"deepseek_peak_windows", "deepseek_peak_timezone", "deepseek_peak_match_keywords"}:
             setattr(self.plugin, key, str(value or "").strip())
@@ -25984,6 +25992,7 @@ class PrivateCompanionPageApi(
             "enable_sensitive_model_replacement",
             "sensitive_replacement_keywords",
             "enable_deepseek_peak_replacement",
+            "enable_llm_streaming",
             "deepseek_peak_windows",
             "deepseek_peak_timezone",
             "deepseek_peak_match_keywords",

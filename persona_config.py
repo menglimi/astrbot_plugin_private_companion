@@ -170,6 +170,7 @@ COMMON_KEYS = frozenset(
         # Model replacement policy is shared; provider selection remains a
         # persona setting so different personas can choose different tasks.
         "provider_config_mode",
+        "enable_llm_streaming",
         "enable_deepseek_peak_replacement",
         "model_replacement_scope",
         "model_replacement_rules",

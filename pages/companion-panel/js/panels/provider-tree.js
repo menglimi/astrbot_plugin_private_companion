@@ -487,6 +487,44 @@ window.PrivateCompanionProviderTree = (() => {
     };
   }
 
+  function currentLlmStreamingValue(context) {
+    const { document, state } = context;
+    const settings = state.overview?.settings || {};
+    const checkbox = document.querySelector("[data-llm-streaming-enabled]");
+    return {
+      enabled: checkbox ? checkbox.checked : Boolean(settings.enable_llm_streaming),
+    };
+  }
+
+  function renderLlmStreamingCard(context) {
+    const { document, escapeHtml } = context;
+    const root = document.getElementById("llmStreamingCard");
+    if (!root) return;
+    const value = currentLlmStreamingValue(context);
+    root.innerHTML = `
+      <article class="deepseek-peak-card ${value.enabled ? "enabled" : ""}">
+        <div class="deepseek-peak-head">
+          <div>
+            <span class="deepseek-peak-kicker">传输 · 可选</span>
+            <h3>插件内部 LLM 流式</h3>
+            <p>插件后台任务（私下创作、日程生成、审校分析、续写等）改为流式逐块累积，避免大输出经 OpenAI 兼容中转单次下发时丢包或截断；Provider 不支持流式时自动回退原有非流式路径。</p>
+          </div>
+          <div class="deepseek-peak-head-actions">
+            <span class="deepseek-peak-status ${value.enabled ? "ready" : "off"}">${value.enabled ? "已启用" : "未启用"}</span>
+            <label class="switch deepseek-peak-switch"><input type="checkbox" data-llm-streaming-enabled ${value.enabled ? "checked" : ""} /><span></span></label>
+          </div>
+        </div>
+        <div class="deepseek-peak-note">独立于 AstrBot 全局「流式响应」，仅作用于插件自身调用；极短任务（max_tokens &lt; 512）仍走非流式以节省开销。</div>
+      </article>
+    `;
+    const enabled = root.querySelector("[data-llm-streaming-enabled]");
+    enabled?.addEventListener("change", () => {
+      root.querySelector(".deepseek-peak-card")?.classList.toggle("enabled", enabled.checked);
+      const label = root.querySelector(".deepseek-peak-status");
+      if (label) label.textContent = enabled.checked ? "已启用" : "未启用";
+    });
+  }
+
   function replacementProviderControl(context, value, selectAttr, inputAttr, placeholder) {
     const { state, escapeHtml } = context;
     const known = state.availableProviders.some((item) => item.id === value);
@@ -822,6 +860,7 @@ window.PrivateCompanionProviderTree = (() => {
     const providers = providerValuesForRender(context);
     renderProviderSummary(context, providers);
     renderDeepseekPeakCard(context);
+    renderLlmStreamingCard(context);
     renderModelReplacementCard(context);
     renderProviderFlow(context, providers);
     const entries = Object.entries(providerLabels)
@@ -879,6 +918,7 @@ window.PrivateCompanionProviderTree = (() => {
     currentProviderTokenLimitValues,
     currentProviderFallbackValues,
     currentDeepseekPeakValues,
+    currentLlmStreamingValue,
     currentModelReplacementValues,
     resolveProviderId,
     bindProviderTests,
