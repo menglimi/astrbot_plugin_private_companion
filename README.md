@@ -1,5 +1,8 @@
 # 我会永远陪着你
 
+> [!IMPORTANT]
+> **插件正在进行大规模重构。** 当前正持续调整模块划分、提示词编排、数据存储与扩展接口，重构期间功能行为、配置和兼容性可能发生变化。升级前请备份插件配置与数据，并阅读更新日志；遇到问题请附上插件版本、相关日志和复现步骤。
+
 <div align="center">
   <img src="./logo.png" alt="我会永远陪着你" width="180">
 </div>
@@ -16,7 +19,7 @@
 | --- | --- |
 | 插件名 | <code>astrbot_plugin_private_companion</code> |
 | 显示名 | 我会永远陪着你 |
-| 版本 | <code>6.4.5b</code> |
+| 版本 | <code>6.5.6</code> |
 | AstrBot | <code>>= 4.22.0</code> |
 | 官方声明平台 | <code>aiocqhttp</code>、<code>qq_official</code> |
 | 管理入口 | AstrBot 插件扩展页中的“陪伴面板”，或可选的独立 WebUI |
