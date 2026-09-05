@@ -1971,6 +1971,8 @@ def _initialize_group_and_provider_config(self: Any, c: Any) -> None:
     self.enable_memory_companion_private_recall = self._cfg_bool(c, "enable_memory_companion_private_recall", True)
     self.memory_companion_context_top_k = self._cfg_int(c, "memory_companion_context_top_k", 5, 1, 10)
     self.memory_companion_context_max_chars = self._cfg_int(c, "memory_companion_context_max_chars", 900, 240, 1800)
+    self.enable_memory_companion_local_fallback = self._cfg_bool(c, "enable_memory_companion_local_fallback", True)
+    self.memory_companion_local_fallback_max_chars = self._cfg_int(c, "memory_companion_local_fallback_max_chars", 600, 240, 1200)
     self.enable_bilibili_integration = self._cfg_bool(c, "enable_bilibili_integration", True)
     self.enable_bilibili_boredom_watch = self._cfg_bool(c, "enable_bilibili_boredom_watch", True)
     self.bilibili_boredom_min_interval_hours = self._cfg_int(c, "bilibili_boredom_min_interval_hours", 8, 2, 72)

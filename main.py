@@ -8162,31 +8162,7 @@ class PrivateCompanionPlugin(
                 )
 
     def _create_startup_background_task(self, label: str, operation: Any) -> asyncio.Task:
-        previous = self._startup_background_tasks.get(label)
-        if isinstance(previous, asyncio.Task) and not previous.done():
-            return previous
-        task = asyncio.create_task(operation())
-        self._startup_background_tasks[label] = task
-
-        def discard_finished_task(finished: asyncio.Task) -> None:
-            if self._startup_background_tasks.get(label) is finished:
-                self._startup_background_tasks.pop(label, None)
-            if finished.cancelled():
-                return
-            try:
-                error = finished.exception()
-            except asyncio.CancelledError:
-                return
-            if error is not None:
-                logger.warning(
-                    "startup background task failed: task=%s error=%s",
-                    _single_line(label, 100) or "startup",
-                    _single_line(error, 180),
-                    exc_info=(type(error), error, error.__traceback__),
-                )
-
-        task.add_done_callback(discard_finished_task)
-        return task
+        return task_manager(self).create_startup(label, operation)
 
     @asynccontextmanager
     async def _temporarily_release_data_lock(self):
@@ -8215,93 +8191,10 @@ class PrivateCompanionPlugin(
         *,
         label: str,
     ) -> asyncio.Task | None:
-        """Track delayed sends and short-lived jobs so plugin reload can cancel them."""
-        stop_event = getattr(self, "_stop_event", None)
-        if isinstance(stop_event, asyncio.Event) and stop_event.is_set():
-            closer = getattr(operation, "close", None)
-            if callable(closer):
-                closer()
-            logger.debug(
-                "插件已进入终止流程，跳过创建后台任务: task=%s",
-                _single_line(label, 100) or "background",
-            )
-            return None
-        try:
-            task = asyncio.create_task(operation)
-        except RuntimeError:
-            closer = getattr(operation, "close", None)
-            if callable(closer):
-                closer()
-            logger.warning(
-                "后台任务无法启动：当前没有运行中的事件循环 task=%s",
-                _single_line(label, 100) or "background",
-            )
-            return None
-        tasks = getattr(self, "_lifecycle_background_tasks", None)
-        if not isinstance(tasks, dict):
-            tasks = {}
-            self._lifecycle_background_tasks = tasks
-        tasks[task] = _single_line(label, 100) or "background"
-
-        def discard_finished_task(finished: asyncio.Task) -> None:
-            registry = getattr(self, "_lifecycle_background_tasks", None)
-            task_label = label
-            if isinstance(registry, dict):
-                task_label = registry.pop(finished, task_label)
-            if finished.cancelled():
-                return
-            try:
-                error = finished.exception()
-            except asyncio.CancelledError:
-                return
-            if error is not None:
-                logger.warning(
-                    "后台任务异常结束: task=%s error=%s",
-                    _single_line(task_label, 100) or "background",
-                    _single_line(error, 180),
-                    exc_info=(type(error), error, error.__traceback__),
-                )
-
-        task.add_done_callback(discard_finished_task)
-        tracker = getattr(self, "_track_final_response_background_task", None)
-        if callable(tracker):
-            tracker(task, label)
-        return task
+        return task_manager(self).create_lifecycle(operation, label=label)
 
     async def _cancel_lifecycle_background_tasks(self, timeout: float = 3.0) -> None:
-        registry = getattr(self, "_lifecycle_background_tasks", None)
-        if not isinstance(registry, dict) or not registry:
-            return
-        current = asyncio.current_task()
-        pending_tasks = {
-            task
-            for task in list(registry)
-            if isinstance(task, asyncio.Task) and task is not current and not task.done()
-        }
-        for task in pending_tasks:
-            task.cancel()
-        if pending_tasks:
-            done, pending = await asyncio.wait(pending_tasks, timeout=max(0.0, float(timeout)))
-            for task in done:
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-                except Exception:
-                    # The task completion callback logs the original exception.
-                    pass
-            if pending:
-                labels = sorted(
-                    {
-                        _single_line(registry.get(task), 100) or "background"
-                        for task in pending
-                    }
-                )
-                logger.warning(
-                    "终止后台任务超时,继续卸载: tasks=%s",
-                    "，".join(labels),
-                )
-        registry.clear()
+        await task_manager(self).cancel_lifecycle(timeout)
 
     def _log_registered_command_handlers(self) -> None:
         expected = {
@@ -14751,7 +14644,7 @@ class PrivateCompanionPlugin(
             add_spec(
                 "reality_touch.continuity",
                 "reality_touch",
-                69,
+                56,
                 lambda: self._format_reality_touch_continuity_context_prompt_section(
                     current_user
                 ),
@@ -14759,7 +14652,7 @@ class PrivateCompanionPlugin(
             add_spec(
                 "reality_touch.mobile_location",
                 "reality_touch",
-                68,
+                55,
                 lambda: self._format_mobile_user_location_context_prompt_section(
                     current_user
                 ),

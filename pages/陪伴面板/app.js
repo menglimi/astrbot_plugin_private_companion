@@ -1416,6 +1416,7 @@ const featureMeta = {
   enable_photo_text_action: ["主动拍照/生图", "允许 Bot 在合适的主动动机下生成真实图片；生图 API 地址、Key、模型和队列请到“模型配置 → 生图模型”配置。"],
   enable_screen_glance_action: ["主动识屏", "允许 Bot 在合适动机下低频看一眼屏幕，并统一管理沉默后的额外识屏。"],
   enable_poke_action: ["主动戳一戳", "允许 Bot 在想轻轻刷存在感或逗一下用户时主动戳一戳。"],
+  enable_reactive_poke: ["被动戳一戳", "允许 Bot 在被用户戳时以文字或 LLM 回复，并可能反戳回去。"],
   enable_voice_action: ["主动语音", "允许 Bot 在合适的主动场景里留一小句语音；需要当前会话有可用 TTS provider。"],
   enable_photo_reference_image: ["参考图一致性", "可选。自拍、人像、头像和角色表情包自动使用人设参考图或今日穿搭图保持外观；关闭后只按提示词生成。"],
   enable_creative_cover_generation: ["创作封面", "可选。作品写出正文后调用当前文生图后端生成封面，并按作品类型、基调和内容自动匹配画风。"],
@@ -1514,6 +1515,7 @@ const featureGroups = [
       "enable_group_injection_guard",
       "enable_group_wakeup_enhancement",
       "enable_group_member_profiles",
+      "enable_group_social_context",
       "enable_group_repeat_follow",
       "enable_atrelay_tools",
       "enable_cross_user_memory_bridge",
@@ -1628,12 +1630,14 @@ const featureStageKeySets = {
     "enable_group_companion",
     "enable_group_conversation_followup",
     "enable_group_air_reply_guard",
+    "enable_group_social_context",
     "enable_group_wakeup_enhancement",
     "enable_atrelay_tools",
     "enable_qzone_integration",
     "enable_photo_text_action",
     "enable_screen_glance_action",
     "enable_poke_action",
+    "enable_reactive_poke",
     "enable_voice_action",
     "enable_reply_interception_forward",
   ]),
@@ -1734,6 +1738,11 @@ const embeddedFeatureParentByKey = {
   enable_group_episode_memory: "enable_group_member_profiles",
   enable_group_relationship_graph: "enable_group_member_profiles",
   enable_worldbook_member_recognition: "enable_group_member_profiles",
+  enable_group_mood_detection: "enable_group_social_context",
+  enable_group_moments: "enable_group_social_context",
+  enable_group_roleplay_strength: "enable_group_social_context",
+  enable_group_joke_guard: "enable_group_social_context",
+  enable_group_moment_portrait: "enable_group_moments",
   group_repeat_trigger_threshold: "enable_group_repeat_follow",
   group_repeat_count_distinct_users_only: "enable_group_repeat_follow",
   enable_bilibili_boredom_watch: "enable_bilibili_integration",
@@ -2144,6 +2153,12 @@ const configLabels = {
   enable_group_scene_awareness: "群聊场景感知",
   enable_group_privacy_guard: "群隐私保护",
   enable_group_third_party_portrait_guard: "群聊第三方画像保护",
+  enable_group_social_context: "群聊氛围与接梗边界",
+  enable_group_mood_detection: "群聊氛围感知",
+  enable_group_moments: "名场面记忆",
+  enable_group_moment_portrait: "名场面互动线索",
+  enable_group_roleplay_strength: "扮演强度自适应",
+  enable_group_joke_guard: "玩笑边界护栏",
   forward_message_mode: "合并消息适配方式",
   forward_message_max_messages: "合并消息最多读取条数",
   forward_message_max_chars: "合并消息注入字数上限",
@@ -2529,6 +2544,16 @@ const configLabels = {
   screen_peek_cooldown_minutes: "主动识屏冷却分钟",
   poke_action_max_times: "单次戳一戳上限",
   poke_action_cooldown_minutes: "主动戳一戳冷却分钟",
+  reactive_poke_trigger_probability: "触发回复总概率",
+  reactive_poke_normal_reply_probability: "预设回复概率",
+  reactive_poke_back_probability: "反戳概率",
+  reactive_poke_super_poke_probability: "超级反戳概率",
+  reactive_poke_back_times: "普通反戳次数",
+  reactive_poke_super_poke_times: "超级反戳次数",
+  reactive_poke_interval: "反戳间隔秒数",
+  reactive_poke_normal_replies: "预设回复列表",
+  reactive_poke_prompts: "被戳提示词列表",
+  reactive_poke_back_prompts: "反戳提示词列表",
   voice_action_max_chars: "主动语音最大字数",
   active_projects: "进行中创作",
   project_count: "创作项目",
@@ -2962,6 +2987,11 @@ const configDescriptions = {
   enable_group_scene_awareness: "开启后，会判断当前这句话是在对 Bot、某个群友还是整个群说话，并结合上下文减少误接话。",
   enable_group_privacy_guard: "开启后，群聊回复会额外防止把私聊记忆、私下关系细节或只适合一对一场景的信息带进群里。",
   enable_group_third_party_portrait_guard: "开启后，被明确 @ 或引用 Bot 时会拦截询问其他群成员偏好、兴趣、习惯、口味或画像的消息；没有明确对象的省略主语问句不会触发。",
+  enable_group_social_context: "开启后，群聊回复会综合氛围感知、名场面记忆、扮演强度自适应与接梗边界护栏；默认关闭，各分项按需开启。",
+  enable_group_mood_detection: "识别群聊氛围标签（调侃、严肃、冷场、火药味等），供后续回复与观察参考。",
+  enable_group_moments: "记住群聊精彩片段，后续可自然回引或唤起。",
+  enable_group_roleplay_strength: "根据群聊氛围自动调节扮演夸张度与语气强度。",
+  enable_group_joke_guard: "识别玩笑边界，避免玩笑或吐槽过头冒犯群友。",
   group_interject_min_interval_minutes: "同一群两次主动插话之间的最小间隔。",
   group_interject_max_daily: "每个群每天最多允许几次主动插话。",
   group_repeat_trigger_threshold: "同一句话连续出现达到多少次后，才开始按概率跟读或打断。必须大于 2，默认 4；开启“复读只计不同用户”后，这里表示不同参与者数量。",
@@ -3373,6 +3403,7 @@ const featureSettingGroups = {
   enable_environment_change_proactive: ["environment_change_check_minutes", "environment_change_cooldown_minutes"],
   enable_yesterday_screen_diary_context: ["screen_diary_context_max_chars"],
   enable_group_companion: [],
+  enable_group_social_context: ["enable_group_mood_detection", "enable_group_roleplay_strength", "enable_group_moments", "enable_group_joke_guard"],
   enable_group_member_safety: ["group_member_safety_review_mode", "group_member_safety_hidden_marker_mode", "group_member_safety_strike_threshold", "group_member_safety_strike_window_days", "group_member_safety_block_hours", "group_member_safety_min_confidence", "group_member_safety_exempt_managers", "group_member_safety_audit_limit", "GROUP_MEMBER_SAFETY_PROVIDER_ID"],
   enable_group_image_understanding: ["enable_group_image_wakeup", "group_image_vision_wait_seconds", "group_image_max_images"],
   enable_group_conversation_followup: ["group_conversation_followup_seconds", "group_conversation_followup_max_turns", "GROUP_FOLLOWUP_JUDGE_PROVIDER_ID"],
@@ -3414,6 +3445,7 @@ const featureSettingGroups = {
   enable_photo_text_action: ["enable_user_requested_photo_generation", "allow_generate_photo_on_reaction_turns", "photo_generation_private_owner_max_daily", "photo_generation_private_friend_max_daily", "photo_generation_group_max_daily", "photo_generation_proactive_max_daily", "photo_generation_backend", "photo_action_max_daily", "proactive_photo_text_probability", "custom_photo_tool_name", "custom_photo_tool_prompt_param", "custom_photo_tool_kind_param", "custom_photo_tool_reference_param", "custom_photo_tool_extra_params", "COMFYUI_TEXT2IMG_WORKFLOW_NAME", "COMFYUI_SELFIE_WORKFLOW_NAME", "external_image_download_proxy", "external_image_download_use_environment_proxy", "enable_photo_reference_image", "photo_reference_catalog", "enable_group_nsfw_private_fallback", "group_nsfw_image_review_mode", "group_nsfw_image_review_sensitivity", "group_nsfw_image_review_min_confidence", "group_nsfw_image_review_timeout_seconds", "group_nsfw_image_review_max_dimension", "group_nsfw_image_review_failure_action", "group_nsfw_image_review_custom_prompt", "enable_daily_outfit_photo", "enable_creative_cover_generation", "daily_outfit_photo_prompt", "daily_outfit_rotation_days", "natural_language_photo_generation_mode", "command_photo_generation_max_daily", "photo_generation_trace_max_size_kb", "photo_generation_trace_backup_count", "enable_natural_language_photo_generation", "natural_language_photo_generation_max_daily", "natural_language_photo_extra_prompt", "comfyui_photo_wait_seconds", "enable_local_photo_load_guard", "local_photo_cpu_busy_percent", "local_photo_memory_busy_percent", "local_photo_defer_minutes", "photo_generation_prompt_format", "photo_generation_style", "photo_generation_style_custom_prompt", "photo_generation_negative_prompt_mode", "photo_generation_negative_prompt", "photo_generation_text2img_negative_prompt", "photo_generation_selfie_negative_prompt", "photo_generation_edit_negative_prompt", "photo_generation_fixed_prompt", "photo_generation_text2img_fixed_prompt", "photo_generation_selfie_fixed_prompt", "photo_generation_edit_fixed_prompt", "photo_generation_scene_presets", "enable_bot_relationship_network", "bot_relationship_cards"],
   enable_screen_glance_action: ["screen_peek_max_daily", "screen_peek_cooldown_minutes", "enable_goodnight_screen_check", "goodnight_screen_check_delay_minutes", "enable_unanswered_screen_peek_followup", "unanswered_screen_peek_after_minutes", "unanswered_screen_peek_cooldown_minutes"],
   enable_poke_action: ["poke_action_max_times", "poke_action_cooldown_minutes"],
+  enable_reactive_poke: ["reactive_poke_trigger_probability", "reactive_poke_normal_reply_probability", "reactive_poke_back_probability", "reactive_poke_super_poke_probability", "reactive_poke_back_times", "reactive_poke_super_poke_times", "reactive_poke_interval", "reactive_poke_normal_replies", "reactive_poke_prompts", "reactive_poke_back_prompts"],
   enable_voice_action: ["voice_action_max_chars"],
   enable_reading_archive_integration: ["enable_reading_archive_boredom_read", "enable_reading_archive_ask_recommendation", "enable_reading_archive_vision", "enable_reading_archive_page_comments", "enable_reading_archive_rating", "reading_archive_min_interval_hours", "reading_archive_max_photo_count", "reading_archive_ask_probability", "reading_archive_default_keywords", "reading_archive_blocked_tags", "enable_reading_archive_preference_influence", "reading_archive_preference_min_ratings", "reading_archive_preference_max_terms"],
   enable_reading_archive_boredom_read: ["reading_archive_min_interval_hours", "reading_archive_max_photo_count", "reading_archive_share_probability", "reading_archive_default_keywords", "reading_archive_blocked_tags", "enable_reading_archive_preference_influence", "reading_archive_preference_min_ratings", "reading_archive_preference_max_terms"],
@@ -3920,6 +3952,28 @@ const featureSettingSections = {
       keys: ["cross_user_memory_owner_only"],
     },
   ],
+  enable_group_social_context: [
+    {
+      title: "氛围感知",
+      note: "识别调侃、严肃、冷场、火药味等群聊氛围标签，供后续回复与观察参考。",
+      keys: ["enable_group_mood_detection"],
+    },
+    {
+      title: "名场面记忆",
+      note: "记住群聊精彩片段，后续可自然回引或唤起。",
+      keys: ["enable_group_moments", "enable_group_moment_portrait"],
+    },
+    {
+      title: "扮演强度自适应",
+      note: "根据群聊氛围自动调节扮演夸张度与语气强度。",
+      keys: ["enable_group_roleplay_strength"],
+    },
+    {
+      title: "玩笑边界护栏",
+      note: "识别玩笑边界，避免玩笑或吐槽过头冒犯群友。",
+      keys: ["enable_group_joke_guard"],
+    },
+  ],
   enable_group_slang_learning: [
     {
       title: "学习范围",
@@ -4179,6 +4233,23 @@ const featureSettingSections = {
       keys: ["poke_action_max_times", "poke_action_cooldown_minutes"],
     },
   ],
+  enable_reactive_poke: [
+    {
+      title: "触发概率",
+      note: "控制被戳时触发回复和反戳的各项概率。",
+      keys: ["reactive_poke_trigger_probability", "reactive_poke_normal_reply_probability", "reactive_poke_back_probability", "reactive_poke_super_poke_probability"],
+    },
+    {
+      title: "反戳次数与间隔",
+      note: "控制普通和超级反戳的次数及动作间隔。",
+      keys: ["reactive_poke_back_times", "reactive_poke_super_poke_times", "reactive_poke_interval"],
+    },
+    {
+      title: "回复与提示词",
+      note: "预设回复和 LLM 提示词，每行一条。",
+      keys: ["reactive_poke_normal_replies", "reactive_poke_prompts", "reactive_poke_back_prompts"],
+    },
+  ],
   enable_voice_action: [
     {
       title: "主动语音长度",
@@ -4271,6 +4342,11 @@ const featureSettingTypes = {
   qzone_life_publish_windows: { type: "textarea" },
   enable_daily_plan: { type: "checkbox" },
   enable_group_image_wakeup: { type: "checkbox" },
+  enable_group_mood_detection: { type: "checkbox" },
+  enable_group_moments: { type: "checkbox" },
+  enable_group_moment_portrait: { type: "checkbox" },
+  enable_group_roleplay_strength: { type: "checkbox" },
+  enable_group_joke_guard: { type: "checkbox" },
   daily_plan_item_count: { type: "number", min: 5, max: 24, step: 1 },
   include_schedule_in_messages: { type: "checkbox" },
   enable_detail_enhancement: { type: "checkbox" },
@@ -4332,6 +4408,16 @@ const featureSettingTypes = {
   goodnight_screen_check_delay_minutes: { type: "number", min: 1, max: 180, step: 1 },
   poke_action_max_times: { type: "number", min: 1, max: 3, step: 1 },
   poke_action_cooldown_minutes: { type: "number", min: 0, max: 1440, step: 5 },
+  reactive_poke_trigger_probability: { type: "number", min: 0, max: 1, step: 0.05 },
+  reactive_poke_normal_reply_probability: { type: "number", min: 0, max: 1, step: 0.05 },
+  reactive_poke_back_probability: { type: "number", min: 0, max: 1, step: 0.05 },
+  reactive_poke_super_poke_probability: { type: "number", min: 0, max: 1, step: 0.01 },
+  reactive_poke_back_times: { type: "number", min: 1, max: 10, step: 1 },
+  reactive_poke_super_poke_times: { type: "number", min: 1, max: 20, step: 1 },
+  reactive_poke_interval: { type: "number", min: 0.1, max: 5, step: 0.1 },
+  reactive_poke_normal_replies: { type: "textarea" },
+  reactive_poke_prompts: { type: "textarea" },
+  reactive_poke_back_prompts: { type: "textarea" },
   voice_action_max_chars: { type: "number", min: 6, max: 80, step: 2 },
   rest_reply_awake_grace_minutes: { type: "number", min: 0, max: 240, step: 5 },
   busy_reply_min_delay_seconds: { type: "number", min: 0, max: 900, step: 15 },
@@ -8883,6 +8969,20 @@ const setupGuideAdvancedItems = {
         { key: "enable_group_episode_memory", type: "bool", kind: "feature", label: "群片段记忆", description: "把一段群聊整理成小事件。" },
         { key: "GROUP_SLANG_PROVIDER_ID", type: "provider", label: "黑话释义模型", description: "整理群黑话含义时使用。" },
         { key: "GROUP_EPISODE_PROVIDER_ID", type: "provider", label: "群片段整理模型", description: "整理群聊片段/话题时使用。" },
+      ],
+    },
+    {
+      key: "enable_group_social_context",
+      title: "群聊氛围与接梗边界",
+      ask: "是否让 Bot 感知群聊氛围、记住名场面并自动调节扮演强度？",
+      description: "综合氛围感知、名场面记忆、扮演强度自适应与接梗边界护栏。想找“怎么让它更懂群聊气氛、记住名场面、说话不过头”，看这里。",
+      caution: "默认关闭；开启后按需启用各分项，避免过度注入。",
+      kind: "feature",
+      settings: [
+        { key: "enable_group_mood_detection", type: "bool", kind: "feature", label: "群聊氛围感知", description: "识别调侃、严肃、冷场、火药味等氛围标签。" },
+        { key: "enable_group_moments", type: "bool", kind: "feature", label: "名场面记忆", description: "记住群聊精彩片段，后续可自然回引。" },
+        { key: "enable_group_roleplay_strength", type: "bool", kind: "feature", label: "扮演强度自适应", description: "根据群聊氛围调节夸张度与语气。" },
+        { key: "enable_group_joke_guard", type: "bool", kind: "feature", label: "玩笑边界护栏", description: "自动识别玩笑边界，避免冒犯群友。" },
       ],
     },
     {
@@ -28957,6 +29057,7 @@ function featureDependencyLines(key) {
   if (key === "enable_tts_enhancement") dependencies.push(["依赖", "当前会话 TTS provider"]);
   if (key === "enable_screen_glance_action") dependencies.push(["依赖", "screen_companion 屏幕观察能力"]);
   if (key === "enable_poke_action") dependencies.push(["依赖", "当前平台支持戳一戳"]);
+  if (key === "enable_reactive_poke") dependencies.push(["依赖", "当前平台支持戳一戳"]);
   if (key === "enable_voice_action") dependencies.push(["依赖", "当前会话 TTS provider"]);
   if (key === "enable_yesterday_screen_diary_context") dependencies.push(["依赖", "screen_companion 昨日观察日记"]);
   if (key === "enable_livingmemory_integration") {
@@ -29648,7 +29749,7 @@ function featureImpactLines(key) {
     lines.push(["场景", "群回复 / 群主动 / 私聊主动"]);
   } else if (key === "enable_tts_enhancement") {
     lines.push(["场景", "私聊回复 / 群聊回复 / 可选全部私聊主动"]);
-  } else if (["enable_screen_glance_action", "enable_poke_action", "enable_voice_action"].includes(key)) {
+  } else if (["enable_screen_glance_action", "enable_poke_action", "enable_reactive_poke", "enable_voice_action"].includes(key)) {
     lines.push(["场景", "私聊主动动作"]);
   } else if (key.startsWith("enable_group_") || key === "enable_atrelay_tools" || key === "enable_cross_user_memory_bridge" || key === "enable_worldbook_member_recognition") {
     lines.push(["场景", "群聊 / 转述 / 关系网"]);

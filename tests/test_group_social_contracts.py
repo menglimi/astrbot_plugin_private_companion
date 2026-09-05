@@ -20,6 +20,7 @@ from astrbot_plugin_private_companion.domains.social.roleplay_strength import (
 )
 from astrbot_plugin_private_companion.domains.social.group_moments import (
     extract_group_moment_candidates,
+    extract_moment_portrait_candidates,
     select_group_moments_for_prompt,
     settle_group_moments,
 )
@@ -63,10 +64,12 @@ class GroupSocialHarness(GroupObservationMixin):
             "enable_group_roleplay_strength": False,
             "enable_group_moments": False,
             "enable_group_joke_guard": False,
+            "enable_group_moment_portrait": False,
         }
         self.messages: list[dict] = []
         self.groups: dict[str, dict] = {}
         self.saved_sections: list[object] = []
+        self.data: dict[str, object] = {"users": {}}
 
     def persona_setting(self, key: str, default=None):
         return self._settings.get(key, default)
@@ -318,7 +321,12 @@ class GroupObservationMountTests(unittest.TestCase):
         self.harness._append_group_social_context_sections(group, sections, sender_id="b", now=T0)
         titles = [section.title for section in sections]
         self.assertEqual(
-            {"group.social_mood", "group.social_moments", "group.roleplay_strength"},
+            {
+                "group.social_soft_reference",
+                "group.social_mood",
+                "group.social_moments",
+                "group.roleplay_strength",
+            },
             {section.key for section in sections},
         )
         self.assertTrue(all(section.source == "group_observation" for section in sections))
@@ -381,6 +389,84 @@ class GroupObservationMountTests(unittest.TestCase):
         boundary = self.harness.groups["group-x"]["social_joke_boundary"]
         self.assertGreaterEqual(boundary["members"]["u9"]["sensitivity"], 12)
         self.assertIn({"groups"}, self.harness.saved_sections)
+
+
+class MomentPortraitContractTests(unittest.TestCase):
+    """Group interaction evidence remains scoped and provisional."""
+
+    def setUp(self) -> None:
+        self.harness = GroupSocialHarness()
+
+    def test_extract_moment_portrait_infers_preference_from_spark(self):
+        moments = {
+            "version": "group_moments.v1",
+            "moments": [
+                {"hash": "a", "sender": "u1", "text": "哈哈笑死我了", "ts": T0, "expires_at": T0 + 86400, "score": 3.0, "reasons": ["spark"]},
+            ],
+        }
+        candidates = extract_moment_portrait_candidates(moments, now=T0 + 10)
+        self.assertEqual(1, len(candidates))
+        self.assertEqual("u1", candidates[0]["sender"])
+        self.assertEqual("communication_preference", candidates[0]["dimension"])
+        self.assertIn("笑死", candidates[0]["claim"])
+
+    def test_extract_moment_portrait_infers_boundary_from_discomfort(self):
+        moments = {
+            "version": "group_moments.v1",
+            "moments": [
+                {"hash": "b", "sender": "u2", "text": "别拿我开玩笑", "ts": T0, "expires_at": T0 + 86400, "score": 2.0, "reasons": ["spark"]},
+            ],
+        }
+        candidates = extract_moment_portrait_candidates(moments, now=T0 + 10)
+        self.assertEqual(1, len(candidates))
+        self.assertEqual("boundary", candidates[0]["dimension"])
+
+    def test_extract_moment_portrait_skips_low_score_noise(self):
+        moments = {
+            "version": "group_moments.v1",
+            "moments": [
+                {"hash": "c", "sender": "u3", "text": "普通消息", "ts": T0, "expires_at": T0 + 86400, "score": 0.2, "reasons": []},
+            ],
+        }
+        self.assertEqual([], extract_moment_portrait_candidates(moments, now=T0 + 10))
+
+    def test_moment_evidence_stays_in_source_group(self):
+        self.harness._settings["enable_group_moments"] = True
+        self.harness._settings["enable_group_moment_portrait"] = True
+        self.harness.data["users"] = {"u1": {"umo": "qq:FriendMessage:u1"}}
+        self.harness.messages = [
+            {"sender_id": "u1", "name": "漂", "text": "这谁顶得住", "ts": T0},
+        ]
+        group: dict = {}
+        self.harness._update_group_social_context(group, now=T0)
+        user = self.harness.data["users"]["u1"]
+        self.assertNotIn("companion_memory", user)
+        self.assertTrue(group["moment_portrait_candidates"])
+        sections = []
+        self.harness._append_group_social_context_sections(group, sections, sender_id="u1", now=T0)
+        evidence = next(s for s in sections if s.key == "group.moment_interaction_evidence")
+        self.assertIn("单次互动线索", evidence.content)
+        self.assertIn("不能据此推定长期偏好", evidence.content)
+        for other_group, sender, now in (({}, "u1", T0), (group, "u2", T0), (group, "u1", T0 + 8 * 86400)):
+            sections = []
+            self.harness._append_group_social_context_sections(other_group, sections, sender_id=sender, now=now)
+            self.assertNotIn("group.moment_interaction_evidence", {s.key for s in sections})
+        self.harness._settings["enable_group_moment_portrait"] = False
+        sections = []
+        self.harness._append_group_social_context_sections(group, sections, sender_id="u1", now=T0)
+        self.assertNotIn("group.moment_interaction_evidence", {s.key for s in sections})
+        self.harness._update_group_social_context(group, now=T0)
+        self.assertNotIn("moment_portrait_candidates", group)
+
+    def test_settle_moment_portraits_does_not_write_unknown_users(self):
+        self.harness._settings["enable_group_moments"] = True
+        self.harness._settings["enable_group_moment_portrait"] = True
+        self.harness.messages = [
+            {"sender_id": "ghost", "name": "幽灵", "text": "经典名场面", "ts": T0},
+        ]
+        group: dict = {}
+        self.harness._update_group_social_context(group, now=T0)
+        self.assertNotIn("ghost", self.harness.data["users"])
 
 
 if __name__ == "__main__":

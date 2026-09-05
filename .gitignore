@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.pytest_astrbot312/
 
 # Local tooling artifacts
 *.orig
