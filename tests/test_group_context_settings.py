@@ -73,6 +73,8 @@ class GroupContextSettingsTests(unittest.TestCase):
                 _filtered_group_recent_messages=lambda value: value["recent_messages"],
                 _environment_fromtimestamp=datetime.fromtimestamp,
                 _effective_plugin_persona_id=lambda: "bot",
+                _format_livingmemory_guidance=lambda *_args, **_kwargs: "",
+                _memory_companion_should_defer_prompt_section=lambda *_args, **_kwargs: True,
             )
 
             context = GroupObservationMixin._format_group_passive_reply_context_for_prompt(

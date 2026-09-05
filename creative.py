@@ -503,9 +503,25 @@ class CreativeMixin:
         if not isinstance(pool, list):
             pool = []
             project["creative_memory_pool"] = pool
-        valid = [item for item in pool if isinstance(item, dict)]
-        if len(valid) != len(pool):
-            pool[:] = valid
+        project_id = str(project.get("id") or "")
+        valid: list[dict[str, Any]] = []
+        for item in pool:
+            if not isinstance(item, dict):
+                continue
+            owner = str(item.get("project_id") or "")
+            if owner and owner != project_id:
+                continue
+            if not owner:
+                item["project_id"] = project_id
+            valid.append(item)
+        valid.sort(
+            key=lambda item: (
+                _safe_int(item.get("importance"), 2, 1, 5),
+                _safe_float(item.get("created_at"), 0.0),
+            ),
+            reverse=True,
+        )
+        pool[:] = valid[:CREATIVE_MEMORY_MAX_ENTRIES]
         return pool
 
     def _extract_creative_keywords(self, text: Any, *, limit: int = 10) -> list[str]:

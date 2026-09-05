@@ -2,23 +2,23 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
-import os
 from pathlib import Path
+
+import pytest
 
 
 COMPANION_ROOT = Path(__file__).resolve().parents[1]
 PEIBAN_ROOT = COMPANION_ROOT.parents[1]
 CONTRACT_PATH = COMPANION_ROOT / "bot_personal_contract.py"
-_MEMORY_CONTRACT_CANDIDATES = (
-    Path(os.environ["ASTRBOT_MEMORY_PLUGIN_ROOT"]) / "core" / "bot_personal_contract.py"
-    if os.environ.get("ASTRBOT_MEMORY_PLUGIN_ROOT")
-    else COMPANION_ROOT / ".missing-memory-root" / "core" / "bot_personal_contract.py",
-    COMPANION_ROOT.parent / "memory" / "core" / "bot_personal_contract.py",
-    PEIBAN_ROOT / "astrbot_plugin_memory_companion-main" / "core" / "bot_personal_contract.py",
-    COMPANION_ROOT.parent / "astrbot_plugin_remember_you" / "core" / "bot_personal_contract.py",
-    COMPANION_ROOT.parent / "我会牢牢记住你" / "core" / "bot_personal_contract.py",
-)
-MEMORY_CONTRACT_PATH = next((path for path in _MEMORY_CONTRACT_CANDIDATES if path.is_file()), _MEMORY_CONTRACT_CANDIDATES[0])
+from external_memory_dependency import resolve_memory_plugin_root
+
+
+_memory_resolution = resolve_memory_plugin_root(COMPANION_ROOT)
+if _memory_resolution.root is None:
+    pytest.skip(_memory_resolution.detail, allow_module_level=True)
+MEMORY_ROOT = _memory_resolution.root
+MEMORY_CONTRACT_PATH = MEMORY_ROOT / "core" / "bot_personal_contract.py"
+
 _SHARED_CONTRACT_CANDIDATES = (
     PEIBAN_ROOT / "doc" / "shared" / "bot_personal_contract.py",
     MEMORY_CONTRACT_PATH,
@@ -38,12 +38,19 @@ contract = load_contract(CONTRACT_PATH, "companion_bot_personal_contract")
 memory_contract = load_contract(MEMORY_CONTRACT_PATH, "memory_bot_personal_contract")
 
 
+def _normalized_contract_bytes(path: Path) -> bytes:
+    text = path.read_text(encoding="utf-8")
+    return text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+
+
 def test_contract_bytes_match_authority_and_other_side():
-    expected = SHARED_CONTRACT_PATH.read_bytes()
-    assert CONTRACT_PATH.read_bytes() == expected
-    assert MEMORY_CONTRACT_PATH.read_bytes() == expected
-    assert hashlib.sha256(CONTRACT_PATH.read_bytes()).digest() == hashlib.sha256(
-        MEMORY_CONTRACT_PATH.read_bytes()
+    expected = _normalized_contract_bytes(SHARED_CONTRACT_PATH)
+    companion_bytes = _normalized_contract_bytes(CONTRACT_PATH)
+    memory_bytes = _normalized_contract_bytes(MEMORY_CONTRACT_PATH)
+    assert companion_bytes == expected
+    assert memory_bytes == expected
+    assert hashlib.sha256(companion_bytes).digest() == hashlib.sha256(
+        memory_bytes
     ).digest()
 
 

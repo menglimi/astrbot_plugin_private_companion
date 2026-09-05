@@ -8729,6 +8729,15 @@
           "enable_group_social_context": true
         }
       },
+      "enable_group_moment_portrait": {
+        "description": "名场面互动线索",
+        "type": "bool",
+        "hint": "从本群名场面提取当前说话人的表达与不适线索，仅在本群作为临时上下文参考；不写入私聊记忆或长期画像。",
+        "default": false,
+        "condition": {
+          "enable_group_moments": true
+        }
+      },
       "enable_group_joke_guard": {
         "description": "群聊接梗边界护栏",
         "type": "bool",

@@ -55,6 +55,56 @@ class UserRequestedPhotoGenerationTests(unittest.IsolatedAsyncioTestCase):
         )
         return plugin
 
+    def _nai_direct_plugin(
+        self, *, nai_available: bool = True
+    ) -> PrivateCompanionPlugin:
+        plugin = self._plugin()
+        plugin._user_requested_photo_generation_allowed = (
+            lambda _event=None, **_kwargs: True
+        )
+        plugin.photo_generation_backend = "nai"
+        # 无 Image Companion 插件（停用/未安装）时桥解析返回 None。
+        plugin._image_companion_api = lambda: None
+        plugin._image_companion_available = lambda: False
+        plugin._nai_image_available = lambda: nai_available
+        return plugin
+
+    def test_nai_direct_backend_keeps_photo_tool_without_image_companion(self) -> None:
+        plugin = self._nai_direct_plugin()
+        event = _FakeEvent()
+
+        self.assertTrue(plugin._nai_image_selected())
+        self.assertTrue(plugin._photo_generation_runtime_available())
+        self.assertTrue(plugin._user_photo_generation_prompt_enabled(event))
+
+        req = SimpleNamespace(
+            func_tool=ToolSet([_tool("pc_generate_photo"), _tool("other_tool")])
+        )
+        self.assertFalse(plugin._scope_photo_generation_tool_for_request(req, event))
+        self.assertIsNotNone(req.func_tool.get_tool("pc_generate_photo"))
+        self.assertIsNotNone(req.func_tool.get_tool("other_tool"))
+
+    def test_nai_direct_backend_strips_photo_tool_when_nai_plugin_missing(self) -> None:
+        plugin = self._nai_direct_plugin(nai_available=False)
+        event = _FakeEvent()
+
+        self.assertFalse(plugin._photo_generation_runtime_available())
+        self.assertFalse(plugin._user_photo_generation_prompt_enabled(event))
+
+        original = ToolSet([_tool("pc_generate_photo"), _tool("other_tool")])
+        req = SimpleNamespace(func_tool=original)
+        self.assertTrue(plugin._scope_photo_generation_tool_for_request(req, event))
+        self.assertIsNone(req.func_tool.get_tool("pc_generate_photo"))
+        self.assertIsNotNone(req.func_tool.get_tool("other_tool"))
+        self.assertIsNotNone(original.get_tool("pc_generate_photo"))
+
+    def test_non_nai_backend_still_requires_image_companion(self) -> None:
+        plugin = self._nai_direct_plugin()
+        plugin.photo_generation_backend = "external"
+
+        self.assertFalse(plugin._nai_image_selected())
+        self.assertFalse(plugin._photo_generation_runtime_available())
+
     def test_passive_request_removes_photo_tool_but_keeps_other_tools(self) -> None:
         plugin = self._plugin()
         original = ToolSet([_tool("pc_generate_photo"), _tool("other_tool")])

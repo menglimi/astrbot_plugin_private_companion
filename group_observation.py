@@ -138,6 +138,7 @@ from .domains.social.group_mood import (
 from .domains.social.roleplay_strength import project_roleplay_strength
 from .domains.social.group_moments import (
     extract_group_moment_candidates,
+    extract_moment_portrait_candidates,
     select_group_moments_for_prompt,
     settle_group_moments,
 )
@@ -148,6 +149,7 @@ from .domains.social.joke_boundary import (
 from .group_prompt_context import (
     build_group_prompt_context,
 )
+from .group_addressing_rules import group_message_addresses_bot
 from .segmented_message import sanitize_llm_segment_control_tokens
 from .planning import (
     build_daily_plan_prompt,
@@ -1656,29 +1658,11 @@ class GroupObservationMixin:
 
     def _group_observed_message_addresses_bot(self, item: dict[str, Any]) -> bool:
         """Return whether the recorded scene actually points at the Bot."""
-        if not isinstance(item, dict):
-            return False
-        talking_to = _single_line(item.get("talking_to"), 40).lower()
-        trigger = _single_line(item.get("scene_trigger"), 40).lower()
-        at_targets = item.get("at_targets") if isinstance(item.get("at_targets"), list) else []
-        if talking_to == "bot" or trigger in {
-            "at_bot",
-            "reply_bot",
-            "mention_bot_name",
-            "bot_conversation_followup",
-        } or trigger.startswith("group_wakeup_"):
-            return True
-        if any(isinstance(target, dict) and bool(target.get("is_bot")) for target in at_targets):
-            return True
-        if talking_to not in {"", "group", "bot"} or trigger in {"at_other", "reply_other"}:
-            return False
-        if at_targets:
-            # Structured targets exist and none of them is the Bot.
-            return False
-        text = _single_line(item.get("text"), 140)
-        folded = text.casefold()
-        markers = [_persona_value(self, "bot_name", ""), "bot", "机器人", "小星"]
-        return any(str(marker or "").strip().casefold() in folded for marker in markers if str(marker or "").strip())
+        return group_message_addresses_bot(
+            item,
+            bot_markers=(_persona_value(self, "bot_name", ""), "bot", "机器人", "小星"),
+            normalize=_single_line,
+        )
 
     def _group_bot_harassment_candidate(
         self,
@@ -2537,9 +2521,13 @@ class GroupObservationMixin:
                 self._update_group_mood(group, now=now)
             except Exception as exc:
                 logger.debug("[PrivateCompanion] 群聊氛围感知更新失败: %s", _single_line(exc, 120))
+        if not (_persona_value(self, "enable_group_moments", False) and _persona_value(self, "enable_group_moment_portrait", False)):
+            group.pop("moment_portrait_candidates", None)
         if _persona_value(self, "enable_group_moments", False):
             try:
                 self._update_group_moments(group, now=now)
+                if _persona_value(self, "enable_group_moment_portrait", False):
+                    self._update_group_moment_portrait_candidates(group, now=now)
             except Exception as exc:
                 logger.debug("[PrivateCompanion] 群聊名场面更新失败: %s", _single_line(exc, 120))
         if _persona_value(self, "enable_group_joke_guard", False):
@@ -2566,6 +2554,13 @@ class GroupObservationMixin:
             candidates=candidates,
             now=now,
         )
+
+    def _update_group_moment_portrait_candidates(self, group: dict[str, Any], *, now: float) -> None:
+        """Keep provisional interaction evidence inside its source group."""
+        moments = group.get("social_moments")
+        candidates = extract_moment_portrait_candidates(moments, now=now)
+        group["moment_portrait_candidates"] = candidates
+
 
     def _update_group_joke_boundary(self, group: dict[str, Any], *, now: float) -> None:
         messages = self._filtered_group_recent_messages(group)[-16:]
@@ -2706,8 +2701,13 @@ class GroupObservationMixin:
         sender_id: str = "",
         now: float | None = None,
     ) -> None:
-        """被动管线注入：氛围摘要 / 名场面 / 扮演强度 / 玩笑边界提醒。"""
+        """被动管线注入：氛围摘要 / 名场面 / 扮演强度 / 玩笑边界提醒。
+
+        这些段只作为当下群聊语感的软参考，统一在段首附一句整体引导，
+        明确它们不覆盖人物画像与长期记忆，仅调节语气与接梗分寸。
+        """
         now = _now_ts() if now is None else max(0.0, _safe_float(now, 0))
+        start = len(sections)
         mood = group.get("social_mood") if isinstance(group.get("social_mood"), dict) else None
         if mood and _persona_value(self, "enable_group_mood_detection", False):
             mood_section = self._group_social_mood_prompt_section(mood, now=now)
@@ -2722,6 +2722,19 @@ class GroupObservationMixin:
             )
             if moments_section is not None:
                 sections.append(moments_section)
+            if sender_id and _persona_value(self, "enable_group_moment_portrait", False):
+                candidates = extract_moment_portrait_candidates(moments, now=now)
+                claims = [
+                    item["claim"] for item in candidates
+                    if item["sender"] == str(sender_id)
+                ]
+                if claims:
+                    sections.append(prompt_section(
+                        key="group.moment_interaction_evidence",
+                        title="当前群成员互动线索",
+                        source="group_observation",
+                        content="\n".join(claims) + "\n这些只是本群单次互动线索，结合原话和当前语境理解；不能据此推定长期偏好、身份或在其他会话中的边界。",
+                    ))
         if _persona_value(self, "enable_group_roleplay_strength", False) and mood:
             expression_band = "relaxed"
             users = self.data.get("users", {}) if isinstance(getattr(self, "data", None), dict) else {}
@@ -2750,6 +2763,19 @@ class GroupObservationMixin:
                 )
                 if joke_section is not None:
                     sections.append(joke_section)
+        if len(sections) > start:
+            sections.insert(
+                start,
+                prompt_section(
+                    key="group.social_soft_reference",
+                    title="群聊社交语境（整体软参考）",
+                    source="group_observation",
+                    content=(
+                        "以下氛围、名场面、扮演强度与玩笑边界只描述群聊当下的气氛和共同回忆，均为软参考，"
+                        "用于调节表达语气与接梗分寸；它们不高于你对群友的持久画像与长期记忆，也不单独压制回复。"
+                    ),
+                ),
+            )
 
     async def _note_group_joke_boundary_recall(self, group_id: str, sender_id: str) -> bool:
         """群聊撤回事件 → 接梗边界 recall 信号（受 enable_group_joke_guard 控制）。"""

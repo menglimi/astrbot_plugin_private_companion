@@ -17,6 +17,11 @@ if str(ROOT) not in sys.path:
 
 from emotion_event_ledger import record_recent_emotion_event  # noqa: E402
 from emotion_targeting import classify_emotion_target
+from tests.emotion_eval_cases import (
+    EMOTION_EVAL_SCHEMA_VERSION,
+    build_emotion_eval_cases,
+    emotion_eval_fingerprint,
+)
 
 
 def _single_line(value: Any, limit: int = 80) -> str:
@@ -181,7 +186,12 @@ class EmotionE7TargetAttributionTests(unittest.TestCase):
         self.assertEqual(observed["event_id"], revised["correction_of"])
         self.assertEqual("bot", revised["target_ref"]["kind"])
 
-    def test_shared_evaluation_fixture_is_exactly_the_120_case_memory_blob(self) -> None:
-        payload = (ROOT / "tests" / "emotion_eval_cases.py").read_bytes()
-        blob_hash = hashlib.sha1(f"blob {len(payload)}\0".encode("ascii") + payload).hexdigest()
-        self.assertEqual("a5510f6e1dc1b75c1abce97194271bc2ccbf6eb4", blob_hash)
+    def test_shared_evaluation_fixture_has_stable_semantics(self) -> None:
+        cases = build_emotion_eval_cases()
+        self.assertEqual(EMOTION_EVAL_SCHEMA_VERSION, "emotion_eval_case.v1")
+        self.assertEqual(120, len(cases))
+        self.assertEqual(120, len({case["case_id"] for case in cases}))
+        self.assertEqual(
+            "d74d47eebfd26ecbaef3d013d56c1add1602401104a3d991f66f30921225ba99",
+            emotion_eval_fingerprint(),
+        )

@@ -167,10 +167,7 @@ class AgendaRuntimeMixin:
         formal["source"] = "calendar_candidate_confirmation"
         formal["confirmed_candidate_id"] = str(candidate.get("candidate_id") or "")
         formal["confirmed_at"] = str(candidate.get("updated_at") or self._agenda_now().isoformat(timespec="seconds"))
-        try:
-            return self._agenda_upsert_calendar_record(formal)
-        except Exception:
-            return None
+        return self._agenda_upsert_calendar_record(formal)
 
     def _agenda_observe_calendar_message(
         self,

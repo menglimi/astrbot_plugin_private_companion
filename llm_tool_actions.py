@@ -81,6 +81,8 @@ from .reaction_expression import (
 )
 from .reaction_asset_library import ReactionAssetLibrary, get_reaction_asset_library
 from .logging_util import get_module_logger
+from .interaction_tool_contract import InteractionQuery
+from .interaction_query_orchestrator import execute_interaction_query
 
 logger = get_module_logger(__name__)
 
@@ -390,6 +392,15 @@ class LlmToolActionsMixin:
                 return True
         except Exception:
             return False
+        nai_selected = getattr(self, "_nai_image_selected", None)
+        if callable(nai_selected) and nai_selected():
+            nai_available = getattr(self, "_nai_image_available", None)
+            if not callable(nai_available):
+                return False
+            try:
+                return bool(nai_available())
+            except Exception:
+                return False
         available = getattr(self, "_image_companion_available", None)
         if not callable(available):
             return False
@@ -8386,97 +8397,16 @@ class LlmToolActionsMixin:
                 _single_line(getattr(event, "unified_msg_origin", ""), 120),
             )
             return json.dumps({"status": "forbidden", "message": forbidden_message}, ensure_ascii=False)
-        scope = _single_line(kwargs.get("scope") or kwargs.get("type") or "auto", 20).lower()
-        user_hint = _single_line(kwargs.get("user_hint") or kwargs.get("user") or kwargs.get("user_id") or kwargs.get("target_user") or "", 128)
-        group_hint = _single_line(kwargs.get("group_hint") or kwargs.get("group") or kwargs.get("group_id") or kwargs.get("target_group") or "", 80)
-        hint = _single_line(kwargs.get("hint") or kwargs.get("target") or kwargs.get("name") or "", 80)
-        hours = max(1, min(24 * 30, _safe_int(kwargs.get("hours"), 72, 1)))
-        limit = max(5, min(80, _safe_int(kwargs.get("limit"), 36, 5)))
-        if scope in {"群", "群聊", "group_message"}:
-            scope = "group"
-        elif scope in {"私聊", "好友", "friend", "private_message", "user"}:
-            scope = "private"
-        elif scope not in {"auto", "private", "group"}:
-            scope = "auto"
-        if scope == "auto":
-            if group_hint:
-                scope = "group"
-            elif user_hint:
-                scope = "private"
-            elif hint and "群" in hint:
-                scope = "group"
-            else:
-                scope = "private"
-        platform = self._interaction_query_platform(event)
-        target_hint = user_hint or group_hint or hint
-        if scope == "private":
-            targets = self._interaction_query_private_targets(user_hint or hint)
-            if not targets:
-                return json.dumps({"status": "not_found", "message": "没有找到匹配的私聊对象", "hint": target_hint}, ensure_ascii=False)
-            if len(targets) > 1 and not (user_hint or hint).isdigit():
-                return json.dumps({"status": "ambiguous", "message": "匹配到多个私聊对象，需要补充用户 ID 或更明确称呼", "matches": targets[:8]}, ensure_ascii=False)
-            target = targets[0]
-            user_id = target.get("user_id", "")
-            umo = f"{platform}:FriendMessage:{user_id}"
-            history = await self._interaction_query_read_history(umo, limit=limit, hours=hours)
-            lines = self._interaction_query_lines(history, limit=min(limit, 28))
-            return json.dumps(
-                {
-                    "status": "success" if lines else "empty",
-                    "scope": "private",
-                    "target": target,
-                    "session": umo,
-                    "hours": hours,
-                    "message_count": len(lines),
-                    "recent_lines": lines,
-                    "reply_hint": "请用自然口吻向主要用户概括最近互动；可以提到对象和大致话题，不要大段复述原文。",
-                },
-                ensure_ascii=False,
-            )
-        if user_hint and not (group_hint or hint):
-            lines = self._interaction_query_group_user_recent_lines(user_hint, limit=min(limit, 36), hours=hours)
-            return json.dumps(
-                {
-                    "status": "success" if lines else "empty",
-                    "scope": "group_user",
-                    "target": {"user_hint": user_hint},
-                    "hours": hours,
-                    "message_count": len(lines),
-                    "recent_lines": lines,
-                    "reply_hint": "请概括这个人最近在群里的发言和互动；如果线索不足，就说明目前只看到这些近期群聊记录。",
-                },
-                ensure_ascii=False,
-            )
-        targets = await self._interaction_query_group_targets(event, group_hint or hint)
-        if not targets:
-            return json.dumps({"status": "not_found", "message": "没有找到匹配的群聊", "hint": target_hint}, ensure_ascii=False)
-        if len(targets) > 1 and not (group_hint or hint).isdigit():
-            return json.dumps({"status": "ambiguous", "message": "匹配到多个群聊，需要补充群号或更明确群名", "matches": targets[:8]}, ensure_ascii=False)
-        target = targets[0]
-        group_id = target.get("group_id", "")
-        umo = f"{platform}:GroupMessage:{group_id}"
-        if user_hint:
-            history = []
-            lines = self._interaction_query_group_recent_lines(group_id, limit=min(limit, 28), user_hint=user_hint, hours=hours)
-        else:
-            history = await self._interaction_query_read_history(umo, limit=limit, hours=hours)
-            lines = self._interaction_query_lines(history, limit=min(limit, 28))
-            if not lines:
-                lines = self._interaction_query_group_recent_lines(group_id, limit=min(limit, 28), hours=hours)
-        return json.dumps(
-            {
-                "status": "success" if lines else "empty",
-                "scope": "group",
-                "target": target,
-                "user_hint": user_hint,
-                "session": umo,
-                "hours": hours,
-                "message_count": len(lines),
-                "recent_lines": lines,
-                "reply_hint": "请用自然口吻向主要用户概括 Bot 最近在这个群里的互动；不要把群聊原文整段搬出来。",
-            },
-            ensure_ascii=False,
-        )
+        query = InteractionQuery.parse(kwargs)
+        scope = query.scope
+        user_hint = query.user_hint
+        group_hint = query.group_hint
+        hint = query.hint
+        hours = query.hours
+        limit = query.limit
+
+        return await execute_interaction_query(self, event, query)
+
 
     async def _pc_get_group_id_by_name_impl(self, event: AstrMessageEvent, **kwargs) -> str:
         if not self.enable_atrelay_tools:

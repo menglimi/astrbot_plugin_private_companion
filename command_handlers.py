@@ -24,6 +24,13 @@ from .conversation_prompt_section import (
 )
 from .helpers import _flat_get, _missing_optional_model_dependency, _now_ts, _path_text, _photo_group_request_matches, _safe_float, _safe_int, _set_into_config, _single_line, _today_key
 from .logging_util import get_module_logger
+from .group_command_system import (
+    GROUP_COMMAND_HELP,
+    GroupLLMAction,
+    format_llm_blocked,
+    format_llm_status,
+    parse_group_command,
+)
 from .photo_generation_scope import PHOTO_GENERATION_SCOPE_LIMIT_KEYS
 from .photo_reference_catalog import (
     CATALOG_VERSION,
@@ -35,7 +42,15 @@ from .photo_reference_catalog import (
     validate_and_serialize,
 )
 from .persona_config import runtime_persona_setting
-from .runtime_config_dispatcher import dispatch_runtime_config_effects
+from .admin_config_command import (
+    apply_config_value,
+    apply_pending_config,
+    apply_setting_command,
+    cancel_pending_config,
+    can_apply_config,
+    get_pending_config,
+    parse_setting_text,
+)
 
 
 logger = get_module_logger(__name__)
@@ -2477,203 +2492,29 @@ class CommandHandlersMixin:
         return fallback[:5]
 
     def _companion_manual_can_apply_config(self, event: AstrMessageEvent) -> bool:
-        is_private = bool(getattr(event, "is_private_chat", lambda: False)())
-        return self._can_manage_private_companion(event) if is_private else self._can_manage_group_companion(event)
+        return can_apply_config(self, event)
 
     def _companion_manual_get_pending_config(self, event: AstrMessageEvent) -> dict[str, Any] | None:
-        store = self._companion_manual_pending_store()
-        key = self._companion_manual_pending_key(event)
-        pending = store.get(key)
-        if not isinstance(pending, dict):
-            return None
-        if _now_ts() - _safe_float(pending.get("ts"), 0.0, 0.0) > 1800:
-            store.pop(key, None)
-            self._save_data_sync(sections={"manual_diagnosis_pending_config"})
-            return None
-        return pending
+        return get_pending_config(self, event)
 
     async def _companion_manual_apply_config_value(self, key: str, value: Any) -> tuple[bool, str, Any, Any]:
-        ok, normalized, error = self._companion_manual_normalize_config_value(key, value)
-        if not ok:
-            return False, error, None, None
-        old = self._companion_manual_current_config_value(key)
-        old_semantic_debounce = runtime_persona_setting(self, 'enable_semantic_message_debounce', None)
-        old_semantic_seconds = runtime_persona_setting(self, 'semantic_message_debounce_seconds', None)
-        extra_config_updates: dict[str, Any] = {}
-        if key == "enable_message_debounce":
-            extra_config_updates["enable_semantic_message_debounce"] = bool(normalized)
-        if key == "text_message_debounce_seconds":
-            extra_config_updates["semantic_message_debounce_seconds"] = normalized
-        config_value = normalized
-        if key == "rest_reply_probability":
-            config_value = max(0, min(100, int(round(_safe_float(normalized, 0.0, 0.0) * 100))))
-        saved = False
-        config = getattr(self, "config", None)
-        if config is not None:
-            try:
-                saved = _set_into_config(config, key, config_value, allow_flat_fallback=False)
-            except TypeError:
-                saved = _set_into_config(config, key, config_value)
-            if not saved:
-                saved = _set_into_config(config, key, config_value)
-            for extra_key, extra_value in extra_config_updates.items():
-                try:
-                    _set_into_config(config, extra_key, extra_value, allow_flat_fallback=False)
-                except TypeError:
-                    _set_into_config(config, extra_key, extra_value)
-            if saved and not await self._save_config_if_possible():
-                old_config_value = old
-                if key == "rest_reply_probability":
-                    old_config_value = max(0, min(100, int(round(_safe_float(old, 0.0, 0.0) * 100))))
-                _set_into_config(config, key, old_config_value)
-                if key == "enable_message_debounce":
-                    _set_into_config(config, "enable_semantic_message_debounce", old_semantic_debounce)
-                if key == "text_message_debounce_seconds":
-                    _set_into_config(config, "semantic_message_debounce_seconds", old_semantic_seconds)
-                await self._save_config_if_possible()
-                return False, "配置保存失败，已恢复修改前的运行配置。", old, old
-        if not saved:
-            logger.debug("答疑设置只更新运行态,未找到可写配置项: key=%s", key)
-            return False, "配置项无法写入，已恢复修改前的运行配置。", old, old
-        try:
-            dispatch_runtime_config_effects(
-                self,
-                {key: normalized},
-                source="manual_command",
-                adapter=getattr(self, "page_api", None),
-                apply_plain_values=True,
-            )
-        except Exception as exc:
-            old_config_value = old
-            if key == "rest_reply_probability":
-                old_config_value = max(
-                    0,
-                    min(100, int(round(_safe_float(old, 0.0, 0.0) * 100))),
-                )
-            _set_into_config(config, key, old_config_value)
-            if key == "enable_message_debounce":
-                _set_into_config(
-                    config,
-                    "enable_semantic_message_debounce",
-                    old_semantic_debounce,
-                )
-            if key == "text_message_debounce_seconds":
-                _set_into_config(
-                    config,
-                    "semantic_message_debounce_seconds",
-                    old_semantic_seconds,
-                )
-            await self._save_config_if_possible()
-            dispatch_runtime_config_effects(
-                self,
-                {key: old},
-                source="manual_command_rollback",
-                adapter=getattr(self, "page_api", None),
-                apply_plain_values=True,
-            )
-            logger.warning(
-                "答疑设置运行态应用失败: key=%s error_type=%s",
-                key,
-                type(exc).__name__,
-            )
-            return False, "配置运行态应用失败，已恢复修改前的配置。", old, old
-        return True, "", old, normalized
+        return await apply_config_value(self, key, value)
 
     async def _companion_manual_apply_pending_config(self, event: AstrMessageEvent) -> str:
-        if not self._companion_manual_can_apply_config(event):
-            return self._management_denied_text()
-        pending = self._companion_manual_get_pending_config(event)
-        if not pending:
-            return "没有待确认的答疑配置建议。先用：陪伴 答疑 <问题>"
-        changes = pending.get("changes") if isinstance(pending.get("changes"), list) else []
-        if not changes:
-            return "这次答疑没有可执行配置建议。"
-        lines = ["已按刚才的答疑建议修改配置："]
-        applied = 0
-        for item in changes:
-            if not isinstance(item, dict):
-                continue
-            key = str(item.get("key") or "").strip()
-            ok, error, old, new = await self._companion_manual_apply_config_value(key, item.get("value"))
-            if not ok:
-                lines.append(f"- {key}：跳过，{error}")
-                continue
-            applied += 1
-            lines.append(
-                f"- {key}（{self._companion_manual_config_label(key)}）："
-                f"由 {self._companion_manual_format_config_item_value(key, old)} 改为 {self._companion_manual_format_config_item_value(key, new)}"
-                f"；{_single_line(item.get('reason'), 120) or '按答疑建议调整'}"
-            )
-        self._companion_manual_pending_store().pop(self._companion_manual_pending_key(event), None)
-        self._save_data_sync(sections={"runtime_settings", "manual_diagnosis_pending_config"})
-        if applied <= 0:
-            return "没有成功应用的配置项。"
-        lines.append("已保存到插件配置；如果 AstrBot 配置对象不支持同步保存，日志里会提示。")
-        return "\n".join(lines)
+        return await apply_pending_config(self, event)
 
     def _companion_manual_cancel_pending_config(self, event: AstrMessageEvent) -> str:
-        store = self._companion_manual_pending_store()
-        key = self._companion_manual_pending_key(event)
-        existed = key in store
-        store.pop(key, None)
-        self._save_data_sync(sections={"manual_diagnosis_pending_config"})
-        return "已取消刚才的答疑配置建议。" if existed else "当前没有待确认的答疑配置建议。"
+        return cancel_pending_config(self, event)
 
     def _companion_manual_parse_setting_text(self, text: str) -> tuple[str, str]:
-        raw = re.sub(r"^(?:把|将)\s*", "", str(text or "").strip())
-        if not raw:
-            return "", ""
-        match = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|:|：|设为|设置为|改成|调到)\s*(.+)", raw)
-        if match:
-            key = self._companion_manual_config_key_from_alias(match.group(1).strip())
-            return key, match.group(2).strip()
-        for alias, key in sorted(self._companion_manual_config_aliases().items(), key=lambda item: len(str(item[0])), reverse=True):
-            alias_text = str(alias or "").strip()
-            if not alias_text:
-                continue
-            delimiter_pattern = rf"^{re.escape(alias_text)}\s*(?:=|:|：|设为|设置为|改成|调到|调整为|调为)\s*(.+)$"
-            delimiter_match = re.match(delimiter_pattern, raw, flags=re.I | re.S)
-            if delimiter_match:
-                return key, delimiter_match.group(1).strip()
-            if raw.lower().startswith(alias_text.lower()):
-                tail = raw[len(alias_text):].strip()
-                tail = re.sub(r"^(?:=|:|：|设为|设置为|改成|调到|调整为|调为)\s*", "", tail).strip()
-                if tail:
-                    return key, tail
-        parts = raw.split(maxsplit=1)
-        if len(parts) >= 2:
-            key = self._companion_manual_config_key_from_alias(parts[0].strip())
-            return key, parts[1].strip()
-        return "", ""
+        return parse_setting_text(
+            text,
+            self._companion_manual_config_aliases(),
+            self._companion_manual_config_key_from_alias,
+        )
 
     async def _companion_manual_apply_setting_command(self, event: AstrMessageEvent, text: str) -> str:
-        if not self._companion_manual_can_apply_config(event):
-            return self._management_denied_text()
-        key, value = self._companion_manual_parse_setting_text(text)
-        if not key or not value:
-            allowed = "、".join(sorted(self._companion_manual_config_specs().keys())[:12])
-            return (
-                "请这样写：陪伴 答疑设置 <配置项> <值>\n"
-                "例如：陪伴 答疑设置 group_high_intensity_wakeup_threshold 5\n"
-                "也可以：陪伴 答疑设置 高强度阈值 5\n"
-                f"可改配置很多，前几个是：{allowed} ..."
-            )
-        ok, error, old, new = await self._companion_manual_apply_config_value(key, value)
-        if not ok:
-            return error
-        self._companion_manual_pending_store().pop(self._companion_manual_pending_key(event), None)
-        self._save_data_sync(sections={"runtime_settings", "manual_diagnosis_pending_config"})
-        if self._companion_manual_values_equal(old, new):
-            return (
-                "配置没有变化：\n"
-                f"{key}（{self._companion_manual_config_label(key)}）本来就是 "
-                f"{self._companion_manual_format_config_item_value(key, new)}"
-            )
-        return (
-            "已修改并保存配置：\n"
-            f"{key}（{self._companion_manual_config_label(key)}）："
-            f"由 {self._companion_manual_format_config_item_value(key, old)} 改为 {self._companion_manual_format_config_item_value(key, new)}"
-        )
+        return await apply_setting_command(self, event, text)
 
     def _companion_manual_entries(self) -> list[dict[str, Any]]:
         return [
@@ -5885,103 +5726,74 @@ class CommandHandlersMixin:
         event.stop_event()
         return True
 
+    async def _group_command_management_allowed(
+        self, event: AstrMessageEvent, group_id: str, *, refresh_role: bool = False
+    ) -> bool:
+        if self._can_manage_group_companion(event):
+            return True
+        if not refresh_role:
+            return False
+        refresher = getattr(self, "_refresh_group_role_snapshot", None)
+        if callable(refresher):
+            try:
+                await refresher(event, group_id, force=False)
+            except Exception as exc:
+                logger.debug(
+                    "刷新群权限快照失败: group=%s error=%s",
+                    _single_line(group_id, 80),
+                    _single_line(exc, 160),
+                )
+        return self._can_manage_group_companion(event)
+
+    @staticmethod
+    def _group_command_operator_id(event: AstrMessageEvent) -> str:
+        try:
+            return str(event.get_sender_id())
+        except (AttributeError, TypeError, ValueError):
+            return ""
+
+    async def _execute_group_llm_action(
+        self, event: AstrMessageEvent, group_id: str, action: GroupLLMAction
+    ) -> str:
+        operator_id = self._group_command_operator_id(event)
+        async with self._data_lock:
+            if action is GroupLLMAction.BLOCK:
+                item = self._set_group_llm_reply_block(
+                    group_id, True, operator_id=operator_id, reason="group_command"
+                )
+                self._save_data_sync(sections={"group_llm_reply_blocks"})
+                elapsed = (
+                    self._format_timestamp_elapsed(_safe_float(item.get("updated_at"), 0.0, 0.0))
+                    if item else "刚刚"
+                )
+                return format_llm_blocked(group_id, elapsed)
+            if action is GroupLLMAction.RESTORE:
+                self._set_group_llm_reply_block(
+                    group_id, False, operator_id=operator_id, reason="group_command"
+                )
+                self._save_data_sync(sections={"group_llm_reply_blocks"})
+                return "已恢复本群 LLM 回复。"
+            item = self._group_llm_reply_block_item(group_id)
+            blocked = bool(item.get("enabled"))
+            elapsed = (
+                self._format_timestamp_elapsed(_safe_float(item.get("updated_at"), 0.0, 0.0))
+                if blocked else ""
+            )
+            return format_llm_status(blocked=blocked, elapsed=elapsed)
+
     async def _group_companion_command_impl(self, event: AstrMessageEvent):
         group_id = self._extract_group_id_from_event(event)
         if not group_id:
             yield event.plain_result("这条命令需要在群聊里使用。")
             return
-        message = str(event.message_str or "").strip()
-        action = ""
+        request = parse_group_command(event.message_str)
+        action = request.action
         response_chain = None
-        parts = message.split(maxsplit=2)
-        if len(parts) >= 2:
-            action = parts[1].strip()
-        value = parts[2].strip() if len(parts) >= 3 else ""
-        action_compact = re.sub(r"\s+", "", f"{action}{value}").lower()
-        llm_block_on = action_compact in {
-            "关闭llm",
-            "关闭llm回复",
-            "关闭所有llm回复",
-            "禁用llm",
-            "禁用llm回复",
-            "停用llm",
-            "停用llm回复",
-            "禁止llm",
-            "禁止llm回复",
-            "关闭主链",
-            "关闭主链回复",
-        }
-        llm_block_off = action_compact in {
-            "开启llm",
-            "开启llm回复",
-            "开启所有llm回复",
-            "启用llm",
-            "启用llm回复",
-            "打开llm",
-            "打开llm回复",
-            "恢复llm",
-            "恢复llm回复",
-            "恢复主链",
-            "恢复主链回复",
-        }
-        llm_block_status = action_compact in {"llm状态", "主链状态", "llm回复状态"}
-        if llm_block_on or llm_block_off or llm_block_status:
-            authorized = self._can_manage_group_companion(event)
-            if not authorized:
-                # Some adapters omit sender.role. Refresh the group member snapshot
-                # before denying a real group owner/admin whose cache has expired.
-                refresher = getattr(self, "_refresh_group_role_snapshot", None)
-                if callable(refresher):
-                    try:
-                        await refresher(event, group_id, force=False)
-                    except Exception as exc:
-                        logger.debug(
-                            "刷新群权限快照失败: group=%s error=%s",
-                            _single_line(group_id, 80),
-                            _single_line(exc, 160),
-                        )
-                    authorized = self._can_manage_group_companion(event)
-            if not authorized:
+        if request.llm_action is not None:
+            if not await self._group_command_management_allowed(event, group_id, refresh_role=True):
                 yield event.plain_result(self._management_denied_text())
                 return
-        if llm_block_on or llm_block_off or llm_block_status:
-            operator_id = ""
-            try:
-                operator_id = str(event.get_sender_id())
-            except Exception:
-                operator_id = ""
-            async with self._data_lock:
-                if llm_block_on:
-                    item = self._set_group_llm_reply_block(
-                        group_id,
-                        True,
-                        operator_id=operator_id,
-                        reason="group_command",
-                    )
-                    self._save_data_sync(sections={"group_llm_reply_blocks"})
-                    ts_text = self._format_timestamp_elapsed(_safe_float(item.get("updated_at"), 0.0, 0.0)) if item else "刚刚"
-                    response = (
-                        "已关闭本群所有 LLM 回复。\n"
-                        f"群号：{group_id}\n"
-                        f"状态：拦截中（{ts_text}）\n"
-                        "恢复：陪伴群 开启LLM"
-                    )
-                elif llm_block_off:
-                    self._set_group_llm_reply_block(
-                        group_id,
-                        False,
-                        operator_id=operator_id,
-                        reason="group_command",
-                    )
-                    self._save_data_sync(sections={"group_llm_reply_blocks"})
-                    response = "已恢复本群 LLM 回复。"
-                else:
-                    item = self._group_llm_reply_block_item(group_id)
-                    if bool(item.get("enabled")):
-                        ts_text = self._format_timestamp_elapsed(_safe_float(item.get("updated_at"), 0.0, 0.0))
-                        response = f"本群 LLM 回复当前关闭中，开启时间：{ts_text}。\n恢复：陪伴群 开启LLM"
-                    else:
-                        response = "本群 LLM 回复当前未被单独关闭。"
+            response = await self._execute_group_llm_action(event, group_id, request.llm_action)
             yield event.plain_result(response)
             event.stop_event()
             return
@@ -6000,7 +5812,7 @@ class CommandHandlersMixin:
             else:
                 yield event.plain_result("这个群暂时不启用群聊陪伴。")
             return
-        if action in {"开启", "启用", "打开", "关闭", "停用", "关掉", "撤回消息", "防撤回", "转述撤回", "撤回转述"} and not self._can_manage_group_companion(event):
+        if request.requires_management and not await self._group_command_management_allowed(event, group_id):
             yield event.plain_result(self._management_denied_text())
             return
         async with self._data_lock:
@@ -6078,22 +5890,7 @@ class CommandHandlersMixin:
             elif action in {"状态", "气氛", ""}:
                 response = self._format_group_status(group)
             else:
-                response = (
-                    "群聊陪伴命令：\n"
-                    "陪伴群 状态\n"
-                    "陪伴群 黑话\n"
-                    "陪伴群 群友\n"
-                    "陪伴群 话题\n"
-                    "陪伴群 片段\n"
-                    "陪伴群 插话反馈\n"
-                    "陪伴群 关系网\n"
-                    "陪伴群 撤回消息\n"
-                    "陪伴群 LLM状态\n"
-                    "陪伴群 关闭LLM\n"
-                    "陪伴群 开启LLM\n"
-                    "陪伴群 开启\n"
-                    "陪伴群 关闭"
-                )
+                response = GROUP_COMMAND_HELP
         if response_chain:
             yield event.chain_result(response_chain)
         else:

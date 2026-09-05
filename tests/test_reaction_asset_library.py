@@ -420,6 +420,56 @@ class ReactionAssetLibraryTests(unittest.TestCase):
         self.assertNotEqual(first, self.library.lookup_revision())
         self.assertFalse(self.library.has_enabled_assets())
 
+    def test_external_catalog_deletion_invalidates_enabled_and_summary_caches(self) -> None:
+        self.library.import_blobs([("开心.png", PNG_BYTES)])
+        self.assertTrue(self.library.has_enabled_assets())
+        self.assertEqual(1, self.library.summary()["enabled"])
+
+        self.library.catalog_path.unlink()
+        self.library._lookup_revision_checked_at = 0.0
+
+        self.assertFalse(self.library.has_enabled_assets())
+        summary = self.library.summary()
+        self.assertEqual(0, summary["total"])
+        self.assertEqual(0, summary["enabled"])
+
+    def test_external_image_deletion_invalidates_summary_after_revision_probe(self) -> None:
+        item = self.library.import_blobs([("开心.png", PNG_BYTES)])["items"][0]
+        self.assertEqual(1, self.library.summary()["enabled"])
+        path = self.library._path_for(item)
+        self.assertIsNotNone(path)
+
+        path.unlink()
+        self.library._lookup_revision_checked_at = 0.0
+        self.library.lookup_revision()
+
+        summary = self.library.summary()
+        self.assertEqual(0, summary["enabled"])
+        self.assertEqual(1, summary["missing"])
+
+    def test_usage_is_persisted_without_rewriting_catalog(self) -> None:
+        item = self.library.import_blobs([("开心.png", PNG_BYTES)])["items"][0]
+        catalog_before = self.library.catalog_path.read_bytes()
+        stamp_before = self.library._catalog_cache_stamp()
+
+        self.assertTrue(self.library.mark_used(item["id"]))
+
+        self.assertEqual(catalog_before, self.library.catalog_path.read_bytes())
+        self.assertEqual(stamp_before, self.library._catalog_cache_stamp())
+        restarted = ReactionAssetLibrary(self.temp_dir.name)
+        persisted = restarted.list_items()["items"][0]
+        self.assertEqual(1, persisted["usage_count"])
+        self.assertGreater(persisted["last_used_at"], 0)
+
+    def test_delete_removes_usage_sidecar_record(self) -> None:
+        item = self.library.import_blobs([("开心.png", PNG_BYTES)])["items"][0]
+        self.assertTrue(self.library.mark_used(item["id"]))
+        self.assertIsNotNone(self.library._usage.get(item["id"]))
+
+        self.assertEqual(1, self.library.delete_items([item["id"]])["deleted"])
+
+        self.assertIsNone(self.library._usage.get(item["id"]))
+
     def test_rescan_reports_duplicates_and_delete_keeps_locked_item(self) -> None:
         item = self.library.import_blobs([("已有.png", PNG_BYTES)])["items"][0]
         duplicate_path = self.library.images_dir / "目录重复.png"

@@ -588,6 +588,11 @@ def build_group_prompt_context(
                 attrs={"key": "group_privacy"},
                 text="私聊记忆、私下关系细节和内部记录不得在群聊回复中公开。",
             ),
+            xml_element(
+                "constraint",
+                attrs={"key": "persona_authority"},
+                text="人格核心与对说话人的持久画像/记忆锚定稳定身份与关系底色；名场面与氛围补充当下的群聊语感与共同回忆。两者互相辅助：用记忆把握关系，用氛围/名场面调节当下表达，互相印证，都不单独压制回复。",
+            ),
         ),
     )
     children: list[XmlElement] = [current_element]

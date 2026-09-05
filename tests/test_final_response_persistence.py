@@ -158,6 +158,117 @@ class _Harness(ProactiveMessageMixin):
 
 
 class FinalResponsePersistenceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_confirmed_outbound_state_propagates_persistence_failure_and_releases_claim(self):
+        class Harness(FinalResponsePersistenceMixin):
+            def __init__(self):
+                self.released = []
+
+            @staticmethod
+            def _claim_confirmed_delivery_locked(_event, _delivery_id):
+                return True
+
+            def _release_confirmed_delivery_claim(self, event, delivery_id):
+                self.released.append((event, delivery_id))
+
+            @staticmethod
+            def _record_confirmed_private_bot_state_locked(
+                _event, *, response_text, now
+            ):
+                return {"users"}
+
+            @staticmethod
+            def _record_confirmed_group_bot_state_locked(
+                _event, *, response_text, now, delivery_id, llm_segments
+            ):
+                return set()
+
+            @staticmethod
+            def _save_data_sync(*, sections):
+                raise OSError("disk full")
+
+        harness = Harness()
+        event = object()
+
+        with self.assertRaisesRegex(OSError, "disk full"):
+            await harness._record_confirmed_outbound_state(
+                event,
+                response_text="delivered",
+                delivery_id="delivery-1",
+            )
+
+        self.assertEqual([(event, "delivery-1")], harness.released)
+
+    async def test_confirmed_outbound_state_does_not_downgrade_programming_error(self):
+        class Harness(FinalResponsePersistenceMixin):
+            def __init__(self):
+                self.released = []
+
+            @staticmethod
+            def _claim_confirmed_delivery_locked(_event, _delivery_id):
+                return True
+
+            def _release_confirmed_delivery_claim(self, event, delivery_id):
+                self.released.append((event, delivery_id))
+
+            @staticmethod
+            def _record_confirmed_private_bot_state_locked(
+                _event, *, response_text, now
+            ):
+                raise TypeError("broken recorder contract")
+
+        harness = Harness()
+        event = object()
+
+        with self.assertRaisesRegex(TypeError, "broken recorder contract"):
+            await harness._record_confirmed_outbound_state(
+                event,
+                response_text="delivered",
+                delivery_id="delivery-2",
+            )
+
+        self.assertEqual([(event, "delivery-2")], harness.released)
+
+    async def test_confirmed_outbound_state_combines_sections_on_success(self):
+        class Harness(FinalResponsePersistenceMixin):
+            def __init__(self):
+                self.saved = []
+
+            @staticmethod
+            def _claim_confirmed_delivery_locked(_event, _delivery_id):
+                return True
+
+            @staticmethod
+            def _release_confirmed_delivery_claim(_event, _delivery_id):
+                raise AssertionError("successful commit must retain its claim")
+
+            @staticmethod
+            def _record_confirmed_private_bot_state_locked(
+                _event, *, response_text, now
+            ):
+                return {"users"}
+
+            @staticmethod
+            def _record_confirmed_group_bot_state_locked(
+                _event, *, response_text, now, delivery_id, llm_segments
+            ):
+                return {"groups"}
+
+            def _save_data_sync(self, *, sections):
+                self.saved.append(set(sections))
+
+        harness = Harness()
+
+        duplicate, sections = await harness._record_confirmed_outbound_state(
+            object(),
+            response_text="delivered",
+            delivery_id="delivery-3",
+            llm_segments=("delivered",),
+        )
+
+        self.assertFalse(duplicate)
+        self.assertEqual({"users", "groups"}, sections)
+        self.assertEqual([{"users", "groups"}], harness.saved)
+
     def test_delivered_image_is_archived_as_internal_media_marker(self):
         harness = _Harness()
 

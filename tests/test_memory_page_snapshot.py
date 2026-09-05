@@ -719,6 +719,33 @@ def test_photo_ref_is_generation_bound_expires_and_has_bounded_registry(tmp_path
     assert _error_code(expired) == "memory_page_photo_ref_expired"
 
 
+def test_photo_ref_rejects_a_different_generation_with_the_same_public_prefix(
+    tmp_path: Path,
+) -> None:
+    photo = tmp_path / "photo.png"
+    photo.write_bytes(PNG)
+    data = {
+        "daily_outfit_photo": {
+            "date": "2026-08-26",
+            "path": str(photo),
+            "generated_at": 1,
+        }
+    }
+    service, owner, _plugin = _service(tmp_path, data)
+    photo_ref = _export(service)["day"]["photos"][0]["photo_ref"]
+
+    owner.generation = GENERATION[:12] + "f" * 20
+    with pytest.raises(MemoryPageSnapshotError) as stale:
+        asyncio.run(
+            service.read_photo(
+                target_plugin_id=MEMORY_PAGE_TARGET_ID,
+                photo_ref=photo_ref,
+            )
+        )
+
+    assert _error_code(stale) == "memory_page_photo_ref_stale"
+
+
 def test_stale_concurrent_photo_read_does_not_revoke_new_registration(tmp_path: Path) -> None:
     photo = tmp_path / "photo.png"
     photo.write_bytes(PNG)

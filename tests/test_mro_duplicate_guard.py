@@ -84,6 +84,56 @@ def _top_level_class(path: Path, name: str) -> ast.ClassDef:
     raise StopIteration
 
 
+def _resolve_top_level_class(path: Path, name: str) -> tuple[Path, ast.ClassDef]:
+    """Resolve a class declared locally or re-exported through a module facade."""
+    tree = _tree(path)
+    local = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == name
+        ),
+        None,
+    )
+    if local is not None:
+        return path, local
+
+    assignment = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == name for target in node.targets)
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == name
+            and isinstance(node.value.value, ast.Name)
+        ),
+        None,
+    )
+    if assignment is None:
+        raise LookupError(f"{name} is neither declared nor re-exported by {path}")
+
+    module_alias = assignment.value.value.id
+    imports = [node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
+    imported = next(
+        (
+            (node, alias)
+            for node in imports
+            for alias in node.names
+            if (alias.asname or alias.name) == module_alias
+        ),
+        None,
+    )
+    if imported is None:
+        raise LookupError(f"cannot resolve facade module {module_alias} in {path}")
+    node, alias = imported
+    module_parts = node.module.split(".") if node.module else []
+    implementation = ROOT.joinpath(*module_parts, alias.name).with_suffix(".py")
+    if not implementation.is_file():
+        raise LookupError(f"facade implementation does not exist: {implementation}")
+    return implementation, _top_level_class(implementation, name)
+
+
 def _methods(owner: ast.ClassDef) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
     return {
         node.name: node
@@ -144,7 +194,7 @@ def _plugin_base_sources() -> tuple[list[str], dict[str, tuple[Path, ast.ClassDe
     for base_name in base_names:
         path = imports.get(base_name)
         if path is not None:
-            resolved[base_name] = (path, _top_level_class(path, base_name))
+            resolved[base_name] = _resolve_top_level_class(path, base_name)
     return base_names, resolved
 
 
@@ -190,6 +240,16 @@ def test_production_class_bodies_do_not_redefine_ordinary_methods() -> None:
                 )
 
     assert collisions == []
+
+
+def test_image_bridge_facade_resolves_to_relocated_mixin() -> None:
+    path, owner = _resolve_top_level_class(
+        ROOT / "image_companion_bridge.py",
+        "ImageCompanionBridgeMixin",
+    )
+
+    assert path == ROOT / "companion" / "integrations" / "image_companion_bridge.py"
+    assert owner.name == "ImageCompanionBridgeMixin"
 
 
 def test_private_companion_mro_has_only_the_exact_cooperative_overlap() -> None:

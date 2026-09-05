@@ -906,6 +906,90 @@ class IncrementalPersistenceStorageTests(unittest.TestCase):
 
         self.assertEqual({"value": "safe"}, self.backend.load_store()["users"])
 
+    def test_partial_batch_reads_existing_rows_with_one_query(self) -> None:
+        self.backend.save_store(
+            {f"section_{index}": {"value": index} for index in range(32)}
+        )
+        statements: list[str] = []
+        original_connect = self.backend._connect
+
+        def traced_connect() -> sqlite3.Connection:
+            connection = original_connect()
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        with patch.object(self.backend, "_connect", side_effect=traced_connect):
+            self.backend.save_sections(
+                {
+                    f"section_{index}": (2, {"value": index + 1})
+                    for index in range(32)
+                },
+                {},
+            )
+
+        batch_reads = [
+            statement
+            for statement in statements
+            if statement.startswith(
+                "SELECT section_name,payload_json,checksum,revision,is_deleted"
+            )
+        ]
+        self.assertEqual(1, len(batch_reads))
+        self.assertIn(" IN (", batch_reads[0])
+
+    def test_idempotent_partial_retry_does_not_update_metadata(self) -> None:
+        payload = {"users": {"value": 1}}
+        self.backend.save_store(payload)
+        statements: list[str] = []
+        original_connect = self.backend._connect
+
+        def traced_connect() -> sqlite3.Connection:
+            connection = original_connect()
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        with patch.object(self.backend, "_connect", side_effect=traced_connect):
+            self.assertEqual(
+                {"users": 1},
+                self.backend.save_sections({"users": (1, payload["users"])}, {}),
+            )
+
+        self.assertFalse(
+            any(statement.startswith("UPDATE store_meta") for statement in statements)
+        )
+        self.assertFalse(
+            any(statement.startswith("INSERT INTO store_sections") for statement in statements)
+        )
+
+    def test_deleted_revision_lookup_uses_one_batch_query(self) -> None:
+        self.backend.save_store(
+            {f"section_{index}": {"value": index} for index in range(16)}
+        )
+        self.backend.save_sections(
+            {}, {f"section_{index}": 2 for index in range(0, 16, 2)}
+        )
+        statements: list[str] = []
+        original_connect = self.backend._connect
+
+        def traced_connect() -> sqlite3.Connection:
+            connection = original_connect()
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        with patch.object(self.backend, "_connect", side_effect=traced_connect):
+            result = self.backend.deleted_section_revisions(
+                [f"section_{index}" for index in range(16)]
+            )
+
+        self.assertEqual(8, len(result))
+        tombstone_reads = [
+            statement
+            for statement in statements
+            if statement.startswith("SELECT section_name,revision FROM store_sections")
+        ]
+        self.assertEqual(1, len(tombstone_reads))
+        self.assertIn(" IN (", tombstone_reads[0])
+
     def test_store_manager_incremental_path_never_loads_or_exports_full_store(
         self,
     ) -> None:

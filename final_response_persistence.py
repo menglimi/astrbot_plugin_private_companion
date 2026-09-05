@@ -1594,18 +1594,10 @@ class FinalResponsePersistenceMixin:
                 raise
 
         lock = getattr(self, "_data_lock", None)
-        try:
-            if lock is not None and hasattr(lock, "__aenter__"):
-                async with lock:
-                    return record()
-            else:
+        if lock is not None and hasattr(lock, "__aenter__"):
+            async with lock:
                 return record()
-        except Exception as exc:
-            logger.debug(
-                "Confirmed delivery state commit failed: %s",
-                _single_line(exc, 120),
-            )
-            return False, set()
+        return record()
 
     async def _finalize_passive_delivered_response(
         self,

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import os
 from pathlib import Path
+
+import pytest
 import sys
 import tempfile
 import types
@@ -14,22 +15,13 @@ from types import SimpleNamespace
 COMPANION_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _memory_root() -> Path:
-    candidates = (
-        Path(os.environ["ASTRBOT_MEMORY_PLUGIN_ROOT"])
-        if os.environ.get("ASTRBOT_MEMORY_PLUGIN_ROOT")
-        else COMPANION_ROOT / ".missing-memory-root",
-        COMPANION_ROOT.parent / "memory-official",
-        COMPANION_ROOT.parent / "memory",
-        COMPANION_ROOT.parents[1] / "astrbot_plugin_memory_companion-main",
-    )
-    for candidate in candidates:
-        if (candidate / "core" / "bridge.py").is_file():
-            return candidate
-    raise unittest.SkipTest("requires a checked-out MemoryCompanion peer repository")
+from external_memory_dependency import resolve_memory_plugin_root
 
 
-MEMORY_ROOT = _memory_root()
+_memory_resolution = resolve_memory_plugin_root(COMPANION_ROOT)
+if _memory_resolution.root is None:
+    pytest.skip(_memory_resolution.detail, allow_module_level=True)
+MEMORY_ROOT = _memory_resolution.root
 
 
 def _load_modules():

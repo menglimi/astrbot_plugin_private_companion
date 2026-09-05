@@ -145,6 +145,8 @@ from .planning import (
     pick_detail_segment,
 )
 from .logging_util import get_module_logger
+from .companion_memory_records import normalize_memory_items, relevant_memory_items
+from .private_identity_policy import format_private_identity_anchor
 
 logger = get_module_logger(__name__)
 
@@ -299,56 +301,23 @@ class UserMemoryMixin:
         memory = user.get("companion_memory")
         if not isinstance(memory, dict):
             return []
-        items = memory.get("items")
-        if not isinstance(items, list):
-            memory["items"] = []
-            return []
-        now = _now_ts()
-        deduped: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for raw in items:
-            if not isinstance(raw, dict):
-                continue
-            text = _single_line(raw.get("text"), 260)
-            if not text:
-                continue
-            created_ts = _safe_float(raw.get("created_ts"), 0)
-            created_at = _single_line(raw.get("created_at"), 24)
-            if created_ts <= 0 and created_at:
-                try:
-                    created_ts = datetime.strptime(created_at, "%Y-%m-%d %H:%M").timestamp()
-                except Exception:
-                    created_ts = now
-            if created_ts > 0 and now - created_ts > 180 * 86400:
-                continue
-            signature = self._memory_fact_signature(text)
-            if not signature or signature in seen:
-                continue
-            seen.add(signature)
-            item = dict(raw)
-            item["text"] = text
-            item["created_ts"] = created_ts or now
-            deduped.append(item)
-        deduped.sort(key=lambda item: (_safe_int(item.get("weight"), 1, 0), _safe_float(item.get("created_ts"), 0)), reverse=True)
-        memory["items"] = deduped[: runtime_persona_setting(self, "max_companion_memory_items", 36)]
-        return memory["items"]
+        items = normalize_memory_items(
+            memory.get("items"),
+            now=_now_ts(),
+            max_items=runtime_persona_setting(self, "max_companion_memory_items", 36),
+            signature_for=self._memory_fact_signature,
+        )
+        # This assignment is the compatibility persistence boundary: callers have
+        # always observed the normalized list in companion_memory.items.
+        memory["items"] = items
+        return items
 
     def _companion_memory_relevant_items(self, user: dict[str, Any], *, hint: str = "", limit: int = 6) -> list[dict[str, Any]]:
-        items = self._cleanup_companion_memory_items(user)
-        if not items:
-            return []
-        hint_text = _single_line(hint, 260).lower()
-        if not hint_text:
-            return items[: max(1, limit)]
-        weighted: list[tuple[int, dict[str, Any]]] = []
-        for item in items:
-            text = _single_line(item.get("text"), 260).lower()
-            score = _safe_int(item.get("weight"), 1, 0)
-            if text and any(token and token in hint_text for token in re.findall(r"[\u4e00-\u9fff]{2,8}|[a-z0-9_]{3,24}", text)):
-                score += 4
-            weighted.append((score, item))
-        weighted.sort(key=lambda pair: (pair[0], _safe_float(pair[1].get("created_ts"), 0)), reverse=True)
-        return [item for _, item in weighted[: max(1, limit)]]
+        return relevant_memory_items(
+            self._cleanup_companion_memory_items(user),
+            hint=hint,
+            limit=limit,
+        )
 
     def _relationship_profile(self, user: dict[str, Any]) -> dict[str, Any]:
         """Compatibility DTO projected from the unified relationship authority."""
@@ -10344,47 +10313,23 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
         user: dict[str, Any],
         event: Any | None = None,
     ) -> PromptSection:
-        # The unified archive is the only person authority.  Retired
-        # Worldbook identities and text must never enter a private prompt.
-        stable_name = _single_address(
-            user.get("nickname") or runtime_persona_setting(self, "default_nickname", "你"),
-            24,
-        )
-        identity_note = _single_line(user.get("profile_note"), 180)
-        display_name = _single_line(user.get("last_display_name") or user.get("display_name"), 40)
+        event_display_name = ""
         if event is not None:
             try:
-                display_name = _single_line(self._sender_display_name(event), 40) or display_name
+                event_display_name = self._sender_display_name(event)
             except Exception:
                 pass
-        aliases = []
-        for item in user.get("observed_display_names") if isinstance(user.get("observed_display_names"), list) else []:
-            alias = _single_line(item, 24)
-            if alias and alias not in aliases and alias != stable_name:
-                aliases.append(alias)
-        display_names = []
-        if display_name and display_name != stable_name:
-            display_names.append(display_name)
-        if aliases:
-            display_names.extend(alias for alias in aliases if alias not in display_names)
-        parts = [f"这轮私聊里，正在说话的人是 {stable_name}（ID：{_single_line(user_id, 40)}）"]
-        if identity_note:
-            parts.append(identity_note.rstrip("。；;"))
-        if display_names:
-            parts.append(f"最近你可能会看到 TA 的显示名是 {'、'.join(display_names[:6])}")
-        lines = [
-            "。".join(parts) + "。回复时按你们原本的关系自然接话；除非对方明确说自己换了身份，否则不要被临时显示名带偏。",
-            f"问句人称消歧：对方问“我是谁/你记得我是谁吗/你知道我是谁吗”时，“我”指 {stable_name} 本人，这是在问你眼中的 TA 是谁，请结合对 TA 的记忆和双方关系回答；只有对方问“你是谁/你叫什么名字/介绍一下你自己”时，“你”才指 Bot 自己。",
-            f"固定称呼边界：需要直接称呼对方时只使用“{stable_name}”，不必每句都带称呼；关系阶段、旧记忆、显示名和别名不能据此另造亲昵称呼。若用户本轮明确要求改称呼，以本轮最新要求为准。",
-        ]
-        rename_text = self._format_display_name_rename_events(user.get("display_name_events"), limit=3)
-        if rename_text:
-            lines.append(f"近期改名行为：{rename_text}")
         return prompt_section(
             key="identity.anchor",
             title="私聊身份锚点",
             source="identity",
-            content="\n".join(lines),
+            content=format_private_identity_anchor(
+                user_id,
+                user,
+                default_nickname=runtime_persona_setting(self, "default_nickname", "你"),
+                event_display_name=event_display_name,
+                format_rename_events=self._format_display_name_rename_events,
+            ),
         )
 
     def _format_private_identity_anchor_for_prompt(
@@ -10394,11 +10339,7 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
         event: Any | None = None,
     ) -> str:
         return _render_conversation_section_labeled(
-            self._format_private_identity_anchor_prompt_section(
-                user_id,
-                user,
-                event,
-            )
+            self._format_private_identity_anchor_prompt_section(user_id, user, event)
         )
 
     def _note_private_display_name_observation(self, user: dict[str, Any], user_id: str, display_name: str, *, now: float | None = None) -> None:

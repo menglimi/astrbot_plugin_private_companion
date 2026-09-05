@@ -259,8 +259,11 @@ class PersonaSqliteStoreTests(unittest.TestCase):
         self.assertTrue(loaded.data["users"]["saved"])
 
     def test_caller_resolved_unicode_and_dangerous_names_are_not_rederived(self) -> None:
-        legacy = self.root / "璃%2F..%2FCON?.json"
-        sqlite = self.root / "璃%2F..%2FCON?.sqlite3"
+        # Keep the traversal/reserved-device spelling encoded: literal '?' is
+        # not a valid Windows fixture filename and prevented the test body from
+        # exercising the storage boundary at all.
+        legacy = self.root / "璃%2F..%2FCON%3F.json"
+        sqlite = self.root / "璃%2F..%2FCON%3F.sqlite3"
         legacy.write_text('{"users":{"用户":{"name":"璃"}}}', encoding="utf-8")
 
         handle = load_persona_sqlite_store(

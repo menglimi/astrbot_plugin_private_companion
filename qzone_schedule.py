@@ -16,6 +16,10 @@ from .helpers import _day_start_ts, _now_ts, _safe_float, _safe_int, _single_lin
 from .conversation_prompt_section import PromptRenderMode, prompt_section, render_prompt_sections
 from .persona_config import runtime_persona_setting
 from .logging_util import get_module_logger
+from .qzone_schedule_domain import (
+    hhmm_to_minutes, length_profile_range, length_profile_sequence, merge_windows,
+    ngram_shared_count, parse_windows, slot_is_night, subtract_ranges, text_length_ok,
+)
 
 logger = get_module_logger(__name__)
 
@@ -124,65 +128,15 @@ class QzoneScheduleMixin:
 
     @classmethod
     def _qzone_parse_windows(cls, raw: Any) -> list[tuple[int, int]]:
-        """Parse "HH:MM-HH:MM" lines into (start_minute, end_minute) pairs.
-
-        There is deliberately no cap on how many windows a user may configure;
-        how many posts actually fit is decided later by the daily target count,
-        the configured gaps and the remaining time in each window.
-        """
-        windows: list[tuple[int, int]] = []
-        for line in str(raw or "").replace("，", "\n").replace(",", "\n").splitlines():
-            text = line.strip()
-            if not text:
-                continue
-            match = re.fullmatch(r"(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})", text)
-            if not match:
-                continue
-            start_h, start_m, end_h, end_m = (int(part) for part in match.groups())
-            if start_h > 23 or start_m > 59 or end_h > 24 or end_m > 59:
-                continue
-            if end_h == 24 and end_m != 0:
-                continue
-            start = start_h * 60 + start_m
-            end = min(end_h * 60 + end_m, 24 * 60)
-            if end == start:
-                continue
-            if end < start:
-                windows.extend(((start, 24 * 60), (0, end)))
-            else:
-                windows.append((start, end))
-        return cls._qzone_merge_windows(windows)
+        return parse_windows(raw, merge=cls._qzone_merge_windows)
 
     @staticmethod
     def _qzone_merge_windows(windows: list[tuple[int, int]]) -> list[tuple[int, int]]:
-        """Sort and merge overlapping windows so no minute is scheduled twice."""
-        merged: list[tuple[int, int]] = []
-        for start, end in sorted(windows):
-            if merged and start <= merged[-1][1]:
-                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
-            else:
-                merged.append((start, end))
-        return merged
+        return merge_windows(windows)
 
     @staticmethod
-    def _qzone_subtract_ranges(
-        window: tuple[int, int],
-        blocked: tuple[tuple[int, int], ...],
-    ) -> list[tuple[int, int]]:
-        """Remove blocked minute ranges from a window, keeping the remainder."""
-        pieces = [window]
-        for block_start, block_end in blocked:
-            remaining: list[tuple[int, int]] = []
-            for start, end in pieces:
-                if block_end <= start or block_start >= end:
-                    remaining.append((start, end))
-                    continue
-                if start < block_start:
-                    remaining.append((start, min(block_start, end)))
-                if end > block_end:
-                    remaining.append((max(block_end, start), end))
-            pieces = [(s, e) for s, e in remaining if e > s]
-        return pieces
+    def _qzone_subtract_ranges(window: tuple[int, int], blocked: tuple[tuple[int, int], ...]) -> list[tuple[int, int]]:
+        return subtract_ranges(window, blocked)
 
     def _qzone_life_publish_window_source(self) -> str:
         """Return the raw window text for the configured mode."""
@@ -329,13 +283,7 @@ class QzoneScheduleMixin:
 
     @staticmethod
     def _qzone_hhmm_to_minutes(value: Any) -> int | None:
-        match = re.fullmatch(r"\s*(\d{1,2}):(\d{2})\s*", str(value or ""))
-        if not match:
-            return None
-        hour, minute = int(match.group(1)), int(match.group(2))
-        if hour > 47 or minute > 59:
-            return None
-        return hour * 60 + minute
+        return hhmm_to_minutes(value)
 
     def _qzone_schedule_candidates_for_today(self) -> list[dict[str, Any]]:
         """Collect short-lived Bot current facts for a nearby publish slot."""
@@ -406,31 +354,14 @@ class QzoneScheduleMixin:
 
     @staticmethod
     def _qzone_length_profile_sequence(count: int) -> list[str]:
-        """Vary post lengths so a multi-post day never reads as one long block."""
-        if count <= 1:
-            return [random.choice(("short", "medium"))]
-        sequence: list[str] = []
-        for index in range(count):
-            sequence.append("short" if index % 2 == 0 else "medium")
-        if count >= 3 and random.random() < 0.35:
-            sequence[random.randrange(count)] = "long"
-        random.shuffle(sequence)
-        return sequence
+        return length_profile_sequence(count, choose=random.choice, chance=random.random, choose_index=random.randrange, shuffle=random.shuffle)
 
     @staticmethod
     def _qzone_length_profile_range(profile: Any) -> tuple[int, int]:
-        profiles = _qzone_compat_constant("QZONE_LENGTH_PROFILES")
-        return profiles.get(
-            _single_line(profile, 16) or "medium",
-            profiles["medium"],
-        )
+        return length_profile_range(profile, _qzone_compat_constant("QZONE_LENGTH_PROFILES"))
 
     def _qzone_slot_is_night(self, planned_at: float) -> bool:
-        minutes = (planned_at - _day_start_ts(planned_at)) / 60.0
-        return any(
-            start <= minutes < end
-            for start, end in _qzone_compat_constant("QZONE_NIGHT_RANGES")
-        )
+        return slot_is_night(planned_at, day_start=_day_start_ts(planned_at), night_ranges=_qzone_compat_constant("QZONE_NIGHT_RANGES"))
 
     def _qzone_life_publish_plan_signature(self) -> str:
         payload = {
@@ -708,13 +639,7 @@ class QzoneScheduleMixin:
 
     @classmethod
     def _qzone_text_length_ok(cls, text: Any, profile: Any) -> bool:
-        """Length gate: a hard ceiling plus a tolerant per-profile band."""
-        length = len(re.sub(r"\s+", "", str(text or "")))
-        if length > int(_qzone_compat_constant("QZONE_LENGTH_HARD_LIMIT")):
-            return False
-        low, high = cls._qzone_length_profile_range(profile)
-        # Tolerance avoids discarding an otherwise good post over a few chars.
-        return low - 8 <= length <= high + 12
+        return text_length_ok(text, profile_range=cls._qzone_length_profile_range(profile), hard_limit=int(_qzone_compat_constant("QZONE_LENGTH_HARD_LIMIT")))
 
     async def _qzone_life_publish_rewrite_to_length(
         self,
@@ -757,13 +682,7 @@ class QzoneScheduleMixin:
 
     @staticmethod
     def _qzone_ngram_shared_count(left: Any, right: Any, *, n: int = 3) -> int:
-        a = re.sub(r"\s+", "", str(left or ""))
-        b = re.sub(r"\s+", "", str(right or ""))
-        if len(a) < n or len(b) < n:
-            return 1 if a and a == b else 0
-        grams_a = {a[i : i + n] for i in range(len(a) - n + 1)}
-        grams_b = {b[i : i + n] for i in range(len(b) - n + 1)}
-        return len(grams_a & grams_b)
+        return ngram_shared_count(left, right, n=n)
 
     def _qzone_life_publish_similar_recent(self, state: dict[str, Any], draft: Any) -> list[dict[str, Any]]:
         """Return recent posts whose shared 3-gram count with the draft meets the threshold."""

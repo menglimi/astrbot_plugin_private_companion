@@ -24,6 +24,7 @@ RUNTIME_DIRECTORIES = (
     ".astrbot-plugin",
     "companion",
     "domains",
+    "page_backend",
     "pages",
     "storage",
 )
