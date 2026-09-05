@@ -1603,7 +1603,7 @@ class TokenBudgetMixin:
         plugin-internal calls (they always go through ``text_chat``), so this
         is an independent switch.
         """
-        if not bool(getattr(self, "enable_llm_streaming", False)):
+        if not bool(runtime_persona_setting(self, "enable_llm_streaming", False)):
             return False
         # Keep very short calls non-streaming: the extra chunked round-trips
         # are pure overhead for small outputs.
@@ -1796,7 +1796,11 @@ class TokenBudgetMixin:
                     timeout_seconds=timeout_seconds,
                 )
                 try:
-                    if self._llm_streaming_enabled_for_call(task=task_key, max_tokens=max_tokens):
+                    streaming_enabled = getattr(self, "_llm_streaming_enabled_for_call", None)
+                    if callable(streaming_enabled) and streaming_enabled(
+                        task=task_key,
+                        max_tokens=max_tokens,
+                    ):
                         resp = await self._llm_generate_streaming(
                             provider_id=attempt_provider,
                             prompt=prompt,

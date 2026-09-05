@@ -15,6 +15,11 @@ from astrbot_plugin_private_companion.storage.json_backend import JsonStoreBacke
 from astrbot_plugin_private_companion.storage.path_generation import (
     activate_persistence_owner,
 )
+from astrbot_plugin_private_companion.plugin_lifecycle import (
+    assemble_plugin_dependencies,
+    cancel_registered_host_tasks,
+    close_early_resources,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -146,6 +151,9 @@ def _load_lifecycle_source() -> tuple[dict[str, Any], ast.ClassDef]:
         "initialize_plugin_config": _initialize_config,
         "initialize_plugin_runtime": _initialize_runtime,
         "initialize_plugin_post_runtime_state": _initialize_post_runtime,
+        "assemble_plugin_dependencies": assemble_plugin_dependencies,
+        "cancel_registered_host_tasks": cancel_registered_host_tasks,
+        "close_early_resources": close_early_resources,
         "resume_story_handoff": _resume_story_handoff,
         "StoryAuthorityError": _StoryAuthorityError,
         "activate_persistence_owner": activate_persistence_owner,

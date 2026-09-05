@@ -73,13 +73,32 @@ def _strict_load_json_object_read_only(
 ) -> dict[str, Any]:
     """Read one bounded regular JSON file without following its final symlink."""
     no_follow = getattr(os, "O_NOFOLLOW", None)
-    if no_follow is None:
-        raise RuntimeError("no-follow file reads are unavailable")
-    flags = os.O_RDONLY | no_follow
+    flags = os.O_RDONLY | (no_follow or 0)
     flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
+    # Windows has no O_NOFOLLOW.  Refuse reparse points before opening and
+    # verify the opened handle still identifies the same regular file below.
+    before_path = path.lstat()
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    if no_follow is None and (
+        stat.S_ISLNK(before_path.st_mode)
+        or int(getattr(before_path, "st_file_attributes", 0)) & reparse_flag
+    ):
+        raise ValueError("persona legacy JSON symlinks are not allowed")
     descriptor = os.open(path, flags)
     try:
         before = os.fstat(descriptor)
+        if no_follow is None and (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+        ) != (
+            before_path.st_dev,
+            before_path.st_ino,
+            before_path.st_size,
+            before_path.st_mtime_ns,
+        ):
+            raise ValueError("persona legacy JSON changed before read-only snapshot")
         if not stat.S_ISREG(before.st_mode):
             raise ValueError("persona legacy JSON is not a regular file")
         if before.st_size < 0 or before.st_size > max_bytes:

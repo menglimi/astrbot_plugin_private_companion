@@ -462,6 +462,12 @@ from .proactive_message import ProactiveMessageMixin
 from .image_companion_bridge import ImageCompanionBridgeMixin
 from .nai_image_bridge import NAIImageBridgeMixin
 from .proactive_chat_runtime_bridge import ProactiveChatRuntimeBridge
+from .plugin_lifecycle import (
+    assemble_plugin_dependencies,
+    cancel_registered_host_tasks,
+    close_early_resources,
+    task_manager,
+)
 from .plugin_bootstrap import (
     DEFAULT_AI_DAILY_JUYA_UID,
     DEFAULT_AI_DAILY_MORNING_UID,
@@ -4254,9 +4260,10 @@ class PrivateCompanionPlugin(
         initialize_plugin_config(self, config)
         initialize_plugin_runtime(self)
         initialize_plugin_post_runtime_state(self, config)
-        getattr(self, "_initialize_lab_fixture_adapter", lambda: None)()
-        self.req041_observability = Req041Observability()
-        self._req041_runtime_boot_ref = f"boot-{id(self)}"
+        assemble_plugin_dependencies(
+            self,
+            observability_factory=Req041Observability,
+        )
 
     def _initialize_lab_fixture_adapter(self) -> None:
         try:
@@ -8432,37 +8439,7 @@ class PrivateCompanionPlugin(
 
     async def terminate(self):
         global _private_companion_plugin
-        lab_fixture_adapter = getattr(self, "_lab_fixture_adapter", None)
-        close_lab_fixture = getattr(lab_fixture_adapter, "close", None)
-        if callable(close_lab_fixture):
-            try:
-                close_lab_fixture()
-            except Exception as exc:
-                logger.warning(
-                    "LAB fixture 门控清理失败，继续关闭插件: %s",
-                    type(exc).__name__,
-                )
-        self._lab_fixture_adapter = None
-        close_extension = getattr(
-            getattr(self, "extension_api", None),
-            "_close_story_migration_api",
-            None,
-        )
-        if callable(close_extension):
-            close_extension()
-        self._stop_event.set()
-        standalone_webui = getattr(self, "standalone_webui", None)
-        if standalone_webui is not None:
-            try:
-                await standalone_webui.stop()
-            except Exception as exc:
-                logger.warning(
-                    "独立陪伴 WebUI 停止失败: %s",
-                    _single_line(exc, 160),
-                )
-        cleanup_delivery_caches = getattr(self, "_cleanup_framework_delivery_caches", None)
-        if callable(cleanup_delivery_caches):
-            cleanup_delivery_caches(force=True)
+        await close_early_resources(self)
         await self._cancel_lifecycle_background_tasks()
         invalidate_bridge = getattr(self, "_memory_companion_invalidate_bridge_cache", None)
         if callable(invalidate_bridge):
@@ -8485,49 +8462,7 @@ class PrivateCompanionPlugin(
                     _single_line(exc, 160),
                 )
 
-        async def cancel_task(task: Any, label: str, timeout: float = 3.0) -> None:
-            if not isinstance(task, asyncio.Task) or task.done():
-                return
-            task.cancel()
-            done, pending = await asyncio.wait({task}, timeout=timeout)
-            if pending:
-                logger.warning("终止后台任务超时,继续卸载: task=%s", label)
-                return
-            for finished in done:
-                try:
-                    await finished
-                except asyncio.CancelledError:
-                    pass
-                except Exception as exc:
-                    logger.debug("终止后台任务时收到异常: task=%s error=%s", label, _single_line(exc, 160))
-
-        if self._task:
-            await cancel_task(self._task, "proactive_scheduler")
-        for task in list(self._passive_input_status_tasks.values()):
-            if isinstance(task, asyncio.Task) and not task.done():
-                task.cancel()
-        self._passive_input_status_tasks.clear()
-        startup_task = getattr(self, "_startup_maintenance_task", None)
-        await cancel_task(startup_task, "startup_maintenance")
-        replay_task = getattr(self, "_req041_replay_task", None)
-        self._req041_replay_requested = False
-        await cancel_task(replay_task, "req041_shadow_replay")
-        scoped_task = getattr(self, "_req041_scoped_sync_task", None)
-        self._req041_scoped_sync_requested = False
-        await cancel_task(scoped_task, "req041_scoped_projection_sync")
-        startup_background_tasks = list(getattr(self, "_startup_background_tasks", {}).items())
-        for label, task in startup_background_tasks:
-            await cancel_task(task, f"startup_{label}")
-        self._startup_background_tasks.clear()
-        group_image_tasks = list(getattr(self, "_group_image_understanding_tasks", {}).items())
-        for task_key, entry in group_image_tasks:
-            task = entry.get("task") if isinstance(entry, dict) else None
-            await cancel_task(task, f"group_image_{_single_line(task_key, 80)}")
-        self._group_image_understanding_tasks.clear()
-        troubleshooting_wakeup_tasks = list(getattr(self, "_troubleshooting_proactive_wakeup_tasks", {}).items())
-        for user_id, task in troubleshooting_wakeup_tasks:
-            await cancel_task(task, f"troubleshooting_proactive_{_single_line(user_id, 40)}")
-        self._troubleshooting_proactive_wakeup_tasks = {}
+        await cancel_registered_host_tasks(self)
         try:
             await asyncio.wait_for(self._flush_scheduled_data_save(), timeout=3.0)
         except asyncio.TimeoutError:

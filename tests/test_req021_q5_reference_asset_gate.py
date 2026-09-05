@@ -4,7 +4,6 @@ import hashlib
 import sys
 import tempfile
 import unittest
-from importlib.util import find_spec
 from pathlib import Path
 
 
@@ -95,9 +94,16 @@ class ReferenceAssetGateTests(unittest.TestCase):
         self.assertEqual("ok", status)
         ticket = self.gate.issue(plan, backend="comfyui")
         self.assertIsNotNone(ticket)
-        denied, denied_status = self.gate.consume(ticket, generation_id="other", backend="comfyui", capacity=1)
-        self.assertEqual([], denied)
-        self.assertEqual("scope_mismatch", denied_status)
+
+        for generation_id, backend in (("other", "comfyui"), ("gen-2", "other")):
+            denied, denied_status = self.gate.consume(
+                ticket,
+                generation_id=generation_id,
+                backend=backend,
+                capacity=1,
+            )
+            self.assertEqual([], denied)
+            self.assertEqual("scope_mismatch", denied_status)
 
         paths, consume_status = self.gate.consume(ticket, generation_id="gen-2", backend="comfyui", capacity=1)
         self.assertEqual("ok", consume_status)
@@ -119,30 +125,23 @@ class ReferenceAssetGateTests(unittest.TestCase):
         self.assertNotIn("sensitive-path", encoded)
         self.assertEqual("identity", projection["items"][0]["role"])
 
-    def test_runtime_and_panel_have_only_q5_gate_call_sites(self) -> None:
-        image_spec = find_spec("astrbot_plugin_image_companion")
-        image_root = (
-            Path(image_spec.origin).resolve().parent
-            if image_spec is not None and image_spec.origin
-            else None
+    def test_expired_ticket_cannot_disclose_managed_asset_path(self) -> None:
+        now = [1000.0]
+        gate = ReferenceAssetGate(self.data_dir, now=lambda: now[0])
+        identity = self._entry("identity-expiring.png", "identity")
+        plan, status = gate.plan(
+            [identity], generation_id="expiring-generation", mode="new_topic"
         )
-        runtime_path = (
-            image_root / "image_runtime.py"
-            if image_root is not None
-            else ROOT / "proactive_message.py"
+        self.assertEqual("ok", status)
+        ticket = gate.issue(plan, backend="external")
+        self.assertIsNotNone(ticket)
+
+        now[0] += 90.0
+        paths, consumed = gate.consume(
+            ticket,
+            generation_id="expiring-generation",
+            backend="external",
+            capacity=1,
         )
-        proactive = runtime_path.read_text(encoding="utf-8")
-        page_api = (ROOT / "page_api.py").read_text(encoding="utf-8")
-        frontend = (ROOT / "pages" / "陪伴面板" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("reference_asset_ticket", proactive)
-        self.assertIn("structured_reference_count", proactive)
-        if image_root is not None:
-            companion = (ROOT / "proactive_message.py").read_text(encoding="utf-8")
-            self.assertIn("_image_companion_generate", companion)
-            self.assertNotIn("reference_asset_ticket", companion)
-        self.assertIn("_q5_structured_reference_asset_projection", page_api)
-        self.assertIn("structuredReferenceAssetStatusHtml", frontend)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        self.assertEqual([], paths)
+        self.assertEqual("expired_or_consumed_ticket", consumed)

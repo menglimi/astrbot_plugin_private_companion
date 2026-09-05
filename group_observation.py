@@ -148,6 +148,7 @@ from .domains.social.joke_boundary import (
 from .group_prompt_context import (
     build_group_prompt_context,
 )
+from .group_addressing_rules import group_message_addresses_bot
 from .segmented_message import sanitize_llm_segment_control_tokens
 from .planning import (
     build_daily_plan_prompt,
@@ -1656,29 +1657,11 @@ class GroupObservationMixin:
 
     def _group_observed_message_addresses_bot(self, item: dict[str, Any]) -> bool:
         """Return whether the recorded scene actually points at the Bot."""
-        if not isinstance(item, dict):
-            return False
-        talking_to = _single_line(item.get("talking_to"), 40).lower()
-        trigger = _single_line(item.get("scene_trigger"), 40).lower()
-        at_targets = item.get("at_targets") if isinstance(item.get("at_targets"), list) else []
-        if talking_to == "bot" or trigger in {
-            "at_bot",
-            "reply_bot",
-            "mention_bot_name",
-            "bot_conversation_followup",
-        } or trigger.startswith("group_wakeup_"):
-            return True
-        if any(isinstance(target, dict) and bool(target.get("is_bot")) for target in at_targets):
-            return True
-        if talking_to not in {"", "group", "bot"} or trigger in {"at_other", "reply_other"}:
-            return False
-        if at_targets:
-            # Structured targets exist and none of them is the Bot.
-            return False
-        text = _single_line(item.get("text"), 140)
-        folded = text.casefold()
-        markers = [_persona_value(self, "bot_name", ""), "bot", "机器人", "小星"]
-        return any(str(marker or "").strip().casefold() in folded for marker in markers if str(marker or "").strip())
+        return group_message_addresses_bot(
+            item,
+            bot_markers=(_persona_value(self, "bot_name", ""), "bot", "机器人", "小星"),
+            normalize=_single_line,
+        )
 
     def _group_bot_harassment_candidate(
         self,

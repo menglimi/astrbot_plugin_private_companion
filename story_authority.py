@@ -631,6 +631,13 @@ class _StoryAuthorityController:
                 raise StoryAuthorityError("story_handoff_generation_stale")
             lease = self._lease
             if self._state not in {"leased", "committing"} or lease is None:
+                digest = self._token_digest(token)
+                if (
+                    self._last_token_reason == "aborted"
+                    and self._last_token_generation == generation
+                    and self._same_digest(digest, self._last_token_digest)
+                ):
+                    return {"aborted": False, "already_released": True}
                 self._receipt_error_locked(generation, token)
             if lease["generation"] != generation:
                 raise StoryAuthorityError("story_handoff_generation_stale")

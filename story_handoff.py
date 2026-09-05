@@ -861,15 +861,16 @@ async def _verify_controller_marker(
     """Upgrade an in-memory marker to an exact persisted source proof."""
 
     pinned = validate_story_migration_commit_marker(marker)
-    if controller.committed_marker_source_verified(pinned):
-        controller.recover_committed_marker(pinned)
-        return pinned
+    if controller.authority_state() == "blocked":
+        _fail("story_handoff_blocked")
     marker_present, marker_value = await _source_marker(plugin)
     if not marker_present:
-        controller.block("story_handoff_marker_persistence_unconfirmed")
-        _fail("story_handoff_marker_persistence_unconfirmed")
+        controller.block("story_handoff_marker_missing")
+        _fail("story_handoff_marker_missing")
     try:
         source_marker = validate_story_migration_commit_marker(marker_value)
+        if source_marker != pinned:
+            _fail("story_handoff_marker_conflict")
         _confirm_persisted_source_marker(plugin, source_marker)
         controller.recover_committed_marker(
             source_marker,

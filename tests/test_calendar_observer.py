@@ -135,3 +135,64 @@ def test_runtime_candidate_stays_out_of_formal_calendar_until_confirmation() -> 
     )
     assert result["candidates"][0]["lifecycle_state"] == "cancelled"
     assert host.data["calendar_events"][0]["status"] == "cancelled"
+
+
+def test_materializing_confirmed_candidate_surfaces_calendar_write_failure() -> None:
+    host = _Host()
+    candidate = {
+        "candidate_id": "candidate-write-failure",
+        "lifecycle_state": "confirmed",
+        "updated_at": NOW.isoformat(),
+        "proposed_record": {
+            "calendar_id": "event-write-failure",
+            "kind": "event",
+            "title": "去医院",
+            "start_date": "2026-08-21",
+        },
+    }
+
+    def fail_upsert(_record: dict) -> dict:
+        raise RuntimeError("injected calendar persistence failure")
+
+    host._agenda_upsert_calendar_record = fail_upsert
+
+    try:
+        host._agenda_materialize_calendar_candidate(candidate)
+    except RuntimeError as exc:
+        assert str(exc) == "injected calendar persistence failure"
+    else:
+        raise AssertionError("calendar persistence failure was silently swallowed")
+
+
+def test_pending_candidate_does_not_write_but_confirmation_surfaces_save_failure() -> None:
+    host = _Host()
+    save_calls: list[set[str]] = []
+
+    def save(*, sections: set[str]) -> None:
+        save_calls.append(set(sections))
+        if "calendar_events" in sections:
+            raise OSError("injected durable store failure")
+
+    host._schedule_data_save = save
+    pending = host._agenda_observe_calendar_message(
+        text="明天去医院",
+        event_time=NOW,
+        source_ref="failure-m-1",
+        source_user_id="u-1",
+        target_user_id="u-1",
+    )
+    assert pending["candidates"]
+    assert save_calls == [{"calendar_candidates"}]
+
+    try:
+        host._agenda_observe_calendar_message(
+            text="确认了明天去医院",
+            event_time=NOW,
+            source_ref="failure-m-2",
+            source_user_id="u-1",
+            target_user_id="u-1",
+        )
+    except OSError as exc:
+        assert str(exc) == "injected durable store failure"
+    else:
+        raise AssertionError("confirmed calendar save failure was silently swallowed")

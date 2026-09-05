@@ -154,6 +154,7 @@ from .reference_assets import (
 )
 from .reaction_asset_library import get_reaction_asset_library
 from .logging_util import get_module_logger
+from .page_backend import MigrationBackupService, build_route_bindings, generation_log_candidates
 
 logger = get_module_logger(__name__)
 
@@ -1431,16 +1432,12 @@ class PrivateCompanionPageApi(
             "/persona/config/detach-preview",
             "/persona/config/detach-apply",
         }
-        bindings: list[tuple[str, Any, list[str], str]] = []
-        for path, handler, methods, desc in routes:
-            scoped_handler = (
-                handler
-                if path in persona_control_routes
-                else self._persona_scoped_route_handler(handler)
-            )
-            registered_handler = self._http_status_route_handler(scoped_handler)
-            bindings.append((path, registered_handler, methods, desc))
-        return bindings
+        return build_route_bindings(
+            routes,
+            persona_control_routes=persona_control_routes,
+            persona_wrapper=self._persona_scoped_route_handler,
+            http_wrapper=self._http_status_route_handler,
+        )
 
     def register_routes(self) -> None:
         register = self.plugin.context.register_web_api
@@ -7555,11 +7552,7 @@ class PrivateCompanionPageApi(
                 "traces": [],
                 "events": [],
             }
-        candidates = [root / "photo_generation_trace.txt"]
-        candidates.extend(sorted(root.glob("photo_generation_trace.*.txt")))
-        debug_root = root / "photo_debug"
-        candidates.append(debug_root / "generation.jsonl")
-        candidates.extend(sorted(debug_root.glob("generation.*.jsonl")))
+        candidates = generation_log_candidates(root)
         paths = [item for item in candidates if item.is_file()]
         if not paths:
             return {
@@ -7831,11 +7824,7 @@ class PrivateCompanionPageApi(
             return {"enabled": False, "available": False, "path": "", "latest": {}, "traces": [], "events": []}
         candidates: list[tuple[Path, str, int]] = []
         for root in roots:
-            paths = [root / "photo_generation_trace.txt"]
-            paths.extend(sorted(root.glob("photo_generation_trace.*.txt")))
-            debug_root = root / "photo_debug"
-            paths.append(debug_root / "generation.jsonl")
-            paths.extend(sorted(debug_root.glob("generation.*.jsonl")))
+            paths = generation_log_candidates(root)
             for path in paths:
                 try:
                     resolved = path.resolve(strict=True)
@@ -21485,47 +21474,18 @@ class PrivateCompanionPageApi(
         data_dir = Path(getattr(self.plugin, "data_dir", "") or Path(getattr(self.plugin, "data_file", ".")).parent)
         return data_dir / "config_backups"
 
+    def _migration_backup_service(self) -> MigrationBackupService:
+        return MigrationBackupService(
+            self._migration_backup_dir(),
+            checksum_matches=self._migration_checksum_matches,
+            error_text=self._single_line,
+        )
+
     def _resolve_migration_backup_path(self, backup_id: str) -> Path:
-        safe_name = Path(str(backup_id or "")).name
-        if not safe_name or not safe_name.endswith(".json"):
-            raise ValueError("没有找到要恢复的备份文件")
-        path = (self._migration_backup_dir() / safe_name).resolve()
-        root = self._migration_backup_dir().resolve()
-        try:
-            path.relative_to(root)
-        except ValueError as exc:
-            raise ValueError("备份路径不合法") from exc
-        if not path.exists() or not path.is_file():
-            raise ValueError("备份文件不存在")
-        return path
+        return self._migration_backup_service().resolve(backup_id)
 
     def _list_migration_backup_items(self, *, limit: int = 8) -> list[dict[str, Any]]:
-        backup_dir = self._migration_backup_dir()
-        if not backup_dir.exists():
-            return []
-        items: list[dict[str, Any]] = []
-        for path in sorted(backup_dir.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True)[: max(1, limit)]:
-            stat = path.stat()
-            item: dict[str, Any] = {
-                "id": path.name,
-                "name": path.name,
-                "size": stat.st_size,
-                "mtime": int(stat.st_mtime),
-                "version": "",
-                "exported_at": 0,
-                "checksum_ok": False,
-            }
-            try:
-                package = json.loads(path.read_text(encoding="utf-8-sig"))
-                item["version"] = str(package.get("version") or "")
-                item["exported_at"] = int(float(package.get("exported_at") or 0))
-                item["included_sections"] = [str(value) for value in package.get("included_sections", []) if str(value).strip()]
-                checksum = str(package.get("checksum") or "")
-                item["checksum_ok"] = bool(checksum) and self._migration_checksum_matches(package, checksum)
-            except Exception as exc:
-                item["error"] = self._single_line(exc, 120)
-            items.append(item)
-        return items
+        return self._migration_backup_service().list_items(limit=limit)
 
     def _migration_checksum(self, package: dict[str, Any]) -> str:
         payload = deepcopy(package)

@@ -26,13 +26,19 @@ def _initialize_backend_from_payload(
         )
         return backend.load_store()
     except Exception as exc:
-        logger.warning(
-            "%s到 %s 后端失败,本次继续使用来源数据: %s",
+        # The destination is not authoritative until both its transaction and
+        # verification load have completed.  Continuing with the source only in
+        # memory creates a split process/restart view: this process appears to
+        # have migrated while the next one sees an uninitialized destination.
+        logger.error(
+            "%s到 %s 后端失败,停止加载以避免迁移状态分歧: %s",
             action,
             backend.backend_name(),
             exc,
         )
-        return payload
+        raise RuntimeError(
+            f"migration to {backend.backend_name()} storage is not durable"
+        ) from exc
 
 
 def migrate_json_to_backend_if_needed(backend: Any, json_backend: Any, default_data: dict[str, Any]) -> dict[str, Any]:

@@ -144,7 +144,7 @@ def test_legacy_entrypoints_are_effect_free_adapters() -> None:
     root = Path(__file__).resolve().parents[1]
     expectations = {
         "page_api.py": "_apply_config_value",
-        "command_handlers.py": "_companion_manual_apply_config_value",
+        "admin_config_command.py": "apply_config_value",
         "main.py": "_apply_persona_setting_hot_effects",
     }
     forbidden = {

@@ -325,11 +325,18 @@ class StoreManager:
                 else:
                     self.backend.save_store(reconciled)
             except Exception as exc:
-                logger.warning(
-                    "夹层恢复结果暂未写回 %s，本进程继续使用已恢复数据: %s",
+                # The recovered payload is not authoritative until it is durable.
+                # Returning it while the write failed creates a process/restart
+                # split: this process serves data that the next process loses.
+                # Fail closed rather than continuing after a partial recovery.
+                logger.error(
+                    "夹层恢复结果无法写回 %s，停止加载以避免内存与持久层分歧: %s",
                     self.backend.backend_name(),
                     exc,
                 )
+                raise RuntimeError(
+                    f"recovered {self.backend.backend_name()} storage is not durable"
+                ) from exc
         return reconciled
 
     def load_initial_store(self) -> dict[str, Any]:

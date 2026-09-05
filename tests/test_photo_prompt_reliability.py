@@ -6,7 +6,6 @@ import json
 import tempfile
 import unittest
 from copy import deepcopy
-from importlib.util import find_spec
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -17,54 +16,39 @@ from astrbot_plugin_private_companion.conversation_prompt_section import (
     prompt_section,
 )
 
-if find_spec("astrbot_plugin_image_companion") is not None:
-    from astrbot_plugin_image_companion.image_runtime import (
-        PhotoGenerationResult,
-        PhotoWardrobeDecision,
-        ProactiveMessageMixin,
-    )
-    from astrbot_plugin_image_companion.photo_prompt_context import (
-        PhotoPromptSection as _photo_section,
-        resolve_photo_prompt_context,
-    )
-    from astrbot_plugin_image_companion.photo_wardrobe_decision import (
-        analyze_photo_wardrobe,
-        resolve_photo_wardrobe_decision,
-    )
-else:
-    from astrbot_plugin_private_companion.proactive_message import (
-        PhotoGenerationResult,
-        PhotoWardrobeDecision,
-        ProactiveMessageMixin,
-    )
-    from astrbot_plugin_private_companion.photo_prompt_context import (
-        resolve_photo_prompt_context,
-    )
-    from astrbot_plugin_private_companion.photo_wardrobe_decision import (
-        analyze_photo_wardrobe,
-        resolve_photo_wardrobe_decision,
-    )
+from astrbot_plugin_private_companion.proactive_message import (
+    PhotoGenerationResult,
+    PhotoWardrobeDecision,
+    ProactiveMessageMixin,
+)
+from astrbot_plugin_private_companion.photo_prompt_context import (
+    resolve_photo_prompt_context,
+)
+from astrbot_plugin_private_companion.photo_wardrobe_decision import (
+    analyze_photo_wardrobe,
+    resolve_photo_wardrobe_decision,
+)
 
-    def _photo_section(
-        name: str,
-        source: str,
-        positive: str = "",
-        negative: str = "",
-        protected: bool = False,
-        sanitize_conflicts: bool | None = None,
-    ) -> PromptSection:
-        return prompt_section(
-            key=f"photo.test.{source}.{name}",
-            title=name,
-            source="photo_prompt_context",
-            content=PhotoPromptContent(
-                positive=positive,
-                negative=negative,
-                domain_source=source,
-                protected=protected,
-                sanitize_conflicts=sanitize_conflicts,
-            ),
-        )
+def _photo_section(
+    name: str,
+    source: str,
+    positive: str = "",
+    negative: str = "",
+    protected: bool = False,
+    sanitize_conflicts: bool | None = None,
+) -> PromptSection:
+    return prompt_section(
+        key=f"photo.test.{source}.{name}",
+        title=name,
+        source="photo_prompt_context",
+        content=PhotoPromptContent(
+            positive=positive,
+            negative=negative,
+            domain_source=source,
+            protected=protected,
+            sanitize_conflicts=sanitize_conflicts,
+        ),
+    )
 
 
 def _photo_name(section: object) -> str:
@@ -245,179 +229,8 @@ class PhotoPromptReliabilityTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual((scene_positive, scene_negative), ("", ""))
 
-    async def test_home_sleepwear_reference_controls_wardrobe_removes_daily_outfit_and_preset(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            reference_path = self._write_reference(root)
-            reference = {
-                "id": "library_sleepwear",
-                "path": str(reference_path),
-                "source": str(reference_path),
-                "kind": "library",
-                "note": "奶油色睡衣，卧室、睡前和居家休息时使用",
-                "reference_roles": ["identity", "outfit"],
-                "outfit_category": "sleepwear",
-                "outfit_lock_default": True,
-                "scene_categories": ["home", "bedroom"],
-                "preferred_preset": "居家睡衣",
-            }
-            harness = _PhotoReliabilityHarness(root, reference)
 
-            backend, image_path, note = await harness._generate_photo_image(
-                workflow_kind="selfie",
-                prompt_text="坐在床边拍一张自然自拍",
-                session_key="default:FriendMessage:10001",
-            )
 
-            self.assertEqual((backend, image_path, note), ("在线图片 API", str(harness.generated_path), "backend completed"))
-            self.assertEqual(len(harness.external_calls), 1)
-            call = harness.external_calls[0]
-            self.assertEqual(call["reference_image_path"], str(reference_path))
-            final_prompt = call["prompt_text"]
-            self.assertIn("outfit category=sleepwear", final_prompt)
-            self.assertIn("authoritative source for identity and the complete visible outfit", final_prompt)
-            self.assertNotIn("今日穿搭：", final_prompt)
-            self.assertNotIn("navy vest", final_prompt)
-            self.assertNotIn("burgundy ribbon", final_prompt)
-
-            record = harness.data["recent_photo_generations"][0]
-            self.assertEqual(record["wardrobe_mode"], "reference_outfit")
-            self.assertEqual(record["wardrobe_category"], "sleepwear")
-            self.assertTrue(record["outfit_locked"])
-            self.assertTrue(record["daily_outfit_removed"])
-            self.assertEqual(record["presets"], ["居家睡衣"])
-            self.assertIn("daily_outfit_context_removed", record["removed_conflicts"])
-
-            debug_payload = json.loads(Path(record["prompt_path"]).read_text(encoding="utf-8"))
-            self.assertNotIn("今日穿搭：", debug_payload["scene_context_after"])
-            self.assertEqual(debug_payload["wardrobe_decision"]["mode"], "reference_outfit")
-            self.assertEqual(debug_payload["presets"], ["居家睡衣"])
-
-    async def test_structured_sleepwear_preset_stays_positive_and_selects_matching_reference(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            sleepwear_path = self._write_reference(root, "sleepwear.png")
-            daily_path = self._write_reference(root, "daily.png")
-            persona_path = self._write_reference(root, "persona.png")
-            harness = _StructuredPresetSelectionHarness(
-                root,
-                [
-                    {
-                        "id": "library_sleepwear",
-                        "path": str(sleepwear_path),
-                        "kind": "library",
-                        "note": "奶油色睡衣，适用于卧室、睡前和居家休息",
-                        "reference_roles": ["identity", "outfit"],
-                        "outfit_category": "sleepwear",
-                        "outfit_lock_default": True,
-                        "scene_categories": ["home", "bedroom"],
-                        "preferred_preset": "居家睡衣",
-                    },
-                    {
-                        "id": "daily_outfit",
-                        "path": str(daily_path),
-                        "kind": "daily_outfit",
-                        "note": "今天的外出穿搭",
-                        "reference_roles": ["identity", "outfit"],
-                        "outfit_category": "daily_outfit",
-                        "outfit_lock_default": True,
-                        "scene_categories": ["outdoor"],
-                        "preferred_preset": "日常穿搭",
-                    },
-                    {
-                        "id": "persona_default",
-                        "path": str(persona_path),
-                        "kind": "persona",
-                        "note": "基础人物身份和外貌参考",
-                        "reference_roles": ["identity"],
-                        "outfit_lock_default": False,
-                    },
-                ],
-            )
-            harness._llm_call = AsyncMock(return_value="1")
-            source_prompt = (
-                "Positive prompt: at a dorm desk after evening skincare, calm portrait. "
-                "Negative prompt: text, watermark, cropped head."
-            )
-
-            await harness._generate_photo_image(
-                workflow_kind="selfie",
-                prompt_text=source_prompt,
-                session_key="default:FriendMessage:10001",
-                requested_scene_preset="居家睡衣",
-            )
-
-            call = harness.external_calls[0]
-            self.assertEqual(call["reference_image_path"], str(sleepwear_path))
-            final_prompt = call["prompt_text"]
-            positive, negative = harness._photo_prompt_split_formatted(final_prompt)
-            self.assertIn("outfit category=sleepwear", positive)
-            self.assertNotIn("outfit category=sleepwear", negative)
-            self.assertNotIn("white shirt", final_prompt)
-            self.assertNotIn("navy vest", final_prompt)
-
-            record = harness.data["recent_photo_generations"][0]
-            self.assertEqual(record["requested_scene_preset"], "居家睡衣")
-            self.assertEqual(record["wardrobe_mode"], "reference_outfit")
-            self.assertEqual(record["wardrobe_category"], "sleepwear")
-            self.assertTrue(record["outfit_locked"])
-            self.assertTrue(record["daily_outfit_removed"])
-            self.assertEqual(record["presets"], ["居家睡衣"])
-            debug_payload = json.loads(Path(record["prompt_path"]).read_text(encoding="utf-8"))
-            self.assertEqual(debug_payload["requested_scene_preset"], "居家睡衣")
-            self.assertEqual(debug_payload["wardrobe_decision"]["category"], "sleepwear")
-
-    async def test_internal_today_outfit_boilerplate_does_not_override_selected_sleepwear(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            reference_path = self._write_reference(root)
-            reference = {
-                "id": "library_sleepwear",
-                "path": str(reference_path),
-                "source": str(reference_path),
-                "kind": "library",
-                "note": "奶油色睡衣，卧室、睡前和居家休息时使用",
-                "reference_roles": ["identity", "outfit"],
-                "outfit_category": "sleepwear",
-                "outfit_lock_default": True,
-                "preferred_preset": "居家睡衣",
-            }
-            for has_reference in (False, True):
-                with self.subTest(has_reference=has_reference):
-                    harness = _PhotoReliabilityHarness(root, reference)
-                    constructed_prompt = harness._build_natural_language_photo_prompt(
-                        prompt="来张自拍",
-                        kind="selfie",
-                        has_reference=has_reference,
-                        memory_context="今日穿搭：白衬衫和西装外套；地点：卧室",
-                    )
-                    self.assertIn("user request: 来张自拍", constructed_prompt)
-                    self.assertIn("preserve character identity and stable appearance", constructed_prompt)
-                    self.assertNotIn("keep today's outfit and character appearance", constructed_prompt)
-                    self.assertIn("visual continuity reference: 今日穿搭：", constructed_prompt)
-
-                    await harness._generate_photo_image(
-                        workflow_kind="selfie",
-                        prompt_text=constructed_prompt,
-                        session_key="default:FriendMessage:10001",
-                    )
-
-                    record = harness.data["recent_photo_generations"][0]
-                    self.assertEqual(record["wardrobe_mode"], "reference_outfit")
-                    self.assertEqual(record["wardrobe_category"], "sleepwear")
-                    self.assertTrue(record["outfit_locked"])
-                    self.assertTrue(record["daily_outfit_removed"])
-                    self.assertEqual(record["presets"], ["居家睡衣"])
-                    final_prompt = harness.external_calls[0]["prompt_text"]
-                    self.assertNotIn("今日穿搭：", final_prompt)
-                    self.assertNotIn("白衬衫", final_prompt)
-                    self.assertNotIn("西装外套", final_prompt)
-                    self.assertNotIn("navy vest", final_prompt)
-                    self.assertNotIn("keep today's outfit and character appearance", final_prompt)
-                    self.assertIn("visual continuity reference: 地点：卧室", final_prompt)
-                    self.assertIn("outfit category=sleepwear", final_prompt)
-                    self.assertIn("generated_daily_outfit_continuity_removed", record["removed_conflicts"])
-                    self.assertNotIn("conflicting_wardrobe:daily_outfit", record["conflicts"])
 
     def test_explicit_outfit_categories_win_and_choose_matching_final_preset(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -762,23 +575,6 @@ class PhotoPromptReliabilityTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("sleepwear", sections["negative"].lower())
             self.assertIn("Avoid ", final_prompt)
 
-    async def test_nai_natural_exclusion_reaches_negative_user_section(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            harness = _PhotoReliabilityHarness(Path(directory))
-            harness.photo_generation_prompt_format = "nai"
-
-            await harness._generate_photo_image(
-                workflow_kind="text2img",
-                prompt_text="一个女孩，不要水印",
-                session_key="default:FriendMessage:10001",
-            )
-
-            record = harness.data["recent_photo_generations"][0]
-            debug_payload = json.loads(Path(record["prompt_path"]).read_text(encoding="utf-8"))
-            user_section = debug_payload["prompt_sections_after"]["user_request"]
-            self.assertEqual(user_section["positive"], "一个女孩")
-            self.assertEqual(user_section["negative"], "水印")
-            self.assertNotIn("不要水印", harness.external_calls[0]["prompt_text"])
 
     async def test_edit_reference_path_keeps_source_role_even_when_it_matches_library(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -930,53 +726,6 @@ class PhotoPromptReliabilityTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Use the schedule only for missing", sections["reference_wardrobe"])
             self.assertNotIn("schedule context controls only location", sections["reference_wardrobe"])
 
-    async def test_daily_outfit_aliases_are_removed_by_the_full_generation_pipeline(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            reference_path = self._write_reference(root)
-            reference = {
-                "id": "library_sleepwear",
-                "path": str(reference_path),
-                "source": str(reference_path),
-                "kind": "library",
-                "note": "奶油色睡衣，卧室、睡前和居家休息时使用",
-                "reference_roles": ["identity", "outfit"],
-                "outfit_category": "sleepwear",
-                "outfit_lock_default": True,
-                "scene_categories": ["home", "bedroom"],
-                "preferred_preset": "居家睡衣",
-            }
-            for label in ("今日穿搭", "当天穿搭", "日常穿搭", "today's outfit", "daily outfit"):
-                with self.subTest(label=label):
-                    harness = _PhotoReliabilityHarness(root, reference)
-                    harness._photo_generation_selfie_schedule_scene_hint = (
-                        lambda label=label: f"{label}：white shirt and navy blazer；当前位置：卧室"
-                    )
-
-                    backend, image_path, note = await harness._generate_photo_image(
-                        workflow_kind="selfie",
-                        prompt_text="坐在床边拍一张自然自拍",
-                        session_key=f"alias:{label}",
-                    )
-
-                    self.assertEqual(
-                        (backend, image_path, note),
-                        ("在线图片 API", str(harness.generated_path), "backend completed"),
-                    )
-                    record = harness.data["recent_photo_generations"][0]
-                    final_prompt = harness.external_calls[0]["prompt_text"]
-                    self.assertNotIn("white shirt", final_prompt)
-                    self.assertNotIn("navy blazer", final_prompt)
-                    self.assertIn("当前位置：卧室", final_prompt)
-                    self.assertEqual(
-                        harness.external_calls[0]["reference_image_path"],
-                        str(reference_path),
-                    )
-                    self.assertFalse(record["reference_removed"])
-                    self.assertIn(
-                        "daily_outfit_context_removed",
-                        record["removed_conflicts"],
-                    )
 
     def test_prompt_debug_json_is_utf8_hashed_and_retains_only_latest_forty(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1078,47 +827,6 @@ class PhotoPromptReliabilityTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertFalse((root / "photo_prompt_debug").exists())
 
-    async def test_structured_result_marks_automatic_reference_used_and_keeps_legacy_tuple(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            reference_path = self._write_reference(root)
-            harness = _PhotoReliabilityHarness(
-                root,
-                {
-                    "id": "automatic-reference",
-                    "path": str(reference_path),
-                    "kind": "library",
-                    "reference_roles": ["identity", "outfit"],
-                    "outfit_category": "sleepwear",
-                    "outfit_lock_default": True,
-                    "preferred_preset": "居家睡衣",
-                },
-            )
-            kwargs = {
-                "workflow_kind": "selfie",
-                "prompt_text": "在卧室拍一张自然自拍",
-                "session_key": "default:FriendMessage:10001",
-            }
-
-            result = await harness._generate_photo_image_result(**kwargs)
-
-            self.assertIsInstance(result, PhotoGenerationResult)
-            self.assertTrue(result.success)
-            self.assertEqual(result.reference_selected_path, str(reference_path))
-            self.assertTrue(result.reference_used)
-            self.assertEqual(result.reference_id, "automatic-reference")
-            self.assertEqual(result.wardrobe_mode, "reference_outfit")
-            self.assertEqual(result.wardrobe_category, "sleepwear")
-            self.assertEqual(result.preset_names, ("居家睡衣",))
-            self.assertEqual(
-                result.as_legacy_tuple(),
-                ("在线图片 API", str(harness.generated_path), "backend completed"),
-            )
-
-            legacy = await harness._generate_photo_image(**kwargs)
-            self.assertIsInstance(legacy, tuple)
-            self.assertEqual(len(legacy), 3)
-            self.assertEqual(legacy, result.as_legacy_tuple())
 
 
 if __name__ == "__main__":

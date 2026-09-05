@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import os
 from pathlib import Path
+
+import pytest
 import sys
 import tempfile
 import types
@@ -11,15 +12,14 @@ from types import SimpleNamespace
 
 
 COMPANION_ROOT = Path(__file__).resolve().parents[1]
-_MEMORY_ROOT_CANDIDATES = (
-    Path(os.environ["ASTRBOT_MEMORY_PLUGIN_ROOT"])
-    if os.environ.get("ASTRBOT_MEMORY_PLUGIN_ROOT")
-    else COMPANION_ROOT / ".missing-memory-root",
-    COMPANION_ROOT.parent / "memory",
-    COMPANION_ROOT.parents[1] / "astrbot_plugin_memory_companion-main",
-    COMPANION_ROOT.parent / "astrbot_plugin_remember_you",
-)
-MEMORY_ROOT = next((path for path in _MEMORY_ROOT_CANDIDATES if path.is_dir()), _MEMORY_ROOT_CANDIDATES[0])
+from external_memory_dependency import resolve_memory_plugin_root
+
+
+_memory_resolution = resolve_memory_plugin_root(COMPANION_ROOT)
+if _memory_resolution.root is None:
+    pytest.skip(_memory_resolution.detail, allow_module_level=True)
+MEMORY_ROOT = _memory_resolution.root
+
 
 
 def _load_companion_package():

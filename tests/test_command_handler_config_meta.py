@@ -32,3 +32,16 @@ def test_manual_config_display_meta_has_unique_keys() -> None:
         "label": "主动消息终审强度",
         "location": "拓展页 -> 功能开关 -> 私聊陪伴 -> 主动消息终审详情",
     }
+
+
+def test_command_handlers_imports_the_logger_it_uses() -> None:
+    tree = ast.parse((ROOT / "command_handlers.py").read_text(encoding="utf-8"))
+    logger_imports = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "astrbot.api"
+        and any(alias.name == "logger" for alias in node.names)
+    ]
+
+    assert len(logger_imports) == 1

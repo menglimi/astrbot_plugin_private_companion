@@ -12,10 +12,7 @@ from copy import deepcopy
 from datetime import date, datetime, time, timedelta
 from typing import Any, Iterable
 
-try:  # package import
-    from ...agenda_contracts import AgendaContractError, stable_id, timezone_or_default
-except ImportError:  # direct test/import from the plugin directory
-    from agenda_contracts import AgendaContractError, stable_id, timezone_or_default
+from ._agenda_primitives import AgendaContractError, stable_id, timezone_or_default
 
 
 CALENDAR_VERSION = 1

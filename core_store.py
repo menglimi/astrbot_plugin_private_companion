@@ -298,6 +298,7 @@ _PLATFORM_DISPLAY_NAMES = {
 _DURABLE_SECTION_NAMES = frozenset(
     {
         "version",
+        "primary_store_ownership",
         "users",
         "private_user_alias_merge_backups",
         "groups",

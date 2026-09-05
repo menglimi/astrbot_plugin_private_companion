@@ -203,23 +203,25 @@ class StorageBackendRecoveryTests(unittest.TestCase):
         with self.assertRaises(SqliteStoreNotInitializedError):
             self.sqlite_backend.load_store()
 
-    def test_empty_sqlite_recovery_write_failure_keeps_json_payload_live(self) -> None:
+    def test_empty_sqlite_recovery_write_failure_fails_closed_and_keeps_json(self) -> None:
         payload = {"users": {"42": {"name": "from-json"}}, "settings": {"source": "json"}}
         self.json_backend.save_store(payload)
         sqlite3.connect(self.sqlite_path).close()
 
-        with patch.object(
-            self.sqlite_backend,
-            "initialize_empty_store",
-            side_effect=OSError("disk is read-only"),
+        with (
+            patch.object(
+                self.sqlite_backend,
+                "initialize_empty_store",
+                side_effect=OSError("disk is read-only"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "migration.*not durable"),
         ):
-            loaded = migrate_json_to_backend_if_needed(
+            migrate_json_to_backend_if_needed(
                 self.sqlite_backend,
                 self.json_backend,
                 _new_store(),
             )
 
-        self.assertEqual(loaded, payload)
         self.assertEqual(self.json_backend.load_store(), payload)
         with self.assertRaises(SqliteStoreNotInitializedError):
             self.sqlite_backend.load_store()

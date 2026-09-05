@@ -205,6 +205,36 @@ def test_prepare_drains_existing_root_rejects_new_root_and_pins_snapshot() -> No
     asyncio.run(scenario())
 
 
+def test_abort_before_marker_is_idempotent_after_commit_cleanup() -> None:
+    async def scenario() -> None:
+        controller = _controller()
+        lease = await _prepare(controller, "generation-1")
+        snapshot = controller.export_lease(
+            generation="generation-1",
+            lease_token=lease["lease_token"],
+        )
+        controller.begin_commit(
+            generation="generation-1",
+            lease_token=lease["lease_token"],
+            snapshot_id=snapshot["snapshot_id"],
+            snapshot_sha256=snapshot["snapshot_sha256"],
+            target_plugin_id=authority.STORY_HANDOFF_TARGET_PLUGIN_ID,
+            owner_id=authority.STORY_MIGRATION_OWNER_ID,
+        )
+
+        assert controller.abort_before_marker(
+            generation="generation-1",
+            lease_token=lease["lease_token"],
+        ) == {"aborted": True, "already_released": False}
+        assert controller.abort_before_marker(
+            generation="generation-1",
+            lease_token=lease["lease_token"],
+        ) == {"aborted": False, "already_released": True}
+        assert controller.authority_state() == "open"
+
+    asyncio.run(scenario())
+
+
 def test_timeout_cancellation_expiry_and_invalid_snapshot_all_reopen_without_residue() -> None:
     async def scenario() -> None:
         timeout_controller = _controller(drain=0.01)

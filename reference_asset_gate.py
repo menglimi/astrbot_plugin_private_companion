@@ -223,7 +223,7 @@ class ReferenceAssetGate:
         record = self._tickets.get(getattr(ticket, "nonce", ""))
         if not record or record.get("ticket") is not ticket:
             return [], "unknown_ticket"
-        if record["consumed"] or float(self._now()) > float(record["expires_at"]):
+        if record["consumed"] or float(self._now()) >= float(record["expires_at"]):
             return [], "expired_or_consumed_ticket"
         plan: ReferenceAssetPlan = record["plan"]
         if generation_id != plan.generation_id or self._text(backend, 24).lower() != record["backend"]:

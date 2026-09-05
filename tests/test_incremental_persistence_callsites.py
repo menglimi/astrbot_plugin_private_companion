@@ -217,6 +217,14 @@ class IncrementalPersistenceCallsiteTests(unittest.TestCase):
         self.assertNotIn(STORY_MIGRATION_COMMIT_KEY, new_store)
         self.assertNotIn(STORY_MIGRATION_COMMIT_KEY, ensured)
 
+    def test_primary_store_ownership_is_a_registered_durable_section(self) -> None:
+        self.assertIn("primary_store_ownership", _DURABLE_SECTION_NAMES)
+        self.assertIn("primary_store_ownership", CoreStoreMixin._new_store(object()))
+        self.assertIn(
+            "primary_store_ownership",
+            CoreStoreMixin._ensure_store_defaults({}),
+        )
+
     def test_literal_durable_data_roots_are_registered(self) -> None:
         unknown: list[str] = []
         for path in _production_python_paths():

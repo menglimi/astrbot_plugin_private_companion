@@ -2,30 +2,24 @@
 from __future__ import annotations
 
 import importlib
-import os
 import sys
 import types
 import unittest
 from copy import deepcopy
 from pathlib import Path
 
+import pytest
+
 
 COMPANION_ROOT = Path(__file__).resolve().parents[1]
-_MEMORY_ROOT_CANDIDATES = (
-    Path(os.environ["ASTRBOT_MEMORY_PLUGIN_ROOT"])
-    if os.environ.get("ASTRBOT_MEMORY_PLUGIN_ROOT")
-    else COMPANION_ROOT / ".missing-memory-root",
-    COMPANION_ROOT.parent / "memory",
-    COMPANION_ROOT.parents[1] / "astrbot_plugin_memory_companion-main",
-)
-MEMORY_ROOT = next(
-    (
-        path
-        for path in _MEMORY_ROOT_CANDIDATES
-        if (path / "core" / "bridge.py").is_file()
-    ),
-    _MEMORY_ROOT_CANDIDATES[0],
-)
+from external_memory_dependency import resolve_memory_plugin_root
+
+
+_memory_resolution = resolve_memory_plugin_root(COMPANION_ROOT)
+if _memory_resolution.root is None:
+    pytest.skip(_memory_resolution.detail, allow_module_level=True)
+MEMORY_ROOT = _memory_resolution.root
+
 
 
 def _register_package_alias(name: str, root: Path) -> None:

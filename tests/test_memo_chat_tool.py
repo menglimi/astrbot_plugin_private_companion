@@ -228,6 +228,36 @@ class MemoChatToolTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(getattr(self.event, "private_companion_memo_reminder_saved", False))
 
+    def test_due_time_parser_characterization_matrix(self):
+        cases = {
+            "": (0.0, ""),
+            "1783994400000": (1783994400.0, ""),
+            "2026-07-15": (datetime(2026, 7, 15, 9, 0, tzinfo=TZ).timestamp(), ""),
+            "2月30日": (0.0, "提醒日期无效"),
+            "完全无法理解": (0.0, "无法识别提醒时间，请提供例如“明早9点”或“2026-07-15 09:00”"),
+        }
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(expected, self.plugin._parse_memo_due_time(raw, now=NOW))
+
+    def test_memo_selector_precedence_and_note_view_schema_are_stable(self):
+        notes = [
+            {"id": "1", "title": "2", "content": "id wins", "status": "active"},
+            {"id": "2", "title": "other", "content": "number would select this", "status": "active"},
+        ]
+        self.assertEqual("2", self.plugin._memo_tool_find_matches(notes, "2")[0]["id"])
+        view = self.plugin._memo_tool_note_view(notes[0], number=3)
+        self.assertEqual(
+            {
+                "id", "title", "content", "content_truncated", "status", "due_at",
+                "due_text", "repeat", "remind_enabled", "pinned", "color", "number",
+            },
+            set(view),
+        )
+        self.assertEqual(3, view["number"])
+        self.assertEqual("none", view["repeat"])
+        self.assertEqual("yellow", view["color"])
+
     def test_memo_routing_excludes_generic_reminders(self):
         self.assertFalse(self.plugin._memo_management_instruction_matches("明天提醒我交材料"))
         self.assertFalse(self.plugin._memo_management_instruction_matches("半小时后叫醒我"))

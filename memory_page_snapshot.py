@@ -81,6 +81,7 @@ class _PhotoBlob:
 
 @dataclass(frozen=True, slots=True)
 class _PhotoRegistration:
+    generation: str
     root: Path
     parts: tuple[str, ...]
     device: int
@@ -893,6 +894,7 @@ class MemoryPageSnapshotService:
                 self._prune_refs_locked(now)
                 for photo_ref, blob in staged:
                     self._photo_refs[photo_ref] = _PhotoRegistration(
+                        generation=generation,
                         root=blob.root,
                         parts=blob.parts,
                         device=blob.device,
@@ -920,6 +922,8 @@ class MemoryPageSnapshotService:
             if registration is None:
                 self._prune_refs_locked(now)
                 raise MemoryPageSnapshotError("memory_page_photo_ref_expired")
+            if registration.generation != generation:
+                raise MemoryPageSnapshotError("memory_page_photo_ref_stale")
             if registration.expires_at <= now:
                 self._photo_refs.pop(photo_ref, None)
                 self._prune_refs_locked(now)
@@ -1096,31 +1100,46 @@ class MemoryPageSnapshotService:
 
     @staticmethod
     def _open_nofollow(root: Path, parts: tuple[str, ...]) -> int:
+        if not parts:
+            raise MemoryPageSnapshotError("memory_page_photo_unavailable")
         nofollow = getattr(os, "O_NOFOLLOW", None)
         directory = getattr(os, "O_DIRECTORY", None)
-        nonblock = getattr(os, "O_NONBLOCK", None)
-        if nofollow is None or directory is None or nonblock is None or not parts:
-            raise MemoryPageSnapshotError("memory_page_photo_unavailable")
+        nonblock = getattr(os, "O_NONBLOCK", 0)
+        binary = getattr(os, "O_BINARY", 0)
         cloexec = getattr(os, "O_CLOEXEC", 0)
-        directory_flags = os.O_RDONLY | directory | nofollow | cloexec
-        file_flags = os.O_RDONLY | nofollow | nonblock | cloexec
-        opened_directory = -1
-        try:
-            opened_directory = os.open(os.fspath(root), directory_flags)
-            for part in parts[:-1]:
-                next_directory = os.open(part, directory_flags, dir_fd=opened_directory)
-                os.close(opened_directory)
-                opened_directory = next_directory
-            result = os.open(parts[-1], file_flags, dir_fd=opened_directory)
-        except (OSError, TypeError, NotImplementedError):
-            raise MemoryPageSnapshotError("memory_page_photo_unavailable") from None
-        finally:
-            if opened_directory >= 0:
-                try:
+        if nofollow is not None and directory is not None and os.open in os.supports_dir_fd:
+            directory_flags = os.O_RDONLY | directory | nofollow | cloexec
+            file_flags = os.O_RDONLY | nofollow | nonblock | binary | cloexec
+            opened_directory = -1
+            try:
+                opened_directory = os.open(os.fspath(root), directory_flags)
+                for part in parts[:-1]:
+                    next_directory = os.open(part, directory_flags, dir_fd=opened_directory)
                     os.close(opened_directory)
-                except OSError:
-                    pass
-        return result
+                    opened_directory = next_directory
+                return os.open(parts[-1], file_flags, dir_fd=opened_directory)
+            except (OSError, TypeError, NotImplementedError):
+                raise MemoryPageSnapshotError("memory_page_photo_unavailable") from None
+            finally:
+                if opened_directory >= 0:
+                    try:
+                        os.close(opened_directory)
+                    except OSError:
+                        pass
+
+        # Windows has no dir_fd/O_NOFOLLOW. Resolve the existing path immediately
+        # before opening and require it to remain under the already trusted root.
+        try:
+            candidate = root.joinpath(*parts)
+            if candidate.is_symlink():
+                raise MemoryPageSnapshotError("memory_page_photo_unavailable")
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(root)
+            return os.open(os.fspath(resolved), os.O_RDONLY | nonblock | binary | cloexec)
+        except MemoryPageSnapshotError:
+            raise
+        except (OSError, RuntimeError, ValueError):
+            raise MemoryPageSnapshotError("memory_page_photo_unavailable") from None
 
     @staticmethod
     def _detect_image_mime(content: bytes) -> str:
