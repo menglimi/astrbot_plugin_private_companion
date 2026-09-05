@@ -873,18 +873,19 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         except Exception:
             location_context = ""
         schedule_context = ""
-        schedule_formatter = getattr(self, "_format_schedule_context_for_prompt", None)
-        if callable(schedule_formatter):
-            try:
-                schedule_context = str(schedule_formatter() or "").strip()
-            except Exception:
-                schedule_context = ""
-        schedule_sanitizer = getattr(self, "_sanitize_schedule_context_for_private_user", None)
-        if schedule_context and callable(schedule_sanitizer):
-            try:
-                schedule_context = str(schedule_sanitizer(schedule_context, user) or "").strip()
-            except Exception:
-                schedule_context = ""
+        if bool(runtime_persona_setting(self, "include_schedule_in_messages", True)):
+            schedule_formatter = getattr(self, "_format_schedule_context_for_prompt", None)
+            if callable(schedule_formatter):
+                try:
+                    schedule_context = str(schedule_formatter() or "").strip()
+                except Exception:
+                    schedule_context = ""
+            schedule_sanitizer = getattr(self, "_sanitize_schedule_context_for_private_user", None)
+            if schedule_context and callable(schedule_sanitizer):
+                try:
+                    schedule_context = str(schedule_sanitizer(schedule_context, user) or "").strip()
+                except Exception:
+                    schedule_context = ""
         def labeled_bridge_section(key: str, title: str, content: str) -> str:
             return render_prompt_sections(
                 [
