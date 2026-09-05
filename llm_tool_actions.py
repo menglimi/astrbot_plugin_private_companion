@@ -390,6 +390,15 @@ class LlmToolActionsMixin:
                 return True
         except Exception:
             return False
+        nai_selected = getattr(self, "_nai_image_selected", None)
+        if callable(nai_selected) and nai_selected():
+            nai_available = getattr(self, "_nai_image_available", None)
+            if not callable(nai_available):
+                return False
+            try:
+                return bool(nai_available())
+            except Exception:
+                return False
         available = getattr(self, "_image_companion_available", None)
         if not callable(available):
             return False
