@@ -978,7 +978,7 @@ async def inject_humanized_state(
         inbound_text,
         state,
     )
-    if departure_section is not None and departure_section.content:
+    if isinstance(departure_section, PromptSection) and departure_section.content:
         prompt_surface.add(departure_section, priority=28)
         self._schedule_data_save(sections={"users"})
     identity_section = self._format_private_identity_anchor_prompt_section(

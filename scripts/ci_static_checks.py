@@ -26,6 +26,11 @@ _EXCLUDED_DIRS = frozenset(
         "scripts",
         "tests",
         "verification",
+        # Legacy standalone checkouts are kept locally for compatibility tests.
+        # They are not part of the private companion package or its release
+        # archive; the package-level implementation owns their migration.
+        "astrbot_plugin_nene_boundary",
+        "astrbot_plugin_temp_emotion",
     }
 )
 

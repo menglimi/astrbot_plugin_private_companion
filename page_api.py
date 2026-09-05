@@ -1281,6 +1281,7 @@ class PrivateCompanionPageApi(
             ("/proactive_only/unlock", self.update_proactive_only_unlock, ["POST"], "Private Companion Page proactive-only temporary unlock"),
             ("/proactive/candidate/delete", self.delete_proactive_candidate, ["POST"], "Private Companion Page delete proactive candidate"),
             ("/proactive/candidate/prune", self.prune_proactive_candidates, ["POST"], "Private Companion Page prune proactive candidates"),
+            ("/extensions/status", self.get_extension_control_plane_status, ["GET"], "Private Companion Page extension control-plane status"),
             ("/diagnostics", self.get_diagnostics, ["GET"], "Private Companion Page diagnostics"),
             ("/troubleshooting", self.get_troubleshooting, ["GET"], "Private Companion Page troubleshooting"),
             ("/daily-review", self.get_daily_review, ["GET"], "Private Companion Page daily review"),
@@ -6387,6 +6388,25 @@ class PrivateCompanionPageApi(
             logger.error("更新排障警告屏蔽失败: %s", self._single_line(exc, 160), exc_info=True)
             return self._exception_error(str(exc))
 
+    async def get_extension_control_plane_status(self) -> dict[str, Any]:
+        """Expose extension metadata and invariant checks without provider data."""
+        api = getattr(self.plugin, "extension_api", None)
+        getter = getattr(api, "extension_control_plane_status", None)
+        if not callable(getter):
+            return self._ok(
+                {
+                    "protocol_version": "0.1",
+                    "extensions": [],
+                    "issues": ["control_plane_unavailable"],
+                }
+            )
+        try:
+            payload = getter()
+            return self._ok(payload if isinstance(payload, dict) else {})
+        except Exception as exc:
+            logger.error("读取扩展控制面状态失败: %s", self._single_line(exc, 160), exc_info=True)
+            return self._exception_error("读取扩展状态失败")
+
     async def get_diagnostics(self) -> dict[str, Any]:
         try:
             async with self.plugin._data_lock:
@@ -6405,10 +6425,24 @@ class PrivateCompanionPageApi(
                 items,
                 {record["key"] for record in suppression_records},
             )
+            extension_status_getter = getattr(
+                getattr(self.plugin, "extension_api", None),
+                "extension_control_plane_status",
+                None,
+            )
+            if callable(extension_status_getter):
+                try:
+                    extension_status = extension_status_getter()
+                except Exception as exc:
+                    logger.warning("扩展控制面自检失败: %s", self._single_line(exc, 160))
+                    extension_status = {"issues": ["control_plane_self_check_failed"]}
+            else:
+                extension_status = {"issues": ["control_plane_unavailable"]}
             return self._ok(
                 {
                     "items": visible_items,
                     "suppressed_warning_types": self._troubleshooting_suppression_payload(suppression_records, items),
+                    "extension_control_plane": extension_status,
                 }
             )
         except Exception as exc:

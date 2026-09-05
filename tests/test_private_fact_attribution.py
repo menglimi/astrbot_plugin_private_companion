@@ -146,6 +146,20 @@ class PrivateFactAttributionTests(unittest.IsolatedAsyncioTestCase):
         prompt = self.harness._format_bot_self_preference_consistency(user, "你喜欢听什么歌")
         self.assertIn("我一直很喜欢听轻爵士", prompt)
 
+    def test_skipped_departure_returns_none_without_recording_an_offer(self):
+        self.harness._private_user_role = lambda _user: "owner"
+        user = {"episode_message_count": 8, "conversation_departure_offer_at": 0}
+        with patch("astrbot_plugin_private_companion.user_memory.random.random", return_value=0.9) as draw:
+            section = self.harness._format_conversation_departure_prompt_section(
+                user, "嗯嗯", now=2_000_000.0,
+            )
+            draw.assert_called_once_with()
+            self.assertIsNone(section)
+            self.assertEqual("", self.harness._format_conversation_departure_prompt(
+                user, "嗯嗯", now=2_000_000.0,
+            ))
+        self.assertEqual(0, user["conversation_departure_offer_at"])
+
     def test_departure_offer_is_low_frequency_and_optional(self):
         self.harness._private_user_role = lambda _user: "owner"
         user = {

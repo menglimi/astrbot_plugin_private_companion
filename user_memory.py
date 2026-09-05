@@ -8268,7 +8268,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         if last_offer > 0 and check_now - last_offer < 3 * 24 * 3600:
             return None
         if random.random() > 0.14:
-            return ""
+            return None
         user["conversation_departure_offer_at"] = check_now
         mood = _single_line((state or {}).get("mood_bias"), 24)
         energy = _safe_int((state or {}).get("energy"), 70, 0, 100)

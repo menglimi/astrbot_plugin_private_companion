@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from astrbot.api.message_components import Plain
 from astrbot.core.provider.entities import LLMResponse
@@ -15,6 +15,9 @@ from astrbot_plugin_private_companion.llm_tool_actions import (
     PHOTO_TOOL_SILENT_SENTINEL,
 )
 from astrbot_plugin_private_companion.main import PrivateCompanionPlugin
+from astrbot_plugin_private_companion.conversation_injection_plan import (
+    get_conversation_injection_plan,
+)
 
 
 class _ToolHarness(TtsToolSanitizerMixin, TtsEnhancementMixin):
@@ -85,6 +88,39 @@ class _CronEvent:
 
 
 class TtsToolFullScopeTests(unittest.IsolatedAsyncioTestCase):
+    def test_passive_boundary_is_not_materialized_again_before_or_after_freeze(self):
+        harness = _PassiveBoundaryHarness()
+        event = SimpleNamespace(unified_msg_origin="default:FriendMessage:10001")
+        req = SimpleNamespace(func_tool=_ToolSet("send_message_to_user"), system_prompt="persona")
+        harness._append_passive_reply_tool_boundary(event, req)
+        plan = get_conversation_injection_plan(req, create=False)
+        self.assertIsNotNone(plan)
+        original_prompt = req.system_prompt
+        original_manifest = plan.manifest()
+        self.assertIn("直接输出一次最终正文", original_prompt)
+        self.assertNotIn("<!-- private_companion_passive_reply_tool_boundary_v1 -->", original_prompt)
+
+        with patch.object(plan, "materialize_system_block", side_effect=AssertionError("duplicate write")):
+            self.assertEqual([], harness._append_passive_reply_tool_boundary(event, req))
+            plan.freeze()
+            event.get_extra = lambda key: req if key == "provider_request" else None
+            self.assertEqual([], harness._finalize_passive_reply_tool_boundary(event))
+
+        self.assertTrue(plan.frozen)
+        self.assertEqual(original_prompt, req.system_prompt)
+        self.assertEqual(original_manifest, plan.manifest())
+
+    def test_passive_boundary_skips_frozen_plan_without_registered_boundary(self):
+        harness = _PassiveBoundaryHarness()
+        event = SimpleNamespace(unified_msg_origin="default:GroupMessage:10001")
+        req = SimpleNamespace(system_prompt="persona")
+        plan = get_conversation_injection_plan(req)
+        plan.freeze()
+
+        self.assertEqual([], harness._append_passive_reply_tool_boundary(event, req))
+        self.assertEqual("persona", req.system_prompt)
+        self.assertEqual([], plan.manifest())
+
     def test_passive_reply_boundary_keeps_sender_added_after_request_hook_for_media(self):
         harness = _PassiveBoundaryHarness()
         initial_req = SimpleNamespace(func_tool=_ToolSet("pc_manage_memo"), system_prompt="原提示")
