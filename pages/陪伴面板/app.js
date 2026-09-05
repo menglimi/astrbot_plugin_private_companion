@@ -8281,6 +8281,7 @@ const setupGuideDraftDefaults = {
   weather_location: "",
   enable_weather_alerts: false,
   weather_alert_min_severity: "blue",
+  enable_llm_streaming: false,
   modelMode: "quick",
   FAST_RESPONSE_PROVIDER_ID: "",
   COMPLEX_REASONING_PROVIDER_ID: "",
@@ -9356,6 +9357,7 @@ function setupGuideDraft() {
       worldbookEnabled: setupGuideBoolValue(settings.enable_worldbook_member_recognition, setupGuideDraftDefaults.worldbookEnabled),
       worldbookSelfRegistration: setupGuideBoolValue(settings.worldbook_self_registration, setupGuideDraftDefaults.worldbookSelfRegistration),
       worldbookUserId: targetIds[0] || "",
+      enable_llm_streaming: setupGuideBoolValue(settings.enable_llm_streaming, setupGuideDraftDefaults.enable_llm_streaming),
       ...Object.fromEntries(setupGuideQuickProviderKeys.map((key) => [key, String(providers[key] || "").trim()])),
     };
     setupGuideAdvancedItemKeys().forEach((key) => {
@@ -10801,6 +10803,7 @@ function setupGuideQuestionnaireHtml(index, overview = state.overview || {}) {
         <h4>填写快捷模型</h4>
         ${setupGuideHint(loadedProviderCount ? `已读取 ${loadedProviderCount} 个 Provider。分别选择模型，并完成必测项。` : "未读取到 Provider 列表。可先手动输入 Provider ID，再测试连通。", loadedProviderCount ? "ok" : "warn")}
         ${setupGuideQuickProviderGridHtml(providers)}
+        ${setupGuideCheck("enable_llm_streaming", "插件内部 LLM 流式", "插件后台任务（创作、日程、审校、续写等）改为流式逐块累积，避免大输出经 OpenAI 兼容中转单次下发时丢包或截断；Provider 不支持流式时自动回退原有非流式路径。")}
       </div>
       <div class="setup-guide-question">
         <h4>当前选择结果</h4>
@@ -40882,6 +40885,7 @@ $("#saveProvidersBtn").addEventListener("click", async () => {
   const tokenLimitOverrides = currentProviderTokenLimitValues();
   const fallbackOverrides = currentProviderFallbackValues();
   const deepseekPeak = window.PrivateCompanionProviderTree.currentDeepseekPeakValues({ document, state });
+  const llmStreaming = window.PrivateCompanionProviderTree.currentLlmStreamingValue({ document, state });
   const modelReplacement = window.PrivateCompanionProviderTree.currentModelReplacementValues({ document, state });
   const provider_config_mode = currentProviderConfigMode();
   const providers = {};
@@ -40901,6 +40905,7 @@ $("#saveProvidersBtn").addEventListener("click", async () => {
       enable_sensitive_model_replacement: modelReplacement.sensitiveEnabled,
       sensitive_replacement_keywords: modelReplacement.sensitiveKeywords,
       enable_deepseek_peak_replacement: deepseekPeak.enabled,
+      enable_llm_streaming: llmStreaming.enabled,
       deepseek_peak_windows: deepseekPeak.windows,
       deepseek_peak_timezone: deepseekPeak.timezone,
       deepseek_peak_match_keywords: deepseekPeak.keywords,
@@ -40922,6 +40927,7 @@ $("#saveProvidersBtn").addEventListener("click", async () => {
   state.overview.settings.model_replacement_rules = modelReplacement.rules;
   state.overview.settings.enable_sensitive_model_replacement = modelReplacement.sensitiveEnabled;
   state.overview.settings.sensitive_replacement_keywords = modelReplacement.sensitiveKeywords;
+  state.overview.settings.enable_llm_streaming = llmStreaming.enabled;
   state.overview.providers = { ...(state.overview.providers || {}), SENSITIVE_REPLACEMENT_PROVIDER_ID: modelReplacement.sensitiveProvider };
   state.providerConfigMode = provider_config_mode;
   renderProviders();
