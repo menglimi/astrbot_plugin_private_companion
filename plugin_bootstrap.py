@@ -316,6 +316,12 @@ def _initialize_core_and_relationship_config(self: Any, c: Any) -> None:
     self.enable_outbound_secret_redaction = self._cfg_bool(
         c, "enable_outbound_secret_redaction", True
     )
+    trusted_domains = self._cfg_raw(c, "outbound_secret_redaction_trusted_domains", [])
+    self.outbound_secret_redaction_trusted_domains = [
+        str(item).strip().lower().rstrip(".")
+        for item in (trusted_domains if isinstance(trusted_domains, (list, tuple, set)) else [])
+        if str(item).strip()
+    ][:100]
     self._rebuild_store_manager()
     config_migration_started = time.perf_counter()
     self._startup_config_migration_changes = migrate_flat_config_into_schema_groups(

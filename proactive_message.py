@@ -873,14 +873,15 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         except Exception:
             location_context = ""
         schedule_context = ""
+        include_schedule = runtime_persona_setting(self, "include_schedule_in_messages", True)
         schedule_formatter = getattr(self, "_format_schedule_context_for_prompt", None)
-        if callable(schedule_formatter):
+        if include_schedule and callable(schedule_formatter):
             try:
                 schedule_context = str(schedule_formatter() or "").strip()
             except Exception:
                 schedule_context = ""
         schedule_sanitizer = getattr(self, "_sanitize_schedule_context_for_private_user", None)
-        if schedule_context and callable(schedule_sanitizer):
+        if include_schedule and schedule_context and callable(schedule_sanitizer):
             try:
                 schedule_context = str(schedule_sanitizer(schedule_context, user) or "").strip()
             except Exception:

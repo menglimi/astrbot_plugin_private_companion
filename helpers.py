@@ -484,6 +484,33 @@ def _redact_outbound_secrets(text: Any, owner: Any = None) -> str:
     cleaned = str(text or "")
     if not cleaned:
         return ""
+
+    # A user may explicitly trust a private dashboard or subscription host.
+    # Protect those complete URLs while applying the general credential rules.
+    trusted_domains = getattr(owner, "outbound_secret_redaction_trusted_domains", None)
+    if trusted_domains is None and owner is not None:
+        config = getattr(owner, "config", {})
+        trusted_domains = config.get("outbound_secret_redaction_trusted_domains", []) if isinstance(config, dict) else []
+    trusted = {
+        str(domain or "").strip().lower().rstrip(".")
+        for domain in (trusted_domains if isinstance(trusted_domains, (list, tuple, set)) else [])
+        if str(domain or "").strip()
+    }
+    protected_urls: dict[str, str] = {}
+    if trusted:
+        def protect_url(match: re.Match[str]) -> str:
+            raw = match.group(0)
+            try:
+                parsed = urlparse(raw)
+                hostname = (parsed.hostname or "").lower().rstrip(".")
+            except Exception:
+                hostname = ""
+            if not hostname or not any(hostname == domain or hostname.endswith("." + domain) for domain in trusted):
+                return raw
+            token = f"__TRUSTED_OUTBOUND_URL_{len(protected_urls)}__"
+            protected_urls[token] = raw
+            return token
+        cleaned = re.sub(r"https?://[^\s<>\"'“”‘’]+", protect_url, cleaned, flags=re.IGNORECASE)
     for secret in _runtime_secret_values(owner) if owner is not None else []:
         cleaned = cleaned.replace(secret, "[密钥已隐藏]")
     patterns = (
@@ -499,6 +526,8 @@ def _redact_outbound_secrets(text: Any, owner: Any = None) -> str:
     )
     for pattern, replacement in patterns:
         cleaned = re.sub(pattern, replacement, cleaned)
+    for token, url in protected_urls.items():
+        cleaned = cleaned.replace(token, url)
     return cleaned
 
 

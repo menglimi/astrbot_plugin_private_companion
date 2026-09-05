@@ -52,6 +52,15 @@ class OutboundSecretRedactionTests(unittest.TestCase):
         text = "这个 API Key 为什么返回 403？模型地址需要带 /v1 吗？"
         self.assertEqual(_redact_outbound_secrets(text, self.owner), text)
 
+    def test_trusted_domain_preserves_url_query_but_not_other_hosts(self) -> None:
+        self.owner.outbound_secret_redaction_trusted_domains = ["panel.example.com"]
+        trusted = "https://panel.example.com/jump?token=keep-this&key=also-keep"
+        other = "https://other.example/jump?token=hide-this"
+        cleaned = _redact_outbound_secrets(f"{trusted}\n{other}", self.owner)
+        self.assertIn(trusted, cleaned)
+        self.assertIn("token=[密钥已隐藏]", cleaned)
+        self.assertNotIn("hide-this", cleaned)
+
     def test_send_message_tool_plain_text_is_redacted(self) -> None:
         class Harness(TtsToolSanitizerMixin):
             external_image_api_key = "custom-s" + "ecret-value-123456"

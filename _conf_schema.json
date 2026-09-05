@@ -153,6 +153,12 @@
         "default": true,
         "hint": "默认开启。发送前自动隐藏回复中的 API Key、Token、Bearer、密码等敏感凭据；关闭后不再修改最终发送文本，也不再记录对应的脱敏日志。工具参数、内部历史和其他插件链路的脱敏仍保持开启。关闭可能导致凭据泄露，请仅在确认误判时使用。"
       },
+      "outbound_secret_redaction_trusted_domains": {
+        "description": "出站脱敏受信域名",
+        "type": "list",
+        "default": [],
+        "hint": "可选。填写你明确信任的域名后，该域名及其子域名 URL 会保留原始查询参数，用于个人订阅链接、自建面板免密跳转等场景。只填写域名，不要填写路径；其他文本和未列入的域名仍照常脱敏。"
+      },
       "daily_token_limit": {
         "description": "每日插件 Token 限额",
         "type": "int",
