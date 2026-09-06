@@ -1678,19 +1678,17 @@ _PROACTIVE_ONLY_TEMP_UNLOCK_RELATED = {
 
 
 def _strip_chain_plain_thinking(owner: Any, chain: list[Any]) -> None:
-    """Strip reasoning/thinking chain from ALL Plain text joined together.
-
-    The thinking chain (e.g. ``  thinking\n...\n  /response```) can be
-    split across multiple Plain components in the chain.  Per-component
-    cleaning would fail since none of the fragments contain the complete
-    opening+content+closing pattern.  This helper joins all Plain text,
-    cleans it, and puts the result back into the first Plain component.
-    """
+    """Clean registered internal tags from all Plain components as one span."""
     plain_components = [(i, comp) for i, comp in enumerate(chain) if isinstance(comp, Plain)]
     if not plain_components:
         return
     all_text = "".join(str(getattr(comp, "text", "") or "") for _, comp in plain_components)
+    split_marker_token = "\x00PRIVATE_COMPANION_SPLIT\x00"
+    all_text = all_text.replace(LLM_SEGMENT_MARKER, split_marker_token)
     cleaned = _strip_internal_message_blocks(all_text)
+    cleaned = cleaned.replace(split_marker_token, LLM_SEGMENT_MARKER)
+    if not all_text.startswith("\n"):
+        cleaned = cleaned.lstrip("\n")
     if cleaned == all_text:
         return
     for idx, (_, comp) in enumerate(plain_components):
@@ -9203,8 +9201,12 @@ class PrivateCompanionPlugin(
             if now - _safe_float(created_at, 0) > 10 * 60:
                 replaced_attempts.pop(stale_attempt, None)
         if attempt_id and attempt_id in replaced_attempts and chain_text:
-            event.set_result(self._build_result_from_chain([]))
-            event.stop_event()
+            self._suppress_outbound_reply(
+                event,
+                source="Proactive Chat 重复分支",
+                reason="改写后的主动消息已处理",
+                history_note="[本轮未发送：主动消息重复分支]",
+            )
             logger.info(
                 "已跳过 Proactive Chat 改写后的重复文本分支: session=%s attempt=%s",
                 _single_line(session_id, 120),
@@ -9232,8 +9234,13 @@ class PrivateCompanionPlugin(
             attempt_id=attempt_id,
         )
         if not review.get("ok") or not review.get("text"):
-            event.set_result(self._build_result_from_chain([]))
-            event.stop_event()
+            self._suppress_outbound_reply(
+                event,
+                source="Proactive Chat 主动候选",
+                reason="主动候选未通过复核",
+                history_note="[本轮未发送：主动候选未通过复核]",
+                level="info",
+            )
             if token:
                 await self._cancel_proactive_chat_bridge(session_id, token=token)
             logger.info(
@@ -9967,13 +9974,13 @@ class PrivateCompanionPlugin(
             duplicate_state,
             _single_line(candidate.get("text"), 120),
         )
-        empty_result = self._build_result_from_chain([])
-        try:
-            empty_result.stop_event()
-        except Exception:
-            pass
-        event.set_result(empty_result)
-        event.stop_event()
+        self._suppress_outbound_reply(
+            event,
+            source="重复正文",
+            reason="短时间内重复发送相同正文",
+            history_note="[本轮未发送：短时间内重复正文]",
+            level="info",
+        )
 
     @filter.after_message_sent(priority=8500)
     @_multi_persona_event_context
@@ -10440,20 +10447,14 @@ class PrivateCompanionPlugin(
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             recalled_message_id,
         )
-        self._record_passive_no_reply(
+        self._suppress_outbound_reply(
             event,
             source="撤回取消",
             reason="触发消息已撤回或发送前不可见",
+            history_note="[本轮未发送：触发消息已撤回]",
             detail=str(recalled_message_id),
             level="info",
         )
-        empty_result = self._build_result_from_chain([])
-        try:
-            empty_result.stop_event()
-        except Exception:
-            pass
-        event.set_result(empty_result)
-        event.stop_event()
 
     @filter.on_decorating_result()
     @_multi_persona_event_context
@@ -10480,26 +10481,19 @@ class PrivateCompanionPlugin(
             _single_line(hit, 40),
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
         )
-        self._record_passive_no_reply(
+        self._suppress_outbound_reply(
             event,
             source="发送前拦截",
             reason="待发送消息命中屏蔽词",
+            history_note="[本轮未发送：待发送消息命中屏蔽词]",
             detail=hit,
-            reply_preview=text,
             level="warn",
         )
-        empty_result = self._build_result_from_chain([])
-        try:
-            empty_result.stop_event()
-        except Exception:
-            pass
-        event.set_result(empty_result)
-        event.stop_event()
 
     @filter.on_decorating_result()
     @_multi_persona_event_context
     async def suppress_framework_error_leak_before_send(self, event: AstrMessageEvent, *args, **kwargs):
-        """避免 AstrBot/Core 的技术错误和工具循环摘要直接发进聊天。"""
+        """清理本插件自身管线可能泄漏进正文的内容（复核评语、atrelay 回执、日志前缀）。不判断框架/模型文本。"""
         if self is None or not self.enabled:
             return
         result = event.get_result()
@@ -10509,165 +10503,54 @@ class PrivateCompanionPlugin(
         if self._restore_response_review_meta_leak_before_send(event, chain):
             return
         text = "\n".join(str(getattr(comp, "text", "") or "") for comp in chain).strip()
-        compact = text.lower()
         if re.fullmatch(
             r"(?:\[\s*astrbot_plugin_private_companion(?:\.[A-Za-z_][\w]*)+:\d+\s*\]\s*)+",
             text,
             flags=re.IGNORECASE,
         ):
-            logger.warning(
-                "已拦截插件日志来源位置外发: session=%s text=%s",
-                _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
-                _single_line(text, 180),
+            cleaned = re.sub(
+                r"\[\s*astrbot_plugin_private_companion(?:\.[A-Za-z_][\w]*)+:\d+\s*\]\s*",
+                "",
+                text,
+                flags=re.IGNORECASE,
             )
-            self._record_passive_no_reply(
-                event,
-                source="发送前拦截",
-                reason="插件日志来源位置泄漏",
-                reply_preview=text,
-                level="warn",
-            )
-            empty_result = self._build_result_from_chain([])
-            try:
-                empty_result.stop_event()
-            except Exception:
-                pass
-            event.set_result(empty_result)
-            event.stop_event()
+            event.set_result(self._build_result_from_chain([Plain(cleaned)] if cleaned else []))
             return
-        receipt_compact = re.sub(r"[\s。.!！?？,，；;:：]+", "", text)
-        status_receipt_like = (
-            len(receipt_compact) <= 28
-            and any(token in receipt_compact for token in ("发送给用户", "发给用户", "发送给对方", "发给对方", "发出去了"))
-            and any(token in receipt_compact for token in ("已", "已经", "完成", "成功"))
-        )
-        if receipt_compact in {
-            "已发送",
-            "发送成功",
-            "发送完成",
-            "发送完毕",
-            "已成功发送",
-            "消息已发送",
-            "消息发送成功",
-            "消息已发送会等对方回复",
-            "messagesent",
-            "sent",
-        } or status_receipt_like or self._is_proactive_delivery_receipt_text(text) or re.fullmatch(r"(?i)message\s+sent\s+to\s+session\s+\S+", text):
-            atrelay_result = getattr(event, "private_companion_atrelay_tool_result", None)
-            if isinstance(atrelay_result, dict) and _single_line(atrelay_result.get("status"), 24) in {"success", "scheduled"}:
-                final_reply = _single_line(atrelay_result.get("final_reply"), 80) or "说过啦。"
-                reference = _single_line(atrelay_result.get("final_reply_reference"), 260)
-                rewriter = getattr(self, "_rewrite_reference_reply_with_persona", None)
-                if reference and callable(rewriter):
+        atrelay_result = getattr(event, "private_companion_atrelay_tool_result", None)
+        if not isinstance(atrelay_result, dict):
+            return
+        if _single_line(atrelay_result.get("status"), 24) not in {"success", "scheduled"}:
+            return
+        final_reply = _single_line(atrelay_result.get("final_reply"), 80) or "说过啦。"
+        reference = _single_line(atrelay_result.get("final_reply_reference"), 260)
+        rewriter = getattr(self, "_rewrite_reference_reply_with_persona", None)
+        if reference and callable(rewriter):
+            sender_id = ""
+            try:
+                resolver = getattr(self, "_private_user_id_for_event", None)
+                sender_id = resolver(event) if callable(resolver) else self._canonical_private_user_id(str(event.get_sender_id()))
+            except Exception:
+                try:
+                    sender_id = str(event.get_sender_id())
+                except Exception:
                     sender_id = ""
-                    try:
-                        resolver = getattr(self, "_private_user_id_for_event", None)
-                        sender_id = (
-                            resolver(event)
-                            if callable(resolver)
-                            else self._canonical_private_user_id(str(event.get_sender_id()))
-                        )
-                    except Exception:
-                        try:
-                            sender_id = str(event.get_sender_id())
-                        except Exception:
-                            sender_id = ""
-                    users = self.data.get("users") if isinstance(getattr(self, "data", None), dict) else {}
-                    user = users.get(sender_id) if sender_id and isinstance(users, dict) and isinstance(users.get(sender_id), dict) else {}
-                    rewritten = await rewriter(
-                        reference,
-                        scene="拦截工具发送状态后改成自然聊天回执",
-                        user=user,
-                        event=event,
-                        fallback_text=final_reply,
-                        task="atrelay_receipt_rewrite",
-                        max_chars=70,
-                        allow_fallback=True,
-                        preserve_status=True,
-                    )
-                    if rewritten:
-                        final_reply = rewritten
-                logger.info(
-                    "工具发送回执已改为自然短句: before=%s after=%s",
-                    _single_line(text, 120),
-                    final_reply,
-                )
-                event.set_result(self._build_result_from_chain([Plain(final_reply)]))
-                return
-            companion_receipt = bool(
-                getattr(event, "private_companion_proactive_framework", False)
+            users = self.data.get("users") if isinstance(getattr(self, "data", None), dict) else {}
+            user = users.get(sender_id) if sender_id and isinstance(users, dict) and isinstance(users.get(sender_id), dict) else {}
+            rewritten = await rewriter(
+                reference,
+                scene="拦截工具发送状态后改成自然聊天回执",
+                user=user,
+                event=event,
+                fallback_text=final_reply,
+                task="atrelay_receipt_rewrite",
+                max_chars=70,
+                allow_fallback=True,
+                preserve_status=True,
             )
-            if not companion_receipt:
-                logger.debug(
-                    "放行非陪伴插件工具回执: session=%s text=%s",
-                    _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
-                    _single_line(text, 120),
-                )
-                return
-            logger.warning(
-                "已拦截孤立工具发送回执外发: session=%s text=%s",
-                _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
-                _single_line(text, 120),
-            )
-            self._record_passive_no_reply(
-                event,
-                source="发送前拦截",
-                reason="孤立工具发送回执被拦截",
-                reply_preview=text,
-                level="warn",
-            )
-            empty_result = self._build_result_from_chain([])
-            try:
-                empty_result.stop_event()
-            except Exception:
-                pass
-            event.set_result(empty_result)
-            event.stop_event()
-            return
-        if not bool(runtime_persona_setting(self, 'enable_framework_error_leak_guard', True)):
-            return
-        tool_loop_markers = (
-            "trying to send messages",
-            "sent 20",
-            "no response yet",
-            "shared parts",
-            "asked for her thoughts",
-            "message captured",
-            "executed the same tool",
-            "repetition is now very high",
-            "agent reached max steps",
-            "forcing a final response",
-            "tool `send_message_to_user`",
-            "send_message_to_user",
-            "一直试着给",
-            "发了差不多20条",
-            "还没收到回复",
-        )
-        error_kind_checker = getattr(self, "_framework_error_leak_kind", None)
-        marker_kind = error_kind_checker(text) if callable(error_kind_checker) else ""
-        if not marker_kind and any(marker in compact for marker in tool_loop_markers):
-            marker_kind = "tool_loop"
-        if not marker_kind:
-            return
-        logger.warning(
-            "已拦截框架异常文本外发: kind=%s session=%s",
-            marker_kind,
-            _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
-        )
-        self._record_passive_no_reply(
-            event,
-            source="发送前拦截",
-            reason=f"框架异常文本外发被拦截:{marker_kind}",
-            reply_preview="",
-            level="warn",
-        )
-        empty_result = self._build_result_from_chain([])
-        try:
-            empty_result.stop_event()
-        except Exception:
-            pass
-        event.set_result(empty_result)
-        event.stop_event()
+            if rewritten:
+                final_reply = rewritten
+        if text and text != final_reply:
+            event.set_result(self._build_result_from_chain([Plain(final_reply)]))
 
     def _restore_response_review_meta_leak_before_send(self, event: AstrMessageEvent, chain: list[Any]) -> bool:
         if not chain or any(not isinstance(comp, Plain) for comp in chain):
@@ -10703,20 +10586,13 @@ class PrivateCompanionPlugin(
                 after=replacement,
             )
             return True
-        self._record_passive_no_reply(
+        self._suppress_outbound_reply(
             event,
             source="发送前拦截",
             reason=f"回复复核内部判断泄漏：{reason}",
-            reply_preview=outbound,
+            history_note="[本轮未发送：回复复核输出无法安全改写]",
             level="warn",
         )
-        empty_result = self._build_result_from_chain([])
-        try:
-            empty_result.stop_event()
-        except Exception:
-            pass
-        event.set_result(empty_result)
-        event.stop_event()
         return True
 
     @filter.on_decorating_result()
@@ -10772,20 +10648,13 @@ class PrivateCompanionPlugin(
             _single_line(review.get("reason"), 120),
             _single_line(reply_text, 160),
         )
-        self._record_passive_no_reply(
+        self._suppress_outbound_reply(
             event,
             source="群聊答疑复核",
             reason=_single_line(review.get("reason"), 120) or "群聊答疑碰瓷回复被拦截",
-            reply_preview=reply_text,
+            history_note="[本轮未发送：群聊答疑复核未通过]",
             level="info",
         )
-        empty_result = self._build_result_from_chain([])
-        try:
-            empty_result.stop_event()
-        except Exception:
-            pass
-        event.set_result(empty_result)
-        event.stop_event()
 
     @filter.on_decorating_result()
     @_multi_persona_event_context
@@ -10798,38 +10667,26 @@ class PrivateCompanionPlugin(
             and bool(getattr(event, "_private_companion_response_review_drop", False))
         ):
             logger.info("回复复核去重发送前兜底拦截")
-            self._record_passive_no_reply(
+            self._suppress_outbound_reply(
                 event,
                 source="回复复核去重",
                 reason="最终回复与上一条 Bot 消息重复",
+                history_note="[本轮未发送：最终回复与上一条消息重复]",
                 level="info",
             )
-            empty_result = self._build_result_from_chain([])
-            try:
-                empty_result.stop_event()
-            except Exception:
-                pass
-            event.set_result(empty_result)
-            event.stop_event()
             return
         if bool(getattr(event, "_private_companion_smart_silence_drop", False)):
             logger.info(
                 "智能沉默发送前兜底拦截: reason=%s",
                 _single_line(getattr(event, "_private_companion_smart_silence_reason", ""), 120),
             )
-            self._record_passive_no_reply(
+            self._suppress_outbound_reply(
                 event,
                 source="智能沉默",
                 reason=_single_line(getattr(event, "_private_companion_smart_silence_reason", ""), 120) or "用户边界语义触发静默",
+                history_note="[本轮未发送：智能沉默判定]",
                 level="info",
             )
-            empty_result = self._build_result_from_chain([])
-            try:
-                empty_result.stop_event()
-            except Exception:
-                pass
-            event.set_result(empty_result)
-            event.stop_event()
             return
         if not bool(runtime_persona_setting(self, 'enable_smart_silence', True)):
             return
@@ -10905,20 +10762,13 @@ class PrivateCompanionPlugin(
             _single_line(inbound_text, 120),
             _single_line(reply_text, 140),
         )
-        self._record_passive_no_reply(
+        self._suppress_outbound_reply(
             event,
             source="智能沉默",
             reason=_single_line(decision.get("reason"), 120) or "群聊边界语义触发静默",
-            reply_preview=reply_text,
+            history_note="[本轮未发送：群聊智能沉默判定]",
             level="info",
         )
-        empty_result = self._build_result_from_chain([])
-        try:
-            empty_result.stop_event()
-        except Exception:
-            pass
-        event.set_result(empty_result)
-        event.stop_event()
 
     @filter.on_decorating_result()
     @_multi_persona_event_context
@@ -10978,13 +10828,13 @@ class PrivateCompanionPlugin(
             return
         chain = list(getattr(result, "chain", []) or [])
         had_visible_content = self._photo_tool_followup_chain_has_visible_content(chain)
-        empty_result = self._build_result_from_chain([])
-        try:
-            empty_result.stop_event()
-        except Exception:
-            pass
-        event.set_result(empty_result)
-        event.stop_event()
+        self._suppress_outbound_reply(
+            event,
+            source="图片工具尾随",
+            reason="图片工具已发送成功，取消尾随文本",
+            history_note="[本轮未发送：图片工具已发送成功]",
+            level="info",
+        )
         logger.info(
             "已阻止图片工具成功发送后的尾随消息: session=%s components=%s visible=%s",
             _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
@@ -11049,20 +10899,13 @@ class PrivateCompanionPlugin(
         if not self._is_silent_control_reply_text(text):
             return
         logger.info("已静默吞掉群聊不回复控制语: %s", _single_line(text, 120))
-        self._record_passive_no_reply(
+        self._suppress_outbound_reply(
             event,
             source="群聊静默",
             reason="模型输出不回复控制语",
-            reply_preview=text,
+            history_note="[本轮未发送：模型输出不回复控制语]",
             level="info",
         )
-        empty_result = self._build_result_from_chain([])
-        try:
-            empty_result.stop_event()
-        except Exception:
-            pass
-        event.set_result(empty_result)
-        event.stop_event()
 
     async def _review_group_question_wakeup_reply_before_send(
         self,
@@ -11302,39 +11145,6 @@ class PrivateCompanionPlugin(
                 is_llm_result = bool(result.is_llm_result())
             except Exception:
                 is_llm_result = False
-        if (
-            bool(runtime_persona_setting(self, 'enable_framework_error_leak_guard', True))
-            and chain
-            and all(isinstance(comp, Plain) for comp in chain)
-        ):
-            provider_error_checker = getattr(self, "_looks_like_internal_provider_error_text", None)
-            outbound_text = "\n".join(str(getattr(comp, "text", "") or "") for comp in chain).strip()
-            if callable(provider_error_checker):
-                try:
-                    provider_error = bool(outbound_text and provider_error_checker(outbound_text))
-                except Exception:
-                    provider_error = False
-                if provider_error:
-                    logger.warning(
-                        "分段前丢弃 Provider 错误正文: session=%s preview=%s",
-                        _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
-                        _single_line(outbound_text, 180),
-                    )
-                    self._record_passive_no_reply(
-                        event,
-                        source="分段前拦截",
-                        reason="Provider 错误正文未进入分段发送",
-                        reply_preview=outbound_text,
-                        level="warn",
-                    )
-                    empty_result = self._build_result_from_chain([])
-                    try:
-                        empty_result.stop_event()
-                    except Exception:
-                        pass
-                    event.set_result(empty_result)
-                    event.stop_event()
-                    return
         reaction_intent = getattr(
             event,
             "_private_companion_reaction_expression_intent",
@@ -11440,13 +11250,13 @@ class PrivateCompanionPlugin(
                 source="decorating_result",
             )
         ):
-            empty_result = self._build_segmented_result_from_chain([], source_result)
-            try:
-                empty_result.stop_event()
-            except Exception:
-                pass
-            event.set_result(empty_result)
-            event.stop_event()
+            self._suppress_outbound_reply(
+                event,
+                source="分段合并转发",
+                reason="分段消息已由插件转发",
+                history_note="[本轮未发送：分段消息已由插件转发]",
+                level="info",
+            )
             return
         event.set_result(
             self._build_segmented_result_from_chain(chunks[0], source_result)
@@ -12296,21 +12106,6 @@ class PrivateCompanionPlugin(
                         return
                     if chunk and all(isinstance(comp, Plain) for comp in chunk):
                         normalized_segment = "".join(str(getattr(comp, "text", "") or "") for comp in chunk).strip()
-                        provider_error_checker = getattr(self, "_looks_like_internal_provider_error_text", None)
-                        if (
-                            bool(runtime_persona_setting(self, 'enable_framework_error_leak_guard', True))
-                            and callable(provider_error_checker)
-                        ):
-                            try:
-                                if normalized_segment and provider_error_checker(normalized_segment):
-                                    logger.warning(
-                                        "分段剩余组件命中 Provider 错误正文，停止补发: source=%s preview=%s",
-                                        source or "unknown",
-                                        _single_line(normalized_segment, 180),
-                                    )
-                                    return
-                            except Exception:
-                                pass
                         normalizer = getattr(self, "_normalize_tts_tags", None)
                         if callable(normalizer) and re.search(r"</?(?:pc[_-]?tts|t{2,}s)\b", normalized_segment, flags=re.IGNORECASE):
                             try:
@@ -17787,26 +17582,24 @@ class PrivateCompanionPlugin(
             group_id or "-",
             _single_line(source, 40),
         )
-        self._record_passive_no_reply(
-            event,
-            source="群聊 LLM 熔断",
-            reason="本群所有 LLM 回复已关闭",
-            detail=f"group={group_id or '-'} source={_single_line(source, 40)}",
-            level="warn",
-        )
-        empty_result = self._build_result_from_chain([])
-        try:
-            empty_result.stop_event()
-        except Exception:
-            pass
         try:
             setattr(event, "_private_companion_group_llm_reply_blocked", True)
             if source.startswith("llm_request"):
                 setattr(event, "_private_companion_group_llm_reply_request_blocked", True)
         except Exception:
             pass
-        event.set_result(empty_result)
-        event.stop_event()
+        if source == "decorating_result":
+            self._suppress_outbound_reply(
+                event,
+                source="群聊 LLM 熔断",
+                reason="本群所有 LLM 回复已关闭",
+                history_note="[本轮未发送：本群已关闭 LLM 回复]",
+                detail=f"group={group_id or '-'} source={_single_line(source, 40)}",
+                level="warn",
+            )
+        else:
+            event.set_result(self._build_result_from_chain([]))
+            event.stop_event()
         return True
 
     def _passive_no_reply_event_text(self, event: AstrMessageEvent | None, *, limit: int = 180) -> str:

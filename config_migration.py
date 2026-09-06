@@ -28,6 +28,7 @@ OBSOLETE_CONFIG_KEYS: frozenset[str] = frozenset(
     {
         "enable_persona_standardization_experiment",
         "enable_llm_timer_scheduling",
+        "enable_framework_error_leak_guard",
         "ai_daily_check_window",
         "ai_daily_check_interval_minutes",
     }

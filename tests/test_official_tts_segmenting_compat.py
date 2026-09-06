@@ -39,7 +39,6 @@ class OfficialTtsSegmentingCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         plugin = object.__new__(PrivateCompanionPlugin)
         plugin.enabled = True
         plugin.segmented_proactive_scope = "all_llm"
-        plugin.enable_framework_error_leak_guard = False
         plugin.enable_daily_case_review_experiment = False
         plugin._proactive_only_blocks_passive_event = lambda *_args: False
         plugin._feature_enabled_or_temp_unlocked = (
@@ -93,7 +92,6 @@ class OfficialTtsSegmentingCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         plugin = object.__new__(PrivateCompanionPlugin)
         plugin.enabled = True
         plugin.segmented_proactive_scope = "all_llm"
-        plugin.enable_framework_error_leak_guard = False
         plugin.enable_daily_case_review_experiment = False
         plugin._proactive_only_blocks_passive_event = lambda *_args: False
         plugin._feature_enabled_or_temp_unlocked = (
@@ -160,7 +158,6 @@ class OfficialTtsSegmentingCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         plugin = object.__new__(PrivateCompanionPlugin)
         plugin.enabled = True
         plugin.segmented_proactive_scope = "all_llm"
-        plugin.enable_framework_error_leak_guard = False
         plugin.enable_daily_case_review_experiment = False
         plugin._proactive_only_blocks_passive_event = lambda *_args: False
         plugin._feature_enabled_or_temp_unlocked = (
@@ -230,7 +227,6 @@ class OfficialTtsSegmentingCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         plugin = object.__new__(PrivateCompanionPlugin)
         plugin.enabled = True
         plugin.segmented_proactive_scope = "all_llm"
-        plugin.enable_framework_error_leak_guard = False
         plugin.enable_daily_case_review_experiment = False
         plugin._proactive_only_blocks_passive_event = lambda *_args: False
         plugin._feature_enabled_or_temp_unlocked = (
@@ -306,7 +302,6 @@ class OfficialTtsSegmentingCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         plugin = object.__new__(PrivateCompanionPlugin)
         plugin.enabled = True
         plugin.segmented_proactive_scope = "all_llm"
-        plugin.enable_framework_error_leak_guard = False
         plugin.enable_daily_case_review_experiment = False
         plugin._proactive_only_blocks_passive_event = lambda *_args: False
         plugin._feature_enabled_or_temp_unlocked = lambda key: key == "enable_segmented_proactive_reply"
@@ -360,7 +355,6 @@ class OfficialTtsSegmentingCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         plugin = object.__new__(PrivateCompanionPlugin)
         plugin.enabled = True
         plugin.segmented_proactive_scope = "all_llm"
-        plugin.enable_framework_error_leak_guard = False
         plugin.enable_daily_case_review_experiment = False
         plugin._proactive_only_blocks_passive_event = lambda *_args: False
         plugin._feature_enabled_or_temp_unlocked = (
@@ -424,7 +418,6 @@ class OfficialTtsSegmentingCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         plugin.enabled = True
         plugin.enable_segmented_proactive_reply = True
         plugin.segmented_proactive_scope = "all_llm"
-        plugin.enable_framework_error_leak_guard = False
         plugin.enable_daily_case_review_experiment = False
         plugin.enable_proactive_quote_trigger_message = False
         plugin.enable_segmented_proactive_content_replacement = False
@@ -742,7 +735,7 @@ class OfficialTtsSegmentingCompatibilityTests(unittest.IsolatedAsyncioTestCase):
                     if isinstance(component, Plain)
                     and str(getattr(component, "text", "") or "").strip()
                 ]
-                self.assertEqual(["正文可见"], plain_texts)
+                self.assertEqual(["thinking", "推理内容被拆分\n  /response", "正文可见"], plain_texts)
 
 
 if __name__ == "__main__":

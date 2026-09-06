@@ -67,31 +67,8 @@ ValueError: bad input"""
         self.assertTrue(self.host._looks_like_python_traceback_text(text))
         self.assertEqual("python_traceback", self.host._framework_error_leak_kind(text))
 
-    def test_provider_request_error_is_still_blocked(self) -> None:
-        text = "Provider API Error: Error code: 400 - Invalid request: tool schema is invalid"
 
-        self.assertTrue(self.host._looks_like_internal_provider_error_text(text))
-        self.assertEqual("provider_error", self.host._framework_error_leak_kind(text))
 
-    def test_tool_loop_summary_is_still_blocked(self) -> None:
-        text = "Agent reached max steps; forcing a final response after trying to send messages."
-
-        self.assertEqual("tool_loop", self.host._framework_error_leak_kind(text))
-
-    def test_send_guard_uses_reason_code_without_recording_the_body(self) -> None:
-        source = (ROOT / "main.py").read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        hook = next(
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.AsyncFunctionDef) and node.name == "suppress_framework_error_leak_before_send"
-        )
-        hook_source = ast.get_source_segment(source, hook) or ""
-
-        self.assertIn('getattr(self, "_framework_error_leak_kind", None)', hook_source)
-        self.assertIn('marker_kind = "tool_loop"', hook_source)
-        self.assertIn('reply_preview=""', hook_source)
-        self.assertNotIn("tool_loop_summary", hook_source)
 
 
 if __name__ == "__main__":

@@ -2152,9 +2152,12 @@ class LlmToolActionsMixin:
         function = value.get("function")
         source = function if isinstance(function, dict) else value
         name = _single_line(source.get("name") or value.get("tool_name"), 80)
+        # TODO: derive this allowlist from the @filter.llm_tool registrations in
+        # main.py once AstrBot exposes a stable registry during decoration.
         known_names = {
             "pc_qzone_view_feed",
             "pc_qzone_publish_feed",
+            "pc_qzone_reply_my_comment",
             "pc_generate_photo",
             "pc_send_current_media",
             "pc_find_reaction_image",

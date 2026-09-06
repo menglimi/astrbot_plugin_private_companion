@@ -403,7 +403,8 @@ class FinalResponsePersistenceCoordinator:
                     stopped = bool(event.is_stopped())
                 except Exception:
                     stopped = False
-                if not stopped:
+                suppressed = bool(getattr(event, "_private_companion_outbound_suppressed", False))
+                if not (stopped or suppressed):
                     return False
             current = asyncio.current_task()
             pending = [

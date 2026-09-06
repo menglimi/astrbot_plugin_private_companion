@@ -2023,12 +2023,6 @@
     "default": true,
     "invisible": true
   },
-  "enable_framework_error_leak_guard": {
-    "description": "Legacy flat config: 拦截框架异常文本外发",
-    "type": "bool",
-    "default": true,
-    "invisible": true
-  },
   "enable_proactive_message_review": {
     "description": "旧版扁平配置：主动消息最终内容门禁",
     "type": "bool",
@@ -7121,15 +7115,6 @@
         "description": "启用被动回复复核",
         "type": "bool",
         "hint": "控制用户消息触发的回复复核：用于私聊普通回复，也覆盖群聊答疑唤醒的插话保护；关闭后不会影响主动私聊终审。最低限度的本地事实与安全纠偏仍会保留。",
-        "default": true,
-        "condition": {
-          "enable_mai_style_integration": true
-        }
-      },
-      "enable_framework_error_leak_guard": {
-        "description": "拦截框架异常文本外发",
-        "type": "bool",
-        "hint": "默认开启。阻止 Provider/API 报错、数据库异常、工具循环总结和 Agent 内部执行摘要直接发进聊天。关闭后不再执行 framework_error/tool_loop_summary 关键词拦截；回复复核、重复回复保护、违禁词、内部控制标签和孤立工具发送回执保护不受影响。若模型正常正文经常讨论 API error、image_url 等技术词而被误拦，可关闭此项。",
         "default": true,
         "condition": {
           "enable_mai_style_integration": true

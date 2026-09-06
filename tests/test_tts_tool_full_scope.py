@@ -15,6 +15,7 @@ from astrbot_plugin_private_companion.llm_tool_actions import (
     PHOTO_TOOL_SILENT_SENTINEL,
 )
 from astrbot_plugin_private_companion.main import PrivateCompanionPlugin
+from astrbot_plugin_private_companion.event_dispatch import EventDispatchMixin
 from astrbot_plugin_private_companion.conversation_injection_plan import (
     get_conversation_injection_plan,
 )
@@ -42,6 +43,7 @@ class _ResponseHarness(TtsToolSanitizerMixin):
     attach_reaction_expression_image_before_send = (
         PrivateCompanionPlugin.attach_reaction_expression_image_before_send
     )
+    _suppress_outbound_reply = EventDispatchMixin._suppress_outbound_reply
 
     @staticmethod
     def _build_result_from_chain(chain):
@@ -196,7 +198,7 @@ class TtsToolFullScopeTests(unittest.IsolatedAsyncioTestCase):
         event = Event()
         await harness.suppress_empty_photo_tool_followup_before_send(event)
 
-        self.assertTrue(event.stopped)
+        self.assertFalse(event.stopped)
         self.assertEqual(event.result.chain, [])
 
     async def test_photo_tool_real_followup_text_is_suppressed_after_delivery(self):
@@ -222,7 +224,7 @@ class TtsToolFullScopeTests(unittest.IsolatedAsyncioTestCase):
         event = Event()
         await harness.suppress_empty_photo_tool_followup_before_send(event)
 
-        self.assertTrue(event.stopped)
+        self.assertFalse(event.stopped)
         self.assertEqual(event.result.chain, [])
 
     async def test_photo_delivery_discards_nonempty_llm_followup_and_reaction_state(self):

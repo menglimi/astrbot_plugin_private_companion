@@ -105,7 +105,7 @@ from .dreaming import (
     recent_diary_tags,
     weighted_unique_fragment_sample,
 )
-from .helpers import _date_key, _now_ts, _safe_float, _safe_int, _single_line, _strip_internal_message_blocks, _today_key
+from .helpers import _date_key, _now_ts, _redact_outbound_secrets, _safe_float, _safe_int, _single_line, _strip_internal_message_blocks, _today_key
 from .conversation_prompt_section import (
     PromptRenderMode,
     PromptSection,
@@ -5577,6 +5577,53 @@ class EventDispatchMixin:
         except Exception:
             pass
         return result
+
+    def _suppress_outbound_reply(
+        self,
+        event: Any,
+        *,
+        source: str,
+        reason: str,
+        replacement_text: str | None = None,
+        history_note: str | None = None,
+        detail: str = "",
+        level: str = "info",
+    ) -> None:
+        """Suppress one outbound result without stopping the enclosing turn."""
+        result = event.get_result()
+        original = ""
+        if result is not None:
+            original = "\n".join(
+                str(getattr(component, "text", "") or "")
+                for component in (getattr(result, "chain", []) or [])
+                if isinstance(component, Plain)
+            ).strip()
+        if replacement_text is not None:
+            event.set_result(self._build_result_from_chain([Plain(str(replacement_text))]))
+        elif result is not None:
+            result.chain = []
+        else:
+            event.set_result(self._build_result_from_chain([]))
+        assistant = getattr(event, "_private_companion_official_assistant_message", None)
+        if replacement_text is None and assistant is not None and getattr(assistant, "role", "assistant") == "assistant":
+            try:
+                assistant.content = [TextPart(text=history_note or f"[本轮未发送：{reason}]")]
+                assistant.tool_calls = None
+                assistant.tool_call_id = None
+                assistant._no_save = False
+            except Exception:
+                pass
+        setattr(event, "_private_companion_outbound_suppressed", True)
+        recorder = getattr(self, "_record_passive_no_reply", None)
+        if callable(recorder):
+            recorder(
+                event,
+                source=source,
+                reason=reason,
+                detail=detail,
+                reply_preview=_redact_outbound_secrets(original)[:160],
+                level=level,
+            )
 
     def _build_segmented_result_from_chain(
         self,
