@@ -733,7 +733,25 @@ class FinalResponsePersistenceMixin:
         if not bool(getattr(event, "_private_companion_persistence_managed", False)):
             return
         try:
+            # Keep the live run context available to image-history enrichment.
+            # AstrBot serializes it only after the after-message-sent hooks, so
+            # mutating the user turn here prevents a later core save from
+            # overwriting the vision marker.
+            setattr(event, "_private_companion_run_context", run_context)
             self._prepare_final_response_persistence(event, run_context, response)
+            image_history_writer = getattr(
+                self,
+                "_persist_private_image_vision_summary_to_history",
+                None,
+            )
+            if callable(image_history_writer):
+                try:
+                    await image_history_writer(event)
+                except Exception as exc:
+                    logger.debug(
+                        "Agent 完成阶段写入图片视觉摘要失败: %s",
+                        _single_line(exc, 160),
+                    )
             self._final_response_persistence_coordinator().mark_final_response_ready(
                 event
             )
@@ -1674,6 +1692,20 @@ class FinalResponsePersistenceMixin:
                 event=event,
                 assistant_response=response_text,
             )
+        image_history_written = False
+        image_history_writer = getattr(
+            self,
+            "_persist_private_image_vision_summary_to_history",
+            None,
+        )
+        if callable(image_history_writer):
+            try:
+                image_history_written = bool(await image_history_writer(event))
+            except Exception as exc:
+                logger.debug(
+                    "图片视觉摘要写入用户 history 失败: %s",
+                    _single_line(exc, 160),
+                )
         memory_written = await self._record_final_assistant_in_livingmemory(
             umo=str(getattr(event, "unified_msg_origin", "") or ""),
             assistant_response=response_text,
@@ -1694,6 +1726,7 @@ class FinalResponsePersistenceMixin:
         persisted = bool(
             local_sections
             or official_written
+            or image_history_written
             or memory_written
             or memory_companion_written
         )
