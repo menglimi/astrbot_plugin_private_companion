@@ -9808,6 +9808,10 @@ class PrivateCompanionPlugin(
             )
             if isinstance(segmented_chunks, list) and segmented_chunks:
                 expected_sources = segmented_chunks
+        elif isinstance(pending, dict):
+            primary_chunk = pending.get("primary_chunk")
+            if isinstance(primary_chunk, list) and primary_chunk:
+                expected_sources = [primary_chunk]
         expected: list[tuple[str, ...]] = []
         for source in expected_sources:
             for item in self._reaction_expression_flatten_delivery_components(source):
@@ -10091,7 +10095,7 @@ class PrivateCompanionPlugin(
         chunks = pending.get("chunks")
         if not isinstance(chunks, list) or not chunks:
             return
-        if not self._reaction_expression_primary_reply_confirmed(event):
+        if not self._reaction_expression_primary_reply_confirmed(event, pending):
             return
         pending["started"] = True
         try:
@@ -11463,6 +11467,7 @@ class PrivateCompanionPlugin(
                     "_private_companion_reaction_expression_segmented_remainder",
                     {
                         "chunks": chunks[1:],
+                        "primary_chunk": chunks[0],
                         "previous_segment": previous_segment,
                         "started_at": activity_baseline,
                         "started": False,

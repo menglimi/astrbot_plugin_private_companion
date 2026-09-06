@@ -10,7 +10,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from astrbot.api.message_components import Image, Plain
+from astrbot.api.message_components import Image, Plain, Record
 from astrbot_plugin_private_companion.llm_tool_actions import (
     LlmToolActionsMixin,
     PHOTO_TOOL_SILENT_SENTINEL,
@@ -988,6 +988,51 @@ class SmartImageChatIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(pending["sent"])
         self.assertEqual("primary_not_delivered", pending["settled_reason"])
         self.assertEqual([], event.sent_results)
+
+    async def test_reaction_segmented_remainder_accepts_record_primary_after_core_extracts_it(
+        self,
+    ) -> None:
+        api = _FakeSmartImageAPI(self.image_path)
+        harness = _ReactionHarness(api)
+        harness.enable_reaction_experiment()
+        first = Record(file="voice.wav")
+        second = Plain("对应正文")
+        event = _FakeResultEvent([])
+        event._private_companion_reaction_expression_delivery_tracker = {
+            "successful_signatures": [
+                harness._reaction_expression_delivery_signature(first),
+            ],
+            "restored": False,
+        }
+        event._private_companion_reaction_expression_expected_primary_chunks = [
+            [first],
+            [second],
+        ]
+        event._private_companion_reaction_expression_segmented_remainder = {
+            "chunks": [[second]],
+            "primary_chunk": [first],
+            "previous_segment": "[Record]",
+            "started_at": 10.0,
+            "started": False,
+            "completed": False,
+        }
+        sent_remainder: list[list[object]] = []
+
+        async def send_remainder(_event, chunks, **_kwargs):
+            sent_remainder.extend(chunks)
+
+        harness._send_segmented_llm_chain_remainder = send_remainder
+        await PrivateCompanionPlugin.release_reaction_expression_segmented_remainder_after_send(
+            harness,
+            event,
+        )
+
+        self.assertEqual([[second]], sent_remainder)
+        self.assertTrue(
+            event._private_companion_reaction_expression_segmented_remainder[
+                "started"
+            ]
+        )
 
     async def test_separate_after_requires_every_primary_text_segment(self) -> None:
         api = _FakeSmartImageAPI(self.image_path)
