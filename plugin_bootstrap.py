@@ -1398,6 +1398,11 @@ def _initialize_photo_and_expression_config(self: Any, c: Any) -> None:
         "enable_user_requested_photo_generation",
         True,
     )
+    self.allow_generate_photo_on_reaction_turns = self._cfg_bool(
+        c,
+        "allow_generate_photo_on_reaction_turns",
+        False,
+    )
     self.command_photo_generation_max_daily = self._cfg_int(c, "command_photo_generation_max_daily", -1, -1, 100)
     self.photo_generation_trace_max_size_kb = self._cfg_int(
         c,
