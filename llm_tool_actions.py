@@ -161,6 +161,7 @@ _REACTION_LOG_DECISIONS = frozenset(
 _REACTION_LOG_REASONS = frozenset(
     {
         "allowed",
+        "vision_rejected",
         "experiment_disabled",
         "provider_unavailable",
         "private_disabled",
@@ -6967,6 +6968,14 @@ class LlmToolActionsMixin:
             cache[asset_id] = description
         fit_value = payload.get("fit")
         fit = fit_value if isinstance(fit_value, bool) else str(fit_value).strip().lower() in {"true", "1", "yes", "是"}
+        logger.info(
+            "表情包视觉复核: fit=%s asset=%s need=%s 描述=%s 原因=%s",
+            fit,
+            asset_id[:12],
+            _single_line(query_text, 80),
+            description,
+            _single_line(payload.get("reason"), 120),
+        )
         return {
             "fit": fit,
             "description": description or known,
