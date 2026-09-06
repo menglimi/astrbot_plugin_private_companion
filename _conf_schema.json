@@ -1037,6 +1037,12 @@
     "default": "0.22,0.16,0.12,0.10,0.10,0.14,0.28,0.50,0.66,0.72,0.78,0.92,1.0,0.94,0.82,0.74,0.78,0.92,1.0,0.98,0.88,0.70,0.48,0.32",
     "invisible": true
   },
+  "proactive_closing_grace_minutes": {
+    "description": "Legacy flat config: 主动收束留白分钟数",
+    "type": "int",
+    "default": 45,
+    "invisible": true
+  },
   "proactive_intensity_preset": {
     "description": "Legacy flat config: 主动强度预设",
     "type": "string",
@@ -1371,6 +1377,12 @@
     "description": "Legacy flat config: 未回应几次后开始降频",
     "type": "int",
     "default": 1,
+    "invisible": true
+  },
+  "proactive_unanswered_pause_after": {
+    "description": "Legacy flat config: 未回应几次后暂停普通主动（0 为不暂停）",
+    "type": "int",
+    "default": 0,
     "invisible": true
   },
   "proactive_unanswered_max_interval_multiplier": {
@@ -5400,6 +5412,17 @@
           "step": 1
         }
       },
+      "proactive_closing_grace_minutes": {
+        "description": "主动收束留白分钟数",
+        "type": "int",
+        "hint": "Bot 完成带收束姿态的主动消息后，普通候选默认留出的短暂空档。它只影响对话节奏，不等同于用户休息或永久禁言；用户新消息和高时效事项仍按各自规则处理。",
+        "default": 45,
+        "slider": {
+          "min": 0,
+          "max": 240,
+          "step": 1
+        }
+      },
       "max_daily_messages": {
         "description": "每日主动消息配额",
         "type": "int",
@@ -6187,6 +6210,17 @@
           "step": 1
         },
         "default": 1
+      },
+      "proactive_unanswered_pause_after": {
+        "description": "未回应几次后暂停普通主动",
+        "type": "int",
+        "hint": "按持久化的连续未回应次数判断，重启后不会归零；设置为 0 表示只降频，不自动暂停。用户发来新消息后计数清零并恢复。",
+        "slider": {
+          "min": 0,
+          "max": 50,
+          "step": 1
+        },
+        "default": 0
       },
       "proactive_unanswered_max_interval_multiplier": {
         "description": "未回应最大间隔倍率",

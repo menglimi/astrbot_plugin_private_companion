@@ -4684,6 +4684,41 @@ class UserMemoryMixin:
                 bucket[key] = max(0.0, _safe_float(bucket.get(key), 0.0) * factor)
         bucket["weighted_updated_at"] = now
 
+    def _record_proactive_conversation_closing(
+        self,
+        user: dict[str, Any],
+        *,
+        source: str = "",
+        reason: str = "",
+        motive: str = "",
+        now: float | None = None,
+    ) -> bool:
+        """Record a bot-initiated conversational closing without text matching."""
+        if not isinstance(user, dict):
+            return False
+        posture = _single_line(user.get("planned_proactive_conversation_posture"), 24).lower()
+        if posture != "closing":
+            return False
+        at = _now_ts() if now is None else now
+        grace_minutes = _safe_float(
+            runtime_persona_setting(self, "proactive_closing_grace_minutes", 45),
+            45.0,
+        )
+        grace_minutes = max(0.0, min(240.0, grace_minutes))
+        continuity = user.setdefault("state_continuity", {})
+        if not isinstance(continuity, dict):
+            continuity = {}
+            user["state_continuity"] = continuity
+        continuity["conversation_closing"] = {
+            "at": at,
+            "until": at + grace_minutes * 60.0,
+            "posture": "closing",
+            "source": _single_line(source, 40),
+            "reason": _single_line(reason, 50),
+            "motive": _single_line(motive, 120),
+        }
+        return True
+
     def _note_action_sent(
         self,
         user: dict[str, Any],
@@ -4743,6 +4778,13 @@ class UserMemoryMixin:
         if not isinstance(continuity, dict):
             continuity = {}
             user["state_continuity"] = continuity
+        self._record_proactive_conversation_closing(
+            user,
+            source=source,
+            reason=reason,
+            motive=motive,
+            now=now,
+        )
         continuity["last_action_ts"] = _now_ts()
         continuity["last_action"] = action
         continuity["last_action_reason"] = _single_line(reason, 50)

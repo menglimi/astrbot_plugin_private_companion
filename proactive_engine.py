@@ -1074,12 +1074,16 @@ class ProactiveEngineMixin:
         opener_mode: str = "",
         followup_kind: str = "",
         origin_event_id: str = "",
+        conversation_posture: str = "",
     ) -> dict[str, Any]:
         role = self._private_user_role(user)
         impulse_reason = _single_line(reason, 40) or "check_in"
         impulse_action = _single_line(action, 40) or "message"
         impulse_topic = _single_line(topic, 80)
         impulse_motive = self._normalize_internal_motive_text(_single_line(motive, 180))
+        posture = _single_line(conversation_posture, 24).lower()
+        if posture not in {"closing", "open", "neutral"}:
+            posture = ""
         salience = 0.54
         warmth = 0.46
         urgency = 0.38
@@ -1141,6 +1145,7 @@ class ProactiveEngineMixin:
             "action": impulse_action,
             "topic": impulse_topic,
             "motive": impulse_motive,
+            "conversation_posture": posture,
             "window_start_at": max(0.0, float(window_start_at or preferred_ts or _now_ts())),
             "preferred_ts": max(0.0, float(preferred_ts or window_start_at or _now_ts())),
             "best_until_at": max(float(best_until_at or preferred_ts or _now_ts()), float(window_start_at or 0.0)),
@@ -1351,15 +1356,32 @@ class ProactiveEngineMixin:
             incoming_start = _safe_float(impulse.get("window_start_at"), 0)
             existing_preferred = _safe_float(existing.get("preferred_ts"), 0)
             incoming_preferred = _safe_float(impulse.get("preferred_ts"), 0)
+            closing_deferred = bool(
+                existing.get("conversation_closing_deferred") or impulse.get("conversation_closing_deferred")
+            )
             existing["updated_ts"] = _now_ts()
             if existing_start <= 0:
                 existing["window_start_at"] = incoming_start
             elif incoming_start > 0:
-                existing["window_start_at"] = min(existing_start, incoming_start)
+                existing["window_start_at"] = (
+                    max(existing_start, incoming_start)
+                    if closing_deferred
+                    else min(existing_start, incoming_start)
+                )
             if existing_preferred <= 0:
                 existing["preferred_ts"] = incoming_preferred
             elif incoming_preferred > 0:
-                existing["preferred_ts"] = min(existing_preferred, incoming_preferred)
+                existing["preferred_ts"] = (
+                    max(existing_preferred, incoming_preferred)
+                    if closing_deferred
+                    else min(existing_preferred, incoming_preferred)
+                )
+            if closing_deferred:
+                existing["conversation_closing_deferred"] = True
+                existing["conversation_closing_deferred_until"] = max(
+                    _safe_float(existing.get("conversation_closing_deferred_until"), 0),
+                    _safe_float(impulse.get("conversation_closing_deferred_until"), 0),
+                )
             existing["best_until_at"] = max(
                 _safe_float(existing.get("best_until_at"), 0),
                 _safe_float(impulse.get("best_until_at"), 0),
@@ -1456,6 +1478,137 @@ class ProactiveEngineMixin:
         del pool[:-16]
         return item
 
+    def _proactive_conversation_closing_until(
+        self,
+        user: dict[str, Any],
+        *,
+        now: float | None = None,
+    ) -> float:
+        """Return the short-lived conversation closing boundary, if still valid.
+
+        This is deliberately separate from the user's rest gate.  A bot-initiated
+        closing is a conversational posture with a TTL; a later user activity
+        supersedes it without requiring text matching.
+        """
+        if not isinstance(user, dict):
+            return 0.0
+        continuity = user.get("state_continuity")
+        marker = continuity.get("conversation_closing") if isinstance(continuity, dict) else None
+        if not isinstance(marker, dict):
+            departure = (
+                continuity.get("conversation_departure")
+                if isinstance(continuity, dict) and isinstance(continuity.get("conversation_departure"), dict)
+                else user.get("conversation_departure")
+            )
+            if isinstance(departure, dict):
+                marker = {
+                    "at": departure.get("at"),
+                    "posture": "closing",
+                    "source": "confirmed_visible_reply",
+                }
+        if not isinstance(marker, dict):
+            return 0.0
+        posture = _single_line(marker.get("posture"), 24).lower()
+        if posture and posture != "closing":
+            return 0.0
+        check_now = _now_ts() if now is None else now
+        at = _safe_float(marker.get("at"), 0.0)
+        if at <= 0:
+            return 0.0
+        latest_activity = 0.0
+        private_activity_getter = getattr(self, "_latest_private_user_activity_ts", None)
+        if callable(private_activity_getter):
+            try:
+                latest_activity = _safe_float(private_activity_getter(user), 0.0)
+            except Exception:
+                latest_activity = 0.0
+        if latest_activity <= 0:
+            latest_activity = max(
+                _safe_float(user.get("last_private_activity_at"), 0.0),
+                _safe_float(user.get("last_user_message_at"), 0.0),
+            )
+        if latest_activity > at + 0.001:
+            self._release_proactive_closing_deferred_plan(user, now=check_now)
+            return 0.0
+        until = _safe_float(marker.get("until"), 0.0)
+        if until <= at:
+            grace_minutes = _safe_float(
+                runtime_persona_setting(self, "proactive_closing_grace_minutes", 45),
+                45.0,
+            )
+            until = at + max(0.0, min(240.0, grace_minutes)) * 60.0
+        return until if until > check_now else 0.0
+
+    def _release_proactive_closing_deferred_plan(
+        self,
+        user: dict[str, Any],
+        *,
+        now: float,
+    ) -> None:
+        """Make a deferred candidate re-evaluable after fresh private activity."""
+        if not isinstance(user, dict):
+            return
+        if bool(user.get("planned_proactive_conversation_closing_deferred")):
+            next_at = _safe_float(user.get("next_proactive_at"), 0.0)
+            if next_at > now:
+                user["next_proactive_at"] = now
+            window_start = _safe_float(user.get("planned_proactive_window_start_at"), 0.0)
+            if window_start > now:
+                user["planned_proactive_window_start_at"] = now
+            user["planned_proactive_conversation_closing_deferred"] = False
+        impulses = user.get("proactive_impulses")
+        if not isinstance(impulses, list):
+            return
+        for impulse in impulses:
+            if not isinstance(impulse, dict) or not impulse.get("conversation_closing_deferred"):
+                continue
+            for key in ("window_start_at", "preferred_ts"):
+                value = _safe_float(impulse.get(key), 0.0)
+                if value > now:
+                    impulse[key] = now
+            impulse["conversation_closing_deferred"] = False
+            impulse["conversation_closing_released_at"] = now
+            impulse["updated_ts"] = now
+
+    def _defer_candidate_after_conversation_closing(
+        self,
+        user: dict[str, Any],
+        candidate: dict[str, Any],
+        *,
+        now: float,
+        timeliness: str = "routine",
+    ) -> dict[str, Any]:
+        """Softly move ordinary candidates past a recent bot closing.
+
+        The candidate remains inspectable and keeps its source/trigger.  Explicit
+        triggers and time-sensitive routes are allowed through; only a routine
+        untriggered candidate is shifted.
+        """
+        if not isinstance(candidate, dict):
+            return candidate
+        closing_until = self._proactive_conversation_closing_until(user, now=now)
+        if closing_until <= now:
+            return candidate
+        posture = _single_line(candidate.get("conversation_posture"), 24).lower()
+        source = _single_line(candidate.get("source"), 40).lower()
+        has_trigger = bool(self._candidate_trigger_message_id(candidate))
+        if posture == "closing" or has_trigger or timeliness in {"urgent", "timely"}:
+            return candidate
+        if source in {"timer", "pending_followup", "followup", "troubleshooting", "simulation"}:
+            return candidate
+        scheduled = _safe_float(candidate.get("scheduled_ts"), now)
+        if scheduled >= closing_until:
+            return candidate
+        shift = closing_until - scheduled
+        shifted = dict(candidate)
+        for key in ("scheduled_ts", "window_start_at", "preferred_ts", "best_until_at", "expire_at"):
+            value = _safe_float(shifted.get(key), 0.0)
+            if value > 0:
+                shifted[key] = value + shift
+        shifted["conversation_closing_deferred"] = True
+        shifted["conversation_closing_deferred_until"] = closing_until
+        return shifted
+
     def _candidate_to_impulse(
         self,
         user: dict[str, Any],
@@ -1520,6 +1673,7 @@ class ProactiveEngineMixin:
                 else ""
             ),
             origin_event_id=_single_line(prepared.get("origin_event_id"), 80),
+            conversation_posture=_single_line(prepared.get("conversation_posture"), 24),
         )
         for key in ("_mobile_location_transition_key", "_mobile_location_priority", "mobile_location_event_type"):
             if key in prepared:
@@ -1540,6 +1694,11 @@ class ProactiveEngineMixin:
         ):
             if key in prepared:
                 impulse[key] = prepared[key]
+        impulse["conversation_closing_deferred"] = bool(prepared.get("conversation_closing_deferred"))
+        if prepared.get("conversation_closing_deferred_until"):
+            impulse["conversation_closing_deferred_until"] = _safe_float(
+                prepared.get("conversation_closing_deferred_until"),
+            )
         return impulse
 
     def _impulse_ready_now(self, impulse: dict[str, Any], *, now: float | None = None) -> bool:
@@ -3530,6 +3689,8 @@ class ProactiveEngineMixin:
             "scheduled_ts": max(review_at, _safe_float(selected.get("window_start_at"), review_at)),
             "topic": _single_line(selected.get("topic"), 80),
             "motive": self._motive_with_hesitation_memory(selected, _single_line(selected.get("motive"), 180)),
+            "conversation_posture": _single_line(selected.get("conversation_posture"), 24).lower(),
+            "conversation_closing_deferred": bool(selected.get("conversation_closing_deferred")),
             "score": int(max(0.0, min(1.0, self._score_proactive_impulse(user, selected, now=check_now))) * 100),
             "context_key": _single_line(selected.get("context_key"), 60),
             "context": selected.get("context"),
@@ -3557,6 +3718,13 @@ class ProactiveEngineMixin:
         user["planned_proactive_reason"] = self._normalize_legacy_proactive_text(candidate["reason"], limit=40) or "check_in"
         user["planned_proactive_action"] = self._normalize_legacy_proactive_text(candidate["action"], limit=40) or "message"
         user["planned_proactive_source"] = self._normalize_legacy_proactive_text(candidate["source"], limit=40) or "impulse"
+        user["planned_proactive_conversation_posture"] = _single_line(
+            candidate.get("conversation_posture"),
+            24,
+        ).lower()
+        user["planned_proactive_conversation_closing_deferred"] = bool(
+            candidate.get("conversation_closing_deferred")
+        )
         user["planned_proactive_kind"] = _single_line(candidate.get("kind"), 40)
         self._store_planned_proactive_route_fields(user, selected)
         user["planned_proactive_motive"] = self._normalize_internal_motive_text(candidate["motive"])
@@ -3755,6 +3923,9 @@ class ProactiveEngineMixin:
                 existing["action"] = action or _single_line(existing.get("action"), 40)
                 existing["topic"] = topic or _single_line(existing.get("topic"), 80)
                 existing["motive"] = motive or _single_line(existing.get("motive"), 160)
+                existing_posture = _single_line(candidate.get("conversation_posture"), 24).lower()
+                if existing_posture in {"closing", "open", "neutral"}:
+                    existing["conversation_posture"] = existing_posture
                 if note:
                     existing["note"] = _single_line(note, 160)
                 existing["score"] = max(_safe_int(existing.get("score"), 0, 0, 100), _safe_int(candidate.get("score"), 0, 0, 100))
@@ -3789,6 +3960,11 @@ class ProactiveEngineMixin:
             "action": action,
             "topic": topic,
             "motive": motive,
+            "conversation_posture": (
+                _single_line(candidate.get("conversation_posture"), 24).lower()
+                if _single_line(candidate.get("conversation_posture"), 24).lower() in {"closing", "open", "neutral"}
+                else ""
+            ),
             "score": _safe_int(candidate.get("score"), 0, 0, 100),
             "signature": signature,
             "status": status,
@@ -4041,6 +4217,13 @@ class ProactiveEngineMixin:
             if preserve_event_expiry:
                 candidate["best_until_at"] = min(_safe_float(candidate.get("best_until_at"), 0), expire_at)
             scheduled = _safe_float(candidate.get("scheduled_ts"), busy_until)
+        candidate = self._defer_candidate_after_conversation_closing(
+            user,
+            candidate,
+            now=now,
+            timeliness=incoming_timeliness,
+        )
+        scheduled = _safe_float(candidate.get("scheduled_ts"), scheduled)
         if not self._user_enabled_for_proactive(str(user_id), user):
             self._clear_pending_proactive_plan(user)
             return False
@@ -4163,6 +4346,13 @@ class ProactiveEngineMixin:
         user["planned_proactive_reason"] = self._normalize_legacy_proactive_text(candidate.get("reason"), limit=40) or "check_in"
         user["planned_proactive_action"] = self._normalize_legacy_proactive_text(action, limit=40) or "message"
         user["planned_proactive_source"] = self._normalize_legacy_proactive_text(source, limit=40) or "proactive"
+        user["planned_proactive_conversation_posture"] = _single_line(
+            impulse.get("conversation_posture") if isinstance(impulse, dict) else candidate.get("conversation_posture"),
+            24,
+        ).lower()
+        user["planned_proactive_conversation_closing_deferred"] = bool(
+            candidate.get("conversation_closing_deferred")
+        )
         user["planned_proactive_window_timezone"] = _single_line(candidate.get("window_timezone"), 64)
         user["planned_proactive_kind"] = _single_line(impulse.get("kind"), 40) or self._proactive_message_kind(
             reason=candidate.get("reason"),
@@ -5181,6 +5371,8 @@ class ProactiveEngineMixin:
             "planned_proactive_reason",
             "planned_proactive_action",
             "planned_proactive_source",
+            "planned_proactive_conversation_posture",
+            "planned_proactive_conversation_closing_deferred",
             "planned_proactive_kind",
             "planned_proactive_motive",
             "planned_proactive_topic",
@@ -6186,6 +6378,8 @@ class ProactiveEngineMixin:
         user["planned_proactive_reason"] = self._normalize_legacy_proactive_text(current.get("reason"), limit=40) or "check_in"
         user["planned_proactive_action"] = self._normalize_legacy_proactive_text(current.get("action"), limit=40) or "message"
         user["planned_proactive_source"] = "simulation"
+        user["planned_proactive_conversation_posture"] = _single_line(current.get("conversation_posture"), 24).lower()
+        user["planned_proactive_conversation_closing_deferred"] = False
         user["planned_proactive_motive"] = _single_line(current.get("motive"), 140)
         user["planned_proactive_topic"] = _single_line(current.get("topic"), 60)
         scheduled_ts = _safe_float(user.get("next_proactive_at"), now)
@@ -6231,6 +6425,8 @@ class ProactiveEngineMixin:
         user["planned_proactive_reason"] = ""
         user["planned_proactive_action"] = ""
         user["planned_proactive_source"] = ""
+        user["planned_proactive_conversation_posture"] = ""
+        user["planned_proactive_conversation_closing_deferred"] = False
         user["planned_proactive_kind"] = ""
         user["planned_proactive_motive"] = ""
         user["planned_proactive_topic"] = ""
@@ -7829,6 +8025,7 @@ class ProactiveEngineMixin:
                 "scene": "晚上安静下来时",
                 "tone": "安静",
                 "impulse": "想趁还没太晚打个招呼",
+                "conversation_posture": "closing",
             },
         ]
 
@@ -8027,6 +8224,7 @@ class ProactiveEngineMixin:
                         "reason": reason,
                         "action": "message",
                         "_daily_greeting": True,
+                        "conversation_posture": "closing" if reason == "evening_greeting" else "",
                         "why": why,
                         "topic": topic,
                         "_scheduled_ts": scheduled,
@@ -8256,6 +8454,7 @@ class ProactiveEngineMixin:
             "why": "Bot 还醒着，夜里只想给用户留一句不要求回应的话",
             "topic": "夜里还醒着",
             "motive": "夜里一直没睡着，想短短和对方说一句",
+            "conversation_posture": "closing",
             "_scheduled_ts": scheduled,
             "_proactive_source": "night_care",
             "context_key": "insomnia_night_context",

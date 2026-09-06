@@ -2594,6 +2594,7 @@ class DailyStateMixin(DailyStateTickMixin):
                     "tone": "平静",
                     "impulse": "想在睡前和用户聊天",
                     "mood": "安静",
+                    "conversation_posture": "closing",
                 }
             )
         if energy < 42 and random.random() < 0.42:
@@ -2609,6 +2610,7 @@ class DailyStateMixin(DailyStateTickMixin):
                     "tone": "疲惫",
                     "impulse": "想在睡前和用户聊天",
                     "mood": "疲惫",
+                    "conversation_posture": "closing",
                 }
             )
         return events[:3]
@@ -18458,6 +18460,8 @@ class DailyStateMixin(DailyStateTickMixin):
             "planned_proactive_reason",
             "planned_proactive_action",
             "planned_proactive_source",
+            "planned_proactive_conversation_posture",
+            "planned_proactive_conversation_closing_deferred",
             "planned_proactive_kind",
             "planned_proactive_route_version",
             "planned_proactive_route_dedupe_key",

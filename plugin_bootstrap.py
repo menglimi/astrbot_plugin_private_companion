@@ -355,6 +355,7 @@ def _initialize_core_and_relationship_config(self: Any, c: Any) -> None:
     )
     self.proactive_preempt_queue_enabled = self._cfg_bool(c, "proactive_preempt_queue_enabled", False)
     self.proactive_preempt_queue_expire_hours = self._cfg_int(c, "proactive_preempt_queue_expire_hours", 2, 1, 24)
+    self.proactive_closing_grace_minutes = self._cfg_int(c, "proactive_closing_grace_minutes", 45, 0, 240)
     self.proactive_share_priority = self._cfg_int(c, "proactive_share_priority", 48, 0, 100)
     self.enable_experimental_motivation_model = self._cfg_bool(c, "enable_experimental_motivation_model", False)
     self.check_interval_seconds = self._cfg_int(c, "check_interval_seconds", 60, 30)
@@ -372,6 +373,13 @@ def _initialize_core_and_relationship_config(self: Any, c: Any) -> None:
         "0.22,0.16,0.12,0.10,0.10,0.14,0.28,0.50,0.66,0.72,0.78,0.92,1.0,0.94,0.82,0.74,0.78,0.92,1.0,0.98,0.88,0.70,0.48,0.32",
     )
     self.proactive_unanswered_slowdown_start = self._cfg_int(c, "proactive_unanswered_slowdown_start", 1, 1, 10)
+    self.proactive_unanswered_pause_after = self._cfg_int(
+        c,
+        "proactive_unanswered_pause_after",
+        0,
+        0,
+        50,
+    )
     self.proactive_unanswered_max_interval_multiplier = min(
         8.0,
         max(1.0, self._cfg_float(c, "proactive_unanswered_max_interval_multiplier", 2.2, 1.0)),

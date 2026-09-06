@@ -414,6 +414,7 @@ _SIMULATION_FALLBACK_EVENTS = [
         "scene": "准备休息的时候",
         "tone": "安静",
         "impulse": "想在睡前和用户说声晚安",
+        "conversation_posture": "closing",
     },
 ]
 
@@ -450,6 +451,8 @@ _DEFAULT_USER_TEMPLATE = {
     "sent_day": "",
     "sent_today": 0,
     "ignored_streak": 0,
+    "unanswered_proactive_count": 0,
+    "unanswered_proactive_count_updated_at": 0,
     "last_user_message": "",
     "last_user_message_at": 0,
     "last_inbound_gap_seconds": 0,
@@ -536,6 +539,8 @@ _DEFAULT_USER_TEMPLATE = {
     "planned_proactive_motive": "",
     "planned_proactive_topic": "",
     "planned_proactive_source": "",
+    "planned_proactive_conversation_posture": "",
+    "planned_proactive_conversation_closing_deferred": False,
     "planned_proactive_kind": "",
     "planned_proactive_route_version": 0,
     "planned_proactive_route_dedupe_key": "",

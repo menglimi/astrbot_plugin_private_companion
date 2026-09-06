@@ -204,6 +204,7 @@ class ProactiveRoutePipelineTests(unittest.TestCase):
                     sent_at=1000,
                 )
                 self.assertEqual(2, user["ignored_streak"])
+                self.assertEqual(2, user["unanswered_proactive_count"])
                 self.assertEqual(50, user["awaiting_reply_since"])
 
         for kind, reason in (("relational", "quiet_care"), ("continuation", "check_in"), ("ritual", "meal_care")):
@@ -221,6 +222,7 @@ class ProactiveRoutePipelineTests(unittest.TestCase):
                     sent_at=1000,
                 )
                 self.assertEqual(3, user["ignored_streak"])
+                self.assertEqual(3, user["unanswered_proactive_count"])
                 self.assertEqual(1000, user["awaiting_reply_since"])
 
     def test_content_settlement_clears_only_its_context_and_disables_followup(self) -> None:

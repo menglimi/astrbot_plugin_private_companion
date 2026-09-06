@@ -1276,6 +1276,16 @@ class CoreStoreMixin:
             if not isinstance(ownership.get("history"), list):
                 ownership["history"] = []
         data.setdefault("users", {})
+        users = data.get("users")
+        if isinstance(users, dict):
+            for raw_user in users.values():
+                if isinstance(raw_user, dict) and "unanswered_proactive_count" not in raw_user:
+                    raw_user["unanswered_proactive_count"] = _safe_int(
+                        raw_user.get("ignored_streak"),
+                        0,
+                        0,
+                        1000,
+                    )
         data.setdefault("private_user_alias_merge_backups", {})
         data.setdefault("groups", {})
         data.setdefault("persona_routing_warnings", {"schema_version": 2, "items": []})
@@ -4268,6 +4278,7 @@ class CoreStoreMixin:
             "relationship_score",
             "sent_today",
             "ignored_streak",
+            "unanswered_proactive_count",
             "poke_count",
         }
         max_keys = {
@@ -5071,6 +5082,13 @@ class CoreStoreMixin:
         created = user_id not in users
         user = users.setdefault(user_id, deepcopy(_DEFAULT_USER_TEMPLATE))
         user["user_id"] = user_id
+        if "unanswered_proactive_count" not in user:
+            user["unanswered_proactive_count"] = _safe_int(
+                user.get("ignored_streak"),
+                0,
+                0,
+                1000,
+            )
         if original_user_id and original_user_id != user_id:
             aliases = user.setdefault("alias_user_ids", [])
             if isinstance(aliases, list) and original_user_id not in aliases:

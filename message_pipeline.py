@@ -13,6 +13,7 @@ from .helpers import (
     _group_link_message_context,
     _missing_optional_model_dependency,
     _now_ts,
+    _reset_unanswered_proactive,
     _safe_float,
     _safe_int,
     _single_line,
@@ -473,7 +474,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
             fast_user["last_private_reply_at"] = received_ts
             fast_user["pending_followup_event"] = {}
             fast_user["planned_proactive_quota_exempt"] = False
-        fast_user["ignored_streak"] = 0
+        _reset_unanswered_proactive(fast_user, replied_at=received_ts)
         fast_user["friend_unanswered_silenced_since"] = 0
         fast_user["friend_unanswered_silence_note"] = ""
         fast_user_is_owner = self._private_user_role(fast_user, user_id) == "owner"
@@ -896,7 +897,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
             user["last_private_reply_at"] = user["last_reply_at"]
             user["pending_followup_event"] = {}
             user["planned_proactive_quota_exempt"] = False
-        user["ignored_streak"] = 0
+        _reset_unanswered_proactive(user, replied_at=received_ts)
         user["friend_unanswered_silenced_since"] = 0
         user["friend_unanswered_silence_note"] = ""
         if text:

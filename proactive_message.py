@@ -4247,6 +4247,22 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         expression_decision = readiness.get("expression_decision") if isinstance(readiness.get("expression_decision"), dict) else {}
 
         lines: list[str] = []
+        closing_getter = getattr(self, "_proactive_conversation_closing_until", None)
+        current_now = _now_ts()
+        closing_until = 0.0
+        if callable(closing_getter):
+            try:
+                closing_until = _safe_float(closing_getter(user, now=current_now), 0.0)
+            except Exception as exc:
+                logger.debug("对话收束状态读取失败: %s", _single_line(exc, 120))
+        if closing_until > current_now:
+            remaining_minutes = max(1, int((closing_until - current_now) / 60))
+            lines.append(
+                f"上一条主动已完成一次对话收束，短暂留白还剩约 {remaining_minutes} 分钟。"
+                "这是对话节奏状态，不是用户休息或永久禁言：普通候选不要借机重新开话题；"
+                "只有本轮已有明确新来源、用户新消息或有时效的事项才可自然承接。"
+                "若本轮仍需生成，正文保持短、完整、低压力，不解释这条内部状态。"
+            )
         troubleshooting_hint = self._proactive_troubleshooting_request_hint(user)
         if troubleshooting_hint:
             lines.append(troubleshooting_hint)

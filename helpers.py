@@ -123,6 +123,41 @@ def _safe_int(value: Any, default: int, minimum: int = 0, maximum: int | None = 
     return parsed
 
 
+def _unanswered_proactive_count(user: Any) -> int:
+    """Return the durable unanswered count while mirroring the legacy key."""
+    if not isinstance(user, dict):
+        return 0
+    if "unanswered_proactive_count" in user:
+        count = _safe_int(user.get("unanswered_proactive_count"), 0, 0, 1000)
+    else:
+        count = _safe_int(user.get("ignored_streak"), 0, 0, 1000)
+    user["unanswered_proactive_count"] = count
+    user["ignored_streak"] = count
+    return count
+
+
+def _record_unanswered_proactive(user: Any, *, sent_at: float = 0.0) -> int:
+    """Increment the durable unanswered count after an awaiting-reply send."""
+    if not isinstance(user, dict):
+        return 0
+    count = _unanswered_proactive_count(user) + 1
+    user["unanswered_proactive_count"] = count
+    user["ignored_streak"] = count
+    if sent_at > 0:
+        user["unanswered_proactive_count_updated_at"] = float(sent_at)
+    return count
+
+
+def _reset_unanswered_proactive(user: Any, *, replied_at: float = 0.0) -> None:
+    """Clear the durable unanswered count after user activity."""
+    if not isinstance(user, dict):
+        return
+    user["unanswered_proactive_count"] = 0
+    user["ignored_streak"] = 0
+    if replied_at > 0:
+        user["unanswered_proactive_count_updated_at"] = float(replied_at)
+
+
 def _safe_float(
     value: Any,
     default: float,
