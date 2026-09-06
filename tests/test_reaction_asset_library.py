@@ -300,6 +300,41 @@ class ReactionAssetLibraryTests(unittest.TestCase):
         self.assertIsNone(self.library.find("不开心", scope="private"))
         self.assertIsNone(self.library.find("查询天气", scope="private"))
 
+    def test_find_lets_embedding_cluster_outrank_stray_lexical_tag(self) -> None:
+        # Nine assets sit close to the query vector; one far-away asset carries
+        # the literal query as a tag. The vector cluster must win the pick.
+        cluster = []
+        for index in range(9):
+            cluster.append(
+                self.library.import_blobs(
+                    [(f"angry{index}.png", PNG_BYTES + bytes([index]))],
+                    metadata={"emotions": ["angry"]},
+                )["items"][0]
+            )
+        stray = self.library.import_blobs(
+            [("stray.png", PNG_BYTES + b"stray")],
+            metadata={"tags": ["傲娇吐槽", "性暗示"], "emotions": ["color"]},
+        )["items"][0]
+        rows = [
+            {"id": item["id"], "vector": [1.0, 0.02 * index], "text_hash": self.library.embedding_text_hash(item)}
+            for index, item in enumerate(cluster)
+        ]
+        rows.append({"id": stray["id"], "vector": [0.6, 0.8], "text_hash": self.library.embedding_text_hash(stray)})
+        self.assertEqual(10, self.library.upsert_embeddings("test-embedding", rows))
+
+        keyword_only = self.library.find("傲娇吐槽")
+        embedded = self.library.find(
+            "傲娇吐槽",
+            embedding_query=[1.0, 0.0],
+            embedding_provider_id="test-embedding",
+            embedding_weight=1.5,
+        )
+
+        self.assertEqual(f"pc-local:{stray['id']}", keyword_only["image_id"])
+        self.assertIn(embedded["asset_id"], {item["id"] for item in cluster})
+        self.assertEqual("embedding", embedded["match_basis"])
+        self.assertIn("description", embedded)
+
     def test_find_softly_rotates_recently_used_equally_relevant_assets(self) -> None:
         first = self.library.import_blobs(
             [("开心一号.png", PNG_BYTES)],

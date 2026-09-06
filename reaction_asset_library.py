@@ -8,6 +8,7 @@ import json
 import mimetypes
 import os
 import re
+import statistics
 import threading
 import time
 import uuid
@@ -1224,12 +1225,33 @@ class ReactionAssetLibrary:
                     and _single_line(raw.get("embedding_text_hash"), 80) == self.embedding_text_hash(item)
                 )
             }
-        ranked: list[tuple[float, float, dict[str, Any], Path, list[str], float, float]] = []
-        now = time.time()
+        eligible_rows: list[tuple[dict[str, Any], Path]] = []
         for item in candidates:
             path = self._path_for(item)
             if not item["enabled"] or scope_text not in item["scopes"] or path is None or not path.is_file():
                 continue
+            eligible_rows.append((item, path))
+        # Text embeddings of short reaction captions are crowded: every asset
+        # lands at cosine 0.4-0.8 for any query, so an absolute threshold passes
+        # almost the whole catalog and the bonus barely separates assets. Rank
+        # against the query's own distribution instead: the best asset earns
+        # the full weight, the median asset earns nothing and assets well
+        # below the median are demoted by the same amount.
+        embedding_scores: dict[str, float] = {}
+        for item, _path in eligible_rows:
+            candidate_vector = embeddings_by_id.get(item["id"])
+            if embedding_vector and candidate_vector and len(candidate_vector) == len(embedding_vector):
+                embedding_scores[item["id"]] = max(
+                    -1.0,
+                    min(1.0, sum(left * right for left, right in zip(embedding_vector, candidate_vector))),
+                )
+        embedding_top = max(embedding_scores.values(), default=0.0)
+        embedding_led = len(embedding_scores) >= 8 and embedding_top >= embedding_threshold
+        embedding_median = statistics.median(embedding_scores.values()) if embedding_led else 0.0
+        embedding_span = max(0.02, embedding_top - embedding_median)
+        ranked: list[tuple[float, float, dict[str, Any], Path, list[str], float, float, float]] = []
+        now = time.time()
+        for item, path in eligible_rows:
             primary = " ".join(
                 [
                     item["name"],
@@ -1281,18 +1303,22 @@ class ReactionAssetLibrary:
                 matched_phrases.append(
                     "语义相近：" + "、".join(sorted(shared_semantic_clusters))
                 )
-            embedding_score = 0.0
-            candidate_vector = embeddings_by_id.get(item["id"])
-            if embedding_vector and candidate_vector and len(candidate_vector) == len(embedding_vector):
-                embedding_score = max(
-                    -1.0,
-                    min(1.0, sum(left * right for left, right in zip(embedding_vector, candidate_vector))),
+            embedding_score = embedding_scores.get(item["id"], 0.0)
+            if embedding_led:
+                embedding_bonus = embedding_factor * max(
+                    -1.0, min(1.0, (embedding_score - embedding_median) / embedding_span)
                 )
-            embedding_bonus = (
-                embedding_factor * max(0.0, (embedding_score - embedding_threshold) / max(0.01, 1.0 - embedding_threshold))
-                if embedding_score >= embedding_threshold
-                else 0.0
-            )
+                # ponytail: once vectors lead, lexical hits only break ties inside
+                # the matched cluster. A stray tag on a wrong-category asset used
+                # to win outright through the 1.7 phrase bonus.
+                score = min(score, 0.5)
+                semantic_bonus = min(semantic_bonus, 0.3)
+            else:
+                embedding_bonus = (
+                    embedding_factor * max(0.0, (embedding_score - embedding_threshold) / max(0.01, 1.0 - embedding_threshold))
+                    if embedding_score >= embedding_threshold
+                    else 0.0
+                )
             relevance_score = score + semantic_bonus + embedding_bonus
             if embedding_bonus > 0.0 and not matched_phrases:
                 matched_phrases.append("语义相近")
@@ -1316,6 +1342,7 @@ class ReactionAssetLibrary:
                     matched_phrases,
                     learned_bias,
                     embedding_score,
+                    embedding_bonus,
                 )
             )
         if not ranked:
@@ -1328,7 +1355,7 @@ class ReactionAssetLibrary:
         if not eligible:
             return None
         eligible.sort(key=lambda row: (row[0], row[2]["updated_at"]), reverse=True)
-        _selection_score, score, item, path, matched_phrases, learned_bias, embedding_score = eligible[0]
+        _selection_score, score, item, path, matched_phrases, learned_bias, embedding_score, embedding_bonus = eligible[0]
         semantic_match = any(
             phrase.startswith("语义相近：") for phrase in matched_phrases
         )
@@ -1342,6 +1369,8 @@ class ReactionAssetLibrary:
             "found": True,
             "image_id": f"pc-local:{item['id']}",
             "asset_id": item["id"],
+            "name": item["name"],
+            "description": item["description"],
             "path": str(path),
             "tags": [*item["tags"], *item["emotions"], *item["intents"]][:20],
             "need": query_text,
@@ -1349,7 +1378,7 @@ class ReactionAssetLibrary:
             "candidate_queries": candidate_queries,
             "reason": (
                 "本插件素材库按关键词及本地语义近似匹配"
-                if semantic_match and not embedding_score >= embedding_threshold
+                if semantic_match and embedding_bonus <= 0.0
                 else "本插件素材库按候选检索表达、标签、情绪和沟通用途匹配"
                 if matched_phrases
                 else "本插件素材库按标签、情绪和沟通用途匹配"
@@ -1359,9 +1388,9 @@ class ReactionAssetLibrary:
             "embedding_score": round(embedding_score, 4) if embedding_score else 0.0,
             "match_basis": (
                 "embedding"
-                if embedding_score >= embedding_threshold and not semantic_match and score < 0.28
+                if embedding_bonus > 0.0 and embedding_bonus >= score - embedding_bonus
                 else "hybrid"
-                if embedding_score >= embedding_threshold
+                if embedding_bonus > 0.0
                 else "keyword_semantic"
                 if semantic_match
                 else "keyword"
