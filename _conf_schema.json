@@ -13006,7 +13006,8 @@
         "description": "发送前视觉复核表情包",
         "type": "string",
         "options": ["off", "embedding", "always"],
-        "hint": "发送前让视觉模型看一眼选中的表情包：embedding=仅当命中完全依赖向量相似度时复核；always=每次都复核；off=关闭。复核结果会随工具返回给聊天模型，不贴合则不发送。主动消息的低延迟路径不复核。",
+        "labels": ["关闭", "仅向量主导选图时复核", "每次都复核"],
+        "hint": "发送前让视觉模型看一眼选中的表情包：embedding=仅当本次选图由向量相似度主导时复核；always=每次都复核；off=关闭。复核结果会随工具返回给聊天模型，不贴合则不发送。主动消息的低延迟路径不复核。",
         "default": "embedding",
         "condition": {
           "enable_reaction_expression_experiment": true
