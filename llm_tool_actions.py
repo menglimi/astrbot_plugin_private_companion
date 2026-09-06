@@ -6466,7 +6466,9 @@ class LlmToolActionsMixin:
         snapshot_caption = "；".join(
             part
             for part in (
-                f"图片画面：{_single_line(lookup.get('description'), 200)}" if lookup.get("description") else "",
+                f"图片画面：{_single_line(lookup.get('description') or lookup.get('image_description'), 200)}"
+                if lookup.get("description") or lookup.get("image_description")
+                else "",
                 f"图库标签：{'、'.join(tags[:8])}" if tags else "",
                 f"表达需求：{need}" if need else "",
                 f"选图依据：{match_reason}" if match_reason else "",
@@ -7319,7 +7321,10 @@ class LlmToolActionsMixin:
         verify_mode = _single_line(
             runtime_persona_setting(self, "reaction_expression_vision_verify_mode", "embedding"), 20
         ).lower()
-        if send_image and not low_latency and (
+        # The automatic tag path prepares the image here (send=False,
+        # internal_attachment=True) and delivers it after the text, so it needs
+        # the same pre-send check as a direct tool send.
+        if (send_image or internal_attachment) and not low_latency and (
             verify_mode == "always"
             or (verify_mode == "embedding" and lookup.get("match_basis") == "embedding")
         ):
@@ -7393,7 +7398,9 @@ class LlmToolActionsMixin:
         snapshot_caption = "；".join(
             part
             for part in (
-                f"图片画面：{_single_line(lookup.get('description'), 200)}" if lookup.get("description") else "",
+                f"图片画面：{_single_line(lookup.get('description') or lookup.get('image_description'), 200)}"
+                if lookup.get("description") or lookup.get("image_description")
+                else "",
                 f"图库标签：{'、'.join(tags[:8])}" if tags else "",
                 f"表达需求：{need}" if need else "",
                 f"选图依据：{match_reason}" if match_reason else "",
