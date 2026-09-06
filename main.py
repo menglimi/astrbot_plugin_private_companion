@@ -12902,8 +12902,19 @@ class PrivateCompanionPlugin(
                 ensure_ascii=False,
             )
         reaction_authorization = self._reaction_expression_authorization(event)
-        if reaction_authorization and not self._photo_generation_instruction_matches(
-            getattr(event, "message_str", "")
+        allow_photo_on_reaction_turns = bool(
+            runtime_persona_setting(
+                self,
+                'allow_generate_photo_on_reaction_turns',
+                False,
+            )
+        )
+        if (
+            reaction_authorization
+            and not allow_photo_on_reaction_turns
+            and not self._photo_generation_instruction_matches(
+                getattr(event, "message_str", "")
+            )
         ):
             return json.dumps(
                 {
