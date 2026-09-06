@@ -403,7 +403,8 @@ class FinalResponsePersistenceCoordinator:
                     stopped = bool(event.is_stopped())
                 except Exception:
                     stopped = False
-                if not stopped:
+                suppressed = bool(getattr(event, "_private_companion_outbound_suppressed", False))
+                if not (stopped or suppressed):
                     return False
             current = asyncio.current_task()
             pending = [
@@ -1047,7 +1048,11 @@ class FinalResponsePersistenceMixin:
         # Media markers are useful to the companion's private continuity state,
         # but AstrBot's official conversation history is rendered directly by
         # chat clients. Keep internal metadata out of that user-visible field.
-        visible_response_text = _strip_outbound_control_blocks(response_text)
+        visible_response_text = _strip_outbound_control_blocks(
+            response_text,
+            enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)),
+            tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False)),
+        )
         message = getattr(event, "_private_companion_official_assistant_message", None)
         if (
             not visible_response_text
@@ -1108,7 +1113,11 @@ class FinalResponsePersistenceMixin:
     ) -> bool:
         umo = str(getattr(event, "unified_msg_origin", "") or "").strip()
         response_text = sanitize_llm_segment_control_tokens(assistant_response)
-        visible_response_text = _strip_outbound_control_blocks(response_text)
+        visible_response_text = _strip_outbound_control_blocks(
+            response_text,
+            enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)),
+            tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False)),
+        )
         conv_mgr = getattr(getattr(self, "context", None), "conversation_manager", None)
         if not umo or not visible_response_text or conv_mgr is None:
             return False
@@ -1355,7 +1364,11 @@ class FinalResponsePersistenceMixin:
         now: float,
     ) -> set[str]:
         visible_text = _single_line(
-            _strip_internal_message_blocks(response_text),
+            _strip_internal_message_blocks(
+                response_text,
+                enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)),
+                tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False)),
+            ),
             500,
         )
         if not visible_text:
@@ -1450,7 +1463,9 @@ class FinalResponsePersistenceMixin:
     ) -> set[str]:
         visible_text = _single_line(
             _strip_internal_message_blocks(
-                sanitize_llm_segment_control_tokens(response_text)
+                sanitize_llm_segment_control_tokens(response_text),
+                enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)),
+                tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False)),
             ),
             500,
         )

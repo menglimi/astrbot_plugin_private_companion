@@ -4847,8 +4847,6 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             "repetition is now very high",
             "agent reached max steps",
             "forcing a final response",
-            "tool `send_message_to_user`",
-            "send_message_to_user",
             "一直试着给",
             "发了差不多20条",
             "还没收到回复",
@@ -4867,7 +4865,6 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             "repetitionisnowveryhigh",
             "agentreachedmaxsteps",
             "forcingafinalresponse",
-            "sendmessagetouser",
             "一直试着给",
             "发了差不多20条",
             "还没收到回复",
@@ -5405,7 +5402,11 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         cleaned = self._sanitize_proactive_text(str(text or ""))
         if not cleaned:
             return ""
-        cleaned = _strip_internal_message_blocks(cleaned)
+        cleaned = _strip_internal_message_blocks(
+            cleaned,
+            enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)),
+            tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False)),
+        )
         cleaned = self._strip_parenthetical_stage_directions(cleaned)
         cleaned = re.sub(r"^(?:最终(?:聊天)?正文|正文|输出|回复)[:：]\s*", "", cleaned).strip()
         cleaned = re.sub(r"\s+", " ", cleaned).strip().strip('"').strip("'")
@@ -10719,11 +10720,13 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             return ""
         if self._is_proactive_delivery_receipt_text(source):
             return ""
+        if not bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)):
+            return _single_line(source, limit)
         placeholder_cleaner = getattr(self, "_sanitize_orphan_tts_placeholders", None)
         if callable(placeholder_cleaner):
             source = placeholder_cleaner(source)
         emotion_cleaner = getattr(self, "_strip_visible_tts_emotion_cues", None)
-        if callable(emotion_cleaner):
+        if bool(runtime_persona_setting(self, "enable_tts_enhancement", False)) and callable(emotion_cleaner):
             source = emotion_cleaner(source)
         normalizer = getattr(self, "_normalize_tts_tags", None)
         if callable(normalizer) and re.search(r"</?t{2,}s\b", source, flags=re.IGNORECASE):
@@ -10735,7 +10738,9 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             outside = re.sub(r"<tts\b[^>]*>.*?</tts>", "", source, flags=re.IGNORECASE | re.DOTALL)
             outside = re.sub(r"</?t{2,}s\b[^>]*>", "", outside, flags=re.IGNORECASE).strip()
             if re.search(r"[\u4e00-\u9fff]", outside):
-                return _single_line(_strip_internal_message_blocks(outside), limit)
+                return _single_line(_strip_internal_message_blocks(
+                    outside, tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False))
+                ), limit)
             source = re.sub(r"</?t{2,}s\b[^>]*>", "", source, flags=re.IGNORECASE).strip()
         has_kana = bool(re.search(r"[\u3040-\u30ff]", source))
         has_cjk = bool(re.search(r"[\u4e00-\u9fff]", source))
@@ -10756,8 +10761,12 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
                     continue
                 kept.append(cleaned)
             if dropped and kept and any(re.search(r"[\u4e00-\u9fff]", item) for item in kept):
-                return _single_line(_strip_internal_message_blocks("".join(kept)), limit)
-        return _single_line(_strip_internal_message_blocks(source), limit)
+                return _single_line(_strip_internal_message_blocks(
+                    "".join(kept), tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False))
+                ), limit)
+        return _single_line(_strip_internal_message_blocks(
+            source, tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False))
+        ), limit)
 
     async def _run_photo_text_action(self, user: dict[str, Any], name: str, reason: str) -> str:
         if not runtime_persona_setting(self, "enable_photo_text_action", True):
@@ -17198,49 +17207,6 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             return self._onebot_forward_action_result_ok(result)
         return False
 
-    @staticmethod
-    def _looks_like_python_traceback_text(text: Any) -> bool:
-        """Only treat a complete Python stack trace as an outbound error leak.
-
-        Technical conversations commonly mention ``traceback`` or explain a
-        schema.  Those words alone are not an error.  A real Python traceback
-        has the header, at least one frame, and a terminating exception line.
-        """
-        raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-        if not raw:
-            return False
-        has_header = bool(re.search(r"(?im)^\s*traceback \(most recent call last\):\s*$", raw))
-        has_frame = bool(re.search(r"(?im)^\s*file \"[^\n\"]+\", line \d+(?:, in .+)?\s*$", raw))
-        has_exception = bool(
-            re.search(
-                r"(?im)^\s*(?:[a-z_][\w.]*(?:error|exception|warning)|assertionerror|keyboardinterrupt|systemexit)(?::|$)",
-                raw,
-            )
-        )
-        return has_header and has_frame and has_exception
-
-    def _framework_error_leak_kind(self, text: Any) -> str:
-        """Return a safe classifier code for a real framework leak, if any."""
-        if self._looks_like_python_traceback_text(text):
-            return "python_traceback"
-        if self._looks_like_internal_provider_error_text(text):
-            return "provider_error"
-        cleaned = _single_line(text, 1000).lower()
-        if any(
-            marker in cleaned
-            for marker in (
-                "error occurred while processing agent request",
-                "sqlite3.operationalerror",
-                "database is locked",
-                "sqlalche.me/e/20/e3q8",
-                "model do not support image input",
-            )
-        ):
-            return "framework_error"
-        if self._framework_agent_meta_summary_leak(str(text or "")):
-            return "tool_loop"
-        return ""
-
     async def _send_segmented_forward_message(
         self,
         *,
@@ -18772,7 +18738,11 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         if not umo or not assistant_response:
             return False
         visible_assistant_response = sanitize_llm_segment_control_tokens(
-            _strip_outbound_control_blocks(assistant_response)
+            _strip_outbound_control_blocks(
+                assistant_response,
+                enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)),
+                tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False)),
+            )
         )
         if not visible_assistant_response:
             return False
@@ -18927,15 +18897,19 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
 
     def _sanitize_proactive_text(self, text: str) -> str:
         cleaned = str(text or "").strip()
-        # Strip reasoning/thinking chain content first, before any other sanitization
-        cleaned = _strip_internal_message_blocks(cleaned)
-        cleaned = re.sub(r"<img\b[^>]*>", "", cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r"</img>", "", cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r"<[^>\n]{0,200}>", "", cleaned)
+        cleaned = _strip_internal_message_blocks(
+            cleaned,
+            enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)),
+            tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False)),
+        )
         cleaned = cleaned.replace("[图片]", "").replace("【图片】", "")
         cleaned = cleaned.replace("（图片已送达）", "").replace("(图片已送达)", "")
         emotion_cleaner = getattr(self, "_strip_visible_tts_emotion_cues", None)
-        if callable(emotion_cleaner):
+        if (
+            bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True))
+            and bool(runtime_persona_setting(self, "enable_tts_enhancement", False))
+            and callable(emotion_cleaner)
+        ):
             cleaned = emotion_cleaner(cleaned)
         identity_cleaner = getattr(self, "_strip_internal_identity_anchors", None)
         if callable(identity_cleaner):
