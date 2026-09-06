@@ -13,10 +13,11 @@ from datetime import date, datetime
 from typing import Any
 from urllib.parse import urlparse
 
-try:
-    from .outbound_tag_registry import strip_own_tags
-except ImportError:
-    from outbound_tag_registry import strip_own_tags
+from .outbound_tag_registry import (
+    _ESCAPED_NONSTANDARD_SELF_CLOSING_TAG_PATTERN,
+    _NONSTANDARD_SELF_CLOSING_TAG_PATTERN,
+    strip_own_tags,
+)
 
 _today_key_timezone = ""
 
@@ -649,20 +650,22 @@ def _strip_personality_sync_blocks(text: Any) -> str:
     return normalized
 
 
-def _strip_internal_message_blocks(text: Any) -> str:
+def _strip_internal_message_blocks(text: Any, *, enabled: bool = True) -> str:
     """Remove registered internal blocks while preserving Markdown examples."""
     source_text = str(text or "")
+    if not enabled:
+        return source_text
     original = source_text.replace("\r\n", "\n").replace("\r", "\n")
     parts = _MARKDOWN_CODE_SPAN_PATTERN.split(original)
     for index in range(0, len(parts), 2):
+        segment = _strip_history_media_markers(parts[index], preserve_whitespace=True)
         segment = strip_own_tags(
-            parts[index],
-            enabled_flags={"enable_tts_enhancement"},
+            segment,
             preserve_code_spans=False,
         )
         segment = _strip_personality_sync_blocks(segment)
         segment = _strip_group_member_safety_markers(segment)
-        parts[index] = _strip_history_media_markers(segment, preserve_whitespace=True)
+        parts[index] = segment
     normalized = "".join(parts)
     if not original.startswith("\n"):
         normalized = normalized.lstrip("\n")
@@ -764,18 +767,6 @@ def _strip_history_media_markers(
     return normalized.strip()
 
 
-_CHAT_SELF_CLOSING_TAG_ALLOWLIST = (r"br|image|img|video|audio|record|file|at|face|emoji|reply|tts|pc[_-]?tts|timer")
-_NONSTANDARD_SELF_CLOSING_TAG_PATTERN = re.compile(
-    r"<\s*(?:pc_[A-Za-z0-9_-]+|private_companion_[A-Za-z0-9_-]+)(?:\s+[^<>\r\n]{0,160})?/\s*>", re.IGNORECASE
-)
-_ESCAPED_NONSTANDARD_SELF_CLOSING_TAG_PATTERN = re.compile(
-    r"&lt;\s*(?:pc_[A-Za-z0-9_-]+|private_companion_[A-Za-z0-9_-]+)(?:\s+[^&\r\n]{0,160})?/\s*&gt;", re.IGNORECASE
-)
-_PERSISTED_LEGACY_SELF_CLOSING_TAG_PATTERN = re.compile(
-    r"<\s*(?!(?:br|image|img|video|audio|record|file|at|face|emoji|reply|tts|pc[_-]?tts|timer)\b)"
-    r"[A-Za-z][A-Za-z0-9_-]{0,31}(?:\s+[^<>\r\n]{0,160})?/\s*>",
-    re.IGNORECASE,
-)
 _MARKDOWN_CODE_SPAN_PATTERN = re.compile(
     r"(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\r\n]+`)",
     re.MULTILINE,
@@ -824,7 +815,7 @@ def _strip_nonstandard_chat_control_tags(
     *,
     preserve_whitespace: bool = False,
 ) -> str:
-    """Remove leaked pseudo-control tags such as <bubble/> without touching media blocks."""
+    """Remove plugin control tags and internal media metadata."""
     normalized = str(text or "")
     if not normalized:
         return ""
@@ -852,17 +843,19 @@ def _strip_persisted_chat_control_tags(text: Any) -> str:
     parts = _MARKDOWN_CODE_SPAN_PATTERN.split(normalized)
     for index in range(0, len(parts), 2):
         parts[index] = _strip_nonstandard_chat_control_tags(parts[index])
-        parts[index] = _PERSISTED_LEGACY_SELF_CLOSING_TAG_PATTERN.sub("", parts[index])
     return "".join(parts)
 
 
 def _strip_outbound_control_blocks(
     text: Any,
     *,
+    enabled: bool = True,
     preserve_private_tts_tokens: bool = False,
     allowed_private_tts_tokens: set[str] | None = None,
 ) -> str:
     source_text = str(text or "")
+    if not enabled:
+        return source_text
     had_photo_sentinel = bool(_PHOTO_TOOL_SILENT_SENTINEL_PATTERN.search(source_text))
     original = source_text.replace("\r\n", "\n").replace("\r", "\n")
     original = re.sub(
@@ -884,12 +877,11 @@ def _strip_outbound_control_blocks(
         segment = _strip_history_media_markers(parts[index], preserve_whitespace=True)
         segment = strip_own_tags(
             segment,
-            enabled_flags={"enable_tts_enhancement"},
             preserve_code_spans=False,
         )
         segment = _strip_personality_sync_blocks(segment)
         segment = _strip_group_member_safety_markers(segment)
-        parts[index] = _strip_history_media_markers(segment, preserve_whitespace=True)
+        parts[index] = segment
     normalized = "".join(parts)
     for marker, token in protected.items():
         normalized = normalized.replace(marker, token)

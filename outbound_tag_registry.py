@@ -19,42 +19,62 @@ class OwnTag:
     pattern: re.Pattern[str]
     truncated: re.Pattern[str] | None = None
     escaped: re.Pattern[str] | None = None
-    feature_flag: str | None = None
 
 
-def _block(name: str, owner: str, *, aliases: tuple[str, ...] = (), feature_flag: str | None = None) -> OwnTag:
+_NONSTANDARD_SELF_CLOSING_TAG_PATTERN = re.compile(
+    r"<\s*(?:pc_[A-Za-z0-9_-]+|private_companion_[A-Za-z0-9_-]+)(?:\s+[^<>\r\n]{0,160})?/\s*>",
+    re.IGNORECASE,
+)
+_ESCAPED_NONSTANDARD_SELF_CLOSING_TAG_PATTERN = re.compile(
+    r"&lt;\s*(?:pc_[A-Za-z0-9_-]+|private_companion_[A-Za-z0-9_-]+)(?:\s+[^&\r\n]{0,160})?/\s*&gt;",
+    re.IGNORECASE,
+)
+
+
+def _block(
+    name: str,
+    owner: Literal["plugin", "astrbot_core", "model_reasoning"],
+    *,
+    aliases: tuple[str, ...] = (),
+) -> OwnTag:
     names = "|".join(re.escape(item) for item in (name, *aliases))
     flags = re.IGNORECASE | re.DOTALL
-    malformed = (
-        re.compile(rf"<\s*(?:{names})[^>]*</\s*(?:{names}|response)\s*>", flags)
-        if name in {"thinking", "think", "reasoning"}
-        else None
-    )
-    truncated = rf"<\s*(?:{names})\b[^>]*>[\s\S]*$"
-    if malformed is not None:
-        truncated = rf"(?:{truncated}|{malformed.pattern})"
+    pattern = rf"<\s*(?:{names})\b[^<>]*>[\s\S]*?<\s*/\s*(?:{names})\s*>"
+    escaped = rf"&lt;\s*(?:{names})\b[^&]*&gt;[\s\S]*?&lt;\s*/\s*(?:{names})\s*&gt;"
+    if owner == "model_reasoning":
+        pattern += rf"|<\s*(?:{names})\b[^<>]*</\s*(?:{names}|response)\s*>"
+        escaped += rf"|&lt;\s*(?:{names})\b[^&]*&lt;/\s*(?:{names}|response)\s*&gt;"
+    truncated = None
+    if name in {"personality_sync", "pc_member_safety"}:
+        truncated = re.compile(rf"<\s*(?:{names})\b[^<>]*>[\s\S]*$", flags)
+        escaped += rf"|&lt;\s*(?:{names})\b[\s\S]*$"
     return OwnTag(
         name=name,
-        owner=owner,  # type: ignore[arg-type]
+        owner=owner,
         kind="block",
-        pattern=re.compile(rf"<\s*(?:{names})\b[^>]*>[\s\S]*?<\s*/\s*(?:{names})\s*>", flags),
-        truncated=re.compile(truncated, flags),
-        escaped=re.compile(rf"&lt;\s*(?:{names})\b[^&]*&gt;[\s\S]*?&lt;\s*/\s*(?:{names})\s*&gt;|&lt;\s*(?:{names})\b[^&]*$", flags),
-        feature_flag=feature_flag,
+        pattern=re.compile(pattern, flags),
+        truncated=truncated,
+        escaped=re.compile(escaped, flags),
     )
 
 
-def _literal(name: str, pattern: str, *, feature_flag: str | None = None) -> OwnTag:
+def _literal(name: str, pattern: str) -> OwnTag:
     return OwnTag(
         name=name,
         owner="plugin",
         kind="sentinel",
         pattern=re.compile(pattern, re.IGNORECASE | re.DOTALL),
-        feature_flag=feature_flag,
     )
 
 
 OWN_TAGS: tuple[OwnTag, ...] = (
+    OwnTag(
+        name="plugin_self_closing",
+        owner="plugin",
+        kind="self_closing",
+        pattern=_NONSTANDARD_SELF_CLOSING_TAG_PATTERN,
+        escaped=_ESCAPED_NONSTANDARD_SELF_CLOSING_TAG_PATTERN,
+    ),
     _block("timer", "plugin"),
     _block("tts", "plugin", aliases=("pc_tts",)),
     _block("pc_reaction_expression", "plugin"),
@@ -70,30 +90,25 @@ OWN_TAGS: tuple[OwnTag, ...] = (
     _literal("tts_block", r"\[\[TTSBLOCK:[^\]]*\]\]"),
     _literal("pc_tts_sentinel", r"\[\[PCTTS:[^\]]*\]\]"),
     _literal("photo_silent", r"\[\[PC_PHOTO_SENT_NO_FOLLOWUP\]\]"),
-    _literal("history_media", r"<\s*pc[_-]?history[_-]?media(?:[_-]?(?:records?|images?))?\b[^>]*(?:>|/\s*>)|&lt;\s*/?\s*pc[_-]?history[_-]?media[^&]*&gt;"),
     _literal("split", r"<<PRIVATE_COMPANION_SPLIT>>"),
-    _literal("qq_anchor", r"(?:\[QQ:[^\]\r\n]{1,160}\]|(?<!\w)QQ:[^\s\r\n]{1,160})"),
+    _literal("qq_anchor", r"(?:\[QQ[:：]\d{5,12}\]|(?<!\w)QQ[:：]\d{5,12}(?!\d))"),
     _literal("legacy_marker", r"&&[A-Za-z_][A-Za-z0-9_]*&&"),
     _literal("personality_sync_comment", r"<!--\s*private_companion_personality_sync_v\d+\s*-->|<!--\s*private_companion_personality_sync_v\d+[\s\S]*$"),
-    _literal("emotion_control", r"(?<![\w`])\[(?:affectionate|shy|happy|sad|angry|calm|excited|surprised|nervous|scared|worried|upset|frustrated|embarrassed|disgusted|moved|proud|relaxed|grateful|confident|curious|confused|nostalgic|sleepy|thoughtful|yawning|comforting|warm|softly|whispering|laughing|chuckling|sighing)\]", feature_flag="enable_tts_enhancement"),
+    _literal("emotion_control", r"(?<![\w`])\[(?:affectionate|shy|happy|sad|angry|calm|excited|surprised|nervous|scared|worried|upset|frustrated|embarrassed|disgusted|moved|proud|relaxed|grateful|confident|curious|confused|nostalgic|sleepy|thoughtful|yawning|comforting|warm|softly|whispering|laughing|chuckling|sighing)\]"),
 )
 
 
 def strip_own_tags(
     text: str,
     *,
-    enabled_flags: set[str] | None = None,
     preserve_code_spans: bool = True,
 ) -> str:
     """Remove registered literal tags while leaving Markdown code examples intact."""
     value = str(text or "")
-    enabled = enabled_flags or set()
     parts = re.split(r"(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\r\n]+`)", value) if preserve_code_spans else [value]
     for index in range(0, len(parts), 2):
         segment = parts[index]
         for tag in OWN_TAGS:
-            if tag.feature_flag and tag.feature_flag not in enabled:
-                continue
             replacement = " " if tag.name == "split" else ""
             segment = tag.pattern.sub(replacement, segment)
             if tag.truncated is not None:
@@ -109,7 +124,5 @@ REGISTERED_TAG_NAMES = frozenset(
     for tag in OWN_TAGS
 ) | frozenset({
     "pc_tts",
-    "pc_history_media",
-    "pc_history_media_records",
 })
 

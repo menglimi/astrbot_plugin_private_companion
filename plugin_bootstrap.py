@@ -1596,6 +1596,11 @@ def _initialize_review_and_group_config(self: Any, c: Any) -> None:
         "enable_passive_response_review",
         legacy_response_review_enabled,
     )
+    self.enable_framework_error_leak_guard = self._cfg_bool(
+        c,
+        "enable_framework_error_leak_guard",
+        True,
+    )
     # Runtime alias for older integrations. It no longer gates proactive review.
     self.enable_response_self_review = self.enable_passive_response_review
     self.enable_proactive_message_review = self._cfg_bool(

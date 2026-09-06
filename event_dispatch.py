@@ -3140,6 +3140,8 @@ class EventDispatchMixin:
         return self._resolve_quote_message_id(event, scene_name="group_reply", text_or_chain=text_or_chain)
 
     def _strip_internal_identity_anchors(self, text: str) -> str:
+        if not bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)):
+            return str(text or "")
         cleaned = str(text or "")
         cleaned = re.sub(r"\[QQ:\d{5,12}\]", "", cleaned)
         cleaned = re.sub(r"(?<![\w])QQ[:：]\d{5,12}", "", cleaned)
@@ -5580,7 +5582,7 @@ class EventDispatchMixin:
 
     def _suppress_outbound_reply(
         self,
-        event: Any,
+        event: AstrMessageEvent,
         *,
         source: str,
         reason: str,
@@ -5594,8 +5596,8 @@ class EventDispatchMixin:
         original = ""
         if result is not None:
             original = "\n".join(
-                str(getattr(component, "text", "") or "")
-                for component in (getattr(result, "chain", []) or [])
+                component.text
+                for component in result.chain
                 if isinstance(component, Plain)
             ).strip()
         if replacement_text is not None:
@@ -5605,25 +5607,20 @@ class EventDispatchMixin:
         else:
             event.set_result(self._build_result_from_chain([]))
         assistant = getattr(event, "_private_companion_official_assistant_message", None)
-        if replacement_text is None and assistant is not None and getattr(assistant, "role", "assistant") == "assistant":
-            try:
-                assistant.content = [TextPart(text=history_note or f"[本轮未发送：{reason}]")]
-                assistant.tool_calls = None
-                assistant.tool_call_id = None
-                assistant._no_save = False
-            except Exception:
-                pass
+        if replacement_text is None and assistant is not None:
+            assistant.content = [TextPart(text=history_note or f"[本轮未发送：{reason}]")]
+            assistant.tool_calls = None
+            assistant.tool_call_id = None
+            assistant._no_save = False
         setattr(event, "_private_companion_outbound_suppressed", True)
-        recorder = getattr(self, "_record_passive_no_reply", None)
-        if callable(recorder):
-            recorder(
-                event,
-                source=source,
-                reason=reason,
-                detail=detail,
-                reply_preview=_redact_outbound_secrets(original)[:160],
-                level=level,
-            )
+        self._record_passive_no_reply(
+            event,
+            source=source,
+            reason=reason,
+            detail=detail,
+            reply_preview=_redact_outbound_secrets(original)[:160],
+            level=level,
+        )
 
     def _build_segmented_result_from_chain(
         self,

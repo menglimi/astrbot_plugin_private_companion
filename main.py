@@ -1679,6 +1679,8 @@ _PROACTIVE_ONLY_TEMP_UNLOCK_RELATED = {
 
 def _strip_chain_plain_thinking(owner: Any, chain: list[Any]) -> None:
     """Clean registered internal tags from all Plain components as one span."""
+    if not bool(runtime_persona_setting(owner, "enable_framework_error_leak_guard", True)):
+        return
     plain_components = [(i, comp) for i, comp in enumerate(chain) if isinstance(comp, Plain)]
     if not plain_components:
         return
@@ -9342,7 +9344,7 @@ class PrivateCompanionPlugin(
             or not bool(getattr(event, "_private_companion_member_safety_hidden_marker_expected", False))
         ):
             logger.warning(
-                "已清理未授权的群成员风控隐性标签，未计数: session=%s",
+                "解析到未授权的群成员风控隐性标签，未计数: session=%s",
                 _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
             )
             return
@@ -10302,6 +10304,8 @@ class PrivateCompanionPlugin(
             return
         if self._proactive_only_blocks_passive_event(event, "llm_request"):
             return
+        if not bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)):
+            return
         result = event.get_result()
         chain = list(getattr(result, "chain", []) or []) if result is not None else []
         if not chain:
@@ -10344,6 +10348,8 @@ class PrivateCompanionPlugin(
     ):
         """最后一环清理，防止后续 TTS/分段钩子重新带出内部标签。"""
         if self is None or not bool(getattr(self, "enabled", False)):
+            return
+        if not bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)):
             return
         result = event.get_result()
         chain = list(getattr(result, "chain", []) or []) if result is not None else []
@@ -11094,18 +11100,7 @@ class PrivateCompanionPlugin(
             str(getattr(event, "_private_companion_external_proactive_source", "") or "")
             == "proactive_chat"
         )
-        # Strip reasoning/thinking chain and internal control markers (e.g.
-        # [[PC_PHOTO_SENT_NO_FOLLOWUP]]) from ALL Plain text joined together,
-        # BEFORE any segmented-scope early return below, because:
-        #   1. The thinking chain can be split across multiple Plain components
-        #      and per-component regex matching would fail.
-        #   2. Passive replies in proactive_only mode (e.g. "来张表情包")
-        #      would otherwise skip the strip via the segmented_scope early
-        #      return, leaking thinking/control content outbound.
-        #   3. `_strip_internal_message_blocks` already handles
-        #      [[PC_PHOTO_SENT_NO_FOLLOWUP]] and other markers, but only
-        #      `_strip_chain_plain_thinking` joins all Plain components first,
-        #      which is necessary for reliable matching.
+        # Join Plain components so enabled tag cleanup can match split blocks.
         early_result = event.get_result()
         if early_result is not None:
             early_chain = list(getattr(early_result, "chain", []) or [])
@@ -11498,6 +11493,8 @@ class PrivateCompanionPlugin(
         return ""
 
     def _sanitize_segmented_plain_text(self, event: AstrMessageEvent, text: Any) -> str:
+        if not bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)):
+            return str(text or "")
         protected_tts_tokens = getattr(event, "_private_companion_tts_block_tokens", None)
         preserve_private_tts_tokens = (
             bool(runtime_persona_setting(self, 'enable_tts_enhancement', False))
@@ -11880,12 +11877,7 @@ class PrivateCompanionPlugin(
 
     def _segment_llm_reply_chain(self, event: AstrMessageEvent, chain: list[Any]) -> tuple[list[list[Any]], bool, str]:
         working_chain = list(chain or [])
-        # Strip reasoning/thinking chain from ALL Plain text joined together,
-        # because the thinking chain can be split across multiple Plain
-        # components (e.g. "  thinking" in one component, reasoning content
-        # in another, "  /response" in a third).  Per-component cleaning
-        # would fail since none of the fragments contain the complete
-        # opening+content+closing pattern.
+        # Apply the same configured cleanup before segmenting joined text.
         _strip_chain_plain_thinking(self, working_chain)
         reply_prefix = [comp for comp in working_chain if self._is_reply_component(comp)]
         content_chain = [comp for comp in working_chain if not self._is_reply_component(comp)]

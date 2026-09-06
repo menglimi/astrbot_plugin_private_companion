@@ -168,6 +168,8 @@ class TtsToolSanitizerMixin:
         return text
 
     def _clean_tool_plain_text_tts_markup(self, raw_text: Any) -> str:
+        if not bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)):
+            return str(raw_text or "")
         text = str(raw_text or "")
         if not text:
             return ""

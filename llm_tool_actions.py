@@ -1192,6 +1192,8 @@ class LlmToolActionsMixin:
 
     def _sanitize_photo_tool_caption(self, value: Any, *, limit: int = 120) -> str:
         """Keep synthesis and internal control cues out of visible image captions."""
+        if not bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)):
+            return _single_line(value, max(1, int(limit or 120)))
         cleaned = _strip_internal_message_blocks(str(value or ""))
         cleaned = re.sub(r"&&[A-Za-z_][A-Za-z0-9_ -]{0,31}&&", "", cleaned)
         cue_cleaner = getattr(self, "_strip_visible_tts_emotion_cues", None)

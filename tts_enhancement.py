@@ -1330,6 +1330,8 @@ class TtsEnhancementMixin:
 
     def _sanitize_orphan_tts_placeholders(self, text: str) -> str:
         """Remove private TTS placeholders that escaped their original event scope."""
+        if not bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)):
+            return str(text or "")
         source = str(text or "")
         if not source:
             return ""
@@ -3586,6 +3588,8 @@ TTS 朗读文本：
         event.set_result(self._build_result_from_chain(new_chain))
 
     async def _sanitize_outbound_tts_chain_without_event(self, chain: list[Any], *, umo: str = "") -> list[Any]:
+        if not bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)):
+            return chain
         if not chain:
             return chain
         changed = False

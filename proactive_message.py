@@ -5402,7 +5402,10 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         cleaned = self._sanitize_proactive_text(str(text or ""))
         if not cleaned:
             return ""
-        cleaned = _strip_internal_message_blocks(cleaned)
+        cleaned = _strip_internal_message_blocks(
+            cleaned,
+            enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)),
+        )
         cleaned = self._strip_parenthetical_stage_directions(cleaned)
         cleaned = re.sub(r"^(?:最终(?:聊天)?正文|正文|输出|回复)[:：]\s*", "", cleaned).strip()
         cleaned = re.sub(r"\s+", " ", cleaned).strip().strip('"').strip("'")
@@ -10716,6 +10719,8 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             return ""
         if self._is_proactive_delivery_receipt_text(source):
             return ""
+        if not bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)):
+            return _single_line(source, limit)
         placeholder_cleaner = getattr(self, "_sanitize_orphan_tts_placeholders", None)
         if callable(placeholder_cleaner):
             source = placeholder_cleaner(source)
@@ -18769,7 +18774,10 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         if not umo or not assistant_response:
             return False
         visible_assistant_response = sanitize_llm_segment_control_tokens(
-            _strip_outbound_control_blocks(assistant_response)
+            _strip_outbound_control_blocks(
+                assistant_response,
+                enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)),
+            )
         )
         if not visible_assistant_response:
             return False
@@ -18924,15 +18932,14 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
 
     def _sanitize_proactive_text(self, text: str) -> str:
         cleaned = str(text or "").strip()
-        # Strip reasoning/thinking chain content first, before any other sanitization
-        cleaned = _strip_internal_message_blocks(cleaned)
-        cleaned = re.sub(r"<img\b[^>]*>", "", cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r"</img>", "", cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r"<[^>\n]{0,200}>", "", cleaned)
+        cleaned = _strip_internal_message_blocks(
+            cleaned,
+            enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)),
+        )
         cleaned = cleaned.replace("[图片]", "").replace("【图片】", "")
         cleaned = cleaned.replace("（图片已送达）", "").replace("(图片已送达)", "")
         emotion_cleaner = getattr(self, "_strip_visible_tts_emotion_cues", None)
-        if callable(emotion_cleaner):
+        if bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)) and callable(emotion_cleaner):
             cleaned = emotion_cleaner(cleaned)
         identity_cleaner = getattr(self, "_strip_internal_identity_anchors", None)
         if callable(identity_cleaner):
