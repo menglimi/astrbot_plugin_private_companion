@@ -3492,7 +3492,7 @@ class ProactiveEngineMixin:
             near_term = [
                 item
                 for item in future
-                if _safe_float(item.get("window_start_at"), earliest_start) <= earliest_start + 90 * 60
+                if _safe_float(item.get("window_start_at"), earliest_start) <= earliest_start + 30 * 60
             ]
             selected = max(
                 near_term,
@@ -9201,6 +9201,8 @@ class ProactiveEngineMixin:
     ) -> dict[str, str]:
         current_item = self._proactive_current_agenda_item()
         current_text = self._format_plan_item_for_prompt(current_item)
+        if current_text.strip(" （）()") in {"", "暂无"}:
+            current_text = ""
         event_text = ""
         if isinstance(planned_event, dict):
             event_text = " ".join(
