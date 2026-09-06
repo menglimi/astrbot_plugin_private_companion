@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+from difflib import SequenceMatcher
 import inspect
 import json
 import os
@@ -5334,15 +5335,31 @@ Provider 规则：{emotion_rule}
                     authored_matches[0].group(0)
                 )
                 source_units = self._tts_full_scope_content_units(full_source)
+                authored_block = authored_matches[0].group(0)
+                authored_content = self._tts_full_scope_content_text(authored_block)
+                source_content = self._tts_full_scope_content_text(full_source)
+                has_control_cue = bool(
+                    FISH_AUDIO_S2_CUE_PATTERN.search(authored_block)
+                    or FISH_AUDIO_S1_CUE_PATTERN.search(authored_block)
+                )
+                compressed_coverage = (
+                    authored_units >= 6
+                    and source_units > authored_units
+                    and has_control_cue
+                    and SequenceMatcher(
+                        None,
+                        source_content,
+                        authored_content,
+                        autojunk=False,
+                    ).ratio()
+                    >= 0.7
+                )
                 if (
                     authored_units
                     and source_units
                     and (
                         authored_units >= max(6, int(source_units * 0.7))
-                        or (
-                            authored_units >= 6
-                            and source_units - authored_units <= 10
-                        )
+                        or compressed_coverage
                     )
                 ):
                     logger.info(
@@ -5427,9 +5444,8 @@ Provider 规则：{emotion_rule}
         return f"<tts>{full_source}</tts>", full_source
 
     @staticmethod
-    def _tts_full_scope_content_units(text: Any) -> int:
-        """Count readable content units of a full-scope spoken draft after
-        removing markup and FishAudio control cues, for coverage comparison."""
+    def _tts_full_scope_content_text(text: Any) -> str:
+        """Return readable full-scope text after removing markup and cues."""
         source = str(text or "")
         source = re.sub(
             r"</?(?:pc[_-]?tts|t{2,}s)\b[^>]*>",
@@ -5439,6 +5455,12 @@ Provider 规则：{emotion_rule}
         )
         source = FISH_AUDIO_S2_CUE_PATTERN.sub("", source)
         source = FISH_AUDIO_S1_CUE_PATTERN.sub("", source)
+        return source
+
+    @classmethod
+    def _tts_full_scope_content_units(cls, text: Any) -> int:
+        """Count readable content units of a full-scope spoken draft."""
+        source = cls._tts_full_scope_content_text(text)
         return len(
             re.findall(
                 r"[\u3040-\u30ff\u31f0-\u31ff\u4e00-\u9fffA-Za-z0-9]",
