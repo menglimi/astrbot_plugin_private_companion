@@ -13009,7 +13009,7 @@
       "reaction_expression_embedding_score_threshold": {
         "description": "表情语义相似度阈值",
         "type": "float",
-        "hint": "低于该相似度的素材不会获得语义加分。建议 0.35-0.55；过高可能漏掉隐含表达，过低会增加误召回。",
+        "hint": "最佳候选的相似度低于该值时，本轮不按向量排序而回退关键词匹配。语义加分按本轮相似度分布相对排序（最佳=满分，中位=0），因此该阈值只是兜底。建议 0.35-0.55。",
         "default": 0.42,
         "slider": {
           "min": 0,
@@ -13024,16 +13024,26 @@
       "reaction_expression_embedding_weight": {
         "description": "表情语义加权分",
         "type": "float",
-        "hint": "语义相似度在现有关键词、情绪和偏好排序中的软加分。建议 0.35-0.75，不会单独决定是否发送。",
-        "default": 0.55,
+        "hint": "向量领先时最佳候选获得的加分；此时关键词命中只在同簇内做微调（上限 0.5）。建议 1.0-2.0；低于 0.8 时关键词重新占主导。不会单独决定是否发送。",
+        "default": 1.5,
         "slider": {
           "min": 0,
-          "max": 1.5,
+          "max": 3,
           "step": 0.05
         },
         "condition": {
           "enable_reaction_expression_experiment": true,
           "reaction_expression_embedding_enabled": true
+        }
+      },
+      "reaction_expression_vision_verify_mode": {
+        "description": "发送前视觉复核表情包",
+        "type": "string",
+        "options": ["off", "embedding", "always"],
+        "hint": "发送前让视觉模型看一眼选中的表情包：embedding=仅当命中完全依赖向量相似度时复核；always=每次都复核；off=关闭。复核结果会随工具返回给聊天模型，不贴合则不发送。主动消息的低延迟路径不复核。",
+        "default": "embedding",
+        "condition": {
+          "enable_reaction_expression_experiment": true
         }
       },
       "reaction_expression_embedding_backfill_enabled": {

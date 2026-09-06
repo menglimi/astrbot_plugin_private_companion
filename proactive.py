@@ -3386,7 +3386,7 @@ class ProactiveMixin(UserRestGateMixin):
         context = self._random_proactive_impulse_context(user, now=now)
         if not bool(context.get("allowed")):
             return None
-        reason = self._choose_planned_reason()
+        reason, scheduled = self._draw_random_reason_slot(user, now=now, delay_hours=delay_hours)
         if bool(context.get("suggest_soft_reason")) and reason in {"check_in", "state_share"}:
             reason = "quiet_care"
         motive = self._choose_proactive_motive(reason, user)
@@ -3398,13 +3398,6 @@ class ProactiveMixin(UserRestGateMixin):
             motive=motive,
             planned_event=None,
         )
-        scheduled = self._sample_proactive_timestamp(
-            user,
-            now=now,
-            delay_hours=delay_hours,
-            reason=reason,
-        )
-        scheduled = self._move_timestamp_into_reason_window(scheduled, reason, user)
         topic = self._choose_proactive_topic(reason, user)
         emotion_adjustment = self._apply_emotion_to_planned_proactive(
             user,
@@ -3464,6 +3457,32 @@ class ProactiveMixin(UserRestGateMixin):
             impulse["salience"] = min(_safe_float(impulse.get("salience"), 0.4), 0.34)
             impulse["urgency"] = min(_safe_float(impulse.get("urgency"), 0.3), 0.22)
         return self._queue_proactive_impulse(user, impulse)
+
+    def _draw_random_reason_slot(
+        self,
+        user: dict[str, Any],
+        *,
+        now: float,
+        delay_hours: tuple[float, float],
+    ) -> tuple[str, float]:
+        """Pick a reason whose time window is open near the sampled slot.
+
+        Reasons are weighted blind to the clock; an evening draw of a daytime
+        reason (activity_share 10:00-18:30) would otherwise be pushed to the
+        next morning and silence the whole night. Redraw a few times and keep
+        the earliest slot.
+        """
+        horizon = now + max(1.0, _safe_float(delay_hours[1], 1.0, 0.05)) * 3600
+        best: tuple[str, float] | None = None
+        for _ in range(6):
+            reason = self._choose_planned_reason()
+            scheduled = self._sample_proactive_timestamp(user, now=now, delay_hours=delay_hours, reason=reason)
+            scheduled = self._move_timestamp_into_reason_window(scheduled, reason, user)
+            if best is None or scheduled < best[1]:
+                best = (reason, scheduled)
+            if scheduled <= horizon:
+                break
+        return best
 
     def _proactive_window_timezone(self) -> str:
         return (
@@ -3771,10 +3790,30 @@ class ProactiveMixin(UserRestGateMixin):
             for item in self._cleanup_proactive_impulses(user, now=now)
             if isinstance(item, dict) and str(item.get("state") or "queued") in {"queued", "deferred"}
         ]
-        if not active_impulses:
+        if self._random_impulse_slot_open(active_impulses, now=now, delay_hours=delay_hours):
             self._queue_random_proactive_impulse(user, now=now, delay_hours=delay_hours)
         if not self._materialize_best_proactive_impulse(user, now=now):
             self._clear_pending_proactive_plan(user)
+
+    @staticmethod
+    def _random_impulse_slot_open(
+        active_impulses: list[dict[str, Any]],
+        *,
+        now: float,
+        delay_hours: tuple[float, float] | None,
+    ) -> bool:
+        """True when nothing queued/deferred starts before the random-draw horizon.
+
+        Ritual greetings (noon/evening) are queued hours ahead; they must not
+        stop the engine from drawing an ordinary impulse for the gap before them.
+        """
+        high = _safe_float(delay_hours[1], 1.0, 0.05) if delay_hours else 1.0
+        horizon = now + max(0.5, high) * 3600
+        return not any(
+            _safe_float(item.get("window_start_at"), 0) <= horizon
+            for item in active_impulses
+            if isinstance(item, dict)
+        )
 
     def _promote_earlier_daily_greeting_event(
         self,

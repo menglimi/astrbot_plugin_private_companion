@@ -1402,9 +1402,9 @@ class LlmToolActionsMixin:
             return True
         if re.search(
             r"(?:把|将|给|帮我|麻烦)?(?:这张|那张|刚才的|上面的|改好的)?"
-            r"(?:图|图片|照片|成图).{0,8}(?:发|传|给|贴|丢)(?:出来|过来|给我|我)?"
+            r"(?:图|图片|照片|成图|表情包|表情|贴纸|反应图|梗图).{0,8}(?:发|传|给|贴|丢)(?:出来|过来|给我|我)?"
             r"|(?:发|传|给|贴|丢).{0,8}(?:这张|那张|刚才的|上面的|改好的)?"
-            r"(?:图|图片|照片|成图)",
+            r"(?:图|图片|照片|成图|表情包|表情|贴纸|反应图|梗图)",
             compact,
             flags=re.I,
         ):
@@ -1415,7 +1415,7 @@ class LlmToolActionsMixin:
         # image anchor, a recent-result anchor, and an actual send instruction.
         has_media_anchor = bool(
             re.search(
-                r"(?:图|图片|照片|成图|图像|画面|这张|那张|这一张|那一张)",
+                r"(?:图|图片|照片|成图|图像|画面|表情包|贴纸|反应图|梗图|这张|那张|这一张|那一张)",
                 compact,
                 flags=re.I,
             )
@@ -6471,6 +6471,7 @@ class LlmToolActionsMixin:
         snapshot_caption = "；".join(
             part
             for part in (
+                f"图片画面：{_single_line(lookup.get('description'), 200)}" if lookup.get("description") else "",
                 f"图库标签：{'、'.join(tags[:8])}" if tags else "",
                 f"表达需求：{need}" if need else "",
                 f"选图依据：{match_reason}" if match_reason else "",
@@ -6908,6 +6909,74 @@ class LlmToolActionsMixin:
         )
         return True
 
+    async def _reaction_expression_vision_verify(
+        self,
+        event: AstrMessageEvent,
+        library: Any,
+        lookup: dict[str, Any],
+        query_text: str,
+        lookup_context: str,
+    ) -> dict[str, Any] | None:
+        """Let a vision-capable model look at the chosen meme before it is sent.
+
+        Returns ``{"fit": bool, "description": str}`` or ``None`` when no
+        vision provider is usable (the caller then trusts the metadata match).
+        """
+        asset_id = _single_line(lookup.get("asset_id"), 64)
+        if not asset_id or library is None:
+            return None
+        # ponytail: in-memory per-asset description cache; persist into the catalog if restarts matter
+        cache = getattr(self, "_reaction_vision_description_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            setattr(self, "_reaction_vision_description_cache", cache)
+        umo = _single_line(getattr(event, "unified_msg_origin", ""), 160)
+        provider_id, provider_source, _prompt, provider = self._select_private_image_visual_provider(umo)
+        if provider is None or not self._can_run_llm_task(provider_id, task="reaction_vision_verify"):
+            return None
+        image = await asyncio.to_thread(library.get_analysis_image_data, asset_id, max_edge=512)
+        if not image or not image.get("data_url"):
+            return None
+        known = _single_line(cache.get(asset_id), 300)
+        prompt = (
+            "你是聊天机器人的眼睛。我准备用这张表情包回应下面的对话，请先看图再判断它是否贴合。\n"
+            f"检索需求：{query_text}\n"
+            + (f"对话语境：{lookup_context}\n" if lookup_context else "")
+            + (f"已知描述：{known}\n" if known else "")
+            + "只输出 JSON：{\"fit\": true/false, \"description\": \"一句话描述图里的内容和情绪（30字内）\", \"reason\": \"贴合或不贴合的原因（20字内）\"}"
+        )
+        started = time.time()
+        try:
+            result = await asyncio.wait_for(
+                provider.text_chat(prompt=prompt, image_urls=[image["data_url"]], max_tokens=120),
+                timeout=8.0,
+            )
+            raw_text = str(getattr(result, "completion_text", result) or "").strip()
+            payload = self._extract_json_payload(raw_text)
+            if not isinstance(payload, dict) or "fit" not in payload:
+                raise ValueError("vision verify returned no fit field")
+            self._record_llm_usage(
+                provider_id=provider_id, task="reaction_vision_verify", prompt=prompt,
+                completion=raw_text, resp=result, elapsed_ms=int((time.time() - started) * 1000),
+                success=True, budget_exempt=True,
+            )
+            self._clear_private_image_provider_failure(provider_id, provider_source)
+        except Exception as exc:
+            self._mark_private_image_provider_failure(provider_id, provider_source, exc, task="reaction_vision_verify")
+            logger.debug("表情包视觉复核失败: provider=%s error_type=%s", provider_id, type(exc).__name__)
+            return None
+        description = _single_line(payload.get("description"), 300)
+        if description:
+            cache[asset_id] = description
+        fit_value = payload.get("fit")
+        fit = fit_value if isinstance(fit_value, bool) else str(fit_value).strip().lower() in {"true", "1", "yes", "是"}
+        return {
+            "fit": fit,
+            "description": description or known,
+            "reason": _single_line(payload.get("reason"), 120),
+            "provider_id": provider_id,
+        }
+
     async def _pc_find_reaction_image_impl(
         self,
         event: AstrMessageEvent,
@@ -7251,6 +7320,49 @@ class LlmToolActionsMixin:
             match_basis=self._reaction_expression_match_basis(lookup),
         )
 
+        vision_review: dict[str, Any] | None = None
+        verify_mode = _single_line(
+            runtime_persona_setting(self, "reaction_expression_vision_verify_mode", "embedding"), 20
+        ).lower()
+        if send_image and not low_latency and (
+            verify_mode == "always"
+            or (verify_mode == "embedding" and lookup.get("match_basis") == "embedding")
+        ):
+            vision_review = await self._reaction_expression_vision_verify(
+                event, library, lookup, query_text, lookup_context
+            )
+            if vision_review is not None and not vision_review.get("fit"):
+                self._log_reaction_expression_event(
+                    event,
+                    stage="lookup",
+                    decision="miss",
+                    reason="vision_rejected",
+                    scope=scope,
+                    status="not_found",
+                    found=False,
+                    sent=False,
+                    image_id=lookup.get("image_id"),
+                    confidence=lookup.get("confidence"),
+                    cache_hit=cache_hit,
+                    latency_ms=lookup_latency_ms,
+                    match_basis=self._reaction_expression_match_basis(lookup),
+                )
+                return json.dumps(
+                    {
+                        "status": "not_found",
+                        "success": False,
+                        "found": False,
+                        "sent": False,
+                        "message": "候选表情包经视觉复核后不贴合当前语境，未发送",
+                        "image_description": _single_line(vision_review.get("description"), 300),
+                        "reason": _single_line(vision_review.get("reason"), 120),
+                        "cache_hit": cache_hit,
+                        "lookup_latency_ms": lookup_latency_ms,
+                        "must_not_claim_sent": True,
+                    },
+                    ensure_ascii=False,
+                )
+
         sent = False
         delivery: dict[str, Any] = {}
         visible_caption = self._sanitize_photo_tool_caption(caption, limit=120)
@@ -7286,6 +7398,7 @@ class LlmToolActionsMixin:
         snapshot_caption = "；".join(
             part
             for part in (
+                f"图片画面：{_single_line(lookup.get('description'), 200)}" if lookup.get("description") else "",
                 f"图库标签：{'、'.join(tags[:8])}" if tags else "",
                 f"表达需求：{need}" if need else "",
                 f"选图依据：{match_reason}" if match_reason else "",
@@ -7386,6 +7499,12 @@ class LlmToolActionsMixin:
             "need": need,
             "reason": match_reason,
             "confidence": _safe_float(lookup.get("confidence"), 0.0, 0.0, 1.0),
+            "image_description": _single_line(
+                (vision_review or {}).get("description")
+                or getattr(self, "_reaction_vision_description_cache", {}).get(_single_line(lookup.get("asset_id"), 64))
+                or lookup.get("description"),
+                300,
+            ),
             "delivery": _single_line(delivery.get("destination"), 40),
             "cache_hit": cache_hit,
             "lookup_latency_ms": lookup_latency_ms,
