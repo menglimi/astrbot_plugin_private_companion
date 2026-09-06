@@ -5337,7 +5337,13 @@ Provider 规则：{emotion_rule}
                 if (
                     authored_units
                     and source_units
-                    and authored_units >= max(6, int(source_units * 0.7))
+                    and (
+                        authored_units >= max(6, int(source_units * 0.7))
+                        or (
+                            authored_units >= 6
+                            and source_units - authored_units <= 10
+                        )
+                    )
                 ):
                     logger.info(
                         "TTS全量后处理保留模型完整语音稿: spoken_units=%s source_units=%s",
