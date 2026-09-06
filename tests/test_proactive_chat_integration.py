@@ -458,7 +458,7 @@ class ProactiveChatIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await plugin.bridge_proactive_chat_outbound(text_event)
 
         self.assertEqual([], text_event.result.chain)
-        self.assertTrue(text_event.stopped)
+        self.assertFalse(text_event.stopped)
 
     async def test_local_review_drop_produces_an_empty_send_chain(self):
         plugin = _plugin_harness()
@@ -481,7 +481,7 @@ class ProactiveChatIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await plugin.finalize_proactive_chat_outbound_bridge(event)
 
         self.assertEqual([], event.result.chain)
-        self.assertTrue(event.stopped)
+        self.assertFalse(event.stopped)
         self.assertEqual(0, plugin.data["users"]["10001"]["sent_today"])
 
 

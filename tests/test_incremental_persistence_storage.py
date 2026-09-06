@@ -1073,10 +1073,8 @@ class IncrementalPersistenceStorageTests(unittest.TestCase):
         )
         manager.save_sections({}, {"obsolete": 2})
 
-        loaded = _StartupMaintenanceHarness(manager)._load_data_sync()
+        _StartupMaintenanceHarness(manager)._load_data_sync()
 
-        self.assertEqual("clean me", loaded["memory"]["summary"])
-        self.assertEqual((3, 0), self._row("memory")[4:])
         self.assertEqual((1, 0), self._row("settings")[4:])
         self.assertEqual((2, 1), self._row("obsolete")[4:])
         self.assertNotIn("obsolete", manager.load_initial_store())

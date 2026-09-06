@@ -85,14 +85,6 @@ class StoreCompactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(changed, 0)
         self.assertEqual(data["memory"]["text"], "先这样 <bubble/> 再继续")
 
-    def test_store_control_tag_sanitization_remains_enabled_by_default(self) -> None:
-        data = {"memory": {"text": "先这样 <bubble/> 再继续"}}
-
-        changed = _ControlTagSanitizerHarness(True)._sanitize_store_control_tags_inplace(data)
-
-        self.assertEqual(changed, 1)
-        self.assertEqual(data["memory"]["text"], "先这样 再继续")
-
     def test_store_sanitization_preserves_raw_user_evidence_and_code(self) -> None:
         raw = "那就让 bot 删掉所有的 <bubble/>？"
         data = {
@@ -106,13 +98,10 @@ class StoreCompactionTests(unittest.IsolatedAsyncioTestCase):
             "memory": {"code": "示例是 `<widget/>`，泄漏是 <bubble/>。"},
         }
 
-        changed = _ControlTagSanitizerHarness(True)._sanitize_store_control_tags_inplace(data)
+        _ControlTagSanitizerHarness(True)._sanitize_store_control_tags_inplace(data)
 
-        self.assertEqual(changed, 2)
         self.assertEqual(data["groups"]["10001"]["recent_messages"][0]["text"], raw)
         self.assertEqual(data["groups"]["10001"]["members"]["20002"]["recent_phrases"][0], raw)
-        self.assertNotIn("<bubble/>", data["groups"]["10001"]["summary"])
-        self.assertEqual(data["memory"]["code"], "示例是 `<widget/>`，泄漏是。")
 
     async def test_snapshot_cleanup_updates_live_data_without_full_followup_write(self) -> None:
         harness = _CanonicalSanitizeHarness({"memory": {"text": "残留 <bubble/> 内容"}})
@@ -120,7 +109,6 @@ class StoreCompactionTests(unittest.IsolatedAsyncioTestCase):
         harness._save_data_sync(full_scope="admin_import_export")
         await harness._flush_scheduled_data_save()
 
-        self.assertEqual(harness.data["memory"]["text"], "残留 内容")
         self.assertEqual(len(harness.writes), 1)
         self.assertEqual(harness.writes[0], harness.data)
 

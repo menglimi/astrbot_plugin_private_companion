@@ -5798,7 +5798,7 @@ class ProactiveEngineMixin:
                 return _single_line(cleaner(text, limit=limit), limit)
             except Exception:
                 pass
-        return _single_line(_strip_internal_message_blocks(text), limit)
+        return _single_line(_strip_internal_message_blocks(text, enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True))), limit)
 
     def _proactive_audit_safe_note(self, note: Any, *, limit: int = 180) -> str:
         limit = max(1, int(limit or 1))

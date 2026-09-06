@@ -13,6 +13,12 @@ from datetime import date, datetime
 from typing import Any
 from urllib.parse import urlparse
 
+from .outbound_tag_registry import (
+    _ESCAPED_NONSTANDARD_SELF_CLOSING_TAG_PATTERN,
+    _NONSTANDARD_SELF_CLOSING_TAG_PATTERN,
+    strip_own_tags,
+)
+
 _today_key_timezone = ""
 
 _GROUP_MESSAGE_URL_PATTERN = re.compile(
@@ -644,79 +650,26 @@ def _strip_personality_sync_blocks(text: Any) -> str:
     return normalized
 
 
-def _strip_internal_message_blocks(text: Any) -> str:
-    original = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
-    normalized = original
-    normalized = _strip_personality_sync_blocks(normalized)
-    normalized = _strip_group_member_safety_markers(normalized)
-    # Strip reasoning/thinking chain content BEFORE _strip_history_media_markers,
-    # because that function strips <> brackets from tags, which would destroy
-    # the  thinking marking that these regexes need to match.
-    normalized = re.sub(r"<thinking[^>]*>.*?</thinking>", "", normalized, flags=re.IGNORECASE | re.DOTALL)
-    # Malformed HTML: <thinking content</thinking> (no > delimiter after tag name)
-    normalized = re.sub(r"<thinking[^>]*</thinking>", "", normalized, flags=re.IGNORECASE)
-    # HTML-style: <think...> ... </response|/think> or  /response|  /think
-    normalized = re.sub(
-        r"<think[^>]*>.*?(?:</?(?:response|think)\b[^>]*>|  /?response|  /think)",
-        "",
-        normalized,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    # Malformed HTML: <think content</response> (no > delimiter after tag name)
-    normalized = re.sub(
-        r"<think[^>]*</?(?:response|think)[^>]*>",
-        "",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    # DeepSeek R1 space-based multi-line:   thinking \n...\n</response> or  /response or  /think or  response
-    normalized = re.sub(
-        r"^[ \t]*thinking.*?(?:\n[ \t]*</response>|\n[ \t]*/\s*response|\n[ \t]*response|\n[ \t]*/\s*think)",
-        "",
-        normalized,
-        flags=re.IGNORECASE | re.MULTILINE | re.DOTALL,
-    )
-    # Mid-text (non-anchored) multi-line: matches the same pattern anywhere in the
-    # text, not just at the start of a line.  This handles cases where the thinking
-    # chain is preceded by other text on the same line (e.g. when the chain is
-    # constructed by joining Plain components with different content).
-    normalized = re.sub(
-        r"[ \t]{2,}thinking\b.*?(?:\n[ \t]*</response>|\n[ \t]*/\s*response|\n[ \t]*response|\n[ \t]*/\s*think)",
-        "",
-        normalized,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    # Same-line:   thinking...  /response or   thinking...  /think (closing on same line)
-    normalized = re.sub(
-        r"^[ \t]*thinking[^\n]*?(?:</?response[^>]*>|  /?response|  /think)",
-        "",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    # Mid-text (non-anchored) same-line: same pattern anywhere in the text.
-    normalized = re.sub(
-        r"[ \t]{2,}thinking\b[^\n]*?(?:</?response[^>]*>|  /?response|  /think)",
-        "",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    normalized = re.sub(r"<reasoning\b[^>]*>.*?</reasoning>", "", normalized, flags=re.IGNORECASE | re.DOTALL)
-    normalized = _strip_history_media_markers(normalized, preserve_whitespace=True)
-    normalized = re.sub(
-        rf"(?m)^[ \t]*{_PHOTO_TOOL_SILENT_SENTINEL_PATTERN.pattern}[ \t]*(?:\n|$)",
-        "",
-        normalized,
-        flags=_PHOTO_TOOL_SILENT_SENTINEL_PATTERN.flags | re.MULTILINE,
-    )
-    normalized = _PHOTO_TOOL_SILENT_SENTINEL_PATTERN.sub("", normalized)
-    normalized = re.sub(r"\[\[TTSBLOCK:[^\]]*\]\]", "", normalized)
-    normalized = re.sub(r"\[\[PCTTS:[^\]]*\]\]", "", normalized)
-    normalized = re.sub(r"<timer\b[^>]*>.*?</timer>", "", normalized, flags=re.IGNORECASE | re.DOTALL)
-    normalized = re.sub(r"<tts\b[^>]*>.*?</tts>", "", normalized, flags=re.IGNORECASE | re.DOTALL)
-    normalized = _strip_nonstandard_chat_control_tags(
-        normalized,
-        preserve_whitespace=True,
-    )
+def _strip_internal_message_blocks(
+    text: Any, *, enabled: bool = True, tts_enabled: bool = False
+) -> str:
+    """Remove registered internal blocks while preserving Markdown examples."""
+    source_text = str(text or "")
+    if not enabled:
+        return source_text
+    original = source_text.replace("\r\n", "\n").replace("\r", "\n")
+    parts = _MARKDOWN_CODE_SPAN_PATTERN.split(original)
+    for index in range(0, len(parts), 2):
+        segment = _strip_history_media_markers(parts[index], preserve_whitespace=True)
+        segment = strip_own_tags(
+            segment,
+            tts_enabled=tts_enabled,
+            preserve_code_spans=False,
+        )
+        segment = _strip_personality_sync_blocks(segment)
+        segment = _strip_group_member_safety_markers(segment)
+        parts[index] = segment
+    normalized = "".join(parts)
     if not original.startswith("\n"):
         normalized = normalized.lstrip("\n")
     if not original.endswith("\n"):
@@ -817,20 +770,6 @@ def _strip_history_media_markers(
     return normalized.strip()
 
 
-_CHAT_SELF_CLOSING_TAG_ALLOWLIST = (
-    r"br|image|img|video|audio|record|file|at|face|emoji|reply|tts|pc[_-]?tts|timer"
-)
-
-_NONSTANDARD_SELF_CLOSING_TAG_PATTERN = re.compile(
-    rf"<\s*(?!(?:{_CHAT_SELF_CLOSING_TAG_ALLOWLIST})\b)"
-    r"[A-Za-z][A-Za-z0-9_-]{0,31}(?:\s+[^<>\r\n]{0,160})?/\s*>",
-    re.IGNORECASE,
-)
-_ESCAPED_NONSTANDARD_SELF_CLOSING_TAG_PATTERN = re.compile(
-    rf"&lt;\s*(?!(?:{_CHAT_SELF_CLOSING_TAG_ALLOWLIST})\b)"
-    r"[A-Za-z][A-Za-z0-9_-]{0,31}(?:\s+[^&\r\n]{0,160})?/\s*&gt;",
-    re.IGNORECASE,
-)
 _MARKDOWN_CODE_SPAN_PATTERN = re.compile(
     r"(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\r\n]+`)",
     re.MULTILINE,
@@ -877,9 +816,10 @@ def _strip_group_member_safety_markers(text: Any) -> str:
 def _strip_nonstandard_chat_control_tags(
     text: Any,
     *,
+    tts_enabled: bool = False,
     preserve_whitespace: bool = False,
 ) -> str:
-    """Remove leaked pseudo-control tags such as <bubble/> without touching media blocks."""
+    """Remove plugin control tags and internal media metadata."""
     normalized = str(text or "")
     if not normalized:
         return ""
@@ -890,7 +830,8 @@ def _strip_nonstandard_chat_control_tags(
     normalized = _ESCAPED_HISTORY_MEDIA_MARKER_PATTERN.sub("", normalized)
     normalized = _NONSTANDARD_SELF_CLOSING_TAG_PATTERN.sub("", normalized)
     normalized = _ESCAPED_NONSTANDARD_SELF_CLOSING_TAG_PATTERN.sub("", normalized)
-    normalized = _LEAKED_CHAT_EMOTION_CONTROL_PATTERN.sub("", normalized)
+    if tts_enabled:
+        normalized = _LEAKED_CHAT_EMOTION_CONTROL_PATTERN.sub("", normalized)
     if not preserve_whitespace:
         normalized = re.sub(r"\s+([，,。！？!?；;：:、~～…])", r"\1", normalized)
         normalized = re.sub(r"([（(【\[])\s+", r"\1", normalized)
@@ -899,105 +840,66 @@ def _strip_nonstandard_chat_control_tags(
     return normalized
 
 
-def _strip_persisted_chat_control_tags(text: Any) -> str:
+def _strip_persisted_chat_control_tags(text: Any, *, tts_enabled: bool = False) -> str:
     """Clean leaked controls while preserving literal tags shown as Markdown code."""
     normalized = str(text or "")
     if not normalized:
         return ""
     parts = _MARKDOWN_CODE_SPAN_PATTERN.split(normalized)
     for index in range(0, len(parts), 2):
-        parts[index] = _strip_nonstandard_chat_control_tags(parts[index])
+        parts[index] = _strip_nonstandard_chat_control_tags(parts[index], tts_enabled=tts_enabled)
     return "".join(parts)
 
 
 def _strip_outbound_control_blocks(
     text: Any,
     *,
+    enabled: bool = True,
+    tts_enabled: bool = False,
     preserve_private_tts_tokens: bool = False,
     allowed_private_tts_tokens: set[str] | None = None,
 ) -> str:
-    original = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
-    normalized = original
-    normalized = _strip_personality_sync_blocks(normalized)
-    normalized = _strip_group_member_safety_markers(normalized)
-    # Strip reasoning/thinking chain content BEFORE _strip_history_media_markers,
-    # because that function strips <> brackets from tags, which would destroy
-    # the  thinking marking that these regexes need to match.
-    normalized = re.sub(r"<thinking[^>]*>.*?</thinking>", "", normalized, flags=re.IGNORECASE | re.DOTALL)
-    # Malformed HTML: <thinking content</thinking> (no > delimiter after tag name)
-    normalized = re.sub(r"<thinking[^>]*</thinking>", "", normalized, flags=re.IGNORECASE)
-    # HTML-style: <think...> ... </response|/think> or  /response|  /think
-    normalized = re.sub(
-        r"<think[^>]*>.*?(?:</?(?:response|think)\b[^>]*>|  /?response|  /think)",
-        "",
-        normalized,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    # Malformed HTML: <think content</response> (no > delimiter after tag name)
-    normalized = re.sub(
-        r"<think[^>]*</?(?:response|think)[^>]*>",
-        "",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    # DeepSeek R1 space-based multi-line:   thinking \n...\n</response> or  /response or  /think or  response
-    normalized = re.sub(
-        r"^[ \t]*thinking.*?(?:\n[ \t]*</response>|\n[ \t]*/\s*response|\n[ \t]*response|\n[ \t]*/\s*think)",
-        "",
-        normalized,
-        flags=re.IGNORECASE | re.MULTILINE | re.DOTALL,
-    )
-    # Mid-text (non-anchored) multi-line: matches the same pattern anywhere in the
-    # text, not just at the start of a line.
-    normalized = re.sub(
-        r"[ \t]{2,}thinking\b.*?(?:\n[ \t]*</response>|\n[ \t]*/\s*response|\n[ \t]*response|\n[ \t]*/\s*think)",
-        "",
-        normalized,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    # Same-line:   thinking...  /response or   thinking...  /think (closing on same line)
-    normalized = re.sub(
-        r"^[ \t]*thinking[^\n]*?(?:</?response[^>]*>|  /?response|  /think)",
-        "",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    # Mid-text (non-anchored) same-line: same pattern anywhere in the text.
-    normalized = re.sub(
-        r"[ \t]{2,}thinking\b[^\n]*?(?:</?response[^>]*>|  /?response|  /think)",
-        "",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    normalized = re.sub(r"<reasoning[^>]*>.*?</reasoning>", "", normalized, flags=re.IGNORECASE | re.DOTALL)
-    normalized = _strip_history_media_markers(normalized, preserve_whitespace=True)
-    normalized = re.sub(
+    source_text = str(text or "")
+    if not enabled:
+        return source_text
+    had_photo_sentinel = bool(_PHOTO_TOOL_SILENT_SENTINEL_PATTERN.search(source_text))
+    original = source_text.replace("\r\n", "\n").replace("\r", "\n")
+    original = re.sub(
         rf"(?m)^[ \t]*{_PHOTO_TOOL_SILENT_SENTINEL_PATTERN.pattern}[ \t]*(?:\n|$)",
         "",
-        normalized,
+        original,
         flags=_PHOTO_TOOL_SILENT_SENTINEL_PATTERN.flags | re.MULTILINE,
     )
-    normalized = _PHOTO_TOOL_SILENT_SENTINEL_PATTERN.sub("", normalized)
-    normalized = re.sub(r"\[\[TTSBLOCK:[^\]]*\]\]", "", normalized)
+    if had_photo_sentinel:
+        original = original.rstrip(" \t")
+    protected: dict[str, str] = {}
     if preserve_private_tts_tokens and allowed_private_tts_tokens:
-        allowed = {str(token) for token in allowed_private_tts_tokens if str(token)}
-
-        def _private_tts_repl(match: re.Match[str]) -> str:
-            token = str(match.group(1) or "")
-            return match.group(0) if token in allowed else ""
-
-        normalized = re.sub(r"\[\[PCTTS:([^\]]*)\]\]", _private_tts_repl, normalized)
-    elif not preserve_private_tts_tokens:
+        for index, token in enumerate(sorted(allowed_private_tts_tokens)):
+            marker = f"\x00PCTTS{index}\x00"
+            protected[marker] = f"[[PCTTS:{token}]]"
+            original = original.replace(protected[marker], marker)
+    parts = _MARKDOWN_CODE_SPAN_PATTERN.split(original)
+    for index in range(0, len(parts), 2):
+        segment = _strip_history_media_markers(parts[index], preserve_whitespace=True)
+        segment = strip_own_tags(
+            segment,
+            tts_enabled=tts_enabled,
+            preserve_code_spans=False,
+        )
+        segment = _strip_personality_sync_blocks(segment)
+        segment = _strip_group_member_safety_markers(segment)
+        parts[index] = segment
+    normalized = "".join(parts)
+    for marker, token in protected.items():
+        normalized = normalized.replace(marker, token)
+    if not preserve_private_tts_tokens:
         normalized = re.sub(r"\[\[PCTTS:[^\]]*\]\]", "", normalized)
-    normalized = re.sub(r"<timer\b[^>]*>.*?</timer>", "", normalized, flags=re.IGNORECASE | re.DOTALL)
-    normalized = _strip_nonstandard_chat_control_tags(
-        normalized,
-        preserve_whitespace=True,
-    )
     if not original.startswith("\n"):
         normalized = normalized.lstrip("\n")
     if not original.endswith("\n"):
         normalized = normalized.rstrip("\n")
+    if had_photo_sentinel:
+        normalized = normalized.rstrip()
     return normalized
 
 
