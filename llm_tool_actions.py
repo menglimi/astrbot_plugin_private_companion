@@ -1194,10 +1194,13 @@ class LlmToolActionsMixin:
         """Keep synthesis and internal control cues out of visible image captions."""
         if not bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)):
             return _single_line(value, max(1, int(limit or 120)))
-        cleaned = _strip_internal_message_blocks(str(value or ""))
+        cleaned = _strip_internal_message_blocks(
+            str(value or ""),
+            tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False)),
+        )
         cleaned = re.sub(r"&&[A-Za-z_][A-Za-z0-9_ -]{0,31}&&", "", cleaned)
         cue_cleaner = getattr(self, "_strip_visible_tts_emotion_cues", None)
-        if callable(cue_cleaner):
+        if bool(runtime_persona_setting(self, "enable_tts_enhancement", False)) and callable(cue_cleaner):
             cleaned = cue_cleaner(cleaned)
         return _single_line(cleaned, max(1, int(limit or 120)))
 
@@ -2159,7 +2162,6 @@ class LlmToolActionsMixin:
         known_names = {
             "pc_qzone_view_feed",
             "pc_qzone_publish_feed",
-            "pc_qzone_reply_my_comment",
             "pc_generate_photo",
             "pc_send_current_media",
             "pc_find_reaction_image",

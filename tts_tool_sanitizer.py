@@ -177,7 +177,9 @@ class TtsToolSanitizerMixin:
         # the same outbound control cleanup here so internal sentinels (such
         # as the photo-delivery marker) are never sent as visible text.
         cleaned_outbound = sanitize_llm_segment_control_tokens(
-            _strip_outbound_control_blocks(text)
+            _strip_outbound_control_blocks(
+                text, tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False))
+            )
         )
         if cleaned_outbound != text:
             logger.info(
@@ -188,7 +190,9 @@ class TtsToolSanitizerMixin:
             text = cleaned_outbound
         if not text:
             return ""
-        cleaned_control = _strip_nonstandard_chat_control_tags(text)
+        cleaned_control = _strip_nonstandard_chat_control_tags(
+            text, tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False))
+        )
         if cleaned_control != text:
             logger.info(
                 "已清理工具直发文本中的非标准控制标签: before=%s after=%s",

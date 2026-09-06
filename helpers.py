@@ -650,7 +650,9 @@ def _strip_personality_sync_blocks(text: Any) -> str:
     return normalized
 
 
-def _strip_internal_message_blocks(text: Any, *, enabled: bool = True) -> str:
+def _strip_internal_message_blocks(
+    text: Any, *, enabled: bool = True, tts_enabled: bool = False
+) -> str:
     """Remove registered internal blocks while preserving Markdown examples."""
     source_text = str(text or "")
     if not enabled:
@@ -661,6 +663,7 @@ def _strip_internal_message_blocks(text: Any, *, enabled: bool = True) -> str:
         segment = _strip_history_media_markers(parts[index], preserve_whitespace=True)
         segment = strip_own_tags(
             segment,
+            tts_enabled=tts_enabled,
             preserve_code_spans=False,
         )
         segment = _strip_personality_sync_blocks(segment)
@@ -813,6 +816,7 @@ def _strip_group_member_safety_markers(text: Any) -> str:
 def _strip_nonstandard_chat_control_tags(
     text: Any,
     *,
+    tts_enabled: bool = False,
     preserve_whitespace: bool = False,
 ) -> str:
     """Remove plugin control tags and internal media metadata."""
@@ -826,7 +830,8 @@ def _strip_nonstandard_chat_control_tags(
     normalized = _ESCAPED_HISTORY_MEDIA_MARKER_PATTERN.sub("", normalized)
     normalized = _NONSTANDARD_SELF_CLOSING_TAG_PATTERN.sub("", normalized)
     normalized = _ESCAPED_NONSTANDARD_SELF_CLOSING_TAG_PATTERN.sub("", normalized)
-    normalized = _LEAKED_CHAT_EMOTION_CONTROL_PATTERN.sub("", normalized)
+    if tts_enabled:
+        normalized = _LEAKED_CHAT_EMOTION_CONTROL_PATTERN.sub("", normalized)
     if not preserve_whitespace:
         normalized = re.sub(r"\s+([，,。！？!?；;：:、~～…])", r"\1", normalized)
         normalized = re.sub(r"([（(【\[])\s+", r"\1", normalized)
@@ -835,14 +840,14 @@ def _strip_nonstandard_chat_control_tags(
     return normalized
 
 
-def _strip_persisted_chat_control_tags(text: Any) -> str:
+def _strip_persisted_chat_control_tags(text: Any, *, tts_enabled: bool = False) -> str:
     """Clean leaked controls while preserving literal tags shown as Markdown code."""
     normalized = str(text or "")
     if not normalized:
         return ""
     parts = _MARKDOWN_CODE_SPAN_PATTERN.split(normalized)
     for index in range(0, len(parts), 2):
-        parts[index] = _strip_nonstandard_chat_control_tags(parts[index])
+        parts[index] = _strip_nonstandard_chat_control_tags(parts[index], tts_enabled=tts_enabled)
     return "".join(parts)
 
 
@@ -850,6 +855,7 @@ def _strip_outbound_control_blocks(
     text: Any,
     *,
     enabled: bool = True,
+    tts_enabled: bool = False,
     preserve_private_tts_tokens: bool = False,
     allowed_private_tts_tokens: set[str] | None = None,
 ) -> str:
@@ -877,6 +883,7 @@ def _strip_outbound_control_blocks(
         segment = _strip_history_media_markers(parts[index], preserve_whitespace=True)
         segment = strip_own_tags(
             segment,
+            tts_enabled=tts_enabled,
             preserve_code_spans=False,
         )
         segment = _strip_personality_sync_blocks(segment)

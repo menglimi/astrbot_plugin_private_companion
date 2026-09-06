@@ -101,6 +101,7 @@ OWN_TAGS: tuple[OwnTag, ...] = (
 def strip_own_tags(
     text: str,
     *,
+    tts_enabled: bool = False,
     preserve_code_spans: bool = True,
 ) -> str:
     """Remove registered literal tags while leaving Markdown code examples intact."""
@@ -109,6 +110,8 @@ def strip_own_tags(
     for index in range(0, len(parts), 2):
         segment = parts[index]
         for tag in OWN_TAGS:
+            if tag.name == "emotion_control" and not tts_enabled:
+                continue
             replacement = " " if tag.name == "split" else ""
             segment = tag.pattern.sub(replacement, segment)
             if tag.truncated is not None:
@@ -117,12 +120,3 @@ def strip_own_tags(
                 segment = tag.escaped.sub("", segment)
         parts[index] = segment
     return "".join(parts)
-
-
-REGISTERED_TAG_NAMES = frozenset(
-    tag.name
-    for tag in OWN_TAGS
-) | frozenset({
-    "pc_tts",
-})
-

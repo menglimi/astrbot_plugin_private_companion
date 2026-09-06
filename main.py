@@ -1687,7 +1687,10 @@ def _strip_chain_plain_thinking(owner: Any, chain: list[Any]) -> None:
     all_text = "".join(str(getattr(comp, "text", "") or "") for _, comp in plain_components)
     split_marker_token = "\x00PRIVATE_COMPANION_SPLIT\x00"
     all_text = all_text.replace(LLM_SEGMENT_MARKER, split_marker_token)
-    cleaned = _strip_internal_message_blocks(all_text)
+    cleaned = _strip_internal_message_blocks(
+        all_text,
+        tts_enabled=bool(runtime_persona_setting(owner, "enable_tts_enhancement", False)),
+    )
     cleaned = cleaned.replace(split_marker_token, LLM_SEGMENT_MARKER)
     if not all_text.startswith("\n"):
         cleaned = cleaned.lstrip("\n")
@@ -10290,14 +10293,6 @@ class PrivateCompanionPlugin(
 
     @filter.on_decorating_result()
     @_multi_persona_event_context
-    async def suppress_group_llm_reply_block_before_send(self, event: AstrMessageEvent, *args, **kwargs):
-        """群级 LLM 熔断的发送前兜底。"""
-        if self is None or not self.enabled:
-            return
-        self._stop_group_llm_reply_if_blocked(event, source="decorating_result")
-
-    @filter.on_decorating_result()
-    @_multi_persona_event_context
     async def strip_outbound_control_blocks_before_send(self, event: AstrMessageEvent, *args, **kwargs):
         """发送前兜底清理内部控制块，避免 timer/TTSBLOCK 泄漏到聊天。"""
         if self is None or not self.enabled:
@@ -10323,6 +10318,7 @@ class PrivateCompanionPlugin(
             original = str(getattr(comp, "text", "") or "")
             cleaned = _strip_outbound_control_blocks(
                 original,
+                tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False)),
                 preserve_private_tts_tokens=preserve_private_tts_tokens,
                 allowed_private_tts_tokens=set(protected_tts_tokens.keys()) if isinstance(protected_tts_tokens, dict) else None,
             )
@@ -10370,6 +10366,7 @@ class PrivateCompanionPlugin(
             original = str(getattr(component, "text", "") or "")
             cleaned = _strip_outbound_control_blocks(
                 original,
+                tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False)),
                 preserve_private_tts_tokens=preserve_private_tts_tokens,
                 allowed_private_tts_tokens=(
                     set(protected_tts_tokens.keys())
@@ -10499,64 +10496,21 @@ class PrivateCompanionPlugin(
     @filter.on_decorating_result()
     @_multi_persona_event_context
     async def suppress_framework_error_leak_before_send(self, event: AstrMessageEvent, *args, **kwargs):
-        """清理本插件自身管线可能泄漏进正文的内容（复核评语、atrelay 回执、日志前缀）。不判断框架/模型文本。"""
+        """还原本插件复核评语泄漏的正文。"""
         if self is None or not self.enabled:
             return
         result = event.get_result()
         chain = list(getattr(result, "chain", []) or []) if result is not None else []
         if not chain or any(not isinstance(comp, Plain) for comp in chain):
             return
-        if self._restore_response_review_meta_leak_before_send(event, chain):
+        self._restore_response_review_meta_leak_before_send(event, chain)
+
+    @filter.on_decorating_result()
+    @_multi_persona_event_context
+    async def rewrite_atrelay_delivery_receipt_before_send(self, event: AstrMessageEvent, *args, **kwargs):
+        if self is None or not self.enabled:
             return
-        text = "\n".join(str(getattr(comp, "text", "") or "") for comp in chain).strip()
-        if re.fullmatch(
-            r"(?:\[\s*astrbot_plugin_private_companion(?:\.[A-Za-z_][\w]*)+:\d+\s*\]\s*)+",
-            text,
-            flags=re.IGNORECASE,
-        ):
-            cleaned = re.sub(
-                r"\[\s*astrbot_plugin_private_companion(?:\.[A-Za-z_][\w]*)+:\d+\s*\]\s*",
-                "",
-                text,
-                flags=re.IGNORECASE,
-            )
-            event.set_result(self._build_result_from_chain([Plain(cleaned)] if cleaned else []))
-            return
-        atrelay_result = getattr(event, "private_companion_atrelay_tool_result", None)
-        if not isinstance(atrelay_result, dict):
-            return
-        if _single_line(atrelay_result.get("status"), 24) not in {"success", "scheduled"}:
-            return
-        final_reply = _single_line(atrelay_result.get("final_reply"), 80) or "说过啦。"
-        reference = _single_line(atrelay_result.get("final_reply_reference"), 260)
-        rewriter = getattr(self, "_rewrite_reference_reply_with_persona", None)
-        if reference and callable(rewriter):
-            sender_id = ""
-            try:
-                resolver = getattr(self, "_private_user_id_for_event", None)
-                sender_id = resolver(event) if callable(resolver) else self._canonical_private_user_id(str(event.get_sender_id()))
-            except Exception:
-                try:
-                    sender_id = str(event.get_sender_id())
-                except Exception:
-                    sender_id = ""
-            users = self.data.get("users") if isinstance(getattr(self, "data", None), dict) else {}
-            user = users.get(sender_id) if sender_id and isinstance(users, dict) and isinstance(users.get(sender_id), dict) else {}
-            rewritten = await rewriter(
-                reference,
-                scene="拦截工具发送状态后改成自然聊天回执",
-                user=user,
-                event=event,
-                fallback_text=final_reply,
-                task="atrelay_receipt_rewrite",
-                max_chars=70,
-                allow_fallback=True,
-                preserve_status=True,
-            )
-            if rewritten:
-                final_reply = rewritten
-        if text and text != final_reply:
-            event.set_result(self._build_result_from_chain([Plain(final_reply)]))
+        await self._rewrite_atrelay_delivery_receipt_before_send(event)
 
     def _restore_response_review_meta_leak_before_send(self, event: AstrMessageEvent, chain: list[Any]) -> bool:
         if not chain or any(not isinstance(comp, Plain) for comp in chain):
@@ -11503,6 +11457,7 @@ class PrivateCompanionPlugin(
         )
         cleaned = _strip_outbound_control_blocks(
             text,
+            tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False)),
             preserve_private_tts_tokens=preserve_private_tts_tokens,
             allowed_private_tts_tokens=set(protected_tts_tokens.keys())
             if isinstance(protected_tts_tokens, dict) else None,
@@ -17561,8 +17516,6 @@ class PrivateCompanionPlugin(
     def _stop_group_llm_reply_if_blocked(self, event: AstrMessageEvent, *, source: str) -> bool:
         if self._is_private_companion_command_event(event):
             return False
-        if source == "decorating_result" and not bool(getattr(event, "_private_companion_group_llm_reply_request_blocked", False)):
-            return False
         item = self._group_llm_reply_block_for_event(event)
         if not item:
             return False
@@ -17574,24 +17527,16 @@ class PrivateCompanionPlugin(
             group_id or "-",
             _single_line(source, 40),
         )
-        try:
-            setattr(event, "_private_companion_group_llm_reply_blocked", True)
-            if source.startswith("llm_request"):
-                setattr(event, "_private_companion_group_llm_reply_request_blocked", True)
-        except Exception:
-            pass
-        if source == "decorating_result":
-            self._suppress_outbound_reply(
-                event,
-                source="群聊 LLM 熔断",
-                reason="本群所有 LLM 回复已关闭",
-                history_note="[本轮未发送：本群已关闭 LLM 回复]",
-                detail=f"group={group_id or '-'} source={_single_line(source, 40)}",
-                level="warn",
-            )
-        else:
-            event.set_result(self._build_result_from_chain([]))
-            event.stop_event()
+        setattr(event, "_private_companion_group_llm_reply_blocked", True)
+        self._record_passive_no_reply(
+            event,
+            source="群聊 LLM 熔断",
+            reason="本群所有 LLM 回复已关闭",
+            detail=f"group={group_id or '-'} source={_single_line(source, 40)}",
+            level="warn",
+        )
+        event.set_result(self._build_result_from_chain([]))
+        event.stop_event()
         return True
 
     def _passive_no_reply_event_text(self, event: AstrMessageEvent | None, *, limit: int = 180) -> str:

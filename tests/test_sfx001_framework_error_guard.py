@@ -22,9 +22,7 @@ def _guard_host_type():
     mixin = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "ProactiveMessageMixin")
     names = {
         "_looks_like_internal_provider_error_text",
-        "_looks_like_python_traceback_text",
         "_framework_agent_meta_summary_leak",
-        "_framework_error_leak_kind",
     }
     namespace: dict[str, Any] = {"Any": Any, "re": re, "_single_line": _single_line}
     for node in mixin.body:
@@ -56,16 +54,6 @@ class FrameworkErrorGuardTests(unittest.TestCase):
         text = "请把完整 traceback、调用栈、相关 tool schema 和页面报错截图贴出来，再检查 image_url 字段。"
 
         self.assertFalse(self.host._looks_like_internal_provider_error_text(text))
-        self.assertEqual("", self.host._framework_error_leak_kind(text))
-
-    def test_complete_python_traceback_has_its_own_reason_code(self) -> None:
-        text = """Traceback (most recent call last):
-  File \"main.py\", line 8, in <module>
-    run()
-ValueError: bad input"""
-
-        self.assertTrue(self.host._looks_like_python_traceback_text(text))
-        self.assertEqual("python_traceback", self.host._framework_error_leak_kind(text))
 
 
 

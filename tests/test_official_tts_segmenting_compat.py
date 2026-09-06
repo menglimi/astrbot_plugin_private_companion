@@ -688,7 +688,7 @@ class OfficialTtsSegmentingCompatibilityTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(should_defer)
 
-    async def test_plugin_strips_cross_plain_thinking_before_scope_early_returns(self) -> None:
+    async def test_plugin_preserves_unmarked_cross_plain_thinking_before_scope_early_returns(self) -> None:
         from astrbot_plugin_private_companion.main import PrivateCompanionPlugin
 
         cases = {

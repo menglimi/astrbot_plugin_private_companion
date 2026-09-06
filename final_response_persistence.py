@@ -1051,6 +1051,7 @@ class FinalResponsePersistenceMixin:
         visible_response_text = _strip_outbound_control_blocks(
             response_text,
             enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)),
+            tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False)),
         )
         message = getattr(event, "_private_companion_official_assistant_message", None)
         if (
@@ -1115,6 +1116,7 @@ class FinalResponsePersistenceMixin:
         visible_response_text = _strip_outbound_control_blocks(
             response_text,
             enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)),
+            tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False)),
         )
         conv_mgr = getattr(getattr(self, "context", None), "conversation_manager", None)
         if not umo or not visible_response_text or conv_mgr is None:
@@ -1365,6 +1367,7 @@ class FinalResponsePersistenceMixin:
             _strip_internal_message_blocks(
                 response_text,
                 enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)),
+                tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False)),
             ),
             500,
         )
@@ -1462,6 +1465,7 @@ class FinalResponsePersistenceMixin:
             _strip_internal_message_blocks(
                 sanitize_llm_segment_control_tokens(response_text),
                 enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)),
+                tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False)),
             ),
             500,
         )

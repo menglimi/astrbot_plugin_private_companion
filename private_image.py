@@ -1846,6 +1846,7 @@ class PrivateImageMixin:
                 _strip_internal_message_blocks(
                     caption,
                     enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)),
+                    tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False)),
                 ),
                 120,
             )
@@ -4866,6 +4867,7 @@ class PrivateImageMixin:
             _strip_internal_message_blocks(
                 raw_reply or "",
                 enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)),
+                tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False)),
             ),
             max_chars,
         )
@@ -4917,6 +4919,7 @@ class PrivateImageMixin:
             _strip_internal_message_blocks(
                 raw_reply or "",
                 enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)),
+                tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False)),
             ),
             300,
         )
@@ -5616,7 +5619,10 @@ class PrivateImageMixin:
         # history; remove plugin-only markers before it reaches that store.
         return _single_line(
             sanitize_llm_segment_control_tokens(
-                _strip_outbound_control_blocks(cleaned or reply)
+                _strip_outbound_control_blocks(
+                    cleaned or reply,
+                    tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False)),
+                )
             ),
             1200,
         )
