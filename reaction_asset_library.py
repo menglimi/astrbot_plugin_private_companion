@@ -1303,17 +1303,23 @@ class ReactionAssetLibrary:
                 matched_phrases.append(
                     "语义相近：" + "、".join(sorted(shared_semantic_clusters))
                 )
-            embedding_score = embedding_scores.get(item["id"], 0.0)
+            embedding_score = embedding_scores.get(item["id"])
             if embedding_led:
-                embedding_bonus = embedding_factor * max(
-                    -1.0, min(1.0, (embedding_score - embedding_median) / embedding_span)
+                # Assets whose vector is missing or stale (caption re-analysed,
+                # backfill pending) stay neutral rather than being demoted.
+                embedding_bonus = (
+                    embedding_factor * max(-1.0, min(1.0, (embedding_score - embedding_median) / embedding_span))
+                    if embedding_score is not None
+                    else 0.0
                 )
+                embedding_score = embedding_score or 0.0
                 # ponytail: once vectors lead, lexical hits only break ties inside
                 # the matched cluster. A stray tag on a wrong-category asset used
                 # to win outright through the 1.7 phrase bonus.
                 score = min(score, 0.5)
                 semantic_bonus = min(semantic_bonus, 0.3)
             else:
+                embedding_score = embedding_score or 0.0
                 embedding_bonus = (
                     embedding_factor * max(0.0, (embedding_score - embedding_threshold) / max(0.01, 1.0 - embedding_threshold))
                     if embedding_score >= embedding_threshold
