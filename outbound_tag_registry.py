@@ -91,7 +91,7 @@ OWN_TAGS: tuple[OwnTag, ...] = (
     _literal("pc_tts_sentinel", r"\[\[PCTTS:[^\]]*\]\]"),
     _literal("photo_silent", r"\[\[PC_PHOTO_SENT_NO_FOLLOWUP\]\]"),
     _literal("split", r"<<PRIVATE_COMPANION_SPLIT>>"),
-    _literal("qq_anchor", r"(?:\[QQ[:：]\d{5,12}\]|(?<!\w)QQ[:：]\d{5,12}(?!\d))"),
+    _literal("qq_anchor", r"\[QQ[:：]\d{5,12}\]"),
     _literal("legacy_marker", r"&&[A-Za-z_][A-Za-z0-9_]*&&"),
     _literal("personality_sync_comment", r"<!--\s*private_companion_personality_sync_v\d+\s*-->|<!--\s*private_companion_personality_sync_v\d+[\s\S]*$"),
     _literal("emotion_control", r"(?<![\w`])\[(?:affectionate|shy|happy|sad|angry|calm|excited|surprised|nervous|scared|worried|upset|frustrated|embarrassed|disgusted|moved|proud|relaxed|grateful|confident|curious|confused|nostalgic|sleepy|thoughtful|yawning|comforting|warm|softly|whispering|laughing|chuckling|sighing)\]"),
