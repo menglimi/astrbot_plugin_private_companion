@@ -7129,7 +7129,7 @@
       "enable_framework_error_leak_guard": {
         "description": "拦截框架异常文本外发",
         "type": "bool",
-        "hint": "默认开启。名称沿用历史，现在控制的是待发正文里内部标签的清理：插件自己的标签与哨兵、AstrBot 核心的 system_reminder、模型推理的成对 thinking/think/reasoning 块，Markdown 代码示例保留。覆盖普通回复、分段回复、主动消息、工具直发，以及写入助手历史的正文；[happy] 类情绪控制词还需要语音增强同时开启才清理。关闭后跳过上述清理、正文原样保留。原先的 framework_error/tool_loop_summary 关键词拦截已从代码中删除，不由本项控制，关闭本项也不会恢复。回复复核、业务静默、语音合成、分段解析和独立存储清洗各按自身配置执行。",
+        "hint": "默认开启。清理待发正文里的内部标签：插件自己的标签与哨兵、AstrBot 核心的 system_reminder、模型推理的成对 thinking/think/reasoning 块，Markdown 代码示例保留。覆盖普通回复、分段回复、主动消息、工具直发，以及写入助手历史的正文；[happy] 类情绪控制词还需要语音增强同时开启才清理。关闭后跳过上述清理、正文原样保留。回复复核、业务静默、语音合成、分段解析和独立存储清洗各按自身配置执行。",
         "default": true,
         "condition": {
           "enable_mai_style_integration": true
