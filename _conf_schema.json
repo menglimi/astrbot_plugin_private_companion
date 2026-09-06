@@ -3501,6 +3501,12 @@
     "default": "温柔日常,奇幻,恐怖,追逐,悬疑,荒诞,怀旧,暧昧春梦",
     "invisible": true
   },
+  "allow_generate_photo_on_reaction_turns": {
+    "description": "Legacy flat config: 表情表达授权轮保留生图工具",
+    "type": "bool",
+    "default": false,
+    "invisible": true
+  },
   "enable_photo_text_action": {
     "description": "Legacy flat config: 允许主动拍照/生图",
     "type": "bool",

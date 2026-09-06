@@ -25632,6 +25632,14 @@ class PrivateCompanionPageApi(
         if key in {"page_font_family", "page_theme"}:
             self._set_schema_compat_value(config, key, value)
             return
+        if key == "allow_generate_photo_on_reaction_turns":
+            # Keep the grouped schema entry and the hidden legacy flat key in
+            # sync: the runtime reads the flat attribute injected by AstrBot,
+            # while the visible config page renders the grouped entry.  A
+            # one-sided write leaves a stale flat False that silently disables
+            # the opt-in switch after a reload.
+            self._set_schema_compat_value(config, key, value)
+            return
         updated_existing = _set_into_config(config, key, value, allow_flat_fallback=False)
         updated_group = self._set_schema_group_config_value(config, key, value, create_group=True)
         if updated_existing or updated_group:

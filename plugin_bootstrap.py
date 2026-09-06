@@ -1398,6 +1398,20 @@ def _initialize_photo_and_expression_config(self: Any, c: Any) -> None:
         "enable_user_requested_photo_generation",
         True,
     )
+    self.allow_generate_photo_on_reaction_turns = self._cfg_bool(
+        c,
+        "allow_generate_photo_on_reaction_turns",
+        False,
+    )
+    # 自愈存量分叉：早期版本只写分组键，配置文件可能残留 AstrBot 注入的
+    # 顶层扁平默认 false。把当前生效值同步回所有同名位置，保证重启后
+    # 运行时属性与配置文件一致，避免“面板已开启但开关仍不生效”。
+    _set_into_config(
+        c,
+        "allow_generate_photo_on_reaction_turns",
+        self.allow_generate_photo_on_reaction_turns,
+        allow_flat_fallback=False,
+    )
     self.command_photo_generation_max_daily = self._cfg_int(c, "command_photo_generation_max_daily", -1, -1, 100)
     self.photo_generation_trace_max_size_kb = self._cfg_int(
         c,

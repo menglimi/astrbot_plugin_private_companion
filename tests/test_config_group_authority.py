@@ -847,6 +847,54 @@ class ConfigGroupAuthorityTests(unittest.TestCase):
                 )
             self.assertIn('placeholder: "-1（不限量）"', script)
 
+    def test_reaction_turn_photo_toggle_keeps_grouped_and_flat_values_in_sync(self):
+        schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+        # The opt-in key must carry both a visible grouped entry and a hidden
+        # legacy flat entry: the runtime reads the flat attribute injected by
+        # AstrBot while the config page renders the grouped entry.  A missing
+        # flat entry leaves a stale default false behind and silently disables
+        # the switch after a reload.
+        legacy = schema["allow_generate_photo_on_reaction_turns"]
+        grouped = schema["photo_action_config"]["items"][
+            "allow_generate_photo_on_reaction_turns"
+        ]
+        self.assertFalse(legacy["default"])
+        self.assertTrue(legacy["invisible"])
+        self.assertFalse(grouped["default"])
+        self.assertEqual(grouped["condition"]["enable_reaction_expression_experiment"], True)
+
+        with tempfile.TemporaryDirectory() as folder:
+            config_path = Path(folder) / "private_companion_config.json"
+            config = AstrBotConfig(str(config_path), schema=schema)
+            # Reproduce the stale fork observed in production: the grouped
+            # entry says True while the flat entry keeps the old default False.
+            config["photo_action_config"] = {
+                "allow_generate_photo_on_reaction_turns": True,
+            }
+            config["allow_generate_photo_on_reaction_turns"] = False
+            plugin = SimpleNamespace(config=config)
+            api = PrivateCompanionPageApi.__new__(PrivateCompanionPageApi)
+            api.plugin = plugin
+            api._schema_key_index_cache = None
+
+            api._apply_config_value("allow_generate_photo_on_reaction_turns", True)
+
+            self.assertTrue(
+                config["photo_action_config"]["allow_generate_photo_on_reaction_turns"]
+            )
+            self.assertTrue(config["allow_generate_photo_on_reaction_turns"])
+
+            # Runtime projection must follow the grouped value when the flat
+            # value is stale, via the bootstrap initializer's grouped-first
+            # read plus the self-healing sync.
+            self.assertTrue(
+                PrivateCompanionPlugin._cfg_bool(
+                    config,
+                    "allow_generate_photo_on_reaction_turns",
+                    False,
+                )
+            )
+
     def test_empty_photo_scope_selection_remains_explicitly_disabled(self):
         api = PrivateCompanionPageApi(None)
         self.assertEqual([], api._normalize_setting_value("photo_generation_allowed_scopes", []))
