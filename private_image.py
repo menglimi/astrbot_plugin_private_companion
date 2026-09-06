@@ -3296,7 +3296,7 @@ class PrivateImageMixin:
                     else await request_call
                 )
                 text = str(getattr(result, "completion_text", result) or "").strip()
-                cleaned_text = _single_line(_strip_internal_message_blocks(text), text_limit)
+                cleaned_text = _single_line(_strip_internal_message_blocks(text, enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True))), text_limit)
                 if not group_mode:
                     cleaned_text = self._private_image_downgrade_conflicting_ownership(cleaned_text)
                 if self._private_image_vision_summary_unusable(

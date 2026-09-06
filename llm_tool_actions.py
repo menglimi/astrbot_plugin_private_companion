@@ -1173,12 +1173,11 @@ class LlmToolActionsMixin:
             ),
         )
 
-    @staticmethod
-    def _photo_tool_followup_is_redundant(sent_caption: Any, followup_text: Any) -> bool:
+    def _photo_tool_followup_is_redundant(self, sent_caption: Any, followup_text: Any) -> bool:
         """Only catch clear repeats of a caption already delivered with the image."""
 
         def compact(value: Any) -> str:
-            text = _strip_internal_message_blocks(str(value or "")).lower()
+            text = _strip_internal_message_blocks(str(value or ""), enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True))).lower()
             return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", text)
 
         caption = compact(sent_caption)
@@ -1707,10 +1706,9 @@ class LlmToolActionsMixin:
         }
         return json.dumps(payload, ensure_ascii=False)
 
-    @staticmethod
-    def _reaction_expression_has_visible_text(value: Any) -> bool:
+    def _reaction_expression_has_visible_text(self, value: Any) -> bool:
         """Require actual reply text before an experimental image may be attached."""
-        text = _strip_internal_message_blocks(str(value or ""))
+        text = _strip_internal_message_blocks(str(value or ""), enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)))
         text = re.sub(r"<[^>]{1,240}>", "", text, flags=re.DOTALL)
         return bool(re.search(r"\w", text, flags=re.UNICODE))
 

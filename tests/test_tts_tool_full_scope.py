@@ -33,7 +33,7 @@ class _ToolHarness(TtsToolSanitizerMixin, TtsEnhancementMixin):
 class _ResponseHarness(TtsToolSanitizerMixin):
     enabled = True
     normalize_tts_enhancement_response = PrivateCompanionPlugin.normalize_tts_enhancement_response
-    _photo_tool_followup_is_redundant = staticmethod(LlmToolActionsMixin._photo_tool_followup_is_redundant)
+    _photo_tool_followup_is_redundant = LlmToolActionsMixin._photo_tool_followup_is_redundant
     _photo_tool_followup_chain_has_visible_content = staticmethod(
         PrivateCompanionPlugin._photo_tool_followup_chain_has_visible_content
     )

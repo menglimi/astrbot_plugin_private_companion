@@ -1188,7 +1188,7 @@ class EventDispatchMixin:
                 for comp, type_name in zip(chain, component_types)
                 if type_name == "plain"
             )
-        text = re.sub(r"\s+", " ", _strip_internal_message_blocks(text)).strip()
+        text = re.sub(r"\s+", " ", _strip_internal_message_blocks(text, enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)))).strip()
         if not text:
             return {}
         scope = _single_line(self._event_scope_key(event), 160) or "unknown"

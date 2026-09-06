@@ -19628,11 +19628,10 @@ class PrivateCompanionPageApi(
             return f"已删除规则组中的 {removed} 条规则"
         return "未知表达样本操作"
 
-    @classmethod
-    def _display_message_text(cls, value: Any, limit: int = 500) -> str:
+    def _display_message_text(self, value: Any, limit: int = 500) -> str:
         source = str(value or "").strip()
         source = source.strip("\"'“”‘’` ")
-        if cls._looks_like_internal_delivery_receipt(source):
+        if self._looks_like_internal_delivery_receipt(source):
             return ""
         if re.fullmatch(r"[.。…~～\s\"'“”‘’`-]{0,12}", source):
             return ""
@@ -19648,7 +19647,7 @@ class PrivateCompanionPageApi(
             kept = [unit.strip() for unit in units if unit.strip() and not re.search(r"[\u3040-\u30ff]", unit)]
             if kept and any(re.search(r"[\u4e00-\u9fff]", item) for item in kept):
                 source = "".join(kept)
-        return cls._single_line(_strip_internal_message_blocks(source), limit)
+        return self._single_line(_strip_internal_message_blocks(source, enabled=bool(runtime_persona_setting(self.plugin, "enable_framework_error_leak_guard", True))), limit)
 
     @staticmethod
     def _looks_like_internal_delivery_receipt(text: Any) -> bool:

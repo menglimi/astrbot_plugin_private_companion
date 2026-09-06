@@ -1333,7 +1333,7 @@ class UserMemoryMixin:
     def _update_expression_profile_from_message(self, user: dict[str, Any], text: str) -> None:
         if not runtime_persona_setting(self, "enable_expression_learning", True):
             return
-        cleaned = _single_line(_strip_internal_message_blocks(text), self._expression_sample_max_chars())
+        cleaned = _single_line(_strip_internal_message_blocks(text, enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True))), self._expression_sample_max_chars())
         if not cleaned:
             return
         if self._should_skip_expression_sample(cleaned):
@@ -1407,7 +1407,7 @@ class UserMemoryMixin:
     def _update_group_expression_profile_from_message(self, group: dict[str, Any], text: str) -> None:
         if not runtime_persona_setting(self, "enable_expression_learning", True):
             return
-        cleaned = _single_line(_strip_internal_message_blocks(text), self._expression_sample_max_chars())
+        cleaned = _single_line(_strip_internal_message_blocks(text, enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True))), self._expression_sample_max_chars())
         if not cleaned or self._should_skip_expression_sample(cleaned):
             return
         managed, scope_context = self._expression_formal_scope_for_owner(group, source_kind="group")
@@ -3629,7 +3629,7 @@ class UserMemoryMixin:
         response_text: Any,
         rule_details: dict[str, Any],
     ) -> list[str]:
-        cleaned = _single_line(_strip_internal_message_blocks(response_text), 500)
+        cleaned = _single_line(_strip_internal_message_blocks(response_text, enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True))), 500)
         if not cleaned or not isinstance(rule_details, dict):
             return []
         expected = {
@@ -4707,7 +4707,7 @@ class UserMemoryMixin:
                 "action": action,
                 "source": source,
                 "reason": _single_line(reason, 50),
-                "text": _single_line(_strip_internal_message_blocks(text), 120),
+                "text": _single_line(_strip_internal_message_blocks(text, enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True))), 120),
                 "motive": _single_line(motive, 100),
                 "summary": _single_line(action_summary, 120),
                 "status": "awaiting_reply",
@@ -4746,7 +4746,7 @@ class UserMemoryMixin:
         continuity["last_action_ts"] = _now_ts()
         continuity["last_action"] = action
         continuity["last_action_reason"] = _single_line(reason, 50)
-        cleaned_text = _single_line(_strip_internal_message_blocks(text), 120)
+        cleaned_text = _single_line(_strip_internal_message_blocks(text, enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True))), 120)
         meta_leak_checker = getattr(self, "_framework_agent_meta_summary_leak", None)
         continuity["last_action_text"] = "" if callable(meta_leak_checker) and meta_leak_checker(cleaned_text) else cleaned_text
 
@@ -4795,7 +4795,7 @@ class UserMemoryMixin:
             "semantic_kind": semantic_kind,
             "anchor_type": anchor_type,
             "semantic_score": semantic_score,
-            "text": _single_line(_strip_internal_message_blocks(text), 160),
+            "text": _single_line(_strip_internal_message_blocks(text, enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True))), 160),
             "motive": _single_line(motive, 120),
             "summary": _single_line(action_summary, 140),
             "feedback": "",
@@ -8296,7 +8296,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         if not isinstance(user, dict):
             return False
         check_now = _now_ts() if now is None else now
-        text = _single_line(_strip_internal_message_blocks(response_text), 1200)
+        text = _single_line(_strip_internal_message_blocks(response_text, enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True))), 1200)
         if not text:
             return False
         changed = False
@@ -9144,7 +9144,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         return True
 
     def _fallback_overlong_casual_reply(self, inbound_text: str, response_text: str) -> str:
-        cleaned = _strip_internal_message_blocks(str(response_text or "")).strip()
+        cleaned = _strip_internal_message_blocks(str(response_text or ""), enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True))).strip()
         parts = [part.strip() for part in re.split(r"(?<=[。！？!?…])\s*|\n+", cleaned) if part.strip()]
         for part in parts:
             if len(part) <= 90 and not re.search(r"(首先|其次|最后|建议你|你可以.*也可以|总结一下|以下是)", part):
@@ -9216,7 +9216,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
         flags: list[str] | None = None,
         user: dict[str, Any] | None = None,
     ) -> str:
-        cleaned = _strip_internal_message_blocks(str(response_text or "")).strip()
+        cleaned = _strip_internal_message_blocks(str(response_text or ""), enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True))).strip()
         if not cleaned:
             return ""
         active_flags = set(flags or [])
@@ -9227,7 +9227,7 @@ Character-specific bottom-line baseline (reference only; empty means use the con
             active_flags.add("false_no_reply_claim")
         if not active_flags.intersection({"invalid_current_time_anchor", "false_no_reply_claim"}):
             return ""
-        last_message = _single_line(_strip_internal_message_blocks(user.get("last_companion_message")), 260)
+        last_message = _single_line(_strip_internal_message_blocks(user.get("last_companion_message"), enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True))), 260)
         if (
             "false_no_reply_claim" in active_flags
             and self._compact_repeat_text(inbound_text) in {"", "？", "?", "啥", "什么", "shenme"}
@@ -9957,8 +9957,7 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
                 persona_id = ""
         return persona_id or "__single__"
 
-    @staticmethod
-    def _normalize_owner_exclusive_relationship_prompt(value: Any) -> str:
+    def _normalize_owner_exclusive_relationship_prompt(self, value: Any) -> str:
         if isinstance(value, (dict, list, tuple, set)):
             return ""
         text = unicodedata.normalize("NFC", str(value or ""))
@@ -9971,7 +9970,7 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
             flags=re.IGNORECASE,
         )
         lines = [
-            _single_line(_strip_internal_message_blocks(line), 480)
+            _single_line(_strip_internal_message_blocks(line, enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True))), 480)
             for line in text.split("\n")
         ]
         normalized = "\n".join(line for line in lines if line).strip()
@@ -10270,7 +10269,7 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
         }
         if compact not in short_reactions and inbound not in short_reactions:
             return None
-        last_message = _single_line(_strip_internal_message_blocks(user.get("last_companion_message")), 260)
+        last_message = _single_line(_strip_internal_message_blocks(user.get("last_companion_message"), enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True))), 260)
         if not last_message:
             return None
         last_at = _safe_float(user.get("last_companion_message_at"), 0) or _safe_float(user.get("last_sent"), 0)
@@ -10709,7 +10708,7 @@ bot_promises 只记录 Bot 明确承诺要提醒、记住、转述、发送或�
             return False, ""
         if self._inbound_explicitly_requests_repeat(inbound_text):
             return False, ""
-        visible = _single_line(_strip_internal_message_blocks(response_text), 500)
+        visible = _single_line(_strip_internal_message_blocks(response_text, enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True))), 500)
         last_message = _single_line(user.get("last_companion_message"), 500)
         if not visible or not last_message:
             return False, ""

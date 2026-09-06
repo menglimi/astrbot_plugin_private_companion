@@ -1205,7 +1205,9 @@ class TtsEnhancementMixin:
         return source
 
     def _sanitize_tts_visible_text(self, text: Any, *, max_chars: int = 800) -> str:
-        cleaned = _strip_history_media_markers(str(text or ""))
+        cleaned = str(text or "")
+        if bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)):
+            cleaned = _strip_history_media_markers(cleaned)
         cleaned = self._strip_any_tts_markup(cleaned)
         if bool(runtime_persona_setting(self, "enable_tts_enhancement", False)):
             cleaned = self._strip_visible_tts_emotion_cues(cleaned)
