@@ -103,7 +103,7 @@ from .dreaming import (
     recent_diary_tags,
     weighted_unique_fragment_sample,
 )
-from .helpers import _date_key, _now_ts, _safe_float, _safe_int, _single_line, _strip_internal_message_blocks, _today_key, normalize_legacy_tag_text
+from .helpers import _date_key, _now_ts, _safe_float, _safe_int, _single_line, _today_key, normalize_legacy_tag_text
 from .persona_config import runtime_persona_setting
 from .conversation_prompt_section import (
     PromptRenderMode,
@@ -702,14 +702,18 @@ class AtRelayMixin:
         logger.info("转述正文已 LLM 转译: before=%s after=%s", _single_line(original, 80), _single_line(cleaned, 120))
         return cleaned
 
-    @filter.on_llm_response()
-    async def compact_atrelay_tool_final_response(self, event: AstrMessageEvent, resp: LLMResponse, *args, **kwargs):
-        """转述工具已执行后，只保留一句自然短回执，避免模型补关系评价或复述正文。"""
-        if self is None or not self.enabled or resp is None:
-            return
-        result = getattr(event, "private_companion_atrelay_tool_result", None)
-        if not isinstance(result, dict) or _single_line(result.get("status"), 24) not in {"success", "scheduled"}:
-            return
+    @staticmethod
+    def _atrelay_text_is_delivery_receipt(text: str) -> bool:
+        """Match a whole delivery receipt, never a receipt embedded in a reply."""
+        return re.fullmatch(
+            r"\s*(?:(?:消息)?(?:已(?:经)?(?:成功)?发送(?:成功|完成|完毕)?|"
+            r"发送(?:成功|完成|完毕))|已(?:经)?(?:发送|发)给(?:用户|对方)|"
+            r"message\s*sent(?:\s+to\s+session\s+[^\s。！!?]+)?|sent)[。.!！?？\s]*",
+            text,
+            flags=re.IGNORECASE,
+        ) is not None
+
+    async def _atrelay_final_receipt_text(self, event: AstrMessageEvent, result: dict[str, Any]) -> str:
         final_reply = _single_line(result.get("final_reply"), 80) or "说过啦。"
         reference = _single_line(result.get("final_reply_reference"), 260)
         if reference:
@@ -731,29 +735,33 @@ class AtRelayMixin:
                 )
                 if rewritten:
                     final_reply = rewritten
-        text = str(getattr(resp, "completion_text", "") or "").strip()
-        sent_text = _single_line(result.get("sent_text"), 120)
-        if not text:
-            resp.completion_text = final_reply
+        return final_reply
+
+    @filter.on_llm_response()
+    async def compact_atrelay_tool_final_response(self, event: AstrMessageEvent, resp: LLMResponse, *args, **kwargs):
+        """仅把转述工具的完整投递回执改成自然短句，保留正常回复。"""
+        if self is None or not self.enabled or resp is None:
             return
-        compact = _single_line(_strip_internal_message_blocks(text), 240)
-        noisy_tokens = (
-            "估计", "应该挺", "你们关系", "关系真好", "算账", "结果是", "哈哈",
-            "我写", "我改", "语气", "氛围", "刚才", "顺手", "已经发送到",
-            "消息已发送到群", "已向", "工具", "参数",
-        )
-        should_compact = (
-            len(compact) > 28
-            or any(token in compact for token in noisy_tokens)
-            or bool(sent_text and sent_text in compact and compact != sent_text and len(compact) > len(sent_text) + 6)
-        )
-        if should_compact:
-            logger.info(
-                "转述工具回执已收敛: before=%s after=%s",
-                _single_line(compact, 160),
-                final_reply,
-            )
-            resp.completion_text = final_reply
+        result = getattr(event, "private_companion_atrelay_tool_result", None)
+        if not isinstance(result, dict) or _single_line(result.get("status"), 24) not in {"success", "scheduled"}:
+            return
+        text = str(getattr(resp, "completion_text", "") or "").strip()
+        if text and not self._atrelay_text_is_delivery_receipt(text):
+            return
+        resp.completion_text = await self._atrelay_final_receipt_text(event, result)
+
+    async def _rewrite_atrelay_delivery_receipt_before_send(self, event: AstrMessageEvent) -> None:
+        result = event.get_result()
+        if result is None or not result.chain or any(not isinstance(comp, Plain) for comp in result.chain):
+            return
+        text = "\n".join(comp.text for comp in result.chain).strip()
+        if not self._atrelay_text_is_delivery_receipt(text):
+            return
+        tool_result = getattr(event, "private_companion_atrelay_tool_result", None)
+        if not isinstance(tool_result, dict) or _single_line(tool_result.get("status"), 24) not in {"success", "scheduled"}:
+            return
+        final_reply = await self._atrelay_final_receipt_text(event, tool_result)
+        result.chain = [Plain(final_reply)]
 
     def _atrelay_sensitive_reason(self, text: str) -> str:
         cleaned = _single_line(text, 800)

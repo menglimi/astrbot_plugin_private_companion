@@ -1220,7 +1220,7 @@ class ForwardMessageMixin:
                 else:
                     result = await provider.text_chat(prompt=prompt, image_urls=image_urls, max_tokens=260)
                 text = str(getattr(result, "completion_text", result) or "").strip()
-                cleaned_text = _single_line(_strip_internal_message_blocks(text), 900)
+                cleaned_text = _single_line(_strip_internal_message_blocks(text, enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True))), 900)
                 if not cleaned_text:
                     empty_note = "合并消息识图模型返回空摘要"
                     self._record_llm_usage(
@@ -2216,7 +2216,7 @@ class ForwardMessageMixin:
             provider_id=provider_id,
             task="forward_message",
         )
-        return _strip_internal_message_blocks(result or "").strip()
+        return _strip_internal_message_blocks(result or "", enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True))).strip()
 
     async def _append_forward_message_context_to_request(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
         marker = "<!-- private_companion_forward_message_v1 -->"

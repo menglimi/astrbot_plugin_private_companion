@@ -14,7 +14,6 @@ def test_unmarked_general_result_is_not_resegmented():
     plugin = object.__new__(PrivateCompanionPlugin)
     plugin.enabled = True
     plugin.segmented_proactive_scope = "all_llm"
-    plugin.enable_framework_error_leak_guard = False
     plugin.enable_daily_case_review_experiment = False
     plugin._proactive_only_blocks_passive_event = lambda *_args: False
     plugin._feature_enabled_or_temp_unlocked = lambda _key: True

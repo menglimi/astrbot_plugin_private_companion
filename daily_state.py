@@ -2911,7 +2911,7 @@ class DailyStateMixin(DailyStateTickMixin):
             if signature == "ordinary_weather_topic":
                 return f"近期已经主动聊过天气" + (f"：{old_text}" if old_text else "")
             return f"近 {max(1, int(age // 60))} 分钟已发送相似主动" + (f"：{old_text}" if old_text else "")
-        last_message = _single_line(_strip_internal_message_blocks(user.get("last_companion_message")), 500)
+        last_message = _single_line(_strip_internal_message_blocks(user.get("last_companion_message"), enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True))), 500)
         # last_reply_at is inbound user activity, so it must never make an old
         # companion message look newly delivered.
         last_at = _safe_float(user.get("last_companion_message_at"), 0)

@@ -1206,9 +1206,12 @@ class TtsEnhancementMixin:
         return source
 
     def _sanitize_tts_visible_text(self, text: Any, *, max_chars: int = 800) -> str:
-        cleaned = _strip_history_media_markers(str(text or ""))
+        cleaned = str(text or "")
+        if bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)):
+            cleaned = _strip_history_media_markers(cleaned)
         cleaned = self._strip_any_tts_markup(cleaned)
-        cleaned = self._strip_visible_tts_emotion_cues(cleaned)
+        if bool(runtime_persona_setting(self, "enable_tts_enhancement", False)):
+            cleaned = self._strip_visible_tts_emotion_cues(cleaned)
         cleaned = re.sub(TTS_TAG_PATTERN, "", cleaned).strip()
         cleaned = re.sub(r"(?m)^\s*[>＞]\s*", "", cleaned).strip()
         previous = None
@@ -1331,10 +1334,14 @@ class TtsEnhancementMixin:
 
     def _sanitize_orphan_tts_placeholders(self, text: str) -> str:
         """Remove private TTS placeholders that escaped their original event scope."""
+        if not bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)):
+            return str(text or "")
         source = str(text or "")
         if not source:
             return ""
-        source = _strip_nonstandard_chat_control_tags(source)
+        source = _strip_nonstandard_chat_control_tags(
+            source, tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False))
+        )
         source = PRIVATE_TTS_BLOCK_TOKEN_PATTERN.sub("", source)
         source = TTS_BLOCK_TOKEN_PATTERN.sub("", source)
         source = re.sub(r"(?:^|[\s\r\n])([。！？!?，,、；;：:~～…]+)(?=\s|$)", " ", source)
@@ -3587,6 +3594,8 @@ TTS 朗读文本：
         event.set_result(self._build_result_from_chain(new_chain))
 
     async def _sanitize_outbound_tts_chain_without_event(self, chain: list[Any], *, umo: str = "") -> list[Any]:
+        if not bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)):
+            return chain
         if not chain:
             return chain
         changed = False
@@ -3606,8 +3615,10 @@ TTS 朗读文本：
                     cleaned_control = ""
             else:
                 cleaned_control = original
-            cleaned_control = _strip_nonstandard_chat_control_tags(cleaned_control)
-            cleaned_control = self._strip_visible_tts_emotion_cues(cleaned_control)
+            tts_enabled = bool(runtime_persona_setting(self, "enable_tts_enhancement", False))
+            cleaned_control = _strip_nonstandard_chat_control_tags(cleaned_control, tts_enabled=tts_enabled)
+            if tts_enabled:
+                cleaned_control = self._strip_visible_tts_emotion_cues(cleaned_control)
             has_tts_markup = re.search(r"</?(?:pc[_-]?tts|t{2,}s)\b", cleaned_control, flags=re.IGNORECASE)
             if not has_tts_markup:
                 if cleaned_control != original:

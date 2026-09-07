@@ -236,7 +236,7 @@ class GroupMemberSafetyMixin:
         self,
         text: Any,
     ) -> tuple[str, list[dict[str, Any]]]:
-        """Strictly parse valid risk markers while always removing marker-shaped control text."""
+        """Parse member-risk decisions and remove their tags when cleanup is enabled."""
         normalized = str(text or "")
         decisions: list[dict[str, Any]] = []
         pattern = re.compile(
@@ -279,7 +279,9 @@ class GroupMemberSafetyMixin:
                     "evidence": payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {},
                 }
             )
-        return _strip_group_member_safety_markers(normalized), decisions
+        if bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)):
+            normalized = _strip_group_member_safety_markers(normalized)
+        return normalized, decisions
 
     def _group_member_safety_has_prior_member_message(
         self,

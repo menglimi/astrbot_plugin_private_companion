@@ -1842,7 +1842,14 @@ class PrivateImageMixin:
         visible_caption = (
             caption_sanitizer(caption, limit=120)
             if callable(caption_sanitizer)
-            else _single_line(_strip_internal_message_blocks(caption), 120)
+            else _single_line(
+                _strip_internal_message_blocks(
+                    caption,
+                    enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)),
+                    tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False)),
+                ),
+                120,
+            )
         )
         separate_chain: list[Any] | None = None
         if reaction_image:
@@ -3289,7 +3296,7 @@ class PrivateImageMixin:
                     else await request_call
                 )
                 text = str(getattr(result, "completion_text", result) or "").strip()
-                cleaned_text = _single_line(_strip_internal_message_blocks(text), text_limit)
+                cleaned_text = _single_line(_strip_internal_message_blocks(text, enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True))), text_limit)
                 if not group_mode:
                     cleaned_text = self._private_image_downgrade_conflicting_ownership(cleaned_text)
                 if self._private_image_vision_summary_unusable(
@@ -4856,7 +4863,14 @@ class PrivateImageMixin:
             task="private_image_only_fallback",
             system_prompt=str(system_prompt or "").strip() or None,
         )
-        reply = _single_line(_strip_internal_message_blocks(raw_reply or ""), max_chars)
+        reply = _single_line(
+            _strip_internal_message_blocks(
+                raw_reply or "",
+                enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)),
+                tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False)),
+            ),
+            max_chars,
+        )
         if reply and self._private_image_reply_is_internal_error(reply):
             logger.warning(
                 "私聊单图兜底 LLM 返回内部错误文本,已丢弃: user=%s source=%s preview=%s",
@@ -4901,7 +4915,14 @@ class PrivateImageMixin:
                 _single_line(exc, 160),
             )
             return "", source
-        reply = _single_line(_strip_internal_message_blocks(raw_reply or ""), 300)
+        reply = _single_line(
+            _strip_internal_message_blocks(
+                raw_reply or "",
+                enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)),
+                tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False)),
+            ),
+            300,
+        )
         if reply and self._private_image_reply_is_internal_error(reply):
             logger.warning(
                 "私聊单图强约束重试返回内部错误文本,已丢弃: user=%s preview=%s",
@@ -5582,6 +5603,8 @@ class PrivateImageMixin:
         return f"用户发送了{image_label}，但当前没有获得可靠视觉摘要。"
 
     def _private_image_context_assistant_message(self, reply: str) -> str:
+        if not bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)):
+            return _single_line(reply, 1200)
         cleaner = getattr(self, "_visible_text_without_tts_reading", None)
         if callable(cleaner):
             try:
@@ -5596,7 +5619,10 @@ class PrivateImageMixin:
         # history; remove plugin-only markers before it reaches that store.
         return _single_line(
             sanitize_llm_segment_control_tokens(
-                _strip_outbound_control_blocks(cleaned or reply)
+                _strip_outbound_control_blocks(
+                    cleaned or reply,
+                    tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False)),
+                )
             ),
             1200,
         )

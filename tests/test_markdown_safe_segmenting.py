@@ -222,7 +222,6 @@ class MarkdownSafeSegmentingTests(unittest.TestCase):
         plugin.segmented_proactive_match_width_variants = False
         plugin.enable_segmented_proactive_content_cleanup = False
         plugin.enable_segmented_proactive_content_replacement = False
-        plugin.enable_framework_error_leak_guard = False
         plugin.enable_daily_case_review_experiment = False
         plugin._proactive_only_blocks_passive_event = lambda *_args: False
         plugin._feature_enabled_or_temp_unlocked = (

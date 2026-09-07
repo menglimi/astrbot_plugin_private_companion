@@ -105,7 +105,7 @@ from .dreaming import (
     recent_diary_tags,
     weighted_unique_fragment_sample,
 )
-from .helpers import _date_key, _now_ts, _safe_float, _safe_int, _single_line, _strip_internal_message_blocks, _today_key
+from .helpers import _date_key, _now_ts, _redact_outbound_secrets, _safe_float, _safe_int, _single_line, _strip_internal_message_blocks, _today_key
 from .conversation_prompt_section import (
     PromptRenderMode,
     PromptSection,
@@ -1188,7 +1188,7 @@ class EventDispatchMixin:
                 for comp, type_name in zip(chain, component_types)
                 if type_name == "plain"
             )
-        text = re.sub(r"\s+", " ", _strip_internal_message_blocks(text)).strip()
+        text = re.sub(r"\s+", " ", _strip_internal_message_blocks(text, enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)))).strip()
         if not text:
             return {}
         scope = _single_line(self._event_scope_key(event), 160) or "unknown"
@@ -3140,6 +3140,8 @@ class EventDispatchMixin:
         return self._resolve_quote_message_id(event, scene_name="group_reply", text_or_chain=text_or_chain)
 
     def _strip_internal_identity_anchors(self, text: str) -> str:
+        if not bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)):
+            return str(text or "")
         cleaned = str(text or "")
         cleaned = re.sub(r"\[QQ:\d{5,12}\]", "", cleaned)
         cleaned = re.sub(r"(?<![\w])QQ[:：]\d{5,12}", "", cleaned)
@@ -5577,6 +5579,48 @@ class EventDispatchMixin:
         except Exception:
             pass
         return result
+
+    def _suppress_outbound_reply(
+        self,
+        event: AstrMessageEvent,
+        *,
+        source: str,
+        reason: str,
+        replacement_text: str | None = None,
+        history_note: str | None = None,
+        detail: str = "",
+        level: str = "info",
+    ) -> None:
+        """Suppress one outbound result without stopping the enclosing turn."""
+        result = event.get_result()
+        original = ""
+        if result is not None:
+            original = "\n".join(
+                component.text
+                for component in result.chain
+                if isinstance(component, Plain)
+            ).strip()
+        if replacement_text is not None:
+            event.set_result(self._build_result_from_chain([Plain(str(replacement_text))]))
+        elif result is not None:
+            result.chain = []
+        else:
+            event.set_result(self._build_result_from_chain([]))
+        assistant = getattr(event, "_private_companion_official_assistant_message", None)
+        if replacement_text is None and assistant is not None:
+            assistant.content = [TextPart(text=history_note or f"[本轮未发送：{reason}]")]
+            assistant.tool_calls = None
+            assistant.tool_call_id = None
+            assistant._no_save = False
+        setattr(event, "_private_companion_outbound_suppressed", True)
+        self._record_passive_no_reply(
+            event,
+            source=source,
+            reason=reason,
+            detail=detail,
+            reply_preview=_redact_outbound_secrets(original)[:160],
+            level=level,
+        )
 
     def _build_segmented_result_from_chain(
         self,

@@ -1504,7 +1504,9 @@ class CoreStoreMixin:
                 if isinstance(item, str):
                     if self._store_path_is_raw_user_text(item_path):
                         continue
-                    cleaned = _strip_persisted_chat_control_tags(item)
+                    cleaned = _strip_persisted_chat_control_tags(
+                        item, tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False))
+                    )
                     if cleaned != item:
                         value[key] = cleaned
                         changed += 1
@@ -1517,7 +1519,9 @@ class CoreStoreMixin:
                 if isinstance(item, str):
                     if self._store_path_is_raw_user_text(item_path):
                         continue
-                    cleaned = _strip_persisted_chat_control_tags(item)
+                    cleaned = _strip_persisted_chat_control_tags(
+                        item, tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False))
+                    )
                     if cleaned != item:
                         value[idx] = cleaned
                         changed += 1

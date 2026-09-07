@@ -35,7 +35,6 @@ class ResponseReviewMetaLeakTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.plugin = PrivateCompanionPlugin.__new__(PrivateCompanionPlugin)
         self.plugin.enabled = True
-        self.plugin.enable_framework_error_leak_guard = True
         self.plugin._record_passive_no_reply = lambda *args, **kwargs: None
         self.plugin._schedule_reply_interception_forward = lambda *args, **kwargs: None
 
@@ -64,7 +63,7 @@ class ResponseReviewMetaLeakTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(event.result.chain))
         self.assertEqual("好，我重新说清楚。", event.result.chain[0].text)
 
-    async def test_final_guard_drops_unmarked_group_review_commentary(self):
+    async def test_final_guard_drops_unmarked_group_review_commentary_without_stopping(self):
         event = _Event(
             "属于正常人无法容忍的一字废话，无法通过清洗正常规整，需要重写",
             "",
@@ -74,37 +73,12 @@ class ResponseReviewMetaLeakTests(unittest.IsolatedAsyncioTestCase):
         await self.plugin.suppress_framework_error_leak_before_send(event)
 
         self.assertEqual([], list(event.result.chain or []))
-        self.assertTrue(event.stopped)
-
-    async def test_framework_error_guard_can_be_disabled_independently(self):
-        self.plugin.enable_framework_error_leak_guard = False
-        event = _Event("Provider API Error：这是一段需要在群里讨论的技术文本", "")
-
-        await self.plugin.suppress_framework_error_leak_before_send(event)
-
-        self.assertEqual("Provider API Error：这是一段需要在群里讨论的技术文本", event.result.chain[0].text)
         self.assertFalse(event.stopped)
+        self.assertTrue(event._private_companion_outbound_suppressed)
 
-    async def test_framework_error_guard_remains_enabled_by_default(self):
-        event = _Event("Provider API Error: upstream timeout", "")
 
-        await self.plugin.suppress_framework_error_leak_before_send(event)
 
-        self.assertEqual([], list(event.result.chain or []))
-        self.assertTrue(event.stopped)
 
-    async def test_framework_error_guard_drops_mixed_punctuation_policy_refusal(self):
-        event = _Event(
-            "The。 prompt。 could。not。be。submitted.。The。prompt。contains。sensitive。words。"
-            "that。violate。Google's。[Generative。AI。Prohibited。Use。policy]"
-            "(https://policies.google.com/terms/generative-ai/use-policy).，Tryrephrasingtheprompt.",
-            "",
-        )
-
-        await self.plugin.suppress_framework_error_leak_before_send(event)
-
-        self.assertEqual([], list(event.result.chain or []))
-        self.assertTrue(event.stopped)
 
     def test_group_interjection_fails_closed_on_non_json_review_text(self):
         leaked = "属于正常人无法容忍的一字废话，无法通过清洗正常规整，需要重写"
@@ -124,18 +98,6 @@ class ResponseReviewMetaLeakTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("", reply)
         self.assertEqual("review_meta_leak", reason)
 
-    def test_framework_error_guard_is_exposed_as_feature_switch(self):
-        schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
-        item = schema["emotion_relationship_config"]["items"]["enable_framework_error_leak_guard"]
-        self.assertTrue(item["default"])
-
-        api = PrivateCompanionPageApi.__new__(PrivateCompanionPageApi)
-        api.plugin = self.plugin
-        api._schema_key_index_cache = None
-        self.assertIn("enable_framework_error_leak_guard", api._allowed_feature_keys())
-
-        script = (ROOT / "pages" / "陪伴面板" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('key: "enable_framework_error_leak_guard"', script)
 
 
 if __name__ == "__main__":

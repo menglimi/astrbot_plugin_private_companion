@@ -74,7 +74,6 @@ class SegmentedRemainderActivityTests(unittest.IsolatedAsyncioTestCase):
     @staticmethod
     def _build_remainder_harness(*, activity: bool = True):
         plugin = object.__new__(PrivateCompanionPlugin)
-        plugin.enable_framework_error_leak_guard = False
         plugin.enable_tts_enhancement = False
         plugin.segmented_proactive_scope = "all_llm"
         plugin._event_scope_key = lambda _event: "group:10001"

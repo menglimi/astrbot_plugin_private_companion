@@ -1173,12 +1173,11 @@ class LlmToolActionsMixin:
             ),
         )
 
-    @staticmethod
-    def _photo_tool_followup_is_redundant(sent_caption: Any, followup_text: Any) -> bool:
+    def _photo_tool_followup_is_redundant(self, sent_caption: Any, followup_text: Any) -> bool:
         """Only catch clear repeats of a caption already delivered with the image."""
 
         def compact(value: Any) -> str:
-            text = _strip_internal_message_blocks(str(value or "")).lower()
+            text = _strip_internal_message_blocks(str(value or ""), enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True))).lower()
             return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", text)
 
         caption = compact(sent_caption)
@@ -1192,10 +1191,15 @@ class LlmToolActionsMixin:
 
     def _sanitize_photo_tool_caption(self, value: Any, *, limit: int = 120) -> str:
         """Keep synthesis and internal control cues out of visible image captions."""
-        cleaned = _strip_internal_message_blocks(str(value or ""))
+        if not bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)):
+            return _single_line(value, max(1, int(limit or 120)))
+        cleaned = _strip_internal_message_blocks(
+            str(value or ""),
+            tts_enabled=bool(runtime_persona_setting(self, "enable_tts_enhancement", False)),
+        )
         cleaned = re.sub(r"&&[A-Za-z_][A-Za-z0-9_ -]{0,31}&&", "", cleaned)
         cue_cleaner = getattr(self, "_strip_visible_tts_emotion_cues", None)
-        if callable(cue_cleaner):
+        if bool(runtime_persona_setting(self, "enable_tts_enhancement", False)) and callable(cue_cleaner):
             cleaned = cue_cleaner(cleaned)
         return _single_line(cleaned, max(1, int(limit or 120)))
 
@@ -1702,10 +1706,9 @@ class LlmToolActionsMixin:
         }
         return json.dumps(payload, ensure_ascii=False)
 
-    @staticmethod
-    def _reaction_expression_has_visible_text(value: Any) -> bool:
+    def _reaction_expression_has_visible_text(self, value: Any) -> bool:
         """Require actual reply text before an experimental image may be attached."""
-        text = _strip_internal_message_blocks(str(value or ""))
+        text = _strip_internal_message_blocks(str(value or ""), enabled=bool(runtime_persona_setting(self, "enable_framework_error_leak_guard", True)))
         text = re.sub(r"<[^>]{1,240}>", "", text, flags=re.DOTALL)
         return bool(re.search(r"\w", text, flags=re.UNICODE))
 
@@ -2152,6 +2155,8 @@ class LlmToolActionsMixin:
         function = value.get("function")
         source = function if isinstance(function, dict) else value
         name = _single_line(source.get("name") or value.get("tool_name"), 80)
+        # TODO: derive this allowlist from the @filter.llm_tool registrations in
+        # main.py once AstrBot exposes a stable registry during decoration.
         known_names = {
             "pc_qzone_view_feed",
             "pc_qzone_publish_feed",

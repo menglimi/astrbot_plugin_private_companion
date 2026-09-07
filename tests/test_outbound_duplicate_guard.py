@@ -96,7 +96,7 @@ class OutboundDuplicateGuardTests(unittest.IsolatedAsyncioTestCase):
         retry = _Event("晚安，睡个好觉哦。")
         await self.plugin.suppress_recent_duplicate_outbound_text(retry)
 
-        self.assertTrue(retry.is_stopped())
+        self.assertFalse(retry.is_stopped())
         self.assertEqual([], list(retry.get_result().chain or []))
 
     async def test_same_message_is_blocked_while_first_send_is_pending(self) -> None:
@@ -106,7 +106,7 @@ class OutboundDuplicateGuardTests(unittest.IsolatedAsyncioTestCase):
         concurrent_branch = _Event("晚安，睡个好觉哦。")
         await self.plugin.suppress_recent_duplicate_outbound_text(concurrent_branch)
 
-        self.assertTrue(concurrent_branch.is_stopped())
+        self.assertFalse(concurrent_branch.is_stopped())
 
     def test_same_inbound_duplicate_survives_slow_failed_tool_loop(self) -> None:
         first = _Event("唔，省流版：这是个 AstrBot 插件")
@@ -195,7 +195,7 @@ class OutboundDuplicateGuardTests(unittest.IsolatedAsyncioTestCase):
         uncertain = _Event("适配器没有消息编号", message_id="message-2")
         await self.plugin.suppress_recent_duplicate_outbound_text(uncertain)
 
-        self.assertTrue(uncertain.is_stopped())
+        self.assertFalse(uncertain.is_stopped())
 
     def test_missing_message_id_fallback_expires_after_sent_window(self) -> None:
         first = self.plugin._outbound_text_duplicate_candidate(
@@ -224,7 +224,7 @@ class OutboundDuplicateGuardTests(unittest.IsolatedAsyncioTestCase):
         )
         await self.plugin.suppress_recent_duplicate_outbound_text(echo)
 
-        self.assertTrue(echo.is_stopped())
+        self.assertFalse(echo.is_stopped())
 
     async def test_partial_primary_send_is_not_confirmed_as_complete_outbound_text(
         self,
