@@ -2690,6 +2690,69 @@ class SmartImageChatIntegrationTests(unittest.IsolatedAsyncioTestCase):
             [tool.name for tool in explicit_with_photo_on.func_tool.tools],
         )
 
+    async def test_reaction_turn_photo_execution_gate_follows_toggle(self) -> None:
+        # The execution-time gate inside pc_generate_photo used to skip every
+        # authorized reaction turn without an explicit request, even when the
+        # opt-in switch kept the tool in the declaration.  With the switch on,
+        # the gate must let the call through to the real implementation (whose
+        # quota/permission guards still run); with the switch off, the legacy
+        # skip behavior stays intact.
+        api = _FakeSmartImageAPI(self.image_path)
+        generated_photo = AsyncMock(
+            return_value='{"status":"success","success":true,"sent":true}'
+        )
+
+        # Switch OFF: legacy skip.
+        harness_off = _ReactionHarness(api)
+        harness_off.enable_reaction_experiment()
+        harness_off.allow_generate_photo_on_reaction_turns = False
+        harness_off._pc_generate_photo_impl = generated_photo
+        event_off = _FakeEvent()
+        event_off.message_str = "普通闲聊"
+        module = SimpleNamespace(get_smart_imagechat_api=lambda: api)
+        with patch(
+            "astrbot_plugin_private_companion.llm_tool_actions.get_reaction_asset_library",
+            return_value=module,
+        ):
+            self.assertTrue(
+                await harness_off._preauthorize_reaction_expression_prompt(event_off)
+            )
+            payload_off = json.loads(
+                await PrivateCompanionPlugin.pc_generate_photo(
+                    harness_off,
+                    event_off,
+                    prompt="看看你",
+                    kind="selfie",
+                )
+            )
+        self.assertEqual("skipped", payload_off["status"])
+        generated_photo.assert_not_awaited()
+
+        # Switch ON: the execution gate lets the request reach the real impl.
+        harness_on = _ReactionHarness(api)
+        harness_on.enable_reaction_experiment()
+        harness_on.allow_generate_photo_on_reaction_turns = True
+        harness_on._pc_generate_photo_impl = generated_photo
+        event_on = _FakeEvent()
+        event_on.message_str = "普通闲聊"
+        with patch(
+            "astrbot_plugin_private_companion.llm_tool_actions.get_reaction_asset_library",
+            return_value=module,
+        ):
+            self.assertTrue(
+                await harness_on._preauthorize_reaction_expression_prompt(event_on)
+            )
+            payload_on = json.loads(
+                await PrivateCompanionPlugin.pc_generate_photo(
+                    harness_on,
+                    event_on,
+                    prompt="看看你",
+                    kind="selfie",
+                )
+            )
+        self.assertEqual("success", payload_on["status"])
+        generated_photo.assert_awaited_once()
+
     def test_failed_media_followup_keeps_current_media_tool_available(self) -> None:
         message = (
             "我重启了，你再试试发过来，不要生成新图，"
