@@ -7346,6 +7346,38 @@ class LlmToolActionsMixin:
                 event, library, lookup, query_text, lookup_context
             )
             if vision_review is not None and not vision_review.get("fit"):
+                async with self._data_lock:
+                    state_owner = self._reaction_expression_state_owner(event, user_id)
+                    if isinstance(state_owner, dict):
+                        state = ensure_reaction_expression_state(state_owner)
+                        scoped_state = reaction_expression_scope_state(state, scope_key)
+                        release_reaction_expression_image(
+                            state,
+                            image_key,
+                            image_keys=image_keys,
+                            reservation_token=reservation_token,
+                        )
+                        release_reaction_expression_reservation(
+                            scoped_state,
+                            intent_signature=signature,
+                            reservation_token=reservation_token,
+                        )
+                        append_reaction_expression_outcome(
+                            state,
+                            status="skipped",
+                            reason="vision_rejected",
+                            intent_signature=signature,
+                            now=_now_ts(),
+                            candidate_limit=candidate_limit,
+                            image_key=image_key,
+                            cache_hit=lookup_cache_hit,
+                            latency_ms=lookup_latency_ms,
+                        )
+                        self._persist_reaction_expression_state(
+                            sections={"reaction_expression_group_states"}
+                            if scope == "group"
+                            else {"users"}
+                        )
                 self._log_reaction_expression_event(
                     event,
                     stage="lookup",
