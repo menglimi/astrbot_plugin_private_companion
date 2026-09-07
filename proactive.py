@@ -653,6 +653,26 @@ class ProactiveMixin(UserRestGateMixin):
             semantic_kind=user.get("planned_proactive_semantic_kind"),
         )
 
+    def _proactive_adaptive_contact_guidance(self, user: dict[str, Any], route: Any) -> str:
+        """Return soft, survey-informed guidance without adding a new hard gate.
+
+        The scheduler still owns eligibility and budgets.  This text only helps the
+        model choose a useful expression and a lower-cost delivery form for the
+        current route, especially after an unanswered contact.
+        """
+        unanswered = _unanswered_proactive_count(user)
+        parts = [
+            "先满足帮助性和最近对话相关性，再考虑是否需要主动表达；没有具体内容时宁可合并、延后或仅记录，也不要发固定问候、神秘短句或重复旧话题",
+            "根据当前上下文选择单独发送、合并当前回复、下次提起、摘要或仅记录等形式，不把‘想联系’自动等同于立刻发消息",
+        ]
+        if unanswered > 0:
+            parts.append(
+                f"此前有 {unanswered} 次主动接触未得到回应；本次不要追问或复述同一主题，按本路线的时效和重要性决定降级形式"
+            )
+        if getattr(route, "response_expectation", "optional") == "none":
+            parts.append("本路线不要求对方回应，避免用问题句制造回应压力")
+        return "；".join(parts) + "。"
+
     def _proactive_route_prompt_section(
         self,
         user: dict[str, Any],
@@ -679,6 +699,7 @@ class ProactiveMixin(UserRestGateMixin):
             content=(
                 f"- 类型：{route.label}。\n"
                 f"- 路线要求：{route.render_directive(quota_tier=_safe_int(tier_policy.get('tier'), 0))}\n"
+                f"- 自适应接触：{self._proactive_adaptive_contact_guidance(user, route)}\n"
                 f"- 终审重点：{route.review_directive()}\n"
                 f"- 配额策略：L{tier_policy.get('tier', 0)} {tier_policy.get('label', '')}。{tier_rule}"
             ),
