@@ -521,7 +521,7 @@ def build_dream_memory_fragments(plugin, count: int = 8) -> list[str]:
             _single_line(yesterday.get("summary"), 100),
         ):
             cleaned = _clean_dream_fragment_text(candidate)
-            if cleaned and "无明确" not in candidate and _dream_fragment_is_useful(cleaned):
+            if cleaned and "无明确" not in candidate and "暂无" not in candidate and _dream_fragment_is_useful(cleaned):
                 fragments.append(cleaned)
         residues = yesterday.get("residues", [])
         if isinstance(residues, list):
