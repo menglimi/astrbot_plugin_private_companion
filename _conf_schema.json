@@ -22,26 +22,6 @@
         "hint": "默认关闭。开启后，本插件只保留主动私聊的日程、生成和发送链路；普通私聊/群聊消息不会再进入本插件的被动增强、图片/转发处理、防抖、群聊观察、TTS 后处理或提示词注入，但不会阻止 AstrBot 默认回复或其他插件处理。用户回复本插件主动消息时仍会轻量记录为已回应。适合只想使用主动陪伴，或担心本插件被动链路误接管、误识别的场景。",
         "default": false
       },
-      "hdsi_experiment_mode": {
-        "description": "HDSI 试验模式",
-        "type": "string",
-        "options": ["legacy", "hdsi_shadow", "hdsi_active"],
-        "labels": ["旧框架（默认）", "HDSI 影子观察", "HDSI 试验接管"],
-        "default": "legacy",
-        "hint": "默认所有用户继续使用旧框架。选择影子或接管后，还必须在下方填写明确的用户/群 ID；未列入的作用域仍保持旧框架。接管模式是兼容试验，旧框架的权限、隐私和投递保护仍保留。"
-      },
-      "hdsi_experiment_user_ids": {
-        "description": "HDSI 试验私聊用户 ID",
-        "type": "list",
-        "default": [],
-        "hint": "仅这些私聊用户进入 HDSI 试验。留空表示没有私聊用户进入试验；支持平台适配器收到的原始用户 ID。"
-      },
-      "hdsi_experiment_group_ids": {
-        "description": "HDSI 试验群 ID",
-        "type": "list",
-        "default": [],
-        "hint": "仅这些群窗口进入 HDSI 试验。群聊是公共回复窗口，必须整群启用；成员个人的私聊试验设置不会改变群聊路径。"
-      },
       "enable_p4_b_legacy_score_isolation": {
         "description": "隔离旧版关系分数写入",
         "type": "bool",
