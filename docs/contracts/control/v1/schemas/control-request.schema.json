@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:control-request:v1",
+  "title": "Control plane request",
+  "type": "object",
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "request_id": {"type": "string", "minLength": 1},
+    "trace_id": {"type": "string", "minLength": 1},
+    "caller_ref": {"type": "string", "minLength": 1},
+    "runtime_scope": {"$ref": "urn:companion:schema:runtime-scope:v1"},
+    "deadline_at": {"type": "string", "format": "date-time"},
+    "idempotency_key": {"type": ["string", "null"], "minLength": 1},
+    "expected_control_revision": {"type": ["integer", "null"], "minimum": 0},
+    "method": {"enum": ["register", "discover", "bind", "release", "cancel", "operation.lookup", "session.resume"]},
+    "manifest": {"$ref": "urn:companion:schema:control-extension-manifest:v1"},
+    "requirement": {"type": "object"}, "scope_selector": {"type": "object"}, "purpose": {"type": "string", "minLength": 1},
+    "cursor": {"type": ["string", "null"]}, "page_limit": {"type": "integer", "minimum": 1, "maximum": 100}, "max_page_bytes": {"type": "integer", "minimum": 1},
+    "candidate_ref": {"type": ["string", "null"]}, "handle_kind": {"enum": ["binding", "subscription"]}, "handle_ref": {"type": "string", "minLength": 1},
+    "target": {"type": "object"}, "owner_ref": {"type": "string", "minLength": 1}, "capability_id": {"type": "string", "minLength": 1}, "major": {"type": "integer", "minimum": 1}, "locator": {"type": "object"},
+    "binding_ref": {"type": "string", "minLength": 1}, "session_id": {"type": "string", "minLength": 1}, "expected_session_revision": {"type": "integer", "minimum": 0}, "expected_controller_generation": {"type": "string", "minLength": 1}, "checkpoint_ref": {"type": "string", "minLength": 1}, "expected_context_revision": {"type": "integer", "minimum": 0}
+  },
+  "required": ["schema_version", "request_id", "trace_id", "caller_ref", "runtime_scope", "deadline_at", "idempotency_key", "expected_control_revision", "method"],
+  "additionalProperties": false,
+  "allOf": [
+    {"if": {"properties": {"method": {"const": "register"}}}, "then": {"required": ["manifest"]}},
+    {"if": {"properties": {"method": {"const": "discover"}}}, "then": {"required": ["requirement", "scope_selector", "purpose", "cursor", "page_limit", "max_page_bytes"]}},
+    {"if": {"properties": {"method": {"const": "bind"}}}, "then": {"required": ["requirement", "scope_selector", "purpose", "candidate_ref"]}},
+    {"if": {"properties": {"method": {"const": "release"}}}, "then": {"required": ["handle_kind", "handle_ref"]}},
+    {"if": {"properties": {"method": {"const": "cancel"}}}, "then": {"required": ["scope_selector", "target"]}},
+    {"if": {"properties": {"method": {"const": "operation.lookup"}}}, "then": {"required": ["scope_selector", "owner_ref", "capability_id", "major", "locator", "purpose"]}},
+    {"if": {"properties": {"method": {"const": "session.resume"}}}, "then": {"required": ["binding_ref", "owner_ref", "session_id", "expected_session_revision", "expected_controller_generation", "checkpoint_ref", "expected_context_revision"]}}
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:world-entity:v1",
+  "title": "A bounded persona-world entity",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "companion.world-entity.v1" },
+    "entity_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "owner_ref": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "scope": { "$ref": "urn:companion:schema:runtime-scope:v1" },
+    "kind": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "attributes": { "type": "object", "maxProperties": 32 },
+    "reality_mode": { "enum": ["simulated", "observed", "mixed"] },
+    "visibility": { "enum": ["private", "user_safe", "global_safe"] },
+    "revision": { "$ref": "urn:companion:schema:common:v1#/$defs/revision" },
+    "source_refs": { "type": "array", "items": { "$ref": "urn:companion:schema:common:v1#/$defs/evidence" }, "minItems": 1, "maxItems": 8 },
+    "valid_until": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/time" }, { "type": "null" }] }
+  },
+  "required": ["schema_version", "entity_id", "owner_ref", "scope", "kind", "attributes", "reality_mode", "visibility", "revision", "source_refs", "valid_until"],
+  "additionalProperties": false
+}

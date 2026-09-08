@@ -1,0 +1,327 @@
+{
+  "format_version": "1.0",
+  "legacy_fingerprint": "49398a609b60cadf",
+  "purpose": "design_examples_using_existing_namespace_policy_not_live_authorization",
+  "cases": [
+    {
+      "id": "private-mapped-identity",
+      "legacy_context": {
+        "contract_name": "chat.namespace_context.v1",
+        "contract_version": "1.0",
+        "contract_fingerprint": "49398a609b60cadf",
+        "kind": "private",
+        "persona_id": "persona-main",
+        "identity_id": "legacy-person-123",
+        "group_id": "",
+        "assurance": "explicit_linked",
+        "profile_status": "active",
+        "policy_version": "req041-v1",
+        "migration_epoch": "review-epoch-001"
+      },
+      "purpose": "memory_read",
+      "expected": {
+        "allowed": true,
+        "code": "namespace_access_allowed"
+      }
+    },
+    {
+      "id": "group-member-mapped-identity",
+      "legacy_context": {
+        "contract_name": "chat.namespace_context.v1",
+        "contract_version": "1.0",
+        "contract_fingerprint": "49398a609b60cadf",
+        "kind": "group_member",
+        "persona_id": "persona-main",
+        "identity_id": "legacy-person-123",
+        "group_id": "legacy-group-456",
+        "assurance": "explicit_linked",
+        "profile_status": "active",
+        "policy_version": "req041-v1",
+        "migration_epoch": "review-epoch-001"
+      },
+      "purpose": "memory_read",
+      "expected": {
+        "allowed": true,
+        "code": "namespace_access_allowed"
+      }
+    },
+    {
+      "id": "group-shared-is-not-user",
+      "legacy_context": {
+        "contract_name": "chat.namespace_context.v1",
+        "contract_version": "1.0",
+        "contract_fingerprint": "49398a609b60cadf",
+        "kind": "group_shared",
+        "persona_id": "persona-main",
+        "identity_id": "",
+        "group_id": "legacy-group-456",
+        "assurance": "explicit_linked",
+        "profile_status": "active",
+        "policy_version": "req041-v1",
+        "migration_epoch": "review-epoch-001"
+      },
+      "purpose": "memory_read",
+      "expected": {
+        "allowed": true,
+        "code": "namespace_access_allowed"
+      }
+    },
+    {
+      "id": "pending-namespace-is-not-pending-proposal",
+      "legacy_context": {
+        "contract_name": "chat.namespace_context.v1",
+        "contract_version": "1.0",
+        "contract_fingerprint": "49398a609b60cadf",
+        "kind": "pending",
+        "persona_id": "persona-main",
+        "identity_id": "legacy-person-123",
+        "group_id": "",
+        "assurance": "unverified",
+        "profile_status": "active",
+        "policy_version": "req041-v1",
+        "migration_epoch": "review-epoch-001"
+      },
+      "purpose": "memory_read",
+      "expected": {
+        "allowed": false,
+        "code": "namespace_pending_denied"
+      }
+    },
+    {
+      "id": "observed-identity-not-verified",
+      "legacy_context": {
+        "contract_name": "chat.namespace_context.v1",
+        "contract_version": "1.0",
+        "contract_fingerprint": "49398a609b60cadf",
+        "kind": "private",
+        "persona_id": "persona-main",
+        "identity_id": "legacy-person-123",
+        "group_id": "",
+        "assurance": "observed",
+        "profile_status": "active",
+        "policy_version": "req041-v1",
+        "migration_epoch": "review-epoch-001"
+      },
+      "purpose": "memory_read",
+      "expected": {
+        "allowed": false,
+        "code": "identity_assurance_insufficient"
+      }
+    },
+    {
+      "id": "suspended-profile",
+      "legacy_context": {
+        "contract_name": "chat.namespace_context.v1",
+        "contract_version": "1.0",
+        "contract_fingerprint": "49398a609b60cadf",
+        "kind": "private",
+        "persona_id": "persona-main",
+        "identity_id": "legacy-person-123",
+        "group_id": "",
+        "assurance": "explicit_linked",
+        "profile_status": "suspended",
+        "policy_version": "req041-v1",
+        "migration_epoch": "review-epoch-001"
+      },
+      "purpose": "memory_read",
+      "expected": {
+        "allowed": false,
+        "code": "profile_suspended"
+      }
+    },
+    {
+      "id": "persona-global-not-memory",
+      "legacy_context": {
+        "contract_name": "chat.namespace_context.v1",
+        "contract_version": "1.0",
+        "contract_fingerprint": "49398a609b60cadf",
+        "kind": "persona_global",
+        "persona_id": "persona-main",
+        "identity_id": "",
+        "group_id": "",
+        "assurance": "explicit_linked",
+        "profile_status": "active",
+        "policy_version": "req041-v1",
+        "migration_epoch": "review-epoch-001"
+      },
+      "purpose": "memory_read",
+      "expected": {
+        "allowed": false,
+        "code": "persona_global_purpose_denied"
+      }
+    },
+    {
+      "id": "domain-purpose-needs-explicit-policy-map",
+      "legacy_context": {
+        "contract_name": "chat.namespace_context.v1",
+        "contract_version": "1.0",
+        "contract_fingerprint": "49398a609b60cadf",
+        "kind": "private",
+        "persona_id": "persona-main",
+        "identity_id": "legacy-person-123",
+        "group_id": "",
+        "assurance": "explicit_linked",
+        "profile_status": "active",
+        "policy_version": "req041-v1",
+        "migration_epoch": "review-epoch-001"
+      },
+      "purpose": "example.reading.continuity",
+      "expected": {
+        "allowed": false,
+        "code": "namespace_purpose_invalid"
+      }
+    }
+  ],
+  "isolation_examples": [
+    {
+      "id": "legacy-key-omits-ecosystem_id",
+      "owners": [
+        {
+          "ecosystem_id": "ecosystem-001",
+          "installation_id": "installation-001",
+          "bot_id": "bot-main",
+          "persona_id": "persona-main",
+          "subject_ref": "person-user-123",
+          "visibility_namespace": "private:person-user-123"
+        },
+        {
+          "ecosystem_id": "another-logical-boundary",
+          "installation_id": "installation-001",
+          "bot_id": "bot-main",
+          "persona_id": "persona-main",
+          "subject_ref": "person-user-123",
+          "visibility_namespace": "private:person-user-123"
+        }
+      ],
+      "legacy_contexts": [
+        {
+          "contract_name": "chat.namespace_context.v1",
+          "contract_version": "1.0",
+          "contract_fingerprint": "49398a609b60cadf",
+          "kind": "private",
+          "persona_id": "persona-main",
+          "identity_id": "legacy-person-123",
+          "group_id": "",
+          "assurance": "explicit_linked",
+          "profile_status": "active",
+          "policy_version": "req041-v1",
+          "migration_epoch": "review-epoch-001"
+        },
+        {
+          "contract_name": "chat.namespace_context.v1",
+          "contract_version": "1.0",
+          "contract_fingerprint": "49398a609b60cadf",
+          "kind": "private",
+          "persona_id": "persona-main",
+          "identity_id": "legacy-person-123",
+          "group_id": "",
+          "assurance": "explicit_linked",
+          "profile_status": "active",
+          "policy_version": "req041-v1",
+          "migration_epoch": "review-epoch-001"
+        }
+      ],
+      "conclusion": "distinct_owner_same_legacy_cache_scope_requires_proven_partition"
+    },
+    {
+      "id": "legacy-key-omits-installation_id",
+      "owners": [
+        {
+          "ecosystem_id": "ecosystem-001",
+          "installation_id": "installation-001",
+          "bot_id": "bot-main",
+          "persona_id": "persona-main",
+          "subject_ref": "person-user-123",
+          "visibility_namespace": "private:person-user-123"
+        },
+        {
+          "ecosystem_id": "ecosystem-001",
+          "installation_id": "another-logical-boundary",
+          "bot_id": "bot-main",
+          "persona_id": "persona-main",
+          "subject_ref": "person-user-123",
+          "visibility_namespace": "private:person-user-123"
+        }
+      ],
+      "legacy_contexts": [
+        {
+          "contract_name": "chat.namespace_context.v1",
+          "contract_version": "1.0",
+          "contract_fingerprint": "49398a609b60cadf",
+          "kind": "private",
+          "persona_id": "persona-main",
+          "identity_id": "legacy-person-123",
+          "group_id": "",
+          "assurance": "explicit_linked",
+          "profile_status": "active",
+          "policy_version": "req041-v1",
+          "migration_epoch": "review-epoch-001"
+        },
+        {
+          "contract_name": "chat.namespace_context.v1",
+          "contract_version": "1.0",
+          "contract_fingerprint": "49398a609b60cadf",
+          "kind": "private",
+          "persona_id": "persona-main",
+          "identity_id": "legacy-person-123",
+          "group_id": "",
+          "assurance": "explicit_linked",
+          "profile_status": "active",
+          "policy_version": "req041-v1",
+          "migration_epoch": "review-epoch-001"
+        }
+      ],
+      "conclusion": "distinct_owner_same_legacy_cache_scope_requires_proven_partition"
+    },
+    {
+      "id": "legacy-key-omits-bot_id",
+      "owners": [
+        {
+          "ecosystem_id": "ecosystem-001",
+          "installation_id": "installation-001",
+          "bot_id": "bot-main",
+          "persona_id": "persona-main",
+          "subject_ref": "person-user-123",
+          "visibility_namespace": "private:person-user-123"
+        },
+        {
+          "ecosystem_id": "ecosystem-001",
+          "installation_id": "installation-001",
+          "bot_id": "another-logical-boundary",
+          "persona_id": "persona-main",
+          "subject_ref": "person-user-123",
+          "visibility_namespace": "private:person-user-123"
+        }
+      ],
+      "legacy_contexts": [
+        {
+          "contract_name": "chat.namespace_context.v1",
+          "contract_version": "1.0",
+          "contract_fingerprint": "49398a609b60cadf",
+          "kind": "private",
+          "persona_id": "persona-main",
+          "identity_id": "legacy-person-123",
+          "group_id": "",
+          "assurance": "explicit_linked",
+          "profile_status": "active",
+          "policy_version": "req041-v1",
+          "migration_epoch": "review-epoch-001"
+        },
+        {
+          "contract_name": "chat.namespace_context.v1",
+          "contract_version": "1.0",
+          "contract_fingerprint": "49398a609b60cadf",
+          "kind": "private",
+          "persona_id": "persona-main",
+          "identity_id": "legacy-person-123",
+          "group_id": "",
+          "assurance": "explicit_linked",
+          "profile_status": "active",
+          "policy_version": "req041-v1",
+          "migration_epoch": "review-epoch-001"
+        }
+      ],
+      "conclusion": "distinct_owner_same_legacy_cache_scope_requires_proven_partition"
+    }
+  ]
+}

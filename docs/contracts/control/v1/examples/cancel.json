@@ -1,0 +1,6 @@
+{
+  "schema_version": "1.0", "request_id": "ctrl-cancel-001", "trace_id": "trace-control-005", "caller_ref": "caller:companion-core",
+  "runtime_scope": {"ecosystem_id": "astrbot", "installation_id": "install-1", "runtime_instance_id": "runtime-1", "host_kind": "astrbot_host", "host_id": "host-1", "bot_id": "bot-1", "platform": null, "account_id": null, "conversation_ref": null, "platform_conversation_id": null, "conversation_id": null, "session_id": null, "user_id": null, "group_id": null, "persona_id": "persona-1", "persona_binding_revision": 3},
+  "deadline_at": "2026-09-08T12:00:05Z", "idempotency_key": "cancel:task-1", "expected_control_revision": null,
+  "method": "cancel", "scope_selector": {"persona_id": "persona-1"}, "target": {"kind": "task", "owner_ref": "world-owner:persona-1", "task_id": "task-1", "operation_id": null, "request_id": null}
+}

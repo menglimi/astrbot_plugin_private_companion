@@ -1,0 +1,23 @@
+{
+  "fixture_version": "0.1.0",
+  "fixture_id": "control-lifecycle-001",
+  "initial": {
+    "provider_generation": "provider-gen-1",
+    "registration_revision": 7,
+    "binding_ref": "binding-001",
+    "binding_generation": "provider-gen-1",
+    "binding_state": "ready",
+    "allocation_count": 1,
+    "owner_ref": "owner:installation-main:bot-main:persona-main:user-123:user_shared"
+  },
+  "operations": [
+    {"id": "LC-RP-01", "kind": "bind_response_lost_retry", "idempotency_key": "bind-key-001", "expected": "same_binding_no_second_allocation"},
+    {"id": "LC-RP-02", "kind": "release_binding", "expected": "admission_closed_and_resources_retained_by_provider"},
+    {"id": "LC-RP-03", "kind": "invoke_old_handle", "expected": "rejected_generation_or_released"},
+    {"id": "LC-RP-04", "kind": "register_new_generation", "expected": "new_generation_requires_new_binding"},
+    {"id": "LC-RP-05", "kind": "cancel_unknown_then_lookup", "expected": "uncertain_original_owner_no_retry"},
+    {"id": "LC-RP-06", "kind": "revoke_and_drain", "expected": "admission_closed_tasks_zero_handles_zero"}
+  ],
+  "budgets": {"max_control_requests": 12, "max_handles": 2, "max_inflight_tasks": 2, "max_queue_items": 4},
+  "forbidden_effects": ["message_delivery", "memory_write", "calendar_commit", "world_transition"]
+}

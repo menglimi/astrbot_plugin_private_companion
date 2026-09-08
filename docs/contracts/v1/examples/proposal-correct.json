@@ -1,0 +1,81 @@
+{
+  "schema_version": "memory.proposal.v1",
+  "capability_id": "memory.proposal.submit",
+  "capability_version": "1.0",
+  "provider_id": "example.memory",
+  "provider_generation": "generation-7",
+  "request_id": "req-reading-001",
+  "trace_id": "trace-reading-001",
+  "deadline_at": "2026-09-07T01:00:03Z",
+  "scope": {
+    "ecosystem_id": "ecosystem-001",
+    "installation_id": "installation-001",
+    "runtime_instance_id": "runtime-001",
+    "host_kind": "astrbot",
+    "bot_id": "bot-main",
+    "platform": "aiocqhttp",
+    "account_id": "qq-bot-001",
+    "conversation_ref": "conversation-001",
+    "platform_conversation_id": "private-user-123",
+    "session_id": "reading-session-001",
+    "user_id": "user-123",
+    "group_id": null,
+    "persona_id": "persona-main",
+    "persona_binding_revision": 12
+  },
+  "required_features": [],
+  "budget": {
+    "max_input_bytes": 16384,
+    "max_model_calls": 0
+  },
+  "payload": {
+    "namespace": "example.reading",
+    "visibility": "private",
+    "purpose": "example.reading.continuity",
+    "proposal_id": "proposal-001",
+    "operation": "correct",
+    "target_atom_id": "atom-001",
+    "expected_revision": 7,
+    "subject": {
+      "kind": "companion.person",
+      "ref": "person-user-123"
+    },
+    "predicate": "共同读到的章节",
+    "object": {
+      "book_ref": "book-001",
+      "chapter_ref": "chapter-04"
+    },
+    "qualifiers": {
+      "book_ref": "book-001"
+    },
+    "polarity": "affirmed",
+    "attribution": "user",
+    "evidence_refs": [
+      {
+        "id": "evidence-001",
+        "source_id": "reading-event-001",
+        "source_type": "example.reading.session",
+        "evidence_kind": "action_receipt",
+        "observed_at": "2026-09-07T01:00:00Z",
+        "expires_at": null
+      }
+    ],
+    "confidence": 0.9,
+    "valid_from": "2026-09-07T01:00:00Z",
+    "valid_to": null,
+    "retention": "durable",
+    "defer_until_boundary": false,
+    "types": [
+      "example.reading.chapter"
+    ],
+    "extensions": {
+      "example.reading.chapter": {
+        "schema_version": "1.0",
+        "payload": {
+          "progress": 0.25
+        }
+      }
+    }
+  },
+  "idempotency_key": "reading-event-002:proposal-1"
+}

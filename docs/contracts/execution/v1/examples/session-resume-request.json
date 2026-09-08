@@ -1,0 +1,73 @@
+{
+  "schema_version": "companion.action.v1",
+  "capability_id": "example.together.resume",
+  "capability_version": "1.0",
+  "provider_id": "example.together",
+  "provider_generation": "provider-generation-8",
+  "request_id": "request-resume-001",
+  "trace_id": "trace-workflow-001",
+  "deadline_at": "2026-09-08T02:05:00Z",
+  "scope": {
+    "ecosystem_id": "ecosystem-001",
+    "installation_id": "installation-001",
+    "runtime_instance_id": "embedded-runtime",
+    "host_kind": "companion-app",
+    "bot_id": "bot-main",
+    "platform": null,
+    "account_id": null,
+    "conversation_ref": "conversation-001",
+    "platform_conversation_id": null,
+    "session_id": "session-watch-001",
+    "user_id": null,
+    "group_id": null,
+    "persona_id": "persona-main",
+    "persona_binding_revision": 12
+  },
+  "required_features": [
+    "companion.execution@1"
+  ],
+  "budget": {
+    "max_input_bytes": 32768,
+    "max_model_calls": 0,
+    "max_output_bytes": 32768
+  },
+  "binding_ref": "binding-example.together",
+  "execution": {
+    "task_id": null,
+    "attempt_id": "attempt-resume-001",
+    "part_id": null,
+    "operation_id": null,
+    "budget_ref": "budget-workflow-001",
+    "caused_by": [
+      {
+        "kind": "companion.candidate",
+        "ref": "candidate-001",
+        "revision": 1
+      }
+    ]
+  },
+  "idempotency_key": "resume-watch-001",
+  "payload_schema": "urn:companion:fixture:execution-domain:v1#/$defs/session-input",
+  "payload": {
+    "session_ref": {
+      "kind": "companion.session",
+      "ref": "session-watch-001",
+      "revision": 18
+    },
+    "checkpoint_ref": {
+      "kind": "together.progress",
+      "ref": "watch-progress",
+      "revision": 12
+    }
+  },
+  "preconditions": [
+    {
+      "target": {
+        "kind": "companion.session",
+        "ref": "session-watch-001",
+        "revision": 18
+      },
+      "expected_revision": 18
+    }
+  ]
+}

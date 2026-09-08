@@ -1,0 +1,29 @@
+{
+  "package_id": "companion.calendar-contracts",
+  "package_version": "0.1.0",
+  "profile": "companion.calendar@1",
+  "maturity": "review",
+  "dialect": "https://json-schema.org/draft/2020-12/schema",
+  "fingerprint_algorithm": "sha256-utf8-lf",
+  "dependencies": [
+    { "name": "common", "id": "urn:companion:schema:common:v1", "path": "../../v1/schemas/common.schema.json", "sha256": "d8312b16010a58ebf2af0d825f0773840913ebee5714cd61cd578d6f4faadedb" },
+    { "name": "runtime-scope", "id": "urn:companion:schema:runtime-scope:v1", "path": "../../v1/schemas/runtime-scope.schema.json", "sha256": "594f87248d7ed9d4868dc8fc2bec0aae1c2abff79e2cbd43a4ea3ac5e0f8b729" }
+  ],
+  "schemas": [
+    { "name": "activity-intent", "id": "urn:companion:schema:calendar-activity-intent:v1", "path": "schemas/activity-intent.schema.json", "sha256": "b9adfddf7cd23a0f6113247e305143ac2bf059754538c81230c5f00fb6e554f0" },
+    { "name": "activity-process", "id": "urn:companion:schema:calendar-activity-process:v1", "path": "schemas/activity-process.schema.json", "sha256": "3c9718aad6f3ae1447a71915f7df5000023ffd57c046f42bcee775220d7a87f8" },
+    { "name": "calendar-boundary", "id": "urn:companion:schema:calendar-boundary:v1", "path": "schemas/calendar-boundary.schema.json", "sha256": "72ebd8011938e6503d60ad2a6d4ef968d6dd2500fc3a32bc2074301c7632bef1" },
+    { "name": "calendar-request", "id": "urn:companion:schema:calendar-request:v1", "path": "schemas/calendar-request.schema.json", "sha256": "5ba5c5248e861c67300cf83b0892579e31e330dd8f759196c3a54236094a7f49" },
+    { "name": "calendar-result", "id": "urn:companion:schema:calendar-result:v1", "path": "schemas/calendar-result.schema.json", "sha256": "ce18e5d6fdd1fcc36e7a2c5fb1312a713a9a2e685abf5882da97bb6f840cb3f8" },
+    { "name": "story-projection", "id": "urn:companion:schema:calendar-story-projection:v1", "path": "schemas/story-projection.schema.json", "sha256": "819d24b7077c9e5baa6f87f46a2496154ea803d34f387af3cf5862f58468652a" }
+  ],
+  "artifacts": [
+    { "path": "calendar.fixture.json", "sha256": "3cd385f1435aef69e13b2cde0240513f3d95349aa80f63e487d182203db382b4" },
+    { "path": "examples/activity-intent.json", "sha256": "c642d7cfc27084a7d75a55144f91be0f88c85654a9a4308057a7993b5c27fa95" },
+    { "path": "examples/activity-process.json", "sha256": "53e88bad667d810069f0bffcda1f1f80ce629e098327789d389c341eae29b122" },
+    { "path": "examples/calendar-boundary.json", "sha256": "383fb183602f0ceb2cf159bcf81b17939b070b845f6d84dc57a29f14c6d1e940" },
+    { "path": "examples/calendar-request.json", "sha256": "303de4ec7860c7f92301c8584095e2f20b49db252cdeb6e95dd7e7f80d6493dc" },
+    { "path": "examples/calendar-result.json", "sha256": "1302ae04ea6ef92fcfd4bd8966149a04c7af8088f4a91610b7fc902c0d6fe241" },
+    { "path": "examples/story-projection.json", "sha256": "76e223ddfa489ec8d9f178c13756a4479ca9885656142ac83c303881a1266297" }
+  ]
+}

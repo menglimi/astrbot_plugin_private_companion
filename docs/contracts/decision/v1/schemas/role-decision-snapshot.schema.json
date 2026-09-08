@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:role-decision-snapshot:v1",
+  "title": "Bounded cross-domain role decision snapshot",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "companion.role-decision-snapshot.v1" },
+    "decision_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "trace_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "scope": { "$ref": "urn:companion:schema:runtime-scope:v1" },
+    "source_event_refs": { "type": "array", "items": { "$ref": "urn:companion:schema:common:v1#/$defs/token" }, "minItems": 1, "maxItems": 16 },
+    "world_revision": { "$ref": "urn:companion:schema:common:v1#/$defs/revision" },
+    "calendar_revision": { "$ref": "urn:companion:schema:common:v1#/$defs/revision" },
+    "affect_revision": { "$ref": "urn:companion:schema:common:v1#/$defs/revision" },
+    "relationship_revision": { "$ref": "urn:companion:schema:common:v1#/$defs/revision" },
+    "motive_revision": { "$ref": "urn:companion:schema:common:v1#/$defs/revision" },
+    "conversation_revision": { "$ref": "urn:companion:schema:common:v1#/$defs/revision" },
+    "motives": { "type": "array", "items": { "$ref": "#/$defs/motive" }, "maxItems": 5 },
+    "blocked_reasons": { "type": "array", "items": { "$ref": "urn:companion:schema:common:v1#/$defs/token" }, "maxItems": 8 },
+    "expression_posture": { "$ref": "#/$defs/posture" },
+    "response_intent": { "enum": ["answer", "clarify", "repair", "share", "rest", "boundary", "silence"] },
+    "candidate_refs": { "type": "array", "items": { "$ref": "urn:companion:schema:common:v1#/$defs/token" }, "maxItems": 8 },
+    "expires_at": { "$ref": "urn:companion:schema:common:v1#/$defs/time" }
+  },
+  "required": ["schema_version", "decision_id", "trace_id", "scope", "source_event_refs", "world_revision", "calendar_revision", "affect_revision", "relationship_revision", "motive_revision", "conversation_revision", "motives", "blocked_reasons", "expression_posture", "response_intent", "candidate_refs", "expires_at"],
+  "additionalProperties": false,
+  "$defs": {
+    "motive": {
+      "type": "object",
+      "properties": { "kind": { "enum": ["connect", "repair", "care", "assist", "share", "rest", "resume", "boundary", "curiosity"] }, "drive": { "type": "number", "minimum": 0, "maximum": 1 }, "feasibility": { "type": "number", "minimum": 0, "maximum": 1 }, "target_ref": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/token" }, { "type": "null" }] }, "evidence_refs": { "type": "array", "items": { "$ref": "urn:companion:schema:common:v1#/$defs/token" }, "minItems": 1 } },
+      "required": ["kind", "drive", "feasibility", "target_ref", "evidence_refs"],
+      "additionalProperties": false
+    },
+    "posture": {
+      "type": "object",
+      "properties": { "distance": { "type": "number", "minimum": 0, "maximum": 1 }, "warmth": { "type": "number", "minimum": 0, "maximum": 1 }, "directness": { "type": "number", "minimum": 0, "maximum": 1 }, "length_budget": { "type": "integer", "minimum": 1, "maximum": 4000 }, "question_budget": { "type": "integer", "minimum": 0, "maximum": 3 }, "safety_mode": { "enum": ["normal", "boundary", "safety"] }, "preferred_modality": { "enum": ["text", "voice", "image", "none"] } },
+      "required": ["distance", "warmth", "directness", "length_budget", "question_budget", "safety_mode", "preferred_modality"],
+      "additionalProperties": false
+    }
+  }
+}

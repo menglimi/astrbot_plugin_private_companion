@@ -1,0 +1,17 @@
+{
+  "cases": [
+    {"id": "CTRL-SHAPE-01", "document": "examples/bind.json", "schema": "control-request", "valid": true},
+    {"id": "CTRL-SHAPE-02", "document": "examples/result-old-handle.json", "schema": "control-result", "valid": true},
+    {"id": "CTRL-SHAPE-03", "document": "examples/result-cancel-unknown.json", "schema": "control-result", "valid": true},
+    {"id": "CTRL-SHAPE-04", "document": "examples/state-page.json", "schema": "extension-state-page", "valid": true},
+    {"id": "CTRL-SHAPE-05", "document": "examples/register.json", "schema": "control-request", "valid": true},
+    {"id": "CTRL-SHAPE-06", "document": "examples/discover.json", "schema": "control-request", "valid": true},
+    {"id": "CTRL-SHAPE-07", "document": "examples/release.json", "schema": "control-request", "valid": true},
+    {"id": "CTRL-SHAPE-08", "document": "examples/cancel.json", "schema": "control-request", "valid": true},
+    {"id": "CTRL-SHAPE-09", "document": "examples/operation-lookup.json", "schema": "control-request", "valid": true},
+    {"id": "CTRL-SHAPE-10", "document": "examples/session-resume.json", "schema": "control-request", "valid": true},
+    {"id": "CTRL-SHAPE-11", "document": "examples/result-bind-pending.json", "schema": "control-result", "valid": true},
+    {"id": "CTRL-SHAPE-12", "document": "examples/result-cancel-unknown.json", "schema": "control-result", "valid": true}
+  ],
+  "json_cases": []
+}

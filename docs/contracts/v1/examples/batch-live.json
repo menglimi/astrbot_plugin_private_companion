@@ -1,0 +1,92 @@
+{
+  "schema_version": "memory.change-batch.v1",
+  "capability_id": "memory.changed",
+  "capability_version": "1.0",
+  "provider_id": "example.memory",
+  "provider_generation": "generation-8",
+  "trace_id": "trace-recovery-001",
+  "scope": {
+    "ecosystem_id": "ecosystem-001",
+    "installation_id": "installation-001",
+    "runtime_instance_id": "embedded-runtime",
+    "host_kind": "companion-app",
+    "bot_id": "bot-main",
+    "platform": null,
+    "account_id": null,
+    "conversation_ref": "conversation-001",
+    "platform_conversation_id": null,
+    "session_id": null,
+    "user_id": null,
+    "group_id": null,
+    "persona_id": "persona-main",
+    "persona_binding_revision": 12
+  },
+  "subscription_id": "subscription-001",
+  "subscriber_generation": "consumer-8",
+  "binding": {
+    "subscriber_ref": "subscriber-reading",
+    "owner_ref": "owner-001",
+    "namespace": "example.reading",
+    "purpose": "projection",
+    "projection_kind": "references",
+    "view_kind": "current_projection",
+    "change_kinds": [
+      "added",
+      "corrected",
+      "retracted",
+      "expired"
+    ],
+    "view_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+    "authorization_revision": "acl-3",
+    "policy_revision": "policy-3",
+    "lineage_id": "lineage-reading",
+    "retention_epoch": "retention-2",
+    "contract_fingerprint": "3a41420f40fcd7dc8b8e2d990c8c5b3bd47cde8a998c88339daa9c71dadaaee2"
+  },
+  "batch_id": "batch-live-001",
+  "lease": {
+    "lease_id": "lease-live-001",
+    "expires_at": "2026-09-08T01:01:00Z"
+  },
+  "delivery_mode": "live",
+  "snapshot_id": null,
+  "from_cursor": "cursor-106",
+  "to_cursor": "cursor-107",
+  "events": [
+    {
+      "schema_version": "memory.changed.v1",
+      "capability_id": "memory.changed",
+      "capability_version": "1.0",
+      "provider_id": "example.memory",
+      "provider_generation": "generation-8",
+      "trace_id": "trace-recovery-001",
+      "scope": {
+        "ecosystem_id": "ecosystem-001",
+        "installation_id": "installation-001",
+        "runtime_instance_id": "embedded-runtime",
+        "host_kind": "companion-app",
+        "bot_id": "bot-main",
+        "platform": null,
+        "account_id": null,
+        "conversation_ref": "conversation-001",
+        "platform_conversation_id": null,
+        "session_id": null,
+        "user_id": null,
+        "group_id": null,
+        "persona_id": "persona-main",
+        "persona_binding_revision": 12
+      },
+      "payload": {
+        "event_id": "event-107",
+        "namespace": "example.reading",
+        "owner_ref": "owner-001",
+        "atom_id": "atom-002",
+        "atom_revision": 1,
+        "memory_revision": 107,
+        "change_kind": "added",
+        "occurred_at": "2026-09-08T01:00:01Z",
+        "trace_id": "trace-recovery-001"
+      }
+    }
+  ]
+}

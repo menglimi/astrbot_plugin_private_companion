@@ -1,0 +1,13 @@
+{
+  "schema_version": "companion.proactive-preview.v1",
+  "preview_id": "preview-042",
+  "decision_id": "decision-042",
+  "scope": { "ecosystem_id": "ecosystem-001", "installation_id": "installation-001", "runtime_instance_id": "embedded-runtime", "host_kind": "companion-app", "bot_id": "bot-main", "platform": "aiocqhttp", "account_id": "qq-bot-001", "conversation_ref": "conversation-001", "platform_conversation_id": "private-user-123", "session_id": "session-a-001", "user_id": "user-a", "group_id": null, "persona_id": "persona-main", "persona_binding_revision": 12 },
+  "mode": "observe",
+  "risk_class": "low",
+  "delivery_allowed": false,
+  "candidates": [{ "candidate_id": "candidate-share-042", "motive_kind": "share", "readiness": 0.42, "decision": "deferred", "blocked_reasons": ["engaged_thread"], "preferred_window": "2026-09-08T20:00:00+08:00" }],
+  "budget": { "max_input_bytes": 8192, "max_model_calls": 0, "max_output_bytes": 4096, "max_tokens": 1000, "max_candidates": 4, "max_concurrency": 1 },
+  "created_at": "2026-09-08T19:20:02+08:00",
+  "expires_at": "2026-09-08T20:00:00+08:00"
+}

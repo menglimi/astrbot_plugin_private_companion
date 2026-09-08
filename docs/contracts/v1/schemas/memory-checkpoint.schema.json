@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:memory-checkpoint:v1",
+  "title": "memory.checkpoint.v1 portable recovery evidence, not authorization",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "memory.checkpoint.v1"
+    },
+    "binding": {
+      "$ref": "urn:companion:schema:memory-stream:v1#/$defs/binding"
+    },
+    "projection_generation": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "state": {
+      "enum": [
+        "snapshot_pages",
+        "snapshot_tail",
+        "active"
+      ]
+    },
+    "snapshot": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:memory-stream:v1#/$defs/snapshot"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "page_cursor": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "stream_cursor": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "last_event_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "memory_revision": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/revision"
+    },
+    "inbox_ref": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "stored_at": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/time"
+    }
+  },
+  "required": [
+    "schema_version",
+    "binding",
+    "projection_generation",
+    "state",
+    "snapshot",
+    "page_cursor",
+    "stream_cursor",
+    "last_event_id",
+    "memory_revision",
+    "inbox_ref",
+    "stored_at"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "snapshot_pages"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "snapshot": {
+            "$ref": "urn:companion:schema:memory-stream:v1#/$defs/snapshot"
+          },
+          "page_cursor": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/token"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "snapshot_tail"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "snapshot": {
+            "$ref": "urn:companion:schema:memory-stream:v1#/$defs/snapshot"
+          },
+          "page_cursor": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "active"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "page_cursor": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+}

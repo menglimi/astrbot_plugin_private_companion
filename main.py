@@ -253,6 +253,7 @@ from .companion_interaction_expression import (
     expression_decision_prompt_section,
 )
 from .photo_reference_catalog import CATALOG_VERSION, load_catalog, validate_and_serialize
+from .photo_nai_params import extract_user_photo_nai_params
 from .relationship_ledger import normalize_relationship_positive_stage_cap_key
 from .relationship_policy import normalize_relationship_stage_policy
 from .runtime_config_dispatcher import dispatch_runtime_config_effects
@@ -288,6 +289,8 @@ def _multi_persona_event_context(function):
     if inspect.isasyncgenfunction(function):
         @functools.wraps(function)
         async def asyncgen_wrapper(self, event, *args, **kwargs):
+            if not _plugin_instance_can_dispatch(self):
+                return
             scope_checker = getattr(self, "_bot_scope_allows_event", None)
             if callable(scope_checker) and not scope_checker(event):
                 return
@@ -309,6 +312,8 @@ def _multi_persona_event_context(function):
 
     @functools.wraps(function)
     async def async_wrapper(self, event, *args, **kwargs):
+        if not _plugin_instance_can_dispatch(self):
+            return None
         scope_checker = getattr(self, "_bot_scope_allows_event", None)
         if callable(scope_checker) and not scope_checker(event):
             return None
@@ -534,6 +539,31 @@ _private_companion_runtime = sys.modules.setdefault(
     _new_private_companion_runtime(),
 )
 _private_companion_plugin: Any | None = _private_companion_runtime.active_plugin
+
+
+def _plugin_instance_root(instance: Any) -> str:
+    """Return the data/plugins directory name that imported an instance."""
+    module_name = str(getattr(type(instance), "__module__", "") or "")
+    parts = module_name.split(".")
+    if len(parts) >= 3 and parts[:2] == ["data", "plugins"]:
+        return parts[2]
+    return ""
+
+
+def _is_primary_plugin_instance(instance: Any) -> bool:
+    return _plugin_instance_root(instance) == PLUGIN_NAME
+
+
+def _plugin_instance_can_dispatch(instance: Any) -> bool:
+    if bool(getattr(instance, "_private_companion_duplicate_instance", False)):
+        return False
+    if not bool(getattr(instance, "_private_companion_instance_guard_enabled", False)):
+        return True
+    with _private_companion_runtime.lock:
+        return (
+            _private_companion_runtime.active_plugin is None
+            or _private_companion_runtime.active_plugin is instance
+        )
 
 
 class _OneBotReactionImage(BaseMessageComponent):
@@ -4603,6 +4633,8 @@ class PrivateCompanionPlugin(
         }
 
     def __init__(self, context: Context, config: AstrBotConfig):
+        self._private_companion_instance_guard_enabled = True
+        self._private_companion_duplicate_instance = False
         super().__init__(context)
         initialize_plugin_entrypoint_state(
             self,
@@ -8386,6 +8418,20 @@ class PrivateCompanionPlugin(
 
     async def initialize(self):
         global _private_companion_plugin
+        with _private_companion_runtime.lock:
+            active = _private_companion_runtime.active_plugin
+            if (
+                active is not None
+                and active is not self
+                and _is_primary_plugin_instance(active)
+                and not _is_primary_plugin_instance(self)
+            ):
+                self._private_companion_duplicate_instance = True
+                logger.warning(
+                    "检测到同名 worktree 插件实例，已跳过其事件处理: module=%s",
+                    type(self).__module__,
+                )
+                return
         await self._initialize_before_publication()
         try:
             await resume_story_handoff(self)
@@ -17938,6 +17984,9 @@ class PrivateCompanionPlugin(
         if proactive_framework:
             return False
         return not self._proactive_only_temp_unlock_allows(effective_feature)
+
+    def _extract_user_photo_nai_params(self, text: str) -> str:
+        return extract_user_photo_nai_params(text)
 
     async def _record_proactive_only_private_feedback(
         self,

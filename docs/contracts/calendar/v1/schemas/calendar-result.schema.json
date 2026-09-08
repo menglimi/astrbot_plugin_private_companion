@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:calendar-result:v1",
+  "title": "Calendar operation result and local impact set",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "companion.calendar.result.v1" },
+    "request_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "trace_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "status": { "enum": ["succeeded", "rejected", "permission_denied", "conflict", "uncertain", "timeout", "cancelled", "failed"] },
+    "calendar_revision": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/revision" }, { "type": "null" }] },
+    "change_set_ref": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/token" }, { "type": "null" }] },
+    "affected_refs": { "type": "array", "items": { "$ref": "urn:companion:schema:common:v1#/$defs/token" }, "maxItems": 32 },
+    "receipt": { "type": "object", "properties": { "committed": { "type": "boolean" }, "external_sync": { "enum": ["not_requested", "pending", "succeeded", "uncertain", "failed"] } }, "required": ["committed", "external_sync"], "additionalProperties": false },
+    "reason": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/token" }, { "type": "null" }] }
+  },
+  "required": ["schema_version", "request_id", "trace_id", "status", "calendar_revision", "change_set_ref", "affected_refs", "receipt", "reason"],
+  "additionalProperties": false,
+  "allOf": [{
+    "if": { "properties": { "status": { "const": "succeeded" } } },
+    "then": { "properties": { "receipt": { "properties": { "committed": { "const": true } } } } }
+  }]
+}

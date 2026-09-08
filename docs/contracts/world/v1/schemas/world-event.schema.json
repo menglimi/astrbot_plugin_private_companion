@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:world-event:v1",
+  "title": "A committed world event or replayable owner event",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "companion.world-event.v1" },
+    "event_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "owner_ref": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "scope": { "$ref": "urn:companion:schema:runtime-scope:v1" },
+    "event_type": { "enum": ["entity_created", "entity_updated", "entity_expired", "activity_started", "activity_paused", "activity_resumed", "activity_completed", "activity_cancelled", "observation_received"] },
+    "entity_refs": { "type": "array", "items": { "$ref": "urn:companion:schema:common:v1#/$defs/token" }, "maxItems": 16 },
+    "process_ref": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/token" }, { "type": "null" }] },
+    "world_revision": { "$ref": "urn:companion:schema:common:v1#/$defs/revision" },
+    "process_revision": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/revision" }, { "type": "null" }] },
+    "observed_at": { "$ref": "urn:companion:schema:common:v1#/$defs/time" },
+    "expires_at": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/time" }, { "type": "null" }] },
+    "reality_mode": { "enum": ["simulated", "observed", "mixed"] },
+    "causation_id": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/token" }, { "type": "null" }] },
+    "evidence_refs": { "type": "array", "items": { "$ref": "urn:companion:schema:common:v1#/$defs/evidence" }, "minItems": 1, "maxItems": 8 },
+    "visibility": { "enum": ["private", "user_safe", "global_safe"] },
+    "payload": { "type": "object", "maxProperties": 24 },
+    "idempotency_key": { "$ref": "urn:companion:schema:common:v1#/$defs/token" }
+  },
+  "required": ["schema_version", "event_id", "owner_ref", "scope", "event_type", "entity_refs", "process_ref", "world_revision", "process_revision", "observed_at", "expires_at", "reality_mode", "causation_id", "evidence_refs", "visibility", "payload", "idempotency_key"],
+  "additionalProperties": false
+}

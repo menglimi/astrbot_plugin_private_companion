@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:action-request:v1",
+  "title": "companion.action.v1 negotiated public execution request",
+  "allOf": [
+    {
+      "$ref": "urn:companion:schema:common:v1#/$defs/request"
+    }
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "companion.action.v1"
+    },
+    "capability_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*(?:\\.[a-z][a-z0-9_-]*)+$",
+      "maxLength": 256
+    },
+    "binding_ref": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "required_features": {
+      "type": "array",
+      "contains": {
+        "const": "companion.execution@1"
+      }
+    },
+    "execution": {
+      "$ref": "urn:companion:schema:execution-common:v1#/$defs/correlation"
+    },
+    "idempotency_key": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "payload_schema": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "payload": {
+      "type": "object"
+    },
+    "preconditions": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:companion:schema:execution-common:v1#/$defs/precondition"
+      }
+    }
+  },
+  "required": [
+    "binding_ref",
+    "required_features",
+    "execution",
+    "idempotency_key",
+    "payload_schema",
+    "preconditions"
+  ],
+  "unevaluatedProperties": false
+}

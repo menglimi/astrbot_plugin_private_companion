@@ -1,0 +1,14 @@
+{
+  "fixture_version": "0.1.0",
+  "run_status": "not_run",
+  "actual": null,
+  "replay": [
+    { "sequence": 1, "event": "activity_paused_by_user_a", "inputs": ["world-event-042"], "outputs": ["affect-event-042", "relationship-event-042"] },
+    { "sequence": 2, "event": "hard_user_calendar_commitment_conflicts_with_share", "inputs": ["calendar-boundary-007"], "outputs": ["decision-042"] },
+    { "sequence": 3, "event": "reply_generated_in_current_session", "inputs": ["decision-042"], "outputs": ["response-plan-042"] },
+    { "sequence": 4, "event": "low_risk_proactive_preview", "inputs": ["decision-042"], "outputs": ["preview-042"], "assertions": ["delivery_allowed=false", "decision=deferred", "no_delivery_receipt"] },
+    { "sequence": 5, "event": "user_a_correction_retracts_source", "inputs": ["affect-event-042"], "outputs": ["decision-043"], "assertions": ["old candidate superseded", "no old event re-applied"] },
+    { "sequence": 6, "event": "user_b_new_session_reads_global_safe_projection", "inputs": ["decision-043"], "outputs": [], "assertions": ["private evidence absent", "session occupancy absent"] }
+  ],
+  "performance": { "max_semantic_model_calls": 1, "max_candidates": 4, "max_snapshot_bytes": 16384, "max_inflight_previews": 8 }
+}

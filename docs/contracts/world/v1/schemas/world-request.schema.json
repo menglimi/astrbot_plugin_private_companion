@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:world-request:v1",
+  "title": "World query, transition, activity advance, or event replay request",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "companion.world.request.v1" },
+    "request_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "trace_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "scope": { "$ref": "urn:companion:schema:runtime-scope:v1" },
+    "operation": { "enum": ["world.model.query", "world.state.transition", "world.activity.advance", "world.event.publish"] },
+    "target_ref": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/token" }, { "type": "null" }] },
+    "expected_revision": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/revision" }, { "type": "null" }] },
+    "patch": { "type": "object", "maxProperties": 24 },
+    "event_ref": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/token" }, { "type": "null" }] },
+    "evidence_refs": { "type": "array", "items": { "$ref": "urn:companion:schema:common:v1#/$defs/evidence" }, "minItems": 1, "maxItems": 8 },
+    "budget": { "$ref": "urn:companion:schema:common:v1#/$defs/budget" },
+    "idempotency_key": { "$ref": "urn:companion:schema:common:v1#/$defs/token" }
+  },
+  "required": ["schema_version", "request_id", "trace_id", "scope", "operation", "target_ref", "expected_revision", "patch", "event_ref", "evidence_refs", "budget", "idempotency_key"],
+  "additionalProperties": false,
+  "allOf": [
+    { "if": { "properties": { "operation": { "const": "world.model.query" } } }, "then": { "properties": { "patch": { "maxProperties": 8 } } } },
+    { "if": { "properties": { "operation": { "const": "world.event.publish" } } }, "then": { "properties": { "event_ref": { "$ref": "urn:companion:schema:common:v1#/$defs/token" } } } }
+  ]
+}

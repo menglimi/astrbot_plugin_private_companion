@@ -1,12 +1,16 @@
 # 现有插件改造审计清单
 
-状态：首轮静态审计 v0.1
+> 导航：[设计总纲](./FRAMEWORK_DESIGN.md) / [主题目录](./FRAMEWORK_DESIGN_INDEX.md)。定位：日期化代码审计；是旧框架证据，运行结论以报告时点为限。
+
+状态：首轮静态审计 v0.1；2026-09-06 补充设计审查对应项（未重新执行全量代码审计）
 
 审计日期：2026-09-05
 
 范围：陪伴聚合体系十个插件的生产代码、manifest 和现有设计稿
 
 原则：只记录可复核的代码事实；本轮不改变运行逻辑、不删除兼容路径。
+
+下文原始统计与行号属于 2026-09-05 快照，不应视为当前 HEAD 的精确位置。后续复核记录仓库、commit、文件与符号、命令及结果日期，再更新对应证据；本次新增项见第 9 节和 [设计审查记录](./DESIGN_REVIEW_20260906.md)。
 
 ## 1. 如何使用这份清单
 
@@ -16,7 +20,7 @@
 | --- | --- | --- |
 | `S0 static` | 从代码、配置或 manifest 即可确认入口和边界 | 立即盘点、标注、补测试，不改变协议 |
 | `S1 observe` | 需要真实运行、回执或跨插件时序才能判断 | 先补统一审计字段，再影子运行 |
-| `S2 contract` | 会改变公共调用、数据所有权或宿主边界 | 等 P0 契约冻结后分批迁移 |
+| `S2 contract` | 会改变公共调用、数据所有权或宿主边界 | 冻结受影响切片的 P0 最小契约后分批迁移 |
 
 审计输出至少包括：入口文件和函数、作用域、读写对象、外部副作用、失败/取消路径、当前 owner、证据链接、风险级别和下一步动作。静态扫描结果只说明“存在需要核对的路径”，不能单独证明一定会泄漏、重复发送或无法停止。
 
@@ -26,14 +30,14 @@
 | --- | --- | --- | --- | --- | --- |
 | A-01 | 运行时身份与权限 | `S0 + S1` | 每个状态、缓存、任务、候选、记忆和页面请求的完整 scope；是否只用 `user_id`、`conversation_id` 或 `persona_id` | 作用域键清单；双 Bot/双人格/双会话隔离矩阵 | `private_companion/proactive_engine.py:362-470`；`remember_you/core/bridge.py:933-950`；`private_companion/bot_personal_contract.py:233` |
 | A-02 | 对话主链与消息投递 | `S0` | Hook 阶段、priority、读写对象、是否注入/改写/停止事件、是否可能重复处理 | Hook 顺序图；冲突矩阵；唯一协调者候选 | `private_companion/main.py:1423`、`:8960`、`:9993`、`:11591`、`:18381-19110`；`remember_you/main.py:93-124`；`reality_companion/main.py:1270-1410`；`live_stream_companion/main.py:5926-6056` |
-| A-03 | 对话主链与消息投递 | `S0 + S1` | 所有直接发送按命令回复、被动回复、主动消息、媒体、TTS、动作回执分类；是否经过发送前处理、幂等和投递回执 | 发送调用表；旁路清单；重复/不确定投递场景表 | `private_companion/main.py:8755-8850`、`:12008-12330`；`private_companion/proactive_message.py:17606-17685`；`screen_companion/main.py:2079-2084`、`:2905-2927`；`live_stream_companion/main.py:2068-2511` |
+| A-03 | 对话主链与消息投递 | `S0 + S1` | 所有直接发送按命令回复、被动回复、主动消息、媒体、TTS、动作回执分类；是否经过发送前处理、对话占用态、幂等和投递回执 | 发送调用表；旁路清单；重复/不确定投递场景表；无关媒体插话清单 | `private_companion/main.py:8755-8850`、`:12008-12330`；`private_companion/proactive_message.py:17606-17685`；`screen_companion/main.py:2079-2084`、`:2905-2927`；`live_stream_companion/main.py:2068-2511` |
 | A-04 | 控制面、诊断、迁移与运维 | `S0 + S1` | 每个 `asyncio.create_task` 的 owner、scope、名称、取消、超时、重试、异常回调和停止钩子 | 任务注册表；卸载后零遗留任务证明；任务数量和耗时基线 | `private_companion/main.py:8123-8264`；`screen_companion/main.py:970-1007`、`:2324-2603`；`reality_companion/main.py:521-579`；`live_stream_companion/main.py:391-405`、`:1327-1416` |
 | A-05 | 控制面、诊断、迁移与运维 | `S0` | 跨插件发现是否走注册表、模块导入或 `sys.modules` 扫描；热重载后旧实例、旧 generation 和旧任务是否被撤销 | 依赖发现图；卸载/重载行为表；单一发现入口迁移清单 | `private_companion/main.py:516-520`；`private_companion/integration_status.py:543-555`、`:808-824`；`content_companion/main.py:549-563`；`image_companion/main.py:472-502`；`reality_companion/main.py:606-640`；`together_companion/main.py:1260-1655` |
 | A-06 | 外部连接、Session 与安全 | `S0 + S1` | Web/API/WS 的鉴权、token 位置、票据过期、重放、CORS/Origin、资源上限、卸载撤销和隐私字段 | 路由和连接矩阵；凭证/票据生命周期表；未授权路径测试 | `screen_companion/core/remote_receiver.py:86-127`；`together_companion/server.py:96-104`、`:481-546`；`reality_companion/mihome_web_api.py:499-576`；`live_stream_companion/subtitle_server.py:152-170` |
-| A-07 | 记忆、证据与知识权威 | `S0 + S1` | 注入模型的事实是否带来源、时间、新鲜度、可信度和敏感级别；模型推测是否被写成稳定记忆；跨会话/跨人格共享是否有授权 | 上下文贡献清单；记忆写入来源表；证据缺失和误记样本集 | `private_companion/agenda_disclosure_policy.py:376-487`；`private_companion/emotion_diagnostics.py:197-266`；`remember_you/core/service.py:921`；`remember_you/core/bridge.py:1160-1170` |
+| A-07 | 记忆、证据与知识权威 | `S0 + S1` | 事实的主体、属性、否定、有效时间与证据是否保真；答案片段是否实际注入；候选限额是否先限定可见空间；证据保留与修订/撤回；模型推测和跨域共享授权 | 上下文贡献与写入来源表；最终证据覆盖率；专项精度反例及误记样本集 | `private_companion/agenda_disclosure_policy.py:376-487`；`private_companion/emotion_diagnostics.py:197-266`；`remember_you/core/service.py:921`；专项源码位置见第 10 节 |
 | A-08 | 模型、媒体与资源治理 | `S0 + S1` | 模型 Provider、Token、视觉/TTS、媒体生成、缓存和临时文件是否有预算、TTL、取消、清理和失败冷却 | 每次模型/媒体任务资源账本；内存、Token、网络和媒体耗时基线 | `private_companion/token_budget.py:477-699`；`private_companion/private_image.py:3658`、`:5151`；`image_companion/image_runtime.py:21284-21321`；`together_companion/main.py:3001-3051` |
-| A-09 | 主动消息与动机 | `S0 + S1` | 念头/候选的来源、状态、延后次数、TTL、合并键、接触预算、未回应反馈和实际投递是否分开 | 候选生命周期表；延后/过期/合并/重复率；接触负担报表 | `private_companion/proactive_engine.py:320-520`、`:3370-3555`；`private_companion/proactive_message.py:15731-15970` |
-| A-10 | 日历与双向时间控制 | `S0 + S1` | 日历事实、活动观测、软计划、可用窗口、安静时段和投影是否分层；Bot 回写是否走版本、授权、幂等和回滚 | 时间段事实表；重算影响范围；CalendarCommand 回写审计 | `private_companion/agenda_runtime.py:142-343`、`:661-969`；`private_companion/calendar_observer.py:162-370`；`private_companion/schedule_reconciler.py:170-560` |
+| A-09 | 主动消息与动机 | `S0 + S1` | 念头/候选的来源、状态、对话占用态、延后原因/次数、TTL、合并键、接触预算、未回应反馈和实际投递是否分开 | 候选生命周期表；延后/过期/合并/重复率；无关媒体打断率；接触负担报表 | `private_companion/proactive_engine.py:320-520`、`:3370-3555`；`private_companion/proactive_message.py:15731-15970` |
+| A-10 | 日历与双向时间控制 | `S0 + S1` | 日历事实、活动观测、软计划、可用窗口、对话占用覆盖、安静时段和投影是否分层；Bot 回写是否走版本、授权、幂等和回滚 | 时间段事实表；占用态与时间段冲突矩阵；重算影响范围；CalendarCommand 回写审计 | `private_companion/agenda_runtime.py:142-343`、`:661-969`；`private_companion/calendar_observer.py:162-370`；`private_companion/schedule_reconciler.py:170-560` |
 | A-11 | 情绪、动机与角色表达 | `S1` | 情绪事件、状态投影、动机和表达姿态如何影响候选；是否直接改 prompt、频率或发送状态；状态是否可过期/撤回 | 新旧候选对照；情绪调制增量和 TTL；误判/恢复样本 | `private_companion/affect_modulation_contract.py:14-23`；`private_companion/emotion_diagnostics.py:93-266`；`private_companion/interaction_dynamics.py` |
 | A-12 | 平台兼容与降级 | `S0 + S1` | 平台类型分支、消息组件能力、主动发送、引用/撤回/语音/图片失败降级；OneBot/QQ 官方身份是否混用 | 平台能力矩阵；每类组件的成功/降级/失败回执 | `private_companion/proactive_message.py:17606-17685`；`private_companion/proactive_chat_runtime_bridge.py:524-582`；各插件 `metadata.yaml` 的 `support_platforms` |
 
@@ -60,7 +64,7 @@
 
 `private_companion` 的生产代码中同时存在模型请求、模型响应、Agent 开始/结束和发送前装饰 Hook。发送前装饰 Hook 从 `main.py:8960` 延伸到 `main.py:12350`，模型请求 Hook 又集中在 `main.py:18083-19110`。外部插件也直接注册模型和发送相关 Hook：记忆插件在 `main.py:93-124`，现实插件在 `main.py:1270-1410`，游戏插件在 `main.py:893-910`，直播插件在 `main.py:5926-6056`。这些入口可以立即静态排序和标注，但只有运行时 trace 才能确认真实执行顺序、是否重复注入以及是否在同一会话生效。
 
-### 4.2 发送出口还没有成为全局唯一出口
+### 4.2 多类发送入口需要划定接管范围
 
 私有核心已有较完整的 Proactive Chat 局部桥接：`proactive_chat_runtime_bridge.py:448-507` 记录 attempt、物理发送成功数和状态结算，`proactive_chat_runtime_bridge.py:524-582` 负责平台发送确认；普通主动链在 `proactive_message.py:17606-17685` 同时尝试精确平台、核心发送和降级路径。与此同时，屏幕、直播、游戏、图片和 AT 转发仍有自己的 `event.send`、`context.send_message` 或 `send_by_session` 调用。第一步应逐处判断它们属于命令回复还是业务投递，并记录是否拥有 `dedupe_key`、`DeliveryReceipt` 和 `InteractionLedger` 结算。
 
@@ -91,6 +95,10 @@
 ```text
 trace_id
 scope_key
+owner_key
+entity_revision
+provider_generation
+run_mode
 provider_id
 capability_version
 task_id
@@ -98,6 +106,16 @@ candidate_id
 opportunity_id
 action_id
 delivery_id
+conversation_state
+conversation_revision
+active_thread_id
+topic_fingerprint
+activity_episode_id
+state_transition_id
+state_revision
+world_entity_id
+habit_revision
+activity_process_id
 policy_version
 started_at
 finished_at
@@ -106,7 +124,7 @@ reason_code
 resource_usage
 ```
 
-原始消息、精确位置、健康数据、屏幕内容和媒体正文不应因为审计被复制到 Kernel。审计事件只保留摘要、引用和脱敏后的状态。没有 `DeliveryReceipt` 时记录为 `submitted` 或 `uncertain`，不能直接记为 `delivered`。
+原始消息、精确位置、健康数据、屏幕内容和媒体正文不因审计复制到 Kernel。只保留摘要、引用和脱敏状态，并设保留期限。`scope_key` 记录调用指纹，`owner_key` 表示稳定数据归属；无关字段允许省略，不能为指标伪造主体。发送前记录 pending，请求已提交但没有明确回执时为 submitted/uncertain，接口确认受理为 accepted；只有明确送达证据才记为 delivered。
 
 ## 6. 可以直接修正的局部问题
 
@@ -115,7 +133,7 @@ resource_usage
 1. 为现有 Hook 和发送点补充来源、阶段、scope、trace 和幂等键日志，不改变调用结果；
 2. 将新的 `external_bridge_resolver` 用作新增跨插件调用的唯一发现入口，旧调用保留兼容回退并记录命中路径；
 3. 给现有后台任务补齐稳定名称、owner、创建时间和取消原因，优先把裸 `asyncio.create_task` 纳入插件已有的任务集合；
-4. 给页面和 WebSocket 状态接口统一返回 `installed/enabled/available/degraded/stopped` 及最近错误，不在主插件复制扩展凭证和原始数据；
+4. 给页面和 WebSocket 状态接口补齐安装、启用、生命周期、可用性及最近错误的独立字段，不把不同维度混为一个状态枚举；不在主插件复制扩展凭证和原始数据；
 5. 为日历候选、主动候选和情绪投影增加 `source_refs`、`valid_until`、`revision` 和 `trace_id` 的兼容字段，先双写审计，不改变旧决策；
 6. 先建立多 Bot/多人格/多会话隔离测试夹具，发现串线时优先修复键构造和上下文传递，暂不删除旧数据。
 
@@ -126,19 +144,49 @@ resource_usage
 - 全量替换外部插件公共 API；
 - 把所有模型、图片、音频、视频和设备动作重写到新 Gateway；
 - 删除旧的主动循环、兼容桥和页面路由；
-- 把各插件领域数据库合并到主插件；
+- 各插件领域数据库合并到主插件不属于当前目标，不能因 P0 完成就自动启动合库；
 - 大规模修改 AstrBot 主事件模型或提交宿主 PR；
 - 在没有影子数据和回滚版本时切换真实主动投递。
 
 ## 8. 首轮执行顺序
 
 ```text
-Hook/发送/任务/发现静态盘点
+核心与九个原生插件的用例、所有权和依赖盘点
+  -> Hook/发送/任务/发现静态盘点
   -> 多 Bot/多人格/多会话隔离夹具
   -> 统一审计字段和回执
-  -> 主动、日历、情绪影子运行
-  -> 低风险被动回复 + 一个低风险主动类型共用投递出口
-  -> 按插件批次迁移并保留兼容回退
+  -> 原生插件最小契约及真实适配入口验证
+  -> N-01--N-05 联动验证、连续聊天占用场景与主动/日历/情绪影子运行
+  -> 按已验证切片冻结公共契约
+  -> 分批迁移完整业务并保留兼容回退
 ```
 
-首轮完成条件：每个生产发送点和后台任务都有 owner、scope、失败/取消路径；每个跨插件发现点能说明注册表或兼容回退来源；候选、时间段和情绪投影可以追溯到证据和策略版本；隔离矩阵没有发现跨 Bot、人格或会话串线。满足这些条件后，才进入 P0 主链样板和数据迁移。
+首轮完成条件：每个生产发送点和后台任务都有 owner、scope、失败/取消路径；每个跨插件发现点能说明注册表或兼容回退来源；候选、时间段、对话占用态和情绪投影可追溯到证据和策略版本；隔离与连续性矩阵通过。九个原生插件分别具备最小契约、真实适配入口与缺失/版本/重载验证记录，N-01--N-05 及连续聊天占用场景共同验证核心边界；外部设备或平台未实测的部分单独注明。按通过的切片进入生产接管和数据迁移，不能只用核心启动或通用假插件注册结果宣布原生联动完成。
+
+## 9. 设计审查后的补充验证
+
+以下是待执行事项，不表示已发现对应运行故障。与原审计编号共用报告，避免再建一套任务体系。
+
+| 对应项 | 补充检查 | 验收证据 |
+| --- | --- | --- |
+| A-01 | 分开 RuntimeScope 指纹与稳定 owner_key；群消息不应用成员私聊人格绑定 | 双 Bot 隔离、同人格跨窗口连续性、绑定改回后的状态恢复 |
+| A-02/A-03 | 明确 delivery_owner/history_owner；区分宿主回复、陪伴主动和实时流 | 每轮只有一个发送/历史所有者，独立命令正常，实时流不进入主动队列 |
+| A-02/A-09 | 连续聊天期间记录 `ConversationOccupancy`；区分同主题合并、无关候选延后和授权抢占；媒体候选不能因生成完成旁路投递 | 散步等活动中的连续聊天回放：无关吃饭/拍照图片为 `deferred(conversation_busy)`，当前回复不被插话；用户询问时可同主题合并 |
+| A-02/A-10 | 区分会过期的 `PromptSnapshot`/日程页与跨时间段保留的 `PersonaContinuityState`；验证活动事件和状态变更提议是否有 owner、证据、TTL 与 revision | 时间段结束后换一轮扮演：短期页面消失，未完成事项/已验证偏好仍能恢复；未确认计划不成为新事实或主动触发器 |
+| A-07/A-10 | 核对长活动、具身状态、世界实体和习惯是否从状态事件进入后续扮演；是否存在只写 prompt/日程页而不落状态的技能 | 刷手机/学习/洗澡可中断恢复；衣柜、路线、食物和时长分布跨轮次一致，未知项不会被自动补造 |
+| A-03/A-09 | accepted/delivered/partial/uncertain；并发预算预留及崩溃恢复 | 分段失败不重发已受理部分，未知结果不盲目重试，额度不并发超发 |
+| A-04/A-06 | 按资源所有者托管连接，generation 撤销先于关闭，管理和媒体入口分别验证 | 共享连接不随聊天窗口结束；旧任务不能回写，媒体流不堵塞管理 API |
+| A-07/A-11 | 同一证据重复召回、异步修订、撤回和备份恢复 | 无重复累加；记忆/索引/余波删除传播，恢复不复活已删除内容 |
+| A-09/A-11 | 影子路径隔离写入空间、提示词与外部副作用 | 旧路径继续生效，新路径只记录差异，模型成本可计量 |
+| A-10 | 重复事项、全天、夏令时、模拟与现实、确认版本冲突 | 稳定 occurrence、无固定秒数跨日误差、旧确认不能覆盖新事实 |
+| A-01/A-07/A-10 | 单一权威写入、outbox/检查点、包含切换后新增数据的回退 | 一致快照、增量追平、唯一写入者；不支持无损反向迁移时停止切回 |
+| A-08/A-12 | 带样本量和场景的性能、兼容与降级基线 | P50/P95、内存/队列峰值、额外模型调用、平台真实回执能力 |
+| A-01--A-12 | 原生联动首期覆盖：每个插件的能力生产方/消费方、数据归属、配置入口与实际适配路径 | 架构 3.1.1 的逐插件记录、N-01--N-05 联动结果、精简安装与缺失/混合版本/热重载结果；注明测试替身和待实测外部边界 |
+
+文档一致性检查只覆盖 UTF-8、链接、结构与术语，不替代以上运行验收。通用场景以架构基线 5.1 为准，首期原生联动场景以 5.2 为准。
+
+## 10. 记忆精度专项发现
+
+针对用户反馈“记得多但记不清”，已在 `remember_you` 基线 `a12c386` 上完成源码审查与临时数据库离线复现，详见[记忆精度专项审查](../../astrbot_plugin_remember_you/docs/MEMORY_PRECISION_REVIEW_20260906.md)。六类问题覆盖可变事实错误折叠、词语重合误判支持、答案被注入截断、无权向量候选挤占、摘要证据过期和 MRR 漏算未命中。注入强化另列为待观测设计风险，不直接认定为错误事实来源。
+
+这些发现纳入 A-07，并与 A-01（候选权限）、A-11（证据生命周期）、A-12（评测口径）联验。49 项相关现有测试通过，但未覆盖这些反例；专项脚本输出当前行为差异，不代表问题已修复。首期 N-01 必须验证答案所需的完整断言与证据实际进入上下文，再结合否定/时间/归属正确性、无依据细节率与成本判定，不以召回条数宣布记忆质量达标。

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:calendar-activity-process:v1",
+  "title": "A resumable bounded activity process and checkpoint",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "companion.activity-process.v1" },
+    "process_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "owner_ref": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "scope": { "$ref": "urn:companion:schema:runtime-scope:v1" },
+    "kind": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "phase": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "started_at": { "$ref": "urn:companion:schema:common:v1#/$defs/time" },
+    "progress": { "type": "number", "minimum": 0, "maximum": 1 },
+    "attention_mode": { "enum": ["foreground", "background", "paused"] },
+    "interruptibility": { "enum": ["none", "low", "medium", "high"] },
+    "resume_policy": { "enum": ["resume", "restart_phase", "expire", "ask_user"] },
+    "next_checkpoint_at": { "$ref": "urn:companion:schema:common:v1#/$defs/time" },
+    "checkpoint": { "$ref": "#/$defs/checkpoint" },
+    "reality_mode": { "enum": ["simulated", "observed", "mixed"] },
+    "revision": { "$ref": "urn:companion:schema:common:v1#/$defs/revision" },
+    "source_refs": { "type": "array", "items": { "$ref": "urn:companion:schema:common:v1#/$defs/evidence" }, "minItems": 1 }
+  },
+  "required": ["schema_version", "process_id", "owner_ref", "scope", "kind", "phase", "started_at", "progress", "attention_mode", "interruptibility", "resume_policy", "next_checkpoint_at", "checkpoint", "reality_mode", "revision", "source_refs"],
+  "additionalProperties": false,
+  "$defs": {
+    "checkpoint": {
+      "type": "object",
+      "properties": {
+        "checkpoint_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+        "captured_at": { "$ref": "urn:companion:schema:common:v1#/$defs/time" },
+        "phase": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+        "progress": { "type": "number", "minimum": 0, "maximum": 1 },
+        "resume_after": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/time" }, { "type": "null" }] },
+        "pause_reason": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/token" }, { "type": "null" }] }
+      },
+      "required": ["checkpoint_id", "captured_at", "phase", "progress", "resume_after", "pause_reason"],
+      "additionalProperties": false
+    }
+  }
+}

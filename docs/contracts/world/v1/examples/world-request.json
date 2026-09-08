@@ -1,0 +1,14 @@
+{
+  "schema_version": "companion.world.request.v1",
+  "request_id": "world-request-001",
+  "trace_id": "trace-world-001",
+  "scope": { "ecosystem_id": "ecosystem-001", "installation_id": "installation-001", "runtime_instance_id": "embedded-runtime", "host_kind": "companion-app", "bot_id": "bot-main", "platform": null, "account_id": null, "conversation_ref": "conversation-001", "platform_conversation_id": null, "session_id": null, "user_id": null, "group_id": null, "persona_id": "persona-main", "persona_binding_revision": 12 },
+  "operation": "world.activity.advance",
+  "target_ref": "process-study-001",
+  "expected_revision": 3,
+  "patch": { "advance_to": "2026-09-08T19:30:00+08:00", "reason": "checkpoint_due" },
+  "event_ref": null,
+  "evidence_refs": [{ "id": "ev-checkpoint-001", "source_id": "scheduler-001", "source_type": "checkpoint", "evidence_kind": "observed", "observed_at": "2026-09-08T19:30:00+08:00", "expires_at": null, "source_revision": "1" }],
+  "budget": { "max_input_bytes": 4096, "max_model_calls": 0 },
+  "idempotency_key": "world-advance-process-study-001-r3"
+}

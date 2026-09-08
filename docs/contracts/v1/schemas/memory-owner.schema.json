@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:memory-owner:v1",
+  "title": "Stable owner tuple, resolved by the owner service",
+  "type": "object",
+  "properties": {
+    "ecosystem_id": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "installation_id": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "bot_id": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "persona_id": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "subject_ref": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "visibility_namespace": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    }
+  },
+  "required": [
+    "ecosystem_id",
+    "installation_id",
+    "bot_id",
+    "persona_id",
+    "subject_ref",
+    "visibility_namespace"
+  ],
+  "additionalProperties": false
+}

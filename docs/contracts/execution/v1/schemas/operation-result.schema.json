@@ -1,0 +1,378 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:operation-result:v1",
+  "title": "companion.operation-result.v1 public capability observation",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "companion.operation-result.v1"
+    },
+    "capability_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*(?:\\.[a-z][a-z0-9_-]*)+$",
+      "maxLength": 256
+    },
+    "capability_version": {
+      "const": "1.0"
+    },
+    "provider_id": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "provider_generation": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "request_id": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "trace_id": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "execution": {
+      "$ref": "urn:companion:schema:execution-common:v1#/$defs/correlation"
+    },
+    "status": {
+      "enum": [
+        "succeeded",
+        "pending",
+        "partial",
+        "rejected",
+        "permission_denied",
+        "unavailable",
+        "timeout",
+        "uncertain",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "reason_code": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "retryable": {
+      "type": "boolean"
+    },
+    "degraded": {
+      "type": "boolean"
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:companion:schema:common:v1#/$defs/token"
+      }
+    },
+    "effect_state": {
+      "$ref": "urn:companion:schema:execution-common:v1#/$defs/effect"
+    },
+    "receipt_ref": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:execution-common:v1#/$defs/reference"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "parts_ref": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:execution-common:v1#/$defs/reference"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "output_schema": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "output": {
+      "type": [
+        "object",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "capability_id",
+    "capability_version",
+    "provider_id",
+    "provider_generation",
+    "request_id",
+    "trace_id",
+    "execution",
+    "status",
+    "reason_code",
+    "retryable",
+    "degraded",
+    "warnings",
+    "effect_state",
+    "receipt_ref",
+    "parts_ref",
+    "output_schema",
+    "output"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "output_schema": {
+            "const": null
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "output": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "output": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "succeeded"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "effect_state": {
+            "enum": [
+              "not_applicable",
+              "not_applied",
+              "applied"
+            ]
+          },
+          "retryable": {
+            "const": false
+          },
+          "output_schema": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/token"
+          },
+          "output": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "pending"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "effect_state": {
+            "enum": [
+              "not_applied",
+              "unknown"
+            ]
+          },
+          "execution": {
+            "properties": {
+              "operation_id": {
+                "$ref": "urn:companion:schema:common:v1#/$defs/token"
+              }
+            }
+          },
+          "receipt_ref": {
+            "$ref": "urn:companion:schema:execution-common:v1#/$defs/reference"
+          },
+          "retryable": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "partial"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "effect_state": {
+            "const": "partial"
+          },
+          "execution": {
+            "properties": {
+              "operation_id": {
+                "$ref": "urn:companion:schema:common:v1#/$defs/token"
+              }
+            }
+          },
+          "parts_ref": {
+            "$ref": "urn:companion:schema:execution-common:v1#/$defs/reference"
+          },
+          "receipt_ref": {
+            "$ref": "urn:companion:schema:execution-common:v1#/$defs/reference"
+          },
+          "degraded": {
+            "const": true
+          },
+          "retryable": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "uncertain"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "effect_state": {
+            "const": "unknown"
+          },
+          "reason_code": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/token"
+          },
+          "retryable": {
+            "const": false
+          },
+          "output_schema": {
+            "type": "null"
+          },
+          "output": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "rejected",
+              "permission_denied",
+              "unavailable",
+              "timeout",
+              "failed",
+              "cancelled"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "reason_code": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/token"
+          },
+          "output_schema": {
+            "type": "null"
+          },
+          "output": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "timeout",
+              "cancelled",
+              "failed"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "effect_state": {
+            "enum": [
+              "not_applicable",
+              "not_applied"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "rejected",
+              "permission_denied",
+              "unavailable"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "effect_state": {
+            "enum": [
+              "not_applicable",
+              "not_applied",
+              "unknown"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "effect_state": {
+            "const": "applied"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "execution": {
+            "properties": {
+              "operation_id": {
+                "$ref": "urn:companion:schema:common:v1#/$defs/token"
+              }
+            }
+          },
+          "receipt_ref": {
+            "$ref": "urn:companion:schema:execution-common:v1#/$defs/reference"
+          }
+        }
+      }
+    }
+  ]
+}

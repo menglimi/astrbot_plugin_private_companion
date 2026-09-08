@@ -1,0 +1,16 @@
+{
+  "schema_version": "companion.calendar.request.v1",
+  "request_id": "calendar-request-001",
+  "trace_id": "trace-calendar-001",
+  "scope": {
+    "ecosystem_id": "ecosystem-001", "installation_id": "installation-001", "runtime_instance_id": "embedded-runtime", "host_kind": "companion-app", "bot_id": "bot-main", "platform": null, "account_id": null, "conversation_ref": "conversation-001", "platform_conversation_id": null, "session_id": null, "user_id": null, "group_id": null, "persona_id": "persona-main", "persona_binding_revision": 12
+  },
+  "calendar_kind": "user_calendar",
+  "operation": "suggest",
+  "target_ref": "commitment-appointment-001",
+  "expected_revision": 4,
+  "change": { "operation": "postpone", "minutes": 30 },
+  "authorization_ref": null,
+  "evidence_refs": [{ "id": "ev-user-request-001", "source_id": "session-001", "source_type": "user_message", "evidence_kind": "observed", "observed_at": "2026-09-08T16:00:00+08:00", "expires_at": null, "source_revision": null }],
+  "idempotency_key": "calendar-request-001-r0"
+}

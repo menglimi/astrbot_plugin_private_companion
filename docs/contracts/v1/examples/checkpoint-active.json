@@ -1,0 +1,58 @@
+{
+  "schema_version": "memory.checkpoint.v1",
+  "binding": {
+    "subscriber_ref": "subscriber-reading",
+    "owner_ref": "owner-001",
+    "namespace": "example.reading",
+    "purpose": "projection",
+    "projection_kind": "references",
+    "view_kind": "current_projection",
+    "change_kinds": [
+      "added",
+      "corrected",
+      "retracted",
+      "expired"
+    ],
+    "view_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+    "authorization_revision": "acl-3",
+    "policy_revision": "policy-3",
+    "lineage_id": "lineage-reading",
+    "retention_epoch": "retention-2",
+    "contract_fingerprint": "3a41420f40fcd7dc8b8e2d990c8c5b3bd47cde8a998c88339daa9c71dadaaee2"
+  },
+  "projection_generation": "projection-002",
+  "state": "active",
+  "snapshot": {
+    "snapshot_id": "snapshot-001",
+    "snapshot_epoch": "snapshot-epoch-001",
+    "binding": {
+      "subscriber_ref": "subscriber-reading",
+      "owner_ref": "owner-001",
+      "namespace": "example.reading",
+      "purpose": "projection",
+      "projection_kind": "references",
+      "view_kind": "current_projection",
+      "change_kinds": [
+        "added",
+        "corrected",
+        "retracted",
+        "expired"
+      ],
+      "view_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+      "authorization_revision": "acl-3",
+      "policy_revision": "policy-3",
+      "lineage_id": "lineage-reading",
+      "retention_epoch": "retention-2",
+      "contract_fingerprint": "3a41420f40fcd7dc8b8e2d990c8c5b3bd47cde8a998c88339daa9c71dadaaee2"
+    },
+    "memory_revision": 104,
+    "tail_start_cursor": "cursor-104",
+    "expires_at": "2026-09-08T01:05:00Z"
+  },
+  "page_cursor": null,
+  "stream_cursor": "cursor-106",
+  "last_event_id": "event-106",
+  "memory_revision": 106,
+  "inbox_ref": "inbox-generation-002",
+  "stored_at": "2026-09-08T01:00:05Z"
+}

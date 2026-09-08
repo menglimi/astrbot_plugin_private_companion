@@ -1,0 +1,146 @@
+{
+  "package_id": "companion.execution-contracts",
+  "package_version": "0.1.0",
+  "profile": "companion.execution@1",
+  "maturity": "review",
+  "dialect": "https://json-schema.org/draft/2020-12/schema",
+  "fingerprint_algorithm": "sha256-utf8-lf",
+  "dependencies": [
+    {
+      "name": "common",
+      "id": "urn:companion:schema:common:v1",
+      "path": "../../v1/schemas/common.schema.json",
+      "sha256": "d8312b16010a58ebf2af0d825f0773840913ebee5714cd61cd578d6f4faadedb"
+    },
+    {
+      "name": "runtime-scope",
+      "id": "urn:companion:schema:runtime-scope:v1",
+      "path": "../../v1/schemas/runtime-scope.schema.json",
+      "sha256": "594f87248d7ed9d4868dc8fc2bec0aae1c2abff79e2cbd43a4ea3ac5e0f8b729"
+    }
+  ],
+  "schemas": [
+    {
+      "name": "action-request",
+      "id": "urn:companion:schema:action-request:v1",
+      "path": "schemas/action-request.schema.json",
+      "sha256": "2c96bb16e25df25c70b2813ee8bc476a5ed3790604ea3a2a271afd0ef8478951"
+    },
+    {
+      "name": "delivery-receipt",
+      "id": "urn:companion:schema:delivery-receipt:v1",
+      "path": "schemas/delivery-receipt.schema.json",
+      "sha256": "ea40d1b270e5958571bb5f109bc6bba213580541a578ff88a3970170aff1fee7"
+    },
+    {
+      "name": "execution-common",
+      "id": "urn:companion:schema:execution-common:v1",
+      "path": "schemas/execution-common.schema.json",
+      "sha256": "eff8418fed49b9e545e8621ebc8e8273d69b01652ecf4e74f53a5f6cdcc93ad2"
+    },
+    {
+      "name": "operation-result",
+      "id": "urn:companion:schema:operation-result:v1",
+      "path": "schemas/operation-result.schema.json",
+      "sha256": "d5b8a14991e373f95a08602c73ff3ef32990ca284f01a6a67dba575e34b12391"
+    },
+    {
+      "name": "session-record",
+      "id": "urn:companion:schema:session-record:v1",
+      "path": "schemas/session-record.schema.json",
+      "sha256": "020e702df6c5099273fa6747d5025d9e482887181c0b0988acb98b4199311577"
+    },
+    {
+      "name": "task-envelope",
+      "id": "urn:companion:schema:task-envelope:v1",
+      "path": "schemas/task-envelope.schema.json",
+      "sha256": "f79b7a3971cf82903d50f36b3a5a6f0527c42214cbc9e848112202cdeabe978d"
+    }
+  ],
+  "fixture_schemas": [
+    {
+      "name": "domain",
+      "id": "urn:companion:fixture:execution-domain:v1",
+      "path": "fixtures/schemas/domain.schema.json",
+      "sha256": "1983ebc04f9eb8037b1830c69ee137b69922dab518d3123cdebef2777502063f"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "cases.json",
+      "sha256": "729fdab172c695d7234ccf87b76d9d6f264d3d76b52e54ad566c3150f9ac82ad"
+    },
+    {
+      "path": "examples/delivery-accepted.json",
+      "sha256": "548cb12cc6666396747c9b420a9347e43a3f536761510d94986682bf7d1e9106"
+    },
+    {
+      "path": "examples/delivery-aggregate.json",
+      "sha256": "c357aebcbaf1cda0b26b7122885bfae5e4d61639ef5117024b7ec5b558511f52"
+    },
+    {
+      "path": "examples/delivery-confirmed.json",
+      "sha256": "7829b38371dba57af979a3be127c6f7d97292fbc07ea7379aa661146a2892d76"
+    },
+    {
+      "path": "examples/delivery-uncertain.json",
+      "sha256": "09491003c240a4f635f84715e2bbf39c86899d135df192624d405d835cf362a4"
+    },
+    {
+      "path": "examples/send-request.json",
+      "sha256": "0ab7bda55de3f6314dd08647f2dc792a0513eae2ab88749e112d3aa2450745d0"
+    },
+    {
+      "path": "examples/send-result-uncertain.json",
+      "sha256": "fcd2a5e1b80fa72b9e78b46aabf217d76c1e16715b2857c01206e88834fb4b7d"
+    },
+    {
+      "path": "examples/session-active.json",
+      "sha256": "085c5b22b9477e7442c46602ae5d4a5c2b9b48e18e283fa8abfa15b02bbe4cf2"
+    },
+    {
+      "path": "examples/session-ended.json",
+      "sha256": "fe8edec8b3a97d4307810fce56030828412adc45886bfbb893dedadebad4a995"
+    },
+    {
+      "path": "examples/session-reconnecting.json",
+      "sha256": "efeb8e63fecc675d5e67c0014cd5dcfd6321149d35a4887b29a86a96cc069085"
+    },
+    {
+      "path": "examples/session-resume-request.json",
+      "sha256": "61157dd24a59ddba67238b48b21a3fac08724911a470f02272e34432a263b67a"
+    },
+    {
+      "path": "examples/session-resume-result.json",
+      "sha256": "b53aa3d4757c21614188e1095bde8dae88be7b18dc2a4fa769e8ca379bb76a8f"
+    },
+    {
+      "path": "examples/story-request.json",
+      "sha256": "b261faf05512ca84edde5c6e359faf31eac7ec1359252bce407455dfc44ee598"
+    },
+    {
+      "path": "examples/story-result.json",
+      "sha256": "20d753dfd7d5c3a0921572ec0026d29b6625913b0a5714a49a84a79e9b478bef"
+    },
+    {
+      "path": "examples/task-created.json",
+      "sha256": "f516a33efa62b0889a531051a1743015f505b1be8ac967f7553f5fcc9bb7cf11"
+    },
+    {
+      "path": "examples/task-retry.json",
+      "sha256": "c6c897c4e5c89c4c6a006b94e8fc49d4b69f3b58479c101356cc258ea776e388"
+    },
+    {
+      "path": "examples/task-running.json",
+      "sha256": "6e4191b33d7a1449d82fc4fe68f0d67bdb65d19ae4d87c22ac65315c7771c181"
+    },
+    {
+      "path": "examples/task-waiting.json",
+      "sha256": "6e0df43fddb93a00d393e30da4a1b60baaf8529d08fe5afe82d23f2d4987a26e"
+    },
+    {
+      "path": "fixtures/cross-plugin.fixture.json",
+      "sha256": "be86e49573b23fb926de07783644a15f881d18fdb15397bb90c0652bea538d07"
+    }
+  ]
+}

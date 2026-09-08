@@ -1,0 +1,22 @@
+{
+  "schema_version": "memory.result.v1",
+  "capability_id": "memory.proposal.submit",
+  "capability_version": "1.0",
+  "provider_id": "example.memory",
+  "provider_generation": "generation-7",
+  "request_id": "req-reading-001",
+  "trace_id": "trace-reading-001",
+  "status": "pending",
+  "reason_code": "awaiting_boundary",
+  "retryable": false,
+  "degraded": false,
+  "warnings": [],
+  "output": {
+    "operation_id": "memory-op-003",
+    "proposal_id": "proposal-pending",
+    "proposal_state": "pending",
+    "owner_ref": "owner-001",
+    "policy_revision": "policy-3",
+    "commit_state": "not_committed"
+  }
+}

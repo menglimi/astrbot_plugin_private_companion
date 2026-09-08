@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:memory-operation-query:v1",
+  "title": "memory.operation-query.v1",
+  "allOf": [
+    {
+      "$ref": "urn:companion:schema:common:v1#/$defs/request"
+    }
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "memory.operation-query.v1"
+    },
+    "capability_id": {
+      "const": "memory.operation.get"
+    },
+    "payload": {
+      "type": "object",
+      "properties": {
+        "namespace": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "visibility": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "purpose": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "operation_id": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "capability_id": {
+          "const": "memory.proposal.submit"
+        },
+        "idempotency_key": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        }
+      },
+      "required": [
+        "namespace",
+        "visibility",
+        "purpose"
+      ],
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "operation_id"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "capability_id"
+                ]
+              },
+              {
+                "required": [
+                  "idempotency_key"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "required": [
+            "capability_id",
+            "idempotency_key"
+          ],
+          "not": {
+            "required": [
+              "operation_id"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "unevaluatedProperties": false
+}

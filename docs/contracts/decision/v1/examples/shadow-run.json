@@ -1,0 +1,15 @@
+{
+  "schema_version": "companion.decision-shadow-run.v1",
+  "shadow_id": "shadow-042",
+  "decision_id": "decision-042",
+  "scope": { "ecosystem_id": "ecosystem-001", "installation_id": "installation-001", "runtime_instance_id": "embedded-runtime", "host_kind": "companion-app", "bot_id": "bot-main", "platform": "aiocqhttp", "account_id": "qq-bot-001", "conversation_ref": "conversation-001", "platform_conversation_id": "private-user-123", "session_id": "session-a-001", "user_id": "user-a", "group_id": null, "persona_id": "persona-main", "persona_binding_revision": 12 },
+  "mode": "observe",
+  "legacy_strategy_ref": "legacy-proactive-v0",
+  "preview_ref": "preview-042",
+  "comparison": { "legacy_candidate_count": 2, "new_candidate_count": 1, "rank_changes": 1, "blocked_change_count": 1, "decision_delta": "new_deferred" },
+  "side_effects": { "delivery_requests": 0, "action_requests": 0, "memory_writes": 0, "calendar_commits": 0 },
+  "metrics": { "latency_ms": 38, "model_calls": 0, "snapshot_bytes": 6840, "peak_inflight_previews": 1 },
+  "status": "succeeded",
+  "created_at": "2026-09-08T19:20:03+08:00",
+  "expires_at": "2026-09-08T20:00:00+08:00"
+}

@@ -1,0 +1,933 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:memory-result:v1",
+  "title": "memory.result.v1",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "memory.result.v1"
+    },
+    "capability_id": {
+      "enum": [
+        "memory.proposal.submit",
+        "memory.query",
+        "memory.operation.get"
+      ]
+    },
+    "capability_version": {
+      "const": "1.0"
+    },
+    "provider_id": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "provider_generation": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "request_id": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "trace_id": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "status": {
+      "enum": [
+        "succeeded",
+        "pending",
+        "partial",
+        "rejected",
+        "permission_denied",
+        "unavailable",
+        "timeout",
+        "uncertain",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "reason_code": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "retryable": {
+      "type": "boolean"
+    },
+    "degraded": {
+      "type": "boolean"
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:companion:schema:common:v1#/$defs/token"
+      }
+    },
+    "output": {}
+  },
+  "required": [
+    "schema_version",
+    "capability_id",
+    "capability_version",
+    "provider_id",
+    "provider_generation",
+    "request_id",
+    "trace_id",
+    "status",
+    "reason_code",
+    "retryable",
+    "degraded",
+    "warnings",
+    "output"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "persisted": {
+      "type": "object",
+      "properties": {
+        "operation_id": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "proposal_id": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "proposal_state": {
+          "const": "persisted"
+        },
+        "atom_id": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "owner_ref": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "memory_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "effective_retention": {
+          "enum": [
+            "session",
+            "short",
+            "durable",
+            "protected"
+          ]
+        },
+        "retention_until": {
+          "anyOf": [
+            {
+              "$ref": "urn:companion:schema:common:v1#/$defs/time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "valid_from": {
+          "anyOf": [
+            {
+              "$ref": "urn:companion:schema:common:v1#/$defs/time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "valid_to": {
+          "anyOf": [
+            {
+              "$ref": "urn:companion:schema:common:v1#/$defs/time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "policy_revision": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "commit_state": {
+          "const": "committed"
+        },
+        "original_capability_id": {
+          "const": "memory.proposal.submit"
+        },
+        "original_provider_generation": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        }
+      },
+      "required": [
+        "operation_id",
+        "proposal_id",
+        "proposal_state",
+        "atom_id",
+        "revision",
+        "owner_ref",
+        "memory_revision",
+        "effective_retention",
+        "retention_until",
+        "valid_from",
+        "valid_to",
+        "policy_revision",
+        "commit_state"
+      ],
+      "additionalProperties": false
+    },
+    "skipped": {
+      "type": "object",
+      "properties": {
+        "operation_id": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "proposal_id": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "proposal_state": {
+          "const": "skipped"
+        },
+        "owner_ref": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "policy_revision": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "commit_state": {
+          "const": "not_committed"
+        },
+        "original_capability_id": {
+          "const": "memory.proposal.submit"
+        },
+        "original_provider_generation": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        }
+      },
+      "required": [
+        "operation_id",
+        "proposal_id",
+        "proposal_state",
+        "owner_ref",
+        "policy_revision",
+        "commit_state"
+      ],
+      "additionalProperties": false
+    },
+    "pending": {
+      "type": "object",
+      "properties": {
+        "operation_id": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "proposal_id": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "proposal_state": {
+          "enum": [
+            "pending",
+            "quarantined"
+          ]
+        },
+        "owner_ref": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "policy_revision": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "commit_state": {
+          "const": "not_committed"
+        },
+        "original_capability_id": {
+          "const": "memory.proposal.submit"
+        },
+        "original_provider_generation": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        }
+      },
+      "required": [
+        "operation_id",
+        "proposal_id",
+        "proposal_state",
+        "owner_ref",
+        "policy_revision",
+        "commit_state"
+      ],
+      "additionalProperties": false
+    },
+    "failure": {
+      "type": "object",
+      "properties": {
+        "operation_id": {
+          "anyOf": [
+            {
+              "$ref": "urn:companion:schema:common:v1#/$defs/token"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "proposal_id": {
+          "anyOf": [
+            {
+              "$ref": "urn:companion:schema:common:v1#/$defs/token"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commit_state": {
+          "const": "not_committed"
+        },
+        "original_capability_id": {
+          "const": "memory.proposal.submit"
+        },
+        "original_provider_generation": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        }
+      },
+      "required": [
+        "commit_state"
+      ],
+      "additionalProperties": false
+    },
+    "uncertain": {
+      "type": "object",
+      "properties": {
+        "operation_id": {
+          "anyOf": [
+            {
+              "$ref": "urn:companion:schema:common:v1#/$defs/token"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "proposal_id": {
+          "anyOf": [
+            {
+              "$ref": "urn:companion:schema:common:v1#/$defs/token"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commit_state": {
+          "const": "uncertain"
+        },
+        "original_capability_id": {
+          "const": "memory.proposal.submit"
+        },
+        "original_provider_generation": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        }
+      },
+      "required": [
+        "commit_state"
+      ],
+      "additionalProperties": false
+    },
+    "fact": {
+      "type": "object",
+      "properties": {
+        "item_kind": {
+          "const": "fact"
+        },
+        "atom_id": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fact_status": {
+          "enum": [
+            "active",
+            "superseded",
+            "expired"
+          ]
+        },
+        "owner_ref": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "assertion": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/assertion"
+        },
+        "valid_from": {
+          "anyOf": [
+            {
+              "$ref": "urn:companion:schema:common:v1#/$defs/time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "valid_to": {
+          "anyOf": [
+            {
+              "$ref": "urn:companion:schema:common:v1#/$defs/time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "visibility": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "ref": {
+                "$ref": "urn:companion:schema:common:v1#/$defs/evidence"
+              },
+              "state": {
+                "enum": [
+                  "available",
+                  "source_missing"
+                ]
+              },
+              "excerpt": {
+                "anyOf": [
+                  {
+                    "$ref": "urn:companion:schema:common:v1#/$defs/semantic"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "ref",
+              "state",
+              "excerpt"
+            ],
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "state": {
+                      "const": "available"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "excerpt": {
+                      "$ref": "urn:companion:schema:common:v1#/$defs/semantic"
+                    }
+                  }
+                },
+                "else": {
+                  "properties": {
+                    "excerpt": {
+                      "type": "null"
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "minItems": 1
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/token"
+          }
+        },
+        "missing": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/token"
+          }
+        },
+        "extensions": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/extensions"
+        }
+      },
+      "required": [
+        "item_kind",
+        "atom_id",
+        "revision",
+        "fact_status",
+        "owner_ref",
+        "assertion",
+        "valid_from",
+        "valid_to",
+        "visibility",
+        "evidence",
+        "conflicts",
+        "missing"
+      ],
+      "additionalProperties": false
+    },
+    "draft": {
+      "type": "object",
+      "properties": {
+        "item_kind": {
+          "const": "proposal"
+        },
+        "proposal_id": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "proposal_state": {
+          "const": "pending"
+        },
+        "session_id": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "owner_ref": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "assertion": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/assertion"
+        },
+        "valid_from": {
+          "anyOf": [
+            {
+              "$ref": "urn:companion:schema:common:v1#/$defs/time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "valid_to": {
+          "anyOf": [
+            {
+              "$ref": "urn:companion:schema:common:v1#/$defs/time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "visibility": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "ref": {
+                "$ref": "urn:companion:schema:common:v1#/$defs/evidence"
+              },
+              "state": {
+                "enum": [
+                  "available",
+                  "source_missing"
+                ]
+              },
+              "excerpt": {
+                "anyOf": [
+                  {
+                    "$ref": "urn:companion:schema:common:v1#/$defs/semantic"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "ref",
+              "state",
+              "excerpt"
+            ],
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "state": {
+                      "const": "available"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "excerpt": {
+                      "$ref": "urn:companion:schema:common:v1#/$defs/semantic"
+                    }
+                  }
+                },
+                "else": {
+                  "properties": {
+                    "excerpt": {
+                      "type": "null"
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "minItems": 1
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/token"
+          }
+        },
+        "missing": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/token"
+          }
+        },
+        "extensions": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/extensions"
+        }
+      },
+      "required": [
+        "item_kind",
+        "proposal_id",
+        "proposal_state",
+        "session_id",
+        "owner_ref",
+        "assertion",
+        "valid_from",
+        "valid_to",
+        "visibility",
+        "evidence",
+        "conflicts",
+        "missing"
+      ],
+      "additionalProperties": false
+    },
+    "recall": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/fact"
+              },
+              {
+                "$ref": "#/$defs/draft"
+              }
+            ]
+          }
+        },
+        "next_cursor": {
+          "anyOf": [
+            {
+              "$ref": "urn:companion:schema:common:v1#/$defs/token"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memory_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "policy_revision": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "coverage": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "strategy_id": {
+                "$ref": "urn:companion:schema:common:v1#/$defs/token"
+              },
+              "strategy_version": {
+                "$ref": "urn:companion:schema:common:v1#/$defs/token"
+              },
+              "status": {
+                "enum": [
+                  "succeeded",
+                  "partial",
+                  "unavailable",
+                  "timeout",
+                  "failed",
+                  "cancelled"
+                ]
+              },
+              "data_revision": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "reason_code": {
+                "anyOf": [
+                  {
+                    "$ref": "urn:companion:schema:common:v1#/$defs/token"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "strategy_id",
+              "strategy_version",
+              "status",
+              "data_revision",
+              "reason_code"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "usage": {
+          "type": "object",
+          "properties": {
+            "candidates": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "model_calls": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "input_tokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "output_tokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "evidence_items": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "evidence_chars": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "evidence_tokens": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "candidates",
+            "model_calls",
+            "input_tokens",
+            "output_tokens",
+            "evidence_items",
+            "evidence_chars",
+            "evidence_tokens"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "items",
+        "next_cursor",
+        "memory_revision",
+        "policy_revision",
+        "coverage",
+        "usage"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "capability_id": {
+            "const": "memory.query"
+          }
+        }
+      },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "status": {
+                "enum": [
+                  "succeeded",
+                  "partial"
+                ]
+              },
+              "output": {
+                "$ref": "#/$defs/recall"
+              }
+            }
+          },
+          {
+            "properties": {
+              "status": {
+                "enum": [
+                  "rejected",
+                  "permission_denied",
+                  "unavailable",
+                  "timeout",
+                  "failed",
+                  "cancelled"
+                ]
+              },
+              "output": {
+                "type": "null"
+              }
+            }
+          }
+        ]
+      },
+      "else": {
+        "oneOf": [
+          {
+            "properties": {
+              "status": {
+                "const": "succeeded"
+              },
+              "output": {
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/persisted"
+                  },
+                  {
+                    "$ref": "#/$defs/skipped"
+                  }
+                ]
+              },
+              "retryable": {
+                "const": false
+              }
+            }
+          },
+          {
+            "properties": {
+              "status": {
+                "const": "pending"
+              },
+              "output": {
+                "$ref": "#/$defs/pending"
+              },
+              "retryable": {
+                "const": false
+              }
+            }
+          },
+          {
+            "properties": {
+              "status": {
+                "const": "uncertain"
+              },
+              "output": {
+                "$ref": "#/$defs/uncertain"
+              },
+              "retryable": {
+                "const": false
+              }
+            }
+          },
+          {
+            "properties": {
+              "status": {
+                "enum": [
+                  "rejected",
+                  "permission_denied",
+                  "unavailable",
+                  "timeout",
+                  "failed",
+                  "cancelled"
+                ]
+              },
+              "output": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/failure"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "capability_id": {
+            "const": "memory.operation.get"
+          },
+          "status": {
+            "enum": [
+              "succeeded",
+              "pending"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "output": {
+            "required": [
+              "original_capability_id",
+              "original_provider_generation"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "partial"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "degraded": {
+            "const": true
+          },
+          "reason_code": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/token"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "not": {
+              "const": "succeeded"
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "reason_code": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/token"
+          }
+        }
+      }
+    }
+  ]
+}

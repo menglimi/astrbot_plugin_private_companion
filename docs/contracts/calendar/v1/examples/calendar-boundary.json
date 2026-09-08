@@ -1,0 +1,19 @@
+{
+  "schema_version": "companion.calendar-boundary.v1",
+  "boundary_id": "boundary-20260908-1700",
+  "owner_ref": "persona-owner-001",
+  "scope": {
+    "ecosystem_id": "ecosystem-001", "installation_id": "installation-001", "runtime_instance_id": "embedded-runtime", "host_kind": "companion-app", "bot_id": "bot-main", "platform": null, "account_id": null, "conversation_ref": "conversation-001", "platform_conversation_id": null, "session_id": null, "user_id": null, "group_id": null, "persona_id": "persona-main", "persona_binding_revision": 12
+  },
+  "as_of": "2026-09-08T17:20:00+08:00",
+  "calendar_kind": "persona_calendar",
+  "calendar_revision": 7,
+  "current": { "window_id": "activity-walk-001", "kind": "activity", "start": "2026-09-08T17:00:00+08:00", "end": "2026-09-08T17:30:00+08:00", "certainty": "inferred", "interruptibility": "high", "source_ref": "process-walk-001" },
+  "next_transition": { "window_id": "buffer-001", "kind": "buffer", "start": "2026-09-08T17:30:00+08:00", "end": "2026-09-08T17:40:00+08:00", "certainty": "authorized", "interruptibility": "high", "source_ref": "calendar-reconciler-001" },
+  "fixed_commitments": [],
+  "available_windows": [{ "window_id": "available-001", "kind": "availability", "start": "2026-09-08T17:20:00+08:00", "end": "2026-09-08T17:30:00+08:00", "certainty": "inferred", "interruptibility": "high", "source_ref": "occupancy-001" }],
+  "conflicts": [],
+  "conversation_occupancy": "engaged_thread",
+  "source_refs": [{ "id": "ev-calendar-007", "source_id": "persona-calendar", "source_type": "calendar", "evidence_kind": "observed", "observed_at": "2026-09-08T17:20:00+08:00", "expires_at": "2026-09-08T17:40:00+08:00", "source_revision": "7" }],
+  "expires_at": "2026-09-08T17:40:00+08:00"
+}

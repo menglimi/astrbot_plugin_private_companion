@@ -1,0 +1,36 @@
+{
+  "package_id": "companion.decision-contracts",
+  "package_version": "0.1.0",
+  "profile": "companion.decision@1",
+  "maturity": "review",
+  "dialect": "https://json-schema.org/draft/2020-12/schema",
+  "fingerprint_algorithm": "sha256-utf8-lf",
+  "dependencies": [
+    { "name": "common", "id": "urn:companion:schema:common:v1", "path": "../../v1/schemas/common.schema.json", "sha256": "d8312b16010a58ebf2af0d825f0773840913ebee5714cd61cd578d6f4faadedb" },
+    { "name": "runtime-scope", "id": "urn:companion:schema:runtime-scope:v1", "path": "../../v1/schemas/runtime-scope.schema.json", "sha256": "594f87248d7ed9d4868dc8fc2bec0aae1c2abff79e2cbd43a4ea3ac5e0f8b729" }
+  ],
+  "schemas": [
+    { "name": "affect-event", "id": "urn:companion:schema:affect-event:v1", "path": "schemas/affect-event.schema.json", "sha256": "233f66f9815ff60eb75135dc0878c1feb0c70c2ddb226b5bb657cc4c507ed17a" },
+    { "name": "proactive-preview", "id": "urn:companion:schema:proactive-preview:v1", "path": "schemas/proactive-preview.schema.json", "sha256": "2ccf3aa67893812783d39926b002f19a47092f054c31396323ce5cf5cd2260bd" },
+    { "name": "relationship-event", "id": "urn:companion:schema:relationship-event:v1", "path": "schemas/relationship-event.schema.json", "sha256": "097b802be78776a37951b51dc22b5b56d705886efe378201012e354b57aba1e6" },
+    { "name": "role-decision-snapshot", "id": "urn:companion:schema:role-decision-snapshot:v1", "path": "schemas/role-decision-snapshot.schema.json", "sha256": "9c36fe60e9d10157a1d25c7d0a01fa3136539215859506b314afbddad00d2f6e" },
+    { "name": "normalized-interaction-event", "id": "urn:companion:schema:normalized-interaction-event:v1", "path": "schemas/normalized-interaction-event.schema.json", "sha256": "69e088080cd8fdf6964b6c70b854776a7db6e92bc0a177fde68f10591a15cd05" },
+    { "name": "shadow-adapter-binding", "id": "urn:companion:schema:decision-shadow-adapter-binding:v1", "path": "schemas/shadow-adapter-binding.schema.json", "sha256": "f2124707e878bf38e87d6c69b4ac26e64feb30a123f53c97632b8e5c6ebb1d08" },
+    { "name": "shadow-run", "id": "urn:companion:schema:decision-shadow-run:v1", "path": "schemas/shadow-run.schema.json", "sha256": "dcd8168574dfb11d624c43467eeed38fc1f1c90caae00bb65021f741660087b6" }
+  ],
+  "artifacts": [
+    { "path": "decision.fixture.json", "sha256": "b3b54ab0fdc9ece9e8ea14b17b079e9895ed05f700a4204e0cc4554d5c78cca3" },
+    { "path": "examples/affect-event.json", "sha256": "7b7fca2efe3a5efee57ddaab065e5a451e1e7081521fb32045a5098ece206b28" },
+    { "path": "examples/proactive-preview.json", "sha256": "2a1d7104201190aa336d4d19dd7e81429c5e975797201fad56548de5bc825b99" },
+    { "path": "examples/relationship-event.json", "sha256": "b79b226ab0a67f7950eaf9691183679f0e8fcb4664f65891f4b284aafed26f13" },
+    { "path": "examples/role-decision-snapshot.json", "sha256": "7eefacbeac1020fd35a7886578566f9e1caa517c7066fed60793da89470b4243" },
+    { "path": "examples/normalized-interaction-event.json", "sha256": "6c8635ad17b2fe688263c2dd54fc3346702c84f66b1f5d2adc555c6574f3ec51" },
+    { "path": "examples/shadow-adapter-binding.json", "sha256": "7d99f0c83fd070a3a59f05befc41395d51e69c90d0a62e23b2cccedec8cabd42" },
+    { "path": "examples/shadow-run.json", "sha256": "723a5e69f563e424a9727570d1b2380471068c3a7af5a3bf2664470db5329a6a" },
+    { "path": "cases/normalized-input-cases.json", "sha256": "3603986546cec93e68a6018d6ebb70c8c0540220a58b14eed659a2b5ba401a0f" },
+    { "path": "cases/cross-host-comparison.json", "sha256": "042dfbe279e2c0409c1edb5930107fa4698f912ac64b46dd3747a48e072239f2" },
+    { "path": "cases/capability-degradation-budget.json", "sha256": "f9ce9be0f1a67ab31c569fff20432486366c12a5dcca1fb772acb892a8ef09d4" },
+    { "path": "cases/global-multi-window-continuity.json", "sha256": "7e8c39ee59a9db57e767e9b236e6a1e827f1c177641afb19f9ad47abeb260369" },
+    { "path": "recordings/astrbot-message-recording.json", "sha256": "f4b4bc45f0c9c20e5ffe08c25b848bf058fd18d58c208f3b6d893e118035f7e3" }
+  ]
+}

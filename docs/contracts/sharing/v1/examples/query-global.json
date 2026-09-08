@@ -1,0 +1,71 @@
+{
+  "schema_version": "memory.query.v1",
+  "capability_id": "memory.query",
+  "capability_version": "1.0",
+  "provider_id": "example.memory",
+  "provider_generation": "generation-7",
+  "request_id": "query-global",
+  "trace_id": "trace-query-global",
+  "deadline_at": "2026-09-07T01:00:03Z",
+  "scope": {
+    "ecosystem_id": "ecosystem-001",
+    "installation_id": "installation-001",
+    "runtime_instance_id": "runtime-001",
+    "host_kind": "astrbot",
+    "bot_id": "bot-main",
+    "platform": null,
+    "account_id": null,
+    "conversation_ref": null,
+    "platform_conversation_id": null,
+    "session_id": null,
+    "user_id": null,
+    "group_id": null,
+    "persona_id": "persona-main",
+    "persona_binding_revision": 12
+  },
+  "required_features": [
+    "companion.sharing@1"
+  ],
+  "budget": {
+    "max_input_bytes": 16384,
+    "max_model_calls": 0
+  },
+  "payload": {
+    "namespace": "companion.world",
+    "visibility": "public",
+    "purpose": "reply",
+    "query_intent": "Available room resources",
+    "subjects": [
+      {
+        "kind": "companion.persona",
+        "ref": "persona-main"
+      }
+    ],
+    "types": [],
+    "time_range": null,
+    "at_time": "2026-09-07T01:00:01Z",
+    "allowed_retention": [
+      "short",
+      "durable"
+    ],
+    "include_pending": false,
+    "conflict_policy": "current_only",
+    "confidence_floor": null,
+    "evidence_budget": {
+      "max_items": 8,
+      "max_chars": 2400,
+      "max_tokens": 800
+    },
+    "cursor": null,
+    "extensions": {
+      "companion.sharing": {
+        "schema_version": "1.0",
+        "payload": {
+          "sharing_mode": "global",
+          "sharing_anchor": "share-persona-world",
+          "sharing_policy_revision": 3
+        }
+      }
+    }
+  }
+}

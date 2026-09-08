@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:sharing-memory-request:v1",
+  "title": "Negotiated sharing profile over existing Memory request extensions",
+  "allOf": [
+    {
+      "oneOf": [
+        {
+          "$ref": "urn:companion:schema:memory-proposal:v1"
+        },
+        {
+          "$ref": "urn:companion:schema:memory-query:v1"
+        }
+      ]
+    },
+    {
+      "if": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "extensions": {
+                "properties": {
+                  "companion.sharing": {
+                    "properties": {
+                      "payload": {
+                        "properties": {
+                          "sharing_mode": {
+                            "const": "session"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "scope": {
+            "properties": {
+              "conversation_ref": {
+                "$ref": "urn:companion:schema:common:v1#/$defs/token"
+              },
+              "session_id": {
+                "$ref": "urn:companion:schema:common:v1#/$defs/token"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "extensions": {
+                "properties": {
+                  "companion.sharing": {
+                    "properties": {
+                      "payload": {
+                        "properties": {
+                          "sharing_mode": {
+                            "const": "user"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "scope": {
+            "properties": {
+              "platform": {
+                "$ref": "urn:companion:schema:common:v1#/$defs/token"
+              },
+              "account_id": {
+                "$ref": "urn:companion:schema:common:v1#/$defs/token"
+              },
+              "user_id": {
+                "$ref": "urn:companion:schema:common:v1#/$defs/token"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "required_features": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_.-]*@[1-9][0-9]*$"
+      },
+      "uniqueItems": true,
+      "contains": {
+        "const": "companion.sharing@1"
+      }
+    },
+    "payload": {
+      "properties": {
+        "extensions": {
+          "properties": {
+            "companion.sharing": {
+              "$ref": "urn:companion:schema:sharing-binding:v1#/$defs/extension"
+            }
+          },
+          "required": [
+            "companion.sharing"
+          ]
+        }
+      },
+      "required": [
+        "extensions"
+      ]
+    }
+  },
+  "required": [
+    "required_features"
+  ]
+}

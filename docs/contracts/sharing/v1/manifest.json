@@ -1,0 +1,138 @@
+{
+  "package_id": "companion.sharing-contracts",
+  "package_version": "0.1.0",
+  "profile": "companion.sharing@1",
+  "maturity": "review",
+  "dialect": "https://json-schema.org/draft/2020-12/schema",
+  "fingerprint_algorithm": "sha256-utf8-lf",
+  "dependencies": [
+    {
+      "name": "common",
+      "id": "urn:companion:schema:common:v1",
+      "path": "../../v1/schemas/common.schema.json",
+      "sha256": "d8312b16010a58ebf2af0d825f0773840913ebee5714cd61cd578d6f4faadedb"
+    },
+    {
+      "name": "runtime-scope",
+      "id": "urn:companion:schema:runtime-scope:v1",
+      "path": "../../v1/schemas/runtime-scope.schema.json",
+      "sha256": "594f87248d7ed9d4868dc8fc2bec0aae1c2abff79e2cbd43a4ea3ac5e0f8b729"
+    },
+    {
+      "name": "memory-proposal",
+      "id": "urn:companion:schema:memory-proposal:v1",
+      "path": "../../v1/schemas/memory-proposal.schema.json",
+      "sha256": "8fced5bcc4d0fbc568e07e3a7fd44bdbdefe87ab82f913666b10f0b983ea32d6"
+    },
+    {
+      "name": "memory-query",
+      "id": "urn:companion:schema:memory-query:v1",
+      "path": "../../v1/schemas/memory-query.schema.json",
+      "sha256": "60c439f68af086867f6d71670bff1a2de7b1b2dc0b386980fa937549409cb223"
+    },
+    {
+      "name": "memory-result",
+      "id": "urn:companion:schema:memory-result:v1",
+      "path": "../../v1/schemas/memory-result.schema.json",
+      "sha256": "5e0a98a62d240b8882bee918af53342db2043b829b171028707a1d841078badc"
+    }
+  ],
+  "schemas": [
+    {
+      "name": "context-contribution",
+      "id": "urn:companion:schema:sharing-context-contribution:v1",
+      "path": "schemas/context-contribution.schema.json",
+      "sha256": "48898e1b857f6944d6b1ca536c59aa3a1a1b96cbe86d1817c9152987b70c2ceb"
+    },
+    {
+      "name": "memory-recall",
+      "id": "urn:companion:schema:sharing-memory-recall:v1",
+      "path": "schemas/memory-recall.schema.json",
+      "sha256": "850a83b80f0ef895040505128dba9b217327e3fde12e6732f75620155cce598b"
+    },
+    {
+      "name": "memory-request",
+      "id": "urn:companion:schema:sharing-memory-request:v1",
+      "path": "schemas/memory-request.schema.json",
+      "sha256": "c3b6ac95087c1435fbb2e0642e33cb3abef21c93ba32b4c9f86993ea9f9ba0da"
+    },
+    {
+      "name": "sharing-binding",
+      "id": "urn:companion:schema:sharing-binding:v1",
+      "path": "schemas/sharing-binding.schema.json",
+      "sha256": "96db1db992727635d11074c52fa8e38daa83f6c73f9490e0a813d9756a482be6"
+    },
+    {
+      "name": "state-transition",
+      "id": "urn:companion:schema:sharing-state-transition:v1",
+      "path": "schemas/state-transition.schema.json",
+      "sha256": "c2579d14591c6af2b9c8c1bb221e9542955c47b113447df20033a55b3aa99912"
+    }
+  ],
+  "fixture_schemas": [
+    {
+      "name": "world-patch",
+      "id": "urn:companion:fixture:sharing-world-patch:v1",
+      "path": "fixtures/schemas/world-patch.schema.json",
+      "sha256": "7ce631c90080e944f17c64a079041a511db4b1a996ae1a81895f27b649a9d3f4"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "cases.json",
+      "sha256": "a9748901910c461faae6fdcbf19e0af831c7a37ef35f5ad84582d7dd03dde675"
+    },
+    {
+      "path": "examples/binding-global.json",
+      "sha256": "644538c7150d348bc501b2f911d7f6672592da26e490eea88fd7ef32e648242e"
+    },
+    {
+      "path": "examples/binding-session.json",
+      "sha256": "7da4ea3e8ef11bc21beb2f9ef0fa682660e426ea0c5c93ff049c133df6394ea8"
+    },
+    {
+      "path": "examples/binding-user.json",
+      "sha256": "463bd26e5e8d969dff5779e4b066220f1b218e59e1929ff923f819145822c291"
+    },
+    {
+      "path": "examples/context-user.json",
+      "sha256": "75440317eca4b6186b3be9ab21474dcd84203b8b2818e3d20edb218ee15aa7c4"
+    },
+    {
+      "path": "examples/proposal-user.json",
+      "sha256": "8d99330177f066663f929c9d79b1f0d419251a2052c3ace217bb8c2f77ec0fc9"
+    },
+    {
+      "path": "examples/query-global.json",
+      "sha256": "815ed8516258e143b0d2ceaa9c67457af02aacc45e13172473c37dba090ff4a4"
+    },
+    {
+      "path": "examples/query-session-a.json",
+      "sha256": "98be807186f4edb445e57d43793aeffbe855015c6bfb85a0e76cd081504f0e0a"
+    },
+    {
+      "path": "examples/query-session-b.json",
+      "sha256": "8330386ed4a8c7fcbb434389f77160d26e33b85c89fa01f79bc812a7a53b945d"
+    },
+    {
+      "path": "examples/query-user-group.json",
+      "sha256": "c5d8d299809f647bb5267a48cb6303fece490a89e5059743ba0808db5f35ba79"
+    },
+    {
+      "path": "examples/query-user-private.json",
+      "sha256": "2d2fdbee1d25fbe4df4ab660e279636d2054a2606272907857ab663d39cc45ae"
+    },
+    {
+      "path": "examples/recall-user.json",
+      "sha256": "8fc89ef2cbfbb2ee4cd107b75832e53430a61fac24f8497b90c77ebfeda7fb50"
+    },
+    {
+      "path": "examples/state-global.json",
+      "sha256": "e38a3a8a4f17950701b641842a6e4da9111e001ce18a879acf9b0dd737a50863"
+    },
+    {
+      "path": "fixtures/sharing.fixture.json",
+      "sha256": "2ae1906b39f00e1c025db7272151903eda2b6d9661880d4ea952677ccd48cb12"
+    }
+  ]
+}

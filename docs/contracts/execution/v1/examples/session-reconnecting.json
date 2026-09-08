@@ -1,0 +1,53 @@
+{
+  "schema_version": "companion.session.v1",
+  "session_id": "session-watch-001",
+  "kind": "together.watch",
+  "scope": {
+    "ecosystem_id": "ecosystem-001",
+    "installation_id": "installation-001",
+    "runtime_instance_id": "embedded-runtime",
+    "host_kind": "companion-app",
+    "bot_id": "bot-main",
+    "platform": null,
+    "account_id": null,
+    "conversation_ref": "conversation-001",
+    "platform_conversation_id": null,
+    "session_id": "session-watch-001",
+    "user_id": null,
+    "group_id": null,
+    "persona_id": "persona-main",
+    "persona_binding_revision": 12
+  },
+  "owner_ref": "together-owner",
+  "controller_generation": "controller-7",
+  "persona_binding_revision": 12,
+  "phase": "reconnecting",
+  "session_revision": 18,
+  "participants_ref": {
+    "kind": "companion.session.participants",
+    "ref": "watch-members",
+    "revision": 3
+  },
+  "capability_grants_ref": {
+    "kind": "companion.session.grants",
+    "ref": "watch-grants",
+    "revision": 3
+  },
+  "context_ref": {
+    "kind": "companion.session.context",
+    "ref": "watch-context",
+    "revision": 12
+  },
+  "context_revision": 12,
+  "checkpoint_ref": {
+    "kind": "together.progress",
+    "ref": "watch-progress",
+    "revision": 12
+  },
+  "started_at": "2026-09-08T01:30:00Z",
+  "last_activity_at": "2026-09-08T02:00:00Z",
+  "expires_at": "2026-09-08T04:00:00Z",
+  "ended_at": null,
+  "termination_reason": null,
+  "summary_ref": null
+}

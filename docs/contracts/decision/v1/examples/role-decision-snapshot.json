@@ -1,0 +1,19 @@
+{
+  "schema_version": "companion.role-decision-snapshot.v1",
+  "decision_id": "decision-042",
+  "trace_id": "trace-world-001",
+  "scope": { "ecosystem_id": "ecosystem-001", "installation_id": "installation-001", "runtime_instance_id": "embedded-runtime", "host_kind": "companion-app", "bot_id": "bot-main", "platform": "aiocqhttp", "account_id": "qq-bot-001", "conversation_ref": "conversation-001", "platform_conversation_id": "private-user-123", "session_id": "session-a-001", "user_id": "user-a", "group_id": null, "persona_id": "persona-main", "persona_binding_revision": 12 },
+  "source_event_refs": ["world-event-042", "affect-event-042", "relationship-event-042"],
+  "world_revision": 43,
+  "calendar_revision": 7,
+  "affect_revision": 9,
+  "relationship_revision": 6,
+  "motive_revision": 3,
+  "conversation_revision": 14,
+  "motives": [{ "kind": "connect", "drive": 0.74, "feasibility": 0.92, "target_ref": "user-a", "evidence_refs": ["affect-event-042", "relationship-event-042"] }, { "kind": "resume", "drive": 0.61, "feasibility": 0.8, "target_ref": null, "evidence_refs": ["world-event-042"] }],
+  "blocked_reasons": [],
+  "expression_posture": { "distance": 0.28, "warmth": 0.72, "directness": 0.58, "length_budget": 800, "question_budget": 1, "safety_mode": "normal", "preferred_modality": "text" },
+  "response_intent": "answer",
+  "candidate_refs": ["candidate-share-042"],
+  "expires_at": "2026-09-08T20:00:00+08:00"
+}

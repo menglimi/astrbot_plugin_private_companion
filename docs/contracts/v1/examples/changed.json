@@ -1,0 +1,35 @@
+{
+  "schema_version": "memory.changed.v1",
+  "capability_id": "memory.changed",
+  "capability_version": "1.0",
+  "provider_id": "example.memory",
+  "provider_generation": "generation-7",
+  "trace_id": "trace-reading-001",
+  "scope": {
+    "ecosystem_id": "ecosystem-001",
+    "installation_id": "installation-001",
+    "runtime_instance_id": "runtime-001",
+    "host_kind": "astrbot",
+    "bot_id": "bot-main",
+    "platform": "aiocqhttp",
+    "account_id": "qq-bot-001",
+    "conversation_ref": "conversation-001",
+    "platform_conversation_id": "private-user-123",
+    "session_id": "reading-session-001",
+    "user_id": "user-123",
+    "group_id": null,
+    "persona_id": "persona-main",
+    "persona_binding_revision": 12
+  },
+  "payload": {
+    "event_id": "memory-event-001",
+    "namespace": "example.reading",
+    "owner_ref": "owner-001",
+    "atom_id": "atom-001",
+    "atom_revision": 7,
+    "memory_revision": 104,
+    "change_kind": "corrected",
+    "occurred_at": "2026-09-07T01:00:01Z",
+    "trace_id": "trace-reading-001"
+  }
+}

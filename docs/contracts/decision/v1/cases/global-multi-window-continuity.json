@@ -1,0 +1,23 @@
+{
+  "fixture_version": "0.1.0",
+  "fixture_id": "global-multi-window-001",
+  "actor_id": "actor-persona-main",
+  "persona_id": "persona-main",
+  "initial_global_revision": 17,
+  "initial_activity": "reading:chapter-4",
+  "windows": [
+    {"window_ref": "window-private-a", "conversation_ref": "conversation-private-a", "session_id": "session-private-a", "audience": "private", "target_subject_ref": "user-a"},
+    {"window_ref": "window-group", "conversation_ref": "conversation-group", "session_id": "session-group", "audience": "group", "target_subject_ref": null},
+    {"window_ref": "window-private-b", "conversation_ref": "conversation-private-b", "session_id": "session-private-b", "audience": "private", "target_subject_ref": "user-b"}
+  ],
+  "events": [
+    {"sequence": 1, "kind": "message", "window_ref": "window-private-a", "target": "user-a", "global_effect": "focus_deepened", "private_evidence": true},
+    {"sequence": 2, "kind": "message", "window_ref": "window-group", "target": null, "global_effect": "social_presence_noted", "private_evidence": false},
+    {"sequence": 3, "kind": "switch_window", "window_ref": "window-private-b", "target": null, "global_effect": null, "private_evidence": false},
+    {"sequence": 4, "kind": "message", "window_ref": "window-private-b", "target": "user-b", "global_effect": "calm_share_intent", "private_evidence": true},
+    {"sequence": 5, "kind": "switch_window", "window_ref": "window-group", "target": null, "global_effect": null, "private_evidence": false},
+    {"sequence": 6, "kind": "switch_window", "window_ref": "window-private-a", "target": null, "global_effect": null, "private_evidence": false}
+  ],
+  "budgets": {"max_windows": 3, "max_global_events": 4, "max_context_checkpoints": 3},
+  "forbidden_effects": ["message_delivery", "memory_write", "calendar_commit", "world_transition"]
+}

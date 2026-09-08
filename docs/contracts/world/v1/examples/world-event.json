@@ -1,0 +1,19 @@
+{
+  "schema_version": "companion.world-event.v1",
+  "event_id": "world-event-042",
+  "owner_ref": "persona-owner-001",
+  "scope": { "ecosystem_id": "ecosystem-001", "installation_id": "installation-001", "runtime_instance_id": "embedded-runtime", "host_kind": "companion-app", "bot_id": "bot-main", "platform": null, "account_id": null, "conversation_ref": "conversation-001", "platform_conversation_id": null, "session_id": null, "user_id": null, "group_id": null, "persona_id": "persona-main", "persona_binding_revision": 12 },
+  "event_type": "activity_paused",
+  "entity_refs": ["entity-desk-001"],
+  "process_ref": "process-study-001",
+  "world_revision": 43,
+  "process_revision": 3,
+  "observed_at": "2026-09-08T19:20:00+08:00",
+  "expires_at": "2026-09-09T00:00:00+08:00",
+  "reality_mode": "simulated",
+  "causation_id": "session-a-message-001",
+  "evidence_refs": [{ "id": "ev-study-003", "source_id": "world-sim-001", "source_type": "activity_process", "evidence_kind": "observed", "observed_at": "2026-09-08T19:20:00+08:00", "expires_at": "2026-09-09T00:00:00+08:00", "source_revision": "3" }],
+  "visibility": "user_safe",
+  "payload": { "pause_reason": "user_message", "resume_policy": "resume" },
+  "idempotency_key": "world-event-042-r3"
+}

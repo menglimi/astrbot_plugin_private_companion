@@ -13223,15 +13223,18 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
                 "已知角色写作 人物名(作品名)，可使用情绪标签；"
                 "多角色分别写作 {人物[tags]人物}，互动使用 source#/target#/mutual#。"
                 "直接输出可投喂后端的提示词，不加 Positive/Negative 标题或解释。"
+                "用户明确给出的画面标签应原样保留，不得无依据删减、替换或软化；同时遵守生图后端的年龄、权限与安全边界。"
             )
         if mode == "natural_language":
             return (
                 "使用自然语言描述：用连贯具体的英文句子描述主体、外观、动作、场景、光线、镜头、构图与风格；"
                 "不要标签堆、权重语法或 Positive/Negative 标题；需要避免的内容在末句用 Avoid ... 表达。"
+                "用户明确给出的画面要素应尽量原样保留，不得无依据删减、替换或软化；同时遵守生图后端的年龄、权限与安全边界。"
             )
         return (
             "使用英文短词组，按主体、外观、服装、场景、光线、镜头、构图、风格排列并以逗号分隔；"
             "使用 Positive prompt: ... Negative prompt: ... 结构，不写解释。"
+            "用户明确给出的画面标签应尽量原样保留，不得无依据删减、替换或软化；同时遵守生图后端的年龄、权限与安全边界。"
         )
 
     @staticmethod

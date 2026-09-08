@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:control-extension-state-page:v1",
+  "title": "Extension capability state page",
+  "type": "object",
+  "properties": {
+    "provider_id": { "type": "string", "minLength": 1 },
+    "provider_generation": { "type": "string", "minLength": 1 },
+    "catalog_revision": { "type": "integer", "minimum": 0 },
+    "phase": { "enum": ["discovered", "validated", "bound", "ready", "degraded", "quiescing", "draining", "closing", "stopped", "failed"] },
+    "admission": { "type": "boolean" },
+    "observed_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": ["string", "null"], "format": "date-time" },
+    "capabilities": { "type": "array", "items": { "$ref": "urn:companion:schema:control-capability-descriptor:v1" } },
+    "diagnostic_refs": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true }
+  },
+  "required": ["provider_id", "provider_generation", "catalog_revision", "phase", "admission", "observed_at", "expires_at", "capabilities", "diagnostic_refs"],
+  "additionalProperties": false
+}

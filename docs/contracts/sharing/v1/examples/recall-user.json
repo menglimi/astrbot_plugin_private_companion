@@ -1,0 +1,86 @@
+{
+  "schema_version": "memory.result.v1",
+  "capability_id": "memory.query",
+  "capability_version": "1.0",
+  "provider_id": "example.memory",
+  "provider_generation": "generation-7",
+  "request_id": "query-user-group",
+  "trace_id": "trace-query-user-group",
+  "status": "succeeded",
+  "reason_code": null,
+  "retryable": false,
+  "degraded": false,
+  "warnings": [],
+  "output": {
+    "items": [
+      {
+        "item_kind": "fact",
+        "atom_id": "atom-001",
+        "revision": 7,
+        "fact_status": "active",
+        "owner_ref": "owner-001",
+        "assertion": {
+          "subject": {
+            "kind": "companion.person",
+            "ref": "person-user-123"
+          },
+          "predicate": "preferred_drink",
+          "object": "tea",
+          "qualifiers": {},
+          "polarity": "affirmed",
+          "attribution": "user"
+        },
+        "valid_from": "2026-09-07T01:00:00Z",
+        "valid_to": null,
+        "visibility": "user_shared",
+        "evidence": [
+          {
+            "ref": {
+              "id": "evidence-preference-1",
+              "source_id": "user-message-1",
+              "source_type": "platform.message",
+              "evidence_kind": "user_stated",
+              "observed_at": "2026-09-07T01:00:00Z",
+              "expires_at": null
+            },
+            "state": "available",
+            "excerpt": "I prefer tea."
+          }
+        ],
+        "conflicts": [],
+        "missing": [],
+        "extensions": {
+          "companion.sharing": {
+            "schema_version": "1.0",
+            "payload": {
+              "sharing_mode": "user",
+              "sharing_anchor": "share-user-a",
+              "sharing_policy_revision": 3
+            }
+          }
+        }
+      }
+    ],
+    "next_cursor": null,
+    "memory_revision": 104,
+    "policy_revision": "policy-3",
+    "coverage": [
+      {
+        "strategy_id": "memory.timeline",
+        "strategy_version": "1.0",
+        "status": "succeeded",
+        "data_revision": 104,
+        "reason_code": null
+      }
+    ],
+    "usage": {
+      "candidates": 1,
+      "model_calls": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "evidence_items": 1,
+      "evidence_chars": 12,
+      "evidence_tokens": 8
+    }
+  }
+}

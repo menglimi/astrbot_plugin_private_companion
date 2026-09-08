@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:relationship-event:v1",
+  "title": "Evidence-backed relationship projection contribution",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "companion.relationship-event.v1" },
+    "event_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "trace_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "scope": { "$ref": "urn:companion:schema:runtime-scope:v1" },
+    "target_ref": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "relation_kind": { "enum": ["trust", "closeness", "reliability", "repair_need", "boundary" ] },
+    "delta": { "type": "number", "minimum": -1, "maximum": 1 },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "occurred_at": { "$ref": "urn:companion:schema:common:v1#/$defs/time" },
+    "valid_until": { "$ref": "urn:companion:schema:common:v1#/$defs/time" },
+    "evidence_refs": { "type": "array", "items": { "$ref": "urn:companion:schema:common:v1#/$defs/evidence" }, "minItems": 1, "maxItems": 8 },
+    "caused_by": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "dedupe_key": { "$ref": "urn:companion:schema:common:v1#/$defs/token" }
+  },
+  "required": ["schema_version", "event_id", "trace_id", "scope", "target_ref", "relation_kind", "delta", "confidence", "occurred_at", "valid_until", "evidence_refs", "caused_by", "dedupe_key"],
+  "additionalProperties": false
+}

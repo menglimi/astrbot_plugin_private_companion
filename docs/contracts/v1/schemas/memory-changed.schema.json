@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:memory-changed:v1",
+  "title": "memory.changed.v1 subscriber projection",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "memory.changed.v1"
+    },
+    "capability_id": {
+      "const": "memory.changed"
+    },
+    "capability_version": {
+      "const": "1.0"
+    },
+    "provider_id": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "provider_generation": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "trace_id": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "scope": {
+      "$ref": "urn:companion:schema:runtime-scope:v1"
+    },
+    "payload": {
+      "type": "object",
+      "properties": {
+        "event_id": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "namespace": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "owner_ref": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "atom_id": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "atom_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "memory_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "change_kind": {
+          "enum": [
+            "added",
+            "corrected",
+            "retracted",
+            "expired"
+          ]
+        },
+        "occurred_at": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/time"
+        },
+        "trace_id": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        }
+      },
+      "required": [
+        "event_id",
+        "namespace",
+        "owner_ref",
+        "atom_id",
+        "atom_revision",
+        "memory_revision",
+        "change_kind",
+        "occurred_at",
+        "trace_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "capability_id",
+    "capability_version",
+    "provider_id",
+    "provider_generation",
+    "trace_id",
+    "scope",
+    "payload"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,15 @@
+{
+  "fixture_version": "0.1.0",
+  "run_status": "not_run",
+  "actual": null,
+  "scenarios": [
+    { "id": "WMS-01", "name": "实体来源与可见性", "artifacts": ["world-entity"], "expected": ["source_refs present", "global_safe contains no private user data"] },
+    { "id": "WMS-02", "name": "活动推进使用独立 process revision", "artifacts": ["world-request", "world-result"], "expected": ["expected_revision=3", "process_revision=4", "changed_refs bounded"] },
+    { "id": "WMS-03", "name": "事件重发保持 event id 幂等", "artifacts": ["world-event"], "expected": ["same event_id and idempotency_key", "no duplicate state transition"] },
+    { "id": "WMS-04", "name": "模拟世界不冒充现实观测", "artifacts": ["world-event", "world-entity"], "expected": ["reality_mode=simulated", "requires external evidence for observed"] },
+    { "id": "WMS-05", "name": "三种共享模式按受众裁剪", "artifacts": ["world-event"], "expected": ["user_safe not broadcast as global_safe"] },
+    { "id": "WMS-06", "name": "响应丢失后查账不重建", "artifacts": ["world-request", "world-result"], "expected": ["same idempotency key", "same process revision"] },
+    { "id": "WMS-07", "name": "外部修订使投影失效", "artifacts": ["world-event"], "expected": ["causation_id retained", "new revision required"] },
+    { "id": "WMS-08", "name": "高频状态受资源上限约束", "artifacts": ["world-request"], "expected": ["max_model_calls=0 for advance", "no per-minute LLM loop"] }
+  ]
+}

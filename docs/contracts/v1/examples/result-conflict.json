@@ -1,0 +1,17 @@
+{
+  "schema_version": "memory.result.v1",
+  "capability_id": "memory.proposal.submit",
+  "capability_version": "1.0",
+  "provider_id": "example.memory",
+  "provider_generation": "generation-7",
+  "request_id": "req-reading-001",
+  "trace_id": "trace-reading-001",
+  "status": "rejected",
+  "reason_code": "revision_conflict",
+  "retryable": false,
+  "degraded": false,
+  "warnings": [],
+  "output": {
+    "commit_state": "not_committed"
+  }
+}

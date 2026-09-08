@@ -1,0 +1,40 @@
+{
+  "fixture_version": "0.1.0",
+  "fixture_id": "decision-capability-budget-001",
+  "canonical_event_ref": "evt-astrbot-0001",
+  "budgets": {
+    "max_model_calls": 1,
+    "max_candidates": 4,
+    "max_snapshot_bytes": 16384,
+    "max_inflight_previews": 2,
+    "max_duration_ms": 8000
+  },
+  "required_capability": "decision.shadow@1",
+  "shells": [
+    {
+      "shell_id": "astrbot",
+      "available_features": ["decision.shadow@1", "vision.context@1", "threading@1"],
+      "degradation": "none",
+      "effective_features": ["decision.shadow@1", "vision.context@1", "threading@1"],
+      "metrics": {"candidate_count": 2, "model_calls": 1, "snapshot_bytes": 6800, "peak_inflight_previews": 1, "duration_ms": 120},
+      "side_effects": {"delivery": 0, "memory_write": 0, "calendar_commit": 0, "world_transition": 0}
+    },
+    {
+      "shell_id": "standalone",
+      "available_features": ["decision.shadow@1", "threading@1"],
+      "degradation": "vision_reference_only",
+      "effective_features": ["decision.shadow@1", "threading@1"],
+      "metrics": {"candidate_count": 1, "model_calls": 0, "snapshot_bytes": 4800, "peak_inflight_previews": 1, "duration_ms": 80},
+      "side_effects": {"delivery": 0, "memory_write": 0, "calendar_commit": 0, "world_transition": 0}
+    },
+    {
+      "shell_id": "embedded",
+      "available_features": ["decision.shadow@1"],
+      "degradation": "bounded_no_model",
+      "effective_features": ["decision.shadow@1"],
+      "metrics": {"candidate_count": 1, "model_calls": 0, "snapshot_bytes": 3000, "peak_inflight_previews": 1, "duration_ms": 30},
+      "side_effects": {"delivery": 0, "memory_write": 0, "calendar_commit": 0, "world_transition": 0}
+    }
+  ],
+  "forbidden_effects": ["delivery", "memory_write", "calendar_commit", "world_transition"]
+}

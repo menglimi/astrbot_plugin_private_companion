@@ -1,0 +1,13 @@
+{
+  "schema_version": "companion.world.result.v1",
+  "request_id": "world-request-001",
+  "trace_id": "trace-world-001",
+  "status": "succeeded",
+  "world_revision": 44,
+  "process_revision": 4,
+  "changed_refs": ["process-study-001", "checkpoint-study-001"],
+  "event_ref": "world-event-043",
+  "checkpoint_ref": "checkpoint-study-002",
+  "committed": true,
+  "reason": null
+}

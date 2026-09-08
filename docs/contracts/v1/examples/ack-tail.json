@@ -1,0 +1,99 @@
+{
+  "schema_version": "memory.ack.v1",
+  "capability_id": "memory.changed.ack",
+  "capability_version": "1.0",
+  "provider_id": "example.memory",
+  "provider_generation": "generation-8",
+  "request_id": "req-ack-001",
+  "trace_id": "trace-recovery-001",
+  "deadline_at": "2026-09-08T01:00:10Z",
+  "scope": {
+    "ecosystem_id": "ecosystem-001",
+    "installation_id": "installation-001",
+    "runtime_instance_id": "embedded-runtime",
+    "host_kind": "companion-app",
+    "bot_id": "bot-main",
+    "platform": null,
+    "account_id": null,
+    "conversation_ref": "conversation-001",
+    "platform_conversation_id": null,
+    "session_id": null,
+    "user_id": null,
+    "group_id": null,
+    "persona_id": "persona-main",
+    "persona_binding_revision": 12
+  },
+  "required_features": [],
+  "budget": {
+    "max_input_bytes": 32768,
+    "max_model_calls": 0,
+    "max_output_bytes": 32768
+  },
+  "payload": {
+    "subscription_id": "subscription-001",
+    "subscriber_generation": "consumer-8",
+    "lease_id": "lease-tail-001",
+    "target": {
+      "kind": "batch",
+      "batch_id": "batch-tail-001"
+    },
+    "checkpoint": {
+      "schema_version": "memory.checkpoint.v1",
+      "binding": {
+        "subscriber_ref": "subscriber-reading",
+        "owner_ref": "owner-001",
+        "namespace": "example.reading",
+        "purpose": "projection",
+        "projection_kind": "references",
+        "view_kind": "current_projection",
+        "change_kinds": [
+          "added",
+          "corrected",
+          "retracted",
+          "expired"
+        ],
+        "view_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+        "authorization_revision": "acl-3",
+        "policy_revision": "policy-3",
+        "lineage_id": "lineage-reading",
+        "retention_epoch": "retention-2",
+        "contract_fingerprint": "3a41420f40fcd7dc8b8e2d990c8c5b3bd47cde8a998c88339daa9c71dadaaee2"
+      },
+      "projection_generation": "projection-002",
+      "state": "snapshot_tail",
+      "snapshot": {
+        "snapshot_id": "snapshot-001",
+        "snapshot_epoch": "snapshot-epoch-001",
+        "binding": {
+          "subscriber_ref": "subscriber-reading",
+          "owner_ref": "owner-001",
+          "namespace": "example.reading",
+          "purpose": "projection",
+          "projection_kind": "references",
+          "view_kind": "current_projection",
+          "change_kinds": [
+            "added",
+            "corrected",
+            "retracted",
+            "expired"
+          ],
+          "view_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+          "authorization_revision": "acl-3",
+          "policy_revision": "policy-3",
+          "lineage_id": "lineage-reading",
+          "retention_epoch": "retention-2",
+          "contract_fingerprint": "3a41420f40fcd7dc8b8e2d990c8c5b3bd47cde8a998c88339daa9c71dadaaee2"
+        },
+        "memory_revision": 104,
+        "tail_start_cursor": "cursor-104",
+        "expires_at": "2026-09-08T01:05:00Z"
+      },
+      "page_cursor": null,
+      "stream_cursor": "cursor-106",
+      "last_event_id": "event-106",
+      "memory_revision": 106,
+      "inbox_ref": "inbox-generation-002",
+      "stored_at": "2026-09-08T01:00:05Z"
+    }
+  }
+}

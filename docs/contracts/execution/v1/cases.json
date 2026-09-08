@@ -1,0 +1,1815 @@
+{
+  "format_version": "1.0",
+  "purpose": "offline_public_execution_contract_examples",
+  "cases": [
+    {
+      "id": "EX-story-request",
+      "schema": "action-request",
+      "document": "examples/story-request.json",
+      "valid": true,
+      "payload_valid": true
+    },
+    {
+      "id": "EX-story-result",
+      "schema": "operation-result",
+      "document": "examples/story-result.json",
+      "valid": true,
+      "payload_valid": true
+    },
+    {
+      "id": "EX-task-running",
+      "schema": "task-envelope",
+      "document": "examples/task-running.json",
+      "valid": true
+    },
+    {
+      "id": "EX-task-created",
+      "schema": "task-envelope",
+      "document": "examples/task-created.json",
+      "valid": true
+    },
+    {
+      "id": "EX-task-retry",
+      "schema": "task-envelope",
+      "document": "examples/task-retry.json",
+      "valid": true
+    },
+    {
+      "id": "EX-task-waiting",
+      "schema": "task-envelope",
+      "document": "examples/task-waiting.json",
+      "valid": true
+    },
+    {
+      "id": "EX-send-request",
+      "schema": "action-request",
+      "document": "examples/send-request.json",
+      "valid": true,
+      "payload_valid": true
+    },
+    {
+      "id": "EX-send-result-uncertain",
+      "schema": "operation-result",
+      "document": "examples/send-result-uncertain.json",
+      "valid": true
+    },
+    {
+      "id": "EX-delivery-accepted",
+      "schema": "delivery-receipt",
+      "document": "examples/delivery-accepted.json",
+      "valid": true
+    },
+    {
+      "id": "EX-delivery-uncertain",
+      "schema": "delivery-receipt",
+      "document": "examples/delivery-uncertain.json",
+      "valid": true
+    },
+    {
+      "id": "EX-delivery-aggregate",
+      "schema": "delivery-receipt",
+      "document": "examples/delivery-aggregate.json",
+      "valid": true
+    },
+    {
+      "id": "EX-delivery-confirmed",
+      "schema": "delivery-receipt",
+      "document": "examples/delivery-confirmed.json",
+      "valid": true
+    },
+    {
+      "id": "EX-session-reconnecting",
+      "schema": "session-record",
+      "document": "examples/session-reconnecting.json",
+      "valid": true
+    },
+    {
+      "id": "EX-session-active",
+      "schema": "session-record",
+      "document": "examples/session-active.json",
+      "valid": true
+    },
+    {
+      "id": "EX-session-ended",
+      "schema": "session-record",
+      "document": "examples/session-ended.json",
+      "valid": true
+    },
+    {
+      "id": "EX-session-resume-request",
+      "schema": "action-request",
+      "document": "examples/session-resume-request.json",
+      "valid": true,
+      "payload_valid": true
+    },
+    {
+      "id": "EX-session-resume-result",
+      "schema": "operation-result",
+      "document": "examples/session-resume-result.json",
+      "valid": true,
+      "payload_valid": true
+    },
+    {
+      "id": "EX-unknown-version",
+      "schema": "action-request",
+      "document": "examples/story-request.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "schema_version"
+          ],
+          "value": "companion.action.v2"
+        }
+      ]
+    },
+    {
+      "id": "EX-unknown-field",
+      "schema": "action-request",
+      "document": "examples/story-request.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "event"
+          ],
+          "value": {
+            "platform": "astrbot"
+          }
+        }
+      ]
+    },
+    {
+      "id": "EX-missing-feature",
+      "schema": "action-request",
+      "document": "examples/story-request.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "required_features"
+          ],
+          "value": []
+        }
+      ]
+    },
+    {
+      "id": "EX-missing-binding",
+      "schema": "action-request",
+      "document": "examples/story-request.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "binding_ref"
+          ],
+          "remove": true
+        }
+      ]
+    },
+    {
+      "id": "EX-missing-input-schema",
+      "schema": "action-request",
+      "document": "examples/story-request.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "payload_schema"
+          ],
+          "remove": true
+        }
+      ]
+    },
+    {
+      "id": "EX-missing-budget",
+      "schema": "action-request",
+      "document": "examples/story-request.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "budget"
+          ],
+          "remove": true
+        }
+      ],
+      "scenario_refs": [
+        "LC-12"
+      ]
+    },
+    {
+      "id": "EX-zero-input-budget",
+      "schema": "action-request",
+      "document": "examples/story-request.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "budget",
+            "max_input_bytes"
+          ],
+          "value": 0
+        }
+      ],
+      "scenario_refs": [
+        "LC-12"
+      ]
+    },
+    {
+      "id": "EX-negative-model-budget",
+      "schema": "action-request",
+      "document": "examples/story-request.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "budget",
+            "max_model_calls"
+          ],
+          "value": -1
+        }
+      ]
+    },
+    {
+      "id": "EX-zero-model-budget",
+      "schema": "action-request",
+      "document": "examples/story-request.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "budget",
+            "max_model_calls"
+          ],
+          "value": 0
+        }
+      ]
+    },
+    {
+      "id": "EX-invalid-deadline",
+      "schema": "action-request",
+      "document": "examples/story-request.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "deadline_at"
+          ],
+          "value": "2026-02-30T01:00:00Z"
+        }
+      ]
+    },
+    {
+      "id": "EX-cause-with-raw-body",
+      "schema": "action-request",
+      "document": "examples/story-request.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "execution",
+            "caused_by",
+            0,
+            "body"
+          ],
+          "value": "private text"
+        }
+      ],
+      "scenario_refs": [
+        "LC-12"
+      ]
+    },
+    {
+      "id": "EX-fake-operation-shape-only",
+      "schema": "action-request",
+      "document": "examples/story-request.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "execution",
+            "operation_id"
+          ],
+          "value": "caller-invented-id"
+        }
+      ],
+      "scenario_refs": [
+        "LC-09"
+      ]
+    },
+    {
+      "id": "EX-write-null-key-shape-only",
+      "schema": "action-request",
+      "document": "examples/story-request.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "idempotency_key"
+          ],
+          "value": null
+        }
+      ],
+      "scenario_refs": [
+        "LC-09"
+      ]
+    },
+    {
+      "id": "EX-request-correlation-missing-attempt",
+      "schema": "action-request",
+      "document": "examples/story-request.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "execution",
+            "attempt_id"
+          ],
+          "remove": true
+        }
+      ],
+      "scenario_refs": [
+        "LC-09"
+      ]
+    },
+    {
+      "id": "EX-missing-precondition-revision",
+      "schema": "action-request",
+      "document": "examples/story-request.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "preconditions",
+            0,
+            "expected_revision"
+          ],
+          "remove": true
+        }
+      ]
+    },
+    {
+      "id": "EX-unknown-payload-schema",
+      "schema": "action-request",
+      "document": "examples/story-request.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "payload_schema"
+          ],
+          "value": "urn:example:unregistered:schema"
+        }
+      ],
+      "payload_valid": false
+    },
+    {
+      "id": "EX-wrong-domain-payload",
+      "schema": "action-request",
+      "document": "examples/story-request.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "payload"
+          ],
+          "value": {}
+        }
+      ],
+      "payload_valid": false
+    },
+    {
+      "id": "EX-domain-extra-field",
+      "schema": "action-request",
+      "document": "examples/story-request.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "force_write"
+          ],
+          "value": true
+        }
+      ],
+      "payload_valid": false
+    },
+    {
+      "id": "EX-domain-result-missing-chunk",
+      "schema": "operation-result",
+      "document": "examples/story-result.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "output",
+            "chunk_ref"
+          ],
+          "remove": true
+        }
+      ],
+      "payload_valid": false
+    },
+    {
+      "id": "EX-task-extra-field",
+      "schema": "task-envelope",
+      "document": "examples/task-running.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "threads"
+          ],
+          "value": []
+        }
+      ]
+    },
+    {
+      "id": "EX-task-first-attempt-null",
+      "schema": "task-envelope",
+      "document": "examples/task-running.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "attempt_id"
+          ],
+          "value": null
+        }
+      ],
+      "scenario_refs": [
+        "LC-09"
+      ]
+    },
+    {
+      "id": "EX-task-zero-attempt-with-id",
+      "schema": "task-envelope",
+      "document": "examples/task-created.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "attempt_id"
+          ],
+          "value": "attempt-new"
+        }
+      ],
+      "scenario_refs": [
+        "LC-09"
+      ]
+    },
+    {
+      "id": "EX-task-negative-revision",
+      "schema": "task-envelope",
+      "document": "examples/task-running.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "task_revision"
+          ],
+          "value": -1
+        }
+      ]
+    },
+    {
+      "id": "EX-task-old-generation-shape-only",
+      "schema": "task-envelope",
+      "document": "examples/task-running.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "supervisor_generation"
+          ],
+          "value": "supervisor-7"
+        }
+      ],
+      "scenario_refs": [
+        "LC-09"
+      ]
+    },
+    {
+      "id": "EX-task-no-write-key",
+      "schema": "task-envelope",
+      "document": "examples/task-running.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "idempotency_key"
+          ],
+          "value": null
+        }
+      ],
+      "scenario_refs": [
+        "LC-09"
+      ]
+    },
+    {
+      "id": "EX-task-no-bound-provider",
+      "schema": "task-envelope",
+      "document": "examples/task-running.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "binding"
+          ],
+          "value": null
+        }
+      ]
+    },
+    {
+      "id": "EX-task-parent-with-effect",
+      "schema": "task-envelope",
+      "document": "examples/task-created.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "side_effect"
+          ],
+          "value": "external_network"
+        },
+        {
+          "path": [
+            "idempotency_key"
+          ],
+          "value": "x"
+        }
+      ],
+      "scenario_refs": [
+        "LC-12"
+      ]
+    },
+    {
+      "id": "EX-task-parent-operation",
+      "schema": "task-envelope",
+      "document": "examples/task-created.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "operation_id"
+          ],
+          "value": "unrelated-operation"
+        }
+      ]
+    },
+    {
+      "id": "EX-task-wait-no-condition",
+      "schema": "task-envelope",
+      "document": "examples/task-waiting.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "wait"
+          ],
+          "value": null
+        }
+      ]
+    },
+    {
+      "id": "EX-task-wait-no-ref",
+      "schema": "task-envelope",
+      "document": "examples/task-waiting.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "wait",
+            "condition_ref"
+          ],
+          "value": null
+        }
+      ]
+    },
+    {
+      "id": "EX-task-timer-wait",
+      "schema": "task-envelope",
+      "document": "examples/task-waiting.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "wait",
+            "kind"
+          ],
+          "value": "timer"
+        },
+        {
+          "path": [
+            "wait",
+            "condition_ref"
+          ],
+          "value": null
+        }
+      ]
+    },
+    {
+      "id": "EX-task-wait-forever",
+      "schema": "task-envelope",
+      "document": "examples/task-waiting.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "wait",
+            "expires_at"
+          ],
+          "value": null
+        }
+      ],
+      "scenario_refs": [
+        "LC-12"
+      ]
+    },
+    {
+      "id": "EX-task-retry-no-basis",
+      "schema": "task-envelope",
+      "document": "examples/task-retry.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "retry"
+          ],
+          "value": null
+        }
+      ],
+      "scenario_refs": [
+        "LC-09"
+      ]
+    },
+    {
+      "id": "EX-task-retry-no-time",
+      "schema": "task-envelope",
+      "document": "examples/task-retry.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "next_run_at"
+          ],
+          "value": null
+        }
+      ],
+      "scenario_refs": [
+        "LC-09"
+      ]
+    },
+    {
+      "id": "EX-task-retry-unknown-basis",
+      "schema": "task-envelope",
+      "document": "examples/task-retry.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "retry",
+            "basis"
+          ],
+          "value": "timeout_means_not_sent"
+        }
+      ],
+      "scenario_refs": [
+        "LC-10"
+      ]
+    },
+    {
+      "id": "EX-task-provider-idempotency",
+      "schema": "task-envelope",
+      "document": "examples/task-retry.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "retry",
+            "basis"
+          ],
+          "value": "provider_idempotent"
+        }
+      ],
+      "scenario_refs": [
+        "LC-10"
+      ]
+    },
+    {
+      "id": "EX-task-forged-retry-proof-shape-only",
+      "schema": "task-envelope",
+      "document": "examples/task-retry.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "retry",
+            "proof_ref",
+            "ref"
+          ],
+          "value": "forged-proof"
+        }
+      ],
+      "scenario_refs": [
+        "LC-10"
+      ]
+    },
+    {
+      "id": "EX-task-cancel-no-reason",
+      "schema": "task-envelope",
+      "document": "examples/task-running.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "state"
+          ],
+          "value": "cancelling"
+        }
+      ],
+      "scenario_refs": [
+        "LC-10"
+      ]
+    },
+    {
+      "id": "EX-task-cancelling",
+      "schema": "task-envelope",
+      "document": "examples/task-running.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "state"
+          ],
+          "value": "cancelling"
+        },
+        {
+          "path": [
+            "cancellation_reason"
+          ],
+          "value": "user_cancelled"
+        }
+      ],
+      "scenario_refs": [
+        "LC-10"
+      ]
+    },
+    {
+      "id": "EX-task-terminal-no-result",
+      "schema": "task-envelope",
+      "document": "examples/task-running.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "state"
+          ],
+          "value": "succeeded"
+        }
+      ]
+    },
+    {
+      "id": "EX-task-uncertain",
+      "schema": "task-envelope",
+      "document": "examples/task-running.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "state"
+          ],
+          "value": "uncertain"
+        },
+        {
+          "path": [
+            "result_ref"
+          ],
+          "value": {
+            "kind": "companion.operation.result",
+            "ref": "unknown-result",
+            "revision": 1
+          }
+        }
+      ],
+      "scenario_refs": [
+        "LC-10"
+      ]
+    },
+    {
+      "id": "EX-task-occurrence",
+      "schema": "task-envelope",
+      "document": "examples/task-running.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "occurrence"
+          ],
+          "value": {
+            "schedule_id": "schedule-001",
+            "occurrence_id": "occurrence-002",
+            "scheduled_for": "2026-09-08T02:00:00Z"
+          }
+        }
+      ],
+      "scenario_refs": [
+        "LC-09"
+      ]
+    },
+    {
+      "id": "EX-task-occurrence-no-id",
+      "schema": "task-envelope",
+      "document": "examples/task-running.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "occurrence"
+          ],
+          "value": {
+            "schedule_id": "schedule-001",
+            "scheduled_for": "2026-09-08T02:00:00Z"
+          }
+        }
+      ],
+      "scenario_refs": [
+        "LC-09"
+      ]
+    },
+    {
+      "id": "EX-session-extra-media",
+      "schema": "session-record",
+      "document": "examples/session-active.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "media_frames"
+          ],
+          "value": []
+        }
+      ],
+      "scenario_refs": [
+        "LC-12"
+      ]
+    },
+    {
+      "id": "EX-session-unbounded-grants",
+      "schema": "session-record",
+      "document": "examples/session-active.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "capability_grants"
+          ],
+          "value": []
+        }
+      ],
+      "scenario_refs": [
+        "LC-12"
+      ]
+    },
+    {
+      "id": "EX-session-active-no-grants",
+      "schema": "session-record",
+      "document": "examples/session-active.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "capability_grants_ref"
+          ],
+          "value": null
+        }
+      ],
+      "scenario_refs": [
+        "LC-11"
+      ]
+    },
+    {
+      "id": "EX-session-active-no-start",
+      "schema": "session-record",
+      "document": "examples/session-active.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "started_at"
+          ],
+          "value": null
+        }
+      ],
+      "scenario_refs": [
+        "LC-11"
+      ]
+    },
+    {
+      "id": "EX-session-reconnect-no-checkpoint",
+      "schema": "session-record",
+      "document": "examples/session-reconnecting.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "checkpoint_ref"
+          ],
+          "value": null
+        }
+      ],
+      "scenario_refs": [
+        "LC-11"
+      ]
+    },
+    {
+      "id": "EX-session-ended-no-reason",
+      "schema": "session-record",
+      "document": "examples/session-ended.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "termination_reason"
+          ],
+          "value": null
+        }
+      ],
+      "scenario_refs": [
+        "LC-11"
+      ]
+    },
+    {
+      "id": "EX-session-ended-no-time",
+      "schema": "session-record",
+      "document": "examples/session-ended.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "ended_at"
+          ],
+          "value": null
+        }
+      ],
+      "scenario_refs": [
+        "LC-11"
+      ]
+    },
+    {
+      "id": "EX-session-active-with-ended-time",
+      "schema": "session-record",
+      "document": "examples/session-active.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "ended_at"
+          ],
+          "value": "2026-09-08T02:04:00Z"
+        }
+      ],
+      "scenario_refs": [
+        "LC-11"
+      ]
+    },
+    {
+      "id": "EX-session-ended-no-start",
+      "schema": "session-record",
+      "document": "examples/session-ended.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "started_at"
+          ],
+          "value": null
+        }
+      ]
+    },
+    {
+      "id": "EX-session-old-controller-shape-only",
+      "schema": "session-record",
+      "document": "examples/session-active.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "controller_generation"
+          ],
+          "value": "controller-7"
+        }
+      ],
+      "scenario_refs": [
+        "LC-11"
+      ]
+    },
+    {
+      "id": "EX-session-persona-mismatch-shape-only",
+      "schema": "session-record",
+      "document": "examples/session-active.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "persona_binding_revision"
+          ],
+          "value": 11
+        }
+      ],
+      "scenario_refs": [
+        "LC-11"
+      ]
+    },
+    {
+      "id": "EX-session-cross-scope-shape-only",
+      "schema": "session-record",
+      "document": "examples/session-active.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "scope",
+            "session_id"
+          ],
+          "value": "session-other"
+        }
+      ],
+      "scenario_refs": [
+        "LC-11"
+      ]
+    },
+    {
+      "id": "EX-session-unknown-phase",
+      "schema": "session-record",
+      "document": "examples/session-active.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "phase"
+          ],
+          "value": "negotiating"
+        }
+      ]
+    },
+    {
+      "id": "EX-result-unknown-status",
+      "schema": "operation-result",
+      "document": "examples/story-result.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "status"
+          ],
+          "value": "delivered"
+        }
+      ],
+      "scenario_refs": [
+        "LC-13"
+      ]
+    },
+    {
+      "id": "EX-result-missing-output-schema",
+      "schema": "operation-result",
+      "document": "examples/story-result.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "output_schema"
+          ],
+          "value": null
+        }
+      ]
+    },
+    {
+      "id": "EX-result-applied-no-operation",
+      "schema": "operation-result",
+      "document": "examples/story-result.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "execution",
+            "operation_id"
+          ],
+          "value": null
+        }
+      ]
+    },
+    {
+      "id": "EX-result-applied-no-receipt",
+      "schema": "operation-result",
+      "document": "examples/story-result.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "receipt_ref"
+          ],
+          "value": null
+        }
+      ]
+    },
+    {
+      "id": "EX-result-success-no-output",
+      "schema": "operation-result",
+      "document": "examples/story-result.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "output"
+          ],
+          "value": null
+        }
+      ]
+    },
+    {
+      "id": "EX-result-uncertain-applied",
+      "schema": "operation-result",
+      "document": "examples/send-result-uncertain.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "effect_state"
+          ],
+          "value": "applied"
+        }
+      ],
+      "scenario_refs": [
+        "LC-10"
+      ]
+    },
+    {
+      "id": "EX-result-uncertain-retry",
+      "schema": "operation-result",
+      "document": "examples/send-result-uncertain.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "retryable"
+          ],
+          "value": true
+        }
+      ],
+      "scenario_refs": [
+        "LC-10"
+      ]
+    },
+    {
+      "id": "EX-result-uncertain-with-output",
+      "schema": "operation-result",
+      "document": "examples/send-result-uncertain.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "output_schema"
+          ],
+          "value": "urn:example:output"
+        },
+        {
+          "path": [
+            "output"
+          ],
+          "value": {}
+        }
+      ],
+      "scenario_refs": [
+        "LC-10"
+      ]
+    },
+    {
+      "id": "EX-result-unknown-before-operation",
+      "schema": "operation-result",
+      "document": "examples/send-result-uncertain.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "execution",
+            "operation_id"
+          ],
+          "value": null
+        },
+        {
+          "path": [
+            "receipt_ref"
+          ],
+          "value": null
+        }
+      ],
+      "scenario_refs": [
+        "LC-10"
+      ]
+    },
+    {
+      "id": "EX-result-timeout-unknown",
+      "schema": "operation-result",
+      "document": "examples/send-result-uncertain.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "status"
+          ],
+          "value": "timeout"
+        }
+      ],
+      "scenario_refs": [
+        "LC-10"
+      ]
+    },
+    {
+      "id": "EX-result-cancelled-unknown",
+      "schema": "operation-result",
+      "document": "examples/send-result-uncertain.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "status"
+          ],
+          "value": "cancelled"
+        }
+      ],
+      "scenario_refs": [
+        "LC-10"
+      ]
+    },
+    {
+      "id": "EX-result-cancelled-not-applied",
+      "schema": "operation-result",
+      "document": "examples/send-result-uncertain.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "status"
+          ],
+          "value": "cancelled"
+        },
+        {
+          "path": [
+            "effect_state"
+          ],
+          "value": "not_applied"
+        },
+        {
+          "path": [
+            "reason_code"
+          ],
+          "value": "user_cancelled"
+        }
+      ],
+      "scenario_refs": [
+        "LC-10"
+      ]
+    },
+    {
+      "id": "EX-result-partial",
+      "schema": "operation-result",
+      "document": "examples/send-result-uncertain.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "status"
+          ],
+          "value": "partial"
+        },
+        {
+          "path": [
+            "effect_state"
+          ],
+          "value": "partial"
+        },
+        {
+          "path": [
+            "degraded"
+          ],
+          "value": true
+        }
+      ],
+      "scenario_refs": [
+        "LC-13"
+      ]
+    },
+    {
+      "id": "EX-result-partial-no-parts",
+      "schema": "operation-result",
+      "document": "examples/send-result-uncertain.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "status"
+          ],
+          "value": "partial"
+        },
+        {
+          "path": [
+            "effect_state"
+          ],
+          "value": "partial"
+        },
+        {
+          "path": [
+            "degraded"
+          ],
+          "value": true
+        },
+        {
+          "path": [
+            "parts_ref"
+          ],
+          "value": null
+        }
+      ],
+      "scenario_refs": [
+        "LC-13"
+      ]
+    },
+    {
+      "id": "EX-result-partial-not-degraded",
+      "schema": "operation-result",
+      "document": "examples/send-result-uncertain.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "status"
+          ],
+          "value": "partial"
+        },
+        {
+          "path": [
+            "effect_state"
+          ],
+          "value": "partial"
+        }
+      ],
+      "scenario_refs": [
+        "LC-13"
+      ]
+    },
+    {
+      "id": "EX-result-pending",
+      "schema": "operation-result",
+      "document": "examples/send-result-uncertain.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "status"
+          ],
+          "value": "pending"
+        }
+      ]
+    },
+    {
+      "id": "EX-result-pending-no-operation",
+      "schema": "operation-result",
+      "document": "examples/send-result-uncertain.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "status"
+          ],
+          "value": "pending"
+        },
+        {
+          "path": [
+            "execution",
+            "operation_id"
+          ],
+          "value": null
+        }
+      ]
+    },
+    {
+      "id": "EX-result-pending-no-lookup",
+      "schema": "operation-result",
+      "document": "examples/send-result-uncertain.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "status"
+          ],
+          "value": "pending"
+        },
+        {
+          "path": [
+            "receipt_ref"
+          ],
+          "value": null
+        }
+      ]
+    },
+    {
+      "id": "EX-result-permission-with-hidden-output",
+      "schema": "operation-result",
+      "document": "examples/story-result.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "status"
+          ],
+          "value": "permission_denied"
+        },
+        {
+          "path": [
+            "reason_code"
+          ],
+          "value": "forbidden"
+        }
+      ]
+    },
+    {
+      "id": "EX-result-stale-attempt-shape-only",
+      "schema": "operation-result",
+      "document": "examples/story-result.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "execution",
+            "attempt_id"
+          ],
+          "value": "attempt-story-old"
+        }
+      ],
+      "scenario_refs": [
+        "LC-09"
+      ]
+    },
+    {
+      "id": "EX-result-readonly",
+      "schema": "operation-result",
+      "document": "examples/story-result.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "effect_state"
+          ],
+          "value": "not_applicable"
+        },
+        {
+          "path": [
+            "execution",
+            "operation_id"
+          ],
+          "value": null
+        },
+        {
+          "path": [
+            "receipt_ref"
+          ],
+          "value": null
+        }
+      ]
+    },
+    {
+      "id": "EX-delivery-accepted-marked-delivered",
+      "schema": "delivery-receipt",
+      "document": "examples/delivery-accepted.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "delivered_at"
+          ],
+          "value": "2026-09-08T02:00:03Z"
+        }
+      ],
+      "scenario_refs": [
+        "LC-13"
+      ]
+    },
+    {
+      "id": "EX-delivery-no-confirmation",
+      "schema": "delivery-receipt",
+      "document": "examples/delivery-confirmed.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "verification"
+          ],
+          "value": null
+        }
+      ],
+      "scenario_refs": [
+        "LC-13"
+      ]
+    },
+    {
+      "id": "EX-delivery-accepted-proof-as-delivery",
+      "schema": "delivery-receipt",
+      "document": "examples/delivery-confirmed.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "verification",
+            "level"
+          ],
+          "value": "platform_accepted"
+        }
+      ],
+      "scenario_refs": [
+        "LC-13"
+      ]
+    },
+    {
+      "id": "EX-delivery-missing-delivery-time",
+      "schema": "delivery-receipt",
+      "document": "examples/delivery-confirmed.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "delivered_at"
+          ],
+          "value": null
+        }
+      ],
+      "scenario_refs": [
+        "LC-13"
+      ]
+    },
+    {
+      "id": "EX-delivery-no-platform-ref",
+      "schema": "delivery-receipt",
+      "document": "examples/delivery-accepted.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "platform_receipt_ref"
+          ],
+          "value": null
+        }
+      ],
+      "scenario_refs": [
+        "LC-13"
+      ]
+    },
+    {
+      "id": "EX-delivery-part-marked-partial",
+      "schema": "delivery-receipt",
+      "document": "examples/delivery-accepted.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "status"
+          ],
+          "value": "partial"
+        },
+        {
+          "path": [
+            "reason_code"
+          ],
+          "value": "incomplete"
+        }
+      ],
+      "scenario_refs": [
+        "LC-13"
+      ]
+    },
+    {
+      "id": "EX-delivery-no-part-id",
+      "schema": "delivery-receipt",
+      "document": "examples/delivery-accepted.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "part_id"
+          ],
+          "value": null
+        }
+      ]
+    },
+    {
+      "id": "EX-delivery-part-with-parts",
+      "schema": "delivery-receipt",
+      "document": "examples/delivery-accepted.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "parts_ref"
+          ],
+          "value": {
+            "kind": "companion.delivery.parts",
+            "ref": "parts",
+            "revision": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "EX-delivery-aggregate-no-parts",
+      "schema": "delivery-receipt",
+      "document": "examples/delivery-aggregate.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "parts_ref"
+          ],
+          "value": null
+        }
+      ],
+      "scenario_refs": [
+        "LC-13"
+      ]
+    },
+    {
+      "id": "EX-delivery-aggregate-has-part-id",
+      "schema": "delivery-receipt",
+      "document": "examples/delivery-aggregate.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "part_id"
+          ],
+          "value": "text"
+        }
+      ]
+    },
+    {
+      "id": "EX-delivery-aggregate-partial",
+      "schema": "delivery-receipt",
+      "document": "examples/delivery-aggregate.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "status"
+          ],
+          "value": "partial"
+        }
+      ],
+      "scenario_refs": [
+        "LC-13"
+      ]
+    },
+    {
+      "id": "EX-delivery-confirmed-zero-attempts",
+      "schema": "delivery-receipt",
+      "document": "examples/delivery-confirmed.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "attempts"
+          ],
+          "value": 0
+        },
+        {
+          "path": [
+            "attempt_id"
+          ],
+          "value": null
+        }
+      ]
+    },
+    {
+      "id": "EX-delivery-cancel-no-proof",
+      "schema": "delivery-receipt",
+      "document": "examples/delivery-uncertain.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "status"
+          ],
+          "value": "cancelled"
+        },
+        {
+          "path": [
+            "reason_code"
+          ],
+          "value": "user_cancelled"
+        }
+      ],
+      "scenario_refs": [
+        "LC-10"
+      ]
+    },
+    {
+      "id": "EX-delivery-cancelled",
+      "schema": "delivery-receipt",
+      "document": "examples/delivery-uncertain.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "status"
+          ],
+          "value": "cancelled"
+        },
+        {
+          "path": [
+            "reason_code"
+          ],
+          "value": "user_cancelled"
+        },
+        {
+          "path": [
+            "verification"
+          ],
+          "value": {
+            "level": "not_submitted",
+            "evidence_ref": {
+              "kind": "companion.platform.receipt",
+              "ref": "not-submitted-proof",
+              "revision": 1
+            },
+            "observed_at": "2026-09-08T02:00:02Z"
+          }
+        }
+      ],
+      "scenario_refs": [
+        "LC-10"
+      ]
+    },
+    {
+      "id": "EX-delivery-old-revision-shape-only",
+      "schema": "delivery-receipt",
+      "document": "examples/delivery-confirmed.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "receipt_revision"
+          ],
+          "value": 0
+        }
+      ],
+      "scenario_refs": [
+        "LC-13"
+      ]
+    },
+    {
+      "id": "EX-delivery-forged-proof-shape-only",
+      "schema": "delivery-receipt",
+      "document": "examples/delivery-confirmed.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "verification",
+            "evidence_ref",
+            "ref"
+          ],
+          "value": "caller-faked-proof"
+        }
+      ],
+      "scenario_refs": [
+        "LC-13"
+      ]
+    }
+  ],
+  "json_cases": [
+    {
+      "id": "EX-json-duplicate-key",
+      "text": "{\"state\":\"running\",\"state\":\"succeeded\"}",
+      "valid": false
+    },
+    {
+      "id": "EX-json-nan",
+      "text": "{\"attempt_no\":NaN}",
+      "valid": false
+    },
+    {
+      "id": "EX-json-overflow",
+      "text": "{\"attempt_no\":1e9999}",
+      "valid": false
+    },
+    {
+      "id": "EX-json-trailing-comma",
+      "text": "{\"state\":\"running\",}",
+      "valid": false
+    },
+    {
+      "id": "EX-json-valid",
+      "text": "{\"state\":\"running\"}",
+      "valid": true
+    }
+  ]
+}

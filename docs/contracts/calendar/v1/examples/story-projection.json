@@ -1,0 +1,15 @@
+{
+  "schema_version": "companion.story-projection.v1",
+  "projection_id": "story-projection-001",
+  "owner_ref": "persona-owner-001",
+  "scope": {
+    "ecosystem_id": "ecosystem-001", "installation_id": "installation-001", "runtime_instance_id": "embedded-runtime", "host_kind": "companion-app", "bot_id": "bot-main", "platform": null, "account_id": null, "conversation_ref": "conversation-001", "platform_conversation_id": null, "session_id": null, "user_id": null, "group_id": null, "persona_id": "persona-main", "persona_binding_revision": 12
+  },
+  "audience": "user",
+  "source_event_refs": ["world-event-042"],
+  "reality_mode": "simulated",
+  "segments": [{ "segment_id": "segment-001", "activity_ref": "process-study-001", "text": "刚才被消息打断了一会儿，等聊完我会接着看。", "shareability": "user_safe", "expires_at": "2026-09-08T20:00:00+08:00" }],
+  "projection_revision": 2,
+  "valid_until": "2026-09-08T20:00:00+08:00",
+  "supersedes": null
+}

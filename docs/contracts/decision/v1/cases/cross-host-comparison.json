@@ -1,0 +1,77 @@
+{
+  "fixture_version": "0.1.0",
+  "fixture_id": "decision-cross-host-001",
+  "canonical_event_ref": "evt-astrbot-0001",
+  "clock": "2026-09-09T10:00:02+08:00",
+  "semantic_fields": ["owner_ref", "subject_ref", "conversation_ref", "scope_mode", "visibility", "reality_mode", "evidence_refs", "content_hash"],
+  "host_fields": ["host_kind", "runtime_instance_id", "platform", "account_id", "source_adapter", "adapter_generation", "session_ref"],
+  "shells": [
+    {
+      "shell_id": "astrbot",
+      "host_kind": "astrbot",
+      "runtime_instance_id": "runtime-astrbot-01",
+      "platform": "aiocqhttp",
+      "account_id": "qq-bot-001",
+      "source_adapter": "astrbot-readonly",
+      "adapter_generation": "astrbot-adapter-gen-3",
+      "external_subject": "qq-user-123",
+      "session_ref": "session-astrbot-001",
+      "resolved": {
+        "owner_ref": "owner:installation-main:bot-main:persona-main:user-123:user_shared",
+        "subject_ref": "user-123",
+        "conversation_ref": "conversation-private-123",
+        "scope_mode": "user",
+        "visibility": "user_shared",
+        "reality_mode": "observed",
+        "evidence_refs": ["evidence-astrbot-0001"],
+        "content_hash": "sha256:9d3e4a"
+      },
+      "capabilities": {"decision_shadow": "ready", "delivery": "none"}
+    },
+    {
+      "shell_id": "standalone",
+      "host_kind": "service",
+      "runtime_instance_id": "runtime-service-01",
+      "platform": "webhook",
+      "account_id": "service-account-001",
+      "source_adapter": "service-readonly",
+      "adapter_generation": "service-adapter-gen-2",
+      "external_subject": "user-123",
+      "session_ref": "session-service-001",
+      "resolved": {
+        "owner_ref": "owner:installation-main:bot-main:persona-main:user-123:user_shared",
+        "subject_ref": "user-123",
+        "conversation_ref": "conversation-private-123",
+        "scope_mode": "user",
+        "visibility": "user_shared",
+        "reality_mode": "observed",
+        "evidence_refs": ["evidence-astrbot-0001"],
+        "content_hash": "sha256:9d3e4a"
+      },
+      "capabilities": {"decision_shadow": "ready", "delivery": "none"}
+    },
+    {
+      "shell_id": "embedded",
+      "host_kind": "embedded",
+      "runtime_instance_id": "runtime-embedded-01",
+      "platform": "mobile-app",
+      "account_id": "app-account-001",
+      "source_adapter": "embedded-readonly",
+      "adapter_generation": "embedded-adapter-gen-5",
+      "external_subject": "local-user-77",
+      "session_ref": "session-embedded-001",
+      "resolved": {
+        "owner_ref": "owner:installation-main:bot-main:persona-main:user-123:user_shared",
+        "subject_ref": "user-123",
+        "conversation_ref": "conversation-private-123",
+        "scope_mode": "user",
+        "visibility": "user_shared",
+        "reality_mode": "observed",
+        "evidence_refs": ["evidence-astrbot-0001"],
+        "content_hash": "sha256:9d3e4a"
+      },
+      "capabilities": {"decision_shadow": "ready", "delivery": "none"}
+    }
+  ],
+  "forbidden_effects": ["delivery", "memory_write", "calendar_commit", "world_transition"]
+}

@@ -1,0 +1,27 @@
+{
+  "schema_version": "memory.subscription-result.v1",
+  "capability_id": "memory.changed.ack",
+  "capability_version": "1.0",
+  "provider_id": "example.memory",
+  "provider_generation": "generation-8",
+  "request_id": "req-ack-001",
+  "trace_id": "trace-recovery-001",
+  "status": "succeeded",
+  "reason_code": null,
+  "retryable": false,
+  "degraded": false,
+  "warnings": [],
+  "output": {
+    "subscription_id": "subscription-001",
+    "subscriber_generation": "consumer-8",
+    "lease_id": "lease-tail-001",
+    "target": {
+      "kind": "batch",
+      "batch_id": "batch-tail-001"
+    },
+    "ack_state": "accepted",
+    "subscription_state": "resyncing",
+    "acknowledged_cursor": "cursor-106",
+    "projection_generation": "projection-002"
+  }
+}

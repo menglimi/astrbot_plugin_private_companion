@@ -1,10 +1,12 @@
 # 陪伴聚合体系架构重置基线
 
-本文档记录 2026-09-05 对陪伴聚合体系的第一轮盘点，以及后续重置必须遵守的边界。它不是一次性重写承诺，而是用来约束每个可验证的迁移切片。
+> 导航：[设计总纲](./FRAMEWORK_DESIGN.md) / [主题目录](./FRAMEWORK_DESIGN_INDEX.md)。定位：综合架构基线；领域细节与迁移依据，现行排期由总纲维护。
+
+本文保留 2026-09-05 起形成的架构边界、领域细节和旧框架迁移依据。整体阅读入口与当前推进顺序见[设计总纲](./FRAMEWORK_DESIGN.md)；第 4--5 节是旧框架改造工作包，按新框架切片择取，不另立全局排期。
 
 > **文档状态**：架构讨论基线，2026-09-06 完成一致性审查。除 3.16 标明的现有兼容切片外，其余均为目标设计，不代表已实现或通过运行验收。本次修订与待验证事项见 [DESIGN_REVIEW_20260906.md](./DESIGN_REVIEW_20260906.md)。
 >
-> **文档定位**：第 1--2 节说明范围和问题；第 3 节说明目标架构与领域决策，3.14 汇总现有插件差距和补齐主线，3.15 给出可立即执行的改造审计入口；第 4--5 节说明迁移顺序和首批切片；第 6 节是所有阶段都不能破坏的不变原则。
+> **文档定位**：第 1--2 节说明范围和问题；第 3 节说明目标架构与领域决策，先阅读[状态、事件与反馈闭环设计](./COMPANION_STATE_EVENT_FEEDBACK_DESIGN.md)和[第一优先级领域状态机](./DOMAIN_STATE_MACHINES_V0.md)，再看 3.14 的现有插件差距和补齐主线、3.14.6 的[功能覆盖与对等性设计](./FUNCTIONAL_COVERAGE_AND_PARITY.md)；设计稿与现有插件的逐项对照见[全面审查报告](./DESIGN_VS_EXISTING_PLUGIN_AUDIT_20260907.md)，主动偏好调研见[问卷对照报告](./PROACTIVE_PREFERENCE_SURVEY_REVIEW_20260907.md)；第 3.15 给出可立即执行的改造审计入口；第 4--5 节说明迁移顺序和首批切片；第 6 节是所有阶段都不能破坏的不变原则。
 >
 > **当前主线结论**：陪伴核心与原生联动插件从构建初期共同设计和验证，首期范围见 3.1.1 与 5.2；Kernel 先留在陪伴核心内部；插件通过版本化 DTO 和能力协议协作；日历是事实源、日计划是投影，活动经历通过 `PersonaContinuityState` 沉淀为角色连续生活；主动行为采用统一机会调度，并由对话占用态保护当前连续互动；情绪通过事件、状态、动机和表达姿态调制角色，不直接发送消息。
 >
@@ -133,7 +135,9 @@ AstrBot 事件/Provider/存储接口
 3. **Adapter** 把平台、模型、图片、设备和网络协议转换成统一接口。领域代码不得出现平台类型判断。
 4. **Admin/diagnostic** 是横切能力，问题治理可以读取审计事件和知识索引，但不应读取陪伴核心私有状态。
 
-首期不新增强制安装依赖。先把 Kernel 提取为陪伴核心内的 `companion_kernel` 包，并以稳定的 `companion_sdk` DTO/API 对外发布；等契约稳定后再决定是否拆成独立发行包。
+首期不新增强制安装依赖，先在现有 `companion/injection.py` 与 facade 内演进。`companion_kernel` / `companion_sdk` 表示目标职责与包边界；契约和多宿主验证后再决定独立打包及发行。Kernel、Feature Service 和领域 DTO 保持宿主/平台中立，以便迁移到其他 Bot 平台或嵌入一站式应用。
+
+平台迁移和一站式打包是一级架构目标，具体边界见[平台可移植与一站式打包设计 v0](./PLATFORM_PORTABILITY_AND_BUNDLING_V0.md)。AstrBot 是首个宿主适配器，不是领域层的永久依赖；插件、独立服务和嵌入式应用必须共用能力 ID、schema、owner、状态和回执。
 
 外部注入协议的控制面/数据面边界、能力类型和 DTO 见 [COMPANION_INJECTION_PROTOCOL.md](./COMPANION_INJECTION_PROTOCOL.md)。主陪伴只管理扩展元数据、生命周期、能力状态和审计摘要；扩展继续持有领域实现、凭证、缓存和业务数据库。
 
@@ -183,18 +187,24 @@ AstrBot 事件/Provider/存储接口
 `RuntimeScope` 至少包含：
 
 ```text
-installation_id       AstrBot 部署或数据目录实例
+ecosystem_id          陪伴生态/数据集合的逻辑身份，迁移时保持
+installation_id       逻辑安装/租户边界，不等同于宿主目录
+runtime_instance_id   当前进程、容器或宿主实例，迁移/重启时可变
+host_kind / host_id   astrbot 等宿主实现及其实例；部署模式单独由装配配置声明
 bot_id                部署中的逻辑 Bot/代理身份
 platform              当前平台类型
 account_id            平台登录账号或连接身份
-conversation_id       当前平台会话/群聊
+conversation_ref      规范化会话引用
+platform_conversation_id 当前平台会话/群聊 ID
 session_id            当前线程、房间或临时交互会话
 group_id / user_id    群和用户主体（可为空，但对象必须存在）
 persona_id            本轮解析出的角色身份
 persona_binding_revision 人格绑定版本
 ```
 
-字段之间不能互相替代：`bot_id` 区分同一部署中的不同 Bot，`account_id` 区分平台登录身份，`persona_id` 区分角色设定，`conversation_id` 区分聊天空间，`session_id` 区分其中的临时线程。简单部署可以让部分值相同，但协议仍保留字段，避免以后扩展时改变主键语义。
+字段之间不能互相替代：`ecosystem_id`/`installation_id` 是逻辑边界，`runtime_instance_id`/`host_id` 是基础设施身份；`bot_id` 区分逻辑 Bot，`account_id` 区分外部登录身份，`persona_id` 区分角色设定，`conversation_ref` 区分规范化聊天空间，`platform_conversation_id` 只由平台适配器拥有，`session_id` 区分其中的临时线程。简单部署可以让部分值相同，但协议仍保留字段，避免平台迁移改变主键语义。
+
+旧 DTO 只有 `installation_id` 或 `conversation_id` 时，兼容层按已登记的 host/identity 映射升级；无法确认逻辑归属则返回 `scope_unresolved`，不把 AstrBot 数据目录名、平台数字 ID 或昵称当作稳定 owner。跨平台的主体、会话和账号使用带 revision 的 IdentityBinding/ConversationBinding，未确认映射保持独立。
 
 人格绑定使用显式的 `PersonaBinding` 记录：
 
@@ -231,6 +241,24 @@ persona_binding_revision 人格绑定版本
 ### 3.2.2 调用上下文与数据归属
 
 `RuntimeScope` 用于授权、路由和判断当前调用是否过期，不直接作为所有领域表的主键。领域记录使用稳定的 `owner_key`，保留来源调用的引用；`persona_binding_revision`、临时 `session_id` 和提供方 `generation` 只参与请求校验、缓存失效与任务 fencing，不进入长期实体身份。
+
+#### 3.2.2.1 三种共享模式
+
+陪伴体系预设三种跨会话使用模式。`sharing_mode` 是状态、记忆、上下文投影或能力声明的业务共享语义；它不替代 `RuntimeScope`，不等于 retention，也不单独授予读取或写入权限。
+
+| `sharing_mode` | 稳定归属锚点 | 允许的连续性 | 默认禁止 |
+| --- | --- | --- | --- |
+| `session` | 当前 installation + bot + platform/account + persona + conversation + session | 只在同一实际会话内延续；重开会话默认不可见 | 不因同一用户、同一群或同一人格自动共享 |
+| `user` | 当前 installation + bot + platform/account + user + persona | 同一平台账号下的同一用户可跨私聊和群聊读取获授权的用户级状态 | 不带入群内其他成员、群专属上下文或另一平台同名用户 |
+| `global` | 显式声明的 installation/bot/persona 全局分区 | 所有符合分区和权限的会话可共享公共状态，例如人格设定、公共世界资源或系统策略 | 不得包含未经脱敏和授权的用户私密事实；不默认跨 bot、跨人格或跨安装共享 |
+
+三种模式必须带明确的 `sharing_anchor` 或可由 Kernel 从可信 `RuntimeScope` 推导出的稳定键。缺少 `user_id`、平台账号或实际 `session_id` 时，不能降级到更宽的模式；解析失败返回 `scope_unresolved`。`global` 不是“全数据库可见”，而是一个需要在 manifest、owner 和权限策略中显式声明的共享分区。
+
+以上是归属语义，精确 wire 由[共享契约包](./contracts/sharing/v1/README.md)维护：Memory v1 经 `extensions["companion.sharing"]` 与必需 profile 协商扩展，不修改既有封闭 Schema；新 ContextContribution/StateTransitionProposal 才使用顶层共享字段。每种模式只要求其自身必需的身份字段，纯内部 global 调用不虚构平台用户或 session。
+
+读取可以按“当前 session -> 同一 user -> 允许的 global”形成有界上下文层，但每层都要单独经过 ACL、visibility、purpose、revision、TTL 和预算校验；不能因为 session 请求存在就把完整 user/global 数据注入 Prompt。写入不能由模型自行扩大共享范围：session 事件升级为 user/global 必须经过 owner 策略、证据和已有授权，涉及用户事实时还要遵守确认规则。
+
+群聊仍然是独立的场景上下文。`user` 模式只共享该用户自己的、明确允许跨会话的状态；群主题、成员关系、他人发言和群内观察不能借 user 锚点外泄。`global` 模式只适合真正公共的角色/系统状态，世界模拟中的人格内部物品和活动可以是 global，但现实用户的房间、健康、位置和私聊经历不能因为选择 global 而进入其中。
 
 | 数据 | 稳定归属 | 会话变化时的行为 |
 | --- | --- | --- |
@@ -372,6 +400,40 @@ persona_binding_revision 人格绑定版本
 兼容迁移期间，旧 `daily_plan` 可能继续由旧路径生成，以保证旧页面和旧命令可用；这只是回退/读取边界，不代表新框架的行为。新路径不得把旧计划中未经确认的条目当作当前事实、主动触发器或必须完成的任务，也不得因整天计划中出现了某项活动就预生成图片、语音或消息。迁移完成后，旧全天生成器应退役，保留的只是可按需重建的投影。
 
 因此，以下行为属于目标设计的失败：启动时为每个时间段生成完整 `today_events`；要求每段必须有主动契机；把未发生的吃饭、散步或拍照写成已完成经历；或从全天大纲逐项派生主动消息。只有用户明确的现实承诺、授权提醒和已记录的实际回执可以跨越当前窗口保留。
+
+#### 3.7.1.3.1 持续剧本对日历的适配
+
+HDSI 式持续剧本会让角色拥有自己的日程感，但它不应把日历重新变成“全天剧本生成器”。日历提供时间约束和生活锚点，世界模拟在这些约束内推进活动，StoryProjection 只叙述当前需要表达的局部经历。
+
+日历相关对象按事实程度分层：
+
+| 层 | 典型对象 | 是否能直接成为日历事实 | 作用 |
+| --- | --- | --- | --- |
+| 硬事实 | 用户确认的 `CalendarCommitment`、外部课表/预约、设备提醒、已执行回执 | 可以，需来源和 revision | 保护不可随意冲突的现实约束 |
+| 软意图 | `Routine`、`Goal`、角色偏好的活动窗口、`ActivityIntent` | 不可以，除非经过 reserve/commit | 为角色生活提供倾向和候选 |
+| 运行过程 | `ActivityProcess`、暂停/恢复、`ActivityEpisode` | 过程完成后形成经历记录；不自动成为承诺 | 让角色生活跨时段连续并可恢复 |
+| 叙事投影 | `StorySegment`、分享候选、Prompt 的时间摘要 | 不可以 | 让角色自然表达正在发生的事 |
+| 会话覆盖 | `ConversationOccupancy`、本轮打断、收束和免打扰 | 不可以 | 决定当前能否插入回复或主动联系 |
+
+角色自主生成的“下午读书”“晚饭后散步”等首先是 `ActivityIntent` 或 `ActivityProcess`，带 `simulated` 来源和有效窗口；只有用户明确要求、确认，或已授权的 `reserve/commit` 流程，才写入可影响用户的现实日历。模拟活动可以使用 `persona_calendar` 的软时间段，但不能假装已经预约场所、购买物品或完成现实任务。`user_calendar` 的创建、移动、取消和提醒仍按确认与外部授权规则执行。
+
+日历变化与剧本变化采用单向可追踪的局部闭环：
+
+```text
+CalendarCommitment / Routine / Goal / Observation
+  -> TemporalDecisionContext
+  -> ActivitySelector / ActivityProcess
+  -> WorldEvent / StoryProjection
+  -> ResponsePlan / ProactiveCandidate
+```
+
+剧本事件可以提出 `suggest` 或在授权窗口内 `reserve`，但不能直接 `commit` 现实承诺。日历的 `move/resize/postpone/cancel` 只刷新受影响的活动、过渡段、缓冲段和候选，不重写整天故事；已完成和已确认的记录先锁定。冲突优先级按现实硬承诺、用户明确请求、已授权安全提醒、正在进行的角色活动、软意图排序，冲突解决过程记录原因和原/新 revision。
+
+活动跨日或用户打断时，日历只保存必要的时间锚点和过程引用；详细进度、暂停原因和恢复条件由 World owner 的 checkpoint 管理。新会话读取的是当前 `TemporalDecisionContext` 和获授权的 StoryProjection，不继承旧会话的私密话题、占用态或投递票据。离线恢复按活动的 `resume_policy` 和有效时间计算有界进度，不为每个错过的时间点补生成一段故事。
+
+日历向 PromptCompiler 只提供当前活动、下一转折、固定承诺、可用/安静窗口和冲突摘要。若没有足够来源，保持 `unknown`；不为了让角色“看起来有生活”而补齐早餐、通勤、社交或日程。活动完成后可形成 `ActivityEpisode` 和可选 MemoryProposal，Memory Writer 未确认前不说成长期记忆；角色模拟的日程和经历始终标记 `reality_mode=simulated`。
+
+该适配不会新增第二套日历 API：继续使用 `CalendarCommand` 的 observe/suggest/reserve/commit、`TemporalDecisionContext`、`ActivityProcess` 和 `calendar.changed`。机器化契约由[日历与持续生活契约包](./contracts/calendar/v1/README.md)维护，只为 `ActivityIntent`、`StoryProjection`、`ActivityProcess/checkpoint` 与日历请求/回执补最小 Schema，复用公共 scope、evidence、revision、budget 和回执。契约包的 CAL-01--04 先作为设计回放，运行授权、局部重算、幂等恢复和资源峰值仍需隔离验证。
 
 #### 3.7.1.3 从“时间页”到角色连续生活状态
 
@@ -1518,7 +1580,13 @@ ingest -> context -> plan -> tool -> review -> delivery -> persistence
 
 P0 任一门槛失败时，暂停扩展迁移，保留旧路径和兼容适配器。P1/P2 可以分批实现，但不能通过增加插件私有旁路来绕过 P0 契约。
 
+#### 3.14.6 功能对等性门槛
+
+公共契约完成后仍可能遗漏旧插件的用户可见能力、治理入口或失败恢复。重建以 [FUNCTIONAL_COVERAGE_AND_PARITY.md](./FUNCTIONAL_COVERAGE_AND_PARITY.md) 的 `CapabilityCoverage` 为功能目录：每项能力必须标记为保留、重新设计、暂缓或有意删除，并绑定 owner、新契约、作用域、失败语义和验收案例。没有登记的能力视为遗漏；没有通过对等性验收时，只能影子运行，不能关闭旧兼容入口。该门槛同时要求把词表审计记录拆成语义、检测器、约束、状态迁移、协议、脱敏或旧数据清理，避免把旧硬编码原样搬进新框架。
+
 #### 3.15 立即审计入口
+
+功能对等和迁移防遗漏另见 [FUNCTIONAL_COVERAGE_AND_PARITY.md](./FUNCTIONAL_COVERAGE_AND_PARITY.md)。任何领域在关闭旧兼容入口前，必须完成该文档定义的 `CapabilityCoverage` 清单；架构契约通过不代表功能已经对等。
 
 3.14 中的主线可以先对现有插件做审计，不需要等待 Kernel 完成。审计要先回答“当前行为从哪里进入、经过哪些边界、由谁负责收口”，再决定是否改代码。首轮审计分为三类：
 
@@ -1541,7 +1609,7 @@ P0 任一门槛失败时，暂停扩展迁移，保留旧路径和兼容适配�
 
 ## 4. 重置顺序
 
-本节是唯一实施依赖顺序，3.13 的 A--I 表用于能力映射。阶段 0--1 同时建设核心与原生插件的最小联动契约；每阶段交付可回退的切片。未具备外部硬件/账号时可以验证适配契约，但不能略去设备、媒体和 Session 的设计边界，也不能声称对应实机能力已验收。
+本节保留早期旧框架迁移的阶段 0--5 工作包，3.13 的 A--I 表用于能力映射。当前全局顺序以[设计总纲第 10 节](./FRAMEWORK_DESIGN.md#10-当前进度与统一路线)为准：先定型契约、只读回放与记忆闭环，再逐域扩展。全域共同设计不要求全部真实适配器先完成；下列日历先迁移、全套适配和页面改造要求仅在对应迁移工作包内适用。未具备外部硬件/账号时可以验证适配契约，但不能声称实机能力已验收。
 
 ### 阶段 0：原生联合设计与基线
 
@@ -1604,7 +1672,7 @@ P0 任一门槛失败时，暂停扩展迁移，保留旧路径和兼容适配�
 
 ## 5. 重置启动切片
 
-首批交付是核心与原生联动插件共同运行的最小体系，复用现有业务算法与兼容入口。完成以下基础切片，并用 5.2 的原生场景验证；市场方案样例仅作补充：
+本节是早期原生联合迁移的切片清单，保留生产方、消费方与失败场景用于覆盖检查。当前首条参考切片按总纲选择记忆查询和隔离回放，以下工作随对应领域推进，不要求同时完成九个插件适配。完整领域迁移时再用 5.2 的原生场景验证。
 
 1. 为核心及九个原生插件明确能力生产方/消费方，建立 `CapabilityDescriptor`、`Scope`、主体身份、权限、`CompanionEvent`、`EvidenceRef`、`ActionResult`、`DeliveryReceipt` 以及记忆、媒体、Session 引用的最小契约，并接入各插件现有适配入口。
 2. 实现 `ConversationPipeline`、`DeliveryGateway` 和 `TaskSupervisor`，让一个被动回复和一个低风险主动类型共用主链，验证合并、取消、幂等、重载和错误诊断。

@@ -19,7 +19,7 @@
 | --- | --- |
 | 插件名 | <code>astrbot_plugin_private_companion</code> |
 | 显示名 | 我会永远陪着你 |
-| 版本 | <code>6.6.0</code> |
+| 版本 | <code>6.6.1</code> |
 | AstrBot | <code>>= 4.22.0</code> |
 | 官方声明平台 | <code>aiocqhttp</code>、<code>qq_official</code> |
 | 管理入口 | AstrBot 插件扩展页中的“陪伴面板”，或可选的独立 WebUI |
@@ -112,6 +112,8 @@ Proactive Chat 的深度联动如果遇到版本不兼容或缺少上游方法�
 ## 文档与支持
 
 - 源代码：[GitHub 仓库](https://github.com/menglimi/astrbot_plugin_private_companion)
+- 新框架整体设计与当前路线：[设计总纲](./docs/FRAMEWORK_DESIGN.md)
+- 按主题查阅契约、领域设计与参考：[设计主题目录](./docs/FRAMEWORK_DESIGN_INDEX.md)
 - 问题反馈：[GitHub Issues](https://github.com/menglimi/astrbot_plugin_private_companion/issues)
 - 版本记录：[CHANGELOG.md](./CHANGELOG.md)
 - 交流群：QQ 群 <code>1097283005</code>

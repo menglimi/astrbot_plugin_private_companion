@@ -1,0 +1,27 @@
+{
+  "record_version": "fixture.record.v0.1",
+  "record_id": "record-astrbot-0001",
+  "trace_id": "trace-astrbot-0001",
+  "sequence": 1,
+  "kind": "platform.input",
+  "occurred_at": "2026-09-09T10:00:00+08:00",
+  "dto_schema": "companion.normalized-interaction-event.v1",
+  "adapter": {
+    "adapter_id": "astrbot-readonly",
+    "adapter_generation": "astrbot-adapter-gen-3",
+    "external_event_ref": "aiocqhttp:event:message:0001"
+  },
+  "native_event_summary": {
+    "host_kind": "astrbot",
+    "platform": "aiocqhttp",
+    "event_type": "private_message",
+    "external_user_id": "qq-user-123",
+    "external_conversation_id": "private-user-123",
+    "received_at": "2026-09-09T10:00:01+08:00",
+    "content_hash": "sha256:9d3e4a",
+    "content_bytes": 54
+  },
+  "normalized_ref": "evt-astrbot-0001",
+  "forbidden_fields": ["raw_text", "event_object", "credentials", "message_handle", "database_connection"],
+  "normalization_status": "recorded"
+}

@@ -1,0 +1,1034 @@
+{
+  "format_version": "1.0",
+  "purpose": "offline_schema_examples",
+  "cases": [
+    {
+      "id": "scope-astrbot",
+      "schema": "runtime-scope",
+      "document": "examples/scope-astrbot.json",
+      "valid": true
+    },
+    {
+      "id": "scope-internal",
+      "schema": "runtime-scope",
+      "document": "examples/scope-internal.json",
+      "valid": true
+    },
+    {
+      "id": "owner",
+      "schema": "memory-owner",
+      "document": "examples/owner.json",
+      "valid": true
+    },
+    {
+      "id": "proposal-add",
+      "schema": "memory-proposal",
+      "document": "examples/proposal-add.json",
+      "valid": true
+    },
+    {
+      "id": "proposal-correct",
+      "schema": "memory-proposal",
+      "document": "examples/proposal-correct.json",
+      "valid": true
+    },
+    {
+      "id": "proposal-retract",
+      "schema": "memory-proposal",
+      "document": "examples/proposal-retract.json",
+      "valid": true
+    },
+    {
+      "id": "proposal-no-op",
+      "schema": "memory-proposal",
+      "document": "examples/proposal-no-op.json",
+      "valid": true
+    },
+    {
+      "id": "query",
+      "schema": "memory-query",
+      "document": "examples/query.json",
+      "valid": true
+    },
+    {
+      "id": "query-internal",
+      "schema": "memory-query",
+      "document": "examples/query-internal.json",
+      "valid": true
+    },
+    {
+      "id": "query-with-pending",
+      "schema": "memory-query",
+      "document": "examples/query-with-pending.json",
+      "valid": true
+    },
+    {
+      "id": "operation-by-id",
+      "schema": "memory-operation-query",
+      "document": "examples/operation-by-id.json",
+      "valid": true
+    },
+    {
+      "id": "operation-by-key",
+      "schema": "memory-operation-query",
+      "document": "examples/operation-by-key.json",
+      "valid": true
+    },
+    {
+      "id": "result-persisted",
+      "schema": "memory-result",
+      "document": "examples/result-persisted.json",
+      "valid": true
+    },
+    {
+      "id": "result-skipped",
+      "schema": "memory-result",
+      "document": "examples/result-skipped.json",
+      "valid": true
+    },
+    {
+      "id": "result-pending",
+      "schema": "memory-result",
+      "document": "examples/result-pending.json",
+      "valid": true
+    },
+    {
+      "id": "result-uncertain",
+      "schema": "memory-result",
+      "document": "examples/result-uncertain.json",
+      "valid": true
+    },
+    {
+      "id": "result-conflict",
+      "schema": "memory-result",
+      "document": "examples/result-conflict.json",
+      "valid": true
+    },
+    {
+      "id": "result-query",
+      "schema": "memory-result",
+      "document": "examples/result-query.json",
+      "valid": true
+    },
+    {
+      "id": "result-empty",
+      "schema": "memory-result",
+      "document": "examples/result-empty.json",
+      "valid": true
+    },
+    {
+      "id": "result-partial",
+      "schema": "memory-result",
+      "document": "examples/result-partial.json",
+      "valid": true
+    },
+    {
+      "id": "result-with-pending",
+      "schema": "memory-result",
+      "document": "examples/result-with-pending.json",
+      "valid": true
+    },
+    {
+      "id": "result-lookup",
+      "schema": "memory-result",
+      "document": "examples/result-lookup.json",
+      "valid": true
+    },
+    {
+      "id": "result-lookup-missing",
+      "schema": "memory-result",
+      "document": "examples/result-lookup-missing.json",
+      "valid": true
+    },
+    {
+      "id": "changed",
+      "schema": "memory-changed",
+      "document": "examples/changed.json",
+      "valid": true
+    },
+    {
+      "id": "scope-no-ecosystem",
+      "schema": "runtime-scope",
+      "document": "examples/scope-astrbot.json",
+      "changes": [
+        {
+          "path": [
+            "ecosystem_id"
+          ],
+          "remove": true
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "scope-empty-identity",
+      "schema": "runtime-scope",
+      "document": "examples/scope-astrbot.json",
+      "changes": [
+        {
+          "path": [
+            "bot_id"
+          ],
+          "value": ""
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "scope-revision-is-bool",
+      "schema": "runtime-scope",
+      "document": "examples/scope-astrbot.json",
+      "changes": [
+        {
+          "path": [
+            "persona_binding_revision"
+          ],
+          "value": true
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "scope-deploy-mode-is-not-host",
+      "schema": "runtime-scope",
+      "document": "examples/scope-astrbot.json",
+      "changes": [
+        {
+          "path": [
+            "host_kind"
+          ],
+          "value": "plugin_hosted"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "scope-half-external-binding",
+      "schema": "runtime-scope",
+      "document": "examples/scope-internal.json",
+      "changes": [
+        {
+          "path": [
+            "account_id"
+          ],
+          "value": "unbound-account"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "scope-native-without-canonical-conversation",
+      "schema": "runtime-scope",
+      "document": "examples/scope-astrbot.json",
+      "changes": [
+        {
+          "path": [
+            "conversation_ref"
+          ],
+          "value": null
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "scope-group-without-conversation",
+      "schema": "runtime-scope",
+      "document": "examples/scope-astrbot.json",
+      "changes": [
+        {
+          "path": [
+            "group_id"
+          ],
+          "value": "group-1"
+        },
+        {
+          "path": [
+            "platform_conversation_id"
+          ],
+          "value": null
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "scope-unknown-privilege",
+      "schema": "runtime-scope",
+      "document": "examples/scope-astrbot.json",
+      "changes": [
+        {
+          "path": [
+            "admin"
+          ],
+          "value": true
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "scope-runtime-change",
+      "schema": "runtime-scope",
+      "document": "examples/scope-astrbot.json",
+      "changes": [
+        {
+          "path": [
+            "runtime_instance_id"
+          ],
+          "value": "runtime-restarted"
+        }
+      ],
+      "valid": true
+    },
+    {
+      "id": "owner-no-runtime-key",
+      "schema": "memory-owner",
+      "document": "examples/owner.json",
+      "changes": [
+        {
+          "path": [
+            "runtime_instance_id"
+          ],
+          "value": "runtime-1"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "owner-no-session-key",
+      "schema": "memory-owner",
+      "document": "examples/owner.json",
+      "changes": [
+        {
+          "path": [
+            "session_id"
+          ],
+          "value": "session-2"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "owner-no-raw-platform-key",
+      "schema": "memory-owner",
+      "document": "examples/owner.json",
+      "changes": [
+        {
+          "path": [
+            "platform"
+          ],
+          "value": "aiocqhttp"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "proposal-no-key",
+      "schema": "memory-proposal",
+      "document": "examples/proposal-add.json",
+      "changes": [
+        {
+          "path": [
+            "idempotency_key"
+          ],
+          "remove": true
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "proposal-no-evidence",
+      "schema": "memory-proposal",
+      "document": "examples/proposal-add.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "evidence_refs"
+          ],
+          "value": []
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "proposal-no-fact-value",
+      "schema": "memory-proposal",
+      "document": "examples/proposal-add.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "object"
+          ],
+          "remove": true
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "proposal-same-meaning-without-keywords",
+      "schema": "memory-proposal",
+      "document": "examples/proposal-add.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "predicate"
+          ],
+          "value": "上一次结伴阅读停留的位置"
+        }
+      ],
+      "valid": true
+    },
+    {
+      "id": "proposal-unknown-nonrequired-extension",
+      "schema": "memory-proposal",
+      "document": "examples/proposal-add.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "extensions",
+            "example.new_type"
+          ],
+          "value": {
+            "schema_version": "1.0",
+            "payload": {
+              "new_field": [
+                "preserve",
+                1
+              ]
+            }
+          }
+        }
+      ],
+      "valid": true
+    },
+    {
+      "id": "proposal-unknown-core-field",
+      "schema": "memory-proposal",
+      "document": "examples/proposal-add.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "write_directly"
+          ],
+          "value": true
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "proposal-unknown-operation",
+      "schema": "memory-proposal",
+      "document": "examples/proposal-add.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "operation"
+          ],
+          "value": "upsert"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "correct-missing-revision",
+      "schema": "memory-proposal",
+      "document": "examples/proposal-correct.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "expected_revision"
+          ],
+          "remove": true
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "correct-null-revision",
+      "schema": "memory-proposal",
+      "document": "examples/proposal-correct.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "expected_revision"
+          ],
+          "value": null
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "retract-missing-target",
+      "schema": "memory-proposal",
+      "document": "examples/proposal-retract.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "target_atom_id"
+          ],
+          "value": null
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "no-op-must-not-target",
+      "schema": "memory-proposal",
+      "document": "examples/proposal-no-op.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "target_atom_id"
+          ],
+          "value": "atom-1"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "no-op-must-not-pend",
+      "schema": "memory-proposal",
+      "document": "examples/proposal-no-op.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "defer_until_boundary"
+          ],
+          "value": true
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "query-mismatched-capability",
+      "schema": "memory-query",
+      "document": "examples/query.json",
+      "changes": [
+        {
+          "path": [
+            "capability_id"
+          ],
+          "value": "memory.proposal.submit"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "query-unknown-version",
+      "schema": "memory-query",
+      "document": "examples/query.json",
+      "changes": [
+        {
+          "path": [
+            "capability_version"
+          ],
+          "value": "2.0"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "query-no-timezone",
+      "schema": "memory-query",
+      "document": "examples/query.json",
+      "changes": [
+        {
+          "path": [
+            "deadline_at"
+          ],
+          "value": "2026-09-07T01:00:03"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "query-invalid-calendar-date",
+      "schema": "memory-query",
+      "document": "examples/query.json",
+      "changes": [
+        {
+          "path": [
+            "deadline_at"
+          ],
+          "value": "2026-02-30T01:00:03Z"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "query-invalid-offset",
+      "schema": "memory-query",
+      "document": "examples/query.json",
+      "changes": [
+        {
+          "path": [
+            "deadline_at"
+          ],
+          "value": "2026-09-07T01:00:03+24:00"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "query-negative-model-budget",
+      "schema": "memory-query",
+      "document": "examples/query.json",
+      "changes": [
+        {
+          "path": [
+            "budget",
+            "max_model_calls"
+          ],
+          "value": -1
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "query-string-model-budget",
+      "schema": "memory-query",
+      "document": "examples/query.json",
+      "changes": [
+        {
+          "path": [
+            "budget",
+            "max_model_calls"
+          ],
+          "value": "0"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "query-invalid-confidence",
+      "schema": "memory-query",
+      "document": "examples/query.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "confidence_floor"
+          ],
+          "value": 1.1
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "query-pending-without-session",
+      "schema": "memory-query",
+      "document": "examples/query-with-pending.json",
+      "changes": [
+        {
+          "path": [
+            "scope",
+            "session_id"
+          ],
+          "value": null
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "query-no-admin-bypass",
+      "schema": "memory-query",
+      "document": "examples/query.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "admin_read_all"
+          ],
+          "value": true
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "lookup-ambiguous-selector",
+      "schema": "memory-operation-query",
+      "document": "examples/operation-by-id.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "capability_id"
+          ],
+          "value": "memory.proposal.submit"
+        },
+        {
+          "path": [
+            "payload",
+            "idempotency_key"
+          ],
+          "value": "key"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "lookup-no-selector",
+      "schema": "memory-operation-query",
+      "document": "examples/operation-by-id.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "operation_id"
+          ],
+          "remove": true
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "lookup-key-needs-original-capability",
+      "schema": "memory-operation-query",
+      "document": "examples/operation-by-key.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "capability_id"
+          ],
+          "remove": true
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "receipt-accepted-is-not-operation-status",
+      "schema": "memory-result",
+      "document": "examples/result-persisted.json",
+      "changes": [
+        {
+          "path": [
+            "status"
+          ],
+          "value": "accepted"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "receipt-persisted-is-not-operation-status",
+      "schema": "memory-result",
+      "document": "examples/result-persisted.json",
+      "changes": [
+        {
+          "path": [
+            "status"
+          ],
+          "value": "persisted"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "receipt-persisted-without-commit",
+      "schema": "memory-result",
+      "document": "examples/result-persisted.json",
+      "changes": [
+        {
+          "path": [
+            "output",
+            "commit_state"
+          ],
+          "value": "not_committed"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "receipt-success-with-pending-proposal",
+      "schema": "memory-result",
+      "document": "examples/result-pending.json",
+      "changes": [
+        {
+          "path": [
+            "status"
+          ],
+          "value": "succeeded"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "receipt-pending-needs-durable-operation",
+      "schema": "memory-result",
+      "document": "examples/result-pending.json",
+      "changes": [
+        {
+          "path": [
+            "output",
+            "operation_id"
+          ],
+          "remove": true
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "receipt-uncertain-cannot-retry",
+      "schema": "memory-result",
+      "document": "examples/result-uncertain.json",
+      "changes": [
+        {
+          "path": [
+            "retryable"
+          ],
+          "value": true
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "receipt-uncertain-needs-state",
+      "schema": "memory-result",
+      "document": "examples/result-uncertain.json",
+      "changes": [
+        {
+          "path": [
+            "output"
+          ],
+          "value": null
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "receipt-skip-cannot-create-atom",
+      "schema": "memory-result",
+      "document": "examples/result-skipped.json",
+      "changes": [
+        {
+          "path": [
+            "output",
+            "atom_id"
+          ],
+          "value": "invented-atom"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "receipt-query-needs-evidence",
+      "schema": "memory-result",
+      "document": "examples/result-query.json",
+      "changes": [
+        {
+          "path": [
+            "output",
+            "items",
+            0,
+            "evidence"
+          ],
+          "value": []
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "receipt-fact-cannot-be-pending",
+      "schema": "memory-result",
+      "document": "examples/result-query.json",
+      "changes": [
+        {
+          "path": [
+            "output",
+            "items",
+            0,
+            "fact_status"
+          ],
+          "value": "pending"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "receipt-fact-revision-not-invented-zero",
+      "schema": "memory-result",
+      "document": "examples/result-query.json",
+      "changes": [
+        {
+          "path": [
+            "output",
+            "items",
+            0,
+            "revision"
+          ],
+          "value": 0
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "receipt-draft-cannot-have-atom-id",
+      "schema": "memory-result",
+      "document": "examples/result-with-pending.json",
+      "changes": [
+        {
+          "path": [
+            "output",
+            "items",
+            0,
+            "atom_id"
+          ],
+          "value": "fake-atom"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "receipt-query-must-have-usage",
+      "schema": "memory-result",
+      "document": "examples/result-query.json",
+      "changes": [
+        {
+          "path": [
+            "output",
+            "usage"
+          ],
+          "remove": true
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "receipt-partial-needs-degradation",
+      "schema": "memory-result",
+      "document": "examples/result-partial.json",
+      "changes": [
+        {
+          "path": [
+            "degraded"
+          ],
+          "value": false
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "lookup-receipt-needs-original-generation",
+      "schema": "memory-result",
+      "document": "examples/result-lookup.json",
+      "changes": [
+        {
+          "path": [
+            "output",
+            "original_provider_generation"
+          ],
+          "remove": true
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "event-no-authoritative-revision",
+      "schema": "memory-changed",
+      "document": "examples/changed.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "atom_revision"
+          ],
+          "value": 0
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "event-accepted-does-not-prove-commit",
+      "schema": "memory-changed",
+      "document": "examples/changed.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "change_kind"
+          ],
+          "value": "accepted"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "event-no-memory-text",
+      "schema": "memory-changed",
+      "document": "examples/changed.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "content"
+          ],
+          "value": "private text"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "extensions-must-be-namespaced",
+      "schema": "memory-proposal",
+      "document": "examples/proposal-add.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "extensions",
+            "admin"
+          ],
+          "value": {
+            "schema_version": "1.0",
+            "payload": {
+              "allow": true
+            }
+          }
+        }
+      ],
+      "valid": false
+    }
+  ],
+  "json_cases": [
+    {
+      "id": "json-valid-extensions",
+      "text": "{\"metadata\":{\"number\":0.5,\"list\":[null,true,\"中文\"]}}",
+      "valid": true
+    },
+    {
+      "id": "json-duplicate-core-key",
+      "text": "{\"scope\":{\"bot_id\":\"a\",\"bot_id\":\"b\"}}",
+      "valid": false
+    },
+    {
+      "id": "json-nan",
+      "text": "{\"value\":NaN}",
+      "valid": false
+    },
+    {
+      "id": "json-infinity",
+      "text": "{\"value\":Infinity}",
+      "valid": false
+    },
+    {
+      "id": "json-overflow-exponent",
+      "text": "{\"extensions\":{\"value\":1e999}}",
+      "valid": false
+    },
+    {
+      "id": "json-trailing-content",
+      "text": "{} {}",
+      "valid": false
+    }
+  ]
+}

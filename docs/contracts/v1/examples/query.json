@@ -1,0 +1,62 @@
+{
+  "schema_version": "memory.query.v1",
+  "capability_id": "memory.query",
+  "capability_version": "1.0",
+  "provider_id": "example.memory",
+  "provider_generation": "generation-7",
+  "request_id": "req-reading-001",
+  "trace_id": "trace-reading-001",
+  "deadline_at": "2026-09-07T01:00:03Z",
+  "scope": {
+    "ecosystem_id": "ecosystem-001",
+    "installation_id": "installation-001",
+    "runtime_instance_id": "runtime-001",
+    "host_kind": "astrbot",
+    "bot_id": "bot-main",
+    "platform": "aiocqhttp",
+    "account_id": "qq-bot-001",
+    "conversation_ref": "conversation-001",
+    "platform_conversation_id": "private-user-123",
+    "session_id": "reading-session-001",
+    "user_id": "user-123",
+    "group_id": null,
+    "persona_id": "persona-main",
+    "persona_binding_revision": 12
+  },
+  "required_features": [],
+  "budget": {
+    "max_input_bytes": 16384,
+    "max_model_calls": 0
+  },
+  "payload": {
+    "namespace": "example.reading",
+    "visibility": "private",
+    "purpose": "reply",
+    "query_intent": "我们上次一起读到哪里？",
+    "subjects": [
+      {
+        "kind": "companion.person",
+        "ref": "person-user-123"
+      }
+    ],
+    "types": [
+      "example.reading.chapter"
+    ],
+    "time_range": null,
+    "at_time": "2026-09-07T01:00:01Z",
+    "allowed_retention": [
+      "short",
+      "durable"
+    ],
+    "include_pending": false,
+    "conflict_policy": "current_only",
+    "confidence_floor": null,
+    "evidence_budget": {
+      "max_items": 8,
+      "max_chars": 2400,
+      "max_tokens": 800
+    },
+    "cursor": null,
+    "extensions": {}
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "fixture_version": "0.1.0",
+  "run_status": "not_run",
+  "actual": null,
+  "resource_budget": { "max_active_processes": 32, "max_projection_segments": 8, "max_rebuild_windows": 4, "max_model_calls": 1 },
+  "scenarios": [
+    {
+      "id": "CAL-01",
+      "name": "角色软活动不直接写入用户日历",
+      "steps": ["activity-intent", "calendar-boundary", "story-projection"],
+      "expected": ["intent.reality_mode=simulated", "user_calendar unchanged", "projection expires"]
+    },
+    {
+      "id": "CAL-02",
+      "name": "用户硬承诺打断角色活动并局部重算",
+      "steps": ["activity-process", "calendar-request", "calendar-result"],
+      "expected": ["checkpoint retained", "affected_refs local", "no full-day regeneration"]
+    },
+    {
+      "id": "CAL-03",
+      "name": "suggest不能伪装成commit",
+      "steps": ["calendar-request", "calendar-result"],
+      "expected": ["suggest has no external commit", "commit requires authorization_ref"]
+    },
+    {
+      "id": "CAL-04",
+      "name": "离线恢复不重复推进",
+      "steps": ["activity-process", "activity-process"],
+      "expected": ["same checkpoint_id is idempotent", "bounded resume"]
+    }
+  ],
+  "replay_trace": [
+    { "sequence": 1, "event": "persona_activity_started", "ref": "process-study-001", "writes": ["activity-process"] },
+    { "sequence": 2, "event": "user_a_session_interrupts", "ref": "session-a-001", "writes": ["activity-process", "story-projection"] },
+    { "sequence": 3, "event": "user_calendar_hard_commitment_observed", "ref": "commitment-appointment-001", "writes": ["calendar-boundary"] },
+    { "sequence": 4, "event": "local_reconciliation", "ref": "changeset-005", "writes": ["calendar-result"] },
+    { "sequence": 5, "event": "new_session_user_b_reads_filtered_projection", "ref": "story-projection-001", "writes": [] },
+    { "sequence": 6, "event": "resume_from_checkpoint", "ref": "checkpoint-study-001", "writes": ["activity-process"] }
+  ]
+}

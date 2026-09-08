@@ -1,0 +1,44 @@
+{
+  "schema_version": "companion.operation-result.v1",
+  "capability_id": "example.together.resume",
+  "capability_version": "1.0",
+  "provider_id": "example.together",
+  "provider_generation": "provider-generation-8",
+  "request_id": "request-resume-001",
+  "trace_id": "trace-workflow-001",
+  "execution": {
+    "task_id": null,
+    "attempt_id": "attempt-resume-001",
+    "part_id": null,
+    "operation_id": "resume-operation-001",
+    "budget_ref": "budget-workflow-001",
+    "caused_by": [
+      {
+        "kind": "companion.candidate",
+        "ref": "candidate-001",
+        "revision": 1
+      }
+    ]
+  },
+  "status": "succeeded",
+  "reason_code": null,
+  "retryable": false,
+  "degraded": false,
+  "warnings": [],
+  "effect_state": "applied",
+  "receipt_ref": {
+    "kind": "companion.operation.receipt",
+    "ref": "resume-operation-001",
+    "revision": 1
+  },
+  "parts_ref": null,
+  "output_schema": "urn:companion:fixture:execution-domain:v1#/$defs/session-output",
+  "output": {
+    "session_ref": {
+      "kind": "companion.session",
+      "ref": "session-watch-001",
+      "revision": 19
+    },
+    "phase": "active"
+  }
+}
