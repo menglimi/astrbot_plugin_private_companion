@@ -253,6 +253,7 @@ from .companion_interaction_expression import (
     expression_decision_prompt_section,
 )
 from .photo_reference_catalog import CATALOG_VERSION, load_catalog, validate_and_serialize
+from .photo_nai_params import extract_user_photo_nai_params
 from .relationship_ledger import normalize_relationship_positive_stage_cap_key
 from .relationship_policy import normalize_relationship_stage_policy
 from .runtime_config_dispatcher import dispatch_runtime_config_effects
@@ -17940,22 +17941,7 @@ class PrivateCompanionPlugin(
         return not self._proactive_only_temp_unlock_allows(effective_feature)
 
     def _extract_user_photo_nai_params(self, text: str) -> str:
-        candidate = str(text or "")
-        if not candidate:
-            return ""
-        match = re.search(r"masterpiece[\s,，]*best\s+quality\b", candidate, flags=re.I)
-        if not match:
-            return ""
-        block = candidate[match.start():]
-        block = re.split(r"[\n\r。！？!?]", block, maxsplit=1)[0]
-        cjk_cursor = re.search(r"[\u4e00-\u9fff]", block)
-        if cjk_cursor and cjk_cursor.start() > 0 and block[cjk_cursor.start() - 1] not in " ,，":
-            block = block[: cjk_cursor.start()]
-        block = re.sub(r"\s+", " ", block.replace("\uFF0C", ",")).strip(" ,")
-        tags = [t.strip() for t in re.split(r",\s*", block) if t.strip()]
-        if len(tags) >= 8:
-            return ", ".join(tags)
-        return ""
+        return extract_user_photo_nai_params(text)
 
     async def _record_proactive_only_private_feedback(
         self,

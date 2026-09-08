@@ -18,6 +18,7 @@ from .helpers import (
     _single_line,
 )
 from .logging_util import get_module_logger
+from .photo_nai_params import cache_user_photo_nai_params
 
 logger = get_module_logger(__name__)
 
@@ -390,9 +391,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
         safe_text = self._sanitize_orphan_tts_placeholders(text)
         fast_user["last_user_message"] = safe_text or text
         fast_user["last_user_message_at"] = received_ts
-        user_photo_nai_params = self._extract_user_photo_nai_params(safe_text or text)
-        if user_photo_nai_params:
-            fast_user["last_photo_nai_params"] = user_photo_nai_params
+        cache_user_photo_nai_params(fast_user, safe_text or text, received_at=received_ts)
         self._note_user_chronotype_from_inbound(fast_user, safe_text or text, received_ts)
         fast_intent_profile = self._analyze_inbound_intent(text)
         boundary_enricher = getattr(self, "_enrich_boundary_feedback_intent", None)
@@ -906,9 +905,7 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
             safe_text = self._sanitize_orphan_tts_placeholders(text)
             user["last_user_message"] = safe_text or text
             user["last_user_message_at"] = received_ts
-            user_photo_nai_params = self._extract_user_photo_nai_params(safe_text or text)
-            if user_photo_nai_params:
-                user["last_photo_nai_params"] = user_photo_nai_params
+            cache_user_photo_nai_params(user, safe_text or text, received_at=received_ts)
             self._note_user_chronotype_from_inbound(user, safe_text or text, received_ts)
             if is_target_user and self._clear_state_share_proactive_after_user_status_question(user, user_id=user_id, text=safe_text or text, now=received_ts):
                 if not self._simulation_active(user) and _safe_float(user.get("next_proactive_at"), 0) <= 0:

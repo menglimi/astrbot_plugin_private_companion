@@ -83,6 +83,7 @@ from .reaction_asset_library import ReactionAssetLibrary, get_reaction_asset_lib
 from .logging_util import get_module_logger
 from .interaction_tool_contract import InteractionQuery
 from .interaction_query_orchestrator import execute_interaction_query
+from .photo_nai_params import merge_user_photo_nai_params, recent_cached_photo_nai_params
 
 logger = get_module_logger(__name__)
 
@@ -3457,39 +3458,15 @@ class LlmToolActionsMixin:
         else:
             workflow_kind = "text2img"
             intent_kind = "text2img"
+        inherited_nai_params = ""
+        inbound_photo_text = str(getattr(event, "message_str", "") or "")[:4000]
         if workflow_kind != "edit":
-            try:
-                inherited_nai_params = ""
-                extractor = getattr(self, "_extract_user_photo_nai_params", None)
-                if callable(extractor):
-                    inbound_photo_text = _single_line(str(getattr(event, "message_str", "") or ""), 4000)
+            extractor = getattr(self, "_extract_user_photo_nai_params", None)
+            if callable(extractor):
+                try:
                     inherited_nai_params = extractor(inbound_photo_text)
-                    if not inherited_nai_params:
-                        photo_users = self.data.get("users") if isinstance(getattr(self, "data", None), dict) and isinstance(self.data.get("users"), dict) else {}
-                        photo_sender_getter = getattr(event, "get_sender_id", None)
-                        photo_sender_id = str(photo_sender_getter()) if callable(photo_sender_getter) else ""
-                        photo_current_user = (photo_users or {}).get(photo_sender_id) if isinstance(photo_users, dict) else None
-                        if isinstance(photo_current_user, dict):
-                            inherited_nai_params = str(photo_current_user.get("last_photo_nai_params") or "")
-                inherited_nai_params = _single_line(inherited_nai_params, 1600)
-                if len([t for t in re.split(r",\s*", inherited_nai_params) if t.strip()]) >= 8:
-                    merged_tags: list[str] = []
-                    merged_seen: set[str] = set()
-                    for raw_tag in re.split(r"[,\uFF0C]\s*", inherited_nai_params):
-                        tag = raw_tag.strip()
-                        key = tag.casefold()
-                        if tag and key not in merged_seen:
-                            merged_tags.append(tag)
-                            merged_seen.add(key)
-                    for raw_tag in re.split(r"[,\uFF0C]\s*", content):
-                        tag = raw_tag.strip().strip("[]{}")
-                        key = tag.casefold()
-                        if tag and "{" not in tag and "}" not in tag and "人物" not in tag and key not in merged_seen:
-                            merged_tags.append(tag)
-                            merged_seen.add(key)
-                    content = ", ".join(merged_tags)
-            except Exception:
-                pass
+                except Exception:
+                    inherited_nai_params = ""
         if not content:
             return public_receipt(
                 {
@@ -4080,6 +4057,22 @@ class LlmToolActionsMixin:
                     _single_line(exc, 160),
                 )
                 prompt_format_mode = "traditional"
+        if (
+            workflow_kind != "edit"
+            and not proactive_request
+            and request_scope == "private"
+            and not inbound_photo_text.strip()
+            and not inherited_nai_params
+        ):
+            inherited_nai_params = recent_cached_photo_nai_params(
+                requester,
+                now=_now_ts(),
+            )
+        content = merge_user_photo_nai_params(
+            content,
+            inherited_nai_params,
+            prompt_format=prompt_format_mode,
+        )
         prompt_builder = getattr(self, "_build_natural_language_photo_prompt_sections", None)
         use_natural_prompt_builder = not callable(prompt_format_getter) or prompt_format_mode in {
             "natural_language",
