@@ -83,6 +83,7 @@ from .reaction_asset_library import ReactionAssetLibrary, get_reaction_asset_lib
 from .logging_util import get_module_logger
 from .interaction_tool_contract import InteractionQuery
 from .interaction_query_orchestrator import execute_interaction_query
+from .photo_nai_params import merge_user_photo_nai_params, recent_cached_photo_nai_params
 
 logger = get_module_logger(__name__)
 
@@ -3457,6 +3458,15 @@ class LlmToolActionsMixin:
         else:
             workflow_kind = "text2img"
             intent_kind = "text2img"
+        inherited_nai_params = ""
+        inbound_photo_text = str(getattr(event, "message_str", "") or "")[:4000]
+        if workflow_kind != "edit":
+            extractor = getattr(self, "_extract_user_photo_nai_params", None)
+            if callable(extractor):
+                try:
+                    inherited_nai_params = extractor(inbound_photo_text)
+                except Exception:
+                    inherited_nai_params = ""
         if not content:
             return public_receipt(
                 {
@@ -4047,6 +4057,22 @@ class LlmToolActionsMixin:
                     _single_line(exc, 160),
                 )
                 prompt_format_mode = "traditional"
+        if (
+            workflow_kind != "edit"
+            and not proactive_request
+            and request_scope == "private"
+            and not inbound_photo_text.strip()
+            and not inherited_nai_params
+        ):
+            inherited_nai_params = recent_cached_photo_nai_params(
+                requester,
+                now=_now_ts(),
+            )
+        content = merge_user_photo_nai_params(
+            content,
+            inherited_nai_params,
+            prompt_format=prompt_format_mode,
+        )
         prompt_builder = getattr(self, "_build_natural_language_photo_prompt_sections", None)
         use_natural_prompt_builder = not callable(prompt_format_getter) or prompt_format_mode in {
             "natural_language",

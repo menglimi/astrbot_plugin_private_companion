@@ -253,6 +253,7 @@ from .companion_interaction_expression import (
     expression_decision_prompt_section,
 )
 from .photo_reference_catalog import CATALOG_VERSION, load_catalog, validate_and_serialize
+from .photo_nai_params import extract_user_photo_nai_params
 from .relationship_ledger import normalize_relationship_positive_stage_cap_key
 from .relationship_policy import normalize_relationship_stage_policy
 from .runtime_config_dispatcher import dispatch_runtime_config_effects
@@ -17938,6 +17939,9 @@ class PrivateCompanionPlugin(
         if proactive_framework:
             return False
         return not self._proactive_only_temp_unlock_allows(effective_feature)
+
+    def _extract_user_photo_nai_params(self, text: str) -> str:
+        return extract_user_photo_nai_params(text)
 
     async def _record_proactive_only_private_feedback(
         self,
