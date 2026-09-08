@@ -4553,7 +4553,7 @@ const featureSettingTypes = {
   segmented_proactive_group_log_base: { type: "number", min: 1.1, max: 10, step: 0.1 },
   proactive_chat_bridge_review_mode: { type: "select", options: [["local", "轻量本地（更即时）"], ["follow_proactive_review", "跟随主动终审（更稳）"]] },
   proactive_chat_bridge_collision_window_seconds: { type: "number", min: 10, max: 600, step: 10, unit: "秒" },
-  photo_generation_backend: { type: "select", options: [["auto", "auto"], ["comfyui", "ComfyUI"], ["sdgen", "SDGen"], ["external", "在线图片 API"], ["tool_call", "函数工具"], ["nai", "NAI 生图（直连）"]] },
+  photo_generation_backend: { type: "select", options: [["auto", "auto"], ["comfyui", "ComfyUI"], ["sdgen", "SDGen"], ["external", "在线图片 API"], ["tool_call", "函数工具"], ["nai", "NAI 生图（直连）"], ["anima_master", "Anima 绘图大师（直连）"]] },
   external_image_api_platform: { type: "select", options: [["auto", "auto"], ["openai", "OpenAI 兼容"], ["openrouter", "OpenRouter"], ["agnes", "Agnes Image"], ["sensenova", "SenseNova 日日新"], ["minimax", "MiniMax"], ["bailian", "阿里云百炼"], ["modelscope", "魔搭社区"], ["doubao", "豆包/火山方舟"], ["gemini", "Gemini"]] },
   backup_external_image_api_platform: { type: "select", options: [["auto", "auto"], ["openai", "OpenAI 兼容"], ["openrouter", "OpenRouter"], ["agnes", "Agnes Image"], ["sensenova", "SenseNova 日日新"], ["minimax", "MiniMax"], ["bailian", "阿里云百炼"], ["modelscope", "魔搭社区"], ["doubao", "豆包/火山方舟"], ["gemini", "Gemini"]] },
   EXTERNAL_IMAGE_API_KEY: { type: "password" },
@@ -9080,7 +9080,7 @@ const setupGuideAdvancedItems = {
         { key: "photo_generation_private_friend_max_daily", type: "number", label: "其他陪伴用户私聊每日上限", placeholder: "-1（不限量）", min: -1, max: 100, step: 1, description: "-1 表示不限量，0 表示不允许，正数表示每日限额。", showWhen: (draft) => photoSettingVisibleForValues("photo_generation_private_friend_max_daily", draft) },
         { key: "photo_generation_group_max_daily", type: "number", label: "群聊生图每日上限", placeholder: "-1（不限量）", min: -1, max: 100, step: 1, description: "-1 表示不限量，0 表示不允许，正数表示每日限额。", showWhen: (draft) => photoSettingVisibleForValues("photo_generation_group_max_daily", draft) },
         { key: "photo_generation_proactive_max_daily", type: "number", label: "Bot 主动生图每日上限", placeholder: "-1（不限量）", min: -1, max: 100, step: 1, description: "-1 表示不限量，0 表示不允许，正数表示每日限额。" },
-        { key: "photo_generation_backend", type: "select", label: "生图后端", options: [["auto", "自动：在线 API → ComfyUI → SDGen"], ["external", "只用在线图片 API"], ["comfyui", "只用 ComfyUI"], ["sdgen", "只用 SDGen"], ["tool_call", "函数工具（调用其他插件的生图工具）"], ["nai", "只用 NAI 生图插件（直连）"]], description: "这里仅选择后端；在线 API 凭据和队列统一在“模型配置 → 生图模型”维护。" },
+        { key: "photo_generation_backend", type: "select", label: "生图后端", options: [["auto", "自动：在线 API → ComfyUI → SDGen"], ["external", "只用在线图片 API"], ["comfyui", "只用 ComfyUI"], ["sdgen", "只用 SDGen"], ["tool_call", "函数工具（调用其他插件的生图工具）"], ["nai", "只用 NAI 生图插件（直连）"], ["anima_master", "Anima 绘图大师（直连）"]], description: "这里仅选择后端；在线 API 凭据和队列统一在“模型配置 → 生图模型”维护。" },
         { key: "natural_language_photo_generation_mode", type: "select", label: "非指令生图处理方式", options: [["tool_first", "工具优先：主链调用 pc_generate_photo"], ["rule_fast", "规则快判：插件前置接管"], ["off", "关闭：不做前置接管"]], description: "注册生图工具后建议用工具优先；只有工具调用不稳定时再用规则快判。" },
         { key: "command_photo_generation_max_daily", type: "number", label: "用户请求每日上限", placeholder: "-1（不限量）", min: -1, max: 100, description: "显式陪伴生图指令与主链 pc_generate_photo 工具共用；-1 表示不限量，0 表示不允许用户请求生图/改图。", showWhen: (draft) => photoSettingVisibleForValues("command_photo_generation_max_daily", draft) },
         { key: "photo_generation_trace_max_size_kb", type: "number", label: "生图日志单文件大小（KB）", placeholder: "0", min: 0, max: 102400, description: "仅排障时开启；事件日志和逐次提示词调试文件可能包含会话标识、用户请求、完整提示词和本地参考图路径。0 表示全部关闭。" },
@@ -28238,7 +28238,7 @@ function photoSettingVisibleForValues(settingKey, values = {}) {
     "COMFYUI_SELFIE_WORKFLOW_NAME",
     "comfyui_photo_wait_seconds",
   ]);
-  const localBackends = new Set(["auto", "comfyui", "sdgen"]);
+  const localBackends = new Set(["auto", "comfyui", "sdgen", "anima_master"]);
   const onlineBackends = new Set(["auto", "external"]);
   const onlineModelOnly = new Set([
     "external_image_api_platform",
@@ -32796,6 +32796,7 @@ function renderImageModelConfig() {
     ["sdgen", "只用 SDGen"],
     ["tool_call", "函数工具"],
     ["nai", "NAI 生图插件直连"],
+    ["anima_master", "Anima 绘图大师直连"],
   ];
   const backendLabel = backendOptions.find(([value]) => value === backend)?.[1] || backend;
   summary.innerHTML = `

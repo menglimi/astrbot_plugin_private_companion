@@ -1225,7 +1225,7 @@ def _initialize_proactive_and_reaction_config(self: Any, c: Any) -> None:
     )
     self.comfyui_photo_wait_seconds = self._cfg_int(c, "comfyui_photo_wait_seconds", 90, 5, 600)
     self.photo_generation_backend = self._cfg_str(c, "photo_generation_backend", "auto", "auto").strip().lower()
-    if self.photo_generation_backend not in {"auto", "comfyui", "sdgen", "external", "tool_call", "nai"}:
+    if self.photo_generation_backend not in {"auto", "comfyui", "sdgen", "external", "tool_call", "nai", "anima_master"}:
         self.photo_generation_backend = "auto"
     self.enable_generated_photo_cleanup = self._cfg_bool(c, "enable_generated_photo_cleanup", True)
     self.generated_photo_retention_days = self._cfg_int(c, "generated_photo_retention_days", 30, 0, 3650)

@@ -10809,7 +10809,7 @@
       "photo_generation_backend": {
         "description": "主动生图后端",
         "type": "string",
-        "hint": "可填：auto、comfyui、sdgen、external、tool_call、nai。auto 会在在线图片 API 配置完整时优先尝试在线 API，失败后回退本地 ComfyUI/astrbot_plugin_SDGen；未配置在线 API 时使用本地后端。tool_call 会调用其他插件注册的函数工具（需在下方填写工具名）。nai 会直连 NAI 生图插件 astrbot_plugin_nai_image，无需在线 API 与本地工作流。",
+        "hint": "可填：auto、comfyui、sdgen、external、tool_call、nai、anima_master。auto 会在在线图片 API 配置完整时优先尝试在线 API，失败后回退本地 ComfyUI/astrbot_plugin_SDGen；未配置在线 API 时使用本地后端。tool_call 会调用其他插件注册的函数工具（需填写工具名）。nai 直连 astrbot_plugin_nai_image。anima_master 直连 Anima 绘图大师，复用其模型与 ComfyUI 配置，由陪伴统一发送图片。",
         "default": "auto",
         "condition": {
           "enable_photo_text_action": true

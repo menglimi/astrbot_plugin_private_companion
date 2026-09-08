@@ -9806,8 +9806,8 @@ class ProactiveEngineMixin:
         selected_backend = _single_line(image_status.get("selected_backend"), 30)
         if selected_backend in {"external", "tool_call"}:
             return ""
-        if selected_backend == "sdgen":
-            local_available = bool((image_status.get("backends") or {}).get("sdgen"))
+        if selected_backend in {"sdgen", "anima_master"}:
+            local_available = bool((image_status.get("backends") or {}).get(selected_backend))
         else:
             local_available = bool((image_status.get("backends") or {}).get("comfyui")) or (
                 selected_backend == "auto" and bool((image_status.get("backends") or {}).get("sdgen"))
