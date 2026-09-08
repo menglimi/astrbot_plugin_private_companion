@@ -11761,6 +11761,32 @@
         "hint": "开启后，用户戳 Bot 时 Bot 会以文字或 LLM 回复，并可能戳回去。",
         "default": false
       },
+      "hdsi_experiment_mode": {
+        "description": "HDSI 试验模式",
+        "type": "string",
+        "options": ["legacy", "hdsi_shadow", "hdsi_active"],
+        "labels": ["旧框架（默认）", "HDSI 影子观察", "HDSI 试验接管"],
+        "default": "legacy",
+        "hint": "默认所有用户继续使用旧框架。影子或接管只对下方明确列出的用户/群生效。"
+      },
+      "hdsi_experiment_user_ids": {
+        "description": "HDSI 试验私聊用户 ID",
+        "type": "list",
+        "default": [],
+        "hint": "仅这些私聊用户进入 HDSI 试验；支持原始平台用户 ID 或完整私聊 UMO。"
+      },
+      "hdsi_experiment_group_ids": {
+        "description": "HDSI 试验群 ID",
+        "type": "list",
+        "default": [],
+        "hint": "仅这些群窗口进入 HDSI 试验；必须整群启用，成员个人设置不会改变公共回复路径。"
+      },
+      "hdsi_experiment_binding_revision": {
+        "description": "HDSI 绑定修订号",
+        "type": "string",
+        "default": "1",
+        "invisible": true
+      },
       "reactive_poke_trigger_probability": {
         "description": "触发回复总概率",
         "type": "float",

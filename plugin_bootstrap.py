@@ -282,6 +282,22 @@ def _initialize_core_and_relationship_config(self: Any, c: Any) -> None:
     self.data_dir = StarTools.get_data_dir(PLUGIN_NAME)
     os.makedirs(self.data_dir, exist_ok=True)
     self.data_file = os.path.join(self.data_dir, "companions.json")
+    # HDSI is opt-in; legacy remains the default and unlisted scopes never
+    # enter the compatibility prompt path.
+    self.hdsi_experiment_mode = self._cfg_str(c, "hdsi_experiment_mode", "legacy", "legacy").strip().lower()
+    if self.hdsi_experiment_mode not in {"legacy", "hdsi_shadow", "hdsi_active"}:
+        self.hdsi_experiment_mode = "legacy"
+    def _hdsi_ids(value: Any) -> tuple[str, ...]:
+        if isinstance(value, str):
+            values = value.replace("\r", "\n").replace(",", "\n").replace("，", "\n").split("\n")
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            values = value
+        else:
+            values = ()
+        return tuple(dict.fromkeys(str(item).strip() for item in values if str(item).strip()))
+    self.hdsi_experiment_user_ids = _hdsi_ids(self._cfg_raw(c, "hdsi_experiment_user_ids", []))
+    self.hdsi_experiment_group_ids = _hdsi_ids(self._cfg_raw(c, "hdsi_experiment_group_ids", []))
+    self.hdsi_experiment_binding_revision = self._cfg_str(c, "hdsi_experiment_binding_revision", "1", "1").strip() or "1"
     self.enable_multi_persona_mode = self._cfg_bool(c, "enable_multi_persona_mode", False)
     self._multi_persona_enable_requested = self.enable_multi_persona_mode
     legacy_primary_cleanup_pending = _initialize_primary_persona_config(self, c)

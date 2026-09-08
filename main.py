@@ -363,6 +363,7 @@ from .conversation_prompt_section import (
     render_prompt_content,
     render_prompt_sections,
 )
+from .hdsi_experiment import build_hdsi_prompt_section, mark_hdsi_route
 from .prompt_surface import CollectedPromptContext, PromptSurface
 from .passive_state_pipeline import inject_humanized_state as run_humanized_state_injection
 from .qzone_integration import QzoneMixin
@@ -3666,6 +3667,80 @@ class PrivateCompanionPlugin(
             normalized_code,
             normalized_channel,
         )
+
+    @filter.on_llm_request(priority=109000)
+    @_multi_persona_event_context
+    async def inject_hdsi_experiment_prompt(self, event: AstrMessageEvent, req: ProviderRequest, *args: Any, **kwargs: Any) -> None:
+        """Apply/audit HDSI only for an explicitly marked inbound chat route."""
+        if not bool(getattr(event, "private_companion_hdsi_chat_route_ready", False)):
+            return
+        checker = getattr(self, "_event_is_inbound_chat_message", None)
+        if callable(checker):
+            try:
+                if not checker(event):
+                    return
+            except Exception:
+                return
+        mode = str(getattr(event, "private_companion_hdsi_mode", "legacy") or "legacy")
+        if mode == "hdsi_shadow":
+            request_key = id(req)
+            if getattr(event, "private_companion_hdsi_shadow_request_key", None) == request_key:
+                return
+            shadow = build_hdsi_prompt_section(event, "hdsi_active")
+            recorder = getattr(self, "_record_request_prompt_fragment", None)
+            if shadow is not None and callable(recorder):
+                await recorder(
+                    event,
+                    title="HDSI 影子试验表达约束",
+                    key="experiment.hdsi.compatibility",
+                    text=shadow.content,
+                    source="hdsi_experiment",
+                    mode=mode,
+                    priority=109,
+                    metadata={
+                        "shadow_only": True,
+                        "route": mode,
+                        "scope": getattr(event, "private_companion_hdsi_scope", ""),
+                        "scope_fingerprint": getattr(event, "private_companion_hdsi_scope_fingerprint", ""),
+                        "binding_revision": getattr(event, "private_companion_hdsi_binding_revision", ""),
+                        "actor_id": getattr(event, "private_companion_hdsi_actor_id", ""),
+                        "persona_id": getattr(event, "private_companion_hdsi_persona_id", ""),
+                    },
+                )
+            try:
+                setattr(event, "private_companion_hdsi_shadow_request_key", request_key)
+            except Exception:
+                pass
+            return
+        section = build_hdsi_prompt_section(event, mode)
+        if section is None:
+            return
+        marker = "<!-- private_companion_hdsi_experiment_v1 -->"
+        current = str(getattr(req, "system_prompt", "") or "")
+        turn = str(getattr(req, "prompt", "") or "")
+        if marker in current or marker in turn:
+            return
+        placement, _, _ = self._place_conversation_prompt_section(req, marker, [section], priority=109)
+        recorder = getattr(self, "_record_request_prompt_fragment", None)
+        if callable(recorder):
+            await recorder(
+                event,
+                title="HDSI 试验表达约束",
+                key="experiment.hdsi.compatibility",
+                text=section.content,
+                source="hdsi_experiment",
+                mode=mode,
+                priority=109,
+                metadata={
+                    "注入位置": placement,
+                    "route": mode,
+                    "scope": getattr(event, "private_companion_hdsi_scope", ""),
+                    "scope_fingerprint": getattr(event, "private_companion_hdsi_scope_fingerprint", ""),
+                    "binding_revision": getattr(event, "private_companion_hdsi_binding_revision", ""),
+                    "actor_id": getattr(event, "private_companion_hdsi_actor_id", ""),
+                    "persona_id": getattr(event, "private_companion_hdsi_persona_id", ""),
+                },
+            )
         signature = "|".join((normalized_code, reason, normalized_channel, window))
         record_id = hashlib.sha256(signature.encode("utf-8")).hexdigest()[:20]
         should_schedule = False
@@ -20907,6 +20982,7 @@ class PrivateCompanionPlugin(
     @_multi_persona_event_context
     @event_data_save_boundary(flush=True)
     async def on_private_message(self, event: AstrMessageEvent, *args, **kwargs):
+        mark_hdsi_route(self, event)
         if await self._handle_private_message_preflight(event):
             return
         return await handle_private_message(self, event, *args, **kwargs)
@@ -21329,6 +21405,7 @@ class PrivateCompanionPlugin(
     @_multi_persona_event_context
     @event_data_save_boundary(flush=True)
     async def on_group_message(self, event: AstrMessageEvent, *args, **kwargs):
+        mark_hdsi_route(self, event)
         return await handle_group_message(self, event, *args, **kwargs)
 
     def _format_timestamp_elapsed(self, timestamp: Any) -> str:
