@@ -237,6 +237,7 @@ from .story_authority import (
     story_legacy_sync_operation,
 )
 from .story_handoff import resume_story_handoff
+from .hdsi_experiment import build_hdsi_prompt_section, mark_hdsi_route
 from .domains.affect.reply_temperature import (
     compose_reply_temperature,
     reply_temperature_prompt_section,
@@ -1778,6 +1779,10 @@ class PrivateCompanionPlugin(
     AtRelayMixin,
     Star,
 ):
+    def _hdsi_experiment_mode_for_event(self, event: Any) -> str:
+        """Resolve an explicit HDSI trial route; legacy is the fail-open default."""
+        return mark_hdsi_route(self, event)
+
     @filter.on_plugin_loaded()
     async def _on_external_plugin_loaded(self, metadata: Any, *args: Any, **kwargs: Any) -> None:
         # 任意插件装载后主动失效桥接缓存：运行中安装/重载可选扩展能立即被
@@ -1824,6 +1829,64 @@ class PrivateCompanionPlugin(
             req,
             *args,
             **kwargs,
+        )
+
+    @filter.on_llm_request(priority=109000)
+    @_multi_persona_event_context
+    async def inject_hdsi_experiment_prompt(
+        self,
+        event: AstrMessageEvent,
+        req: ProviderRequest,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        """Apply or audit the HDSI overlay only on explicitly opted-in routes."""
+        mode = str(getattr(event, "private_companion_hdsi_mode", "") or "")
+        if mode != "hdsi_active":
+            mode = self._hdsi_experiment_mode_for_event(event)
+        if mode == "hdsi_shadow":
+            if bool(getattr(event, "private_companion_hdsi_shadow_recorded", False)):
+                return
+            shadow_section = build_hdsi_prompt_section(event, "hdsi_active")
+            if shadow_section is not None:
+                await self._record_request_prompt_fragment(
+                    event,
+                    title="HDSI 影子试验表达约束",
+                    key="experiment.hdsi.compatibility",
+                    text=shadow_section.content,
+                    source="hdsi_experiment",
+                    mode="hdsi_shadow",
+                    priority=109,
+                    metadata={"shadow_only": True, "route": "hdsi_shadow"},
+                )
+            try:
+                setattr(event, "private_companion_hdsi_shadow_recorded", True)
+            except Exception:
+                pass
+            return
+        section = build_hdsi_prompt_section(event, mode)
+        if section is None:
+            return
+        marker = "<!-- private_companion_hdsi_experiment_v1 -->"
+        current_prompt = str(getattr(req, "system_prompt", "") or "")
+        current_turn_prompt = str(getattr(req, "prompt", "") or "")
+        if marker in current_prompt or marker in current_turn_prompt:
+            return
+        placement, _, _ = self._place_conversation_prompt_section(
+            req,
+            marker,
+            [section],
+            priority=109,
+        )
+        await self._record_request_prompt_fragment(
+            event,
+            title="HDSI 试验表达约束",
+            key="experiment.hdsi.compatibility",
+            text=section.content,
+            source="hdsi_experiment",
+            mode="hdsi_active",
+            priority=109,
+            metadata={"注入位置": placement, "route": "hdsi_active"},
         )
 
     @filter.on_llm_response(priority=-100000)
@@ -20907,6 +20970,7 @@ class PrivateCompanionPlugin(
     @_multi_persona_event_context
     @event_data_save_boundary(flush=True)
     async def on_private_message(self, event: AstrMessageEvent, *args, **kwargs):
+        self._hdsi_experiment_mode_for_event(event)
         if await self._handle_private_message_preflight(event):
             return
         return await handle_private_message(self, event, *args, **kwargs)
@@ -21329,6 +21393,7 @@ class PrivateCompanionPlugin(
     @_multi_persona_event_context
     @event_data_save_boundary(flush=True)
     async def on_group_message(self, event: AstrMessageEvent, *args, **kwargs):
+        self._hdsi_experiment_mode_for_event(event)
         return await handle_group_message(self, event, *args, **kwargs)
 
     def _format_timestamp_elapsed(self, timestamp: Any) -> str:
