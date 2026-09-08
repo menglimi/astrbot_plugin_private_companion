@@ -4084,6 +4084,7 @@ class LlmToolActionsMixin:
         if generation_timeout <= 0:
             generation_timeout = 0.01
         generation_kwargs = {
+            "event": event,
             "workflow_kind": workflow_kind,
             "prompt_text": prompt_text,
             "request_text": content,
@@ -4205,6 +4206,7 @@ class LlmToolActionsMixin:
         ][:1]
         final_scene_preset = final_presets[0] if final_presets else ""
         ok = bool(image_path and os.path.exists(image_path))
+        tool_delivery_confirmed = ";tool_delivery_confirmed" in str(note or "")
         annotator = getattr(self, "_annotate_recent_photo_generation", None)
         if callable(annotator):
             annotator(
@@ -4233,7 +4235,15 @@ class LlmToolActionsMixin:
         delivery_deferred = False
         delivery: dict[str, Any] = {}
         generation_trace_id = _single_line(generation_metadata.get("trace_id"), 80)
-        if ok and send_image:
+        if ok and send_image and tool_delivery_confirmed:
+            sent = True
+            delivery = {
+                "sent": True,
+                "destination": "custom_tool",
+                "message": "自定义生图工具已完成图片投递",
+                "external": True,
+            }
+        elif ok and send_image:
             # 图片本身就是成功结果。纯状态 caption 不应成为可见回执；
             # 只有包含实际语境信息的自然正文才随图发送。
             usable_caption = "" if self._photo_caption_is_generic(visible_caption) else visible_caption
