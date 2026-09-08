@@ -3457,6 +3457,39 @@ class LlmToolActionsMixin:
         else:
             workflow_kind = "text2img"
             intent_kind = "text2img"
+        if workflow_kind != "edit":
+            try:
+                inherited_nai_params = ""
+                extractor = getattr(self, "_extract_user_photo_nai_params", None)
+                if callable(extractor):
+                    inbound_photo_text = _single_line(str(getattr(event, "message_str", "") or ""), 4000)
+                    inherited_nai_params = extractor(inbound_photo_text)
+                    if not inherited_nai_params:
+                        photo_users = self.data.get("users") if isinstance(getattr(self, "data", None), dict) and isinstance(self.data.get("users"), dict) else {}
+                        photo_sender_getter = getattr(event, "get_sender_id", None)
+                        photo_sender_id = str(photo_sender_getter()) if callable(photo_sender_getter) else ""
+                        photo_current_user = (photo_users or {}).get(photo_sender_id) if isinstance(photo_users, dict) else None
+                        if isinstance(photo_current_user, dict):
+                            inherited_nai_params = str(photo_current_user.get("last_photo_nai_params") or "")
+                inherited_nai_params = _single_line(inherited_nai_params, 1600)
+                if len([t for t in re.split(r",\s*", inherited_nai_params) if t.strip()]) >= 8:
+                    merged_tags: list[str] = []
+                    merged_seen: set[str] = set()
+                    for raw_tag in re.split(r"[,\uFF0C]\s*", inherited_nai_params):
+                        tag = raw_tag.strip()
+                        key = tag.casefold()
+                        if tag and key not in merged_seen:
+                            merged_tags.append(tag)
+                            merged_seen.add(key)
+                    for raw_tag in re.split(r"[,\uFF0C]\s*", content):
+                        tag = raw_tag.strip().strip("[]{}")
+                        key = tag.casefold()
+                        if tag and "{" not in tag and "}" not in tag and "人物" not in tag and key not in merged_seen:
+                            merged_tags.append(tag)
+                            merged_seen.add(key)
+                    content = ", ".join(merged_tags)
+            except Exception:
+                pass
         if not content:
             return public_receipt(
                 {

@@ -17939,6 +17939,24 @@ class PrivateCompanionPlugin(
             return False
         return not self._proactive_only_temp_unlock_allows(effective_feature)
 
+    def _extract_user_photo_nai_params(self, text: str) -> str:
+        candidate = str(text or "")
+        if not candidate:
+            return ""
+        match = re.search(r"masterpiece[\s,，]*best\s+quality\b", candidate, flags=re.I)
+        if not match:
+            return ""
+        block = candidate[match.start():]
+        block = re.split(r"[\n\r。！？!?]", block, maxsplit=1)[0]
+        cjk_cursor = re.search(r"[\u4e00-\u9fff]", block)
+        if cjk_cursor and cjk_cursor.start() > 0 and block[cjk_cursor.start() - 1] not in " ,，":
+            block = block[: cjk_cursor.start()]
+        block = re.sub(r"\s+", " ", block.replace("\uFF0C", ",")).strip(" ,")
+        tags = [t.strip() for t in re.split(r",\s*", block) if t.strip()]
+        if len(tags) >= 8:
+            return ", ".join(tags)
+        return ""
+
     async def _record_proactive_only_private_feedback(
         self,
         event: AstrMessageEvent,
