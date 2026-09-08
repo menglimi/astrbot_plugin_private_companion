@@ -263,6 +263,14 @@ _PROMPT_AUTHORING_ALLOWLIST: tuple[dict[str, object], ...] = (
     _prompt_allow(
         _PROMPT_RULE_LEGACY_HEADING,
         "private_image.py",
+        "PrivateImageMixin._private_image_history_user_matches_event",
+        ("【图片】",),
+        "matches persisted legacy image-only history rows to the current event",
+        "legacy image history rows are migrated to structured media metadata",
+    ),
+    _prompt_allow(
+        _PROMPT_RULE_LEGACY_HEADING,
+        "private_image.py",
         "PrivateImageMixin._context_image_skip_text",
         ("【本轮延迟图片】", "【本轮引用图片】", "【当前引用图片锚点】", "【本轮合并消息】", "【本轮合并消息转述】"),
         "detects already-materialized legacy image context in compatibility input",
