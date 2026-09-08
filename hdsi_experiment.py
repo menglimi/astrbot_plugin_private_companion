@@ -70,9 +70,11 @@ async def hdsi_window_command(plugin: Any, event: Any, action: str = "状态") -
             return "配置无法写入，设置未修改。"
         try:
             saved = await plugin._save_config_if_possible()
-        except BaseException:
+        except asyncio.CancelledError:
             _set_into_config(config, WINDOW_MODES_KEY, old_value)
             raise
+        except Exception:
+            saved = False
         if not saved:
             _set_into_config(config, WINDOW_MODES_KEY, old_value)
             return "保存失败，当前窗口仍使用原设置。"
@@ -282,4 +284,8 @@ async def apply_hdsi_prompt(plugin: Any, event: Any, req: Any) -> None:
         )
 
 
-__all__ = ["EXPERIMENT_MODES", "build_hdsi_prompt_section", "mark_hdsi_route", "normalize_hdsi_mode", "normalize_id_set", "resolve_hdsi_binding", "resolve_hdsi_mode"]
+__all__ = [
+    "EXPERIMENT_MODES", "apply_hdsi_prompt", "build_hdsi_prompt_section",
+    "hdsi_window_command", "mark_hdsi_route", "normalize_hdsi_mode",
+    "normalize_id_set", "normalize_window_modes", "resolve_hdsi_binding", "resolve_hdsi_mode",
+]

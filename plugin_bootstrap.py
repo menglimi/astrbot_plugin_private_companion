@@ -13,6 +13,7 @@ from astrbot.api.star import StarTools
 from .body_monitor_integration import BodyMonitorIntegration
 from .bot_personal_contract import capability_descriptor, contract_self_check
 from .config_migration import migrate_flat_config_into_schema_groups
+from .hdsi_experiment import normalize_window_modes
 from .constants import (
     DEFAULT_NATURAL_LANGUAGE_PHOTO_EXTRA_PROMPT,
     DEFAULT_REPLY_STYLE_PROMPT,
@@ -298,6 +299,9 @@ def _initialize_core_and_relationship_config(self: Any, c: Any) -> None:
     self.hdsi_experiment_user_ids = _hdsi_ids(self._cfg_raw(c, "hdsi_experiment_user_ids", []))
     self.hdsi_experiment_group_ids = _hdsi_ids(self._cfg_raw(c, "hdsi_experiment_group_ids", []))
     self.hdsi_experiment_binding_revision = self._cfg_str(c, "hdsi_experiment_binding_revision", "1", "1").strip() or "1"
+    self.hdsi_experiment_window_modes = normalize_window_modes(
+        self._cfg_raw(c, "hdsi_experiment_window_modes", "{}")
+    )
     self.enable_multi_persona_mode = self._cfg_bool(c, "enable_multi_persona_mode", False)
     self._multi_persona_enable_requested = self.enable_multi_persona_mode
     legacy_primary_cleanup_pending = _initialize_primary_persona_config(self, c)

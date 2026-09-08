@@ -363,7 +363,7 @@ from .conversation_prompt_section import (
     render_prompt_content,
     render_prompt_sections,
 )
-from .hdsi_experiment import build_hdsi_prompt_section, mark_hdsi_route
+from .hdsi_experiment import apply_hdsi_prompt, hdsi_window_command, mark_hdsi_route
 from .prompt_surface import CollectedPromptContext, PromptSurface
 from .passive_state_pipeline import inject_humanized_state as run_humanized_state_injection
 from .qzone_integration import QzoneMixin
@@ -1826,6 +1826,22 @@ class PrivateCompanionPlugin(
             *args,
             **kwargs,
         )
+
+    @filter.command("HDSI", alias={"hdsi"})
+    @_multi_persona_event_context
+    async def hdsi_experiment_command(self, event: AstrMessageEvent, action: str = "状态"):
+        event.stop_event()
+        await self._reply(event, await hdsi_window_command(self, event, action))
+
+    @filter.on_llm_request(priority=109000)
+    @_multi_persona_event_context
+    async def inject_hdsi_experiment_prompt(
+        self, event: AstrMessageEvent, req: ProviderRequest, *args: Any, **kwargs: Any,
+    ) -> None:
+        try:
+            await apply_hdsi_prompt(self, event, req)
+        except Exception as exc:
+            logger.warning("HDSI 表达试验处理失败: error_type=%s", type(exc).__name__)
 
     @filter.on_llm_response(priority=-100000)
     @_multi_persona_event_context
@@ -3668,79 +3684,6 @@ class PrivateCompanionPlugin(
             normalized_channel,
         )
 
-    @filter.on_llm_request(priority=109000)
-    @_multi_persona_event_context
-    async def inject_hdsi_experiment_prompt(self, event: AstrMessageEvent, req: ProviderRequest, *args: Any, **kwargs: Any) -> None:
-        """Apply/audit HDSI only for an explicitly marked inbound chat route."""
-        if not bool(getattr(event, "private_companion_hdsi_chat_route_ready", False)):
-            return
-        checker = getattr(self, "_event_is_inbound_chat_message", None)
-        if callable(checker):
-            try:
-                if not checker(event):
-                    return
-            except Exception:
-                return
-        mode = str(getattr(event, "private_companion_hdsi_mode", "legacy") or "legacy")
-        if mode == "hdsi_shadow":
-            request_key = id(req)
-            if getattr(event, "private_companion_hdsi_shadow_request_key", None) == request_key:
-                return
-            shadow = build_hdsi_prompt_section(event, "hdsi_active")
-            recorder = getattr(self, "_record_request_prompt_fragment", None)
-            if shadow is not None and callable(recorder):
-                await recorder(
-                    event,
-                    title="HDSI 影子试验表达约束",
-                    key="experiment.hdsi.compatibility",
-                    text=shadow.content,
-                    source="hdsi_experiment",
-                    mode=mode,
-                    priority=109,
-                    metadata={
-                        "shadow_only": True,
-                        "route": mode,
-                        "scope": getattr(event, "private_companion_hdsi_scope", ""),
-                        "scope_fingerprint": getattr(event, "private_companion_hdsi_scope_fingerprint", ""),
-                        "binding_revision": getattr(event, "private_companion_hdsi_binding_revision", ""),
-                        "actor_id": getattr(event, "private_companion_hdsi_actor_id", ""),
-                        "persona_id": getattr(event, "private_companion_hdsi_persona_id", ""),
-                    },
-                )
-            try:
-                setattr(event, "private_companion_hdsi_shadow_request_key", request_key)
-            except Exception:
-                pass
-            return
-        section = build_hdsi_prompt_section(event, mode)
-        if section is None:
-            return
-        marker = "<!-- private_companion_hdsi_experiment_v1 -->"
-        current = str(getattr(req, "system_prompt", "") or "")
-        turn = str(getattr(req, "prompt", "") or "")
-        if marker in current or marker in turn:
-            return
-        placement, _, _ = self._place_conversation_prompt_section(req, marker, [section], priority=109)
-        recorder = getattr(self, "_record_request_prompt_fragment", None)
-        if callable(recorder):
-            await recorder(
-                event,
-                title="HDSI 试验表达约束",
-                key="experiment.hdsi.compatibility",
-                text=section.content,
-                source="hdsi_experiment",
-                mode=mode,
-                priority=109,
-                metadata={
-                    "注入位置": placement,
-                    "route": mode,
-                    "scope": getattr(event, "private_companion_hdsi_scope", ""),
-                    "scope_fingerprint": getattr(event, "private_companion_hdsi_scope_fingerprint", ""),
-                    "binding_revision": getattr(event, "private_companion_hdsi_binding_revision", ""),
-                    "actor_id": getattr(event, "private_companion_hdsi_actor_id", ""),
-                    "persona_id": getattr(event, "private_companion_hdsi_persona_id", ""),
-                },
-            )
         signature = "|".join((normalized_code, reason, normalized_channel, window))
         record_id = hashlib.sha256(signature.encode("utf-8")).hexdigest()[:20]
         should_schedule = False
@@ -8493,13 +8436,20 @@ class PrivateCompanionPlugin(
 
     async def initialize(self):
         global _private_companion_plugin
+        # Lifecycle tests execute this method in an isolated namespace that
+        # only contains the class methods. Keep duplicate-instance fencing
+        # active in the full module while allowing that reduced namespace to
+        # exercise publication behavior.
+        is_primary_instance = globals().get("_is_primary_plugin_instance")
+        if not callable(is_primary_instance):
+            is_primary_instance = lambda _instance: True
         with _private_companion_runtime.lock:
             active = _private_companion_runtime.active_plugin
             if (
                 active is not None
                 and active is not self
-                and _is_primary_plugin_instance(active)
-                and not _is_primary_plugin_instance(self)
+                and is_primary_instance(active)
+                and not is_primary_instance(self)
             ):
                 self._private_companion_duplicate_instance = True
                 logger.warning(

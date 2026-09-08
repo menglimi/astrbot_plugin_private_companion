@@ -11765,9 +11765,9 @@
         "description": "HDSI 试验模式",
         "type": "string",
         "options": ["legacy", "hdsi_shadow", "hdsi_active"],
-        "labels": ["旧框架（默认）", "HDSI 影子观察", "HDSI 试验接管"],
+        "labels": ["旧框架（默认）", "HDSI 影子观察", "HDSI 表达试验"],
         "default": "legacy",
-        "hint": "默认所有用户继续使用旧框架。影子或接管只对下方明确列出的用户/群生效。"
+        "hint": "此项设置下方列表的模式；聊天命令保存的窗口选择优先。可直接在目标窗口发送 HDSI 开启、HDSI 关闭或 HDSI 状态，无需手填 ID；群聊需要陪伴管理权限。"
       },
       "hdsi_experiment_user_ids": {
         "description": "HDSI 试验私聊用户 ID",
@@ -11786,6 +11786,13 @@
         "type": "string",
         "default": "1",
         "invisible": true
+      },
+      "hdsi_experiment_window_modes": {
+        "description": "HDSI 窗口选择",
+        "type": "text",
+        "default": "{}",
+        "invisible": true,
+        "hint": "由聊天命令维护的窗口模式 JSON，按完整 UMO 匹配并优先于用户/群列表。"
       },
       "reactive_poke_trigger_probability": {
         "description": "触发回复总概率",
