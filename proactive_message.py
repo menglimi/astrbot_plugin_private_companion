@@ -18767,18 +18767,34 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             return False
         for attempt in range(4):
             try:
-                safe_user_prompt = "" if self._proactive_archive_context_text(user_prompt) else str(user_prompt or "").strip()
+                archive_context_only = self._proactive_archive_context_text(user_prompt)
+                safe_user_prompt = str(user_prompt or "").strip()
                 user_msg_obj = UserMessageSegment(content=safe_user_prompt)
                 assistant_msg_obj = AssistantMessageSegment(content=visible_assistant_response)
                 async def _write():
                     conv_id = await self._ensure_conversation_id_for_umo(umo, title="Private Companion 主动消息")
                     if not conv_id:
                         return False
-                    await self.context.conversation_manager.add_message_pair(
-                        cid=conv_id,
-                        user_message=user_msg_obj,
-                        assistant_message=assistant_msg_obj,
-                    )
+                    conversation_manager = self.context.conversation_manager
+                    if archive_context_only:
+                        conversation = await conversation_manager.get_conversation(umo, conv_id)
+                        if conversation is None:
+                            return False
+                        raw_history = getattr(conversation, "history", "[]")
+                        if isinstance(raw_history, str):
+                            history = json.loads(raw_history or "[]")
+                        elif isinstance(raw_history, list):
+                            history = list(raw_history)
+                        else:
+                            history = []
+                        history.append(assistant_msg_obj.model_dump())
+                        await conversation_manager.update_conversation(umo, conv_id, history=history)
+                    else:
+                        await conversation_manager.add_message_pair(
+                            cid=conv_id,
+                            user_message=user_msg_obj,
+                            assistant_message=assistant_msg_obj,
+                        )
                     return True
 
                 written = await self._conversation_db_operation("archive_proactive_message", _write)

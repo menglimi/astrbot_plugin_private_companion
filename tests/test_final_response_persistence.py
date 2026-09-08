@@ -657,7 +657,14 @@ class FinalResponsePersistenceTests(unittest.IsolatedAsyncioTestCase):
             ["user", "assistant"],
             [item["role"] for item in harness.conversation_manager.history[-2:]],
         )
-        self.assertEqual("", harness.conversation_manager.history[-2]["content"])
+        self.assertEqual("真实用户消息", harness.conversation_manager.history[-2]["content"])
+        self.assertTrue(
+            all(
+                item.get("content")
+                for item in harness.conversation_manager.history
+                if item.get("role") == "user"
+            )
+        )
         self.assertEqual(["实际发出的主动消息"], captured)
 
     async def test_livingmemory_prefers_plugin_public_handler_when_available(self):

@@ -162,6 +162,7 @@ _REACTION_LOG_DECISIONS = frozenset(
 _REACTION_LOG_REASONS = frozenset(
     {
         "allowed",
+        "vision_rejected",
         "experiment_disabled",
         "provider_unavailable",
         "private_disabled",
@@ -6507,7 +6508,9 @@ class LlmToolActionsMixin:
         snapshot_caption = "；".join(
             part
             for part in (
-                f"图片画面：{_single_line(lookup.get('description'), 200)}" if lookup.get("description") else "",
+                f"图片画面：{_single_line(lookup.get('description') or lookup.get('image_description'), 200)}"
+                if lookup.get("description") or lookup.get("image_description")
+                else "",
                 f"图库标签：{'、'.join(tags[:8])}" if tags else "",
                 f"表达需求：{need}" if need else "",
                 f"选图依据：{match_reason}" if match_reason else "",
@@ -7006,6 +7009,14 @@ class LlmToolActionsMixin:
             cache[asset_id] = description
         fit_value = payload.get("fit")
         fit = fit_value if isinstance(fit_value, bool) else str(fit_value).strip().lower() in {"true", "1", "yes", "是"}
+        logger.info(
+            "表情包视觉复核: fit=%s asset=%s need=%s 描述=%s 原因=%s",
+            fit,
+            asset_id[:12],
+            _single_line(query_text, 80),
+            description,
+            _single_line(payload.get("reason"), 120),
+        )
         return {
             "fit": fit,
             "description": description or known,
@@ -7360,7 +7371,10 @@ class LlmToolActionsMixin:
         verify_mode = _single_line(
             runtime_persona_setting(self, "reaction_expression_vision_verify_mode", "embedding"), 20
         ).lower()
-        if send_image and not low_latency and (
+        # The automatic tag path prepares the image here (send=False,
+        # internal_attachment=True) and delivers it after the text, so it needs
+        # the same pre-send check as a direct tool send.
+        if (send_image or internal_attachment) and not low_latency and (
             verify_mode == "always"
             or (verify_mode == "embedding" and lookup.get("match_basis") == "embedding")
         ):
@@ -7368,6 +7382,38 @@ class LlmToolActionsMixin:
                 event, library, lookup, query_text, lookup_context
             )
             if vision_review is not None and not vision_review.get("fit"):
+                async with self._data_lock:
+                    state_owner = self._reaction_expression_state_owner(event, user_id)
+                    if isinstance(state_owner, dict):
+                        state = ensure_reaction_expression_state(state_owner)
+                        scoped_state = reaction_expression_scope_state(state, scope_key)
+                        release_reaction_expression_image(
+                            state,
+                            image_key,
+                            image_keys=image_keys,
+                            reservation_token=reservation_token,
+                        )
+                        release_reaction_expression_reservation(
+                            scoped_state,
+                            intent_signature=signature,
+                            reservation_token=reservation_token,
+                        )
+                        append_reaction_expression_outcome(
+                            state,
+                            status="skipped",
+                            reason="vision_rejected",
+                            intent_signature=signature,
+                            now=_now_ts(),
+                            candidate_limit=candidate_limit,
+                            image_key=image_key,
+                            cache_hit=lookup_cache_hit,
+                            latency_ms=lookup_latency_ms,
+                        )
+                        self._persist_reaction_expression_state(
+                            sections={"reaction_expression_group_states"}
+                            if scope == "group"
+                            else {"users"}
+                        )
                 self._log_reaction_expression_event(
                     event,
                     stage="lookup",
@@ -7434,7 +7480,9 @@ class LlmToolActionsMixin:
         snapshot_caption = "；".join(
             part
             for part in (
-                f"图片画面：{_single_line(lookup.get('description'), 200)}" if lookup.get("description") else "",
+                f"图片画面：{_single_line(lookup.get('description') or lookup.get('image_description'), 200)}"
+                if lookup.get("description") or lookup.get("image_description")
+                else "",
                 f"图库标签：{'、'.join(tags[:8])}" if tags else "",
                 f"表达需求：{need}" if need else "",
                 f"选图依据：{match_reason}" if match_reason else "",

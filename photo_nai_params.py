@@ -50,13 +50,20 @@ def extract_user_photo_nai_params(text: Any) -> str:
     candidate = str(text or "")
     if not candidate:
         return ""
-    match = re.search(r"masterpiece[\s,，]*best\s+quality\b", candidate, flags=re.I)
+    # These tokens are strong NAI signals and avoid treating ordinary prose as tags.
+    match = re.search(
+        r"(?:masterpiece[\s,，]*best\s+quality\b|score[_\s-]?\d(?:\.\d+)?\b|rating[_\s-]?(?:safe|questionable|explicit)\b)",
+        candidate,
+        flags=re.I,
+    )
     if not match:
         return ""
     block = candidate[match.start():]
     block = re.split(r"[\n\r。！？!?]", block, maxsplit=1)[0]
     block = re.sub(r"\s+", " ", block.replace("\uFF0C", ",")).strip(" ,")
-    return block if len(re.split(r",\s*", block)) >= 8 else ""
+    # A short, explicit tag block is still valid; the prompt contract controls
+    # what may be retained, so do not discard it using an arbitrary tag count.
+    return block if len(_split_tags(block)) >= 2 else ""
 
 
 def cache_user_photo_nai_params(
