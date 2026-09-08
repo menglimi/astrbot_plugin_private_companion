@@ -27,6 +27,14 @@ class PhotoNaiParamsTests(unittest.TestCase):
             "masterpiece, best quality, 1girl, green hair, sitting, bedroom, soft light, detailed eyes",
         )
 
+    def test_extracts_short_explicit_nai_block(self) -> None:
+        text = "masterpiece, best quality, portrait"
+        self.assertEqual(extract_user_photo_nai_params(text), text)
+
+    def test_extracts_score_marker_without_quality_pair(self) -> None:
+        text = "score_9, score_8_up, 1girl"
+        self.assertEqual(extract_user_photo_nai_params(text), text)
+
     def test_cached_params_expire(self) -> None:
         user = {"last_photo_nai_params": "masterpiece, best quality", "last_photo_nai_params_at": 100.0}
         self.assertEqual(recent_cached_photo_nai_params(user, now=100 + 60), "masterpiece, best quality")
