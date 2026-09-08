@@ -1,0 +1,35 @@
+{
+  "fixture_version": "0.1.0",
+  "fixture_id": "persona-window-matrix-001",
+  "same_persona": {
+    "actor_id": "actor-main",
+    "persona_id": "persona-main",
+    "windows": [
+      {"window_ref": "private-a", "audience": "private", "target_subject_ref": "user-a"},
+      {"window_ref": "group-main", "audience": "group", "target_subject_ref": null},
+      {"window_ref": "private-b", "audience": "private", "target_subject_ref": "user-b"}
+    ],
+    "shared_state": ["persona_core", "global_activity", "global_affect_projection"],
+    "private_state": ["user_a_relationship", "user_b_relationship", "private_transcript"],
+    "expected": "one_actor_with_audience_projection"
+  },
+  "different_personas": {
+    "runtimes": [
+      {"actor_id": "actor-main", "persona_id": "persona-main", "window_ref": "private-a"},
+      {"actor_id": "actor-alt", "persona_id": "persona-alt", "window_ref": "private-a"}
+    ],
+    "isolated_state": ["world", "affect", "relationship", "memory", "event_ledger"],
+    "expected": "explicit_binding_required"
+  },
+  "stale_draft": {
+    "draft_persona_id": "persona-main",
+    "draft_global_revision": 21,
+    "committed_global_revision": 22,
+    "expected": "discard_or_recompile"
+  },
+  "forbidden": [
+    "group_reads_private_transcript",
+    "window_switch_changes_persona",
+    "same_window_implicit_persona_mix"
+  ]
+}

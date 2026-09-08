@@ -1,0 +1,25 @@
+{
+  "package_id": "companion.world-contracts",
+  "package_version": "0.1.0",
+  "profile": "companion.world@1",
+  "maturity": "review",
+  "dialect": "https://json-schema.org/draft/2020-12/schema",
+  "fingerprint_algorithm": "sha256-utf8-lf",
+  "dependencies": [
+    { "name": "common", "id": "urn:companion:schema:common:v1", "path": "../../v1/schemas/common.schema.json", "sha256": "d8312b16010a58ebf2af0d825f0773840913ebee5714cd61cd578d6f4faadedb" },
+    { "name": "runtime-scope", "id": "urn:companion:schema:runtime-scope:v1", "path": "../../v1/schemas/runtime-scope.schema.json", "sha256": "594f87248d7ed9d4868dc8fc2bec0aae1c2abff79e2cbd43a4ea3ac5e0f8b729" }
+  ],
+  "schemas": [
+    { "name": "world-entity", "id": "urn:companion:schema:world-entity:v1", "path": "schemas/world-entity.schema.json", "sha256": "3998fa411e490cfb11c91a3cb34b2f27e6e21f54e30571501cc27db40e7a112f" },
+    { "name": "world-event", "id": "urn:companion:schema:world-event:v1", "path": "schemas/world-event.schema.json", "sha256": "da29f7975d31511783bfb5f2b28411cb9c265b441a2868c8b73abda755231296" },
+    { "name": "world-request", "id": "urn:companion:schema:world-request:v1", "path": "schemas/world-request.schema.json", "sha256": "6c2c4c69512553bcf161a6b59a93534b7723b412785072022c6927304a6c767e" },
+    { "name": "world-result", "id": "urn:companion:schema:world-result:v1", "path": "schemas/world-result.schema.json", "sha256": "c0a88e6e1b0c9c6b1b2464460912465e89b7e4504faef324cb492576498330c5" }
+  ],
+  "artifacts": [
+    { "path": "world.fixture.json", "sha256": "33a8303ca48dc80189f1ea4e3aab4e37e342d4e0c21f1e72262c865964722921" },
+    { "path": "examples/world-entity.json", "sha256": "0e09680db7aae60b32c6e912f81b47533fdd8542f5fb45923fc589c942ac79ac" },
+    { "path": "examples/world-event.json", "sha256": "453cb20b72c0c5985c0b16ea56cec678e5852729f4dd9cbd7ab855833cbb43dd" },
+    { "path": "examples/world-request.json", "sha256": "9cecc6780d8346281e3cd21e0f7038767785187b12d1363a28b53de0d19fbe95" },
+    { "path": "examples/world-result.json", "sha256": "df3030d12908b6896898a72e3712c8fd9bdcbe6b4be862bcaaca4e654dc81d22" }
+  ]
+}

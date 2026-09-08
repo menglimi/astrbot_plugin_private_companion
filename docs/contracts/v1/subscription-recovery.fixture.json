@@ -1,0 +1,406 @@
+{
+  "fixture_id": "memory-subscription-recovery-001",
+  "fixture_version": "0.1.0",
+  "contract_package_version": "0.2.0",
+  "mode": "design_review",
+  "run_status": "not_run",
+  "actual": null,
+  "projection_kind": "references",
+  "clock": {
+    "mode": "controlled",
+    "initial": "2026-09-08T01:00:00Z"
+  },
+  "contract_fingerprint": "3a41420f40fcd7dc8b8e2d990c8c5b3bd47cde8a998c88339daa9c71dadaaee2",
+  "initial_state": {
+    "owner_ref": "owner-001",
+    "namespace": "example.reading",
+    "lineage_id": "lineage-reading",
+    "memory_revision": 104,
+    "atoms": [
+      {
+        "atom_id": "atom-001",
+        "atom_revision": 7,
+        "memory_revision": 104,
+        "status": "active"
+      },
+      {
+        "atom_id": "atom-old",
+        "atom_revision": 2,
+        "memory_revision": 103,
+        "status": "expired"
+      }
+    ],
+    "consumer": {
+      "active_projection_generation": "projection-001",
+      "fresh": false
+    }
+  },
+  "source_mappings": [
+    {
+      "canonical_source_ref": "source-reading-001",
+      "platform": "aiocqhttp",
+      "native_ref": "recorded-message-001",
+      "source_generation": "source-generation-7"
+    }
+  ],
+  "shell_profiles": [
+    {
+      "id": "astrbot-shell",
+      "host_kind": "astrbot",
+      "runtime_instance_id": "recorded-runtime-astrbot",
+      "platform_inputs": "not_recorded"
+    },
+    {
+      "id": "embedded-shell",
+      "host_kind": "companion-app",
+      "runtime_instance_id": "embedded-runtime",
+      "platform_inputs": "not_applicable"
+    }
+  ],
+  "artifacts": {
+    "subscribe": {
+      "schema": "memory-subscription-request",
+      "document": "examples/subscribe.json"
+    },
+    "bound": {
+      "schema": "memory-subscription-result",
+      "document": "examples/result-subscribe.json"
+    },
+    "start": {
+      "schema": "memory-subscription-request",
+      "document": "examples/resync-start.json"
+    },
+    "page0": {
+      "schema": "memory-subscription-result",
+      "document": "examples/result-resync-page.json"
+    },
+    "pages_checkpoint": {
+      "schema": "memory-checkpoint",
+      "document": "examples/checkpoint-pages.json"
+    },
+    "page_request": {
+      "schema": "memory-subscription-request",
+      "document": "examples/resync-page.json"
+    },
+    "final_page": {
+      "schema": "memory-subscription-result",
+      "document": "examples/result-resync-complete.json"
+    },
+    "tail": {
+      "schema": "memory-change-batch",
+      "document": "examples/batch-tail.json"
+    },
+    "tail_checkpoint": {
+      "schema": "memory-checkpoint",
+      "document": "examples/checkpoint-tail.json"
+    },
+    "tail_ack": {
+      "schema": "memory-subscription-request",
+      "document": "examples/ack-tail.json"
+    },
+    "tail_ack_result": {
+      "schema": "memory-subscription-result",
+      "document": "examples/result-ack-tail.json"
+    },
+    "active_checkpoint": {
+      "schema": "memory-checkpoint",
+      "document": "examples/checkpoint-active.json"
+    },
+    "activate_ack": {
+      "schema": "memory-subscription-request",
+      "document": "examples/ack-snapshot.json"
+    },
+    "activate_ack_result": {
+      "schema": "memory-subscription-result",
+      "document": "examples/result-ack-snapshot.json"
+    },
+    "live_batch": {
+      "schema": "memory-change-batch",
+      "document": "examples/batch-live.json"
+    },
+    "resume": {
+      "schema": "memory-subscription-request",
+      "document": "examples/subscribe-resume.json"
+    }
+  },
+  "steps": [
+    {
+      "sequence": 1,
+      "action": "bind_authenticated_subscriber",
+      "request": "subscribe",
+      "result": "bound"
+    },
+    {
+      "sequence": 2,
+      "action": "create_snapshot_at_W",
+      "request": "start",
+      "result": "page0"
+    },
+    {
+      "sequence": 3,
+      "action": "persist_page_and_page_checkpoint",
+      "checkpoint": "pages_checkpoint",
+      "barrier": "after_page_commit"
+    },
+    {
+      "sequence": 4,
+      "action": "fetch_final_snapshot_page",
+      "request": "page_request",
+      "result": "final_page"
+    },
+    {
+      "sequence": 5,
+      "action": "persist_final_page_then_apply_W_to_C_tail_to_staging",
+      "delivery": "tail",
+      "checkpoint": "tail_checkpoint",
+      "barrier": "after_tail_commit_before_ack"
+    },
+    {
+      "sequence": 6,
+      "action": "ack_staged_tail_without_activating",
+      "request": "tail_ack",
+      "result": "tail_ack_result"
+    },
+    {
+      "sequence": 7,
+      "action": "atomically_activate_projection_and_checkpoint",
+      "checkpoint": "active_checkpoint",
+      "barrier": "after_activation_before_ack"
+    },
+    {
+      "sequence": 8,
+      "action": "confirm_snapshot_and_cutoff_C",
+      "request": "activate_ack",
+      "result": "activate_ack_result"
+    },
+    {
+      "sequence": 9,
+      "action": "continue_live_delivery_after_C",
+      "delivery": "live_batch"
+    }
+  ],
+  "expected_at_activation": {
+    "memory_revision": 106,
+    "stream_cursor": "cursor-106",
+    "active_projection_generation": "projection-002",
+    "atom_states": {
+      "atom-001": {
+        "atom_revision": 9,
+        "status": "retracted"
+      },
+      "atom-old": {
+        "atom_revision": 2,
+        "status": "expired"
+      }
+    },
+    "proposal_calls": 0,
+    "model_calls": 0,
+    "message_calls": 0,
+    "image_calls": 0,
+    "device_calls": 0
+  },
+  "scenarios": [
+    {
+      "case_id": "SUB-01",
+      "schema_case_ids": [
+        "sub-result-duplicate-ack",
+        "sub-batch-duplicates"
+      ],
+      "runtime_assertion": "Repeat identical event delivery and ACK within and across leases; durable logical application occurs once.",
+      "run_status": "not_run",
+      "actual": null,
+      "evidence_refs": []
+    },
+    {
+      "case_id": "SUB-02",
+      "schema_case_ids": [
+        "sub-result-uncertain",
+        "sub-checkpoint-no-inbox"
+      ],
+      "runtime_assertion": "Interrupt after durable apply and after server ACK persistence; recover without new fact commits.",
+      "run_status": "not_run",
+      "actual": null,
+      "evidence_refs": []
+    },
+    {
+      "case_id": "SUB-03",
+      "schema_case_ids": [
+        "sub-batch-empty",
+        "sub-batch-no-from-cursor",
+        "sub-batch-numeric-cursor",
+        "sub-checkpoint-empty-stream"
+      ],
+      "runtime_assertion": "Use authoritative filtered and empty stream boundaries; cumulative ACK never skips an unapplied range.",
+      "run_status": "not_run",
+      "actual": null,
+      "evidence_refs": []
+    },
+    {
+      "case_id": "SUB-04",
+      "schema_case_ids": [],
+      "runtime_assertion": "Change authorization and policy in both directions; old cursor invalidates and new visibility rebuilds.",
+      "run_status": "not_run",
+      "actual": null,
+      "evidence_refs": []
+    },
+    {
+      "case_id": "SUB-05",
+      "schema_case_ids": [
+        "sub-result-unknown-status",
+        "sub-snapshot-empty-final"
+      ],
+      "runtime_assertion": "Expire retention and tombstones; require complete replacement evidence or return unavailable.",
+      "run_status": "not_run",
+      "actual": null,
+      "evidence_refs": []
+    },
+    {
+      "case_id": "SUB-06",
+      "schema_case_ids": [
+        "sub-request-missing-scope",
+        "sub-request-self-owner",
+        "sub-result-error-leaks-output",
+        "sub-snapshot-full-body-forbidden",
+        "sub-batch-event-body",
+        "sub-batch-foreign-owner-shape-only"
+      ],
+      "runtime_assertion": "Revoke before dispatch, reference resolution and ACK; no hidden object identifiers escape.",
+      "run_status": "not_run",
+      "actual": null,
+      "evidence_refs": []
+    },
+    {
+      "case_id": "SUB-07",
+      "schema_case_ids": [
+        "sub-batch-reordered"
+      ],
+      "runtime_assertion": "Deliver E106 before E105 and another atom's older revision; retain retraction and process the other atom.",
+      "run_status": "not_run",
+      "actual": null,
+      "evidence_refs": []
+    },
+    {
+      "case_id": "SUB-08",
+      "schema_case_ids": [
+        "sub-resume-staging",
+        "sub-ack-before-page-complete",
+        "sub-snapshot-ack-not-active",
+        "sub-snapshot-ack-no-snapshot",
+        "sub-resync-start-no-key",
+        "sub-resync-page-no-cursor",
+        "sub-resync-page-no-epoch",
+        "sub-result-snapshot-not-live",
+        "sub-snapshot-final-no-completion",
+        "sub-batch-tail-no-snapshot",
+        "sub-checkpoint-pages-no-cursor",
+        "sub-checkpoint-tail-no-snapshot",
+        "sub-checkpoint-active-has-page"
+      ],
+      "runtime_assertion": "Interrupt page writes, pointer activation and ACK; only valid epochs resume and incomplete staging never activates.",
+      "run_status": "not_run",
+      "actual": null,
+      "evidence_refs": []
+    },
+    {
+      "case_id": "SUB-09",
+      "schema_case_ids": [
+        "sub-limit-zero-items",
+        "sub-limit-negative-retries",
+        "sub-limit-zero-retries",
+        "sub-limit-missing-staging"
+      ],
+      "runtime_assertion": "Increase history and stalled subscribers under fixed runtime and disk budgets; measure RSS, WAL, latency and cleanup.",
+      "run_status": "not_run",
+      "actual": null,
+      "evidence_refs": []
+    },
+    {
+      "case_id": "SUB-10",
+      "schema_case_ids": [
+        "sub-request-model-budget"
+      ],
+      "runtime_assertion": "Replay only canonical reference projection; all proposal, model, message, image and device ports remain unused.",
+      "run_status": "not_run",
+      "actual": null,
+      "evidence_refs": []
+    },
+    {
+      "case_id": "SUB-11",
+      "schema_case_ids": [
+        "sub-resume-missing-checkpoint",
+        "sub-batch-unknown-field",
+        "sub-checkpoint-platform-object",
+        "sub-checkpoint-foreign-lineage-shape-only"
+      ],
+      "runtime_assertion": "Rebind under both shell profiles with the same verified lineage; reject foreign lineage and preserve source mappings.",
+      "run_status": "not_run",
+      "actual": null,
+      "evidence_refs": []
+    },
+    {
+      "case_id": "SUB-12",
+      "schema_case_ids": [
+        "sub-ack-no-lease",
+        "sub-ack-unknown-target",
+        "sub-snapshot-ack-no-proof",
+        "sub-ack-future-cursor-shape-only",
+        "sub-ack-old-generation-shape-only"
+      ],
+      "runtime_assertion": "Reject wrong subscriber, stale lease/generation, future cursor and gaps using authoritative dispatch state.",
+      "run_status": "not_run",
+      "actual": null,
+      "evidence_refs": []
+    },
+    {
+      "case_id": "SUB-13",
+      "schema_case_ids": [
+        "sub-snapshot-final-no-completion",
+        "sub-snapshot-middle-has-completion"
+      ],
+      "runtime_assertion": "Commit corrections, retractions and additions between snapshot pages; include W-to-C tail and resume after C.",
+      "run_status": "not_run",
+      "actual": null,
+      "evidence_refs": []
+    },
+    {
+      "case_id": "SUB-14",
+      "schema_case_ids": [
+        "sub-snapshot-empty-final",
+        "sub-snapshot-tombstone-no-body",
+        "sub-snapshot-wrong-epoch-shape-only"
+      ],
+      "runtime_assertion": "Revoke or change lineage/schema during snapshot; no mixed-authorization snapshot can activate.",
+      "run_status": "not_run",
+      "actual": null,
+      "evidence_refs": []
+    },
+    {
+      "case_id": "SUB-15",
+      "schema_case_ids": [
+        "sub-projection-no-retract",
+        "sub-projection-duplicate-kinds",
+        "sub-projection-live-start",
+        "sub-notifications-live",
+        "sub-result-binding-incomplete-filter"
+      ],
+      "runtime_assertion": "Require all change kinds for current reference projections; partial notifications cannot claim completeness.",
+      "run_status": "not_run",
+      "actual": null,
+      "evidence_refs": []
+    },
+    {
+      "case_id": "SUB-16",
+      "schema_case_ids": [],
+      "runtime_assertion": "Detect conflicting source payloads and atom revisions; bounded failure handling must not silently skip a retraction.",
+      "run_status": "not_run",
+      "actual": null,
+      "evidence_refs": []
+    }
+  ],
+  "limitations": [
+    "No native platform recording or shell execution is included.",
+    "No authorization, persistence, lease, timestamp ordering or peak-memory guarantee is proven by Schema validation.",
+    "Opaque cursors and proof tokens in examples are fixture handles; the isolated service must issue and bind them.",
+    "Snapshots contain reference state only, not fact bodies, full backups or vector-index rebuild data."
+  ]
+}

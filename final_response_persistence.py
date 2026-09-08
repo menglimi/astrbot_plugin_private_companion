@@ -702,7 +702,24 @@ def collect_proactive_delivery(
         except BaseException:
             coordinator._reset_context(ledger)
             raise
-        return coordinator.finish_proactive(ledger, outcome)
+        outcome = coordinator.finish_proactive(ledger, outcome)
+        # TTS 会把可见正文除首块外的部分放到后台异步补发。主链返回时
+        # confirmed_chains 只含首块，finish_proactive 据此覆盖出的
+        # delivered_text 会丢掉消息尾部（例如承诺的后半句）。
+        # 当整轮已判定 complete 时，改回用发送前的原始全文归档。
+        original_text = str(args[0] or "").strip() if args else ""
+        if (
+            original_text
+            and getattr(outcome, "complete", False)
+            and str(getattr(outcome, "delivered_text", "") or "").strip()
+            != original_text
+        ):
+            try:
+                outcome = replace(outcome, delivered_text=original_text)
+            except (TypeError, ValueError):
+                # outcome 不是 dataclass 或字段缺失时保持原样
+                pass
+        return outcome
 
     return wrapped
 
@@ -733,7 +750,25 @@ class FinalResponsePersistenceMixin:
         if not bool(getattr(event, "_private_companion_persistence_managed", False)):
             return
         try:
+            # Keep the live run context available to image-history enrichment.
+            # AstrBot serializes it only after the after-message-sent hooks, so
+            # mutating the user turn here prevents a later core save from
+            # overwriting the vision marker.
+            setattr(event, "_private_companion_run_context", run_context)
             self._prepare_final_response_persistence(event, run_context, response)
+            image_history_writer = getattr(
+                self,
+                "_persist_private_image_vision_summary_to_history",
+                None,
+            )
+            if callable(image_history_writer):
+                try:
+                    await image_history_writer(event)
+                except Exception as exc:
+                    logger.debug(
+                        "Agent 完成阶段写入图片视觉摘要失败: %s",
+                        _single_line(exc, 160),
+                    )
             self._final_response_persistence_coordinator().mark_final_response_ready(
                 event
             )
@@ -1674,6 +1709,20 @@ class FinalResponsePersistenceMixin:
                 event=event,
                 assistant_response=response_text,
             )
+        image_history_written = False
+        image_history_writer = getattr(
+            self,
+            "_persist_private_image_vision_summary_to_history",
+            None,
+        )
+        if callable(image_history_writer):
+            try:
+                image_history_written = bool(await image_history_writer(event))
+            except Exception as exc:
+                logger.debug(
+                    "图片视觉摘要写入用户 history 失败: %s",
+                    _single_line(exc, 160),
+                )
         memory_written = await self._record_final_assistant_in_livingmemory(
             umo=str(getattr(event, "unified_msg_origin", "") or ""),
             assistant_response=response_text,
@@ -1694,6 +1743,7 @@ class FinalResponsePersistenceMixin:
         persisted = bool(
             local_sections
             or official_written
+            or image_history_written
             or memory_written
             or memory_companion_written
         )

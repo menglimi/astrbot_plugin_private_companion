@@ -1,0 +1,4 @@
+{
+  "schema_version": "1.0", "request_id": "ctrl-release-002", "trace_id": "trace-control-008", "method": "release", "status": "rejected", "control_revision": 23, "observed_at": "2026-09-08T12:00:03Z", "retry_after_ms": null,
+  "output": null, "error": {"code": "handle_expired", "message": "Binding handle is no longer valid", "retryable": false, "ref": "binding:world-query:1"}
+}

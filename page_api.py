@@ -8698,6 +8698,9 @@ class PrivateCompanionPageApi(
         if preferred == "nai":
             segments.append(("NAI 生图直连", external_timeout * 2))
             warnings.append("NAI 直连超时与重试由 NAI 生图插件内部控制，本插件只能估算耗时。")
+        if preferred == "anima_master":
+            segments.append(("Anima 绘图大师", 420))
+            warnings.append("Anima 的生成、启动等待与重试由绘图大师配置控制，测试耗时为估算值。")
         if preferred in {"auto", "external"} and external_available:
             if ready_endpoint_queue:
                 for index, endpoint in enumerate(ready_endpoint_queue[:12]):
@@ -20499,6 +20502,7 @@ class PrivateCompanionPageApi(
             "enable_solar_term_perception",
             "enable_almanac_perception",
             "enable_group_companion",
+            "enable_group_social_context",
             "enable_group_member_safety",
             "enable_group_slang_learning",
             "enable_group_member_profiles",
@@ -25571,7 +25575,7 @@ class PrivateCompanionPageApi(
                 text = str(value).strip()
                 if key == "photo_generation_backend":
                     text = text.lower()
-                    if text not in {"auto", "comfyui", "sdgen", "external", "tool_call", "nai"}:
+                    if text not in {"auto", "comfyui", "sdgen", "external", "tool_call", "nai", "anima_master"}:
                         text = "auto"
                 elif key == "photo_generation_prompt_format":
                     normalizer = getattr(self.plugin, "_normalize_photo_generation_prompt_format", None)
@@ -25856,6 +25860,7 @@ class PrivateCompanionPageApi(
             "enable_solar_term_perception",
             "enable_almanac_perception",
             "enable_group_companion",
+            "enable_group_social_context",
             "enable_group_member_safety",
             "enable_group_slang_learning",
             "enable_group_member_profiles",

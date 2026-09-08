@@ -1,0 +1,4 @@
+{
+  "schema_version": "1.0", "request_id": "ctrl-bind-001", "trace_id": "trace-control-003", "method": "bind", "status": "pending", "control_revision": 8, "observed_at": "2026-09-08T12:00:01Z", "retry_after_ms": 250,
+  "output": {"binding_ref": "binding:world-query:1", "binding_revision": 1, "provider_id": "world-provider-1", "provider_generation": "gen-1", "expires_at": "2026-09-08T12:10:00Z"}, "error": null
+}

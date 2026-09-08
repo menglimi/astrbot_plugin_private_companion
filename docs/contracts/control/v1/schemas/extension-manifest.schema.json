@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:control-extension-manifest:v1",
+  "title": "Extension registration manifest",
+  "type": "object",
+  "properties": {
+    "extension_id": { "type": "string", "pattern": "^[a-z][a-z0-9_.-]+$" },
+    "extension_version": { "type": "string", "pattern": "^[1-9][0-9]*\\.[0-9]+\\.[0-9]+$" },
+    "provider_id": { "type": "string", "minLength": 1 },
+    "provider_generation": { "type": "string", "minLength": 1 },
+    "manifest_revision": { "type": "integer", "minimum": 0 },
+    "host_kinds": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1, "uniqueItems": true },
+    "capabilities": { "type": "array", "items": { "$ref": "urn:companion:schema:control-capability-descriptor:v1" }, "minItems": 1 },
+    "dependencies": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "resource_limits": {
+      "type": "object",
+      "properties": {
+        "max_metadata_bytes": { "type": "integer", "minimum": 1 },
+        "max_bindings": { "type": "integer", "minimum": 1 },
+        "max_control_inflight": { "type": "integer", "minimum": 1 },
+        "max_persistent_receipts": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["max_metadata_bytes", "max_bindings", "max_control_inflight", "max_persistent_receipts"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["extension_id", "extension_version", "provider_id", "provider_generation", "manifest_revision", "host_kinds", "capabilities", "dependencies", "resource_limits"],
+  "additionalProperties": false
+}

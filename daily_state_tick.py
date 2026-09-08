@@ -16,6 +16,8 @@ from .helpers import (
     _safe_int,
     _single_line,
     _today_key,
+    _record_unanswered_proactive,
+    _unanswered_proactive_count,
     normalize_legacy_tag_text,
 )
 from .persona_config import runtime_persona_setting
@@ -115,6 +117,7 @@ class DailyStateTickMixin:
         count_delivery: bool = True,
     ) -> None:
         user["last_proactive_kind"] = route_key
+        _unanswered_proactive_count(user)
         if count_delivery:
             route_counts = user.setdefault("proactive_route_sent_counts", {})
             if not isinstance(route_counts, dict):
@@ -122,7 +125,7 @@ class DailyStateTickMixin:
                 user["proactive_route_sent_counts"] = route_counts
             route_counts[route_key] = _safe_int(route_counts.get(route_key), 0, 0) + 1
             if bool(settlement.get("await_reply")):
-                user["ignored_streak"] = _safe_int(user.get("ignored_streak"), 0) + 1
+                _record_unanswered_proactive(user, sent_at=sent_at)
                 user["awaiting_reply_since"] = sent_at
         for context_key in settlement.get("clear_context_keys", ()):
             clean_key = _single_line(context_key, 80)

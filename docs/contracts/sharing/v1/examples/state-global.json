@@ -1,0 +1,55 @@
+{
+  "schema_version": "companion.state-transition-proposal.v1",
+  "required_features": [
+    "companion.sharing@1"
+  ],
+  "proposal_id": "world-pause-1",
+  "trace_id": "trace-world-pause",
+  "scope": {
+    "ecosystem_id": "ecosystem-001",
+    "installation_id": "installation-001",
+    "runtime_instance_id": "runtime-001",
+    "host_kind": "astrbot",
+    "bot_id": "bot-main",
+    "platform": null,
+    "account_id": null,
+    "conversation_ref": null,
+    "platform_conversation_id": null,
+    "session_id": null,
+    "user_id": null,
+    "group_id": null,
+    "persona_id": "persona-main",
+    "persona_binding_revision": 12
+  },
+  "sharing_mode": "global",
+  "sharing_anchor": "share-persona-world",
+  "sharing_policy_revision": 3,
+  "owner_ref": "world-owner-persona-main",
+  "target_state": "activity-study-1",
+  "expected_revision": 7,
+  "patch_schema": "urn:companion:fixture:sharing-world-patch:v1",
+  "patch": {
+    "phase": "paused",
+    "progress": 0.4
+  },
+  "evidence_refs": [
+    {
+      "id": "event-study-interrupted",
+      "source_id": "world-process-1",
+      "source_type": "example.world",
+      "evidence_kind": "simulated",
+      "observed_at": "2026-09-07T01:00:00Z",
+      "expires_at": null
+    }
+  ],
+  "visibility": "public",
+  "purpose": "activity_continuity",
+  "valid_until": "2026-09-07T01:05:00Z",
+  "idempotency_key": "world-pause-study-1",
+  "budget": {
+    "max_input_bytes": 16384,
+    "max_output_bytes": 2048,
+    "max_model_calls": 0
+  },
+  "extensions": {}
+}

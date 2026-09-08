@@ -1,0 +1,876 @@
+{
+  "cases": [
+    {
+      "id": "SHAPE-binding-session",
+      "schema": "sharing-binding",
+      "document": "examples/binding-session.json",
+      "valid": true
+    },
+    {
+      "id": "SHAPE-binding-user",
+      "schema": "sharing-binding",
+      "document": "examples/binding-user.json",
+      "valid": true
+    },
+    {
+      "id": "SHAPE-binding-global",
+      "schema": "sharing-binding",
+      "document": "examples/binding-global.json",
+      "valid": true
+    },
+    {
+      "id": "SHAPE-query-user-private",
+      "schema": "memory-request",
+      "document": "examples/query-user-private.json",
+      "valid": true
+    },
+    {
+      "id": "SHAPE-query-user-group",
+      "schema": "memory-request",
+      "document": "examples/query-user-group.json",
+      "valid": true
+    },
+    {
+      "id": "SHAPE-query-session-a",
+      "schema": "memory-request",
+      "document": "examples/query-session-a.json",
+      "valid": true
+    },
+    {
+      "id": "SHAPE-query-session-b",
+      "schema": "memory-request",
+      "document": "examples/query-session-b.json",
+      "valid": true
+    },
+    {
+      "id": "SHAPE-query-global",
+      "schema": "memory-request",
+      "document": "examples/query-global.json",
+      "valid": true
+    },
+    {
+      "id": "SHAPE-proposal-user",
+      "schema": "memory-request",
+      "document": "examples/proposal-user.json",
+      "valid": true
+    },
+    {
+      "id": "SHAPE-recall-user",
+      "schema": "memory-recall",
+      "document": "examples/recall-user.json",
+      "valid": true
+    },
+    {
+      "id": "SHAPE-context-user",
+      "schema": "context-contribution",
+      "document": "examples/context-user.json",
+      "valid": true
+    },
+    {
+      "id": "SHAPE-state-global",
+      "schema": "state-transition",
+      "document": "examples/state-global.json",
+      "valid": true,
+      "patch_valid": true
+    },
+    {
+      "id": "binding-invalid-mode",
+      "schema": "sharing-binding",
+      "document": "examples/binding-user.json",
+      "changes": [
+        {
+          "path": [
+            "sharing_mode"
+          ],
+          "value": "group"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "binding-empty-anchor",
+      "schema": "sharing-binding",
+      "document": "examples/binding-user.json",
+      "changes": [
+        {
+          "path": [
+            "sharing_anchor"
+          ],
+          "value": ""
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "binding-null-anchor",
+      "schema": "sharing-binding",
+      "document": "examples/binding-user.json",
+      "changes": [
+        {
+          "path": [
+            "sharing_anchor"
+          ],
+          "value": null
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "binding-missing-revision",
+      "schema": "sharing-binding",
+      "document": "examples/binding-user.json",
+      "changes": [
+        {
+          "path": [
+            "sharing_policy_revision"
+          ],
+          "remove": true
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "binding-negative-revision",
+      "schema": "sharing-binding",
+      "document": "examples/binding-user.json",
+      "changes": [
+        {
+          "path": [
+            "sharing_policy_revision"
+          ],
+          "value": -1
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "binding-zero-revision",
+      "schema": "sharing-binding",
+      "document": "examples/binding-user.json",
+      "changes": [
+        {
+          "path": [
+            "sharing_policy_revision"
+          ],
+          "value": 0
+        }
+      ],
+      "valid": true
+    },
+    {
+      "id": "binding-no-self-grant",
+      "schema": "sharing-binding",
+      "document": "examples/binding-user.json",
+      "changes": [
+        {
+          "path": [
+            "authorized"
+          ],
+          "value": true
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "request-missing-feature",
+      "schema": "memory-request",
+      "document": "examples/query-user-private.json",
+      "changes": [
+        {
+          "path": [
+            "required_features"
+          ],
+          "value": []
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "request-wrong-feature-major",
+      "schema": "memory-request",
+      "document": "examples/query-user-private.json",
+      "changes": [
+        {
+          "path": [
+            "required_features"
+          ],
+          "value": [
+            "companion.sharing@2"
+          ]
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "request-wrong-extension-major",
+      "schema": "memory-request",
+      "document": "examples/query-user-private.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "extensions",
+            "companion.sharing",
+            "schema_version"
+          ],
+          "value": "2.0"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "request-missing-anchor",
+      "schema": "memory-request",
+      "document": "examples/query-user-private.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "extensions",
+            "companion.sharing",
+            "payload",
+            "sharing_anchor"
+          ],
+          "remove": true
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "request-missing-mode",
+      "schema": "memory-request",
+      "document": "examples/query-user-private.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "extensions",
+            "companion.sharing",
+            "payload",
+            "sharing_mode"
+          ],
+          "remove": true
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "request-missing-policy",
+      "schema": "memory-request",
+      "document": "examples/query-user-private.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "extensions",
+            "companion.sharing",
+            "payload",
+            "sharing_policy_revision"
+          ],
+          "remove": true
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "request-null-anchor",
+      "schema": "memory-request",
+      "document": "examples/query-user-private.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "extensions",
+            "companion.sharing",
+            "payload",
+            "sharing_anchor"
+          ],
+          "value": null
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "request-reject-top-level-sharing",
+      "schema": "memory-request",
+      "document": "examples/query-user-private.json",
+      "changes": [
+        {
+          "path": [
+            "sharing_mode"
+          ],
+          "value": "user"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "legacy-query-not-sharing-profile",
+      "schema": "memory-request",
+      "document": "examples/query-user-private.json",
+      "changes": [
+        {
+          "path": [
+            "required_features"
+          ],
+          "value": []
+        },
+        {
+          "path": [
+            "payload",
+            "extensions"
+          ],
+          "value": {}
+        }
+      ],
+      "valid": false,
+      "legacy_schema": "memory-query",
+      "legacy_valid": true
+    },
+    {
+      "id": "new-query-still-base-shape",
+      "schema": "memory-request",
+      "document": "examples/query-user-private.json",
+      "changes": [],
+      "valid": true,
+      "legacy_schema": "memory-query",
+      "legacy_valid": true
+    },
+    {
+      "id": "new-proposal-still-base-shape",
+      "schema": "memory-request",
+      "document": "examples/proposal-user.json",
+      "changes": [],
+      "valid": true,
+      "legacy_schema": "memory-proposal",
+      "legacy_valid": true
+    },
+    {
+      "id": "session-needs-session-id",
+      "schema": "memory-request",
+      "document": "examples/query-session-a.json",
+      "changes": [
+        {
+          "path": [
+            "scope",
+            "session_id"
+          ],
+          "value": null
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "session-needs-conversation",
+      "schema": "memory-request",
+      "document": "examples/query-session-a.json",
+      "changes": [
+        {
+          "path": [
+            "scope",
+            "conversation_ref"
+          ],
+          "value": null
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "user-needs-user-id",
+      "schema": "memory-request",
+      "document": "examples/query-user-private.json",
+      "changes": [
+        {
+          "path": [
+            "scope",
+            "user_id"
+          ],
+          "value": null
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "user-needs-platform",
+      "schema": "memory-request",
+      "document": "examples/query-user-private.json",
+      "changes": [
+        {
+          "path": [
+            "scope",
+            "platform"
+          ],
+          "value": null
+        },
+        {
+          "path": [
+            "scope",
+            "account_id"
+          ],
+          "value": null
+        },
+        {
+          "path": [
+            "scope",
+            "platform_conversation_id"
+          ],
+          "value": null
+        },
+        {
+          "path": [
+            "scope",
+            "user_id"
+          ],
+          "value": null
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "global-internal-scope",
+      "schema": "memory-request",
+      "document": "examples/query-global.json",
+      "changes": [],
+      "valid": true
+    },
+    {
+      "id": "global-platform-scope",
+      "schema": "memory-request",
+      "document": "examples/query-global.json",
+      "changes": [
+        {
+          "path": [
+            "scope"
+          ],
+          "value": {
+            "ecosystem_id": "ecosystem-001",
+            "installation_id": "installation-001",
+            "runtime_instance_id": "runtime-001",
+            "host_kind": "astrbot",
+            "bot_id": "bot-main",
+            "platform": "aiocqhttp",
+            "account_id": "qq-bot-001",
+            "conversation_ref": "conversation-group-002",
+            "platform_conversation_id": "group-002",
+            "session_id": "group-session-002",
+            "user_id": "user-123",
+            "group_id": "group-002",
+            "persona_id": "persona-main",
+            "persona_binding_revision": 12
+          }
+        }
+      ],
+      "valid": true
+    },
+    {
+      "id": "old-session-anchor-shape-only",
+      "schema": "memory-request",
+      "document": "examples/query-session-b.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "extensions",
+            "companion.sharing",
+            "payload",
+            "sharing_anchor"
+          ],
+          "value": "share-session-a"
+        }
+      ],
+      "valid": true,
+      "runtime_scenario": "SHR-01"
+    },
+    {
+      "id": "other-user-anchor-shape-only",
+      "schema": "memory-request",
+      "document": "examples/query-user-group.json",
+      "changes": [
+        {
+          "path": [
+            "scope",
+            "user_id"
+          ],
+          "value": "user-456"
+        }
+      ],
+      "valid": true,
+      "runtime_scenario": "SHR-03"
+    },
+    {
+      "id": "other-platform-anchor-shape-only",
+      "schema": "memory-request",
+      "document": "examples/query-user-private.json",
+      "changes": [
+        {
+          "path": [
+            "scope",
+            "platform"
+          ],
+          "value": "another-platform"
+        }
+      ],
+      "valid": true,
+      "runtime_scenario": "SHR-04"
+    },
+    {
+      "id": "global-private-data-shape-only",
+      "schema": "memory-request",
+      "document": "examples/query-global.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "visibility"
+          ],
+          "value": "private"
+        }
+      ],
+      "valid": true,
+      "runtime_scenario": "SHR-06"
+    },
+    {
+      "id": "stale-policy-shape-only",
+      "schema": "memory-request",
+      "document": "examples/query-user-private.json",
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "extensions",
+            "companion.sharing",
+            "payload",
+            "sharing_policy_revision"
+          ],
+          "value": 2
+        }
+      ],
+      "valid": true,
+      "runtime_scenario": "SHR-08"
+    },
+    {
+      "id": "recall-missing-binding",
+      "schema": "memory-recall",
+      "document": "examples/recall-user.json",
+      "changes": [
+        {
+          "path": [
+            "output",
+            "items",
+            0,
+            "extensions"
+          ],
+          "remove": true
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "recall-null-anchor",
+      "schema": "memory-recall",
+      "document": "examples/recall-user.json",
+      "changes": [
+        {
+          "path": [
+            "output",
+            "items",
+            0,
+            "extensions",
+            "companion.sharing",
+            "payload",
+            "sharing_anchor"
+          ],
+          "value": null
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "recall-other-anchor-shape-only",
+      "schema": "memory-recall",
+      "document": "examples/recall-user.json",
+      "changes": [
+        {
+          "path": [
+            "output",
+            "items",
+            0,
+            "extensions",
+            "companion.sharing",
+            "payload",
+            "sharing_anchor"
+          ],
+          "value": "share-user-b"
+        }
+      ],
+      "valid": true,
+      "runtime_scenario": "SHR-03"
+    },
+    {
+      "id": "recall-base-compatible",
+      "schema": "memory-recall",
+      "document": "examples/recall-user.json",
+      "changes": [],
+      "valid": true,
+      "legacy_schema": "memory-result",
+      "legacy_valid": true
+    },
+    {
+      "id": "recall-error-preserved",
+      "schema": "memory-recall",
+      "document": "examples/recall-user.json",
+      "changes": [
+        {
+          "path": [
+            "status"
+          ],
+          "value": "permission_denied"
+        },
+        {
+          "path": [
+            "reason_code"
+          ],
+          "value": "permission_denied"
+        },
+        {
+          "path": [
+            "output"
+          ],
+          "value": null
+        }
+      ],
+      "valid": true
+    },
+    {
+      "id": "context-missing-anchor",
+      "schema": "context-contribution",
+      "document": "examples/context-user.json",
+      "changes": [
+        {
+          "path": [
+            "sharing_anchor"
+          ],
+          "remove": true
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "context-empty-content-and-resource",
+      "schema": "context-contribution",
+      "document": "examples/context-user.json",
+      "changes": [
+        {
+          "path": [
+            "content"
+          ],
+          "value": null
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "context-no-evidence",
+      "schema": "context-contribution",
+      "document": "examples/context-user.json",
+      "changes": [
+        {
+          "path": [
+            "evidence_refs"
+          ],
+          "value": []
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "context-no-budget",
+      "schema": "context-contribution",
+      "document": "examples/context-user.json",
+      "changes": [
+        {
+          "path": [
+            "budget"
+          ],
+          "remove": true
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "context-feature-missing",
+      "schema": "context-contribution",
+      "document": "examples/context-user.json",
+      "changes": [
+        {
+          "path": [
+            "required_features"
+          ],
+          "value": []
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "context-old-policy-shape-only",
+      "schema": "context-contribution",
+      "document": "examples/context-user.json",
+      "changes": [
+        {
+          "path": [
+            "sharing_policy_revision"
+          ],
+          "value": 2
+        }
+      ],
+      "valid": true,
+      "runtime_scenario": "SHR-08"
+    },
+    {
+      "id": "transition-missing-key",
+      "schema": "state-transition",
+      "document": "examples/state-global.json",
+      "changes": [
+        {
+          "path": [
+            "idempotency_key"
+          ],
+          "remove": true
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "transition-missing-revision",
+      "schema": "state-transition",
+      "document": "examples/state-global.json",
+      "changes": [
+        {
+          "path": [
+            "expected_revision"
+          ],
+          "remove": true
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "transition-negative-revision",
+      "schema": "state-transition",
+      "document": "examples/state-global.json",
+      "changes": [
+        {
+          "path": [
+            "expected_revision"
+          ],
+          "value": -1
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "transition-no-evidence",
+      "schema": "state-transition",
+      "document": "examples/state-global.json",
+      "changes": [
+        {
+          "path": [
+            "evidence_refs"
+          ],
+          "value": []
+        }
+      ],
+      "valid": false
+    },
+    {
+      "id": "transition-patch-invalid",
+      "schema": "state-transition",
+      "document": "examples/state-global.json",
+      "changes": [
+        {
+          "path": [
+            "patch",
+            "progress"
+          ],
+          "value": 1.5
+        }
+      ],
+      "valid": true,
+      "patch_valid": false
+    },
+    {
+      "id": "transition-patch-schema-unregistered",
+      "schema": "state-transition",
+      "document": "examples/state-global.json",
+      "changes": [
+        {
+          "path": [
+            "patch_schema"
+          ],
+          "value": "urn:unregistered:patch:v1"
+        }
+      ],
+      "valid": true,
+      "patch_valid": false
+    },
+    {
+      "id": "transition-no-implicit-promotion",
+      "schema": "state-transition",
+      "document": "examples/state-global.json",
+      "changes": [
+        {
+          "path": [
+            "sharing_mode"
+          ],
+          "value": "user"
+        },
+        {
+          "path": [
+            "sharing_anchor"
+          ],
+          "value": "share-user-a"
+        },
+        {
+          "path": [
+            "scope"
+          ],
+          "value": {
+            "ecosystem_id": "ecosystem-001",
+            "installation_id": "installation-001",
+            "runtime_instance_id": "runtime-001",
+            "host_kind": "astrbot",
+            "bot_id": "bot-main",
+            "platform": "aiocqhttp",
+            "account_id": "qq-bot-001",
+            "conversation_ref": "conversation-001",
+            "platform_conversation_id": "private-user-123",
+            "session_id": "reading-session-001",
+            "user_id": "user-123",
+            "group_id": null,
+            "persona_id": "persona-main",
+            "persona_binding_revision": 12
+          }
+        }
+      ],
+      "valid": true,
+      "runtime_scenario": "SHR-12"
+    }
+  ],
+  "json_cases": [
+    {
+      "id": "sharing-json-duplicate-mode",
+      "text": "{\"sharing_mode\":\"session\",\"sharing_mode\":\"global\"}",
+      "valid": false
+    },
+    {
+      "id": "sharing-json-nan",
+      "text": "{\"sharing_policy_revision\":NaN}",
+      "valid": false
+    },
+    {
+      "id": "sharing-json-valid",
+      "text": "{\"sharing_mode\":\"user\",\"sharing_anchor\":\"anchor-1\",\"sharing_policy_revision\":0}",
+      "valid": true
+    }
+  ]
+}

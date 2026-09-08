@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:calendar-activity-intent:v1",
+  "title": "A bounded soft activity intention; not a calendar commitment",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "companion.activity-intent.v1" },
+    "intent_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "owner_ref": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "scope": { "$ref": "urn:companion:schema:runtime-scope:v1" },
+    "kind": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "priority": { "enum": ["routine", "goal", "soft", "user_requested"] },
+    "window": {
+      "type": "object",
+      "properties": {
+        "start": { "$ref": "urn:companion:schema:common:v1#/$defs/time" },
+        "end": { "$ref": "urn:companion:schema:common:v1#/$defs/time" }
+      },
+      "required": ["start", "end"],
+      "additionalProperties": false
+    },
+    "duration_minutes": { "type": "integer", "minimum": 1, "maximum": 1440 },
+    "status": { "enum": ["proposed", "reserved", "expired", "cancelled", "converted"] },
+    "reality_mode": { "enum": ["simulated", "observed", "mixed"] },
+    "source_refs": { "type": "array", "items": { "$ref": "urn:companion:schema:common:v1#/$defs/evidence" }, "minItems": 1 },
+    "revision": { "$ref": "urn:companion:schema:common:v1#/$defs/revision" },
+    "expires_at": { "$ref": "urn:companion:schema:common:v1#/$defs/time" },
+    "idempotency_key": { "$ref": "urn:companion:schema:common:v1#/$defs/token" }
+  },
+  "required": ["schema_version", "intent_id", "owner_ref", "scope", "kind", "priority", "window", "duration_minutes", "status", "reality_mode", "source_refs", "revision", "expires_at", "idempotency_key"],
+  "additionalProperties": false
+}

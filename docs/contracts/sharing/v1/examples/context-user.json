@@ -1,0 +1,55 @@
+{
+  "schema_version": "companion.context-contribution.v1",
+  "required_features": [
+    "companion.sharing@1"
+  ],
+  "contribution_id": "context-user-preference",
+  "source_plugin": "example.memory",
+  "source_event_id": "memory-revision-104",
+  "scope": {
+    "ecosystem_id": "ecosystem-001",
+    "installation_id": "installation-001",
+    "runtime_instance_id": "runtime-001",
+    "host_kind": "astrbot",
+    "bot_id": "bot-main",
+    "platform": "aiocqhttp",
+    "account_id": "qq-bot-001",
+    "conversation_ref": "conversation-group-002",
+    "platform_conversation_id": "group-002",
+    "session_id": "group-session-002",
+    "user_id": "user-123",
+    "group_id": "group-002",
+    "persona_id": "persona-main",
+    "persona_binding_revision": 12
+  },
+  "sharing_mode": "user",
+  "sharing_anchor": "share-user-a",
+  "sharing_policy_revision": 3,
+  "lane": "memory",
+  "content_type": "memory",
+  "content": "User prefers tea.",
+  "resource_ref": null,
+  "evidence_refs": [
+    {
+      "id": "evidence-preference-1",
+      "source_id": "user-message-1",
+      "source_type": "platform.message",
+      "evidence_kind": "user_stated",
+      "observed_at": "2026-09-07T01:00:00Z",
+      "expires_at": null
+    }
+  ],
+  "authority": "user_stated",
+  "visibility": "user_shared",
+  "purpose": "reply",
+  "redaction": "summary_only",
+  "confidence": 1,
+  "valid_from": "2026-09-07T01:00:00Z",
+  "expires_at": "2026-09-07T01:05:00Z",
+  "budget": {
+    "max_input_bytes": 16384,
+    "max_output_bytes": 2048,
+    "max_model_calls": 0
+  },
+  "extensions": {}
+}

@@ -1,0 +1,53 @@
+{
+  "schema_version": "companion.delivery-receipt.v1",
+  "delivery_id": "delivery-001",
+  "receipt_revision": 2,
+  "operation_id": "send-operation-001",
+  "delivery_owner_ref": "delivery-owner",
+  "history_owner_ref": "history-owner",
+  "scope": {
+    "ecosystem_id": "ecosystem-001",
+    "installation_id": "installation-001",
+    "runtime_instance_id": "embedded-runtime",
+    "host_kind": "companion-app",
+    "bot_id": "bot-main",
+    "platform": null,
+    "account_id": null,
+    "conversation_ref": "conversation-001",
+    "platform_conversation_id": null,
+    "session_id": null,
+    "user_id": null,
+    "group_id": null,
+    "persona_id": "persona-main",
+    "persona_binding_revision": 12
+  },
+  "receipt_kind": "part",
+  "part_id": "text",
+  "parts_ref": null,
+  "target_ref": {
+    "kind": "companion.delivery.target",
+    "ref": "private-target-001",
+    "revision": 3
+  },
+  "status": "delivered",
+  "attempt_id": "attempt-send-001",
+  "attempts": 1,
+  "platform_receipt_ref": {
+    "kind": "companion.platform.receipt",
+    "ref": "platform-text-receipt",
+    "revision": 1
+  },
+  "submitted_at": "2026-09-08T02:00:00Z",
+  "delivered_at": "2026-09-08T02:00:03Z",
+  "verification": {
+    "level": "delivery_confirmed",
+    "evidence_ref": {
+      "kind": "companion.platform.receipt",
+      "ref": "platform-delivery-proof",
+      "revision": 2
+    },
+    "observed_at": "2026-09-08T02:00:03Z"
+  },
+  "reason_code": null,
+  "trace_id": "trace-workflow-001"
+}

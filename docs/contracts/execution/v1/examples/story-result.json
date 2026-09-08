@@ -1,0 +1,48 @@
+{
+  "schema_version": "companion.operation-result.v1",
+  "capability_id": "story.operation.generate-chunk",
+  "capability_version": "1.0",
+  "provider_id": "example.content",
+  "provider_generation": "provider-generation-8",
+  "request_id": "request-story-001",
+  "trace_id": "trace-workflow-001",
+  "execution": {
+    "task_id": "task-story-001",
+    "attempt_id": "attempt-story-001",
+    "part_id": null,
+    "operation_id": "story-operation-001",
+    "budget_ref": "budget-workflow-001",
+    "caused_by": [
+      {
+        "kind": "companion.candidate",
+        "ref": "candidate-001",
+        "revision": 1
+      }
+    ]
+  },
+  "status": "succeeded",
+  "reason_code": null,
+  "retryable": false,
+  "degraded": false,
+  "warnings": [],
+  "effect_state": "applied",
+  "receipt_ref": {
+    "kind": "companion.operation.receipt",
+    "ref": "story-operation-001",
+    "revision": 1
+  },
+  "parts_ref": null,
+  "output_schema": "urn:companion:fixture:execution-domain:v1#/$defs/story-output",
+  "output": {
+    "project_ref": {
+      "kind": "content.project",
+      "ref": "project-001",
+      "revision": 8
+    },
+    "chunk_ref": {
+      "kind": "content.chunk",
+      "ref": "chunk-001",
+      "revision": 1
+    }
+  }
+}

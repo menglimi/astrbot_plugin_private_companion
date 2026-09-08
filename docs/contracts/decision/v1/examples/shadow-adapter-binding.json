@@ -1,0 +1,16 @@
+{
+  "schema_version": "companion.decision-shadow-adapter-binding.v1",
+  "binding_id": "shadow-binding-astrbot-001",
+  "adapter_id": "astrbot-shadow-adapter",
+  "adapter_generation": "adapter-generation-4",
+  "host_kind": "astrbot",
+  "capability_id": "companion.decision.shadow",
+  "capability_version": "1.0",
+  "scope": { "ecosystem_id": "ecosystem-001", "installation_id": "installation-001", "runtime_instance_id": "runtime-001", "host_kind": "astrbot", "bot_id": "bot-main", "platform": "aiocqhttp", "account_id": "qq-bot-001", "conversation_ref": "conversation-001", "platform_conversation_id": "private-user-123", "session_id": "session-a-001", "user_id": "user-a", "group_id": null, "persona_id": "persona-main", "persona_binding_revision": 12 },
+  "input_schema": "companion.role-decision-snapshot.v1",
+  "output_schema": "companion.decision-shadow-run.v1",
+  "mode": "observe",
+  "delivery_permission": "none",
+  "max_inflight": 8,
+  "expires_at": "2026-09-08T20:00:00+08:00"
+}

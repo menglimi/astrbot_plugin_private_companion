@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:control-capability-descriptor:v1",
+  "title": "Versioned capability descriptor",
+  "type": "object",
+  "properties": {
+    "capability_id": { "type": "string", "pattern": "^[a-z][a-z0-9_.-]+$" },
+    "capability_version": { "const": "1.0" },
+    "provider_id": { "type": "string", "minLength": 1 },
+    "provider_generation": { "type": "string", "minLength": 1 },
+    "descriptor_revision": { "type": "integer", "minimum": 0 },
+    "owner_ref": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["discovered", "validated", "bound", "ready", "degraded", "stopped", "failed"] },
+    "admission": { "type": "boolean" },
+    "side_effect": { "enum": ["none", "local", "remote"] },
+    "features": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "required_permissions": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "input_schema": { "type": ["string", "null"], "pattern": "^urn:[^\\s]+$" },
+    "output_schema": { "type": ["string", "null"], "pattern": "^urn:[^\\s]+$" },
+    "limits": {
+      "type": "object",
+      "properties": {
+        "max_input_bytes": { "type": "integer", "minimum": 1 },
+        "max_output_bytes": { "type": "integer", "minimum": 1 },
+        "max_concurrency": { "type": "integer", "minimum": 1 },
+        "max_duration_ms": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["max_input_bytes", "max_output_bytes", "max_concurrency"],
+      "additionalProperties": false
+    },
+    "expires_at": { "type": ["string", "null"], "format": "date-time" }
+  },
+  "required": ["capability_id", "capability_version", "provider_id", "provider_generation", "descriptor_revision", "owner_ref", "status", "admission", "side_effect", "features", "required_permissions", "input_schema", "output_schema", "limits", "expires_at"],
+  "additionalProperties": false
+}

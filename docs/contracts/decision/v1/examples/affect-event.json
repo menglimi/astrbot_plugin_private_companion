@@ -1,0 +1,19 @@
+{
+  "schema_version": "companion.affect-event.v1",
+  "event_id": "affect-event-042",
+  "trace_id": "trace-world-001",
+  "scope": { "ecosystem_id": "ecosystem-001", "installation_id": "installation-001", "runtime_instance_id": "embedded-runtime", "host_kind": "companion-app", "bot_id": "bot-main", "platform": "aiocqhttp", "account_id": "qq-bot-001", "conversation_ref": "conversation-001", "platform_conversation_id": "private-user-123", "session_id": "session-a-001", "user_id": "user-a", "group_id": null, "persona_id": "persona-main", "persona_binding_revision": 12 },
+  "actor_ref": "user-a",
+  "target_ref": "persona-main",
+  "quoted_target_ref": null,
+  "event_class": "relationship",
+  "valence": -0.15,
+  "arousal": 0.35,
+  "vulnerability": 0.2,
+  "confidence": 0.82,
+  "occurred_at": "2026-09-08T19:20:00+08:00",
+  "valid_until": "2026-09-08T23:00:00+08:00",
+  "dedupe_key": "msg-session-a-001-042",
+  "evidence_refs": [{ "id": "ev-user-msg-042", "source_id": "session-a-001", "source_type": "user_message", "evidence_kind": "observed", "observed_at": "2026-09-08T19:20:00+08:00", "expires_at": null, "source_revision": null }],
+  "supersedes": null
+}

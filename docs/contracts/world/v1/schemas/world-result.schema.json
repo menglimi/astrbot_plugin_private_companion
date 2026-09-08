@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:world-result:v1",
+  "title": "World operation result with revision and bounded changes",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "companion.world.result.v1" },
+    "request_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "trace_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "status": { "enum": ["succeeded", "rejected", "conflict", "permission_denied", "unavailable", "uncertain", "timeout", "cancelled", "failed"] },
+    "world_revision": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/revision" }, { "type": "null" }] },
+    "process_revision": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/revision" }, { "type": "null" }] },
+    "changed_refs": { "type": "array", "items": { "$ref": "urn:companion:schema:common:v1#/$defs/token" }, "maxItems": 32 },
+    "event_ref": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/token" }, { "type": "null" }] },
+    "checkpoint_ref": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/token" }, { "type": "null" }] },
+    "committed": { "type": "boolean" },
+    "reason": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/token" }, { "type": "null" }] }
+  },
+  "required": ["schema_version", "request_id", "trace_id", "status", "world_revision", "process_revision", "changed_refs", "event_ref", "checkpoint_ref", "committed", "reason"],
+  "additionalProperties": false,
+  "allOf": [{ "if": { "properties": { "status": { "const": "succeeded" } } }, "then": { "properties": { "committed": { "const": true } } } }]
+}

@@ -13,6 +13,7 @@ from astrbot.api.star import StarTools
 from .body_monitor_integration import BodyMonitorIntegration
 from .bot_personal_contract import capability_descriptor, contract_self_check
 from .config_migration import migrate_flat_config_into_schema_groups
+from .hdsi_experiment import normalize_window_modes
 from .constants import (
     DEFAULT_NATURAL_LANGUAGE_PHOTO_EXTRA_PROMPT,
     DEFAULT_REPLY_STYLE_PROMPT,
@@ -282,6 +283,25 @@ def _initialize_core_and_relationship_config(self: Any, c: Any) -> None:
     self.data_dir = StarTools.get_data_dir(PLUGIN_NAME)
     os.makedirs(self.data_dir, exist_ok=True)
     self.data_file = os.path.join(self.data_dir, "companions.json")
+    # HDSI is opt-in; legacy remains the default and unlisted scopes never
+    # enter the compatibility prompt path.
+    self.hdsi_experiment_mode = self._cfg_str(c, "hdsi_experiment_mode", "legacy", "legacy").strip().lower()
+    if self.hdsi_experiment_mode not in {"legacy", "hdsi_shadow", "hdsi_active"}:
+        self.hdsi_experiment_mode = "legacy"
+    def _hdsi_ids(value: Any) -> tuple[str, ...]:
+        if isinstance(value, str):
+            values = value.replace("\r", "\n").replace(",", "\n").replace("，", "\n").split("\n")
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            values = value
+        else:
+            values = ()
+        return tuple(dict.fromkeys(str(item).strip() for item in values if str(item).strip()))
+    self.hdsi_experiment_user_ids = _hdsi_ids(self._cfg_raw(c, "hdsi_experiment_user_ids", []))
+    self.hdsi_experiment_group_ids = _hdsi_ids(self._cfg_raw(c, "hdsi_experiment_group_ids", []))
+    self.hdsi_experiment_binding_revision = self._cfg_str(c, "hdsi_experiment_binding_revision", "1", "1").strip() or "1"
+    self.hdsi_experiment_window_modes = normalize_window_modes(
+        self._cfg_raw(c, "hdsi_experiment_window_modes", "{}")
+    )
     self.enable_multi_persona_mode = self._cfg_bool(c, "enable_multi_persona_mode", False)
     self._multi_persona_enable_requested = self.enable_multi_persona_mode
     legacy_primary_cleanup_pending = _initialize_primary_persona_config(self, c)
@@ -355,6 +375,7 @@ def _initialize_core_and_relationship_config(self: Any, c: Any) -> None:
     )
     self.proactive_preempt_queue_enabled = self._cfg_bool(c, "proactive_preempt_queue_enabled", False)
     self.proactive_preempt_queue_expire_hours = self._cfg_int(c, "proactive_preempt_queue_expire_hours", 2, 1, 24)
+    self.proactive_closing_grace_minutes = self._cfg_int(c, "proactive_closing_grace_minutes", 45, 0, 240)
     self.proactive_share_priority = self._cfg_int(c, "proactive_share_priority", 48, 0, 100)
     self.enable_experimental_motivation_model = self._cfg_bool(c, "enable_experimental_motivation_model", False)
     self.check_interval_seconds = self._cfg_int(c, "check_interval_seconds", 60, 30)
@@ -372,6 +393,13 @@ def _initialize_core_and_relationship_config(self: Any, c: Any) -> None:
         "0.22,0.16,0.12,0.10,0.10,0.14,0.28,0.50,0.66,0.72,0.78,0.92,1.0,0.94,0.82,0.74,0.78,0.92,1.0,0.98,0.88,0.70,0.48,0.32",
     )
     self.proactive_unanswered_slowdown_start = self._cfg_int(c, "proactive_unanswered_slowdown_start", 1, 1, 10)
+    self.proactive_unanswered_pause_after = self._cfg_int(
+        c,
+        "proactive_unanswered_pause_after",
+        0,
+        0,
+        50,
+    )
     self.proactive_unanswered_max_interval_multiplier = min(
         8.0,
         max(1.0, self._cfg_float(c, "proactive_unanswered_max_interval_multiplier", 2.2, 1.0)),
@@ -1217,7 +1245,7 @@ def _initialize_proactive_and_reaction_config(self: Any, c: Any) -> None:
     )
     self.comfyui_photo_wait_seconds = self._cfg_int(c, "comfyui_photo_wait_seconds", 90, 5, 600)
     self.photo_generation_backend = self._cfg_str(c, "photo_generation_backend", "auto", "auto").strip().lower()
-    if self.photo_generation_backend not in {"auto", "comfyui", "sdgen", "external", "tool_call", "nai"}:
+    if self.photo_generation_backend not in {"auto", "comfyui", "sdgen", "external", "tool_call", "nai", "anima_master"}:
         self.photo_generation_backend = "auto"
     self.enable_generated_photo_cleanup = self._cfg_bool(c, "enable_generated_photo_cleanup", True)
     self.generated_photo_retention_days = self._cfg_int(c, "generated_photo_retention_days", 30, 0, 3650)

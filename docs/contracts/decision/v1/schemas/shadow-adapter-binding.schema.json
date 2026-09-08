@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:decision-shadow-adapter-binding:v1",
+  "title": "Platform-neutral shadow adapter binding",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "companion.decision-shadow-adapter-binding.v1" },
+    "binding_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "adapter_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "adapter_generation": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "host_kind": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "capability_id": { "const": "companion.decision.shadow" },
+    "capability_version": { "const": "1.0" },
+    "scope": { "$ref": "urn:companion:schema:runtime-scope:v1" },
+    "input_schema": { "const": "companion.role-decision-snapshot.v1" },
+    "output_schema": { "const": "companion.decision-shadow-run.v1" },
+    "mode": { "const": "observe" },
+    "delivery_permission": { "const": "none" },
+    "max_inflight": { "type": "integer", "minimum": 1, "maximum": 32 },
+    "expires_at": { "$ref": "urn:companion:schema:common:v1#/$defs/time" }
+  },
+  "required": ["schema_version", "binding_id", "adapter_id", "adapter_generation", "host_kind", "capability_id", "capability_version", "scope", "input_schema", "output_schema", "mode", "delivery_permission", "max_inflight", "expires_at"],
+  "additionalProperties": false
+}

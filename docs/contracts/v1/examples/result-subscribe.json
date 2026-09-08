@@ -1,0 +1,54 @@
+{
+  "schema_version": "memory.subscription-result.v1",
+  "capability_id": "memory.changed.subscribe",
+  "capability_version": "1.0",
+  "provider_id": "example.memory",
+  "provider_generation": "generation-8",
+  "request_id": "req-subscribe-001",
+  "trace_id": "trace-recovery-001",
+  "status": "succeeded",
+  "reason_code": null,
+  "retryable": false,
+  "degraded": false,
+  "warnings": [],
+  "output": {
+    "subscription_id": "subscription-001",
+    "subscriber_generation": "consumer-8",
+    "binding": {
+      "subscriber_ref": "subscriber-reading",
+      "owner_ref": "owner-001",
+      "namespace": "example.reading",
+      "purpose": "projection",
+      "projection_kind": "references",
+      "view_kind": "current_projection",
+      "change_kinds": [
+        "added",
+        "corrected",
+        "retracted",
+        "expired"
+      ],
+      "view_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+      "authorization_revision": "acl-3",
+      "policy_revision": "policy-3",
+      "lineage_id": "lineage-reading",
+      "retention_epoch": "retention-2",
+      "contract_fingerprint": "3a41420f40fcd7dc8b8e2d990c8c5b3bd47cde8a998c88339daa9c71dadaaee2"
+    },
+    "limits": {
+      "max_batch_items": 32,
+      "max_batch_bytes": 32768,
+      "max_inflight_bytes": 65536,
+      "max_inflight_batches": 2,
+      "lease_ms": 30000,
+      "max_retry_attempts": 3,
+      "max_snapshot_bytes": 1048576,
+      "max_staging_bytes": 2097152,
+      "max_retained_log_bytes": 1048576,
+      "recovery_deadline_at": "2026-09-08T01:05:00Z"
+    },
+    "expires_at": "2026-09-08T02:00:00Z",
+    "subscription_state": "resync_required",
+    "cursor": null,
+    "resync_reason": "initial_snapshot"
+  }
+}

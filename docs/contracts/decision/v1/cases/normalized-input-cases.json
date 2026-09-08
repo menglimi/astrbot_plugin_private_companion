@@ -1,0 +1,11 @@
+{
+  "schema_version": "companion.normalized-input-cases.v1",
+  "cases": [
+    { "id": "NIN-01", "name": "missing stable event id", "input_patch": { "event_id": "" }, "expected": "reject" },
+    { "id": "NIN-02", "name": "unmapped platform user", "input_patch": { "subject_ref": "platform-user-unknown", "scope": { "user_id": null } }, "expected": "reject" },
+    { "id": "NIN-03", "name": "group event classified as private", "input_patch": { "scope": { "group_id": "group-42", "conversation_ref": "conversation-group-42", "platform_conversation_id": "group-42" }, "conversation_ref": "conversation-private-123" }, "expected": "reject" },
+    { "id": "NIN-04", "name": "private body projected to global", "input_patch": { "scope_mode": "global", "visibility": "public", "payload": { "redaction": "none" } }, "expected": "reject" },
+    { "id": "NIN-05", "name": "old adapter generation", "input_patch": { "adapter_generation": "astrbot-adapter-gen-1" }, "expected": "reject_generation" },
+    { "id": "NIN-06", "name": "expired event", "input_patch": { "expires_at": "2026-09-09T09:00:00+08:00" }, "expected": "reject_expired" }
+  ]
+}

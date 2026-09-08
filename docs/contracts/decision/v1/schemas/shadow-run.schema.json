@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:decision-shadow-run:v1",
+  "title": "Side-effect-free comparison of legacy and new proactive decisions",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "companion.decision-shadow-run.v1" },
+    "shadow_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "decision_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "scope": { "$ref": "urn:companion:schema:runtime-scope:v1" },
+    "mode": { "const": "observe" },
+    "legacy_strategy_ref": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "preview_ref": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "comparison": { "$ref": "#/$defs/comparison" },
+    "side_effects": { "$ref": "#/$defs/sideEffects" },
+    "metrics": { "$ref": "#/$defs/metrics" },
+    "status": { "enum": ["succeeded", "partial", "failed"] },
+    "created_at": { "$ref": "urn:companion:schema:common:v1#/$defs/time" },
+    "expires_at": { "$ref": "urn:companion:schema:common:v1#/$defs/time" }
+  },
+  "required": ["schema_version", "shadow_id", "decision_id", "scope", "mode", "legacy_strategy_ref", "preview_ref", "comparison", "side_effects", "metrics", "status", "created_at", "expires_at"],
+  "additionalProperties": false,
+  "$defs": {
+    "comparison": {
+      "type": "object",
+      "properties": { "legacy_candidate_count": { "type": "integer", "minimum": 0, "maximum": 16 }, "new_candidate_count": { "type": "integer", "minimum": 0, "maximum": 16 }, "rank_changes": { "type": "integer", "minimum": 0, "maximum": 16 }, "blocked_change_count": { "type": "integer", "minimum": 0, "maximum": 16 }, "decision_delta": { "enum": ["same", "new_deferred", "new_suppressed", "new_candidate", "inconclusive"] } },
+      "required": ["legacy_candidate_count", "new_candidate_count", "rank_changes", "blocked_change_count", "decision_delta"],
+      "additionalProperties": false
+    },
+    "sideEffects": {
+      "type": "object",
+      "properties": { "delivery_requests": { "const": 0 }, "action_requests": { "const": 0 }, "memory_writes": { "const": 0 }, "calendar_commits": { "const": 0 } },
+      "required": ["delivery_requests", "action_requests", "memory_writes", "calendar_commits"],
+      "additionalProperties": false
+    },
+    "metrics": {
+      "type": "object",
+      "properties": { "latency_ms": { "type": "integer", "minimum": 0 }, "model_calls": { "type": "integer", "minimum": 0, "maximum": 1 }, "snapshot_bytes": { "type": "integer", "minimum": 0, "maximum": 65536 }, "peak_inflight_previews": { "type": "integer", "minimum": 0, "maximum": 32 } },
+      "required": ["latency_ms", "model_calls", "snapshot_bytes", "peak_inflight_previews"],
+      "additionalProperties": false
+    }
+  }
+}

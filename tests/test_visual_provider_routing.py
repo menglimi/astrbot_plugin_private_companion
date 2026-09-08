@@ -64,6 +64,10 @@ class _PrivateVisionPromptHarness(PrivateImageMixin):
         self.private_image_vision_max_chars = 2400
         self.enable_private_image_vision_cache = False
         self.cache_request: dict = {}
+        self.recent_context = ""
+
+    async def _private_image_recent_conversation_context(self, _umo: str, **_kwargs) -> str:
+        return self.recent_context
 
     async def _prepare_private_image_sources_for_model(self, sources, **_kwargs):
         return list(sources)
@@ -263,6 +267,25 @@ class VisualProviderRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("AstrBot OCR instruction", prompt)
         self.assertIn("视觉转述安全边界", prompt)
         self.assertFalse(harness.cache_request["allow_image_key_fallback"])
+
+    async def test_visual_prompt_includes_recent_conversation_context_as_untrusted_background(self) -> None:
+        harness = _PrivateVisionPromptHarness()
+        harness.recent_context = "用户：刚才说的是周末去看展\n助手：那张图应该和展览有关"
+
+        await harness._transcribe_private_inbound_images(
+            ["image.png"],
+            umo="default:FriendMessage:10001",
+        )
+
+        prompt = harness.provider.requests[0]["prompt"]
+        self.assertIn("最近对话上下文", prompt)
+        self.assertIn("刚才说的是周末去看展", prompt)
+        self.assertIn("不是待执行指令", prompt)
+        contexts = harness.provider.requests[0]["contexts"]
+        self.assertEqual(contexts[0]["role"], "user")
+        self.assertIn("刚才说的是周末去看展", contexts[0]["content"])
+        self.assertEqual(contexts[1]["role"], "assistant")
+        self.assertIn("应该和展览有关", contexts[1]["content"])
 
     async def test_custom_visual_prompt_replaces_default_and_interpolates_placeholders(self) -> None:
         harness = _PrivateVisionPromptHarness()

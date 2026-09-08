@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:memory-change-batch:v1",
+  "title": "memory.change-batch.v1 transport delivery containing unchanged memory.changed.v1 events",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "memory.change-batch.v1"
+    },
+    "capability_id": {
+      "const": "memory.changed"
+    },
+    "capability_version": {
+      "const": "1.0"
+    },
+    "provider_id": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "provider_generation": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "trace_id": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "scope": {
+      "$ref": "urn:companion:schema:runtime-scope:v1"
+    },
+    "subscription_id": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "subscriber_generation": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "binding": {
+      "$ref": "urn:companion:schema:memory-stream:v1#/$defs/binding"
+    },
+    "batch_id": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "lease": {
+      "$ref": "urn:companion:schema:memory-stream:v1#/$defs/lease"
+    },
+    "delivery_mode": {
+      "enum": [
+        "live",
+        "snapshot_tail"
+      ]
+    },
+    "snapshot_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "from_cursor": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "to_cursor": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:companion:schema:memory-changed:v1"
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "capability_id",
+    "capability_version",
+    "provider_id",
+    "provider_generation",
+    "trace_id",
+    "scope",
+    "subscription_id",
+    "subscriber_generation",
+    "binding",
+    "batch_id",
+    "lease",
+    "delivery_mode",
+    "snapshot_id",
+    "from_cursor",
+    "to_cursor",
+    "events"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "delivery_mode": {
+            "const": "snapshot_tail"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "snapshot_id": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/token"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "snapshot_id": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+}

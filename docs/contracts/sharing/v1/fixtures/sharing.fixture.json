@@ -1,0 +1,305 @@
+{
+  "contract_package_version": "0.1.0",
+  "run_status": "not_run",
+  "actual": null,
+  "artifacts": {
+    "binding-session": {
+      "document": "examples/binding-session.json",
+      "schema": "sharing-binding"
+    },
+    "binding-user": {
+      "document": "examples/binding-user.json",
+      "schema": "sharing-binding"
+    },
+    "binding-global": {
+      "document": "examples/binding-global.json",
+      "schema": "sharing-binding"
+    },
+    "query-user-private": {
+      "document": "examples/query-user-private.json",
+      "schema": "memory-request"
+    },
+    "query-user-group": {
+      "document": "examples/query-user-group.json",
+      "schema": "memory-request"
+    },
+    "query-session-a": {
+      "document": "examples/query-session-a.json",
+      "schema": "memory-request"
+    },
+    "query-session-b": {
+      "document": "examples/query-session-b.json",
+      "schema": "memory-request"
+    },
+    "query-global": {
+      "document": "examples/query-global.json",
+      "schema": "memory-request"
+    },
+    "proposal-user": {
+      "document": "examples/proposal-user.json",
+      "schema": "memory-request"
+    },
+    "recall-user": {
+      "document": "examples/recall-user.json",
+      "schema": "memory-recall"
+    },
+    "context-user": {
+      "document": "examples/context-user.json",
+      "schema": "context-contribution"
+    },
+    "state-global": {
+      "document": "examples/state-global.json",
+      "schema": "state-transition"
+    }
+  },
+  "static_assertions": [
+    {
+      "id": "private-group-user-anchor",
+      "relation": "equal",
+      "left": {
+        "artifact": "query-user-private",
+        "path": [
+          "payload",
+          "extensions",
+          "companion.sharing",
+          "payload"
+        ]
+      },
+      "right": {
+        "artifact": "query-user-group",
+        "path": [
+          "payload",
+          "extensions",
+          "companion.sharing",
+          "payload"
+        ]
+      }
+    },
+    {
+      "id": "private-group-conversation",
+      "relation": "not_equal",
+      "left": {
+        "artifact": "query-user-private",
+        "path": [
+          "scope",
+          "conversation_ref"
+        ]
+      },
+      "right": {
+        "artifact": "query-user-group",
+        "path": [
+          "scope",
+          "conversation_ref"
+        ]
+      }
+    },
+    {
+      "id": "new-session-new-anchor",
+      "relation": "not_equal",
+      "left": {
+        "artifact": "query-session-a",
+        "path": [
+          "payload",
+          "extensions",
+          "companion.sharing",
+          "payload",
+          "sharing_anchor"
+        ]
+      },
+      "right": {
+        "artifact": "query-session-b",
+        "path": [
+          "payload",
+          "extensions",
+          "companion.sharing",
+          "payload",
+          "sharing_anchor"
+        ]
+      }
+    },
+    {
+      "id": "group-recall-anchor",
+      "relation": "equal",
+      "left": {
+        "artifact": "query-user-group",
+        "path": [
+          "payload",
+          "extensions",
+          "companion.sharing",
+          "payload"
+        ]
+      },
+      "right": {
+        "artifact": "recall-user",
+        "path": [
+          "output",
+          "items",
+          0,
+          "extensions",
+          "companion.sharing",
+          "payload"
+        ]
+      }
+    },
+    {
+      "id": "recall-context-anchor",
+      "relation": "equal",
+      "left": {
+        "artifact": "recall-user",
+        "path": [
+          "output",
+          "items",
+          0,
+          "extensions",
+          "companion.sharing",
+          "payload",
+          "sharing_anchor"
+        ]
+      },
+      "right": {
+        "artifact": "context-user",
+        "path": [
+          "sharing_anchor"
+        ]
+      }
+    }
+  ],
+  "scenarios": [
+    {
+      "case_id": "SHR-01",
+      "name": "Actual sessions are isolated",
+      "trigger": "The same user starts session B after session A",
+      "expected": "Session B cannot read anchor A; no fallback to user/global",
+      "schema_case_ids": [
+        "old-session-anchor-shape-only"
+      ],
+      "run_status": "not_run",
+      "actual": null
+    },
+    {
+      "case_id": "SHR-02",
+      "name": "User continuity across private and group chat",
+      "trigger": "The same authenticated platform user moves to a group",
+      "expected": "Same user partition; only evidence allowed for the current group audience reaches Prompt/output",
+      "schema_case_ids": [
+        "SHAPE-query-user-group"
+      ],
+      "run_status": "not_run",
+      "actual": null
+    },
+    {
+      "case_id": "SHR-03",
+      "name": "Other users remain distinct",
+      "trigger": "Another group member or a mismatched recall item uses the same anchor",
+      "expected": "Reject the mismatched resolved subject/anchor before reading or rendering",
+      "schema_case_ids": [
+        "other-user-anchor-shape-only",
+        "recall-other-anchor-shape-only"
+      ],
+      "run_status": "not_run",
+      "actual": null
+    },
+    {
+      "case_id": "SHR-04",
+      "name": "Platform identity remains distinct",
+      "trigger": "Another platform repeats the same raw user ID",
+      "expected": "No identity merge without a verified mapping",
+      "schema_case_ids": [
+        "other-platform-anchor-shape-only"
+      ],
+      "run_status": "not_run",
+      "actual": null
+    },
+    {
+      "case_id": "SHR-05",
+      "name": "Global state is shared within the configured partition",
+      "trigger": "Two users/platforms access the same persona world partition",
+      "expected": "One logical public world state; source subjects, local occupancy and delivery targets remain distinct",
+      "schema_case_ids": [
+        "global-platform-scope"
+      ],
+      "run_status": "not_run",
+      "actual": null
+    },
+    {
+      "case_id": "SHR-06",
+      "name": "Sharing does not grant disclosure",
+      "trigger": "A private fact is requested through global or a group audience",
+      "expected": "Current audience/ACL rejects unauthorized content; global is not a privacy bypass",
+      "schema_case_ids": [
+        "global-private-data-shape-only"
+      ],
+      "run_status": "not_run",
+      "actual": null
+    },
+    {
+      "case_id": "SHR-07",
+      "name": "Missing identity never widens scope",
+      "trigger": "A session/user request lacks a resolvable anchor or identity",
+      "expected": "Reject unresolved scope; do not default to a wider partition",
+      "schema_case_ids": [
+        "request-missing-anchor",
+        "session-needs-session-id",
+        "user-needs-user-id"
+      ],
+      "run_status": "not_run",
+      "actual": null
+    },
+    {
+      "case_id": "SHR-08",
+      "name": "Policy changes fence old projections",
+      "trigger": "Sharing policy is changed while a request is in flight",
+      "expected": "Invalidate affected bindings/cursors/context caches; no silent historical data merge",
+      "schema_case_ids": [
+        "stale-policy-shape-only",
+        "context-old-policy-shape-only"
+      ],
+      "run_status": "not_run",
+      "actual": null
+    },
+    {
+      "case_id": "SHR-09",
+      "name": "Retraction invalidates all dependent views",
+      "trigger": "Memory is corrected or retracted after user/global recall",
+      "expected": "Invalidate dependencies and recheck at output; do not replay external actions",
+      "schema_case_ids": [
+        "SHAPE-recall-user"
+      ],
+      "run_status": "not_run",
+      "actual": null
+    },
+    {
+      "case_id": "SHR-10",
+      "name": "Shared state has bounded resource use",
+      "trigger": "Many sessions query one user/global partition",
+      "expected": "Paged reads and shared immutable data; aggregate bytes, inflight work and cache eviction are measured",
+      "schema_case_ids": [
+        "SHAPE-query-global"
+      ],
+      "run_status": "not_run",
+      "actual": null
+    },
+    {
+      "case_id": "SHR-11",
+      "name": "Platform migration preserves logical partitions",
+      "trigger": "Checkpoint is imported into another host",
+      "expected": "Reauthorize and rebind stable partition; keep raw source scope and actual delivery target",
+      "schema_case_ids": [
+        "SHAPE-state-global"
+      ],
+      "run_status": "not_run",
+      "actual": null
+    },
+    {
+      "case_id": "SHR-12",
+      "name": "Presets and data promotion are explicit",
+      "trigger": "Select session/user/global preset or promote an existing record",
+      "expected": "Policy chooses compatible domain partitions; migration/projection is explicit, never a key rename or replayed write",
+      "schema_case_ids": [
+        "transition-no-implicit-promotion"
+      ],
+      "run_status": "not_run",
+      "actual": null
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "schema_version": "memory.result.v1",
+  "capability_id": "memory.operation.get",
+  "capability_version": "1.0",
+  "provider_id": "example.memory",
+  "provider_generation": "generation-7",
+  "request_id": "req-reading-001",
+  "trace_id": "trace-reading-001",
+  "status": "succeeded",
+  "reason_code": null,
+  "retryable": false,
+  "degraded": false,
+  "warnings": [],
+  "output": {
+    "operation_id": "memory-op-001",
+    "proposal_id": "proposal-001",
+    "proposal_state": "persisted",
+    "atom_id": "atom-001",
+    "revision": 7,
+    "owner_ref": "owner-001",
+    "memory_revision": 104,
+    "effective_retention": "durable",
+    "retention_until": null,
+    "valid_from": "2026-09-07T01:00:00Z",
+    "valid_to": null,
+    "policy_revision": "policy-3",
+    "commit_state": "committed",
+    "original_capability_id": "memory.proposal.submit",
+    "original_provider_generation": "generation-6"
+  }
+}

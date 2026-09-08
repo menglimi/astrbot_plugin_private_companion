@@ -1,0 +1,41 @@
+{
+  "schema_version": "companion.operation-result.v1",
+  "capability_id": "example.delivery.send",
+  "capability_version": "1.0",
+  "provider_id": "example.delivery",
+  "provider_generation": "provider-generation-8",
+  "request_id": "request-send-001",
+  "trace_id": "trace-workflow-001",
+  "execution": {
+    "task_id": "task-send-001",
+    "attempt_id": "attempt-send-001",
+    "part_id": null,
+    "operation_id": "send-operation-001",
+    "budget_ref": "budget-workflow-001",
+    "caused_by": [
+      {
+        "kind": "companion.candidate",
+        "ref": "candidate-001",
+        "revision": 1
+      }
+    ]
+  },
+  "status": "uncertain",
+  "reason_code": "delivery_unknown",
+  "retryable": false,
+  "degraded": false,
+  "warnings": [],
+  "effect_state": "unknown",
+  "receipt_ref": {
+    "kind": "companion.operation.receipt",
+    "ref": "send-operation-001",
+    "revision": 1
+  },
+  "parts_ref": {
+    "kind": "companion.delivery.parts",
+    "ref": "delivery-parts-001",
+    "revision": 2
+  },
+  "output_schema": null,
+  "output": null
+}

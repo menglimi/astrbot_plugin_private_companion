@@ -1,0 +1,267 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:common:v1",
+  "title": "Shared vocabulary for the review-only memory contract",
+  "$defs": {
+    "token": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$"
+    },
+    "semantic": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "time": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-5][0-9](?:\\.[0-9]+)?(?:[Zz]|[+-][0-9]{2}:[0-5][0-9])$"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "extensions": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*(?:\\.[a-z][a-z0-9_-]*)+$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]*\\.[0-9]+$"
+          },
+          "payload": {}
+        },
+        "required": [
+          "schema_version",
+          "payload"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "subject": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "ref": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        }
+      },
+      "required": [
+        "kind",
+        "ref"
+      ],
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "source_id": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "source_type": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "evidence_kind": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "observed_at": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/time"
+        },
+        "expires_at": {
+          "anyOf": [
+            {
+              "$ref": "urn:companion:schema:common:v1#/$defs/time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_revision": {
+          "anyOf": [
+            {
+              "$ref": "urn:companion:schema:common:v1#/$defs/token"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "source_id",
+        "source_type",
+        "evidence_kind",
+        "observed_at",
+        "expires_at"
+      ],
+      "additionalProperties": false
+    },
+    "assertion": {
+      "type": "object",
+      "properties": {
+        "subject": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/subject"
+        },
+        "predicate": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/semantic"
+        },
+        "object": {},
+        "qualifiers": {
+          "type": "object"
+        },
+        "polarity": {
+          "enum": [
+            "affirmed",
+            "negated",
+            "unknown"
+          ]
+        },
+        "attribution": {
+          "enum": [
+            "user",
+            "third_party",
+            "bot",
+            "unknown"
+          ]
+        }
+      },
+      "required": [
+        "subject",
+        "predicate",
+        "object",
+        "qualifiers",
+        "polarity",
+        "attribution"
+      ],
+      "additionalProperties": false
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "max_input_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_model_calls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_output_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_candidates": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_concurrency": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "max_input_bytes",
+        "max_model_calls"
+      ],
+      "additionalProperties": false
+    },
+    "evidenceBudget": {
+      "type": "object",
+      "properties": {
+        "max_items": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_chars": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "max_items",
+        "max_chars",
+        "max_tokens"
+      ],
+      "additionalProperties": false
+    },
+    "request": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "capability_id": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "capability_version": {
+          "const": "1.0"
+        },
+        "provider_id": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "provider_generation": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "request_id": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "trace_id": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "deadline_at": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/time"
+        },
+        "scope": {
+          "$ref": "urn:companion:schema:runtime-scope:v1"
+        },
+        "required_features": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_.-]*@[1-9][0-9]*$"
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "budget": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/budget"
+        },
+        "payload": {}
+      },
+      "required": [
+        "schema_version",
+        "capability_id",
+        "capability_version",
+        "provider_id",
+        "provider_generation",
+        "request_id",
+        "trace_id",
+        "deadline_at",
+        "scope",
+        "budget",
+        "payload"
+      ]
+    }
+  }
+}

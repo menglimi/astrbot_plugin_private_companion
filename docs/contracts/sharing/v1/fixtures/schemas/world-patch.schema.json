@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:fixture:sharing-world-patch:v1",
+  "title": "Fixture-only world activity patch",
+  "type": "object",
+  "properties": {
+    "phase": {
+      "enum": [
+        "running",
+        "paused",
+        "completed"
+      ]
+    },
+    "progress": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    }
+  },
+  "required": [
+    "phase",
+    "progress"
+  ],
+  "additionalProperties": false
+}

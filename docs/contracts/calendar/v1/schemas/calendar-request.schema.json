@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:calendar-request:v1",
+  "title": "Calendar observe/suggest/reserve/commit request",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "companion.calendar.request.v1" },
+    "request_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "trace_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "scope": { "$ref": "urn:companion:schema:runtime-scope:v1" },
+    "calendar_kind": { "enum": ["persona_calendar", "user_calendar"] },
+    "operation": { "enum": ["observe", "suggest", "reserve", "commit"] },
+    "target_ref": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/token" }, { "type": "null" }] },
+    "expected_revision": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/revision" }, { "type": "null" }] },
+    "change": { "type": "object" },
+    "authorization_ref": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/token" }, { "type": "null" }] },
+    "evidence_refs": { "type": "array", "items": { "$ref": "urn:companion:schema:common:v1#/$defs/evidence" }, "minItems": 1 },
+    "idempotency_key": { "$ref": "urn:companion:schema:common:v1#/$defs/token" }
+  },
+  "required": ["schema_version", "request_id", "trace_id", "scope", "calendar_kind", "operation", "target_ref", "expected_revision", "change", "authorization_ref", "evidence_refs", "idempotency_key"],
+  "additionalProperties": false,
+  "allOf": [{
+    "if": { "properties": { "operation": { "const": "commit" } } },
+    "then": { "properties": { "authorization_ref": { "$ref": "urn:companion:schema:common:v1#/$defs/token" } } }
+  }]
+}

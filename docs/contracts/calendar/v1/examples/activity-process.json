@@ -1,0 +1,20 @@
+{
+  "schema_version": "companion.activity-process.v1",
+  "process_id": "process-study-001",
+  "owner_ref": "persona-owner-001",
+  "scope": {
+    "ecosystem_id": "ecosystem-001", "installation_id": "installation-001", "runtime_instance_id": "embedded-runtime", "host_kind": "companion-app", "bot_id": "bot-main", "platform": null, "account_id": null, "conversation_ref": "conversation-001", "platform_conversation_id": null, "session_id": null, "user_id": null, "group_id": null, "persona_id": "persona-main", "persona_binding_revision": 12
+  },
+  "kind": "quiet_study",
+  "phase": "focused",
+  "started_at": "2026-09-08T19:00:00+08:00",
+  "progress": 0.42,
+  "attention_mode": "paused",
+  "interruptibility": "medium",
+  "resume_policy": "resume",
+  "next_checkpoint_at": "2026-09-08T19:30:00+08:00",
+  "checkpoint": { "checkpoint_id": "checkpoint-study-001", "captured_at": "2026-09-08T19:20:00+08:00", "phase": "focused", "progress": 0.42, "resume_after": "2026-09-08T19:30:00+08:00", "pause_reason": "user_message" },
+  "reality_mode": "simulated",
+  "revision": 3,
+  "source_refs": [{ "id": "ev-study-003", "source_id": "world-sim-001", "source_type": "activity_process", "evidence_kind": "observed", "observed_at": "2026-09-08T19:20:00+08:00", "expires_at": "2026-09-09T00:00:00+08:00", "source_revision": "3" }]
+}

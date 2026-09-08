@@ -1,0 +1,65 @@
+{
+  "schema_version": "memory.subscription-result.v1",
+  "capability_id": "memory.changed.resync",
+  "capability_version": "1.0",
+  "provider_id": "example.memory",
+  "provider_generation": "generation-8",
+  "request_id": "req-resync-page-001",
+  "trace_id": "trace-recovery-001",
+  "status": "succeeded",
+  "reason_code": null,
+  "retryable": false,
+  "degraded": false,
+  "warnings": [],
+  "output": {
+    "subscription_id": "subscription-001",
+    "subscriber_generation": "consumer-8",
+    "snapshot": {
+      "snapshot_id": "snapshot-001",
+      "snapshot_epoch": "snapshot-epoch-001",
+      "binding": {
+        "subscriber_ref": "subscriber-reading",
+        "owner_ref": "owner-001",
+        "namespace": "example.reading",
+        "purpose": "projection",
+        "projection_kind": "references",
+        "view_kind": "current_projection",
+        "change_kinds": [
+          "added",
+          "corrected",
+          "retracted",
+          "expired"
+        ],
+        "view_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+        "authorization_revision": "acl-3",
+        "policy_revision": "policy-3",
+        "lineage_id": "lineage-reading",
+        "retention_epoch": "retention-2",
+        "contract_fingerprint": "3a41420f40fcd7dc8b8e2d990c8c5b3bd47cde8a998c88339daa9c71dadaaee2"
+      },
+      "memory_revision": 104,
+      "tail_start_cursor": "cursor-104",
+      "expires_at": "2026-09-08T01:05:00Z"
+    },
+    "page_id": "page-001",
+    "page_cursor": "snapshot-page-001",
+    "items": [
+      {
+        "item_kind": "tombstone",
+        "atom_id": "atom-old",
+        "atom_revision": 2,
+        "memory_revision": 103,
+        "change_kind": "expired"
+      }
+    ],
+    "next_page_cursor": null,
+    "completion": {
+      "completion_token": "snapshot-proof-001",
+      "tail_until_cursor": "cursor-106"
+    },
+    "activation_lease": {
+      "lease_id": "activation-lease-001",
+      "expires_at": "2026-09-08T01:00:40Z"
+    }
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "schema_version": "companion.task.v1",
+  "task_id": "task-story-001",
+  "task_revision": 3,
+  "kind": "content.generate_chunk",
+  "mode": "capability",
+  "scope": {
+    "ecosystem_id": "ecosystem-001",
+    "installation_id": "installation-001",
+    "runtime_instance_id": "embedded-runtime",
+    "host_kind": "companion-app",
+    "bot_id": "bot-main",
+    "platform": null,
+    "account_id": null,
+    "conversation_ref": "conversation-001",
+    "platform_conversation_id": null,
+    "session_id": null,
+    "user_id": null,
+    "group_id": null,
+    "persona_id": "persona-main",
+    "persona_binding_revision": 12
+  },
+  "owner_ref": "content-owner-001",
+  "supervisor_generation": "supervisor-8",
+  "binding": {
+    "capability_id": "story.operation.generate-chunk",
+    "capability_version": "1.0",
+    "provider_id": "example.content",
+    "provider_generation": "provider-generation-8"
+  },
+  "parent_task_id": "task-workflow-001",
+  "source_event_ref": {
+    "kind": "companion.event",
+    "ref": "event-story-request",
+    "revision": 1
+  },
+  "session_id": null,
+  "operation_id": null,
+  "idempotency_key": "story-chunk-001",
+  "side_effect": "local",
+  "state": "retry_scheduled",
+  "attempt_id": "attempt-story-001",
+  "attempt_no": 1,
+  "occurrence": null,
+  "next_run_at": "2026-09-08T02:00:10Z",
+  "deadline_at": "2026-09-08T02:05:00Z",
+  "budget_ref": "budget-workflow-001",
+  "wait": null,
+  "retry": {
+    "basis": "proven_not_applied",
+    "proof_ref": {
+      "kind": "companion.operation.receipt",
+      "ref": "rollback-proof-001",
+      "revision": 1
+    },
+    "expires_at": "2026-09-08T02:05:00Z"
+  },
+  "checkpoint_ref": null,
+  "result_ref": null,
+  "cancellation_reason": null,
+  "last_error": "provider_busy"
+}

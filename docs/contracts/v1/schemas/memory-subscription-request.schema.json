@@ -1,0 +1,435 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:memory-subscription-request:v1",
+  "title": "Negotiated subscribe, acknowledge and resync requests",
+  "allOf": [
+    {
+      "$ref": "urn:companion:schema:common:v1#/$defs/request"
+    }
+  ],
+  "properties": {
+    "idempotency_key": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "budget": {
+      "properties": {
+        "max_model_calls": {
+          "const": 0
+        }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "schema_version": {
+          "const": "memory.subscribe.v1"
+        },
+        "capability_id": {
+          "const": "memory.changed.subscribe"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "namespace": {
+              "$ref": "urn:companion:schema:common:v1#/$defs/token"
+            },
+            "visibility": {
+              "$ref": "urn:companion:schema:common:v1#/$defs/token"
+            },
+            "purpose": {
+              "$ref": "urn:companion:schema:common:v1#/$defs/token"
+            },
+            "subscriber_generation": {
+              "$ref": "urn:companion:schema:common:v1#/$defs/token"
+            },
+            "projection_kind": {
+              "const": "references"
+            },
+            "view_kind": {
+              "enum": [
+                "current_projection",
+                "notifications"
+              ]
+            },
+            "change_kinds": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "added",
+                  "corrected",
+                  "retracted",
+                  "expired"
+                ]
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            },
+            "start": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "mode": {
+                      "const": "snapshot"
+                    }
+                  },
+                  "required": [
+                    "mode"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "mode": {
+                      "const": "live"
+                    }
+                  },
+                  "required": [
+                    "mode"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "mode": {
+                      "const": "resume"
+                    },
+                    "checkpoint": {
+                      "allOf": [
+                        {
+                          "$ref": "urn:companion:schema:memory-checkpoint:v1"
+                        },
+                        {
+                          "properties": {
+                            "state": {
+                              "const": "active"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "mode",
+                    "checkpoint"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "limits": {
+              "$ref": "urn:companion:schema:memory-stream:v1#/$defs/limits"
+            }
+          },
+          "required": [
+            "namespace",
+            "visibility",
+            "purpose",
+            "subscriber_generation",
+            "projection_kind",
+            "view_kind",
+            "change_kinds",
+            "start",
+            "limits"
+          ],
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "view_kind": {
+                    "const": "current_projection"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "change_kinds": {
+                    "minItems": 4,
+                    "maxItems": 4
+                  },
+                  "start": {
+                    "properties": {
+                      "mode": {
+                        "enum": [
+                          "snapshot",
+                          "resume"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "view_kind": {
+                    "const": "notifications"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "start": {
+                    "properties": {
+                      "mode": {
+                        "enum": [
+                          "live",
+                          "resume"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "required": [
+        "idempotency_key"
+      ]
+    },
+    {
+      "properties": {
+        "schema_version": {
+          "const": "memory.ack.v1"
+        },
+        "capability_id": {
+          "const": "memory.changed.ack"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "subscription_id": {
+              "$ref": "urn:companion:schema:common:v1#/$defs/token"
+            },
+            "subscriber_generation": {
+              "$ref": "urn:companion:schema:common:v1#/$defs/token"
+            },
+            "lease_id": {
+              "$ref": "urn:companion:schema:common:v1#/$defs/token"
+            },
+            "target": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "const": "batch"
+                    },
+                    "batch_id": {
+                      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "batch_id"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "const": "snapshot"
+                    },
+                    "snapshot_id": {
+                      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+                    },
+                    "completion_token": {
+                      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "snapshot_id",
+                    "completion_token"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "checkpoint": {
+              "$ref": "urn:companion:schema:memory-checkpoint:v1"
+            }
+          },
+          "required": [
+            "subscription_id",
+            "subscriber_generation",
+            "lease_id",
+            "target",
+            "checkpoint"
+          ],
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "target": {
+                    "properties": {
+                      "kind": {
+                        "const": "snapshot"
+                      }
+                    }
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "checkpoint": {
+                    "allOf": [
+                      {
+                        "$ref": "urn:companion:schema:memory-checkpoint:v1"
+                      },
+                      {
+                        "properties": {
+                          "state": {
+                            "const": "active"
+                          },
+                          "snapshot": {
+                            "$ref": "urn:companion:schema:memory-stream:v1#/$defs/snapshot"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "target": {
+                    "properties": {
+                      "kind": {
+                        "const": "batch"
+                      }
+                    }
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "checkpoint": {
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "snapshot_tail",
+                          "active"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "not": {
+        "required": [
+          "idempotency_key"
+        ]
+      }
+    },
+    {
+      "properties": {
+        "schema_version": {
+          "const": "memory.resync.v1"
+        },
+        "capability_id": {
+          "const": "memory.changed.resync"
+        },
+        "payload": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "subscription_id": {
+                  "$ref": "urn:companion:schema:common:v1#/$defs/token"
+                },
+                "subscriber_generation": {
+                  "$ref": "urn:companion:schema:common:v1#/$defs/token"
+                },
+                "action": {
+                  "const": "start"
+                }
+              },
+              "required": [
+                "subscription_id",
+                "subscriber_generation",
+                "action"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "subscription_id": {
+                  "$ref": "urn:companion:schema:common:v1#/$defs/token"
+                },
+                "subscriber_generation": {
+                  "$ref": "urn:companion:schema:common:v1#/$defs/token"
+                },
+                "action": {
+                  "const": "page"
+                },
+                "snapshot_id": {
+                  "$ref": "urn:companion:schema:common:v1#/$defs/token"
+                },
+                "snapshot_epoch": {
+                  "$ref": "urn:companion:schema:common:v1#/$defs/token"
+                },
+                "page_cursor": {
+                  "$ref": "urn:companion:schema:common:v1#/$defs/token"
+                }
+              },
+              "required": [
+                "subscription_id",
+                "subscriber_generation",
+                "action",
+                "snapshot_id",
+                "snapshot_epoch",
+                "page_cursor"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "payload": {
+                "properties": {
+                  "action": {
+                    "const": "start"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "idempotency_key"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "idempotency_key"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "unevaluatedProperties": false
+}

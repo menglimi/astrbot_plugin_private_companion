@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:runtime-scope:v1",
+  "title": "Resolved invocation scope; never an authorization grant",
+  "type": "object",
+  "properties": {
+    "ecosystem_id": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "installation_id": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "runtime_instance_id": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "host_kind": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "host_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "bot_id": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "platform": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "account_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "conversation_ref": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "platform_conversation_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "conversation_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "deprecated": true
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "user_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "group_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "persona_id": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "persona_binding_revision": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "ecosystem_id",
+    "installation_id",
+    "runtime_instance_id",
+    "host_kind",
+    "bot_id",
+    "platform",
+    "account_id",
+    "conversation_ref",
+    "platform_conversation_id",
+    "session_id",
+    "user_id",
+    "group_id",
+    "persona_id",
+    "persona_binding_revision"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "platform": {
+            "type": "null"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "account_id": {
+            "type": "null"
+          },
+          "platform_conversation_id": {
+            "type": "null"
+          },
+          "conversation_id": {
+            "type": "null"
+          },
+          "user_id": {
+            "type": "null"
+          },
+          "group_id": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "account_id": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/token"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "platform_conversation_id": {
+            "type": "string"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "conversation_ref": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/token"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "group_id": {
+            "type": "string"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "conversation_ref": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/token"
+          },
+          "platform_conversation_id": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/token"
+          }
+        }
+      }
+    },
+    {
+      "not": {
+        "properties": {
+          "host_kind": {
+            "enum": [
+              "plugin_hosted",
+              "standalone_service",
+              "embedded_app",
+              "split_services"
+            ]
+          }
+        },
+        "required": [
+          "host_kind"
+        ]
+      }
+    }
+  ]
+}

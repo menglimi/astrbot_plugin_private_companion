@@ -1,0 +1,8 @@
+{
+  "ecosystem_id": "ecosystem-001",
+  "installation_id": "installation-001",
+  "bot_id": "bot-main",
+  "persona_id": "persona-main",
+  "subject_ref": "person-user-123",
+  "visibility_namespace": "private:person-user-123"
+}

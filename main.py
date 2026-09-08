@@ -289,6 +289,8 @@ def _multi_persona_event_context(function):
     if inspect.isasyncgenfunction(function):
         @functools.wraps(function)
         async def asyncgen_wrapper(self, event, *args, **kwargs):
+            if not _plugin_instance_can_dispatch(self):
+                return
             scope_checker = getattr(self, "_bot_scope_allows_event", None)
             if callable(scope_checker) and not scope_checker(event):
                 return
@@ -310,6 +312,8 @@ def _multi_persona_event_context(function):
 
     @functools.wraps(function)
     async def async_wrapper(self, event, *args, **kwargs):
+        if not _plugin_instance_can_dispatch(self):
+            return None
         scope_checker = getattr(self, "_bot_scope_allows_event", None)
         if callable(scope_checker) and not scope_checker(event):
             return None
@@ -359,6 +363,7 @@ from .conversation_prompt_section import (
     render_prompt_content,
     render_prompt_sections,
 )
+from .hdsi_experiment import apply_hdsi_prompt, hdsi_window_command, mark_hdsi_route
 from .prompt_surface import CollectedPromptContext, PromptSurface
 from .passive_state_pipeline import inject_humanized_state as run_humanized_state_injection
 from .qzone_integration import QzoneMixin
@@ -535,6 +540,31 @@ _private_companion_runtime = sys.modules.setdefault(
     _new_private_companion_runtime(),
 )
 _private_companion_plugin: Any | None = _private_companion_runtime.active_plugin
+
+
+def _plugin_instance_root(instance: Any) -> str:
+    """Return the data/plugins directory name that imported an instance."""
+    module_name = str(getattr(type(instance), "__module__", "") or "")
+    parts = module_name.split(".")
+    if len(parts) >= 3 and parts[:2] == ["data", "plugins"]:
+        return parts[2]
+    return ""
+
+
+def _is_primary_plugin_instance(instance: Any) -> bool:
+    return _plugin_instance_root(instance) == PLUGIN_NAME
+
+
+def _plugin_instance_can_dispatch(instance: Any) -> bool:
+    if bool(getattr(instance, "_private_companion_duplicate_instance", False)):
+        return False
+    if not bool(getattr(instance, "_private_companion_instance_guard_enabled", False)):
+        return True
+    with _private_companion_runtime.lock:
+        return (
+            _private_companion_runtime.active_plugin is None
+            or _private_companion_runtime.active_plugin is instance
+        )
 
 
 class _OneBotReactionImage(BaseMessageComponent):
@@ -1796,6 +1826,22 @@ class PrivateCompanionPlugin(
             *args,
             **kwargs,
         )
+
+    @filter.command("HDSI", alias={"hdsi"})
+    @_multi_persona_event_context
+    async def hdsi_experiment_command(self, event: AstrMessageEvent, action: str = "状态"):
+        event.stop_event()
+        await self._reply(event, await hdsi_window_command(self, event, action))
+
+    @filter.on_llm_request(priority=109000)
+    @_multi_persona_event_context
+    async def inject_hdsi_experiment_prompt(
+        self, event: AstrMessageEvent, req: ProviderRequest, *args: Any, **kwargs: Any,
+    ) -> None:
+        try:
+            await apply_hdsi_prompt(self, event, req)
+        except Exception as exc:
+            logger.warning("HDSI 表达试验处理失败: error_type=%s", type(exc).__name__)
 
     @filter.on_llm_response(priority=-100000)
     @_multi_persona_event_context
@@ -3637,6 +3683,7 @@ class PrivateCompanionPlugin(
             normalized_code,
             normalized_channel,
         )
+
         signature = "|".join((normalized_code, reason, normalized_channel, window))
         record_id = hashlib.sha256(signature.encode("utf-8")).hexdigest()[:20]
         should_schedule = False
@@ -4604,6 +4651,8 @@ class PrivateCompanionPlugin(
         }
 
     def __init__(self, context: Context, config: AstrBotConfig):
+        self._private_companion_instance_guard_enabled = True
+        self._private_companion_duplicate_instance = False
         super().__init__(context)
         initialize_plugin_entrypoint_state(
             self,
@@ -8387,6 +8436,27 @@ class PrivateCompanionPlugin(
 
     async def initialize(self):
         global _private_companion_plugin
+        # Lifecycle tests execute this method in an isolated namespace that
+        # only contains the class methods. Keep duplicate-instance fencing
+        # active in the full module while allowing that reduced namespace to
+        # exercise publication behavior.
+        is_primary_instance = globals().get("_is_primary_plugin_instance")
+        if not callable(is_primary_instance):
+            is_primary_instance = lambda _instance: True
+        with _private_companion_runtime.lock:
+            active = _private_companion_runtime.active_plugin
+            if (
+                active is not None
+                and active is not self
+                and is_primary_instance(active)
+                and not is_primary_instance(self)
+            ):
+                self._private_companion_duplicate_instance = True
+                logger.warning(
+                    "检测到同名 worktree 插件实例，已跳过其事件处理: module=%s",
+                    type(self).__module__,
+                )
+                return
         await self._initialize_before_publication()
         try:
             await resume_story_handoff(self)
@@ -20862,6 +20932,7 @@ class PrivateCompanionPlugin(
     @_multi_persona_event_context
     @event_data_save_boundary(flush=True)
     async def on_private_message(self, event: AstrMessageEvent, *args, **kwargs):
+        mark_hdsi_route(self, event)
         if await self._handle_private_message_preflight(event):
             return
         return await handle_private_message(self, event, *args, **kwargs)
@@ -21284,6 +21355,7 @@ class PrivateCompanionPlugin(
     @_multi_persona_event_context
     @event_data_save_boundary(flush=True)
     async def on_group_message(self, event: AstrMessageEvent, *args, **kwargs):
+        mark_hdsi_route(self, event)
         return await handle_group_message(self, event, *args, **kwargs)
 
     def _format_timestamp_elapsed(self, timestamp: Any) -> str:

@@ -1,0 +1,20 @@
+{
+  "contract_package_version": "0.1.0",
+  "run_status": "not_run",
+  "actual": null,
+  "artifacts": {
+    "bind_request": "examples/bind.json",
+    "bind_pending": "examples/result-bind-pending.json",
+    "cancel_request": "examples/cancel.json",
+    "cancel_unknown": "examples/result-cancel-unknown.json",
+    "release_request": "examples/release.json",
+    "old_handle": "examples/result-old-handle.json",
+    "state_page": "examples/state-page.json",
+    "lifecycle_replay": "lifecycle-replay.json"
+  },
+  "scenarios": [
+    {"case_id": "CTRL-01", "name": "bind response lost and same key retries", "run_status": "not_run", "actual": null, "expected": "same binding or explicit invalidation; no second allocation", "schema_case_ids": ["CTRL-SHAPE-01"]},
+    {"case_id": "CTRL-02", "name": "old binding released then reused", "run_status": "not_run", "actual": null, "expected": "old handle rejected and cannot revive provider generation", "schema_case_ids": ["CTRL-SHAPE-02"]},
+    {"case_id": "CTRL-03", "name": "cancel accepted while business result is unknown", "run_status": "not_run", "actual": null, "expected": "reconciliation_required; lookup remains with original owner", "schema_case_ids": ["CTRL-SHAPE-03"]}
+  ]
+}

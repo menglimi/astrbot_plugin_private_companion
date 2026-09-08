@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:proactive-preview:v1",
+  "title": "Observe-only low-risk proactive decision preview",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "companion.proactive-preview.v1" },
+    "preview_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "decision_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "scope": { "$ref": "urn:companion:schema:runtime-scope:v1" },
+    "mode": { "const": "observe" },
+    "risk_class": { "const": "low" },
+    "delivery_allowed": { "const": false },
+    "candidates": { "type": "array", "items": { "$ref": "#/$defs/candidate" }, "maxItems": 4 },
+    "budget": { "$ref": "urn:companion:schema:common:v1#/$defs/budget" },
+    "created_at": { "$ref": "urn:companion:schema:common:v1#/$defs/time" },
+    "expires_at": { "$ref": "urn:companion:schema:common:v1#/$defs/time" }
+  },
+  "required": ["schema_version", "preview_id", "decision_id", "scope", "mode", "risk_class", "delivery_allowed", "candidates", "budget", "created_at", "expires_at"],
+  "additionalProperties": false,
+  "$defs": {
+    "candidate": {
+      "type": "object",
+      "properties": { "candidate_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" }, "motive_kind": { "enum": ["connect", "care", "share", "assist", "repair"] }, "readiness": { "type": "number", "minimum": 0, "maximum": 1 }, "decision": { "enum": ["approved_for_preview", "deferred", "suppressed", "expired"] }, "blocked_reasons": { "type": "array", "items": { "$ref": "urn:companion:schema:common:v1#/$defs/token" }, "maxItems": 6 }, "preferred_window": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/time" }, { "type": "null" }] } },
+      "required": ["candidate_id", "motive_kind", "readiness", "decision", "blocked_reasons", "preferred_window"],
+      "additionalProperties": false
+    }
+  }
+}

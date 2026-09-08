@@ -1,0 +1,62 @@
+{
+  "schema_version": "memory.subscribe.v1",
+  "capability_id": "memory.changed.subscribe",
+  "capability_version": "1.0",
+  "provider_id": "example.memory",
+  "provider_generation": "generation-8",
+  "request_id": "req-subscribe-001",
+  "trace_id": "trace-recovery-001",
+  "deadline_at": "2026-09-08T01:00:10Z",
+  "scope": {
+    "ecosystem_id": "ecosystem-001",
+    "installation_id": "installation-001",
+    "runtime_instance_id": "embedded-runtime",
+    "host_kind": "companion-app",
+    "bot_id": "bot-main",
+    "platform": null,
+    "account_id": null,
+    "conversation_ref": "conversation-001",
+    "platform_conversation_id": null,
+    "session_id": null,
+    "user_id": null,
+    "group_id": null,
+    "persona_id": "persona-main",
+    "persona_binding_revision": 12
+  },
+  "required_features": [],
+  "budget": {
+    "max_input_bytes": 32768,
+    "max_model_calls": 0,
+    "max_output_bytes": 32768
+  },
+  "payload": {
+    "namespace": "example.reading",
+    "visibility": "private",
+    "purpose": "projection",
+    "subscriber_generation": "consumer-8",
+    "projection_kind": "references",
+    "view_kind": "current_projection",
+    "change_kinds": [
+      "added",
+      "corrected",
+      "retracted",
+      "expired"
+    ],
+    "start": {
+      "mode": "snapshot"
+    },
+    "limits": {
+      "max_batch_items": 32,
+      "max_batch_bytes": 32768,
+      "max_inflight_bytes": 65536,
+      "max_inflight_batches": 2,
+      "lease_ms": 30000,
+      "max_retry_attempts": 3,
+      "max_snapshot_bytes": 1048576,
+      "max_staging_bytes": 2097152,
+      "max_retained_log_bytes": 1048576,
+      "recovery_deadline_at": "2026-09-08T01:05:00Z"
+    }
+  },
+  "idempotency_key": "subscribe-reading-001"
+}

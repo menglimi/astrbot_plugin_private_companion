@@ -1,0 +1,470 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:task-envelope:v1",
+  "title": "companion.task.v1 durable task record, not a task submission command",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "companion.task.v1"
+    },
+    "task_id": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "task_revision": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/revision"
+    },
+    "kind": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*(?:\\.[a-z][a-z0-9_-]*)+$",
+      "maxLength": 256
+    },
+    "mode": {
+      "enum": [
+        "capability",
+        "orchestration"
+      ]
+    },
+    "scope": {
+      "$ref": "urn:companion:schema:runtime-scope:v1"
+    },
+    "owner_ref": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "supervisor_generation": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "binding": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:execution-common:v1#/$defs/binding"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "parent_task_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "source_event_ref": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:execution-common:v1#/$defs/reference"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "operation_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "idempotency_key": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "side_effect": {
+      "enum": [
+        "none",
+        "local",
+        "external_device",
+        "external_network",
+        "message_delivery"
+      ]
+    },
+    "state": {
+      "enum": [
+        "created",
+        "admitted",
+        "running",
+        "waiting",
+        "retry_scheduled",
+        "cancelling",
+        "succeeded",
+        "partial",
+        "failed",
+        "uncertain",
+        "cancelled",
+        "expired",
+        "dead_letter"
+      ]
+    },
+    "attempt_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "attempt_no": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/revision"
+    },
+    "occurrence": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:execution-common:v1#/$defs/occurrence"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "next_run_at": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/time"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "deadline_at": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/time"
+    },
+    "budget_ref": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "wait": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:execution-common:v1#/$defs/wait"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "retry": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:execution-common:v1#/$defs/retry"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "checkpoint_ref": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:execution-common:v1#/$defs/reference"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "result_ref": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:execution-common:v1#/$defs/reference"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cancellation_reason": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "last_error": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "task_id",
+    "task_revision",
+    "kind",
+    "mode",
+    "scope",
+    "owner_ref",
+    "supervisor_generation",
+    "binding",
+    "parent_task_id",
+    "source_event_ref",
+    "session_id",
+    "operation_id",
+    "idempotency_key",
+    "side_effect",
+    "state",
+    "attempt_id",
+    "attempt_no",
+    "occurrence",
+    "next_run_at",
+    "deadline_at",
+    "budget_ref",
+    "wait",
+    "retry",
+    "checkpoint_ref",
+    "result_ref",
+    "cancellation_reason",
+    "last_error"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "const": "orchestration"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "binding": {
+            "type": "null"
+          },
+          "operation_id": {
+            "type": "null"
+          },
+          "idempotency_key": {
+            "type": "null"
+          },
+          "side_effect": {
+            "const": "none"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "side_effect": {
+            "enum": [
+              "local",
+              "external_device",
+              "external_network",
+              "message_delivery"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "idempotency_key": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/token"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "attempt_no": {
+            "const": 0
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "attempt_id": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "attempt_id": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/token"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "enum": [
+              "running",
+              "cancelling",
+              "succeeded",
+              "partial",
+              "uncertain"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "attempt_id": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/token"
+          },
+          "attempt_no": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "const": "capability"
+          },
+          "state": {
+            "enum": [
+              "admitted",
+              "running",
+              "waiting",
+              "retry_scheduled",
+              "cancelling",
+              "succeeded",
+              "partial",
+              "uncertain"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "binding": {
+            "$ref": "urn:companion:schema:execution-common:v1#/$defs/binding"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "waiting"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "wait": {
+            "$ref": "urn:companion:schema:execution-common:v1#/$defs/wait"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "wait": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "retry_scheduled"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "retry": {
+            "$ref": "urn:companion:schema:execution-common:v1#/$defs/retry"
+          },
+          "next_run_at": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/time"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "retry": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "enum": [
+              "succeeded",
+              "partial",
+              "failed",
+              "uncertain",
+              "cancelled",
+              "expired",
+              "dead_letter"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "result_ref": {
+            "$ref": "urn:companion:schema:execution-common:v1#/$defs/reference"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "enum": [
+              "cancelling",
+              "cancelled"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "cancellation_reason": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/token"
+          }
+        }
+      }
+    }
+  ]
+}

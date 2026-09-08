@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:calendar-boundary:v1",
+  "title": "A bounded temporal decision context",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "companion.calendar-boundary.v1" },
+    "boundary_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "owner_ref": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "scope": { "$ref": "urn:companion:schema:runtime-scope:v1" },
+    "as_of": { "$ref": "urn:companion:schema:common:v1#/$defs/time" },
+    "calendar_kind": { "enum": ["persona_calendar", "user_calendar"] },
+    "calendar_revision": { "$ref": "urn:companion:schema:common:v1#/$defs/revision" },
+    "current": { "$ref": "#/$defs/window" },
+    "next_transition": { "anyOf": [{ "$ref": "#/$defs/window" }, { "type": "null" }] },
+    "fixed_commitments": { "type": "array", "items": { "$ref": "#/$defs/window" }, "maxItems": 8 },
+    "available_windows": { "type": "array", "items": { "$ref": "#/$defs/window" }, "maxItems": 8 },
+    "conflicts": { "type": "array", "items": { "$ref": "#/$defs/token" }, "maxItems": 16 },
+    "conversation_occupancy": { "enum": ["turn_open", "engaged_thread", "closing", "idle", "quiet", "unknown"] },
+    "source_refs": { "type": "array", "items": { "$ref": "urn:companion:schema:common:v1#/$defs/evidence" }, "minItems": 1 },
+    "expires_at": { "$ref": "urn:companion:schema:common:v1#/$defs/time" }
+  },
+  "required": ["schema_version", "boundary_id", "owner_ref", "scope", "as_of", "calendar_kind", "calendar_revision", "current", "next_transition", "fixed_commitments", "available_windows", "conflicts", "conversation_occupancy", "source_refs", "expires_at"],
+  "additionalProperties": false,
+  "$defs": {
+    "window": {
+      "type": "object",
+      "properties": {
+        "window_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+        "kind": { "enum": ["commitment", "activity", "availability", "quiet", "transition", "deadline", "buffer", "unknown"] },
+        "start": { "$ref": "urn:companion:schema:common:v1#/$defs/time" },
+        "end": { "$ref": "urn:companion:schema:common:v1#/$defs/time" },
+        "certainty": { "enum": ["confirmed", "authorized", "inferred", "unknown"] },
+        "interruptibility": { "enum": ["none", "low", "medium", "high", "unknown"] },
+        "source_ref": { "$ref": "urn:companion:schema:common:v1#/$defs/token" }
+      },
+      "required": ["window_id", "kind", "start", "end", "certainty", "interruptibility", "source_ref"],
+      "additionalProperties": false
+    }
+  }
+}

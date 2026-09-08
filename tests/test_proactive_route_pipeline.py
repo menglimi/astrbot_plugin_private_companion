@@ -204,6 +204,7 @@ class ProactiveRoutePipelineTests(unittest.TestCase):
                     sent_at=1000,
                 )
                 self.assertEqual(2, user["ignored_streak"])
+                self.assertEqual(2, user["unanswered_proactive_count"])
                 self.assertEqual(50, user["awaiting_reply_since"])
 
         for kind, reason in (("relational", "quiet_care"), ("continuation", "check_in"), ("ritual", "meal_care")):
@@ -221,6 +222,7 @@ class ProactiveRoutePipelineTests(unittest.TestCase):
                     sent_at=1000,
                 )
                 self.assertEqual(3, user["ignored_streak"])
+                self.assertEqual(3, user["unanswered_proactive_count"])
                 self.assertEqual(1000, user["awaiting_reply_since"])
 
     def test_content_settlement_clears_only_its_context_and_disables_followup(self) -> None:
@@ -306,6 +308,19 @@ class ProactiveRoutePipelineTests(unittest.TestCase):
             with self.subTest(kind=kind):
                 route = PROACTIVE_ROUTE_REGISTRY.route_for(kind=kind)
                 self.assertEqual(disable_segmenting, route.delivery_options({})["disable_segmenting"])
+
+    def test_adaptive_contact_guidance_stays_soft_and_route_aware(self) -> None:
+        user = {"unanswered_proactive_count": 2}
+        content_route = PROACTIVE_ROUTE_REGISTRY.route_for(kind="content_share")
+        content_guidance = self.harness._proactive_adaptive_contact_guidance(user, content_route)
+
+        self.assertIn("2 次主动接触未得到回应", content_guidance)
+        self.assertIn("合并、延后或仅记录", content_guidance)
+        self.assertIn("不要追问", content_guidance)
+
+        transactional_route = PROACTIVE_ROUTE_REGISTRY.route_for(kind="transactional")
+        transactional_guidance = self.harness._proactive_adaptive_contact_guidance({}, transactional_route)
+        self.assertIn("本路线不要求对方回应", transactional_guidance)
 
 
 if __name__ == "__main__":

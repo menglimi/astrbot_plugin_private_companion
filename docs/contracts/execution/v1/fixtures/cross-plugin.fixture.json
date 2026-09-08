@@ -1,0 +1,321 @@
+{
+  "fixture_id": "public-execution-cross-plugin-001",
+  "fixture_version": "0.1.0",
+  "contract_package_version": "0.1.0",
+  "mode": "design_review",
+  "run_status": "not_run",
+  "actual": null,
+  "clock": {
+    "mode": "controlled",
+    "now": "2026-09-08T02:00:00Z"
+  },
+  "capabilities": {
+    "story.operation.generate-chunk": {
+      "side_effect": "local",
+      "input_schema": "urn:companion:fixture:execution-domain:v1#/$defs/story-input",
+      "output_schema": "urn:companion:fixture:execution-domain:v1#/$defs/story-output",
+      "scope": "resolved_content_owner"
+    },
+    "example.delivery.send": {
+      "side_effect": "message_delivery",
+      "input_schema": "urn:companion:fixture:execution-domain:v1#/$defs/delivery-input",
+      "output_schema": null,
+      "scope": "resolved_delivery_target"
+    },
+    "example.together.resume": {
+      "side_effect": "local",
+      "input_schema": "urn:companion:fixture:execution-domain:v1#/$defs/session-input",
+      "output_schema": "urn:companion:fixture:execution-domain:v1#/$defs/session-output",
+      "scope": "resolved_session_participants"
+    }
+  },
+  "artifacts": {
+    "story-request": {
+      "schema": "action-request",
+      "document": "examples/story-request.json"
+    },
+    "story-result": {
+      "schema": "operation-result",
+      "document": "examples/story-result.json"
+    },
+    "task-running": {
+      "schema": "task-envelope",
+      "document": "examples/task-running.json"
+    },
+    "task-created": {
+      "schema": "task-envelope",
+      "document": "examples/task-created.json"
+    },
+    "task-retry": {
+      "schema": "task-envelope",
+      "document": "examples/task-retry.json"
+    },
+    "task-waiting": {
+      "schema": "task-envelope",
+      "document": "examples/task-waiting.json"
+    },
+    "send-request": {
+      "schema": "action-request",
+      "document": "examples/send-request.json"
+    },
+    "send-result-uncertain": {
+      "schema": "operation-result",
+      "document": "examples/send-result-uncertain.json"
+    },
+    "delivery-accepted": {
+      "schema": "delivery-receipt",
+      "document": "examples/delivery-accepted.json"
+    },
+    "delivery-uncertain": {
+      "schema": "delivery-receipt",
+      "document": "examples/delivery-uncertain.json"
+    },
+    "delivery-aggregate": {
+      "schema": "delivery-receipt",
+      "document": "examples/delivery-aggregate.json"
+    },
+    "delivery-confirmed": {
+      "schema": "delivery-receipt",
+      "document": "examples/delivery-confirmed.json"
+    },
+    "session-reconnecting": {
+      "schema": "session-record",
+      "document": "examples/session-reconnecting.json"
+    },
+    "session-active": {
+      "schema": "session-record",
+      "document": "examples/session-active.json"
+    },
+    "session-ended": {
+      "schema": "session-record",
+      "document": "examples/session-ended.json"
+    },
+    "session-resume-request": {
+      "schema": "action-request",
+      "document": "examples/session-resume-request.json"
+    },
+    "session-resume-result": {
+      "schema": "operation-result",
+      "document": "examples/session-resume-result.json"
+    }
+  },
+  "correlations": [
+    {
+      "request": "story-request",
+      "result": "story-result"
+    },
+    {
+      "request": "send-request",
+      "result": "send-result-uncertain"
+    },
+    {
+      "request": "session-resume-request",
+      "result": "session-resume-result"
+    }
+  ],
+  "workflows": [
+    {
+      "id": "content-share",
+      "initial": {
+        "project_revision": 7,
+        "authorized_cover_ref": "existing-image-asset",
+        "cover_owner": "image-owner"
+      },
+      "steps": [
+        {
+          "action": "admit_bounded_task",
+          "artifact": "task-running"
+        },
+        {
+          "action": "generate_chunk",
+          "request": "story-request",
+          "result": "story-result"
+        },
+        {
+          "action": "offer_share_and_resolve_current_authorization",
+          "ports": "fixture_candidate_and_authorization_ports"
+        },
+        {
+          "action": "send_authorized_share",
+          "request": "send-request",
+          "result": "send-result-uncertain"
+        },
+        {
+          "action": "retain_per_part_evidence",
+          "artifacts": [
+            "delivery-accepted",
+            "delivery-uncertain",
+            "delivery-aggregate"
+          ]
+        }
+      ],
+      "expected": {
+        "project_revision": 8,
+        "aggregate_delivery_status": "uncertain",
+        "disclosed": false,
+        "unknown_parts": [
+          "cover"
+        ],
+        "regenerated_chapters_during_reconciliation": 0,
+        "regenerated_images_during_reconciliation": 0,
+        "resent_confirmed_parts": 0
+      },
+      "run_status": "not_run",
+      "actual": null
+    },
+    {
+      "id": "together-resume",
+      "initial": {
+        "session_id": "session-watch-001",
+        "session_revision": 18,
+        "controller_generation": "controller-7"
+      },
+      "steps": [
+        {
+          "action": "load_persistent_session_checkpoint",
+          "artifact": "session-reconnecting"
+        },
+        {
+          "action": "reauthorize_and_resume",
+          "request": "session-resume-request",
+          "result": "session-resume-result"
+        },
+        {
+          "action": "observe_new_session_revision",
+          "artifact": "session-active"
+        },
+        {
+          "action": "end_session_and_release_owned_resources",
+          "artifact": "session-ended"
+        }
+      ],
+      "expected": {
+        "session_revision": 20,
+        "phase": "ended",
+        "old_controller_callbacks_applied": 0,
+        "shared_provider_closes": 0,
+        "automatic_memory_proposals": 0,
+        "unbounded_media_buffers": 0
+      },
+      "run_status": "not_run",
+      "actual": null
+    }
+  ],
+  "scenarios": [
+    {
+      "case_id": "LC-09",
+      "schema_case_ids": [
+        "EX-fake-operation-shape-only",
+        "EX-write-null-key-shape-only",
+        "EX-request-correlation-missing-attempt",
+        "EX-task-first-attempt-null",
+        "EX-task-zero-attempt-with-id",
+        "EX-task-old-generation-shape-only",
+        "EX-task-no-write-key",
+        "EX-task-retry-no-basis",
+        "EX-task-retry-no-time",
+        "EX-task-occurrence",
+        "EX-task-occurrence-no-id",
+        "EX-result-stale-attempt-shape-only"
+      ],
+      "runtime_assertion": "Crash around checkpoint, then retry the original occurrence and execute a distinct next occurrence; one effect per logical operation.",
+      "run_status": "not_run",
+      "actual": null
+    },
+    {
+      "case_id": "LC-10",
+      "schema_case_ids": [
+        "EX-task-retry-unknown-basis",
+        "EX-task-provider-idempotency",
+        "EX-task-forged-retry-proof-shape-only",
+        "EX-task-cancel-no-reason",
+        "EX-task-cancelling",
+        "EX-task-uncertain",
+        "EX-result-uncertain-applied",
+        "EX-result-uncertain-retry",
+        "EX-result-uncertain-with-output",
+        "EX-result-unknown-before-operation",
+        "EX-result-timeout-unknown",
+        "EX-result-cancelled-unknown",
+        "EX-result-cancelled-not-applied",
+        "EX-delivery-cancel-no-proof",
+        "EX-delivery-cancelled"
+      ],
+      "runtime_assertion": "Cancel at admission, before submit and after an uncertain external submit; local generation changes do not prove the network request stopped.",
+      "run_status": "not_run",
+      "actual": null
+    },
+    {
+      "case_id": "LC-11",
+      "schema_case_ids": [
+        "EX-session-active-no-grants",
+        "EX-session-active-no-start",
+        "EX-session-reconnect-no-checkpoint",
+        "EX-session-ended-no-reason",
+        "EX-session-ended-no-time",
+        "EX-session-active-with-ended-time",
+        "EX-session-old-controller-shape-only",
+        "EX-session-persona-mismatch-shape-only",
+        "EX-session-cross-scope-shape-only"
+      ],
+      "runtime_assertion": "Reject old session revision, expired grants and ended-to-active callbacks under both host profiles.",
+      "run_status": "not_run",
+      "actual": null
+    },
+    {
+      "case_id": "LC-12",
+      "schema_case_ids": [
+        "EX-missing-budget",
+        "EX-zero-input-budget",
+        "EX-cause-with-raw-body",
+        "EX-task-parent-with-effect",
+        "EX-task-wait-forever",
+        "EX-session-extra-media",
+        "EX-session-unbounded-grants"
+      ],
+      "runtime_assertion": "Increase tasks, participants and disconnect duration under fixed global memory, depth and storage budgets; measure allocation and cleanup.",
+      "run_status": "not_run",
+      "actual": null
+    },
+    {
+      "case_id": "LC-13",
+      "schema_case_ids": [
+        "EX-result-unknown-status",
+        "EX-result-partial",
+        "EX-result-partial-no-parts",
+        "EX-result-partial-not-degraded",
+        "EX-delivery-accepted-marked-delivered",
+        "EX-delivery-no-confirmation",
+        "EX-delivery-accepted-proof-as-delivery",
+        "EX-delivery-missing-delivery-time",
+        "EX-delivery-no-platform-ref",
+        "EX-delivery-part-marked-partial",
+        "EX-delivery-aggregate-no-parts",
+        "EX-delivery-aggregate-partial",
+        "EX-delivery-old-revision-shape-only",
+        "EX-delivery-forged-proof-shape-only"
+      ],
+      "runtime_assertion": "Keep project, image and delivery outcomes separate; late cover and repeated platform callbacks never regenerate successful work.",
+      "run_status": "not_run",
+      "actual": null
+    }
+  ],
+  "host_profiles": [
+    {
+      "host_kind": "astrbot",
+      "status": "not_run",
+      "native_inputs": "not_recorded"
+    },
+    {
+      "host_kind": "companion-app",
+      "status": "not_run",
+      "native_inputs": "not_applicable"
+    }
+  ],
+  "limitations": [
+    "example.* capability IDs and fixture payload schemas are fixture-only declarations, not installed runtime APIs.",
+    "The content workflow starts with an authorized image resource reference; it does not validate image generation.",
+    "Schema checks and explicit request/result comparisons here inspect fixed artifacts, not live authorization or execution.",
+    "The runner does not execute workflow steps, reload plugins, send messages, import databases or access devices."
+  ]
+}

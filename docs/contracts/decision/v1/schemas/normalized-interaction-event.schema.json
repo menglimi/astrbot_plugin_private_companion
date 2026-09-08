@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:normalized-interaction-event:v1",
+  "title": "Platform-neutral read-only interaction event",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "companion.normalized-interaction-event.v1" },
+    "event_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "trace_id": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "event_kind": { "enum": ["user_message", "conversation_opened", "conversation_closed", "reaction", "platform_event", "calendar_change", "world_event", "action_receipt", "timer_tick"] },
+    "scope": { "$ref": "urn:companion:schema:runtime-scope:v1" },
+    "scope_mode": { "enum": ["session", "user", "global"] },
+    "subject_ref": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "conversation_ref": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/token" }, { "type": "null" }] },
+    "session_ref": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/token" }, { "type": "null" }] },
+    "occurred_at": { "$ref": "urn:companion:schema:common:v1#/$defs/time" },
+    "observed_at": { "$ref": "urn:companion:schema:common:v1#/$defs/time" },
+    "expires_at": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/time" }, { "type": "null" }] },
+    "evidence_refs": { "type": "array", "items": { "$ref": "urn:companion:schema:common:v1#/$defs/token" }, "minItems": 1, "maxItems": 8, "uniqueItems": true },
+    "payload": { "$ref": "#/$defs/payload" },
+    "visibility": { "enum": ["private", "user_shared", "public", "restricted"] },
+    "reality_mode": { "enum": ["simulated", "observed", "user_asserted", "externally_confirmed", "mixed"] },
+    "source_adapter": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "adapter_generation": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "dedupe_key": { "$ref": "urn:companion:schema:common:v1#/$defs/token" },
+    "extensions": { "$ref": "urn:companion:schema:common:v1#/$defs/extensions" }
+  },
+  "required": ["schema_version", "event_id", "trace_id", "event_kind", "scope", "scope_mode", "subject_ref", "conversation_ref", "session_ref", "occurred_at", "observed_at", "expires_at", "evidence_refs", "payload", "visibility", "reality_mode", "source_adapter", "adapter_generation", "dedupe_key", "extensions"],
+  "additionalProperties": false,
+  "$defs": {
+    "payload": {
+      "type": "object",
+      "properties": {
+        "content_kind": { "enum": ["text_summary", "media_ref", "structured", "none"] },
+        "summary": { "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 2000 }, { "type": "null" }] },
+        "content_ref": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/token" }, { "type": "null" }] },
+        "content_hash": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/token" }, { "type": "null" }] },
+        "structured": { "anyOf": [{ "type": "object", "maxProperties": 32 }, { "type": "null" }] },
+        "byte_length": { "type": "integer", "minimum": 0, "maximum": 1048576 },
+        "redaction": { "enum": ["summary_only", "reference_only", "structured_only", "none"] },
+        "language": { "anyOf": [{ "$ref": "urn:companion:schema:common:v1#/$defs/token" }, { "type": "null" }] }
+      },
+      "required": ["content_kind", "summary", "content_ref", "content_hash", "structured", "byte_length", "redaction", "language"],
+      "additionalProperties": false,
+      "allOf": [
+        { "if": { "properties": { "content_kind": { "const": "text_summary" } } }, "then": { "required": ["summary"], "properties": { "summary": { "type": "string" }, "content_ref": { "type": "null" }, "structured": { "type": "null" } } } },
+        { "if": { "properties": { "content_kind": { "const": "media_ref" } } }, "then": { "required": ["content_ref"], "properties": { "content_ref": { "type": "string" }, "summary": { "anyOf": [{ "type": "string" }, { "type": "null" }] }, "structured": { "type": "null" } } } },
+        { "if": { "properties": { "content_kind": { "const": "structured" } } }, "then": { "required": ["structured"], "properties": { "structured": { "type": "object", "maxProperties": 32 }, "summary": { "anyOf": [{ "type": "string" }, { "type": "null" }] }, "content_ref": { "type": "null" } } } },
+        { "if": { "properties": { "content_kind": { "const": "none" } } }, "then": { "properties": { "summary": { "type": "null" }, "content_ref": { "type": "null" }, "structured": { "type": "null" }, "byte_length": { "const": 0 }, "redaction": { "const": "reference_only" } } } }
+      ]
+    }
+  }
+}

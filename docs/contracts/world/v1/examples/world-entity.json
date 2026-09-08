@@ -1,0 +1,13 @@
+{
+  "schema_version": "companion.world-entity.v1",
+  "entity_id": "entity-desk-001",
+  "owner_ref": "persona-owner-001",
+  "scope": { "ecosystem_id": "ecosystem-001", "installation_id": "installation-001", "runtime_instance_id": "embedded-runtime", "host_kind": "companion-app", "bot_id": "bot-main", "platform": null, "account_id": null, "conversation_ref": "conversation-001", "platform_conversation_id": null, "session_id": null, "user_id": null, "group_id": null, "persona_id": "persona-main", "persona_binding_revision": 12 },
+  "kind": "desk",
+  "attributes": { "location": "bedroom", "surface": "wood", "has_water": true },
+  "reality_mode": "simulated",
+  "visibility": "global_safe",
+  "revision": 2,
+  "source_refs": [{ "id": "ev-world-001", "source_id": "world-seed-001", "source_type": "persona_config", "evidence_kind": "observed", "observed_at": "2026-09-01T00:00:00+08:00", "expires_at": null, "source_revision": "1" }],
+  "valid_until": null
+}

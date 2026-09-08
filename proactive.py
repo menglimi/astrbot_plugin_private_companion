@@ -103,7 +103,16 @@ from .dreaming import (
     recent_diary_tags,
     weighted_unique_fragment_sample,
 )
-from .helpers import _date_key, _now_ts, _safe_float, _safe_int, _single_line, _strip_internal_message_blocks, _today_key
+from .helpers import (
+    _date_key,
+    _now_ts,
+    _safe_float,
+    _safe_int,
+    _single_line,
+    _strip_internal_message_blocks,
+    _today_key,
+    _unanswered_proactive_count,
+)
 from .conversation_prompt_section import (
     PromptRenderMode,
     PromptSection,
@@ -644,6 +653,26 @@ class ProactiveMixin(UserRestGateMixin):
             semantic_kind=user.get("planned_proactive_semantic_kind"),
         )
 
+    def _proactive_adaptive_contact_guidance(self, user: dict[str, Any], route: Any) -> str:
+        """Return soft, survey-informed guidance without adding a new hard gate.
+
+        The scheduler still owns eligibility and budgets.  This text only helps the
+        model choose a useful expression and a lower-cost delivery form for the
+        current route, especially after an unanswered contact.
+        """
+        unanswered = _unanswered_proactive_count(user)
+        parts = [
+            "先满足帮助性和最近对话相关性，再考虑是否需要主动表达；没有具体内容时宁可合并、延后或仅记录，也不要发固定问候、神秘短句或重复旧话题",
+            "根据当前上下文选择单独发送、合并当前回复、下次提起、摘要或仅记录等形式，不把‘想联系’自动等同于立刻发消息",
+        ]
+        if unanswered > 0:
+            parts.append(
+                f"此前有 {unanswered} 次主动接触未得到回应；本次不要追问或复述同一主题，按本路线的时效和重要性决定降级形式"
+            )
+        if getattr(route, "response_expectation", "optional") == "none":
+            parts.append("本路线不要求对方回应，避免用问题句制造回应压力")
+        return "；".join(parts) + "。"
+
     def _proactive_route_prompt_section(
         self,
         user: dict[str, Any],
@@ -670,6 +699,7 @@ class ProactiveMixin(UserRestGateMixin):
             content=(
                 f"- 类型：{route.label}。\n"
                 f"- 路线要求：{route.render_directive(quota_tier=_safe_int(tier_policy.get('tier'), 0))}\n"
+                f"- 自适应接触：{self._proactive_adaptive_contact_guidance(user, route)}\n"
                 f"- 终审重点：{route.review_directive()}\n"
                 f"- 配额策略：L{tier_policy.get('tier', 0)} {tier_policy.get('label', '')}。{tier_rule}"
             ),
@@ -1996,7 +2026,7 @@ class ProactiveMixin(UserRestGateMixin):
         if not isinstance(user, dict) or self._private_user_role(user) != "friend":
             return 0
         level = 0
-        ignored = _safe_int(user.get("ignored_streak"), 0, 0, 20)
+        ignored = _unanswered_proactive_count(user)
         if ignored >= 3:
             level = 3
         elif ignored >= 2:
@@ -2020,7 +2050,7 @@ class ProactiveMixin(UserRestGateMixin):
             return ""
         # 未回应只降低频率并把内容收敛为低压文字，不再把已授权用户永久停发。
         # 明确拒绝、休息和关系边界仍由统一互动/休息闸门处理。
-        ignored = _safe_int(user.get("ignored_streak"), 0, 0, 20)
+        ignored = _unanswered_proactive_count(user)
         check_now = _now_ts() if now is None else now
         awaiting_since = _safe_float(user.get("awaiting_reply_since"), 0)
         unanswered_hours = (check_now - awaiting_since) / 3600.0 if awaiting_since > 0 else 0.0
@@ -2034,6 +2064,32 @@ class ProactiveMixin(UserRestGateMixin):
             user["friend_unanswered_silence_note"] = ""
         user["friend_unanswered_silenced_since"] = 0
         return ""
+
+    def _proactive_unanswered_pause_after(self) -> int:
+        configured = _safe_int(
+            _proactive_setting_value(self, "proactive_unanswered_pause_after", 0),
+            0,
+            0,
+            50,
+        )
+        return self._effective_proactive_int(
+            "pause_after",
+            configured,
+            minimum=0,
+            maximum=50,
+        )
+
+    def _proactive_unanswered_pause_reason(self, user: dict[str, Any] | None) -> str:
+        if not isinstance(user, dict):
+            return ""
+        pause_after = self._proactive_unanswered_pause_after()
+        count = _unanswered_proactive_count(user)
+        if pause_after <= 0 or count < pause_after:
+            return ""
+        return (
+            f"连续 {count} 次主动消息未收到回复，已达到配置的暂停阈值 {pause_after}；"
+            "收到用户新消息后恢复普通主动"
+        )
 
     def _block_friend_unanswered_pending_proactive(
         self,
@@ -2277,7 +2333,7 @@ class ProactiveMixin(UserRestGateMixin):
         return True
 
     def _unanswered_slowdown_count(self, user: dict[str, Any]) -> int:
-        ignored_streak = _safe_int(user.get("ignored_streak"), 0)
+        ignored_streak = _unanswered_proactive_count(user)
         start = self._effective_proactive_int(
             "unanswered_slowdown_start",
             _safe_int(_proactive_setting_value(self, "proactive_unanswered_slowdown_start", 1), 1, 1, 10),
@@ -2360,7 +2416,7 @@ class ProactiveMixin(UserRestGateMixin):
         check_now = _now_ts() if now is None else now
         score = 0.54
         reasons: list[str] = []
-        ignored_streak = _safe_int(user.get("ignored_streak"), 0, 0, 20)
+        ignored_streak = _unanswered_proactive_count(user)
         if ignored_streak:
             score -= min(0.32, ignored_streak * 0.08)
             reasons.append(f"未回应{ignored_streak}")
@@ -2528,7 +2584,7 @@ class ProactiveMixin(UserRestGateMixin):
         semantic_pressure = _safe_float(semantics.get("pressure"), 0.4)
         score += (semantic_score - 0.5) * 0.10
         score -= max(0.0, semantic_pressure - 0.55) * 0.16
-        ignored = _safe_int(user.get("ignored_streak"), 0, 0, 20)
+        ignored = _unanswered_proactive_count(user)
         if ignored:
             score -= min(0.22, ignored * 0.055)
             reasons.append(f"未回应{ignored}")
@@ -2557,7 +2613,7 @@ class ProactiveMixin(UserRestGateMixin):
         if any(token in note for token in ("困", "疲惫", "低电量", "慢一点", "收声")):
             arousal -= 0.08
             reasons.append("状态偏低")
-        ignored = _safe_int(user.get("ignored_streak"), 0, 0, 20)
+        ignored = _unanswered_proactive_count(user)
         if ignored >= 2:
             arousal -= 0.06
             reasons.append("未回应降唤醒")
@@ -3182,7 +3238,7 @@ class ProactiveMixin(UserRestGateMixin):
         energy = _safe_int(state.get("energy"), 70, 0, 100)
         mood = _single_line(state.get("mood_bias") or state.get("mood"), 24)
         note = _single_line(state.get("note"), 120)
-        ignored_streak = _safe_int(user.get("ignored_streak"), 0, 0, 20)
+        ignored_streak = _unanswered_proactive_count(user)
         awaiting_since = _safe_float(user.get("awaiting_reply_since"), 0)
         last_sent = _safe_float(user.get("last_sent"), 0)
         reasons: list[str] = []
@@ -3637,6 +3693,17 @@ class ProactiveMixin(UserRestGateMixin):
         now = now or _now_ts()
         timer_event = self._get_active_llm_timer(user)
         if not (isinstance(timer_event, dict) and self._llm_timer_can_use_internal_scheduler(timer_event)):
+            pause_reason = self._proactive_unanswered_pause_reason(user)
+            if pause_reason:
+                self._block_friend_unanswered_pending_proactive(user, note=pause_reason, now=now)
+                self._clear_pending_proactive_plan(user)
+                logger.info(
+                    "连续未回应达到配置阈值,暂停普通主动: user=%s unanswered=%s threshold=%s",
+                    _single_line(user_id, 40) or "unknown",
+                    _unanswered_proactive_count(user),
+                    self._proactive_unanswered_pause_after(),
+                )
+                return
             silence_reason_getter = getattr(self, "_friend_unanswered_silence_reason", None)
             silence_reason = silence_reason_getter(user, now=now) if callable(silence_reason_getter) else ""
             if silence_reason:
@@ -3645,7 +3712,7 @@ class ProactiveMixin(UserRestGateMixin):
                 logger.info(
                     "次要用户连续未回应,停止安排普通主动: user=%s ignored=%s reason=%s",
                     _single_line(user_id, 40) or "unknown",
-                    _safe_int(user.get("ignored_streak"), 0, 0),
+                    _unanswered_proactive_count(user),
                     _single_line(silence_reason, 120),
                 )
                 return
@@ -3835,6 +3902,8 @@ class ProactiveMixin(UserRestGateMixin):
         user["planned_proactive_reason"] = reason
         user["planned_proactive_action"] = action
         user["planned_proactive_source"] = source
+        user["planned_proactive_conversation_posture"] = _single_line(event.get("conversation_posture"), 24).lower()
+        user["planned_proactive_conversation_closing_deferred"] = False
         user["planned_proactive_motive"] = motive
         user["planned_proactive_topic"] = _single_line(event.get("topic"), 60)
         user["planned_proactive_impulse_id"] = ""
@@ -3900,6 +3969,8 @@ class ProactiveMixin(UserRestGateMixin):
         user["planned_proactive_reason"] = ""
         user["planned_proactive_action"] = ""
         user["planned_proactive_source"] = ""
+        user["planned_proactive_conversation_posture"] = ""
+        user["planned_proactive_conversation_closing_deferred"] = False
         user["planned_proactive_kind"] = ""
         user["planned_proactive_route_version"] = 0
         user["planned_proactive_route_dedupe_key"] = ""

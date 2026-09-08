@@ -1,0 +1,1649 @@
+{
+  "format_version": "1.0",
+  "purpose": "offline_subscription_schema_examples",
+  "cases": [
+    {
+      "id": "sub-subscribe",
+      "schema": "memory-subscription-request",
+      "document": "examples/subscribe.json",
+      "valid": true
+    },
+    {
+      "id": "sub-subscribe-resume",
+      "schema": "memory-subscription-request",
+      "document": "examples/subscribe-resume.json",
+      "valid": true
+    },
+    {
+      "id": "sub-result-subscribe",
+      "schema": "memory-subscription-result",
+      "document": "examples/result-subscribe.json",
+      "valid": true
+    },
+    {
+      "id": "sub-resync-start",
+      "schema": "memory-subscription-request",
+      "document": "examples/resync-start.json",
+      "valid": true
+    },
+    {
+      "id": "sub-resync-page",
+      "schema": "memory-subscription-request",
+      "document": "examples/resync-page.json",
+      "valid": true
+    },
+    {
+      "id": "sub-result-resync-page",
+      "schema": "memory-subscription-result",
+      "document": "examples/result-resync-page.json",
+      "valid": true
+    },
+    {
+      "id": "sub-result-resync-complete",
+      "schema": "memory-subscription-result",
+      "document": "examples/result-resync-complete.json",
+      "valid": true
+    },
+    {
+      "id": "sub-batch-tail",
+      "schema": "memory-change-batch",
+      "document": "examples/batch-tail.json",
+      "valid": true
+    },
+    {
+      "id": "sub-batch-live",
+      "schema": "memory-change-batch",
+      "document": "examples/batch-live.json",
+      "valid": true
+    },
+    {
+      "id": "sub-checkpoint-pages",
+      "schema": "memory-checkpoint",
+      "document": "examples/checkpoint-pages.json",
+      "valid": true
+    },
+    {
+      "id": "sub-checkpoint-tail",
+      "schema": "memory-checkpoint",
+      "document": "examples/checkpoint-tail.json",
+      "valid": true
+    },
+    {
+      "id": "sub-checkpoint-active",
+      "schema": "memory-checkpoint",
+      "document": "examples/checkpoint-active.json",
+      "valid": true
+    },
+    {
+      "id": "sub-ack-tail",
+      "schema": "memory-subscription-request",
+      "document": "examples/ack-tail.json",
+      "valid": true
+    },
+    {
+      "id": "sub-ack-snapshot",
+      "schema": "memory-subscription-request",
+      "document": "examples/ack-snapshot.json",
+      "valid": true
+    },
+    {
+      "id": "sub-result-ack-tail",
+      "schema": "memory-subscription-result",
+      "document": "examples/result-ack-tail.json",
+      "valid": true
+    },
+    {
+      "id": "sub-result-ack-snapshot",
+      "schema": "memory-subscription-result",
+      "document": "examples/result-ack-snapshot.json",
+      "valid": true
+    },
+    {
+      "id": "sub-result-control-rejected",
+      "schema": "memory-subscription-result",
+      "document": "examples/result-control-rejected.json",
+      "valid": true
+    },
+    {
+      "id": "sub-request-unknown",
+      "schema": "memory-subscription-request",
+      "document": "examples/subscribe.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "unknown"
+          ],
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "sub-request-old-version",
+      "schema": "memory-subscription-request",
+      "document": "examples/subscribe.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "schema_version"
+          ],
+          "value": "memory.subscribe.v2"
+        }
+      ]
+    },
+    {
+      "id": "sub-request-capability-mismatch",
+      "schema": "memory-subscription-request",
+      "document": "examples/subscribe.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "capability_id"
+          ],
+          "value": "memory.changed.ack"
+        }
+      ]
+    },
+    {
+      "id": "sub-request-missing-scope",
+      "schema": "memory-subscription-request",
+      "document": "examples/subscribe.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "scope"
+          ],
+          "remove": true
+        }
+      ],
+      "scenario_refs": [
+        "SUB-06"
+      ]
+    },
+    {
+      "id": "sub-request-self-owner",
+      "schema": "memory-subscription-request",
+      "document": "examples/subscribe.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "owner_ref"
+          ],
+          "value": "owner-other"
+        }
+      ],
+      "scenario_refs": [
+        "SUB-06"
+      ]
+    },
+    {
+      "id": "sub-request-missing-key",
+      "schema": "memory-subscription-request",
+      "document": "examples/subscribe.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "idempotency_key"
+          ],
+          "remove": true
+        }
+      ]
+    },
+    {
+      "id": "sub-request-model-budget",
+      "schema": "memory-subscription-request",
+      "document": "examples/subscribe.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "budget",
+            "max_model_calls"
+          ],
+          "value": 1
+        }
+      ],
+      "scenario_refs": [
+        "SUB-10"
+      ]
+    },
+    {
+      "id": "sub-request-no-model-budget",
+      "schema": "memory-subscription-request",
+      "document": "examples/subscribe.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "budget",
+            "max_model_calls"
+          ],
+          "remove": true
+        }
+      ]
+    },
+    {
+      "id": "sub-request-no-output-budget",
+      "schema": "memory-subscription-request",
+      "document": "examples/subscribe.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "budget",
+            "max_output_bytes"
+          ],
+          "remove": true
+        }
+      ]
+    },
+    {
+      "id": "sub-limit-zero-items",
+      "schema": "memory-subscription-request",
+      "document": "examples/subscribe.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "limits",
+            "max_batch_items"
+          ],
+          "value": 0
+        }
+      ],
+      "scenario_refs": [
+        "SUB-09"
+      ]
+    },
+    {
+      "id": "sub-limit-negative-retries",
+      "schema": "memory-subscription-request",
+      "document": "examples/subscribe.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "limits",
+            "max_retry_attempts"
+          ],
+          "value": -1
+        }
+      ],
+      "scenario_refs": [
+        "SUB-09"
+      ]
+    },
+    {
+      "id": "sub-limit-zero-retries",
+      "schema": "memory-subscription-request",
+      "document": "examples/subscribe.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "limits",
+            "max_retry_attempts"
+          ],
+          "value": 0
+        }
+      ],
+      "scenario_refs": [
+        "SUB-09"
+      ]
+    },
+    {
+      "id": "sub-limit-missing-staging",
+      "schema": "memory-subscription-request",
+      "document": "examples/subscribe.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "limits",
+            "max_staging_bytes"
+          ],
+          "remove": true
+        }
+      ],
+      "scenario_refs": [
+        "SUB-09"
+      ]
+    },
+    {
+      "id": "sub-limit-bad-deadline",
+      "schema": "memory-subscription-request",
+      "document": "examples/subscribe.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "limits",
+            "recovery_deadline_at"
+          ],
+          "value": "2026-02-30T01:00:00Z"
+        }
+      ]
+    },
+    {
+      "id": "sub-projection-no-retract",
+      "schema": "memory-subscription-request",
+      "document": "examples/subscribe.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "change_kinds"
+          ],
+          "value": [
+            "added",
+            "corrected",
+            "expired"
+          ]
+        }
+      ],
+      "scenario_refs": [
+        "SUB-15"
+      ]
+    },
+    {
+      "id": "sub-projection-duplicate-kinds",
+      "schema": "memory-subscription-request",
+      "document": "examples/subscribe.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "change_kinds"
+          ],
+          "value": [
+            "added",
+            "corrected",
+            "retracted",
+            "retracted"
+          ]
+        }
+      ],
+      "scenario_refs": [
+        "SUB-15"
+      ]
+    },
+    {
+      "id": "sub-projection-live-start",
+      "schema": "memory-subscription-request",
+      "document": "examples/subscribe.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "start"
+          ],
+          "value": {
+            "mode": "live"
+          }
+        }
+      ],
+      "scenario_refs": [
+        "SUB-15"
+      ]
+    },
+    {
+      "id": "sub-notifications-live",
+      "schema": "memory-subscription-request",
+      "document": "examples/subscribe.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "view_kind"
+          ],
+          "value": "notifications"
+        },
+        {
+          "path": [
+            "payload",
+            "change_kinds"
+          ],
+          "value": [
+            "added"
+          ]
+        },
+        {
+          "path": [
+            "payload",
+            "start"
+          ],
+          "value": {
+            "mode": "live"
+          }
+        }
+      ],
+      "scenario_refs": [
+        "SUB-15"
+      ]
+    },
+    {
+      "id": "sub-notifications-snapshot",
+      "schema": "memory-subscription-request",
+      "document": "examples/subscribe.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "view_kind"
+          ],
+          "value": "notifications"
+        }
+      ]
+    },
+    {
+      "id": "sub-resume-staging",
+      "schema": "memory-subscription-request",
+      "document": "examples/subscribe-resume.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "start",
+            "checkpoint",
+            "state"
+          ],
+          "value": "snapshot_tail"
+        }
+      ],
+      "scenario_refs": [
+        "SUB-08"
+      ]
+    },
+    {
+      "id": "sub-resume-missing-checkpoint",
+      "schema": "memory-subscription-request",
+      "document": "examples/subscribe-resume.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "start",
+            "checkpoint"
+          ],
+          "remove": true
+        }
+      ],
+      "scenario_refs": [
+        "SUB-11"
+      ]
+    },
+    {
+      "id": "sub-ack-no-lease",
+      "schema": "memory-subscription-request",
+      "document": "examples/ack-tail.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "lease_id"
+          ],
+          "remove": true
+        }
+      ],
+      "scenario_refs": [
+        "SUB-12"
+      ]
+    },
+    {
+      "id": "sub-ack-unknown-target",
+      "schema": "memory-subscription-request",
+      "document": "examples/ack-tail.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "target",
+            "kind"
+          ],
+          "value": "anything"
+        }
+      ],
+      "scenario_refs": [
+        "SUB-12"
+      ]
+    },
+    {
+      "id": "sub-ack-idempotency-field",
+      "schema": "memory-subscription-request",
+      "document": "examples/ack-tail.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "idempotency_key"
+          ],
+          "value": "unexpected-key"
+        }
+      ]
+    },
+    {
+      "id": "sub-ack-before-page-complete",
+      "schema": "memory-subscription-request",
+      "document": "examples/ack-tail.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "checkpoint"
+          ],
+          "value": {
+            "schema_version": "memory.checkpoint.v1",
+            "binding": {
+              "subscriber_ref": "subscriber-reading",
+              "owner_ref": "owner-001",
+              "namespace": "example.reading",
+              "purpose": "projection",
+              "projection_kind": "references",
+              "view_kind": "current_projection",
+              "change_kinds": [
+                "added",
+                "corrected",
+                "retracted",
+                "expired"
+              ],
+              "view_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+              "authorization_revision": "acl-3",
+              "policy_revision": "policy-3",
+              "lineage_id": "lineage-reading",
+              "retention_epoch": "retention-2",
+              "contract_fingerprint": "3a41420f40fcd7dc8b8e2d990c8c5b3bd47cde8a998c88339daa9c71dadaaee2"
+            },
+            "projection_generation": "projection-002",
+            "state": "snapshot_pages",
+            "snapshot": {
+              "snapshot_id": "snapshot-001",
+              "snapshot_epoch": "snapshot-epoch-001",
+              "binding": {
+                "subscriber_ref": "subscriber-reading",
+                "owner_ref": "owner-001",
+                "namespace": "example.reading",
+                "purpose": "projection",
+                "projection_kind": "references",
+                "view_kind": "current_projection",
+                "change_kinds": [
+                  "added",
+                  "corrected",
+                  "retracted",
+                  "expired"
+                ],
+                "view_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+                "authorization_revision": "acl-3",
+                "policy_revision": "policy-3",
+                "lineage_id": "lineage-reading",
+                "retention_epoch": "retention-2",
+                "contract_fingerprint": "3a41420f40fcd7dc8b8e2d990c8c5b3bd47cde8a998c88339daa9c71dadaaee2"
+              },
+              "memory_revision": 104,
+              "tail_start_cursor": "cursor-104",
+              "expires_at": "2026-09-08T01:05:00Z"
+            },
+            "page_cursor": "snapshot-page-001",
+            "stream_cursor": "cursor-104",
+            "last_event_id": null,
+            "memory_revision": 104,
+            "inbox_ref": "inbox-generation-002",
+            "stored_at": "2026-09-08T01:00:05Z"
+          }
+        }
+      ],
+      "scenario_refs": [
+        "SUB-08"
+      ]
+    },
+    {
+      "id": "sub-snapshot-ack-not-active",
+      "schema": "memory-subscription-request",
+      "document": "examples/ack-snapshot.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "checkpoint",
+            "state"
+          ],
+          "value": "snapshot_tail"
+        }
+      ],
+      "scenario_refs": [
+        "SUB-08"
+      ]
+    },
+    {
+      "id": "sub-snapshot-ack-no-proof",
+      "schema": "memory-subscription-request",
+      "document": "examples/ack-snapshot.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "target",
+            "completion_token"
+          ],
+          "remove": true
+        }
+      ],
+      "scenario_refs": [
+        "SUB-12"
+      ]
+    },
+    {
+      "id": "sub-snapshot-ack-no-snapshot",
+      "schema": "memory-subscription-request",
+      "document": "examples/ack-snapshot.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "checkpoint",
+            "snapshot"
+          ],
+          "value": null
+        }
+      ],
+      "scenario_refs": [
+        "SUB-08"
+      ]
+    },
+    {
+      "id": "sub-ack-future-cursor-shape-only",
+      "schema": "memory-subscription-request",
+      "document": "examples/ack-tail.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "checkpoint",
+            "stream_cursor"
+          ],
+          "value": "cursor-not-dispatched"
+        }
+      ],
+      "scenario_refs": [
+        "SUB-12"
+      ]
+    },
+    {
+      "id": "sub-ack-old-generation-shape-only",
+      "schema": "memory-subscription-request",
+      "document": "examples/ack-tail.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "subscriber_generation"
+          ],
+          "value": "consumer-7"
+        }
+      ],
+      "scenario_refs": [
+        "SUB-12"
+      ]
+    },
+    {
+      "id": "sub-resync-start-no-key",
+      "schema": "memory-subscription-request",
+      "document": "examples/resync-start.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "idempotency_key"
+          ],
+          "remove": true
+        }
+      ],
+      "scenario_refs": [
+        "SUB-08"
+      ]
+    },
+    {
+      "id": "sub-resync-page-no-cursor",
+      "schema": "memory-subscription-request",
+      "document": "examples/resync-page.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "page_cursor"
+          ],
+          "remove": true
+        }
+      ],
+      "scenario_refs": [
+        "SUB-08"
+      ]
+    },
+    {
+      "id": "sub-resync-page-no-epoch",
+      "schema": "memory-subscription-request",
+      "document": "examples/resync-page.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "snapshot_epoch"
+          ],
+          "remove": true
+        }
+      ],
+      "scenario_refs": [
+        "SUB-08"
+      ]
+    },
+    {
+      "id": "sub-resync-page-extra-key",
+      "schema": "memory-subscription-request",
+      "document": "examples/resync-page.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "idempotency_key"
+          ],
+          "value": "page-key"
+        }
+      ]
+    },
+    {
+      "id": "sub-resync-unknown-action",
+      "schema": "memory-subscription-request",
+      "document": "examples/resync-start.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "payload",
+            "action"
+          ],
+          "value": "erase"
+        }
+      ]
+    },
+    {
+      "id": "sub-result-unknown-status",
+      "schema": "memory-subscription-result",
+      "document": "examples/result-subscribe.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "status"
+          ],
+          "value": "resync_required"
+        }
+      ],
+      "scenario_refs": [
+        "SUB-05"
+      ]
+    },
+    {
+      "id": "sub-result-live",
+      "schema": "memory-subscription-result",
+      "document": "examples/result-subscribe.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "output",
+            "subscription_state"
+          ],
+          "value": "live"
+        },
+        {
+          "path": [
+            "output",
+            "cursor"
+          ],
+          "value": "cursor-106"
+        },
+        {
+          "path": [
+            "output",
+            "resync_reason"
+          ],
+          "value": null
+        }
+      ]
+    },
+    {
+      "id": "sub-result-live-no-cursor",
+      "schema": "memory-subscription-result",
+      "document": "examples/result-subscribe.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "output",
+            "subscription_state"
+          ],
+          "value": "live"
+        },
+        {
+          "path": [
+            "output",
+            "resync_reason"
+          ],
+          "value": null
+        }
+      ]
+    },
+    {
+      "id": "sub-result-resync-no-reason",
+      "schema": "memory-subscription-result",
+      "document": "examples/result-subscribe.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "output",
+            "resync_reason"
+          ],
+          "value": null
+        }
+      ]
+    },
+    {
+      "id": "sub-result-binding-incomplete-filter",
+      "schema": "memory-subscription-result",
+      "document": "examples/result-subscribe.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "output",
+            "binding",
+            "change_kinds"
+          ],
+          "value": [
+            "added"
+          ]
+        }
+      ],
+      "scenario_refs": [
+        "SUB-15"
+      ]
+    },
+    {
+      "id": "sub-result-bad-fingerprint",
+      "schema": "memory-subscription-result",
+      "document": "examples/result-subscribe.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "output",
+            "binding",
+            "contract_fingerprint"
+          ],
+          "value": "not-a-fingerprint"
+        }
+      ]
+    },
+    {
+      "id": "sub-result-error-leaks-output",
+      "schema": "memory-subscription-result",
+      "document": "examples/result-control-rejected.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "output"
+          ],
+          "value": {
+            "subscription_id": "subscription-001",
+            "subscriber_generation": "consumer-8",
+            "lease_id": "lease-tail-001",
+            "target": {
+              "kind": "batch",
+              "batch_id": "batch-tail-001"
+            },
+            "ack_state": "accepted",
+            "subscription_state": "resyncing",
+            "acknowledged_cursor": "cursor-106",
+            "projection_generation": "projection-002"
+          }
+        }
+      ],
+      "scenario_refs": [
+        "SUB-06"
+      ]
+    },
+    {
+      "id": "sub-result-error-missing-reason",
+      "schema": "memory-subscription-result",
+      "document": "examples/result-control-rejected.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "reason_code"
+          ],
+          "value": null
+        }
+      ]
+    },
+    {
+      "id": "sub-result-uncertain",
+      "schema": "memory-subscription-result",
+      "document": "examples/result-control-rejected.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "status"
+          ],
+          "value": "uncertain"
+        },
+        {
+          "path": [
+            "reason_code"
+          ],
+          "value": "control_unknown"
+        }
+      ],
+      "scenario_refs": [
+        "SUB-02"
+      ]
+    },
+    {
+      "id": "sub-result-wrong-capability-output",
+      "schema": "memory-subscription-result",
+      "document": "examples/result-ack-tail.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "capability_id"
+          ],
+          "value": "memory.changed.subscribe"
+        }
+      ]
+    },
+    {
+      "id": "sub-result-duplicate-ack",
+      "schema": "memory-subscription-result",
+      "document": "examples/result-ack-tail.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "output",
+            "ack_state"
+          ],
+          "value": "already_accepted"
+        }
+      ],
+      "scenario_refs": [
+        "SUB-01"
+      ]
+    },
+    {
+      "id": "sub-result-snapshot-not-live",
+      "schema": "memory-subscription-result",
+      "document": "examples/result-ack-snapshot.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "output",
+            "subscription_state"
+          ],
+          "value": "resyncing"
+        }
+      ],
+      "scenario_refs": [
+        "SUB-08"
+      ]
+    },
+    {
+      "id": "sub-snapshot-final-no-completion",
+      "schema": "memory-subscription-result",
+      "document": "examples/result-resync-complete.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "output",
+            "completion"
+          ],
+          "value": null
+        }
+      ],
+      "scenario_refs": [
+        "SUB-08",
+        "SUB-13"
+      ]
+    },
+    {
+      "id": "sub-snapshot-final-no-activation-lease",
+      "schema": "memory-subscription-result",
+      "document": "examples/result-resync-complete.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "output",
+            "activation_lease"
+          ],
+          "value": null
+        }
+      ]
+    },
+    {
+      "id": "sub-snapshot-middle-has-completion",
+      "schema": "memory-subscription-result",
+      "document": "examples/result-resync-page.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "output",
+            "completion"
+          ],
+          "value": {
+            "completion_token": "snapshot-proof-001",
+            "tail_until_cursor": "cursor-106"
+          }
+        }
+      ],
+      "scenario_refs": [
+        "SUB-13"
+      ]
+    },
+    {
+      "id": "sub-snapshot-empty-final",
+      "schema": "memory-subscription-result",
+      "document": "examples/result-resync-complete.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "output",
+            "items"
+          ],
+          "value": []
+        }
+      ],
+      "scenario_refs": [
+        "SUB-05",
+        "SUB-14"
+      ]
+    },
+    {
+      "id": "sub-snapshot-full-body-forbidden",
+      "schema": "memory-subscription-result",
+      "document": "examples/result-resync-page.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "output",
+            "items",
+            0,
+            "body"
+          ],
+          "value": "hidden text"
+        }
+      ],
+      "scenario_refs": [
+        "SUB-06"
+      ]
+    },
+    {
+      "id": "sub-snapshot-tombstone-no-body",
+      "schema": "memory-subscription-result",
+      "document": "examples/result-resync-complete.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "output",
+            "items",
+            0,
+            "body"
+          ],
+          "value": "hidden text"
+        }
+      ],
+      "scenario_refs": [
+        "SUB-14"
+      ]
+    },
+    {
+      "id": "sub-snapshot-active-zero-revision",
+      "schema": "memory-subscription-result",
+      "document": "examples/result-resync-page.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "output",
+            "items",
+            0,
+            "atom_revision"
+          ],
+          "value": 0
+        }
+      ]
+    },
+    {
+      "id": "sub-snapshot-wrong-epoch-shape-only",
+      "schema": "memory-subscription-result",
+      "document": "examples/result-resync-page.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "output",
+            "snapshot",
+            "snapshot_epoch"
+          ],
+          "value": "epoch-other"
+        }
+      ],
+      "scenario_refs": [
+        "SUB-14"
+      ]
+    },
+    {
+      "id": "sub-batch-empty",
+      "schema": "memory-change-batch",
+      "document": "examples/batch-live.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "events"
+          ],
+          "value": []
+        }
+      ],
+      "scenario_refs": [
+        "SUB-03"
+      ]
+    },
+    {
+      "id": "sub-batch-duplicates",
+      "schema": "memory-change-batch",
+      "document": "examples/batch-tail.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "events"
+          ],
+          "value": [
+            {
+              "schema_version": "memory.changed.v1",
+              "capability_id": "memory.changed",
+              "capability_version": "1.0",
+              "provider_id": "example.memory",
+              "provider_generation": "generation-8",
+              "trace_id": "trace-recovery-001",
+              "scope": {
+                "ecosystem_id": "ecosystem-001",
+                "installation_id": "installation-001",
+                "runtime_instance_id": "embedded-runtime",
+                "host_kind": "companion-app",
+                "bot_id": "bot-main",
+                "platform": null,
+                "account_id": null,
+                "conversation_ref": "conversation-001",
+                "platform_conversation_id": null,
+                "session_id": null,
+                "user_id": null,
+                "group_id": null,
+                "persona_id": "persona-main",
+                "persona_binding_revision": 12
+              },
+              "payload": {
+                "event_id": "event-105",
+                "namespace": "example.reading",
+                "owner_ref": "owner-001",
+                "atom_id": "atom-001",
+                "atom_revision": 8,
+                "memory_revision": 105,
+                "change_kind": "corrected",
+                "occurred_at": "2026-09-08T01:00:01Z",
+                "trace_id": "trace-recovery-001"
+              }
+            },
+            {
+              "schema_version": "memory.changed.v1",
+              "capability_id": "memory.changed",
+              "capability_version": "1.0",
+              "provider_id": "example.memory",
+              "provider_generation": "generation-8",
+              "trace_id": "trace-recovery-001",
+              "scope": {
+                "ecosystem_id": "ecosystem-001",
+                "installation_id": "installation-001",
+                "runtime_instance_id": "embedded-runtime",
+                "host_kind": "companion-app",
+                "bot_id": "bot-main",
+                "platform": null,
+                "account_id": null,
+                "conversation_ref": "conversation-001",
+                "platform_conversation_id": null,
+                "session_id": null,
+                "user_id": null,
+                "group_id": null,
+                "persona_id": "persona-main",
+                "persona_binding_revision": 12
+              },
+              "payload": {
+                "event_id": "event-105",
+                "namespace": "example.reading",
+                "owner_ref": "owner-001",
+                "atom_id": "atom-001",
+                "atom_revision": 8,
+                "memory_revision": 105,
+                "change_kind": "corrected",
+                "occurred_at": "2026-09-08T01:00:01Z",
+                "trace_id": "trace-recovery-001"
+              }
+            }
+          ]
+        }
+      ],
+      "scenario_refs": [
+        "SUB-01"
+      ]
+    },
+    {
+      "id": "sub-batch-reordered",
+      "schema": "memory-change-batch",
+      "document": "examples/batch-tail.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "events"
+          ],
+          "value": [
+            {
+              "schema_version": "memory.changed.v1",
+              "capability_id": "memory.changed",
+              "capability_version": "1.0",
+              "provider_id": "example.memory",
+              "provider_generation": "generation-8",
+              "trace_id": "trace-recovery-001",
+              "scope": {
+                "ecosystem_id": "ecosystem-001",
+                "installation_id": "installation-001",
+                "runtime_instance_id": "embedded-runtime",
+                "host_kind": "companion-app",
+                "bot_id": "bot-main",
+                "platform": null,
+                "account_id": null,
+                "conversation_ref": "conversation-001",
+                "platform_conversation_id": null,
+                "session_id": null,
+                "user_id": null,
+                "group_id": null,
+                "persona_id": "persona-main",
+                "persona_binding_revision": 12
+              },
+              "payload": {
+                "event_id": "event-106",
+                "namespace": "example.reading",
+                "owner_ref": "owner-001",
+                "atom_id": "atom-001",
+                "atom_revision": 9,
+                "memory_revision": 106,
+                "change_kind": "retracted",
+                "occurred_at": "2026-09-08T01:00:01Z",
+                "trace_id": "trace-recovery-001"
+              }
+            },
+            {
+              "schema_version": "memory.changed.v1",
+              "capability_id": "memory.changed",
+              "capability_version": "1.0",
+              "provider_id": "example.memory",
+              "provider_generation": "generation-8",
+              "trace_id": "trace-recovery-001",
+              "scope": {
+                "ecosystem_id": "ecosystem-001",
+                "installation_id": "installation-001",
+                "runtime_instance_id": "embedded-runtime",
+                "host_kind": "companion-app",
+                "bot_id": "bot-main",
+                "platform": null,
+                "account_id": null,
+                "conversation_ref": "conversation-001",
+                "platform_conversation_id": null,
+                "session_id": null,
+                "user_id": null,
+                "group_id": null,
+                "persona_id": "persona-main",
+                "persona_binding_revision": 12
+              },
+              "payload": {
+                "event_id": "event-105",
+                "namespace": "example.reading",
+                "owner_ref": "owner-001",
+                "atom_id": "atom-001",
+                "atom_revision": 8,
+                "memory_revision": 105,
+                "change_kind": "corrected",
+                "occurred_at": "2026-09-08T01:00:01Z",
+                "trace_id": "trace-recovery-001"
+              }
+            }
+          ]
+        }
+      ],
+      "scenario_refs": [
+        "SUB-07"
+      ]
+    },
+    {
+      "id": "sub-batch-live-with-snapshot",
+      "schema": "memory-change-batch",
+      "document": "examples/batch-live.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "snapshot_id"
+          ],
+          "value": "snapshot-001"
+        }
+      ]
+    },
+    {
+      "id": "sub-batch-tail-no-snapshot",
+      "schema": "memory-change-batch",
+      "document": "examples/batch-tail.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "snapshot_id"
+          ],
+          "value": null
+        }
+      ],
+      "scenario_refs": [
+        "SUB-08"
+      ]
+    },
+    {
+      "id": "sub-batch-no-from-cursor",
+      "schema": "memory-change-batch",
+      "document": "examples/batch-live.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "from_cursor"
+          ],
+          "remove": true
+        }
+      ],
+      "scenario_refs": [
+        "SUB-03"
+      ]
+    },
+    {
+      "id": "sub-batch-numeric-cursor",
+      "schema": "memory-change-batch",
+      "document": "examples/batch-live.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "to_cursor"
+          ],
+          "value": 107
+        }
+      ],
+      "scenario_refs": [
+        "SUB-03"
+      ]
+    },
+    {
+      "id": "sub-batch-unknown-field",
+      "schema": "memory-change-batch",
+      "document": "examples/batch-live.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "callback"
+          ],
+          "value": "platform.handler"
+        }
+      ],
+      "scenario_refs": [
+        "SUB-11"
+      ]
+    },
+    {
+      "id": "sub-batch-event-control-field",
+      "schema": "memory-change-batch",
+      "document": "examples/batch-live.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "events",
+            0,
+            "payload",
+            "subscription_id"
+          ],
+          "value": "subscription-001"
+        }
+      ]
+    },
+    {
+      "id": "sub-batch-event-body",
+      "schema": "memory-change-batch",
+      "document": "examples/batch-live.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "events",
+            0,
+            "payload",
+            "body"
+          ],
+          "value": "hidden text"
+        }
+      ],
+      "scenario_refs": [
+        "SUB-06"
+      ]
+    },
+    {
+      "id": "sub-batch-foreign-owner-shape-only",
+      "schema": "memory-change-batch",
+      "document": "examples/batch-live.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "events",
+            0,
+            "payload",
+            "owner_ref"
+          ],
+          "value": "owner-other"
+        }
+      ],
+      "scenario_refs": [
+        "SUB-06"
+      ]
+    },
+    {
+      "id": "sub-checkpoint-pages-no-cursor",
+      "schema": "memory-checkpoint",
+      "document": "examples/checkpoint-pages.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "page_cursor"
+          ],
+          "value": null
+        }
+      ],
+      "scenario_refs": [
+        "SUB-08"
+      ]
+    },
+    {
+      "id": "sub-checkpoint-tail-no-snapshot",
+      "schema": "memory-checkpoint",
+      "document": "examples/checkpoint-tail.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "snapshot"
+          ],
+          "value": null
+        }
+      ],
+      "scenario_refs": [
+        "SUB-08"
+      ]
+    },
+    {
+      "id": "sub-checkpoint-active-has-page",
+      "schema": "memory-checkpoint",
+      "document": "examples/checkpoint-active.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "page_cursor"
+          ],
+          "value": "page-not-complete"
+        }
+      ],
+      "scenario_refs": [
+        "SUB-08"
+      ]
+    },
+    {
+      "id": "sub-checkpoint-empty-stream",
+      "schema": "memory-checkpoint",
+      "document": "examples/checkpoint-active.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "last_event_id"
+          ],
+          "value": null
+        },
+        {
+          "path": [
+            "memory_revision"
+          ],
+          "value": 0
+        },
+        {
+          "path": [
+            "snapshot"
+          ],
+          "value": null
+        }
+      ],
+      "scenario_refs": [
+        "SUB-03"
+      ]
+    },
+    {
+      "id": "sub-checkpoint-no-inbox",
+      "schema": "memory-checkpoint",
+      "document": "examples/checkpoint-active.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "inbox_ref"
+          ],
+          "remove": true
+        }
+      ],
+      "scenario_refs": [
+        "SUB-02"
+      ]
+    },
+    {
+      "id": "sub-checkpoint-platform-object",
+      "schema": "memory-checkpoint",
+      "document": "examples/checkpoint-active.json",
+      "valid": false,
+      "changes": [
+        {
+          "path": [
+            "event"
+          ],
+          "value": {
+            "platform": "astrbot"
+          }
+        }
+      ],
+      "scenario_refs": [
+        "SUB-11"
+      ]
+    },
+    {
+      "id": "sub-checkpoint-foreign-lineage-shape-only",
+      "schema": "memory-checkpoint",
+      "document": "examples/checkpoint-active.json",
+      "valid": true,
+      "changes": [
+        {
+          "path": [
+            "binding",
+            "lineage_id"
+          ],
+          "value": "lineage-other"
+        }
+      ],
+      "scenario_refs": [
+        "SUB-11"
+      ]
+    }
+  ],
+  "json_cases": []
+}

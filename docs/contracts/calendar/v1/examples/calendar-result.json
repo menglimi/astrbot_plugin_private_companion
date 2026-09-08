@@ -1,0 +1,11 @@
+{
+  "schema_version": "companion.calendar.result.v1",
+  "request_id": "calendar-request-001",
+  "trace_id": "trace-calendar-001",
+  "status": "succeeded",
+  "calendar_revision": 5,
+  "change_set_ref": "changeset-005",
+  "affected_refs": ["commitment-appointment-001", "buffer-before-appointment-001"],
+  "receipt": { "committed": true, "external_sync": "pending" },
+  "reason": null
+}

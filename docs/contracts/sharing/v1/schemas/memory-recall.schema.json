@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:sharing-memory-recall:v1",
+  "title": "Sharing metadata on every recalled fact or pending proposal",
+  "allOf": [
+    {
+      "$ref": "urn:companion:schema:memory-result:v1"
+    }
+  ],
+  "properties": {
+    "capability_id": {
+      "const": "memory.query"
+    },
+    "output": {
+      "if": {
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "items": {
+            "items": {
+              "properties": {
+                "extensions": {
+                  "properties": {
+                    "companion.sharing": {
+                      "$ref": "urn:companion:schema:sharing-binding:v1#/$defs/extension"
+                    }
+                  },
+                  "required": [
+                    "companion.sharing"
+                  ]
+                }
+              },
+              "required": [
+                "extensions"
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

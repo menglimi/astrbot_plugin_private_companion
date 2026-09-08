@@ -1451,6 +1451,9 @@ class IntegrationStatusMixin:
             return comfyui_label()
         if preferred == "sdgen":
             return "SDGen"
+        if preferred == "anima_master":
+            available = bool(self._image_companion_backend_available("anima_master"))
+            return "Anima 绘图大师（直连）" if available else "Anima 绘图大师（未检测到兼容插件）"
         if preferred == "tool_call":
             return f"函数工具 / {tool_call_name or '未配置'}" if tool_call_available else f"函数工具（未找到 {tool_call_name or '未配置'}）"
         if external_available:

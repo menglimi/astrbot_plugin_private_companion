@@ -1,0 +1,35 @@
+{
+  "package_id": "companion.control-contracts",
+  "package_version": "0.1.0",
+  "profile": "companion.control@1",
+  "maturity": "review",
+  "dialect": "https://json-schema.org/draft/2020-12/schema",
+  "fingerprint_algorithm": "sha256-utf8-lf",
+  "dependencies": [
+    {"name": "common", "id": "urn:companion:schema:common:v1", "path": "../../v1/schemas/common.schema.json", "sha256": "d8312b16010a58ebf2af0d825f0773840913ebee5714cd61cd578d6f4faadedb"},
+    {"name": "runtime-scope", "id": "urn:companion:schema:runtime-scope:v1", "path": "../../v1/schemas/runtime-scope.schema.json", "sha256": "594f87248d7ed9d4868dc8fc2bec0aae1c2abff79e2cbd43a4ea3ac5e0f8b729"}
+  ],
+  "schemas": [
+    {"name": "capability-descriptor", "id": "urn:companion:schema:control-capability-descriptor:v1", "path": "schemas/capability-descriptor.schema.json", "sha256": "669e36e5c8e7ee023bc19a850f5aa9c72fcdc62cf571e30a7a43dea2a00b8a6b"},
+    {"name": "control-request", "id": "urn:companion:schema:control-request:v1", "path": "schemas/control-request.schema.json", "sha256": "314877efe92a91b7a892f0c6e79576f86cd04d27331b531a88a43e20f84335fe"},
+    {"name": "control-result", "id": "urn:companion:schema:control-result:v1", "path": "schemas/control-result.schema.json", "sha256": "69c5b495e06260009af81367c9bb52957831007d389ed58ac46857569d5c55ca"},
+    {"name": "extension-manifest", "id": "urn:companion:schema:control-extension-manifest:v1", "path": "schemas/extension-manifest.schema.json", "sha256": "610facf3dd8827dcf9dbbfad22a257f596fa4fe501bdfab3696d997393295670"},
+    {"name": "extension-state-page", "id": "urn:companion:schema:control-extension-state-page:v1", "path": "schemas/extension-state-page.schema.json", "sha256": "a81f4dde0a458d13d08d604a27feb7997be86704e04a5bb7b645787800f56b28"}
+  ],
+  "artifacts": [
+    {"path": "cases.json", "sha256": "495d6858c906f3da2bbc120126c2883a58913c52b2ed9047c426c4005f1087b8"},
+    {"path": "fixture.json", "sha256": "448e685d4b7ff9e4675438ff8c4ac0d36f9d49f937ad6da553a321dce35a636f"},
+    {"path": "examples/bind.json", "sha256": "dd4e4917b0686f14557d5309daa9a7f3e771623963b43dd5ed8c0af31a0b417d"},
+    {"path": "examples/cancel.json", "sha256": "d2c4dd237835da95ad38d794a83472eb20dc1c85e8020ed75428ba276f224276"},
+    {"path": "examples/discover.json", "sha256": "59a78c4b797675a3071ef6cc65c8d2d5bb64e74a4378931c3408ad25137275be"},
+    {"path": "examples/operation-lookup.json", "sha256": "2a782dc153ac5420adbac15444b9ece1d0d75a685498167482f819c8584dab17"},
+    {"path": "examples/register.json", "sha256": "a195b4ecaf76c9fab410127aa74d47b9495d8478e2abf9f894a5ecd1ca1c9715"},
+    {"path": "examples/release.json", "sha256": "78d1b37b36c6a62601f93352116de12a39134b766f1915c533fa422a0030fb97"},
+    {"path": "examples/result-bind-pending.json", "sha256": "606c18e0991516df426ae0dbb8dc9fc7b16c94e9a5cc7f2bb1637d83f08707a4"},
+    {"path": "examples/result-cancel-unknown.json", "sha256": "249abbea15363f05c95602b4093b713af5cc89297dbf8a081677ef19bbf36125"},
+    {"path": "examples/result-old-handle.json", "sha256": "2ccb79254b0a493bbeada0482b0682c9ab3c4310113c7ad87a80b3840669a699"},
+    {"path": "examples/session-resume.json", "sha256": "af2842404d350a4ea726170122adb398400c547cb3034cca7493f397d3c89800"},
+    {"path": "examples/state-page.json", "sha256": "f0d6291b2a49ad5afd8c0ca5d0ce5adbb6f46ee5011613c3113091744075f766"},
+    {"path": "lifecycle-replay.json", "sha256": "d8d8d58e6e8262fd9f786795680a827350752d27cbdefcbc88720861cf31f4bb"}
+  ]
+}

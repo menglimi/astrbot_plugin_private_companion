@@ -1,0 +1,423 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:delivery-receipt:v1",
+  "title": "companion.delivery-receipt.v1 effect evidence independent of task completion",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "companion.delivery-receipt.v1"
+    },
+    "delivery_id": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "receipt_revision": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/revision"
+    },
+    "operation_id": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "delivery_owner_ref": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "history_owner_ref": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "scope": {
+      "$ref": "urn:companion:schema:runtime-scope:v1"
+    },
+    "receipt_kind": {
+      "enum": [
+        "part",
+        "aggregate"
+      ]
+    },
+    "part_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "parts_ref": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:execution-common:v1#/$defs/reference"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "target_ref": {
+      "$ref": "urn:companion:schema:execution-common:v1#/$defs/reference"
+    },
+    "status": {
+      "enum": [
+        "pending",
+        "submitted",
+        "accepted",
+        "delivered",
+        "partial",
+        "uncertain",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "attempt_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "attempts": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/revision"
+    },
+    "platform_receipt_ref": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:execution-common:v1#/$defs/reference"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "submitted_at": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/time"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "delivered_at": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/time"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "verification": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:execution-common:v1#/$defs/verification"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "reason_code": {
+      "anyOf": [
+        {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "trace_id": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    }
+  },
+  "required": [
+    "schema_version",
+    "delivery_id",
+    "receipt_revision",
+    "operation_id",
+    "delivery_owner_ref",
+    "history_owner_ref",
+    "scope",
+    "receipt_kind",
+    "part_id",
+    "parts_ref",
+    "target_ref",
+    "status",
+    "attempt_id",
+    "attempts",
+    "platform_receipt_ref",
+    "submitted_at",
+    "delivered_at",
+    "verification",
+    "reason_code",
+    "trace_id"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "receipt_kind": {
+            "const": "part"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "part_id": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/token"
+          },
+          "parts_ref": {
+            "type": "null"
+          },
+          "status": {
+            "not": {
+              "const": "partial"
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "part_id": {
+            "type": "null"
+          },
+          "parts_ref": {
+            "$ref": "urn:companion:schema:execution-common:v1#/$defs/reference"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "attempts": {
+            "const": 0
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "attempt_id": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "attempt_id": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/token"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "submitted",
+              "accepted",
+              "delivered",
+              "partial",
+              "uncertain"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "attempts": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "attempt_id": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/token"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "delivered"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "delivered_at": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/time"
+          },
+          "submitted_at": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/time"
+          },
+          "verification": {
+            "allOf": [
+              {
+                "$ref": "urn:companion:schema:execution-common:v1#/$defs/verification"
+              },
+              {
+                "properties": {
+                  "level": {
+                    "const": "delivery_confirmed"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "delivered_at": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "accepted"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "submitted_at": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/time"
+          },
+          "verification": {
+            "allOf": [
+              {
+                "$ref": "urn:companion:schema:execution-common:v1#/$defs/verification"
+              },
+              {
+                "properties": {
+                  "level": {
+                    "const": "platform_accepted"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "receipt_kind": {
+            "const": "part"
+          },
+          "status": {
+            "enum": [
+              "accepted",
+              "delivered"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "platform_receipt_ref": {
+            "$ref": "urn:companion:schema:execution-common:v1#/$defs/reference"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "pending"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "attempts": {
+            "const": 0
+          },
+          "submitted_at": {
+            "type": "null"
+          },
+          "verification": {
+            "type": "null"
+          },
+          "platform_receipt_ref": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "cancelled"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "reason_code": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/token"
+          },
+          "verification": {
+            "allOf": [
+              {
+                "$ref": "urn:companion:schema:execution-common:v1#/$defs/verification"
+              },
+              {
+                "properties": {
+                  "level": {
+                    "const": "not_submitted"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "uncertain"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "reason_code": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/token"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "partial"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "reason_code": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/token"
+          }
+        }
+      }
+    }
+  ]
+}

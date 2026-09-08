@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:memory-query:v1",
+  "title": "memory.query.v1",
+  "allOf": [
+    {
+      "$ref": "urn:companion:schema:common:v1#/$defs/request"
+    },
+    {
+      "if": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "include_pending": {
+                "const": true
+              }
+            },
+            "required": [
+              "include_pending"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "scope": {
+            "properties": {
+              "session_id": {
+                "$ref": "urn:companion:schema:common:v1#/$defs/token"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "memory.query.v1"
+    },
+    "capability_id": {
+      "const": "memory.query"
+    },
+    "payload": {
+      "type": "object",
+      "properties": {
+        "namespace": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "visibility": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "purpose": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/token"
+        },
+        "query_intent": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/semantic"
+        },
+        "subjects": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/subject"
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "types": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:companion:schema:common:v1#/$defs/token"
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "time_range": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "start": {
+                  "anyOf": [
+                    {
+                      "$ref": "urn:companion:schema:common:v1#/$defs/time"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "end": {
+                  "anyOf": [
+                    {
+                      "$ref": "urn:companion:schema:common:v1#/$defs/time"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "start",
+                "end"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "at_time": {
+          "anyOf": [
+            {
+              "$ref": "urn:companion:schema:common:v1#/$defs/time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "allowed_retention": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "session",
+              "short",
+              "durable",
+              "protected"
+            ]
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "include_pending": {
+          "type": "boolean",
+          "default": false
+        },
+        "conflict_policy": {
+          "enum": [
+            "current_only",
+            "include_history"
+          ],
+          "default": "current_only"
+        },
+        "confidence_floor": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 1,
+          "default": null
+        },
+        "evidence_budget": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/evidenceBudget"
+        },
+        "cursor": {
+          "anyOf": [
+            {
+              "$ref": "urn:companion:schema:common:v1#/$defs/token"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "extensions": {
+          "$ref": "urn:companion:schema:common:v1#/$defs/extensions"
+        }
+      },
+      "required": [
+        "namespace",
+        "visibility",
+        "purpose",
+        "query_intent"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "unevaluatedProperties": false
+}

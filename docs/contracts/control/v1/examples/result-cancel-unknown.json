@@ -1,0 +1,4 @@
+{
+  "schema_version": "1.0", "request_id": "ctrl-cancel-001", "trace_id": "trace-control-005", "method": "cancel", "status": "accepted", "control_revision": 21, "observed_at": "2026-09-08T12:00:02Z", "retry_after_ms": null,
+  "output": {"cancellation_ref": "cancel:1", "target_ref": "operation:world-transition:1", "disposition": "reconciliation_required", "task_ref": "task-1", "operation_ref": "operation-1"}, "error": null
+}

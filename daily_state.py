@@ -2594,6 +2594,7 @@ class DailyStateMixin(DailyStateTickMixin):
                     "tone": "平静",
                     "impulse": "想在睡前和用户聊天",
                     "mood": "安静",
+                    "conversation_posture": "closing",
                 }
             )
         if energy < 42 and random.random() < 0.42:
@@ -2609,6 +2610,7 @@ class DailyStateMixin(DailyStateTickMixin):
                     "tone": "疲惫",
                     "impulse": "想在睡前和用户聊天",
                     "mood": "疲惫",
+                    "conversation_posture": "closing",
                 }
             )
         return events[:3]
@@ -3520,7 +3522,7 @@ class DailyStateMixin(DailyStateTickMixin):
                     state["weather"] = self._weather_summary_text(weather)
                     return state
                 async with self._data_lock:
-                    deleted_sections = self._cleanup_expired_conditions() or set()
+                    deleted_sections = set(self._cleanup_expired_conditions() or ())
                     self._ensure_time_based_hunger_condition()
                     state = self._compose_state_from_conditions(weather)
                     existing_state = self.data.get("daily_state")
@@ -3531,6 +3533,11 @@ class DailyStateMixin(DailyStateTickMixin):
                             "state_conditions",
                             "body_cycle_state",
                         } - set(deleted_sections)
+                        if "body_cycle_state" in self.data:
+                            deleted_sections.discard("body_cycle_state")
+                            save_sections.add("body_cycle_state")
+                        else:
+                            save_sections.discard("body_cycle_state")
                         self._save_data_sync(
                             sections=save_sections,
                             deleted_sections=deleted_sections,
@@ -3565,7 +3572,7 @@ class DailyStateMixin(DailyStateTickMixin):
 
             needs_generation = force or self.data.get("state_generated_day") != today
             if not needs_generation:
-                deleted_sections = self._cleanup_expired_conditions() or set()
+                deleted_sections = set(self._cleanup_expired_conditions() or ())
                 self._ensure_time_based_hunger_condition()
                 state = self._compose_state_from_conditions(weather)
                 self.data["daily_state"] = state
@@ -3575,6 +3582,11 @@ class DailyStateMixin(DailyStateTickMixin):
                     "body_cycle_state",
                     "hunger_window_attempts",
                 } - set(deleted_sections)
+                if "body_cycle_state" in self.data:
+                    deleted_sections.discard("body_cycle_state")
+                    save_sections.add("body_cycle_state")
+                else:
+                    save_sections.discard("body_cycle_state")
                 self._save_data_sync(
                     sections=save_sections,
                     deleted_sections=deleted_sections,
@@ -3591,9 +3603,9 @@ class DailyStateMixin(DailyStateTickMixin):
         async with self._data_lock:
             deleted_sections: set[str] = set()
             if not force and self.data.get("state_generated_day") == generation_day:
-                deleted_sections = self._cleanup_expired_conditions() or set()
+                deleted_sections = set(self._cleanup_expired_conditions() or ())
             else:
-                deleted_sections = self._cleanup_expired_conditions() or set()
+                deleted_sections = set(self._cleanup_expired_conditions() or ())
                 if force:
                     self.data["state_conditions"] = []
                 dream_pick = deferred_updates.get("dream_pick")
@@ -3627,6 +3639,11 @@ class DailyStateMixin(DailyStateTickMixin):
                 "body_cycle_state",
                 "hunger_window_attempts",
             } - set(deleted_sections)
+            if "body_cycle_state" in self.data:
+                deleted_sections.discard("body_cycle_state")
+                save_sections.add("body_cycle_state")
+            else:
+                save_sections.discard("body_cycle_state")
             self._save_data_sync(
                 sections=save_sections,
                 deleted_sections=deleted_sections,
@@ -18458,6 +18475,8 @@ class DailyStateMixin(DailyStateTickMixin):
             "planned_proactive_reason",
             "planned_proactive_action",
             "planned_proactive_source",
+            "planned_proactive_conversation_posture",
+            "planned_proactive_conversation_closing_deferred",
             "planned_proactive_kind",
             "planned_proactive_route_version",
             "planned_proactive_route_dedupe_key",

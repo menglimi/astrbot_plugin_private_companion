@@ -6,6 +6,7 @@ import json
 import unittest
 from dataclasses import dataclass
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 from astrbot.api.message_components import Image, Plain
@@ -102,11 +103,35 @@ class _ActiveOutcome:
     delivered_chain: tuple = ()
 
 
+@dataclass(frozen=True)
+class _CompleteActiveOutcome:
+    delivered: bool
+    complete: bool
+    delivered_text: str = ""
+    delivery_umo: str = ""
+    delivered_chain: tuple = ()
+
+
 class _ActiveCollector(FinalResponsePersistenceMixin):
     @collect_proactive_delivery
     async def send(self, umo: str) -> _ActiveOutcome:
         self._confirm_outbound_delivery(umo, [Plain("平台实际收到的主动回复")])
         return _ActiveOutcome(True, delivered_text="审核后的候选回复")
+
+
+class _FullTextActiveCollector(FinalResponsePersistenceMixin):
+    def __init__(self, *, complete: bool, confirmed_chain: list[Any]) -> None:
+        self.complete = complete
+        self.confirmed_chain = confirmed_chain
+
+    @collect_proactive_delivery
+    async def send(self, umo: str, text: str) -> _CompleteActiveOutcome:
+        self._confirm_outbound_delivery(umo, self.confirmed_chain)
+        return _CompleteActiveOutcome(
+            delivered=bool(self.confirmed_chain),
+            complete=self.complete,
+            delivered_text="审核后的候选回复",
+        )
 
 
 class _Registry:
@@ -1025,6 +1050,49 @@ class FinalResponsePersistenceTests(unittest.IsolatedAsyncioTestCase):
             "平台实际收到的主动回复",
             outcome.delivered_chain[0].text,
         )
+
+    async def test_proactive_collector_restores_original_text_after_complete_tts_delivery(self):
+        outcome = await _FullTextActiveCollector(
+            complete=True,
+            confirmed_chain=[Plain("首块正文")],
+        ).send(UMO, "首块正文尾部承诺")
+
+        self.assertTrue(outcome.complete)
+        self.assertEqual("首块正文尾部承诺", outcome.delivered_text)
+        self.assertEqual(("首块正文",), tuple(item.text for item in outcome.delivered_chain))
+
+    async def test_proactive_collector_keeps_confirmed_prefix_after_partial_delivery(self):
+        outcome = await _FullTextActiveCollector(
+            complete=False,
+            confirmed_chain=[Plain("首块正文")],
+        ).send(UMO, "首块正文尾部承诺")
+
+        self.assertFalse(outcome.complete)
+        self.assertEqual("首块正文", outcome.delivered_text)
+
+    async def test_proactive_collector_keeps_equal_text_for_single_segment_delivery(self):
+        outcome = await _FullTextActiveCollector(
+            complete=True,
+            confirmed_chain=[Plain("单段全文")],
+        ).send(UMO, "单段全文")
+
+        self.assertEqual("单段全文", outcome.delivered_text)
+
+    async def test_proactive_collector_only_replaces_text_and_preserves_media_chain(self):
+        collector = _FullTextActiveCollector(
+            complete=True,
+            confirmed_chain=[Plain("首块正文"), Image(file="image.png")],
+        )
+        outcome = await collector.send(UMO, "首块正文尾部承诺")
+
+        self.assertEqual("首块正文尾部承诺", outcome.delivered_text)
+        self.assertIsInstance(outcome.delivered_chain[1], Image)
+        archived = collector._delivered_assistant_text_from_chain(
+            outcome.delivered_chain,
+            fallback_text=outcome.delivered_text,
+        )
+        self.assertIn("首块正文尾部承诺", archived)
+        self.assertIn('<pc_history_media images="1" />', archived)
 
     async def test_streaming_response_persists_only_confirmed_stream_chunks(self):
         plugin = PrivateCompanionPlugin.__new__(PrivateCompanionPlugin)

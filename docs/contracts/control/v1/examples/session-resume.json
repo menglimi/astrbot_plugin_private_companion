@@ -1,0 +1,6 @@
+{
+  "schema_version": "1.0", "request_id": "ctrl-resume-001", "trace_id": "trace-control-007", "caller_ref": "caller:together",
+  "runtime_scope": {"ecosystem_id": "astrbot", "installation_id": "install-1", "runtime_instance_id": "runtime-1", "host_kind": "astrbot_host", "host_id": "host-1", "bot_id": "bot-1", "platform": "example-chat", "account_id": "account-1", "conversation_ref": "conv-1", "platform_conversation_id": "platform-conv-1", "conversation_id": null, "session_id": "session-1", "user_id": "user-1", "group_id": null, "persona_id": "persona-1", "persona_binding_revision": 3},
+  "deadline_at": "2026-09-08T12:00:05Z", "idempotency_key": "resume:session-1:4", "expected_control_revision": 12,
+  "method": "session.resume", "binding_ref": "binding:together:1", "owner_ref": "together-owner:session-1", "session_id": "session-1", "expected_session_revision": 4, "expected_controller_generation": "controller-2", "checkpoint_ref": "checkpoint:session-1:4", "expected_context_revision": 9
+}

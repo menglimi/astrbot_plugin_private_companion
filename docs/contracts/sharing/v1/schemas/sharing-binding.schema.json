@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:sharing-binding:v1",
+  "title": "Resolved sharing partition; fields are not an authorization grant",
+  "type": "object",
+  "properties": {
+    "sharing_mode": {
+      "$ref": "urn:companion:schema:sharing-binding:v1#/$defs/mode"
+    },
+    "sharing_anchor": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/token"
+    },
+    "sharing_policy_revision": {
+      "$ref": "urn:companion:schema:common:v1#/$defs/revision"
+    }
+  },
+  "required": [
+    "sharing_mode",
+    "sharing_anchor",
+    "sharing_policy_revision"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "mode": {
+      "enum": [
+        "session",
+        "user",
+        "global"
+      ]
+    },
+    "extension": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "1.0"
+        },
+        "payload": {
+          "$ref": "urn:companion:schema:sharing-binding:v1"
+        }
+      },
+      "required": [
+        "schema_version",
+        "payload"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

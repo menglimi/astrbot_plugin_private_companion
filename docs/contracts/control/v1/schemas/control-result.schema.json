@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:companion:schema:control-result:v1",
+  "title": "Control plane result",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "request_id": { "type": "string", "minLength": 1 },
+    "trace_id": { "type": "string", "minLength": 1 },
+    "method": { "enum": ["register", "discover", "bind", "release", "cancel", "operation.lookup", "session.resume"] },
+    "status": { "enum": ["accepted", "pending", "rejected", "failed", "unavailable"] },
+    "control_revision": { "type": "integer", "minimum": 0 },
+    "observed_at": { "type": "string", "format": "date-time" },
+    "retry_after_ms": { "type": ["integer", "null"], "minimum": 0 },
+    "output": { "type": ["object", "null"] },
+    "error": {
+      "type": ["object", "null"],
+      "properties": { "code": { "type": "string", "minLength": 1 }, "message": { "type": "string", "minLength": 1 }, "retryable": { "type": "boolean" }, "ref": { "type": ["string", "null"] } },
+      "required": ["code", "message", "retryable", "ref"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["schema_version", "request_id", "trace_id", "method", "status", "control_revision", "observed_at", "retry_after_ms", "output", "error"],
+  "additionalProperties": false,
+  "allOf": [
+    { "if": { "properties": { "status": { "enum": ["accepted", "pending"] } } }, "then": { "required": ["output"], "properties": { "error": { "type": "null" } } } },
+    { "if": { "properties": { "status": { "enum": ["rejected", "failed", "unavailable"] } } }, "then": { "required": ["error"], "properties": { "output": { "type": "null" } } } }
+  ]
+}
