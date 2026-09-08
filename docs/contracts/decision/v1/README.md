@@ -17,3 +17,5 @@
 `cases/capability-degradation-budget.json` 和 `scripts/replay_capability_degradation.py` 固定三套 shell 的可用 feature、降级原因和共享资源预算。能力缺失只能产生声明式降级（如视觉引用模式或无模型模式），不能偷偷扩大候选、模型调用、快照字节或并发；当前 11 项资源/降级隔离检查通过。
 
 `cases/global-multi-window-continuity.json` 和 `scripts/replay_global_multi_window.py` 固定“一个角色同时面对多个窗口”的运行模型。三个窗口共享同一 `actor_id`、`persona_id`、全局活动和 revision，切换只改变注意力；每个窗口仍保留独立 session 和受众边界。当前 13 项多窗口连续性隔离检查通过。
+
+`cases/persona-window-matrix.json` 和 `scripts/replay_persona_window_matrix.py` 补充区分“同一人格的受众投影”与“真正的多人格运行时”：同一 `persona_id` 的群聊/私聊共享角色连续性，不同 `persona_id` 必须拥有独立 `actor_id` 和领域 owner；人格绑定变化会使旧 revision 草稿失效。当前 8 项矩阵检查通过。

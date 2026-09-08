@@ -31,6 +31,7 @@
     { "path": "cases/cross-host-comparison.json", "sha256": "042dfbe279e2c0409c1edb5930107fa4698f912ac64b46dd3747a48e072239f2" },
     { "path": "cases/capability-degradation-budget.json", "sha256": "f9ce9be0f1a67ab31c569fff20432486366c12a5dcca1fb772acb892a8ef09d4" },
     { "path": "cases/global-multi-window-continuity.json", "sha256": "7e8c39ee59a9db57e767e9b236e6a1e827f1c177641afb19f9ad47abeb260369" },
+    { "path": "cases/persona-window-matrix.json", "sha256": "62595abbf36601361e0e105fbd3e751f331d09c7571be60e72d366ef2fccf3f6" },
     { "path": "recordings/astrbot-message-recording.json", "sha256": "f4b4bc45f0c9c20e5ffe08c25b848bf058fd18d58c208f3b6d893e118035f7e3" }
   ]
 }
