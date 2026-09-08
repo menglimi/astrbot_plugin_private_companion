@@ -72,6 +72,52 @@ class _StateHarness(DailyStateMixin):
         self.save_count += 1
 
 
+class _CyclePersistenceHarness(_StateHarness):
+    """Small harness for asserting the daily-state save contract."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.cleanup_results: list[set[str]] = []
+        self.rebuild_body_cycle = False
+        self.compose_count = 0
+        self.save_requests: list[dict[str, set[str]]] = []
+
+    def _cleanup_expired_conditions(self) -> set[str]:
+        result = self.cleanup_results.pop(0) if self.cleanup_results else set()
+        if "body_cycle_state" in result:
+            self.data.pop("body_cycle_state", None)
+        return set(result)
+
+    async def _generate_state_conditions(
+        self,
+        _weather=None,
+        *,
+        deferred_state_updates=None,
+    ):
+        if self.rebuild_body_cycle and isinstance(deferred_state_updates, dict):
+            deferred_state_updates["body_cycle_conditions"] = [
+                {"id": "rebuilt", "kind": "body_cycle"}
+            ]
+        return []
+
+    def _compose_state_from_conditions(self, _weather=None):
+        self.compose_count += 1
+        return {
+            "date": "2026-07-23",
+            "conditions": deepcopy(self.data.get("state_conditions", [])),
+            "refresh": self.compose_count,
+        }
+
+    def _save_data_sync(self, **kwargs) -> None:
+        self.save_count += 1
+        self.save_requests.append(
+            {
+                "sections": set(kwargs.get("sections") or ()),
+                "deleted_sections": set(kwargs.get("deleted_sections") or ()),
+            }
+        )
+
+
 class _DiaryHarness(DailyStateMixin):
     def __init__(self) -> None:
         self._data_lock = asyncio.Lock()
@@ -116,6 +162,81 @@ class _DiaryHarness(DailyStateMixin):
 
 
 class DailyStateGenerationSafetyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cycle_cleanup_emits_tombstone_once_without_stale_changed_section(self) -> None:
+        harness = _CyclePersistenceHarness()
+        harness.data.update(
+            {
+                "daily_state": {"date": "2026-07-23"},
+                "state_generated_day": "2026-07-23",
+                "body_cycle_state": {"cycle_anchor_ts": 1},
+            }
+        )
+        harness.cleanup_results = [{"body_cycle_state"}, set()]
+
+        with patch("astrbot_plugin_private_companion.daily_state._today_key", return_value="2026-07-23"):
+            await harness._ensure_daily_state_once()
+            await harness._ensure_daily_state_once()
+
+        self.assertEqual(2, len(harness.save_requests))
+        first, second = harness.save_requests
+        self.assertNotIn("body_cycle_state", first["sections"])
+        self.assertEqual({"body_cycle_state"}, first["deleted_sections"])
+        self.assertNotIn("body_cycle_state", second["sections"])
+        self.assertEqual(set(), second["deleted_sections"])
+
+    async def test_passive_fast_cycle_cleanup_does_not_reintroduce_missing_section(self) -> None:
+        harness = _CyclePersistenceHarness()
+        harness.data.update(
+            {
+                "daily_state": {"date": "2026-07-23", "refresh": 0},
+                "daily_weather": {"date": "2026-07-23", "prompt": "晴"},
+                "body_cycle_state": {"cycle_anchor_ts": 1},
+            }
+        )
+        harness.cleanup_results = [{"body_cycle_state"}, set()]
+
+        with patch("astrbot_plugin_private_companion.daily_state._today_key", return_value="2026-07-23"):
+            await harness._ensure_daily_state_once(passive_fast=True)
+            await harness._ensure_daily_state_once(passive_fast=True)
+
+        self.assertEqual(2, len(harness.save_requests))
+        first, second = harness.save_requests
+        self.assertNotIn("body_cycle_state", first["sections"])
+        self.assertEqual({"body_cycle_state"}, first["deleted_sections"])
+        self.assertNotIn("body_cycle_state", second["sections"])
+        self.assertEqual(set(), second["deleted_sections"])
+
+    async def test_force_cycle_refresh_keeps_missing_section_out_of_final_changed_set(self) -> None:
+        harness = _CyclePersistenceHarness()
+        harness.data["body_cycle_state"] = {"cycle_anchor_ts": 1}
+        harness.cleanup_results = [{"body_cycle_state"}, set()]
+
+        with patch("astrbot_plugin_private_companion.daily_state._today_key", return_value="2026-07-23"):
+            await harness._ensure_daily_state_once(force=True)
+            await harness._ensure_daily_state_once(force=True)
+
+        self.assertEqual(2, len(harness.save_requests))
+        first, second = harness.save_requests
+        self.assertNotIn("body_cycle_state", first["sections"])
+        self.assertEqual({"body_cycle_state"}, first["deleted_sections"])
+        self.assertNotIn("body_cycle_state", second["sections"])
+        self.assertEqual(set(), second["deleted_sections"])
+
+    async def test_rebuilt_cycle_state_supersedes_cleanup_tombstone(self) -> None:
+        harness = _CyclePersistenceHarness()
+        harness.data["body_cycle_state"] = {"cycle_anchor_ts": 1}
+        harness.cleanup_results = [{"body_cycle_state"}]
+        harness.rebuild_body_cycle = True
+
+        with patch("astrbot_plugin_private_companion.daily_state._today_key", return_value="2026-07-23"):
+            await harness._ensure_daily_state_once(force=True)
+
+        self.assertEqual(1, len(harness.save_requests))
+        request = harness.save_requests[0]
+        self.assertIn("body_cycle_state", request["sections"])
+        self.assertEqual(set(), request["deleted_sections"])
+        self.assertEqual("rebuilt", harness.data["body_cycle_state"]["id"])
+
     async def test_passive_fast_discards_cached_period_when_humanized_states_disabled(self) -> None:
         harness = _StateHarness()
         harness.enable_humanized_states = False
