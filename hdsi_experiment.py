@@ -1,10 +1,84 @@
 """Opt-in HDSI compatibility routing for the legacy companion pipeline."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import json
 from typing import Any
 
 EXPERIMENT_MODES = frozenset({"legacy", "hdsi_shadow", "hdsi_active"})
+WINDOW_MODES_KEY = "hdsi_experiment_window_modes"
+
+
+def normalize_window_modes(value: Any) -> dict[str, str]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return {}
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: mode for key, mode in value.items()
+        if isinstance(key, str) and key and isinstance(mode, str) and mode in EXPERIMENT_MODES
+    }
+
+
+def _window_ref(event: Any) -> str:
+    origin = _event_origin(event)
+    parts = origin.split(":", 2)
+    kind = "friendmessage" if _event_is_private(event) else "groupmessage"
+    if len(parts) != 3 or not parts[0] or parts[1].lower() != kind or not parts[2]:
+        return ""
+    return origin
+
+
+async def hdsi_window_command(plugin: Any, event: Any, action: str = "状态") -> str:
+    """Persist a current-window override without changing any other binding."""
+    from .helpers import _flat_get, _set_into_config
+
+    window = _window_ref(event)
+    if not window:
+        return "无法识别当前聊天窗口，设置未修改。"
+    action = str(action or "状态").strip().lower()
+    labels = {"legacy": "旧框架", "hdsi_shadow": "影子观察", "hdsi_active": "HDSI 表达试验"}
+    if action in {"状态", "status"}:
+        return f"当前窗口：{labels[resolve_hdsi_mode(plugin, event)]}。"
+    modes = {"开启": "hdsi_active", "on": "hdsi_active", "关闭": "legacy", "off": "legacy", "观察": "hdsi_shadow"}
+    if action not in modes:
+        return "HDSI 开启 / HDSI 关闭 / HDSI 状态"
+    checker = getattr(plugin, "_can_manage_private_companion" if _event_is_private(event) else "_can_manage_group_companion", None)
+    if not callable(checker) or not checker(event):
+        return "需要当前窗口的陪伴管理权限才能切换。"
+    inbound = getattr(plugin, "_event_is_inbound_chat_message", None)
+    if not callable(inbound) or not inbound(event):
+        return "仅支持在入站聊天中切换，设置未修改。"
+
+    lock = getattr(plugin, "_hdsi_window_config_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        plugin._hdsi_window_config_lock = lock
+    async with lock:
+        config = getattr(plugin, "config", None)
+        if config is None:
+            return "配置暂不可用，设置未修改。"
+        old_value = _flat_get(config, WINDOW_MODES_KEY, "{}")
+        windows = normalize_window_modes(old_value)
+        windows[window] = modes[action]
+        encoded = json.dumps(windows, ensure_ascii=False, sort_keys=True)
+        if not _set_into_config(config, WINDOW_MODES_KEY, encoded):
+            return "配置无法写入，设置未修改。"
+        try:
+            saved = await plugin._save_config_if_possible()
+        except BaseException:
+            _set_into_config(config, WINDOW_MODES_KEY, old_value)
+            raise
+        if not saved:
+            _set_into_config(config, WINDOW_MODES_KEY, old_value)
+            return "保存失败，当前窗口仍使用原设置。"
+        plugin.hdsi_experiment_window_modes = windows
+    scope = "当前私聊" if _event_is_private(event) else "当前整个群聊"
+    return f"{scope}已切换为{labels[modes[action]]}，下一条消息生效。"
 
 
 def normalize_hdsi_mode(value: Any) -> str:
@@ -113,6 +187,13 @@ def resolve_hdsi_binding(plugin: Any, event: Any) -> dict[str, str]:
     matched = next((candidate for candidate in candidates if candidate in configured), "") if mode != "legacy" else ""
     if not matched:
         mode = "legacy"
+    windows = getattr(plugin, WINDOW_MODES_KEY, {})
+    if isinstance(windows, str):
+        windows = normalize_window_modes(windows)
+    window = _window_ref(event)
+    override = windows.get(window) if isinstance(windows, dict) else None
+    if isinstance(override, str) and override in EXPERIMENT_MODES:
+        mode = override
     scope = "private" if private else "group"
     subject = matched or (candidates[0] if candidates else "")
     if private and candidates:
@@ -160,6 +241,45 @@ def build_hdsi_prompt_section(event: Any, mode: str):
     audience = "私聊" if _event_is_private(event) else "群聊"
     content = ("当前处于 HDSI 兼容试验的主动表达模式。把本轮消息视为持续性生活剧本中的一个新事件，先承接角色此刻正在进行的活动、注意力和情绪，再自然回应当前对象。保持同一人格和跨窗口连续性，不要因为切换聊天窗口重置状态，不要把尚未发生的计划写成事实，不要凭空添加共同经历。" f"当前受众是{audience}：只使用本受众获准看到的关系和记忆；群聊中收敛私密细节、长度和主动追问，不要把其他窗口的私聊正文带入回复。若上下文不足，采用简短、自然、可继续的回应或等待，不要用解释框架实现感代替事实。")
     return prompt_section(key="experiment.hdsi.compatibility", title="HDSI 试验表达约束", source="hdsi_experiment", content=content)
+
+
+async def apply_hdsi_prompt(plugin: Any, event: Any, req: Any) -> None:
+    """Apply the optional overlay after chat routing, using the existing plan."""
+    if not getattr(plugin, "enabled", False):
+        return
+    if not getattr(event, "private_companion_hdsi_chat_route_ready", False):
+        return
+    if getattr(event, "private_companion_proactive_framework", False):
+        return
+    if getattr(req, "_private_companion_hdsi_processed", False):
+        return
+    mode = getattr(event, "private_companion_hdsi_mode", "legacy")
+    if mode not in {"hdsi_active", "hdsi_shadow"} or mode != resolve_hdsi_mode(plugin, event):
+        return
+    checker = getattr(plugin, "_event_is_inbound_chat_message", None)
+    if not callable(checker) or not checker(event):
+        return
+    blocker = getattr(plugin, "_proactive_only_blocks_passive_event", None)
+    if callable(blocker) and blocker(event):
+        return
+    section = build_hdsi_prompt_section(event, "hdsi_active")
+    metadata = {
+        key: getattr(event, f"private_companion_hdsi_{key}", "")
+        for key in ("scope", "scope_fingerprint", "binding_revision", "actor_id", "persona_id")
+    }
+    metadata.update(route=mode, shadow_only=mode == "hdsi_shadow")
+    if mode == "hdsi_active":
+        metadata["placement"] = plugin._place_conversation_prompt_section(
+            req, "<!-- private_companion_hdsi_experiment_v1 -->", section, priority=109,
+        )
+    setattr(req, "_private_companion_hdsi_processed", True)
+    recorder = getattr(plugin, "_record_request_prompt_fragment", None)
+    if callable(recorder):
+        await recorder(
+            event, title="HDSI 表达试验", key="experiment.hdsi.compatibility",
+            text=section.content, source="hdsi_experiment", mode=mode, priority=109,
+            metadata=metadata,
+        )
 
 
 __all__ = ["EXPERIMENT_MODES", "build_hdsi_prompt_section", "mark_hdsi_route", "normalize_hdsi_mode", "normalize_id_set", "resolve_hdsi_binding", "resolve_hdsi_mode"]

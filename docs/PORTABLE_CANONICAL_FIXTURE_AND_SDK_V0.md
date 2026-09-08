@@ -146,7 +146,7 @@ SDK 只提供协议 DTO、端口和错误/状态枚举；实现由宿主或服�
 | 控制命令与原操作对账 | register/discover/bind/release/cancel/operation.lookup/session.resume 使用独立控制语义；可信 caller 由 shell 注入，控制成功与原业务效果分开 |
 | fixture 读取、记录与比较 | 属于验收工具包；可包装多种 DTO，不进入生产 SDK 的强制运行依赖 |
 
-不新增与能力 facade 平行的 CanonicalRuntime.dispatch。Runner 解包记录后，通过已经协商的标准接口调用；记录器旁路收集结果，不拥有事实或授权。 
+不新增与能力 facade 平行的 CanonicalRuntime.dispatch。Runner 解包记录后，通过已经协商的标准接口调用；记录器旁路收集结果，不拥有事实或授权。
 
 ### 4.1 角色决策影子适配器
 
