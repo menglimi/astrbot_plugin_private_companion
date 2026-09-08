@@ -702,7 +702,24 @@ def collect_proactive_delivery(
         except BaseException:
             coordinator._reset_context(ledger)
             raise
-        return coordinator.finish_proactive(ledger, outcome)
+        outcome = coordinator.finish_proactive(ledger, outcome)
+        # TTS 会把可见正文除首块外的部分放到后台异步补发。主链返回时
+        # confirmed_chains 只含首块，finish_proactive 据此覆盖出的
+        # delivered_text 会丢掉消息尾部（例如承诺的后半句）。
+        # 当整轮已判定 complete 时，改回用发送前的原始全文归档。
+        original_text = str(args[0] or "").strip() if args else ""
+        if (
+            original_text
+            and getattr(outcome, "complete", False)
+            and str(getattr(outcome, "delivered_text", "") or "").strip()
+            != original_text
+        ):
+            try:
+                outcome = replace(outcome, delivered_text=original_text)
+            except (TypeError, ValueError):
+                # outcome 不是 dataclass 或字段缺失时保持原样
+                pass
+        return outcome
 
     return wrapped
 
