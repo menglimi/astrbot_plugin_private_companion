@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import unittest
+from pathlib import Path
 
 from astrbot_plugin_private_companion.domains.social.group_mood import (
     MOOD_LABELS,
@@ -270,6 +272,22 @@ class GroupMomentsContractTests(unittest.TestCase):
 
 
 class GroupObservationMountTests(unittest.TestCase):
+    def test_social_switches_are_loaded_from_grouped_config_on_startup(self):
+        root = Path(__file__).resolve().parents[1]
+        schema = json.loads((root / "_conf_schema.json").read_text(encoding="utf-8"))
+        items = schema["group_observation_config"]["items"]
+        bootstrap = (root / "plugin_bootstrap.py").read_text(encoding="utf-8")
+        for key in (
+            "enable_group_social_context",
+            "enable_group_mood_detection",
+            "enable_group_roleplay_strength",
+            "enable_group_moments",
+            "enable_group_moment_portrait",
+            "enable_group_joke_guard",
+        ):
+            self.assertEqual("bool", items[key]["type"])
+            self.assertIn(f'self._cfg_bool(c, "{key}", False)', bootstrap)
+
     def setUp(self) -> None:
         self.harness = GroupSocialHarness()
         self.harness.messages = [

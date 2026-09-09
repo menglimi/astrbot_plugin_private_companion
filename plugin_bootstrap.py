@@ -1881,6 +1881,17 @@ def _initialize_review_and_group_config(self: Any, c: Any) -> None:
     )
     self.enable_group_injection_guard = self._cfg_bool(c, "enable_group_injection_guard", True)
     self.enable_group_persona_denoise = self._cfg_bool(c, "enable_group_persona_denoise", True)
+    # Keep the grouped social-context switches in the runtime snapshot too.
+    # They are consumed by the group observer and exposed by the WebUI; when
+    # they were only present in the schema, a restart made a saved ``true``
+    # value look disabled because the feature flag reader fell back to a
+    # missing attribute.
+    self.enable_group_social_context = self._cfg_bool(c, "enable_group_social_context", False)
+    self.enable_group_mood_detection = self._cfg_bool(c, "enable_group_mood_detection", False)
+    self.enable_group_roleplay_strength = self._cfg_bool(c, "enable_group_roleplay_strength", False)
+    self.enable_group_moments = self._cfg_bool(c, "enable_group_moments", False)
+    self.enable_group_moment_portrait = self._cfg_bool(c, "enable_group_moment_portrait", False)
+    self.enable_group_joke_guard = self._cfg_bool(c, "enable_group_joke_guard", False)
     self.enable_forward_message_adaptation = self._cfg_bool(c, "enable_forward_message_adaptation", True)
     self.forward_message_mode = self._cfg_str(c, "forward_message_mode", "inject", "inject").lower()
     if self.forward_message_mode in {"注入", "injection"}:
