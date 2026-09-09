@@ -5,6 +5,7 @@ import asyncio
 import os
 import re
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,7 @@ from astrbot.api.star import StarTools
 from .body_monitor_integration import BodyMonitorIntegration
 from .bot_personal_contract import capability_descriptor, contract_self_check
 from .config_migration import migrate_flat_config_into_schema_groups
-from .hdsi_experiment import normalize_window_modes
+from .hdsi_experiment import normalize_continuity_scope, normalize_window_modes
 from .constants import (
     DEFAULT_NATURAL_LANGUAGE_PHOTO_EXTRA_PROMPT,
     DEFAULT_REPLY_STYLE_PROMPT,
@@ -288,6 +289,9 @@ def _initialize_core_and_relationship_config(self: Any, c: Any) -> None:
     self.hdsi_experiment_mode = self._cfg_str(c, "hdsi_experiment_mode", "legacy", "legacy").strip().lower()
     if self.hdsi_experiment_mode not in {"legacy", "hdsi_shadow", "hdsi_active"}:
         self.hdsi_experiment_mode = "legacy"
+    self.hdsi_experiment_continuity_scope = normalize_continuity_scope(
+        self._cfg_str(c, "hdsi_experiment_continuity_scope", "global", "global")
+    )
     def _hdsi_ids(value: Any) -> tuple[str, ...]:
         if isinstance(value, str):
             values = value.replace("\r", "\n").replace(",", "\n").replace("，", "\n").split("\n")
@@ -2119,6 +2123,8 @@ def initialize_plugin_runtime(self: Any) -> None:
     # These references are process-local capabilities. Never inherit them from
     # mixin class attributes or a previous hot-reloaded plugin instance.
     self._bridge_cache = None
+    # Fence HDSI plans created by a previous plugin instance or hot reload.
+    self.hdsi_runtime_generation = uuid.uuid4().hex
     self._bridge_cache_ts = 0.0
     self._bridge_last_status = {}
     self._bridge_dependency_failure_until = 0.0

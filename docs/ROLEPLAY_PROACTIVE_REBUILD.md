@@ -189,6 +189,65 @@ select window
 
 为控制资源，`GlobalActorRuntime` 只保存有界状态和引用，不保存所有窗口的完整 transcript。活跃窗口保留近期事件，冷窗口转为 checkpoint；待处理窗口按 owner、优先级、TTL 和接触预算合并。全局状态提交失败时沿用上一有效 revision，单个窗口失败不能阻塞其他窗口；没有可安全表达的内容时，统一返回 `silence` 或延后。
 
+### 3.2.1.3 HDSI 试验运行与效果验证
+
+HDSI 试验不是把旧提示词整体替换掉，而是用同一条规范化输入同时驱动旧路径和 HDSI 旁路。旁路拥有独立的连续状态、事件账本和快照版本；旧路径仍是默认生产 owner，直到试验达到退出门槛。
+
+```text
+NormalizedInteractionEvent
+  -> LegacyRequest -------------------------------> LegacyResponse
+  -> HDSI Trial Runtime -> TrialDecisionSnapshot -> TrialResponsePlan
+                                      \-----------> TrialObservation
+```
+
+试验运行时至少保存以下有界对象：
+
+```text
+HDSITrialBinding {
+  binding_id / mode / scope_selector / actor_id / persona_id
+  binding_revision / generation / effective_from / expires_at
+}
+
+HDSITrialInput {
+  trial_id / trace_id / normalized_event_ref
+  input_digest / clock_id / random_seed
+  global_revision / window_revision / policy_versions
+}
+
+HDSITrialObservation {
+  trial_id / legacy_result_ref / hdsi_result_ref
+  decision_diff / privacy_check / continuity_check
+  latency_ms / model_calls / prompt_bytes / state_bytes / peak_inflight
+  outcome / fallback_reason / created_at
+}
+```
+
+`mode` 分为四种运行状态：
+
+| 模式 | HDSI 权限 | 用户看到的结果 |
+| --- | --- | --- |
+| `legacy` | 不运行 | 旧框架回复 |
+| `shadow` | 读取同一输入并计算，不写生产状态、不投递 | 旧框架回复；记录可解释差异 |
+| `active` | 生成 HDSI `ResponsePlan`，提交前经过统一安全、权限和投递校验 | HDSI 回复；失败时回退同一输入的旧结果 |
+| `rollback` | 停止新副作用，保留诊断和旁路状态只读 | 旧框架回复；不删除 HDSI 试验数据 |
+
+`shadow` 必须复用同一时钟、输入版本、策略版本和可复现随机种子；模型调用可以抽样，但抽样率、成本和遗漏样本数要记录。比较不能只看文本相似度，至少包括：
+
+1. 角色连续性：当前活动、未完成事项、情绪方向和人格核心是否一致；
+2. 受众边界：私聊专属事实、群成员观察、第三方信息是否泄漏；
+3. 决策质量：回答、澄清、分享、沉默、延后和主动候选的意图是否合理；
+4. 事实质量：时间、关系、记忆证据、现实观测和模拟内容是否分层；
+5. 交互效果：首句延迟、回复完成率、用户追问/纠正、同主题吸收率和无关打扰率；
+6. 资源成本：辅助模型调用、输入/输出字节、旁路状态大小、队列长度、峰值在途任务和进程 RSS。
+
+`active` 的回退必须绑定到同一个 `trial_id + input_digest`：HDSI 生成失败、状态 revision 过期、权限/隐私检查失败或投递不确定时，取消未提交的 HDSI 副作用并使用旧路径结果；已经提交的外部投递只保留原回执，不重复发送。回退只影响当前绑定，不暂停其他 actor、窗口或 legacy 用户。
+
+试验状态采用单一绑定和 generation fencing。配置或人格绑定变化后，旧 generation 的 HDSI 草稿不能写回全局状态；窗口可以继续读取上一有效 checkpoint，但必须以新 binding revision 重新编译。冷窗口只保留事件引用和有限摘要，完整 transcript 由历史 owner 管理；试验观察默认保存哈希、指标和最小脱敏片段，避免旁路复制整套聊天记录。
+
+退出门槛分为硬门槛和软指标。任一硬门槛失败立即对受影响绑定执行 `rollback`：跨窗口隐私泄漏、重复外部投递、旧 generation 写回、人格串线、无法解释的权限放宽或资源超出安装预算。软指标至少需要与 legacy 基线相比不降低回复完成率和同主题吸收率，不增加无关打扰率与纠正率，P95 延迟和峰值内存处于预先记录的预算内；未达到时只能调整策略资产或提示词，不扩大 active 范围。
+
+最小验证矩阵覆盖：同一 `global` actor 的私聊/群聊交替、两个用户同时发言、窗口冷却后恢复、两个 persona 隔离、session/user/global 三种共享模式、模型超时、配置切换、进程重启、事件重复/乱序/修订、群聊隐私裁剪以及 Memory/World provider 暂不可用。每个样本同时保存旧结果、HDSI 结果或失败原因、输入/状态 revision、资源指标和人工复核结论；没有这些记录只能算提示词试用，不能算 HDSI 效果验证。
+
 ### 3.2.2 角色决策闭环
 
 持续剧本要真正影响行为，必须经过一条可回放的中间链，而不是把“角色现在的心情”直接拼进提示词。每次事件只在受影响的作用域和领域内局部重算：

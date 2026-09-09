@@ -11769,6 +11769,14 @@
         "default": "legacy",
         "hint": "此项设置下方列表的模式；聊天命令保存的窗口选择优先。可直接在目标窗口发送 HDSI 开启、HDSI 关闭或 HDSI 状态，无需手填 ID；群聊需要陪伴管理权限。"
       },
+      "hdsi_experiment_continuity_scope": {
+        "description": "HDSI 持续生活共享范围",
+        "type": "string",
+        "options": ["session", "user", "global"],
+        "labels": ["当前会话", "同一用户", "全局共用角色"],
+        "default": "global",
+        "hint": "HDSI 试验中角色持续状态的归属。global 表示一个角色同时面对多个私聊和群聊窗口；user 按平台用户隔离；session 仅在当前会话内连续。"
+      },
       "hdsi_experiment_user_ids": {
         "description": "HDSI 试验私聊用户 ID",
         "type": "list",

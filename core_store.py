@@ -303,6 +303,9 @@ _DURABLE_SECTION_NAMES = frozenset(
         "private_user_alias_merge_backups",
         "groups",
         "persona_routing_warnings",
+        "hdsi_trial_observations",
+        "hdsi_event_ledger",
+        "hdsi_actor_state",
         "daily_plan",
         "daily_plan_history",
         "agenda_version",
@@ -1108,6 +1111,16 @@ class CoreStoreMixin:
             "private_user_alias_merge_backups": {},
             "groups": {},
             "persona_routing_warnings": {"schema_version": 2, "items": []},
+            "hdsi_trial_observations": {
+                "schema_version": 1,
+                "events": [],
+                "metrics": {},
+            },
+            "hdsi_event_ledger": {
+                "schema_version": 1,
+                "events": [],
+            },
+            "hdsi_actor_state": {},
             "daily_plan": {},
             "daily_plan_history": [],
             "agenda_version": 1,
@@ -1289,6 +1302,68 @@ class CoreStoreMixin:
         data.setdefault("private_user_alias_merge_backups", {})
         data.setdefault("groups", {})
         data.setdefault("persona_routing_warnings", {"schema_version": 2, "items": []})
+        trial_observations = data.setdefault(
+            "hdsi_trial_observations",
+            {"schema_version": 1, "events": [], "metrics": {}},
+        )
+        if not isinstance(trial_observations, dict):
+            trial_observations = {
+                "schema_version": 1,
+                "events": [],
+                "metrics": {},
+            }
+            data["hdsi_trial_observations"] = trial_observations
+        trial_observations.setdefault("schema_version", 1)
+        if not isinstance(trial_observations.get("events"), list):
+            trial_observations["events"] = []
+        else:
+            del trial_observations["events"][:-200]
+        if not isinstance(trial_observations.get("metrics"), dict):
+            trial_observations["metrics"] = {}
+        event_ledger = data.setdefault(
+            "hdsi_event_ledger",
+            {"schema_version": 1, "events": []},
+        )
+        if not isinstance(event_ledger, dict):
+            event_ledger = {"schema_version": 1, "events": []}
+            data["hdsi_event_ledger"] = event_ledger
+        event_ledger.setdefault("schema_version", 1)
+        if not isinstance(event_ledger.get("events"), list):
+            event_ledger["events"] = []
+        else:
+            # Keep an upgrade from loading an unbounded trial ledger into
+            # memory. Detailed entries are observational and disposable.
+            del event_ledger["events"][:-320]
+        actor_state = data.setdefault("hdsi_actor_state", {})
+        if not isinstance(actor_state, dict):
+            data["hdsi_actor_state"] = {}
+        else:
+            trial_modes = {"hdsi_shadow", "hdsi_active"}
+            now = time.time()
+            cutoff = now - 30 * 24 * 60 * 60
+            trial_items = []
+            for actor_key, actor in list(actor_state.items()):
+                if not isinstance(actor, dict):
+                    actor_state.pop(actor_key, None)
+                    continue
+                windows = actor.get("windows")
+                if isinstance(windows, list):
+                    actor["windows"] = windows[:24]
+                mode = str(actor.get("mode", "") or "")
+                if mode in trial_modes:
+                    last = actor.get("last_event_at", 0)
+                    try:
+                        last = max(0.0, float(last or 0.0))
+                    except (TypeError, ValueError, OverflowError):
+                        last = 0.0
+                    if last > 0 and last < cutoff:
+                        actor_state.pop(actor_key, None)
+                        continue
+                    trial_items.append((actor_key, last))
+            if len(trial_items) > 128:
+                trial_items.sort(key=lambda item: item[1], reverse=True)
+                for actor_key, _ in trial_items[128:]:
+                    actor_state.pop(actor_key, None)
         data.setdefault("daily_plan", {})
         data.setdefault("daily_plan_history", [])
         data.setdefault("agenda_version", 1)

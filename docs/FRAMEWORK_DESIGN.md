@@ -218,7 +218,7 @@ overlay 采用五层归属：world、persona、relationship、user preference、
 | --- | --- | --- |
 | A. 公共契约与共享预设 | session/user/global 语义、兼容 wire、跨会话正反例、索引 | 已形成 review 包；真实 ACL 和订阅隔离明确留作运行要求 |
 | B. 世界模拟首条切片 | 学习中断/恢复、Memory 纠正、三模式归属、来源、资源上限；最小世界 Schema 与 WS 夹具 | 日历相关对象和 WorldEntity/WorldEvent/Request/Result 已固定并有 CAL-01--04、WMS-01--08 夹具；下一项转角色决策闭环，运行授权与资源验证保留后续隔离阶段 |
-| C. 角色决策闭环 | 同一条经历怎样影响情绪、关系、动机、回复和主动；哪些只在当前场景生效 | 已固定 `NormalizedInteractionEvent` 只读输入、`RoleDecisionSnapshot`、统一决策闸门、反馈回写、观察模式主动预览和 `companion.decision@1` 契约；下一项在 AstrBot 边界做 normalize/record 回放，再执行跨域影子比较，不执行真实投递 |
+| C. 角色决策闭环 | 同一条经历怎样影响情绪、关系、动机、回复和主动；哪些只在当前场景生效；HDSI 如何旁路复现、比较、接管和回退 | 已固定 `NormalizedInteractionEvent`、`RoleDecisionSnapshot`、GlobalActorRuntime、统一决策闸门和反馈回写；HDSI 试验运行对象、指标、generation fencing 和回退门槛已补入角色蓝图；下一项在 AstrBot 边界做 normalize/record 回放，再执行跨域影子比较，不执行真实投递 |
 | D. 原生能力组合与产品场景 | 先现实观察与共处，再创作/生图等；三种共享预设的使用体验、平台迁移和聚合预算 | 每次选择一个既有能力检验调用、回执、恢复和治理，复用已定契约 |
 
 下方阶段 1--7 是未来建设和运行验收顺序，与上方设计顺序分开标明。现有原型仅供发现契约与状态缺口，不能将局部 fake 测试计为事务、撤回或崩溃恢复通过。

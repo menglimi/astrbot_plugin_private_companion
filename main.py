@@ -363,7 +363,16 @@ from .conversation_prompt_section import (
     render_prompt_content,
     render_prompt_sections,
 )
-from .hdsi_experiment import apply_hdsi_prompt, hdsi_window_command, mark_hdsi_route
+from .hdsi_experiment import (
+    apply_hdsi_prompt,
+    finalize_trial_response,
+    hdsi_window_command,
+    mark_hdsi_route,
+    record_hdsi_inbound_event,
+    record_hdsi_outbound_event,
+    record_hdsi_proactive_event,
+    record_trial_failure,
+)
 from .prompt_surface import CollectedPromptContext, PromptSurface
 from .passive_state_pipeline import inject_humanized_state as run_humanized_state_injection
 from .qzone_integration import QzoneMixin
@@ -1841,7 +1850,18 @@ class PrivateCompanionPlugin(
         try:
             await apply_hdsi_prompt(self, event, req)
         except Exception as exc:
+            await record_trial_failure(self, event, type(exc).__name__)
             logger.warning("HDSI 表达试验处理失败: error_type=%s", type(exc).__name__)
+
+    @filter.on_llm_response(priority=-99950)
+    @_multi_persona_event_context
+    async def finalize_hdsi_trial_response(self, event: AstrMessageEvent, resp: LLMResponse, *args: Any, **kwargs: Any) -> None:
+        await finalize_trial_response(self, event, resp)
+        try:
+            await record_hdsi_outbound_event(self, event, resp)
+        except Exception:
+            # The event bridge is observational and must never alter delivery.
+            pass
 
     @filter.on_llm_response(priority=-100000)
     @_multi_persona_event_context
@@ -9267,6 +9287,20 @@ class PrivateCompanionPlugin(
         source_text = str(bridge_context.get("full_text") or chain_text).strip()
         if not source_text:
             return
+        try:
+            await record_hdsi_proactive_event(
+                self,
+                event,
+                "proactive_event",
+                tick_id=_single_line(bridge_context.get("attempt_id"), 100),
+                content_digest=hashlib.sha256(
+                    source_text.encode("utf-8", errors="replace")
+                ).hexdigest()[:20],
+                content_chars=len(source_text),
+            )
+        except Exception:
+            # HDSI continuity is observational here and cannot affect delivery.
+            pass
         attempt_id = _single_line(bridge_context.get("attempt_id"), 100)
         replaced_attempts = getattr(self, "_proactive_chat_bridge_replaced_record_attempts", None)
         if not isinstance(replaced_attempts, dict):
@@ -20933,6 +20967,10 @@ class PrivateCompanionPlugin(
     @event_data_save_boundary(flush=True)
     async def on_private_message(self, event: AstrMessageEvent, *args, **kwargs):
         mark_hdsi_route(self, event)
+        try:
+            await record_hdsi_inbound_event(self, event)
+        except Exception:
+            pass
         if await self._handle_private_message_preflight(event):
             return
         return await handle_private_message(self, event, *args, **kwargs)
@@ -21356,6 +21394,10 @@ class PrivateCompanionPlugin(
     @event_data_save_boundary(flush=True)
     async def on_group_message(self, event: AstrMessageEvent, *args, **kwargs):
         mark_hdsi_route(self, event)
+        try:
+            await record_hdsi_inbound_event(self, event)
+        except Exception:
+            pass
         return await handle_group_message(self, event, *args, **kwargs)
 
     def _format_timestamp_elapsed(self, timestamp: Any) -> str:

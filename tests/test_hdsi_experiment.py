@@ -9,11 +9,23 @@ import pytest
 from astrbot_plugin_private_companion.hdsi_experiment import (
     apply_hdsi_prompt,
     build_hdsi_prompt_section,
+    finalize_trial_response,
+    format_hdsi_trial_stats,
     hdsi_window_command,
     mark_hdsi_route,
     normalize_window_modes,
+    record_trial_failure,
+    record_trial_input,
+    record_hdsi_proactive_event,
+    record_hdsi_inbound_event,
+    record_hdsi_outbound_event,
+    get_hdsi_runtime_snapshot,
     resolve_hdsi_binding,
     resolve_hdsi_mode,
+    run_hdsi_life_tick,
+    build_hdsi_decision_snapshot,
+    build_hdsi_response_plan,
+    hdsi_plan_fence_valid,
 )
 
 
@@ -53,6 +65,117 @@ def test_group_full_umo_binding_is_accepted():
     event = group_event()
     event.unified_msg_origin = "OneBot:GroupMessage:group-1"
     assert resolve_hdsi_mode(plugin(groups=[event.unified_msg_origin]), event) == "hdsi_active"
+
+
+def test_global_continuity_uses_one_actor_across_windows():
+    value = plugin(
+        mode="hdsi_active",
+        users=["pilot"],
+        hdsi_experiment_continuity_scope="global",
+    )
+    first = window_event(subject="pilot", adapter="bot-a")
+    second = window_event(subject="pilot", adapter="bot-b")
+    first_binding = resolve_hdsi_binding(value, first)
+    second_binding = resolve_hdsi_binding(value, second)
+    assert first_binding["continuity_scope"] == "global"
+    assert first_binding["continuity_actor_id"] == second_binding["continuity_actor_id"]
+    assert first_binding["actor_id"] != second_binding["actor_id"]
+
+
+@pytest.mark.parametrize("scope, same", [("user", True), ("session", False)])
+def test_continuity_scope_controls_actor_merge(scope, same):
+    value = plugin(mode="hdsi_active", users=["pilot"], hdsi_experiment_continuity_scope=scope)
+    first = window_event(subject="pilot", adapter="bot-a")
+    second = window_event(subject="pilot", adapter="bot-b")
+    left = resolve_hdsi_binding(value, first)["continuity_actor_id"]
+    right = resolve_hdsi_binding(value, second)["continuity_actor_id"]
+    assert (left == right) is same
+
+
+def test_user_continuity_uses_group_sender_not_group_id():
+    value = plugin(mode="hdsi_active", users=["pilot"], groups=["group-1"], hdsi_experiment_continuity_scope="user")
+    private = window_event(subject="pilot")
+    group = window_event(group=True)
+    group.get_sender_id = lambda: "pilot"
+    assert resolve_hdsi_binding(value, private)["continuity_actor_id"] == resolve_hdsi_binding(value, group)["continuity_actor_id"]
+
+
+def test_proactive_event_uses_same_global_actor_ledger():
+    host = plugin(mode="hdsi_active", users=["pilot"])
+    host.data = {}
+    host._data_lock = asyncio.Lock()
+    host._schedule_data_save = lambda **_kwargs: None
+    event = window_event(subject="pilot")
+    asyncio.run(record_hdsi_proactive_event(host, event, "autonomous_tick", activity="reading"))
+    asyncio.run(record_hdsi_proactive_event(host, event, "autonomous_tick", activity="walking"))
+    assert host.data["hdsi_event_ledger"]["events"][0]["event_type"] == "autonomous_tick"
+    assert host.data["hdsi_actor_state"]["hdsi:global:default"]["event_count"] == 2
+
+
+def test_global_actor_ledger_survives_window_switch():
+    host = plugin(mode="hdsi_active", users=["pilot"], hdsi_experiment_continuity_scope="global")
+    host.data = {}
+    first, second = window_event(subject="pilot", adapter="bot-a"), window_event(subject="pilot", adapter="bot-b")
+    mark_hdsi_route(host, first)
+    mark_hdsi_route(host, second)
+
+    async def run():
+        await record_hdsi_inbound_event(host, first)
+        await record_hdsi_inbound_event(host, second)
+
+    asyncio.run(run())
+    actor = host.data["hdsi_actor_state"][first.private_companion_hdsi_continuity_actor_id]
+    assert actor["event_count"] == 2
+    assert len(actor["windows"]) == 2
+    second._private_companion_plugin = host
+    snapshot = get_hdsi_runtime_snapshot(host, second)
+    assert "统一生活账本已记录约2个事件" in snapshot
+    assert "另一个聊天窗口" in snapshot
+
+
+def test_runtime_snapshot_uses_bot_activity_projection_only():
+    host = plugin(mode="hdsi_active", users=["pilot"])
+    host.data = {"daily_state": {"current_activity": "整理房间"}}
+    event = window_event(subject="pilot")
+    mark_hdsi_route(host, event)
+    snapshot = get_hdsi_runtime_snapshot(host, event)
+    assert "整理房间" in snapshot
+    assert "message_str" not in snapshot
+
+
+def test_active_plan_is_structured_bounded_and_fenced():
+    host = plugin(mode="hdsi_active", users=["pilot"], hdsi_experiment_binding_revision="rev-7")
+    host.hdsi_runtime_generation = "generation-a"
+    host.data = {"hdsi_actor_state": {"hdsi:global:default": {
+        "event_count": 4, "last_scope": "private", "previous_scope": "group",
+        "previous_window": "bot:GroupMessage:g", "windows": ["bot:GroupMessage:g"],
+        "current_activity": "看书", "life_phase": "晚间生活",
+    }}}
+    event = window_event(subject="pilot")
+    mark_hdsi_route(host, event)
+    snapshot = build_hdsi_decision_snapshot(host, event)
+    plan = build_hdsi_response_plan(host, event, snapshot)
+    assert snapshot["event_count"] == 4
+    assert snapshot["runtime_generation"] == "generation-a"
+    assert plan["action"] == "respond"
+    assert plan["continuity"] == "resume_attention_after_window_switch"
+    assert plan["privacy"] == "private_relationship_allowed"
+    assert len(plan["plan_id"]) == 24
+    assert hdsi_plan_fence_valid(host, event, plan)
+    host.hdsi_runtime_generation = "generation-b"
+    assert not hdsi_plan_fence_valid(host, event, plan)
+
+
+def test_group_plan_limits_public_audience_and_stale_binding_is_rejected():
+    host = plugin(mode="hdsi_active", groups=["g"], hdsi_experiment_binding_revision="rev-1")
+    event = window_event(group=True, subject="g")
+    mark_hdsi_route(host, event)
+    plan = build_hdsi_response_plan(host, event)
+    assert plan["audience"] == "group"
+    assert plan["privacy"] == "public_context_only"
+    assert plan["max_chars"] < 500
+    host.hdsi_experiment_binding_revision = "rev-2"
+    assert not hdsi_plan_fence_valid(host, event, plan)
 
 
 def test_mark_route_metadata_and_prompt():
@@ -146,6 +269,84 @@ def test_unknown_action_and_missing_window_do_not_modify_configuration():
     host._save_config_if_possible.assert_not_awaited()
 
 
+def test_trial_stats_command_is_aggregate_and_permission_gated():
+    host, event = command_plugin(), window_event()
+    host.data = {
+        "hdsi_trial_observations": {
+            "schema_version": 1,
+            "events": [{"input_digest": "secret-digest"}],
+            "metrics": {
+                "hdsi_active": {
+                    "requests": 3,
+                    "responses": 2,
+                    "failures": 1,
+                    "latency_ms_total": 2400,
+                    "prompt_bytes": 1200,
+                }
+            },
+        }
+    }
+    result = asyncio.run(hdsi_window_command(host, event, "试验统计"))
+    assert "请求 3" in result
+    assert "平均延迟 1200ms" in result
+    assert "secret-digest" not in result
+
+    host._can_manage_private_companion = lambda _event: False
+    denied = asyncio.run(hdsi_window_command(host, event, "统计"))
+    assert "管理权限" in denied
+
+
+def test_trial_stats_without_data_is_explicit():
+    host = command_plugin()
+    host.data = {}
+    assert format_hdsi_trial_stats(host) == "HDSI 试验统计：暂无数据。"
+
+
+def test_trial_observer_records_bounded_content_free_lifecycle():
+    host = plugin(mode="hdsi_active", users=["pilot"])
+    host.data = {}
+    host._data_lock = asyncio.Lock()
+    saves = []
+    host._schedule_data_save = lambda **kwargs: saves.append(kwargs)
+
+    async def run():
+        for index in range(205):
+            event = window_event(subject="pilot")
+            event.message_str = f"message-{index}"
+            mark_hdsi_route(host, event)
+            await record_trial_input(host, event)
+        response_event = window_event(subject="pilot")
+        response_event.message_str = "response input"
+        mark_hdsi_route(host, response_event)
+        await record_trial_input(host, response_event)
+        response_event.private_companion_hdsi_prompt_bytes = 321
+        await finalize_trial_response(
+            host, response_event, SimpleNamespace(completion_text="done"),
+        )
+        failure_event = window_event(subject="pilot")
+        failure_event.message_str = "failure input"
+        mark_hdsi_route(host, failure_event)
+        await record_trial_input(host, failure_event)
+        await record_trial_failure(host, failure_event, "provider_timeout")
+
+    asyncio.run(run())
+    state = host.data["hdsi_trial_observations"]
+    assert len(state["events"]) == 200
+    metrics = state["metrics"]["hdsi_active"]
+    assert metrics["requests"] == 207
+    assert metrics["responses"] == 1
+    assert metrics["failures"] == 1
+    assert metrics["prompt_bytes"] == 321
+    assert state["events"][-2]["outcome"] == "response"
+    assert state["events"][-1]["failure_reason"] == "provider_timeout"
+    assert all(set(item).isdisjoint({"message_str", "completion_text"}) for item in state["events"])
+    assert all(
+        {"hdsi_trial_observations", "hdsi_event_ledger", "hdsi_actor_state"}
+        <= set(call.get("sections") or ())
+        for call in saves
+    )
+
+
 def test_simultaneous_window_switches_do_not_overwrite_each_other():
     host = command_plugin()
 
@@ -191,6 +392,8 @@ def test_active_command_reaches_real_prompt_hook_and_placement_once():
     asyncio.run(hook(host, event, req))
     asyncio.run(hook(host, event, req))
     assert "HDSI" in str(req.extra_user_content_parts)
+    assert req._private_companion_hdsi_response_plan["action"] == "respond"
+    assert event.private_companion_hdsi_decision_snapshot["schema_version"] == 1
     assert req.system_prompt == "persona"
     host._record_request_prompt_fragment.assert_awaited_once()
 
@@ -203,6 +406,163 @@ def test_shadow_records_once_per_request_without_changing_prompts():
     asyncio.run(apply_hdsi_prompt(host, event, req))
     assert vars(req) == {"system_prompt": "persona", "prompt": "hello", "extra_user_content_parts": [], "_private_companion_hdsi_processed": True}
     host._record_request_prompt_fragment.assert_awaited_once()
+
+
+def test_trial_observer_persists_response_metrics_and_prompt_bytes():
+    from astrbot_plugin_private_companion.hdsi_experiment import TRIAL_STATE_KEY
+
+    class Host:
+        def __init__(self):
+            self.data = {}
+            self._data_lock = asyncio.Lock()
+            self.saves = []
+
+        def _schedule_data_save(self, **kwargs):
+            self.saves.append(kwargs)
+
+    host = Host()
+    event = SimpleNamespace(private_companion_hdsi_mode="hdsi_active", message_str="hello")
+    asyncio.run(record_trial_input(host, event))
+    event.private_companion_hdsi_prompt_bytes = 321
+    asyncio.run(finalize_trial_response(host, event, SimpleNamespace(completion_text="reply")))
+    state = host.data[TRIAL_STATE_KEY]
+    assert state["metrics"]["hdsi_active"] == {
+        "requests": 1, "responses": 1, "failures": 0,
+        "latency_ms_total": state["metrics"]["hdsi_active"]["latency_ms_total"],
+        "prompt_bytes": 321,
+    }
+    assert state["events"][0]["prompt_bytes"] == 321
+    assert host.saves
+
+
+def test_trial_observer_bounds_events_and_failure_is_idempotent():
+    class Host:
+        def __init__(self):
+            self.data = {}
+            self._data_lock = asyncio.Lock()
+
+        def _schedule_data_save(self, **kwargs):
+            return None
+
+    host = Host()
+    async def collect():
+        for index in range(201):
+            await record_trial_input(host, SimpleNamespace(private_companion_hdsi_mode="hdsi_shadow", message_str=str(index)))
+        failed = SimpleNamespace(private_companion_hdsi_mode="hdsi_shadow", message_str="failure")
+        await record_trial_input(host, failed)
+        await record_trial_failure(host, failed, "provider_error")
+        await record_trial_failure(host, failed, "provider_error")
+    asyncio.run(collect())
+    state = host.data["hdsi_trial_observations"]
+    assert len(state["events"]) == 200
+    assert state["metrics"]["hdsi_shadow"]["failures"] == 1
+
+
+def test_trial_input_retries_deduplicate_by_message_id_but_repeated_text_does_not():
+    class Host:
+        def __init__(self):
+            self.data = {}
+            self._data_lock = asyncio.Lock()
+            self._event_message_id = lambda event: getattr(event, "message_id", "")
+
+        def _schedule_data_save(self, **kwargs):
+            return None
+
+    host = Host()
+
+    async def collect():
+        first = SimpleNamespace(private_companion_hdsi_mode="hdsi_active", message_str="same", message_id="m-1")
+        retry = SimpleNamespace(private_companion_hdsi_mode="hdsi_active", message_str="same", message_id="m-1")
+        await record_trial_input(host, first)
+        await record_trial_failure(host, first, "provider_error")
+        await record_trial_input(host, retry)
+        await record_trial_failure(host, retry, "provider_error")
+        await record_trial_input(host, SimpleNamespace(private_companion_hdsi_mode="hdsi_active", message_str="same"))
+        await record_trial_input(host, SimpleNamespace(private_companion_hdsi_mode="hdsi_active", message_str="same"))
+
+    asyncio.run(collect())
+    state = host.data["hdsi_trial_observations"]
+    assert state["metrics"]["hdsi_active"]["requests"] == 3
+    assert state["metrics"]["hdsi_active"]["failures"] == 1
+    assert len(state["events"]) == 3
+
+
+def test_orphan_trial_failure_is_ignored():
+    class Host:
+        def __init__(self):
+            self.data = {}
+            self._data_lock = asyncio.Lock()
+
+        def _schedule_data_save(self, **kwargs):
+            raise AssertionError("orphan failures must not schedule trial persistence")
+
+    host = Host()
+    event = SimpleNamespace(private_companion_hdsi_mode="hdsi_active")
+    asyncio.run(record_trial_failure(host, event, "provider_error"))
+    assert "hdsi_trial_observations" not in host.data
+
+
+def test_outbound_ledger_ignores_intermediate_and_empty_responses():
+    host = plugin(mode="hdsi_active", users=["pilot"])
+    host.data = {}
+    host._data_lock = asyncio.Lock()
+    host._schedule_data_save = lambda **kwargs: None
+    event = window_event(subject="pilot")
+    mark_hdsi_route(host, event)
+
+    async def run():
+        await record_hdsi_outbound_event(host, event, SimpleNamespace(role="assistant", is_chunk=True, completion_text="part"))
+        await record_hdsi_outbound_event(host, event, SimpleNamespace(role="tool", completion_text="tool"))
+        await record_hdsi_outbound_event(host, event, SimpleNamespace(role="assistant", completion_text="tool prelude", tools_call_args=[{}]))
+        await record_hdsi_outbound_event(host, event, SimpleNamespace(role="assistant", completion_text=""))
+        assert not getattr(event, "private_companion_hdsi_outbound_recorded", False)
+        await record_hdsi_outbound_event(host, event, SimpleNamespace(role="assistant", completion_text="final"))
+        await record_hdsi_outbound_event(host, event, SimpleNamespace(role="assistant", completion_text="duplicate"))
+
+    asyncio.run(run())
+    events = host.data["hdsi_event_ledger"]["events"]
+    assert [item["event_type"] for item in events] == ["outbound_message"]
+    assert events[0]["response_chars"] == len("final")
+
+
+def test_legacy_route_does_not_create_trial_state():
+    host = plugin(mode="legacy")
+    host.enabled = True
+    host.data = {}
+    event = window_event(subject="pilot")
+    mark_hdsi_route(host, event)
+    asyncio.run(apply_hdsi_prompt(host, event, request()))
+    assert "hdsi_trial_observations" not in host.data
+
+
+def test_hdsi_life_tick_advances_existing_actor_only_and_is_throttled():
+    host = plugin(mode="hdsi_active")
+    host.data = {
+        "hdsi_actor_state": {
+            "hdsi:global:default": {
+                "schema_version": 1,
+                "mode": "hdsi_active",
+                "persona_id": "default",
+                "last_scope": "private",
+                "scope_fingerprint": "fp",
+                "windows": ["bot:FriendMessage:pilot"],
+                "event_count": 2,
+                "last_life_tick_at": 0,
+            },
+            "legacy-actor": {"mode": "legacy", "event_count": 9},
+        }
+    }
+    host._data_lock = asyncio.Lock()
+    host._schedule_data_save = lambda **kwargs: None
+    first = asyncio.run(run_hdsi_life_tick(host, now=1_700_000_000))
+    second = asyncio.run(run_hdsi_life_tick(host, now=1_700_000_030))
+    assert first == 1
+    assert second == 0
+    actor = host.data["hdsi_actor_state"]["hdsi:global:default"]
+    assert actor["life_phase"]
+    assert actor["event_count"] == 3
+    assert host.data["hdsi_actor_state"]["legacy-actor"]["event_count"] == 9
+    assert host.data["hdsi_event_ledger"]["events"][-1]["event_type"] == "life_tick"
 
 
 @pytest.mark.parametrize("blocked_by", ["disabled", "proactive", "not_inbound", "proactive_only", "unmarked", "turned_off"])
