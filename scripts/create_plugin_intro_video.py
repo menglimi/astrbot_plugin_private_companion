@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -25,8 +26,19 @@ FONT = Path(r"C:\Windows\Fonts\NotoSansSC-VF.ttf")
 FFMPEG = Path(r"C:\Users\99505\.astrbot\data\tools\bin\ffmpeg.exe")
 CONFIG = Path(r"C:\Users\99505\.astrbot\data\cmd_config.json")
 
+
+def _plugin_version() -> str:
+    """Read the release version from the canonical plugin metadata."""
+
+    metadata = (ROOT / "metadata.yaml").read_text(encoding="utf-8")
+    match = re.search(r"^version:\s*([^\s#]+)", metadata, re.MULTILINE)
+    return match.group(1) if match else "unknown"
+
+
+PLUGIN_VERSION = _plugin_version()
+
 SCENES = [
-    ("01_title", "把陪伴做成一段连续的生活", "astrbot_plugin_private_companion  ·  v6.6.0", "欢迎来到“我会永远陪着你”。它不是一组孤立的问候命令，而是让 AstrBot 拥有连续生活上下文的陪伴核心。"),
+    ("01_title", "把陪伴做成一段连续的生活", f"astrbot_plugin_private_companion  ·  v{PLUGIN_VERSION}", "欢迎来到“我会永远陪着你”。它不是一组孤立的问候命令，而是让 AstrBot 拥有连续生活上下文的陪伴核心。"),
     ("02_context", "同一套上下文，贯穿每次互动", "状态  ·  日程  ·  关系  ·  场景", "插件把角色状态、日程、关系和当前场景放在同一条链路里。每次回复和主动消息，都先有依据，再决定是否开口。"),
     ("03_proactive", "主动消息，也有具体由头", "主动候选  →  额度与时机  →  发送前复核", "它会根据临近日程、刚发生的小事和共同话题生成候选，再经过免打扰时段、额度、冷却和隐私边界检查。合适才发，不合适就安静。"),
     ("04_group", "群聊不再只有关键词触发", "气氛  ·  群友  ·  话题线  ·  片段记忆", "在群聊里，插件可以观察群气氛、识别群友和黑话，跟住话题线，再决定自然续接还是保持沉默。"),
