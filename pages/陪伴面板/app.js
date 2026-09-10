@@ -226,6 +226,17 @@ const state = {
   configBackups: [],
   configLastChecks: [],
   activeTab: "dashboard",
+  taskPrompts: [],
+  taskPromptGroups: [],
+  taskPromptsLoading: false,
+  taskPromptsError: "",
+  taskPromptRequestSeq: 0,
+  taskPromptQuery: "",
+  taskPromptGroup: "all",
+  taskPromptMode: "all",
+  selectedTaskPromptKey: "",
+  taskPromptDraft: "",
+  taskPromptSaving: false,
   lazyLoaded: {
     diagnostics: false,
     dailyReview: false,
@@ -239,6 +250,7 @@ const state = {
     userGroupLists: false,
     memoNotes: false,
     calendar: false,
+    taskPrompts: false,
   },
   lazyScripts: {},
   lazyScriptErrors: {},
@@ -777,8 +789,27 @@ function hasUnsavedFeatureChanges() {
     || featureDraftSignature(state.featureDraft || {}) !== String(state.featureDraftBaseline || "");
 }
 
+function selectedTaskPrompt() {
+  const taskKey = String(state.selectedTaskPromptKey || "");
+  return state.taskPrompts.find((item) => item.task_key === taskKey) || null;
+}
+
+function hasUnsavedTaskPromptChanges() {
+  const selected = selectedTaskPrompt();
+  return Boolean(selected) && String(state.taskPromptDraft ?? "") !== String(selected.custom_prompt ?? "");
+}
+
+function discardUnsavedTaskPromptChanges() {
+  const selected = selectedTaskPrompt();
+  state.taskPromptDraft = String(selected?.custom_prompt || "");
+  syncTaskPromptEditorState();
+}
+
 function hasUnsavedChanges() {
-  return hasUnsavedFeatureChanges() || hasUnsavedModuleFormChanges() || hasUnsavedTtsProviderChanges();
+  return hasUnsavedFeatureChanges()
+    || hasUnsavedModuleFormChanges()
+    || hasUnsavedTtsProviderChanges()
+    || hasUnsavedTaskPromptChanges();
 }
 
 function hasUnsavedTtsProviderChanges() {
@@ -5642,6 +5673,7 @@ const tokenTaskLabels = {
   memory_profile: "本地陪伴画像",
   dialogue_episode: "私聊片段",
   response_review: "回复/主动复核",
+  reactive_poke_reply: "被动戳一戳回复",
   emotion_judgement: "情绪判断",
   relationship: "关系分析",
   group_interject: "群聊插话",
@@ -5685,6 +5717,7 @@ const tokenTaskLabels = {
   smart_silence: "智能沉默判断",
   group_air_reply_guard: "群聊插话把关",
   group_nsfw_image_review: "群图安全审核",
+  reaction_vision_verify: "表情包视觉复核",
   rest_wakeup_judge: "休息醒来判断",
   yesterday_summary: "昨日摘要",
   full_test_detail: "完整测试细化",
@@ -7669,6 +7702,445 @@ function mergeCreativeWorkspace() {
 
 mergeCreativeWorkspace();
 
+function normalizeTaskPromptBuiltinText(value) {
+  if (value === null || value === undefined) return "";
+  return String(value).replace(/\r\n?/g, "\n").trim();
+}
+
+function normalizeTaskPromptBuiltinDynamic(value, fallback = false) {
+  if (value === null || value === undefined) return Boolean(fallback);
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized) return false;
+  if (["0", "false", "no", "off", "static"].includes(normalized)) return false;
+  return true;
+}
+
+function normalizeTaskPromptCatalog(raw) {
+  const data = raw?.data && typeof raw.data === "object" ? raw.data : (raw || {});
+  const source = Array.isArray(data.tasks)
+    ? data.tasks
+    : Array.isArray(data.items)
+      ? data.items
+      : [];
+  const overrides = data.overrides && typeof data.overrides === "object" && !Array.isArray(data.overrides)
+    ? data.overrides
+    : {};
+  const seen = new Set();
+  return source.map((item) => {
+    if (!item || typeof item !== "object") return null;
+    const taskKey = String(item.task_key || item.key || item.id || "").trim();
+    if (!taskKey || seen.has(taskKey)) return null;
+    seen.add(taskKey);
+    const overrideValue = Object.prototype.hasOwnProperty.call(overrides, taskKey)
+      ? overrides[taskKey]
+      : undefined;
+    const customPrompt = String(item.custom_prompt ?? item.prompt ?? overrideValue ?? "");
+    const customized = item.customized === true || customPrompt.trim().length > 0;
+    const overrideKey = String(item.override_key || "").trim()
+      || (customized && Object.prototype.hasOwnProperty.call(overrides, taskKey) ? taskKey : "");
+    const builtinPromptDynamic = normalizeTaskPromptBuiltinDynamic(
+      item.builtin_prompt_dynamic ?? item.builtinPromptDynamic,
+      item.dynamic === true,
+    );
+    return {
+      task_key: taskKey,
+      name: String(item.name || item.title || taskKey).trim() || taskKey,
+      group: String(item.group || item.category || "其他任务").trim() || "其他任务",
+      description: String(item.description || item.purpose || "插件内部任务模型调用").trim(),
+      provider_key: String(item.provider_key || item.provider || "").trim(),
+      custom_prompt: customPrompt,
+      customized,
+      override_key: customized ? overrideKey : "",
+      dynamic: item.dynamic === true,
+      builtin_prompt: normalizeTaskPromptBuiltinText(item.builtin_prompt ?? item.builtinPrompt),
+      builtin_prompt_dynamic: builtinPromptDynamic,
+    };
+  }).filter(Boolean);
+}
+
+function applyTaskPromptCatalog(raw) {
+  const items = normalizeTaskPromptCatalog(raw);
+  state.taskPrompts = items;
+  state.taskPromptGroups = [...new Set(items.map((item) => item.group))];
+  if (state.taskPromptGroup !== "all" && !state.taskPromptGroups.includes(state.taskPromptGroup)) {
+    state.taskPromptGroup = "all";
+  }
+  const previousKey = String(state.selectedTaskPromptKey || "");
+  const selected = items.find((item) => item.task_key === previousKey) || items[0] || null;
+  state.selectedTaskPromptKey = selected?.task_key || "";
+  state.taskPromptDraft = String(selected?.custom_prompt || "");
+  state.taskPromptsError = "";
+  state.lazyLoaded.taskPrompts = true;
+}
+
+function taskPromptModeItems() {
+  if (state.taskPromptMode !== "customized") return state.taskPrompts;
+  return state.taskPrompts.filter((item) => item.customized);
+}
+
+function taskPromptOverrideSource(item) {
+  return String(item?.override_key || "").trim();
+}
+
+function taskPromptUsesInheritedOverride(item) {
+  const source = taskPromptOverrideSource(item);
+  return Boolean(item?.customized && source && source !== item.task_key);
+}
+
+function visibleTaskPromptItems() {
+  const query = String(state.taskPromptQuery || "").trim().toLocaleLowerCase("zh-CN");
+  return taskPromptModeItems().filter((item) => {
+    if (state.taskPromptGroup !== "all" && item.group !== state.taskPromptGroup) return false;
+    if (!query) return true;
+    return [
+      item.name,
+      item.task_key,
+      item.group,
+      item.description,
+      item.provider_key,
+      item.override_key,
+      item.builtin_prompt,
+    ].some((value) => String(value || "").toLocaleLowerCase("zh-CN").includes(query));
+  });
+}
+
+function clearTaskPromptResetConfirmation() {
+  const button = $("#promptsResetBtn");
+  if (!(button instanceof HTMLButtonElement)) return;
+  window.clearTimeout(button._confirmTimer);
+  delete button.dataset.confirmKey;
+  delete button.dataset.confirmAt;
+  delete button.dataset.originalText;
+  button.classList.remove("is-confirming");
+  button.removeAttribute("aria-pressed");
+  button.textContent = "恢复默认";
+}
+
+function syncTaskPromptEditorState() {
+  const selected = selectedTaskPrompt();
+  const textarea = $("#promptsTextarea");
+  const saveButton = $("#promptsSaveBtn");
+  const resetButton = $("#promptsResetBtn");
+  const status = $("#promptsStatus");
+  const badge = $("#promptsEditorBadge");
+  if (!selected) {
+    if (saveButton) saveButton.disabled = true;
+    if (resetButton) resetButton.disabled = true;
+    return;
+  }
+
+  const draft = String(state.taskPromptDraft ?? "");
+  const dirty = hasUnsavedTaskPromptChanges();
+  const draftCustomized = draft.trim().length > 0;
+  const inherited = taskPromptUsesInheritedOverride(selected);
+  const overrideKey = taskPromptOverrideSource(selected);
+  const emptyInheritedDraft = inherited && dirty && !draftCustomized;
+  if (textarea) textarea.disabled = state.taskPromptSaving;
+  if (saveButton) saveButton.disabled = state.taskPromptSaving || !dirty || emptyInheritedDraft;
+  if (resetButton) {
+    resetButton.disabled = state.taskPromptSaving || (!selected.customized && !draftCustomized);
+  }
+  if (status) {
+    status.classList.toggle("dirty", dirty);
+    status.textContent = state.taskPromptSaving
+      ? "正在保存提示词..."
+      : dirty
+        ? draftCustomized
+          ? `有未保存更改 · ${draft.length} 字`
+          : emptyInheritedDraft
+            ? `已清空继承指令 · 请使用“恢复默认”清除通用规则 ${overrideKey}`
+            : "有未保存更改 · 保存后移除当前任务专用指令"
+        : inherited
+          ? `已继承通用规则 · ${selected.custom_prompt.length} 字`
+          : selected.customized
+            ? `已保存当前任务专用指令 · ${selected.custom_prompt.length} 字`
+          : "使用内置任务提示词";
+  }
+  if (badge) {
+    badge.classList.toggle("customized", draftCustomized);
+    badge.classList.toggle("inherited", !dirty && inherited);
+    badge.textContent = dirty
+      ? draftCustomized
+        ? "待保存"
+        : emptyInheritedDraft
+          ? "请恢复通用规则"
+          : "待移除当前任务专用指令"
+      : inherited
+        ? "继承通用规则"
+        : selected.customized
+          ? "任务专用"
+          : "使用内置提示词";
+  }
+}
+
+function renderTaskPromptCatalog() {
+  const root = $("#promptsRoot");
+  const search = $("#promptsSearch");
+  const groupNav = $("#promptsGroupNav");
+  const list = $("#promptsTaskList");
+  if (!root || !groupNav || !list) return;
+  root.setAttribute("aria-busy", state.taskPromptsLoading ? "true" : "false");
+  if (search && search.value !== state.taskPromptQuery) search.value = state.taskPromptQuery;
+  const controlsBusy = state.taskPromptsLoading || state.taskPromptSaving;
+  if (search) search.disabled = controlsBusy;
+
+  document.querySelectorAll("[data-prompts-mode]").forEach((button) => {
+    const active = button.dataset.promptsMode === state.taskPromptMode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+    button.disabled = controlsBusy;
+  });
+
+  const modeItems = taskPromptModeItems();
+  const groupButtons = [
+    { key: "all", label: "全部", count: modeItems.length },
+    ...state.taskPromptGroups.map((group) => ({
+      key: group,
+      label: group,
+      count: modeItems.filter((item) => item.group === group).length,
+    })),
+  ];
+  groupNav.innerHTML = groupButtons.map((item) => {
+    const active = item.key === state.taskPromptGroup;
+    return `<button type="button" class="${active ? "active" : ""}" data-prompt-group="${escapeHtml(item.key)}" aria-pressed="${active}"${controlsBusy ? " disabled" : ""}>${escapeHtml(item.label)} · ${item.count}</button>`;
+  }).join("");
+
+  if (state.taskPromptsLoading) {
+    list.innerHTML = '<div class="prompts-list-state">正在读取完整任务提示词目录...</div>';
+    return;
+  }
+  if (state.taskPromptsError) {
+    list.innerHTML = `<div class="prompts-list-state error"><span>读取失败：${escapeHtml(state.taskPromptsError)}</span><button type="button" data-prompts-retry>重新读取</button></div>`;
+    return;
+  }
+  if (!state.lazyLoaded.taskPrompts) {
+    list.innerHTML = '<div class="prompts-list-state">正在准备任务目录...</div>';
+    return;
+  }
+
+  const items = visibleTaskPromptItems();
+  if (!items.length) {
+    list.innerHTML = '<div class="prompts-list-state">当前筛选下没有匹配的任务提示词。</div>';
+    return;
+  }
+  list.innerHTML = items.map((item) => {
+    const active = item.task_key === state.selectedTaskPromptKey;
+    const inherited = taskPromptUsesInheritedOverride(item);
+    const stateTitle = item.customized
+      ? inherited
+        ? `继承自通用规则 ${taskPromptOverrideSource(item)}`
+        : "当前任务专用指令"
+      : "使用内置提示词";
+    return `
+      <button
+        type="button"
+        class="prompts-task-item${active ? " active" : ""}"
+        data-prompt-task="${escapeHtml(item.task_key)}"
+        aria-pressed="${active}"
+        ${controlsBusy ? "disabled" : ""}
+        title="${escapeHtml(item.description)}"
+      >
+        <span class="prompts-task-item-head">
+          <b>${escapeHtml(item.name)}</b>
+          <i class="prompts-task-state${item.customized ? " customized" : ""}${inherited ? " inherited" : ""}" title="${escapeHtml(stateTitle)}" aria-label="${escapeHtml(stateTitle)}"></i>
+        </span>
+        <code>${escapeHtml(item.task_key)}</code>
+      </button>
+    `;
+  }).join("");
+}
+
+function renderTaskPromptEditor() {
+  const selected = selectedTaskPrompt();
+  const empty = $("#promptsEditorEmpty");
+  const content = $("#promptsEditorContent");
+  if (!empty || !content) return;
+  empty.hidden = Boolean(selected);
+  content.hidden = !selected;
+  if (!selected) return;
+
+  $("#promptsEditorGroup").textContent = selected.group;
+  $("#promptsEditorTitle").textContent = selected.name;
+  $("#promptsEditorDescription").textContent = selected.description || "插件内部任务模型调用";
+  $("#promptsEditorTaskKey").textContent = selected.task_key;
+  $("#promptsEditorProviderKey").textContent = selected.provider_key || "自动路由";
+  const overrideKey = taskPromptOverrideSource(selected);
+  $("#promptsEditorOverrideKey").textContent = !selected.customized || !overrideKey
+    ? "未设置（使用内置提示词）"
+    : taskPromptUsesInheritedOverride(selected)
+      ? `${overrideKey}（通用规则，同源任务共享）`
+      : `${overrideKey}（当前任务专用）`;
+  const builtinPrompt = $("#promptsBuiltinPrompt");
+  const builtinPromptDynamic = $("#promptsBuiltinPromptDynamic");
+  const builtinPromptText = normalizeTaskPromptBuiltinText(selected.builtin_prompt);
+  if (builtinPrompt) {
+    builtinPrompt.textContent = builtinPromptText || "当前任务暂无可展示的内置任务模型提示词。";
+    builtinPrompt.classList.toggle("is-empty", !builtinPromptText);
+  }
+  if (builtinPromptDynamic) {
+    builtinPromptDynamic.textContent = selected.builtin_prompt_dynamic
+      ? "动态字段以占位符表示；此处展示完整内置任务模型提示词，实际值仅在任务执行时注入"
+      : "此处展示完整内置任务模型提示词；运行时字段按任务执行时填充";
+  }
+  const textarea = $("#promptsTextarea");
+  if (textarea && textarea.value !== state.taskPromptDraft) {
+    textarea.value = state.taskPromptDraft;
+  }
+  syncTaskPromptEditorState();
+}
+
+function renderTaskPrompts() {
+  renderTaskPromptCatalog();
+  renderTaskPromptEditor();
+}
+
+async function loadTaskPrompts(force = false) {
+  if (force && hasUnsavedTaskPromptChanges()) return state.taskPrompts;
+  if (state.lazyLoaded.taskPrompts && !force) {
+    renderTaskPrompts();
+    return state.taskPrompts;
+  }
+  if (state.taskPromptsLoading && !force) return state.taskPrompts;
+
+  const requestSeq = Number(state.taskPromptRequestSeq || 0) + 1;
+  state.taskPromptRequestSeq = requestSeq;
+  state.taskPromptsLoading = true;
+  state.taskPromptsError = "";
+  if (state.activeTab === "prompts") renderTaskPrompts();
+  try {
+    const data = await fetchJson("/task-prompts", { dedupe: false });
+    if (requestSeq !== state.taskPromptRequestSeq) return state.taskPrompts;
+    applyTaskPromptCatalog(data);
+    return state.taskPrompts;
+  } catch (error) {
+    if (requestSeq !== state.taskPromptRequestSeq) return state.taskPrompts;
+    state.taskPromptsError = error?.message || "任务提示词读取失败";
+    throw error;
+  } finally {
+    if (requestSeq === state.taskPromptRequestSeq) {
+      state.taskPromptsLoading = false;
+      if (state.activeTab === "prompts") renderTaskPrompts();
+    }
+  }
+}
+
+function selectTaskPrompt(taskKey) {
+  if (state.taskPromptSaving) return;
+  const next = state.taskPrompts.find((item) => item.task_key === String(taskKey || ""));
+  if (!next || next.task_key === state.selectedTaskPromptKey) return;
+  if (hasUnsavedTaskPromptChanges()) {
+    const confirmed = window.confirm("当前任务提示词还有未保存的更改。切换任务将放弃这些更改，确定继续吗？");
+    if (!confirmed) return;
+  }
+  clearTaskPromptResetConfirmation();
+  state.selectedTaskPromptKey = next.task_key;
+  state.taskPromptDraft = String(next.custom_prompt || "");
+  renderTaskPrompts();
+  if (window.matchMedia?.("(max-width: 700px)")?.matches) {
+    $("#promptsEditor")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+
+function applyTaskPromptUpdateResult(result, taskKey, prompt) {
+  const data = result?.data && typeof result.data === "object" ? result.data : (result || {});
+  if (Array.isArray(data.tasks) || Array.isArray(data.items)) {
+    applyTaskPromptCatalog(data);
+    return;
+  }
+  const item = state.taskPrompts.find((entry) => entry.task_key === taskKey);
+  if (!item) return;
+  const updated = data.task || data.item || data;
+  item.custom_prompt = String(updated.custom_prompt ?? updated.prompt ?? prompt ?? "");
+  item.customized = updated.customized === true || item.custom_prompt.trim().length > 0;
+  item.override_key = item.customized
+    ? String(updated.override_key || taskKey).trim()
+    : "";
+  if (Object.prototype.hasOwnProperty.call(updated, "builtin_prompt")) {
+    item.builtin_prompt = normalizeTaskPromptBuiltinText(updated.builtin_prompt);
+  }
+  if (Object.prototype.hasOwnProperty.call(updated, "builtin_prompt_dynamic")) {
+    item.builtin_prompt_dynamic = normalizeTaskPromptBuiltinDynamic(updated.builtin_prompt_dynamic, item.dynamic);
+  }
+  state.taskPromptDraft = item.custom_prompt;
+  state.lazyLoaded.taskPrompts = true;
+}
+
+async function persistTaskPrompt(prompt, button, reset = false, resetKey = "") {
+  const selected = selectedTaskPrompt();
+  if (!selected || state.taskPromptSaving) return false;
+  const taskKey = selected.task_key;
+  const normalizedPrompt = String(prompt ?? "");
+  const effectiveResetKey = String(resetKey || selected.override_key || taskKey).trim() || taskKey;
+  state.taskPromptSaving = true;
+  setActionBusy(button, true);
+  syncTaskPromptEditorState();
+  try {
+    const payload = reset
+      ? { reset_keys: [effectiveResetKey] }
+      : { task_key: taskKey, prompt: normalizedPrompt };
+    const result = await postJson("/task-prompts/update", payload);
+    if (configPersistenceFailed(result)) {
+      showToast("提示词已应用到运行态，但配置持久化失败；刷新或重启后可能恢复旧值", "error");
+      return false;
+    }
+    applyTaskPromptUpdateResult(result, taskKey, normalizedPrompt);
+    if (!reset) {
+      showToast("任务提示词已保存");
+    } else {
+      const updatedSelected = selectedTaskPrompt();
+      if (updatedSelected?.customized) {
+        showToast(`已清除规则“${effectiveResetKey}”；当前任务仍继承 ${updatedSelected.override_key || "其他规则"}`);
+      } else if (effectiveResetKey !== taskKey) {
+        showToast(`已清除通用规则“${effectiveResetKey}”，所有同源任务已回到内置默认`);
+      } else {
+        showToast("已恢复该任务的内置默认提示词");
+      }
+    }
+    return true;
+  } catch (error) {
+    showToast(`提示词保存失败：${error?.message || "未知错误"}`, "error");
+    return false;
+  } finally {
+    state.taskPromptSaving = false;
+    setActionBusy(button, false);
+    renderTaskPrompts();
+  }
+}
+
+async function saveSelectedTaskPrompt(button) {
+  if (!hasUnsavedTaskPromptChanges()) return;
+  const selected = selectedTaskPrompt();
+  if (selected && taskPromptUsesInheritedOverride(selected) && !String(state.taskPromptDraft || "").trim()) {
+    showToast("该任务继承通用规则，请使用“恢复默认”清除同源规则", "error");
+    return;
+  }
+  await persistTaskPrompt(state.taskPromptDraft, button, false);
+}
+
+async function resetSelectedTaskPrompt(button) {
+  const selected = selectedTaskPrompt();
+  if (!selected) return;
+  if (!selected.customized) {
+    state.taskPromptDraft = "";
+    syncTaskPromptEditorState();
+    showToast("已清空未保存的提示词草稿");
+    return;
+  }
+  if (!requireSecondClick(
+    button,
+    `reset-task-prompt:${selected.override_key || selected.task_key}`,
+    taskPromptUsesInheritedOverride(selected)
+      ? `再次点击将清除通用规则“${selected.override_key}”，并同时影响所有同源任务`
+      : "再次点击将移除当前任务专用指令；如有通用规则，之后会自动继承",
+    taskPromptUsesInheritedOverride(selected) ? "再次点击清除通用规则" : "再次点击恢复默认",
+  )) return;
+  clearTaskPromptResetConfirmation();
+  await persistTaskPrompt("", button, true, selected.override_key || selected.task_key);
+}
+
+
 function renderActiveTab(tabName = state.activeTab || "dashboard") {
   if (tabName === "calendar") {
     renderCalendar();
@@ -7702,6 +8174,8 @@ function renderActiveTab(tabName = state.activeTab || "dashboard") {
     renderModuleSettings();
   } else if (tabName === "models") {
     renderProviders();
+  } else if (tabName === "prompts") {
+    renderTaskPrompts();
   } else if (tabName === "experimental") {
     renderExperimentalPage();
   } else if (tabName === "reality") {
@@ -8227,6 +8701,8 @@ async function ensureTabData(tabName, force = false) {
   } else if (tabName === "image") {
     renderImageRuntimeStatus();
     await loadImageExtensionStatus(force);
+  } else if (tabName === "prompts") {
+    await loadTaskPrompts(force);
   } else if (tabName === "models") {
     try {
       await Promise.all([
@@ -38942,7 +39418,10 @@ function switchTab(tabName) {
     const featureDirty = hasUnsavedFeatureChanges();
     const moduleDirty = hasUnsavedModuleFormChanges();
     const ttsDirty = hasUnsavedTtsProviderChanges();
-    const warning = moduleDirty
+    const taskPromptDirty = hasUnsavedTaskPromptChanges();
+    const warning = taskPromptDirty
+      ? "当前任务提示词还有未保存的更改。离开此页面将放弃这些更改，确定继续吗？"
+      : moduleDirty
       ? "当前页面还有未保存的配置。离开此页面将放弃这些更改，确定继续吗？"
       : ttsDirty
         ? "TTS 还有未保存的 Provider、语种路由或语音策略。离开此页面将放弃这些更改，确定继续吗？"
@@ -38952,6 +39431,7 @@ function switchTab(tabName) {
     if (featureDirty) discardAllFeatureChanges();
     if (moduleDirty) discardUnsavedModuleFormChanges();
     if (ttsDirty) discardUnsavedTtsProviderChanges();
+    if (taskPromptDirty) discardUnsavedTaskPromptChanges();
   }
   if (tabName === state.activeTab) {
     if (opensSocialLearning) switchLearningSection("social", { focus: true });
@@ -38961,6 +39441,7 @@ function switchTab(tabName) {
     }
     return;
   }
+  if (state.activeTab === "prompts") clearTaskPromptResetConfirmation();
   cancelBookshelfTransition();
   const tabs = [...document.querySelectorAll(".annotations .tab[data-tab]")];
   const previousIndex = tabs.findIndex((item) => item.dataset.tab === state.activeTab);
@@ -39038,6 +39519,48 @@ document.querySelectorAll(".annotations .tab[data-tab]").forEach((button) => {
   button.addEventListener("click", () => {
     switchTab(button.dataset.tab);
   });
+});
+
+$("#promptsSearch")?.addEventListener("input", (event) => {
+  state.taskPromptQuery = String(event.currentTarget.value || "");
+  renderTaskPromptCatalog();
+});
+
+document.querySelectorAll("[data-prompts-mode]").forEach((button) => {
+  button.addEventListener("click", () => {
+    state.taskPromptMode = button.dataset.promptsMode === "customized" ? "customized" : "all";
+    renderTaskPromptCatalog();
+  });
+});
+
+$("#promptsGroupNav")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-prompt-group]");
+  if (!button) return;
+  state.taskPromptGroup = String(button.dataset.promptGroup || "all");
+  renderTaskPromptCatalog();
+});
+
+$("#promptsTaskList")?.addEventListener("click", (event) => {
+  const retryButton = event.target.closest("[data-prompts-retry]");
+  if (retryButton) {
+    loadTaskPrompts(true).catch(() => {});
+    return;
+  }
+  const taskButton = event.target.closest("[data-prompt-task]");
+  if (taskButton) selectTaskPrompt(taskButton.dataset.promptTask);
+});
+
+$("#promptsTextarea")?.addEventListener("input", (event) => {
+  state.taskPromptDraft = String(event.currentTarget.value || "");
+  syncTaskPromptEditorState();
+});
+
+$("#promptsSaveBtn")?.addEventListener("click", async (event) => {
+  await saveSelectedTaskPrompt(event.currentTarget);
+});
+
+$("#promptsResetBtn")?.addEventListener("click", async (event) => {
+  await resetSelectedTaskPrompt(event.currentTarget);
 });
 
 $("#calendarPreviousMonth")?.addEventListener("click", () => {

@@ -60,11 +60,25 @@ class _FakeVisionProvider:
 class _PrivateVisionPromptHarness(PrivateImageMixin):
     def __init__(self, completion: str = "图片类型：截图 可见内容：测试") -> None:
         self.provider = _FakeVisionProvider(completion)
+        self.task_prompt_extra = ""
         self.private_image_vision_custom_prompt = ""
         self.private_image_vision_max_chars = 2400
         self.enable_private_image_vision_cache = False
         self.cache_request: dict = {}
         self.recent_context = ""
+
+    def _apply_task_prompt_override_for_call(
+        self,
+        task,
+        prompt,
+        system_prompt=None,
+        *,
+        flatten_system_prompt=False,
+    ):
+        if not self.task_prompt_extra:
+            return prompt, system_prompt
+        self.applied_task = task
+        return f"{prompt}\n\n{self.task_prompt_extra}", None
 
     async def _private_image_recent_conversation_context(self, _umo: str, **_kwargs) -> str:
         return self.recent_context
@@ -152,6 +166,17 @@ class _PrivateVisionPromptHarness(PrivateImageMixin):
         return text
 
 
+class _PrivateImageCacheHarness(PrivateImageMixin):
+    def __init__(self) -> None:
+        self.data: dict = {"private_image_vision_cache": {}}
+        self.enable_private_image_vision_cache = True
+        self.private_image_vision_max_chars = 2400
+        self.metrics: list[dict] = []
+
+    def _record_cache_metric(self, namespace: str, *, hit: bool, detail: str = "") -> None:
+        self.metrics.append({"namespace": namespace, "hit": hit, "detail": detail})
+
+
 class _PrivateImageFallbackHarness(PrivateImageMixin):
     def __init__(self, reply: str) -> None:
         self.reply = reply
@@ -177,6 +202,20 @@ class _ForwardVisionHarness(ForwardMessageMixin):
         self.mai_style_provider_id = ""
         self.forward_message_max_chars = 5000
         self.llm_calls: list[dict] = []
+        self.task_prompt_extra = ""
+
+    def _apply_task_prompt_override_for_call(
+        self,
+        task,
+        prompt,
+        system_prompt=None,
+        *,
+        flatten_system_prompt=False,
+    ):
+        if not self.task_prompt_extra:
+            return prompt, system_prompt
+        self.applied_task = task
+        return f"{prompt}\n\n{self.task_prompt_extra}", None
 
     async def _prepare_private_image_sources_for_model(self, sources, **_kwargs):
         self.prepared_sources = list(sources)
@@ -287,6 +326,16 @@ class VisualProviderRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(contexts[1]["role"], "assistant")
         self.assertIn("应该和展览有关", contexts[1]["content"])
 
+    async def test_visual_task_prompt_override_reaches_provider_and_disables_legacy_cache_fallback(self) -> None:
+        harness = _PrivateVisionPromptHarness()
+        harness.task_prompt_extra = "视觉任务附加约束：只保留可见事实"
+
+        await harness._transcribe_private_inbound_images(["image.png"])
+
+        self.assertEqual("private_image_vision", harness.applied_task)
+        self.assertIn(harness.task_prompt_extra, harness.provider.requests[0]["prompt"])
+        self.assertFalse(harness.cache_request["allow_image_key_fallback"])
+
     async def test_custom_visual_prompt_replaces_default_and_interpolates_placeholders(self) -> None:
         harness = _PrivateVisionPromptHarness()
         harness.private_image_vision_custom_prompt = (
@@ -317,6 +366,93 @@ class VisualProviderRoutingTests(unittest.IsolatedAsyncioTestCase):
         second = harness._private_image_vision_cache_prompt_signature("prompt two")
 
         self.assertNotEqual(first, second)
+
+    def test_visual_cache_fallback_rejects_a_different_prompt_signature(self) -> None:
+        harness = _PrivateImageCacheHarness()
+        stale_key = "stale-prompt-entry"
+        harness.data["private_image_vision_cache"][stale_key] = {
+            "text": "旧提示词结果",
+            "provider_id": "vision",
+            "image_keys": ["image-key"],
+            "image_aliases": ["image-alias"],
+            "image_count": 1,
+            "scope": "private_image",
+            "prompt_sig": harness._private_image_vision_cache_prompt_sig("旧提示词"),
+        }
+        requested_key = harness._private_image_vision_cache_key(
+            ["image-key"], "vision", "新提示词", scope="private_image"
+        )
+
+        result = harness._get_private_image_vision_cache(
+            requested_key,
+            provider_id="vision",
+            image_keys=["image-key"],
+            image_aliases=["image-alias"],
+            image_count=1,
+            scope="private_image",
+            prompt="新提示词",
+            allow_image_key_fallback=True,
+        )
+
+        self.assertEqual("", result)
+        self.assertIn(stale_key, harness.data["private_image_vision_cache"])
+
+    def test_visual_cache_fallback_keeps_unsigned_legacy_entries_usable(self) -> None:
+        harness = _PrivateImageCacheHarness()
+        legacy_key = "unsigned-legacy-entry"
+        harness.data["private_image_vision_cache"][legacy_key] = {
+            "text": "无签名旧结果",
+            "provider_id": "vision",
+            "image_keys": ["image-key"],
+            "image_aliases": ["image-alias"],
+            "image_count": 1,
+            "scope": "private_image",
+        }
+        requested_key = harness._private_image_vision_cache_key(
+            ["image-key"], "vision", "当前提示词", scope="private_image"
+        )
+
+        result = harness._get_private_image_vision_cache(
+            requested_key,
+            provider_id="vision",
+            image_keys=["image-key"],
+            image_aliases=["image-alias"],
+            image_count=1,
+            scope="private_image",
+            prompt="当前提示词",
+            allow_image_key_fallback=True,
+        )
+
+        self.assertEqual("无签名旧结果", result)
+
+    def test_visual_cache_alias_fallback_also_checks_prompt_signature(self) -> None:
+        harness = _PrivateImageCacheHarness()
+        alias_key = "alias-prompt-entry"
+        harness.data["private_image_vision_cache"][alias_key] = {
+            "text": "别的提示词别名结果",
+            "provider_id": "vision",
+            "image_keys": ["different-image-key"],
+            "image_aliases": ["stable-alias"],
+            "image_count": 1,
+            "scope": "private_image",
+            "prompt_sig": harness._private_image_vision_cache_prompt_sig("别的提示词"),
+        }
+        requested_key = harness._private_image_vision_cache_key(
+            ["current-image-key"], "vision", "当前提示词", scope="private_image"
+        )
+
+        result = harness._get_private_image_vision_cache(
+            requested_key,
+            provider_id="vision",
+            image_keys=["current-image-key"],
+            image_aliases=["stable-alias"],
+            image_count=1,
+            scope="private_image",
+            prompt="当前提示词",
+            allow_image_key_fallback=True,
+        )
+
+        self.assertEqual("", result)
 
     def test_visual_priority_normalization_is_backward_compatible(self) -> None:
         self.assertEqual(
@@ -678,6 +814,18 @@ class VisualProviderRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(harness.providers["backup"].calls, 1)
         self.assertFalse(harness.usage[0]["success"])
         self.assertTrue(harness.usage[1]["success"])
+
+    async def test_forward_image_task_prompt_override_reaches_each_direct_provider_call(self) -> None:
+        harness = _ForwardVisionHarness()
+        harness.task_prompt_extra = "转发图片附加约束"
+        harness.providers["primary"].text = "第一模型摘要"
+        event = SimpleNamespace(unified_msg_origin="default:FriendMessage:10001")
+
+        result = await harness._transcribe_forward_message_images(event, ["image.png"])
+
+        self.assertEqual("第一模型摘要", result)
+        self.assertEqual("forward_message_image_vision", harness.applied_task)
+        self.assertIn(harness.task_prompt_extra, harness.providers["primary"].requests[0]["prompt"])
 
     async def test_forward_image_vision_passes_explicit_180_second_timeout(self) -> None:
         harness = _ForwardVisionHarness()

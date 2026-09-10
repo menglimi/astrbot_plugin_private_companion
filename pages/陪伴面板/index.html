@@ -96,7 +96,7 @@
       to { opacity: 1; transform: scaleX(1); transform-origin: left; }
     }
   </style>
-  <link rel="stylesheet" href="./app.css?v=20260809-external-ability-controls-v3&amp;build=20260810-reference-upload-v1&amp;touch=reality-redesign-rt2-v4&amp;migration-notice=v2&amp;component-order=v1&amp;layout=model-routing-v2&amp;directory-nav=v2&amp;terminal=plugin-check-v1&amp;diagnostic-layout=v2&amp;release=6.4.4f" />
+  <link rel="stylesheet" href="./app.css?v=20260809-external-ability-controls-v3&amp;build=20260810-reference-upload-v1&amp;touch=reality-redesign-rt2-v4&amp;migration-notice=v2&amp;component-order=v1&amp;layout=model-routing-v2&amp;directory-nav=v2&amp;terminal=plugin-check-v1&amp;diagnostic-layout=v2&amp;prompts=task-editor-v1&amp;release=6.4.4f" />
   <!-- Keep the structured roleplay form readable while a WebUI asset is being refreshed. -->
   <style id="roleplay-layout-fallback">
     .roleplay-form,
@@ -270,7 +270,8 @@
         <button class="tab" data-tab="config"><i>12</i><span>配置</span></button>
         <button class="tab" data-tab="models"><i>13</i><span>模型</span></button>
         <button class="tab" data-tab="experimental"><i>14</i><span>实验</span></button>
-        <button class="tab" data-tab="reality" hidden><i>15</i><span>现实触及</span></button>
+        <button class="tab" data-tab="prompts"><i>15</i><span>提示词</span></button>
+        <button class="tab" data-tab="reality" hidden><i>16</i><span>现实触及</span></button>
       </nav>
 
       <section class="panel dashboard-overview is-active" id="panel-dashboard">
@@ -2125,6 +2126,80 @@ QQ空间 = 公开札记
         <div id="experimentalRoot" class="experimental-root"></div>
       </section>
 
+      <section class="panel prompts-panel" id="panel-prompts">
+        <div class="section-head prompts-page-head">
+          <div>
+            <h2>任务提示词</h2>
+            <p class="section-desc">统一管理插件内部任务模型的附加指令，包括工具结果转述、日程、复核、群聊、视觉等任务。</p>
+          </div>
+          <div class="prompts-scope-note" role="note">
+            <b>作用范围</b>
+            <span>仅插件任务模型，不包含主对话系统提示词</span>
+          </div>
+        </div>
+
+        <div id="promptsRoot" class="prompts-workspace" aria-busy="false">
+          <aside class="prompts-catalog" aria-label="任务提示词目录">
+            <div class="prompts-catalog-toolbar">
+              <label class="prompts-search-field" for="promptsSearch">
+                <span>查找任务</span>
+                <input id="promptsSearch" type="search" autocomplete="off" placeholder="名称、任务键、用途或模型配置键" />
+              </label>
+              <div class="prompts-mode-switch" role="group" aria-label="提示词状态筛选">
+                <button type="button" class="active" data-prompts-mode="all" aria-pressed="true">全部</button>
+                <button type="button" data-prompts-mode="customized" aria-pressed="false">已自定义</button>
+              </div>
+            </div>
+            <nav id="promptsGroupNav" class="prompts-group-nav" aria-label="任务分组"></nav>
+            <div id="promptsTaskList" class="prompts-task-list" role="list" aria-label="任务提示词"></div>
+          </aside>
+
+          <section id="promptsEditor" class="prompts-editor" aria-labelledby="promptsEditorTitle">
+            <div id="promptsEditorEmpty" class="prompts-editor-empty">
+              <b>选择一个任务</b>
+              <span>从左侧目录选择要调整的插件任务提示词。</span>
+            </div>
+            <div id="promptsEditorContent" class="prompts-editor-content" hidden>
+              <header class="prompts-editor-head">
+                <div>
+                  <span id="promptsEditorGroup" class="prompts-editor-kicker">任务提示词</span>
+                  <h3 id="promptsEditorTitle">选择任务</h3>
+                  <p id="promptsEditorDescription"></p>
+                </div>
+                <span id="promptsEditorBadge" class="prompts-custom-badge">使用内置提示词</span>
+              </header>
+              <dl class="prompts-editor-meta">
+                <div><dt>任务键</dt><dd><code id="promptsEditorTaskKey">-</code></dd></div>
+                <div><dt>模型配置</dt><dd><code id="promptsEditorProviderKey">自动路由</code></dd></div>
+                <div class="prompts-meta-wide"><dt>覆盖来源</dt><dd><code id="promptsEditorOverrideKey">未设置</code></dd></div>
+              </dl>
+              <section class="prompts-builtin-preview" aria-labelledby="promptsBuiltinPromptLabel">
+                <div class="prompts-builtin-preview-head">
+                  <div>
+                    <span id="promptsBuiltinPromptLabel">完整内置任务模型提示词</span>
+                    <small id="promptsBuiltinPromptDynamic" aria-live="polite">动态字段以占位符表示，实际值仅在任务执行时注入</small>
+                  </div>
+                  <span class="prompts-readonly-badge">只读</span>
+                </div>
+                <pre id="promptsBuiltinPrompt" class="prompts-builtin-prompt" role="textbox" aria-readonly="true" aria-labelledby="promptsBuiltinPromptLabel" aria-describedby="promptsBuiltinPromptDynamic" tabindex="0">选择任务后显示完整内置任务模型提示词。</pre>
+              </section>
+              <label class="prompts-textarea-field" for="promptsTextarea">
+                <span>自定义附加指令</span>
+                <textarea id="promptsTextarea" rows="16" spellcheck="false" placeholder="留空时完整使用插件内置任务提示词。填写后，这段指令会附加到该任务动态生成的提示词中。"></textarea>
+              </label>
+              <p class="prompts-editor-boundary">插件仍会保留任务所需的动态上下文和内置约束；这里的内容不会进入 AstrBot 主对话系统提示词、人格或普通聊天回复。</p>
+              <footer class="prompts-editor-actions">
+                <span id="promptsStatus" aria-live="polite">使用内置任务提示词</span>
+                <div>
+                  <button id="promptsResetBtn" type="button" class="danger-outline" disabled>恢复默认</button>
+                  <button id="promptsSaveBtn" type="button" class="primary-button" disabled>保存提示词</button>
+                </div>
+              </footer>
+            </div>
+          </section>
+        </div>
+      </section>
+
       <section class="panel" id="panel-reality" hidden>
         <div id="realityTouchRoot" class="reality-touch-root"></div>
       </section>
@@ -2168,6 +2243,6 @@ QQ空间 = 公开札记
   <!-- Loaded on demand by app.js through AstrBot's relative dynamic-import rewriting:
        ./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&amp;manual=provider-input-v2&amp;layout=v2
        ./js/panels/qzone-panel.js?v=20260810-qzone-classic-loader-v1 -->
-  <script src="./app.js?v=20260809-proactive-tts-external-ability-photo-fixed-v1&amp;build=20260810-reference-upload-v2&amp;page=lazy-classic-loader-v1&amp;scope=photo-scope-quota-v1&amp;touch=reality-redesign-rt2-v4&amp;memory-source=memory-companion-v2&amp;user-create=profile-v1&amp;relationship-role-photo=pr125-v1&amp;camera-runtime-scope=v1&amp;config=multi-persona-summary-v2&amp;troubleshooting=persona-routing-lifecycle-v1&amp;content-visibility=v1&amp;migration-notice=v4&amp;component-order=v1&amp;layout=model-routing-v2&amp;persona-style-batch-recovery=v1&amp;preset-save=v1&amp;directory-nav=v2&amp;mihome=external-runtime-v2&amp;terminal=plugin-check-v1&amp;diagnostic-layout=v2&amp;release=6.4.4f"></script>
+  <script src="./app.js?v=20260809-proactive-tts-external-ability-photo-fixed-v1&amp;build=20260810-reference-upload-v2&amp;page=lazy-classic-loader-v1&amp;scope=photo-scope-quota-v1&amp;touch=reality-redesign-rt2-v4&amp;memory-source=memory-companion-v2&amp;user-create=profile-v1&amp;relationship-role-photo=pr125-v1&amp;camera-runtime-scope=v1&amp;config=multi-persona-summary-v2&amp;troubleshooting=persona-routing-lifecycle-v1&amp;content-visibility=v1&amp;migration-notice=v4&amp;component-order=v1&amp;layout=model-routing-v2&amp;persona-style-batch-recovery=v1&amp;preset-save=v1&amp;directory-nav=v2&amp;mihome=external-runtime-v2&amp;terminal=plugin-check-v1&amp;diagnostic-layout=v2&amp;prompts=task-editor-v2&amp;release=6.4.4f"></script>
 </body>
 </html>

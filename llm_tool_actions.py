@@ -6984,6 +6984,14 @@ class LlmToolActionsMixin:
             + (f"已知描述：{known}\n" if known else "")
             + "只输出 JSON：{\"fit\": true/false, \"description\": \"一句话描述图里的内容和情绪（30字内）\", \"reason\": \"贴合或不贴合的原因（20字内）\"}"
         )
+        prompt_applier = getattr(self, "_apply_task_prompt_override_for_call", None)
+        if callable(prompt_applier):
+            prompt, _unused_system_prompt = prompt_applier(
+                "reaction_vision_verify",
+                prompt,
+                None,
+                flatten_system_prompt=True,
+            )
         started = time.time()
         try:
             result = await asyncio.wait_for(

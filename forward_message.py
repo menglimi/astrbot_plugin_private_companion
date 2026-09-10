@@ -1144,7 +1144,20 @@ class ForwardMessageMixin:
             )
             if self_recognition_prompt and self_recognition_prompt not in prompt:
                 prompt = f"{prompt}\n\n{self_recognition_prompt}"
-            cache_prompt_sig = self._private_image_vision_cache_prompt_signature(default_prompt)
+            # This visual call bypasses ``_llm_call``; apply plugin-owned task
+            # instructions before both cache-key construction and dispatch.
+            task_prompt_customized = False
+            prompt_applier = getattr(self, "_apply_task_prompt_override_for_call", None)
+            if callable(prompt_applier):
+                original_prompt = prompt
+                prompt, _unused_system_prompt = prompt_applier(
+                    "forward_message_image_vision",
+                    prompt,
+                    None,
+                    flatten_system_prompt=True,
+                )
+                task_prompt_customized = prompt != original_prompt
+            cache_prompt_sig = self._private_image_vision_cache_prompt_signature(prompt)
             cache_key = self._private_image_vision_cache_key(image_keys, provider_id, cache_prompt_sig, scope="forward_image")
             cached_text = self._get_private_image_vision_cache(
                 cache_key,
@@ -1153,6 +1166,8 @@ class ForwardMessageMixin:
                 image_aliases=image_aliases,
                 image_count=image_count,
                 scope="forward_image",
+                allow_image_key_fallback=not task_prompt_customized,
+                prompt=cache_prompt_sig,
             )
             if cached_text:
                 logger.info(

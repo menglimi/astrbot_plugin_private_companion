@@ -21,9 +21,11 @@ class _ReviewProvider:
     def __init__(self, payload: dict[str, object]) -> None:
         self.payload = payload
         self.calls = 0
+        self.requests: list[dict[str, object]] = []
 
-    async def text_chat(self, **_kwargs):
+    async def text_chat(self, **kwargs):
         self.calls += 1
+        self.requests.append(dict(kwargs))
         return SimpleNamespace(completion_text=json.dumps(self.payload, ensure_ascii=False))
 
 
@@ -47,6 +49,20 @@ class _ReviewHarness(PrivateImageMixin):
     def __init__(self, providers: dict[str, _ReviewProvider], temp_dir: str) -> None:
         self.providers = providers
         self.data_dir = temp_dir
+        self.task_prompt_extra = ""
+
+    def _apply_task_prompt_override_for_call(
+        self,
+        task,
+        prompt,
+        system_prompt=None,
+        *,
+        flatten_system_prompt=False,
+    ):
+        if not self.task_prompt_extra:
+            return prompt, system_prompt
+        self.applied_task = task
+        return f"{prompt}\n\n{self.task_prompt_extra}", None
 
     async def _prepare_private_image_sources_for_model(self, image_sources, *, namespace="vision"):
         return list(image_sources)
@@ -134,6 +150,22 @@ class GroupImageReviewConfigTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("fallback", result["provider_id"])
         self.assertEqual(1, providers["primary"].calls)
         self.assertEqual(1, providers["fallback"].calls)
+
+    async def test_group_review_task_prompt_override_reaches_visual_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = os.path.join(temp_dir, "generated.png")
+            Path(image_path).write_bytes(b"image")
+            providers = {"primary": _ReviewProvider({"label": "safe", "confidence": 0.95})}
+            harness = _ReviewHarness(providers, temp_dir)
+            harness.task_prompt_extra = "审核附加约束：保守判定"
+
+            result = await harness._review_group_generated_image_for_delivery(
+                _ReviewEvent(), image_path
+            )
+
+        self.assertEqual("safe", result["label"])
+        self.assertEqual("group_nsfw_image_review", harness.applied_task)
+        self.assertIn(harness.task_prompt_extra, providers["primary"].requests[0]["prompt"])
 
     async def test_dual_review_uses_two_distinct_models_and_keeps_stricter_result(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

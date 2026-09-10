@@ -19,6 +19,11 @@ from .helpers import _flat_get, _now_ts, _safe_float, _safe_int, _single_line, _
 from .model_routing import contains_sensitive_refusal, scope_allows
 from .persona_config import runtime_persona_setting
 from .logging_util import get_module_logger
+from .task_prompt_registry import (
+    TASK_PROMPT_CONFIG_KEY,
+    apply_task_prompt_override,
+    normalize_task_prompt_overrides,
+)
 
 logger = get_module_logger(__name__)
 
@@ -135,6 +140,67 @@ class TokenBudgetMixin:
     MODEL_TOKEN_LIMIT_MIN = 256
     MODEL_TOKEN_LIMIT_MAX = 2_000_000
     MODEL_IMAGE_TOKEN_ESTIMATE = 256
+
+    def _task_prompt_overrides_for_call(self) -> dict[str, str]:
+        """Read the plugin-owned task prompt overrides for one internal call.
+
+        The runtime attribute is preferred after a page hot update, while the
+        persisted config is used on startup.  This deliberately does not read
+        or mutate an AstrBot ``ProviderRequest``/conversation system prompt.
+        """
+        missing = object()
+        runtime_value = getattr(self, TASK_PROMPT_CONFIG_KEY, missing)
+        config = getattr(self, "config", None)
+        persisted_value = _flat_get(config, TASK_PROMPT_CONFIG_KEY, missing)
+        raw = runtime_value if runtime_value is not missing else persisted_value
+        if raw is missing:
+            return {}
+        try:
+            return normalize_task_prompt_overrides(raw)
+        except Exception:
+            # A malformed legacy value must never break an otherwise valid
+            # plugin task call.  The registry is intentionally defensive too.
+            return {}
+
+    def _apply_task_prompt_override_for_call(
+        self,
+        task: str | None,
+        prompt: str,
+        system_prompt: str | None = None,
+        *,
+        flatten_system_prompt: bool = False,
+    ) -> tuple[str, str | None]:
+        """Apply one configured task instruction to a plugin-internal call.
+
+        ``flatten_system_prompt`` is for direct visual Provider APIs which do
+        not accept a ``system_prompt`` argument.  The normal budgeted paths
+        preserve the separate system channel, so the host's main conversation
+        request is never involved.
+        """
+        original_prompt = str(prompt or "")
+        original_system = system_prompt
+        overrides = self._task_prompt_overrides_for_call()
+        try:
+            updated_prompt, updated_system = apply_task_prompt_override(
+                task,
+                original_prompt,
+                original_system,
+                overrides,
+            )
+        except Exception:
+            return original_prompt, original_system
+        if not flatten_system_prompt:
+            return updated_prompt, updated_system
+        # Direct Provider ``text_chat`` variants commonly reject an unknown
+        # system_prompt kwarg.  Preserve both channels in the user prompt in
+        # the same order as the normal path (task input, then task constraints)
+        # and explicitly clear the unsupported channel.
+        system_text = str(updated_system or "").strip()
+        if not system_text:
+            return updated_prompt, None
+        prompt_text = str(updated_prompt or "").strip()
+        flattened = "\n\n".join(part for part in (prompt_text, system_text) if part)
+        return flattened, None
 
     def _token_usage_now_dt(self) -> datetime:
         now_getter = getattr(self, "_environment_now", None)
@@ -1390,7 +1456,15 @@ class TokenBudgetMixin:
     ) -> Any | None:
         """Call a provider with native tools and one optional card fallback."""
         selected_provider = self._resolve_chat_provider_id(provider_id)
-        task_key = _single_line(task, 40) or self._classify_llm_prompt(prompt)
+        # Keep the full registered task identifier for prompt-override
+        # resolution.  A few persona JSON-repair keys are longer than the
+        # historical 40-character logging limit.
+        task_key = _single_line(task, 120) or self._classify_llm_prompt(prompt)
+        prompt, system_prompt = self._apply_task_prompt_override_for_call(
+            task_key,
+            prompt,
+            system_prompt,
+        )
         tool_schema = self._llm_tool_schema_for_usage(tools)
         usage_prompt = "\n\n".join(
             part
@@ -1731,7 +1805,14 @@ class TokenBudgetMixin:
             or str(runtime_persona_setting(self, "llm_provider_id", "") or "").strip()
         ):
             selected_provider = peak_router(selected_provider)
-        task_key = _single_line(task, 40) or self._classify_llm_prompt(prompt)
+        # Do not truncate task identifiers before the registry resolves an
+        # exact or dynamic-family override.
+        task_key = _single_line(task, 120) or self._classify_llm_prompt(prompt)
+        prompt, system_prompt = self._apply_task_prompt_override_for_call(
+            task_key,
+            prompt,
+            system_prompt,
+        )
         usage_prompt = (
             f"{str(system_prompt or '').strip()}\n\n{str(prompt or '').strip()}".strip()
             if str(system_prompt or "").strip()
