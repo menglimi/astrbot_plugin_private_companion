@@ -6016,9 +6016,9 @@ function loadOptionalClassicScript(relativePath, retry = 0) {
 
 const optionalModuleLoaders = {
   providerTree: [
-    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2", 0),
-    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2", 1),
-    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2", 2),
+    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2&vision-state=v1", 0),
+    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2&vision-state=v1", 1),
+    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2&vision-state=v1", 2),
   ],
   qzonePanel: [
     () => loadOptionalClassicScript("./js/panels/qzone-panel.js?v=20260810-qzone-classic-loader-v1", 0),

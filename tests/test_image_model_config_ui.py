@@ -95,6 +95,24 @@ class ImageModelConfigUiTests(unittest.TestCase):
         self.assertIn("readingVisionNode", flow)
         self.assertNotIn("JM 本子", summary)
 
+    def test_vision_provider_summary_distinguishes_unset_and_unloaded_ids(self) -> None:
+        summary = self.provider_tree.split("function renderProviderSummary", 1)[1].split(
+            "function deepseekPeakProviderControl", 1
+        )[0]
+        card = self.provider_tree.split("function providerCardMarkup", 1)[1].split(
+            "function renderProviderSummary", 1
+        )[0]
+        self.assertIn("const visualProviderKeys = new Set([", self.provider_tree)
+        self.assertIn('emptyLabel = "未设置"', self.provider_tree)
+        self.assertIn("当前未加载，可能是已保存的旧配置", self.provider_tree)
+        self.assertIn("currentProviderDisplay(context, key, selected, resolved", card)
+        self.assertIn('displayProviderId(context, providers.PLUGIN_VISION_PROVIDER_ID)', summary)
+        self.assertIn('空值显示为“未设置”', summary)
+        companion_tree = (
+            ROOT / "pages" / "companion-panel" / "js" / "panels" / "provider-tree.js"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(self.provider_tree, companion_tree)
+
     def test_authoritative_overview_clears_saved_provider_drafts(self) -> None:
         apply_overview = self.script.split("function applyOverviewData", 1)[1].split(
             "async function loadUserGroupLists", 1

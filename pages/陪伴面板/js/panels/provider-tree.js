@@ -140,13 +140,14 @@ window.PrivateCompanionProviderTree = (() => {
   function providerSelect(context, key, value) {
     const { state, noFallbackProviderKeys, optionalNoFallbackProviderKeys, escapeHtml } = context;
     const embeddingProvider = embeddingProviderKeys.has(key);
+    const visualProvider = key === "PLUGIN_VISION_PROVIDER_ID" || key === "READING_ARCHIVE_VISION_PROVIDER_ID";
     const providerItems = embeddingProvider
       ? (state.availableEmbeddingProviders || [])
       : state.availableProviders;
     const known = providerItems.some((item) => item.id === value);
     const customValue = value && !known ? value : "";
     const options = [
-      `<option value="">${key === "REACTION_EXPRESSION_EMBEDDING_PROVIDER_ID" ? "留空继承通用模型/自动探测" : embeddingProvider ? "留空不启用" : noFallbackProviderKeys.has(key) || optionalNoFallbackProviderKeys.has(key) ? "留空不启用" : "留空自动回退"}</option>`,
+      `<option value="">${visualProvider ? "未设置" : key === "REACTION_EXPRESSION_EMBEDDING_PROVIDER_ID" ? "留空继承通用模型/自动探测" : embeddingProvider ? "留空不启用" : noFallbackProviderKeys.has(key) || optionalNoFallbackProviderKeys.has(key) ? "留空不启用" : "留空自动回退"}</option>`,
       ...providerItems.map((item) => {
         const label = `${item.name || item.id}${item.model ? ` · ${item.model}` : ""}${item.is_default ? " · 默认" : ""}`;
         return `<option value="${escapeHtml(item.id)}" ${item.id === value ? "selected" : ""}>${escapeHtml(label)}</option>`;
@@ -348,16 +349,46 @@ window.PrivateCompanionProviderTree = (() => {
     return haystack.includes(query);
   }
 
+  const visualProviderKeys = new Set([
+    "PLUGIN_VISION_PROVIDER_ID",
+    "READING_ARCHIVE_VISION_PROVIDER_ID",
+  ]);
+
+  function providerAvailability(context, value) {
+    const id = String(value || "").trim();
+    const state = context?.state || {};
+    const availableProviders = Array.isArray(state.availableProviders) ? state.availableProviders : [];
+    const loaded = Boolean(state.lazyLoaded?.providers) || availableProviders.length > 0;
+    const available = Boolean(id) && availableProviders.some((item) => String(item?.id || "").trim() === id);
+    return { id, loaded, available };
+  }
+
+  function displayProviderId(context, value, emptyLabel = "未设置") {
+    const status = providerAvailability(context, value);
+    if (!status.id) return emptyLabel;
+    return status.loaded && !status.available
+      ? `${status.id}（当前未加载，可能是已保存的旧配置）`
+      : status.id;
+  }
+
+  function currentProviderDisplay(context, key, selected, resolved, fallback) {
+    if (visualProviderKeys.has(key)) return displayProviderId(context, selected);
+    return resolved ? displayProviderId(context, resolved) : fallback;
+  }
+
   function providerCardMarkup(context, key, label, providers) {
     const { providerGroupByKey, noFallbackProviderKeys, optionalNoFallbackProviderKeys, providerGuides, providerPreferenceMeta, providerPassiveImpactMeta, escapeHtml } = context;
     const selected = providers[key] || "";
     const resolved = resolveProviderId(context, key, providers);
     const configured = Boolean(selected);
+    const selectedAvailability = providerAvailability(context, selected);
     const embeddingProvider = embeddingProviderKeys.has(key);
     const noFallback = noFallbackProviderKeys.has(key);
     const optionalNoFallback = optionalNoFallbackProviderKeys.has(key);
     const group = providerGroupByKey[key];
-    const statusLabel = configured ? "已单独配置" : (key === "REACTION_EXPRESSION_EMBEDDING_PROVIDER_ID" ? "继承通用/自动探测" : (embeddingProvider ? "未配置" : (noFallback ? "未配置" : (optionalNoFallback ? "可选未启用" : "自动回退"))));
+    const statusLabel = configured
+      ? (selectedAvailability.loaded && !selectedAvailability.available ? "已保存，当前未加载" : "已单独配置")
+      : (visualProviderKeys.has(key) ? "未设置" : key === "REACTION_EXPRESSION_EMBEDDING_PROVIDER_ID" ? "继承通用/自动探测" : (embeddingProvider ? "未配置" : (noFallback ? "未配置" : (optionalNoFallback ? "可选未启用" : "自动回退"))));
     const guide = providerGuides[key] || {};
     const preference = providerPreferenceMeta[guide.preference || "balanced"];
     const impact = providerPassiveImpactMeta[guide.passiveImpact || ""];
@@ -408,7 +439,7 @@ window.PrivateCompanionProviderTree = (() => {
           </label>`}
           <div class="provider-current">
             <span>当前使用</span>
-            <b>${escapeHtml(resolved || (key === "REACTION_EXPRESSION_EMBEDDING_PROVIDER_ID" ? "继承通用模型 / 自动探测" : (embeddingProvider ? "未配置" : (noFallback ? "未配置" : (optionalNoFallback ? "未启用" : "AstrBot 默认模型")))))}</b>
+            <b>${escapeHtml(currentProviderDisplay(context, key, selected, resolved, key === "REACTION_EXPRESSION_EMBEDDING_PROVIDER_ID" ? "继承通用模型 / 自动探测" : (embeddingProvider ? "未配置" : (noFallback ? "未配置" : (optionalNoFallback ? "未启用" : "AstrBot 默认模型")))))}</b>
           </div>
           ${providerGuideMarkup(context, key)}
           <div class="provider-row">
@@ -431,15 +462,15 @@ window.PrivateCompanionProviderTree = (() => {
     const passiveSensitive = keys.filter((key) => providerGuides[key]?.passiveImpact === "direct").length;
     const speedRecommended = keys.filter((key) => providerNeedsLowLatency(key)).length;
     const qualityRecommended = keys.filter((key) => providerGuides[key]?.preference === "quality").length;
-    const genericVision = providers.PLUGIN_VISION_PROVIDER_ID || "跟随 AstrBot 本体图片转文字";
+    const genericVision = displayProviderId(context, providers.PLUGIN_VISION_PROVIDER_ID);
     const readingVisionAvailable = visibleConfigKey("READING_ARCHIVE_VISION_PROVIDER_ID");
-    const readingVision = providers.READING_ARCHIVE_VISION_PROVIDER_ID || "未配置";
+    const readingVision = displayProviderId(context, providers.READING_ARCHIVE_VISION_PROVIDER_ID);
     const vision = readingVisionAvailable
       ? `通用：${genericVision} · 资料归档：${readingVision}`
       : `通用：${genericVision}`;
     const visionHint = readingVisionAvailable
-      ? "通用识图与资料归档识图使用独立 Provider"
-      : "当前仅显示已安装能力使用的视觉通道";
+      ? "空值显示为“未设置”；不在当前 Provider 列表中的 ID 会标记为未加载"
+      : "空值显示为“未设置”；视觉运行时可跟随 AstrBot 本体图片转文字，面板只读取本地 Provider 列表";
     document.getElementById("providerSummary").innerHTML = `
       <div class="provider-summary-card strong"><span>单独配置</span><b>${configured}/${keys.length}</b><small>已指定专用 Provider</small></div>
       <div class="provider-summary-card"><span>自动回退</span><b>${inherited}</b><small>留空项会按兜底链路执行</small></div>
@@ -734,15 +765,15 @@ window.PrivateCompanionProviderTree = (() => {
     const fast = providers.FAST_RESPONSE_PROVIDER_ID || "未配置";
     const complex = providers.COMPLEX_REASONING_PROVIDER_ID || "未配置";
     const creative = providers.CREATIVE_MODEL_PROVIDER_ID || "未配置";
-    const quickVision = providers.PLUGIN_VISION_PROVIDER_ID || "未配置";
+    const quickVision = displayProviderId(context, providers.PLUGIN_VISION_PROVIDER_ID);
     const main = resolveProviderId(context, "LLM_PROVIDER_ID", providers) || "AstrBot 默认模型";
     const mai = resolveProviderId(context, "MAI_STYLE_PROVIDER_ID", providers) || main;
-    const pluginVision = providers.PLUGIN_VISION_PROVIDER_ID || "跟随 AstrBot 本体图片转文字";
+    const pluginVision = displayProviderId(context, providers.PLUGIN_VISION_PROVIDER_ID);
     if (mode === "quick") {
       const readingVisionNode = visibleConfigKey("READING_ARCHIVE_VISION_PROVIDER_ID")
         ? `
           <span class="flow-arrow">·</span>
-          <span class="flow-node primary">资料归档识图<br><b>${escapeHtml(providers.READING_ARCHIVE_VISION_PROVIDER_ID || "未配置")}</b></span>
+          <span class="flow-node primary">资料归档识图<br><b>${escapeHtml(displayProviderId(context, providers.READING_ARCHIVE_VISION_PROVIDER_ID))}</b></span>
         `
         : "";
       document.getElementById("providerFlow").innerHTML = `
