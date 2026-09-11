@@ -633,6 +633,7 @@ class WardrobeConfigTests(unittest.TestCase):
             "enable_wardrobe_prompt",
             "wardrobe_prompt_max_items",
             "wardrobe_image_max_count",
+            "wardrobe_image_prompt",
             "WARDROBE_VISION_PROVIDER_ID",
             "wardrobe_items",
         ):
@@ -647,6 +648,7 @@ class WardrobeConfigTests(unittest.TestCase):
             "enable_wardrobe_prompt",
             "wardrobe_prompt_max_items",
             "wardrobe_image_max_count",
+            "wardrobe_image_prompt",
             "WARDROBE_VISION_PROVIDER_ID",
             "wardrobe_items",
         ):
