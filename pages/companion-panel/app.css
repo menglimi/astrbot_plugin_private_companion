@@ -35395,3 +35395,69 @@ input:checked + .rt2-switch-track.lg::after,
     transition: none;
   }
 }
+
+/* ---------- 角色衣柜 ---------- */
+.wardrobe-note {
+  margin: 0 0 12px;
+  color: var(--text-muted, #6b7280);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.wardrobe-manager {
+  margin: 16px 0;
+  padding: 14px;
+  border: 1px solid var(--border-soft, rgba(148, 163, 184, 0.35));
+  border-radius: 12px;
+  background: var(--surface-soft, rgba(148, 163, 184, 0.06));
+}
+.wardrobe-manager-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.wardrobe-manager-head h4 { margin: 0; font-size: 14px; }
+.wardrobe-manager-head span { color: var(--text-muted, #6b7280); font-size: 12px; }
+.wardrobe-list { display: grid; gap: 8px; }
+.wardrobe-empty {
+  margin: 0;
+  padding: 10px 0;
+  color: var(--text-muted, #6b7280);
+  font-size: 13px;
+}
+.wardrobe-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface, rgba(255, 255, 255, 0.7));
+  border: 1px solid var(--border-soft, rgba(148, 163, 184, 0.25));
+}
+.wardrobe-item-body { min-width: 0; }
+.wardrobe-item-body strong { display: block; font-size: 13px; }
+.wardrobe-item-body p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-muted, #6b7280);
+  word-break: break-word;
+}
+.wardrobe-item-body small { color: var(--text-muted, #6b7280); font-size: 11px; }
+.wardrobe-item-actions button {
+  border: 1px solid var(--border-soft, rgba(148, 163, 184, 0.4));
+  background: transparent;
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.wardrobe-add { display: grid; gap: 8px; margin-top: 12px; }
+.wardrobe-add label { display: grid; gap: 4px; font-size: 12px; }
+.wardrobe-add input[type="text"], .wardrobe-add textarea { width: 100%; }
+.wardrobe-add-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.wardrobe-status { font-size: 12px; color: var(--text-muted, #6b7280); }
+.wardrobe-status[data-tone="ok"] { color: #15803d; }
+.wardrobe-status[data-tone="error"] { color: #b91c1c; }

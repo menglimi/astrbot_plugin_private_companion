@@ -40,6 +40,7 @@ REQUIRED_PAGE_ASSETS = {
     "pages/陪伴面板/app.css",
     "pages/陪伴面板/js/panels/qzone-panel.js",
     "pages/陪伴面板/js/features/daily-outfit.js",
+    "pages/陪伴面板/js/features/wardrobe.js",
 }
 
 EXPECTED_QZONE_ROUTES = [

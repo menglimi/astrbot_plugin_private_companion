@@ -475,9 +475,10 @@
           <aside class="world-outline" aria-label="世界知识章节">
             <span class="world-outline-label">知识目录</span>
             <button type="button" class="world-outline-item is-active" data-world-section="persona"><span>01</span>角色设定</button>
-            <button type="button" class="world-outline-item" data-world-section="world"><span>02</span>世界设定</button>
-            <button type="button" class="world-outline-item" data-world-section="sources"><span>03</span>引用资料</button>
-            <button type="button" class="world-outline-item" data-world-section="advanced"><span>04</span>关系资料</button>
+            <button type="button" class="world-outline-item" data-world-section="wardrobe"><span>02</span>角色衣柜</button>
+            <button type="button" class="world-outline-item" data-world-section="world"><span>03</span>世界设定</button>
+            <button type="button" class="world-outline-item" data-world-section="sources"><span>04</span>引用资料</button>
+            <button type="button" class="world-outline-item" data-world-section="advanced"><span>05</span>关系资料</button>
           </aside>
           <div class="module-card-head">
             <div>
@@ -566,6 +567,56 @@
 不要重复填写发色、瞳色、服装等上方已有外貌信息，也不要填写用户资料。"></textarea>
                 </label>
               </details>
+            </section>
+
+            <section class="world-blueprint is-hidden" data-world-panel="wardrobe">
+              <div class="blueprint-head">
+                <div>
+                  <span>角色衣柜</span>
+                  <h3>整体服饰倾向与具体衣物</h3>
+                </div>
+              </div>
+              <p class="wardrobe-note">整体服饰倾向描述角色平时怎么穿；具体衣物是衣柜里可以点名的那几件。开启“写入提示词”后，角色会按这份资料保持穿着一致。</p>
+              <div class="roleplay-standard">
+                <label class="roleplay-toggle">启用角色衣柜 <input type="checkbox" name="enable_wardrobe" /></label>
+                <label class="roleplay-toggle">把衣柜写入角色提示词 <input type="checkbox" name="enable_wardrobe_prompt" /></label>
+              </div>
+              <label class="roleplay-textarea">整体服饰倾向
+                <textarea name="wardrobe_tendency" rows="4" maxlength="800" placeholder="例如：偏爱宽松针织与低饱和色，居家穿棉质家居服，出门常套一件长大衣，配饰只用细银链。"></textarea>
+              </label>
+              <div class="wardrobe-manager" data-wardrobe-manager>
+                <div class="wardrobe-manager-head">
+                  <h4>具体衣物</h4>
+                  <span data-wardrobe-count>0 / 40</span>
+                </div>
+                <div class="wardrobe-list" data-wardrobe-list></div>
+                <div class="wardrobe-add">
+                  <label>衣物名称
+                    <input type="text" data-wardrobe-name maxlength="40" placeholder="例如：米色针织开衫" />
+                  </label>
+                  <label>描述
+                    <textarea data-wardrobe-description rows="2" maxlength="500" placeholder="款式、颜色、材质、版型、图案与明显细节。"></textarea>
+                  </label>
+                  <div class="wardrobe-add-actions">
+                    <button type="button" class="secondary-button" data-wardrobe-add-text>添加衣物</button>
+                    <button type="button" class="secondary-button" data-wardrobe-add-image>上传图片并识图</button>
+                    <input type="file" accept="image/png,image/jpeg,image/webp" data-wardrobe-file hidden />
+                    <span class="wardrobe-status" data-wardrobe-status aria-live="polite"></span>
+                  </div>
+                </div>
+                <input type="hidden" name="wardrobe_items" data-wardrobe-items-input value="[]" />
+              </div>
+              <div class="roleplay-standard">
+                <label>注入提示词的衣物条数上限
+                  <input type="number" name="wardrobe_prompt_max_items" min="1" max="40" step="1" />
+                </label>
+                <label>单次识图添加上限（上限 <b data-wardrobe-image-limit>3</b> 张）
+                  <input type="number" name="wardrobe_image_max_count" min="1" max="8" step="1" />
+                </label>
+                <label>衣柜识图模型
+                  <input type="text" name="WARDROBE_VISION_PROVIDER_ID" maxlength="160" placeholder="留空则跟随陪伴通用视觉模型" />
+                </label>
+              </div>
             </section>
 
             <section class="world-blueprint is-hidden" data-world-panel="world">
@@ -2239,6 +2290,7 @@ QQ空间 = 公开札记
   </div>
 
   <script src="./js/features/daily-outfit.js?v=20260711-qzone-preview-context"></script>
+  <script src="./js/features/wardrobe.js?v=20260910-wardrobe-v1"></script>
   <script src="./js/ui/appearance.js?v=20260713-font-options"></script>
   <!-- Loaded on demand by app.js through AstrBot's relative dynamic-import rewriting:
        ./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&amp;manual=provider-input-v2&amp;layout=v2

@@ -30,7 +30,7 @@ class PersonaConfigTests(unittest.TestCase):
         cls.manifest = build_scope_manifest(cls.schema)
 
     def test_manifest_covers_every_canonical_grouped_leaf(self) -> None:
-        self.assertEqual(5, PERSONA_SETTINGS_SCHEMA_VERSION)
+        self.assertEqual(6, PERSONA_SETTINGS_SCHEMA_VERSION)
         leaves = discover_grouped_schema_leaves(self.schema)
         self.assertGreater(len(leaves), 900)
         self.assertEqual(set(leaves), set(self.manifest))
@@ -293,6 +293,13 @@ class PersonaConfigTests(unittest.TestCase):
                 "enable_llm_controlled_segmenting": False,
                 "enable_segmented_plugin_rules": True,
                 "enable_user_requested_photo_generation": True,
+                "enable_wardrobe": True,
+                "wardrobe_tendency": "",
+                "enable_wardrobe_prompt": True,
+                "wardrobe_prompt_max_items": 12,
+                "wardrobe_image_max_count": 3,
+                "WARDROBE_VISION_PROVIDER_ID": "",
+                "wardrobe_items": [],
             },
         )
         self.assertEqual(
@@ -301,17 +308,17 @@ class PersonaConfigTests(unittest.TestCase):
         self.assertEqual(migrated["persona_settings_revision"], 0)
         # A future version explicitly lists new keys; only those keys are
         # materialized, while old missing keys retain follow-primary semantics.
-        migrated_v6 = migrate_persona_profile(
+        migrated_future = migrate_persona_profile(
             migrated,
             manifest=self.manifest,
-            target_version=6,
-            new_keys_by_version={6: ["quiet_hours"]},
+            target_version=PERSONA_SETTINGS_SCHEMA_VERSION + 1,
+            new_keys_by_version={PERSONA_SETTINGS_SCHEMA_VERSION + 1: ["quiet_hours"]},
         )
         self.assertEqual(
-            migrated_v6["persona_settings"]["quiet_hours"],
+            migrated_future["persona_settings"]["quiet_hours"],
             self.manifest["quiet_hours"]["new_key_default"],
         )
-        self.assertNotIn("max_daily_messages", migrated_v6["persona_settings"])
+        self.assertNotIn("max_daily_messages", migrated_future["persona_settings"])
 
     def test_v1_profile_materializes_new_defaults_during_current_migration(self) -> None:
         migrated = migrate_persona_profile(
@@ -418,6 +425,13 @@ class PersonaConfigTests(unittest.TestCase):
                 "enable_llm_controlled_segmenting": False,
                 "enable_segmented_plugin_rules": True,
                 "enable_user_requested_photo_generation": True,
+                "enable_wardrobe": True,
+                "wardrobe_tendency": "",
+                "enable_wardrobe_prompt": True,
+                "wardrobe_prompt_max_items": 12,
+                "wardrobe_image_max_count": 3,
+                "WARDROBE_VISION_PROVIDER_ID": "",
+                "wardrobe_items": [],
             },
         )
         self.assertEqual(
