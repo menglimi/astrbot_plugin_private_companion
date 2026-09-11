@@ -5028,6 +5028,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
         prompt: str,
         name: str,
         label: str,
+        task: str | None = None,
         user: dict[str, Any] | None = None,
         max_steps: int = 20,
     ) -> str:
@@ -5069,6 +5070,15 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
                 )
                 if isinstance(value, dict):
                     camera_state = value
+        task_key = _single_line(task or label, 120)
+        prompt_applier = getattr(self, "_apply_task_prompt_override_for_call", None)
+        if callable(prompt_applier):
+            prompt, _unused_system_prompt = prompt_applier(
+                task_key,
+                prompt,
+                None,
+                flatten_system_prompt=True,
+            )
         event = self._proactive_synthetic_event(umo, prompt=prompt, name=name)
         if event is None:
             return ""
@@ -5260,6 +5270,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
                 prompt=prompt,
                 name=name,
                 label="proactive_message",
+                task="proactive_message",
                 user=user,
                 max_steps=20,
             )
@@ -7456,6 +7467,7 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
                 prompt=prompt,
                 name=name,
                 label="proactive_voice",
+                task="proactive_voice",
                 user=user,
                 max_steps=20,
             )

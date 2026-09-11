@@ -4808,6 +4808,13 @@ Provider 规则：{emotion_rule}
         allow_fallback: bool = True,
     ) -> Any:
         start = time.time()
+        prompt_applier = getattr(self, "_apply_task_prompt_override_for_call", None)
+        if callable(prompt_applier):
+            prompt, system_prompt = prompt_applier(
+                task,
+                prompt,
+                system_prompt,
+            )
         stable_system_prompt = str(system_prompt or "").strip()
         usage_prompt = (
             f"{stable_system_prompt}\n\n{str(prompt or '').strip()}".strip()

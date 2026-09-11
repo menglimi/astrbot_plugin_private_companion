@@ -865,11 +865,17 @@ class PrivateImageMixin:
             self.data["private_image_vision_cache"] = cache
         return cache
 
+    @staticmethod
+    def _private_image_vision_cache_prompt_sig(prompt: str = "") -> str:
+        """Return the compact signature stored alongside a vision cache item."""
+        value = str(prompt or "")
+        return hashlib.sha1(value.encode("utf-8", errors="ignore")).hexdigest()[:16] if value else ""
+
     def _private_image_vision_cache_key(self, image_keys: list[str], provider_id: str, prompt: str = "", *, scope: str = "private_image") -> str:
         clean_keys = [str(item).strip() for item in image_keys if str(item or "").strip()]
         if not clean_keys:
             return ""
-        prompt_sig = hashlib.sha1(str(prompt or "").encode("utf-8", errors="ignore")).hexdigest()[:16] if prompt else ""
+        prompt_sig = self._private_image_vision_cache_prompt_sig(prompt)
         raw = "v3|" + _single_line(scope, 40) + "|" + str(provider_id or "") + "|" + prompt_sig + "|" + "|".join(clean_keys)
         return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()
 
@@ -883,6 +889,7 @@ class PrivateImageMixin:
         image_count: int = 0,
         scope: str = "private_image",
         allow_image_key_fallback: bool = True,
+        prompt: str = "",
     ) -> str:
         if not bool(self._private_image_setting("enable_private_image_vision_cache", True)):
             return ""
@@ -890,8 +897,18 @@ class PrivateImageMixin:
         clean_image_keys = [str(item).strip() for item in (image_keys or []) if str(item or "").strip()]
         clean_aliases = {str(item).strip() for item in (image_aliases or []) if str(item or "").strip()}
         expected_count = max(0, int(image_count or 0))
+        expected_prompt_sig = self._private_image_vision_cache_prompt_sig(prompt)
+
+        def prompt_matches(item: dict[str, Any]) -> bool:
+            """Allow unsigned legacy entries, but never cross prompt variants."""
+            if not expected_prompt_sig:
+                return True
+            cached_prompt_sig = _single_line(item.get("prompt_sig"), 32)
+            return not cached_prompt_sig or cached_prompt_sig == expected_prompt_sig
 
         def use_item(key: str, item: dict[str, Any], *, fallback: bool = False, detail: str = "") -> str:
+            if not prompt_matches(item):
+                return ""
             text = _single_line(item.get("text"), 900 if scope == "forward_image" else self._private_image_vision_text_limit(expected_count))
             if not text:
                 cache.pop(key, None)
@@ -924,6 +941,8 @@ class PrivateImageMixin:
                 cached_scope = _single_line(item.get("scope"), 40)
                 if cached_scope and expected_scope and cached_scope != expected_scope:
                     continue
+                if not prompt_matches(item):
+                    continue
                 cached_provider = _single_line(item.get("provider_id"), 160)
                 if expected_provider and cached_provider and cached_provider != expected_provider:
                     if provider_fallback is None:
@@ -945,6 +964,8 @@ class PrivateImageMixin:
                         continue
                     cached_scope = _single_line(item.get("scope"), 40)
                     if cached_scope and expected_scope and cached_scope != expected_scope:
+                        continue
+                    if not prompt_matches(item):
                         continue
                     cached_count = _safe_int(item.get("image_count"), 0, 0)
                     if cached_count <= 0:
@@ -998,7 +1019,7 @@ class PrivateImageMixin:
         clean_count = max(0, int(image_count or 0))
         if clean_count <= 0:
             clean_count = len(clean_image_keys)
-        prompt_sig = hashlib.sha1(str(prompt or "").encode("utf-8", errors="ignore")).hexdigest()[:16] if prompt else ""
+        prompt_sig = self._private_image_vision_cache_prompt_sig(prompt)
         removed_variants = 0
         for old_key, old_item in list(cache.items()):
             if old_key == cache_key or not isinstance(old_item, dict):
@@ -1701,6 +1722,14 @@ class PrivateImageMixin:
             return {"label": "unavailable", "reason": "图片无法转换为审核模型输入"}
 
         prompt = self._group_generated_image_review_prompt()
+        prompt_applier = getattr(self, "_apply_task_prompt_override_for_call", None)
+        if callable(prompt_applier):
+            prompt, _unused_system_prompt = prompt_applier(
+                "group_nsfw_image_review",
+                prompt,
+                None,
+                flatten_system_prompt=True,
+            )
         review_mode = _single_line(self._private_image_setting("group_nsfw_image_review_mode", "single"), 20).lower()
         if review_mode not in {"single", "dual"}:
             review_mode = "single"
@@ -3362,6 +3391,20 @@ class PrivateImageMixin:
             self_recognition_prompt = "" if group_mode else self._private_image_self_recognition_prompt()
             if self_recognition_prompt and self_recognition_prompt not in prompt:
                 prompt = f"{prompt}\n\n{self_recognition_prompt}"
+            # Visual providers are called directly instead of through the
+            # budgeted ``_llm_call`` path. Apply the same plugin-owned task
+            # instruction here without touching the main conversation prompt.
+            task_prompt_customized = False
+            prompt_applier = getattr(self, "_apply_task_prompt_override_for_call", None)
+            if callable(prompt_applier):
+                original_prompt = prompt
+                prompt, _unused_system_prompt = prompt_applier(
+                    clean_task_name,
+                    prompt,
+                    None,
+                    flatten_system_prompt=True,
+                )
+                task_prompt_customized = prompt != original_prompt
             scope = clean_cache_scope or ("private_image_query" if contextual else "private_image")
             cache_prompt_sig = self._private_image_vision_cache_prompt_signature(
                 prompt,
@@ -3376,7 +3419,8 @@ class PrivateImageMixin:
                 image_aliases=image_aliases,
                 image_count=image_count,
                 scope=scope,
-                allow_image_key_fallback=not contextual and not customized_prompt,
+                allow_image_key_fallback=not contextual and not customized_prompt and not task_prompt_customized,
+                prompt=cache_prompt_sig,
             )
             if cached_text:
                 if not group_mode:
@@ -6370,6 +6414,18 @@ class PrivateImageMixin:
                 llm_safety_mode=False,
                 streaming_response=False,
             )
+            # The single-image response is a plugin-owned task even though it
+            # runs through AstrBot's framework agent. Keep the custom rule in
+            # this task request body; never mutate the main conversation system
+            # prompt or the stored conversation configuration.
+            prompt_applier = getattr(self, "_apply_task_prompt_override_for_call", None)
+            if callable(prompt_applier):
+                prompt, _unused_system_prompt = prompt_applier(
+                    "private_image_only_framework",
+                    prompt,
+                    None,
+                    flatten_system_prompt=True,
+                )
             req = ProviderRequest(
                 prompt=prompt,
                 conversation=conv,

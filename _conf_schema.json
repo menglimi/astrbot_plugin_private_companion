@@ -4869,6 +4869,13 @@
     "default": "{}",
     "invisible": true
   },
+  "task_prompt_overrides": {
+    "description": "插件内部任务模型自定义提示词",
+    "type": "text",
+    "default": "{}",
+    "invisible": true,
+    "hint": "仅由陪伴面板的提示词管理页维护；不会修改 AstrBot 主对话系统提示词。"
+  },
   "model_assignment_config": {
     "description": "模型分流",
     "type": "object",

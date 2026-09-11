@@ -37,6 +37,15 @@ class _LegacyPromptProvider:
 class _TtsCacheHarness(TtsEnhancementMixin):
     context = SimpleNamespace(get_provider_by_id=lambda _provider_id: None)
 
+    def __init__(self, task_prompt_extra: str = "") -> None:
+        self.task_prompt_extra = task_prompt_extra
+
+    def _apply_task_prompt_override_for_call(self, task, prompt, system_prompt=None):
+        if not self.task_prompt_extra:
+            return prompt, system_prompt
+        self.applied_task = task
+        return prompt, f"{system_prompt or ''}\n\n{self.task_prompt_extra}".strip()
+
     @staticmethod
     def _provider_id_from_instance(provider) -> str:
         return provider.provider_id
@@ -127,6 +136,21 @@ class TaskPromptCachePrefixTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("稳定转换规则", provider.prompt)
         self.assertIn("动态原文", provider.prompt)
+
+    async def test_tts_task_prompt_override_is_kept_in_system_channel(self) -> None:
+        provider = _SystemPromptProvider()
+        harness = _TtsCacheHarness("TTS 附加约束：只保留朗读正文")
+
+        await harness._tts_provider_text_chat(
+            provider,
+            "动态原文",
+            system_prompt="稳定转换规则",
+            task="tts_spoken_conversion",
+        )
+
+        self.assertEqual("tts_spoken_conversion", harness.applied_task)
+        self.assertIn(harness.task_prompt_extra, provider.kwargs["system_prompt"])
+        self.assertEqual("动态原文", provider.kwargs["prompt"])
 
 
 if __name__ == "__main__":
