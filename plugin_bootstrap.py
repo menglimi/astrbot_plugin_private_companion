@@ -46,6 +46,7 @@ from .migration_coordinator import MigrationCoordinator
 from .wardrobe import (
     WARDROBE_MAX_ITEMS,
     WARDROBE_PROMPT_MAX_ITEMS,
+    normalize_wardrobe_image_prompt,
     normalize_wardrobe_items,
 )
 from .migration_outbox import MigrationOutbox
@@ -1430,6 +1431,9 @@ def _initialize_photo_and_expression_config(self: Any, c: Any) -> None:
         c, "wardrobe_prompt_max_items", WARDROBE_PROMPT_MAX_ITEMS, 1, WARDROBE_MAX_ITEMS
     )
     self.wardrobe_image_max_count = self._cfg_int(c, "wardrobe_image_max_count", 3, 1, 8)
+    self.wardrobe_image_prompt = normalize_wardrobe_image_prompt(
+        self._cfg_str(c, "wardrobe_image_prompt", "")
+    )
     self.wardrobe_vision_provider_id = self._cfg_str(c, "WARDROBE_VISION_PROVIDER_ID", "")
     self.enable_natural_language_photo_generation = self._cfg_bool(c, "enable_natural_language_photo_generation", False)
     self.natural_language_photo_generation_mode = self._cfg_str(

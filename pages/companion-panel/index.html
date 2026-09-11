@@ -606,15 +606,38 @@
                 </div>
                 <input type="hidden" name="wardrobe_items" data-wardrobe-items-input value="[]" />
               </div>
+              <details class="wardrobe-vision-settings" data-wardrobe-vision-settings>
+                <summary>
+                  <span><b>识图设置</b><small>在这里调整衣柜识图使用的模型和描述提示词。</small></span>
+                </summary>
+                <div class="wardrobe-vision-body">
+                  <label class="wardrobe-vision-field">衣柜识图模型
+                    <div class="wardrobe-provider-control" data-wardrobe-provider-control></div>
+                    <small class="wardrobe-vision-hint" data-wardrobe-provider-hint></small>
+                  </label>
+                  <div class="wardrobe-vision-actions">
+                    <button type="button" class="secondary-button" data-wardrobe-test-provider>测试识图模型</button>
+                    <span class="wardrobe-status" data-wardrobe-provider-status aria-live="polite"></span>
+                  </div>
+                  <label class="wardrobe-vision-field">衣物描述提示词
+                    <textarea name="wardrobe_image_prompt" rows="6" maxlength="2000" data-wardrobe-image-prompt placeholder="留空使用内置提示词。"></textarea>
+                  </label>
+                  <div class="wardrobe-vision-actions">
+                    <button type="button" class="secondary-button" data-wardrobe-prompt-reset>恢复内置提示词</button>
+                    <button type="button" class="secondary-button" data-wardrobe-prompt-copy>复制内置提示词到编辑框</button>
+                    <span class="wardrobe-status" data-wardrobe-prompt-status aria-live="polite"></span>
+                  </div>
+                  <small class="wardrobe-vision-hint">
+                    自定义时建议保留「名称：／描述：／标签：」三行格式，面板才能自动回填这三项；不按该格式输出时，整段文字会作为衣物描述。
+                  </small>
+                </div>
+              </details>
               <div class="roleplay-standard">
                 <label>注入提示词的衣物条数上限
                   <input type="number" name="wardrobe_prompt_max_items" min="1" max="40" step="1" />
                 </label>
                 <label>单次识图添加上限（上限 <b data-wardrobe-image-limit>3</b> 张）
                   <input type="number" name="wardrobe_image_max_count" min="1" max="8" step="1" />
-                </label>
-                <label>衣柜识图模型
-                  <input type="text" name="WARDROBE_VISION_PROVIDER_ID" maxlength="160" placeholder="留空则跟随陪伴通用视觉模型" />
                 </label>
               </div>
             </section>

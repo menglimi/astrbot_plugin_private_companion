@@ -14395,10 +14395,20 @@
           "enable_wardrobe": true
         }
       },
+      "wardrobe_image_prompt": {
+        "description": "衣柜识图描述提示词",
+        "type": "text",
+        "hint": "留空使用内置提示词。自定义时建议保留「名称／描述／标签」三行格式，面板会自动回填这三项；不按该格式输出时，整段文字会作为衣物描述。",
+        "default": "",
+        "condition": {
+          "enable_wardrobe": true
+        }
+      },
       "WARDROBE_VISION_PROVIDER_ID": {
         "description": "衣柜识图模型",
         "type": "string",
-        "hint": "用于把衣物图片描述成文字的视觉模型。留空则跟随陪伴的通用视觉模型。",
+        "_special": "select_provider",
+        "hint": "用于把衣物图片描述成文字的视觉模型。可在角色页的衣柜里直接选择或手动填写；留空则跟随陪伴的通用视觉模型。",
         "default": "",
         "condition": {
           "enable_wardrobe": true

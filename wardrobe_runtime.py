@@ -34,6 +34,7 @@ from .wardrobe import (
     clear_wardrobe,
     delete_wardrobe_item,
     find_wardrobe_item,
+    normalize_wardrobe_image_prompt,
     normalize_wardrobe_items,
     normalize_wardrobe_tendency,
     parse_wardrobe_image_reply,
@@ -96,6 +97,11 @@ class WardrobeMixin:
 
     def _wardrobe_vision_provider_id(self) -> str:
         return _single_line(self._wardrobe_setting("WARDROBE_VISION_PROVIDER_ID", ""), 160)
+
+    def _wardrobe_image_prompt(self) -> str:
+        """Return the user-authored description prompt, or empty for the default."""
+
+        return normalize_wardrobe_image_prompt(self._wardrobe_setting("wardrobe_image_prompt", ""))
 
     def _wardrobe_items(self) -> list[dict[str, Any]]:
         return normalize_wardrobe_items(self._wardrobe_setting("wardrobe_items", []))
@@ -221,12 +227,15 @@ class WardrobeMixin:
     # 识图：图片 → 衣物描述
     # ------------------------------------------------------------------
 
-    def _wardrobe_vision_candidates(self, umo: str = "") -> list[str]:
+    def _wardrobe_vision_candidates(self, umo: str = "", preferred: str = "") -> list[str]:
         """Return ordered vision provider ids for wardrobe description."""
 
         ordered: list[str] = []
+        override = _single_line(preferred, 160)
+        if override:
+            ordered.append(override)
         configured = self._wardrobe_vision_provider_id()
-        if configured:
+        if configured and configured not in ordered:
             ordered.append(configured)
         resolver = getattr(self, "_private_image_visual_provider_candidates", None)
         if callable(resolver):
@@ -245,6 +254,7 @@ class WardrobeMixin:
         *,
         note: str = "",
         umo: str = "",
+        provider_id: str = "",
     ) -> tuple[dict[str, Any] | None, str]:
         """Describe one garment image; return ``(parsed_fields, error_text)``."""
 
@@ -266,18 +276,24 @@ class WardrobeMixin:
             items_getter = getattr(self, "_private_image_model_image_items_with_meta", None)
             if not callable(items_getter):
                 return None, "当前运行时不支持识图。"
-            _keys, image_urls, _has_gif = items_getter(prepared)
-            image_urls = [str(url) for url in (image_urls or []) if str(url or "").strip()]
+            # 真实签名是 (image_items, source_image_count, has_gif_frames)，
+            # 图片地址要从 image_items 的第二个字段取，不能直接当成第二项。
+            image_items, _source_image_count, _has_gif = items_getter(prepared)
+            image_urls = [
+                str(url)
+                for _key, url in (image_items or ())
+                if str(url or "").strip()
+            ]
             if not image_urls:
                 return None, "图片无法读取，请换一张再试。"
-            prompt = build_wardrobe_image_instruction(note)
+            prompt = build_wardrobe_image_instruction(note, self._wardrobe_image_prompt())
             failure = "识图模型没有返回可用的衣物描述。"
-            for provider_id in self._wardrobe_vision_candidates(umo):
-                provider = self._private_image_provider_by_id(provider_id)
+            for provider_id_candidate in self._wardrobe_vision_candidates(umo, preferred=provider_id):
+                provider = self._private_image_provider_by_id(provider_id_candidate)
                 if provider is None or not self._provider_supports_image(provider):
                     continue
                 runner = getattr(self, "_can_run_llm_task", None)
-                if callable(runner) and not runner(provider_id, task="wardrobe_image"):
+                if callable(runner) and not runner(provider_id_candidate, task="wardrobe_image"):
                     continue
                 try:
                     request_call = provider.text_chat(prompt=prompt, image_urls=image_urls)
@@ -287,13 +303,13 @@ class WardrobeMixin:
                         )
                     except asyncio.TimeoutError:
                         failure = "识图超时，请稍后再试或换一张图。"
-                        logger.warning("衣柜识图超时: provider=%s", provider_id)
+                        logger.warning("衣柜识图超时: provider=%s", provider_id_candidate)
                         continue
                 except Exception as exc:
                     failure = "识图失败，请稍后再试。"
                     logger.warning(
                         "衣柜识图调用失败: provider=%s error=%s",
-                        provider_id,
+                        provider_id_candidate,
                         _single_line(exc, 160),
                     )
                     continue
@@ -302,7 +318,7 @@ class WardrobeMixin:
                 if parsed is None:
                     logger.info(
                         "衣柜识图返回不可用结果: provider=%s preview=%s",
-                        provider_id,
+                        provider_id_candidate,
                         _single_line(text, 160),
                     )
                     continue

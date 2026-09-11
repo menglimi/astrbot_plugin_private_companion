@@ -30,6 +30,7 @@ from .model_routing import normalize_rule_configs, normalize_scope
 from .wardrobe import (
     WARDROBE_MAX_ITEMS,
     WARDROBE_PROMPT_MAX_ITEMS,
+    normalize_wardrobe_image_prompt,
     normalize_wardrobe_items,
     normalize_wardrobe_tendency,
 )
@@ -548,6 +549,8 @@ class PageSettingNormalizerMixin:
             return self._normalize_wardrobe_items(value)
         if key == "wardrobe_tendency":
             return normalize_wardrobe_tendency(value)
+        if key == "wardrobe_image_prompt":
+            return normalize_wardrobe_image_prompt(value)
         if key == "wardrobe_prompt_max_items":
             return self._normalize_wardrobe_int(value, WARDROBE_PROMPT_MAX_ITEMS, 1, WARDROBE_MAX_ITEMS)
         if key == "wardrobe_image_max_count":

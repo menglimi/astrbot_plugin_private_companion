@@ -413,6 +413,7 @@ def test_existing_sparse_profile_is_repaired_without_materializing_old_keys():
             "wardrobe_image_max_count": 3,
             "WARDROBE_VISION_PROVIDER_ID": "",
             "wardrobe_items": [],
+            "wardrobe_image_prompt": "",
         }
         assert "quiet_hours" not in profile["persona_settings"]
 

@@ -18,9 +18,11 @@ from astrbot_plugin_private_companion.persona_config import (
     migrate_persona_profile,
 )
 from astrbot_plugin_private_companion.wardrobe import (
+    DEFAULT_WARDROBE_IMAGE_PROMPT,
     SOURCE_KIND_IMAGE,
     SOURCE_KIND_MANUAL,
     WARDROBE_MAX_DESCRIPTION,
+    WARDROBE_MAX_IMAGE_PROMPT,
     WARDROBE_MAX_ITEMS,
     WARDROBE_MAX_NAME,
     WARDROBE_MAX_TENDENCY,
@@ -32,6 +34,7 @@ from astrbot_plugin_private_companion.wardrobe import (
     delete_wardrobe_item,
     find_wardrobe_item,
     new_wardrobe_item,
+    normalize_wardrobe_image_prompt,
     normalize_wardrobe_item,
     normalize_wardrobe_items,
     normalize_wardrobe_tags,
@@ -203,6 +206,38 @@ class WardrobeImageReplyTests(unittest.TestCase):
         self.assertIn("以图片实际可见内容为准", instruction)
         self.assertNotIn("补充说明", build_wardrobe_image_instruction(""))
 
+    def test_empty_template_keeps_the_builtin_prompt(self) -> None:
+        for blank in ("", "   ", None, "\n\n"):
+            self.assertEqual(
+                DEFAULT_WARDROBE_IMAGE_PROMPT,
+                build_wardrobe_image_instruction("", blank),
+                repr(blank),
+            )
+
+    def test_custom_template_replaces_the_builtin_wording(self) -> None:
+        instruction = build_wardrobe_image_instruction("", "只描述外套的材质和颜色。")
+        self.assertEqual("只描述外套的材质和颜色。", instruction)
+        self.assertNotIn("你正在为角色的衣柜整理衣物资料", instruction)
+
+    def test_custom_template_still_gets_the_user_note(self) -> None:
+        instruction = build_wardrobe_image_instruction("重点看领口", "只描述外套。")
+        self.assertIn("只描述外套。", instruction)
+        self.assertIn("重点看领口", instruction)
+        self.assertIn("以图片实际可见内容为准", instruction)
+
+    def test_custom_template_is_length_bounded(self) -> None:
+        instruction = build_wardrobe_image_instruction("", "甲" * 5000)
+        self.assertEqual(WARDROBE_MAX_IMAGE_PROMPT, len(instruction))
+
+    def test_prompt_normalization_keeps_newlines_drops_blank_lines(self) -> None:
+        self.assertEqual("第一行\n第二行", normalize_wardrobe_image_prompt("第一行\n\n\n第二行"))
+        self.assertEqual("", normalize_wardrobe_image_prompt(None))
+
+    def test_custom_prompt_reply_is_still_parsed(self) -> None:
+        parsed = parse_wardrobe_image_reply("名称：风衣\n描述：黑色长款\n标签：外出")
+        assert parsed is not None
+        self.assertEqual("风衣", parsed["name"])
+
     def test_parse_labelled_reply(self) -> None:
         parsed = parse_wardrobe_image_reply(
             "名称：碎花连衣裙\n描述：米白底小碎花，方领，及膝\n标签：外出|春夏"
@@ -245,6 +280,7 @@ class _WardrobeHarness(WardrobeMixin):
             "wardrobe_prompt_max_items": 12,
             "wardrobe_image_max_count": 3,
             "WARDROBE_VISION_PROVIDER_ID": "",
+            "wardrobe_image_prompt": "",
         }
         self.save_calls = 0
         self.save_should_fail = False
@@ -253,6 +289,41 @@ class _WardrobeHarness(WardrobeMixin):
         self.command_images: list[tuple[str, str]] = []
         self.placed_sections: list[tuple[str, object, int]] = []
         self.placement_error: Exception | None = None
+        # 识图替身：真正记录下送进 provider 的 prompt，用来验证提示词接线。
+        self.vision_prompts: list[str] = []
+        self.vision_provider_calls: list[str] = []
+
+    # --- 识图替身：走真实的 _wardrobe_describe_image 代码路径 ---
+    async def _prepare_private_image_sources_for_model(self, sources, *, namespace="vision"):
+        return list(sources)
+
+    def _cleanup_prepared_image_sources(self, sources, *, namespace):
+        return None
+
+    def _private_image_model_image_items_with_meta(self, sources):
+        # 真实签名是 (image_items, source_image_count, has_gif_frames)。
+        image_items = [(f"key:{item}", f"url:{item}") for item in sources]
+        return image_items, len(sources), False
+
+    def _private_image_provider_by_id(self, provider_id):
+        return SimpleNamespace(text_chat=self._fake_text_chat(provider_id))
+
+    def _private_image_visual_provider_candidates(self, umo=""):
+        # 生产环境里这里总会给出候选；替身也给一个，否则在未配置模型时
+        # 真实 _wardrobe_describe_image 会判定"没有可用候选"而直接放弃。
+        return [("vision-default", "plugin_vision", "")]
+
+    @staticmethod
+    def _provider_supports_image(provider):
+        return True
+
+    def _fake_text_chat(self, provider_id):
+        async def _call(*, prompt, image_urls, **kwargs):
+            self.vision_provider_calls.append(provider_id)
+            self.vision_prompts.append(prompt)
+            return SimpleNamespace(completion_text="名称：风衣\n描述：黑色长款\n标签：外出")
+
+        return _call
 
     def _place_conversation_prompt_section(self, req, marker, section, *, priority=50, force_dynamic=False):
         if self.placement_error is not None:
@@ -267,19 +338,23 @@ class _WardrobeHarness(WardrobeMixin):
         self.save_calls += 1
         return not self.save_should_fail
 
-    async def _wardrobe_describe_image(self, image_sources, *, note="", umo=""):  # type: ignore[override]
+    async def _photo_reference_images_from_command_context(self, event, user_id, *, limit=12):
+        return list(self.command_images), bool(self.command_images)
+
+
+class _WardrobeCommandHarness(_WardrobeHarness):
+    """命令层只需要一个可控的识图结果；真实识图接线由视觉替身用例覆盖。"""
+
+    async def _wardrobe_describe_image(self, image_sources, *, note="", umo="", provider_id=""):  # type: ignore[override]
         self.describe_calls.append(note)
         if self.describe_reply is None:
             return None, "识图模型没有返回可用的衣物描述。"
         return dict(self.describe_reply), ""
 
-    async def _photo_reference_images_from_command_context(self, event, user_id, *, limit=12):
-        return list(self.command_images), bool(self.command_images)
-
 
 class WardrobeMixinTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        self.plugin = _WardrobeHarness()
+        self.plugin = _WardrobeCommandHarness()
 
     async def test_view_reports_state_and_help(self) -> None:
         text, image = await self.plugin._wardrobe_command_payload(None, "u1", "")
@@ -462,6 +537,74 @@ class WardrobeMixinTests(unittest.IsolatedAsyncioTestCase):
         except Exception as exc:  # pragma: no cover - 失败即视为回归
             self.fail(f"注入失败不应向上抛出: {exc}")
 
+    def test_vision_provider_id_reads_from_config(self) -> None:
+        self.plugin.config["WARDROBE_VISION_PROVIDER_ID"] = "vision-a"
+        self.assertEqual("vision-a", self.plugin._wardrobe_vision_provider_id())
+        self.plugin.config["WARDROBE_VISION_PROVIDER_ID"] = ""
+        self.assertEqual("", self.plugin._wardrobe_vision_provider_id())
+
+    def test_image_prompt_reads_from_config(self) -> None:
+        self.assertEqual("", self.plugin._wardrobe_image_prompt())
+        self.plugin.config["wardrobe_image_prompt"] = "只描述外套。"
+        self.assertEqual("只描述外套。", self.plugin._wardrobe_image_prompt())
+        self.plugin.config["wardrobe_image_prompt"] = "行一\n\n行二"
+        self.assertEqual("行一\n行二", self.plugin._wardrobe_image_prompt())
+
+    def test_vision_candidates_put_the_override_first(self) -> None:
+        self.plugin.config["WARDROBE_VISION_PROVIDER_ID"] = "vision-config"
+        candidates = self.plugin._wardrobe_vision_candidates("", preferred="vision-picked")
+        self.assertEqual("vision-picked", candidates[0])
+        self.assertIn("vision-config", candidates)
+
+    def test_vision_candidates_without_override_start_with_config(self) -> None:
+        self.plugin.config["WARDROBE_VISION_PROVIDER_ID"] = "vision-config"
+        candidates = self.plugin._wardrobe_vision_candidates("")
+        self.assertEqual("vision-config", candidates[0])
+
+    def test_vision_candidates_ignore_blank_override(self) -> None:
+        self.plugin.config["WARDROBE_VISION_PROVIDER_ID"] = "vision-config"
+        for blank in ("", "   ", None):
+            self.assertEqual("vision-config", self.plugin._wardrobe_vision_candidates("", preferred=blank)[0])
+
+    def test_vision_candidates_deduplicate(self) -> None:
+        self.plugin.config["WARDROBE_VISION_PROVIDER_ID"] = "vision-config"
+        candidates = self.plugin._wardrobe_vision_candidates("", preferred="vision-config")
+        self.assertEqual(1, candidates.count("vision-config"), candidates)
+        self.assertEqual("vision-config", candidates[0])
+        self.assertEqual(len(candidates), len(set(candidates)))
+
+    async def test_describe_uses_the_custom_prompt(self) -> None:
+        """自定义提示词必须真的送到识别调用里，而不是只存进配置。"""
+
+        plugin = _WardrobeHarness()
+        plugin.config["wardrobe_image_prompt"] = "只看外套。"
+        await plugin._wardrobe_describe_image(["/tmp/coat.png"])
+        self.assertEqual(1, len(plugin.vision_prompts))
+        self.assertTrue(plugin.vision_prompts[0].startswith("只看外套。"))
+
+    async def test_describe_uses_default_prompt_when_unset(self) -> None:
+        plugin = _WardrobeHarness()
+        await plugin._wardrobe_describe_image(["/tmp/coat.png"])
+        self.assertEqual(DEFAULT_WARDROBE_IMAGE_PROMPT, plugin.vision_prompts[0])
+
+    async def test_describe_prefers_the_picked_provider(self) -> None:
+        plugin = _WardrobeHarness()
+        plugin.config["WARDROBE_VISION_PROVIDER_ID"] = "vision-config"
+        await plugin._wardrobe_describe_image(["/tmp/coat.png"], provider_id="vision-picked")
+        # 第一个候选就成功了，因此只调用一次；顺序由候选表断言。
+        self.assertEqual(["vision-picked"], plugin.vision_provider_calls)
+        self.assertEqual(
+            ["vision-picked", "vision-config", "vision-default"],
+            plugin._wardrobe_vision_candidates("", preferred="vision-picked"),
+        )
+
+    def test_prompt_section_unaffected_by_image_prompt(self) -> None:
+        self.plugin.config["wardrobe_tendency"] = "偏爱针织"
+        self.plugin.config["wardrobe_image_prompt"] = "只看外套。"
+        section = self.plugin._wardrobe_prompt_section()
+        assert section is not None
+        self.assertNotIn("只看外套", str(section.content))
+
     def test_alias_actions_resolve_to_wardrobe(self) -> None:
         self.assertTrue(issubclass(_WardrobeHarness, WardrobeMixin))
         source = (ROOT / "main.py").read_text(encoding="utf-8")
@@ -513,7 +656,7 @@ class WardrobeConfigTests(unittest.TestCase):
             self.assertTrue(entry["cloneable"], key)
 
     def test_current_persona_version_materializes_wardrobe_keys(self) -> None:
-        self.assertEqual(6, PERSONA_SETTINGS_SCHEMA_VERSION)
+        self.assertEqual(7, PERSONA_SETTINGS_SCHEMA_VERSION)
         migrated = migrate_persona_profile(
             {"persona_settings": {}, "persona_settings_schema_version": 5},
             manifest=self.manifest,
@@ -522,6 +665,7 @@ class WardrobeConfigTests(unittest.TestCase):
         self.assertTrue(settings["enable_wardrobe"])
         self.assertEqual("", settings["wardrobe_tendency"])
         self.assertEqual([], settings["wardrobe_items"])
+        self.assertEqual("", settings["wardrobe_image_prompt"])
 
     def test_existing_wardrobe_values_survive_migration(self) -> None:
         migrated = migrate_persona_profile(
@@ -561,6 +705,7 @@ class WardrobeConfigTests(unittest.TestCase):
             "self.enable_wardrobe_prompt",
             "self.wardrobe_prompt_max_items",
             "self.wardrobe_image_max_count",
+            "self.wardrobe_image_prompt",
             "self.wardrobe_vision_provider_id",
         ):
             self.assertIn(attr, source, attr)
@@ -603,6 +748,16 @@ class WardrobeConfigAccessorTests(unittest.TestCase):
         self.assertEqual("偏爱黑色长风衣", self.plugin._cfg_str(config, "wardrobe_tendency", ""))
         self.assertEqual(5, self.plugin._cfg_int(config, "wardrobe_prompt_max_items", 12, 1, 40))
         self.assertEqual("vision-a", self.plugin._cfg_str(config, "WARDROBE_VISION_PROVIDER_ID", ""))
+
+    def test_image_prompt_default_is_empty_and_reads_through(self) -> None:
+        self.assertEqual("", self.plugin._cfg_str(self._config(), "wardrobe_image_prompt", "x"))
+        config = self._config(wardrobe_image_prompt="只描述外套。")
+        self.assertEqual("只描述外套。", self.plugin._cfg_str(config, "wardrobe_image_prompt", ""))
+
+    def test_image_prompt_survives_normalization_with_newlines(self) -> None:
+        config = self._config(wardrobe_image_prompt="第一行\n\n第二行")
+        raw = self.plugin._cfg_str(config, "wardrobe_image_prompt", "")
+        self.assertEqual("第一行\n第二行", normalize_wardrobe_image_prompt(raw))
 
     def test_items_round_trip_through_normalizer(self) -> None:
         config = self._config()
@@ -664,9 +819,48 @@ class WardrobePanelTests(unittest.TestCase):
             self.assertIn('name="enable_wardrobe_prompt"', html)
             self.assertIn('name="wardrobe_prompt_max_items"', html)
             self.assertIn('name="wardrobe_image_max_count"', html)
-            self.assertIn('name="WARDROBE_VISION_PROVIDER_ID"', html)
             self.assertIn('name="wardrobe_items"', html)
             self.assertIn("js/features/wardrobe.js", html)
+
+    def test_html_exposes_vision_settings_block(self) -> None:
+        for html in self.htmls:
+            self.assertIn("data-wardrobe-vision-settings", html)
+            # 识图模型由 JS 渲染成下拉＋手动输入，容器必须在页面里。
+            self.assertIn("data-wardrobe-provider-control", html)
+            self.assertIn('name="wardrobe_image_prompt"', html)
+            self.assertIn("data-wardrobe-image-prompt", html)
+            self.assertIn("data-wardrobe-test-provider", html)
+            self.assertIn("data-wardrobe-prompt-reset", html)
+            self.assertIn("data-wardrobe-prompt-copy", html)
+
+    def test_module_renders_provider_picker_and_manual_input(self) -> None:
+        self.assertIn('const PROVIDER_KEY = "WARDROBE_VISION_PROVIDER_ID"', self.module)
+        self.assertIn("function renderProviderControl(", self.module)
+        self.assertIn("data-wardrobe-provider-select", self.module)
+        self.assertIn("data-wardrobe-provider-manual", self.module)
+        self.assertIn("CUSTOM_PROVIDER", self.module)
+        self.assertIn("state?.availableProviders", self.module)
+
+    def test_module_only_one_control_carries_the_name(self) -> None:
+        # 否则 collectFormSettings 会收到两个同名值。
+        self.assertIn("if (!isCustom) select.name = PROVIDER_KEY;", self.module)
+        self.assertIn("if (isCustom) manual.name = PROVIDER_KEY;", self.module)
+        self.assertIn("delete select.name;", self.module)
+        self.assertIn("delete manual.name;", self.module)
+
+    def test_module_offers_default_prompt_copy_and_reset(self) -> None:
+        self.assertIn("const DEFAULT_IMAGE_PROMPT", self.module)
+        self.assertIn("名称：", self.module)
+        self.assertIn("data-wardrobe-prompt-copy", self.module)
+        self.assertIn("data-wardrobe-prompt-reset", self.module)
+
+    def test_module_sends_picked_provider_to_describe(self) -> None:
+        self.assertIn('postJson("/wardrobe/describe"', self.module)
+        self.assertIn("provider_id: currentProviderValue(context)", self.module)
+
+    def test_module_can_test_the_picked_provider(self) -> None:
+        self.assertIn('postJson("/provider/test"', self.module)
+        self.assertIn('("/provider/test", self.test_provider, ["POST"]', self.api)
 
     def test_html_hides_wardrobe_panel_initially(self) -> None:
         for html in self.htmls:
@@ -856,10 +1050,10 @@ class WardrobeDescribeEndpointTests(unittest.IsolatedAsyncioTestCase):
         class _Plugin:
             def __init__(self) -> None:
                 self.data_dir = str(root)
-                self.describe_calls: list[tuple[list[str], str]] = []
+                self.describe_calls: list[tuple[list[str], str, str]] = []
 
-            async def _wardrobe_describe_image(self, sources, *, note="", umo=""):
-                self.describe_calls.append((list(sources), note))
+            async def _wardrobe_describe_image(self, sources, *, note="", umo="", provider_id=""):
+                self.describe_calls.append((list(sources), note, provider_id))
                 return (dict(reply) if reply is not None else None), error
 
         return _Plugin()
@@ -886,6 +1080,7 @@ class WardrobeDescribeEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(["外出"], result["data"]["tags"])
         self.assertEqual([str(path.resolve())], plugin.describe_calls[0][0])
         self.assertEqual("只看外套", plugin.describe_calls[0][1])
+        self.assertEqual("", plugin.describe_calls[0][2])
 
     async def test_describe_rejects_path_outside_plugin_dirs(self) -> None:
         from astrbot_plugin_private_companion.page_api import PrivateCompanionPageApi
@@ -941,6 +1136,50 @@ class WardrobeDescribeEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["success"])
         self.assertIn("识图模型", json.dumps(result, ensure_ascii=False))
 
+    async def test_describe_forwards_the_picked_provider(self) -> None:
+        from astrbot_plugin_private_companion.page_api import PrivateCompanionPageApi
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            path = self._write_image(root)
+            plugin = self._plugin(root, reply={"name": "风衣", "description": "黑色长款", "tags": []})
+            api = PrivateCompanionPageApi(plugin)
+            async with self.app.test_request_context(
+                "/",
+                method="POST",
+                json={"source": str(path), "note": "", "provider_id": "vision-picked"},
+            ):
+                result = await api.describe_wardrobe_image()
+        self.assertTrue(result["success"])
+        self.assertEqual("vision-picked", plugin.describe_calls[0][2])
+
+    async def test_describe_provider_is_optional(self) -> None:
+        from astrbot_plugin_private_companion.page_api import PrivateCompanionPageApi
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            path = self._write_image(root)
+            plugin = self._plugin(root, reply={"name": "风衣", "description": "黑色长款", "tags": []})
+            api = PrivateCompanionPageApi(plugin)
+            async with self.app.test_request_context("/", method="POST", json={"source": str(path)}):
+                result = await api.describe_wardrobe_image()
+        self.assertTrue(result["success"])
+        self.assertEqual("", plugin.describe_calls[0][2])
+
+    async def test_describe_provider_is_bounded(self) -> None:
+        from astrbot_plugin_private_companion.page_api import PrivateCompanionPageApi
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            path = self._write_image(root)
+            plugin = self._plugin(root, reply={"name": "风衣", "description": "黑色长款", "tags": []})
+            api = PrivateCompanionPageApi(plugin)
+            async with self.app.test_request_context(
+                "/", method="POST", json={"source": str(path), "provider_id": "x" * 500}
+            ):
+                await api.describe_wardrobe_image()
+        self.assertLessEqual(len(plugin.describe_calls[0][2]), 160)
+
     async def test_describe_reports_missing_capability(self) -> None:
         from astrbot_plugin_private_companion.page_api import PrivateCompanionPageApi
 
@@ -964,7 +1203,7 @@ class WardrobeDescribeEndpointTests(unittest.IsolatedAsyncioTestCase):
                 def __init__(self) -> None:
                     self.data_dir = str(root)
 
-                async def _wardrobe_describe_image(self, sources, *, note="", umo=""):
+                async def _wardrobe_describe_image(self, sources, *, note="", umo="", provider_id=""):
                     raise RuntimeError("provider exploded")
 
             api = PrivateCompanionPageApi(_Raising())
@@ -984,5 +1223,216 @@ class WardrobeDescribeEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([], plugin.describe_calls)
 
 
+class WardrobeVisionControlTests(unittest.TestCase):
+    """用 Node 验证识图模型选择器与提示词编辑框的接线。"""
+
+    MODULE = ROOT / "pages" / "陪伴面板" / "js" / "features" / "wardrobe.js"
+
+    _HARNESS = """
+// 模块里用了 `x instanceof HTMLElement / HTMLSelectElement` 做守卫，
+// 所以替身必须是真的实例，否则守卫会抛 ReferenceError。
+class FakeHTMLElement {}
+class FakeHTMLSelectElement extends FakeHTMLElement {}
+class FakeHTMLInputElement extends FakeHTMLElement {}
+global.HTMLElement = FakeHTMLElement;
+global.HTMLSelectElement = FakeHTMLSelectElement;
+global.HTMLInputElement = FakeHTMLInputElement;
+function makeElement(tag) {
+  const name = String(tag || "").toLowerCase();
+  const proto = name === "select" ? FakeHTMLSelectElement
+    : name === "input" ? FakeHTMLInputElement : FakeHTMLElement;
+  const el = Object.assign(new proto(), {
+    tagName: name.toUpperCase(),
+    children: [], attributes: {}, dataset: {}, style: {},
+    value: "", textContent: "", hidden: false, type: "", name: undefined, selected: false,
+    listeners: {},
+    appendChild(child) { this.children.push(child); return child; },
+    setAttribute(key, val) { this.attributes[key] = val; },
+    hasAttribute(key) { return Object.prototype.hasOwnProperty.call(this.attributes, key); },
+    addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); },
+    dispatch(type, event) { (this.listeners[type] || []).forEach((fn) => fn(event)); },
+    focus() { this.focused = true; },
+  });
+  return el;
+}
+function buildContext(settings, providers, inputValue) {
+  const itemsInput = makeElement("input");
+  itemsInput.value = inputValue || "";
+  const controlHost = makeElement("div");
+  const visionHost = makeElement("details");
+  const elements = {};
+  const document = {
+    activeElement: null,
+    createElement: (tag) => makeElement(tag),
+    querySelector: (sel) => {
+      if (sel === "[data-wardrobe-provider-control]") return controlHost;
+      if (sel === "[data-wardrobe-items-input]") return itemsInput;
+      if (sel === "[data-wardrobe-vision-settings]") return visionHost;
+      // 渲染出来的下拉/输入框是 controlHost 的子节点，按 data 标记查找。
+      if (sel === "[data-wardrobe-provider-select]") {
+        return controlHost.children.find((c) => c.dataset && c.dataset.wardrobeProviderSelect) || null;
+      }
+      if (sel === "[data-wardrobe-provider-manual]") {
+        return controlHost.children.find((c) => c.dataset && c.dataset.wardrobeProviderManual) || null;
+      }
+      return elements[sel] || null;
+    },
+    querySelectorAll: () => [],
+    stub: (sel, el) => { elements[sel] = el; return el; },
+  };
+  const context = {
+    state: { overview: { settings }, availableProviders: providers },
+    postJson: async () => ({}),
+    document,
+  };
+  return { context, controlHost, visionHost, itemsInput, document };
+}
+"""
+
+    def _run(self, settings: dict, providers: list, body: str, input_value: str = "") -> dict:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node.js is unavailable")
+        script = f"""
+global.window = {{}};
+const fs = require("fs");
+eval(fs.readFileSync({json.dumps(str(self.MODULE), ensure_ascii=False)}, "utf8"));
+{self._HARNESS}
+const built = buildContext(
+  {json.dumps(settings, ensure_ascii=False)},
+  {json.dumps(providers, ensure_ascii=False)},
+  {json.dumps(input_value, ensure_ascii=False)},
+);
+const context = built.context;
+window.PrivateCompanionWardrobe.hydrateWardrobePanel(context);
+{body}
+"""
+        result = subprocess.run(
+            [node, "-e", script],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        return json.loads(result.stdout)
+
+    PROVIDERS = [
+        {"id": "p1", "name": "视觉一号", "model": "gpt-4o"},
+        {"id": "p2", "name": "视觉二号", "model": "qwen-vl", "is_default": True},
+    ]
+
+    def _control_state(self) -> str:
+        return """
+const host = built.controlHost;
+const select = host.children[0];
+const manual = host.children[1];
+process.stdout.write(JSON.stringify({
+  optionValues: select.children.map((o) => o.value),
+  optionLabels: select.children.map((o) => o.textContent),
+  selectName: select.name || "",
+  manualName: manual.name || "",
+  manualHidden: Boolean(manual.hidden),
+  manualValue: manual.value || "",
+}));
+"""
+
+    def test_options_come_from_available_providers(self) -> None:
+        out = self._run({"WARDROBE_VISION_PROVIDER_ID": ""}, self.PROVIDERS, self._control_state())
+        self.assertEqual(["", "p1", "p2", "__custom__"], out["optionValues"])
+        self.assertIn("留空", out["optionLabels"][0])
+        self.assertIn("视觉一号", out["optionLabels"][1])
+        self.assertIn("gpt-4o", out["optionLabels"][1])
+        self.assertIn("默认", out["optionLabels"][2])
+        self.assertIn("手动输入", out["optionLabels"][3])
+
+    def test_known_provider_selects_and_only_select_carries_name(self) -> None:
+        out = self._run({"WARDROBE_VISION_PROVIDER_ID": "p2"}, self.PROVIDERS, self._control_state())
+        self.assertEqual("WARDROBE_VISION_PROVIDER_ID", out["selectName"])
+        self.assertEqual("", out["manualName"])
+        self.assertTrue(out["manualHidden"])
+
+    def test_blank_provider_keeps_select_named_and_manual_hidden(self) -> None:
+        out = self._run({"WARDROBE_VISION_PROVIDER_ID": ""}, self.PROVIDERS, self._control_state())
+        self.assertEqual("WARDROBE_VISION_PROVIDER_ID", out["selectName"])
+        self.assertEqual("", out["manualName"])
+        self.assertTrue(out["manualHidden"])
+
+    def test_unknown_provider_falls_back_to_manual_input(self) -> None:
+        out = self._run(
+            {"WARDROBE_VISION_PROVIDER_ID": "my-own-provider"}, self.PROVIDERS, self._control_state()
+        )
+        self.assertEqual("", out["selectName"], "自定义值时 select 不应再带 name")
+        self.assertEqual("WARDROBE_VISION_PROVIDER_ID", out["manualName"])
+        self.assertFalse(out["manualHidden"])
+        self.assertEqual("my-own-provider", out["manualValue"])
+
+    def test_switching_to_custom_moves_the_name_to_the_input(self) -> None:
+        """真实 change 事件必须把 name 从 select 挪到手动输入框。"""
+
+        out = self._run(
+            {"WARDROBE_VISION_PROVIDER_ID": "p1"},
+            self.PROVIDERS,
+            """
+const host = built.controlHost;
+const select = host.children[0];
+const manual = host.children[1];
+const before = { selectName: select.name || "", manualName: manual.name || "" };
+select.value = "__custom__";
+built.visionHost.dispatch("change", { target: select });
+process.stdout.write(JSON.stringify({
+  before,
+  selectName: select.name || "",
+  manualName: manual.name || "",
+  manualHidden: Boolean(manual.hidden),
+}));
+""",
+        )
+        self.assertEqual("WARDROBE_VISION_PROVIDER_ID", out["before"]["selectName"])
+        self.assertEqual("", out["before"]["manualName"])
+        self.assertEqual("", out["selectName"])
+        self.assertEqual("WARDROBE_VISION_PROVIDER_ID", out["manualName"])
+        self.assertFalse(out["manualHidden"])
+
+    def test_switching_back_restores_the_select_name(self) -> None:
+        out = self._run(
+            {"WARDROBE_VISION_PROVIDER_ID": "p1"},
+            self.PROVIDERS,
+            """
+const host = built.controlHost;
+const select = host.children[0];
+const manual = host.children[1];
+select.value = "__custom__";
+built.visionHost.dispatch("change", { target: select });
+select.value = "p2";
+built.visionHost.dispatch("change", { target: select });
+process.stdout.write(JSON.stringify({
+  selectName: select.name || "",
+  manualName: manual.name || "",
+  manualHidden: Boolean(manual.hidden),
+}));
+""",
+        )
+        self.assertEqual("WARDROBE_VISION_PROVIDER_ID", out["selectName"])
+        self.assertEqual("", out["manualName"])
+        self.assertTrue(out["manualHidden"])
+
+    def test_prompt_editor_uses_stored_value(self) -> None:
+        out = self._run(
+            {"wardrobe_image_prompt": "只描述外套。"},
+            self.PROVIDERS,
+            """
+const editor = { value: "", placeholder: "" };
+const original = built.document.querySelector;
+built.document.querySelector = (sel) => (sel === "[data-wardrobe-image-prompt]"
+  ? editor : original.call(built.document, sel));
+window.PrivateCompanionWardrobe.hydrateWardrobePanel(context);
+process.stdout.write(JSON.stringify({ value: editor.value, placeholder: editor.placeholder }));
+""",
+        )
+        self.assertEqual("只描述外套。", out["value"])
+        self.assertIn("留空", out["placeholder"])
+
+
 if __name__ == "__main__":
     unittest.main()
+

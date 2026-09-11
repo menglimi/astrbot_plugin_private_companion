@@ -3908,8 +3908,13 @@ class PrivateCompanionPageApi(
         if source is None:
             return self._error("只能描述已上传到插件目录的 PNG、JPEG 或 WebP 图片")
         note = self._single_line(payload.get("note"), 200)
+        # 面板可以先选模型再识图，不必等保存；这里只把候选排到最前，
+        # 无效或不支持图片的 id 会被下游跳过并回退到已配置模型。
+        preferred = self._single_line(payload.get("provider_id"), 160)
         try:
-            parsed, error = await describer([str(source)], note=note, umo="")
+            parsed, error = await describer(
+                [str(source)], note=note, umo="", provider_id=preferred
+            )
         except Exception as exc:
             logger.warning("衣柜识图接口失败: %s", self._single_line(exc, 160), exc_info=True)
             return self._error("识图失败，请稍后再试")
@@ -17382,7 +17387,7 @@ class PrivateCompanionPageApi(
                 vector = await vector_getter(provider, "开心 安慰 抱抱 表情语义测试")
                 text = f"{len(vector)} 维向量" if vector else ""
                 step_name = "向量生成"
-            elif key in {"PLUGIN_VISION_PROVIDER_ID", "READING_ARCHIVE_VISION_PROVIDER_ID"}:
+            elif key in {"PLUGIN_VISION_PROVIDER_ID", "READING_ARCHIVE_VISION_PROVIDER_ID", "WARDROBE_VISION_PROVIDER_ID"}:
                 provider = self._visual_provider_for_test(provider_id)
                 supports_image = getattr(self.plugin, "_provider_supports_image", None)
                 if provider is None:
@@ -17433,7 +17438,7 @@ class PrivateCompanionPageApi(
             elapsed_ms = int((time.time() - start) * 1000)
             ok = bool(text)
             embedding_test = key in {"EMBEDDING_PROVIDER_ID", "REACTION_EXPRESSION_EMBEDDING_PROVIDER_ID"}
-            vision_test = key in {"PLUGIN_VISION_PROVIDER_ID", "READING_ARCHIVE_VISION_PROVIDER_ID"}
+            vision_test = key in {"PLUGIN_VISION_PROVIDER_ID", "READING_ARCHIVE_VISION_PROVIDER_ID", "WARDROBE_VISION_PROVIDER_ID"}
             result = {
                 "ok": ok,
                 "key": key,

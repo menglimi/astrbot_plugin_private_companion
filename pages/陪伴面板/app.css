@@ -35461,3 +35461,34 @@ input:checked + .rt2-switch-track.lg::after,
 .wardrobe-status { font-size: 12px; color: var(--text-muted, #6b7280); }
 .wardrobe-status[data-tone="ok"] { color: #15803d; }
 .wardrobe-status[data-tone="error"] { color: #b91c1c; }
+
+/* ---------- 衣柜识图设置 ---------- */
+.wardrobe-vision-settings {
+  margin: 12px 0 16px;
+  border: 1px solid var(--border-soft, rgba(148, 163, 184, 0.3));
+  border-radius: 12px;
+  background: var(--surface, rgba(255, 255, 255, 0.6));
+}
+.wardrobe-vision-settings > summary {
+  cursor: pointer;
+  padding: 10px 14px;
+  list-style: none;
+}
+.wardrobe-vision-settings > summary::-webkit-details-marker { display: none; }
+.wardrobe-vision-settings > summary span { display: grid; gap: 2px; }
+.wardrobe-vision-settings > summary b { font-size: 13px; }
+.wardrobe-vision-settings > summary small { color: var(--text-muted, #6b7280); font-size: 12px; }
+.wardrobe-vision-body {
+  display: grid;
+  gap: 12px;
+  padding: 0 14px 14px;
+  border-top: 1px solid var(--border-soft, rgba(148, 163, 184, 0.2));
+  padding-top: 12px;
+}
+.wardrobe-vision-field { display: grid; gap: 6px; font-size: 12px; }
+.wardrobe-vision-field textarea { width: 100%; font-family: inherit; }
+.wardrobe-provider-control { display: grid; gap: 6px; }
+.wardrobe-provider-control select,
+.wardrobe-provider-control input[type="text"] { width: 100%; }
+.wardrobe-vision-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.wardrobe-vision-hint { color: var(--text-muted, #6b7280); font-size: 11px; line-height: 1.6; }
