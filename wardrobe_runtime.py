@@ -287,6 +287,17 @@ class WardrobeMixin:
             if not image_urls:
                 return None, "图片无法读取，请换一张再试。"
             prompt = build_wardrobe_image_instruction(note, self._wardrobe_image_prompt())
+            # 视觉 Provider 是直连调用，不走预算化的 _llm_call 路径，因此需要
+            # 按同一约定手动补上插件任务附加指令，让面板里的「衣柜衣物识图」
+            # 覆盖项生效；只影响本任务请求，不改动 AstrBot 主对话提示词。
+            prompt_applier = getattr(self, "_apply_task_prompt_override_for_call", None)
+            if callable(prompt_applier):
+                prompt, _unused_system_prompt = prompt_applier(
+                    "wardrobe_image",
+                    prompt,
+                    None,
+                    flatten_system_prompt=True,
+                )
             failure = "识图模型没有返回可用的衣物描述。"
             for provider_id_candidate in self._wardrobe_vision_candidates(umo, preferred=provider_id):
                 provider = self._private_image_provider_by_id(provider_id_candidate)
