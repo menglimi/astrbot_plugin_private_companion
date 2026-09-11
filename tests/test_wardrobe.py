@@ -1435,4 +1435,3 @@ process.stdout.write(JSON.stringify({ value: editor.value, placeholder: editor.p
 
 if __name__ == "__main__":
     unittest.main()
-
