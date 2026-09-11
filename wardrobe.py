@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import re
+import json
 import time
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
@@ -223,6 +224,14 @@ def _safe_timestamp(value: Any, fallback: float) -> float:
 def normalize_wardrobe_items(value: Any) -> list[dict[str, Any]]:
     """Normalize a stored item list, dropping duplicates and empty rows."""
 
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            value = json.loads(text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
     if not isinstance(value, (list, tuple)):
         return []
     result: list[dict[str, Any]] = []

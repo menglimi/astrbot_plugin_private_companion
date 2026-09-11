@@ -1622,6 +1622,30 @@ class SmartImageChatIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload["sent"])
         self.assertIsNone(api.calls[0]["event"])
 
+    async def test_vision_rejection_in_direct_lookup_does_not_use_outer_reservation_state(self) -> None:
+        """A direct lookup has no reaction-expression reservation to release."""
+
+        harness = _ReactionHarness(_FakeSmartImageAPI(self.image_path))
+        harness.reaction_expression_low_latency_mode = False
+        harness.reaction_expression_vision_verify_mode = "always"
+        harness._reaction_expression_vision_verify = AsyncMock(
+            return_value={"fit": False, "description": "不匹配", "reason": "语境不符"}
+        )
+
+        payload = json.loads(
+            await harness._pc_find_reaction_image_impl(
+                _FakeEvent(),
+                query="无语",
+                send=False,
+                internal_attachment=True,
+            )
+        )
+
+        self.assertEqual("not_found", payload["status"])
+        self.assertFalse(payload["found"])
+        self.assertFalse(payload["sent"])
+        harness._reaction_expression_vision_verify.assert_awaited_once()
+
     async def test_scope_probability_and_send_gates_do_not_query_provider(self) -> None:
         api = _FakeSmartImageAPI(self.image_path)
         module = SimpleNamespace(get_smart_imagechat_api=lambda: api)

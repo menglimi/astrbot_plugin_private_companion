@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from typing import Any
 
 from astrbot.api import logger
@@ -20,7 +21,7 @@ from astrbot.api.event import AstrMessageEvent
 
 from .conversation_prompt_section import PromptSection, prompt_section
 from .helpers import _flat_get, _set_into_config, _single_line
-from .persona_config import runtime_persona_setting
+from .persona_config import PERSONA_SETTINGS_KEY, runtime_persona_setting
 from .wardrobe import (
     SOURCE_KIND_IMAGE,
     SOURCE_KIND_MANUAL,
@@ -60,6 +61,20 @@ class WardrobeMixin:
     # 读数
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _wardrobe_bool(value: Any, default: bool = False) -> bool:
+        """Coerce config booleans without treating ``"false"`` as truthy."""
+
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().casefold()
+            if lowered in {"true", "1", "yes", "on", "enable", "enabled", "是", "开启", "开"}:
+                return True
+            if lowered in {"false", "0", "no", "off", "disable", "disabled", "否", "关闭", "关", ""}:
+                return False
+        return default if value is None else bool(value)
+
     def _wardrobe_setting(self, key: str, default: Any = None) -> Any:
         getter = getattr(self, "persona_setting", None)
         if callable(getter):
@@ -73,13 +88,13 @@ class WardrobeMixin:
         return getattr(self, key, default)
 
     def _wardrobe_enabled(self) -> bool:
-        return bool(self._wardrobe_setting("enable_wardrobe", True))
+        return self._wardrobe_bool(self._wardrobe_setting("enable_wardrobe", True), True)
 
     def _wardrobe_tendency(self) -> str:
         return normalize_wardrobe_tendency(self._wardrobe_setting("wardrobe_tendency", ""))
 
     def _wardrobe_prompt_mode(self) -> bool:
-        return bool(self._wardrobe_setting("enable_wardrobe_prompt", True))
+        return self._wardrobe_bool(self._wardrobe_setting("enable_wardrobe_prompt", True), True)
 
     def _wardrobe_prompt_item_limit(self) -> int:
         try:
@@ -134,9 +149,41 @@ class WardrobeMixin:
         previous_runtime = {
             key: getattr(self, attr, _MISSING) for key, attr in runtime_attr.items()
         }
-        previous_config = {
-            key: _flat_get(self.config, key, _MISSING) for key in payload
-        }
+        active_scope_getter = getattr(self, "_active_persona_scope", None)
+        active_persona = ""
+        if callable(active_scope_getter):
+            try:
+                active_persona = str(active_scope_getter() or "").strip()
+            except Exception:
+                active_persona = ""
+        primary_getter = getattr(self, "_primary_persona_id", None)
+        primary_persona = ""
+        if callable(primary_getter):
+            try:
+                primary_persona = str(primary_getter() or "").strip()
+            except Exception:
+                primary_persona = ""
+        profile = None
+        profile_settings = None
+        if active_persona and active_persona != primary_persona:
+            ensure_profile = getattr(self, "_ensure_persona_profile", None)
+            if callable(ensure_profile):
+                try:
+                    candidate = ensure_profile(active_persona)
+                    if isinstance(candidate, dict):
+                        settings = candidate.get(PERSONA_SETTINGS_KEY)
+                        if not isinstance(settings, dict):
+                            settings = {}
+                            candidate[PERSONA_SETTINGS_KEY] = settings
+                        profile, profile_settings = candidate, settings
+                except Exception:
+                    profile = profile_settings = None
+        previous_config = (
+            {key: _flat_get(self.config, key, _MISSING) for key in payload}
+            if profile_settings is None
+            else {}
+        )
+        previous_profile_settings = deepcopy(profile_settings) if profile_settings is not None else None
 
         def rollback() -> None:
             for key, attr in runtime_attr.items():
@@ -149,16 +196,26 @@ class WardrobeMixin:
                         pass
                 else:
                     setattr(self, attr, previous_runtime[key])
-                if previous_config[key] is _MISSING:
-                    continue
-                try:
-                    _set_into_config(self.config, key, previous_config[key])
-                except Exception:
-                    pass
+                if profile_settings is not None and previous_profile_settings is not None:
+                    profile_settings.clear()
+                    profile_settings.update(deepcopy(previous_profile_settings))
+                elif previous_config[key] is not _MISSING:
+                    try:
+                        _set_into_config(self.config, key, previous_config[key])
+                    except Exception:
+                        pass
 
         for key, value in payload.items():
             setattr(self, runtime_attr[key], value)
         try:
+            if profile_settings is not None and profile is not None:
+                profile_settings.update(payload)
+                saver = getattr(self, "_save_persona_profile_async", None)
+                if not callable(saver):
+                    rollback()
+                    return False
+                await saver(active_persona, profile)
+                return True
             saved = False
             for key, value in payload.items():
                 saved = _set_into_config(self.config, key, value) or saved
@@ -484,10 +541,14 @@ class WardrobeMixin:
         added: list[str] = []
         replaced: list[str] = []
         failures: list[str] = []
-        for path, _label in images[:limit]:
-            parsed, error = await self._wardrobe_describe_image([path], note=note, umo="")
+        for path, label in images[:limit]:
+            parsed, error = await self._wardrobe_describe_image(
+                [path],
+                note=note,
+                umo=_single_line(getattr(event, "unified_msg_origin", ""), 240),
+            )
             if parsed is None:
-                failures.append(f"{path}：{error}")
+                failures.append(f"{_single_line(label, 80) or '图片'}：{error}")
                 continue
             existing = find_wardrobe_item(items, parsed["name"])
             try:
