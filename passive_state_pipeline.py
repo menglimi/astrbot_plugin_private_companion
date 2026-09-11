@@ -397,6 +397,9 @@ async def inject_humanized_state(
         await self._append_group_persona_denoise_to_request(event, req)
         await self._append_group_high_intensity_reply_guard_to_request(event, req)
         await self._append_group_member_safety_hidden_marker_to_request(event, req)
+        wardrobe_appender = getattr(self, "_append_group_wardrobe_to_request", None)
+        if callable(wardrobe_appender):
+            await wardrobe_appender(event, req)
     else:
         await self._append_non_target_private_identity_guard_to_request(event, req)
     await self._append_daily_review_guidance_to_request(event, req)
@@ -805,6 +808,15 @@ async def inject_humanized_state(
     outfit_section = self._format_dialogue_outfit_continuity_prompt_section(current_user)
     if outfit_section.content:
         prompt_surface.add(outfit_section, priority=13)
+    wardrobe_builder = getattr(self, "_wardrobe_prompt_section", None)
+    if callable(wardrobe_builder):
+        try:
+            wardrobe_section = wardrobe_builder(current_user)
+        except Exception as exc:
+            wardrobe_section = None
+            logger.debug("角色衣柜提示词构建失败: %s", _single_line(exc, 160))
+        if wardrobe_section is not None and wardrobe_section.content:
+            prompt_surface.add(wardrobe_section, priority=13)
     routine_check_section = self._format_private_routine_check_boundary_section(inbound_text)
     routine_check_boundary = str(routine_check_section.content or "")
     if routine_check_boundary:

@@ -1320,6 +1320,7 @@ class PrivateCompanionPageApi(
             ("/photo_reference/list", self.list_photo_references, ["GET"], "Private Companion Page photo reference list"),
             ("/photo_reference/image_data", self.get_photo_reference_image_data, ["GET"], "Private Companion Page photo reference image data"),
             ("/photo_reference/upload", self.upload_photo_reference, ["POST"], "Private Companion Page upload photo reference image"),
+            ("/wardrobe/describe", self.describe_wardrobe_image, ["POST"], "Private Companion Page describe wardrobe garment image"),
             ("/photo_reference/metadata/compile", self.compile_photo_reference_metadata, ["POST"], "Compile guided photo reference metadata"),
             ("/photo_reference/metadata/review", self.review_photo_reference_metadata, ["POST"], "Review and merge guided photo reference answers"),
             ("/photo_reference/selection_trial", self.run_photo_reference_selection_trial, ["POST"], "Run side-effect-free photo reference selection trial"),
@@ -3890,6 +3891,62 @@ class PrivateCompanionPageApi(
             setattr(self.plugin, "_photo_reference_catalog_upload_guard", lock)
         async with lock:
             yield
+
+    async def describe_wardrobe_image(self) -> dict[str, Any]:
+        """Describe one garment image with the vision model for the wardrobe panel."""
+
+        payload = await request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return self._error("请求体必须是 JSON 对象")
+        describer = getattr(self.plugin, "_wardrobe_describe_image", None)
+        if not callable(describer):
+            return self._error("当前插件实例不支持衣柜识图")
+        raw_source = _path_text(payload.get("source") or payload.get("path"), 1200)
+        if not raw_source:
+            return self._error("缺少图片路径")
+        source = self._wardrobe_page_local_path(raw_source)
+        if source is None:
+            return self._error("只能描述已上传到插件目录的 PNG、JPEG 或 WebP 图片")
+        note = self._single_line(payload.get("note"), 200)
+        # 面板可以先选模型再识图，不必等保存；这里只把候选排到最前，
+        # 无效或不支持图片的 id 会被下游跳过并回退到已配置模型。
+        preferred = self._single_line(payload.get("provider_id"), 160)
+        try:
+            parsed, error = await describer(
+                [str(source)], note=note, umo="", provider_id=preferred
+            )
+        except Exception as exc:
+            logger.warning("衣柜识图接口失败: %s", self._single_line(exc, 160), exc_info=True)
+            return self._error("识图失败，请稍后再试")
+        if parsed is None:
+            return self._error(error or "识图模型没有返回可用的衣物描述")
+        return self._ok(
+            {
+                "source": str(source),
+                "name": parsed.get("name", ""),
+                "description": parsed.get("description", ""),
+                "tags": list(parsed.get("tags") or []),
+            }
+        )
+
+    def _wardrobe_page_local_path(self, value: Any) -> Path | None:
+        """Allow only images already stored in the plugin's own asset directories."""
+
+        path = Path(str(value or "")).expanduser()
+        try:
+            if not path.is_file() or path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
+                return None
+            resolved = path.resolve()
+            data_root = Path(str(getattr(self.plugin, "data_dir", "") or ".")).expanduser().resolve()
+            allowed_roots = (
+                data_root / "photo_reference_images",
+                data_root / "photo_reference_assets",
+            )
+            if not any(resolved == root or root in resolved.parents for root in allowed_roots):
+                return None
+            return resolved
+        except (OSError, ValueError):
+            return None
 
     async def upload_photo_reference(self) -> dict[str, Any]:
         content_length = request.content_length
@@ -17330,7 +17387,7 @@ class PrivateCompanionPageApi(
                 vector = await vector_getter(provider, "开心 安慰 抱抱 表情语义测试")
                 text = f"{len(vector)} 维向量" if vector else ""
                 step_name = "向量生成"
-            elif key in {"PLUGIN_VISION_PROVIDER_ID", "READING_ARCHIVE_VISION_PROVIDER_ID"}:
+            elif key in {"PLUGIN_VISION_PROVIDER_ID", "READING_ARCHIVE_VISION_PROVIDER_ID", "WARDROBE_VISION_PROVIDER_ID"}:
                 provider = self._visual_provider_for_test(provider_id)
                 supports_image = getattr(self.plugin, "_provider_supports_image", None)
                 if provider is None:
@@ -17381,7 +17438,7 @@ class PrivateCompanionPageApi(
             elapsed_ms = int((time.time() - start) * 1000)
             ok = bool(text)
             embedding_test = key in {"EMBEDDING_PROVIDER_ID", "REACTION_EXPRESSION_EMBEDDING_PROVIDER_ID"}
-            vision_test = key in {"PLUGIN_VISION_PROVIDER_ID", "READING_ARCHIVE_VISION_PROVIDER_ID"}
+            vision_test = key in {"PLUGIN_VISION_PROVIDER_ID", "READING_ARCHIVE_VISION_PROVIDER_ID", "WARDROBE_VISION_PROVIDER_ID"}
             result = {
                 "ok": ok,
                 "key": key,
@@ -23198,6 +23255,13 @@ class PrivateCompanionPageApi(
             "photo_reference_catalog",
             "photo_persona_reference_image_path",
             "photo_reference_library",
+            "enable_wardrobe",
+            "wardrobe_tendency",
+            "enable_wardrobe_prompt",
+            "wardrobe_prompt_max_items",
+            "wardrobe_image_max_count",
+            "WARDROBE_VISION_PROVIDER_ID",
+            "wardrobe_items",
             "enable_daily_outfit_photo",
             "enable_creative_cover_generation",
             "daily_outfit_photo_prompt",
@@ -25745,6 +25809,13 @@ class PrivateCompanionPageApi(
             "photo_reference_catalog": "photo_reference_catalog",
             "photo_persona_reference_image_path": "photo_persona_reference_image_path",
             "photo_reference_library": "photo_reference_library",
+            "enable_wardrobe": "enable_wardrobe",
+            "wardrobe_tendency": "wardrobe_tendency",
+            "enable_wardrobe_prompt": "enable_wardrobe_prompt",
+            "wardrobe_prompt_max_items": "wardrobe_prompt_max_items",
+            "wardrobe_image_max_count": "wardrobe_image_max_count",
+            "WARDROBE_VISION_PROVIDER_ID": "wardrobe_vision_provider_id",
+            "wardrobe_items": "wardrobe_items",
             "daily_outfit_photo_prompt": "daily_outfit_photo_prompt",
             "daily_outfit_rotation_days": "daily_outfit_rotation_days",
             "external_image_api_platform": "external_image_api_platform",
@@ -26463,6 +26534,13 @@ class PrivateCompanionPageApi(
             "enable_creative_cover_generation",
             "daily_outfit_photo_prompt",
             "daily_outfit_rotation_days",
+            "enable_wardrobe",
+            "wardrobe_tendency",
+            "enable_wardrobe_prompt",
+            "wardrobe_prompt_max_items",
+            "wardrobe_image_max_count",
+            "WARDROBE_VISION_PROVIDER_ID",
+            "wardrobe_items",
             "enable_user_requested_photo_generation",
             "allow_generate_photo_on_reaction_turns",
             "enable_natural_language_photo_generation",

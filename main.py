@@ -515,6 +515,7 @@ from .state_views import StateViewsMixin
 from .interaction_utils import InteractionUtilsMixin
 from .llm_tool_actions import LlmToolActionsMixin, PHOTO_TOOL_SILENT_SENTINEL
 from .command_handlers import CommandHandlersMixin
+from .wardrobe_runtime import WardrobeMixin
 from .tts_enhancement import TtsEnhancementMixin
 from .tts_tool_sanitizer import TtsToolSanitizerMixin
 from .reality_companion_bridge import RealityCompanionBridgeMixin
@@ -1775,6 +1776,7 @@ class PrivateCompanionPlugin(
     InteractionUtilsMixin,
     LlmToolActionsMixin,
     CommandHandlersMixin,
+    WardrobeMixin,
     TtsEnhancementMixin,
     TtsToolSanitizerMixin,
     RealityCompanionBridgeMixin,
@@ -20227,6 +20229,7 @@ class PrivateCompanionPlugin(
         companion_manual_cancel_actions = {"答疑取消", "排障取消", "诊断取消", "取消答疑建议", "取消建议"}
         companion_manual_setting_actions = {"答疑设置", "排障设置", "诊断设置", "答疑修改", "排障修改", "诊断修改"}
         daily_outfit_view_actions = {"今日穿搭图", "今日穿搭", "查看穿搭图", "查看穿搭", "穿搭图", "每日穿搭图", "每日穿搭", "当前穿搭图", "当前穿搭", "展示穿搭图"}
+        wardrobe_command_actions = {"衣柜", "衣橱", "wardrobe", "角色衣柜", "服装库"}
         daily_outfit_generate_actions = {
             "生成穿搭", "刷新穿搭", "重置穿搭",
             "生成穿搭图", "刷新穿搭图", "重置穿搭图",
@@ -20491,6 +20494,8 @@ class PrivateCompanionPlugin(
                 response, response_image_path = await self._photo_reference_command_payload(event, user_id, value)
             elif action == "参考图库":
                 response, response_image_path = await self._photo_reference_library_command_payload(event, user_id, value)
+            elif action in wardrobe_command_actions:
+                response, response_image_path = await self._wardrobe_command_payload(event, user_id, value)
             elif action in daily_outfit_view_actions:
                 response, response_image_path = self._daily_outfit_command_payload()
             elif action in image_api_status_actions:
