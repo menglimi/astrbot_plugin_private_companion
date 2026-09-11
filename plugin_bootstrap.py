@@ -43,6 +43,12 @@ from .relationship_policy import (
 )
 from .runtime_compat import probe_runtime_capabilities
 from .migration_coordinator import MigrationCoordinator
+from .wardrobe import (
+    WARDROBE_MAX_ITEMS,
+    WARDROBE_PROMPT_MAX_ITEMS,
+    normalize_wardrobe_image_prompt,
+    normalize_wardrobe_items,
+)
 from .migration_outbox import MigrationOutbox
 from .model_routing import DEFAULT_SENSITIVE_REPLACEMENT_KEYWORDS, build_rules, normalize_scope
 from .segmented_message import normalize_component_order, normalize_component_strategy
@@ -1416,6 +1422,19 @@ def _initialize_photo_and_expression_config(self: Any, c: Any) -> None:
     self.enable_creative_cover_generation = self._cfg_bool(c, "enable_creative_cover_generation", False)
     self.daily_outfit_photo_prompt = self._cfg_str(c, "daily_outfit_photo_prompt", "")
     self.daily_outfit_rotation_days = self._cfg_int(c, "daily_outfit_rotation_days", 10, 1, 30)
+    self.enable_wardrobe = self._cfg_bool(c, "enable_wardrobe", True)
+    self.wardrobe_tendency = self._cfg_str(c, "wardrobe_tendency", "")
+    wardrobe_items_raw = self._cfg_raw(c, "wardrobe_items", [])
+    self.wardrobe_items = normalize_wardrobe_items(wardrobe_items_raw)
+    self.enable_wardrobe_prompt = self._cfg_bool(c, "enable_wardrobe_prompt", True)
+    self.wardrobe_prompt_max_items = self._cfg_int(
+        c, "wardrobe_prompt_max_items", WARDROBE_PROMPT_MAX_ITEMS, 1, WARDROBE_MAX_ITEMS
+    )
+    self.wardrobe_image_max_count = self._cfg_int(c, "wardrobe_image_max_count", 3, 1, 8)
+    self.wardrobe_image_prompt = normalize_wardrobe_image_prompt(
+        self._cfg_str(c, "wardrobe_image_prompt", "")
+    )
+    self.wardrobe_vision_provider_id = self._cfg_str(c, "WARDROBE_VISION_PROVIDER_ID", "")
     self.enable_natural_language_photo_generation = self._cfg_bool(c, "enable_natural_language_photo_generation", False)
     self.natural_language_photo_generation_mode = self._cfg_str(
         c,

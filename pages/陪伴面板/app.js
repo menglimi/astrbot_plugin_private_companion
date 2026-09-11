@@ -346,6 +346,7 @@ const providerLabels = {
   FORWARD_MESSAGE_PROVIDER_ID: "合并消息转述",
   PLUGIN_VISION_PROVIDER_ID: "插件识图模型",
   READING_ARCHIVE_VISION_PROVIDER_ID: "资料归档视觉模型",
+  WARDROBE_VISION_PROVIDER_ID: "衣柜识图模型",
   REACTION_EXPRESSION_EMBEDDING_PROVIDER_ID: "表情嵌入模型覆盖",
   NEWS_PROVIDER_ID: "新闻整理",
   WEB_EXPLORATION_PROVIDER_ID: "搜索决策/整理",
@@ -1253,6 +1254,13 @@ const providerGuides = {
     fit: "必须是支持图片输入的视觉模型，最好能稳定输出 JSON，并能看懂漫画页图细节。",
     fallback: "不回退。留空或模型不可用时，不生成资料归档批注和读后感。",
   },
+  WARDROBE_VISION_PROVIDER_ID: {
+    preference: "quality",
+    passiveImpact: "async",
+    purpose: "角色衣柜专用：观察衣物图片，输出名称、描述和场景标签，写入角色衣柜。",
+    fit: "必须是支持图片输入的视觉模型，中文衣物细节描述越准越好。",
+    fallback: "留空跟随陪伴通用视觉模型；也会回退到插件识图模型候选。",
+  },
   REACTION_EXPRESSION_EMBEDDING_PROVIDER_ID: {
     preference: "speed",
     passiveImpact: "conditional",
@@ -1326,7 +1334,7 @@ const providerGroups = [
     id: "media",
     title: "视觉与外界信息",
     desc: "识图、新闻和主动搜索相关模型。",
-    keys: ["READING_ARCHIVE_VISION_PROVIDER_ID", "NEWS_PROVIDER_ID", "WEB_EXPLORATION_PROVIDER_ID"],
+    keys: ["READING_ARCHIVE_VISION_PROVIDER_ID", "WARDROBE_VISION_PROVIDER_ID", "NEWS_PROVIDER_ID", "WEB_EXPLORATION_PROVIDER_ID"],
   },
 ];
 
@@ -4755,6 +4763,16 @@ function collectSettingValue(key, input) {
   if (["segmented_proactive_split_words", "segmented_proactive_content_cleanup_words"].includes(key)) {
     return parseSegmentedWordList(input.value);
   }
+  if (key === "wardrobe_items") {
+    const raw = String(input.value || "").trim();
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (_error) {
+      return [];
+    }
+  }
   if (key === "multi_persona_ids") {
     const host = input.closest("[data-feature-param-group='multi_persona_ids']");
     return Array.from(host?.querySelectorAll("[data-multi-persona-profile]:checked") || [])
@@ -5679,6 +5697,7 @@ const tokenTaskLabels = {
   group_interject: "群聊插话",
   group_episode: "群聊片段",
   group_slang: "黑话释义",
+  wardrobe_image: "衣柜识图",
   group_slang_learning: "群黑话学习",
   group_slang_meaning: "黑话释义",
   group_question_wakeup_reply_review: "群聊答疑复核",
@@ -5945,6 +5964,12 @@ bindBookshelfCoverPreviewDismissal();
 async function hydrateDailyOutfitLogo() {
   if (window.PrivateCompanionDailyOutfit?.hydrateDailyOutfitLogo) {
     await window.PrivateCompanionDailyOutfit.hydrateDailyOutfitLogo({ state, fetchJson, document });
+  }
+}
+
+function hydrateWardrobePanel() {
+  if (window.PrivateCompanionWardrobe?.hydrateWardrobePanel) {
+    window.PrivateCompanionWardrobe.hydrateWardrobePanel({ state, postJson, document });
   }
 }
 
@@ -25106,6 +25131,7 @@ function renderModuleSettings() {
   if (newsRaw) newsRaw.value = displaySettingValue("news_sources", settings.news_sources);
   fillForm("#roleplayProfileForm", formValues);
   resizeRoleplayTextareas();
+  hydrateWardrobePanel();
   fillForm("#privateAliasForm", formValues);
   fillForm("#quickModuleForm", formValues);
   fillForm("#runtimeSettingsForm", formValues);
@@ -25718,7 +25744,12 @@ function fillForm(selector, values) {
     if (input.type === "checkbox") {
       input.checked = toBool(value);
     } else if (Array.isArray(value)) {
-      input.value = value.join("\n");
+      // Structured collections (for example the character wardrobe) must keep
+      // their object shape; joining them would collapse every row to
+      // "[object Object]" and destroy the data on the next save.
+      input.value = value.every((item) => item === null || typeof item !== "object")
+        ? value.join("\n")
+        : JSON.stringify(value);
     } else {
       input.value = displaySettingValue(input.name, value);
     }
@@ -41255,6 +41286,7 @@ document.querySelectorAll("[data-world-section]").forEach((button) => button.add
   });
   const activePanel = document.querySelector(`[data-world-panel="${sectionKey}"]`);
   if (activePanel) resizeRoleplayTextareas(activePanel);
+  if (sectionKey === "wardrobe") hydrateWardrobePanel();
   renderWorldPreview(sectionKey);
 }));
 $("#worldPreviewToggle")?.addEventListener("click", (event) => {

@@ -14339,4 +14339,87 @@
       }
     }
   }
+,
+  "wardrobe_config": {
+    "description": "角色衣柜",
+    "type": "object",
+    "hint": "为角色定义整体服饰倾向与具体衣物。衣物可手工添加，也可发送图片由视觉模型描述后加入衣柜。",
+    "items": {
+      "enable_wardrobe": {
+        "description": "启用角色衣柜",
+        "type": "bool",
+        "hint": "开启后角色会按衣柜里的服饰倾向与具体衣物保持穿着与形象一致。",
+        "default": true
+      },
+      "wardrobe_tendency": {
+        "description": "整体服饰倾向",
+        "type": "text",
+        "hint": "描述角色整体怎么穿，例如：偏爱宽松针织与低饱和色，居家穿棉质家居服，冬天常套一件长大衣。留空则不注入。",
+        "default": ""
+      },
+      "enable_wardrobe_prompt": {
+        "description": "把衣柜写入角色提示词",
+        "type": "bool",
+        "hint": "开启后衣柜内容会作为角色资料注入对话，让角色知道自己有什么衣服。",
+        "default": true,
+        "condition": {
+          "enable_wardrobe": true
+        }
+      },
+      "wardrobe_prompt_max_items": {
+        "description": "注入提示词的衣物条数上限",
+        "type": "int",
+        "hint": "衣柜较长时只注入前若干件，避免占用过多上下文。",
+        "default": 12,
+        "slider": {
+          "min": 1,
+          "max": 40,
+          "step": 1
+        },
+        "condition": {
+          "enable_wardrobe": true,
+          "enable_wardrobe_prompt": true
+        }
+      },
+      "wardrobe_image_max_count": {
+        "description": "单次识图添加上限",
+        "type": "int",
+        "hint": "一次发送多张图片时，最多描述几张并加入衣柜。",
+        "default": 3,
+        "slider": {
+          "min": 1,
+          "max": 8,
+          "step": 1
+        },
+        "condition": {
+          "enable_wardrobe": true
+        }
+      },
+      "wardrobe_image_prompt": {
+        "description": "衣柜识图描述提示词",
+        "type": "text",
+        "hint": "留空使用内置提示词。自定义时建议保留「名称／描述／标签」三行格式，面板会自动回填这三项；不按该格式输出时，整段文字会作为衣物描述。",
+        "default": "",
+        "condition": {
+          "enable_wardrobe": true
+        }
+      },
+      "WARDROBE_VISION_PROVIDER_ID": {
+        "description": "衣柜识图模型",
+        "type": "string",
+        "_special": "select_provider",
+        "hint": "用于把衣物图片描述成文字的视觉模型。可在角色页的衣柜里直接选择或手动填写；留空则跟随陪伴的通用视觉模型。",
+        "default": "",
+        "condition": {
+          "enable_wardrobe": true
+        }
+      },
+      "wardrobe_items": {
+        "description": "具体衣物条目（由命令或面板维护）",
+        "type": "list",
+        "default": [],
+        "invisible": true
+      }
+    }
+  }
 }

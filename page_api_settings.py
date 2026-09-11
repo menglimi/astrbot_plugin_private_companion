@@ -27,6 +27,13 @@ from .relationship_policy import (
 )
 from .segmented_message import normalize_component_order
 from .model_routing import normalize_rule_configs, normalize_scope
+from .wardrobe import (
+    WARDROBE_MAX_ITEMS,
+    WARDROBE_PROMPT_MAX_ITEMS,
+    normalize_wardrobe_image_prompt,
+    normalize_wardrobe_items,
+    normalize_wardrobe_tendency,
+)
 
 _SETTING_UNHANDLED = object()
 
@@ -538,6 +545,20 @@ class PageSettingNormalizerMixin:
             return normalize_bot_relationship_cards(value)
         if key == "photo_reference_library":
             return self._normalize_photo_reference_library(value)
+        if key == "wardrobe_items":
+            return self._normalize_wardrobe_items(value)
+        if key == "wardrobe_tendency":
+            return normalize_wardrobe_tendency(value)
+        if key == "wardrobe_image_prompt":
+            return normalize_wardrobe_image_prompt(value)
+        if key == "wardrobe_prompt_max_items":
+            return self._normalize_wardrobe_int(value, WARDROBE_PROMPT_MAX_ITEMS, 1, WARDROBE_MAX_ITEMS)
+        if key == "wardrobe_image_max_count":
+            return self._normalize_wardrobe_int(value, 3, 1, 8)
+        if key in {"enable_wardrobe", "enable_wardrobe_prompt"}:
+            return self._normalize_bool_value(value)
+        if key == "WARDROBE_VISION_PROVIDER_ID":
+            return str(value or "").strip()[:160]
         if key == "external_image_api_endpoints":
             normalizer = getattr(self.plugin, "_normalize_external_image_api_endpoints", None)
             return normalizer(value) if callable(normalizer) else (value if isinstance(value, list) else [])
@@ -585,6 +606,29 @@ class PageSettingNormalizerMixin:
             mode = aliases.get(mode, mode)
             return mode if mode in {"auto", "openai", "openrouter", "agnes", "sensenova", "bailian", "modelscope", "doubao", "gemini", "minimax"} else "auto"
         return _SETTING_UNHANDLED
+
+    def _normalize_wardrobe_int(self, value: Any, default: int, minimum: int, maximum: int) -> int:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return default
+        return max(minimum, min(maximum, number))
+
+    def _normalize_wardrobe_items(self, value: Any) -> list[dict[str, Any]]:
+        """Accept a JSON string or a real list and return normalized wardrobe rows."""
+
+        raw_items = value
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            try:
+                raw_items = json.loads(text)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return []
+        if not isinstance(raw_items, list):
+            return []
+        return normalize_wardrobe_items(raw_items)
 
     def _normalize_photo_reference_library(self, value: Any) -> list[dict[str, Any]]:
         if isinstance(value, list):
