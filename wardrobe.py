@@ -28,7 +28,6 @@ from __future__ import annotations
 import re
 import json
 import time
-import uuid
 import hashlib
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import date
@@ -1022,8 +1021,11 @@ def normalize_wardrobe_outfit(
         name = clean_wardrobe_text(style, 12) or "未命名整套"
     timestamp = float(now if now is not None else time.time())
     created_at = _safe_timestamp(raw.get("created_at"), timestamp)
+    stable_id = hashlib.sha256(
+        f"{name}\u0000{kind}\u0000{style}\u0000{'|'.join(items)}".encode("utf-8")
+    ).hexdigest()[:12]
     return {
-        "id": clean_wardrobe_text(raw.get("id"), 80) or fallback_id or f"outfit_{uuid.uuid4().hex[:12]}",
+        "id": clean_wardrobe_text(raw.get("id"), 80) or fallback_id or f"outfit_{stable_id}",
         "name": name,
         "kind": kind,
         "style": style,

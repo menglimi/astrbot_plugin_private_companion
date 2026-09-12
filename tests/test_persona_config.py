@@ -30,7 +30,7 @@ class PersonaConfigTests(unittest.TestCase):
         cls.manifest = build_scope_manifest(cls.schema)
 
     def test_manifest_covers_every_canonical_grouped_leaf(self) -> None:
-        self.assertEqual(7, PERSONA_SETTINGS_SCHEMA_VERSION)
+        self.assertEqual(8, PERSONA_SETTINGS_SCHEMA_VERSION)
         leaves = discover_grouped_schema_leaves(self.schema)
         self.assertGreater(len(leaves), 900)
         self.assertEqual(set(leaves), set(self.manifest))
@@ -303,6 +303,13 @@ class PersonaConfigTests(unittest.TestCase):
                     self.manifest["wardrobe_items"]["new_key_default"]
                 ),
                 "wardrobe_image_prompt": "",
+                "wardrobe_outfit_mode": "select",
+                "wardrobe_outfit_rotation_days": 7,
+                "enable_wardrobe_outfit_generate": False,
+                "WARDROBE_OUTFIT_PROVIDER_ID": "",
+                "wardrobe_outfits": copy.deepcopy(
+                    self.manifest["wardrobe_outfits"]["new_key_default"]
+                ),
             },
         )
         self.assertEqual(
@@ -438,6 +445,13 @@ class PersonaConfigTests(unittest.TestCase):
                     self.manifest["wardrobe_items"]["new_key_default"]
                 ),
                 "wardrobe_image_prompt": "",
+                "wardrobe_outfit_mode": "select",
+                "wardrobe_outfit_rotation_days": 7,
+                "enable_wardrobe_outfit_generate": False,
+                "WARDROBE_OUTFIT_PROVIDER_ID": "",
+                "wardrobe_outfits": copy.deepcopy(
+                    self.manifest["wardrobe_outfits"]["new_key_default"]
+                ),
             },
         )
         self.assertEqual(

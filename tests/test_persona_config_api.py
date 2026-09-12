@@ -414,6 +414,11 @@ def test_existing_sparse_profile_is_repaired_without_materializing_old_keys():
             "WARDROBE_VISION_PROVIDER_ID": "",
             "wardrobe_items": load_scope_manifest()["wardrobe_items"]["new_key_default"],
             "wardrobe_image_prompt": "",
+            "wardrobe_outfit_mode": "select",
+            "wardrobe_outfit_rotation_days": 7,
+            "enable_wardrobe_outfit_generate": False,
+            "WARDROBE_OUTFIT_PROVIDER_ID": "",
+            "wardrobe_outfits": load_scope_manifest()["wardrobe_outfits"]["new_key_default"],
         }
         assert "quiet_hours" not in profile["persona_settings"]
 

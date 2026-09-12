@@ -48,6 +48,7 @@ from .wardrobe import (
     WARDROBE_PROMPT_MAX_ITEMS,
     normalize_wardrobe_image_prompt,
     normalize_wardrobe_items,
+    normalize_wardrobe_outfits,
 )
 from .migration_outbox import MigrationOutbox
 from .model_routing import DEFAULT_SENSITIVE_REPLACEMENT_KEYWORDS, build_rules, normalize_scope
@@ -1441,6 +1442,17 @@ def _initialize_photo_and_expression_config(self: Any, c: Any) -> None:
         self._cfg_str(c, "wardrobe_image_prompt", "")
     )
     self.wardrobe_vision_provider_id = self._cfg_str(c, "WARDROBE_VISION_PROVIDER_ID", "")
+    self.wardrobe_outfit_mode = self._cfg_str(c, "wardrobe_outfit_mode", "select").strip().lower()
+    if self.wardrobe_outfit_mode not in {"inventory", "select"}:
+        self.wardrobe_outfit_mode = "select"
+    self.wardrobe_outfit_rotation_days = self._cfg_int(c, "wardrobe_outfit_rotation_days", 7, 1, 30)
+    self.enable_wardrobe_outfit_generate = self._cfg_bool(
+        c, "enable_wardrobe_outfit_generate", False
+    )
+    self.wardrobe_outfit_provider_id = self._cfg_str(c, "WARDROBE_OUTFIT_PROVIDER_ID", "")
+    self.wardrobe_outfits = normalize_wardrobe_outfits(
+        self._cfg_raw(c, "wardrobe_outfits", [])
+    )
     self.enable_natural_language_photo_generation = self._cfg_bool(c, "enable_natural_language_photo_generation", False)
     self.natural_language_photo_generation_mode = self._cfg_str(
         c,

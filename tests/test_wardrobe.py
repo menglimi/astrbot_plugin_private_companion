@@ -670,6 +670,11 @@ class WardrobeConfigTests(unittest.TestCase):
             "wardrobe_image_prompt",
             "WARDROBE_VISION_PROVIDER_ID",
             "wardrobe_items",
+            "wardrobe_outfit_mode",
+            "wardrobe_outfit_rotation_days",
+            "enable_wardrobe_outfit_generate",
+            "WARDROBE_OUTFIT_PROVIDER_ID",
+            "wardrobe_outfits",
         ):
             self.assertIn(key, items)
         self.assertTrue(items["wardrobe_items"]["default"], "预设衣柜不该为空")
@@ -685,6 +690,11 @@ class WardrobeConfigTests(unittest.TestCase):
             "wardrobe_image_prompt",
             "WARDROBE_VISION_PROVIDER_ID",
             "wardrobe_items",
+            "wardrobe_outfit_mode",
+            "wardrobe_outfit_rotation_days",
+            "enable_wardrobe_outfit_generate",
+            "WARDROBE_OUTFIT_PROVIDER_ID",
+            "wardrobe_outfits",
         ):
             entry = self.manifest[key]
             self.assertEqual("persona", entry["scope"], key)
@@ -692,7 +702,7 @@ class WardrobeConfigTests(unittest.TestCase):
             self.assertTrue(entry["cloneable"], key)
 
     def test_current_persona_version_materializes_wardrobe_keys(self) -> None:
-        self.assertEqual(7, PERSONA_SETTINGS_SCHEMA_VERSION)
+        self.assertEqual(8, PERSONA_SETTINGS_SCHEMA_VERSION)
         migrated = migrate_persona_profile(
             {"persona_settings": {}, "persona_settings_schema_version": 5},
             manifest=self.manifest,
@@ -704,6 +714,11 @@ class WardrobeConfigTests(unittest.TestCase):
             self.manifest["wardrobe_items"]["new_key_default"], settings["wardrobe_items"]
         )
         self.assertEqual("", settings["wardrobe_image_prompt"])
+        self.assertEqual("select", settings["wardrobe_outfit_mode"])
+        self.assertEqual(7, settings["wardrobe_outfit_rotation_days"])
+        self.assertFalse(settings["enable_wardrobe_outfit_generate"])
+        self.assertEqual("", settings["WARDROBE_OUTFIT_PROVIDER_ID"])
+        self.assertEqual(self.manifest["wardrobe_outfits"]["new_key_default"], settings["wardrobe_outfits"])
 
     def test_existing_wardrobe_values_survive_migration(self) -> None:
         migrated = migrate_persona_profile(
@@ -731,8 +746,20 @@ class WardrobeConfigTests(unittest.TestCase):
             "wardrobe_image_max_count",
             "WARDROBE_VISION_PROVIDER_ID",
             "wardrobe_items",
+            "wardrobe_outfit_mode",
+            "wardrobe_outfit_rotation_days",
+            "enable_wardrobe_outfit_generate",
+            "WARDROBE_OUTFIT_PROVIDER_ID",
+            "wardrobe_outfits",
         ):
-            self.assertGreaterEqual(source.count(f'"{key}"'), 3, key)
+            minimum = 1 if key in {
+                "wardrobe_outfit_mode",
+                "wardrobe_outfit_rotation_days",
+                "enable_wardrobe_outfit_generate",
+                "WARDROBE_OUTFIT_PROVIDER_ID",
+                "wardrobe_outfits",
+            } else 3
+            self.assertGreaterEqual(source.count(f'"{key}"'), minimum, key)
 
     def test_bootstrap_reads_wardrobe_config(self) -> None:
         source = (ROOT / "plugin_bootstrap.py").read_text(encoding="utf-8")
@@ -745,6 +772,11 @@ class WardrobeConfigTests(unittest.TestCase):
             "self.wardrobe_image_max_count",
             "self.wardrobe_image_prompt",
             "self.wardrobe_vision_provider_id",
+            "self.wardrobe_outfit_mode",
+            "self.wardrobe_outfit_rotation_days",
+            "self.enable_wardrobe_outfit_generate",
+            "self.wardrobe_outfit_provider_id",
+            "self.wardrobe_outfits",
         ):
             self.assertIn(attr, source, attr)
 
@@ -1963,6 +1995,15 @@ class WardrobeOutfitSelectionTests(unittest.TestCase):
             [p["id"] for p in first["picked"]], [p["id"] for p in second["picked"]]
         )
 
+    def test_outfits_without_ids_still_pick_a_stable_outfit(self) -> None:
+        raw = [
+            {"name": "通勤", "kind": "style", "style": "利落"},
+            {"name": "居家", "kind": "style", "style": "舒适"},
+        ]
+        first = select_wardrobe_outfit([], raw, seed="2026-09-12")
+        second = select_wardrobe_outfit([], raw, seed="2026-09-12")
+        self.assertEqual(first, second)
+
     def test_a_new_day_can_produce_a_different_look(self) -> None:
         # 有整套 outfit 时它每天都命中，look_id 恒定；这里只验证散件兜底会随天变化。
         items, _ = _wardrobe_fixture()
@@ -2039,6 +2080,18 @@ class WardrobeOutfitGeneratorTests(unittest.TestCase):
         self.assertIn("最近穿过", request)
         self.assertIn("每个部位最多选一件", request)
         self.assertIn('"summary"', request)
+
+    def test_generation_cache_key_tracks_persona_and_wardrobe_content(self) -> None:
+        plugin = _WardrobeCommandHarness()
+        plugin.config["wardrobe_items"] = [{"name": "开衫", "description": "米色"}]
+        plugin._active_persona_scope = lambda: "persona-a"
+        first = plugin._wardrobe_outfit_cache_key()
+        plugin.config["wardrobe_items"] = [{"name": "开衫", "description": "黑色"}]
+        changed = plugin._wardrobe_outfit_cache_key()
+        plugin._active_persona_scope = lambda: "persona-b"
+        other_persona = plugin._wardrobe_outfit_cache_key()
+        self.assertNotEqual(first, changed)
+        self.assertNotEqual(changed, other_persona)
 
     def test_request_passes_the_occasion_as_context_only(self) -> None:
         # 场合写给生成器看，但衣柜清单不做任何剔除：泳衣与内衣在每个场合都在。

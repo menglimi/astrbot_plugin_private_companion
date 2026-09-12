@@ -645,6 +645,22 @@
                 </div>
               </details>
               <div class="roleplay-standard">
+                <label>着装注入方式
+                  <select name="wardrobe_outfit_mode">
+                    <option value="select">只注入当天裁决出的那一套</option>
+                    <option value="inventory">注入整份衣柜清单</option>
+                  </select>
+                </label>
+                <label>着装轮换冷却天数
+                  <input type="number" name="wardrobe_outfit_rotation_days" min="1" max="30" step="1" />
+                </label>
+                <label class="checkbox-label">
+                  <input type="checkbox" name="enable_wardrobe_outfit_generate" />
+                  用模型生成着装搭配
+                </label>
+                <label>着装搭配生成模型
+                  <input type="text" name="WARDROBE_OUTFIT_PROVIDER_ID" maxlength="160" placeholder="留空跟随插件默认模型" />
+                </label>
                 <label>注入提示词的衣物条数上限
                   <input type="number" name="wardrobe_prompt_max_items" min="1" max="40" step="1" />
                 </label>

@@ -44,6 +44,8 @@ window.PrivateCompanionWardrobe = (() => {
     const description = cleanText(raw.description ?? raw.note, MAX_DESCRIPTION);
     if (!name && !description) return null;
     const source = cleanText(raw.source ?? raw.path, 1200);
+    const slot = cleanText(raw.slot ?? raw.category ?? raw.part, 20);
+    const precision = cleanText(raw.precision, 12) || "exact";
     return {
       id: cleanText(raw.id, 80) || randomId(),
       name: name || description.slice(0, 12) || "未命名衣物",
@@ -51,6 +53,9 @@ window.PrivateCompanionWardrobe = (() => {
       tags: cleanTags(raw.tags),
       source,
       source_kind: cleanText(raw.source_kind, 20) || (source ? "image" : "manual"),
+      slot,
+      intimate: raw.intimate === true || raw.intimate === "true" || raw.intimate === 1,
+      precision: ["exact", "loose"].includes(precision) ? precision : "exact",
     };
   }
 
@@ -383,6 +388,11 @@ window.PrivateCompanionWardrobe = (() => {
       source: cleanText(extra.source ?? (existingIndex >= 0 ? items[existingIndex].source : ""), 1200),
       source_kind: cleanText(extra.source_kind, 20)
         || (extra.source ? "image" : (existingIndex >= 0 ? items[existingIndex].source_kind : "manual")),
+      slot: cleanText(extra.slot ?? (existingIndex >= 0 ? items[existingIndex].slot : ""), 20),
+      intimate: extra.intimate ?? (existingIndex >= 0 ? items[existingIndex].intimate : false),
+      precision: ["exact", "loose"].includes(extra.precision ?? (existingIndex >= 0 ? items[existingIndex].precision : "exact"))
+        ? (extra.precision ?? (existingIndex >= 0 ? items[existingIndex].precision : "exact"))
+        : "exact",
     };
     if (existingIndex >= 0) items.splice(existingIndex, 1, payload);
     else {

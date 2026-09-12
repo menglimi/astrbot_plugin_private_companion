@@ -32,6 +32,7 @@ from .wardrobe import (
     WARDROBE_PROMPT_MAX_ITEMS,
     normalize_wardrobe_image_prompt,
     normalize_wardrobe_items,
+    normalize_wardrobe_outfits,
     normalize_wardrobe_tendency,
 )
 
@@ -552,6 +553,12 @@ class PageSettingNormalizerMixin:
             return self._normalize_photo_reference_library(value)
         if key == "wardrobe_items":
             return self._normalize_wardrobe_items(value)
+        if key == "wardrobe_outfits":
+            return normalize_wardrobe_outfits(value)
+        if key == "wardrobe_outfit_mode":
+            return "select" if str(value or "").strip().casefold() == "select" else "inventory"
+        if key == "wardrobe_outfit_rotation_days":
+            return self._normalize_wardrobe_int(value, 7, 1, 30)
         if key == "wardrobe_tendency":
             return normalize_wardrobe_tendency(value)
         if key == "wardrobe_image_prompt":
@@ -560,9 +567,9 @@ class PageSettingNormalizerMixin:
             return self._normalize_wardrobe_int(value, WARDROBE_PROMPT_MAX_ITEMS, 1, WARDROBE_MAX_ITEMS)
         if key == "wardrobe_image_max_count":
             return self._normalize_wardrobe_int(value, 3, 1, 8)
-        if key in {"enable_wardrobe", "enable_wardrobe_prompt"}:
+        if key in {"enable_wardrobe", "enable_wardrobe_prompt", "enable_wardrobe_outfit_generate"}:
             return self._normalize_bool_value(value)
-        if key == "WARDROBE_VISION_PROVIDER_ID":
+        if key in {"WARDROBE_VISION_PROVIDER_ID", "WARDROBE_OUTFIT_PROVIDER_ID"}:
             return str(value or "").strip()[:160]
         if key == "external_image_api_endpoints":
             normalizer = getattr(self.plugin, "_normalize_external_image_api_endpoints", None)
