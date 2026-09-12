@@ -198,6 +198,7 @@ class WardrobeMixin:
             self._wardrobe_outfits(),
             scene=self._wardrobe_current_scene(),
             seed=seed,
+            rotation_days=self._wardrobe_outfit_rotation_days(),
         )
 
     # ------------------------------------------------------------------
@@ -519,7 +520,11 @@ class WardrobeMixin:
         clean_seed = _single_line(seed, 60) or _today_key()
 
         selection = select_wardrobe_outfit(
-            items, outfits, scene=clean_scene, seed=clean_seed
+            items,
+            outfits,
+            scene=clean_scene,
+            seed=clean_seed,
+            rotation_days=self._wardrobe_outfit_rotation_days(),
         )
         generated = self._wardrobe_cached_generated_outfit()
         generated_view: dict[str, Any] | None = None

@@ -31,6 +31,7 @@ import time
 import uuid
 import hashlib
 from collections.abc import Collection, Iterable, Mapping, Sequence
+from datetime import date
 from typing import Any
 
 WARDROBE_VERSION = 1
@@ -45,7 +46,9 @@ WARDROBE_MAX_SOURCE = 1200
 WARDROBE_MAX_NOTE = 200
 
 # 渲染进提示词时的预算。衣柜可以很长，但角色提示词必须保持紧凑。
-WARDROBE_PROMPT_MAX_ITEMS = 12
+# 与 _conf_schema.json 的 wardrobe_prompt_max_items 默认值保持一致：
+# 内置预设衣柜 19 件，上限低于它就会永远列不全。
+WARDROBE_PROMPT_MAX_ITEMS = 20
 WARDROBE_PROMPT_MAX_CHARS = 900
 
 SOURCE_KIND_MANUAL = "manual"
@@ -1262,6 +1265,61 @@ def _stable_index(seed: str, size: int) -> int:
     return int(digest[:12], 16) % size
 
 
+def _seed_day_ordinal(seed: str) -> int | None:
+    """Day ordinal when the seed starts with an ISO date, else ``None``."""
+
+    head = str(seed or "")[:10]
+    if len(head) != 10 or head[4] != "-" or head[7] != "-":
+        return None
+    try:
+        return date(int(head[:4]), int(head[5:7]), int(head[8:10])).toordinal()
+    except ValueError:
+        return None
+
+
+def _window_order(salt: str, index: int, size: int) -> list[int]:
+    """Stable shuffled order for one rotation window."""
+
+    return sorted(
+        range(size),
+        key=lambda slot: hashlib.sha256(f"{salt}|{index}|{slot}".encode("utf-8")).hexdigest(),
+    )
+
+
+def _rotation_index(seed: str, size: int, rotation_days: Any) -> int:
+    """Pick a slot in a rotating wardrobe without repeating on two days running.
+
+    Windows are aligned to natural weeks, so the default ``rotation_days=7``
+    means "wear every outfit once per week".  ``rotation_days`` <= 1 — or a seed
+    that carries no date — falls back to plain per-seed hashing, which keeps
+    callers that pass no window (and the panel's hand-typed seeds) working as before.
+    """
+
+    if size <= 1:
+        return 0
+    text = str(seed or "")
+    try:
+        window = max(1, int(rotation_days))
+    except (TypeError, ValueError):
+        window = 1
+    day = _seed_day_ordinal(text) if window > 1 else None
+    if day is None:
+        return _stable_index(text, size)
+    # 日期只用来决定「第几个窗口、窗口里第几天」，洗牌顺序只看窗口号 ——
+    # 否则每天都重新洗牌，等于每天随机抽一套。
+    index, offset = divmod(day - 1, window)
+    offset %= size
+    salt = text[10:]
+    order = _window_order(salt, index, size)
+    # 整个窗口共用一份（可能微调过的）顺序：只在窗口第一天做对调的话，
+    # 第二天仍用未对调的序列，反而会和第一天撞衫。
+    previous = _window_order(salt, index - 1, size)
+    if order[0] == previous[(window - 1) % size]:
+        # 换窗口的第一天撞上昨天那套：和下一个位置对调，衔接处也不重复。
+        order[0], order[1] = order[1], order[0]
+    return order[offset]
+
+
 def _pick_for_slot(
     candidates: Sequence[Mapping[str, Any]],
     *,
@@ -1317,13 +1375,14 @@ def select_wardrobe_outfit(
     scene: Any = "",
     seed: str = "",
     recent_ids: Collection[str] | None = None,
+    rotation_days: Any = 0,
 ) -> dict[str, Any]:
     """Compose one outfit **without calling a model**.
 
     Resolution order (design doc 5.4 / 6.5):
 
-    1. bundle 整套命中 -> 用它的组成；
-    2. style  整套命中 -> 用它的风格描述；
+    1. bundle 整套命中 -> 用它的组成（多套之间按 rotation_days 窗口轮换）；
+    2. style  整套命中 -> 用它的风格描述（同样轮换）；
     3. 散件兜底        -> 每个部位取一件。
 
     The result is always internally coherent because at most one item is taken
@@ -1373,7 +1432,9 @@ def select_wardrobe_outfit(
 
     ordered_outfits = sorted(normalized_outfits, key=lambda row: str(row.get("id") or ""))
 
-    # 1) bundle 整套优先：它是用户明确拼好的那一套。
+    # 1) bundle 整套优先：它是用户明确拼好的那一套。候选可能不止一套，按种子轮换
+    #    挑选 —— 否则排序最靠前的那套会永远霸占衣柜，其余整套等于不存在。
+    bundles: list[tuple[Mapping[str, Any], list[Mapping[str, Any]]]] = []
     for outfit in ordered_outfits:
         if outfit.get("kind") != OUTFIT_KIND_BUNDLE:
             continue
@@ -1381,9 +1442,13 @@ def select_wardrobe_outfit(
         if not picked:
             # 引用的散件都被删了 —— 跳过，继续找下一套，别返回空壳。
             continue
-        result = _compose("bundle", picked, str(outfit.get("style") or ""))
-        result["look_id"] = f"bundle-{outfit['id']}"
-        result["outfit_name"] = str(outfit.get("name") or "")
+        bundles.append((outfit, picked))
+    if bundles:
+        slot = _rotation_index(f"{base_seed}|bundle", len(bundles), rotation_days)
+        chosen, picked = bundles[slot]
+        result = _compose("bundle", picked, str(chosen.get("style") or ""))
+        result["look_id"] = f"bundle-{chosen['id']}"
+        result["outfit_name"] = str(chosen.get("name") or "")
         return result
 
     # 2) style 整套：只有描述，留给模型发挥。
@@ -1394,7 +1459,7 @@ def select_wardrobe_outfit(
         and str(outfit.get("style") or "").strip()
     ]
     if styles:
-        chosen = styles[_stable_index(base_seed, len(styles))]
+        chosen = styles[_rotation_index(f"{base_seed}|style", len(styles), rotation_days)]
         result = _compose("style", [], str(chosen.get("style") or ""))
         result["look_id"] = f"style-{chosen['id']}"
         result["outfit_name"] = str(chosen.get("name") or "")

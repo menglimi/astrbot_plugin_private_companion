@@ -296,10 +296,12 @@ class PersonaConfigTests(unittest.TestCase):
                 "enable_wardrobe": True,
                 "wardrobe_tendency": "",
                 "enable_wardrobe_prompt": True,
-                "wardrobe_prompt_max_items": 12,
+                "wardrobe_prompt_max_items": 20,
                 "wardrobe_image_max_count": 3,
                 "WARDROBE_VISION_PROVIDER_ID": "",
-                "wardrobe_items": [],
+                "wardrobe_items": copy.deepcopy(
+                    self.manifest["wardrobe_items"]["new_key_default"]
+                ),
                 "wardrobe_image_prompt": "",
             },
         )
@@ -429,10 +431,12 @@ class PersonaConfigTests(unittest.TestCase):
                 "enable_wardrobe": True,
                 "wardrobe_tendency": "",
                 "enable_wardrobe_prompt": True,
-                "wardrobe_prompt_max_items": 12,
+                "wardrobe_prompt_max_items": 20,
                 "wardrobe_image_max_count": 3,
                 "WARDROBE_VISION_PROVIDER_ID": "",
-                "wardrobe_items": [],
+                "wardrobe_items": copy.deepcopy(
+                    self.manifest["wardrobe_items"]["new_key_default"]
+                ),
                 "wardrobe_image_prompt": "",
             },
         )

@@ -14369,8 +14369,8 @@
       "wardrobe_prompt_max_items": {
         "description": "注入提示词的衣物条数上限",
         "type": "int",
-        "hint": "衣柜较长时只注入前若干件，避免占用过多上下文。",
-        "default": 12,
+        "hint": "衣柜较长时只注入前若干件，避免占用过多上下文；内置预设衣柜 19 件，20 可完整列出。",
+        "default": 20,
         "slider": {
           "min": 1,
           "max": 40,
@@ -14419,8 +14419,8 @@
         "type": "string",
         "options": ["inventory", "select"],
         "labels": ["注入整份衣柜清单", "只注入当天裁决出的那一套"],
-        "hint": "inventory：把整份衣柜清单注入提示词（原有行为）。select：每天按场景与天气裁决出一套，只注入这一套——更省上下文，也更像真的在换衣服。",
-        "default": "inventory",
+        "hint": "inventory：把整份衣柜清单注入提示词。select：每天裁决出一套只注入这一套，更省上下文，也更像真的在换衣服；内置七套预设整套，开箱即用。",
+        "default": "select",
         "condition": {
           "enable_wardrobe": true,
           "enable_wardrobe_prompt": true
@@ -14429,7 +14429,7 @@
       "wardrobe_outfit_rotation_days": {
         "description": "着装轮换冷却天数",
         "type": "int",
-        "hint": "散件兜底裁决时避开最近这么多天内穿过的衣物。整套（bundle）命中时不受影响。",
+        "hint": "整套轮换窗口：同一窗口内不会重复穿同一套，跨窗口重新洗牌。默认 7 天，正好把预设的七套各穿一遍。",
         "default": 7,
         "slider": {
           "min": 1,
@@ -14467,13 +14467,304 @@
       "wardrobe_items": {
         "description": "具体衣物条目（由命令或面板维护）",
         "type": "list",
-        "default": [],
+        "default": [
+          {
+            "id": "w_preset_tee_white",
+            "name": "白色纯棉T恤",
+            "description": "基础圆领，版型合身",
+            "slot": "upper",
+            "tags": [
+              "日常",
+              "夏季",
+              "百搭"
+            ]
+          },
+          {
+            "id": "w_preset_shirt_blue",
+            "name": "浅蓝条纹衬衫",
+            "description": "棉质，袖口可挽起",
+            "slot": "upper",
+            "tags": [
+              "通勤",
+              "春秋",
+              "利落"
+            ]
+          },
+          {
+            "id": "w_preset_knit_beige",
+            "name": "米色针织开衫",
+            "description": "宽松版型，柔软亲肤",
+            "slot": "upper",
+            "tags": [
+              "居家",
+              "春秋",
+              "温柔"
+            ]
+          },
+          {
+            "id": "w_preset_hoodie_grey",
+            "name": "浅灰连帽卫衣",
+            "description": "宽松落肩，抓绒内里",
+            "slot": "upper",
+            "tags": [
+              "休闲",
+              "秋冬",
+              "运动"
+            ]
+          },
+          {
+            "id": "w_preset_swim_top",
+            "name": "分体泳衣上装",
+            "description": "运动款，速干面料",
+            "slot": "upper",
+            "tags": [
+              "泳池",
+              "夏季"
+            ]
+          },
+          {
+            "id": "w_preset_jeans",
+            "name": "深蓝直筒牛仔裤",
+            "description": "经典款，微弹面料",
+            "slot": "lower",
+            "tags": [
+              "日常",
+              "四季",
+              "耐穿"
+            ]
+          },
+          {
+            "id": "w_preset_slacks",
+            "name": "深灰直筒长裤",
+            "description": "垂坠感好，不易皱",
+            "slot": "lower",
+            "tags": [
+              "通勤",
+              "四季",
+              "利落"
+            ]
+          },
+          {
+            "id": "w_preset_shorts",
+            "name": "浅色棉质短裤",
+            "description": "宽松，居家外穿都合适",
+            "slot": "lower",
+            "tags": [
+              "居家",
+              "夏季"
+            ]
+          },
+          {
+            "id": "w_preset_leggings",
+            "name": "黑色运动紧身裤",
+            "description": "高弹速干",
+            "slot": "lower",
+            "tags": [
+              "运动",
+              "四季"
+            ]
+          },
+          {
+            "id": "w_preset_swim_bottom",
+            "name": "分体泳衣下装",
+            "description": "运动款，速干面料",
+            "slot": "lower",
+            "tags": [
+              "泳池",
+              "夏季"
+            ]
+          },
+          {
+            "id": "w_preset_dress",
+            "name": "碎花连衣裙",
+            "description": "小碎花，收腰，及膝",
+            "slot": "whole",
+            "tags": [
+              "外出",
+              "春夏",
+              "温柔"
+            ]
+          },
+          {
+            "id": "w_preset_nightgown",
+            "name": "棉质睡裙",
+            "description": "宽松及膝，亲肤",
+            "slot": "whole",
+            "tags": [
+              "居家",
+              "睡前",
+              "夏季"
+            ]
+          },
+          {
+            "id": "w_preset_sneakers",
+            "name": "白色帆布鞋",
+            "description": "低帮，百搭",
+            "slot": "feet",
+            "tags": [
+              "日常",
+              "四季"
+            ]
+          },
+          {
+            "id": "w_preset_slippers",
+            "name": "棉质居家拖鞋",
+            "description": "软底静音",
+            "slot": "feet",
+            "tags": [
+              "居家",
+              "四季"
+            ]
+          },
+          {
+            "id": "w_preset_loafers",
+            "name": "黑色乐福鞋",
+            "description": "皮质，正式",
+            "slot": "feet",
+            "tags": [
+              "通勤",
+              "四季"
+            ]
+          },
+          {
+            "id": "w_preset_glasses",
+            "name": "细框眼镜",
+            "description": "轻量，日常佩戴",
+            "slot": "extra",
+            "tags": [
+              "日常",
+              "四季"
+            ]
+          },
+          {
+            "id": "w_preset_scarf",
+            "name": "米色羊毛围巾",
+            "description": "柔软保暖",
+            "slot": "extra",
+            "tags": [
+              "秋冬",
+              "外出"
+            ]
+          },
+          {
+            "id": "w_preset_bra",
+            "name": "白色棉质内衣",
+            "description": "无钢圈，舒适",
+            "slot": "upper",
+            "intimate": true,
+            "tags": [
+              "四季"
+            ]
+          },
+          {
+            "id": "w_preset_underpants",
+            "name": "白色棉质内裤",
+            "description": "纯棉中腰",
+            "slot": "lower",
+            "intimate": true,
+            "tags": [
+              "四季"
+            ]
+          }
+        ],
         "invisible": true
       },
       "wardrobe_outfits": {
         "description": "整套定义（由命令或面板维护）",
         "type": "list",
-        "default": [],
+        "default": [
+          {
+            "id": "o_preset_home",
+            "name": "居家休闲",
+            "kind": "bundle",
+            "style": "舒适随意，颜色素净",
+            "items": [
+              "w_preset_tee_white",
+              "w_preset_shorts",
+              "w_preset_slippers",
+              "w_preset_glasses",
+              "w_preset_bra",
+              "w_preset_underpants"
+            ]
+          },
+          {
+            "id": "o_preset_commute",
+            "name": "通勤正装",
+            "kind": "bundle",
+            "style": "干净利落",
+            "items": [
+              "w_preset_shirt_blue",
+              "w_preset_slacks",
+              "w_preset_loafers",
+              "w_preset_glasses",
+              "w_preset_bra",
+              "w_preset_underpants"
+            ]
+          },
+          {
+            "id": "o_preset_outdoor",
+            "name": "外出约会",
+            "kind": "bundle",
+            "style": "轻快温柔",
+            "items": [
+              "w_preset_dress",
+              "w_preset_sneakers",
+              "w_preset_glasses",
+              "w_preset_bra",
+              "w_preset_underpants"
+            ]
+          },
+          {
+            "id": "o_preset_autumn",
+            "name": "秋冬外出",
+            "kind": "bundle",
+            "style": "保暖有层次",
+            "items": [
+              "w_preset_knit_beige",
+              "w_preset_jeans",
+              "w_preset_sneakers",
+              "w_preset_scarf",
+              "w_preset_bra",
+              "w_preset_underpants"
+            ]
+          },
+          {
+            "id": "o_preset_sport",
+            "name": "运动装",
+            "kind": "bundle",
+            "style": "轻便好活动",
+            "items": [
+              "w_preset_hoodie_grey",
+              "w_preset_leggings",
+              "w_preset_sneakers",
+              "w_preset_bra",
+              "w_preset_underpants"
+            ]
+          },
+          {
+            "id": "o_preset_swim",
+            "name": "泳池装",
+            "kind": "bundle",
+            "style": "清爽利落",
+            "items": [
+              "w_preset_swim_top",
+              "w_preset_swim_bottom",
+              "w_preset_slippers"
+            ]
+          },
+          {
+            "id": "o_preset_sleep",
+            "name": "睡前",
+            "kind": "bundle",
+            "style": "柔软放松",
+            "items": [
+              "w_preset_nightgown",
+              "w_preset_slippers",
+              "w_preset_bra",
+              "w_preset_underpants"
+            ]
+          }
+        ],
         "invisible": true
       }
     }

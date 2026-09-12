@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -39,6 +40,8 @@ from astrbot_plugin_private_companion.wardrobe import (
     WARDROBE_MAX_TENDENCY,
     WARDROBE_OUTFIT_FIELD_LIMIT,
     WARDROBE_OUTFIT_REQUEST_LIMIT,
+    WARDROBE_PROMPT_MAX_CHARS,
+    WARDROBE_PROMPT_MAX_ITEMS,
     WARDROBE_PROMPT_PREAMBLE,
     WARDROBE_SLOTS,
     WardrobeError,
@@ -669,7 +672,7 @@ class WardrobeConfigTests(unittest.TestCase):
             "wardrobe_items",
         ):
             self.assertIn(key, items)
-        self.assertEqual([], items["wardrobe_items"]["default"])
+        self.assertTrue(items["wardrobe_items"]["default"], "预设衣柜不该为空")
         self.assertTrue(items["enable_wardrobe"]["default"])
 
     def test_keys_are_persona_scoped_and_cloneable(self) -> None:
@@ -697,7 +700,9 @@ class WardrobeConfigTests(unittest.TestCase):
         settings = migrated["persona_settings"]
         self.assertTrue(settings["enable_wardrobe"])
         self.assertEqual("", settings["wardrobe_tendency"])
-        self.assertEqual([], settings["wardrobe_items"])
+        self.assertEqual(
+            self.manifest["wardrobe_items"]["new_key_default"], settings["wardrobe_items"]
+        )
         self.assertEqual("", settings["wardrobe_image_prompt"])
 
     def test_existing_wardrobe_values_survive_migration(self) -> None:
@@ -767,7 +772,7 @@ class WardrobeConfigAccessorTests(unittest.TestCase):
 
     def test_int_defaults_and_clamping(self) -> None:
         config = self._config()
-        self.assertEqual(12, self.plugin._cfg_int(config, "wardrobe_prompt_max_items", 5, 1, 40))
+        self.assertEqual(20, self.plugin._cfg_int(config, "wardrobe_prompt_max_items", 5, 1, 40))
         self.assertEqual(3, self.plugin._cfg_int(config, "wardrobe_image_max_count", 5, 1, 8))
 
     def test_explicit_values_win(self) -> None:
@@ -804,9 +809,17 @@ class WardrobeConfigAccessorTests(unittest.TestCase):
         self.assertEqual("米色针织开衫", items[0]["name"])
         self.assertEqual(["居家", "秋冬"], items[0]["tags"])
 
-    def test_items_default_is_empty_list(self) -> None:
-        raw = self.plugin._cfg_raw(self._config(), "wardrobe_items", None)
-        self.assertEqual([], normalize_wardrobe_items(raw))
+    def test_items_default_is_the_starter_wardrobe(self) -> None:
+        # 键缺失时运行时按 schema 默认值兜底。注意 _cfg_raw(default=None) 只是
+        # 「缺值探测」，不参与默认值解析 —— 默认值链路走的是 schema -> manifest。
+        expected = load_schema()["wardrobe_config"]["items"]["wardrobe_items"]["default"]
+        self.assertTrue(expected, "开箱即用不该是空衣柜")
+        self.assertEqual(expected, build_scope_manifest()["wardrobe_items"]["new_key_default"])
+        self.assertIsNone(self.plugin._cfg_raw(self._config(), "wardrobe_items", None))
+        items = normalize_wardrobe_items(
+            self.plugin._cfg_raw(self._config(wardrobe_items=expected), "wardrobe_items", None)
+        )
+        self.assertEqual(len(expected), len(items))
 
     def test_metadata_help_documents_wardrobe(self) -> None:
         metadata = (ROOT / "metadata.yaml").read_text(encoding="utf-8")
@@ -1858,6 +1871,89 @@ class WardrobeOutfitSelectionTests(unittest.TestCase):
             # 整套 outfit 一旦命中就与场合无关：通勤正装在任何场景下都是候选。
             self.assertEqual("通勤正装", result["outfit_name"], scene)
 
+    def test_rotation_window_wears_every_bundle_before_repeating(self) -> None:
+        # 7 套整套 + 7 天窗口：一周内每套各穿一次，而不是每天重新抽签（会连着重复）。
+        items = normalize_wardrobe_items(
+            [{"id": f"w_{index}", "name": f"衣{index}", "slot": "upper"} for index in range(7)]
+        )
+        outfits = normalize_wardrobe_outfits(
+            [
+                {
+                    "id": f"o_{index}",
+                    "name": f"整套{index}",
+                    "kind": "bundle",
+                    "items": [f"w_{index}"],
+                }
+                for index in range(7)
+            ]
+        )
+
+        def week(start: date) -> list[str]:
+            first = start
+            return [
+                select_wardrobe_outfit(
+                    items,
+                    outfits,
+                    seed=(first + timedelta(days=offset)).isoformat(),
+                    rotation_days=7,
+                )["outfit_name"]
+                for offset in range(7)
+            ]
+
+        # 窗口对齐到自然周：先退到本周起点 —— 跨窗口的一周本来就会重复。
+        start = date(2026, 1, 1)
+        start -= timedelta(days=(start.toordinal() - 1) % 7)
+        self.assertEqual(0, start.weekday())
+        self.assertEqual(7, len(set(week(start))), "一个窗口内不该重复")
+        self.assertEqual(7, len(set(week(start + timedelta(days=7)))), "下一个窗口同样铺满")
+        fortnight = week(start) + week(start + timedelta(days=7))
+        self.assertTrue(
+            all(left != right for left, right in zip(fortnight, fortnight[1:])), fortnight
+        )
+
+    def test_rotation_falls_back_when_the_seed_has_no_date(self) -> None:
+        # 面板手填的种子可能不带日期，此时退回逐日哈希：不报错、结果依旧稳定。
+        items = normalize_wardrobe_items(
+            [
+                {"id": "w_a", "name": "开衫A", "slot": "upper"},
+                {"id": "w_b", "name": "开衫B", "slot": "upper"},
+            ]
+        )
+        outfits = normalize_wardrobe_outfits(
+            [
+                {"id": "o_a", "name": "整套A", "kind": "bundle", "items": ["w_a"]},
+                {"id": "o_b", "name": "整套B", "kind": "bundle", "items": ["w_b"]},
+            ]
+        )
+        first = select_wardrobe_outfit(items, outfits, seed="d1", rotation_days=7)
+        second = select_wardrobe_outfit(items, outfits, seed="d1", rotation_days=7)
+        self.assertTrue(first["outfit_name"])
+        self.assertEqual(first["outfit_name"], second["outfit_name"])
+
+    def test_multiple_bundles_rotate_instead_of_freezing_on_the_first(self) -> None:
+        # 预设自带好几套整套；如果永远只认排序最靠前的那套，其余整套等于不存在。
+        items = normalize_wardrobe_items(
+            [
+                {"id": "w_a", "name": "开衫A", "slot": "upper"},
+                {"id": "w_b", "name": "开衫B", "slot": "upper"},
+            ]
+        )
+        outfits = normalize_wardrobe_outfits(
+            [
+                {"id": "o_a", "name": "整套A", "kind": "bundle", "items": ["w_a"]},
+                {"id": "o_b", "name": "整套B", "kind": "bundle", "items": ["w_b"]},
+            ]
+        )
+        names = {
+            select_wardrobe_outfit(items, outfits, seed=f"2026-09-{day:02d}")["outfit_name"]
+            for day in range(1, 25)
+        }
+        self.assertEqual({"整套A", "整套B"}, names)
+        # 同一天必须稳定：不能每次调用都换一套。
+        first = select_wardrobe_outfit(items, outfits, seed="2026-09-12")
+        second = select_wardrobe_outfit(items, outfits, seed="2026-09-12")
+        self.assertEqual(first["outfit_name"], second["outfit_name"])
+
     def test_same_seed_is_idempotent_so_the_outfit_never_flaps(self) -> None:
         items, outfits = _wardrobe_fixture()
         first = select_wardrobe_outfit(items, outfits, scene="sport", seed="2026-09-12|u1")
@@ -2263,3 +2359,86 @@ class WardrobeDeterminismRegressionTests(unittest.TestCase):
         names = [row["name"] for row in select_wardrobe_outfit(items, [], scene="home", seed="x")["picked"]]
         self.assertIn("开衫", names)
         self.assertNotIn("来历不明的外套", names)
+
+
+# ---------------------------------------------------------------------------
+# O. 开箱即用的预设衣柜（schema 默认值）
+# ---------------------------------------------------------------------------
+
+
+class WardrobePresetTests(unittest.TestCase):
+    """默认衣柜必须自洽：改了预设却忘了同步整套引用，开箱就是坏的。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        fields = load_schema()["wardrobe_config"]["items"]
+        cls.raw_items = fields["wardrobe_items"]["default"]
+        cls.raw_outfits = fields["wardrobe_outfits"]["default"]
+        cls.items = normalize_wardrobe_items(cls.raw_items)
+        cls.outfits = normalize_wardrobe_outfits(cls.raw_outfits)
+
+    def test_defaults_survive_normalization(self) -> None:
+        self.assertGreaterEqual(len(self.outfits), 3, "预设整套太少，开箱体验太单薄")
+        self.assertEqual(len(self.raw_items), len(self.items), "预设衣物有被丢弃的条目")
+        self.assertEqual(len(self.raw_outfits), len(self.outfits), "预设整套有被丢弃的条目")
+        ids = [item["id"] for item in self.items]
+        self.assertEqual(len(ids), len(set(ids)), "预设衣物 id 必须唯一")
+        self.assertTrue(all(item["slot"] for item in self.items), "预设衣物必须都有部位")
+
+    def test_every_preset_outfit_references_existing_items(self) -> None:
+        known = {item["id"] for item in self.items}
+        for outfit in self.raw_outfits:
+            self.assertTrue(outfit.get("items"), outfit.get("name"))
+            for key in outfit["items"]:
+                self.assertIn(key, known, f"{outfit['name']} 引用了不存在的衣物 {key}")
+
+    def test_every_preset_item_is_reachable(self) -> None:
+        # select 模式下整套一旦命中就不走散件兜底：没有任何整套引用的衣物永远
+        # 不会出现，用户只会以为衣柜坏了。
+        used = {key for outfit in self.raw_outfits for key in outfit.get("items") or ()}
+        for item in self.items:
+            self.assertIn(item["id"], used, f"{item['name']} 没有被任何预设整套引用")
+
+    def test_inventory_cap_covers_the_preset_wardrobe(self) -> None:
+        # inventory 模式按条数截断；上限低于预设件数就会永远藏起几件衣物。
+        fields = load_schema()["wardrobe_config"]["items"]
+        cap = fields["wardrobe_prompt_max_items"]["default"]
+        self.assertEqual(WARDROBE_PROMPT_MAX_ITEMS, cap, "常量与 schema 默认值必须一致")
+        self.assertGreaterEqual(cap, len(self.items))
+
+    def test_a_fresh_install_injects_a_preset_outfit(self) -> None:
+        # 开箱即用：schema 默认值（预设衣物 + 预设整套 + select 模式）必须真的注入一套。
+        fields = load_schema()["wardrobe_config"]["items"]
+        self.assertEqual("select", fields["wardrobe_outfit_mode"]["default"])
+        plugin = _WardrobeCommandHarness()
+        plugin.config["wardrobe_outfit_mode"] = fields["wardrobe_outfit_mode"]["default"]
+        plugin.config["wardrobe_prompt_max_items"] = fields["wardrobe_prompt_max_items"]["default"]
+        plugin.config["wardrobe_items"] = copy.deepcopy(self.raw_items)
+        plugin.config["wardrobe_outfits"] = copy.deepcopy(self.raw_outfits)
+        section = plugin._wardrobe_prompt_section(None)
+        self.assertIsNotNone(section, "开箱即用不该什么都不注入")
+        body = section.content
+        self.assertTrue(body.startswith(WARDROBE_PROMPT_PREAMBLE))
+        self.assertIn("当前着装：", body)
+        self.assertIn("（贴身）", body)
+        self.assertLessEqual(len(body), WARDROBE_PROMPT_MAX_CHARS)
+
+    def test_all_presets_get_worn_and_fit_the_budget(self) -> None:
+        first_day = date(2026, 1, 1)
+        first_day -= timedelta(days=(first_day.toordinal() - 1) % 7)
+        seen: set[str] = set()
+        first_week: list[str] = []
+        for offset in range(400):
+            moment = (first_day + timedelta(days=offset)).isoformat()
+            selection = select_wardrobe_outfit(
+                self.items, self.outfits, seed=moment, rotation_days=7
+            )
+            body = render_wardrobe_outfit_prompt("偏爱简洁", selection)
+            self.assertTrue(body.startswith(WARDROBE_PROMPT_PREAMBLE))
+            self.assertLessEqual(len(body), WARDROBE_PROMPT_MAX_CHARS, selection["outfit_name"])
+            if offset < len(self.outfits):
+                first_week.append(selection["outfit_name"])
+            seen.add(selection["outfit_name"])
+        self.assertEqual({outfit["name"] for outfit in self.outfits}, seen)
+        # 默认 7 天窗口正好把七套预设各穿一遍。
+        self.assertEqual(len(set(first_week)), len(self.outfits), first_week)
