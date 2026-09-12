@@ -206,6 +206,16 @@ __all__ = [
     "delete_wardrobe_outfit",
     "update_wardrobe_outfit",
     "select_wardrobe_outfit",
+    "OUTFIT_PHOTO_FIELDS",
+    "OUTFIT_INTIMATE_FIELDS",
+    "OUTFIT_REPLY_FIELDS",
+    "WARDROBE_OUTFIT_FIELD_LIMIT",
+    "WARDROBE_OUTFIT_SUMMARY_LIMIT",
+    "WARDROBE_OUTFIT_REQUEST_LIMIT",
+    "build_wardrobe_outfit_request",
+    "parse_wardrobe_outfit_reply",
+    "render_generated_outfit",
+    "outfit_photo_profile",
 ]
 
 
@@ -1502,3 +1512,228 @@ def select_wardrobe_outfit(
     digest = hashlib.sha256(f"{base_seed}|{picked_ids}".encode("utf-8")).hexdigest()
     result["look_id"] = f"rule-{digest[:12]}"
     return result
+
+
+# ---------------------------------------------------------------------------
+# 生成器：请求构造与回复解析
+#
+# 这一层是纯函数，不依赖插件运行时，因此既能单测，也能直接给搭配测试面板复用；
+# 真正的模型调用在 wardrobe_runtime 里。
+# ---------------------------------------------------------------------------
+
+# 模型回复里允许出现的字段。前七个是生图投影字段，中间两个是贴身层（不进生图），
+# 最后一个是给对话用的一句话概述。
+OUTFIT_PHOTO_FIELDS = (
+    "palette",
+    "silhouette",
+    "top",
+    "outer",
+    "bottom",
+    "footwear",
+    "accessory",
+)
+OUTFIT_INTIMATE_FIELDS = ("underwear_top", "underwear_bottom")
+OUTFIT_REPLY_FIELDS = OUTFIT_PHOTO_FIELDS + OUTFIT_INTIMATE_FIELDS + ("summary",)
+
+# 真正"能穿"的字段。palette / silhouette 只是对搭配的描述，单独出现不构成一套，
+# 所以判可用性时必须看这几个，否则 {"palette": "低饱和"} 会被当成有效结果。
+_OUTFIT_GARMENT_FIELDS = (
+    "top",
+    "outer",
+    "bottom",
+    "footwear",
+    "accessory",
+) + OUTFIT_INTIMATE_FIELDS
+
+WARDROBE_OUTFIT_FIELD_LIMIT = 160
+WARDROBE_OUTFIT_SUMMARY_LIMIT = 200
+WARDROBE_OUTFIT_REQUEST_LIMIT = 2600
+
+_FENCE = chr(96) * 3
+
+_FIELD_LABELS_ZH: dict[str, str] = {
+    "top": "上装",
+    "outer": "外套",
+    "bottom": "下装",
+    "footwear": "鞋袜",
+    "accessory": "配件",
+    "underwear_top": "内衣",
+    "underwear_bottom": "内裤",
+}
+
+# 对话渲染按穿着顺序输出：贴身 -> 上装 -> 外套 -> 下装 -> 鞋袜 -> 配件。
+_OUTFIT_RENDER_ORDER = (
+    "underwear_top",
+    "underwear_bottom",
+    "top",
+    "outer",
+    "bottom",
+    "footwear",
+    "accessory",
+)
+
+
+def build_wardrobe_outfit_request(
+    items: Sequence[Mapping[str, Any]] | None,
+    outfits: Sequence[Mapping[str, Any]] | None = None,
+    *,
+    tendency: Any = "",
+    scene: Any = "",
+    weather: Any = "",
+    recent_names: Sequence[Any] | None = None,
+    max_items: int = WARDROBE_PROMPT_MAX_ITEMS,
+    max_chars: int = WARDROBE_PROMPT_MAX_CHARS,
+) -> str:
+    """Build the outfit-generator request body.
+
+    Pure and side-effect free, so the panel can show exactly what will be sent
+    instead of approximating it.
+    """
+
+    inventory = render_wardrobe_block(
+        "", items, max_items=max_items, max_chars=max_chars, scene=scene
+    )
+    heading = "衣柜里的具体衣物："
+    if inventory.startswith(heading):
+        inventory = inventory[len(heading):].strip()
+
+    lines = [
+        "你在为角色决定这次对话要穿的服装。只依据下面的衣柜与场合信息选择，"
+        "不要编造衣柜里没有的衣物。",
+        "",
+        "── 场合 ──",
+        f"场景：{clean_wardrobe_text(scene, 40) or 'daily'}",
+    ]
+    clean_weather = clean_wardrobe_text(weather, 120)
+    if clean_weather:
+        lines.append(f"天气：{clean_weather}")
+
+    clean_tendency = normalize_wardrobe_tendency(tendency)
+    if clean_tendency:
+        lines += ["", "── 整体服饰倾向 ──", clean_tendency]
+
+    style_hints = [
+        str(outfit.get("style") or "").strip()
+        for outfit in normalize_wardrobe_outfits(list(outfits or ()))
+        if outfit.get("kind") == OUTFIT_KIND_STYLE
+        and wardrobe_outfit_matches_scene(outfit, scene)
+        and str(outfit.get("style") or "").strip()
+    ]
+    if style_hints:
+        lines += ["", "── 可参考的整体风格 ──", "；".join(style_hints)]
+
+    if inventory.strip():
+        lines += ["", "── 衣柜 ──", inventory.strip()]
+
+    recent = [
+        clean_wardrobe_text(name, WARDROBE_MAX_NAME)
+        for name in (recent_names or ())
+    ]
+    recent = [name for name in recent if name]
+    if recent:
+        lines += ["", "── 最近穿过（尽量避开）──", "、".join(recent)]
+
+    lines += [
+        "",
+        "── 规则 ──",
+        "1. 每个部位最多选一件；选了整身（连衣裙/连体）就不要再选上装与下装。",
+        "2. 标注为贴身的衣物单独选，上下一共最多各一件。",
+        "3. 搭配要贴合场景与天气：冷天考虑加外套，运动场合选运动装，居家选舒适款。",
+        "4. 只输出一个 JSON 对象，不要解释，也不要加代码块标记。",
+        "5. 没有把握的部位留空字符串，不要硬凑。",
+        "",
+        "── 输出格式 ──",
+        '{"top": "", "outer": "", "bottom": "", "footwear": "", "accessory": "", '
+        '"underwear_top": "", "underwear_bottom": "", "palette": "", "silhouette": "", '
+        '"summary": ""}',
+    ]
+    return _truncate_block("\n".join(lines), WARDROBE_OUTFIT_REQUEST_LIMIT)
+
+
+def parse_wardrobe_outfit_reply(text: Any) -> dict[str, Any] | None:
+    """Parse a generator reply into a normalized outfit payload.
+
+    Accepts a bare JSON object or one wrapped in a Markdown code fence, because
+    models add fences even when told not to.  Returns None when nothing usable
+    is found, so the caller can fall back to the rule selector instead of
+    injecting an empty outfit.
+    """
+
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+
+    candidate = raw
+    if candidate.startswith(_FENCE):
+        parts = candidate.split("\n")
+        if parts and parts[0].startswith(_FENCE):
+            parts = parts[1:]
+        if parts and parts[-1].strip().startswith(_FENCE):
+            parts = parts[:-1]
+        candidate = "\n".join(parts).strip()
+
+    payload: Any = None
+    try:
+        payload = json.loads(candidate)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        start = candidate.find("{")
+        end = candidate.rfind("}")
+        if 0 <= start < end:
+            try:
+                payload = json.loads(candidate[start : end + 1])
+            except (TypeError, ValueError, json.JSONDecodeError):
+                payload = None
+    if not isinstance(payload, Mapping):
+        return None
+
+    fields: dict[str, str] = {}
+    for key in OUTFIT_REPLY_FIELDS:
+        limit = (
+            WARDROBE_OUTFIT_SUMMARY_LIMIT
+            if key == "summary"
+            else WARDROBE_OUTFIT_FIELD_LIMIT
+        )
+        value = clean_wardrobe_text(payload.get(key), limit)
+        if value:
+            fields[key] = value
+
+    # 至少要有一件真实衣物：只有 summary、只有配色或只有轮廓等于什么都没生成，
+    # 让调用方回退规则选择器，而不是注入一段没有衣服的"描述"。
+    if not any(fields.get(key) for key in _OUTFIT_GARMENT_FIELDS):
+        return None
+    return fields
+
+
+def render_generated_outfit(payload: Mapping[str, Any] | None) -> str:
+    """Render a parsed generator payload as the injected outfit body."""
+
+    if not isinstance(payload, Mapping):
+        return ""
+    lines: list[str] = []
+    summary = clean_wardrobe_text(payload.get("summary"), WARDROBE_OUTFIT_SUMMARY_LIMIT)
+    if summary:
+        lines.append(summary)
+    for key in _OUTFIT_RENDER_ORDER:
+        value = clean_wardrobe_text(payload.get(key), WARDROBE_OUTFIT_FIELD_LIMIT)
+        if not value:
+            continue
+        marker = "（贴身）" if key in OUTFIT_INTIMATE_FIELDS else ""
+        lines.append(f"{_FIELD_LABELS_ZH.get(key, key)}：{value}{marker}")
+    return "\n".join(lines)
+
+
+def outfit_photo_profile(payload: Mapping[str, Any] | None) -> dict[str, str]:
+    """Photo projection of a generated outfit; intimate fields are dropped.
+
+    This mirrors :data:`SLOT_PROFILE_FIELDS` for the rule path, and is the
+    mechanism that keeps intimate garments out of photo generation.
+    """
+
+    if not isinstance(payload, Mapping):
+        return {}
+    profile: dict[str, str] = {}
+    for key in OUTFIT_PHOTO_FIELDS:
+        value = clean_wardrobe_text(payload.get(key), WARDROBE_OUTFIT_FIELD_LIMIT)
+        if value:
+            profile[key] = value
+    return profile
