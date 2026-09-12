@@ -426,7 +426,9 @@ def normalize_wardrobe_item(
     created_at = _safe_timestamp(raw.get("created_at"), timestamp)
     updated_at = _safe_timestamp(raw.get("updated_at"), created_at)
     return {
-        "id": clean_wardrobe_text(raw.get("id"), 80) or fallback_id or f"wardrobe_{uuid.uuid4().hex[:12]}",
+        "id": clean_wardrobe_text(raw.get("id"), 80)
+        or fallback_id
+        or _derived_item_id(name, description),
         "name": name,
         "description": description,
         # 部位是唯一分类维度；未知值一律落回「未分类」而不是报错。
@@ -444,6 +446,19 @@ def normalize_wardrobe_item(
         "updated_at": updated_at,
         "version": WARDROBE_VERSION,
     }
+
+
+def _derived_item_id(name: str, description: str) -> str:
+    """Stable fallback id derived from the item content.
+
+    A uuid4 here would be regenerated on every normalization pass, and since the
+    rule selector orders candidates by id, a hand-written config without ids
+    would pick a *different outfit on every call* -- exactly the flapping the
+    determinism requirement exists to prevent.
+    """
+
+    digest = hashlib.sha256(f"{name}\u0000{description}".encode("utf-8")).hexdigest()
+    return f"wardrobe_{digest[:12]}"
 
 
 def _safe_timestamp(value: Any, fallback: float) -> float:
@@ -1338,7 +1353,16 @@ def _pick_for_slot(
 
     if not candidates:
         return None
-    ordered = sorted(candidates, key=lambda row: str(row.get("id") or ""))
+    # 按内容排序而不是按 id：即使 id 因某种原因不稳定（例如手工改过配置），
+    # 挑选顺序也保持一致，不会每轮换一套衣服。
+    ordered = sorted(
+        candidates,
+        key=lambda row: (
+            str(row.get("name") or ""),
+            str(row.get("description") or ""),
+            str(row.get("id") or ""),
+        ),
+    )
     fresh = [row for row in ordered if str(row.get("id") or "") not in recent_ids]
     pool = fresh or ordered
     return pool[_stable_index(seed, len(pool))]
@@ -1507,6 +1531,16 @@ def select_wardrobe_outfit(
             )
             if chosen_item is not None:
                 picked_items.append(chosen_item)
+
+    # 未分类的衣物没有部位可依据，正常不参与组合。但如果整个衣柜都没有部位
+    # 信息（老配置、或用户还没整理过），空手而归对用户毫无用处 —— 这时退一步
+    # 取几件未分类的，保证仍然能解析出一套可注入的着装。
+    if not picked_items:
+        unclassified = [
+            item for item in usable if not str(item.get("slot") or "")
+        ]
+        unclassified.sort(key=lambda row: str(row.get("id") or ""))
+        picked_items = unclassified[:3]
     result = _compose("rule", picked_items)
     picked_ids = "-".join(str(item.get("id") or "") for item in picked_items)
     digest = hashlib.sha256(f"{base_seed}|{picked_ids}".encode("utf-8")).hexdigest()

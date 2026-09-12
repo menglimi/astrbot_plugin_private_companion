@@ -539,6 +539,11 @@ class WardrobeMixin:
             "seed": clean_seed,
             "item_count": len(items),
             "outfit_count": len(outfits),
+            # 未分类的衣物没有部位可依据，正常不参与组合；数量暴露给面板，方便
+            # 提示用户补全，而不是让他纳闷"为什么这几件从来不出现"。
+            "unclassified_count": len(
+                [item for item in items if not str(item.get("slot") or "")]
+            ),
             "request": build_wardrobe_outfit_request(
                 items,
                 outfits,
