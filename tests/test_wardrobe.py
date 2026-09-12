@@ -36,6 +36,8 @@ from astrbot_plugin_private_companion.wardrobe import (
     WARDROBE_MAX_NAME,
     WARDROBE_MAX_OUTFITS,
     WARDROBE_MAX_TENDENCY,
+    WARDROBE_OUTFIT_FIELD_LIMIT,
+    WARDROBE_OUTFIT_REQUEST_LIMIT,
     WARDROBE_PROMPT_PREAMBLE,
     WARDROBE_SLOTS,
     WardrobeError,
@@ -43,6 +45,7 @@ from astrbot_plugin_private_companion.wardrobe import (
     add_wardrobe_item,
     add_wardrobe_outfit,
     build_wardrobe_image_instruction,
+    build_wardrobe_outfit_request,
     clear_wardrobe,
     delete_wardrobe_item,
     delete_wardrobe_outfit,
@@ -61,7 +64,10 @@ from astrbot_plugin_private_companion.wardrobe import (
     normalize_wardrobe_slot,
     normalize_wardrobe_tags,
     normalize_wardrobe_tendency,
+    outfit_photo_profile,
     parse_wardrobe_image_reply,
+    parse_wardrobe_outfit_reply,
+    render_generated_outfit,
     render_wardrobe_block,
     render_wardrobe_outfit_prompt,
     render_wardrobe_prompt,
@@ -1914,3 +1920,143 @@ class WardrobeOutfitSelectionTests(unittest.TestCase):
             self.assertLessEqual(len(body), 900, scene)
             if result["prompt_text"]:
                 self.assertTrue(body.startswith(WARDROBE_PROMPT_PREAMBLE), scene)
+
+
+# ---------------------------------------------------------------------------
+# L. 生成器：请求构造、回复解析、渲染与生图投影
+# ---------------------------------------------------------------------------
+
+
+class WardrobeOutfitGeneratorTests(unittest.TestCase):
+    def _items(self) -> list[dict]:
+        return normalize_wardrobe_items(
+            [
+                {"name": "米色针织开衫", "description": "宽松", "slot": "upper", "tags": ["居家"]},
+                {"name": "白色棉质内衣", "slot": "upper", "intimate": True, "scenes": ["home"]},
+                {"name": "深色直筒长裤", "slot": "lower"},
+                {"name": "帆布鞋", "slot": "feet"},
+                {"name": "分体泳衣上装", "slot": "upper", "scenes": ["sport"]},
+            ]
+        )
+
+    def test_request_carries_context_inventory_and_rules(self) -> None:
+        outfits = normalize_wardrobe_outfits(
+            [{"name": "慵懒周末", "kind": "style", "style": "宽松棉质", "scenes": ["home"]}]
+        )
+        request = build_wardrobe_outfit_request(
+            self._items(),
+            outfits,
+            tendency="偏爱宽松针织",
+            scene="home",
+            weather="冷",
+            recent_names=["旧外套"],
+        )
+        self.assertIn("场景：home", request)
+        self.assertIn("天气：冷", request)
+        self.assertIn("偏爱宽松针织", request)
+        self.assertIn("宽松棉质", request)
+        self.assertIn("米色针织开衫", request)
+        self.assertIn("最近穿过", request)
+        self.assertIn("每个部位最多选一件", request)
+        self.assertIn('"summary"', request)
+
+    def test_request_respects_the_scene_filter(self) -> None:
+        home = build_wardrobe_outfit_request(self._items(), None, scene="home")
+        sport = build_wardrobe_outfit_request(self._items(), None, scene="sport")
+        self.assertIn("白色棉质内衣", home)
+        self.assertNotIn("白色棉质内衣", sport)
+        self.assertIn("分体泳衣上装", sport)
+
+    def test_request_never_uses_legacy_bracket_headings(self) -> None:
+        request = build_wardrobe_outfit_request(self._items(), None, scene="home")
+        self.assertNotIn(chr(0x3010), request)
+        self.assertNotIn(chr(0x3011), request)
+
+    def test_request_stays_within_its_own_budget(self) -> None:
+        request = build_wardrobe_outfit_request(
+            self._items(), None, scene="home", tendency="x" * 4000
+        )
+        self.assertLessEqual(len(request), WARDROBE_OUTFIT_REQUEST_LIMIT)
+
+    def test_parse_accepts_bare_and_fenced_json(self) -> None:
+        bare = '{"top": "衬衫", "bottom": "长裤"}'
+        fenced = chr(96) * 3 + 'json\n' + bare + '\n' + chr(96) * 3
+        with_prose = "好的，这是搭配：\n" + bare + "\n希望合适。"
+        for raw in (bare, fenced, with_prose):
+            parsed = parse_wardrobe_outfit_reply(raw)
+            self.assertIsNotNone(parsed, raw)
+            self.assertEqual("衬衫", parsed["top"])
+            self.assertEqual("长裤", parsed["bottom"])
+
+    def test_parse_rejects_unusable_replies(self) -> None:
+        # 只有概述或只有配色等于什么都没生成，必须让调用方回退规则选择器。
+        for raw in (
+            "",
+            "   ",
+            "我不确定",
+            "{}",
+            "null",
+            "[1, 2]",
+            '{"summary": "只有概述"}',
+            '{"palette": "低饱和"}',
+        ):
+            self.assertIsNone(parse_wardrobe_outfit_reply(raw), repr(raw))
+
+    def test_parse_truncates_overlong_fields(self) -> None:
+        parsed = parse_wardrobe_outfit_reply('{"top": "' + "x" * 500 + '"}')
+        self.assertEqual(WARDROBE_OUTFIT_FIELD_LIMIT, len(parsed["top"]))
+
+    def test_render_puts_summary_first_and_marks_intimate(self) -> None:
+        parsed = parse_wardrobe_outfit_reply(
+            '{"summary": "居家放松", "top": "针织开衫", "bottom": "长裤",'
+            ' "underwear_top": "棉质内衣", "footwear": "帆布鞋"}'
+        )
+        body = render_generated_outfit(parsed)
+        lines = body.split("\n")
+        self.assertEqual("居家放松", lines[0])
+        self.assertIn("内衣：棉质内衣（贴身）", body)
+        self.assertIn("上装：针织开衫", body)
+        # 贴身层排在外衣之前，符合穿着顺序。
+        self.assertLess(body.index("内衣："), body.index("上装："))
+
+    def test_render_is_empty_for_an_empty_payload(self) -> None:
+        self.assertEqual("", render_generated_outfit(None))
+        self.assertEqual("", render_generated_outfit({}))
+
+    def test_photo_profile_drops_intimate_fields(self) -> None:
+        parsed = parse_wardrobe_outfit_reply(
+            '{"top": "针织开衫", "underwear_top": "棉质内衣",'
+            ' "underwear_bottom": "棉质内裤", "palette": "低饱和"}'
+        )
+        profile = outfit_photo_profile(parsed)
+        self.assertEqual({"top": "针织开衫", "palette": "低饱和"}, profile)
+        self.assertNotIn("underwear_top", profile)
+        self.assertNotIn("underwear_bottom", profile)
+
+    def test_photo_profile_matches_the_rule_path_field_names(self) -> None:
+        # 两条路径最终都要落进作者的 outfit_profile，字段名必须一致。
+        parsed = parse_wardrobe_outfit_reply('{"footwear": "帆布鞋"}')
+        profile = outfit_photo_profile(parsed)
+        self.assertEqual(set(profile) - {"footwear"}, set())
+        self.assertIn("footwear", profile)
+
+    def test_generated_outfit_renders_into_the_injection_budget(self) -> None:
+        parsed = parse_wardrobe_outfit_reply(
+            json.dumps(
+                {
+                    "summary": "s" * 200,
+                    "top": "t" * 160,
+                    "outer": "o" * 160,
+                    "bottom": "b" * 160,
+                    "footwear": "f" * 160,
+                    "accessory": "a" * 160,
+                    "palette": "p" * 160,
+                    "silhouette": "l" * 160,
+                    "underwear_top": "u" * 160,
+                    "underwear_bottom": "v" * 160,
+                }
+            )
+        )
+        body = render_wardrobe_outfit_prompt("偏爱宽松", {"prompt_text": render_generated_outfit(parsed)})
+        self.assertTrue(body.startswith(WARDROBE_PROMPT_PREAMBLE))
+        self.assertNotIn(chr(0x3010), body)
