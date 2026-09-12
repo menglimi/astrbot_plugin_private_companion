@@ -34,7 +34,7 @@ class _Context:
         self.provider_manager = provider_manager
 
 
-class _Owner:
+class _Owner(TokenBudgetMixin):
     def __init__(self, context: Any, streaming: bool = False) -> None:
         self.context = context
         self.enable_llm_streaming = streaming

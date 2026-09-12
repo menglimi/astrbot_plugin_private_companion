@@ -6016,9 +6016,9 @@ function loadOptionalClassicScript(relativePath, retry = 0) {
 
 const optionalModuleLoaders = {
   providerTree: [
-    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2&vision-state=v1&studio=20260912-v1", 0),
-    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2&vision-state=v1&studio=20260912-v1", 1),
-    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2&vision-state=v1&studio=20260912-v1", 2),
+    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2&vision-state=v1&studio=20260912-v1&retry=20260913-v1", 0),
+    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2&vision-state=v1&studio=20260912-v1&retry=20260913-v1", 1),
+    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2&vision-state=v1&studio=20260912-v1&retry=20260913-v1", 2),
   ],
   qzonePanel: [
     () => loadOptionalClassicScript("./js/panels/qzone-panel.js?v=20260810-qzone-classic-loader-v1", 0),
@@ -7244,6 +7244,8 @@ function applyOverviewData(overview) {
     .map((endpoint, index) => photoApiEndpointFingerprint(endpoint, index));
   state.providerConfigMode = inferProviderConfigMode(overview);
   state.providerTimeoutDraft = normalizeModelTimeoutOverrides(overview?.settings?.model_timeout_overrides);
+  state.providerRequestAttemptsDraft = {};
+  state.backgroundLlmAttemptsDraft = null;
   state.providerTokenLimitDraft = normalizeModelTokenLimitOverrides(overview?.settings?.model_token_limit_overrides);
   state.providerFallbackDraft = normalizeModelFallbackOverrides(overview?.settings?.model_fallback_overrides);
   state.pageFontFamily = normalizePageFontFamily(overview?.settings?.page_font_family);
@@ -16087,9 +16089,17 @@ function tailId(value) {
   return text.length > 8 ? `*${text.slice(-4)}` : text;
 }
 
+function tokenRequestAttemptsText(item) {
+  if (!item.request_max_attempts) return "-";
+  const source = { model_card: "卡片", plugin: "插件", astrbot_global: "AstrBot 全局", astrbot_default: "AstrBot 默认" }[item.request_retry_source] || "配置";
+  const support = item.request_retry_supported === false ? "；Provider 不支持" : "";
+  const retry = item.retry_after ? `；退避至 ${formatRecentTime(item.retry_after, "")}` : "";
+  return `${source}上限 ${item.request_max_attempts}；实际未知${support}${retry}`;
+}
+
 function renderTokenRecentTable(rows) {
   $("#tokenRecentTable").innerHTML = tokenTable(
-    ["时间", "任务", "Provider", "Token", "缓存", "延迟", "状态"],
+    ["时间", "任务", "Provider", "Token", "缓存", "延迟", "请求尝试（含首次）", "状态"],
     rows,
     (item) => [
       formatRecentTime(item.ts, item.time),
@@ -16098,6 +16108,7 @@ function renderTokenRecentTable(rows) {
       `${formatNumber(item.total_tokens)}${item.estimated ? " 估" : ""}`,
       tokenCacheText(item),
       `${formatNumber(Math.round(Number(item.elapsed_ms || item.latency_ms || 0)))} ms`,
+      tokenRequestAttemptsText(item),
       item.success ? "成功" : `失败 ${item.error || ""}`.trim(),
     ],
     "暂无最近调用"
@@ -17253,12 +17264,12 @@ function renderUnifiedIdentityPanel(detail) {
       <div class="toolbar user-danger-actions">
         ${lifecycle.can_relink_current ? '<button type="button" data-identity-action="relink" class="secondary-button">预览恢复当前账号</button>' : ""}
         ${lifecycle.can_unlink_current ? '<button type="button" data-identity-action="unlink" class="secondary-button">预览解绑当前账号</button>' : ""}
-        ${lifecycle.can_archive ? '<button type="button" data-identity-action="archive" class="danger">预览归档统一人物</button>' : ""}
+        ${lifecycle.can_archive || (identity.profile_status === "active" && lifecycle.archive_ready === false) ? `<button type="button" data-identity-action="archive" class="danger" ${lifecycle.archive_ready === false ? 'disabled aria-disabled="true" aria-describedby="identityArchiveUnavailable"' : ""}>预览归档统一人物</button>` : ""}
         ${lifecycle.can_purge ? '<button type="button" data-identity-action="purge" class="danger">预览永久删除</button>' : ""}
       </div>
       <div data-identity-lifecycle-preview class="notice-box" role="status" aria-live="polite" hidden></div>
         ${!lifecycle.can_unlink_current && lifecycle.can_archive ? '<p class="muted">当前是唯一或主身份，不能直接拆分；如需移除，请使用统一人物归档。</p>' : ""}
-        ${identity.profile_status === "active" && lifecycle.archive_ready === false ? '<p class="muted">记忆插件的作用域归档服务尚未就绪，暂不显示归档执行按钮；请启动或更新记忆插件后刷新。</p>' : ""}
+        ${identity.profile_status === "active" && lifecycle.archive_ready === false ? `<p id="identityArchiveUnavailable" class="muted" role="status">${escapeHtml(lifecycle.archive_reason || "记忆插件的作用域归档服务尚未就绪。")} ${escapeHtml(lifecycle.archive_recovery || "请检查记忆桥接和身份迁移状态，恢复服务后刷新页面。")}</p>` : ""}
     </section>` : `<section class="detail-block"><header class="detail-block-head"><div><h2>${escapeHtml(pendingGuidance.title)}</h2><p>${escapeHtml(pendingGuidance.detail)}</p></div><span class="badge ${escapeHtml(pendingGuidance.tone)}">安全待确认</span></header><p class="muted">当前页面不会按昵称或模糊 ID 猜测合并。“暂不处理”只移出审核队列，不删除旧资料，不阻断未来精确消息认领。</p>${identity.pending?.found && ["pending", "dismissed"].includes(String(identity.pending?.state || "")) ? `<div class="toolbar"><button type="button" class="secondary-button" data-pending-identity-action="${identity.pending.state === "dismissed" ? "restore" : "dismiss"}">${identity.pending.state === "dismissed" ? "重新加入审核" : "暂不处理"}</button></div>` : ""}</section>`}
   `;
 }
@@ -41556,6 +41567,10 @@ $("#saveProvidersBtn").addEventListener("click", async () => {
     return;
   }
   const values = currentProviderValues();
+  for (const input of document.querySelectorAll("[data-provider-request-attempts], [data-background-llm-attempts]")) {
+    if (!input.reportValidity()) return;
+  }
+  const requestAttemptsOverrides = window.PrivateCompanionProviderTree.currentProviderRequestAttemptsValues({ document, state });
   const timeoutOverrides = currentProviderTimeoutValues();
   const tokenLimitOverrides = currentProviderTokenLimitValues();
   const fallbackOverrides = currentProviderFallbackValues();
@@ -41573,6 +41588,8 @@ $("#saveProvidersBtn").addEventListener("click", async () => {
     () => postJson("/settings/update", { settings: {
       provider_config_mode,
       model_timeout_overrides: timeoutOverrides,
+      model_request_max_attempts_overrides: requestAttemptsOverrides,
+      background_llm_request_max_attempts: llmStreaming.maxAttempts,
       model_token_limit_overrides: tokenLimitOverrides,
       model_fallback_overrides: fallbackOverrides,
       model_replacement_scope: modelReplacement.scope,
@@ -41593,6 +41610,10 @@ $("#saveProvidersBtn").addEventListener("click", async () => {
   state.overview.settings = { ...(state.overview.settings || {}), provider_config_mode };
   state.providerDraft = {};
   state.providerTimeoutDraft = { ...timeoutOverrides };
+  state.providerRequestAttemptsDraft = { ...requestAttemptsOverrides };
+  state.backgroundLlmAttemptsDraft = llmStreaming.maxAttempts;
+  state.overview.settings.model_request_max_attempts_overrides = { ...requestAttemptsOverrides };
+  state.overview.settings.background_llm_request_max_attempts = llmStreaming.maxAttempts;
   state.providerTokenLimitDraft = { ...tokenLimitOverrides };
   state.providerFallbackDraft = { ...fallbackOverrides };
   state.overview.settings.model_timeout_overrides = { ...timeoutOverrides };

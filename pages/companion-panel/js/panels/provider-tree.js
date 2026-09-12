@@ -41,6 +41,36 @@ window.PrivateCompanionProviderTree = (() => {
     return values;
   }
 
+  function normalizeRequestAttemptsValue(value) {
+    if (value === null || value === undefined || String(value).trim() === "") return "";
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : "";
+  }
+
+  function providerRequestAttemptsValuesForRender(context) {
+    const saved = context.state.overview?.settings?.model_request_max_attempts_overrides;
+    let source = saved;
+    if (typeof source === "string") {
+      try { source = JSON.parse(source || "{}"); } catch (_error) { source = {}; }
+    }
+    const values = {};
+    Object.entries({ ...(source && typeof source === "object" ? source : {}), ...(context.state.providerRequestAttemptsDraft || {}) }).forEach(([key, value]) => {
+      const normalized = normalizeRequestAttemptsValue(value);
+      if (normalized !== "") values[key] = normalized;
+    });
+    return values;
+  }
+
+  function currentProviderRequestAttemptsValues(context) {
+    const values = providerRequestAttemptsValuesForRender(context);
+    context.document.querySelectorAll("[data-provider-request-attempts]").forEach(input => {
+      const value = normalizeRequestAttemptsValue(input.value);
+      if (value === "") delete values[input.dataset.providerRequestAttempts];
+      else values[input.dataset.providerRequestAttempts] = value;
+    });
+    return values;
+  }
+
   function normalizeTokenLimitValue(value) {
     if (value === null || value === undefined || String(value).trim() === "") return "";
     const parsed = Math.round(Number(value));
@@ -396,6 +426,7 @@ window.PrivateCompanionProviderTree = (() => {
     const impact = providerPassiveImpactMeta[guide.passiveImpact || ""];
     const preview = [guide.purpose || "", guide.fit || ""].filter(Boolean).join(" ");
     const timeoutValue = providerTimeoutValuesForRender(context)[key] || "";
+    const requestAttemptsValue = providerRequestAttemptsValuesForRender(context)[key] || "";
     const tokenLimitValue = providerTokenLimitValuesForRender(context)[key] || "";
     const fallbackValue = providerFallbackValuesForRender(context)[key] || "";
     return `
@@ -420,6 +451,13 @@ window.PrivateCompanionProviderTree = (() => {
             ${providerSelect(context, key, selected)}
           </label>
           ${embeddingProvider ? "" : `<div class="provider-limit-grid">
+            ${visualProviderKeys.has(key) || key === "tts_conversion_provider_id" ? "" : `<label class="provider-field provider-limit-field">
+              <span>最大尝试次数（包含首次）</span>
+              <span class="provider-limit-control">
+                <input type="number" min="1" step="1" inputmode="numeric" data-provider-request-attempts="${escapeHtml(key)}" value="${escapeHtml(requestAttemptsValue)}" placeholder="继承后台默认" aria-label="${escapeHtml(label)}最大尝试次数" title="后台模型调用生效；长创作、日程、每日巡视建议 1-2 次" />
+                <b>次</b>
+              </span>
+            </label>`}
             <label class="provider-field provider-limit-field provider-timeout-field">
               <span>请求超时</span>
               <span class="provider-limit-control provider-timeout-control">
@@ -436,7 +474,7 @@ window.PrivateCompanionProviderTree = (() => {
             </label>
           </div>`}
           ${embeddingProvider ? "" : `<label class="provider-field provider-fallback-field">
-            <span>备用模型 <small>主模型失败、超时、Token 超限或空响应时尝试一次</small></span>
+            <span>备用模型 <small>失败、Token 超限或空响应时尝试；长任务超时先退避</small></span>
             ${providerFallbackSelect(context, key, fallbackValue)}
           </label>`}
           <div class="provider-current">
@@ -524,8 +562,10 @@ window.PrivateCompanionProviderTree = (() => {
     const { document, state } = context;
     const settings = state.overview?.settings || {};
     const checkbox = document.querySelector("[data-llm-streaming-enabled]");
+    const attemptsInput = document.querySelector("[data-background-llm-attempts]");
     return {
       enabled: checkbox ? checkbox.checked : Boolean(settings.enable_llm_streaming),
+      maxAttempts: normalizeRequestAttemptsValue(attemptsInput ? attemptsInput.value : (state.backgroundLlmAttemptsDraft ?? settings.background_llm_request_max_attempts)) || 0,
     };
   }
 
@@ -548,8 +588,16 @@ window.PrivateCompanionProviderTree = (() => {
           </div>
         </div>
         <div class="deepseek-peak-note">独立于 AstrBot 全局「流式响应」，仅作用于插件自身调用；极短任务（max_tokens &lt; 512）仍走非流式以节省开销。</div>
+        <label class="provider-field">
+          <span>后台文本模型最大尝试次数（包含首次请求）</span>
+          <input type="number" min="0" step="1" inputmode="numeric" data-background-llm-attempts value="${escapeHtml(value.maxAttempts)}" aria-label="后台模型最大尝试次数" />
+          <small>0 继承 AstrBot 全局配置；1 为单次请求。卡片覆盖优先；SDK 重试、密钥轮换和备用模型可能增加实际请求数。长任务超时后，同一请求至少退避 60 秒。</small>
+        </label>
       </article>
     `;
+    root.querySelector("[data-background-llm-attempts]")?.addEventListener("input", event => {
+      context.state.backgroundLlmAttemptsDraft = event.target.value;
+    });
     const enabled = root.querySelector("[data-llm-streaming-enabled]");
     enabled?.addEventListener("change", () => {
       root.querySelector(".deepseek-peak-card")?.classList.toggle("enabled", enabled.checked);
@@ -872,6 +920,14 @@ window.PrivateCompanionProviderTree = (() => {
         rememberProviderTimeoutDraft(context, input);
       });
     });
+    document.querySelectorAll("[data-provider-request-attempts]").forEach(input => {
+      input.addEventListener("input", () => {
+        context.state.providerRequestAttemptsDraft = {
+          ...(context.state.providerRequestAttemptsDraft || {}),
+          [input.dataset.providerRequestAttempts]: input.value,
+        };
+      });
+    });
     document.querySelectorAll("[data-provider-token-limit]").forEach((input) => {
       input.addEventListener("input", () => rememberProviderTokenLimitDraft(context, input));
       input.addEventListener("change", () => {
@@ -948,6 +1004,7 @@ window.PrivateCompanionProviderTree = (() => {
     bindProviderToolbar,
     currentProviderValues,
     currentProviderTimeoutValues,
+    currentProviderRequestAttemptsValues,
     currentProviderTokenLimitValues,
     currentProviderFallbackValues,
     currentDeepseekPeakValues,

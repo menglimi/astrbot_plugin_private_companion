@@ -50,6 +50,9 @@ def _load_page_unlink():
         "_identity_pending_reference",
         "_identity_pending_summary",
         "_identity_admin_summary",
+        "_identity_archive_status",
+        "_identity_archive_remote_available",
+        "delete_user",
         "_identity_link_confirmation",
         "_identity_unlink_confirmation",
         "_safe_identity_unlink_result",
@@ -95,6 +98,9 @@ class _PageHost:
     _identity_pending_reference = PAGE_METHODS["_identity_pending_reference"]
     _identity_pending_summary = PAGE_METHODS["_identity_pending_summary"]
     _identity_admin_summary = PAGE_METHODS["_identity_admin_summary"]
+    _identity_archive_status = PAGE_METHODS["_identity_archive_status"]
+    _identity_archive_remote_available = PAGE_METHODS["_identity_archive_remote_available"]
+    delete_user = PAGE_METHODS["delete_user"]
     _identity_link_confirmation = staticmethod(PAGE_METHODS["_identity_link_confirmation"])
     _identity_unlink_confirmation = staticmethod(PAGE_METHODS["_identity_unlink_confirmation"])
     _safe_identity_unlink_result = staticmethod(PAGE_METHODS["_safe_identity_unlink_result"])
@@ -159,6 +165,40 @@ class _PageHost:
 
 
 class IdentityAdminUiTests(unittest.TestCase):
+    def test_missing_archive_bridge_exposes_reason_and_recovery(self) -> None:
+        host = _PageHost()
+        host._req041_scoped_archive_available = lambda: False
+        summary = host._identity_admin_summary(host.data["users"]["10001"])
+        lifecycle = summary["lifecycle"]
+        self.assertFalse(lifecycle["archive_ready"])
+        self.assertFalse(lifecycle["can_archive"])
+        self.assertEqual("scoped_archive_bridge_unavailable", lifecycle["archive_code"])
+        self.assertIn("记忆桥接", lifecycle["archive_reason"])
+        self.assertIn("LivingMemory", lifecycle["archive_recovery"])
+
+    def test_paused_archive_bridge_exposes_migration_recovery(self) -> None:
+        host = _PageHost()
+        host._req041_scoped_archive_available = lambda: False
+        host.req041_scoped_projection_sync = types.SimpleNamespace(archive_identity_scopes=lambda: None)
+        host.req041_migration_status = {"state": "paused"}
+        status = host._identity_archive_status()
+        self.assertEqual("scoped_archive_paused", status["code"])
+        self.assertIn("暂停", status["reason"])
+        self.assertIn("身份迁移", status["recovery"])
+
+    def test_delete_reports_unavailable_archive_without_modifying_user(self) -> None:
+        host = _PageHost()
+        host._req041_scoped_archive_available = lambda: False
+        host._canonical_private_user_id = lambda value: value
+        before = copy.deepcopy(host.data)
+        PAGE_REQUEST.payload = {"user_id": "10001"}
+        result = asyncio.run(host.delete_user())
+        self.assertFalse(result["ok"])
+        self.assertIn("当前无法归档", result["error"])
+        self.assertIn("scoped archive", result["error"])
+        self.assertNotIn("预览并归档", result["error"])
+        self.assertEqual(before, host.data)
+
     def test_domain_summary_counts_only_scopes_and_records_for_current_person(self) -> None:
         host = _PageHost()
         other = "person_" + "f" * 24

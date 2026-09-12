@@ -345,12 +345,8 @@ class PrivateCompanionPageApiUsersGroupsMixin:
         }
 
         summary["domains"] = self._identity_domain_summary(person_id, snapshot or {})
-        archive_ready_checker = getattr(self, "_identity_archive_remote_available", None)
-        archive_ready = (
-            bool(archive_ready_checker())
-            if callable(archive_ready_checker)
-            else True
-        )
+        archive_status = self._identity_archive_status()
+        archive_ready = archive_status["ready"]
         summary["lifecycle"] = {
             "can_unlink_current": bool(
                 summary.get("current_identity_linked")
@@ -363,6 +359,9 @@ class PrivateCompanionPageApiUsersGroupsMixin:
                 and archive_ready
             ),
             "archive_ready": archive_ready,
+            "archive_code": archive_status["code"],
+            "archive_reason": archive_status["reason"],
+            "archive_recovery": archive_status["recovery"],
             "can_purge": bool(summary.get("profile_status") == "deleted"),
             "can_relink_current": bool(
                 summary.get("current_identity_detached")
@@ -372,7 +371,7 @@ class PrivateCompanionPageApiUsersGroupsMixin:
         return summary
 
     def _identity_archive_remote_available(self) -> bool:
-        """Only expose the destructive archive action when scoped cleanup is bound."""
+        """Only enable the destructive archive action when scoped cleanup is bound."""
         checker = getattr(self.plugin, "_req041_scoped_archive_available", None)
         if not callable(checker):
             # Compatibility with older plugin instances that predate the
@@ -382,6 +381,27 @@ class PrivateCompanionPageApiUsersGroupsMixin:
             return bool(checker())
         except Exception:
             return False
+
+    def _identity_archive_status(self) -> dict[str, Any]:
+        if self._identity_archive_remote_available():
+            return {"ready": True, "code": "ready", "reason": "", "recovery": ""}
+        synchronizer = getattr(self.plugin, "req041_scoped_projection_sync", None)
+        if not callable(getattr(synchronizer, "archive_identity_scopes", None)):
+            return {
+                "ready": False,
+                "code": "scoped_archive_bridge_unavailable",
+                "reason": "未连接支持统一人物作用域归档的记忆桥接服务。",
+                "recovery": "请启用支持 scoped archive 的 Memory Companion / Remember You 桥接并重新加载插件。仅安装 LivingMemory 不代表已具备此能力；外部记忆不会被自动删除。",
+            }
+        status = getattr(self.plugin, "req041_migration_status", None)
+        state = str(status.get("state") or "").strip().lower() if isinstance(status, dict) else ""
+        labels = {"degraded": "降级", "paused": "暂停", "stopped": "停止"}
+        return {
+            "ready": False,
+            "code": f"scoped_archive_{state}" if state in labels else "scoped_archive_not_ready",
+            "reason": f"统一身份迁移服务处于{labels[state]}状态。" if state in labels else "统一身份归档服务尚未就绪。",
+            "recovery": "请在排障页检查记忆桥接和身份迁移状态，恢复服务后刷新页面。",
+        }
 
     @staticmethod
     def _relationship_score_input(value: Any) -> int:
@@ -696,7 +716,8 @@ class PrivateCompanionPageApiUsersGroupsMixin:
             if not result.get("ok"):
                 code = str(result.get("code") or "人物归档失败")
                 if code == "scoped_identity_archive_unavailable":
-                    return self._error("记忆插件的作用域归档服务尚未就绪，请先启动或更新记忆插件后刷新页面")
+                    status = self._identity_archive_status()
+                    return self._error(status["reason"] + status["recovery"] or "人物归档服务尚未就绪，请刷新身份与隔离页面")
                 return self._error(code)
             return self._ok({"result": self._safe_person_lifecycle_result(result, "archive")})
         except Exception as exc:
@@ -1180,6 +1201,12 @@ class PrivateCompanionPageApiUsersGroupsMixin:
                     isinstance(existing_user, dict)
                     and self._single_line(existing_user.get("unified_person_id"), 80)
                 ):
+                    status = self._identity_archive_status()
+                    if not status["ready"]:
+                        return self._error(
+                            "该用户已属于统一人物，当前无法归档。"
+                            + status["reason"] + status["recovery"]
+                        )
                     return self._error(
                         "该用户已属于统一人物，请在“身份与隔离”中预览并归档，不能绕过统一数据链直接删除"
                     )
