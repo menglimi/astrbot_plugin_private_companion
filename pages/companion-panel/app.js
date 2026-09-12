@@ -17253,12 +17253,12 @@ function renderUnifiedIdentityPanel(detail) {
       <div class="toolbar user-danger-actions">
         ${lifecycle.can_relink_current ? '<button type="button" data-identity-action="relink" class="secondary-button">预览恢复当前账号</button>' : ""}
         ${lifecycle.can_unlink_current ? '<button type="button" data-identity-action="unlink" class="secondary-button">预览解绑当前账号</button>' : ""}
-        ${lifecycle.can_archive ? '<button type="button" data-identity-action="archive" class="danger">预览归档统一人物</button>' : ""}
+        ${lifecycle.can_archive || (identity.profile_status === "active" && lifecycle.archive_ready === false) ? `<button type="button" data-identity-action="archive" class="danger" ${lifecycle.archive_ready === false ? 'disabled aria-disabled="true" aria-describedby="identityArchiveUnavailable"' : ""}>预览归档统一人物</button>` : ""}
         ${lifecycle.can_purge ? '<button type="button" data-identity-action="purge" class="danger">预览永久删除</button>' : ""}
       </div>
       <div data-identity-lifecycle-preview class="notice-box" role="status" aria-live="polite" hidden></div>
         ${!lifecycle.can_unlink_current && lifecycle.can_archive ? '<p class="muted">当前是唯一或主身份，不能直接拆分；如需移除，请使用统一人物归档。</p>' : ""}
-        ${identity.profile_status === "active" && lifecycle.archive_ready === false ? '<p class="muted">记忆插件的作用域归档服务尚未就绪，暂不显示归档执行按钮；请启动或更新记忆插件后刷新。</p>' : ""}
+        ${identity.profile_status === "active" && lifecycle.archive_ready === false ? `<p id="identityArchiveUnavailable" class="muted" role="status">${escapeHtml(lifecycle.archive_reason || "记忆插件的作用域归档服务尚未就绪。")} ${escapeHtml(lifecycle.archive_recovery || "请检查记忆桥接和身份迁移状态，恢复服务后刷新页面。")}</p>` : ""}
     </section>` : `<section class="detail-block"><header class="detail-block-head"><div><h2>${escapeHtml(pendingGuidance.title)}</h2><p>${escapeHtml(pendingGuidance.detail)}</p></div><span class="badge ${escapeHtml(pendingGuidance.tone)}">安全待确认</span></header><p class="muted">当前页面不会按昵称或模糊 ID 猜测合并。“暂不处理”只移出审核队列，不删除旧资料，不阻断未来精确消息认领。</p>${identity.pending?.found && ["pending", "dismissed"].includes(String(identity.pending?.state || "")) ? `<div class="toolbar"><button type="button" class="secondary-button" data-pending-identity-action="${identity.pending.state === "dismissed" ? "restore" : "dismiss"}">${identity.pending.state === "dismissed" ? "重新加入审核" : "暂不处理"}</button></div>` : ""}</section>`}
   `;
 }
