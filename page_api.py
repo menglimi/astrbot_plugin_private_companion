@@ -23068,6 +23068,8 @@ class PrivateCompanionPageApi(
             "page_theme",
             "provider_config_mode",
             "model_timeout_overrides",
+            "background_llm_request_max_attempts",
+            "model_request_max_attempts_overrides",
             "model_token_limit_overrides",
             "model_fallback_overrides",
             "model_replacement_scope",
@@ -25439,6 +25441,12 @@ class PrivateCompanionPageApi(
                 else str(value or "quick").strip().lower()
             )
             return
+        if key == "background_llm_request_max_attempts":
+            self.plugin.background_llm_request_max_attempts = self.plugin._normalize_request_max_attempts(value)
+            return
+        if key == "model_request_max_attempts_overrides":
+            self.plugin.model_request_max_attempts_overrides = self.plugin._normalize_model_request_max_attempts_overrides(value)
+            return
         if key == "model_timeout_overrides":
             normalizer = getattr(self.plugin, "_normalize_model_timeout_overrides", None)
             self.plugin.model_timeout_overrides = normalizer(value) if callable(normalizer) else {}
@@ -26343,6 +26351,8 @@ class PrivateCompanionPageApi(
             "page_theme",
             "provider_config_mode",
             "model_timeout_overrides",
+            "background_llm_request_max_attempts",
+            "model_request_max_attempts_overrides",
             "model_token_limit_overrides",
             "model_fallback_overrides",
             "model_replacement_scope",
@@ -30681,6 +30691,11 @@ class PrivateCompanionPageApi(
                         "completion_chars": self._int(item.get("completion_chars")),
                         "error": self._single_line(item.get("error"), 160),
                         "budget_exempt": bool(item.get("budget_exempt", False)),
+                        "request_max_attempts": self._int(item.get("request_max_attempts")),
+                        "request_retry_source": self._single_line(item.get("request_retry_source"), 32),
+                        "request_retry_supported": item.get("request_retry_supported") if type(item.get("request_retry_supported")) is bool else None,
+                        "provider_attempts": None,
+                        "retry_after": self._float(item.get("retry_after")),
                     }
                 )
         return {

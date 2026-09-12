@@ -96,7 +96,7 @@
       to { opacity: 1; transform: scaleX(1); transform-origin: left; }
     }
   </style>
-  <link rel="stylesheet" href="./app.css?v=20260809-external-ability-controls-v3&amp;build=20260810-reference-upload-v1&amp;touch=reality-redesign-rt2-v4&amp;migration-notice=v2&amp;component-order=v1&amp;layout=model-routing-v2&amp;directory-nav=v2&amp;terminal=plugin-check-v1&amp;diagnostic-layout=v2&amp;prompts=task-editor-v1&amp;release=6.4.4f" />
+  <link rel="stylesheet" href="./app.css?v=20260809-external-ability-controls-v3&amp;build=20260810-reference-upload-v1&amp;touch=reality-redesign-rt2-v4&amp;migration-notice=v2&amp;component-order=v1&amp;layout=model-routing-v2&amp;directory-nav=v2&amp;terminal=plugin-check-v1&amp;diagnostic-layout=v2&amp;prompts=task-editor-v1&amp;release=6.4.4f&amp;outfit-preview-layering=v1" />
   <!-- Keep the structured roleplay form readable while a WebUI asset is being refreshed. -->
   <style id="roleplay-layout-fallback">
     .roleplay-form,
@@ -163,7 +163,7 @@
   </style>
   <link rel="stylesheet" href="./css/header-tools.css?v=20260713-font-options" />
   <link rel="stylesheet" href="./css/qzone-mobile.css?v=20260711-qzone-image-preview" />
-  <link rel="stylesheet" href="./css/polish.css?v=20260810-responsive-containment-v1&amp;world=20260811-responsive-v2&amp;config=multi-persona-summary-v2&amp;mobile=20260829-overflow-v1" />
+  <link rel="stylesheet" href="./css/polish.css?v=20260810-responsive-containment-v1&amp;world=20260811-responsive-v2&amp;config=multi-persona-summary-v2&amp;mobile=20260829-overflow-v1&amp;studio=20260912-v4" />
   <script>
     (function () {
       try {
@@ -208,7 +208,8 @@
     })();
   </script>
 </head>
-<body>
+<body class="companion-studio">
+  <a class="studio-skip" href="#panel-dashboard">跳到主要内容</a>
   <section class="asset-load-fallback" role="status" aria-live="polite">
     <div class="asset-load-fallback__content">
       <div class="asset-load-fallback__state" aria-hidden="true"></div>
@@ -226,8 +227,8 @@
       <div class="folio-meta">
         <div class="folio-heading">
           <div>
-            <div class="folio-eyebrow"><b>●</b> PRIVATE COMPANION</div>
-            <h1 class="folio-title">陪伴面板</h1>
+            <div class="folio-eyebrow">你的专属陪伴空间</div>
+            <h1 class="folio-title">陪伴面板 <span class="studio-header-slash">/</span> <span id="studioPageTitle">总览</span></h1>
           </div>
           <div class="folio-persona-context">
             <label id="pagePersonaSelector" class="page-persona-selector" for="pagePersonaSelect" hidden>
@@ -237,7 +238,7 @@
             <p id="subtitle">读取运行态中...</p>
           </div>
         </div>
-        <div class="folio-stats" id="stats"></div>
+
       </div>
 
       <div class="folio-plate" aria-label="今日穿搭">
@@ -255,35 +256,44 @@
 
     <section class="layout">
       <nav class="annotations" aria-label="视图">
+        <div class="studio-brand"><span class="studio-brand-mark" aria-hidden="true">✳</span><div><b>伴 · Companion</b><small>PRIVATE COMPANION</small></div></div>
+        <button type="button" class="studio-find" id="studioFindBtn" aria-label="查找功能" title="查找功能"><span aria-hidden="true">⌕</span><span class="studio-find-label">查找功能</span></button>
         <div class="annot-axis" aria-hidden="true"></div>
-        <button class="tab is-active" data-tab="dashboard"><i>01</i><span>总览</span></button>
-        <button class="tab" data-tab="roleplay"><i>02</i><span>世界知识</span></button>
-        <button class="tab" data-tab="private"><i>03</i><span>用户</span></button>
-        <button class="tab" data-tab="group"><i>04</i><span>群聊</span></button>
-        <button class="tab" data-tab="learning"><i>05</i><span>学习</span></button>
-        <button class="tab" data-tab="memory"><i>06</i><span>观察</span></button>
-        <button class="tab" data-tab="proactive"><i>07</i><span>主动</span></button>
-        <button class="tab" data-tab="creative" hidden><i>08</i><span>创作</span></button>
-        <button class="tab" data-tab="image" hidden><i>09</i><span>生图</span></button>
-        <button class="tab" data-tab="tokens"><i>10</i><span>Token</span></button>
-        <button class="tab" data-tab="troubleshooting"><i>11</i><span>排障</span></button>
-        <button class="tab" data-tab="config"><i>12</i><span>配置</span></button>
-        <button class="tab" data-tab="models"><i>13</i><span>模型</span></button>
-        <button class="tab" data-tab="experimental"><i>14</i><span>实验</span></button>
-        <button class="tab" data-tab="prompts"><i>15</i><span>提示词</span></button>
-        <button class="tab" data-tab="reality" hidden><i>16</i><span>现实触及</span></button>
+        <div class="studio-nav-label">日常陪伴</div>
+        <button class="tab is-active" data-tab="dashboard"><i>◫</i><span>总览</span></button>
+        <button class="tab" data-tab="roleplay"><i>◎</i><span>角色与背景</span></button>
+        <button class="tab" data-tab="private"><i>♧</i><span>陪伴对象</span></button>
+        <button class="tab" data-tab="group"><i>♧</i><span>群聊</span></button>
+        <div class="studio-nav-label">理解与成长</div>
+        <button class="tab" data-tab="learning"><i>✧</i><span>学习</span></button>
+        <button class="tab" data-tab="memory"><i>◷</i><span>日程与记忆</span></button>
+        <button class="tab" data-tab="proactive"><i>↗</i><span>主动消息</span></button>
+        <button class="tab" data-tab="creative" hidden><i>✎</i><span>创作</span></button>
+        <button class="tab" data-tab="image" hidden><i>▧</i><span>生图</span></button>
+        <div class="studio-nav-label">管理与调校</div>
+        <button class="tab" data-tab="tokens"><i>◴</i><span>用量统计</span></button>
+        <button class="tab" data-tab="troubleshooting"><i>⊙</i><span>检查与修复</span></button>
+        <button class="tab" data-tab="config"><i>⚙</i><span>功能设置</span></button>
+        <button class="tab" data-tab="models"><i>◇</i><span>模型服务</span></button>
+        <button class="tab" data-tab="experimental"><i>⚗</i><span>实验</span></button>
+        <button class="tab" data-tab="prompts"><i>≡</i><span>提示词</span></button>
+        <button class="tab" data-tab="reality" hidden><i>⌁</i><span>现实触及</span></button>
+        <div class="studio-nav-foot"><span>✧</span> 让陪伴，回归日常。<small>POWERED BY ASTRBOT</small></div>
       </nav>
 
       <section class="panel dashboard-overview is-active" id="panel-dashboard">
         <div class="section-head dashboard-overview-head">
           <div>
             <h2>今日概览</h2>
-            <p class="section-desc">日程、状态、主动与记忆集中在这里；配置和诊断按需展开。</p>
+            <p class="section-desc">今天的点滴，都在这里。</p>
           </div>
           <div class="actions compact">
             <button id="exportSnapshotBtn" type="button">导出快照</button>
           </div>
         </div>
+
+        <div class="studio-metrics-label"><span>运行概况</span><button type="button" data-jump-tab="memory" class="studio-text-button">日程与记忆 <span aria-hidden="true">↗</span></button></div>
+        <div class="folio-stats" id="stats" aria-label="运行概况"></div>
         <section class="dashboard-life-desk" aria-label="今日生活工作台">
           <aside class="dashboard-life-column dashboard-life-column-left">
             <article class="life-desk-card life-desk-today">
@@ -314,7 +324,11 @@
             </article>
           </section>
 
-          <aside class="dashboard-life-column dashboard-life-column-right">
+
+        </section>
+        <section class="dashboard-secondary" aria-label="更多运行信息">
+          <div class="studio-section-label">更多信息 <small>需要时展开查看。</small></div>
+          <details class="dashboard-disclosure studio-memory-disclosure"><summary><span><b>动态、记忆与运行能力</b><small>近期动向、记忆概况与能力状态</small></span></summary>          <aside class="dashboard-life-column dashboard-life-column-right">
             <article class="life-desk-card life-desk-memory">
               <div class="life-desk-card-head">
                 <div><span class="life-desk-dot"></span><h3>动态与记忆</h3></div>
@@ -336,9 +350,7 @@
               </div>
               <div id="dashboardCapabilitySummary" class="life-capability-list"></div>
             </article>
-          </aside>
-        </section>
-        <section class="dashboard-secondary" aria-label="更多运行信息">
+          </aside></details>
           <details class="dashboard-disclosure">
             <summary>
               <span><b>互动与主动</b><small>私聊、群聊和长线主动策略</small></span>
@@ -387,7 +399,7 @@
             </div>
           </details>
         </section>
-        <section class="dashboard-companion-terminal" aria-labelledby="dashboardCompanionTerminalTitle">
+        <details class="dashboard-disclosure studio-terminal-disclosure"><summary><span><b>扩展连接与诊断</b><small>陪伴系插件发现状态、检查与终端入口</small></span></summary>        <section class="dashboard-companion-terminal" aria-labelledby="dashboardCompanionTerminalTitle">
           <header class="dashboard-companion-terminal-head">
             <div>
               <span class="dashboard-kicker">连接检查</span>
@@ -402,14 +414,14 @@
           </header>
           <div id="dashboardCompanionTerminalSummary" class="dashboard-companion-terminal-summary" aria-live="polite"></div>
           <div id="dashboardCompanionTerminalList" class="dashboard-companion-terminal-list"></div>
-        </section>
+        </section></details>
       </section>
 
       <section class="panel" id="panel-roleplay">
         <div class="section-head">
           <div>
             <h2>世界知识</h2>
-            <span class="muted">整理角色和世界背景，作为陪伴行为的稳定参考。</span>
+            <span class="muted">告诉 TA 自己是谁、生活在哪里，以及与你的关系。</span>
           </div>
           <div class="world-page-actions">
             <span class="world-save-state" id="worldSaveState">已同步</span>
@@ -482,7 +494,7 @@
           </aside>
           <div class="module-card-head">
             <div>
-              <h2>世界知识工作台</h2>
+              <h2>角色与背景资料</h2>
               <span class="section-desc">把角色资料、世界观和用户关系整理成插件可引用的背景材料；不会覆盖 AstrBot 主人格。</span>
             </div>
             <span class="module-badge">知识</span>
@@ -1276,12 +1288,22 @@ QQ空间 = 公开札记
 
       <section class="panel" id="panel-proactive">
         <div class="section-head">
-          <h2>今日主动候选</h2>
-          <span class="muted">统一候选池、去重、配额与调度结果</span>
+          <h2>主动消息记录</h2>
+          <span class="muted">先看待发送和已发送消息；需要追查原因时，再展开统计与执行记录。</span>
         </div>
         <div id="proactiveSummary" class="proactive-summary"></div>
         <div class="proactive-layout">
-          <article>
+          <article class="wide proactive-records-card">
+            <h2>消息列表</h2>
+            <div id="proactiveCandidateFilters" class="proactive-filters"></div>
+            <div id="proactiveCandidateList" class="proactive-candidates"></div>
+          </article>
+          <details class="studio-proactive-disclosure"><summary>执行记录 <small>查看任务安排、发送过程与结果</small></summary>          <article class="wide">
+            <h2>主动任务记录</h2>
+            <div id="proactiveTaskList" class="proactive-tasks"></div>
+          </article>
+</details>
+          <details class="studio-proactive-disclosure"><summary>来源与状态分布 <small>按来源和处理状态查看统计图</small></summary><div class="studio-chart-layout">          <article>
             <h2>来源分布</h2>
             <div id="proactiveSourceChart" class="chart-box"></div>
           </article>
@@ -1289,15 +1311,7 @@ QQ空间 = 公开札记
             <h2>状态分布</h2>
             <div id="proactiveStatusChart" class="chart-box"></div>
           </article>
-          <article class="wide">
-            <h2>主动任务记录</h2>
-            <div id="proactiveTaskList" class="proactive-tasks"></div>
-          </article>
-          <article class="wide proactive-records-card">
-            <h2>候选记录</h2>
-            <div id="proactiveCandidateFilters" class="proactive-filters"></div>
-            <div id="proactiveCandidateList" class="proactive-candidates"></div>
-          </article>
+</div></details>
         </div>
       </section>
 
@@ -1512,21 +1526,21 @@ QQ空间 = 公开札记
         <div class="subpage troubleshooting-page">
           <header class="diagnostic-masthead">
             <div>
-              <span class="diagnostic-kicker">SYSTEM / SIGNAL / EVIDENCE</span>
-              <h2>排障指挥台</h2>
-              <p>先选择遇到的问题，再按对应链路查看检查、证据与测试结果。</p>
+              <span class="diagnostic-kicker">遇到问题，从这里查起</span>
+              <h2>检查与修复</h2>
+              <p>先选问题类型，再查看原因。检查不会自动修改你的配置。</p>
             </div>
             <div class="diagnostic-masthead-actions">
-              <button id="refreshTroubleshootingBtn" type="button">执行检查</button>
-              <span class="diagnostic-live-dot"><i></i> 运行态快照</span>
+              <button id="refreshTroubleshootingBtn" type="button">重新检查</button>
+              <span class="diagnostic-live-dot"><i></i> 最近一次检查结果</span>
             </div>
           </header>
 
           <section class="diagnostic-problem-picker" aria-labelledby="troubleshootingProblemTitle">
             <div>
-              <span>从问题开始</span>
-              <h3 id="troubleshootingProblemTitle">你遇到了什么问题？</h3>
-              <p>选择后只保留相关的检查、事件、链路测试与排查说明。</p>
+              <span>选择范围</span>
+              <h3 id="troubleshootingProblemTitle">哪里不正常？</h3>
+              <p>选一类，就只看这一类的检查结果。</p>
             </div>
             <div id="troubleshootingCategories" class="diagnostic-category-list" role="tablist" aria-label="问题类型"></div>
           </section>
@@ -1536,8 +1550,8 @@ QQ空间 = 公开札记
           <section class="diagnostic-priority-zone">
             <div class="diagnostic-zone-head">
               <div>
-                <span>优先队列</span>
-                <h3 id="troubleshootingChecksTitle">需要处理的信号</h3>
+                <span>逐项检查</span>
+                <h3 id="troubleshootingChecksTitle">检查结果</h3>
               </div>
               <div class="troubleshooting-filter diagnostic-filter" role="group" aria-label="问题筛选">
                 <button type="button" data-troubleshooting-filter="all" class="is-active">全部</button>
@@ -1559,12 +1573,13 @@ QQ空间 = 公开札记
           <div class="diagnostic-main-grid">
             <section class="diagnostic-live-lane">
               <div class="diagnostic-zone-head compact">
-                <div><span>实时验证</span><h3 id="troubleshootingChainTitle">链路与运行状态</h3></div>
+                <div><span>需要时再测试</span><h3 id="troubleshootingChainTitle">连接测试</h3></div>
               </div>
               <div id="troubleshootingChainTests" class="troubleshooting-chain-tests"></div>
+              <details class="studio-runtime-details"><summary>数据库、用户隔离与消息合并 <small>展开查看底层运行状态</small></summary>
               <div id="troubleshootingRuntimeStack" class="diagnostic-runtime-stack">
                 <article class="diagnostic-runtime-card">
-                  <div class="diagnostic-card-head"><h3>统一身份与隔离</h3><span>REQ-041</span></div>
+                  <div class="diagnostic-card-head"><h3>用户身份与数据隔离</h3><span>REQ-041</span></div>
                   <div id="troubleshootingReq041" class="troubleshooting-sqlite"></div>
                 </article>
                 <article class="diagnostic-runtime-card">
@@ -1572,29 +1587,29 @@ QQ空间 = 公开札记
                   <div id="troubleshootingSqlite" class="troubleshooting-sqlite"></div>
                 </article>
                 <article class="diagnostic-runtime-card">
-                  <div class="diagnostic-card-head"><h3>消息收口追踪</h3><span>防抖</span></div>
+                  <div class="diagnostic-card-head"><h3>消息合并记录</h3><span>防抖</span></div>
                   <div id="troubleshootingDebounceTrace" class="troubleshooting-debounce-trace"></div>
                 </article>
-              </div>
+              </div></details>
             </section>
 
             <aside class="diagnostic-event-lane">
               <div class="diagnostic-zone-head compact">
-                <div><span>事件时间线</span><h3 id="troubleshootingEventsTitle">最近问题</h3></div>
+                <div><span>按时间查看</span><h3 id="troubleshootingEventsTitle">最近记录</h3></div>
               </div>
               <div id="troubleshootingEvents" class="troubleshooting-events diagnostic-events"></div>
             </aside>
           </div>
 
           <details class="diagnostic-evidence-drawer">
-            <summary><span>证据与深度排查</span><small>提示词注入、常见问题和运行诊断</small></summary>
+            <summary><span>日志与详细说明</span><small>检查正常但仍有问题？展开查看原始记录</small></summary>
             <div class="diagnostic-evidence-body">
               <article class="troubleshooting-injection-panel">
-                <div><h2>最近注入内容</h2><span class="muted">用于排查污染、错时、TTS 规则和上下文串线</span></div>
+                <div><h2>最近加入对话的上下文</h2><span class="muted">检查是否加进了错误的人物资料、时间信息或语音规则。</span></div>
                 <div id="troubleshootingPromptInjections" class="troubleshooting-prompt-injections"></div>
               </article>
               <article class="troubleshooting-diagnostics-panel">
-                <div><h2>运行诊断</h2><span class="muted">从配置、目标用户、群聊开关和运行态中整理出的诊断项</span></div>
+                <div><h2>运行诊断</h2><span class="muted">查看当前配置、陪伴对象、群聊开关是否符合运行条件。</span></div>
                 <div id="diagnosticPanel" class="diagnostic-list"></div>
               </article>
               <article class="troubleshooting-faq-panel">
@@ -1658,8 +1673,8 @@ QQ空间 = 公开札记
         <header class="config-page-intro">
           <div>
             <span class="config-page-kicker">配置中心</span>
-            <h2>配置工作台</h2>
-            <p>基础维护、运行节奏与功能生命周期集中管理。</p>
+            <h2>插件设置</h2>
+            <p>管理陪伴对象、模型服务和功能开关。改完后记得保存。</p>
           </div>
           <nav class="config-section-nav" aria-label="配置区域">
             <button type="button" data-config-section-target="config-common-settings">通用设置</button>
@@ -1671,7 +1686,7 @@ QQ空间 = 公开札记
           <details class="config-fold-panel config-common-settings" id="config-common-settings">
             <summary class="config-fold-summary">
               <div class="config-fold-heading">
-                <span class="config-fold-kicker">配置工作台</span>
+                <span class="config-fold-kicker">插件设置</span>
                 <h2>通用设置</h2>
                 <p>多人格拓扑、AstrBot 路由状态、群聊范围、数据维护与页面外观。</p>
                 <span class="config-fold-preview" aria-label="包含的配置范围">
@@ -1927,7 +1942,7 @@ QQ空间 = 公开札记
                 </div>
                 <span id="configPersonaStatsSource" class="muted">统计随人格选择更新</span>
               </header>
-              <div class="folio-stats config-stats" id="configStats"></div>
+              <details class="studio-config-stats"><summary>查看当前人格的运行统计</summary><div class="folio-stats config-stats" id="configStats"></div></details>
             </section>
           </section>
 
@@ -2011,6 +2026,7 @@ QQ空间 = 公开札记
                 </label>
                 <button id="enableSafeFeaturesBtn" type="button">启用基础安全项</button>
               </div>
+              <details class="studio-filter-options"><summary>按分类、阶段或状态筛选</summary>
               <section class="feature-filter-row" aria-labelledby="featureDomainLabel">
                 <div class="feature-filter-label">
                   <b id="featureDomainLabel">功能领域</b>
@@ -2031,8 +2047,9 @@ QQ空间 = 公开札记
                   <small>快速核对</small>
                 </div>
                 <div id="featureStatusFilters" class="feature-filter-options" role="group" aria-label="当前状态"></div>
-              </section>
+              </section></details>
             </div>
+            <p class="studio-feature-instructions">点击分组展开。右侧开关控制启停，点击功能名称调整参数；更改后请保存。</p>
             <div class="feature-switch-board" id="featureFlags"></div>
           </article>
           </section>
@@ -2098,7 +2115,7 @@ QQ空间 = 公开札记
         <div class="section-head models-page-head">
           <div class="models-page-heading">
             <h2>模型配置</h2>
-            <span class="muted">任务分流、语音合成与生图后端</span>
+            <span class="muted">设置文字、语音和图片任务使用的模型服务。</span>
           </div>
           <nav class="models-subnav" aria-label="模型配置分类" role="tablist">
             <button id="modelsProvidersTab" type="button" class="active" data-index="01" data-models-section="providers" role="tab" aria-controls="modelsProviderPane" aria-selected="true">任务模型</button>
@@ -2111,13 +2128,13 @@ QQ空间 = 公开札记
           <div id="llmStreamingCard"></div>
           <div id="deepseekPeakCard"></div>
           <div id="modelReplacementCard"></div>
-          <div id="providerFlow" class="provider-flow"></div>
+          <details class="studio-routing-help"><summary>查看模型调用关系 <small>不确定某个任务会用哪个模型？在这里查看。</small></summary><div id="providerFlow" class="provider-flow"></div></details>
           <div class="provider-config-mode-card">
             <div>
-              <b>模型配置模式</b>
+              <b>选择配置方式</b>
               <span id="providerConfigModeHint">插件功能通常会携带较多动态上下文，Token 缓存命中率可能较低，请结合调用频率和预算合理规划模型。</span>
             </div>
-            <div class="provider-config-mode" aria-label="模型配置模式">
+            <div class="provider-config-mode" aria-label="选择配置方式">
               <button type="button" data-provider-config-mode="quick" class="active">快速配置</button>
               <button type="button" data-provider-config-mode="precision">精准配置</button>
             </div>
@@ -2134,9 +2151,10 @@ QQ空间 = 公开札记
             </div>
             <div class="provider-toolbar-actions">
               <button id="testAllProvidersBtn" type="button">测试全部模型</button>
-              <button id="saveProvidersBtn" type="button">保存并覆盖两套模型配置</button>
+              <button id="saveProvidersBtn" type="button" title="保存当前填写的模型设置，同时覆盖快速配置和精准配置">保存两套配置</button>
             </div>
           </div>
+          <p class="studio-save-explainer">保存会同时覆盖快速配置和精准配置；测试只检查连接，不会保存修改。</p>
           <form id="providerForm" class="provider-groups"></form>
         </div>
         <div id="modelsTtsPane" class="tts-model-pane" data-models-pane="tts" role="tabpanel" aria-labelledby="modelsTtsTab" hidden>
@@ -2245,7 +2263,7 @@ QQ空间 = 公开札记
         <div class="section-head prompts-page-head">
           <div>
             <h2>任务提示词</h2>
-            <p class="section-desc">统一管理插件内部任务模型的附加指令，包括工具结果转述、日程、复核、群聊、视觉等任务。</p>
+            <p class="section-desc">为日程、群聊、识图等任务补充要求。这里不会修改主聊天人格。</p>
           </div>
           <div class="prompts-scope-note" role="note">
             <b>作用范围</b>
@@ -2266,7 +2284,8 @@ QQ空间 = 公开札记
               </div>
             </div>
             <nav id="promptsGroupNav" class="prompts-group-nav" aria-label="任务分组"></nav>
-            <div id="promptsTaskList" class="prompts-task-list" role="list" aria-label="任务提示词"></div>
+            <p class="prompts-directory-hint" id="promptsDirectoryHint">任务较多时可在目录内滚动，或用上方搜索定位。选择任务后，在编辑区查看完整内容。</p>
+            <div id="promptsTaskList" class="prompts-task-list" role="list" aria-label="任务提示词" aria-describedby="promptsDirectoryHint" tabindex="0"></div>
           </aside>
 
           <section id="promptsEditor" class="prompts-editor" aria-labelledby="promptsEditorTitle">
@@ -2327,6 +2346,12 @@ QQ空间 = 公开札记
     <button id="saveFeaturesBtn" type="button">保存功能开关</button>
   </div>
 
+  <dialog id="studioCommand" class="studio-command" aria-labelledby="studioCommandTitle">
+    <div class="studio-command-head"><h2 id="studioCommandTitle">你想做什么？</h2><button type="button" id="studioCommandClose" aria-label="关闭功能搜索">×</button></div>
+    <input id="studioCommandInput" type="search" placeholder="搜索功能，例如：日程、模型、提示词…" aria-label="搜索功能" autocomplete="off" />
+    <div id="studioCommandResults" class="studio-command-results"></div>
+    <p class="studio-command-help">↑ ↓ 选择 · Enter 打开 · Esc 关闭</p>
+  </dialog>
   <div id="setupGuideOverlayRoot"></div>
 
   <div id="bookshelfCoverPreview" class="bookshelf-cover-preview" hidden aria-hidden="true">
@@ -2359,6 +2384,6 @@ QQ空间 = 公开札记
   <!-- Loaded on demand by app.js through AstrBot's relative dynamic-import rewriting:
        ./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&amp;manual=provider-input-v2&amp;layout=v2&amp;vision-state=v1
        ./js/panels/qzone-panel.js?v=20260810-qzone-classic-loader-v1 -->
-  <script src="./app.js?v=20260809-proactive-tts-external-ability-photo-fixed-v1&amp;build=20260810-reference-upload-v2&amp;page=lazy-classic-loader-v1&amp;scope=photo-scope-quota-v1&amp;touch=reality-redesign-rt2-v4&amp;memory-source=memory-companion-v2&amp;user-create=profile-v1&amp;relationship-role-photo=pr125-v1&amp;camera-runtime-scope=v1&amp;config=multi-persona-summary-v2&amp;troubleshooting=persona-routing-lifecycle-v1&amp;content-visibility=v1&amp;migration-notice=v4&amp;component-order=v1&amp;layout=model-routing-v2&amp;persona-style-batch-recovery=v1&amp;preset-save=v1&amp;directory-nav=v2&amp;mihome=external-runtime-v2&amp;terminal=plugin-check-v1&amp;diagnostic-layout=v2&amp;prompts=task-editor-v2&amp;release=6.4.4f&amp;vision-state=v1"></script>
+  <script src="./app.js?v=20260809-proactive-tts-external-ability-photo-fixed-v1&amp;build=20260810-reference-upload-v2&amp;page=lazy-classic-loader-v1&amp;scope=photo-scope-quota-v1&amp;touch=reality-redesign-rt2-v4&amp;memory-source=memory-companion-v2&amp;user-create=profile-v1&amp;relationship-role-photo=pr125-v1&amp;camera-runtime-scope=v1&amp;config=multi-persona-summary-v2&amp;troubleshooting=persona-routing-lifecycle-v1&amp;content-visibility=v1&amp;migration-notice=v4&amp;component-order=v1&amp;layout=model-routing-v2&amp;persona-style-batch-recovery=v1&amp;preset-save=v1&amp;directory-nav=v2&amp;mihome=external-runtime-v2&amp;terminal=plugin-check-v1&amp;diagnostic-layout=v2&amp;prompts=task-editor-v2&amp;release=6.4.4f&amp;vision-state=v1&amp;studio=20260912-v4&amp;retry=20260913-v1"></script>
 </body>
 </html>

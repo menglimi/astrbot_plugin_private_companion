@@ -181,6 +181,8 @@ COMMON_KEYS = frozenset(
         # persona setting so different personas can choose different tasks.
         "provider_config_mode",
         "enable_llm_streaming",
+        "background_llm_request_max_attempts",
+        "model_request_max_attempts_overrides",
         "enable_deepseek_peak_replacement",
         "model_replacement_scope",
         "model_replacement_rules",

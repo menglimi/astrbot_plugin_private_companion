@@ -398,7 +398,7 @@ class FeatureConfigUiOwnershipTests(unittest.TestCase):
             'enable_livingmemory_integration: "enable_external_memory_integration"',
             self.script,
         )
-        self.assertIn('<small>${escapeHtml(featurePublicKey(key))}</small>', self.script)
+        self.assertIn('<code>${escapeHtml(featurePublicKey(key))}</code>', self.script)
         self.assertIn('data-feature-key="${escapeHtml(key)}"', self.script)
 
     def test_personal_goal_feature_and_settings_are_saveable(self) -> None:
