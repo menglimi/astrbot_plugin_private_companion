@@ -8063,7 +8063,8 @@ function selectTaskPrompt(taskKey) {
   state.selectedTaskPromptKey = next.task_key;
   state.taskPromptDraft = String(next.custom_prompt || "");
   renderTaskPrompts();
-  if (getComputedStyle($("#promptsRoot")).gridTemplateColumns.trim().split(/\s+/).length === 1) {
+  const promptsRoot = $("#promptsRoot");
+  if (promptsRoot && getComputedStyle(promptsRoot).gridTemplateColumns.trim().split(/\s+/).length === 1) {
     $("#promptsEditor")?.scrollIntoView({ behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ? "auto" : "smooth", block: "start" });
   }
 }
@@ -41697,7 +41698,7 @@ void bootstrapPage();
       hint.textContent = descriptions[tab.dataset.tab] || "打开功能页面";
       copy.append(title, hint);
       button.append(icon, copy);
-      button.addEventListener("click", () => { dialog.close(); tab.click(); });
+      button.addEventListener("click", () => { returnFocus = tab; dialog.close(); tab.click(); });
       results.append(button);
     });
     if (!results.childElementCount) {

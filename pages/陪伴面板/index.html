@@ -257,7 +257,7 @@
     <section class="layout">
       <nav class="annotations" aria-label="视图">
         <div class="studio-brand"><span class="studio-brand-mark" aria-hidden="true">✳</span><div><b>伴 · Companion</b><small>PRIVATE COMPANION</small></div></div>
-        <button type="button" class="studio-find" id="studioFindBtn"><span>⌕ &nbsp; 查找功能</span><kbd>⌘ K</kbd></button>
+        <button type="button" class="studio-find" id="studioFindBtn" aria-label="查找功能" title="查找功能"><span aria-hidden="true">⌕</span><span class="studio-find-label">查找功能</span></button>
         <div class="annot-axis" aria-hidden="true"></div>
         <div class="studio-nav-label">日常陪伴</div>
         <button class="tab is-active" data-tab="dashboard"><i>◫</i><span>总览</span></button>
@@ -292,27 +292,7 @@
           </div>
         </div>
 
-        <section class="studio-welcome" aria-labelledby="studioWelcomeTitle">
-          <div class="studio-welcome-copy"><span class="studio-kicker"><span></span> OUR EVERYDAY, TOGETHER</span>
-            <h2 id="studioWelcomeTitle">今天，TA 过得怎么样？</h2>
-            <p>看看当前状态和日程；要调整行为，去左侧设置。</p>
-            <div class="studio-welcome-actions"><button type="button" data-jump-tab="memory" class="studio-primary">看看 TA 的一天 <span>↗</span></button><button type="button" data-setup-guide-open class="studio-text-button">初次见面？开始配置 <span>→</span></button></div>
-          </div>
-          <svg class="studio-art" viewBox="0 0 400 280" fill="none" aria-hidden="true">
-            <circle cx="224" cy="135" r="108" fill="#e0e7d9"/><circle cx="224" cy="135" r="84" stroke="#c8d3c1" stroke-dasharray="3 7"/>
-            <ellipse cx="218" cy="240" rx="142" ry="14" fill="#d2ddce" opacity=".55"/>
-            <path d="M117 212c-32-29-40-66-29-102 34 7 59 39 53 80" fill="#809b7d"/><path d="M124 213c-4-43 10-75 44-92 17 35 3 67-44 92Z" fill="#a5b99c"/><path d="M122 218 99 139m24 70 32-65" stroke="#526f57" stroke-width="2"/>
-            <path d="M98 202h58l-8 34h-42z" fill="#ede7d9"/><path d="M98 203h58" stroke="#d7d0bd" stroke-width="4"/>
-            <rect x="182" y="185" width="113" height="48" rx="12" fill="#567761"/><rect x="189" y="179" width="110" height="44" rx="10" fill="#f8f5ea"/><path d="M202 190h77m-77 8h77m-77 8h62" stroke="#d9d9c8" stroke-width="2"/>
-            <rect x="170" y="163" width="118" height="21" rx="6" fill="#a7b693"/><path d="M182 173h91" stroke="#eff1de" stroke-width="2"/>
-            <path d="M206 102h57v39c0 20-57 20-57 0z" fill="#fdfbf3"/><ellipse cx="234.5" cy="103" rx="28.5" ry="8" fill="#dad4bc"/><ellipse cx="234.5" cy="104" rx="23" ry="5" fill="#aa8963"/><path d="M264 111h8c23 0 18 30-8 25" stroke="#fdfbf3" stroke-width="9"/>
-            <path d="M225 83c-12-12 13-18 2-32m17 34c-12-12 13-18 2-32" stroke="#fffdf5" stroke-width="3" stroke-linecap="round"/>
-            <path d="m309 64 4 10 11 3-11 4-4 11-3-11-11-4 11-3z" fill="#82946d"/><circle cx="162" cy="65" r="5" fill="#c2a577"/>
-            <path d="m325 172 3 7 7 3-7 2-3 8-2-8-8-2 8-3z" fill="#bda779"/>
-          </svg>
-          <span class="studio-art-caption">A LITTLE CLOSER, EVERY DAY</span>
-        </section>
-        <div class="studio-metrics-label"><span>运行概况</span><small>点击指标，查看详情 ↗</small></div>
+        <div class="studio-metrics-label"><span>运行概况</span><button type="button" data-jump-tab="memory" class="studio-text-button">日程与记忆 <span aria-hidden="true">↗</span></button></div>
         <div class="folio-stats" id="stats" aria-label="运行概况"></div>
         <section class="dashboard-life-desk" aria-label="今日生活工作台">
           <aside class="dashboard-life-column dashboard-life-column-left">
