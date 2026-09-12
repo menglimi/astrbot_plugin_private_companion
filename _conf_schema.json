@@ -14414,8 +14414,42 @@
           "enable_wardrobe": true
         }
       },
+      "wardrobe_outfit_mode": {
+        "description": "着装注入方式",
+        "type": "string",
+        "options": ["inventory", "select"],
+        "labels": ["注入整份衣柜清单", "只注入当天裁决出的那一套"],
+        "hint": "inventory：把整份衣柜清单注入提示词（原有行为）。select：每天按场景与天气裁决出一套，只注入这一套——更省上下文，也更像真的在换衣服。",
+        "default": "inventory",
+        "condition": {
+          "enable_wardrobe": true,
+          "enable_wardrobe_prompt": true
+        }
+      },
+      "wardrobe_outfit_rotation_days": {
+        "description": "着装轮换冷却天数",
+        "type": "int",
+        "hint": "散件兜底裁决时避开最近这么多天内穿过的衣物。整套（bundle）命中时不受影响。",
+        "default": 7,
+        "slider": {
+          "min": 1,
+          "max": 30,
+          "step": 1
+        },
+        "condition": {
+          "enable_wardrobe": true,
+          "enable_wardrobe_prompt": true,
+          "wardrobe_outfit_mode": "select"
+        }
+      },
       "wardrobe_items": {
         "description": "具体衣物条目（由命令或面板维护）",
+        "type": "list",
+        "default": [],
+        "invisible": true
+      },
+      "wardrobe_outfits": {
+        "description": "整套定义（由命令或面板维护）",
         "type": "list",
         "default": [],
         "invisible": true

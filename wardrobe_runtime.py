@@ -20,27 +20,37 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
 from .conversation_prompt_section import PromptSection, prompt_section
-from .helpers import _flat_get, _set_into_config, _single_line
+from .helpers import _flat_get, _set_into_config, _single_line, _today_key
 from .persona_config import PERSONA_SETTINGS_KEY, runtime_persona_setting
 from .wardrobe import (
+    OUTFIT_KIND_BUNDLE,
+    OUTFIT_KIND_STYLE,
     SOURCE_KIND_IMAGE,
     SOURCE_KIND_MANUAL,
     WARDROBE_MAX_ITEMS,
+    WARDROBE_MAX_OUTFITS,
     WARDROBE_PROMPT_MAX_CHARS,
     WARDROBE_PROMPT_MAX_ITEMS,
     WardrobeError,
     WardrobeLimitError,
     add_wardrobe_item,
+    add_wardrobe_outfit,
     build_wardrobe_image_instruction,
     clear_wardrobe,
     delete_wardrobe_item,
+    delete_wardrobe_outfit,
     find_wardrobe_item,
+    find_wardrobe_outfit,
     normalize_wardrobe_image_prompt,
     normalize_wardrobe_items,
+    normalize_wardrobe_outfits,
     normalize_wardrobe_tendency,
     parse_wardrobe_image_reply,
+    render_wardrobe_outfit_prompt,
     render_wardrobe_prompt,
+    select_wardrobe_outfit,
     update_wardrobe_item,
+    update_wardrobe_outfit,
     wardrobe_summary_lines,
 )
 
@@ -120,6 +130,69 @@ class WardrobeMixin:
 
     def _wardrobe_items(self) -> list[dict[str, Any]]:
         return normalize_wardrobe_items(self._wardrobe_setting("wardrobe_items", []))
+
+    def _wardrobe_outfits(self) -> list[dict[str, Any]]:
+        return normalize_wardrobe_outfits(self._wardrobe_setting("wardrobe_outfits", []))
+
+    def _wardrobe_outfit_mode(self) -> str:
+        """Return inventory (列出全部衣物) or select (只注入裁决出的那一套)."""
+
+        text = _single_line(self._wardrobe_setting("wardrobe_outfit_mode", "inventory"), 20).casefold()
+        return "select" if text == "select" else "inventory"
+
+    def _wardrobe_outfit_rotation_days(self) -> int:
+        """Cooldown window, kept in the same 1..30 range as the author's photo setting."""
+
+        try:
+            value = int(self._wardrobe_setting("wardrobe_outfit_rotation_days", 7))
+        except (TypeError, ValueError):
+            return 7
+        return max(1, min(30, value))
+
+    def _wardrobe_current_scene(self) -> str:
+        """Reuse the author's scene decision; return "" when it is unavailable.
+
+        An empty scene means "no filtering", so a plugin build that lacks
+        _daily_outfit_scene_kind keeps behaving exactly as before.
+        """
+
+        decide = getattr(self, "_daily_outfit_scene_kind", None)
+        if not callable(decide):
+            return ""
+        schedule = ""
+        getter = getattr(self, "_daily_outfit_schedule_text", None)
+        if callable(getter):
+            try:
+                schedule = str(getter() or "")
+            except Exception:
+                schedule = ""
+        weather = ""
+        getter = getattr(self, "_format_weather_for_prompt", None)
+        if callable(getter):
+            try:
+                weather = str(getter() or "")
+            except Exception:
+                weather = ""
+        try:
+            return _single_line(decide(schedule, weather), 20)
+        except Exception:
+            return ""
+
+    def _wardrobe_outfit_selection(self, user: Any = None) -> dict[str, Any]:
+        """Resolve the outfit for this turn.
+
+        Deterministic for a given (date, scene, wardrobe), so repeated calls
+        inside one day never make the character change clothes mid-conversation.
+        """
+
+        user_id = _single_line((user or {}).get("user_id"), 80) if isinstance(user, dict) else ""
+        seed = f"{_today_key()}|{user_id}"
+        return select_wardrobe_outfit(
+            self._wardrobe_items(),
+            self._wardrobe_outfits(),
+            scene=self._wardrobe_current_scene(),
+            seed=seed,
+        )
 
     # ------------------------------------------------------------------
     # 落盘
@@ -239,14 +312,19 @@ class WardrobeMixin:
             return None
         tendency = self._wardrobe_tendency()
         items = self._wardrobe_items()
-        if not tendency and not items:
+        outfits = self._wardrobe_outfits()
+        if not tendency and not items and not outfits:
             return None
-        body = render_wardrobe_prompt(
-            tendency,
-            items,
-            max_items=self._wardrobe_prompt_item_limit(),
-            max_chars=WARDROBE_PROMPT_MAX_CHARS,
-        )
+        if self._wardrobe_outfit_mode() == "select":
+            body = self._wardrobe_selected_outfit_body(user, tendency)
+        else:
+            body = render_wardrobe_prompt(
+                tendency,
+                items,
+                max_items=self._wardrobe_prompt_item_limit(),
+                max_chars=WARDROBE_PROMPT_MAX_CHARS,
+                scene=self._wardrobe_current_scene(),
+            )
         if not body:
             return None
         return prompt_section(
@@ -254,6 +332,26 @@ class WardrobeMixin:
             title="角色衣柜",
             source="wardrobe",
             content=body,
+        )
+
+    def _wardrobe_selected_outfit_body(self, user: Any = None, tendency: Any = "") -> str:
+        """Body for the select mode: only the resolved outfit, not the inventory.
+
+        Falls back to the full listing when nothing can be resolved (empty
+        wardrobe, or every item filtered out by scene) so the section never
+        silently becomes empty.
+        """
+
+        selection = self._wardrobe_outfit_selection(user)
+        body = render_wardrobe_outfit_prompt(tendency, selection)
+        if body:
+            return body
+        return render_wardrobe_prompt(
+            tendency,
+            self._wardrobe_items(),
+            max_items=self._wardrobe_prompt_item_limit(),
+            max_chars=WARDROBE_PROMPT_MAX_CHARS,
+            scene=self._wardrobe_current_scene(),
         )
 
     async def _append_group_wardrobe_to_request(self, event: Any, req: Any) -> None:
