@@ -579,10 +579,10 @@ function syncProviderConfigModeControls() {
   });
   const hint = document.getElementById("providerConfigModeHint");
   if (hint) {
-    const tokenCostHint = "插件功能通常会携带较多动态上下文，Token 缓存命中率可能较低，请结合调用频率和预算合理规划模型。";
+    const tokenCostHint = "每次调用可能附带日程、记忆等资料，因此缓存不一定命中；请留意调用频率和 Token 花费。";
     hint.textContent = quick
-      ? `${tokenCostHint} 快速配置显示通用场景模型；插件识图、资料归档视觉和通用嵌入模型各自独立。`
-      : `${tokenCostHint} 精准配置显示各任务单独 Provider；独立识图与通用嵌入不会跟随文本模型改写。`;
+      ? `先为常用任务选模型即可。图片识别、资料归档识图和向量模型需要单独设置。${tokenCostHint}`
+      : `为每一种任务单独选模型服务。修改文字模型不会改动独立识图和向量模型。${tokenCostHint}`;
   }
 }
 
@@ -6016,9 +6016,9 @@ function loadOptionalClassicScript(relativePath, retry = 0) {
 
 const optionalModuleLoaders = {
   providerTree: [
-    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2&vision-state=v1", 0),
-    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2&vision-state=v1", 1),
-    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2&vision-state=v1", 2),
+    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2&vision-state=v1&studio=20260912-v1", 0),
+    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2&vision-state=v1&studio=20260912-v1", 1),
+    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2&vision-state=v1&studio=20260912-v1", 2),
   ],
   qzonePanel: [
     () => loadOptionalClassicScript("./js/panels/qzone-panel.js?v=20260810-qzone-classic-loader-v1", 0),
@@ -8063,8 +8063,9 @@ function selectTaskPrompt(taskKey) {
   state.selectedTaskPromptKey = next.task_key;
   state.taskPromptDraft = String(next.custom_prompt || "");
   renderTaskPrompts();
-  if (window.matchMedia?.("(max-width: 700px)")?.matches) {
-    $("#promptsEditor")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const promptsRoot = $("#promptsRoot");
+  if (promptsRoot && getComputedStyle(promptsRoot).gridTemplateColumns.trim().split(/\s+/).length === 1) {
+    $("#promptsEditor")?.scrollIntoView({ behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ? "auto" : "smooth", block: "start" });
   }
 }
 
@@ -12239,7 +12240,7 @@ function renderCompanionPluginTerminal() {
         <p>${escapeHtml(entry.detail)}</p>
         <small>${escapeHtml(entry.note)}</small>
       </div>
-      <button type="button" class="dashboard-companion-plugin-action" data-jump-tab="${escapeHtml(entry.tab)}" ${entry.key === "image" && !entry.status.installed ? "disabled" : ""}>${escapeHtml(entry.action)}</button>
+      <button type="button" class="dashboard-companion-plugin-action" data-jump-tab="${escapeHtml(entry.tab)}" ${!entry.status?.installed ? 'disabled aria-disabled="true" title="未安装对应扩展插件"' : ""}>${escapeHtml(entry.action)}</button>
     </article>
   `).join("");
 }
@@ -13113,12 +13114,12 @@ function labeledRoleplayValuePresent(text, label) {
 }
 
 const troubleshootingCategories = {
-  all: { label: "全部概览", description: "先看所有正在影响功能的信号", keywords: [] },
-  reply: { label: "回复", description: "没有回复、回复异常或内容被带偏", keywords: ["回复", "llm", "防抖", "沉默", "token", "模型", "注入", "上下文", "群聊"] },
-  proactive: { label: "主动", description: "主动消息没有发出、被延后或被丢弃", keywords: ["主动", "候选", "静默", "冷却", "预约", "人格", "配额", "未回复"] },
+  all: { label: "全部", description: "查看所有检查结果", keywords: [] },
+  reply: { label: "聊天回复", description: "不回复、回复慢，或答非所问", keywords: ["回复", "llm", "防抖", "沉默", "token", "模型", "注入", "上下文", "群聊"] },
+  proactive: { label: "主动消息", description: "没有主动联系，或消息没有发出", keywords: ["主动", "候选", "静默", "冷却", "预约", "人格", "配额", "未回复"] },
   image_generation: { label: "生图", description: "文生图、自拍、参考图或图片下载失败", keywords: ["生图", "图片生成", "文生图", "自拍", "参考图", "comfy", "图像 api", "image"] },
-  image_recognition: { label: "识图", description: "图片识别、视觉模型、转述或窥屏异常", keywords: ["识图", "图片识别", "视觉", "转述", "窥屏", "screen", "vision"] },
-  voice: { label: "语音", description: "TTS 设置、真实语音 Provider 或音频生成失败", keywords: ["tts", "语音", "音频", "朗读", "voice"] },
+  image_recognition: { label: "图片识别", description: "看不懂图片，或屏幕内容识别失败", keywords: ["识图", "图片识别", "视觉", "转述", "窥屏", "screen", "vision"] },
+  voice: { label: "语音", description: "没有声音、音频生成失败或服务配置有误", keywords: ["tts", "语音", "音频", "朗读", "voice"] },
 };
 
 function troubleshootingCategoryInfo(category) {
@@ -13441,14 +13442,14 @@ function renderTroubleshooting() {
   const reasonItems = troubleshootingReasonItems(filteredChecks, filteredEvents, selected);
   renderTroubleshootingSuppressedWarnings(data);
   if (categoriesEl) categoriesEl.innerHTML = troubleshootingCategoryPickerMarkup(category);
-  $("#troubleshootingChecksTitle")?.replaceChildren(document.createTextNode(`${categoryInfo.label}：需要处理的信号`));
-  $("#troubleshootingChainTitle")?.replaceChildren(document.createTextNode(`${categoryInfo.label}：链路与运行状态`));
-  $("#troubleshootingEventsTitle")?.replaceChildren(document.createTextNode(`${categoryInfo.label}：最近问题`));
+  $("#troubleshootingChecksTitle")?.replaceChildren(document.createTextNode(`${categoryInfo.label} · 检查结果`));
+  $("#troubleshootingChainTitle")?.replaceChildren(document.createTextNode(`${categoryInfo.label} · 连接测试`));
+  $("#troubleshootingEventsTitle")?.replaceChildren(document.createTextNode(`${categoryInfo.label} · 最近记录`));
   summaryEl.innerHTML = `
     <section class="troubleshooting-head-card ${escapeHtml(level)}">
       <div>
         <span>${escapeHtml(summary.generated_at || "等待检查")}</span>
-        <b>${escapeHtml(summary.headline || "尚未加载排障信息")}</b>
+        <b>${escapeHtml(studioDiagnosticTitle(summary.headline) || "还没有检查结果")}</b>
         <small>${escapeHtml(troubleshootingSummaryText(counts, summary))}</small>
       </div>
       <button type="button" data-troubleshooting-refresh>重新检查</button>
@@ -13460,18 +13461,18 @@ function renderTroubleshooting() {
       </button>
     `).join("")}
     ${troubleshootingProactiveIntensityMarkup(data.proactive_intensity || state.overview?.proactive_intensity || {})}
-    <section class="troubleshooting-reasons">
-      <header>
-        <b>${escapeHtml(selected === "all" ? `近 2 小时${categoryInfo.label}待处理原因` : `${troubleshootingLevelLabel(selected)}原因`)}</b>
-        <span>${escapeHtml(selected === "all" ? "只展示近期需要处理的错误和警告；普通信息可点信息查看" : "筛选同时作用于常见问题检查和最近问题")}</span>
-      </header>
-      ${reasonItems.length ? reasonItems.map((item) => `
+    <details class="troubleshooting-reasons studio-reason-details">
+      <summary>
+        <b>${escapeHtml(selected === "all" ? `近 2 小时的问题摘要` : `${troubleshootingLevelLabel(selected)}原因`)}</b>
+        <span>${escapeHtml(selected === "all" ? "展开查看错误和警告；详细结果见下方" : "按当前条件筛选；详细结果见下方")}</span>
+      </summary>
+      <div class="studio-reason-body">${reasonItems.length ? reasonItems.map((item) => `
         <button type="button" class="${escapeHtml(item.level || "info")}" ${item.jump ? `data-jump-tab="${escapeHtml(item.jump)}"` : ""}>
           <b>${escapeHtml(item.title || "-")}</b>
           <span>${escapeHtml(item.text || "")}</span>
         </button>
-      `).join("") : `<div class="empty small">${escapeHtml(selected === "all" ? "暂无需要处理的原因" : "这个筛选下暂无原因")}</div>`}
-    </section>
+      `).join("") : `<div class="empty small">${escapeHtml(selected === "all" ? "暂无需要处理的原因" : "这个筛选下暂无原因")}</div>`}</div>
+    </details>
   `;
   document.querySelectorAll("[data-troubleshooting-filter]").forEach((button) => {
     button.classList.toggle("is-active", button.dataset.troubleshootingFilter === selected);
@@ -13673,12 +13674,13 @@ function troubleshootingCheckMarkup(item) {
     <section class="troubleshooting-check ${escapeHtml(level)}">
       <div class="troubleshooting-check-icon">${escapeHtml(level === "ok" ? "✓" : level === "error" ? "!" : level === "warn" ? "!" : "i")}</div>
       <div>
-        <b>${escapeHtml(item.title || "-")}</b>
-        <p>${escapeHtml(item.text || "")}</p>
+        <b title="${escapeHtml(item.title || "")}">${escapeHtml(studioDiagnosticTitle(item.title) || "-")}</b>
+        <p>${escapeHtml(studioDiagnosticExplanation(item) || item.text || "")}</p>
+        ${studioDiagnosticExplanation(item) && item.text ? `<details class="studio-check-original"><summary>原始检查说明</summary><p>${escapeHtml(item.text)}</p></details>` : ""}
         ${item.action ? `<small>${escapeHtml(item.action)}</small>` : ""}
       </div>
       <div class="troubleshooting-check-actions">
-        ${item.jump ? `<button type="button" data-jump-tab="${escapeHtml(item.jump)}">查看</button>` : ""}
+        ${item.jump ? `<button type="button" data-jump-tab="${escapeHtml(item.jump)}">${escapeHtml(studioDiagnosticDestination(item.jump))} ↗</button>` : ""}
         ${troubleshootingSuppressionButtonMarkup(item, "常见检查")}
       </div>
     </section>
@@ -13692,12 +13694,12 @@ function troubleshootingEventMarkup(item) {
         <span>${escapeHtml(item.source || "事件")}</span>
         <small>${escapeHtml(item.time || "")}</small>
       </header>
-      <b>${escapeHtml(item.title || "-")}</b>
+      <b title="${escapeHtml(item.title || "")}">${escapeHtml(studioDiagnosticTitle(item.title) || "-")}</b>
       ${item.detail ? `<p>${escapeHtml(item.detail)}</p>` : ""}
       <footer>
         ${item.action ? `<span>${escapeHtml(item.action)}</span>` : ""}
         <div class="troubleshooting-event-actions">
-          ${item.jump ? `<button type="button" data-jump-tab="${escapeHtml(item.jump)}">查看</button>` : ""}
+          ${item.jump ? `<button type="button" data-jump-tab="${escapeHtml(item.jump)}">${escapeHtml(studioDiagnosticDestination(item.jump))} ↗</button>` : ""}
           ${troubleshootingSuppressionButtonMarkup(item, item.source || "最近问题")}
         </div>
       </footer>
@@ -17080,13 +17082,13 @@ async function renderUserDetail(forceFetch = false) {
       </label>
       <button type="submit">保存</button>
       </form>
-    <div class="visual-strip">
+    <details class="studio-user-metrics"><summary>更多互动统计 <small>关系、主动次数、片段、待续话题与习惯</small></summary><div class="visual-strip">
       ${miniStat("关系阶段", detail.relationship_stage || detail.relationship_intimacy?.phase?.label || "初识")}
       ${scoreGauge("今日主动", detail.sent_today || 0, 0, proactiveGaugeMax(detail.sent_today, detail.effective_daily_limit, detail.effective_daily_limit_unlimited, state.overview?.private?.max_daily_messages || 8))}
       ${miniStat("片段", detail.dialogue_episode_count || (detail.dialogue_episodes || []).length)}
       ${miniStat("未完话头", Array.isArray(detail.open_loops) ? activeOpenLoopItems(detail.open_loops).length : (detail.open_loop_count || 0))}
       ${miniStat("习惯", detail.habit_count || detail.behavior_habits?.items?.length || 0)}
-    </div>
+    </div></details>
       ${detailBlock("最近对话", "", [["用户消息", detail.last_user_message || ""], ["陪伴回复", detail.last_companion_message || ""]])}
       ${renderOpenLoopBlock(detail)}
     </section>
@@ -23387,7 +23389,10 @@ function renderProactiveCandidates() {
   const listTruncated = Boolean(data.list_truncated);
   const taskData = state.overview?.proactive_tasks || {};
   const runtime = taskData.runtime || {};
-  $("#proactiveSummary").innerHTML = [
+  $("#proactiveSummary").innerHTML = `
+    <div class="studio-proactive-lead"><span>待发送 <b>${escapeHtml(pendingTotal)}</b></span><span>已发送 <b>${escapeHtml(counts.sent || 0)}</b></span><span>调度检查 <b>${runtime.healthy ? "正常" : "待确认"}</b></span></div>
+    <details class="studio-proactive-metrics" ${studioDisclosureIsOpen("proactive-metrics") ? "open" : ""} data-studio-disclosure="proactive-metrics"><summary>完整统计与调度状态 <small>新增、合并、拦截及执行记录</small></summary><div class="studio-metric-list">
+${[
     proactiveSummaryCard("今日新增", data.today_record_total || 0, `候选池现有 ${formatNumber(data.pool_record_total || totalRecords)} 条`),
     proactiveSummaryCard("今日合并", data.today_merge_trigger_count || 0, "同一来源或相近候选合并次数"),
     proactiveSummaryCard("今日拦截", data.today_blocked_record_total || 0, "按实际拦截记录统计"),
@@ -23397,7 +23402,9 @@ function renderProactiveCandidates() {
     proactiveSummaryCard("被拦截", counts.blocked || 0, "同类拦截已合并计数"),
     proactiveSummaryCard("执行审计", taskData.audit_total || 0, `${Object.keys(taskData.audit_status_counts || {}).length || 0} 类结果`),
     proactiveSummaryCard("循环状态", runtime.healthy ? "正常" : "待确认", runtime.last_tick_started_ts ? `最近 ${runtime.last_tick_started}` : "尚无心跳"),
-  ].join("");
+  ].join("")}
+    </div></details>`;
+  studioBindDisclosures($("#proactiveSummary"));
   $("#proactiveSourceChart").innerHTML = donutChart(sourceCounts, {
     emptyText: "暂无来源数据",
     labelFormatter: (label) => sourceLabels[label] || proactiveCandidateSourceLabel(label),
@@ -23435,7 +23442,7 @@ function renderProactiveCandidates() {
           <div class="toolbar">
             <span class="badge">${escapeHtml(repeat > 1 ? `${status} x${repeat}` : status)}</span>
             <button type="button" class="danger-outline" data-proactive-candidate-delete="${escapeHtml(item.id || "")}" data-proactive-user-id="${escapeHtml(item.user_id || "")}">删除</button>
-            <button type="button" class="danger-outline" data-proactive-candidate-prune="${escapeHtml(item.user_id || "")}" data-proactive-prune-keep="160">删一点</button>
+            <button type="button" class="danger-outline" data-proactive-candidate-prune="${escapeHtml(item.user_id || "")}" data-proactive-prune-keep="160" title="保留最近 160 条，清理更早的记录">清理旧记录</button>
           </div>
         </div>
         <p>${escapeHtml(item.motive || "暂无动机记录")}</p>
@@ -28080,22 +28087,23 @@ function renderFeatureSwitches() {
       ? proactiveIntensityCommonSettingCard(overviewSettings, intensity)
       : "";
     return `
-      <section class="feature-switch-group">
-        <header>
+      <details class="feature-switch-group studio-feature-group" data-studio-feature-group="${escapeHtml(group.title)}" ${studioFeatureGroupOpen(group.title) ? "open" : ""}>
+        <summary>
           <div>
             <b>${escapeHtml(group.title)}</b>
             <span>${escapeHtml(group.note || "")}</span>
           </div>
-          <small>${escapeHtml(groupMeta)}</small>
-        </header>
+          <small>已开启 ${escapeHtml(groupMeta)}</small>
+        </summary>
         <div class="feature-switch-list">
           ${prefix}
           ${visibleKeys.map((key) => featureSwitchItem(key)).join("")}
         </div>
-      </section>
+      </details>
     `;
   }).filter(Boolean).join("");
   $("#featureFlags").innerHTML = board || `<div class="feature-filter-empty"><b>没有匹配的功能开关</b><span>可以调整领域、作用阶段、状态或搜索词。</span><button type="button" data-feature-filter-reset>清除筛选</button></div>`;
+  studioBindFeatureGroups();
   document.querySelectorAll("[data-feature-key]").forEach((input) => {
     input.addEventListener("change", () => {
       state.featureDraft[input.dataset.featureKey] = input.checked;
@@ -28121,7 +28129,7 @@ function renderFeatureSwitches() {
       renderFeatureSwitches();
     };
     card.addEventListener("click", (event) => {
-      if (event.target.closest("button, input, label, select, textarea, a")) return;
+      if (event.target.closest("button, input, label, select, textarea, a, summary, .studio-feature-notes")) return;
       openDetail();
     });
   });
@@ -28512,10 +28520,9 @@ function featureSwitchItem(key) {
       <div class="feature-switch-body">
         <button type="button" class="feature-switch-text" data-feature-open="${escapeHtml(key)}">
           <b>${escapeHtml(featureLabel(key))}</b>
-          <small>${escapeHtml(featurePublicKey(key))}</small>
           <span class="feature-open-hint">查看配置 <span aria-hidden="true">›</span></span>
         </button>
-        <div class="feature-stage-tags" aria-label="作用阶段">${imageUse ? `<span class="feature-image-use">${escapeHtml(imageUse)}</span>` : ""}${stageTags}</div>
+        <details class="studio-feature-notes"><summary>配置键与作用阶段</summary><code>${escapeHtml(featurePublicKey(key))}</code><div class="feature-stage-tags" aria-label="作用阶段">${imageUse ? `<span class="feature-image-use">${escapeHtml(imageUse)}</span>` : ""}${stageTags}</div></details>
         <div class="feature-switch-meta">
           <span class="feature-state-text">${escapeHtml(stateText)}</span>
           ${sourceBadge}
@@ -39441,8 +39448,19 @@ function switchTab(tabName) {
   // Calendar is part of the observation workspace now. Keep old deep links
   // and bookmarks working by redirecting the retired tab to that workspace.
   if (tabName === "calendar") tabName = "memory";
-  if (tabName === "enable_experimental_bluetooth_wakeup") tabName = "reality";
   tabName = tabName === "modules" ? "config" : (opensSocialLearning ? "learning" : (opensDailyReview ? "experimental" : (tabName || "dashboard")));
+  if (tabName === "creative" && !contentCompanionInstalled()) {
+    showToast("尚未安装创作扩展，请在插件市场安装后使用", "warn");
+    return;
+  }
+  if (tabName === "reality" && !realityCompanionInstalled()) {
+    showToast("尚未安装现实触及扩展，请在插件市场安装后使用", "warn");
+    return;
+  }
+  if (tabName === "image" && !imageCompanionInstalled()) {
+    showToast("尚未安装生图扩展，请在插件市场安装后使用", "warn");
+    return;
+  }
   if (opensSocialLearning) state.learningSection = "social";
   if (opensDailyReview) state.experimentalSubpage = "daily-review";
   if (tabName !== state.activeTab && hasUnsavedChanges()) {
@@ -40035,7 +40053,7 @@ document.addEventListener("change", (event) => {
 
 document.addEventListener("click", async (event) => {
   const target = event.target instanceof Element ? event.target.closest("[data-jump-tab]") : null;
-  if (!target) return;
+  if (!target || target.disabled || target.getAttribute("aria-disabled") === "true") return;
   state.setupGuideOpen = false;
   clearSetupGuideProactivePoll();
   renderSetupGuideOverlay();
@@ -41642,3 +41660,189 @@ async function bootstrapPage() {
 }
 
 void bootstrapPage();
+
+/* Companion Studio: presentation enhancements only. All navigation goes through
+ * existing tab clicks / switchTab(), including dirty-form checks and lazy loads. */
+(function initializeCompanionStudio() {
+  if (!document.body.classList.contains("companion-studio")) return;
+  const nav = document.querySelector(".annotations");
+  const dialog = document.getElementById("studioCommand");
+  const input = document.getElementById("studioCommandInput");
+  const results = document.getElementById("studioCommandResults");
+  const descriptions = {
+    dashboard: "今日状态、陪伴概况与运行信息", roleplay: "角色设定、世界观、衣柜与关系资料",
+    private: "陪伴对象、用户资料与私聊关系", group: "群聊成员、互动与观察",
+    learning: "表达学习、社交知识与反应素材", memory: "日程、时间轴、记忆与生活观察",
+    proactive: "主动互动、候选消息与策略", creative: "书架、日记、创作与空间",
+    image: "图像生成与运行状态", tokens: "用量、预算与消耗分析",
+    troubleshooting: "诊断、连接检查与故障排查", config: "功能开关、人格配置与行为设置",
+    models: "模型路由、Provider、语音与图像服务", experimental: "实验能力与每日巡视",
+    prompts: "任务提示词、附加指令与默认恢复", reality: "现实触及与外部设备",
+  };
+  let returnFocus = null;
+  const visibleTabs = () => [...nav.querySelectorAll(".tab[data-tab]")].filter(tab => !tab.hidden && getComputedStyle(tab).display !== "none");
+  function renderSearch() {
+    const query = input.value.trim().toLocaleLowerCase();
+    results.replaceChildren();
+    visibleTabs().filter(tab => `${tab.textContent} ${descriptions[tab.dataset.tab] || ""}`.toLocaleLowerCase().includes(query)).forEach(tab => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "studio-command-result";
+      const icon = document.createElement("span");
+      icon.textContent = tab.querySelector("i")?.textContent || "↗";
+      icon.setAttribute("aria-hidden", "true");
+      const copy = document.createElement("div");
+      const title = document.createElement("b");
+      title.textContent = tab.querySelector("span")?.textContent || tab.dataset.tab;
+      const hint = document.createElement("small");
+      hint.textContent = descriptions[tab.dataset.tab] || "打开功能页面";
+      copy.append(title, hint);
+      button.append(icon, copy);
+      button.addEventListener("click", () => { returnFocus = tab; dialog.close(); tab.click(); });
+      results.append(button);
+    });
+    if (!results.childElementCount) {
+      const empty = document.createElement("p");
+      empty.className = "studio-search-empty";
+      empty.textContent = "没有找到相关功能，试试「配置」或「日程」。";
+      results.append(empty);
+    }
+  }
+  function openSearch() {
+    if (dialog.open) return;
+    // Do not cover a pending confirmation or another feature's modal dialog.
+    if (document.querySelector("dialog[open]")) return;
+    returnFocus = document.activeElement;
+    input.value = "";
+    renderSearch();
+    dialog.showModal();
+    input.focus();
+  }
+  document.getElementById("studioFindBtn").addEventListener("click", openSearch);
+  document.getElementById("studioCommandClose").addEventListener("click", () => dialog.close());
+  dialog.addEventListener("close", () => returnFocus?.focus?.({ preventScroll: true }));
+  dialog.addEventListener("click", event => {
+    if (event.target !== dialog) return;
+    const rect = dialog.getBoundingClientRect();
+    if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) dialog.close();
+  });
+  input.addEventListener("input", renderSearch);
+  dialog.addEventListener("keydown", event => {
+    const buttons = [...results.querySelectorAll("button")];
+    const index = buttons.indexOf(document.activeElement);
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (event.key === "ArrowUp" && index <= 0) input.focus();
+      else buttons[Math.min(buttons.length - 1, Math.max(0, index + (event.key === "ArrowDown" ? 1 : -1)))]?.focus();
+    } else if (event.key === "Enter" && event.target === input) {
+      event.preventDefault(); buttons[0]?.click();
+    }
+  });
+  document.addEventListener("keydown", event => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault(); if (dialog.open) dialog.close(); else openSearch();
+    }
+    const stat = event.target.closest?.(".stat[data-jump-tab]");
+    if (stat && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); stat.click(); }
+  });
+  let activeName = "";
+  function syncNavigation() {
+    const tabs = [...nav.querySelectorAll(".tab[data-tab]")];
+    const active = tabs.find(tab => tab.classList.contains("is-active"));
+    tabs.forEach(tab => {
+      if (tab === active) tab.setAttribute("aria-current", "page");
+      else tab.removeAttribute("aria-current");
+      tab.setAttribute("aria-controls", `panel-${tab.dataset.tab}`);
+    });
+    if (!active || activeName === active.dataset.tab) return;
+    activeName = active.dataset.tab;
+    document.getElementById("studioPageTitle").textContent = active.querySelector("span")?.textContent || "总览";
+    document.querySelector(".studio-skip").href = `#panel-${activeName}`;
+    if (window.matchMedia("(min-width: 681px)").matches) {
+      const top = active.offsetTop;
+      if (top < nav.scrollTop || top + active.offsetHeight > nav.scrollTop + nav.clientHeight) {
+        nav.scrollTo({ top: Math.max(0, top - nav.clientHeight / 2), behavior: "auto" });
+      }
+    }
+  }
+  new MutationObserver(syncNavigation).observe(nav, { subtree: true, attributes: true, attributeFilter: ["class", "hidden"] });
+  syncNavigation();
+  function enhanceStats(root) {
+    root.querySelectorAll(".stat[data-jump-tab]").forEach(stat => {
+      stat.tabIndex = 0;
+      stat.setAttribute("role", "button");
+      stat.setAttribute("aria-label", `${stat.textContent.trim()}，查看详情`);
+    });
+  }
+  ["stats", "configStats"].forEach(id => {
+    const root = document.getElementById(id);
+    if (!root) return;
+    new MutationObserver(() => enhanceStats(root)).observe(root, { childList: true });
+    enhanceStats(root);
+  });
+  document.querySelectorAll(".layout > .panel").forEach(panel => { panel.tabIndex = -1; });
+})();
+
+/* Plain-language labels only; raw diagnostic data, filters and action keys remain unchanged. */
+function studioDiagnosticTitle(title) {
+  const labels = {
+    "有可关注项": "有几项需要确认",
+    "主动消息没有私聊对象": "还没有设置私聊对象",
+    "主动带图当前不可用": "主动消息暂时不能附图",
+    "Token 预算未阻塞": "Token 预算正常",
+    "TTS 强化未开启": "未启用语音增强",
+    "SQLite WAL 检查通过": "数据库读写检查通过",
+    "近期模型调用无待处理失败": "近期没有待处理的模型错误",
+  };
+  return labels[String(title || "")] || String(title || "");
+}
+function studioDiagnosticDestination(tab) {
+  const labels = { private: "设置陪伴对象", tokens: "查看用量", config: "打开设置", models: "模型设置", image: "图片设置", proactive: "主动消息设置", group: "群聊设置", memory: "查看日程", troubleshooting: "查看详情" };
+  return labels[tab] || "打开相关页面";
+}
+
+function studioDiagnosticExplanation(item) {
+  const explanations = {
+    "主动消息没有私聊对象": "还没有启用的陪伴对象，所以暂时不会发送主动私聊消息。",
+    "主动带图当前不可用": "主动消息暂时不能附图。请检查图片服务、用量限制，以及陪伴对象的权限。",
+    "TTS 强化未开启": "语音增强已关闭。请勿要求模型输出 TTS 标签；如果仍有标签，发送前会清理。",
+  };
+  return explanations[String(item?.title || "")] || "";
+}
+
+/* Studio v3: native disclosures preserve mounted controls and existing events.
+ * In-memory UI preferences only. Never write configuration or infer feature state. */
+function studioFeatureFilterActive() {
+  return Boolean(document.getElementById("featureFilter")?.value.trim())
+    || [state.featureDomainFilter, state.featureStageFilter, state.featureStatusFilter].some(value => value && value !== "all");
+}
+function studioDisclosureIsOpen(key) { return Boolean(studioDisclosureIsOpen.values?.get(key)); }
+function studioBindDisclosures(root) {
+  root?.querySelectorAll("details[data-studio-disclosure]").forEach(node => {
+    if (node.dataset.studioBound) return;
+    node.dataset.studioBound = "1";
+    node.addEventListener("toggle", () => {
+      if (!node.isConnected) return;
+      studioDisclosureIsOpen.values ||= new Map();
+      studioDisclosureIsOpen.values.set(node.dataset.studioDisclosure, node.open);
+    });
+  });
+}
+function studioFeatureGroupOpen(title) {
+  return studioFeatureFilterActive() || studioDisclosureIsOpen("feature:" + title);
+}
+function studioBindFeatureGroups() {
+  document.querySelectorAll("details[data-studio-feature-group]").forEach(node => {
+    const revealedByFilter = studioFeatureFilterActive();
+    node.querySelector(":scope > summary")?.addEventListener("click", () => {
+      if (revealedByFilter) return;
+      studioDisclosureIsOpen.values ||= new Map();
+      studioDisclosureIsOpen.values.set("feature:" + node.dataset.studioFeatureGroup, !node.open);
+    });
+    node.addEventListener("toggle", () => {
+      if (!node.isConnected || revealedByFilter || studioFeatureFilterActive()) return;
+      studioDisclosureIsOpen.values ||= new Map();
+      studioDisclosureIsOpen.values.set("feature:" + node.dataset.studioFeatureGroup, node.open);
+    });
+  });
+}
