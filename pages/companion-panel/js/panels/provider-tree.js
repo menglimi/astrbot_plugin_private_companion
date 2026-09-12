@@ -126,6 +126,7 @@ window.PrivateCompanionProviderTree = (() => {
     const preference = providerPreferenceMeta[guide.preference || ""];
     const impact = providerPassiveImpactMeta[guide.passiveImpact || ""];
     return `
+      <details class="studio-provider-guide"><summary>模型用途与选择建议</summary>
       <span class="provider-guide">
         <span><b>用途</b>${escapeHtml(guide.purpose)}</span>
         <span><b>适合</b>${escapeHtml(guide.fit)}</span>
@@ -134,6 +135,7 @@ window.PrivateCompanionProviderTree = (() => {
         ${guide.note ? `<span><b>注意</b>${escapeHtml(guide.note)}</span>` : ""}
         <span><b>回退</b>${escapeHtml(guide.fallback)}</span>
       </span>
+      </details>
     `;
   }
 
