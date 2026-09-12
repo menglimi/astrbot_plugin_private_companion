@@ -3943,7 +3943,8 @@ class PrivateCompanionPageApi(
         preview = getattr(self.plugin, "_wardrobe_outfit_preview", None)
         if not callable(preview):
             return self._error("当前插件实例不支持着装预览")
-        # 缺省的 scene/weather 表示「用插件自动判定的值」，传空串才表示「不做场景过滤」。
+        # 缺省的 scene/weather 表示「用插件自动判定的值」；传空串表示这一轮没有场合上下文。
+        # 场合只写进请求与种子，从不过滤候选，所以这里怎么填都不会藏起某件衣物。
         raw_scene = payload.get("scene")
         raw_weather = payload.get("weather")
         try:

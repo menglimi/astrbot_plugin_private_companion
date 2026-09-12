@@ -156,8 +156,10 @@ class WardrobeMixin:
     def _wardrobe_current_scene(self) -> str:
         """Reuse the author's scene decision; return "" when it is unavailable.
 
-        An empty scene means "no filtering", so a plugin build that lacks
-        _daily_outfit_scene_kind keeps behaving exactly as before.
+        Scene is **context**, never a hard filter: it is passed to the outfit
+        generator ("what occasion is this?") and mixed into the selection seed
+        so different occasions get different outfits. It never removes items
+        from the candidate pool -- at home you may well wear swimwear.
         """
 
         decide = getattr(self, "_daily_outfit_scene_kind", None)
@@ -327,7 +329,6 @@ class WardrobeMixin:
                 items,
                 max_items=self._wardrobe_prompt_item_limit(),
                 max_chars=WARDROBE_PROMPT_MAX_CHARS,
-                scene=self._wardrobe_current_scene(),
             )
         if not body:
             return None
@@ -341,8 +342,8 @@ class WardrobeMixin:
     def _wardrobe_selected_outfit_body(self, user: Any = None, tendency: Any = "") -> str:
         """Body for the select mode: only the resolved outfit, not the inventory.
 
-        Falls back to the full listing when nothing can be resolved (empty
-        wardrobe, or every item filtered out by scene) so the section never
+        Falls back to the full listing when nothing can be resolved (an empty
+        wardrobe, or no item carrying a usable slot) so the section never
         silently becomes empty.
         """
 
@@ -368,7 +369,6 @@ class WardrobeMixin:
             self._wardrobe_items(),
             max_items=self._wardrobe_prompt_item_limit(),
             max_chars=WARDROBE_PROMPT_MAX_CHARS,
-            scene=self._wardrobe_current_scene(),
         )
 
 

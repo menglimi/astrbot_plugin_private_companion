@@ -643,11 +643,12 @@
               <details class="wardrobe-outfit-preview" data-wardrobe-outfit-preview>
                 <summary>搭配测试（预览实际注入的着装）</summary>
                 <p class="wardrobe-note">
-                  只读预览：不改配置、不调用模型。留空场景/天气表示用插件自动判定的值；
-                  点下面的快捷按钮可以模拟不同场合，用来核对泳衣、睡裙这类场合性衣物有没有越界。
+                  只读预览：不改配置、不调用模型。留空场景/天气表示用插件自动判定的值。
+                  快捷按钮只切换写进提示词的这段场合上下文：场合不过滤衣物，
+                  泳衣、睡裙在任何场合都留在候选里，穿不穿由生成器判断。
                 </p>
                 <div class="wardrobe-preview-controls">
-                  <label>场景
+                  <label>场合
                     <input type="text" data-wardrobe-preview-scene maxlength="20" placeholder="留空 = 自动判定" />
                   </label>
                   <label>天气
@@ -662,7 +663,7 @@
                   <button type="button" class="roleplay-example-btn" data-wardrobe-preview-scene-set="sport">运动</button>
                   <button type="button" class="roleplay-example-btn" data-wardrobe-preview-scene-set="school">学校</button>
                   <button type="button" class="roleplay-example-btn" data-wardrobe-preview-scene-set="daily">日常</button>
-                  <button type="button" class="roleplay-example-btn" data-wardrobe-preview-scene-set="">不限场景</button>
+                  <button type="button" class="roleplay-example-btn" data-wardrobe-preview-scene-set="">自动判定</button>
                 </div>
                 <div class="wardrobe-preview-output" data-wardrobe-preview-output hidden>
                   <dl class="wardrobe-preview-meta" data-wardrobe-preview-meta></dl>

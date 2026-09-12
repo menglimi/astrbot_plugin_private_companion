@@ -124,9 +124,12 @@ PRECISION_EXACT = "exact"
 PRECISION_LOOSE = "loose"
 WARDROBE_PRECISIONS = (PRECISION_EXACT, PRECISION_LOOSE)
 
-# 适用场景。取值对齐作者的 _daily_outfit_scene_kind，便于两侧共用判定结果。
-WARDROBE_SCENES = ("school", "commute", "sport", "home", "daily", "sleep")
-WARDROBE_MAX_SCENES = 6
+# 刻意不做「场景 → 衣物」的硬隔离。理由：
+#   1. 场合与衣物的对应关系是多对多的 —— 在家也可能穿泳衣，泳池也可能穿常服；
+#   2. 「适合什么场合」这个信号 tags 已经能表达（例如 居家|秋冬|宽松），
+#      再单独加一个 scenes 白名单属于重复建模；
+#   3. 该由谁来配、配得合不合适，交给生成器结合场景描述判断更合适。
+# 场景仍然作为**上下文**传给生成器，并参与选取种子，只是不再过滤候选。
 
 _TAG_SPLIT_PATTERN = re.compile(r"[,，、/|;；\s]+")
 _WHITESPACE_PATTERN = re.compile(r"\s+")
@@ -156,8 +159,6 @@ __all__ = [
     "PRECISION_EXACT",
     "PRECISION_LOOSE",
     "WARDROBE_PRECISIONS",
-    "WARDROBE_SCENES",
-    "WARDROBE_MAX_SCENES",
     "DEFAULT_WARDROBE_IMAGE_PROMPT",
     "WardrobeError",
     "WardrobeLimitError",
@@ -169,8 +170,6 @@ __all__ = [
     "normalize_wardrobe_bool",
     "normalize_wardrobe_slot",
     "normalize_wardrobe_precision",
-    "normalize_wardrobe_scenes",
-    "wardrobe_item_matches_scene",
     "normalize_wardrobe_item",
     "normalize_wardrobe_items",
     "wardrobe_item_name_key",
@@ -199,7 +198,6 @@ __all__ = [
     "normalize_wardrobe_outfit_kind",
     "normalize_wardrobe_outfit",
     "normalize_wardrobe_outfits",
-    "wardrobe_outfit_matches_scene",
     "new_wardrobe_outfit",
     "find_wardrobe_outfit",
     "add_wardrobe_outfit",
@@ -321,45 +319,6 @@ def normalize_wardrobe_precision(value: Any) -> str:
     return PRECISION_EXACT
 
 
-def normalize_wardrobe_scenes(value: Any) -> list[str]:
-    """Return a de-duplicated, ordered scene allow-list (empty means everywhere)."""
-
-    if isinstance(value, str):
-        raw: Iterable[Any] = _TAG_SPLIT_PATTERN.split(value)
-    elif isinstance(value, (list, tuple, set)):
-        raw = value
-    else:
-        raw = ()
-    result: list[str] = []
-    seen: set[str] = set()
-    for entry in raw:
-        scene = clean_wardrobe_text(entry, WARDROBE_MAX_TAG).casefold()
-        if not scene or scene in seen or scene not in WARDROBE_SCENES:
-            continue
-        seen.add(scene)
-        result.append(scene)
-        if len(result) >= WARDROBE_MAX_SCENES:
-            break
-    return result
-
-
-def wardrobe_item_matches_scene(item: Mapping[str, Any], scene: Any) -> bool:
-    """Return whether an item may be worn in the given scene.
-
-    An item with no scene restriction applies everywhere, and an unknown or empty
-    scene never filters anything out -- so callers that have no scene information
-    keep the pre-existing behaviour.
-    """
-
-    clean_scene = clean_wardrobe_text(scene, WARDROBE_MAX_TAG).casefold()
-    if not clean_scene:
-        return True
-    scenes = normalize_wardrobe_scenes(item.get("scenes"))
-    if not scenes:
-        return True
-    return clean_scene in scenes
-
-
 def _first_present(raw: Mapping[str, Any], *keys: str) -> Any:
     """Return the first key that is present and not None.
 
@@ -437,8 +396,6 @@ def normalize_wardrobe_item(
         "intimate": normalize_wardrobe_bool(_first_present(raw, "intimate", "underwear"), False),
         # 约束强度：exact 必须照此，loose 仅作方向提示。
         "precision": normalize_wardrobe_precision(_first_present(raw, "precision")),
-        # 适用场景白名单；为空表示不限场景。
-        "scenes": normalize_wardrobe_scenes(_first_present(raw, "scenes", "scene")),
         "tags": normalize_wardrobe_tags(raw.get("tags")),
         "source": source,
         "source_kind": _normalize_source_kind(raw.get("source_kind"), source=source),
@@ -513,7 +470,6 @@ def new_wardrobe_item(
     slot: Any = "",
     intimate: Any = False,
     precision: Any = PRECISION_EXACT,
-    scenes: Any = None,
     source: Any = "",
     source_kind: Any = "",
     now: float | None = None,
@@ -529,7 +485,6 @@ def new_wardrobe_item(
             "slot": slot,
             "intimate": intimate,
             "precision": precision,
-            "scenes": scenes,
             "source": source,
             "source_kind": source_kind or (SOURCE_KIND_IMAGE if clean_wardrobe_text(source) else SOURCE_KIND_MANUAL),
             "created_at": timestamp,
@@ -550,7 +505,6 @@ def add_wardrobe_item(
     slot: Any = "",
     intimate: Any = False,
     precision: Any = PRECISION_EXACT,
-    scenes: Any = None,
     source: Any = "",
     source_kind: Any = "",
     replace_existing: bool = True,
@@ -571,7 +525,6 @@ def add_wardrobe_item(
         slot=slot,
         intimate=intimate,
         precision=precision,
-        scenes=scenes,
         source=source,
         source_kind=source_kind,
         now=now,
@@ -590,7 +543,6 @@ def add_wardrobe_item(
         # 不该把已经填好的部位/场景/贴身标记清掉。
         merged["slot"] = incoming["slot"] or item.get("slot", "")
         merged["intimate"] = bool(incoming["intimate"]) or normalize_wardrobe_bool(item.get("intimate"))
-        merged["scenes"] = incoming["scenes"] or list(item.get("scenes") or ())
         # precision 的默认值 exact 是有意义的值而非空值，所以只有显式传 loose
         # 才覆盖；想从 loose 改回 exact 请用 update_wardrobe_item。
         merged["precision"] = (
@@ -670,7 +622,6 @@ def update_wardrobe_item(
     slot: Any = None,
     intimate: Any = None,
     precision: Any = None,
-    scenes: Any = None,
     now: float | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Patch one item in place; return the new list and the updated item."""
@@ -686,7 +637,6 @@ def update_wardrobe_item(
         and slot is None
         and intimate is None
         and precision is None
-        and scenes is None
     ):
         raise WardrobeError("没有需要修改的内容")
     timestamp = float(now if now is not None else time.time())
@@ -711,8 +661,6 @@ def update_wardrobe_item(
             row["intimate"] = normalize_wardrobe_bool(intimate)
         if precision is not None:
             row["precision"] = normalize_wardrobe_precision(precision)
-        if scenes is not None:
-            row["scenes"] = normalize_wardrobe_scenes(scenes)
         row["updated_at"] = timestamp
         updated.append(row)
     result = normalize_wardrobe_items(updated)
@@ -788,22 +736,16 @@ def render_wardrobe_block(
     *,
     max_items: int = WARDROBE_PROMPT_MAX_ITEMS,
     max_chars: int = WARDROBE_PROMPT_MAX_CHARS,
-    scene: Any = "",
 ) -> str:
     """Render the wardrobe as a compact prompt block (may be empty).
 
     Items are grouped by slot so the model can tell an upper garment from a
-    lower one without guessing from the name.  ``scene`` drops items whose
-    scene allow-list excludes it; an empty scene keeps everything, which is
-    the behaviour every pre-existing caller relied on.
+    lower one without guessing from the name.  No occasion filtering happens
+    here: see the module header for why scene is context, not a hard filter.
     """
 
     clean_tendency = normalize_wardrobe_tendency(tendency)
-    normalized = [
-        item
-        for item in normalize_wardrobe_items(list(items or ()))
-        if wardrobe_item_matches_scene(item, scene)
-    ]
+    normalized = normalize_wardrobe_items(list(items or ()))
     if not clean_tendency and not normalized:
         return ""
     lines: list[str] = []
@@ -824,8 +766,8 @@ def render_wardrobe_block(
             if max_items and emitted >= max_items:
                 truncated = True
                 break
-            # 刻意不用【】方括号标题：仓库的 CI（scripts/ci_static_checks.py 的
-            # raw_legacy_heading 规则）把提示词里的字面量【】视为待淘汰的旧标题
+            # 刻意不用全角方括号做标题：仓库的 CI（scripts/ci_static_checks.py 的
+            # raw_legacy_heading 规则）把提示词里的字面量方括号标题视为待淘汰的旧写法
             # 语法，只允许 canonical renderer 使用。这里用分隔线代替。
             lines.append(f"── {WARDROBE_SLOT_LABELS.get(slot, '未分类')} ──")
             for item in bucket:
@@ -853,7 +795,6 @@ def render_wardrobe_prompt(
     *,
     max_items: int = WARDROBE_PROMPT_MAX_ITEMS,
     max_chars: int = WARDROBE_PROMPT_MAX_CHARS,
-    scene: Any = "",
 ) -> str:
     """Render the wardrobe as a chat-model prompt section body."""
 
@@ -862,7 +803,6 @@ def render_wardrobe_prompt(
         items,
         max_items=max_items,
         max_chars=max_chars,
-        scene=scene,
     )
     if not block:
         return ""
@@ -1085,7 +1025,6 @@ def normalize_wardrobe_outfit(
         "kind": kind,
         "style": style,
         "items": items,
-        "scenes": normalize_wardrobe_scenes(_first_present(raw, "scenes", "scene")),
         "precision": normalize_wardrobe_precision(_first_present(raw, "precision")),
         "created_at": created_at,
         "updated_at": _safe_timestamp(raw.get("updated_at"), created_at),
@@ -1125,25 +1064,12 @@ def normalize_wardrobe_outfits(value: Any) -> list[dict[str, Any]]:
     return result
 
 
-def wardrobe_outfit_matches_scene(outfit: Mapping[str, Any], scene: Any) -> bool:
-    """Return whether an outfit may be worn in the given scene."""
-
-    clean_scene = clean_wardrobe_text(scene, WARDROBE_MAX_TAG).casefold()
-    if not clean_scene:
-        return True
-    scenes = normalize_wardrobe_scenes(outfit.get("scenes"))
-    if not scenes:
-        return True
-    return clean_scene in scenes
-
-
 def new_wardrobe_outfit(
     name: Any,
     *,
     kind: Any = "",
     style: Any = "",
     items: Any = None,
-    scenes: Any = None,
     precision: Any = PRECISION_EXACT,
     now: float | None = None,
 ) -> dict[str, Any]:
@@ -1155,7 +1081,6 @@ def new_wardrobe_outfit(
             "kind": kind,
             "style": style,
             "items": items,
-            "scenes": scenes,
             "precision": precision,
         },
         now=now,
@@ -1199,7 +1124,6 @@ def add_wardrobe_outfit(
     kind: Any = "",
     style: Any = "",
     items: Any = None,
-    scenes: Any = None,
     precision: Any = PRECISION_EXACT,
     replace_existing: bool = True,
     now: float | None = None,
@@ -1212,7 +1136,6 @@ def add_wardrobe_outfit(
         kind=kind,
         style=style,
         items=items,
-        scenes=scenes,
         precision=precision,
         now=now,
     )
@@ -1229,7 +1152,6 @@ def add_wardrobe_outfit(
                 "kind": incoming["kind"],
                 "style": incoming["style"] or outfit.get("style", ""),
                 "items": incoming["items"] or list(outfit.get("items") or ()),
-                "scenes": incoming["scenes"] or list(outfit.get("scenes") or ()),
                 "precision": incoming["precision"],
                 "created_at": outfit.get("created_at") or incoming["created_at"],
                 "updated_at": incoming["updated_at"],
@@ -1265,7 +1187,6 @@ def update_wardrobe_outfit(
     kind: Any = None,
     style: Any = None,
     items: Any = None,
-    scenes: Any = None,
     precision: Any = None,
     now: float | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -1275,7 +1196,7 @@ def update_wardrobe_outfit(
     target = find_wardrobe_outfit(normalized, reference)
     if target is None:
         raise KeyError(clean_wardrobe_text(reference, 80))
-    if name is None and kind is None and style is None and items is None and scenes is None and precision is None:
+    if name is None and kind is None and style is None and items is None and precision is None:
         raise WardrobeError("没有需要修改的内容")
     timestamp = float(now if now is not None else time.time())
     updated: list[dict[str, Any]] = []
@@ -1294,8 +1215,6 @@ def update_wardrobe_outfit(
             row["style"] = clean_wardrobe_multiline(style, WARDROBE_MAX_OUTFIT_STYLE)
         if items is not None:
             row["items"] = normalize_wardrobe_outfit({**row, "items": items})["items"]
-        if scenes is not None:
-            row["scenes"] = normalize_wardrobe_scenes(scenes)
         if precision is not None:
             row["precision"] = normalize_wardrobe_precision(precision)
         row["updated_at"] = timestamp
@@ -1420,7 +1339,7 @@ def select_wardrobe_outfit(
     base_seed = f"{seed}|{clean_scene}"
 
     by_id = {str(item["id"]): item for item in normalized_items}
-    usable = [item for item in normalized_items if wardrobe_item_matches_scene(item, clean_scene)]
+    usable = list(normalized_items)
 
     def _compose(source: str, picked: list[Mapping[str, Any]], style_text: str = "") -> dict[str, Any]:
         profile: dict[str, str] = {}
@@ -1458,8 +1377,6 @@ def select_wardrobe_outfit(
     for outfit in ordered_outfits:
         if outfit.get("kind") != OUTFIT_KIND_BUNDLE:
             continue
-        if not wardrobe_outfit_matches_scene(outfit, clean_scene):
-            continue
         picked = [by_id[key] for key in outfit.get("items") or () if key in by_id]
         if not picked:
             # 引用的散件都被删了 —— 跳过，继续找下一套，别返回空壳。
@@ -1474,7 +1391,6 @@ def select_wardrobe_outfit(
         outfit
         for outfit in ordered_outfits
         if outfit.get("kind") == OUTFIT_KIND_STYLE
-        and wardrobe_outfit_matches_scene(outfit, clean_scene)
         and str(outfit.get("style") or "").strip()
     ]
     if styles:
@@ -1491,8 +1407,8 @@ def select_wardrobe_outfit(
     # 内衣永远抢不过外衣，贴身层就形同虚设。
     #
     # whole（连衣裙/连体）与「上身 + 下身」是两种互斥的外衣穿法。这里用同一个
-    # 种子在两者之间做**确定性**选择：如果无条件让 whole 压制上下装，一件不受
-    # 场景限制的连衣裙就会永远霸占衣柜，其他上衣裤子再也穿不上。
+    # 种子在两者之间做**确定性**选择：如果无条件让 whole 压制上下装，一件连衣裙
+    # 就会永远霸占衣柜，其他上衣裤子再也穿不上。
     has_whole_pool = any(
         str(item.get("slot") or "") == SLOT_WHOLE and not item.get("intimate")
         for item in usable
@@ -1625,7 +1541,7 @@ def build_wardrobe_outfit_request(
     """
 
     inventory = render_wardrobe_block(
-        "", items, max_items=max_items, max_chars=max_chars, scene=scene
+        "", items, max_items=max_items, max_chars=max_chars
     )
     heading = "衣柜里的具体衣物："
     if inventory.startswith(heading):
@@ -1650,7 +1566,6 @@ def build_wardrobe_outfit_request(
         str(outfit.get("style") or "").strip()
         for outfit in normalize_wardrobe_outfits(list(outfits or ()))
         if outfit.get("kind") == OUTFIT_KIND_STYLE
-        and wardrobe_outfit_matches_scene(outfit, scene)
         and str(outfit.get("style") or "").strip()
     ]
     if style_hints:

@@ -91,7 +91,7 @@ window.PrivateCompanionWardrobe = (() => {
     "严格按下面三行输出，每行一个字段，不要写标题、分析过程或多余空行：",
     "名称：<这件衣服的简短名称，12字以内，例如 米色针织开衫>",
     "描述：<款式、颜色、材质、版型、图案与明显细节，120字以内>",
-    "标签：<2到4个场景或季节标签，用竖线分隔，例如 居家|秋冬|宽松>",
+    "标签：<2到4个场合或季节标签，用竖线分隔，例如 居家|秋冬|宽松>",
     "如果图片里没有可辨认的衣物，请只输出一行：无",
   ].join("\n");
 
@@ -567,7 +567,7 @@ window.PrivateCompanionWardrobe = (() => {
             : "已开启 · 尚未生成（后台进行中）"
           : "关闭",
       ],
-      ["场景", data.scene || "（不过滤）"],
+      ["场合", data.scene || "（未判定）"],
       ["天气", data.weather || "—"],
       ["裁决来源", PREVIEW_SOURCE_LABELS[data.rule?.source] || data.rule?.source || "—"],
       ["命中的整套", data.rule?.outfit_name || "—"],
@@ -605,7 +605,7 @@ window.PrivateCompanionWardrobe = (() => {
     if (!picked.length) {
       const empty = document.createElement("p");
       empty.className = "wardrobe-empty";
-      empty.textContent = "这一场景下没有可用的衣物。";
+      empty.textContent = "衣柜里还没有可搭配的衣物。";
       host.append(empty);
       return;
     }
