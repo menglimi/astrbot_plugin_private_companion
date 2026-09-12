@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import shutil
 import subprocess
@@ -2183,3 +2184,93 @@ class WardrobeOutfitPreviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(section)
         self.assertTrue(section.content.startswith(WARDROBE_PROMPT_PREAMBLE))
         self.assertIn("衣柜里的具体衣物", section.content)
+
+
+
+    def test_preview_reports_unclassified_items(self) -> None:
+        # 面板据此提示"这几件不参与自动搭配"，免得用户纳闷为什么它们从不出现。
+        self.plugin.config["wardrobe_items"] = [
+            {"name": "开衫", "slot": "upper"},
+            {"name": "来历不明的外套", "description": "没标部位"},
+            {"name": "另一件没标的"},
+        ]
+        data = self.plugin._wardrobe_outfit_preview(scene="home")
+        self.assertEqual(2, data["unclassified_count"])
+
+    def test_preview_reports_zero_unclassified_when_all_classified(self) -> None:
+        data = self.plugin._wardrobe_outfit_preview(scene="home")
+        self.assertEqual(0, data["unclassified_count"])
+
+
+# ---------------------------------------------------------------------------
+# N. 回归：review 阶段发现、原测试未覆盖的两个真实缺陷
+# ---------------------------------------------------------------------------
+
+
+class WardrobeDeterminismRegressionTests(unittest.TestCase):
+    def test_items_without_ids_still_pick_a_stable_outfit(self) -> None:
+        # 兜底 id 曾经用 uuid4：每次归一化都重新生成，而候选池按 id 排序，
+        # 于是手写配置（没有 id）每调用一次就换一套衣服 —— 8 次能出 4 种组合。
+        raw = [
+            {"name": "开衫A", "slot": "upper"},
+            {"name": "开衫B", "slot": "upper"},
+            {"name": "长裤A", "slot": "lower"},
+            {"name": "长裤B", "slot": "lower"},
+        ]
+        combos = set()
+        for _ in range(8):
+            items = normalize_wardrobe_items(copy.deepcopy(raw))
+            result = select_wardrobe_outfit(items, [], scene="home", seed="2026-09-12")
+            combos.add(tuple(sorted(row["name"] for row in result["picked"])))
+        self.assertEqual(1, len(combos), combos)
+
+    def test_derived_ids_are_stable_across_normalizations(self) -> None:
+        raw = {"name": "开衫", "description": "宽松"}
+        first = normalize_wardrobe_item(dict(raw))["id"]
+        second = normalize_wardrobe_item(dict(raw))["id"]
+        self.assertEqual(first, second)
+        self.assertTrue(first.startswith("wardrobe_"))
+
+    def test_explicit_ids_are_never_replaced(self) -> None:
+        self.assertEqual(
+            "my-own-id", normalize_wardrobe_item({"id": "my-own-id", "name": "开衫"})["id"]
+        )
+
+    def test_candidate_order_does_not_depend_on_ids(self) -> None:
+        # 双层防护：即使 id 不稳定，挑选顺序也按内容走。
+        base = [
+            {"name": "开衫", "slot": "upper"},
+            {"name": "外套", "slot": "upper"},
+        ]
+        first = normalize_wardrobe_items([dict(row, id=f"a{i}") for i, row in enumerate(base)])
+        second = normalize_wardrobe_items([dict(row, id=f"z{i}") for i, row in enumerate(base)])
+        picked_a = select_wardrobe_outfit(first, [], scene="home", seed="s")["picked"]
+        picked_b = select_wardrobe_outfit(second, [], scene="home", seed="s")["picked"]
+        self.assertEqual(
+            [row["name"] for row in picked_a], [row["name"] for row in picked_b]
+        )
+
+    def test_wardrobe_without_any_slot_still_resolves_an_outfit(self) -> None:
+        # 未分类衣物没有部位可依据，正常不参与组合；但整柜都未分类时不能空手
+        # 而归，否则 select 模式永远只能落回整份清单。
+        legacy = normalize_wardrobe_items(
+            [
+                {"name": "旧T恤", "description": "没标部位"},
+                {"name": "旧裤子", "description": "也没标"},
+            ]
+        )
+        result = select_wardrobe_outfit(legacy, [], scene="home", seed="x")
+        self.assertEqual(["旧T恤", "旧裤子"], [row["name"] for row in result["picked"]])
+        self.assertIn("其他：旧T恤", result["prompt_text"])
+        self.assertTrue(render_wardrobe_outfit_prompt("", result))
+
+    def test_unclassified_fallback_does_not_displace_classified_items(self) -> None:
+        items = normalize_wardrobe_items(
+            [
+                {"name": "开衫", "slot": "upper"},
+                {"name": "来历不明的外套", "description": "没标部位"},
+            ]
+        )
+        names = [row["name"] for row in select_wardrobe_outfit(items, [], scene="home", seed="x")["picked"]]
+        self.assertIn("开衫", names)
+        self.assertNotIn("来历不明的外套", names)

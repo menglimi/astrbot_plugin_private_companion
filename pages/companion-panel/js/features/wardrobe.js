@@ -572,6 +572,12 @@ window.PrivateCompanionWardrobe = (() => {
       ["裁决来源", PREVIEW_SOURCE_LABELS[data.rule?.source] || data.rule?.source || "—"],
       ["命中的整套", data.rule?.outfit_name || "—"],
       ["衣柜", `${data.item_count} 件 · ${data.outfit_count} 套`],
+      [
+        "未分类衣物",
+        Number(data.unclassified_count) > 0
+          ? `${data.unclassified_count} 件（没有部位，不参与自动搭配，建议补全）`
+          : "0 件",
+      ],
       ["注入长度", `${data.injected_chars} / ${data.injected_limit} 字`],
     ];
     for (const [key, value] of rows) {
