@@ -19,30 +19,57 @@ from astrbot_plugin_private_companion.persona_config import (
 )
 from astrbot_plugin_private_companion.wardrobe import (
     DEFAULT_WARDROBE_IMAGE_PROMPT,
+    OUTFIT_KIND_BUNDLE,
+    OUTFIT_KIND_STYLE,
+    PRECISION_EXACT,
+    PRECISION_LOOSE,
+    SLOT_EXTRA,
+    SLOT_FEET,
+    SLOT_LOWER,
+    SLOT_UPPER,
+    SLOT_WHOLE,
     SOURCE_KIND_IMAGE,
     SOURCE_KIND_MANUAL,
     WARDROBE_MAX_DESCRIPTION,
     WARDROBE_MAX_IMAGE_PROMPT,
     WARDROBE_MAX_ITEMS,
     WARDROBE_MAX_NAME,
+    WARDROBE_MAX_OUTFITS,
     WARDROBE_MAX_TENDENCY,
+    WARDROBE_PROMPT_PREAMBLE,
+    WARDROBE_SLOTS,
     WardrobeError,
     WardrobeLimitError,
     add_wardrobe_item,
+    add_wardrobe_outfit,
     build_wardrobe_image_instruction,
     clear_wardrobe,
     delete_wardrobe_item,
+    delete_wardrobe_outfit,
     find_wardrobe_item,
+    find_wardrobe_outfit,
     new_wardrobe_item,
+    new_wardrobe_outfit,
+    normalize_wardrobe_bool,
     normalize_wardrobe_image_prompt,
     normalize_wardrobe_item,
     normalize_wardrobe_items,
+    normalize_wardrobe_outfit,
+    normalize_wardrobe_outfits,
+    normalize_wardrobe_precision,
+    normalize_wardrobe_scenes,
+    normalize_wardrobe_slot,
     normalize_wardrobe_tags,
     normalize_wardrobe_tendency,
     parse_wardrobe_image_reply,
     render_wardrobe_block,
+    render_wardrobe_outfit_prompt,
     render_wardrobe_prompt,
+    select_wardrobe_outfit,
     update_wardrobe_item,
+    update_wardrobe_outfit,
+    wardrobe_item_matches_scene,
+    wardrobe_outfit_matches_scene,
     wardrobe_summary_lines,
 )
 from astrbot_plugin_private_companion.wardrobe_runtime import (
@@ -1437,3 +1464,453 @@ process.stdout.write(JSON.stringify({ value: editor.value, placeholder: editor.p
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# H. 角色着装系统：部位、贴身标记、场景约束
+# ---------------------------------------------------------------------------
+
+
+class WardrobeSlotAndFlagTests(unittest.TestCase):
+    """部位是唯一的分类维度；贴身是一条独立标记，不是一个层级。"""
+
+    def test_slot_alias_and_substring_resolution(self) -> None:
+        cases = {
+            "upper": SLOT_UPPER,
+            "UPPER": SLOT_UPPER,
+            "上装": SLOT_UPPER,
+            "上衣": SLOT_UPPER,
+            "外套": SLOT_UPPER,
+            "lower": SLOT_LOWER,
+            "裤": SLOT_LOWER,
+            "白色棉袜子": SLOT_FEET,
+            "鞋子": SLOT_FEET,
+            "连衣裙": SLOT_WHOLE,
+            "围巾": SLOT_EXTRA,
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(expected, normalize_wardrobe_slot(raw), raw)
+
+    def test_unknown_slot_is_unclassified_rather_than_an_error(self) -> None:
+        # 分类不准只是不够精确；抛异常会打断整条命令，代价更大。
+        for raw in ("", None, "不存在的部位", 42):
+            self.assertEqual("", normalize_wardrobe_slot(raw), repr(raw))
+
+    def test_precision_defaults_to_exact(self) -> None:
+        self.assertEqual(PRECISION_EXACT, normalize_wardrobe_precision(None))
+        self.assertEqual(PRECISION_EXACT, normalize_wardrobe_precision(""))
+        self.assertEqual(PRECISION_EXACT, normalize_wardrobe_precision("exact"))
+        self.assertEqual(PRECISION_LOOSE, normalize_wardrobe_precision("loose"))
+        self.assertEqual(PRECISION_LOOSE, normalize_wardrobe_precision("模糊"))
+
+    def test_bool_coercion_never_treats_false_string_as_truthy(self) -> None:
+        for raw in (False, "false", "0", "off", "", None, "否", "关闭"):
+            self.assertFalse(normalize_wardrobe_bool(raw), repr(raw))
+        for raw in (True, "true", "1", "on", "是", "开启"):
+            self.assertTrue(normalize_wardrobe_bool(raw), repr(raw))
+
+    def test_scenes_are_validated_deduplicated_and_ordered(self) -> None:
+        self.assertEqual(
+            ["sleep", "home"],
+            normalize_wardrobe_scenes(["sleep", "home", "bogus", "home"]),
+        )
+        self.assertEqual(["home", "sport"], normalize_wardrobe_scenes("home,sport,nope"))
+        self.assertEqual([], normalize_wardrobe_scenes(None))
+
+    def test_empty_scene_never_filters_anything(self) -> None:
+        restricted = normalize_wardrobe_item({"name": "泳衣上装", "scenes": ["sport"]})
+        unrestricted = normalize_wardrobe_item({"name": "开衫"})
+        self.assertTrue(wardrobe_item_matches_scene(restricted, ""))
+        self.assertTrue(wardrobe_item_matches_scene(unrestricted, "commute"))
+        self.assertTrue(wardrobe_item_matches_scene(restricted, "sport"))
+        self.assertFalse(wardrobe_item_matches_scene(restricted, "commute"))
+
+    def test_legacy_item_without_new_fields_keeps_working(self) -> None:
+        item = normalize_wardrobe_item({"name": "旧条目", "description": "没有新字段"})
+        self.assertEqual("", item["slot"])
+        self.assertFalse(item["intimate"])
+        self.assertEqual(PRECISION_EXACT, item["precision"])
+        self.assertEqual([], item["scenes"])
+
+    def test_intimate_false_is_not_overwritten_by_the_alias(self) -> None:
+        # 用 _first_present 而不是 or 链，否则 False 会落到下一个别名上。
+        item = normalize_wardrobe_item({"name": "x", "intimate": False, "underwear": True})
+        self.assertFalse(item["intimate"])
+
+    def test_update_can_clear_slot_and_scenes(self) -> None:
+        items, _ = add_wardrobe_item(None, name="开衫", slot="upper", scenes=["home"])
+        items, updated = update_wardrobe_item(items, "开衫", slot="", scenes=[])
+        self.assertEqual("", updated["slot"])
+        self.assertEqual([], updated["scenes"])
+
+    def test_add_keeps_new_fields_when_re_describing_same_name(self) -> None:
+        items, _ = add_wardrobe_item(
+            None, name="开衫", slot="upper", scenes=["home"], intimate=True
+        )
+        items, second = add_wardrobe_item(items, name="开衫", description="重新识图描述")
+        self.assertEqual("upper", second["slot"])
+        self.assertEqual(["home"], second["scenes"])
+        self.assertTrue(second["intimate"])
+        self.assertEqual(1, len(items))
+
+
+# ---------------------------------------------------------------------------
+# I. 渲染：按部位分组、贴身标记、场景过滤、预算截断
+# ---------------------------------------------------------------------------
+
+
+def _sample_items() -> list[dict]:
+    return normalize_wardrobe_items(
+        [
+            {"name": "米色针织开衫", "description": "宽松版型", "slot": "upper", "tags": ["居家"]},
+            {
+                "name": "白色棉质内衣",
+                "description": "无钢圈",
+                "slot": "upper",
+                "intimate": True,
+                "scenes": ["home"],
+            },
+            {"name": "深色直筒长裤", "slot": "lower"},
+            {"name": "帆布鞋", "slot": "feet"},
+            {"name": "细框眼镜", "slot": "extra"},
+            {"name": "旧T恤", "description": "没标部位"},
+        ]
+    )
+
+
+class WardrobeRenderTests(unittest.TestCase):
+    def test_block_groups_by_slot_and_marks_intimate(self) -> None:
+        block = render_wardrobe_block("偏爱宽松", _sample_items())
+        for header in ("── 上身 ──", "── 下身 ──", "── 足部 ──", "── 配件 ──", "── 未分类 ──"):
+            self.assertIn(header, block)
+        self.assertIn("白色棉质内衣（贴身）", block)
+        # 部位的固定顺序：上身在下身之前，未分类排最后。
+        self.assertLess(block.index("── 上身 ──"), block.index("── 下身 ──"))
+        self.assertLess(block.index("── 配件 ──"), block.index("── 未分类 ──"))
+
+    def test_block_never_emits_legacy_bracket_headings(self) -> None:
+        # 仓库 CI 的 raw_legacy_heading 规则禁止提示词里出现字面量【】标题，
+        # 只允许 conversation_prompt_section.py 的 canonical renderer 使用。
+        block = render_wardrobe_block("偏爱宽松", _sample_items())
+        prompt = render_wardrobe_prompt("偏爱宽松", _sample_items())
+        selection = select_wardrobe_outfit(_sample_items(), [], scene="", seed="s")
+        outfit_prompt = render_wardrobe_outfit_prompt("偏爱宽松", selection)
+        for text in (block, prompt, outfit_prompt):
+            self.assertNotIn(chr(0x3010), text)
+            self.assertNotIn(chr(0x3011), text)
+
+    def test_block_scene_filter_drops_restricted_items(self) -> None:
+        home = render_wardrobe_block("", _sample_items(), scene="home")
+        commute = render_wardrobe_block("", _sample_items(), scene="commute")
+        self.assertIn("白色棉质内衣", home)
+        self.assertNotIn("白色棉质内衣", commute)
+
+    def test_block_truncation_reports_remaining_count(self) -> None:
+        block = render_wardrobe_block("", _sample_items(), max_items=2)
+        self.assertIn("（另有 4 件未列出）", block)
+
+    def test_block_stays_within_the_character_budget(self) -> None:
+        block = render_wardrobe_block("x" * 2000, _sample_items(), max_chars=200)
+        self.assertLessEqual(len(block), 200)
+
+    def test_prompt_preamble_states_priority_and_background_role(self) -> None:
+        body = render_wardrobe_prompt("偏爱宽松", _sample_items())
+        self.assertTrue(body.startswith(WARDROBE_PROMPT_PREAMBLE))
+        self.assertIn("除非用户明确要求换装", body)
+        self.assertIn("背景事实", body)
+        self.assertIn("不要主动汇报", body)
+
+    def test_outfit_prompt_is_empty_for_an_empty_selection(self) -> None:
+        self.assertEqual("", render_wardrobe_outfit_prompt("x", None))
+        self.assertEqual("", render_wardrobe_outfit_prompt("x", {}))
+        self.assertEqual("", render_wardrobe_outfit_prompt("x", {"prompt_text": "   "}))
+
+    def test_outfit_prompt_includes_tendency_and_current_outfit(self) -> None:
+        selection = {"prompt_text": "上身：开衫\n下身：长裤"}
+        body = render_wardrobe_outfit_prompt("偏爱宽松", selection)
+        self.assertTrue(body.startswith(WARDROBE_PROMPT_PREAMBLE))
+        self.assertIn("整体服饰倾向：偏爱宽松", body)
+        self.assertIn("当前着装：", body)
+        self.assertIn("上身：开衫", body)
+
+    def test_summary_lines_show_slot_and_intimate_marker(self) -> None:
+        lines = wardrobe_summary_lines(_sample_items())
+        self.assertTrue(any("(上身)" in line for line in lines))
+        self.assertTrue(any("(上身·贴身)" in line for line in lines))
+
+
+# ---------------------------------------------------------------------------
+# J. 整套（style / bundle）实体
+# ---------------------------------------------------------------------------
+
+
+class WardrobeOutfitEntityTests(unittest.TestCase):
+    def test_kind_is_inferred_when_omitted(self) -> None:
+        # 有 items -> 准确组合；只有 style -> 模糊整套。
+        self.assertEqual(
+            OUTFIT_KIND_BUNDLE,
+            normalize_wardrobe_outfit({"name": "A", "items": ["x"]})["kind"],
+        )
+        self.assertEqual(
+            OUTFIT_KIND_STYLE,
+            normalize_wardrobe_outfit({"name": "B", "style": "宽松"})["kind"],
+        )
+
+    def test_bundle_without_items_degrades_to_style(self) -> None:
+        # 声称是组合却没有件，等同于空组合；降级比渲染空壳好。
+        outfit = normalize_wardrobe_outfit(
+            {"name": "空组合", "kind": "bundle", "style": "随便"}
+        )
+        self.assertEqual(OUTFIT_KIND_STYLE, outfit["kind"])
+
+    def test_kind_accepts_chinese_input(self) -> None:
+        self.assertEqual(
+            OUTFIT_KIND_BUNDLE,
+            normalize_wardrobe_outfit({"name": "A", "kind": "组合", "items": ["x"]})["kind"],
+        )
+        self.assertEqual(
+            OUTFIT_KIND_STYLE,
+            normalize_wardrobe_outfit({"name": "B", "kind": "模糊", "style": "s"})["kind"],
+        )
+
+    def test_empty_outfit_is_dropped(self) -> None:
+        self.assertIsNone(normalize_wardrobe_outfit({}))
+        self.assertIsNone(normalize_wardrobe_outfit(None))
+        self.assertEqual([], normalize_wardrobe_outfits([{}, None, "x"]))
+
+    def test_items_are_deduplicated_and_capped(self) -> None:
+        outfit = normalize_wardrobe_outfit(
+            {"name": "A", "items": ["a", "a", "b", "c", "d", "e", "f", "g", "h", "i"]}
+        )
+        self.assertEqual(["a", "b", "c", "d", "e", "f", "g", "h"], outfit["items"])
+
+    def test_outfit_scene_matching_is_open_by_default(self) -> None:
+        open_outfit = normalize_wardrobe_outfit({"name": "通用", "style": "s"})
+        scoped = normalize_wardrobe_outfit(
+            {"name": "通勤", "style": "s", "scenes": ["commute"]}
+        )
+        self.assertTrue(wardrobe_outfit_matches_scene(open_outfit, "home"))
+        self.assertTrue(wardrobe_outfit_matches_scene(scoped, ""))
+        self.assertTrue(wardrobe_outfit_matches_scene(scoped, "commute"))
+        self.assertFalse(wardrobe_outfit_matches_scene(scoped, "home"))
+
+    def test_add_find_update_delete_round_trip(self) -> None:
+        outfits, added = add_wardrobe_outfit(
+            None, name="通勤正装", kind="bundle", items=["a", "b"]
+        )
+        self.assertEqual(1, len(outfits))
+        self.assertEqual(added["id"], find_wardrobe_outfit(outfits, "通勤")["id"])
+        self.assertEqual(added["id"], find_wardrobe_outfit(outfits, "1")["id"])
+        outfits, updated = update_wardrobe_outfit(outfits, "通勤正装", style="干净利落")
+        self.assertEqual("干净利落", updated["style"])
+        outfits, removed = delete_wardrobe_outfit(outfits, "通勤正装")
+        self.assertEqual([], outfits)
+        self.assertEqual(added["id"], removed["id"])
+
+    def test_same_name_replaces_instead_of_piling_up(self) -> None:
+        outfits, _ = add_wardrobe_outfit(None, name="居家", style="宽松")
+        outfits, second = add_wardrobe_outfit(outfits, name="居家", style="更宽松")
+        self.assertEqual(1, len(outfits))
+        self.assertEqual("更宽松", second["style"])
+
+    def test_missing_outfit_raises_key_error(self) -> None:
+        with self.assertRaises(KeyError):
+            delete_wardrobe_outfit([], "不存在")
+
+    def test_invalid_outfit_raises_wardrobe_error(self) -> None:
+        with self.assertRaises(WardrobeError):
+            new_wardrobe_outfit("")
+
+
+# ---------------------------------------------------------------------------
+# K. 规则选择器与边界用例
+# ---------------------------------------------------------------------------
+
+
+def _wardrobe_fixture() -> tuple[list[dict], list[dict]]:
+    items = normalize_wardrobe_items(
+        [
+            {"name": "米色针织开衫", "description": "宽松", "slot": "upper"},
+            {"name": "白色棉质内衣", "slot": "upper", "intimate": True, "scenes": ["home"]},
+            {"name": "棉质内裤", "slot": "lower", "intimate": True, "scenes": ["home"]},
+            {"name": "深色直筒长裤", "slot": "lower"},
+            {"name": "白色棉袜", "slot": "feet"},
+            {"name": "帆布鞋", "description": "低帮", "slot": "feet"},
+            {"name": "细框眼镜", "slot": "extra"},
+            {"name": "分体泳衣上装", "slot": "upper", "scenes": ["sport"]},
+            {"name": "分体泳衣下装", "slot": "lower", "scenes": ["sport"]},
+            {"name": "碎花连衣裙", "slot": "whole", "scenes": ["daily"]},
+        ]
+    )
+    by_name = {item["name"]: item["id"] for item in items}
+    outfits = normalize_wardrobe_outfits(
+        [
+            {
+                "name": "通勤正装",
+                "kind": "bundle",
+                "items": [by_name["米色针织开衫"], by_name["深色直筒长裤"]],
+                "scenes": ["commute"],
+            },
+            {
+                "name": "慵懒周末",
+                "kind": "style",
+                "style": "宽松棉质，低饱和色",
+                "scenes": ["home"],
+            },
+        ]
+    )
+    return items, outfits
+
+
+class WardrobeOutfitSelectionTests(unittest.TestCase):
+    """规则选择器：模型路径失败时的降级方案，也是面板的离线预览。"""
+
+    def test_bundle_wins_over_style_and_rule(self) -> None:
+        items, outfits = _wardrobe_fixture()
+        result = select_wardrobe_outfit(items, outfits, scene="commute", seed="d1")
+        self.assertEqual("bundle", result["source"])
+        self.assertEqual("通勤正装", result["outfit_name"])
+        self.assertEqual(["bottom", "top"], sorted(result["profile"]))
+
+    def test_style_is_used_when_no_bundle_matches(self) -> None:
+        items, outfits = _wardrobe_fixture()
+        result = select_wardrobe_outfit(items, outfits, scene="home", seed="d1")
+        self.assertEqual("style", result["source"])
+        self.assertEqual("慵懒周末", result["outfit_name"])
+        self.assertIn("宽松棉质", result["prompt_text"])
+        self.assertEqual({}, result["profile"])
+
+    def test_bundle_referencing_deleted_items_falls_through(self) -> None:
+        items, outfits = _wardrobe_fixture()
+        # 把 bundle 引用的散件全部删掉，它就不该再被选中。
+        remaining = [item for item in items if item["name"] not in {"米色针织开衫", "深色直筒长裤"}]
+        result = select_wardrobe_outfit(remaining, outfits, scene="commute", seed="d1")
+        self.assertEqual("rule", result["source"])
+
+    def test_rule_path_takes_at_most_one_item_per_slot(self) -> None:
+        items, _ = _wardrobe_fixture()
+        result = select_wardrobe_outfit(items, [], scene="commute", seed="d1")
+        slots = [picked["slot"] for picked in result["picked"] if not picked["intimate"]]
+        self.assertEqual(len(slots), len(set(slots)))
+
+    def test_intimate_layer_is_an_independent_axis(self) -> None:
+        # 穿开衫的同时也穿内衣，两者不能互相竞争同一个名额。
+        items, _ = _wardrobe_fixture()
+        result = select_wardrobe_outfit(items, [], scene="home", seed="d1")
+        picked = {picked["name"]: picked for picked in result["picked"]}
+        self.assertIn("米色针织开衫", picked)
+        self.assertIn("白色棉质内衣", picked)
+        self.assertIn("深色直筒长裤", picked)
+        self.assertIn("棉质内裤", picked)
+
+    def test_intimate_stays_out_of_the_photo_profile_but_in_the_prompt(self) -> None:
+        items, _ = _wardrobe_fixture()
+        result = select_wardrobe_outfit(items, [], scene="home", seed="d1")
+        profile_blob = " ".join(result["profile"].values())
+        self.assertNotIn("内衣", profile_blob)
+        self.assertNotIn("内裤", profile_blob)
+        self.assertIn("内衣", result["prompt_text"])
+        self.assertIn("（贴身）", result["prompt_text"])
+
+    def test_whole_and_separates_are_exclusive_and_both_get_turns(self) -> None:
+        # 连衣裙与「上装 + 下装」是两种互斥穿法。如果无条件让 whole 压制上下装，
+        # 一件不受场景限制的连衣裙就会永远霸占衣柜 —— 所以这里既验证互斥，
+        # 也验证两者都会轮到。
+        items = normalize_wardrobe_items(
+            [
+                {"name": "碎花连衣裙", "slot": "whole", "scenes": ["home"]},
+                {"name": "米色针织开衫", "slot": "upper", "scenes": ["home"]},
+                {"name": "深色直筒长裤", "slot": "lower", "scenes": ["home"]},
+                {"name": "白色棉质内衣", "slot": "upper", "intimate": True, "scenes": ["home"]},
+            ]
+        )
+        seen_whole = seen_separates = False
+        for day in range(1, 40):
+            result = select_wardrobe_outfit(items, [], scene="home", seed=f"2026-09-{day:02d}")
+            names = {picked["name"] for picked in result["picked"]}
+            # 贴身件与穿法无关：穿连衣裙时也穿内衣。
+            self.assertIn("白色棉质内衣", names)
+            has_whole = "碎花连衣裙" in names
+            has_separates = bool({"米色针织开衫", "深色直筒长裤"} & names)
+            self.assertFalse(has_whole and has_separates, f"day {day} 同时出现整身与上下装")
+            seen_whole = seen_whole or has_whole
+            seen_separates = seen_separates or has_separates
+        self.assertTrue(seen_whole, "应至少有一天穿连衣裙")
+        self.assertTrue(seen_separates, "应至少有一天穿上装 + 下装")
+
+    def test_swimwear_is_kept_out_of_the_commute_scene(self) -> None:
+        # 每个场景的候选池都只留一件，断言才是确定的：衣物 id 由 uuid4 生成，
+        # 候选池按 id 排序，所以"多候选取其一"的结果会随运行变化 —— 那不是
+        # 被测行为，只是测试不确定性。
+        items = normalize_wardrobe_items(
+            [
+                {"name": "米色针织开衫", "slot": "upper", "scenes": ["commute"]},
+                {"name": "深色直筒长裤", "slot": "lower", "scenes": ["commute"]},
+                {"name": "分体泳衣上装", "slot": "upper", "scenes": ["sport"]},
+                {"name": "分体泳衣下装", "slot": "lower", "scenes": ["sport"]},
+            ]
+        )
+        commute = select_wardrobe_outfit(items, [], scene="commute", seed="d1")
+        self.assertEqual(
+            {"米色针织开衫", "深色直筒长裤"},
+            {picked["name"] for picked in commute["picked"]},
+        )
+        sport = select_wardrobe_outfit(items, [], scene="sport", seed="d1")
+        self.assertEqual(
+            {"分体泳衣上装", "分体泳衣下装"},
+            {picked["name"] for picked in sport["picked"]},
+        )
+
+    def test_same_seed_is_idempotent_so_the_outfit_never_flaps(self) -> None:
+        items, outfits = _wardrobe_fixture()
+        first = select_wardrobe_outfit(items, outfits, scene="sport", seed="2026-09-12|u1")
+        second = select_wardrobe_outfit(items, outfits, scene="sport", seed="2026-09-12|u1")
+        self.assertEqual(first["look_id"], second["look_id"])
+        self.assertEqual([p["id"] for p in first["picked"]], [p["id"] for p in second["picked"]])
+
+    def test_a_new_day_can_produce_a_different_look(self) -> None:
+        items, outfits = _wardrobe_fixture()
+        looks = {
+            select_wardrobe_outfit(items, outfits, scene="sport", seed=f"2026-09-{day}|u1")["look_id"]
+            for day in range(10, 25)
+        }
+        self.assertGreater(len(looks), 1)
+
+    def test_empty_wardrobe_yields_an_empty_selection_without_raising(self) -> None:
+        result = select_wardrobe_outfit([], [], scene="home", seed="d1")
+        self.assertEqual("rule", result["source"])
+        self.assertEqual("", result["prompt_text"])
+        self.assertEqual({}, result["profile"])
+        self.assertEqual([], result["picked"])
+
+    def test_scene_filtering_removes_everything_gracefully(self) -> None:
+        items = normalize_wardrobe_items(
+            [{"name": "泳衣", "slot": "upper", "scenes": ["sport"]}]
+        )
+        result = select_wardrobe_outfit(items, [], scene="commute", seed="d1")
+        self.assertEqual([], result["picked"])
+        self.assertEqual("", result["prompt_text"])
+
+    def test_recent_ids_are_avoided_when_alternatives_exist(self) -> None:
+        items = normalize_wardrobe_items(
+            [
+                {"name": "开衫A", "slot": "upper"},
+                {"name": "开衫B", "slot": "upper"},
+            ]
+        )
+        worn = items[0]["id"]
+        result = select_wardrobe_outfit(
+            items, [], scene="", seed="fixed", recent_ids={worn}
+        )
+        picked = {p["id"] for p in result["picked"]}
+        self.assertNotIn(worn, picked)
+        self.assertIn(items[1]["id"], picked)
+
+    def test_selection_is_always_renderable_and_within_budget(self) -> None:
+        items, outfits = _wardrobe_fixture()
+        for scene in ("", "home", "commute", "sport", "daily", "school"):
+            result = select_wardrobe_outfit(items, outfits, scene=scene, seed="2026-09-12")
+            body = render_wardrobe_outfit_prompt("偏爱宽松", result)
+            self.assertLessEqual(len(body), 900, scene)
+            if result["prompt_text"]:
+                self.assertTrue(body.startswith(WARDROBE_PROMPT_PREAMBLE), scene)
