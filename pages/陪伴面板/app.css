@@ -4725,6 +4725,9 @@ input[type="search"] {
   position: absolute;
   top: 10px;
   right: 10px;
+  /* 预览图始终带 inline transform（scale(1) 也算），会成为后绘制的层叠上下文，
+     不抬高层级时关闭按钮会被图片盖住、点击落到图片上。 */
+  z-index: 2;
   width: 36px;
   height: 36px;
   border-radius: 999px;
@@ -4765,6 +4768,9 @@ input[type="search"] {
 }
 
 .daily-outfit-preview__meta {
+  /* 放大预览时说明文字可能与图片重叠；同样需要压过带 transform 的预览图。 */
+  position: relative;
+  z-index: 1;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.6;
