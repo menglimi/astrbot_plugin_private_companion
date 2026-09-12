@@ -6016,9 +6016,9 @@ function loadOptionalClassicScript(relativePath, retry = 0) {
 
 const optionalModuleLoaders = {
   providerTree: [
-    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2&vision-state=v1&studio=20260912-v1", 0),
-    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2&vision-state=v1&studio=20260912-v1", 1),
-    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2&vision-state=v1&studio=20260912-v1", 2),
+    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2&vision-state=v1&studio=20260912-v1&retry=20260913-v1", 0),
+    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2&vision-state=v1&studio=20260912-v1&retry=20260913-v1", 1),
+    () => loadOptionalClassicScript("./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&manual=provider-input-v2&layout=v2&vision-state=v1&studio=20260912-v1&retry=20260913-v1", 2),
   ],
   qzonePanel: [
     () => loadOptionalClassicScript("./js/panels/qzone-panel.js?v=20260810-qzone-classic-loader-v1", 0),
@@ -7244,6 +7244,8 @@ function applyOverviewData(overview) {
     .map((endpoint, index) => photoApiEndpointFingerprint(endpoint, index));
   state.providerConfigMode = inferProviderConfigMode(overview);
   state.providerTimeoutDraft = normalizeModelTimeoutOverrides(overview?.settings?.model_timeout_overrides);
+  state.providerRequestAttemptsDraft = {};
+  state.backgroundLlmAttemptsDraft = null;
   state.providerTokenLimitDraft = normalizeModelTokenLimitOverrides(overview?.settings?.model_token_limit_overrides);
   state.providerFallbackDraft = normalizeModelFallbackOverrides(overview?.settings?.model_fallback_overrides);
   state.pageFontFamily = normalizePageFontFamily(overview?.settings?.page_font_family);
@@ -16087,9 +16089,17 @@ function tailId(value) {
   return text.length > 8 ? `*${text.slice(-4)}` : text;
 }
 
+function tokenRequestAttemptsText(item) {
+  if (!item.request_max_attempts) return "-";
+  const source = { model_card: "卡片", plugin: "插件", astrbot_global: "AstrBot 全局", astrbot_default: "AstrBot 默认" }[item.request_retry_source] || "配置";
+  const support = item.request_retry_supported === false ? "；Provider 不支持" : "";
+  const retry = item.retry_after ? `；退避至 ${formatRecentTime(item.retry_after, "")}` : "";
+  return `${source}上限 ${item.request_max_attempts}；实际未知${support}${retry}`;
+}
+
 function renderTokenRecentTable(rows) {
   $("#tokenRecentTable").innerHTML = tokenTable(
-    ["时间", "任务", "Provider", "Token", "缓存", "延迟", "状态"],
+    ["时间", "任务", "Provider", "Token", "缓存", "延迟", "请求尝试（含首次）", "状态"],
     rows,
     (item) => [
       formatRecentTime(item.ts, item.time),
@@ -16098,6 +16108,7 @@ function renderTokenRecentTable(rows) {
       `${formatNumber(item.total_tokens)}${item.estimated ? " 估" : ""}`,
       tokenCacheText(item),
       `${formatNumber(Math.round(Number(item.elapsed_ms || item.latency_ms || 0)))} ms`,
+      tokenRequestAttemptsText(item),
       item.success ? "成功" : `失败 ${item.error || ""}`.trim(),
     ],
     "暂无最近调用"
@@ -41556,6 +41567,10 @@ $("#saveProvidersBtn").addEventListener("click", async () => {
     return;
   }
   const values = currentProviderValues();
+  for (const input of document.querySelectorAll("[data-provider-request-attempts], [data-background-llm-attempts]")) {
+    if (!input.reportValidity()) return;
+  }
+  const requestAttemptsOverrides = window.PrivateCompanionProviderTree.currentProviderRequestAttemptsValues({ document, state });
   const timeoutOverrides = currentProviderTimeoutValues();
   const tokenLimitOverrides = currentProviderTokenLimitValues();
   const fallbackOverrides = currentProviderFallbackValues();
@@ -41573,6 +41588,8 @@ $("#saveProvidersBtn").addEventListener("click", async () => {
     () => postJson("/settings/update", { settings: {
       provider_config_mode,
       model_timeout_overrides: timeoutOverrides,
+      model_request_max_attempts_overrides: requestAttemptsOverrides,
+      background_llm_request_max_attempts: llmStreaming.maxAttempts,
       model_token_limit_overrides: tokenLimitOverrides,
       model_fallback_overrides: fallbackOverrides,
       model_replacement_scope: modelReplacement.scope,
@@ -41593,6 +41610,10 @@ $("#saveProvidersBtn").addEventListener("click", async () => {
   state.overview.settings = { ...(state.overview.settings || {}), provider_config_mode };
   state.providerDraft = {};
   state.providerTimeoutDraft = { ...timeoutOverrides };
+  state.providerRequestAttemptsDraft = { ...requestAttemptsOverrides };
+  state.backgroundLlmAttemptsDraft = llmStreaming.maxAttempts;
+  state.overview.settings.model_request_max_attempts_overrides = { ...requestAttemptsOverrides };
+  state.overview.settings.background_llm_request_max_attempts = llmStreaming.maxAttempts;
   state.providerTokenLimitDraft = { ...tokenLimitOverrides };
   state.providerFallbackDraft = { ...fallbackOverrides };
   state.overview.settings.model_timeout_overrides = { ...timeoutOverrides };

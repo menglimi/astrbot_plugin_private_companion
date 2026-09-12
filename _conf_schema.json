@@ -4857,6 +4857,12 @@
     "default": "{}",
     "invisible": true
   },
+  "model_request_max_attempts_overrides": {
+    "description": "模型卡片最大尝试次数覆盖（包含首次请求）",
+    "type": "text",
+    "default": "{}",
+    "invisible": true
+  },
   "model_token_limit_overrides": {
     "description": "Legacy flat config: 模型卡片单次 Token 上限",
     "type": "text",
@@ -4894,6 +4900,12 @@
           "快速配置",
           "精准配置"
         ]
+      },
+      "background_llm_request_max_attempts": {
+        "description": "后台模型最大尝试次数（包含首次请求）",
+        "type": "int",
+        "default": 0,
+        "hint": "0 继承 AstrBot provider_settings.request_max_retries；1 表示每次 Provider 请求不重试。可在陪伴面板按模型卡片覆盖，长创作、日程和每日巡视建议设置 1–2。需 Provider 支持 request_max_retries；SDK、密钥轮换和备用模型可能额外发起请求，实际次数以服务商记录为准。"
       },
       "enable_llm_streaming": {
         "description": "插件内部 LLM 调用使用流式",

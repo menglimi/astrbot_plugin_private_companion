@@ -230,6 +230,11 @@ class PageSettingNormalizerMixin:
             }
             text = aliases.get(text, text)
             return text if text in {"quick", "precision"} else "quick"
+        if key == "background_llm_request_max_attempts":
+            return self.plugin._normalize_request_max_attempts(value)
+        if key == "model_request_max_attempts_overrides":
+            normalized = self.plugin._normalize_model_request_max_attempts_overrides(value)
+            return json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
         if key == "model_timeout_overrides":
             normalizer = getattr(self.plugin, "_normalize_model_timeout_overrides", None)
             normalized = normalizer(value) if callable(normalizer) else {}

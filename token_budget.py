@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import inspect
 import json
 import re
 import time
@@ -552,6 +554,7 @@ class TokenBudgetMixin:
         error: str = "",
         resp: Any = None,
         budget_exempt: bool | None = None,
+        request_policy: dict[str, Any] | None = None,
     ) -> None:
         usage = self._extract_llm_usage(resp, prompt, completion)
         now_ts = _now_ts()
@@ -638,6 +641,8 @@ class TokenBudgetMixin:
                 "completion_chars": len(str(completion or "")),
                 "error": _single_line(error, 160),
                 "budget_exempt": exempt,
+                **(request_policy or {}),
+                "provider_attempts": None,
             }
         )
         del recent[:-240]
@@ -1109,6 +1114,105 @@ class TokenBudgetMixin:
         return bool(self._default_chat_provider_id())
 
     @staticmethod
+    def _normalize_request_max_attempts(value: Any) -> int:
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
+            return 0
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError, OverflowError):
+            return 0
+
+    @classmethod
+    def _normalize_model_request_max_attempts_overrides(cls, value: Any) -> dict[str, int]:
+        if isinstance(value, str):
+            try:
+                value = json.loads(value or "{}")
+            except (TypeError, ValueError):
+                return {}
+        if not isinstance(value, dict):
+            return {}
+        return {
+            key: attempts for key, raw in value.items()
+            if key in MODEL_PROVIDER_KEYS and (attempts := cls._normalize_request_max_attempts(raw))
+        }
+
+    def _background_llm_request_policy(
+        self, *, task: str = "", provider_id: str = "", provider_key: str = ""
+    ) -> dict[str, Any]:
+        key = self._model_provider_key_for_call(task, provider_id, provider_key)
+        overrides = getattr(self, "model_request_max_attempts_overrides", {})
+        attempts = self._normalize_request_max_attempts(overrides.get(key)) if isinstance(overrides, dict) else 0
+        source = "model_card"
+        if not attempts:
+            attempts = self._normalize_request_max_attempts(
+                getattr(self, "background_llm_request_max_attempts", 0)
+            )
+            source = "plugin"
+        if not attempts:
+            getter = getattr(self.context, "get_config", None)
+            try:
+                config = getter() if callable(getter) else {}
+            except Exception:
+                config = {}
+            settings = config.get("provider_settings", {}) if isinstance(config, dict) else {}
+            attempts = self._normalize_request_max_attempts(settings.get("request_max_retries")) if isinstance(settings, dict) else 0
+            source = "astrbot_global"
+        if not attempts:
+            # Match AstrBot's default only when no valid configured value exists.
+            try:
+                from astrbot.core.provider.sources.request_retry import REQUEST_RETRY_ATTEMPTS
+            except ImportError:
+                REQUEST_RETRY_ATTEMPTS = 5
+            attempts = REQUEST_RETRY_ATTEMPTS
+            source = "astrbot_default"
+        return {"request_max_attempts": attempts, "request_retry_source": source}
+
+    @staticmethod
+    def _llm_retry_kwargs(call: Any, policy: dict[str, Any], *, explicit: bool = False) -> dict[str, int]:
+        try:
+            params = inspect.signature(call).parameters
+            supported = "request_max_retries" in params or (
+                not explicit and any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+            )
+        except (TypeError, ValueError):
+            supported = False
+        policy["request_retry_supported"] = supported
+        return {"request_max_retries": policy["request_max_attempts"]} if supported else {}
+
+    def _llm_context_retry_kwargs(self, provider_id: str, policy: dict[str, Any]) -> dict[str, int]:
+        getter = getattr(self.context, "get_provider_by_id", None)
+        provider = getter(provider_id) if callable(getter) else None
+        if provider is not None:
+            # Old providers may forward arbitrary kwargs directly to the SDK.
+            if not self._llm_retry_kwargs(getattr(provider, "text_chat", None), policy, explicit=True):
+                return {}
+        return self._llm_retry_kwargs(self.context.llm_generate, policy)
+
+    def _llm_backoff_key(self, task: str, provider_id: str, prompt: str) -> str:
+        persona_getter = getattr(self, "_active_persona_scope", None)
+        persona = persona_getter() if callable(persona_getter) else ""
+        return hashlib.sha256(json.dumps([persona, task, provider_id, prompt], ensure_ascii=False).encode("utf-8")).hexdigest()
+
+    def _llm_request_retry_after(self, key: str, *, defer: bool = False) -> float:
+        now = time.time()
+        pending = getattr(self, "_background_llm_retry_after", {})
+        pending = {k: ts for k, ts in pending.items() if ts > now}
+        if defer:
+            pending[key] = now + 60
+        self._background_llm_retry_after = pending
+        return pending.get(key, 0.0)
+
+    @staticmethod
+    def _llm_result_unknown_timeout(error: BaseException) -> bool:
+        seen: set[int] = set()
+        while error is not None and id(error) not in seen:
+            seen.add(id(error))
+            if isinstance(error, TimeoutError) or type(error).__name__ in {"ReadTimeout", "ReadTimeoutError", "APITimeoutError"}:
+                return True
+            error = error.__cause__ or error.__context__
+        return False
+
+    @staticmethod
     def _normalize_model_timeout_overrides(value: Any) -> dict[str, int]:
         raw = value
         if isinstance(raw, str):
@@ -1475,6 +1579,9 @@ class TokenBudgetMixin:
             )
             if part
         )
+        backoff_key = self._llm_backoff_key(task_key, selected_provider, usage_prompt)
+        if self._llm_request_retry_after(backoff_key):
+            return None
         budget_exempt = self._is_llm_budget_exempt_task(task_key)
         if not budget_exempt and self._daily_token_soft_limit_should_defer(task_key):
             self._record_llm_budget_skip(
@@ -1524,11 +1631,15 @@ class TokenBudgetMixin:
         for attempt_index, attempt_provider in enumerate(candidates):
             started_at = time.time()
             response = None
+            request_policy = self._background_llm_request_policy(
+                task=task_key, provider_id=attempt_provider, provider_key=provider_key
+            )
             try:
                 kwargs: dict[str, Any] = {
                     "prompt": prompt,
                     "chat_provider_id": attempt_provider,
                     "tools": tools,
+                    **self._llm_context_retry_kwargs(attempt_provider, request_policy),
                 }
                 if max_tokens and max_tokens > 0:
                     kwargs["max_tokens"] = max_tokens
@@ -1594,6 +1705,7 @@ class TokenBudgetMixin:
                         error=failure_code,
                         resp=response,
                         budget_exempt=budget_exempt,
+                        request_policy=request_policy,
                     )
                     if attempt_index + 1 < len(candidates):
                         logger.warning(
@@ -1616,6 +1728,7 @@ class TokenBudgetMixin:
                         success=False,
                         error="empty_response",
                         budget_exempt=budget_exempt,
+                        request_policy=request_policy,
                     )
                     if attempt_index + 1 < len(candidates):
                         continue
@@ -1629,6 +1742,7 @@ class TokenBudgetMixin:
                     success=True,
                     resp=response,
                     budget_exempt=budget_exempt,
+                    request_policy=request_policy,
                 )
                 if attempt_index > 0 or token_routed:
                     logger.info(
@@ -1640,6 +1754,9 @@ class TokenBudgetMixin:
                     )
                 return response
             except Exception as exc:
+                uncertain_timeout = (not max_tokens or max_tokens >= 512) and self._llm_result_unknown_timeout(exc)
+                if uncertain_timeout:
+                    request_policy["retry_after"] = self._llm_request_retry_after(backoff_key, defer=True)
                 self._record_llm_usage(
                     provider_id=attempt_provider,
                     task=task_key,
@@ -1650,7 +1767,10 @@ class TokenBudgetMixin:
                     error=str(exc),
                     resp=response,
                     budget_exempt=budget_exempt,
+                    request_policy=request_policy,
                 )
+                if uncertain_timeout:
+                    raise
                 if attempt_index + 1 < len(candidates):
                     logger.warning(
                         "工具调用失败，尝试卡片备用模型: task=%s card=%s error=%s",
@@ -1695,6 +1815,7 @@ class TokenBudgetMixin:
         max_tokens: int = 0,
         timeout_seconds: float | None = None,
         task: str | None = None,
+        request_policy: dict[str, Any] | None = None,
     ) -> Any:
         """Call ``provider.text_chat_stream`` and accumulate chunks.
 
@@ -1715,7 +1836,13 @@ class TokenBudgetMixin:
         if not callable(streamer):
             return None
 
-        stream_kwargs: dict[str, Any] = {"prompt": prompt}
+        policy = request_policy if request_policy is not None else self._background_llm_request_policy(
+            task=task or "", provider_id=provider_id
+        )
+        stream_kwargs: dict[str, Any] = {
+            "prompt": prompt,
+            **self._llm_retry_kwargs(streamer, policy, explicit=True),
+        }
         if system_prompt:
             stream_kwargs["system_prompt"] = system_prompt
         if max_tokens and max_tokens > 0:
@@ -1747,7 +1874,9 @@ class TokenBudgetMixin:
                 collected = await _collect()
         except asyncio.TimeoutError:
             raise
-        except Exception as exc:
+        except NotImplementedError as exc:
+            if chunk_parts:
+                raise
             logger.debug(
                 "流式 Provider 调用不可用，回退非流式: provider=%s error=%s",
                 _single_line(provider_id, 120),
@@ -1818,6 +1947,9 @@ class TokenBudgetMixin:
             if str(system_prompt or "").strip()
             else str(prompt or "")
         )
+        backoff_key = self._llm_backoff_key(task_key, selected_provider, usage_prompt)
+        if self._llm_request_retry_after(backoff_key):
+            return None
         budget_exempt = self._is_llm_budget_exempt_task(task_key)
         if not budget_exempt and self._daily_token_soft_limit_should_defer(task_key):
             self._record_llm_budget_skip(
@@ -1862,10 +1994,16 @@ class TokenBudgetMixin:
         for attempt_index, attempt_provider in enumerate(candidates):
             start = time.time()
             resp = None
+            request_policy = self._background_llm_request_policy(
+                task=task_key, provider_id=attempt_provider, provider_key=provider_key
+            )
             try:
                 if not attempt_provider:
                     raise RuntimeError("未找到可用的 AstrBot 默认模型 Provider")
-                kwargs: dict[str, Any] = {"prompt": prompt, "chat_provider_id": attempt_provider}
+                kwargs: dict[str, Any] = {
+                    "prompt": prompt, "chat_provider_id": attempt_provider,
+                    **self._llm_context_retry_kwargs(attempt_provider, request_policy),
+                }
                 if max_tokens and max_tokens > 0:
                     kwargs["max_tokens"] = max_tokens
                 if system_prompt:
@@ -1889,11 +2027,13 @@ class TokenBudgetMixin:
                             max_tokens=max_tokens,
                             timeout_seconds=effective_timeout,
                             task=task_key,
+                            request_policy=request_policy,
                         )
                         if resp is None:
                             # 流式路径不可用（Provider 不支持流式、流式为空或
                             # 能力缺失）时回退到原有非流式调用，避免误判为空
                             # 响应而触发备用模型。
+                            self._llm_context_retry_kwargs(attempt_provider, request_policy)
                             request_call = self.context.llm_generate(**kwargs)
                             if effective_timeout is not None:
                                 resp = await asyncio.wait_for(request_call, timeout=effective_timeout)
@@ -1906,6 +2046,8 @@ class TokenBudgetMixin:
                         else:
                             resp = await request_call
                 except asyncio.TimeoutError as exc:
+                    if effective_timeout is None:
+                        raise TimeoutError(f"模型任务 {task_key} 调用超时") from exc
                     raise TimeoutError(f"模型任务 {task_key} 超过 {effective_timeout:.0f} 秒未返回") from exc
                 if resp and resp.completion_text:
                     completion = resp.completion_text.strip()
@@ -1952,6 +2094,7 @@ class TokenBudgetMixin:
                                 error=failure_code,
                                 resp=resp,
                                 budget_exempt=budget_exempt,
+                                request_policy=request_policy,
                             )
                             if attempt_index + 1 < len(candidates):
                                 logger.warning(
@@ -1979,6 +2122,7 @@ class TokenBudgetMixin:
                             success=True,
                             resp=resp,
                             budget_exempt=budget_exempt,
+                            request_policy=request_policy,
                         )
                         if attempt_index > 0 or token_routed:
                             logger.info(
@@ -1999,6 +2143,7 @@ class TokenBudgetMixin:
                     error="empty_response",
                     resp=resp,
                     budget_exempt=budget_exempt,
+                    request_policy=request_policy,
                 )
                 if attempt_index + 1 < len(candidates):
                     logger.warning(
@@ -2009,6 +2154,9 @@ class TokenBudgetMixin:
                         _single_line(candidates[attempt_index + 1], 120),
                     )
             except Exception as e:
+                uncertain_timeout = (not max_tokens or max_tokens >= 512) and self._llm_result_unknown_timeout(e)
+                if uncertain_timeout:
+                    request_policy["retry_after"] = self._llm_request_retry_after(backoff_key, defer=True)
                 self._record_llm_usage(
                     provider_id=attempt_provider,
                     task=task_key,
@@ -2018,7 +2166,11 @@ class TokenBudgetMixin:
                     success=False,
                     error=str(e),
                     budget_exempt=budget_exempt,
+                    request_policy=request_policy,
                 )
+                if uncertain_timeout:
+                    logger.warning("模型任务结果未知，退避后再尝试: task=%s retry_after=%s", task_key, request_policy["retry_after"])
+                    return None
                 if attempt_index + 1 < len(candidates):
                     logger.warning(
                         "主模型调用失败,尝试卡片备用模型: task=%s card=%s primary=%s fallback=%s error=%s",

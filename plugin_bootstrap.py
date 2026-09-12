@@ -651,6 +651,12 @@ def _initialize_world_and_model_config(self: Any, c: Any) -> None:
         self._cfg_raw(c, "provider_config_mode", None),
         c,
     )
+    self.background_llm_request_max_attempts = self._normalize_request_max_attempts(
+        self._cfg_raw(c, "background_llm_request_max_attempts", 0)
+    )
+    self.model_request_max_attempts_overrides = self._normalize_model_request_max_attempts_overrides(
+        self._cfg_raw(c, "model_request_max_attempts_overrides", {})
+    )
     self.model_timeout_overrides = self._normalize_model_timeout_overrides(
         self._cfg_raw(c, "model_timeout_overrides", {})
     )
