@@ -2060,3 +2060,126 @@ class WardrobeOutfitGeneratorTests(unittest.TestCase):
         body = render_wardrobe_outfit_prompt("偏爱宽松", {"prompt_text": render_generated_outfit(parsed)})
         self.assertTrue(body.startswith(WARDROBE_PROMPT_PREAMBLE))
         self.assertNotIn(chr(0x3010), body)
+
+
+# ---------------------------------------------------------------------------
+# M. 搭配测试面板的后端契约与生成器运行时
+# ---------------------------------------------------------------------------
+
+
+class WardrobeOutfitPreviewTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.plugin = _WardrobeCommandHarness()
+        self.plugin.config.update(
+            {
+                "wardrobe_outfit_mode": "select",
+                "wardrobe_items": [
+                    {"name": "米色针织开衫", "slot": "upper"},
+                    {"name": "白色棉质内衣", "slot": "upper", "intimate": True},
+                    {"name": "深色直筒长裤", "slot": "lower"},
+                    {"name": "分体泳衣上装", "slot": "upper", "scenes": ["sport"]},
+                ],
+            }
+        )
+
+    def test_preview_reports_the_injection_without_writing_config(self) -> None:
+        before = {key: value for key, value in self.plugin.config.items()}
+        data = self.plugin._wardrobe_outfit_preview(scene="home", weather="冷")
+        self.assertEqual(before, self.plugin.config)
+        self.assertEqual("select", data["mode"])
+        self.assertEqual("home", data["scene"])
+        self.assertEqual("冷", data["weather"])
+        self.assertEqual(4, data["item_count"])
+        self.assertIn("场景：home", data["request"])
+        self.assertIn("天气：冷", data["request"])
+        self.assertEqual(data["injected_chars"], len(data["injected"]))
+        self.assertLessEqual(data["injected_chars"], data["injected_limit"])
+
+    def test_preview_lets_the_panel_simulate_another_occasion(self) -> None:
+        home = self.plugin._wardrobe_outfit_preview(scene="home")
+        sport = self.plugin._wardrobe_outfit_preview(scene="sport")
+        home_names = {row["name"] for row in home["rule"]["picked"]}
+        sport_names = {row["name"] for row in sport["rule"]["picked"]}
+        self.assertNotIn("分体泳衣上装", home_names)
+        self.assertIn("分体泳衣上装", sport_names)
+
+    def test_preview_keeps_intimate_out_of_the_photo_projection(self) -> None:
+        data = self.plugin._wardrobe_outfit_preview(scene="home")
+        profile_blob = " ".join(data["rule"]["profile"].values())
+        self.assertNotIn("内衣", profile_blob)
+        self.assertIn("内衣", data["rule"]["prompt_text"])
+
+    def test_preview_handles_an_empty_wardrobe(self) -> None:
+        self.plugin.config["wardrobe_items"] = []
+        data = self.plugin._wardrobe_outfit_preview(scene="home")
+        self.assertEqual(0, data["item_count"])
+        self.assertEqual([], data["rule"]["picked"])
+        self.assertEqual("", data["injected"])
+        self.assertFalse(data["generator_ready"])
+
+    def test_generator_is_off_by_default(self) -> None:
+        self.assertFalse(self.plugin._wardrobe_generator_enabled())
+        self.assertIsNone(self.plugin._wardrobe_cached_generated_outfit())
+        data = self.plugin._wardrobe_outfit_preview(scene="home")
+        self.assertFalse(data["generator_enabled"])
+        self.assertIn(data["rule"]["source"], {"rule", "bundle", "style"})
+
+    async def test_generate_returns_none_without_an_llm_entry_point(self) -> None:
+        self.plugin.config["enable_wardrobe_outfit_generate"] = True
+        self.assertIsNone(await self.plugin._wardrobe_generate_outfit(None))
+
+    async def test_generate_parses_the_reply_and_then_serves_it_from_cache(self) -> None:
+        calls: list[dict] = []
+
+        async def _fake_llm(prompt, **kwargs):
+            calls.append({"prompt": prompt, **kwargs})
+            return '{"top": "米色针织开衫", "bottom": "深色长裤", "underwear_top": "棉质内衣"}'
+
+        self.plugin._llm_call = _fake_llm
+        self.plugin.config["enable_wardrobe_outfit_generate"] = True
+        payload = await self.plugin._wardrobe_generate_outfit(None)
+        self.assertEqual("米色针织开衫", payload["top"])
+        self.assertEqual("wardrobe_outfit_generate", calls[0]["task"])
+        again = await self.plugin._wardrobe_generate_outfit(None)
+        self.assertEqual(payload, again)
+        self.assertEqual(1, len(calls), "第二次调用必须走缓存，不能再打模型")
+
+    async def test_generate_caches_an_unusable_reply_and_degrades(self) -> None:
+        calls: list[str] = []
+
+        async def _bad_llm(prompt, **kwargs):
+            calls.append(prompt)
+            return "我不确定"
+
+        self.plugin._llm_call = _bad_llm
+        self.plugin.config["enable_wardrobe_outfit_generate"] = True
+        self.assertIsNone(await self.plugin._wardrobe_generate_outfit(None))
+        self.assertIsNone(await self.plugin._wardrobe_generate_outfit(None))
+        self.assertEqual(1, len(calls), "失败结果也要入缓存，避免同一天反复重试")
+
+    async def test_generate_survives_a_model_exception(self) -> None:
+        async def _boom(prompt, **kwargs):
+            raise RuntimeError("boom")
+
+        self.plugin._llm_call = _boom
+        self.plugin.config["enable_wardrobe_outfit_generate"] = True
+        self.assertIsNone(await self.plugin._wardrobe_generate_outfit(None))
+
+    async def test_cached_generation_replaces_the_rule_selection(self) -> None:
+        self.plugin.config["enable_wardrobe_outfit_generate"] = True
+        self.plugin._wardrobe_outfit_cache()[self.plugin._wardrobe_outfit_cache_key()] = {
+            "top": "生成的上装",
+            "underwear_top": "生成的内衣",
+        }
+        body = self.plugin._wardrobe_selected_outfit_body(None, "偏爱宽松")
+        self.assertIn("生成的上装", body)
+        self.assertIn("生成的内衣（贴身）", body)
+        self.assertNotIn(chr(0x3010), body)
+
+    async def test_inventory_mode_ignores_the_generator_entirely(self) -> None:
+        self.plugin.config["wardrobe_outfit_mode"] = "inventory"
+        self.plugin.config["enable_wardrobe_outfit_generate"] = True
+        section = self.plugin._wardrobe_prompt_section(None)
+        self.assertIsNotNone(section)
+        self.assertTrue(section.content.startswith(WARDROBE_PROMPT_PREAMBLE))
+        self.assertIn("衣柜里的具体衣物", section.content)
