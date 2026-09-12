@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping
 
 
-PERSONA_SETTINGS_SCHEMA_VERSION = 7
+PERSONA_SETTINGS_SCHEMA_VERSION = 8
 PERSONA_CONFIG_SCHEMA_VERSION = PERSONA_SETTINGS_SCHEMA_VERSION
 SCOPE_MANIFEST_VERSION = 1
 PERSONA_SETTINGS_KEY = "persona_settings"
@@ -44,6 +44,13 @@ PERSONA_SETTINGS_NEW_KEYS_BY_VERSION: dict[int, tuple[str, ...]] = {
         "wardrobe_items",
     ),
     7: ("wardrobe_image_prompt",),
+    8: (
+        "wardrobe_outfit_mode",
+        "wardrobe_outfit_rotation_days",
+        "enable_wardrobe_outfit_generate",
+        "WARDROBE_OUTFIT_PROVIDER_ID",
+        "wardrobe_outfits",
+    ),
 }
 
 MODE_FOLLOW_PRIMARY = "follow_primary"

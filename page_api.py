@@ -1321,6 +1321,7 @@ class PrivateCompanionPageApi(
             ("/photo_reference/image_data", self.get_photo_reference_image_data, ["GET"], "Private Companion Page photo reference image data"),
             ("/photo_reference/upload", self.upload_photo_reference, ["POST"], "Private Companion Page upload photo reference image"),
             ("/wardrobe/describe", self.describe_wardrobe_image, ["POST"], "Private Companion Page describe wardrobe garment image"),
+            ("/wardrobe/outfit-preview", self.preview_wardrobe_outfit, ["POST"], "Private Companion Page preview wardrobe outfit injection"),
             ("/photo_reference/metadata/compile", self.compile_photo_reference_metadata, ["POST"], "Compile guided photo reference metadata"),
             ("/photo_reference/metadata/review", self.review_photo_reference_metadata, ["POST"], "Review and merge guided photo reference answers"),
             ("/photo_reference/selection_trial", self.run_photo_reference_selection_trial, ["POST"], "Run side-effect-free photo reference selection trial"),
@@ -3928,6 +3929,34 @@ class PrivateCompanionPageApi(
                 "tags": list(parsed.get("tags") or []),
             }
         )
+
+    async def preview_wardrobe_outfit(self) -> dict[str, Any]:
+        """Preview what the wardrobe would inject for one occasion.
+
+        Read-only: never writes config and never calls the model, so the panel
+        can refresh it freely while the administrator tunes the settings.
+        """
+
+        payload = await request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return self._error("请求体必须是 JSON 对象")
+        preview = getattr(self.plugin, "_wardrobe_outfit_preview", None)
+        if not callable(preview):
+            return self._error("当前插件实例不支持着装预览")
+        # 缺省的 scene/weather 表示「用插件自动判定的值」；传空串表示这一轮没有场合上下文。
+        # 场合只写进请求与种子，从不过滤候选，所以这里怎么填都不会藏起某件衣物。
+        raw_scene = payload.get("scene")
+        raw_weather = payload.get("weather")
+        try:
+            data = preview(
+                scene=None if raw_scene is None else self._single_line(raw_scene, 20),
+                weather=None if raw_weather is None else self._single_line(raw_weather, 120),
+                seed=self._single_line(payload.get("seed"), 60),
+            )
+        except Exception as exc:
+            logger.warning("着装预览失败: %s", self._single_line(exc, 160), exc_info=True)
+            return self._error("着装预览失败，请稍后再试")
+        return self._ok(data)
 
     def _wardrobe_page_local_path(self, value: Any) -> Path | None:
         """Allow only images already stored in the plugin's own asset directories."""
@@ -23264,7 +23293,12 @@ class PrivateCompanionPageApi(
             "wardrobe_image_max_count",
             "wardrobe_image_prompt",
             "WARDROBE_VISION_PROVIDER_ID",
+            "wardrobe_outfit_mode",
+            "wardrobe_outfit_rotation_days",
+            "enable_wardrobe_outfit_generate",
+            "WARDROBE_OUTFIT_PROVIDER_ID",
             "wardrobe_items",
+            "wardrobe_outfits",
             "enable_daily_outfit_photo",
             "enable_creative_cover_generation",
             "daily_outfit_photo_prompt",

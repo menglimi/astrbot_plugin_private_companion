@@ -44,6 +44,8 @@ window.PrivateCompanionWardrobe = (() => {
     const description = cleanText(raw.description ?? raw.note, MAX_DESCRIPTION);
     if (!name && !description) return null;
     const source = cleanText(raw.source ?? raw.path, 1200);
+    const slot = cleanText(raw.slot ?? raw.category ?? raw.part, 20);
+    const precision = cleanText(raw.precision, 12) || "exact";
     return {
       id: cleanText(raw.id, 80) || randomId(),
       name: name || description.slice(0, 12) || "未命名衣物",
@@ -51,6 +53,9 @@ window.PrivateCompanionWardrobe = (() => {
       tags: cleanTags(raw.tags),
       source,
       source_kind: cleanText(raw.source_kind, 20) || (source ? "image" : "manual"),
+      slot,
+      intimate: raw.intimate === true || raw.intimate === "true" || raw.intimate === 1,
+      precision: ["exact", "loose"].includes(precision) ? precision : "exact",
     };
   }
 
@@ -91,7 +96,7 @@ window.PrivateCompanionWardrobe = (() => {
     "严格按下面三行输出，每行一个字段，不要写标题、分析过程或多余空行：",
     "名称：<这件衣服的简短名称，12字以内，例如 米色针织开衫>",
     "描述：<款式、颜色、材质、版型、图案与明显细节，120字以内>",
-    "标签：<2到4个场景或季节标签，用竖线分隔，例如 居家|秋冬|宽松>",
+    "标签：<2到4个场合或季节标签，用竖线分隔，例如 居家|秋冬|宽松>",
     "如果图片里没有可辨认的衣物，请只输出一行：无",
   ].join("\n");
 
@@ -383,6 +388,11 @@ window.PrivateCompanionWardrobe = (() => {
       source: cleanText(extra.source ?? (existingIndex >= 0 ? items[existingIndex].source : ""), 1200),
       source_kind: cleanText(extra.source_kind, 20)
         || (extra.source ? "image" : (existingIndex >= 0 ? items[existingIndex].source_kind : "manual")),
+      slot: cleanText(extra.slot ?? (existingIndex >= 0 ? items[existingIndex].slot : ""), 20),
+      intimate: extra.intimate ?? (existingIndex >= 0 ? items[existingIndex].intimate : false),
+      precision: ["exact", "loose"].includes(extra.precision ?? (existingIndex >= 0 ? items[existingIndex].precision : "exact"))
+        ? (extra.precision ?? (existingIndex >= 0 ? items[existingIndex].precision : "exact"))
+        : "exact",
     };
     if (existingIndex >= 0) items.splice(existingIndex, 1, payload);
     else {
@@ -519,8 +529,178 @@ window.PrivateCompanionWardrobe = (() => {
     renderProviderControl(context);
     renderPromptEditor(context);
     bindVisionSettings(context);
+    bindOutfitPreview(context);
     commit(context);
     bindActions(context);
+  }
+
+  // ------------------------------------------------------------------
+  // 搭配测试：只读预览
+  //
+  // 直接问后端"这一刻会注入什么"，不写配置、不调模型，所以可以随便点。
+  // 面板展示的就是真正会发出去的请求原文，不是近似值。
+  // ------------------------------------------------------------------
+
+  const PREVIEW_SOURCE_LABELS = {
+    bundle: "整套（准确）",
+    style: "整套（模糊）",
+    rule: "散件兜底",
+    generate: "模型生成",
+  };
+
+  const PREVIEW_SLOT_LABELS = {
+    upper: "上身",
+    lower: "下身",
+    whole: "整身",
+    feet: "足部",
+    extra: "配件",
+  };
+
+  function previewPickLine(row) {
+    const slot = PREVIEW_SLOT_LABELS[row?.slot] || "未分类";
+    const intimate = row?.intimate ? "·贴身" : "";
+    return `[${slot}${intimate}] ${row?.name || ""}`;
+  }
+
+  function renderPreviewMeta(context, data) {
+    const document = contextDocument(context);
+    const host = document?.querySelector("[data-wardrobe-preview-meta]");
+    if (!host) return;
+    host.textContent = "";
+    const rows = [
+      ["注入模式", data.mode === "select" ? "按天裁决" : "整份清单"],
+      [
+        "生成器",
+        data.generator_enabled
+          ? data.generator_ready
+            ? "已开启 · 已有生成结果"
+            : "已开启 · 尚未生成（后台进行中）"
+          : "关闭",
+      ],
+      ["场合", data.scene || "（未判定）"],
+      ["天气", data.weather || "—"],
+      ["裁决来源", PREVIEW_SOURCE_LABELS[data.rule?.source] || data.rule?.source || "—"],
+      ["命中的整套", data.rule?.outfit_name || "—"],
+      ["衣柜", `${data.item_count} 件 · ${data.outfit_count} 套`],
+      [
+        "未分类衣物",
+        Number(data.unclassified_count) > 0
+          ? `${data.unclassified_count} 件（没有部位，不参与自动搭配，建议补全）`
+          : "0 件",
+      ],
+      ["注入长度", `${data.injected_chars} / ${data.injected_limit} 字`],
+    ];
+    for (const [key, value] of rows) {
+      const wrap = document.createElement("div");
+      const dt = document.createElement("dt");
+      dt.textContent = key;
+      const dd = document.createElement("dd");
+      dd.textContent = String(value);
+      wrap.append(dt, dd);
+      host.append(wrap);
+    }
+  }
+
+  function setPreviewText(context, selector, text) {
+    const node = contextDocument(context)?.querySelector(selector);
+    if (node) node.textContent = text || "";
+  }
+
+  function renderPreviewPicked(context, data) {
+    const document = contextDocument(context);
+    const host = document?.querySelector("[data-wardrobe-preview-picked]");
+    if (!host) return;
+    host.textContent = "";
+    const picked = Array.isArray(data.rule?.picked) ? data.rule.picked : [];
+    if (!picked.length) {
+      const empty = document.createElement("p");
+      empty.className = "wardrobe-empty";
+      empty.textContent = "衣柜里还没有可搭配的衣物。";
+      host.append(empty);
+      return;
+    }
+    for (const row of picked) {
+      const line = document.createElement("div");
+      line.className = "wardrobe-preview-pick";
+      line.textContent = previewPickLine(row);
+      host.append(line);
+    }
+  }
+
+  function renderPreviewProfile(context, data) {
+    const profile = data.rule?.profile || {};
+    const keys = Object.keys(profile);
+    const body = keys.length
+      ? keys.map((key) => `${key}: ${profile[key]}`).join("\n")
+      : "（本次没有生图投影字段）";
+    setPreviewText(context, "[data-wardrobe-preview-profile]", body);
+  }
+
+  async function runOutfitPreview(context) {
+    const document = contextDocument(context);
+    const { postJson } = context || {};
+    if (!document) return;
+    const status = document.querySelector("[data-wardrobe-preview-status]");
+    if (!postJson) {
+      if (status) status.textContent = "当前面板不支持预览请求。";
+      return;
+    }
+    const scene = document.querySelector("[data-wardrobe-preview-scene]")?.value || "";
+    const weather = document.querySelector("[data-wardrobe-preview-weather]")?.value || "";
+    if (status) {
+      status.textContent = "正在生成预览…";
+      status.dataset.tone = "";
+    }
+    try {
+      const result = await postJson("/wardrobe/outfit-preview", { scene, weather });
+      const payload =
+        result?.data && typeof result.data === "object" ? result.data : result;
+      if (!payload || result?.status === "error") {
+        if (status) {
+          status.textContent = result?.error || result?.message || "预览失败。";
+          status.dataset.tone = "error";
+        }
+        return;
+      }
+      const output = document.querySelector("[data-wardrobe-preview-output]");
+      if (output) output.hidden = false;
+      renderPreviewMeta(context, payload);
+      renderPreviewPicked(context, payload);
+      renderPreviewProfile(context, payload);
+      setPreviewText(context, "[data-wardrobe-preview-outfit]", payload.rule?.prompt_text || "（无）");
+      setPreviewText(context, "[data-wardrobe-preview-injected]", payload.injected || "（无）");
+      setPreviewText(context, "[data-wardrobe-preview-request]", payload.request || "");
+      if (status) {
+        status.textContent = "预览已更新。";
+        status.dataset.tone = "ok";
+      }
+    } catch (error) {
+      if (status) {
+        status.textContent = `预览失败：${error?.message || "请求异常"}`;
+        status.dataset.tone = "error";
+      }
+    }
+  }
+
+  function bindOutfitPreview(context) {
+    const document = contextDocument(context);
+    const root = document?.querySelector("[data-wardrobe-outfit-preview]");
+    if (!root || root.dataset.bound === "1") return;
+    root.dataset.bound = "1";
+    root.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const preset = target.getAttribute("data-wardrobe-preview-scene-set");
+      if (preset !== null) {
+        const input = root.querySelector("[data-wardrobe-preview-scene]");
+        if (input) input.value = preset;
+        void runOutfitPreview(context);
+        return;
+      }
+      if (target.hasAttribute("data-wardrobe-preview-run")) {
+        void runOutfitPreview(context);
+      }
+    });
   }
 
   return {

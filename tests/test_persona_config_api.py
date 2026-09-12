@@ -409,11 +409,16 @@ def test_existing_sparse_profile_is_repaired_without_materializing_old_keys():
             "enable_wardrobe": True,
             "wardrobe_tendency": "",
             "enable_wardrobe_prompt": True,
-            "wardrobe_prompt_max_items": 12,
+            "wardrobe_prompt_max_items": 20,
             "wardrobe_image_max_count": 3,
             "WARDROBE_VISION_PROVIDER_ID": "",
-            "wardrobe_items": [],
+            "wardrobe_items": load_scope_manifest()["wardrobe_items"]["new_key_default"],
             "wardrobe_image_prompt": "",
+            "wardrobe_outfit_mode": "select",
+            "wardrobe_outfit_rotation_days": 7,
+            "enable_wardrobe_outfit_generate": False,
+            "WARDROBE_OUTFIT_PROVIDER_ID": "",
+            "wardrobe_outfits": load_scope_manifest()["wardrobe_outfits"]["new_key_default"],
         }
         assert "quiet_hours" not in profile["persona_settings"]
 

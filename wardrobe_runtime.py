@@ -13,6 +13,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from copy import deepcopy
 from typing import Any
 
@@ -20,27 +22,41 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
 from .conversation_prompt_section import PromptSection, prompt_section
-from .helpers import _flat_get, _set_into_config, _single_line
+from .helpers import _flat_get, _set_into_config, _single_line, _today_key
 from .persona_config import PERSONA_SETTINGS_KEY, runtime_persona_setting
 from .wardrobe import (
+    OUTFIT_KIND_BUNDLE,
+    OUTFIT_KIND_STYLE,
     SOURCE_KIND_IMAGE,
     SOURCE_KIND_MANUAL,
     WARDROBE_MAX_ITEMS,
+    WARDROBE_MAX_OUTFITS,
     WARDROBE_PROMPT_MAX_CHARS,
     WARDROBE_PROMPT_MAX_ITEMS,
     WardrobeError,
     WardrobeLimitError,
     add_wardrobe_item,
+    add_wardrobe_outfit,
     build_wardrobe_image_instruction,
+    build_wardrobe_outfit_request,
     clear_wardrobe,
     delete_wardrobe_item,
+    delete_wardrobe_outfit,
     find_wardrobe_item,
+    find_wardrobe_outfit,
     normalize_wardrobe_image_prompt,
     normalize_wardrobe_items,
+    normalize_wardrobe_outfits,
     normalize_wardrobe_tendency,
+    outfit_photo_profile,
     parse_wardrobe_image_reply,
+    parse_wardrobe_outfit_reply,
+    render_generated_outfit,
+    render_wardrobe_outfit_prompt,
     render_wardrobe_prompt,
+    select_wardrobe_outfit,
     update_wardrobe_item,
+    update_wardrobe_outfit,
     wardrobe_summary_lines,
 )
 
@@ -120,6 +136,83 @@ class WardrobeMixin:
 
     def _wardrobe_items(self) -> list[dict[str, Any]]:
         return normalize_wardrobe_items(self._wardrobe_setting("wardrobe_items", []))
+
+    def _wardrobe_outfits(self) -> list[dict[str, Any]]:
+        return normalize_wardrobe_outfits(self._wardrobe_setting("wardrobe_outfits", []))
+
+    def _wardrobe_outfit_mode(self) -> str:
+        """Return inventory (列出全部衣物) or select (只注入裁决出的那一套)."""
+
+        text = _single_line(self._wardrobe_setting("wardrobe_outfit_mode", "inventory"), 20).casefold()
+        return "select" if text == "select" else "inventory"
+
+    def _wardrobe_outfit_rotation_days(self) -> int:
+        """Cooldown window, kept in the same 1..30 range as the author's photo setting."""
+
+        try:
+            value = int(self._wardrobe_setting("wardrobe_outfit_rotation_days", 7))
+        except (TypeError, ValueError):
+            return 7
+        return max(1, min(30, value))
+
+    def _wardrobe_current_scene(self) -> str:
+        """Reuse the author's scene decision; return "" when it is unavailable.
+
+        Scene is **context**, never a hard filter: it is passed to the outfit
+        generator ("what occasion is this?") and mixed into the selection seed
+        so different occasions get different outfits. It never removes items
+        from the candidate pool -- at home you may well wear swimwear.
+        """
+
+        decide = getattr(self, "_daily_outfit_scene_kind", None)
+        if not callable(decide):
+            return ""
+        schedule = ""
+        getter = getattr(self, "_daily_outfit_schedule_text", None)
+        if callable(getter):
+            try:
+                schedule = str(getter() or "")
+            except Exception:
+                schedule = ""
+        weather = ""
+        getter = getattr(self, "_format_weather_for_prompt", None)
+        if callable(getter):
+            try:
+                weather = str(getter() or "")
+            except Exception:
+                weather = ""
+        try:
+            return _single_line(decide(schedule, weather), 20)
+        except Exception:
+            return ""
+
+    def _wardrobe_outfit_selection(self, user: Any = None) -> dict[str, Any]:
+        """Resolve the outfit for this turn.
+
+        Deterministic for a given (date, scene, wardrobe), so repeated calls
+        inside one day never make the character change clothes mid-conversation.
+        """
+
+        seed = self._wardrobe_outfit_seed()
+        return select_wardrobe_outfit(
+            self._wardrobe_items(),
+            self._wardrobe_outfits(),
+            scene=self._wardrobe_current_scene(),
+            seed=seed,
+            rotation_days=self._wardrobe_outfit_rotation_days(),
+        )
+
+    def _wardrobe_persona_id(self) -> str:
+        for name in ("_active_persona_scope", "_primary_persona_id"):
+            getter = getattr(self, name, None)
+            if callable(getter):
+                persona_id = str(getter() or "").strip()
+                if persona_id:
+                    return persona_id
+        return str(self._wardrobe_setting("plugin_specific_persona_id", "") or "").strip()
+
+    def _wardrobe_outfit_seed(self) -> str:
+        return f"{_today_key()}|{self._wardrobe_persona_id()}"
 
     # ------------------------------------------------------------------
     # 落盘
@@ -239,14 +332,18 @@ class WardrobeMixin:
             return None
         tendency = self._wardrobe_tendency()
         items = self._wardrobe_items()
-        if not tendency and not items:
+        outfits = self._wardrobe_outfits()
+        if not tendency and not items and not outfits:
             return None
-        body = render_wardrobe_prompt(
-            tendency,
-            items,
-            max_items=self._wardrobe_prompt_item_limit(),
-            max_chars=WARDROBE_PROMPT_MAX_CHARS,
-        )
+        if self._wardrobe_outfit_mode() == "select":
+            body = self._wardrobe_selected_outfit_body(user, tendency)
+        else:
+            body = render_wardrobe_prompt(
+                tendency,
+                items,
+                max_items=self._wardrobe_prompt_item_limit(),
+                max_chars=WARDROBE_PROMPT_MAX_CHARS,
+            )
         if not body:
             return None
         return prompt_section(
@@ -255,6 +352,310 @@ class WardrobeMixin:
             source="wardrobe",
             content=body,
         )
+
+    def _wardrobe_selected_outfit_body(self, user: Any = None, tendency: Any = "") -> str:
+        """Body for the select mode: only the resolved outfit, not the inventory.
+
+        Falls back to the full listing when nothing can be resolved (an empty
+        wardrobe, or no item carrying a usable slot) so the section never
+        silently becomes empty.
+        """
+
+        generated = self._wardrobe_cached_generated_outfit()
+        if generated is not None:
+            selection = self._wardrobe_generated_selection(generated, self._wardrobe_current_scene())
+        else:
+            selection = self._wardrobe_outfit_selection(user)
+            # 同步路径不能等模型：这里只排一个后台任务，下一轮就能用上生成结果。
+            self._schedule_wardrobe_outfit_generation(user)
+        body = render_wardrobe_outfit_prompt(tendency, selection)
+        if body:
+            return body
+        return render_wardrobe_prompt(
+            tendency,
+            self._wardrobe_items(),
+            max_items=self._wardrobe_prompt_item_limit(),
+            max_chars=WARDROBE_PROMPT_MAX_CHARS,
+        )
+
+
+    # ------------------------------------------------------------------
+    # 生成器（模型路径）
+    # ------------------------------------------------------------------
+
+    def _wardrobe_generator_enabled(self) -> bool:
+        return self._wardrobe_bool(
+            self._wardrobe_setting("enable_wardrobe_outfit_generate", False), False
+        )
+
+    def _wardrobe_generator_provider_id(self) -> str:
+        return _single_line(self._wardrobe_setting("WARDROBE_OUTFIT_PROVIDER_ID", ""), 160)
+
+    def _wardrobe_current_weather(self) -> str:
+        getter = getattr(self, "_format_weather_for_prompt", None)
+        if not callable(getter):
+            return ""
+        try:
+            return _single_line(getter(), 120)
+        except Exception:
+            return ""
+
+    def _wardrobe_outfit_cache_key(self) -> str:
+        """Keep each persona's daily result tied to the complete wardrobe."""
+
+        def content(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return [
+                {key: value for key, value in row.items() if key not in {"created_at", "updated_at"}}
+                for row in rows
+            ]
+
+        inputs = {
+            "persona": self._wardrobe_persona_id(),
+            "scene": self._wardrobe_current_scene(),
+            "weather": self._wardrobe_current_weather(),
+            "items": content(self._wardrobe_items()),
+            "outfits": content(self._wardrobe_outfits()),
+            "tendency": self._wardrobe_tendency(),
+            "provider": self._wardrobe_generator_provider_id(),
+            "prompt": self._wardrobe_setting("task_prompt_overrides", {}),
+        }
+        digest = hashlib.sha256(
+            json.dumps(inputs, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+        return f"{_today_key()}|{digest}"
+
+    def _wardrobe_outfit_cache(self) -> dict[str, Any]:
+        """In-memory cache for generated outfits.
+
+        Deliberately in memory: persisting it would need a new data key in the
+        author's store, which this change set avoids. The consequence is that a
+        plugin restart on the same day regenerates the outfit once.
+        """
+
+        cache = getattr(self, "_wardrobe_outfit_cache_store", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._wardrobe_outfit_cache_store = cache
+        return cache
+
+    def _wardrobe_cached_generated_outfit(self) -> dict[str, Any] | None:
+        if not self._wardrobe_generator_enabled():
+            return None
+        cache = getattr(self, "_wardrobe_outfit_cache_store", {})
+        cached = cache.get(self._wardrobe_outfit_cache_key()) if isinstance(cache, dict) else None
+        return cached if isinstance(cached, dict) and cached else None
+
+    @staticmethod
+    def _wardrobe_generated_selection(generated: dict[str, Any], scene: str) -> dict[str, Any]:
+        return {
+            "source": "generate",
+            "scene": scene,
+            "prompt_text": render_generated_outfit(generated),
+            "profile": outfit_photo_profile(generated),
+            "picked": [],
+        }
+
+    def _schedule_wardrobe_outfit_generation(self, user: Any = None) -> None:
+        """Kick off generation in the background so the reply path never waits.
+
+        The prompt-section builder is synchronous and sits on the reply path, so
+        generating inline would add a model round-trip to the user's first
+        message of the day. Instead the current turn uses the rule selection and
+        the generated outfit is picked up from the next turn onward.
+        """
+
+        if not self._wardrobe_generator_enabled():
+            return
+        key = self._wardrobe_outfit_cache_key()
+        cache = getattr(self, "_wardrobe_outfit_cache_store", {})
+        if isinstance(cache, dict) and key in cache:
+            return
+        runner = getattr(self, "_create_lifecycle_background_task", None)
+        if not callable(runner):
+            return
+        tasks = getattr(self, "_wardrobe_generation_tasks", None)
+        if not isinstance(tasks, dict):
+            tasks = {}
+            self._wardrobe_generation_tasks = tasks
+        previous = tasks.get(key)
+        if previous is not None and not previous.done():
+            return
+        operation = self._wardrobe_generate_outfit(user)
+        try:
+            task = runner(operation, label="wardrobe_outfit_generate")
+        except Exception as exc:
+            operation.close()
+            logger.debug("着装生成任务调度失败: %s", _single_line(exc, 160))
+            return
+        if task is None:
+            operation.close()
+            return
+        tasks[key] = task
+
+        def discard(finished: asyncio.Task) -> None:
+            if tasks.get(key) is finished:
+                tasks.pop(key, None)
+
+        task.add_done_callback(discard)
+
+    async def _wardrobe_generate_outfit(self, user: Any = None) -> dict[str, Any] | None:
+        """Ask the model to compose the outfit for the current (date, scene).
+
+        Returns None when generation is disabled, unavailable, or produced
+        nothing usable -- callers then fall back to the rule selector, so a
+        model outage degrades instead of injecting an empty outfit.
+        """
+
+        if not self._wardrobe_generator_enabled():
+            return None
+        caller = getattr(self, "_llm_call", None)
+        if not callable(caller):
+            return None
+        key = self._wardrobe_outfit_cache_key()
+        cache = self._wardrobe_outfit_cache()
+        if key in cache:
+            cached = cache[key]
+            return cached if isinstance(cached, dict) and cached else None
+
+        request = build_wardrobe_outfit_request(
+            self._wardrobe_items(),
+            self._wardrobe_outfits(),
+            tendency=self._wardrobe_tendency(),
+            scene=self._wardrobe_current_scene(),
+            weather=self._wardrobe_current_weather(),
+        )
+        payload: dict[str, Any] | None = None
+        try:
+            raw = await caller(
+                request,
+                max_tokens=700,
+                provider_id=self._wardrobe_generator_provider_id() or None,
+                task="wardrobe_outfit_generate",
+            )
+            payload = parse_wardrobe_outfit_reply(raw)
+        except Exception as exc:
+            logger.warning("着装生成调用失败: %s", _single_line(exc, 160))
+            payload = None
+        # 失败也缓存：同一天内不再反复重试，直接走规则选择器降级。
+        today = _today_key() + "|"
+        for stale in list(cache):
+            if not stale.startswith(today):
+                cache.pop(stale, None)
+        while len(cache) >= 128:
+            cache.pop(next(iter(cache)))
+        cache[key] = payload or {}
+        if payload is None:
+            logger.info("着装生成未产出可用结果，本次回退规则挑选")
+        return payload
+
+    def _wardrobe_outfit_preview(
+        self,
+        *,
+        scene: Any = None,
+        weather: Any = None,
+        seed: Any = "",
+    ) -> dict[str, Any]:
+        """Diagnostics for the 搭配测试 panel: what would be injected, and why.
+
+        Strictly read-only -- it never writes config, never calls the model and
+        never touches the generation cache, so the panel can be refreshed freely.
+        Passing scene/weather overrides the auto-detected ones so the panel can
+        simulate other occasions without waiting for the real schedule to change.
+        """
+
+        items = self._wardrobe_items()
+        outfits = self._wardrobe_outfits()
+        tendency = self._wardrobe_tendency()
+        clean_scene = (
+            self._wardrobe_current_scene() if scene is None else _single_line(scene, 20)
+        )
+        clean_weather = (
+            self._wardrobe_current_weather() if weather is None else _single_line(weather, 120)
+        )
+        clean_seed = _single_line(seed, 160) or self._wardrobe_outfit_seed()
+        mode = self._wardrobe_outfit_mode()
+
+        selection = select_wardrobe_outfit(
+            items,
+            outfits,
+            scene=clean_scene,
+            seed=clean_seed,
+            rotation_days=self._wardrobe_outfit_rotation_days(),
+        )
+        current_context = (
+            clean_scene == self._wardrobe_current_scene()
+            and clean_weather == self._wardrobe_current_weather()
+            and clean_seed == self._wardrobe_outfit_seed()
+        )
+        generated = self._wardrobe_cached_generated_outfit() if current_context and mode == "select" else None
+        generated_view: dict[str, Any] | None = None
+        if generated is not None:
+            generated_view = {
+                "fields": dict(generated),
+                "body": render_generated_outfit(generated),
+                "profile": outfit_photo_profile(generated),
+            }
+        selected = (
+            self._wardrobe_generated_selection(generated, clean_scene)
+            if generated is not None else selection
+        )
+        injected = ""
+        if self._wardrobe_enabled() and self._wardrobe_prompt_mode():
+            if mode == "select":
+                injected = render_wardrobe_outfit_prompt(tendency, selected)
+            if not injected:
+                injected = render_wardrobe_prompt(
+                    tendency, items, max_items=self._wardrobe_prompt_item_limit(),
+                    max_chars=WARDROBE_PROMPT_MAX_CHARS,
+                )
+        key = self._wardrobe_outfit_cache_key()
+        cache = getattr(self, "_wardrobe_outfit_cache_store", {})
+        tasks = getattr(self, "_wardrobe_generation_tasks", {})
+        pending = tasks.get(key) if isinstance(tasks, dict) and current_context else None
+        generator_state = (
+            "disabled" if not self._wardrobe_generator_enabled() or mode != "select"
+            else "ready" if generated is not None
+            else "pending" if pending is not None and not pending.done()
+            else "failed" if current_context and isinstance(cache, dict) and key in cache
+            else "idle"
+        )
+        return {
+            "mode": mode,
+            "enabled": self._wardrobe_enabled() and self._wardrobe_prompt_mode(),
+            "generator_enabled": self._wardrobe_generator_enabled(),
+            "generator_ready": generated is not None,
+            "generator_state": generator_state,
+            "scene": clean_scene,
+            "weather": clean_weather,
+            "seed": clean_seed,
+            "item_count": len(items),
+            "outfit_count": len(outfits),
+            # 未分类的衣物没有部位可依据，正常不参与组合；数量暴露给面板，方便
+            # 提示用户补全，而不是让他纳闷"为什么这几件从来不出现"。
+            "unclassified_count": len(
+                [item for item in items if not str(item.get("slot") or "")]
+            ),
+            "request": build_wardrobe_outfit_request(
+                items,
+                outfits,
+                tendency=tendency,
+                scene=clean_scene,
+                weather=clean_weather,
+            ),
+            "rule": {
+                "source": str(selected.get("source") or ""),
+                "outfit_name": str(selected.get("outfit_name") or ""),
+                "look_id": str(selected.get("look_id") or ""),
+                "picked": [dict(row) for row in (selected.get("picked") or ())],
+                "profile": dict(selected.get("profile") or {}),
+                "prompt_text": str(selected.get("prompt_text") or ""),
+            },
+            "generated": generated_view,
+            "selected": selected,
+            "injected": injected,
+            "injected_chars": len(injected),
+            "injected_limit": WARDROBE_PROMPT_MAX_CHARS,
+        }
 
     async def _append_group_wardrobe_to_request(self, event: Any, req: Any) -> None:
         """Inject the wardrobe into a group request exactly once."""

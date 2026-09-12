@@ -347,6 +347,7 @@ const providerLabels = {
   PLUGIN_VISION_PROVIDER_ID: "插件识图模型",
   READING_ARCHIVE_VISION_PROVIDER_ID: "资料归档视觉模型",
   WARDROBE_VISION_PROVIDER_ID: "衣柜识图模型",
+  WARDROBE_OUTFIT_PROVIDER_ID: "着装搭配生成模型",
   REACTION_EXPRESSION_EMBEDDING_PROVIDER_ID: "表情嵌入模型覆盖",
   NEWS_PROVIDER_ID: "新闻整理",
   WEB_EXPLORATION_PROVIDER_ID: "搜索决策/整理",
@@ -1261,6 +1262,13 @@ const providerGuides = {
     fit: "必须是支持图片输入的视觉模型，中文衣物细节描述越准越好。",
     fallback: "留空跟随陪伴通用视觉模型；也会回退到插件识图模型候选。",
   },
+  WARDROBE_OUTFIT_PROVIDER_ID: {
+    preference: "quality",
+    passiveImpact: "async",
+    purpose: "为角色衣柜按场合和天气搭配已有衣物，生成当天着装建议。",
+    fit: "适合稳定输出短 JSON、能理解衣物层次和场合的小模型。",
+    fallback: "留空时跟随插件默认模型；失败会回退到规则轮换。",
+  },
   REACTION_EXPRESSION_EMBEDDING_PROVIDER_ID: {
     preference: "speed",
     passiveImpact: "conditional",
@@ -1334,7 +1342,7 @@ const providerGroups = [
     id: "media",
     title: "视觉与外界信息",
     desc: "识图、新闻和主动搜索相关模型。",
-    keys: ["READING_ARCHIVE_VISION_PROVIDER_ID", "WARDROBE_VISION_PROVIDER_ID", "NEWS_PROVIDER_ID", "WEB_EXPLORATION_PROVIDER_ID"],
+    keys: ["READING_ARCHIVE_VISION_PROVIDER_ID", "WARDROBE_VISION_PROVIDER_ID", "WARDROBE_OUTFIT_PROVIDER_ID", "NEWS_PROVIDER_ID", "WEB_EXPLORATION_PROVIDER_ID"],
   },
 ];
 
