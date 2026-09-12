@@ -14442,6 +14442,28 @@
           "wardrobe_outfit_mode": "select"
         }
       },
+      "enable_wardrobe_outfit_generate": {
+        "description": "用模型生成着装搭配",
+        "type": "bool",
+        "hint": "开启后由模型依据衣柜、场景与天气搭配出一套，比按固定规则轮换更贴合场合。生成在后台进行，不会拖慢回复；失败或超时会自动回退到规则轮换。",
+        "default": false,
+        "condition": {
+          "enable_wardrobe": true,
+          "enable_wardrobe_prompt": true,
+          "wardrobe_outfit_mode": "select"
+        }
+      },
+      "WARDROBE_OUTFIT_PROVIDER_ID": {
+        "description": "着装搭配生成模型",
+        "type": "string",
+        "_special": "select_provider",
+        "hint": "用于为角色搭配着装的任务模型。留空则跟随插件默认模型。",
+        "default": "",
+        "condition": {
+          "enable_wardrobe": true,
+          "enable_wardrobe_outfit_generate": true
+        }
+      },
       "wardrobe_items": {
         "description": "具体衣物条目（由命令或面板维护）",
         "type": "list",

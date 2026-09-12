@@ -115,6 +115,7 @@ MODEL_TASK_PROVIDER_KEYS = {
     "forward_message": "FORWARD_MESSAGE_PROVIDER_ID",
     "forward_message_image_vision": "PLUGIN_VISION_PROVIDER_ID",
     "wardrobe_image": "WARDROBE_VISION_PROVIDER_ID",
+    "wardrobe_outfit_generate": "WARDROBE_OUTFIT_PROVIDER_ID",
     "private_image_vision": "PLUGIN_VISION_PROVIDER_ID",
     "group_nsfw_image_review": "PLUGIN_VISION_PROVIDER_ID",
     "reading_archive_vision": "READING_ARCHIVE_VISION_PROVIDER_ID",

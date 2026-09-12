@@ -36,6 +36,7 @@ from .wardrobe import (
     add_wardrobe_item,
     add_wardrobe_outfit,
     build_wardrobe_image_instruction,
+    build_wardrobe_outfit_request,
     clear_wardrobe,
     delete_wardrobe_item,
     delete_wardrobe_outfit,
@@ -45,7 +46,10 @@ from .wardrobe import (
     normalize_wardrobe_items,
     normalize_wardrobe_outfits,
     normalize_wardrobe_tendency,
+    outfit_photo_profile,
     parse_wardrobe_image_reply,
+    parse_wardrobe_outfit_reply,
+    render_generated_outfit,
     render_wardrobe_outfit_prompt,
     render_wardrobe_prompt,
     select_wardrobe_outfit,
@@ -342,7 +346,20 @@ class WardrobeMixin:
         silently becomes empty.
         """
 
-        selection = self._wardrobe_outfit_selection(user)
+        generated = self._wardrobe_cached_generated_outfit()
+        if generated is not None:
+            # 生成结果按 (日期, 场景, 衣柜规模) 缓存，所以同一轮次内多次构建
+            # 提示词拿到的是同一套衣服，不会中途换装。
+            selection = {
+                "source": "generate",
+                "scene": self._wardrobe_current_scene(),
+                "prompt_text": render_generated_outfit(generated),
+                "profile": outfit_photo_profile(generated),
+            }
+        else:
+            selection = self._wardrobe_outfit_selection(user)
+            # 同步路径不能等模型：这里只排一个后台任务，下一轮就能用上生成结果。
+            self._schedule_wardrobe_outfit_generation(user)
         body = render_wardrobe_outfit_prompt(tendency, selection)
         if body:
             return body
@@ -353,6 +370,127 @@ class WardrobeMixin:
             max_chars=WARDROBE_PROMPT_MAX_CHARS,
             scene=self._wardrobe_current_scene(),
         )
+
+
+    # ------------------------------------------------------------------
+    # 生成器（模型路径）
+    # ------------------------------------------------------------------
+
+    def _wardrobe_generator_enabled(self) -> bool:
+        return self._wardrobe_bool(
+            self._wardrobe_setting("enable_wardrobe_outfit_generate", False), False
+        )
+
+    def _wardrobe_generator_provider_id(self) -> str:
+        return _single_line(self._wardrobe_setting("WARDROBE_OUTFIT_PROVIDER_ID", ""), 160)
+
+    def _wardrobe_current_weather(self) -> str:
+        getter = getattr(self, "_format_weather_for_prompt", None)
+        if not callable(getter):
+            return ""
+        try:
+            return _single_line(getter(), 120)
+        except Exception:
+            return ""
+
+    def _wardrobe_outfit_cache_key(self) -> str:
+        """Cache identity: same day + same scene + same wardrobe size."""
+
+        return f"{_today_key()}|{self._wardrobe_current_scene()}|{len(self._wardrobe_items())}"
+
+    def _wardrobe_outfit_cache(self) -> dict[str, Any]:
+        """In-memory cache for generated outfits.
+
+        Deliberately in memory: persisting it would need a new data key in the
+        author's store, which this change set avoids. The consequence is that a
+        plugin restart on the same day regenerates the outfit once.
+        """
+
+        cache = getattr(self, "_wardrobe_outfit_cache_store", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._wardrobe_outfit_cache_store = cache
+        return cache
+
+    def _wardrobe_cached_generated_outfit(self) -> dict[str, Any] | None:
+        cached = self._wardrobe_outfit_cache().get(self._wardrobe_outfit_cache_key())
+        return cached if isinstance(cached, dict) and cached else None
+
+    def _schedule_wardrobe_outfit_generation(self, user: Any = None) -> None:
+        """Kick off generation in the background so the reply path never waits.
+
+        The prompt-section builder is synchronous and sits on the reply path, so
+        generating inline would add a model round-trip to the user's first
+        message of the day. Instead the current turn uses the rule selection and
+        the generated outfit is picked up from the next turn onward.
+        """
+
+        if not self._wardrobe_generator_enabled():
+            return
+        if getattr(self, "_wardrobe_generation_inflight", False):
+            return
+        if self._wardrobe_cached_generated_outfit() is not None:
+            return
+        runner = getattr(self, "_create_lifecycle_background_task", None)
+        if not callable(runner):
+            return
+        self._wardrobe_generation_inflight = True
+
+        async def _job() -> None:
+            try:
+                await self._wardrobe_generate_outfit(user)
+            finally:
+                self._wardrobe_generation_inflight = False
+
+        try:
+            runner(_job(), label="wardrobe_outfit_generate")
+        except Exception as exc:
+            self._wardrobe_generation_inflight = False
+            logger.debug("着装生成任务调度失败: %s", _single_line(exc, 160))
+
+    async def _wardrobe_generate_outfit(self, user: Any = None) -> dict[str, Any] | None:
+        """Ask the model to compose the outfit for the current (date, scene).
+
+        Returns None when generation is disabled, unavailable, or produced
+        nothing usable -- callers then fall back to the rule selector, so a
+        model outage degrades instead of injecting an empty outfit.
+        """
+
+        if not self._wardrobe_generator_enabled():
+            return None
+        caller = getattr(self, "_llm_call", None)
+        if not callable(caller):
+            return None
+        key = self._wardrobe_outfit_cache_key()
+        cache = self._wardrobe_outfit_cache()
+        if key in cache:
+            cached = cache[key]
+            return cached if isinstance(cached, dict) and cached else None
+
+        request = build_wardrobe_outfit_request(
+            self._wardrobe_items(),
+            self._wardrobe_outfits(),
+            tendency=self._wardrobe_tendency(),
+            scene=self._wardrobe_current_scene(),
+            weather=self._wardrobe_current_weather(),
+        )
+        payload: dict[str, Any] | None = None
+        try:
+            raw = await caller(
+                request,
+                max_tokens=700,
+                provider_id=self._wardrobe_generator_provider_id() or None,
+                task="wardrobe_outfit_generate",
+            )
+            payload = parse_wardrobe_outfit_reply(raw)
+        except Exception as exc:
+            logger.warning("着装生成调用失败: %s", _single_line(exc, 160))
+            payload = None
+        # 失败也缓存：同一天内不再反复重试，直接走规则选择器降级。
+        cache[key] = payload or {}
+        if payload is None:
+            logger.info("着装生成未产出可用结果，本次回退规则挑选")
+        return payload
 
     async def _append_group_wardrobe_to_request(self, event: Any, req: Any) -> None:
         """Inject the wardrobe into a group request exactly once."""
