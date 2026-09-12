@@ -492,6 +492,74 @@ class WardrobeMixin:
             logger.info("着装生成未产出可用结果，本次回退规则挑选")
         return payload
 
+    def _wardrobe_outfit_preview(
+        self,
+        *,
+        scene: Any = None,
+        weather: Any = None,
+        seed: Any = "",
+    ) -> dict[str, Any]:
+        """Diagnostics for the 搭配测试 panel: what would be injected, and why.
+
+        Strictly read-only -- it never writes config, never calls the model and
+        never touches the generation cache, so the panel can be refreshed freely.
+        Passing scene/weather overrides the auto-detected ones so the panel can
+        simulate other occasions without waiting for the real schedule to change.
+        """
+
+        items = self._wardrobe_items()
+        outfits = self._wardrobe_outfits()
+        tendency = self._wardrobe_tendency()
+        clean_scene = (
+            self._wardrobe_current_scene() if scene is None else _single_line(scene, 20)
+        )
+        clean_weather = (
+            self._wardrobe_current_weather() if weather is None else _single_line(weather, 120)
+        )
+        clean_seed = _single_line(seed, 60) or _today_key()
+
+        selection = select_wardrobe_outfit(
+            items, outfits, scene=clean_scene, seed=clean_seed
+        )
+        generated = self._wardrobe_cached_generated_outfit()
+        generated_view: dict[str, Any] | None = None
+        if generated is not None:
+            generated_view = {
+                "fields": dict(generated),
+                "body": render_generated_outfit(generated),
+                "profile": outfit_photo_profile(generated),
+            }
+        injected = render_wardrobe_outfit_prompt(tendency, selection)
+        return {
+            "mode": self._wardrobe_outfit_mode(),
+            "generator_enabled": self._wardrobe_generator_enabled(),
+            "generator_ready": generated is not None,
+            "scene": clean_scene,
+            "weather": clean_weather,
+            "seed": clean_seed,
+            "item_count": len(items),
+            "outfit_count": len(outfits),
+            "request": build_wardrobe_outfit_request(
+                items,
+                outfits,
+                tendency=tendency,
+                scene=clean_scene,
+                weather=clean_weather,
+            ),
+            "rule": {
+                "source": str(selection.get("source") or ""),
+                "outfit_name": str(selection.get("outfit_name") or ""),
+                "look_id": str(selection.get("look_id") or ""),
+                "picked": [dict(row) for row in (selection.get("picked") or ())],
+                "profile": dict(selection.get("profile") or {}),
+                "prompt_text": str(selection.get("prompt_text") or ""),
+            },
+            "generated": generated_view,
+            "injected": injected,
+            "injected_chars": len(injected),
+            "injected_limit": WARDROBE_PROMPT_MAX_CHARS,
+        }
+
     async def _append_group_wardrobe_to_request(self, event: Any, req: Any) -> None:
         """Inject the wardrobe into a group request exactly once."""
 

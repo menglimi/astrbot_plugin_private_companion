@@ -640,6 +640,46 @@
                   <input type="number" name="wardrobe_image_max_count" min="1" max="8" step="1" />
                 </label>
               </div>
+              <details class="wardrobe-outfit-preview" data-wardrobe-outfit-preview>
+                <summary>搭配测试（预览实际注入的着装）</summary>
+                <p class="wardrobe-note">
+                  只读预览：不改配置、不调用模型。留空场景/天气表示用插件自动判定的值；
+                  点下面的快捷按钮可以模拟不同场合，用来核对泳衣、睡裙这类场合性衣物有没有越界。
+                </p>
+                <div class="wardrobe-preview-controls">
+                  <label>场景
+                    <input type="text" data-wardrobe-preview-scene maxlength="20" placeholder="留空 = 自动判定" />
+                  </label>
+                  <label>天气
+                    <input type="text" data-wardrobe-preview-weather maxlength="120" placeholder="留空 = 自动判定" />
+                  </label>
+                  <button type="button" class="secondary-button" data-wardrobe-preview-run>生成预览</button>
+                  <span class="wardrobe-status" data-wardrobe-preview-status aria-live="polite"></span>
+                </div>
+                <div class="wardrobe-preview-presets">
+                  <button type="button" class="roleplay-example-btn" data-wardrobe-preview-scene-set="home">居家</button>
+                  <button type="button" class="roleplay-example-btn" data-wardrobe-preview-scene-set="commute">通勤</button>
+                  <button type="button" class="roleplay-example-btn" data-wardrobe-preview-scene-set="sport">运动</button>
+                  <button type="button" class="roleplay-example-btn" data-wardrobe-preview-scene-set="school">学校</button>
+                  <button type="button" class="roleplay-example-btn" data-wardrobe-preview-scene-set="daily">日常</button>
+                  <button type="button" class="roleplay-example-btn" data-wardrobe-preview-scene-set="">不限场景</button>
+                </div>
+                <div class="wardrobe-preview-output" data-wardrobe-preview-output hidden>
+                  <dl class="wardrobe-preview-meta" data-wardrobe-preview-meta></dl>
+                  <h5>本次选中的衣物</h5>
+                  <div class="wardrobe-preview-picked" data-wardrobe-preview-picked></div>
+                  <h5>生图投影字段（贴身衣物不应出现在这里）</h5>
+                  <pre class="wardrobe-preview-block" data-wardrobe-preview-profile></pre>
+                  <h5>对话注入的着装</h5>
+                  <pre class="wardrobe-preview-block" data-wardrobe-preview-outfit></pre>
+                  <h5>最终注入提示词</h5>
+                  <pre class="wardrobe-preview-block" data-wardrobe-preview-injected></pre>
+                  <details>
+                    <summary>发往模型的请求原文</summary>
+                    <pre class="wardrobe-preview-block" data-wardrobe-preview-request></pre>
+                  </details>
+                </div>
+              </details>
             </section>
 
             <section class="world-blueprint is-hidden" data-world-panel="world">

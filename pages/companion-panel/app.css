@@ -35492,3 +35492,68 @@ input:checked + .rt2-switch-track.lg::after,
 .wardrobe-provider-control input[type="text"] { width: 100%; }
 .wardrobe-vision-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .wardrobe-vision-hint { color: var(--text-muted, #6b7280); font-size: 11px; line-height: 1.6; }
+
+/* ---------- 搭配测试 ---------- */
+.wardrobe-outfit-preview {
+  margin: 12px 0 16px;
+  border: 1px solid var(--border-soft, rgba(148, 163, 184, 0.3));
+  border-radius: 12px;
+  background: var(--surface, rgba(255, 255, 255, 0.6));
+}
+.wardrobe-outfit-preview > summary {
+  cursor: pointer;
+  padding: 10px 14px;
+  list-style: none;
+  font-weight: 600;
+}
+.wardrobe-outfit-preview > summary::-webkit-details-marker { display: none; }
+.wardrobe-outfit-preview > summary::before {
+  content: "▸ ";
+  color: var(--text-muted, #6b7280);
+}
+.wardrobe-outfit-preview[open] > summary::before { content: "▾ "; }
+.wardrobe-preview-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 0 14px 10px;
+}
+.wardrobe-preview-controls label { display: grid; gap: 4px; font-size: 12px; }
+.wardrobe-preview-controls input { min-width: 180px; }
+.wardrobe-preview-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 14px 10px;
+}
+.wardrobe-preview-output { padding: 0 14px 14px; }
+.wardrobe-preview-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 6px 14px;
+  margin: 0 0 12px;
+}
+.wardrobe-preview-meta > div { display: flex; justify-content: space-between; gap: 8px; }
+.wardrobe-preview-meta dt { color: var(--text-muted, #6b7280); font-size: 12px; }
+.wardrobe-preview-meta dd { margin: 0; font-size: 12px; }
+.wardrobe-preview-output h5 { margin: 12px 0 6px; font-size: 13px; }
+.wardrobe-preview-output > details > summary { cursor: pointer; font-size: 12px; }
+.wardrobe-preview-picked { display: grid; gap: 4px; font-size: 12px; }
+.wardrobe-preview-pick {
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: var(--surface-soft, rgba(148, 163, 184, 0.08));
+}
+.wardrobe-preview-block {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 280px;
+  overflow: auto;
+  border-radius: 10px;
+  background: var(--surface-soft, rgba(148, 163, 184, 0.08));
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
