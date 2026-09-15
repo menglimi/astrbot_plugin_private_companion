@@ -163,6 +163,7 @@
   </style>
   <link rel="stylesheet" href="./css/header-tools.css?v=20260713-font-options" />
   <link rel="stylesheet" href="./css/qzone-mobile.css?v=20260711-qzone-image-preview" />
+  <link rel="stylesheet" href="./css/home-room.css?v=20260915-voxel-beta1" />
   <link rel="stylesheet" href="./css/polish.css?v=20260810-responsive-containment-v1&amp;world=20260811-responsive-v2&amp;config=multi-persona-summary-v2&amp;mobile=20260829-overflow-v1&amp;panel=20260913-rollback-v1&amp;maintenance=persona-reset-v1" />
   <script>
     (function () {
@@ -257,21 +258,22 @@
       <nav class="annotations" aria-label="视图">
         <div class="annot-axis" aria-hidden="true"></div>
         <button class="tab is-active" data-tab="dashboard"><i>01</i><span>总览</span></button>
-        <button class="tab" data-tab="roleplay"><i>02</i><span>世界知识</span></button>
-        <button class="tab" data-tab="private"><i>03</i><span>用户</span></button>
-        <button class="tab" data-tab="group"><i>04</i><span>群聊</span></button>
-        <button class="tab" data-tab="learning"><i>05</i><span>学习</span></button>
-        <button class="tab" data-tab="memory"><i>06</i><span>观察</span></button>
-        <button class="tab" data-tab="proactive"><i>07</i><span>主动</span></button>
-        <button class="tab" data-tab="creative" hidden><i>08</i><span>创作</span></button>
-        <button class="tab" data-tab="image" hidden><i>09</i><span>生图</span></button>
-        <button class="tab" data-tab="tokens"><i>10</i><span>Token</span></button>
-        <button class="tab" data-tab="troubleshooting"><i>11</i><span>排障</span></button>
-        <button class="tab" data-tab="config"><i>12</i><span>配置</span></button>
-        <button class="tab" data-tab="models"><i>13</i><span>模型</span></button>
-        <button class="tab" data-tab="experimental"><i>14</i><span>实验</span></button>
-        <button class="tab" data-tab="prompts"><i>15</i><span>提示词</span></button>
-        <button class="tab" data-tab="reality" hidden><i>16</i><span>现实触及</span></button>
+        <button class="tab" data-tab="home"><i>02</i><span>小屋</span></button>
+        <button class="tab" data-tab="roleplay"><i>03</i><span>世界知识</span></button>
+        <button class="tab" data-tab="private"><i>04</i><span>用户</span></button>
+        <button class="tab" data-tab="group"><i>05</i><span>群聊</span></button>
+        <button class="tab" data-tab="learning"><i>06</i><span>学习</span></button>
+        <button class="tab" data-tab="memory"><i>07</i><span>观察</span></button>
+        <button class="tab" data-tab="proactive"><i>08</i><span>主动</span></button>
+        <button class="tab" data-tab="creative" hidden><i>09</i><span>创作</span></button>
+        <button class="tab" data-tab="image" hidden><i>10</i><span>生图</span></button>
+        <button class="tab" data-tab="tokens"><i>11</i><span>Token</span></button>
+        <button class="tab" data-tab="troubleshooting"><i>12</i><span>排障</span></button>
+        <button class="tab" data-tab="config"><i>13</i><span>配置</span></button>
+        <button class="tab" data-tab="models"><i>14</i><span>模型</span></button>
+        <button class="tab" data-tab="experimental"><i>15</i><span>实验</span></button>
+        <button class="tab" data-tab="prompts"><i>16</i><span>提示词</span></button>
+        <button class="tab" data-tab="reality" hidden><i>17</i><span>现实触及</span></button>
       </nav>
 
       <section class="panel dashboard-overview is-active" id="panel-dashboard">
@@ -403,6 +405,166 @@
           <div id="dashboardCompanionTerminalSummary" class="dashboard-companion-terminal-summary" aria-live="polite"></div>
           <div id="dashboardCompanionTerminalList" class="dashboard-companion-terminal-list"></div>
         </section>
+      </section>
+
+      <section class="panel home-room-panel" id="panel-home">
+        <div id="homeRoomRoot" class="home-room" aria-busy="false">
+          <header class="home-room-head">
+            <div class="home-room-heading">
+              <span class="home-room-kicker">一间小屋，慢慢生活</span>
+              <h2><span id="homeRoomBotName">她</span>的小屋</h2>
+              <p id="homeRoomCurrentLine">正在读取此刻的生活状态…</p>
+            </div>
+            <div class="home-room-head-actions">
+              <span class="room-beta-label">体素小屋 · 测试版</span>
+              <button type="button" class="home-room-icon-button" data-home-room-theme aria-label="切换小屋光线" title="切换日间与夜间光线">☼</button>
+            </div>
+          </header>
+
+          <div class="home-room-layout">
+            <section class="home-room-main" aria-label="小屋场景">
+              <div class="room-environment" aria-label="当地时间和天气">
+                <span id="homeRoomWeatherIcon" class="room-weather-icon" aria-hidden="true">◌</span>
+                <div class="room-weather-copy">
+                  <b id="homeRoomWeather">正在看看窗外…</b>
+                  <small id="homeRoomWeatherDetail">沿用已配置的天气地点</small>
+                </div>
+                <div class="room-local-time"><time id="homeRoomClock">--:--</time><small id="homeRoomClockLabel">当地时间</small></div>
+                <button type="button" data-room-weather-refresh aria-label="更新小屋天气" title="更新天气（沿用天气来源的刷新间隔）">↻</button>
+              </div>
+              <div class="home-room-scene" data-home-room-scene>
+                <div class="home-room-scene-3d" data-home-room-scene-3d>
+                  <div class="home-room-3d-mount" data-home-room-3d-mount role="group" aria-label="可交互的体素小屋"></div>
+                  <div class="room-scene-tools" role="group" aria-label="房间工具">
+                    <button type="button" data-room-edit aria-pressed="false" aria-controls="homeRoomEditor"><span aria-hidden="true">▦</span> 布置房间</button>
+                    <button type="button" data-room-door aria-pressed="false" aria-label="打开房门">开门</button>
+                    <button type="button" class="room-reset-camera" data-home-room-camera-reset title="停止巡游，恢复全景和缩放"><span aria-hidden="true">↺</span> 复位</button>
+                  </div>
+                  <span id="homeRoomEditBadge" class="room-edit-badge" hidden>布置中 · 拖动家具</span>
+                  <div class="home-room-3d-loading" data-home-room-3d-loading role="status">
+                    <span></span>
+                    <b>正在布置体素小屋</b>
+                    <small>书、灯光，还有生活的小细节</small>
+                  </div>
+                  <div class="home-room-3d-error" data-home-room-3d-error hidden>
+                    <b>体素场景暂时没有加载出来</b>
+                    <span>可以重试加载，或从下方家具目录查看日历、便签等功能。</span>
+                    <button type="button" data-home-room-retry-3d>重试</button>
+                  </div>
+                </div>
+
+              </div>
+
+              <div class="home-room-camera-bar" data-home-room-camera-bar>
+                <div class="home-room-camera-targets" role="group" aria-label="镜头目标">
+                  <button type="button" data-home-room-camera-focus="overview">全景</button>
+                  <span class="room-footnote">悬停查看 · 点击家具 · 拖动旋转</span>
+                </div>
+                <div class="home-room-camera-actions">
+                  <small id="homeRoomShot" class="room-shot-label" aria-live="polite">自由观察</small>
+                  <button type="button" data-home-room-camera-tour aria-pressed="false">电影巡游</button>
+                  <button type="button" data-room-next-shot title="切换到下一个运镜段落">下一镜 →</button>
+                </div>
+              </div>
+
+              <div class="room-moments">
+                <div class="room-moment-copy"><span aria-hidden="true">✧</span><p id="homeRoomMoment" role="status">坐一会儿，等一个小小的偶遇。</p></div>
+                <div class="room-moment-actions">
+                  <button type="button" data-room-encounter>遇见一次</button>
+                  <details class="room-atmosphere">
+                    <summary>小屋氛围</summary>
+                    <div class="room-atmosphere-options">
+                      <label>光线<select id="homeRoomLightMode"><option value="auto">随当地时间</option><option value="day">常驻白天</option><option value="night">常驻夜晚</option></select></label>
+                      <label><input id="homeRoomMotion" type="checkbox" checked /> 动态天气与小景</label>
+                      <label><input id="homeRoomEvents" type="checkbox" checked /> 偶尔发生的小事件</label>
+                      <small id="homeRoomMotionHint">小景安静出现，不播放声音。</small>
+                      <div class="room-moment-history"><b>刚刚的小片刻</b><ul id="homeRoomMomentHistory"><li>还没有遇见，慢慢来。</li></ul></div>
+                    </div>
+                  </details>
+                </div>
+              </div>
+              <nav id="homeRoomStations" class="home-room-stations" aria-label="小屋家具与拓展目录"></nav>
+
+            </section>
+
+            <aside class="home-room-sidebar" aria-label="小屋状态">
+              <section id="homeRoomEditor" class="room-editor" aria-labelledby="homeRoomEditorTitle" hidden>
+                <header><div><span>让小屋更像你</span><h3 id="homeRoomEditorTitle" tabindex="-1">布置房间</h3></div><span id="homeRoomLayoutStatus" role="status">尚未改动</span></header>
+                <div class="room-editor-body">
+                  <details class="room-house-picker" id="homeRoomHousePicker">
+                    <summary><span>房屋样式</span><b id="homeRoomHouseLabel">原木小屋</b><span aria-hidden="true">⌄</span></summary>
+                    <div id="homeRoomHouseOptions" class="room-style-options room-house-options" role="group" aria-label="房屋样式" aria-describedby="homeRoomHouseNote"></div>
+                    <p id="homeRoomHouseNote" class="room-style-note" role="status"></p>
+                    <p class="room-house-hint">墙地面、窗框与房门一起换，家具可自由混搭。</p>
+                  </details>
+                  <label for="homeRoomFurniture">选择家具</label>
+                  <select id="homeRoomFurniture"></select>
+                  <label id="homeRoomModelField" hidden>物件形态<select id="homeRoomObjectModel"></select></label>
+                  <label>摆放表面<select id="homeRoomSurface"></select></label>
+                  <div class="room-style-heading"><span>家具款式</span><small id="homeRoomStyleCount"></small></div>
+                  <div id="homeRoomStyleOptions" class="room-style-options" role="group" aria-label="家具款式" aria-describedby="homeRoomStyleNote"></div>
+                  <p id="homeRoomStyleNote" class="room-style-note" role="status"></p>
+                  <div class="room-position-fields">
+                    <label>左右 X<input id="homeRoomFurnitureX" data-room-coordinate="x" type="number" step="0.25" inputmode="decimal" /></label>
+                    <label>前后 Z<input id="homeRoomFurnitureZ" data-room-coordinate="z" type="number" step="0.25" inputmode="decimal" /></label>
+                    <label hidden>高度 Y<input id="homeRoomFurnitureY" data-room-coordinate="y" type="number" step="0.25" inputmode="decimal" /></label>
+                    <label>朝向 °<input id="homeRoomFurnitureRotation" data-room-coordinate="rotation" type="number" step="15" inputmode="decimal" /></label>
+                  </div>
+                  <div class="room-placement-controls">
+                    <div class="room-nudge" role="group" aria-label="微调家具位置">
+                      <button type="button" data-room-nudge="0,-0.25" aria-label="家具向后移动">↑</button>
+                      <button type="button" data-room-nudge="-0.25,0" aria-label="家具向左移动">←</button>
+                      <span aria-hidden="true">挪动</span>
+                      <button type="button" data-room-nudge="0.25,0" aria-label="家具向右移动">→</button>
+                      <button type="button" data-room-nudge="0,0.25" aria-label="家具向前移动">↓</button>
+                    </div>
+                    <div class="room-rotate"><button type="button" data-room-rotate="-45">↶ 左转 45°</button><button type="button" data-room-rotate="45">右转 45° ↷</button></div>
+                  </div>
+                  <p id="homeRoomPlacementHint" class="room-placement-hint" role="status"></p>
+                  <div class="room-edit-history"><button type="button" data-room-undo disabled>↶ 撤销</button><button type="button" data-room-redo disabled>↷ 重做</button><button type="button" data-room-defaults>默认布局</button></div>
+                  <p id="homeRoomStorageNote" class="room-editor-note">保存到当前 AstrBot，按人格独立记住。默认布局也可以撤销。</p>
+                </div>
+                <footer><button type="button" data-room-cancel>取消</button><button type="button" data-room-save>保存布置</button></footer>
+              </section>
+              <section id="homeRoomInspector" class="home-room-inspector" aria-labelledby="homeRoomInspectorTitle" hidden>
+                <header><span id="homeRoomInspectorNumber" class="room-station-number">01</span><div><h3 id="homeRoomInspectorTitle" tabindex="-1">生活日历</h3><p id="homeRoomInspectorHint"></p></div><button type="button" data-room-close aria-label="收起内容，返回全景">×</button></header>
+                <div id="homeRoomInspectorBody" class="home-room-inspector-body"></div>
+              </section>
+              <article class="home-room-card home-room-schedule-card" data-room-default-card>
+                <header>
+                  <div>
+                    <span>今日安排</span>
+                    <h3 id="homeRoomDate">读取中</h3>
+                  </div>
+                  <button type="button" data-home-room-station="calendar">翻开日历 <i aria-hidden="true">→</i></button>
+                </header>
+                <ol id="homeRoomSchedule" class="home-room-schedule" aria-live="polite">
+                  <li class="is-loading"><span></span><div><b>正在读取日程</b><small>请稍候</small></div></li>
+                </ol>
+              </article>
+
+              <article class="home-room-card home-room-state-card" data-room-default-card>
+                <header>
+                  <div>
+                    <span>此刻的她</span>
+                    <h3 id="homeRoomStateTitle">生活状态</h3>
+                  </div>
+                  <span id="homeRoomStateBadge" class="home-room-state-badge">同步中</span>
+                </header>
+                <div class="home-room-state-summary">
+                  <div class="home-room-state-orb" aria-hidden="true"><span>☁</span></div>
+                  <dl id="homeRoomStateFacts"></dl>
+                </div>
+                <button type="button" class="home-room-outfit" data-home-room-station="wardrobe">
+                  <span class="home-room-outfit-thumb" data-home-room-outfit-thumb><i aria-hidden="true">♧</i></span>
+                  <span><small>当前穿搭</small><b id="homeRoomOutfitLabel">暂无穿搭照片</b></span>
+                  <i aria-hidden="true">→</i>
+                </button>
+                <blockquote id="homeRoomNote">这里展示的是陪伴插件已经记录的状态，不会补写没有发生的生活事实。</blockquote>
+              </article>
+            </aside>
+          </div>
+        </div>
       </section>
 
       <section class="panel" id="panel-roleplay">
@@ -2390,9 +2552,11 @@ QQ空间 = 公开札记
   <script src="./js/features/daily-outfit.js?v=20260711-qzone-preview-context"></script>
   <script src="./js/features/wardrobe.js?v=20260910-wardrobe-v1"></script>
   <script src="./js/ui/appearance.js?v=20260713-font-options"></script>
+  <script src="./js/panels/home-room.js?v=20260915-voxel-beta1"></script>
   <!-- Loaded on demand by app.js through AstrBot's relative dynamic-import rewriting:
        ./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&amp;manual=provider-input-v2&amp;layout=v2&amp;vision-state=v1
-       ./js/panels/qzone-panel.js?v=20260810-qzone-classic-loader-v1 -->
-  <script src="./app.js?v=20260809-proactive-tts-external-ability-photo-fixed-v1&amp;build=20260810-reference-upload-v2&amp;page=lazy-classic-loader-v1&amp;scope=photo-scope-quota-v1&amp;touch=reality-redesign-rt2-v4&amp;memory-source=memory-companion-v2&amp;user-create=profile-v1&amp;relationship-role-photo=pr125-v1&amp;camera-runtime-scope=v1&amp;config=multi-persona-summary-v2&amp;troubleshooting=persona-routing-lifecycle-v1&amp;content-visibility=v1&amp;migration-notice=v4&amp;component-order=v1&amp;layout=model-routing-v2&amp;persona-style-batch-recovery=v1&amp;preset-save=v1&amp;directory-nav=v2&amp;mihome=external-runtime-v2&amp;terminal=plugin-check-v1&amp;diagnostic-layout=v2&amp;prompts=task-editor-v2&amp;release=6.4.4f&amp;vision-state=v1&amp;retry=20260913-v1&amp;panel=20260913-rollback-v1&amp;maintenance=persona-reset-v1"></script>
+       ./js/panels/qzone-panel.js?v=20260810-qzone-classic-loader-v1
+       ./js/panels/home-room-3d.js?v=20260915-voxel-beta1 -->
+  <script src="./app.js?v=20260809-proactive-tts-external-ability-photo-fixed-v1&amp;build=20260810-reference-upload-v2&amp;page=lazy-classic-loader-v1&amp;scope=photo-scope-quota-v1&amp;touch=reality-redesign-rt2-v4&amp;memory-source=memory-companion-v2&amp;user-create=profile-v1&amp;relationship-role-photo=pr125-v1&amp;camera-runtime-scope=v1&amp;config=multi-persona-summary-v2&amp;troubleshooting=persona-routing-lifecycle-v1&amp;content-visibility=v1&amp;migration-notice=v4&amp;component-order=v1&amp;layout=model-routing-v2&amp;persona-style-batch-recovery=v1&amp;preset-save=v1&amp;directory-nav=v2&amp;mihome=external-runtime-v2&amp;terminal=plugin-check-v1&amp;diagnostic-layout=v2&amp;prompts=task-editor-v2&amp;release=6.4.4f&amp;vision-state=v1&amp;retry=20260913-v1&amp;panel=20260913-rollback-v1&amp;maintenance=persona-reset-v1&amp;home-room=voxel-beta1"></script>
 </body>
 </html>

@@ -51,6 +51,7 @@ const state = {
   calendarMonth: "",
   calendarLoading: false,
   calendarError: "",
+  calendarRequestSeq: 0,
   selectedUserId: "",
   userDetailCache: {},
   userDetailView: "overview",
@@ -6046,11 +6047,17 @@ const optionalModuleLoaders = {
     () => loadOptionalClassicScript("./js/panels/qzone-panel.js?v=20260810-qzone-classic-loader-v1", 1),
     () => loadOptionalClassicScript("./js/panels/qzone-panel.js?v=20260810-qzone-classic-loader-v1", 2),
   ],
+  homeRoom3d: [
+    () => loadOptionalClassicScript("./js/panels/home-room-3d.js?v=20260915-voxel-beta1", 0),
+    () => loadOptionalClassicScript("./js/panels/home-room-3d.js?v=20260915-voxel-beta1", 1),
+    () => loadOptionalClassicScript("./js/panels/home-room-3d.js?v=20260915-voxel-beta1", 2),
+  ],
 };
 
 const optionalModuleGlobals = {
   providerTree: "PrivateCompanionProviderTree",
   qzonePanel: "PrivateCompanionQzonePanel",
+  homeRoom3d: "PrivateCompanionHomeRoom3D",
 };
 
 function loadOptionalModule(name) {
@@ -7572,6 +7579,24 @@ function renderAll() {
   renderSetupGuideOverlay();
 }
 
+function homeRoomContext() {
+  return {
+    state,
+    fetchJson,
+    postJson,
+    applyMemoPayload,
+    loadOptionalModule,
+    switchTab,
+    showToast,
+    document,
+    personaId: selectedPagePersonaId(),
+  };
+}
+
+function renderHomeRoom() {
+  window.PrivateCompanionHomeRoom?.render?.(homeRoomContext());
+}
+
 function renderCreativeCompanionStatus() {
   const target = $("#creativeCompanionStatus");
   if (!target) return;
@@ -8191,7 +8216,9 @@ async function resetSelectedTaskPrompt(button) {
 
 
 function renderActiveTab(tabName = state.activeTab || "dashboard") {
-  if (tabName === "calendar") {
+  if (tabName === "home") {
+    renderHomeRoom();
+  } else if (tabName === "calendar") {
     renderCalendar();
   } else if (tabName === "private") {
     renderUsers();
@@ -8693,22 +8720,29 @@ function renderCalendar() {
 async function loadCalendar(force = false) {
   const month = state.calendarMonth || calendarMonthKey();
   if (state.lazyLoaded.calendar && !force && state.calendar && state.calendarMonth === month) return state.calendar;
+  const requestSeq = ++state.calendarRequestSeq;
   state.calendarLoading = true;
   state.calendarError = "";
   if (state.activeTab === "memory" || state.activeTab === "calendar") renderCalendar();
+  if (state.activeTab === "home") renderHomeRoom();
   try {
     const result = await fetchJson(`/calendar?month=${encodeURIComponent(month)}`);
+    if (requestSeq !== state.calendarRequestSeq) return state.calendar;
     state.calendar = result || { records: [], candidates: [], instances: [], today: {}, conflicts: [] };
     state.calendarMonth = month;
     state.lazyLoaded.calendar = true;
     return state.calendar;
   } catch (error) {
+    if (requestSeq !== state.calendarRequestSeq) return state.calendar;
     state.calendarError = error?.message || "读取日历失败";
     state.calendar = null;
     throw error;
   } finally {
-    state.calendarLoading = false;
-    if (state.activeTab === "memory" || state.activeTab === "calendar") renderCalendar();
+    if (requestSeq === state.calendarRequestSeq) {
+      state.calendarLoading = false;
+      if (state.activeTab === "memory" || state.activeTab === "calendar") renderCalendar();
+      if (state.activeTab === "home") renderHomeRoom();
+    }
   }
 }
 
@@ -8732,7 +8766,7 @@ async function ensureTabData(tabName, force = false) {
   if (["private", "group", "learning", "memory", "proactive", "experimental"].includes(tabName) && (!state.lazyLoaded.userGroupLists || force)) {
     await loadUserGroupLists(loadAllRequestSeq, { showErrors: true, force });
   }
-  if (tabName === "calendar" || tabName === "memory") {
+  if (tabName === "calendar" || tabName === "memory" || tabName === "home") {
     await loadCalendar(force);
   } else if (tabName === "tokens") {
     await loadTokenStats(force);
@@ -24457,6 +24491,11 @@ function resetPersonaScopedPageState() {
   state.userDetailCache = {};
   state.groupMemberSafety = null;
   state.memoNotes = null;
+  state.calendar = null;
+  state.calendarMonth = "";
+  state.calendarError = "";
+  state.calendarLoading = false;
+  state.calendarRequestSeq += 1;
   state.selectedBook = null;
   state.bookshelfUnlocked = null;
   state.bookshelfPersonaId = "";
@@ -24474,7 +24513,9 @@ function resetPersonaScopedPageState() {
     tokenStats: false,
     userGroupLists: false,
     memoNotes: false,
+    calendar: false,
   });
+  window.PrivateCompanionHomeRoom?.resetPersona?.();
 }
 
 async function selectPagePersona(nextPersonaId, control = null) {
@@ -39548,6 +39589,7 @@ function switchTab(tabName) {
         void loadUserGroupLists(loadAllRequestSeq, { showErrors: true });
       });
     }
+    window.PrivateCompanionHomeRoom?.setActive?.(tabName === "home");
     state.activeTab = tabName;
     syncTroubleshootingRefreshTimer();
     tabs.forEach((item) => item.classList.toggle("is-active", item.dataset.tab === tabName));
@@ -39777,7 +39819,11 @@ document.addEventListener("click", (event) => {
   if (!retryButton) return;
   event.preventDefault();
   const moduleName = retryButton.dataset.optionalModuleRetry || "";
-  const tabName = moduleName === "providerTree" ? "models" : "creative";
+  const tabName = moduleName === "providerTree"
+    ? "models"
+    : moduleName === "homeRoom3d"
+      ? "home"
+      : "creative";
   retryButton.disabled = true;
   retryButton.textContent = "正在重试...";
   loadOptionalModule(moduleName)

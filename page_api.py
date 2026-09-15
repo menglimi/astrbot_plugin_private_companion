@@ -75,6 +75,8 @@ from .conversation_prompt_section import (
 from .diagnostic_envelope import DIAGNOSTIC_ENVELOPE_VERSION, diagnostic_test_id, normalize_diagnostic_result
 from .helpers import _MISSING, _flat_get, _normalize_timezone_name, _normalize_timezone_setting, _path_text, _redact_outbound_secrets, _safe_int, _set_into_config, _strip_internal_message_blocks, _text_looks_garbled, _text_similarity, _today_key, normalize_bot_relationship_cards
 from .persona_config import runtime_persona_setting
+from .home_room_environment import home_room_environment
+from .home_room_layout import load_room_layout, save_room_layout
 from .story_authority import (
     StoryAuthorityError,
     story_authority_controller,
@@ -1241,6 +1243,9 @@ class PrivateCompanionPageApi(
         """Return the wrapped page handlers used by every transport."""
         routes = [
             ("/overview", self.get_overview, ["GET"], "Private Companion Page overview"),
+            ("/home-room/environment", self.get_home_room_environment, ["GET"], "Private Companion Page room weather and clock"),
+            ("/home-room/layout", self.get_home_room_layout, ["GET"], "Private Companion Page saved room layout"),
+            ("/home-room/layout/update", self.update_home_room_layout, ["POST"], "Private Companion Page save room layout"),
             ("/calendar", self.get_calendar, ["GET"], "Private Companion Page long-lived calendar"),
             ("/calendar/conflicts", self.get_calendar_conflicts, ["GET"], "Private Companion Page calendar conflicts"),
             ("/calendar/preview", self.preview_calendar, ["POST"], "Private Companion Page preview calendar record"),
@@ -1730,6 +1735,30 @@ class PrivateCompanionPageApi(
                 exc_info=True,
             )
             return deepcopy(fallback)
+
+    @_multi_persona_page_context
+    async def get_home_room_environment(self) -> dict[str, Any]:
+        return self._ok(await home_room_environment(self.plugin))
+
+    @_multi_persona_page_context
+    async def get_home_room_layout(self) -> dict[str, Any]:
+        try:
+            return self._ok({"layout": await load_room_layout(self.plugin)})
+        except Exception:
+            return self._error("未能读取房间布置，请稍后重试", status_code=503)
+
+    @_multi_persona_page_context
+    async def update_home_room_layout(self) -> dict[str, Any]:
+        payload = await request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return self._error("房间布置请求格式无效")
+        try:
+            layout = await save_room_layout(self.plugin, payload.get("layout"))
+            return self._ok({"saved": True, "layout": layout})
+        except ValueError as exc:
+            return self._error(str(exc))
+        except Exception:
+            return self._error("未能保存房间布置，请稍后重试", status_code=503)
 
     @_multi_persona_page_context
     async def get_overview(self) -> dict[str, Any]:
