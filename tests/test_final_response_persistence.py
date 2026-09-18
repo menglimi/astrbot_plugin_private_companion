@@ -95,6 +95,25 @@ class _SendTrackerEvent(_Event):
         return self.stopped
 
 
+class _DelayedSendTrackerEvent(_SendTrackerEvent):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.finished = asyncio.Event()
+        self.cancelled = False
+
+    async def send(self, message):
+        self.sent.append(message)
+        self.started.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        self.finished.set()
+
+
 @dataclass(frozen=True)
 class _ActiveOutcome:
     delivered: bool
@@ -790,6 +809,92 @@ class FinalResponsePersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result)
         plugin._finalize_passive_delivered_response.assert_not_awaited()
         self.assertFalse(event._private_companion_send_tracking_installed)
+
+    async def test_cancelled_photo_tool_send_is_confirmed_and_persisted_when_upload_finishes(self):
+        plugin = PrivateCompanionPlugin.__new__(PrivateCompanionPlugin)
+        plugin._finalize_passive_delivered_response = AsyncMock(return_value=True)
+        plugin._mark_private_companion_skip_reaction_expression = lambda _event: None
+        plugin._sanitize_photo_tool_caption = lambda value, **_kwargs: str(value or "")
+        plugin._build_outbound_chain = lambda text, image_path, **_kwargs: [
+            Plain(text),
+            Image(file=image_path),
+        ]
+        plugin._build_result_from_chain = lambda chain: SimpleNamespace(chain=list(chain))
+        plugin._extract_group_id_from_event = lambda _event: ""
+        event = _DelayedSendTrackerEvent()
+
+        plugin._begin_final_response_persistence(event)
+        plugin._capture_final_outbound_delivery(event)
+        delivery_task = asyncio.create_task(
+            plugin._deliver_generated_image_to_event(
+                event,
+                image_path="generated.png",
+                caption="给你看",
+            )
+        )
+        await asyncio.wait_for(event.started.wait(), timeout=1)
+
+        delivery_task.cancel()
+        delivery = await delivery_task
+
+        self.assertFalse(delivery["sent"])
+        self.assertTrue(delivery["uncertain"])
+        self.assertFalse(event.cancelled)
+        self.assertEqual(1, len(event.sent))
+
+        ledger = event._private_companion_delivery_ledger
+        self.assertEqual(0, ledger.photo_tool_chain_start)
+        event._private_companion_official_assistant_message = object()
+        plugin._final_response_persistence_coordinator().mark_final_response_ready(event)
+        self.assertEqual(0, ledger.final_chain_start)
+        persistence_task = asyncio.create_task(
+            plugin.persist_confirmed_passive_reply(event)
+        )
+        await asyncio.sleep(0)
+        self.assertFalse(persistence_task.done())
+
+        event.release.set()
+        await asyncio.wait_for(persistence_task, timeout=1)
+        self.assertTrue(event.finished.is_set())
+        self.assertEqual(1, len(event.sent))
+        self.assertEqual(1, len(ledger.confirmed_chains))
+        call = plugin._finalize_passive_delivered_response.await_args
+        archived = plugin._delivered_assistant_text_from_chain(call.kwargs["chain"])
+        self.assertIn('<pc_history_media images="1" />', archived)
+
+    async def test_photo_confirmation_before_final_response_is_not_excluded_from_history(self):
+        plugin = PrivateCompanionPlugin.__new__(PrivateCompanionPlugin)
+        plugin._finalize_passive_delivered_response = AsyncMock(return_value=True)
+        plugin._mark_private_companion_skip_reaction_expression = lambda _event: None
+        plugin._sanitize_photo_tool_caption = lambda value, **_kwargs: str(value or "")
+        plugin._build_outbound_chain = lambda text, image_path, **_kwargs: [
+            Plain(text),
+            Image(file=image_path),
+        ]
+        plugin._build_result_from_chain = lambda chain: SimpleNamespace(chain=list(chain))
+        plugin._extract_group_id_from_event = lambda _event: ""
+        event = _SendTrackerEvent()
+
+        plugin._begin_final_response_persistence(event)
+        delivery = await plugin._deliver_generated_image_to_event(
+            event,
+            image_path="generated.png",
+            caption="给你看",
+        )
+        self.assertTrue(delivery["sent"])
+
+        ledger = event._private_companion_delivery_ledger
+        self.assertEqual(1, len(ledger.confirmed_chains))
+        self.assertEqual(0, ledger.photo_tool_chain_start)
+        event._private_companion_official_assistant_message = object()
+        plugin._final_response_persistence_coordinator().mark_final_response_ready(event)
+        self.assertEqual(0, ledger.final_chain_start)
+
+        await plugin.persist_confirmed_passive_reply(event)
+
+        call = plugin._finalize_passive_delivered_response.await_args
+        archived = plugin._delivered_assistant_text_from_chain(call.kwargs["chain"])
+        self.assertIn('<pc_history_media images="1" />', archived)
 
     async def test_passive_finalizer_waits_for_segmented_remainder(self):
         plugin = PrivateCompanionPlugin.__new__(PrivateCompanionPlugin)
