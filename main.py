@@ -13237,6 +13237,51 @@ class PrivateCompanionPlugin(
             return '{"status":"disabled","message":"主动消息专用模式下，普通被动回复不可使用 Private Companion 工具。"}'
         return await self._pc_get_specified_group_members_impl(event, **kwargs)
 
+    @filter.llm_tool(name="pc_query_wardrobe_detail")
+    @_multi_persona_event_context
+    async def pc_query_wardrobe_detail(
+        self, event: AstrMessageEvent, scope: str = "today", slot: str = "", **kwargs
+    ) -> str:
+        """查看角色衣柜的更多细节：某个部位都有什么、今天这身每件是什么、整份衣柜清单。
+
+        只在用户或剧情需要具体衣物时调用一次即可；衣柜为空或未启用时工具会直接说明，
+        不要据此编造衣物。
+
+        Args:
+            scope(string): today=今天裁决出的这一身穿了什么（默认）；slot=指定部位的全部衣物；all=整份衣柜清单。只能填这三个值。
+            slot(string): 仅 scope=slot 时需要。部位：upper 上装 / lower 下装 / whole 整身（连衣裙）/ feet 鞋 / extra 配件，也认「上装」「裙子」这类中文说法。
+        """
+        if self is None or self._proactive_only_blocks_passive_event(event, "pc_tools"):
+            return '{"status":"disabled","message":"主动消息专用模式下，普通被动回复不可使用 Private Companion 工具。"}'
+        return self._wardrobe_detail_reply(
+            scope=scope, slot=slot, user=self._wardrobe_intent_user(event)
+        )
+
+    @filter.llm_tool(name="pc_set_outfit_intent")
+    @_multi_persona_event_context
+    async def pc_set_outfit_intent(
+        self,
+        event: AstrMessageEvent,
+        intent: str = "",
+        items: str = "",
+        outfit: str = "",
+        **kwargs,
+    ) -> str:
+        """记录角色「本会话接下来穿什么」。用户明确要求换装、或剧情已经写出换衣过程时调用。
+
+        记下之后，后续对话、日程与生图都以这套服装为准，直到用户再次换装，或今天结束
+        （最长 12 小时）。只是想了解衣柜里有什么，请用 pc_query_wardrobe_detail，不要用本工具。
+
+        Args:
+            intent(string): 一句话说明换成什么，用用户原话最好，例如「换上泳衣」「今天想穿得清爽一点」。没有具体衣物时也要填这一项。
+            items(string): 可选。衣柜里具体衣物的名称或编号，多个用逗号或顿号分隔，例如「浅蓝条纹衬衫,深蓝直筒牛仔裤」。只填你确认存在于衣柜里的；衣柜里没有的衣物不要填在这里，写进 intent 即可。
+            outfit(string): 可选。整套的名称或编号，例如「通勤三件套」。与 items 同时给出时以整套为准。
+        """
+        if self is None or self._proactive_only_blocks_passive_event(event, "pc_tools"):
+            return '{"status":"disabled","message":"主动消息专用模式下，普通被动回复不可使用 Private Companion 工具。"}'
+        return self._wardrobe_intent_reply(
+            intent, items=items, outfit=outfit, user=self._wardrobe_intent_user(event)
+        )
     @filter.llm_tool(name="pc_query_interaction")
     @_multi_persona_event_context
     async def pc_query_interaction(self, event: AstrMessageEvent, **kwargs) -> str:

@@ -30,7 +30,7 @@ class PersonaConfigTests(unittest.TestCase):
         cls.manifest = build_scope_manifest(cls.schema)
 
     def test_manifest_covers_every_canonical_grouped_leaf(self) -> None:
-        self.assertEqual(8, PERSONA_SETTINGS_SCHEMA_VERSION)
+        self.assertEqual(9, PERSONA_SETTINGS_SCHEMA_VERSION)
         leaves = discover_grouped_schema_leaves(self.schema)
         self.assertGreater(len(leaves), 900)
         self.assertEqual(set(leaves), set(self.manifest))
@@ -310,6 +310,8 @@ class PersonaConfigTests(unittest.TestCase):
                 "wardrobe_outfits": copy.deepcopy(
                     self.manifest["wardrobe_outfits"]["new_key_default"]
                 ),
+                "wardrobe_injection_detail": "full",
+                "wardrobe_photo_source": "builtin",
             },
         )
         self.assertEqual(
@@ -452,6 +454,8 @@ class PersonaConfigTests(unittest.TestCase):
                 "wardrobe_outfits": copy.deepcopy(
                     self.manifest["wardrobe_outfits"]["new_key_default"]
                 ),
+                "wardrobe_injection_detail": "full",
+                "wardrobe_photo_source": "builtin",
             },
         )
         self.assertEqual(

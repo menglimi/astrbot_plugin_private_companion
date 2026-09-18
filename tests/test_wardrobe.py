@@ -21,6 +21,13 @@ from astrbot_plugin_private_companion.persona_config import (
 )
 from astrbot_plugin_private_companion.wardrobe import (
     DEFAULT_WARDROBE_IMAGE_PROMPT,
+    OWNERSHIP_OWNED,
+    OWNERSHIP_REFERENCE,
+    WARDROBE_IMAGE_KIND_ITEM,
+    WARDROBE_IMAGE_KIND_NONE,
+    WARDROBE_IMAGE_KIND_OUTFIT,
+    WARDROBE_IMAGE_KIND_REFERENCE,
+    WARDROBE_MAX_ASSET_IDS,
     OUTFIT_KIND_BUNDLE,
     OUTFIT_KIND_STYLE,
     PRECISION_EXACT,
@@ -48,6 +55,7 @@ from astrbot_plugin_private_companion.wardrobe import (
     WardrobeLimitError,
     add_wardrobe_item,
     add_wardrobe_outfit,
+    apply_wardrobe_draft,
     build_wardrobe_image_instruction,
     build_wardrobe_outfit_request,
     clear_wardrobe,
@@ -63,6 +71,10 @@ from astrbot_plugin_private_companion.wardrobe import (
     normalize_wardrobe_items,
     normalize_wardrobe_outfit,
     normalize_wardrobe_outfits,
+    infer_wardrobe_slot,
+    normalize_asset_ids,
+    normalize_wardrobe_image_kind,
+    normalize_wardrobe_ownership,
     normalize_wardrobe_precision,
     normalize_wardrobe_slot,
     normalize_wardrobe_tags,
@@ -82,6 +94,7 @@ from astrbot_plugin_private_companion.wardrobe import (
 from astrbot_plugin_private_companion.wardrobe_runtime import (
     WARDROBE_PROMPT_KEY,
     WardrobeMixin,
+    _WARDROBE_VISION_TERSE_SUFFIX,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -386,6 +399,23 @@ class _WardrobeCommandHarness(_WardrobeHarness):
         return dict(self.describe_reply), ""
 
 
+class _EmptyFirstVisionHarness(_WardrobeHarness):
+    """按顺序吐出预设回复，用来演「第一次正文为空」的推理型视觉模型。"""
+
+    def __init__(self, replies: list[str]) -> None:
+        super().__init__()
+        self.vision_replies = list(replies)
+
+    def _fake_text_chat(self, provider_id):
+        async def _call(*, prompt, image_urls, **kwargs):
+            self.vision_provider_calls.append(provider_id)
+            self.vision_prompts.append(prompt)
+            reply = self.vision_replies.pop(0) if self.vision_replies else ""
+            return SimpleNamespace(completion_text=reply)
+
+        return _call
+
+
 class WardrobeMixinTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.plugin = _WardrobeCommandHarness()
@@ -463,7 +493,7 @@ class WardrobeMixinTests(unittest.IsolatedAsyncioTestCase):
     async def test_add_from_image_describes_and_stores(self) -> None:
         self.plugin.command_images = [("/tmp/coat.png", "随消息发送的图片")]
         text, _ = await self.plugin._wardrobe_command_payload(None, "u1", "添加图片")
-        self.assertIn("已加入：碎花连衣裙", text)
+        self.assertIn("已加入衣物：碎花连衣裙", text)
         self.assertEqual([""], self.plugin.describe_calls)
         stored = self.plugin.config["wardrobe_items"][0]
         self.assertEqual("碎花连衣裙", stored["name"])
@@ -632,6 +662,36 @@ class WardrobeMixinTests(unittest.IsolatedAsyncioTestCase):
             plugin._wardrobe_vision_candidates("", preferred="vision-picked"),
         )
 
+    async def test_empty_reply_is_retried_with_a_terse_prompt(self) -> None:
+        """推理型模型把预算花在思考上时正文会是空的，必须换提示词再问一次。"""
+
+        plugin = _EmptyFirstVisionHarness(["", "名称：风衣\n描述：黑色长款\n标签：外出"])
+        parsed, error = await plugin._wardrobe_describe_image(["/tmp/coat.png"])
+        self.assertEqual("", error)
+        assert parsed is not None
+        self.assertIn("风衣", parsed["name"])
+        self.assertEqual("黑色长款", parsed["description"])
+        # 同一个 Provider 重试，而不是直接跳到下一个候选。
+        self.assertEqual(["vision-default", "vision-default"], plugin.vision_provider_calls)
+        self.assertFalse(plugin.vision_prompts[0].endswith(_WARDROBE_VISION_TERSE_SUFFIX))
+        self.assertTrue(plugin.vision_prompts[1].endswith(_WARDROBE_VISION_TERSE_SUFFIX))
+
+    async def test_always_empty_reply_falls_through_instead_of_looping(self) -> None:
+        plugin = _EmptyFirstVisionHarness([])
+        parsed, error = await plugin._wardrobe_describe_image(["/tmp/coat.png"])
+        self.assertIsNone(parsed)
+        self.assertTrue(error)
+        # 每个候选各问两次：原始提示 + 精简提示，然后就放弃。
+        self.assertEqual(["vision-default", "vision-default"], plugin.vision_provider_calls)
+
+    async def test_unusable_text_is_not_retried(self) -> None:
+        """有正文但读不出衣物（模型明确说"无"）时不该白花一次调用。"""
+
+        plugin = _EmptyFirstVisionHarness(["无"])
+        parsed, _error = await plugin._wardrobe_describe_image(["/tmp/coat.png"])
+        self.assertIsNone(parsed)
+        self.assertEqual(["vision-default"], plugin.vision_provider_calls)
+
     def test_prompt_section_unaffected_by_image_prompt(self) -> None:
         self.plugin.config["wardrobe_tendency"] = "偏爱针织"
         self.plugin.config["wardrobe_image_prompt"] = "只看外套。"
@@ -675,6 +735,8 @@ class WardrobeConfigTests(unittest.TestCase):
             "enable_wardrobe_outfit_generate",
             "WARDROBE_OUTFIT_PROVIDER_ID",
             "wardrobe_outfits",
+            "wardrobe_injection_detail",
+            "wardrobe_photo_source",
         ):
             self.assertIn(key, items)
         self.assertTrue(items["wardrobe_items"]["default"], "预设衣柜不该为空")
@@ -695,6 +757,8 @@ class WardrobeConfigTests(unittest.TestCase):
             "enable_wardrobe_outfit_generate",
             "WARDROBE_OUTFIT_PROVIDER_ID",
             "wardrobe_outfits",
+            "wardrobe_injection_detail",
+            "wardrobe_photo_source",
         ):
             entry = self.manifest[key]
             self.assertEqual("persona", entry["scope"], key)
@@ -702,7 +766,7 @@ class WardrobeConfigTests(unittest.TestCase):
             self.assertTrue(entry["cloneable"], key)
 
     def test_current_persona_version_materializes_wardrobe_keys(self) -> None:
-        self.assertEqual(8, PERSONA_SETTINGS_SCHEMA_VERSION)
+        self.assertEqual(9, PERSONA_SETTINGS_SCHEMA_VERSION)
         migrated = migrate_persona_profile(
             {"persona_settings": {}, "persona_settings_schema_version": 5},
             manifest=self.manifest,
@@ -719,6 +783,8 @@ class WardrobeConfigTests(unittest.TestCase):
         self.assertFalse(settings["enable_wardrobe_outfit_generate"])
         self.assertEqual("", settings["WARDROBE_OUTFIT_PROVIDER_ID"])
         self.assertEqual(self.manifest["wardrobe_outfits"]["new_key_default"], settings["wardrobe_outfits"])
+        self.assertEqual("full", settings["wardrobe_injection_detail"])
+        self.assertEqual("builtin", settings["wardrobe_photo_source"])
 
     def test_existing_wardrobe_values_survive_migration(self) -> None:
         migrated = migrate_persona_profile(
@@ -751,6 +817,8 @@ class WardrobeConfigTests(unittest.TestCase):
             "enable_wardrobe_outfit_generate",
             "WARDROBE_OUTFIT_PROVIDER_ID",
             "wardrobe_outfits",
+            "wardrobe_injection_detail",
+            "wardrobe_photo_source",
         ):
             minimum = 1 if key in {
                 "wardrobe_outfit_mode",
@@ -758,6 +826,9 @@ class WardrobeConfigTests(unittest.TestCase):
                 "enable_wardrobe_outfit_generate",
                 "WARDROBE_OUTFIT_PROVIDER_ID",
                 "wardrobe_outfits",
+                # 这两个键由 _runtime_settings 与归一化器各出现一次；写入路径是否放行
+                # 由 test_wardrobe_integration 的运行时用例盯着，这里只查有没有登记。
+                "wardrobe_injection_detail",
             } else 3
             self.assertGreaterEqual(source.count(f'"{key}"'), minimum, key)
 
@@ -777,6 +848,8 @@ class WardrobeConfigTests(unittest.TestCase):
             "self.enable_wardrobe_outfit_generate",
             "self.wardrobe_outfit_provider_id",
             "self.wardrobe_outfits",
+            "self.wardrobe_injection_detail",
+            "self.wardrobe_photo_source",
         ):
             self.assertIn(attr, source, attr)
 
@@ -2081,6 +2154,30 @@ class WardrobeOutfitGeneratorTests(unittest.TestCase):
         self.assertIn("每个部位最多选一件", request)
         self.assertIn('"summary"', request)
 
+    def test_request_excludes_reference_items_but_keeps_reference_style_hints(self) -> None:
+        items = normalize_wardrobe_items(
+            [
+                {"name": "自己的针织衫", "slot": "upper", "ownership": "owned"},
+                {"name": "博主的参考外套", "slot": "upper", "ownership": "reference"},
+            ]
+        )
+        outfits = normalize_wardrobe_outfits(
+            [
+                {
+                    "name": "博主叠穿参考",
+                    "kind": "style",
+                    "style": "衬衫叠针织马甲",
+                    "ownership": "reference",
+                }
+            ]
+        )
+
+        request = build_wardrobe_outfit_request(items, outfits, scene="daily")
+
+        self.assertIn("自己的针织衫", request)
+        self.assertNotIn("博主的参考外套", request)
+        self.assertIn("衬衫叠针织马甲", request)
+
     def test_generation_cache_key_tracks_persona_and_wardrobe_content(self) -> None:
         plugin = _WardrobeCommandHarness()
         plugin.config["wardrobe_items"] = [{"name": "开衫", "description": "米色"}]
@@ -2495,3 +2592,1965 @@ class WardrobePresetTests(unittest.TestCase):
         self.assertEqual({outfit["name"] for outfit in self.outfits}, seen)
         # 默认 7 天窗口正好把七套预设各穿一遍。
         self.assertEqual(len(set(first_week)), len(self.outfits), first_week)
+
+
+# ---------------------------------------------------------------------------
+# P. 识图两态：散件 / 整套 / 参考 / 无关
+# ---------------------------------------------------------------------------
+
+
+class WardrobeImageKindTests(unittest.TestCase):
+    """第一层分类决定入库去向，比描述本身更容易出错，所以要钉死。"""
+
+    def test_kind_aliases(self) -> None:
+        cases = {
+            "散件": WARDROBE_IMAGE_KIND_ITEM,
+            "单件": WARDROBE_IMAGE_KIND_ITEM,
+            "整套": WARDROBE_IMAGE_KIND_OUTFIT,
+            "全身": WARDROBE_IMAGE_KIND_OUTFIT,
+            "参考": WARDROBE_IMAGE_KIND_REFERENCE,
+            "灵感": WARDROBE_IMAGE_KIND_REFERENCE,
+            "无关": WARDROBE_IMAGE_KIND_NONE,
+            "无": WARDROBE_IMAGE_KIND_NONE,
+            "item": WARDROBE_IMAGE_KIND_ITEM,
+            "outfit": WARDROBE_IMAGE_KIND_OUTFIT,
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(expected, normalize_wardrobe_image_kind(raw), raw)
+
+    def test_unknown_kind_is_empty_not_a_guess(self) -> None:
+        for raw in ("", None, "看起来像衣服", 42):
+            self.assertEqual("", normalize_wardrobe_image_kind(raw), repr(raw))
+
+    def test_item_reply_keeps_slot_and_tags(self) -> None:
+        draft = parse_wardrobe_image_reply(
+            "类型：散件\n名称：米色针织开衫\n描述：细针织落肩版型\n部位：上身\n标签：居家|春秋"
+        )
+        assert draft is not None
+        self.assertEqual(WARDROBE_IMAGE_KIND_ITEM, draft["kind"])
+        self.assertEqual(SLOT_UPPER, draft["slot"])
+        self.assertEqual(["居家", "春秋"], draft["tags"])
+
+    def test_item_reply_without_slot_falls_back_to_name(self) -> None:
+        draft = parse_wardrobe_image_reply("类型：散件\n名称：深蓝牛仔裤\n描述：直筒微弹")
+        assert draft is not None
+        self.assertEqual(SLOT_LOWER, draft["slot"])
+
+    def test_outfit_reply_needs_no_slot(self) -> None:
+        draft = parse_wardrobe_image_reply(
+            "类型：整套\n名称：通勤正装\n描述：衬衫扎进长裤，配乐福鞋\n部位：\n标签：通勤"
+        )
+        assert draft is not None
+        self.assertEqual(WARDROBE_IMAGE_KIND_OUTFIT, draft["kind"])
+        self.assertEqual("", draft["slot"])
+
+    def test_none_reply_is_dropped(self) -> None:
+        self.assertIsNone(parse_wardrobe_image_reply("类型：无关"))
+        self.assertIsNone(parse_wardrobe_image_reply("无"))
+        self.assertIsNone(parse_wardrobe_image_reply(""))
+
+    def test_legacy_reply_without_kind_still_works(self) -> None:
+        # 旧提示词只有 名称/描述/标签：按散件处理，并从名称推断部位
+        draft = parse_wardrobe_image_reply("名称：碎花连衣裙\n描述：米白底小碎花及膝")
+        assert draft is not None
+        self.assertEqual(WARDROBE_IMAGE_KIND_ITEM, draft["kind"])
+        self.assertEqual(SLOT_WHOLE, draft["slot"])
+
+    def test_bullet_lines_are_not_swallowed_into_description(self) -> None:
+        draft = parse_wardrobe_image_reply(
+            "类型：散件\n  · 散件：单件衣物\n名称：白衬衫\n描述：挺括棉质"
+        )
+        assert draft is not None
+        self.assertNotIn("散件：单件衣物", draft["description"])
+
+    def test_slot_inference_table(self) -> None:
+        cases = {
+            "米色针织开衫": SLOT_UPPER,
+            "深蓝牛仔裤": SLOT_LOWER,
+            "白色帆布鞋": SLOT_FEET,
+            "细框眼镜": SLOT_EXTRA,
+            "碎花连衣裙": SLOT_WHOLE,
+            "白色棉质内衣": SLOT_UPPER,
+            "不明物体": "",
+        }
+        for name, expected in cases.items():
+            self.assertEqual(expected, infer_wardrobe_slot(name), name)
+
+
+class WardrobeAssetLinkTests(unittest.TestCase):
+    """素材引用与归属：架构上把"我拥有的"和"我喜欢的"分开的落点。"""
+
+    def test_asset_ids_normalized_and_capped(self) -> None:
+        self.assertEqual(["a", "b"], normalize_asset_ids("a, b、a"))
+        self.assertEqual([], normalize_asset_ids(None))
+        self.assertEqual(WARDROBE_MAX_ASSET_IDS, len(normalize_asset_ids([f"x{i}" for i in range(30)])))
+
+    def test_ownership_defaults_to_owned(self) -> None:
+        self.assertEqual(OWNERSHIP_OWNED, normalize_wardrobe_ownership(None))
+        self.assertEqual(OWNERSHIP_REFERENCE, normalize_wardrobe_ownership("参考"))
+        self.assertEqual(OWNERSHIP_REFERENCE, normalize_wardrobe_ownership("reference"))
+
+    def test_item_keeps_assets_and_ownership(self) -> None:
+        items, stored = add_wardrobe_item(
+            None, name="米色针织开衫", slot="upper", asset_ids=["asset_1"], ownership="reference"
+        )
+        self.assertEqual(["asset_1"], stored["asset_ids"])
+        self.assertEqual(OWNERSHIP_REFERENCE, stored["ownership"])
+        self.assertEqual(["asset_1"], normalize_wardrobe_item(items[0])["asset_ids"])
+
+    def test_re_describing_unions_assets(self) -> None:
+        items, _ = add_wardrobe_item(None, name="开衫", asset_ids=["asset_1"])
+        items, second = add_wardrobe_item(items, name="开衫", description="重新识图", asset_ids=["asset_2"])
+        self.assertEqual(["asset_1", "asset_2"], second["asset_ids"])
+
+    def test_outfit_keeps_assets_and_ownership(self) -> None:
+        outfits, stored = add_wardrobe_outfit(
+            None, name="白衬衫黑纱裙", kind="style", style="白衬衫配黑色纱裙",
+            asset_ids=["asset_9"], ownership="reference",
+        )
+        self.assertEqual(["asset_9"], stored["asset_ids"])
+        self.assertEqual(OWNERSHIP_REFERENCE, stored["ownership"])
+        self.assertEqual(["asset_9"], normalize_wardrobe_outfit(outfits[0])["asset_ids"])
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class WardrobeImageIngestionRoutingTests(unittest.IsolatedAsyncioTestCase):
+    """识图两态在命令路径上的分流：散件进 items，整套/参考进 outfits。"""
+
+    PNG_1X1 = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+        "0000000a49444154789c6360000002000100ffff03000006000557bfabd4000000"
+        "0049454e44ae426082"
+    )
+
+    def setUp(self) -> None:
+        self.plugin = _WardrobeCommandHarness()
+        self.plugin.command_images = [("/tmp/coat.png", "随消息发送的图片")]
+
+    async def test_item_reply_lands_in_items_with_slot(self) -> None:
+        self.plugin.describe_reply = {
+            "kind": "item",
+            "name": "米色针织开衫",
+            "description": "细针织落肩版型",
+            "tags": ["居家"],
+            "slot": "upper",
+        }
+        text, _ = await self.plugin._wardrobe_command_payload(None, "u1", "添加图片")
+        self.assertIn("已加入衣物：米色针织开衫", text)
+        items = self.plugin.config["wardrobe_items"]
+        self.assertEqual(1, len(items))
+        self.assertEqual("upper", items[0]["slot"])
+        self.assertEqual([], self.plugin.config["wardrobe_outfits"])
+
+    async def test_outfit_reply_lands_in_outfits_not_items(self) -> None:
+        self.plugin.describe_reply = {
+            "kind": "outfit",
+            "name": "白衬衫黑纱裙",
+            "description": "白衬衫配黑色纱裙与厚底鞋",
+            "tags": ["日常"],
+            "slot": "",
+        }
+        text, _ = await self.plugin._wardrobe_command_payload(None, "u1", "添加图片")
+        self.assertIn("已加入整套：白衬衫黑纱裙", text)
+        self.assertEqual([], self.plugin.config["wardrobe_items"])
+        outfits = self.plugin.config["wardrobe_outfits"]
+        self.assertEqual(1, len(outfits))
+        self.assertEqual("style", outfits[0]["kind"])
+        self.assertEqual("owned", outfits[0]["ownership"])
+
+    async def test_reference_reply_is_marked_reference(self) -> None:
+        self.plugin.describe_reply = {
+            "kind": "reference",
+            "name": "博主通勤装",
+            "description": "条纹衬衫配深灰长裤",
+            "tags": [],
+            "slot": "",
+        }
+        await self.plugin._wardrobe_command_payload(None, "u1", "添加图片")
+        outfits = self.plugin.config["wardrobe_outfits"]
+        self.assertEqual(1, len(outfits))
+        self.assertEqual("reference", outfits[0]["ownership"])
+
+    async def test_reply_without_kind_still_adds_an_item(self) -> None:
+        # 旧提示词或旧模型不回「类型」时按散件处理，且部位由名称推断
+        self.plugin.describe_reply = {"name": "碎花连衣裙", "description": "米白底小碎花", "tags": ["外出"]}
+        text, _ = await self.plugin._wardrobe_command_payload(None, "u1", "添加图片")
+        self.assertIn("已加入衣物：碎花连衣裙", text)
+        self.assertEqual("whole", self.plugin.config["wardrobe_items"][0]["slot"])
+
+    async def test_image_is_imported_into_the_asset_store(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "coat.png"
+            source.write_bytes(self.PNG_1X1)
+            self.plugin.data_dir = str(Path(root) / "data")
+            self.plugin.command_images = [(str(source), "随消息发送的图片")]
+            self.plugin.describe_reply = {
+                "kind": "item",
+                "name": "白衬衫",
+                "description": "挺括棉质",
+                "slot": "upper",
+            }
+            await self.plugin._wardrobe_command_payload(None, "u1", "添加图片")
+            item = self.plugin.config["wardrobe_items"][0]
+            self.assertEqual(1, len(item["asset_ids"]))
+            self.assertTrue((Path(self.plugin.data_dir) / "wardrobe_assets" / "index.json").is_file())
+
+    async def test_overview_reports_outfit_count(self) -> None:
+        self.plugin.config["wardrobe_outfits"] = [
+            {"name": "白衬衫黑纱裙", "kind": "style", "style": "白衬衫配黑纱裙", "ownership": "reference"}
+        ]
+        text, _ = await self.plugin._wardrobe_command_payload(None, "u1", "查看")
+        self.assertIn("套", text)
+        self.assertIn("白衬衫黑纱裙（参考", text)
+
+
+class WardrobeReferenceIsolationTests(unittest.IsolatedAsyncioTestCase):
+    """参考（ownership=reference）只影响风格，绝不被她穿。"""
+
+    def setUp(self) -> None:
+        self.plugin = _WardrobeCommandHarness()
+
+    def _config_with_reference(self) -> None:
+        self.plugin.config["wardrobe_items"] = [
+            {"id": "w_owned", "name": "米色针织开衫", "slot": "upper", "ownership": "owned"},
+            {"id": "w_ref", "name": "博主同款外套", "slot": "upper", "ownership": "reference"},
+        ]
+        self.plugin.config["wardrobe_outfits"] = [
+            {"id": "o_owned", "name": "自有整套", "kind": "style", "style": "米色针织配长裤",
+             "ownership": "owned"},
+            {"id": "o_ref", "name": "参考整套", "kind": "style", "style": "暗黑白蕾丝层叠",
+             "ownership": "reference"},
+        ]
+
+    def test_selection_never_picks_a_reference_outfit(self) -> None:
+        self._config_with_reference()
+        result = self.plugin._wardrobe_outfit_selection(None)
+        self.assertEqual("自有整套", result["outfit_name"])
+
+    def test_reference_items_are_excluded_from_rule_selection(self) -> None:
+        self._config_with_reference()
+        names = {
+            row["name"]
+            for row in select_wardrobe_outfit(
+                self.plugin._wardrobe_owned_items(), [], seed="d1"
+            )["picked"]
+        }
+        self.assertIn("米色针织开衫", names)
+        self.assertNotIn("博主同款外套", names)
+
+    def test_reference_profile_line_is_injected_once_there_is_evidence(self) -> None:
+        self._config_with_reference()
+        self.plugin.config["wardrobe_outfits"] += [
+            {"name": "参考2", "kind": "style", "style": "白色蕾丝层叠连衣裙", "ownership": "reference"},
+            {"name": "参考3", "kind": "style", "style": "白色蕾丝蓬松半身裙", "ownership": "reference"},
+        ]
+        section = self.plugin._wardrobe_prompt_section(None)
+        assert section is not None
+        self.assertIn("参考风格（来自 3 套参考）", section.content)
+
+    def test_preview_exposes_reference_count_and_profile(self) -> None:
+        self._config_with_reference()
+        data = self.plugin._wardrobe_outfit_preview()
+        self.assertEqual(1, data["reference_count"])
+        self.assertEqual("", data["style_profile"])
+
+    def test_overview_marks_reference_outfits(self) -> None:
+        self._config_with_reference()
+        text = self.plugin._wardrobe_overview_text()
+        self.assertIn("参考整套（参考", text)
+
+
+class WardrobeDraftRoutingTests(unittest.TestCase):
+    """数据层的分流函数：命令路径与草稿队列共用它，所以要单独钉死。"""
+
+    def test_item_draft_links_asset_and_infers_slot(self) -> None:
+        items, outfits, outcome = apply_wardrobe_draft(
+            None, None,
+            {"kind": "item", "name": "深蓝牛仔裤", "description": "直筒微弹", "tags": ["日常"]},
+            asset_id="asset_1",
+        )
+        self.assertTrue(outcome["ok"])
+        self.assertEqual("lower", items[0]["slot"])
+        self.assertEqual(["asset_1"], items[0]["asset_ids"])
+        self.assertEqual([], outfits)
+
+    def test_outfit_draft_goes_to_outfits(self) -> None:
+        items, outfits, outcome = apply_wardrobe_draft(
+            None, None, {"kind": "outfit", "name": "通勤正装", "description": "衬衫配长裤"}
+        )
+        self.assertTrue(outcome["ok"])
+        self.assertEqual([], items)
+        self.assertEqual("style", outfits[0]["kind"])
+        self.assertEqual("owned", outfits[0]["ownership"])
+
+    def test_reference_draft_is_marked_reference(self) -> None:
+        _, outfits, _ = apply_wardrobe_draft(
+            None, None, {"kind": "reference", "name": "博主通勤装", "description": "条纹衬衫"}
+        )
+        self.assertEqual("reference", outfits[0]["ownership"])
+
+    def test_unknown_kind_is_reported_not_guessed(self) -> None:
+        items, outfits, outcome = apply_wardrobe_draft(
+            None, None, {"kind": "看起来像衣服", "name": "x", "description": "y"}
+        )
+        self.assertFalse(outcome["ok"])
+        self.assertIn("无法识别的类型", outcome["error"])
+        self.assertEqual([], items)
+        self.assertEqual([], outfits)
+
+    def test_existing_name_is_replaced_not_duplicated(self) -> None:
+        items, _, _ = apply_wardrobe_draft(
+            None, None, {"kind": "item", "name": "开衫", "description": "薄款", "slot": "upper"}
+        )
+        items, _, outcome = apply_wardrobe_draft(
+            items, None, {"kind": "item", "name": "开衫", "description": "厚款", "slot": "upper"}
+        )
+        self.assertTrue(outcome["replaced"])
+        self.assertEqual(1, len(items))
+        self.assertEqual("厚款", items[0]["description"])
+
+    def test_wardrobe_limit_is_flagged(self) -> None:
+        full = [{"id": f"w{i}", "name": f"衣{i}", "slot": "upper"} for i in range(WARDROBE_MAX_ITEMS)]
+        _, _, outcome = apply_wardrobe_draft(
+            full, None, {"kind": "item", "name": "新衣", "description": "x", "slot": "upper"}
+        )
+        self.assertFalse(outcome["ok"])
+        self.assertTrue(outcome["limit"])
+
+
+class WardrobeProgressiveDisclosureTests(unittest.IsolatedAsyncioTestCase):
+    """渐进披露：默认每轮完整；progressive 时只常驻一行，问到才展开。"""
+
+    def setUp(self) -> None:
+        self.plugin = _WardrobeCommandHarness()
+        self.plugin.config["wardrobe_outfit_mode"] = "select"
+        self.plugin.config["wardrobe_items"] = [
+            {"name": "白色长袖衬衫", "slot": "upper"},
+            {"name": "黑色高腰纱裙", "slot": "lower"},
+        ]
+        self.plugin.config["wardrobe_outfits"] = [
+            {"name": "白衬衫黑纱裙", "kind": "style", "style": "白衬衫配黑色高腰纱裙与厚底玛丽珍鞋"},
+        ]
+
+    def test_default_mode_is_full(self) -> None:
+        self.assertEqual("full", self.plugin._wardrobe_injection_detail())
+        section = self.plugin._wardrobe_prompt_section(None, "今天天气不错")
+        assert section is not None
+        self.assertIn(WARDROBE_PROMPT_PREAMBLE, section.content)
+        self.assertIn("白衬衫配黑色高腰纱裙", section.content)
+
+    def test_progressive_without_trigger_injects_the_minimal_line(self) -> None:
+        self.plugin.config["wardrobe_injection_detail"] = "progressive"
+        section = self.plugin._wardrobe_prompt_section(None, "今天天气不错")
+        assert section is not None
+        self.assertIn("穿着（背景事实", section.content)
+        self.assertIn("白衬衫黑纱裙", section.content)
+        self.assertNotIn(WARDROBE_PROMPT_PREAMBLE, section.content)
+        self.assertLessEqual(len(section.content), 200)
+
+    def test_progressive_expands_when_the_user_asks_about_clothes(self) -> None:
+        self.plugin.config["wardrobe_injection_detail"] = "progressive"
+        section = self.plugin._wardrobe_prompt_section(None, "你今天穿的是什么呀")
+        assert section is not None
+        self.assertIn(WARDROBE_PROMPT_PREAMBLE, section.content)
+        self.assertGreater(len(section.content), 120)
+
+    def test_trigger_detection_is_keyword_based(self) -> None:
+        self.assertFalse(self.plugin._wardrobe_detail_triggered(""))
+        self.assertFalse(self.plugin._wardrobe_detail_triggered("晚饭吃什么"))
+        self.assertTrue(self.plugin._wardrobe_detail_triggered("外面冷，记得加外套"))
+        self.assertTrue(self.plugin._wardrobe_detail_triggered("让我看看你的 outfit"))
+
+    def test_unknown_detail_value_falls_back_to_full(self) -> None:
+        self.plugin.config["wardrobe_injection_detail"] = "乱填的值"
+        self.assertEqual("full", self.plugin._wardrobe_injection_detail())
+
+    def test_preview_reports_detail_mode_and_minimal(self) -> None:
+        self.plugin.config["wardrobe_injection_detail"] = "progressive"
+        data = self.plugin._wardrobe_outfit_preview()
+        self.assertEqual("progressive", data["detail_mode"])
+        self.assertIn("穿着（背景事实", data["minimal"])
+        self.assertLessEqual(len(data["minimal"]), data["minimal_limit"])
+
+# ---------------------------------------------------------------------------
+# E. 草稿队列：运行时（素材 → 语义的人工确认）
+# ---------------------------------------------------------------------------
+
+
+class _FakePageRequest:
+    """page_api 只用到 request.get_json；替身让接口用例在缺 Quart 桩时也能跑。"""
+
+    def __init__(self, payload=None) -> None:
+        self.payload = payload
+        self.calls = 0
+
+    async def get_json(self, silent: bool = True):
+        self.calls += 1
+        return self.payload
+
+
+class _WardrobeDraftHarness(_WardrobeCommandHarness):
+    """命令替身 + 一个真实素材目录：队列读写必须真的落到磁盘上。"""
+
+    def __init__(self, data_dir: Path) -> None:
+        super().__init__()
+        self.data_dir = str(data_dir)
+        self.config["wardrobe_outfits"] = []
+
+    def make_asset(self, *, origin: str = "blogger", marker: bytes = b"a", name: str = "coat.png") -> dict:
+        from astrbot_plugin_private_companion.wardrobe_assets import import_asset
+
+        source = Path(self.data_dir) / name
+        source.write_bytes(b"\x89PNG\r\n\x1a\n" + marker * 32)
+        record, _created = import_asset(self.data_dir, source, origin=origin)
+        return record
+
+    def write_draft(self, asset_id: str, **draft) -> None:
+        from astrbot_plugin_private_companion.wardrobe_assets import write_asset_draft
+
+        write_asset_draft(self.data_dir, asset_id, draft)
+
+    def asset_status(self, asset_id: str) -> str:
+        from astrbot_plugin_private_companion.wardrobe_assets import load_asset_index
+
+        return str((load_asset_index(self.data_dir).get(asset_id) or {}).get("status") or "")
+
+
+class WardrobeDraftQueueRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    """队列方法：列表 / 确认（可覆盖字段）/ 丢弃。"""
+
+    def setUp(self) -> None:
+        self._temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp.cleanup)
+        self.root = Path(self._temp.name)
+        self.plugin = _WardrobeDraftHarness(self.root)
+
+    def _item_draft(self, **overrides) -> dict:
+        marker = overrides.pop("marker", b"a")
+        record = self.plugin.make_asset(marker=marker)
+        draft = {
+            "kind": WARDROBE_IMAGE_KIND_ITEM,
+            "name": "碎花连衣裙",
+            "description": "米白底小碎花",
+            "slot": "whole",
+            "tags": ["外出"],
+        }
+        draft.update(overrides)
+        self.plugin.write_draft(record["id"], **draft)
+        return record
+
+    def _outfit_draft(self, kind: str, **overrides) -> dict:
+        marker = overrides.pop("marker", b"b")
+        record = self.plugin.make_asset(marker=marker)
+        draft = {
+            "kind": kind,
+            "name": "通勤西装",
+            "description": "米色西装外套配直筒长裤",
+            "slot": "",
+            "tags": [],
+        }
+        draft.update(overrides)
+        self.plugin.write_draft(record["id"], **draft)
+        return record
+
+    # --- 列表 ---
+
+    def test_pending_drafts_render_labels_for_the_panel(self) -> None:
+        record = self._item_draft()
+        rows = self.plugin._wardrobe_pending_drafts()
+        self.assertEqual(1, len(rows))
+        row = rows[0]
+        self.assertEqual(record["id"], row["asset_id"])
+        self.assertEqual(WARDROBE_IMAGE_KIND_ITEM, row["kind"])
+        self.assertEqual("散件", row["kind_label"])
+        self.assertEqual("整身", row["slot_label"])
+        self.assertEqual("博主参考", row["origin_label"])
+        self.assertTrue(row["has_draft"])
+        self.assertTrue(row["has_image"])
+        self.assertEqual(["外出"], row["tags"])
+
+    def test_pending_drafts_mark_the_ones_still_waiting_for_vision(self) -> None:
+        record = self.plugin.make_asset(marker=b"c")
+        rows = self.plugin._wardrobe_pending_drafts()
+        self.assertEqual(1, len(rows))
+        self.assertEqual(record["id"], rows[0]["asset_id"])
+        self.assertFalse(rows[0]["has_draft"])
+        self.assertEqual("待识图", rows[0]["kind_label"])
+        self.assertEqual("未分类", rows[0]["slot_label"])
+
+    def test_pending_drafts_are_empty_without_a_data_dir(self) -> None:
+        del self.plugin.data_dir
+        self.assertEqual([], self.plugin._wardrobe_pending_drafts())
+
+    def test_pending_drafts_survive_a_broken_index(self) -> None:
+        from astrbot_plugin_private_companion.wardrobe_assets import asset_index_path
+
+        path = asset_index_path(self.root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{不是 JSON", encoding="utf-8")
+        self.assertEqual([], self.plugin._wardrobe_pending_drafts())
+
+    def test_pending_drafts_mark_text_assets_as_not_previewable(self) -> None:
+        self.plugin.make_asset(marker=b"t", name="share.txt")
+        rows = self.plugin._wardrobe_pending_drafts()
+        self.assertEqual(1, len(rows))
+        self.assertTrue(rows[0]["has_draft"] is False)
+        self.assertFalse(rows[0]["has_image"], "分享文本没有缩略图可拉")
+
+    async def test_pending_drafts_exclude_processed_assets(self) -> None:
+        record = self._item_draft()
+        outcome = await self.plugin._wardrobe_confirm_draft(record["id"])
+        self.assertTrue(outcome["ok"], outcome)
+        self.assertEqual([], self.plugin._wardrobe_pending_drafts())
+
+    # --- 确认 ---
+
+    async def test_confirm_draft_stores_the_item_and_advances_the_asset(self) -> None:
+        record = self._item_draft()
+        outcome = await self.plugin._wardrobe_confirm_draft(record["id"])
+        self.assertTrue(outcome["ok"], outcome)
+        self.assertEqual(WARDROBE_IMAGE_KIND_ITEM, outcome["kind"])
+        self.assertEqual("碎花连衣裙", outcome["name"])
+        self.assertFalse(outcome["replaced"])
+        self.assertEqual("understood", self.plugin.asset_status(record["id"]))
+        self.assertGreater(self.plugin.save_calls, 0)
+        stored = self.plugin.config["wardrobe_items"][0]
+        self.assertEqual("碎花连衣裙", stored["name"])
+        self.assertEqual("whole", stored["slot"])
+        self.assertEqual([record["id"]], stored["asset_ids"])
+        self.assertEqual(SOURCE_KIND_IMAGE, stored["source_kind"])
+
+    async def test_confirm_draft_applies_in_place_overrides(self) -> None:
+        record = self._item_draft()
+        outcome = await self.plugin._wardrobe_confirm_draft(
+            record["id"],
+            {"name": "米白碎花连衣裙", "description": "米白底小碎花，收腰", "slot": "lower"},
+        )
+        self.assertTrue(outcome["ok"], outcome)
+        stored = self.plugin.config["wardrobe_items"][0]
+        self.assertEqual("米白碎花连衣裙", stored["name"])
+        self.assertEqual("米白底小碎花，收腰", stored["description"])
+        self.assertEqual("lower", stored["slot"])
+        # 标签不在可覆盖字段里，必须原样保留草稿里的值。
+        self.assertEqual(["外出"], stored["tags"])
+
+    async def test_confirm_draft_ignores_uneditable_override_fields(self) -> None:
+        record = self._item_draft()
+        outcome = await self.plugin._wardrobe_confirm_draft(
+            record["id"],
+            {"kind": WARDROBE_IMAGE_KIND_OUTFIT, "asset_id": "asset_hacked", "ownership": "reference"},
+        )
+        self.assertTrue(outcome["ok"], outcome)
+        self.assertEqual(WARDROBE_IMAGE_KIND_ITEM, outcome["kind"])
+        self.assertEqual(1, len(self.plugin.config["wardrobe_items"]))
+        self.assertEqual([], self.plugin.config["wardrobe_outfits"])
+        self.assertEqual([record["id"]], self.plugin.config["wardrobe_items"][0]["asset_ids"])
+
+    async def test_confirm_draft_routes_an_outfit_into_outfits(self) -> None:
+        record = self._outfit_draft(WARDROBE_IMAGE_KIND_OUTFIT)
+        outcome = await self.plugin._wardrobe_confirm_draft(record["id"])
+        self.assertTrue(outcome["ok"], outcome)
+        self.assertEqual(WARDROBE_IMAGE_KIND_OUTFIT, outcome["kind"])
+        self.assertEqual([], self.plugin.config["wardrobe_items"])
+        outfits = self.plugin.config["wardrobe_outfits"]
+        self.assertEqual(1, len(outfits))
+        self.assertEqual("通勤西装", outfits[0]["name"])
+        self.assertEqual(OUTFIT_KIND_STYLE, outfits[0]["kind"])
+        self.assertEqual("米色西装外套配直筒长裤", outfits[0]["style"])
+        self.assertEqual(OWNERSHIP_OWNED, outfits[0]["ownership"])
+        self.assertEqual([record["id"]], outfits[0]["asset_ids"])
+
+    async def test_confirm_draft_routes_a_reference_into_outfits_as_reference(self) -> None:
+        record = self._outfit_draft(WARDROBE_IMAGE_KIND_REFERENCE, name="博主叠穿", marker=b"d")
+        outcome = await self.plugin._wardrobe_confirm_draft(record["id"])
+        self.assertTrue(outcome["ok"], outcome)
+        outfits = self.plugin.config["wardrobe_outfits"]
+        self.assertEqual(1, len(outfits))
+        self.assertEqual(OWNERSHIP_REFERENCE, outfits[0]["ownership"])
+
+    async def test_confirm_draft_returns_the_stored_row_for_the_panel(self) -> None:
+        record = self._outfit_draft(WARDROBE_IMAGE_KIND_OUTFIT)
+        outcome = await self.plugin._wardrobe_confirm_draft(record["id"])
+        row = outcome.get("row") or {}
+        self.assertEqual("通勤西装", row.get("name"))
+        self.assertEqual([record["id"]], row.get("asset_ids"))
+        self.assertEqual(1, outcome["outfits_total"])
+        self.assertEqual(0, outcome["items_total"])
+
+    async def test_confirm_draft_requires_a_draft(self) -> None:
+        record = self.plugin.make_asset(marker=b"e")
+        outcome = await self.plugin._wardrobe_confirm_draft(record["id"])
+        self.assertFalse(outcome["ok"])
+        self.assertIn("还没有草稿", outcome["error"])
+        self.assertEqual(0, self.plugin.save_calls)
+
+    async def test_confirm_draft_rejects_unknown_and_processed_assets(self) -> None:
+        missing = await self.plugin._wardrobe_confirm_draft("asset_nope")
+        self.assertFalse(missing["ok"])
+        self.assertIn("不在索引里", missing["error"])
+        blank = await self.plugin._wardrobe_confirm_draft("")
+        self.assertFalse(blank["ok"])
+        self.assertIn("缺少素材编号", blank["error"])
+        record = self._item_draft()
+        self.assertTrue((await self.plugin._wardrobe_confirm_draft(record["id"]))["ok"])
+        again = await self.plugin._wardrobe_confirm_draft(record["id"])
+        self.assertFalse(again["ok"])
+        self.assertIn("已经处理过", again["error"])
+
+    async def test_confirm_draft_keeps_the_asset_pending_when_saving_fails(self) -> None:
+        record = self._item_draft()
+        self.plugin.save_should_fail = True
+        outcome = await self.plugin._wardrobe_confirm_draft(record["id"])
+        self.assertFalse(outcome["ok"])
+        self.assertIn("保存失败", outcome["error"])
+        # 落库失败＝素材必须留在队列里，用户刷新后还能重试。
+        self.assertEqual("imported", self.plugin.asset_status(record["id"]))
+        self.assertEqual(1, len(self.plugin._wardrobe_pending_drafts()))
+        self.assertEqual([], self.plugin.config["wardrobe_items"])
+
+    async def test_confirm_draft_reports_a_full_wardrobe(self) -> None:
+        self.plugin.config["wardrobe_items"] = [
+            {"name": "衣物%d" % index, "description": "x"} for index in range(WARDROBE_MAX_ITEMS)
+        ]
+        record = self._item_draft(name="第 41 件")
+        outcome = await self.plugin._wardrobe_confirm_draft(record["id"])
+        self.assertFalse(outcome["ok"])
+        self.assertIn("最多", outcome["error"])
+        self.assertEqual("imported", self.plugin.asset_status(record["id"]))
+
+    # --- 丢弃 ---
+
+    async def test_reject_draft_marks_the_asset_without_touching_the_wardrobe(self) -> None:
+        record = self._item_draft()
+        outcome = await self.plugin._wardrobe_reject_draft(record["id"])
+        self.assertTrue(outcome["ok"], outcome)
+        self.assertEqual("rejected", self.plugin.asset_status(record["id"]))
+        self.assertEqual([], self.plugin.config["wardrobe_items"])
+        self.assertEqual(0, self.plugin.save_calls)
+        self.assertEqual([], self.plugin._wardrobe_pending_drafts())
+
+    async def test_reject_draft_reports_unknown_assets(self) -> None:
+        outcome = await self.plugin._wardrobe_reject_draft("asset_nope")
+        self.assertFalse(outcome["ok"])
+        self.assertIn("不在索引里", outcome["error"])
+        blank = await self.plugin._wardrobe_reject_draft("")
+        self.assertFalse(blank["ok"])
+        self.assertIn("缺少素材编号", blank["error"])
+
+    async def test_reject_draft_without_a_data_dir_reports(self) -> None:
+        del self.plugin.data_dir
+        outcome = await self.plugin._wardrobe_reject_draft("asset_any")
+        self.assertFalse(outcome["ok"])
+        self.assertIn("数据目录", outcome["error"])
+
+
+
+# ---------------------------------------------------------------------------
+# F. 草稿队列：页面接口
+# ---------------------------------------------------------------------------
+
+
+class WardrobeDraftEndpointTests(unittest.IsolatedAsyncioTestCase):
+    """POST /wardrobe/drafts、/draft-apply、/draft-reject、/asset-image。
+
+    这里直接替换 page_api.request，而不是走 Quart 的 test_request_context：
+    接口本身只用到 request.get_json，替身让用例在 CI 桩环境（quart 是空壳）
+    下也能真正跑起来。
+    """
+
+    def _api(self, plugin):
+        from astrbot_plugin_private_companion.page_api import PrivateCompanionPageApi
+
+        return PrivateCompanionPageApi(plugin)
+
+    def _request(self, payload):
+        import sys
+        from unittest import mock
+
+        from astrbot_plugin_private_companion.page_api import PrivateCompanionPageApi
+
+        # 直接替换承载这个类的模块 globals：from package import submodule 在测试进程里
+        # 有可能拿到一个陈旧的模块对象，patch 上去对真正执行的处理函数无效。
+        namespace = vars(sys.modules[PrivateCompanionPageApi.__module__])
+        return mock.patch.dict(namespace, {"request": _FakePageRequest(payload)})
+
+    def _queue_plugin(self, root: Path, *, rows=None, outcome=None, reject=None):
+        class _Plugin:
+            def __init__(self) -> None:
+                self.data_dir = str(root)
+                self.confirm_calls: list = []
+                self.reject_calls: list = []
+
+            def _wardrobe_pending_drafts(self):
+                return list(rows or [])
+
+            async def _wardrobe_confirm_draft(self, asset_id, overrides=None):
+                self.confirm_calls.append((asset_id, dict(overrides or {})))
+                return dict(outcome or {"ok": True, "asset_id": asset_id, "kind": "item", "name": "碎花连衣裙"})
+
+            async def _wardrobe_reject_draft(self, asset_id):
+                self.reject_calls.append(asset_id)
+                return dict(reject or {"ok": True, "asset_id": asset_id})
+
+        return _Plugin()
+
+    # --- 列表 ---
+
+    async def test_drafts_endpoint_lists_rows_with_counts(self) -> None:
+        rows = [
+            {"asset_id": "asset_a", "kind_label": "散件", "has_draft": True},
+            {"asset_id": "asset_b", "kind_label": "待识图", "has_draft": False},
+        ]
+        plugin = self._queue_plugin(Path("/tmp"), rows=rows)
+        with self._request({}):
+            result = await self._api(plugin).list_wardrobe_drafts()
+        self.assertTrue(result["success"])
+        self.assertEqual(2, result["data"]["count"])
+        self.assertEqual(1, result["data"]["ready_count"])
+        self.assertEqual("asset_a", result["data"]["drafts"][0]["asset_id"])
+
+    async def test_drafts_endpoint_does_not_require_a_body(self) -> None:
+        plugin = self._queue_plugin(Path("/tmp"), rows=[{"asset_id": "asset_a"}])
+        for payload in ({}, None, "不是对象"):
+            with self.subTest(payload=payload):
+                with self._request(payload):
+                    result = await self._api(plugin).list_wardrobe_drafts()
+                self.assertTrue(result["success"])
+
+    async def test_drafts_endpoint_reports_missing_capability(self) -> None:
+        with self._request({}):
+            result = await self._api(SimpleNamespace(data_dir="/tmp")).list_wardrobe_drafts()
+        self.assertFalse(result["success"])
+
+    async def test_drafts_endpoint_survives_a_raising_lister(self) -> None:
+        class _Raising:
+            def _wardrobe_pending_drafts(self):
+                raise RuntimeError("index exploded")
+
+        with self._request({}):
+            result = await self._api(_Raising()).list_wardrobe_drafts()
+        self.assertFalse(result["success"])
+        self.assertIn("草稿队列", json.dumps(result, ensure_ascii=False))
+
+    # --- 确认 ---
+
+    async def test_draft_apply_forwards_bounded_overrides(self) -> None:
+        plugin = self._queue_plugin(Path("/tmp"))
+        with self._request(
+            {
+                "asset_id": "asset_a",
+                "overrides": {
+                    "name": "米" * 80,
+                    "description": "描" * 900,
+                    "slot": "s" * 40,
+                    "kind": "outfit",
+                },
+            }
+        ):
+            result = await self._api(plugin).confirm_wardrobe_draft()
+        self.assertTrue(result["success"])
+        asset_id, overrides = plugin.confirm_calls[0]
+        self.assertEqual("asset_a", asset_id)
+        self.assertEqual(WARDROBE_MAX_NAME, len(overrides["name"]))
+        self.assertEqual(WARDROBE_MAX_DESCRIPTION, len(overrides["description"]))
+        self.assertEqual(16, len(overrides["slot"]))
+        # 类型决定进哪个库，不能在确认环节被面板偷换。
+        self.assertNotIn("kind", overrides)
+
+    async def test_draft_apply_omits_missing_override_fields(self) -> None:
+        plugin = self._queue_plugin(Path("/tmp"))
+        with self._request({"asset_id": "asset_a", "overrides": {"name": "新名字"}}):
+            result = await self._api(plugin).confirm_wardrobe_draft()
+        self.assertTrue(result["success"])
+        self.assertEqual({"name": "新名字"}, plugin.confirm_calls[0][1])
+
+    async def test_draft_apply_requires_an_asset_id(self) -> None:
+        plugin = self._queue_plugin(Path("/tmp"))
+        with self._request({"overrides": {"name": "x"}}):
+            result = await self._api(plugin).confirm_wardrobe_draft()
+        self.assertFalse(result["success"])
+        self.assertEqual([], plugin.confirm_calls)
+
+    async def test_draft_apply_reports_runtime_failure(self) -> None:
+        plugin = self._queue_plugin(
+            Path("/tmp"), outcome={"ok": False, "error": "这条素材已经处理过了，刷新队列看看。"}
+        )
+        with self._request({"asset_id": "asset_a"}):
+            result = await self._api(plugin).confirm_wardrobe_draft()
+        self.assertFalse(result["success"])
+        self.assertIn("已经处理过", result["error"])
+
+    async def test_draft_apply_survives_a_raising_confirmer(self) -> None:
+        class _Raising:
+            async def _wardrobe_confirm_draft(self, *_args, **_kwargs):
+                raise RuntimeError("save exploded")
+
+        with self._request({"asset_id": "asset_a"}):
+            result = await self._api(_Raising()).confirm_wardrobe_draft()
+        self.assertFalse(result["success"])
+
+    async def test_draft_apply_reports_missing_capability(self) -> None:
+        with self._request({"asset_id": "asset_a"}):
+            result = await self._api(SimpleNamespace(data_dir="/tmp")).confirm_wardrobe_draft()
+        self.assertFalse(result["success"])
+
+    # --- 丢弃 ---
+
+    async def test_draft_reject_forwards_the_asset_id(self) -> None:
+        plugin = self._queue_plugin(Path("/tmp"))
+        with self._request({"asset_id": "asset_a"}):
+            result = await self._api(plugin).reject_wardrobe_draft()
+        self.assertTrue(result["success"])
+        self.assertEqual(["asset_a"], plugin.reject_calls)
+
+    async def test_draft_reject_requires_an_asset_id(self) -> None:
+        plugin = self._queue_plugin(Path("/tmp"))
+        with self._request({}):
+            result = await self._api(plugin).reject_wardrobe_draft()
+        self.assertFalse(result["success"])
+        self.assertEqual([], plugin.reject_calls)
+
+    async def test_draft_reject_reports_runtime_failure(self) -> None:
+        plugin = self._queue_plugin(Path("/tmp"), reject={"ok": False, "error": "素材不在索引里。"})
+        with self._request({"asset_id": "asset_a"}):
+            result = await self._api(plugin).reject_wardrobe_draft()
+        self.assertFalse(result["success"])
+        self.assertIn("不在索引里", result["error"])
+
+    # --- 缩略图 ---
+
+    def _stored_asset(self, root: Path, *, marker: bytes = b"a", name: str = "coat.png") -> dict:
+        from astrbot_plugin_private_companion.wardrobe_assets import import_asset
+
+        source = root / name
+        source.write_bytes(b"\x89PNG\r\n\x1a\n" + marker * 24)
+        record, _created = import_asset(root, source, origin="panel")
+        return record
+
+    async def test_asset_image_returns_a_data_url(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            record = self._stored_asset(root)
+            plugin = self._queue_plugin(root)
+            with self._request({"asset_id": record["id"]}):
+                result = await self._api(plugin).get_wardrobe_asset_image()
+        self.assertTrue(result["success"])
+        self.assertEqual("image/png", result["data"]["mime"])
+        self.assertTrue(result["data"]["data_url"].startswith("data:image/png;base64,"))
+        self.assertGreater(result["data"]["size"], 0)
+
+    async def test_asset_image_rejects_unknown_assets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            plugin = self._queue_plugin(Path(temp_dir))
+            with self._request({"asset_id": "asset_nope"}):
+                result = await self._api(plugin).get_wardrobe_asset_image()
+        self.assertFalse(result["success"])
+
+    async def test_asset_image_rejects_paths_outside_the_asset_store(self) -> None:
+        from astrbot_plugin_private_companion.wardrobe_assets import load_asset_index, save_asset_index
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            record = self._stored_asset(root)
+            outside = root / "outside.png"
+            outside.write_bytes(b"\x89PNG\r\n\x1a\n" + b"z" * 16)
+            index = load_asset_index(root)
+            row = dict(index[record["id"]])
+            row["path"] = "../outside.png"
+            index[record["id"]] = row
+            save_asset_index(root, index)
+            plugin = self._queue_plugin(root)
+            with self._request({"asset_id": record["id"]}):
+                result = await self._api(plugin).get_wardrobe_asset_image()
+        self.assertFalse(result["success"])
+
+    async def test_asset_image_rejects_non_image_assets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            record = self._stored_asset(root, name="share.txt")
+            plugin = self._queue_plugin(root)
+            with self._request({"asset_id": record["id"]}):
+                result = await self._api(plugin).get_wardrobe_asset_image()
+        self.assertFalse(result["success"])
+
+    async def test_asset_image_requires_a_data_dir(self) -> None:
+        with self._request({"asset_id": "asset_a"}):
+            result = await self._api(SimpleNamespace()).get_wardrobe_asset_image()
+        self.assertFalse(result["success"])
+
+
+class WardrobeDraftRouteRegistrationTests(unittest.TestCase):
+    """路由表必须注册面板会调用的那四个接口。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.api = (ROOT / "page_api.py").read_text(encoding="utf-8")
+
+    def test_routes_are_registered(self) -> None:
+        for route, handler in (
+            ("/wardrobe/drafts", "self.list_wardrobe_drafts"),
+            ("/wardrobe/draft-apply", "self.confirm_wardrobe_draft"),
+            ("/wardrobe/draft-reject", "self.reject_wardrobe_draft"),
+            ("/wardrobe/asset-image", "self.get_wardrobe_asset_image"),
+        ):
+            self.assertIn('("%s", %s, ["POST"]' % (route, handler), self.api, route)
+
+    def test_handlers_never_touch_paths_from_the_request(self) -> None:
+        # 缩略图只能按 asset_id 查索引，请求里的路径一律不认。
+        self.assertIn("def _wardrobe_asset_local_path", self.api)
+        self.assertIn("load_asset_index(data_dir).get(clean_id)", self.api)
+
+
+
+# ---------------------------------------------------------------------------
+# G. 面板：整套区与草稿队列
+# ---------------------------------------------------------------------------
+
+
+class WardrobeOutfitDraftPanelTests(unittest.TestCase):
+    PANEL_DIRS = ("companion-panel", "陪伴面板")
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.htmls: list[str] = []
+        cls.styles: list[str] = []
+        for name in cls.PANEL_DIRS:
+            base = ROOT / "pages" / name
+            cls.htmls.append((base / "index.html").read_text(encoding="utf-8"))
+            cls.styles.append((base / "app.css").read_text(encoding="utf-8"))
+        cls.module = (ROOT / "pages" / "companion-panel" / "js" / "features" / "wardrobe.js").read_text(
+            encoding="utf-8"
+        )
+
+    def test_panel_copies_stay_byte_identical(self) -> None:
+        for relative in ("index.html", "app.css", "js/features/wardrobe.js"):
+            first = (ROOT / "pages" / "companion-panel" / relative).read_bytes()
+            second = (ROOT / "pages" / "陪伴面板" / relative).read_bytes()
+            self.assertEqual(first, second, relative)
+
+    def test_html_exposes_the_outfit_block_and_hidden_input(self) -> None:
+        for html in self.htmls:
+            self.assertIn("data-wardrobe-outfit-manager", html)
+            # 保存链路沿用既有 name 收集：隐藏字段带上 wardrobe_outfits。
+            self.assertIn('name="wardrobe_outfits"', html)
+            self.assertIn("data-wardrobe-outfits-input", html)
+            self.assertIn("data-wardrobe-outfit-list", html)
+            self.assertIn("data-wardrobe-outfit-count", html)
+            self.assertIn("data-wardrobe-outfit-name", html)
+            self.assertIn("data-wardrobe-outfit-style", html)
+            self.assertIn("data-wardrobe-outfit-ownership", html)
+            self.assertIn("data-wardrobe-outfit-add", html)
+
+    def test_html_exposes_the_draft_queue_block(self) -> None:
+        for html in self.htmls:
+            self.assertIn('<details class="wardrobe-drafts" data-wardrobe-drafts>', html)
+            self.assertIn("data-wardrobe-drafts-count", html)
+            self.assertIn("data-wardrobe-drafts-refresh", html)
+            self.assertIn("data-wardrobe-drafts-apply-all", html)
+            self.assertIn("data-wardrobe-draft-list", html)
+
+    def test_module_only_calls_registered_endpoints(self) -> None:
+        api = (ROOT / "page_api.py").read_text(encoding="utf-8")
+        for route in ("/wardrobe/drafts", "/wardrobe/draft-apply", "/wardrobe/draft-reject", "/wardrobe/asset-image"):
+            self.assertIn('postJson("%s"' % route, self.module, route)
+            self.assertIn('("%s"' % route, api, route)
+
+    def test_module_uses_the_settings_save_chain_for_outfits(self) -> None:
+        self.assertIn('querySelector("[data-wardrobe-outfits-input]")', self.module)
+        self.assertIn('hasOwnProperty.call(settings, "wardrobe_outfits")', self.module)
+        self.assertIn("syncOutfitHiddenInput(context)", self.module)
+        # 面板不改的字段（素材引用、时间戳）必须原样带回去。
+        self.assertIn('["precision", "asset_ids", "created_at", "updated_at", "version"]', self.module)
+
+    def test_styles_cover_the_appended_wardrobe_classes(self) -> None:
+        for style in self.styles:
+            for selector in (
+                ".wardrobe-outfit-list {",
+                ".wardrobe-outfit {",
+                ".wardrobe-outfit-actions button {",
+                ".wardrobe-drafts {",
+                ".wardrobe-drafts-count {",
+                ".wardrobe-draft-list {",
+                ".wardrobe-draft {",
+                ".wardrobe-draft-thumb {",
+            ):
+                self.assertIn(selector, style, selector)
+
+
+
+class WardrobeOutfitDraftPanelRuntimeTests(unittest.TestCase):
+    """用 Node 实际执行面板模块，验证整套保存链与草稿队列的确认链路。"""
+
+    MODULE = ROOT / "pages" / "陪伴面板" / "js" / "features" / "wardrobe.js"
+
+    _HARNESS = r"""
+class FakeHTMLElement {}
+class FakeHTMLSelectElement extends FakeHTMLElement {}
+class FakeHTMLInputElement extends FakeHTMLElement {}
+global.HTMLElement = FakeHTMLElement;
+global.HTMLSelectElement = FakeHTMLSelectElement;
+global.HTMLInputElement = FakeHTMLInputElement;
+
+function selectorToKey(selector) {
+  const match = /^\[data-([a-z0-9-]+)\]$/.exec(String(selector || ""));
+  if (!match) return "";
+  return match[1].replace(/-([a-z0-9])/g, (all, ch) => ch.toUpperCase());
+}
+function findAllByKey(node, key) {
+  const result = [];
+  const walk = (current) => {
+    if (!current || !current.children) return;
+    for (const child of current.children) {
+      if (child.dataset && child.dataset[key] !== undefined) result.push(child);
+      walk(child);
+    }
+  };
+  walk(node);
+  return result;
+}
+function findByKey(node, key) {
+  const found = findAllByKey(node, key);
+  return found.length ? found[0] : null;
+}
+function findByKeyValue(node, key, value) {
+  return findAllByKey(node, key).find((item) => item.dataset[key] === value) || null;
+}
+function makeElement(tag) {
+  const name = String(tag || "").toLowerCase();
+  const proto = name === "select" ? FakeHTMLSelectElement
+    : name === "input" ? FakeHTMLInputElement : FakeHTMLElement;
+  const el = Object.assign(new proto(), {
+    tagName: name.toUpperCase(),
+    children: [], dataset: {}, attributes: {}, listeners: {}, style: {},
+    value: "", hidden: false, disabled: false, type: "", open: false, _text: "",
+    appendChild(child) { this.children.push(child); return child; },
+    append(...items) { items.forEach((item) => this.children.push(item)); return this; },
+    addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); },
+    dispatch(type, event) { (this.listeners[type] || []).forEach((fn) => fn(event)); },
+    setAttribute(key, value) { this.attributes[key] = value; },
+    hasAttribute(key) { return Object.prototype.hasOwnProperty.call(this.attributes, key); },
+    querySelector(selector) { return findByKey(this, selectorToKey(selector)); },
+    focus() { this.focused = true; },
+  });
+  Object.defineProperty(el, "textContent", {
+    get() { return this._text; },
+    set(value) { this._text = String(value); this.children.length = 0; },
+  });
+  return el;
+}
+
+const HOOKS = [
+  "[data-wardrobe-items-input]", "[data-wardrobe-outfits-input]",
+  "[data-wardrobe-outfit-manager]", "[data-wardrobe-outfit-list]", "[data-wardrobe-outfit-count]",
+  "[data-wardrobe-outfit-name]", "[data-wardrobe-outfit-style]", "[data-wardrobe-outfit-ownership]",
+  "[data-wardrobe-outfit-status]", "[data-wardrobe-outfit-add]",
+  "[data-wardrobe-drafts]", "[data-wardrobe-draft-list]", "[data-wardrobe-drafts-count]",
+  "[data-wardrobe-drafts-status]", "[data-wardrobe-drafts-refresh]", "[data-wardrobe-drafts-apply-all]",
+  "[data-wardrobe-intent]", "[data-wardrobe-intent-count]", "[data-wardrobe-intent-detail]",
+  "[data-wardrobe-intent-status]", "[data-wardrobe-intent-refresh]", "[data-wardrobe-intent-clear]",
+  "[data-wardrobe-intent-clear-status]",
+];
+
+function buildContext(settings, responses, seeds) {
+  const els = {};
+  HOOKS.forEach((hook) => {
+    const el = makeElement("div");
+    // 真实页面里这些钩子是写死在 HTML 上的属性，模块用 hasAttribute 判断。
+    el.attributes[hook.slice(1, -1)] = "";
+    els[hook] = el;
+  });
+  Object.keys(seeds || {}).forEach((hook) => { if (els[hook]) els[hook].value = seeds[hook]; });
+  els["[data-wardrobe-drafts]"].open = false;
+  els["[data-wardrobe-intent]"].open = false;
+  const calls = [];
+  const postJson = async (path, body) => {
+    calls.push({ path, body });
+    if (Object.prototype.hasOwnProperty.call(responses, path)) {
+      const value = responses[path];
+      if (value && value.__error__) throw new Error(value.__error__);
+      return JSON.parse(JSON.stringify(value));
+    }
+    return {};
+  };
+  const documentStub = {
+    activeElement: null,
+    createElement: (tag) => makeElement(tag),
+    querySelector: (selector) => els[selector] || null,
+    querySelectorAll: (selector) => (selector === "[data-wardrobe-draft-id]"
+      ? findAllByKey(els["[data-wardrobe-draft-list]"], "wardrobeDraftId") : []),
+  };
+  const context = { state: { overview: { settings } }, postJson, document: documentStub };
+  return { context, els, calls, documentStub };
+}
+
+async function settle(rounds) {
+  for (let round = 0; round < (rounds || 4); round += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+"""
+
+    OUTFITS = [
+        {
+            "id": "outfit_a",
+            "name": "通勤西装",
+            "kind": "bundle",
+            "style": "米色西装外套配直筒长裤",
+            "items": ["米色针织开衫"],
+            "ownership": "owned",
+            "asset_ids": ["asset_src"],
+            "created_at": 1700000000.0,
+        },
+        {"name": "博主叠穿", "kind": "style", "style": "衬衫叠马甲", "ownership": "reference"},
+        {"name": "", "style": ""},
+    ]
+
+    def _run(self, settings: dict, responses: dict, body: str, seeds: dict | None = None) -> dict:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node.js is unavailable")
+        script = f"""
+global.window = {{}};
+const fs = require("fs");
+eval(fs.readFileSync({json.dumps(str(self.MODULE), ensure_ascii=False)}, "utf8"));
+{self._HARNESS}
+(async () => {{
+  const built = buildContext({json.dumps(settings, ensure_ascii=False)}, {json.dumps(responses, ensure_ascii=False)}, {json.dumps(seeds or {}, ensure_ascii=False)});
+  const mod = window.PrivateCompanionWardrobe;
+  mod.hydrateWardrobePanel(built.context);
+  await settle();
+  const report = {{}};
+  {body}
+  process.stdout.write(JSON.stringify(report));
+}})();
+"""
+        result = subprocess.run(
+            [node, "-e", script],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        return json.loads(result.stdout)
+
+    DRAFT_ROWS = [
+        {
+            "asset_id": "asset_a",
+            "kind": "item",
+            "kind_label": "散件",
+            "name": "碎花连衣裙",
+            "description": "米白底小碎花",
+            "slot": "whole",
+            "origin_label": "博主参考",
+            "has_draft": True,
+            "has_image": True,
+        },
+        {
+            "asset_id": "asset_b",
+            "kind": "",
+            "kind_label": "待识图",
+            "name": "",
+            "description": "",
+            "slot": "",
+            "origin_label": "本地导入",
+            "has_draft": False,
+            "has_image": True,
+        },
+        {
+            "asset_id": "asset_c",
+            "kind": "none",
+            "kind_label": "无法辨认",
+            "name": "",
+            "description": "",
+            "slot": "",
+            "origin_label": "分享文本",
+            "has_draft": True,
+            "has_image": False,
+        },
+    ]
+
+    IMAGE_RESPONSE = {"success": True, "data": {"data_url": "data:image/png;base64,AAA"}}
+
+    def _drafts_response(self, rows=None):
+        listed = list(self.DRAFT_ROWS if rows is None else rows)
+        return {"success": True, "data": {"drafts": listed, "count": len(listed)}}
+
+    def _item_apply_response(self, **row_overrides):
+        row = {
+            "id": "wardrobe_item_x",
+            "name": "米白碎花连衣裙",
+            "description": "米白底小碎花，收腰",
+            "slot": "whole",
+            "tags": ["外出"],
+            "asset_ids": ["asset_a"],
+            "ownership": "owned",
+            "precision": "exact",
+            "source_kind": "image",
+            "created_at": 1700000001.0,
+        }
+        row.update(row_overrides)
+        return {
+            "success": True,
+            "data": {
+                "asset_id": "asset_a",
+                "ok": True,
+                "kind": "item",
+                "name": row["name"],
+                "replaced": False,
+                "row": row,
+            },
+        }
+
+    # --- 整套 ---
+
+    def test_outfits_hydrate_and_serialize_through_the_hidden_input(self) -> None:
+        out = self._run(
+            {"wardrobe_items": [], "wardrobe_outfits": self.OUTFITS},
+            {},
+            """
+report.outfits = mod.wardrobeOutfitsForTest();
+report.serialized = JSON.parse(built.els["[data-wardrobe-outfits-input]"].value || "[]");
+report.counter = built.els["[data-wardrobe-outfit-count]"].textContent;
+report.metas = built.els["[data-wardrobe-outfit-list]"].children.map((row) => row.children[0].children.map((c) => c.textContent).join("|"));
+report.ids = built.els["[data-wardrobe-outfit-list]"].children.map((row) => row.dataset.wardrobeOutfitId);
+""",
+        )
+        self.assertEqual(2, len(out["outfits"]), "空整套必须在面板侧被清理")
+        self.assertEqual("bundle", out["outfits"][0]["kind"])
+        self.assertEqual("2 / 30", out["counter"])
+        self.assertEqual(2, len(out["serialized"]))
+        # 面板不改的字段必须原样带回，否则保存一次就会把素材关联洗掉。
+        self.assertEqual(["asset_src"], out["serialized"][0]["asset_ids"])
+        self.assertEqual(1700000000.0, out["serialized"][0]["created_at"])
+        self.assertTrue(any("参考" in meta for meta in out["metas"]))
+        self.assertTrue(any("引用 1 件散件" in meta for meta in out["metas"]))
+        self.assertEqual("outfit_a", out["ids"][0])
+
+    def test_outfits_fall_back_to_the_form_draft_when_settings_lack_the_key(self) -> None:
+        draft = json.dumps([{"name": "黑色长风衣套装", "kind": "style", "style": "厚"}], ensure_ascii=False)
+        out = self._run(
+            {"wardrobe_items": []},
+            {},
+            """
+report.serialized = JSON.parse(built.els["[data-wardrobe-outfits-input]"].value || "[]");
+""",
+            seeds={"[data-wardrobe-outfits-input]": draft},
+        )
+        self.assertEqual(1, len(out["serialized"]))
+        self.assertEqual("黑色长风衣套装", out["serialized"][0]["name"])
+
+    def test_outfits_ignore_a_placeholder_form_value(self) -> None:
+        out = self._run(
+            {"wardrobe_items": [], "wardrobe_outfits": []},
+            {},
+            """
+report.serialized = JSON.parse(built.els["[data-wardrobe-outfits-input]"].value || "[]");
+""",
+            seeds={"[data-wardrobe-outfits-input]": "[object Object]"},
+        )
+        self.assertEqual([], out["serialized"])
+
+    def test_add_outfit_writes_into_the_hidden_input(self) -> None:
+        out = self._run(
+            {"wardrobe_items": [], "wardrobe_outfits": self.OUTFITS},
+            {},
+            """
+built.els["[data-wardrobe-outfit-name]"].value = "夏日连衣裙";
+built.els["[data-wardrobe-outfit-style]"].value = "浅蓝碎花，及膝";
+built.els["[data-wardrobe-outfit-ownership]"].value = "reference";
+built.els["[data-wardrobe-outfit-manager]"].dispatch("click", { target: built.els["[data-wardrobe-outfit-add]"] });
+report.serialized = JSON.parse(built.els["[data-wardrobe-outfits-input]"].value || "[]");
+report.status = built.els["[data-wardrobe-outfit-status]"].textContent;
+report.nameCleared = built.els["[data-wardrobe-outfit-name]"].value;
+""",
+        )
+        self.assertEqual(3, len(out["serialized"]))
+        added = out["serialized"][-1]
+        self.assertEqual("夏日连衣裙", added["name"])
+        self.assertEqual("浅蓝碎花，及膝", added["style"])
+        self.assertEqual("style", added["kind"], "手填的整套没有散件，后端会把它当风格整套")
+        self.assertEqual("reference", added["ownership"])
+        self.assertIn("已加入", out["status"])
+        self.assertEqual("", out["nameCleared"])
+
+    def test_add_outfit_without_a_name_is_refused(self) -> None:
+        out = self._run(
+            {"wardrobe_items": [], "wardrobe_outfits": self.OUTFITS},
+            {},
+            """
+built.els["[data-wardrobe-outfit-manager]"].dispatch("click", { target: built.els["[data-wardrobe-outfit-add]"] });
+report.serialized = JSON.parse(built.els["[data-wardrobe-outfits-input]"].value || "[]");
+report.status = built.els["[data-wardrobe-outfit-status]"].textContent;
+report.tone = built.els["[data-wardrobe-outfit-status]"].dataset.tone;
+""",
+        )
+        self.assertEqual(2, len(out["serialized"]))
+        self.assertIn("请先填写", out["status"])
+        self.assertEqual("error", out["tone"])
+
+    def test_remove_outfit_updates_the_hidden_input(self) -> None:
+        out = self._run(
+            {"wardrobe_items": [], "wardrobe_outfits": self.OUTFITS},
+            {},
+            """
+const remove = findByKeyValue(built.els["[data-wardrobe-outfit-list]"], "wardrobeOutfitRemove", "outfit_a");
+built.els["[data-wardrobe-outfit-manager]"].dispatch("click", { target: remove });
+report.serialized = JSON.parse(built.els["[data-wardrobe-outfits-input]"].value || "[]");
+report.status = built.els["[data-wardrobe-outfit-status]"].textContent;
+""",
+        )
+        self.assertEqual(["博主叠穿"], [row["name"] for row in out["serialized"]])
+        self.assertIn("已移除", out["status"])
+
+    # --- 草稿队列 ---
+
+    def test_draft_queue_renders_rows_with_labels(self) -> None:
+        out = self._run(
+            {"wardrobe_items": [], "wardrobe_outfits": []},
+            {"/wardrobe/drafts": self._drafts_response()},
+            """
+report.count = built.els["[data-wardrobe-drafts-count]"].textContent;
+report.rows = findAllByKey(built.els["[data-wardrobe-draft-list]"], "wardrobeDraftId").map((row) => row.dataset.wardrobeDraftId);
+report.metas = findAllByKey(built.els["[data-wardrobe-draft-list]"], "wardrobeDraftId").map((row) => row.children[1].children[0].textContent);
+report.readyDisabled = findByKeyValue(built.els["[data-wardrobe-draft-list]"], "wardrobeDraftApply", "asset_a").disabled;
+report.pendingDisabled = findByKeyValue(built.els["[data-wardrobe-draft-list]"], "wardrobeDraftApply", "asset_b").disabled;
+report.noneDisabled = findByKeyValue(built.els["[data-wardrobe-draft-list]"], "wardrobeDraftApply", "asset_c").disabled;
+report.thumbs = findAllByKey(built.els["[data-wardrobe-draft-list]"], "wardrobeDraftThumb").length;
+report.nameValue = findByKeyValue(built.els["[data-wardrobe-draft-list]"], "wardrobeDraftName", "asset_a").value;
+report.slotOptions = findByKeyValue(built.els["[data-wardrobe-draft-list]"], "wardrobeDraftSlot", "asset_a").children.map((option) => option.value);
+report.slotSelected = findByKeyValue(built.els["[data-wardrobe-draft-list]"], "wardrobeDraftSlot", "asset_a").children.filter((option) => option.selected).map((option) => option.value);
+report.calls = built.calls.map((call) => call.path);
+""",
+        )
+        self.assertEqual("3", out["count"])
+        self.assertEqual(["asset_a", "asset_b", "asset_c"], out["rows"])
+        self.assertIn("asset_a · 散件 · 来自博主参考", out["metas"])
+        self.assertFalse(out["readyDisabled"])
+        self.assertTrue(out["pendingDisabled"], "等识图的素材不该能确认")
+        self.assertTrue(out["noneDisabled"], "识图判定无法辨认的素材不该能确认")
+        self.assertEqual(0, out["thumbs"], "折叠时不拉缩略图")
+        self.assertEqual("碎花连衣裙", out["nameValue"])
+        self.assertEqual(["", "upper", "lower", "whole", "feet", "extra"], out["slotOptions"])
+        self.assertEqual(["whole"], out["slotSelected"])
+        self.assertEqual(["/wardrobe/drafts"], out["calls"])
+
+    def test_draft_queue_loads_thumbnails_only_when_expanded(self) -> None:
+        out = self._run(
+            {"wardrobe_items": [], "wardrobe_outfits": []},
+            {
+                "/wardrobe/drafts": self._drafts_response(),
+                "/wardrobe/asset-image": self.IMAGE_RESPONSE,
+            },
+            """
+built.els["[data-wardrobe-drafts]"].open = true;
+built.els["[data-wardrobe-drafts]"].dispatch("toggle", {});
+await settle();
+const thumbs = findAllByKey(built.els["[data-wardrobe-draft-list]"], "wardrobeDraftThumb");
+report.thumbs = thumbs.length;
+report.loaded = thumbs.filter((image) => image.hidden === false).length;
+report.sources = thumbs.map((image) => image.src);
+report.calls = built.calls.map((call) => call.path);
+""",
+        )
+        self.assertEqual(2, out["thumbs"], "只有带图的素材需要缩略图")
+        self.assertEqual(2, out["loaded"])
+        self.assertTrue(all(source.startswith("data:image/png") for source in out["sources"]))
+        self.assertIn("/wardrobe/asset-image", out["calls"])
+
+    def test_refresh_reports_endpoint_failures(self) -> None:
+        out = self._run(
+            {"wardrobe_items": [], "wardrobe_outfits": []},
+            {"/wardrobe/drafts": {"__error__": "读取草稿队列失败，请稍后再试"}},
+            """
+built.els["[data-wardrobe-drafts]"].dispatch("click", { target: built.els["[data-wardrobe-drafts-refresh]"] });
+await settle();
+report.status = built.els["[data-wardrobe-drafts-status]"].textContent;
+report.tone = built.els["[data-wardrobe-drafts-status]"].dataset.tone;
+report.count = built.els["[data-wardrobe-drafts-count]"].textContent;
+""",
+        )
+        self.assertIn("读取草稿队列失败", out["status"])
+        self.assertEqual("error", out["tone"])
+
+    def test_confirm_draft_sends_in_place_overrides_and_merges_the_row(self) -> None:
+        out = self._run(
+            {"wardrobe_items": [], "wardrobe_outfits": []},
+            {
+                "/wardrobe/drafts": self._drafts_response(),
+                "/wardrobe/draft-apply": self._item_apply_response(),
+                "/wardrobe/asset-image": self.IMAGE_RESPONSE,
+            },
+            """
+const row = findByKeyValue(built.els["[data-wardrobe-draft-list]"], "wardrobeDraftId", "asset_a");
+findByKeyValue(row, "wardrobeDraftName", "asset_a").value = "米白碎花连衣裙";
+findByKeyValue(row, "wardrobeDraftDescription", "asset_a").value = "米白底小碎花，收腰";
+findByKeyValue(row, "wardrobeDraftSlot", "asset_a").value = "lower";
+built.els["[data-wardrobe-drafts]"].dispatch("click", { target: findByKeyValue(row, "wardrobeDraftApply", "asset_a") });
+await settle();
+const applied = built.calls.filter((call) => call.path === "/wardrobe/draft-apply");
+report.applyBody = applied.length ? applied[0].body : null;
+report.calls = built.calls.map((call) => call.path);
+report.items = mod.wardrobeItemsForTest();
+report.itemsSerialized = JSON.parse(built.els["[data-wardrobe-items-input]"].value || "[]");
+report.outfitsSerialized = JSON.parse(built.els["[data-wardrobe-outfits-input]"].value || "[]");
+report.status = built.els["[data-wardrobe-drafts-status]"].textContent;
+""",
+        )
+        self.assertEqual(
+            {
+                "asset_id": "asset_a",
+                "overrides": {
+                    "name": "米白碎花连衣裙",
+                    "description": "米白底小碎花，收腰",
+                    "slot": "lower",
+                },
+            },
+            out["applyBody"],
+        )
+        self.assertEqual(["/wardrobe/drafts", "/wardrobe/draft-apply", "/wardrobe/drafts"], out["calls"])
+        self.assertEqual(1, len(out["itemsSerialized"]))
+        self.assertEqual("米白碎花连衣裙", out["itemsSerialized"][0]["name"])
+        # 后端返回的素材引用必须留在隐藏字段里，否则下一次保存就把图丢了。
+        self.assertEqual(["asset_a"], out["itemsSerialized"][0]["asset_ids"])
+        self.assertEqual([], out["outfitsSerialized"])
+        self.assertIn("已确认", out["status"])
+
+    def test_confirm_draft_merges_an_outfit_into_the_outfit_list(self) -> None:
+        response = {
+            "success": True,
+            "data": {
+                "asset_id": "asset_a",
+                "ok": True,
+                "kind": "outfit",
+                "name": "通勤西装",
+                "replaced": False,
+                "row": {
+                    "id": "outfit_x",
+                    "name": "通勤西装",
+                    "kind": "style",
+                    "style": "米色西装外套配直筒长裤",
+                    "items": [],
+                    "ownership": "owned",
+                    "asset_ids": ["asset_a"],
+                },
+            },
+        }
+        out = self._run(
+            {"wardrobe_items": [], "wardrobe_outfits": []},
+            {
+                "/wardrobe/drafts": self._drafts_response(),
+                "/wardrobe/draft-apply": response,
+                "/wardrobe/asset-image": self.IMAGE_RESPONSE,
+            },
+            """
+const row = findByKeyValue(built.els["[data-wardrobe-draft-list]"], "wardrobeDraftId", "asset_a");
+built.els["[data-wardrobe-drafts]"].dispatch("click", { target: findByKeyValue(row, "wardrobeDraftApply", "asset_a") });
+await settle();
+report.itemsSerialized = JSON.parse(built.els["[data-wardrobe-items-input]"].value || "[]");
+report.outfitsSerialized = JSON.parse(built.els["[data-wardrobe-outfits-input]"].value || "[]");
+report.counter = built.els["[data-wardrobe-outfit-count]"].textContent;
+""",
+        )
+        self.assertEqual([], out["itemsSerialized"])
+        self.assertEqual(1, len(out["outfitsSerialized"]))
+        self.assertEqual("通勤西装", out["outfitsSerialized"][0]["name"])
+        self.assertEqual(["asset_a"], out["outfitsSerialized"][0]["asset_ids"])
+        self.assertEqual("1 / 30", out["counter"])
+
+    def test_confirm_draft_failure_is_reported_and_lists_stay_untouched(self) -> None:
+        out = self._run(
+            {"wardrobe_items": [], "wardrobe_outfits": []},
+            {
+                "/wardrobe/drafts": self._drafts_response(),
+                "/wardrobe/draft-apply": {"__error__": "这条素材已经处理过了，刷新队列看看。"},
+            },
+            """
+const row = findByKeyValue(built.els["[data-wardrobe-draft-list]"], "wardrobeDraftId", "asset_a");
+built.els["[data-wardrobe-drafts]"].dispatch("click", { target: findByKeyValue(row, "wardrobeDraftApply", "asset_a") });
+await settle();
+report.status = built.els["[data-wardrobe-drafts-status]"].textContent;
+report.tone = built.els["[data-wardrobe-drafts-status]"].dataset.tone;
+report.itemsSerialized = JSON.parse(built.els["[data-wardrobe-items-input]"].value || "[]");
+report.calls = built.calls.map((call) => call.path);
+""",
+        )
+        self.assertIn("已经处理过", out["status"])
+        self.assertEqual("error", out["tone"])
+        self.assertEqual([], out["itemsSerialized"])
+        self.assertEqual(["/wardrobe/drafts", "/wardrobe/draft-apply"], out["calls"])
+
+    def test_reject_draft_calls_the_reject_endpoint(self) -> None:
+        out = self._run(
+            {"wardrobe_items": [], "wardrobe_outfits": []},
+            {
+                "/wardrobe/drafts": self._drafts_response(),
+                "/wardrobe/draft-reject": {"success": True, "data": {"asset_id": "asset_a", "ok": True}},
+            },
+            """
+const row = findByKeyValue(built.els["[data-wardrobe-draft-list]"], "wardrobeDraftId", "asset_a");
+built.els["[data-wardrobe-drafts]"].dispatch("click", { target: findByKeyValue(row, "wardrobeDraftReject", "asset_a") });
+await settle();
+const rejected = built.calls.filter((call) => call.path === "/wardrobe/draft-reject");
+report.rejectBody = rejected.length ? rejected[0].body : null;
+report.status = built.els["[data-wardrobe-drafts-status]"].textContent;
+report.calls = built.calls.map((call) => call.path);
+""",
+        )
+        self.assertEqual({"asset_id": "asset_a"}, out["rejectBody"])
+        self.assertIn("已丢弃", out["status"])
+        self.assertEqual(["/wardrobe/drafts", "/wardrobe/draft-reject", "/wardrobe/drafts"], out["calls"])
+
+    def test_apply_all_confirms_ready_drafts_in_order(self) -> None:
+        rows = [dict(self.DRAFT_ROWS[0]), dict(self.DRAFT_ROWS[0], asset_id="asset_d", name="黑色长风衣")]
+        out = self._run(
+            {"wardrobe_items": [], "wardrobe_outfits": []},
+            {
+                "/wardrobe/drafts": self._drafts_response(rows),
+                "/wardrobe/draft-apply": self._item_apply_response(),
+                "/wardrobe/asset-image": self.IMAGE_RESPONSE,
+            },
+            """
+built.els["[data-wardrobe-drafts]"].dispatch("click", { target: built.els["[data-wardrobe-drafts-apply-all]"] });
+await settle(8);
+report.applyIds = built.calls.filter((call) => call.path === "/wardrobe/draft-apply").map((call) => call.body.asset_id);
+report.status = built.els["[data-wardrobe-drafts-status]"].textContent;
+report.tone = built.els["[data-wardrobe-drafts-status]"].dataset.tone;
+report.items = mod.wardrobeItemsForTest().map((row) => row.name);
+""",
+        )
+        self.assertEqual(["asset_a", "asset_d"], out["applyIds"], "必须按队列顺序串行确认")
+        self.assertIn("已确认 2 项", out["status"])
+        self.assertEqual("ok", out["tone"])
+
+    def test_apply_all_skips_rows_without_a_draft(self) -> None:
+        out = self._run(
+            {"wardrobe_items": [], "wardrobe_outfits": []},
+            {"/wardrobe/drafts": self._drafts_response([self.DRAFT_ROWS[1], self.DRAFT_ROWS[2]])},
+            """
+built.els["[data-wardrobe-drafts]"].dispatch("click", { target: built.els["[data-wardrobe-drafts-apply-all]"] });
+await settle();
+report.status = built.els["[data-wardrobe-drafts-status]"].textContent;
+report.tone = built.els["[data-wardrobe-drafts-status]"].dataset.tone;
+report.calls = built.calls.map((call) => call.path);
+""",
+        )
+        self.assertIn("没有可确认的草稿", out["status"])
+        self.assertEqual("error", out["tone"])
+        self.assertEqual(["/wardrobe/drafts"], out["calls"])
+
+# ---------------------------------------------------------------------------
+# Q. 穿衣意图：页面接口
+# ---------------------------------------------------------------------------
+
+
+class WardrobeIntentEndpointTests(unittest.IsolatedAsyncioTestCase):
+    """POST /wardrobe/intent 与 /wardrobe/intent-clear。
+
+    与草稿队列同一套路：直接替换 page_api.request（这两个接口都不需要请求体），
+    用例在缺 Quart 桩的环境里也能真正跑起来。
+    """
+
+    SNAPSHOT = {
+        "instruction": "换上泳衣",
+        "source": "model_tool",
+        "date": "2026-02-11",
+        "created_at": 1770000000.0,
+        "expires_at": 1770043200.0,
+        "outfit_id": "",
+        "outfit_name": "",
+        "items": [{"id": "item_xxx", "name": "分体泳衣上装", "slot": "upper"}],
+    }
+
+    def _api(self, plugin):
+        from astrbot_plugin_private_companion.page_api import PrivateCompanionPageApi
+
+        return PrivateCompanionPageApi(plugin)
+
+    def _request(self, payload=None):
+        import sys
+        from unittest import mock
+
+        from astrbot_plugin_private_companion.page_api import PrivateCompanionPageApi
+
+        namespace = vars(sys.modules[PrivateCompanionPageApi.__module__])
+        return mock.patch.dict(namespace, {"request": _FakePageRequest(payload)})
+
+    def _intent_plugin(self, *, snapshot=None, cleared=False):
+        class _Plugin:
+            def __init__(self) -> None:
+                self.snapshot_calls = 0
+                self.clear_calls = 0
+
+            def _wardrobe_intent_snapshot(self):
+                self.snapshot_calls += 1
+                return dict(snapshot or {})
+
+            def _wardrobe_clear_intent(self):
+                self.clear_calls += 1
+                return cleared
+
+        return _Plugin()
+
+    # --- 读取 ---
+
+    async def test_intent_endpoint_returns_the_snapshot(self) -> None:
+        plugin = self._intent_plugin(snapshot=self.SNAPSHOT)
+        with self._request({}):
+            result = await self._api(plugin).get_wardrobe_intent()
+        self.assertTrue(result["success"])
+        self.assertEqual(self.SNAPSHOT, result["data"]["intent"])
+        self.assertEqual(1, plugin.snapshot_calls)
+
+    async def test_intent_endpoint_reports_an_empty_snapshot(self) -> None:
+        plugin = self._intent_plugin()
+        with self._request({}):
+            result = await self._api(plugin).get_wardrobe_intent()
+        self.assertTrue(result["success"])
+        self.assertEqual({}, result["data"]["intent"])
+
+    async def test_intent_endpoint_does_not_require_a_body(self) -> None:
+        plugin = self._intent_plugin(snapshot=self.SNAPSHOT)
+        for payload in ({}, None, "不是对象"):
+            with self.subTest(payload=payload):
+                with self._request(payload):
+                    result = await self._api(plugin).get_wardrobe_intent()
+                self.assertTrue(result["success"])
+
+    async def test_intent_endpoint_reports_missing_capability(self) -> None:
+        with self._request({}):
+            result = await self._api(SimpleNamespace(data_dir="/tmp")).get_wardrobe_intent()
+        self.assertFalse(result["success"])
+        self.assertIn("不支持穿衣意图", json.dumps(result, ensure_ascii=False))
+
+    async def test_intent_endpoint_survives_a_raising_reader(self) -> None:
+        class _Raising:
+            def _wardrobe_intent_snapshot(self):
+                raise RuntimeError("override exploded")
+
+        with self._request({}):
+            result = await self._api(_Raising()).get_wardrobe_intent()
+        self.assertFalse(result["success"])
+        self.assertIn("读取穿衣意图失败", json.dumps(result, ensure_ascii=False))
+
+    async def test_intent_endpoint_drops_a_non_mapping_snapshot(self) -> None:
+        plugin = self._intent_plugin()
+        plugin._wardrobe_intent_snapshot = lambda: ["不是", "字典"]
+        with self._request({}):
+            result = await self._api(plugin).get_wardrobe_intent()
+        self.assertTrue(result["success"])
+        self.assertEqual({}, result["data"]["intent"])
+
+    # --- 清除 ---
+
+    async def test_intent_clear_reports_true_when_something_was_cleared(self) -> None:
+        plugin = self._intent_plugin(cleared=True)
+        with self._request({}):
+            result = await self._api(plugin).clear_wardrobe_intent()
+        self.assertTrue(result["success"])
+        self.assertIs(True, result["data"]["cleared"])
+        self.assertEqual(1, plugin.clear_calls)
+
+    async def test_intent_clear_reports_false_when_there_was_nothing(self) -> None:
+        plugin = self._intent_plugin(cleared=False)
+        with self._request({}):
+            result = await self._api(plugin).clear_wardrobe_intent()
+        self.assertTrue(result["success"])
+        self.assertIs(False, result["data"]["cleared"])
+        self.assertEqual(1, plugin.clear_calls)
+
+    async def test_intent_clear_reports_missing_capability(self) -> None:
+        with self._request({}):
+            result = await self._api(SimpleNamespace(data_dir="/tmp")).clear_wardrobe_intent()
+        self.assertFalse(result["success"])
+        self.assertIn("不支持穿衣意图", json.dumps(result, ensure_ascii=False))
+
+    async def test_intent_clear_survives_a_raising_clearer(self) -> None:
+        class _Raising:
+            def _wardrobe_clear_intent(self):
+                raise RuntimeError("override exploded")
+
+        with self._request({}):
+            result = await self._api(_Raising()).clear_wardrobe_intent()
+        self.assertFalse(result["success"])
+        self.assertIn("清除穿衣意图失败", json.dumps(result, ensure_ascii=False))
+
+
+# ---------------------------------------------------------------------------
+# R. 面板：今天的穿衣意图
+# ---------------------------------------------------------------------------
+
+
+class WardrobeIntentPanelTests(unittest.TestCase):
+    PANEL_DIRS = ("companion-panel", "陪伴面板")
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.htmls: list[str] = []
+        cls.styles: list[str] = []
+        for name in cls.PANEL_DIRS:
+            base = ROOT / "pages" / name
+            cls.htmls.append((base / "index.html").read_text(encoding="utf-8"))
+            cls.styles.append((base / "app.css").read_text(encoding="utf-8"))
+        cls.module = (ROOT / "pages" / "companion-panel" / "js" / "features" / "wardrobe.js").read_text(
+            encoding="utf-8"
+        )
+
+    def test_panel_copies_stay_byte_identical(self) -> None:
+        for relative in ("index.html", "app.css", "js/features/wardrobe.js"):
+            first = (ROOT / "pages" / "companion-panel" / relative).read_bytes()
+            second = (ROOT / "pages" / "陪伴面板" / relative).read_bytes()
+            self.assertEqual(first, second, relative)
+
+    def test_html_exposes_the_intent_block(self) -> None:
+        for html in self.htmls:
+            self.assertIn('<details class="wardrobe-intent" data-wardrobe-intent>', html)
+            self.assertIn("data-wardrobe-intent-count", html)
+            self.assertIn("data-wardrobe-intent-detail", html)
+            self.assertIn("data-wardrobe-intent-refresh", html)
+            self.assertIn("data-wardrobe-intent-clear", html)
+            # 两块状态文案都要能读屏：状态 span 必须带 aria-live。
+            self.assertIn("data-wardrobe-intent-status", html)
+            self.assertIn('data-wardrobe-intent-status aria-live="polite"', html)
+            # 两个按钮各带一个 aria-live 状态区（读取与清除的消息互不覆盖）。
+            self.assertIn('data-wardrobe-intent-status aria-live="polite"', html)
+            self.assertIn('data-wardrobe-intent-clear-status aria-live="polite"', html)
+            # 展开前就写明状态：badge 未读取、清除按钮不可点。
+            self.assertIn("data-wardrobe-intent-count>未读取</span>", html)
+            self.assertIn("data-wardrobe-intent-clear disabled", html)
+
+    def test_intent_block_sits_between_outfits_and_drafts(self) -> None:
+        for html in self.htmls:
+            outfits = html.index("data-wardrobe-outfit-manager")
+            intent = html.index("data-wardrobe-intent")
+            drafts = html.index('class="wardrobe-drafts"')
+            self.assertLess(outfits, intent)
+            self.assertLess(intent, drafts)
+
+    def test_cache_buster_is_bumped(self) -> None:
+        for html in self.htmls:
+            self.assertIn("js/features/wardrobe.js?v=20260910-wardrobe-v3", html)
+            self.assertNotIn("wardrobe-v2", html)
+
+    def test_module_only_calls_registered_endpoints(self) -> None:
+        api = (ROOT / "page_api.py").read_text(encoding="utf-8")
+        for route in ("/wardrobe/intent", "/wardrobe/intent-clear"):
+            self.assertIn('postJson("%s"' % route, self.module, route)
+            self.assertIn('("%s"' % route, api, route)
+
+    def test_module_renders_intent_without_inner_html(self) -> None:
+        # 既有面板一律 textContent + createElement，意图块不能破例。
+        self.assertNotIn("innerHTML", self.module)
+        for selector in (
+            "[data-wardrobe-intent]",
+            "[data-wardrobe-intent-count]",
+            "[data-wardrobe-intent-detail]",
+            "[data-wardrobe-intent-status]",
+        ):
+            self.assertIn(selector, self.module, selector)
+
+    def test_intent_refreshes_only_while_expanded(self) -> None:
+        self.assertIn('querySelector("[data-wardrobe-intent]")?.open === true', self.module)
+        self.assertIn("if (root.open) void refreshIntent(context);", self.module)
+
+    def test_styles_cover_the_appended_intent_classes(self) -> None:
+        for style in self.styles:
+            for selector in (
+                ".wardrobe-intent {",
+                ".wardrobe-intent > summary {",
+                ".wardrobe-intent-count {",
+                ".wardrobe-intent-body {",
+                ".wardrobe-intent-actions {",
+                ".wardrobe-intent-action {",
+                ".wardrobe-intent-detail {",
+                ".wardrobe-intent-note {",
+                ".wardrobe-intent-meta {",
+                ".wardrobe-intent-items {",
+                ".wardrobe-intent-item {",
+            ):
+                self.assertIn(selector, style, selector)
+
+
+class WardrobeIntentPanelRuntimeTests(unittest.TestCase):
+    """用 Node 实际执行面板模块，验证意图块的读取、清除与状态文案。"""
+
+    MODULE = ROOT / "pages" / "陪伴面板" / "js" / "features" / "wardrobe.js"
+    _HARNESS = WardrobeOutfitDraftPanelRuntimeTests._HARNESS
+    _run = WardrobeOutfitDraftPanelRuntimeTests._run
+
+    SNAPSHOT = {
+        "instruction": "换上泳衣",
+        "source": "model_tool",
+        "date": "2026-02-11",
+        "created_at": 1770000000.0,
+        "expires_at": 1770043200.0,
+        "outfit_id": "",
+        "outfit_name": "",
+        "items": [
+            {"id": "item_xxx", "name": "分体泳衣上装", "slot": "upper"},
+            {"id": "item_yyy", "name": "沙滩短裤", "slot": "lower"},
+        ],
+    }
+
+    _COLLECT = """
+function allText(node) {
+  let out = node.textContent || "";
+  (node.children || []).forEach((child) => { out += allText(child); });
+  return out;
+}
+"""
+
+    def _intent_response(self, snapshot=None):
+        return {"success": True, "data": {"intent": snapshot if snapshot is not None else self.SNAPSHOT}}
+
+    def test_hydration_does_not_fetch_while_collapsed(self) -> None:
+        out = self._run(
+            {"wardrobe_items": [], "wardrobe_outfits": []},
+            {"/wardrobe/intent": self._intent_response()},
+            """
+report.calls = built.calls.map((call) => call.path);
+""",
+        )
+        self.assertEqual(["/wardrobe/drafts"], out["calls"], "没展开就不该发意图请求")
+
+    def test_toggle_renders_the_intent(self) -> None:
+        out = self._run(
+            {"wardrobe_items": [], "wardrobe_outfits": []},
+            {"/wardrobe/intent": self._intent_response()},
+            self._COLLECT
+            + """
+const root = built.els["[data-wardrobe-intent]"];
+root.open = true;
+root.dispatch("toggle", {});
+await settle();
+report.badge = built.els["[data-wardrobe-intent-count]"].textContent;
+report.status = built.els["[data-wardrobe-intent-status]"].textContent;
+report.tone = built.els["[data-wardrobe-intent-status]"].dataset.tone;
+report.text = allText(built.els["[data-wardrobe-intent-detail]"]);
+report.clearDisabled = built.els["[data-wardrobe-intent-clear]"].disabled;
+report.calls = built.calls.map((call) => call.path);
+""",
+        )
+        self.assertEqual(["有 · 模型记录"], [out["badge"]])
+        self.assertIn("换上泳衣", out["text"])
+        self.assertIn("分体泳衣上装 · 上身", out["text"])
+        self.assertIn("沙滩短裤 · 下身", out["text"])
+        self.assertIn("模型记录", out["text"])
+        self.assertRegex(out["text"], r"\d{2}:\d{2}")
+        self.assertFalse(out["clearDisabled"])
+        self.assertEqual("ok", out["tone"])
+        # 衣柜本身在 hydrate 时拉一次草稿队列；意图只多了一次自己的读取。
+        self.assertEqual(["/wardrobe/drafts", "/wardrobe/intent"], out["calls"])
+
+    def test_toggle_without_an_intent_disables_the_clear_button(self) -> None:
+        out = self._run(
+            {"wardrobe_items": [], "wardrobe_outfits": []},
+            {"/wardrobe/intent": self._intent_response({})},
+            self._COLLECT
+            + """
+const root = built.els["[data-wardrobe-intent]"];
+root.open = true;
+root.dispatch("toggle", {});
+await settle();
+report.badge = built.els["[data-wardrobe-intent-count]"].textContent;
+report.text = allText(built.els["[data-wardrobe-intent-detail]"]);
+report.clearDisabled = built.els["[data-wardrobe-intent-clear]"].disabled;
+""",
+        )
+        self.assertEqual("无", out["badge"])
+        self.assertIn("当前没有额外指定，按当天轮换着装", out["text"])
+        self.assertTrue(out["clearDisabled"])
+
+    def test_refresh_button_fetches_again(self) -> None:
+        out = self._run(
+            {"wardrobe_items": [], "wardrobe_outfits": []},
+            {"/wardrobe/intent": self._intent_response()},
+            self._COLLECT
+            + """
+const root = built.els["[data-wardrobe-intent]"];
+root.open = true;
+root.dispatch("toggle", {});
+await settle();
+root.dispatch("click", { target: built.els["[data-wardrobe-intent-refresh]"] });
+await settle();
+report.badge = built.els["[data-wardrobe-intent-count]"].textContent;
+report.calls = built.calls.map((call) => call.path);
+""",
+        )
+        self.assertEqual("有 · 模型记录", out["badge"])
+        self.assertEqual(["/wardrobe/drafts", "/wardrobe/intent", "/wardrobe/intent"], out["calls"])
+
+    def test_clear_refreshes_the_block_and_reports_success(self) -> None:
+        out = self._run(
+            {"wardrobe_items": [], "wardrobe_outfits": []},
+            {
+                "/wardrobe/intent": self._intent_response(),
+                "/wardrobe/intent-clear": {"success": True, "data": {"cleared": True}},
+            },
+            self._COLLECT
+            + """
+const root = built.els["[data-wardrobe-intent]"];
+root.open = true;
+root.dispatch("toggle", {});
+await settle();
+root.dispatch("click", { target: built.els["[data-wardrobe-intent-clear]"] });
+await settle();
+report.status = built.els["[data-wardrobe-intent-clear-status]"].textContent;
+report.tone = built.els["[data-wardrobe-intent-clear-status]"].dataset.tone;
+report.readStatus = built.els["[data-wardrobe-intent-status]"].textContent;
+report.clearBody = built.calls.filter((call) => call.path === "/wardrobe/intent-clear").map((call) => call.body);
+report.calls = built.calls.map((call) => call.path);
+""",
+        )
+        self.assertIn("已清除", out["status"])
+        self.assertEqual("ok", out["tone"])
+        # 快照已经变了，读取区的旧文案不能再留着。
+        self.assertEqual("", out["readStatus"])
+        self.assertEqual([{}], out["clearBody"])
+        # 清除后必须重读一次快照（badge 与列表都跟着快照走）。
+        self.assertEqual(
+            ["/wardrobe/drafts", "/wardrobe/intent", "/wardrobe/intent-clear", "/wardrobe/intent"],
+            out["calls"],
+        )
+
+    def test_clear_reports_nothing_to_clear(self) -> None:
+        out = self._run(
+            {"wardrobe_items": [], "wardrobe_outfits": []},
+            {
+                "/wardrobe/intent": self._intent_response(),
+                "/wardrobe/intent-clear": {"success": True, "data": {"cleared": False}},
+            },
+            """
+const root = built.els["[data-wardrobe-intent]"];
+root.open = true;
+root.dispatch("toggle", {});
+await settle();
+root.dispatch("click", { target: built.els["[data-wardrobe-intent-clear]"] });
+await settle();
+report.status = built.els["[data-wardrobe-intent-clear-status]"].textContent;
+""",
+        )
+        self.assertIn("本来就没有穿衣意图", out["status"])
+
+    def test_backend_error_text_lands_in_the_status_span(self) -> None:
+        out = self._run(
+            {"wardrobe_items": [], "wardrobe_outfits": []},
+            {
+                "/wardrobe/intent": self._intent_response(),
+                "/wardrobe/intent-clear": {"__error__": "当前插件实例不支持穿衣意图"},
+            },
+            """
+const root = built.els["[data-wardrobe-intent]"];
+root.open = true;
+root.dispatch("toggle", {});
+await settle();
+root.dispatch("click", { target: built.els["[data-wardrobe-intent-clear]"] });
+await settle();
+report.status = built.els["[data-wardrobe-intent-clear-status]"].textContent;
+report.tone = built.els["[data-wardrobe-intent-clear-status]"].dataset.tone;
+""",
+        )
+        self.assertEqual("当前插件实例不支持穿衣意图", out["status"])
+        self.assertEqual("error", out["tone"])

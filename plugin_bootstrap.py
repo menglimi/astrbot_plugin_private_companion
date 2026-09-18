@@ -1453,6 +1453,11 @@ def _initialize_photo_and_expression_config(self: Any, c: Any) -> None:
     self.wardrobe_outfits = normalize_wardrobe_outfits(
         self._cfg_raw(c, "wardrobe_outfits", [])
     )
+    # 这两个键此前只进了 schema 与面板白名单，没有落成实例属性。单人格（默认）下
+    # get_persona_setting 取不到属性就直接返回调用方默认值 —— 症状是「面板点保存当场
+    # 生效，重启后静默失效」，衣柜接管与渐进披露都不会真正启用。
+    self.wardrobe_injection_detail = self._cfg_str(c, "wardrobe_injection_detail", "full")
+    self.wardrobe_photo_source = self._cfg_str(c, "wardrobe_photo_source", "builtin")
     self.enable_natural_language_photo_generation = self._cfg_bool(c, "enable_natural_language_photo_generation", False)
     self.natural_language_photo_generation_mode = self._cfg_str(
         c,

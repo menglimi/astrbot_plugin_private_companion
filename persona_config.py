@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping
 
 
-PERSONA_SETTINGS_SCHEMA_VERSION = 8
+PERSONA_SETTINGS_SCHEMA_VERSION = 9
 PERSONA_CONFIG_SCHEMA_VERSION = PERSONA_SETTINGS_SCHEMA_VERSION
 SCOPE_MANIFEST_VERSION = 1
 PERSONA_SETTINGS_KEY = "persona_settings"
@@ -50,6 +50,12 @@ PERSONA_SETTINGS_NEW_KEYS_BY_VERSION: dict[int, tuple[str, ...]] = {
         "enable_wardrobe_outfit_generate",
         "WARDROBE_OUTFIT_PROVIDER_ID",
         "wardrobe_outfits",
+    ),
+    # 衣柜接管与渐进披露：与 v6/v7/v8 一样，新键要在升版时给已存在的人格物化默认值，
+    # 否则副人格只会「跟随主人格」，面板上也看不到自己的这一项。
+    9: (
+        "wardrobe_injection_detail",
+        "wardrobe_photo_source",
     ),
 }
 

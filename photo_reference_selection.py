@@ -120,10 +120,35 @@ def _category_mentions(text: str, vocabulary: Mapping[str, tuple[str, ...]]) -> 
     return included, excluded
 
 
+_OUTFIT_CLAUSE_FIELD = (
+    r"(?:上装|外搭|下装|配饰|配色|轮廓|鞋履|鞋子|"
+    r"top|outer|bottom|accessory|palette|silhouette|footwear)"
+)
+# 「当天基础穿搭：上装:…；下装:…」说的是**穿什么**，不是**在哪**。作者原本的候选表是
+# 纯英文（"crisp white shirt with a navy knit vest"），永远撞不上场景词表；衣柜接管后
+# 衣物名是中文，「黑色运动紧身裤」「居家拖鞋」会把场景误判成 sport/home，把「今日穿搭
+# 参考图」挤掉换成无关的场景图库图。所以解析场景前先把这段摘掉。
+_DAILY_OUTFIT_CLAUSE = re.compile(
+    r"(?:今日穿搭|当天基础穿搭|当天穿搭|日常穿搭|today'?s outfit|daily outfit)\s*[：:]\s*"
+    + _OUTFIT_CLAUSE_FIELD
+    + r"\s*[:：][^；;]*"
+    + r"(?:\s*[；;]\s*" + _OUTFIT_CLAUSE_FIELD + r"\s*[:：][^；;]*)*",
+    re.I,
+)
+
+
+def strip_daily_outfit_clause(text: Any) -> str:
+    """Drop the 「当天基础穿搭：…」段 before mining scene categories."""
+
+    return _DAILY_OUTFIT_CLAUSE.sub(" ", str(text or ""))
+
+
 def parse_photo_reference_context_categories(text: str) -> tuple[set[str], set[str], set[str], set[str]]:
     """Return requested scenes/times and explicitly negated scenes/times."""
-    scenes, excluded_scenes = _category_mentions(text, _SCENE_CATEGORY_TOKENS)
-    times, excluded_times = _category_mentions(text, _TIME_CATEGORY_TOKENS)
+    # 场景类别只认地点/日程/时间：衣物名先摘掉再扫词表。
+    scene_text = strip_daily_outfit_clause(text)
+    scenes, excluded_scenes = _category_mentions(scene_text, _SCENE_CATEGORY_TOKENS)
+    times, excluded_times = _category_mentions(scene_text, _TIME_CATEGORY_TOKENS)
     return scenes, times, excluded_scenes, excluded_times
 
 

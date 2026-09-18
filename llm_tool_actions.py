@@ -2172,6 +2172,8 @@ class LlmToolActionsMixin:
             "pc_get_user_id_by_name",
             "pc_query_relation_person",
             "pc_get_specified_group_members",
+            "pc_query_wardrobe_detail",
+            "pc_set_outfit_intent",
             "pc_query_interaction",
             "pc_relay_message",
             "pc_send_to_group",

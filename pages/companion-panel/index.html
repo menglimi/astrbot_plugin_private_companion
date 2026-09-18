@@ -96,7 +96,7 @@
       to { opacity: 1; transform: scaleX(1); transform-origin: left; }
     }
   </style>
-  <link rel="stylesheet" href="./app.css?v=20260809-external-ability-controls-v3&amp;build=20260810-reference-upload-v1&amp;touch=reality-redesign-rt2-v4&amp;migration-notice=v2&amp;component-order=v1&amp;layout=model-routing-v2&amp;directory-nav=v2&amp;terminal=plugin-check-v1&amp;diagnostic-layout=v2&amp;prompts=task-editor-v1&amp;release=6.4.4f&amp;outfit-preview-layering=v1&amp;panel=20260913-rollback-v1" />
+  <link rel="stylesheet" href="./app.css?v=20260809-external-ability-controls-v3&amp;build=20260810-reference-upload-v1&amp;touch=reality-redesign-rt2-v4&amp;migration-notice=v2&amp;component-order=v1&amp;layout=model-routing-v2&amp;directory-nav=v2&amp;terminal=plugin-check-v1&amp;diagnostic-layout=v2&amp;prompts=task-editor-v1&amp;release=6.4.4f&amp;outfit-preview-layering=v1&amp;panel=20260913-rollback-v1&amp;wardrobe=v1" />
   <!-- Keep the structured roleplay form readable while a WebUI asset is being refreshed. -->
   <style id="roleplay-layout-fallback">
     .roleplay-form,
@@ -606,6 +606,68 @@
                 </div>
                 <input type="hidden" name="wardrobe_items" data-wardrobe-items-input value="[]" />
               </div>
+              <div class="wardrobe-manager wardrobe-outfits" data-wardrobe-outfit-manager>
+                <div class="wardrobe-manager-head">
+                  <h4>整套</h4>
+                  <span data-wardrobe-outfit-count>0 / 30</span>
+                </div>
+                <p class="wardrobe-note">整套是「这一身怎么搭」：风格整套只有一段描述，组合整套还会引用若干散件。参考整套只影响风格，不会被当成能穿的衣服。</p>
+                <div class="wardrobe-outfit-list" data-wardrobe-outfit-list></div>
+                <div class="wardrobe-add wardrobe-outfit-add">
+                  <label>整套名称
+                    <input type="text" data-wardrobe-outfit-name maxlength="40" placeholder="例如：通勤西装三件套" />
+                  </label>
+                  <label>风格描述
+                    <textarea data-wardrobe-outfit-style rows="2" maxlength="300" placeholder="例如：米色西装外套配直筒长裤，利落通勤。"></textarea>
+                  </label>
+                  <div class="wardrobe-outfit-fields">
+                    <label>归属
+                      <select data-wardrobe-outfit-ownership>
+                        <option value="owned">自有（会穿在身上）</option>
+                        <option value="reference">参考（只影响风格）</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div class="wardrobe-add-actions">
+                    <button type="button" class="secondary-button" data-wardrobe-outfit-add>添加整套</button>
+                    <span class="wardrobe-status" data-wardrobe-outfit-status aria-live="polite"></span>
+                  </div>
+                </div>
+                <input type="hidden" name="wardrobe_outfits" data-wardrobe-outfits-input value="[]" />
+              </div>
+              <details class="wardrobe-intent" data-wardrobe-intent>
+                <summary>
+                  <span><b>今天的穿衣意图</b><small>本会话临时指定的着装，优先于当天轮换。</small></span>
+                  <span class="wardrobe-intent-count" data-wardrobe-intent-count>未读取</span>
+                </summary>
+                <div class="wardrobe-intent-body">
+                  <div class="wardrobe-intent-actions">
+                    <div class="wardrobe-intent-action">
+                      <button type="button" class="secondary-button" data-wardrobe-intent-refresh>刷新</button>
+                      <span class="wardrobe-status" data-wardrobe-intent-status aria-live="polite"></span>
+                    </div>
+                    <div class="wardrobe-intent-action">
+                      <button type="button" class="secondary-button" data-wardrobe-intent-clear disabled>清除意图</button>
+                      <span class="wardrobe-status" data-wardrobe-intent-clear-status aria-live="polite"></span>
+                    </div>
+                  </div>
+                  <div class="wardrobe-intent-detail" data-wardrobe-intent-detail></div>
+                </div>
+              </details>
+              <details class="wardrobe-drafts" data-wardrobe-drafts>
+                <summary>
+                  <span><b>草稿队列</b><small>批量导入与识图只写草稿；确认才落库，丢弃只标记素材。</small></span>
+                  <span class="wardrobe-drafts-count" data-wardrobe-drafts-count>0</span>
+                </summary>
+                <div class="wardrobe-drafts-body">
+                  <div class="wardrobe-drafts-actions">
+                    <button type="button" class="secondary-button" data-wardrobe-drafts-refresh>刷新队列</button>
+                    <button type="button" class="secondary-button" data-wardrobe-drafts-apply-all>全部确认</button>
+                    <span class="wardrobe-status" data-wardrobe-drafts-status aria-live="polite"></span>
+                  </div>
+                  <div class="wardrobe-draft-list" data-wardrobe-draft-list></div>
+                </div>
+              </details>
               <details class="wardrobe-vision-settings" data-wardrobe-vision-settings>
                 <summary>
                   <span><b>识图设置</b><small>在这里调整衣柜识图使用的模型和描述提示词。</small></span>
@@ -628,7 +690,7 @@
                     <span class="wardrobe-status" data-wardrobe-prompt-status aria-live="polite"></span>
                   </div>
                   <small class="wardrobe-vision-hint">
-                    自定义时建议保留「名称：／描述：／标签：」三行格式，面板才能自动回填这三项；不按该格式输出时，整段文字会作为衣物描述。
+                    自定义时建议保留「类型：」开头与「名称：／描述：／部位：／标签：」四行格式，面板才能自动回填这几项并区分整套与参考；不按该格式输出时，整段文字会作为衣物描述。
                   </small>
                 </div>
               </details>
@@ -637,6 +699,18 @@
                   <select name="wardrobe_outfit_mode">
                     <option value="select">只注入当天裁决出的那一套</option>
                     <option value="inventory">注入整份衣柜清单</option>
+                  </select>
+                </label>
+                <label>着装描述详略
+                  <select name="wardrobe_injection_detail">
+                    <option value="full">每轮注入完整着装</option>
+                    <option value="progressive">常驻一行，问到才展开</option>
+                  </select>
+                </label>
+                <label>每日穿搭照片的衣物来源
+                  <select name="wardrobe_photo_source">
+                    <option value="builtin">用插件内置的每日穿搭（默认）</option>
+                    <option value="wardrobe">跟随衣柜（当天裁决出的那一套）</option>
                   </select>
                 </label>
                 <label>着装轮换冷却天数
@@ -2388,7 +2462,7 @@ QQ空间 = 公开札记
   </div>
 
   <script src="./js/features/daily-outfit.js?v=20260711-qzone-preview-context"></script>
-  <script src="./js/features/wardrobe.js?v=20260910-wardrobe-v1"></script>
+  <script src="./js/features/wardrobe.js?v=20260910-wardrobe-v3"></script>
   <script src="./js/ui/appearance.js?v=20260713-font-options"></script>
   <!-- Loaded on demand by app.js through AstrBot's relative dynamic-import rewriting:
        ./js/panels/provider-tree.js?v=20260804-reading-archive-capability-v1&amp;manual=provider-input-v2&amp;layout=v2&amp;vision-state=v1

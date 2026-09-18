@@ -555,8 +555,20 @@ class PageSettingNormalizerMixin:
             return self._normalize_wardrobe_items(value)
         if key == "wardrobe_outfits":
             return normalize_wardrobe_outfits(value)
+        if key == "wardrobe_photo_source":
+            # 默认不接管：只有明确写了 wardrobe（或「衣柜」）才交给衣柜，
+            # 其余（含空值、拼错、旧的 built-in 写法）一律沿用作者候选表。
+            raw_source = str(value or "").strip().casefold()
+            return "wardrobe" if raw_source in {"wardrobe", "衣柜", "跟随衣柜"} else "builtin"
         if key == "wardrobe_outfit_mode":
-            return "select" if str(value or "").strip().casefold() == "select" else "inventory"
+            # 兜底与 schema / bootstrap 的默认值对齐（都应该是 select）。
+            return "inventory" if str(value or "").strip().casefold() == "inventory" else "select"
+        if key == "wardrobe_injection_detail":
+            return (
+                "progressive"
+                if str(value or "").strip().casefold() == "progressive"
+                else "full"
+            )
         if key == "wardrobe_outfit_rotation_days":
             return self._normalize_wardrobe_int(value, 7, 1, 30)
         if key == "wardrobe_tendency":

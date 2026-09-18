@@ -14410,7 +14410,7 @@
       "wardrobe_image_prompt": {
         "description": "衣柜识图描述提示词",
         "type": "text",
-        "hint": "留空使用内置提示词。自定义时建议保留「名称／描述／标签」三行格式，面板会自动回填这三项；不按该格式输出时，整段文字会作为衣物描述。",
+        "hint": "留空使用内置提示词。自定义时建议保留「类型：」开头与「名称／描述／部位／标签」四行格式，面板会自动回填这几项并区分整套与参考；不按该格式输出时，整段文字会作为衣物描述。",
         "default": "",
         "condition": {
           "enable_wardrobe": true
@@ -14436,6 +14436,29 @@
         "condition": {
           "enable_wardrobe": true,
           "enable_wardrobe_prompt": true
+        }
+      },
+      "wardrobe_injection_detail": {
+        "description": "着装描述详略",
+        "type": "string",
+        "options": ["full", "progressive"],
+        "labels": ["每轮注入完整着装", "常驻一行，问到才展开"],
+        "hint": "full：每轮都注入完整着装描述（原有行为）。progressive：常驻只注入一行「今天穿什么」，用户问到服装时才展开完整描述——省上下文，细节也更集中。",
+        "default": "full",
+        "condition": {
+          "enable_wardrobe": true,
+          "enable_wardrobe_prompt": true
+        }
+      },
+      "wardrobe_photo_source": {
+        "description": "每日穿搭照片的衣着来源",
+        "type": "string",
+        "options": ["builtin", "wardrobe"],
+        "labels": ["沿用插件自带候选表（默认）", "用衣柜裁决的那一套"],
+        "hint": "builtin（默认）：沿用插件原有的场景候选表，升级后行为不变；wardrobe：每日穿搭照片改穿衣柜里裁决出的那一套（含 footwear 等字段），需要主动开启。衣柜为空时自动回落。",
+        "default": "builtin",
+        "condition": {
+          "enable_wardrobe": true
         }
       },
       "wardrobe_outfit_rotation_days": {

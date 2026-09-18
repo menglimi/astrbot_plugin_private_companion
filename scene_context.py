@@ -420,6 +420,9 @@ class SceneContextMixin:
             ("top", "上装"),
             ("outer", "外搭"),
             ("bottom", "下装"),
+            # 鞋子也是当天穿搭的一部分：衣柜接管的投影带 footwear，这里不收就等于
+            # 私聊提示词的「当天基础穿搭」永远不提鞋（与 proactive_message 的字段表对齐）。
+            ("footwear", "鞋履"),
             ("accessory", "配饰"),
             ("palette", "配色"),
             ("silhouette", "轮廓"),

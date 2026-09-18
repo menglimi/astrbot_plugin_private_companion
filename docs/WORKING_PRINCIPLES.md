@@ -115,6 +115,7 @@ PLUGIN_DATA_DIRECTORY_KEY = PLUGIN_ID
 | **主动消息** | `proactive.py`、`proactive_engine.py`、`proactive_message.py`、`proactive_routes.py`、`proactive_chat_runtime_bridge.py` | 候选 9 阶段、调度器、路由注册表、桥接 |
 | **关系** | `relationship_ledger.py`、`relationship_policy.py`、`relationship_affinity_runtime.py`、`relationship_event_policy.py`、`companion_interaction_expression.py` | 阶段 / 互动档位 / 关系网 / 表达决策 |
 | **群聊** | `group_observation.py`、`group_wakeup.py`、`group_member_safety.py`、`group_cycle_boundary.py`、`group_prompt_context.py`、`group_context_interception.py` | 观察 / 唤醒 / 续接 / 插话 / 成员安全 |
+| **衣柜** | `wardrobe.py`、`wardrobe_runtime.py`、`wardrobe_assets.py`、`wardrobe_decision.py`、`wardrobe_style.py`、`wardrobe_photo.py` | 散件 / 整套（风格·组合）/ 素材层 / 决策与装箱 / 参考风格画像 / 每日穿搭生图 |
 | **图片** | `private_image.py`、`image_companion_bridge.py`、`nai_image_bridge.py`、`photo_reference_*.py`、`photo_wardrobe_decision.py`、`photo_prompt_context.py`、`photo_generation_scope.py` | 视觉理解 / 生图 / 参考图 / 服装意图 |
 | **TTS** | `tts_enhancement.py`、`tts_tool_sanitizer.py` | 文本转换 / 链式分段 / Fish Audio / 本机播放 |
 | **梦境 / 日记 / 创作** | `dreaming.py`、`daily_review.py`、`creative.py` | 梦境池 / 日记 / 创作项目生命周期 |
@@ -1391,6 +1392,8 @@ def _can_manage_private_companion(event) -> bool: ...     # main.py L20050 附�
 | 12998 | `pc_get_user_id_by_name` | 13000 | 按用户名查 ID |
 | 13011 | `pc_query_relation_person` | 13013 | 查询关系人 |
 | 13023 | `pc_get_specified_group_members` | 13025 | 查询指定群成员 |
+| 13199 | `pc_query_wardrobe_detail` | 13201 | 按需查看衣柜细节（今天这身 / 某部位 / 整份清单） |
+| 13219 | `pc_set_outfit_intent` | 13221 | 记录「本会话接下来穿什么」（仅主要用户） |
 | 13036 | `pc_query_interaction` | 13038 | 查询互动状态 |
 | 13053 | `pc_relay_message` | 13055 | 中继消息 |
 | 13075 | `pc_send_to_group` | 13077 | 主动发群 |
@@ -1794,6 +1797,14 @@ _ContentStoryModelBudget.max = 8
 - 超限优先调用备用模型，未配置时不阻断请求
 - 多人格模式按人格汇总
 
+
+### 20.17 衣柜子系统 — 6 个文件
+
+分成四层：**数据层**（`wardrobe.py`：散件 / 整套 / 裁决 / 渲染；`wardrobe_assets.py`：内容寻址素材库与草稿队列；`wardrobe_style.py`：参考风格画像）、**决策层**（`wardrobe_decision.py`：纯函数，priority 决定预算不足先丢谁、weight 决定文本里谁更靠下，三趟式装箱）、**运行时层**（`wardrobe_runtime.py`：唯一持有 IO 与宿主交互 —— 注入段落 / 命令 / 识图 / 草稿队列 / 穿衣意图 / 工具按请求同步）、**桥接层**（`wardrobe_photo.py`：把当天裁决投影成照片 profile，只读、失败即回落）。
+
+注入形态四选一：`wardrobe_injection_detail`（full / progressive）× `wardrobe_outfit_mode`（select / inventory）；权威顺序为 **本会话明确换装**（复用作者的 `dialogue_outfit_override`）> 当天裁决 > 轮换兜底。
+离线工具见 `scripts/wardrobe_{import,understand,review,style_profile}.py`。
+
 ---
 
 ## 21. 陪伴面板（`page_api.py`，31 111 行）
@@ -1834,7 +1845,7 @@ class PrivateCompanionPageApi:                                # line 314
 | `/photo_reference/*` `/reference_asset/*` | `page_api.py` | 参考图谱 |
 | `/worldbook/member/reference/*` `/knowledge/reference/*` `/worldbook/*` | `page_api.py` | 知识库 |
 | `/relationship/role/reference/*` | `page_api.py` | 关系角色参考 |
-| `/daily_outfit/*` | `page_api.py` | 每日穿搭 |
+| `/wardrobe/*` | `page_api.py` | 角色衣柜（8 条：识图 / 搭配预览 / 草稿队列 / 素材缩略图 / 穿衣意图） |
 | `/bookshelf/*` | `page_api.py` | 书架 |
 | `/memo/*` | `page_api.py` | 备忘 |
 | `/qzone/*` | `page_api_qzone.py`（532 行, line 17） | QQ 空间操作 |
@@ -2104,6 +2115,14 @@ photo_reference_*.py                             (~5)
 photo_wardrobe_decision.py                       (~)
 photo_prompt_context.py                          (~)
 photo_generation_scope.py                        (~)
+
+# 衣柜
+wardrobe.py                                      2 423
+wardrobe_runtime.py                              2 229
+wardrobe_assets.py                                 584
+wardrobe_decision.py                               347
+wardrobe_style.py                                  180
+wardrobe_photo.py                                  195
 
 # TTS
 tts_enhancement.py                               5 994

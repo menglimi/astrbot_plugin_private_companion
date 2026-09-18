@@ -75,6 +75,8 @@ from .conversation_prompt_section import (
 from .diagnostic_envelope import DIAGNOSTIC_ENVELOPE_VERSION, diagnostic_test_id, normalize_diagnostic_result
 from .helpers import _MISSING, _flat_get, _normalize_timezone_name, _normalize_timezone_setting, _path_text, _redact_outbound_secrets, _safe_int, _set_into_config, _strip_internal_message_blocks, _text_looks_garbled, _text_similarity, _today_key, normalize_bot_relationship_cards
 from .persona_config import runtime_persona_setting
+from .wardrobe import WARDROBE_MAX_DESCRIPTION, WARDROBE_MAX_NAME, WARDROBE_MAX_TAG
+from .wardrobe_assets import asset_abs_path, asset_root, load_asset_index
 from .story_authority import (
     StoryAuthorityError,
     story_authority_controller,
@@ -1322,6 +1324,12 @@ class PrivateCompanionPageApi(
             ("/photo_reference/upload", self.upload_photo_reference, ["POST"], "Private Companion Page upload photo reference image"),
             ("/wardrobe/describe", self.describe_wardrobe_image, ["POST"], "Private Companion Page describe wardrobe garment image"),
             ("/wardrobe/outfit-preview", self.preview_wardrobe_outfit, ["POST"], "Private Companion Page preview wardrobe outfit injection"),
+            ("/wardrobe/drafts", self.list_wardrobe_drafts, ["POST"], "Private Companion Page list wardrobe drafts"),
+            ("/wardrobe/draft-apply", self.confirm_wardrobe_draft, ["POST"], "Private Companion Page apply wardrobe draft"),
+            ("/wardrobe/draft-reject", self.reject_wardrobe_draft, ["POST"], "Private Companion Page reject wardrobe draft"),
+            ("/wardrobe/asset-image", self.get_wardrobe_asset_image, ["POST"], "Private Companion Page wardrobe asset image data"),
+            ("/wardrobe/intent", self.get_wardrobe_intent, ["POST"], "Private Companion Page wardrobe session intent"),
+            ("/wardrobe/intent-clear", self.clear_wardrobe_intent, ["POST"], "Private Companion Page clear wardrobe session intent"),
             ("/photo_reference/metadata/compile", self.compile_photo_reference_metadata, ["POST"], "Compile guided photo reference metadata"),
             ("/photo_reference/metadata/review", self.review_photo_reference_metadata, ["POST"], "Review and merge guided photo reference answers"),
             ("/photo_reference/selection_trial", self.run_photo_reference_selection_trial, ["POST"], "Run side-effect-free photo reference selection trial"),
@@ -3924,6 +3932,9 @@ class PrivateCompanionPageApi(
         return self._ok(
             {
                 "source": str(source),
+                # 类型决定去向：散件进 wardrobe_items，整套/参考进 wardrobe_outfits
+                "kind": str(parsed.get("kind") or ""),
+                "slot": str(parsed.get("slot") or ""),
                 "name": parsed.get("name", ""),
                 "description": parsed.get("description", ""),
                 "tags": list(parsed.get("tags") or []),
@@ -3976,6 +3987,184 @@ class PrivateCompanionPageApi(
             return resolved
         except (OSError, ValueError):
             return None
+
+    async def list_wardrobe_drafts(self) -> dict[str, Any]:
+        """List the wardrobe draft queue for the panel.
+
+        Read-only: it only reads the asset index and the draft files, so the
+        panel can refresh it whenever the administrator opens the block.
+        """
+
+        lister = getattr(self.plugin, "_wardrobe_pending_drafts", None)
+        if not callable(lister):
+            return self._error("当前插件实例不支持衣柜草稿队列")
+        try:
+            drafts = [dict(row) for row in (lister() or ()) if isinstance(row, dict)]
+        except Exception as exc:
+            logger.warning("衣柜草稿队列读取失败: %s", self._single_line(exc, 160), exc_info=True)
+            return self._error("读取草稿队列失败，请稍后再试")
+        return self._ok(
+            {
+                "drafts": drafts,
+                "count": len(drafts),
+                # 还没有草稿的只是"等识图"，面板据此灰掉确认按钮。
+                "ready_count": len([row for row in drafts if row.get("has_draft")]),
+            }
+        )
+
+    async def confirm_wardrobe_draft(self) -> dict[str, Any]:
+        """Apply one wardrobe draft, optionally overriding name / description / slot."""
+
+        payload = await request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return self._error("请求体必须是 JSON 对象")
+        confirmer = getattr(self.plugin, "_wardrobe_confirm_draft", None)
+        if not callable(confirmer):
+            return self._error("当前插件实例不支持确认衣柜草稿")
+        asset_id = self._single_line(payload.get("asset_id"), 80)
+        if not asset_id:
+            return self._error("缺少素材编号")
+        raw_overrides = payload.get("overrides")
+        overrides: dict[str, Any] = {}
+        if isinstance(raw_overrides, dict):
+            # 只允许就地改这三项：类型决定进散件库还是整套库，在确认环节
+            # 偷换类型会让"我确认过的"和"落库的"不是同一条记录。
+            if raw_overrides.get("name") is not None:
+                overrides["name"] = self._single_line(raw_overrides.get("name"), WARDROBE_MAX_NAME)
+            if raw_overrides.get("description") is not None:
+                overrides["description"] = self._single_line(
+                    raw_overrides.get("description"), WARDROBE_MAX_DESCRIPTION
+                )
+            if raw_overrides.get("slot") is not None:
+                overrides["slot"] = self._single_line(raw_overrides.get("slot"), WARDROBE_MAX_TAG)
+        try:
+            outcome = await confirmer(asset_id, overrides)
+        except Exception as exc:
+            logger.warning("确认衣柜草稿失败: %s", self._single_line(exc, 160), exc_info=True)
+            return self._error("确认草稿失败，请稍后再试")
+        if not isinstance(outcome, dict) or not outcome.get("ok"):
+            detail = self._single_line(outcome.get("error"), 160) if isinstance(outcome, dict) else ""
+            return self._error(detail or "确认草稿失败，请稍后再试")
+        return self._ok(outcome)
+
+    async def reject_wardrobe_draft(self) -> dict[str, Any]:
+        """Reject one wardrobe draft; only the asset status changes."""
+
+        payload = await request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return self._error("请求体必须是 JSON 对象")
+        rejecter = getattr(self.plugin, "_wardrobe_reject_draft", None)
+        if not callable(rejecter):
+            return self._error("当前插件实例不支持丢弃衣柜草稿")
+        asset_id = self._single_line(payload.get("asset_id"), 80)
+        if not asset_id:
+            return self._error("缺少素材编号")
+        try:
+            outcome = await rejecter(asset_id)
+        except Exception as exc:
+            logger.warning("丢弃衣柜草稿失败: %s", self._single_line(exc, 160), exc_info=True)
+            return self._error("丢弃草稿失败，请稍后再试")
+        if not isinstance(outcome, dict) or not outcome.get("ok"):
+            detail = self._single_line(outcome.get("error"), 160) if isinstance(outcome, dict) else ""
+            return self._error(detail or "丢弃草稿失败，请稍后再试")
+        return self._ok(outcome)
+
+    # 缩略图只服务衣柜素材目录里的位图；单张上限是为了不把 32MB 的原图
+    # base64 成 43MB 再塞回浏览器 —— 队列里那一小格图不值得这个带宽。
+    WARDROBE_ASSET_IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif"})
+    WARDROBE_ASSET_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+
+    def _wardrobe_asset_local_path(self, asset_id: Any) -> Path | None:
+        """Resolve one asset id to a file inside this plugin's wardrobe asset store."""
+
+        clean_id = self._single_line(asset_id, 80)
+        data_dir = str(getattr(self.plugin, "data_dir", "") or "")
+        if not clean_id or not data_dir:
+            return None
+        try:
+            record = load_asset_index(data_dir).get(clean_id)
+            if record is None:
+                return None
+            root = asset_root(data_dir).expanduser().resolve()
+            path = asset_abs_path(data_dir, record).expanduser().resolve()
+            if not path.is_file():
+                return None
+            # 索引里的 path 是相对路径，但被手改成 ../.. 就能读到插件之外，
+            # 所以这里必须按目录兜住（与 _wardrobe_page_local_path 同一思路）。
+            if path != root and root not in path.parents:
+                return None
+            return path
+        except (OSError, ValueError):
+            return None
+
+    async def get_wardrobe_asset_image(self) -> dict[str, Any]:
+        """Return one wardrobe asset as a data URL for the draft queue thumbnails."""
+
+        payload = await request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return self._error("请求体必须是 JSON 对象")
+        asset_id = self._single_line(payload.get("asset_id"), 80)
+        path = self._wardrobe_asset_local_path(asset_id)
+        if path is None:
+            return self._error("找不到这个素材，或它不是插件目录里的图片")
+        try:
+            # 与同文件其它素材接口一致\uff1a未知后缀不能猜成 png\u3002
+            mime = mimetypes.guess_type(str(path))[0] or ""
+            if not mime.startswith("image/") or mime not in self.WARDROBE_ASSET_IMAGE_MIMES:
+                return self._error("这个素材不是可以预览的图片")
+            # 先 stat 再读：导入期有上限，但手工放进目录、手改 index 的文件不受约束，
+            # 整份读进内存再拒绝会白白分配这份内存（与同文件其它素材接口一致）。
+            try:
+                size = int((await asyncio.to_thread(path.stat)).st_size)
+            except OSError:
+                return self._error("这个素材已经读不到了")
+            if size > self.WARDROBE_ASSET_IMAGE_MAX_BYTES:
+                return self._error("素材图片过大，无法在面板里预览")
+            raw = await asyncio.to_thread(path.read_bytes)
+            # 读完再比一次：文件可能在 stat 与 read 之间被换掉。
+            if len(raw) > self.WARDROBE_ASSET_IMAGE_MAX_BYTES:
+                return self._error("素材图片过大，无法在面板里预览")
+            return self._ok(
+                {
+                    "asset_id": asset_id,
+                    "mime": mime,
+                    "size": len(raw),
+                    "data_url": f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}",
+                }
+            )
+        except Exception as exc:
+            logger.warning("读取衣柜素材图片失败: %s", self._single_line(exc, 160))
+            return self._exception_error("读取衣柜素材图片失败")
+
+    async def get_wardrobe_intent(self) -> dict[str, Any]:
+        """Read the session outfit intent for the wardrobe panel.
+
+        Read-only: it only asks the plugin for the author's dialogue_outfit_override
+        snapshot, so the panel can show what this session asked the character to wear.
+        """
+
+        reader = getattr(self.plugin, "_wardrobe_intent_snapshot", None)
+        if not callable(reader):
+            return self._error("当前插件实例不支持穿衣意图")
+        try:
+            snapshot = reader()
+        except Exception as exc:
+            logger.warning("穿衣意图读取失败: %s", self._single_line(exc, 160), exc_info=True)
+            return self._error("读取穿衣意图失败，请稍后再试")
+        return self._ok({"intent": snapshot if isinstance(snapshot, dict) else {}})
+
+    async def clear_wardrobe_intent(self) -> dict[str, Any]:
+        """Clear the session outfit intent so the daily rotation takes over again."""
+
+        clearer = getattr(self.plugin, "_wardrobe_clear_intent", None)
+        if not callable(clearer):
+            return self._error("当前插件实例不支持穿衣意图")
+        try:
+            cleared = bool(clearer())
+        except Exception as exc:
+            logger.warning("穿衣意图清除失败: %s", self._single_line(exc, 160), exc_info=True)
+            return self._error("清除穿衣意图失败，请稍后再试")
+        return self._ok({"cleared": cleared})
 
     async def upload_photo_reference(self) -> dict[str, Any]:
         content_length = request.content_length
@@ -23294,11 +23483,13 @@ class PrivateCompanionPageApi(
             "wardrobe_image_prompt",
             "WARDROBE_VISION_PROVIDER_ID",
             "wardrobe_outfit_mode",
+            "wardrobe_injection_detail",
             "wardrobe_outfit_rotation_days",
             "enable_wardrobe_outfit_generate",
             "WARDROBE_OUTFIT_PROVIDER_ID",
             "wardrobe_items",
             "wardrobe_outfits",
+            "wardrobe_photo_source",
             "enable_daily_outfit_photo",
             "enable_creative_cover_generation",
             "daily_outfit_photo_prompt",
@@ -25860,6 +26051,7 @@ class PrivateCompanionPageApi(
             "wardrobe_image_prompt": "wardrobe_image_prompt",
             "WARDROBE_VISION_PROVIDER_ID": "wardrobe_vision_provider_id",
             "wardrobe_items": "wardrobe_items",
+            "wardrobe_photo_source": "wardrobe_photo_source",
             "daily_outfit_photo_prompt": "daily_outfit_photo_prompt",
             "daily_outfit_rotation_days": "daily_outfit_rotation_days",
             "external_image_api_platform": "external_image_api_platform",
@@ -26588,6 +26780,9 @@ class PrivateCompanionPageApi(
             "wardrobe_image_prompt",
             "WARDROBE_VISION_PROVIDER_ID",
             "wardrobe_items",
+            "wardrobe_outfits",
+            "WARDROBE_OUTFIT_PROVIDER_ID",
+            "wardrobe_photo_source",
             "enable_user_requested_photo_generation",
             "allow_generate_photo_on_reaction_turns",
             "enable_natural_language_photo_generation",

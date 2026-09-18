@@ -810,8 +810,19 @@ async def inject_humanized_state(
         prompt_surface.add(outfit_section, priority=13)
     wardrobe_builder = getattr(self, "_wardrobe_prompt_section", None)
     if callable(wardrobe_builder):
+        # 先按请求挂好衣柜只读工具，再决定提示词里要不要写它：顺序反了就会出现
+        # 「提示词说有、工具表里没有」，模型会照着提示词凭空调用一个不存在的工具。
+        wardrobe_tool_syncer = getattr(self, "_sync_wardrobe_detail_tool", None)
+        wardrobe_detail_tool = False
+        if callable(wardrobe_tool_syncer):
+            try:
+                wardrobe_detail_tool = bool(wardrobe_tool_syncer(req))
+            except Exception as exc:
+                logger.debug("衣柜细节工具挂载失败: %s", _single_line(exc, 160))
         try:
-            wardrobe_section = wardrobe_builder(current_user)
+            wardrobe_section = wardrobe_builder(
+                current_user, inbound_text, detail_tool=wardrobe_detail_tool
+            )
         except Exception as exc:
             wardrobe_section = None
             logger.debug("角色衣柜提示词构建失败: %s", _single_line(exc, 160))
