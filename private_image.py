@@ -1952,18 +1952,72 @@ class PrivateImageMixin:
                     result = event.chain_result(chain)
                 except Exception as fallback_error:
                     return False, _single_line(fallback_error or build_error, 180), False
-            try:
+
+            async def perform_send() -> None:
                 await event.send(result)
                 # Send the separate chain (caption or image) as a second message
-                # when delivery mode is separate_after or separate_before
+                # when delivery mode is separate_after or separate_before.
                 if separate_chain is not None:
                     try:
                         separate_result = self._build_result_from_chain(separate_chain)
                         await event.send(separate_result)
                     except Exception:
-                        # Separate send failure is non-critical; main chain already sent
+                        # Separate send failure is non-critical; main chain already sent.
                         pass
+
+            operation = perform_send()
+            task: asyncio.Task | None = None
+            task_creator = getattr(self, "_create_lifecycle_background_task", None)
+            if callable(task_creator):
+                task = task_creator(operation, label="photo_tool_delivery")
+            else:
+                try:
+                    task = asyncio.create_task(
+                        operation,
+                        name="private-companion-photo-tool-delivery",
+                    )
+                except RuntimeError:
+                    operation.close()
+                    task = None
+                if task is not None:
+                    tasks = getattr(self, "_private_image_background_tasks", None)
+                    if not isinstance(tasks, set):
+                        tasks = set()
+                        self._private_image_background_tasks = tasks
+                    tasks.add(task)
+                    task.add_done_callback(tasks.discard)
+                    tracker = getattr(self, "_track_final_response_background_task", None)
+                    if callable(tracker):
+                        tracker(task, "photo_tool_delivery")
+            if task is None:
+                return False, "插件正在停止，图片发送任务未启动", False
+            try:
+                await asyncio.shield(task)
                 return True, "", False
+            except asyncio.CancelledError:
+                if task.done():
+                    try:
+                        task.result()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as send_error:
+                        return (
+                            False,
+                            _single_line(send_error, 180),
+                            send_error_is_ambiguous(send_error),
+                        )
+                    return True, "", False
+                # AstrBot cancels a tool call when its outer timeout expires.
+                # The adapter may already be uploading the image, so cancelling
+                # that same send or retrying it can either lose or duplicate it.
+                # Keep the task alive; send tracking will confirm and persist the
+                # chain if the platform eventually acknowledges it.
+                logger.warning(
+                    "图片发送等待被工具时限取消，保留原发送任务等待平台回执: session=%s image=%s",
+                    _single_line(getattr(event, "unified_msg_origin", ""), 120) or "unknown",
+                    _single_line(image_path, 180),
+                )
+                return False, "工具等待已超时，图片仍在发送并等待平台回执", True
             except Exception as send_error:
                 # A transport timeout can happen after the platform accepted the
                 # message. Retrying here would send the same image twice.

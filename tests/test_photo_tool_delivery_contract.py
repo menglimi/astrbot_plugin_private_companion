@@ -139,6 +139,31 @@ class _AmbiguousSendEvent:
         return {"fallback_chain": list(chain)}
 
 
+class _DelayedSendEvent:
+    unified_msg_origin = "default:GroupMessage:10001"
+
+    def __init__(self) -> None:
+        self.send_calls: list[object] = []
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.finished = asyncio.Event()
+        self.cancelled = False
+
+    async def send(self, result) -> None:
+        self.send_calls.append(result)
+        self.started.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        self.finished.set()
+
+    @staticmethod
+    def chain_result(chain):
+        return {"fallback_chain": list(chain)}
+
+
 class _DirectPhotoDeliveryHarness(PrivateImageMixin):
     enable_group_nsfw_private_fallback = False
 
@@ -344,6 +369,29 @@ class PhotoToolDeliveryContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("current", delivery["destination"])
         self.assertIn("acknowledgement", delivery["message"])
         self.assertIn("不再重试", delivery["message"])
+        self.assertEqual(1, len(event.send_calls))
+
+    async def test_tool_cancellation_keeps_original_platform_send_running(self) -> None:
+        harness = _DirectPhotoDeliveryHarness()
+        event = _DelayedSendEvent()
+        delivery = await asyncio.wait_for(
+            harness._deliver_generated_image_to_event(
+                event,
+                image_path=self.image_path,
+                caption="给你看",
+            ),
+            timeout=0.01,
+        )
+
+        self.assertFalse(delivery["sent"])
+        self.assertTrue(delivery["uncertain"])
+        self.assertIn("仍在发送", delivery["message"])
+        self.assertTrue(event.started.is_set())
+        self.assertEqual(1, len(event.send_calls))
+        self.assertFalse(event.cancelled)
+
+        event.release.set()
+        await asyncio.wait_for(event.finished.wait(), timeout=1)
         self.assertEqual(1, len(event.send_calls))
 
     async def test_current_media_tool_sends_fresh_image_from_allowed_root(self) -> None:

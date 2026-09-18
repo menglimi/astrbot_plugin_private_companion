@@ -40,6 +40,10 @@ _DELIVERY_TASK_LABELS = frozenset(
         # normal result and releases the remaining text asynchronously. Keep
         # final history persistence behind that remainder as well.
         "tts_reply_remainder",
+        # A platform upload can outlive AstrBot's LLM tool timeout. The same
+        # send keeps running after the tool wait is cancelled, so final history
+        # persistence must wait for its eventual platform acknowledgement.
+        "photo_tool_delivery",
     }
 )
 
@@ -73,6 +77,7 @@ class DeliveryLedger:
     context_token: contextvars.Token | None = None
     fallback_task: asyncio.Task | None = None
     final_chain_start: int | None = None
+    photo_tool_chain_start: int | None = None
     finalized: bool = False
     finalize_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     logical_plan_cursor: int = 0
@@ -220,11 +225,16 @@ class FinalResponsePersistenceCoordinator:
             await self.finalize_passive(event)
 
     def track_background_task(self, task: asyncio.Task | None, label: str) -> None:
-        if task is None or _single_line(label, 100) not in _DELIVERY_TASK_LABELS:
+        task_label = _single_line(label, 100)
+        if task is None or task_label not in _DELIVERY_TASK_LABELS:
             return
         ledger = _CURRENT_DELIVERY.get()
         if ledger is None or not ledger.passive:
             return
+        if task_label == "photo_tool_delivery" and ledger.photo_tool_chain_start is None:
+            # The photo tool owns this visible media reply. Preserve its first
+            # chain even when its acknowledgement beats the silent final reply.
+            ledger.photo_tool_chain_start = len(ledger.confirmed_chains)
         ledger.background_tasks.add(task)
         task.add_done_callback(ledger.background_tasks.discard)
 
@@ -238,7 +248,10 @@ class FinalResponsePersistenceCoordinator:
             is None
         ):
             return
-        ledger.final_chain_start = len(ledger.confirmed_chains)
+        chain_start = len(ledger.confirmed_chains)
+        if ledger.photo_tool_chain_start is not None:
+            chain_start = min(chain_start, ledger.photo_tool_chain_start)
+        ledger.final_chain_start = chain_start
 
     def install_send_tracking(self, event: AstrMessageEvent) -> None:
         if not bool(getattr(event, "_private_companion_persistence_managed", False)):
