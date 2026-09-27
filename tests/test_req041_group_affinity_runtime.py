@@ -12,6 +12,7 @@ from relationship_affinity_runtime import (
     normalize_group_allowlist,
     prepare_group_affinity_candidate,
 )
+from tests.module_source_index import main_source_text, file_family_source_text
 
 
 EPOCH = "req041-affinity-runtime-test"
@@ -125,8 +126,8 @@ class GroupAffinityRuntimeTests(unittest.TestCase):
 
     def test_production_wiring_requires_new_read_and_confirmed_delivery(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        main_source = (root / "main.py").read_text(encoding="utf-8")
-        pipeline_source = (root / "message_pipeline.py").read_text(encoding="utf-8")
+        main_source = main_source_text(root)
+        pipeline_source = file_family_source_text(root, "message_pipeline.py")
         self.assertIn('req041_read_generation", "") or "") != "new"', main_source)
         self.assertIn("_reaction_expression_primary_reply_confirmed", main_source)
         self.assertIn("require_segmented_complete=True", main_source)

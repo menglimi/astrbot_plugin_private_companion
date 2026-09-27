@@ -17,7 +17,7 @@ class GroupConversationFollowupWindowTests(unittest.IsolatedAsyncioTestCase):
         harness = _FollowupHarness()
         group = {"message_count": 1, "recent_messages": []}
 
-        with patch("astrbot_plugin_private_companion.event_dispatch._now_ts", return_value=100.0):
+        with patch("astrbot_plugin_private_companion.event_dispatch_group_guard._now_ts", return_value=100.0):
             harness._mark_group_bot_conversation(
                 group,
                 "user-1",
@@ -39,7 +39,7 @@ class GroupConversationFollowupWindowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(139.0, active["last_ts"])
         self.assertEqual(179.0, active["expires_at"])
 
-        with patch("astrbot_plugin_private_companion.event_dispatch._now_ts", return_value=145.0):
+        with patch("astrbot_plugin_private_companion.event_dispatch_group_guard._now_ts", return_value=145.0):
             continued = await harness._group_message_is_bot_continuation(
                 group,
                 "user-1",

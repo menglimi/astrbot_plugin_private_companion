@@ -14,13 +14,14 @@ from authoritative_private_memory import (
     private_memory_content,
 )
 from unified_person_registry import UnifiedPersonRegistry
+from tests.module_source_index import user_memory_mixin_tree, user_memory_source_text, file_family_source_text
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def _load_methods(*names: str) -> dict[str, Any]:
-    tree = ast.parse((ROOT / "user_memory.py").read_text(encoding="utf-8"))
+    tree = user_memory_mixin_tree(ROOT)
     owner = next(
         node for node in tree.body
         if isinstance(node, ast.ClassDef) and node.name == "UserMemoryMixin"
@@ -107,7 +108,7 @@ class ScopedMemoryWriteGateTests(unittest.TestCase):
         self.assertFalse(host._req041_private_memory_write_allowed({"formal": True}))
 
     def test_private_pipeline_guards_all_durable_memory_mutations(self) -> None:
-        source = (ROOT / "message_pipeline.py").read_text(encoding="utf-8")
+        source = file_family_source_text(ROOT, "message_pipeline.py")
         gate = source.index("private_memory_write_allowed = self._req041_private_memory_write_allowed(user)")
         guarded = source.index("if private_memory_write_allowed:", gate)
         for call in (
@@ -120,10 +121,10 @@ class ScopedMemoryWriteGateTests(unittest.TestCase):
         self.assertIn("_req041_prepare_authoritative_private_memory(user)", source)
         self.assertIn("_req041_commit_authoritative_private_memory(", source)
 
-        page_source = (ROOT / "page_api_users_groups.py").read_text(encoding="utf-8")
+        page_source = file_family_source_text(ROOT, "page_api_users_groups.py")
         self.assertIn('"_req041_prepare_authoritative_private_memory"', page_source)
         self.assertIn('"_req041_commit_authoritative_private_memory"', page_source)
-        command_source = (ROOT / "main.py").read_text(encoding="utf-8")
+        command_source = file_family_source_text(ROOT, "main.py")
         command_branch = command_source.index('elif action in {"话头删除"')
         self.assertGreater(
             command_source.index("_req041_prepare_authoritative_private_memory", command_branch),

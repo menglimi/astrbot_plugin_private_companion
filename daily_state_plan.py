@@ -1,0 +1,16 @@
+# -*- coding: utf-8 -*-
+from .daily_state_plan_shared import (
+    _now_ts,
+    _today_key,
+    logger,
+)
+from .daily_state_plan_shared import logger
+from .daily_state_plan_yesterday_summary import DailyStatePlanYesterdaySummaryMixin
+from .daily_state_plan_story_dates_calendar import DailyStatePlanStoryDatesCalendarMixin
+from .daily_state_plan_relationship_authority_sanitize import DailyStatePlanRelationshipAuthoritySanitizeMixin
+from .daily_state_plan_plan_generate_selector import DailyStatePlanPlanGenerateSelectorMixin
+from .daily_state_plan_parse_clock_current_format import DailyStatePlanParseClockCurrentFormatMixin
+from .daily_state_plan_history_dates_runtime import DailyStatePlanHistoryDatesRuntimeMixin
+from .daily_state_plan_food_adjustment import DailyStatePlanFoodAdjustmentMixin
+class DailyStatePlanMixin(DailyStatePlanFoodAdjustmentMixin, DailyStatePlanHistoryDatesRuntimeMixin, DailyStatePlanParseClockCurrentFormatMixin, DailyStatePlanPlanGenerateSelectorMixin, DailyStatePlanRelationshipAuthoritySanitizeMixin, DailyStatePlanStoryDatesCalendarMixin, DailyStatePlanYesterdaySummaryMixin):
+    """plan 域（从 DailyStateMixin 拆出）。"""

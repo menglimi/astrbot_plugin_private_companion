@@ -61,7 +61,7 @@ class ReactionImageFormatTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
         self.assertEqual(
-            ("image", os.path.normcase(os.path.normpath(str(self.image_path)))),
+            ("image", os.path.normcase(str(self.image_path.resolve()))),
             PrivateCompanionPlugin._reaction_expression_delivery_signature(component),
         )
         self.assertTrue(

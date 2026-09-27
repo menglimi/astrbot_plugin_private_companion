@@ -69,7 +69,9 @@ class CompanionManualExpertTests(unittest.IsolatedAsyncioTestCase):
             "_apply_photo_generation_prompt_format 是在哪里处理的",
             [],
         )
-        self.assertIn("proactive_message.py", context)
+        # \u62c6\u5206\u540e\u8be5\u65b9\u6cd5\u5df2\u8fc1\u81f3 proactive_message_photo_generation.py\uff1a
+        # \u65ad\u8a00\u4e0d\u5e94\u7ed1\u5b9a\u201c\u5728\u54ea\u4e2a\u6587\u4ef6\u201d\uff0c\u53ea\u8981\u6c42\u68c0\u7d22\u5230\u4e86\u771f\u5b9e\u5b9e\u73b0\u3002
+        self.assertIn("proactive_message", context)
         self.assertIn("_apply_photo_generation_prompt_format", context)
 
     async def test_model_answer_is_expert_led_and_respects_model_timeout(self) -> None:

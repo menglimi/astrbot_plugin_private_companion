@@ -8,6 +8,9 @@ from unittest.mock import patch
 
 import astrbot_plugin_private_companion.private_image as private_image_module
 from astrbot_plugin_private_companion.private_image import PrivateImageMixin
+from module_source_index import private_image_source_text
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 PLACEHOLDER = "用户刚刚先单独发送了一张图片,可能马上会补充说明。"
@@ -82,7 +85,7 @@ class PrivateImageVisionHandoffTests(unittest.IsolatedAsyncioTestCase):
         )
 
     def test_framework_tts_restore_runs_before_reply_quality_checks(self):
-        source = Path(private_image_module.__file__).read_text(encoding="utf-8")
+        source = private_image_source_text(ROOT)
         restore_call = source.index("reply = self._restore_private_image_framework_tts_reply(")
         internal_error_check = source.index(
             "if reply and self._private_image_reply_is_internal_error(reply):",

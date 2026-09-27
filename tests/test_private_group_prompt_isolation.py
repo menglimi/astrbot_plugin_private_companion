@@ -46,21 +46,13 @@ class PrivateGroupPromptIsolationTests(unittest.TestCase):
         self.assertLessEqual(discovered, set(GROUP_SCOPE_MARKERS))
 
     def test_private_scope_guard_runs_immediately_before_plan_finalize(self) -> None:
-        module = ast.parse(
-            (Path(__file__).resolve().parents[1] / "main.py").read_text(
-                encoding="utf-8"
-            )
-        )
-        plugin = next(
-            node
-            for node in module.body
-            if isinstance(node, ast.ClassDef)
-            and node.name == "PrivateCompanionPlugin"
-        )
+        # 方法已随域拆分分散在 main.py 与 main_*.py，跨宿主族聚合采集。
+        from tests.module_source_index import iter_class_methods
+
         priorities = {}
-        for method in plugin.body:
-            if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
+        for method, _owner in iter_class_methods(
+            Path(__file__).resolve().parents[1], "main", "PrivateCompanionPlugin"
+        ):
             for decorator in method.decorator_list:
                 if (
                     not isinstance(decorator, ast.Call)

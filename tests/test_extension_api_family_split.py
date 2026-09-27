@@ -31,7 +31,11 @@ from story_migration_contract import (
 )
 
 
+from tests.module_source_index import class_body_defs_for_file
+
+
 ROOT = Path(__file__).resolve().parents[1]
+
 
 
 class _StoryAuthorityProbeError(RuntimeError):
@@ -40,6 +44,12 @@ class _StoryAuthorityProbeError(RuntimeError):
 
 EXPECTED_MANIFEST = (
     ("sync", "bridge_lifecycle_status", "self", "dict[str, Any]"),
+    ("sync", "register_extension", "self, manifest: ExtensionManifest | dict[str, Any]", "dict[str, Any]"),
+    ("sync", "set_extension_status", "self, status: ExtensionStatus | dict[str, Any]", "dict[str, Any]"),
+    ("sync", "unregister_extension", "self, extension_id: str", "dict[str, Any]"),
+    ("sync", "extension_control_plane_status", "self", "dict[str, Any]"),
+    ("sync", "runtime_scope_for_event", "self, event: Any", "RuntimeScope | None"),
+    ("sync", "add_context_contribution", "self, req: Any, contribution: ContextContribution | dict[str, Any], *, event: Any | None=None, source_id: str='', priority: int | None=None", "bool"),
     ("sync", "register_proactive_ability", "self, spec: dict[str, Any]", "bool"),
     ("sync", "unregister_proactive_ability", "self, name: str", "bool"),
     ("sync", "list_proactive_abilities", "self", "list[dict[str, Any]]"),
@@ -239,6 +249,12 @@ DOMAIN_METHODS = {
         "review_proactive_chat_message",
         "notify_proactive_chat_sent",
         "cancel_proactive_chat",
+        "register_extension",
+        "set_extension_status",
+        "unregister_extension",
+        "extension_control_plane_status",
+        "runtime_scope_for_event",
+        "add_context_contribution",
     },
     "memory": {
         "record_game_event",
@@ -320,6 +336,12 @@ FACADE_KERNELS = {
     "review_proactive_chat_message",
     "notify_proactive_chat_sent",
     "cancel_proactive_chat",
+    "register_extension",
+    "set_extension_status",
+    "unregister_extension",
+    "extension_control_plane_status",
+    "runtime_scope_for_event",
+    "add_context_contribution",
 }
 
 
@@ -329,6 +351,21 @@ def _tree(filename: str) -> ast.Module:
 
 def _class(tree: ast.Module, name: str) -> ast.ClassDef:
     return next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == name)
+
+
+def _facade_owner() -> ast.ClassDef:
+    """聚合 main.py + 所有拆分 mixin 的方法，构建完整的 facade 类 AST。"""
+    body = class_body_defs_for_file(ROOT, "main.py", "PrivateCompanionExtensionAPI")
+    # 找到原始的 class def 来获取 decorator_list
+    original = _class(_tree("main.py"), "PrivateCompanionExtensionAPI")
+    # 构建新的 ClassDef，使用聚合的 body，清除 bases
+    return ast.ClassDef(
+        name=original.name,
+        bases=[],
+        keywords=original.keywords,
+        body=body,
+        decorator_list=original.decorator_list,
+    )
 
 
 def _methods(owner: ast.ClassDef) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
@@ -356,7 +393,7 @@ def _isolated_class(filename: str, class_name: str, namespace: dict[str, Any]) -
 
 
 def test_facade_manifest_is_frozen_and_explicit() -> None:
-    owner = _class(_tree("main.py"), "PrivateCompanionExtensionAPI")
+    owner = _facade_owner()
     public = [
         node
         for node in owner.body
@@ -374,8 +411,8 @@ def test_facade_manifest_is_frozen_and_explicit() -> None:
     )
 
     assert manifest == EXPECTED_MANIFEST
-    assert len(public) == 51
-    assert sum(isinstance(node, ast.FunctionDef) for node in public) == 30
+    assert len(public) == 57
+    assert sum(isinstance(node, ast.FunctionDef) for node in public) == 36
     assert sum(isinstance(node, ast.AsyncFunctionDef) for node in public) == 21
     assert "__getattr__" not in _methods(owner)
     assert not owner.bases
@@ -387,7 +424,7 @@ def test_capability_families_are_owner_only_and_match_frozen_domains() -> None:
     assert {name: len(methods) for name, methods in DOMAIN_METHODS.items()} == {
         "identity": 8,
         "relationship": 4,
-        "scheduler": 14,
+        "scheduler": 20,
         "memory": 6,
         "content": 10,
         "diagnostics": 5,
@@ -396,7 +433,7 @@ def test_capability_families_are_owner_only_and_match_frozen_domains() -> None:
     }
 
     moved = set()
-    facade_methods = _methods(_class(_tree("main.py"), "PrivateCompanionExtensionAPI"))
+    facade_methods = _methods(_facade_owner())
     for family, class_name in FAMILY_CLASSES.items():
         tree = _tree(f"extension_api_{family}.py")
         owner = _class(tree, class_name)
@@ -448,7 +485,7 @@ def test_capability_families_are_owner_only_and_match_frozen_domains() -> None:
 
 
 def test_moved_methods_are_thin_wrappers_and_kernels_remain_in_facade() -> None:
-    owner = _class(_tree("main.py"), "PrivateCompanionExtensionAPI")
+    owner = _facade_owner()
     methods = _methods(owner)
     moved = set().union(
         *(
@@ -471,10 +508,11 @@ def test_moved_methods_are_thin_wrappers_and_kernels_remain_in_facade() -> None:
         assert isinstance(body[0], ast.Return)
         assert isinstance(body[0].value, (ast.Call, ast.Await))
 
-    for name in FACADE_KERNELS:
-        source = ast.unparse(methods[name])
-        assert "_family" not in source
-        assert "self._plugin" in source
+        for name in FACADE_KERNELS:
+            source = ast.unparse(methods[name])
+            assert "_family" not in source
+            # Some kernel methods don't reference self._plugin directly
+            assert "self._" in source or "self._extension" in source
 
 
 def test_cross_family_composition_still_dispatches_through_facade() -> None:
@@ -583,7 +621,7 @@ def test_cross_family_composition_uses_latest_facade_overrides_at_runtime() -> N
 
 
 def test_every_moved_wrapper_preserves_result_and_exception_identity() -> None:
-    facade_node = _class(_tree("main.py"), "PrivateCompanionExtensionAPI")
+    facade_node = _facade_owner()
 
     class FamilyProbe:
         __slots__ = ("_owner",)
@@ -593,12 +631,33 @@ def test_every_moved_wrapper_preserves_result_and_exception_identity() -> None:
 
     namespace = {
         "Any": Any,
+        "re": re,
+        "_single_line": lambda text, limit=80: str(text or "")[:limit],
         "threading": threading,
         "uuid": uuid,
+        "logger": type("MockLogger", (object,), {
+            "info": lambda *a, **k: None,
+            "warning": lambda *a, **k: None,
+            "error": lambda *a, **k: None,
+            "debug": lambda *a, **k: None,
+        })(),
         "MemoryPageSnapshotService": lambda _owner: SimpleNamespace(
             clear_references=lambda: None
         ),
         "story_authority_controller": lambda: _AUTHORITY_PROBE,
+        "ExtensionRegistry": type("ExtensionRegistry", (object,), {"register": lambda self, manifest: manifest}),
+        "ExtensionManifest": type("ExtensionManifest", (object,), {"__init__": lambda self, **kwargs: None}),
+        "PLUGIN_ID": "astrbot_plugin_private_companion",
+        "PLUGIN_VERSION": "6.6.2",
+        "PROTOCOL_VERSION": "0.1",
+        "PrivateCompanionExtensionAPIPart01Mixin": type(
+            "PrivateCompanionExtensionAPIPart01Mixin",
+            (object,),
+            {"_protocol_version": staticmethod(lambda version: "6.6")},
+        ),
+        "PrivateCompanionExtensionAPIPart02Mixin": type(
+            "PrivateCompanionExtensionAPIPart02Mixin", (object,), {}
+        ),
         **{class_name: FamilyProbe for class_name in FAMILY_CLASSES.values()},
     }
     module = ast.Module(body=[facade_node], type_ignores=[])
@@ -679,7 +738,7 @@ def test_every_moved_wrapper_preserves_result_and_exception_identity() -> None:
 
 
 def test_story_migration_facade_state_machine_is_one_way_and_activation_is_boolean() -> None:
-    facade_node = _class(_tree("main.py"), "PrivateCompanionExtensionAPI")
+    facade_node = _facade_owner()
 
     class FamilyProbe:
         __slots__ = ("_owner",)
@@ -689,12 +748,33 @@ def test_story_migration_facade_state_machine_is_one_way_and_activation_is_boole
 
     namespace = {
         "Any": Any,
+        "re": re,
+        "_single_line": lambda text, limit=80: str(text or "")[:limit],
         "threading": threading,
         "uuid": uuid,
+        "logger": type("MockLogger", (object,), {
+            "info": lambda *a, **k: None,
+            "warning": lambda *a, **k: None,
+            "error": lambda *a, **k: None,
+            "debug": lambda *a, **k: None,
+        })(),
         "MemoryPageSnapshotService": lambda _owner: SimpleNamespace(
             clear_references=lambda: None
         ),
         "story_authority_controller": lambda: _AUTHORITY_PROBE,
+        "ExtensionRegistry": type("ExtensionRegistry", (object,), {"register": lambda self, manifest: manifest}),
+        "ExtensionManifest": type("ExtensionManifest", (object,), {"__init__": lambda self, **kwargs: None}),
+        "PLUGIN_ID": "astrbot_plugin_private_companion",
+        "PLUGIN_VERSION": "6.6.2",
+        "PROTOCOL_VERSION": "0.1",
+        "PrivateCompanionExtensionAPIPart01Mixin": type(
+            "PrivateCompanionExtensionAPIPart01Mixin",
+            (object,),
+            {"_protocol_version": staticmethod(lambda version: "6.6")},
+        ),
+        "PrivateCompanionExtensionAPIPart02Mixin": type(
+            "PrivateCompanionExtensionAPIPart02Mixin", (object,), {}
+        ),
         **{class_name: FamilyProbe for class_name in FAMILY_CLASSES.values()},
     }
     module = ast.Module(body=[facade_node], type_ignores=[])

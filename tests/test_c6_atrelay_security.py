@@ -5,6 +5,8 @@ from pathlib import Path
 import types
 import unittest
 
+from tests.module_source_index import llm_tool_actions_source_text
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -92,7 +94,11 @@ class AtRelaySecurityTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.helpers = _load_security_helpers()
-        cls.source = (ROOT / "atrelay.py").read_text(encoding="utf-8") + (ROOT / "llm_tool_actions.py").read_text(encoding="utf-8")
+        cls.source = (
+            (ROOT / "atrelay.py").read_text(encoding="utf-8")
+            + (ROOT / "atrelay_part03.py").read_text(encoding="utf-8")
+            + llm_tool_actions_source_text(ROOT)
+        )
 
     def _bind(self, harness, name):
         method = self.helpers[name]

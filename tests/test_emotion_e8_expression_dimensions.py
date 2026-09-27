@@ -106,7 +106,7 @@ class EmotionE8ExpressionDimensionTests(unittest.TestCase):
             self.assertIn(f"{label}={decision[key]}", prompt)
         self.assertLess(len(prompt), 620)
 
-        page_source = (ROOT / "page_api.py").read_text(encoding="utf-8")
+        page_source = "".join((ROOT / p).read_text(encoding="utf-8") for p in ["page_api.py", *sorted(ROOT.glob("page_api_*.py"))])
         for key, fallback in {
             "pacing": "steady",
             "directness": "natural",
@@ -120,7 +120,14 @@ class EmotionE8ExpressionDimensionTests(unittest.TestCase):
         source = (ROOT / "tts_enhancement.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
         owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "TtsEnhancementMixin")
-        method = next(node for node in owner.body if isinstance(node, ast.FunctionDef) and node.name == "_tts_expression_style_context")
+        # 拆分后 _tts_expression_style_context 落在 TtsEnhancementVisibleChineseMixin 中，
+        # 需从聚合类体中查找。
+        from tests.module_source_index import class_body_defs_for_file
+        method = next(
+            node
+            for node in class_body_defs_for_file(ROOT, "tts_enhancement.py", "TtsEnhancementMixin")
+            if isinstance(node, ast.FunctionDef) and node.name == "_tts_expression_style_context"
+        )
         method.decorator_list = []
         module = ast.Module(body=[method], type_ignores=[])
         ast.fix_missing_locations(module)

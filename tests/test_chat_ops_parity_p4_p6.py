@@ -56,12 +56,12 @@ def live_state(**changes: object) -> dict[str, str]:
 
 def _load_p4_live_state_for_event() -> object:
     """Compile only the chat-side lookup method without importing AstrBot."""
-    source = (ROOT / "main.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    method = deepcopy(next(
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "_p4_live_state_for_event"
-    ))
+    # 方法已随域拆分分散在 main.py 与 main_*.py，跨宿主族聚合定位。
+    from tests.module_source_index import find_method
+
+    found = find_method(ROOT, "main", "PrivateCompanionPlugin", "_p4_live_state_for_event")
+    assert found is not None
+    method = deepcopy(found)
     module = ast.Module(
         body=[
             ast.ImportFrom(
@@ -82,15 +82,12 @@ def _load_p4_live_state_for_event() -> object:
 
 def _load_p4_relationship_event_settlement() -> object:
     """Compile the central score-write gate without importing AstrBot."""
-    source = (ROOT / "core_store.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    owner = next(
-        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "CoreStoreMixin"
-    )
-    method = deepcopy(next(
-        node for node in owner.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_apply_relationship_event"
-    ))
+    # 方法已随域拆分搬到 core_store_*.py，按宿主族聚合定位（断言语义不变）。
+    from tests.module_source_index import find_method
+
+    found = find_method(ROOT, "core_store", "CoreStoreMixin", "_apply_relationship_event")
+    assert found is not None
+    method = deepcopy(found)
     module = ast.Module(
         body=[
             ast.ImportFrom(
@@ -498,9 +495,18 @@ class P4P6ParityTests(unittest.TestCase):
         self.assertEqual({"schema_version", "source_plugin", "contract_fingerprint", "health", "reason_code", "counts"}, set(projection))
 
     def test_relationship_panel_source_cannot_return_sensitive_contract_fields(self) -> None:
-        source = (ROOT / "page_api.py").read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        function = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "_relationship_panel")
+        function = None
+        for path in [ROOT / "page_api.py", *sorted(ROOT.glob("page_api_*.py"))]:
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (OSError, SyntaxError):
+                continue
+            try:
+                function = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "_relationship_panel")
+            except StopIteration:
+                continue
+            break
+        self.assertIsNotNone(function, "_relationship_panel not found in page_api family")
         string_constants = {node.value for node in ast.walk(function) if isinstance(node, ast.Constant) and type(node.value) is str}
         forbidden = {"person_id", "p4_effect", "p4_live", "attestation", "raw_prompt", "memory_content", "group_overlay"}
         self.assertTrue(forbidden.isdisjoint(string_constants))
@@ -509,14 +515,13 @@ class P4P6ParityTests(unittest.TestCase):
         self.assertIn("expression_decision", string_constants)
 
     def test_extension_api_does_not_expose_p4_effect_or_live_authority(self) -> None:
-        source = (ROOT / "main.py").read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        extension_api = next(
-            node for node in tree.body
-            if isinstance(node, ast.ClassDef) and node.name == "PrivateCompanionExtensionAPI"
-        )
+        # 扩展 API 的类体已拆到 main_core_part*.py，按宿主族聚合（断言语义不变）。
+        from tests.module_source_index import class_body_defs_for_file
+
         public_methods = {
-            node.name for node in extension_api.body
+            node.name for node in class_body_defs_for_file(
+                ROOT, "main.py", "PrivateCompanionExtensionAPI"
+            )
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         }
         forbidden = {"read_p4_effect_state", "read_p4_live_state", "record_p4_effect_event"}

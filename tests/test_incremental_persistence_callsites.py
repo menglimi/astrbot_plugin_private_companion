@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import ast
+import copy
 import time
 import unittest
 from pathlib import Path
@@ -16,6 +17,12 @@ from astrbot_plugin_private_companion.core_store import (
 )
 from astrbot_plugin_private_companion.event_dispatch import EventDispatchMixin
 from astrbot_plugin_private_companion.story_handoff import STORY_MIGRATION_COMMIT_KEY
+from module_source_index import (
+    host_source_text,
+    iter_class_methods,
+    iter_module_sources,
+    private_image_source_text,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,7 +30,9 @@ SAVE_METHODS = {"_save_data_sync", "_save_data_now_sync", "_schedule_data_save"}
 
 
 def _production_python_paths() -> list[Path]:
-    excluded = {"tests", "__pycache__", ".pytest_cache", ".ruff_cache"}
+    # tmp/ 是 .git/info/exclude 里的本地草稿目录（旧快照副本、一次性脚本），
+    # 不是生产代码，扫它只会产生噪音失败。
+    excluded = {"tests", "tmp", "__pycache__", ".pytest_cache", ".ruff_cache"}
     return [
         path
         for path in sorted(ROOT.rglob("*.py"))
@@ -43,7 +52,11 @@ def _save_calls(path: Path) -> list[ast.Call]:
 
 
 def _is_official_no_arg_save_compatibility(path: Path, node: ast.Call) -> bool:
-    if path.name != "llm_tool_actions.py" or node.func.attr != "_save_data_sync":
+    # 该兼容钩子随二级拆分从 llm_tool_actions_reaction_search.py 迁到
+    # llm_tool_actions_reaction_search_part*.py，按模块族匹配（语义不变）。
+    if path.stem.split("_part", 1)[0] != "llm_tool_actions_reaction_search":
+        return False
+    if node.func.attr != "_save_data_sync":
         return False
     lines = path.read_text(encoding="utf-8").splitlines()
     context = "\n".join(lines[max(0, node.lineno - 5) : node.lineno])
@@ -80,30 +93,45 @@ def _literal_durable_data_roots(path: Path) -> list[tuple[str, int]]:
     return roots
 
 
+def _pipeline_handler(name: str) -> ast.AsyncFunctionDef:
+    """按宿主族聚合 message_pipeline 的顶层处理器。
+
+    巨型处理器已被阶段化拆分（编排壳 + 阶段函数，见 message_pipeline_part02.py
+    文档），只读 message_pipeline.py 会漏掉全部语句。这里把阶段函数体并入壳，
+    并按拼接顺序重新编号行号，保持「先初始化后使用」类断言的顺序语义。
+    """
+    shell: ast.AsyncFunctionDef | None = None
+    groups: list[list[ast.stmt]] = []
+    for _path, tree in iter_module_sources(ROOT, "message_pipeline"):
+        for node in tree.body:
+            if not isinstance(node, ast.AsyncFunctionDef):
+                continue
+            if node.name == name:
+                shell = node
+            elif node.name.startswith(f"_{name}_"):
+                groups.append(copy.deepcopy(node.body))
+    assert shell is not None, f"{name} 未在 message_pipeline 宿主族中找到"
+
+    merged = copy.deepcopy(shell)
+    merged.body = []
+    cursor = 0
+    for group in [copy.deepcopy(shell.body), *groups]:
+        low = min(getattr(item, "lineno", 1) for item in group)
+        high = max(getattr(item, "end_lineno", None) or getattr(item, "lineno", 1) for item in group)
+        for item in group:
+            ast.increment_lineno(item, cursor - low + 1)
+        merged.body.extend(group)
+        cursor += high - low + 1
+    ast.fix_missing_locations(merged)
+    return merged
+
+
 def _private_handler() -> ast.AsyncFunctionDef:
-    tree = ast.parse(
-        (ROOT / "message_pipeline.py").read_text(encoding="utf-8"),
-        filename="message_pipeline.py",
-    )
-    return next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "handle_private_message"
-    )
+    return _pipeline_handler("handle_private_message")
 
 
 def _group_handler() -> ast.AsyncFunctionDef:
-    tree = ast.parse(
-        (ROOT / "message_pipeline.py").read_text(encoding="utf-8"),
-        filename="message_pipeline.py",
-    )
-    return next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "handle_group_message"
-    )
+    return _pipeline_handler("handle_group_message")
 
 
 def _if_node(function: ast.AST, condition: str) -> ast.If:
@@ -157,7 +185,11 @@ class IncrementalPersistenceCallsiteTests(unittest.TestCase):
                         f"{path.relative_to(ROOT).as_posix()}:{node.lineno}"
                     )
         self.assertEqual([], bare_calls)
-        self.assertEqual(["llm_tool_actions.py"], compatibility_calls)
+        # 兼容钩子所在文件已随二级拆分变化，按模块族断言（语义不变）。
+        self.assertEqual(
+            {"llm_tool_actions_reaction_search"},
+            {Path(name).stem.split("_part", 1)[0] for name in compatibility_calls},
+        )
 
     def test_literal_save_sections_are_registered(self) -> None:
         unknown: list[str] = []
@@ -237,7 +269,8 @@ class IncrementalPersistenceCallsiteTests(unittest.TestCase):
         self.assertEqual([], unknown)
 
     def test_runtime_section_registry_contains_review_and_hot_path_sections(self) -> None:
-        source = (ROOT / "core_store.py").read_text(encoding="utf-8")
+        # 注册表内容随拆分搬到 core_store_*.py，按宿主族聚合（语义不变）。
+        source = host_source_text(ROOT, "core_store")
 
         for section in (
             "proactive_review_runtime",
@@ -380,10 +413,8 @@ class IncrementalPersistenceCallsiteTests(unittest.TestCase):
         )
 
     def test_message_hooks_share_event_batch_inside_persona_context(self) -> None:
-        tree = ast.parse(
-            (ROOT / "main.py").read_text(encoding="utf-8"),
-            filename="main.py",
-        )
+        # 方法经拆分后分布在 main.py 与 main_*.py 域 mixin 中，
+        # 需跨宿主族聚合定位（module_source_index 风格），断言语义不变。
         expected = {
             "guard_req036_private_capability_early": False,
             "on_private_message": True,
@@ -394,10 +425,9 @@ class IncrementalPersistenceCallsiteTests(unittest.TestCase):
             "on_group_message": True,
         }
         functions = {
-            node.name: node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.AsyncFunctionDef)
-            and node.name in expected
+            child.name: child
+            for child, _owner in iter_class_methods(ROOT, "main", "PrivateCompanionPlugin")
+            if child.name in expected
         }
         self.assertEqual(set(expected), set(functions))
         for name, flush in expected.items():
@@ -459,22 +489,18 @@ class IncrementalPersistenceCallsiteTests(unittest.TestCase):
         self.assertEqual([], bare_calls)
 
     def test_private_image_buffer_persists_smart_learning_state(self) -> None:
-        source = (ROOT / "private_image.py").read_text(encoding="utf-8")
+        source = private_image_source_text(ROOT)
         self.assertIn(
             'scheduler(sections={"smart_message_debounce"})',
             source,
         )
 
     def test_proactive_only_meal_care_marks_food_menu(self) -> None:
-        tree = ast.parse(
-            (ROOT / "main.py").read_text(encoding="utf-8"),
-            filename="main.py",
-        )
+        # 方法已随域拆分迁至 main_*.py，跨宿主族聚合定位（module_source_index 风格）。
         handler = next(
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.AsyncFunctionDef)
-            and node.name == "_record_proactive_only_private_feedback"
+            child
+            for child, _owner in iter_class_methods(ROOT, "main", "PrivateCompanionPlugin")
+            if child.name == "_record_proactive_only_private_feedback"
         )
         source = ast.unparse(handler)
 

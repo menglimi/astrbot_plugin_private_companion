@@ -14,6 +14,7 @@ from relationship_ledger import (
     migrate_legacy_relationship_score,
     migrate_relationship_score_schema,
 )
+from tests.module_source_index import class_body_defs_for_file
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,12 +46,13 @@ class _Logger:
 
 
 def _class_method(method_name: str, namespace: dict[str, Any]) -> Any:
+    # core_store.py 拆分后方法散落在 core_store_*.py 的域 mixin 里，改为按宿主族
+    # 聚合扫描（module_source_index），断言语义不变。
     path = ROOT / "core_store.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "CoreStoreMixin")
+    owner_body = class_body_defs_for_file(ROOT, "core_store.py", "CoreStoreMixin")
     method = next(
         node
-        for node in owner.body
+        for node in owner_body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == method_name
     )
     module = ast.Module(body=[copy.deepcopy(method)], type_ignores=[])

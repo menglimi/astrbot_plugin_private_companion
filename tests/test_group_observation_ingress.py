@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock
 
 from astrbot_plugin_private_companion.group_observation import GroupObservationMixin
 from astrbot_plugin_private_companion.main import PrivateCompanionPlugin
+from module_source_index import main_source_text
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -192,7 +193,8 @@ class GroupObservationIngressTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(event._stopped)
 
     def test_observer_priority_and_group_form_default_are_explicit(self) -> None:
-        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        # 方法经拆分分布在 main.py 与 main_*.py 域 mixin，需跨宿主族聚合源码。
+        source = main_source_text(ROOT)
         html = (ROOT / "pages" / "陪伴面板" / "index.html").read_text(encoding="utf-8")
         script = (ROOT / "pages" / "陪伴面板" / "app.js").read_text(encoding="utf-8")
 

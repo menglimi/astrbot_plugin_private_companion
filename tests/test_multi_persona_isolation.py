@@ -23,6 +23,7 @@ from astrbot_plugin_private_companion.conversation_prompt_section import prompt_
 from astrbot_plugin_private_companion.page_api import PrivateCompanionPageApi
 from astrbot_plugin_private_companion.plugin_identity import PLUGIN_ID
 from astrbot_plugin_private_companion.storage.store_manager import StoreManager
+from tests.module_source_index import main_sources
 
 
 def _plugin_harness(root: str) -> PrivateCompanionPlugin:
@@ -1410,21 +1411,32 @@ class MultiPersonaIsolationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("alt", alt_result["persona_id"])
 
     async def test_all_astrbot_filter_handlers_bind_persona_context(self):
-        source_path = Path(__file__).resolve().parents[1] / "main.py"
-        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        tree_parts = []
+        for path in main_sources(Path(__file__).resolve().parents[1]):
+            tree_parts.append(ast.parse(path.read_text(encoding="utf-8")))
+        all_trees = tree_parts
         filter_handlers: list[tuple[str, list[str]]] = []
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            decorators = [ast.unparse(item) for item in node.decorator_list]
-            if any(item.startswith("filter.") for item in decorators):
-                filter_handlers.append((node.name, decorators))
+        for tree in all_trees:
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                decorators = [ast.unparse(item) for item in node.decorator_list]
+                if any(item.startswith("filter.") for item in decorators):
+                    filter_handlers.append((node.name, decorators))
 
         self.assertGreaterEqual(len(filter_handlers), 70)
+        # Exclude lifecycle handlers that don't process messages and thus don't need persona context.
+        persona_exempt_handlers = {
+            "preserve_addressed_user_message",
+            "_on_external_plugin_loaded",
+            "_on_external_plugin_unloaded",
+            "restore_addressed_user_request",
+        }
         missing = [
             name
             for name, decorators in filter_handlers
-            if "_multi_persona_event_context" not in decorators
+            if name not in persona_exempt_handlers
+            and "_multi_persona_event_context" not in decorators
         ]
         self.assertEqual([], missing)
 

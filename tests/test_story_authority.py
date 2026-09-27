@@ -19,6 +19,12 @@ from story_migration_contract import (
     canonical_story_snapshot_payload,
 )
 
+from tests.module_source_index import (
+    class_body_defs_for_file,
+    file_family_source_text,
+    iter_class_methods,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = f"_companion_story_authority_tests_{uuid.uuid4().hex}"
@@ -67,16 +73,12 @@ def _controller(*, drain: float = 0.2, ttl: float = 1.0):
 
 
 def _persona_id_harness_type() -> type:
-    tree = ast.parse((ROOT / "main.py").read_text(encoding="utf-8"))
-    owner = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.ClassDef)
-        and node.name == "PrivateCompanionPlugin"
-    )
+    # _persona_profile_ids 已拆入 main_persona_routing.py 的域 mixin，故不能只读
+    # 宿主单文件 main.py；改用跨模块聚合的 class_body_defs 收集目标方法。
+    from module_source_index import class_body_defs
     methods = [
         copy.deepcopy(node)
-        for node in owner.body
+        for node in class_body_defs(ROOT, "main", "PrivateCompanionPlugin")
         if isinstance(node, ast.FunctionDef)
         and node.name in {
             "_configured_multi_persona_ids",
@@ -570,15 +572,24 @@ def test_strict_persona_id_enumeration_rejects_ambiguous_config_and_symlinks(
         host._persona_profile_ids(strict=True)
 
 
-def _decorators(filename: str, class_name: str) -> dict[str, set[str]]:
-    tree = ast.parse((ROOT / filename).read_text(encoding="utf-8"))
-    owner = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.ClassDef) and node.name == class_name
-    )
+def _decorators(filename: str, class_name: str, aggregate: bool = False) -> dict[str, set[str]]:
+    if aggregate:
+        # _apply_migration_normalized 已拆入 page_api_migration.py 的域 mixin，
+        # 只读宿主 page_api.py 会漏掉它；改用跨模块聚合的 iter_class_methods。
+        from pathlib import Path as _Path
+        result: dict[str, set[str]] = {}
+        for method, _owner in iter_class_methods(ROOT, _Path(filename).stem, class_name):
+            result[method.name] = {
+                decorator.func.id
+                for decorator in method.decorator_list
+                if isinstance(decorator, ast.Call)
+                and isinstance(decorator.func, ast.Name)
+            }
+        return result
+    # 拆分后方法落在域 mixin 中，用 class_body_defs_for_file 聚合宿主+域类体。
+    body = class_body_defs_for_file(ROOT, filename, class_name)
     result: dict[str, set[str]] = {}
-    for method in owner.body:
+    for method in body:
         if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         result[method.name] = {
@@ -616,7 +627,7 @@ def test_story_mutation_root_allowlist_is_gated_and_read_tool_stays_read_only() 
             "story_legacy_sync_operation",
         }
 
-    page = _decorators("page_api.py", "PrivateCompanionPageApi")
+    page = _decorators("page_api.py", "PrivateCompanionPageApi", aggregate=True)
     for name in {
         "update_creative_project",
         "update_creative_chunk",
@@ -643,18 +654,13 @@ def test_story_mutation_root_allowlist_is_gated_and_read_tool_stays_read_only() 
         "_rebuild_creative_memory_from_project": "_content_story_execute",
         "_maybe_generate_creative_cover": "story_authority_controller",
     }
-    bridge_tree = ast.parse(
-        (ROOT / "content_companion_bridge.py").read_text(encoding="utf-8")
-    )
-    bridge_owner = next(
-        node
-        for node in bridge_tree.body
-        if isinstance(node, ast.ClassDef)
-        and node.name == "ContentCompanionBridgeMixin"
+    # 拆分后桥接方法落在 content_companion_bridge_part*.py 域模块中，需聚合查找。
+    bridge_body = class_body_defs_for_file(
+        ROOT, "content_companion_bridge.py", "ContentCompanionBridgeMixin"
     )
     bridge_methods = {
         node.name: node
-        for node in bridge_owner.body
+        for node in bridge_body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
     for name, gate in bridge_gates.items():
@@ -663,7 +669,9 @@ def test_story_mutation_root_allowlist_is_gated_and_read_tool_stays_read_only() 
         assert bridge[name] == set()
         assert gate in ast.unparse(bridge_methods[name])
 
-    tool_tree = ast.parse((ROOT / "llm_tool_actions.py").read_text(encoding="utf-8"))
+    from module_source_index import llm_tool_actions_mixin_tree
+
+    tool_tree = llm_tool_actions_mixin_tree(ROOT)
     tool_owner = next(
         node
         for node in tool_tree.body
@@ -708,7 +716,9 @@ def test_story_mutation_root_allowlist_is_gated_and_read_tool_stays_read_only() 
 def test_s4_surface_enforces_unique_content_routing_after_commit() -> None:
     authority_source = (ROOT / "story_authority.py").read_text(encoding="utf-8")
     content_source = (ROOT / "extension_api_content.py").read_text(encoding="utf-8")
-    handoff_source = (ROOT / "story_handoff.py").read_text(encoding="utf-8")
+    # 拆分后 STORY_MIGRATION_COMMIT_VERSION 定义在 story_handoff_part01.py，
+    # 只读 story_handoff.py 宿主会漏掉。
+    handoff_source = file_family_source_text(ROOT, "story_handoff.py")
     bridge_source = (ROOT / "content_companion_bridge.py").read_text(
         encoding="utf-8"
     )

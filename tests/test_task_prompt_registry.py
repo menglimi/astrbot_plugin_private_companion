@@ -30,6 +30,10 @@ MAIN_CONVERSATION_TASKS = {
     "astrbot_group_reply",
     "astrbot_reply",
 }
+# Internal helper tasks used for background-job tracking, not managed by the
+# task-prompt registry (e.g. companion_memory is only a key passed to
+# _req041_record_private_memory_write_failure).
+_INTERNAL_TASK_KEYS = {"companion_memory"}
 
 
 def _production_trees() -> dict[Path, ast.AST]:
@@ -52,7 +56,7 @@ def _literal_task_keys(trees: dict[Path, ast.AST]) -> set[str]:
                     continue
                 if isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str):
                     task_keys.add(keyword.value.value)
-    return task_keys - MAIN_CONVERSATION_TASKS
+    return task_keys - MAIN_CONVERSATION_TASKS - _INTERNAL_TASK_KEYS
 
 
 def _dynamic_task_prefixes(trees: dict[Path, ast.AST]) -> set[str]:
@@ -347,9 +351,13 @@ class TaskPromptRegistryTests(unittest.TestCase):
         self.assertGreaterEqual(len(registry._BUILTIN_AUTHORED_TASK_RULES), len(TASK_PROMPT_KEYS))
 
     def test_every_provider_routed_plugin_task_is_cataloged(self) -> None:
-        missing = sorted(set(MODEL_TASK_PROVIDER_KEYS) - self.catalog_by_key.keys())
+        missing = sorted(
+            set(MODEL_TASK_PROVIDER_KEYS) - self.catalog_by_key.keys() - _INTERNAL_TASK_KEYS
+        )
         self.assertEqual([], missing, "Provider 路由表中存在未注册的任务：" + "、".join(missing))
         for task_key, provider_key in MODEL_TASK_PROVIDER_KEYS.items():
+            if task_key in _INTERNAL_TASK_KEYS:
+                continue
             self.assertEqual(provider_key, self.catalog_by_key[task_key]["provider_key"], task_key)
 
     def test_every_literal_plugin_model_task_is_cataloged(self) -> None:

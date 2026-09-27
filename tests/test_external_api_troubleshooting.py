@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import unittest
 from copy import deepcopy
 from pathlib import Path
@@ -12,6 +13,72 @@ from astrbot_plugin_private_companion.page_api import PrivateCompanionPageApi
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _request_patch_targets(method_name: str) -> tuple[object, ...]:
+    """返回该方法体里 ``request`` 名字实际解析到的所有模块。
+
+    拆分后每个 ``page_api_*.py``/``main_*.py`` mixin 都各自
+    ``from quart import request``，方法体里的 ``request`` 因此解析到 **mixin
+    自己模块的全局**。只 patch 宿主模块对已搬走的方法完全无效。
+
+    这里从方法定义所在类的 ``__module__`` 出发做 MRO 反查，取每个声明了
+    ``request`` 属性的模块，既精确又不依赖硬编码的模块名。
+    """
+    module_names: list[str] = [getattr(PrivateCompanionPageApi, "__module__", "")]
+    for klass in getattr(PrivateCompanionPageApi, "__mro__", ()):
+        name = getattr(klass, "__module__", "")
+        if name and name not in module_names:
+            module_names.append(name)
+
+    targets: list[object] = []
+    seen: set[int] = set()
+    for name in module_names:
+        module = sys.modules.get(name)
+        if module is None or id(module) in seen:
+            continue
+        if hasattr(module, "request"):
+            seen.add(id(module))
+            targets.append(module)
+    return tuple(targets)
+
+
+def patch_request_for_method(method_name: str, fake_request: object):
+    """把 ``method_name`` 实际会解析到的 ``request`` 全部替换为 ``fake_request``。
+
+    ``_request_patch_targets`` 走 MRO 反查，因此必然包含方法定义所在的那个
+    mixin 模块。断言 target 非空是为了避免「patch 打空、测试却因为别的原因变绿」
+    这种假阳性：一旦拆分让某方法不再解析到任何带 ``request`` 的模块，这里会
+    直接失败而不是静默放过。
+    """
+    targets = _request_patch_targets(method_name)
+    assert targets, f"{method_name} 未解析到任何声明了 request 的模块"
+    return _MultiModuleRequestPatch(targets, fake_request)
+
+
+class _MultiModuleRequestPatch:
+    """在多继承 MRO 上的每个模块里替换同名全局（退出时精确还原）。"""
+
+    def __init__(self, modules: tuple[object, ...], value: object) -> None:
+        self._modules = modules
+        self._value = value
+        self._active: list[tuple[object, object, bool]] = []
+
+    def __enter__(self) -> "_MultiModuleRequestPatch":
+        for module in self._modules:
+            had = hasattr(module, "request")
+            self._active.append((module, getattr(module, "request", None), had))
+            setattr(module, "request", self._value)
+        return self
+
+    def __exit__(self, *_exc: object) -> bool:
+        for module, original, had in reversed(self._active):
+            if had:
+                setattr(module, "request", original)
+            else:
+                delattr(module, "request")
+        self._active.clear()
+        return False
 
 
 class _ExternalApiPluginHarness:
@@ -332,7 +399,7 @@ class ExternalApiTroubleshootingBackendTests(unittest.IsolatedAsyncioTestCase):
         for test_type, payload in payloads.items():
             with self.subTest(test_type=test_type):
                 fake_request = SimpleNamespace(get_json=AsyncMock(return_value=payload))
-                with patch("astrbot_plugin_private_companion.page_api.request", fake_request):
+                with patch_request_for_method("run_troubleshooting_test", fake_request):
                     response = await self.api.run_troubleshooting_test()
                 result = response["data"]
                 self.assertTrue(response["success"])
@@ -356,7 +423,7 @@ class ExternalApiTroubleshootingBackendTests(unittest.IsolatedAsyncioTestCase):
         fake_request = SimpleNamespace(get_json=AsyncMock(return_value=payload))
         failure = RuntimeError(f"Authorization: Bearer {secret}")
         with (
-            patch("astrbot_plugin_private_companion.page_api.request", fake_request),
+            patch_request_for_method("run_troubleshooting_test", fake_request),
             patch.object(self.api, "_run_external_api_test", AsyncMock(side_effect=failure)),
             patch("astrbot_plugin_private_companion.page_api.logger.warning") as warning,
         ):
@@ -434,8 +501,9 @@ class ExternalApiTroubleshootingUiTests(unittest.TestCase):
         self.assertIn("external-api-result-preview", self.script)
 
     def test_active_search_and_group_slang_share_the_same_runtime_entry(self) -> None:
-        news = (ROOT / "news_exploration.py").read_text(encoding="utf-8")
-        group = (ROOT / "group_observation.py").read_text(encoding="utf-8")
+        from module_source_index import file_family_source_text
+        news = file_family_source_text(ROOT, "news_exploration.py")
+        group = file_family_source_text(ROOT, "group_observation.py")
         self.assertIn("async def _run_astrbot_web_search", news)
         self.assertIn('getattr(self, "_run_astrbot_web_search", None)', group)
         self.assertIn("results = await searcher(", group)

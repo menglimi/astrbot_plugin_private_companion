@@ -19,6 +19,7 @@ if str(ROOT) not in os.sys.path:
     os.sys.path.insert(0, str(ROOT))
 
 from owned_reaction_asset_catalog import OwnedReactionAssetCatalog  # noqa: E402
+from tests.module_source_index import find_method, llm_tool_actions_source_text  # noqa: E402
 
 
 def _single_line(value: Any, limit: int = 1000) -> str:
@@ -37,12 +38,10 @@ def _safe_float(value: Any, default: float, minimum: float, maximum: float) -> f
 
 
 def _load_owned_lookup_impl() -> Any:
-    source = (ROOT / "llm_tool_actions.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "LlmToolActionsMixin")
-    method = next(
-        node for node in owner.body if isinstance(node, ast.FunctionDef) and node.name == "_find_owned_reaction_asset"
+    method = find_method(
+        ROOT, "llm_tool_actions", "LlmToolActionsMixin", "_find_owned_reaction_asset"
     )
+    assert method is not None, "_find_owned_reaction_asset 未在 llm_tool_actions 族中定位"
     namespace: dict[str, Any] = {
         "Any": Any,
         "logger": logging.getLogger("test_req021_q6"),
@@ -134,7 +133,7 @@ class OwnedReactionToolAndPanelContractTests(unittest.TestCase):
 
         self.assertEqual("owned_reaction_assets", lookup["source"] if lookup else "")
         self.assertEqual("smile-01", lookup["image_id"] if lookup else "")
-        source = (ROOT / "llm_tool_actions.py").read_text(encoding="utf-8")
+        source = llm_tool_actions_source_text(ROOT)
         runtime_source = source[source.index("async def _pc_find_reaction_image_impl"):]
         self.assertLess(
             runtime_source.index("owned_lookup_finder = getattr"),
@@ -144,7 +143,10 @@ class OwnedReactionToolAndPanelContractTests(unittest.TestCase):
         self.assertIn("or internal_attachment", source)
 
     def test_panel_is_id_only_and_routes_are_read_only(self) -> None:
-        api_source = (ROOT / "page_api.py").read_text(encoding="utf-8")
+        api_source = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(ROOT.glob("page_api*.py"))
+        )
         panel_source = (ROOT / "pages" / "陪伴面板" / "app.js").read_text(encoding="utf-8")
         routes = {
             (node.elts[0].value, node.elts[2].elts[0].value)

@@ -23,14 +23,34 @@ from companion_interaction_expression import (  # noqa: E402
 
 
 def _class_method(filename: str, class_name: str, method_name: str, namespace: dict[str, Any]):
+    # daily_state.py 已按域拆分，方法体可能落在 daily_state_*.py。
+    # 先按原路径找，找不到再扫同族域模块（module_source_index），断言语义不变。
     source = (ROOT / filename).read_text(encoding="utf-8")
     tree = ast.parse(source)
-    owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == class_name)
-    method = next(
-        node
-        for node in owner.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == method_name
+    owner = next(
+        (node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == class_name),
+        None,
     )
+    method = None
+    if owner is not None:
+        method = next(
+            (
+                node
+                for node in owner.body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == method_name
+            ),
+            None,
+        )
+    if method is None:
+        sys.path.insert(0, str(ROOT / "tests"))
+        from module_source_index import find_method
+
+        host = Path(filename).stem
+        method = find_method(ROOT, host, class_name, method_name)
+        if method is None:
+            raise StopIteration(
+                f"{method_name} 未在 {filename} 及其域模块中找到"
+            )
     module = ast.Module(
         body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0), method],
         type_ignores=[],
@@ -295,6 +315,31 @@ def test_strict_llm_provider_skips_peak_replacement_and_fallback() -> None:
         @staticmethod
         def _sensitive_model_replacement_keyword(_completion: str) -> str:
             return ""
+
+        def _apply_task_prompt_override_for_call(self, task, prompt, system_prompt=None):
+            return prompt, system_prompt
+
+        @staticmethod
+        def _llm_backoff_key(task: str, provider_id: str, prompt: str) -> str:
+            return f"{task}:{provider_id}:{prompt}"
+
+        def _llm_request_retry_after(self, key: str, *, defer: bool = False) -> float:
+            return 0.0
+
+        @staticmethod
+        def _background_llm_request_policy(*_args: Any, **_kwargs: Any) -> dict:
+            return {}
+
+        @staticmethod
+        def _llm_result_unknown_timeout(_e: Any) -> bool:
+            return False
+
+        @staticmethod
+        def _llm_streaming_enabled_for_call(*_args: Any, **_kwargs: Any) -> bool:
+            return False
+
+        def _llm_context_retry_kwargs(self, provider_id: str, policy: dict) -> dict:
+            return {}
 
     Host._llm_call = llm_call
     host = Host()

@@ -1,0 +1,10 @@
+# -*- coding: utf-8 -*-
+from .main_private_passive_prompt_shared import (
+    logger,
+)
+from .main_private_passive_prompt_shared import logger
+from .main_private_passive_prompt_part03 import PrivateCompanionPluginPrivatePassivePromptPart03Mixin
+from .main_private_passive_prompt_part02 import PrivateCompanionPluginPrivatePassivePromptPart02Mixin
+from .main_private_passive_prompt_part01 import PrivateCompanionPluginPrivatePassivePromptPart01Mixin
+class PrivateCompanionPluginPrivatePassivePromptMixin(PrivateCompanionPluginPrivatePassivePromptPart01Mixin, PrivateCompanionPluginPrivatePassivePromptPart02Mixin, PrivateCompanionPluginPrivatePassivePromptPart03Mixin):
+    """private_passive_prompt（从 PrivateCompanionPlugin 拆出）。"""

@@ -4,6 +4,8 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+from tests.module_source_index import page_api_source_text
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -16,7 +18,7 @@ class ImageModelConfigUiTests(unittest.TestCase):
             ROOT / "pages" / "陪伴面板" / "js" / "panels" / "provider-tree.js"
         ).read_text(encoding="utf-8")
         cls.html = (ROOT / "pages" / "陪伴面板" / "index.html").read_text(encoding="utf-8")
-        cls.api = (ROOT / "page_api.py").read_text(encoding="utf-8")
+        cls.api = page_api_source_text(ROOT)
 
     def test_model_page_has_separate_image_model_navigation(self) -> None:
         self.assertIn('data-models-section="providers"', self.html)
@@ -238,7 +240,8 @@ class ImageModelConfigUiTests(unittest.TestCase):
         self.assertNotIn('featureKey === "enable_photo_text_action"', payload_function)
 
     def test_troubleshooting_points_online_model_fields_to_model_page(self) -> None:
-        handlers = (ROOT / "command_handlers.py").read_text(encoding="utf-8")
+        from module_source_index import file_family_source_text
+        handlers = file_family_source_text(ROOT, "command_handlers.py")
         self.assertIn(
             '"EXTERNAL_IMAGE_API_BASE_URL": {"label": "在线图片 API 地址", "location": "拓展页 -> 模型配置 -> 生图模型 -> 在线 API 队列"}',
             handlers,

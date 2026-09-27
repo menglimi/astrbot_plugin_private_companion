@@ -207,6 +207,10 @@ class _ReactionHarness(SceneContextMixin, LlmToolActionsMixin):
     _reaction_expression_attachment_present = staticmethod(
         PrivateCompanionPlugin._reaction_expression_attachment_present
     )
+    _tts_recover_visible_text = PrivateCompanionPlugin._tts_recover_visible_text
+    _tts_drop_photo_tool_trailing_text = PrivateCompanionPlugin._tts_drop_photo_tool_trailing_text
+    _tts_apply_reaction_expression_pass = PrivateCompanionPlugin._tts_apply_reaction_expression_pass
+    _tts_apply_photo_sentinel_guards = PrivateCompanionPlugin._tts_apply_photo_sentinel_guards
 
     def __init__(self, api: _FakeSmartImageAPI, *, sent: bool = True) -> None:
         self.api = api

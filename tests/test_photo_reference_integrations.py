@@ -71,15 +71,32 @@ with mock.patch.dict(sys.modules, _astrbot_stubs()):
 
 
 def _load_startup_background_maintenance():
-    tree = ast.parse((PLUGIN_ROOT / "main.py").read_text(encoding="utf-8"), filename="main.py")
-    plugin_class = next(
-        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "PrivateCompanionPlugin"
-    )
-    method = next(
-        node
-        for node in plugin_class.body
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_run_startup_background_maintenance"
-    )
+    # 生命周期方法已随 main.py 拆分迁至 main_lifecycle.py，跨宿主族聚合扫描
+    # main.py 与全部 main_*.py（86ebc90 范本）。
+    method = None
+    for path in [PLUGIN_ROOT / "main.py", *sorted(PLUGIN_ROOT.glob("main_*.py"))]:
+        if not path.is_file():
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.name)
+        for node in tree.body:
+            if not isinstance(node, ast.ClassDef):
+                continue
+            if node.name != "PrivateCompanionPlugin" and not node.name.startswith("PrivateCompanionPlugin"):
+                continue
+            method = next(
+                (
+                    sub
+                    for sub in node.body
+                    if isinstance(sub, ast.AsyncFunctionDef) and sub.name == "_run_startup_background_maintenance"
+                ),
+                None,
+            )
+            if method is not None:
+                break
+        if method is not None:
+            break
+    if method is None:
+        raise RuntimeError("未在 main.py / main_*.py 中定位 _run_startup_background_maintenance")
     namespace = {
         "asyncio": asyncio,
         "time": time,

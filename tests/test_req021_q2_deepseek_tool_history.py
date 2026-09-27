@@ -12,6 +12,8 @@ from tool_history_sanitizer import sanitize_openai_tool_history
 
 ROOT = Path(__file__).resolve().parents[1]
 
+from tests.module_source_index import class_body_defs
+
 
 class OpenAIToolHistorySanitizerTests(unittest.TestCase):
     def test_valid_single_and_multi_tool_groups_keep_original_objects(self) -> None:
@@ -83,9 +85,8 @@ class OpenAIToolHistorySanitizerTests(unittest.TestCase):
 
 
 def _load_main_methods(names: set[str]) -> dict[str, Any]:
-    source = (ROOT / "main.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "PrivateCompanionPlugin")
+    # 方法体已拆到 main_outbound_guard.py 等域 mixin，
+    # 故在「宿主类 + 各域 mixin 类」里聚合查找，保持原有执行语义。
     namespace: dict[str, Any] = {
         "Any": Any,
         "AstrMessageEvent": Any,
@@ -97,11 +98,16 @@ def _load_main_methods(names: set[str]) -> dict[str, Any]:
         "sanitize_openai_tool_history": sanitize_openai_tool_history,
         "logger": SimpleNamespace(info=lambda *_args, **_kwargs: None),
     }
-    for node in owner.body:
+    found: set[str] = set()
+    for node in class_body_defs(ROOT, "main", "PrivateCompanionPlugin"):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names:
             module = ast.Module(body=[copy.deepcopy(node)], type_ignores=[])
             ast.fix_missing_locations(module)
             exec(compile(module, str(ROOT / "main.py"), "exec"), namespace)
+            found.add(node.name)
+    missing = set(names) - found
+    if missing:
+        raise KeyError(sorted(missing))
     return {name: namespace[name] for name in names}
 
 

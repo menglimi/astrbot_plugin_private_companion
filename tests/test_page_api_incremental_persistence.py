@@ -11,6 +11,12 @@ USERS_GROUPS_API = ROOT / "page_api_users_groups.py"
 SAVE_METHODS = {"_save_data_sync", "_save_data_now_sync", "_schedule_data_save"}
 
 
+def _page_api_domain_sources() -> list[Path]:
+    """宿主 page_api.py 及其全部域 mixin 模块（按文件名排序，宿主在前）。"""
+    domains = sorted(ROOT.glob("page_api_*.py"))
+    return [PAGE_API, *domains]
+
+
 def _function(path: Path, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     return next(
@@ -19,6 +25,16 @@ def _function(path: Path, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and node.name == name
     )
+
+
+def _function_anywhere(name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
+    """在宿主或任一域 mixin 中定位方法（拆分后方法可能已搬离宿主）。"""
+    for path in _page_api_domain_sources():
+        try:
+            return _function(path, name)
+        except StopIteration:
+            continue
+    raise AssertionError(f"function not found in any page_api module: {name}")
 
 
 def _direct_save_calls(node: ast.AST) -> list[ast.Call]:
@@ -44,7 +60,7 @@ def _literal_sections(call: ast.Call) -> set[str] | None:
 
 
 def _single_literal_save_sections(path: Path, function_name: str) -> set[str]:
-    calls = _direct_save_calls(_function(path, function_name))
+    calls = _direct_save_calls(_function_anywhere(function_name))
     literal = [sections for call in calls if (sections := _literal_sections(call)) is not None]
     if len(literal) != 1:
         raise AssertionError(
@@ -55,8 +71,8 @@ def _single_literal_save_sections(path: Path, function_name: str) -> set[str]:
 
 class PageApiIncrementalPersistenceTests(unittest.TestCase):
     def test_page_read_endpoints_do_not_repair_or_persist_live_state(self) -> None:
-        overview = ast.unparse(_function(PAGE_API, "get_overview"))
-        expression_library = ast.unparse(_function(PAGE_API, "get_expression_library"))
+        overview = ast.unparse(_function_anywhere("get_overview"))
+        expression_library = ast.unparse(_function_anywhere("get_expression_library"))
 
         for source in (overview, expression_library):
             self.assertNotIn("_save_data_sync", source)
@@ -132,7 +148,7 @@ class PageApiIncrementalPersistenceTests(unittest.TestCase):
                 )
 
     def test_dynamic_user_update_tracks_secondary_sections(self) -> None:
-        source = ast.unparse(_function(USERS_GROUPS_API, "update_user"))
+        source = ast.unparse(_function_anywhere("update_user"))
 
         self.assertIn("save_sections = {'users'}", source)
         self.assertIn("save_sections.add('expression_voice_profile')", source)
@@ -141,11 +157,12 @@ class PageApiIncrementalPersistenceTests(unittest.TestCase):
         self.assertIn("_save_data_sync(sections=save_sections)", source)
 
     def test_migration_import_saves_the_normalized_data_sections(self) -> None:
+        # 迁移域方法已搬到 page_api_migration.py，故用 _function_anywhere 定位。
         entry_source = ast.unparse(
-            _function(PAGE_API, "_apply_migration_normalized")
+            _function_anywhere("_apply_migration_normalized")
         )
         commit_source = ast.unparse(
-            _function(PAGE_API, "_commit_migration_normalized")
+            _function_anywhere("_commit_migration_normalized")
         )
 
         self.assertIn("validator(set(data_payload), (), None)", entry_source)
@@ -189,15 +206,15 @@ class PageApiIncrementalPersistenceTests(unittest.TestCase):
         }
         for function_name, sections in expected.items():
             with self.subTest(function=function_name):
-                source = ast.unparse(_function(PAGE_API, function_name))
+                source = ast.unparse(_function_anywhere(function_name))
                 self.assertNotIn("data_payload", source)
                 for section in sections:
                     self.assertIn(repr(section), source)
 
     def test_expression_management_saves_users_groups_persona_and_voice_sections(self) -> None:
-        preview = ast.unparse(_function(PAGE_API, "preview_expression_library_import"))
-        apply_import = ast.unparse(_function(PAGE_API, "apply_expression_library_import"))
-        update = ast.unparse(_function(PAGE_API, "update_expression_library"))
+        preview = ast.unparse(_function_anywhere("preview_expression_library_import"))
+        apply_import = ast.unparse(_function_anywhere("apply_expression_library_import"))
+        update = ast.unparse(_function_anywhere("update_expression_library"))
 
         self.assertIn("source_type == 'group'", preview)
         self.assertIn("source_type == 'group'", apply_import)

@@ -264,7 +264,12 @@ class ReactionLibraryPageApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(1, updated["data"]["updated"])
 
             preview_request = SimpleNamespace(args={"id": item_id})
-            with patch("astrbot_plugin_private_companion.page_api.request", preview_request):
+            # `get_reaction_library_image_data` 住在 page_api_media mixin，其方法体里的
+            # `request` 解析到该模块自己的全局（page_api_media.py:27），patch 宿主无效。
+            with patch(
+                "astrbot_plugin_private_companion.page_api_media.request",
+                preview_request,
+            ):
                 preview = await api.get_reaction_library_image_data()
             self.assertTrue(preview["data"]["data_url"].startswith("data:image/png;base64,"))
 

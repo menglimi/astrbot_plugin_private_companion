@@ -70,8 +70,19 @@ if PACKAGE_NAME not in sys.modules:
     sys.modules[PACKAGE_NAME] = package
 
 
-if os.environ.get("ASTRBOT_CI_STUBS") == "1" and "astrbot" not in sys.modules:
-    class _Dummy:
+if "astrbot" not in sys.modules:
+    class _DummyMeta(type):
+        def __getattr__(cls, _name):
+            return cls
+
+    class _Dummy(metaclass=_DummyMeta):
+        def __new__(cls, *_args, **_kwargs):
+            instance = super().__new__(cls)
+            return instance
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
         def __call__(self, *_args, **_kwargs):
             return self
 
@@ -100,21 +111,177 @@ if os.environ.get("ASTRBOT_CI_STUBS") == "1" and "astrbot" not in sys.modules:
 
     astrbot = _module("astrbot", package=True)
     api = _module("astrbot.api", package=True)
-    event = _module("astrbot.api.event")
+    api.logger = _Logger()
+    api.AstrBotConfig = _Dummy
+    astrbot.api = api
+
+    api_event = _module("astrbot.api.event")
+    api_event.MessageChain = _Dummy
+    api_event.AstrMessageEvent = _Dummy
+    api_event.MessageEventResult = _Dummy
+    api_event.filter = _Dummy()
+    api.event = api_event
+
+    message_components = _module("astrbot.api.message_components")
+    for _name in (
+        "At",
+        "BaseMessageComponent",
+        "ComponentType",
+        "File",
+        "Image",
+        "Plain",
+        "Record",
+        "Reply",
+    ):
+        setattr(message_components, _name, _Dummy)
+    api.message_components = message_components
+
+    api_provider = _module("astrbot.api.provider")
+    api_provider.ProviderRequest = _Dummy
+    api.provider = api_provider
+
+    api_star = _module("astrbot.api.star")
+    for _name in ("Context", "Star", "StarTools", "register"):
+        setattr(api_star, _name, _Dummy)
+    api.star = api_star
+
     core = _module("astrbot.core", package=True)
+    core.file_token_service = _Dummy()
+    astrbot.core = core
+
+    main_agent = _module("astrbot.core.astr_main_agent")
+    main_agent.MainAgentBuildConfig = _Dummy
+    main_agent.build_main_agent = _Dummy()
+    main_agent._apply_prompt_prefix = _Dummy()
+    core.astr_main_agent = main_agent
+
+    agent = _module("astrbot.core.agent", package=True)
+    agent_message = _module("astrbot.core.agent.message")
+    for _name in (
+        "AssistantMessageSegment",
+        "Message",
+        "SystemMessageSegment",
+        "TextPart",
+        "UserMessageSegment",
+    ):
+        setattr(agent_message, _name, _Dummy)
+    agent.message = agent_message
+    agent_tool = _module("astrbot.core.agent.tool")
+    agent_tool.FunctionTool = _Dummy
+    agent_tool.ToolSet = _Dummy
+    agent.tool = agent_tool
+    agent_runners = _module("astrbot.core.agent.runners")
+    agent.runners = agent_runners
+    core.agent = agent
+
+    pipeline = _module("astrbot.core.pipeline", package=True)
+    core.pipeline = pipeline
+
+    db = _module("astrbot.core.db", package=True)
+    db_po = _module("astrbot.core.db.po")
+    db_po.Conversation = _Dummy
+    db.po = db_po
+    core.db = db
+
+    core_message = _module("astrbot.core.message", package=True)
+    core_message_components = _module("astrbot.core.message.components")
+    for _name in (
+        "At",
+        "BaseMessageComponent",
+        "ComponentType",
+        "Image",
+        "Plain",
+        "Record",
+        "Reply",
+    ):
+        setattr(core_message_components, _name, _Dummy)
+    core_message.components = core_message_components
+    core_message_result = _module("astrbot.core.message.message_event_result")
+    core_message_result.MessageEventResult = _Dummy
+    core_message_result.ResultContentType = _Dummy
+    core_message_result.MessageChain = _Dummy
+    core_message.message_event_result = core_message_result
+    core.message = core_message
+
+    platform = _module("astrbot.core.platform", package=True)
+    platform_message = _module("astrbot.core.platform.astrbot_message")
+    platform_message.AstrBotMessage = _Dummy
+    platform_message.MessageMember = _Dummy
+    platform.astrbot_message = platform_message
+    platform_session = _module("astrbot.core.platform.message_session")
+    platform_session.MessageSession = _Dummy
+    platform.message_session = platform_session
+    platform_message_type = _module("astrbot.core.platform.message_type")
+    platform_message_type.MessageType = _Dummy
+    platform.message_type = platform_message_type
+    platform_platform = _module("astrbot.core.platform.platform")
+    platform_platform.PlatformStatus = _Dummy
+    platform.platform = platform_platform
+    platform_metadata = _module("astrbot.core.platform.platform_metadata")
+    platform_metadata.PlatformMetadata = _Dummy
+    platform.platform_metadata = platform_metadata
+    platform_sources = _module("astrbot.core.platform.sources", package=True)
+    platform.sources = platform_sources
+    core.platform = platform
+
+    star = _module("astrbot.core.star", package=True)
+    star_handler = _module("astrbot.core.star.star_handler")
+    star_handler.EventType = _Dummy
+    star_handler.star_handlers_registry = _Dummy()
+    star.star_handler = star_handler
+    star_star = _module("astrbot.core.star.star")
+    star_star.star_map = _Dummy()
+    star.star = star_star
+    star_filter = _module("astrbot.core.star.filter", package=True)
+    star_filter_command = _module("astrbot.core.star.filter.command")
+    star_filter_command.CommandFilter = _Dummy
+    star_filter.command = star_filter_command
+    star_filter_command_group = _module("astrbot.core.star.filter.command_group")
+    star_filter_command_group.CommandGroupFilter = _Dummy
+    star_filter.command_group = star_filter_command_group
+    star_filter_event_type = _module("astrbot.core.star.filter.event_message_type")
+    star_filter_event_type.EventMessageType = _Dummy
+    star_filter_event_type.EventMessageTypeFilter = _Dummy
+    star_filter.event_message_type = star_filter_event_type
+    star.filter = star_filter
+    core.star = star
+
+    core_config = _module("astrbot.core.config", package=True)
+    core_config_astrbot = _module("astrbot.core.config.astrbot_config")
+    core_config_astrbot.AstrBotConfig = _Dummy
+    core_config.astrbot_config = core_config_astrbot
+    core_config_default = _module("astrbot.core.config.default")
+    core_config_default.CONFIG_METADATA_2 = _Dummy()
+    core_config.default = core_config_default
+    core.config = core_config
+
+    provider = _module("astrbot.core.provider", package=True)
+    provider_entities = _module("astrbot.core.provider.entities")
+    provider_entities.LLMResponse = _Dummy
+    provider.entities = provider_entities
+    core.provider = provider
+
     utils = _module("astrbot.core.utils", package=True)
     paths = _module("astrbot.core.utils.astrbot_path")
-    api.logger = _Logger()
-    event.MessageChain = _Dummy
-    event.AstrMessageEvent = _Dummy
-    event.filter = _Dummy()
     paths.get_astrbot_data_path = lambda: Path(".")
-    astrbot.api = api
+    utils.astrbot_path = paths
     core.utils = utils
 
     quart = _module("quart")
     quart.request = _Dummy()
     quart.send_file = _Dummy()
+    quart.Quart = _Dummy
+    quart.Blueprint = _Dummy
+    quart.jsonify = _Dummy()
+    quart.Response = _Dummy
+    quart.redirect = _Dummy()
+    quart.url_for = _Dummy()
+    quart.render_template = _Dummy()
+    quart.current_app = _Dummy()
+    quart.g = _Dummy()
+    quart.session = _Dummy()
+    quart.make_response = _Dummy()
+    quart.abort = _Dummy()
 
 
 _HAS_PYTEST_ASYNCIO = importlib.util.find_spec("pytest_asyncio") is not None

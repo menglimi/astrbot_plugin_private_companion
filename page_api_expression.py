@@ -1,0 +1,13 @@
+# -*- coding: utf-8 -*-
+from .page_api_expression_shared import (
+    logger,
+)
+from .page_api_expression_shared import logger
+from .page_api_expression_read_write_apply import PrivateCompanionPageApiExpressionReadWriteApplyMixin
+from .page_api_expression_reaction_diagnostics import PrivateCompanionPageApiExpressionReactionDiagnosticsMixin
+from .page_api_expression_profile_summary import PrivateCompanionPageApiExpressionProfileSummaryMixin
+from .page_api_expression_library_share import PrivateCompanionPageApiExpressionLibraryShareMixin
+from .page_api_expression_import_apply import PrivateCompanionPageApiExpressionImportApplyMixin
+from .page_api_expression_admin_scope import PrivateCompanionPageApiExpressionAdminScopeMixin
+class PrivateCompanionPageApiExpressionMixin(PrivateCompanionPageApiExpressionAdminScopeMixin, PrivateCompanionPageApiExpressionImportApplyMixin, PrivateCompanionPageApiExpressionLibraryShareMixin, PrivateCompanionPageApiExpressionProfileSummaryMixin, PrivateCompanionPageApiExpressionReactionDiagnosticsMixin, PrivateCompanionPageApiExpressionReadWriteApplyMixin):
+    """表达 / 表达库 域（从 PrivateCompanionPageApi 拆出）。"""

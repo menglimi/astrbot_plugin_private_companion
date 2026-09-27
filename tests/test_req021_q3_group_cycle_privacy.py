@@ -13,6 +13,7 @@ from group_cycle_boundary import (
     cycle_phase_from_label,
     group_cycle_boundary_prompt_section,
 )
+from module_source_index import find_method, main_sources
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -90,11 +91,24 @@ class GroupCycleBoundaryTests(unittest.TestCase):
         self.assertFalse(non_menstrual["private_boundary"])
 
 
+def _method_source(name: str) -> str:
+    # 跨宿主族（main.py + main_*.py 域 mixin）聚合定位方法源码片段。
+    for path in main_sources(ROOT):
+        try:
+            text = path.read_text(encoding="utf-8")
+            tree = ast.parse(text, filename=str(path))
+        except (OSError, SyntaxError):
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+                return ast.get_source_segment(text, node) or ""
+    raise KeyError(name)
+
+
 def _load_hook() -> Any:
-    source = (ROOT / "main.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "PrivateCompanionPlugin")
-    hook = next(node for node in owner.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "append_group_cycle_privacy_boundary")
+    # append_group_cycle_privacy_boundary 已拆入 main_group_inbound_capture.py，
+    # 用 find_method 跨宿主族定位节点（module_source_index 风格）。
+    hook = find_method(ROOT, "main", "PrivateCompanionPlugin", "append_group_cycle_privacy_boundary")
     namespace: dict[str, Any] = {
         "Any": Any,
         "AstrMessageEvent": Any,
@@ -110,7 +124,7 @@ def _load_hook() -> Any:
     }
     module = ast.Module(body=[copy.deepcopy(hook)], type_ignores=[])
     ast.fix_missing_locations(module)
-    exec(compile(module, str(ROOT / "main.py"), "exec"), namespace)
+    exec(compile(module, str(ROOT / "main_group_inbound_capture.py"), "exec"), namespace)
     return namespace["append_group_cycle_privacy_boundary"]
 
 
@@ -180,10 +194,8 @@ class GroupCycleHookTests(unittest.IsolatedAsyncioTestCase):
         schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
         item = schema["humanized_state_config"]["items"]["enable_group_cycle_awareness"]
         self.assertFalse(item["default"])
-        source = ast.get_source_segment((ROOT / "main.py").read_text(encoding="utf-8"), next(
-            node for node in ast.walk(ast.parse((ROOT / "main.py").read_text(encoding="utf-8")))
-            if isinstance(node, ast.AsyncFunctionDef) and node.name == "append_group_cycle_privacy_boundary"
-        )) or ""
+        # 方法已拆入 main_group_inbound_capture.py，用家族扫描 helper 取源码。
+        source = _method_source("append_group_cycle_privacy_boundary")
         self.assertNotIn("_ensure_daily_state", source)
         self.assertNotIn("_schedule_data_save", source)
         self.assertIn("group_cycle_boundary_prompt_section", source)

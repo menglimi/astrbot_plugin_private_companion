@@ -12,6 +12,7 @@ from migration_dual_write import MigrationDualWriteProducer
 from migration_outbox import MigrationOutbox, StaleMigrationEpoch
 from persona_config import runtime_persona_setting
 from relationship_ledger import apply_relationship_event, migrate_legacy_relationship_score
+from tests.module_source_index import class_body_defs_for_file
 from unified_person_registry import UnifiedPersonRegistry
 
 
@@ -20,9 +21,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _load_relationship_writer():
-    tree = ast.parse((ROOT / "core_store.py").read_text(encoding="utf-8"))
-    owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "CoreStoreMixin")
-    method = next(node for node in owner.body if isinstance(node, ast.FunctionDef) and node.name == "_apply_relationship_event")
+    # core_store.py 拆分后 _apply_relationship_event 落在 core_store_private_user_state.py，
+    # 按宿主文件名聚合类体（module_source_index），断言语义不变。
+    method = next(
+        node
+        for node in class_body_defs_for_file(ROOT, "core_store.py", "CoreStoreMixin")
+        if isinstance(node, ast.FunctionDef) and node.name == "_apply_relationship_event"
+    )
     module = ast.Module(body=[copy.deepcopy(method)], type_ignores=[])
     ast.fix_missing_locations(module)
     namespace = {
@@ -406,8 +411,11 @@ class MigrationDualWriteTests(unittest.TestCase):
         self.assertEqual("paused", host.req041_migration_status["state"])
 
     def test_all_live_identity_entrypoints_call_dual_write_helper(self) -> None:
-        main_source = (ROOT / "main.py").read_text(encoding="utf-8")
-        page_source = (ROOT / "page_api_users_groups.py").read_text(encoding="utf-8")
+        # 方法已随域拆分分散在 main.py 与 main_*.py，跨宿主族聚合拼接。
+        from tests.module_source_index import file_family_source_text, main_source_text
+
+        main_source = main_source_text(ROOT)
+        page_source = file_family_source_text(ROOT, "page_api_users_groups.py")
         self.assertIn("self._req041_emit_identity_dual_write(", main_source)
         self.assertGreaterEqual(page_source.count("_req041_emit_identity_dual_write"), 2)
 

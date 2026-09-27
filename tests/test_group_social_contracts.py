@@ -33,6 +33,7 @@ from astrbot_plugin_private_companion.domains.social.joke_boundary import (
     settle_joke_boundary,
 )
 from astrbot_plugin_private_companion.group_observation import GroupObservationMixin
+from tests.module_source_index import file_family_source_text
 from astrbot_plugin_private_companion.conversation_prompt_section import (
     PromptRenderMode,
     PromptSection,
@@ -276,7 +277,7 @@ class GroupObservationMountTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         schema = json.loads((root / "_conf_schema.json").read_text(encoding="utf-8"))
         items = schema["group_observation_config"]["items"]
-        bootstrap = (root / "plugin_bootstrap.py").read_text(encoding="utf-8")
+        bootstrap = file_family_source_text(root, "plugin_bootstrap.py")
         for key in (
             "enable_group_social_context",
             "enable_group_mood_detection",

@@ -23,7 +23,10 @@ class CreativeCoverUiTests(unittest.TestCase):
         cls.script = (page_root / "app.js").read_text(encoding="utf-8")
         cls.css = (page_root / "app.css").read_text(encoding="utf-8")
         cls.html = (page_root / "index.html").read_text(encoding="utf-8")
-        cls.page_api = (ROOT / "page_api.py").read_text(encoding="utf-8")
+        cls.page_api = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(ROOT.glob("page_api*.py"))
+        )
 
     def test_creative_cover_uses_bridge_readable_data_endpoint(self) -> None:
         self.assertIn('("/creative/project/cover_data", self.get_creative_project_cover_data', self.page_api)

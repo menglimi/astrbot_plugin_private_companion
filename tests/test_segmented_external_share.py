@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import inspect
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
 from astrbot.api.message_components import Plain
@@ -10,6 +11,9 @@ from astrbot_plugin_private_companion.daily_state import DailyStateMixin
 from astrbot_plugin_private_companion.event_dispatch import EventDispatchMixin
 from astrbot_plugin_private_companion.proactive_message import ProactiveMessageMixin
 from astrbot_plugin_private_companion.tts_enhancement import TtsEnhancementMixin
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class _SegmentHarness(ProactiveMessageMixin, EventDispatchMixin):
@@ -123,7 +127,8 @@ class SegmentedExternalShareTests(unittest.TestCase):
         )
 
     def test_proactive_send_loop_uses_route_and_reason_gates(self) -> None:
-        source = inspect.getsource(DailyStateMixin._tick_user)
+        from module_source_index import file_family_source_text
+        source = file_family_source_text(ROOT, "daily_state.py")
 
         self.assertIn(
             'route_options_for_send.get("disable_segmenting")',

@@ -13,6 +13,8 @@ from tool_history_sanitizer import sanitize_history_image_blocks
 
 ROOT = Path(__file__).resolve().parents[1]
 
+from tests.module_source_index import find_method
+
 
 class HistoricalImageSanitizerTests(unittest.TestCase):
     def test_image_blocks_are_replaced_without_removing_message_text(self) -> None:
@@ -42,20 +44,29 @@ class HistoricalImageSanitizerTests(unittest.TestCase):
         self.assertEqual(0, stats["changed"])
 
 
+class _Plain:
+    def __init__(self, text: str = "") -> None:
+        self.text = text
+
+
+class _Image:
+    def __init__(self, file: str = "", url: str = "") -> None:
+        self.file = file
+        self.url = url
+
+
 def _load_hook() -> Any:
-    source = (ROOT / "main.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "PrivateCompanionPlugin")
-    target = next(
-        node
-        for node in owner.body
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "sanitize_historical_image_blocks_before_provider"
-    )
+    # 该 hook 已从 main.py 拆到 main_outbound_guard.py 域 mixin，
+    # 故跨宿主 + 各域 mixin 定位，保持原有「定位不到即失败」语义。
+    target = find_method(ROOT, "main", "PrivateCompanionPlugin", "sanitize_historical_image_blocks_before_provider")
+    if target is None:
+        raise LookupError("sanitize_historical_image_blocks_before_provider")
     namespace: dict[str, Any] = {
         "Any": Any,
         "AstrMessageEvent": Any,
         "ProviderRequest": Any,
+        "Plain": _Plain,
+        "Image": _Image,
         "_multi_persona_event_context": lambda value: value,
         "filter": SimpleNamespace(on_llm_request=lambda **_kwargs: lambda value: value),
         "sanitize_history_image_blocks": sanitize_history_image_blocks,

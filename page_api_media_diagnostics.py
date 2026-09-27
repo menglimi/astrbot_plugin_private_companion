@@ -1,0 +1,11 @@
+# -*- coding: utf-8 -*-
+from .page_api_media_diagnostics_shared import (
+    logger,
+)
+from .page_api_media_diagnostics_shared import logger
+from .page_api_media_diagnostics_part04 import PrivateCompanionPageApiMediaDiagnosticsPart04Mixin
+from .page_api_media_diagnostics_part03 import PrivateCompanionPageApiMediaDiagnosticsPart03Mixin
+from .page_api_media_diagnostics_part02 import PrivateCompanionPageApiMediaDiagnosticsPart02Mixin
+from .page_api_media_diagnostics_part01 import PrivateCompanionPageApiMediaDiagnosticsPart01Mixin
+class PrivateCompanionPageApiMediaDiagnosticsMixin(PrivateCompanionPageApiMediaDiagnosticsPart01Mixin, PrivateCompanionPageApiMediaDiagnosticsPart02Mixin, PrivateCompanionPageApiMediaDiagnosticsPart03Mixin, PrivateCompanionPageApiMediaDiagnosticsPart04Mixin):
+    """生图诊断域（从 PrivateCompanionPageApiMediaMixin 拆出）。"""

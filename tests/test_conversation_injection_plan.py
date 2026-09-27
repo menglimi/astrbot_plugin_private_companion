@@ -26,6 +26,8 @@ from astrbot_plugin_private_companion.conversation_prompt_section import (
 from astrbot_plugin_private_companion.main import PrivateCompanionPlugin
 from astrbot_plugin_private_companion.prompt_surface import PromptSurface
 
+from tests.module_source_index import class_body_defs
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -879,10 +881,10 @@ class ConversationInjectionPlanTests(unittest.TestCase):
             surface.add("body")  # type: ignore[arg-type]
 
     def test_flush_hook_priority_precedes_provider_cleanup_hooks(self) -> None:
-        module = ast.parse((ROOT / "main.py").read_text(encoding="utf-8"))
-        plugin = next(node for node in module.body if isinstance(node, ast.ClassDef) and node.name == "PrivateCompanionPlugin")
+        # 巨型模块拆分后，on_llm_request 钩子方法体可能位于 main.py 或 main_*.py
+        # 域 mixin 类里，故聚合「宿主类 + 各域 mixin 类」的类体，语义不变。
         priorities: dict[str, int] = {}
-        for node in plugin.body:
+        for node in class_body_defs(ROOT, "main", "PrivateCompanionPlugin"):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             for decorator in node.decorator_list:

@@ -1,12 +1,14 @@
 from pathlib import Path
 import unittest
 
+from tests.module_source_index import page_api_source_text
+
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 APP_JS = (PLUGIN_ROOT / "pages" / "陪伴面板" / "app.js").read_text(encoding="utf-8")
 APP_CSS = (PLUGIN_ROOT / "pages" / "陪伴面板" / "app.css").read_text(encoding="utf-8")
 INDEX_HTML = (PLUGIN_ROOT / "pages" / "陪伴面板" / "index.html").read_text(encoding="utf-8")
-PAGE_API = (PLUGIN_ROOT / "page_api.py").read_text(encoding="utf-8")
+PAGE_API = page_api_source_text(PLUGIN_ROOT)
 PHOTO_REFERENCE_METADATA = (PLUGIN_ROOT / "photo_reference_metadata.py").read_text(encoding="utf-8")
 
 

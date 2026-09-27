@@ -160,7 +160,10 @@ class RelationshipProactiveSoftTargetTests(unittest.TestCase):
 
     def test_user_detail_explains_interval_slowdown(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        page_source = (root / "page_api.py").read_text(encoding="utf-8")
+        page_source = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(root.glob("page_api*.py"))
+        )
         panel_source = (root / "pages" / "陪伴面板" / "app.js").read_text(encoding="utf-8")
         self.assertIn('"unanswered_interval_multiplier"', page_source)
         self.assertIn('"unanswered_slowdown_text"', page_source)
@@ -171,7 +174,10 @@ class RelationshipProactiveSoftTargetTests(unittest.TestCase):
 
     def test_setup_guide_preserves_review_switches_and_schema_defaults(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        page_source = (root / "page_api.py").read_text(encoding="utf-8")
+        page_source = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(root.glob("page_api*.py"))
+        )
         panel_source = (root / "pages" / "陪伴面板" / "app.js").read_text(encoding="utf-8")
 
         self.assertIn('number_value("privateMaxDailyMessages", 8)', page_source)

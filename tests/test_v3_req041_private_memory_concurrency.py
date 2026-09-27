@@ -24,6 +24,7 @@ from authoritative_private_memory import (
 )
 from astrbot_plugin_private_companion import user_memory as user_memory_module
 from astrbot_plugin_private_companion.user_memory import UserMemoryMixin
+from tests.module_source_index import user_memory_mixin_tree, user_memory_source_text, file_family_source_text
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -704,7 +705,7 @@ class Req041StoreContractTests(unittest.TestCase):
 
     def test_dialogue_operation_id_follows_llm_output_not_input_hash(self):
         """方案 E：同一段输入的不同产物必须得到不同的 operation_id。"""
-        source = (ROOT / "user_memory.py").read_text(encoding="utf-8")
+        source = user_memory_source_text(ROOT)
         dialogue_source = source[
             source.index("async def _refresh_dialogue_episode_batch"):
             source.index("def _build_expression_decision_for_user")
@@ -722,7 +723,9 @@ class Req041StoreContractTests(unittest.TestCase):
 
 class Req041CriticalSectionTests(unittest.TestCase):
     def _module_tree(self, name: str) -> ast.Module:
-        return ast.parse((ROOT / name).read_text(encoding="utf-8"))
+        if name == "user_memory.py":
+            return user_memory_mixin_tree(ROOT)
+        return ast.parse(file_family_source_text(ROOT, name))
 
     def _method(self, tree: ast.Module, name: str) -> ast.AsyncFunctionDef:
         for node in ast.walk(tree):
@@ -740,32 +743,130 @@ class Req041CriticalSectionTests(unittest.TestCase):
                 blocks.append(child)
         return blocks
 
+    @staticmethod
+    def _all_data_lock_blocks(tree: ast.Module) -> list[ast.AsyncWith]:
+        """收集模块中所有持有 _data_lock 的 async with 块（不限于某个方法）。"""
+        result: list[ast.AsyncWith] = []
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                result.extend(
+                    block
+                    for block in ast.walk(node)
+                    if isinstance(block, ast.AsyncWith)
+                    and any(
+                        "_data_lock" in (ast.unparse(item.context_expr) or "")
+                        for item in block.items
+                    )
+                )
+        return result
+
     def test_every_authoritative_writer_commits_inside_one_lock_held_window(self):
-        """CAS 窗口收敛：提交与权威 revision 读取必须同处一段 _data_lock 临界区，且无 await 间隔。"""
+        """CAS 窗口收敛：提交与权威 revision 读取必须同处一段 _data_lock 临界区，且无 await 间隔。
+
+        重构后提交点常下沉到同名辅助函数（如 _handle_private_message_lock_memory），
+        而 _data_lock 临界区仍留在宿主壳（handle_private_message）。本测试须跨函数感知：
+        当辅助函数自身不含 _data_lock 块时，改校验"宿主对辅助函数的调用点"是否落在
+        宿主的 _data_lock 块内；prepare/await 不变量则在辅助函数（prepare 与 commit
+        实际同处之处）内校验。
+        """
         for filename, method_name in WRITER_SITES:
             with self.subTest(writer=f"{filename}:{method_name}"):
-                method = self._method(self._module_tree(filename), method_name)
-                commits = self._memory_api_sites(method, "commit")
+                tree = self._module_tree(filename)
+                host = self._method(tree, method_name)
+
+                # 先尝试在宿主方法内直接定位提交点（保留原始单函数语义）
+                direct_commits = self._memory_api_sites(host, "commit")
+                direct_locks = self._data_lock_blocks(host)
+                # 每个扫描单元 = (承载 prepare/commit 的函数, 该函数自身锁块 或 None=锁在宿主)
+                scan_units: list[tuple[ast.AST, list[ast.AsyncWith] | None]] = [
+                    (host, direct_locks)
+                ]
+                commits: list[int] = list(direct_commits)
+
+                if not direct_commits:
+                    # 重构后提交点常下沉到同名辅助函数；锁仍留在宿主壳
+                    candidate_names = [
+                        n.name for n in ast.walk(tree)
+                        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and method_name in n.name
+                    ]
+                    host_lock_blocks = self._data_lock_blocks(host)
+                    for name in candidate_names:
+                        cand = self._method(tree, name)
+                        cand_commits = self._memory_api_sites(cand, "commit")
+                        if not cand_commits:
+                            continue
+                        cand_locks = self._data_lock_blocks(cand)
+                        if cand_locks:
+                            # 辅助函数自带锁块：按原单函数逻辑处理
+                            scan_units.append((cand, cand_locks))
+                            commits.extend(cand_commits)
+                            continue
+                        # 辅助函数无锁块：锁在宿主，需验证"宿主对辅助函数的调用点"落在宿主锁内
+                        self.assertTrue(
+                            host_lock_blocks,
+                            f"{filename}:{method_name} 宿主函数没有 _data_lock 块，"
+                            f"却把提交下沉到无锁辅助函数 {name}",
+                        )
+                        call_lines = [
+                            node.lineno for node in ast.walk(host)
+                            if isinstance(node, ast.Call)
+                            and isinstance(node.func, ast.Name)
+                            and node.func.id == name
+                        ]
+                        self.assertTrue(
+                            call_lines,
+                            f"{filename}:{method_name} 未在宿主内找到对 {name} 的调用",
+                        )
+                        for call_line in call_lines:
+                            enclosing = [
+                                block for block in host_lock_blocks
+                                if block.lineno <= call_line <= (block.end_lineno or block.lineno)
+                            ]
+                            self.assertTrue(
+                                enclosing,
+                                f"{filename}:{method_name} 对提交辅助函数 {name} 的调用"
+                                f"(行 {call_line}) 未落在宿主 _data_lock 内",
+                            )
+                        # prepare/await 不变量在辅助函数内校验（prepare 与 commit 同处）
+                        scan_units.append((cand, None))
+                        commits.extend(cand_commits)
+
                 self.assertTrue(commits, f"{filename}:{method_name} 没有提交点")
-                for commit_line in commits:
-                    enclosing = [
-                        block for block in self._data_lock_blocks(method)
-                        if block.lineno <= commit_line <= (block.end_lineno or block.lineno)
-                    ]
-                    self.assertTrue(enclosing, f"{filename}:{method_name} 的提交点未持有 _data_lock")
-                    block = min(enclosing, key=lambda item: item.lineno)
-                    prepares = self._memory_api_sites(block, "prepare")
-                    self.assertTrue(prepares, f"{filename}:{method_name} 未在同一临界区内重读权威 revision")
-                    lower = max(prepares)
-                    waits = [
-                        node.lineno for node in ast.walk(block)
-                        if isinstance(node, ast.Await) and lower < node.lineno < commit_line
-                    ]
-                    self.assertEqual(
-                        [],
-                        waits,
-                        f"{filename}:{method_name} 在权威 revision 读取与提交之间跨了 await",
-                    )
+                # 对每个承载提交的函数单元做 prepare/await 不变量校验
+                for unit_func, unit_locks in scan_units:
+                    unit_commits = self._memory_api_sites(unit_func, "commit")
+                    if not unit_commits:
+                        continue
+                    for commit_line in unit_commits:
+                        if unit_locks is not None:
+                            enclosing = [
+                                block for block in unit_locks
+                                if block.lineno <= commit_line <= (block.end_lineno or block.lineno)
+                            ]
+                            self.assertTrue(
+                                enclosing,
+                                f"{filename}:{method_name} 的提交点未持有 _data_lock",
+                            )
+                            block = min(enclosing, key=lambda item: item.lineno)
+                        else:
+                            # 锁在宿主层已校验；以整个辅助函数作为 prepare/await 扫描范围
+                            block = unit_func
+                        prepares = self._memory_api_sites(block, "prepare")
+                        self.assertTrue(
+                            prepares,
+                            f"{filename}:{method_name} 未在同一临界区内重读权威 revision",
+                        )
+                        lower = max(prepares)
+                        waits = [
+                            node.lineno for node in ast.walk(block)
+                            if isinstance(node, ast.Await) and lower < node.lineno < commit_line
+                        ]
+                        self.assertEqual(
+                            [],
+                            waits,
+                            f"{filename}:{method_name} 在权威 revision 读取与提交之间跨了 await",
+                        )
 
     @staticmethod
     def _memory_api_sites(node: ast.AST, action: str) -> list[int]:

@@ -41,6 +41,14 @@ from astrbot_plugin_private_companion.runtime_config_dispatcher import TTS_RUNTI
 
 ROOT = Path(__file__).resolve().parents[1]
 
+from tests.module_source_index import (  # noqa: E402
+    class_body_defs_for_file,
+    file_family_source_text,
+    find_method,
+    proactive_message_source_text,
+    sources_for_file,
+)
+
 
 class _Logger:
     def _noop(self, *_args: Any, **_kwargs: Any) -> None:
@@ -77,18 +85,35 @@ def _single_line(value: Any, limit: int = 80) -> str:
 
 
 def _class_method(filename: str, class_name: str, method_name: str, namespace: dict[str, Any]) -> Any:
-    path = ROOT / filename
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == class_name)
-    method = next(
-        node
-        for node in owner.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == method_name
+    # 拆分后方法可能已搬离宿主到 page_api_*.py / core_store_*.py 的 mixin，
+    # 按方法名跨域定位（沿 tests/module_source_index 的既有约定）。
+    sources: list[Path] = []
+    for candidate in sources_for_file(ROOT, filename):
+        if candidate not in sources:
+            sources.append(candidate)
+    if ROOT / filename not in sources:
+        sources.insert(0, ROOT / filename)
+    for pattern in ("page_api_*.py", "user_memory_*.py"):
+        for p in sorted(ROOT.glob(pattern)):
+            if p not in sources:
+                sources.append(p)
+    for path in sources:
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError):
+            continue
+        for owner in ast.walk(tree):
+            if not isinstance(owner, ast.ClassDef):
+                continue
+            for sub in owner.body:
+                if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)) and sub.name == method_name:
+                    module = ast.Module(body=[copy.deepcopy(sub)], type_ignores=[])
+                    ast.fix_missing_locations(module)
+                    exec(compile(module, str(path), "exec"), namespace)
+                    return namespace[method_name]
+    raise AssertionError(
+        f"method {method_name!r} not found in {filename} or any page_api_*.py mixin"
     )
-    module = ast.Module(body=[copy.deepcopy(method)], type_ignores=[])
-    ast.fix_missing_locations(module)
-    exec(compile(module, str(path), "exec"), namespace)
-    return namespace[method_name]
 
 
 NOW = 1_700_000_000.0
@@ -1345,6 +1370,31 @@ def test_strict_llm_provider_skips_peak_replacement_and_fallback() -> None:
         def _sensitive_model_replacement_keyword(_completion: str) -> str:
             return ""
 
+        def _apply_task_prompt_override_for_call(self, task, prompt, system_prompt=None):
+            return prompt, system_prompt
+
+        @staticmethod
+        def _llm_backoff_key(task: str, provider_id: str, prompt: str) -> str:
+            return f"{task}:{provider_id}:{prompt}"
+
+        def _llm_request_retry_after(self, key: str, *, defer: bool = False) -> float:
+            return 0.0
+
+        @staticmethod
+        def _background_llm_request_policy(*_args: Any, **_kwargs: Any) -> dict:
+            return {}
+
+        @staticmethod
+        def _llm_result_unknown_timeout(_e: Any) -> bool:
+            return False
+
+        @staticmethod
+        def _llm_streaming_enabled_for_call(*_args: Any, **_kwargs: Any) -> bool:
+            return False
+
+        def _llm_context_retry_kwargs(self, provider_id: str, policy: dict) -> dict:
+            return {}
+
     Host._llm_call = llm_call
     host = Host()
     result = asyncio.run(
@@ -1400,19 +1450,22 @@ def test_non_adult_output_guard_and_shared_consumers_are_wired() -> None:
     ):
         assert detector(normal_context) is False
 
-    main_tree = ast.parse((ROOT / "main.py").read_text(encoding="utf-8"))
-    plugin = next(node for node in main_tree.body if isinstance(node, ast.ClassDef) and node.name == "PrivateCompanionPlugin")
-    hook = next(node for node in plugin.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "inject_unified_relationship_expression")
+    # 方法已随域拆分分散在 main.py 与 main_*.py，跨宿主族聚合定位。
+    from tests.module_source_index import find_method
+
+    hook = find_method(ROOT, "main", "PrivateCompanionPlugin", "inject_unified_relationship_expression")
+    assert hook is not None
     hook_names = {node.id for node in ast.walk(hook) if isinstance(node, ast.Name)}
     assert {"content_intent_from_text", "expression_decision_prompt_section"} <= hook_names
     assert "prompt_section" not in hook_names
     assert "_private_companion_expression_decision" in ast.unparse(hook)
 
     for filename in ("proactive.py", "proactive_message.py"):
-        source = (ROOT / filename).read_text(encoding="utf-8")
+        # 重构后 proactive / proactive_message 的正文可能落在域模块中，跨模块联合检查。
+        source = file_family_source_text(ROOT, filename)
         assert "_build_expression_decision_for_user" in source, filename
         assert '"requested_content_tier": "normal"' in source, filename
-    tts_source = (ROOT / "tts_enhancement.py").read_text(encoding="utf-8")
+    tts_source = file_family_source_text(ROOT, "tts_enhancement.py")
     assert '_private_companion_expression_decision' in tts_source
     assert 'expression.get("tts_style")' in tts_source
     assert "语音只能收敛语气，不能扩大文字内容尺度" in tts_source
@@ -1420,14 +1473,26 @@ def test_non_adult_output_guard_and_shared_consumers_are_wired() -> None:
 
 def test_legacy_relationship_state_has_no_parallel_expression_consumers() -> None:
     def method_source(filename: str, class_name: str, method_name: str) -> str:
-        tree = ast.parse((ROOT / filename).read_text(encoding="utf-8"))
-        owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == class_name)
-        method = next(
-            node
-            for node in owner.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == method_name
+        # 重构后 proactive_message 的方法已拆到域模块，改用跨模块定位。
+        if filename == "proactive_message.py":
+            node = find_method(ROOT, "proactive_message", class_name, method_name)
+            assert node is not None, f"{class_name}.{method_name} 未找到"
+            return ast.unparse(node)
+        if filename == "user_memory.py":
+            node = find_method(ROOT, "user_memory", class_name, method_name)
+            assert node is not None, f"{class_name}.{method_name} 未找到"
+            return ast.unparse(node)
+        if filename == "llm_tool_actions.py":
+            node = find_method(ROOT, "llm_tool_actions", class_name, method_name)
+            assert node is not None, f"{class_name}.{method_name} 未找到"
+            return ast.unparse(node)
+        node = next(
+            candidate
+            for candidate in class_body_defs_for_file(ROOT, filename, class_name)
+            if isinstance(candidate, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and candidate.name == method_name
         )
-        return ast.unparse(method)
+        return ast.unparse(node)
 
     user_source = (ROOT / "user_memory.py").read_text(encoding="utf-8")
     assert "def _relationship_approach_hint" not in user_source
@@ -1465,7 +1530,10 @@ def test_legacy_relationship_state_has_no_parallel_expression_consumers() -> Non
     assert "relationship_state" not in tool_source
     assert "_build_expression_decision_for_user" in tool_source
 
-    main_source = (ROOT / "main.py").read_text(encoding="utf-8")
+    # main.py 的源码断言需跨宿主族聚合（方法已分散到 main_*.py）。
+    from tests.module_source_index import main_source_text
+
+    main_source = main_source_text(ROOT)
     assert main_source.count("expression_decision_prompt_section(projection)") == 1
 
 

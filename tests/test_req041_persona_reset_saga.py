@@ -13,21 +13,23 @@ import uuid
 from identity_namespace import NamespaceContext
 from migration_scoped_projection import scoped_persona_ref
 from astrbot_plugin_private_companion.persona_config import runtime_persona_setting
+from tests.module_source_index import class_body_defs
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def _load_methods(*names: str) -> dict[str, Any]:
-    tree = ast.parse((ROOT / "main.py").read_text(encoding="utf-8"))
-    owner = next(
-        node for node in tree.body
-        if isinstance(node, ast.ClassDef) and node.name == "PrivateCompanionPlugin"
-    )
+    # 巨型模块拆分后，方法体可能位于 main.py 或 main_*.py 域 mixin 类里，
+    # 故聚合「宿主类 + 各域 mixin 类」的类体，保持原有断言语义。
     selected = [
-        copy.deepcopy(node) for node in owner.body
+        copy.deepcopy(node)
+        for node in class_body_defs(ROOT, "main", "PrivateCompanionPlugin")
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names
     ]
+    missing = set(names) - {node.name for node in selected}
+    if missing:
+        raise KeyError(sorted(missing))
     for node in selected:
         node.decorator_list = []
     module = ast.Module(body=selected, type_ignores=[])

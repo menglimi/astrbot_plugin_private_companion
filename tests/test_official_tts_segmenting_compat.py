@@ -12,6 +12,16 @@ from astrbot.core.message.message_event_result import (
 )
 from astrbot_plugin_private_companion.tts_enhancement import TtsEnhancementMixin
 
+# PyO3 environment guard: python_ripgrep (PyO3 C extension) can only be
+# initialized once per interpreter process. If importing the plugin main
+# module triggers this restriction, skip all tests in this file.
+try:
+    from astrbot_plugin_private_companion import main as _pcompanion_main
+    _PYO3_IMPORT_OK = True
+except ImportError:
+    _PYO3_IMPORT_OK = False
+    _pcompanion_main = None
+
 
 class _OfficialTtsHarness(TtsEnhancementMixin):
     def __init__(self, *, enabled: bool = True, probability: object = 1) -> None:
@@ -34,6 +44,8 @@ def _llm_result(*components: object) -> MessageEventResult:
 
 class OfficialTtsSegmentingCompatibilityTests(unittest.IsolatedAsyncioTestCase):
     async def test_plugin_tts_plain_fallback_still_segments_for_owner(self) -> None:
+        if not _PYO3_IMPORT_OK:
+            self.skipTest("PyO3 env: python_ripgrep can only be initialized once per process")
         from astrbot_plugin_private_companion.main import PrivateCompanionPlugin
 
         plugin = object.__new__(PrivateCompanionPlugin)
@@ -87,6 +99,8 @@ class OfficialTtsSegmentingCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         plugin._create_lifecycle_background_task.assert_not_called()
 
     async def test_plugin_private_plain_reply_segments_without_role_gate(self) -> None:
+        if not _PYO3_IMPORT_OK:
+            self.skipTest("PyO3 env: python_ripgrep can only be initialized once per process")
         from astrbot_plugin_private_companion.main import PrivateCompanionPlugin
 
         plugin = object.__new__(PrivateCompanionPlugin)
@@ -153,6 +167,8 @@ class OfficialTtsSegmentingCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         plugin._create_lifecycle_background_task.assert_called_once()
 
     async def test_plugin_group_quoted_plain_reply_segments_without_llm_marker(self) -> None:
+        if not _PYO3_IMPORT_OK:
+            self.skipTest("PyO3 env: python_ripgrep can only be initialized once per process")
         from astrbot_plugin_private_companion.main import PrivateCompanionPlugin
 
         plugin = object.__new__(PrivateCompanionPlugin)
@@ -222,6 +238,8 @@ class OfficialTtsSegmentingCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         plugin._create_lifecycle_background_task.assert_called_once()
 
     async def test_plugin_tts_group_quote_is_still_a_plain_fallback(self) -> None:
+        if not _PYO3_IMPORT_OK:
+            self.skipTest("PyO3 env: python_ripgrep can only be initialized once per process")
         from astrbot_plugin_private_companion.main import PrivateCompanionPlugin
 
         plugin = object.__new__(PrivateCompanionPlugin)
@@ -279,6 +297,8 @@ class OfficialTtsSegmentingCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         plugin._create_lifecycle_background_task.assert_called_once()
 
     def test_plugin_command_plain_reply_stays_whole(self) -> None:
+        if not _PYO3_IMPORT_OK:
+            self.skipTest("PyO3 env: python_ripgrep can only be initialized once per process")
         from astrbot_plugin_private_companion.main import PrivateCompanionPlugin
 
         plugin = object.__new__(PrivateCompanionPlugin)
@@ -297,6 +317,8 @@ class OfficialTtsSegmentingCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_reaction_reply_defers_remaining_bubbles_until_first_send(self) -> None:
+        if not _PYO3_IMPORT_OK:
+            self.skipTest("PyO3 env: python_ripgrep can only be initialized once per process")
         from astrbot_plugin_private_companion.main import PrivateCompanionPlugin
 
         plugin = object.__new__(PrivateCompanionPlugin)
@@ -350,6 +372,8 @@ class OfficialTtsSegmentingCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         plugin._create_lifecycle_background_task.assert_not_called()
 
     async def test_deferred_reaction_tts_text_still_enters_segmenting(self) -> None:
+        if not _PYO3_IMPORT_OK:
+            self.skipTest("PyO3 env: python_ripgrep can only be initialized once per process")
         from astrbot_plugin_private_companion.main import PrivateCompanionPlugin
 
         plugin = object.__new__(PrivateCompanionPlugin)
@@ -412,6 +436,8 @@ class OfficialTtsSegmentingCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         plugin._create_lifecycle_background_task.assert_not_called()
 
     async def test_logged_reaction_reply_uses_active_segment_rules_after_tts(self) -> None:
+        if not _PYO3_IMPORT_OK:
+            self.skipTest("PyO3 env: python_ripgrep can only be initialized once per process")
         from astrbot_plugin_private_companion.main import PrivateCompanionPlugin
 
         plugin = object.__new__(PrivateCompanionPlugin)
@@ -499,6 +525,8 @@ class OfficialTtsSegmentingCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         plugin._create_lifecycle_background_task.assert_not_called()
 
     async def test_segmenting_hook_leaves_official_tts_llm_result_untouched(self) -> None:
+        if not _PYO3_IMPORT_OK:
+            self.skipTest("PyO3 env: python_ripgrep can only be initialized once per process")
         from astrbot_plugin_private_companion.main import PrivateCompanionPlugin
 
         plugin = object.__new__(PrivateCompanionPlugin)
@@ -549,6 +577,8 @@ class OfficialTtsSegmentingCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.is_llm_result())
 
     async def test_official_tts_preflight_removes_reply_quote(self) -> None:
+        if not _PYO3_IMPORT_OK:
+            self.skipTest("PyO3 env: python_ripgrep can only be initialized once per process")
         from astrbot_plugin_private_companion.main import PrivateCompanionPlugin
 
         plugin = object.__new__(PrivateCompanionPlugin)
@@ -689,6 +719,8 @@ class OfficialTtsSegmentingCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(should_defer)
 
     async def test_plugin_preserves_unmarked_cross_plain_thinking_before_scope_early_returns(self) -> None:
+        if not _PYO3_IMPORT_OK:
+            self.skipTest("PyO3 env: python_ripgrep can only be initialized once per process")
         from astrbot_plugin_private_companion.main import PrivateCompanionPlugin
 
         cases = {

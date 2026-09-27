@@ -10,13 +10,14 @@ from typing import Any
 from astrbot_plugin_private_companion.helpers import _now_ts, _safe_float, _safe_int, _single_line
 from astrbot_plugin_private_companion.persona_config import runtime_persona_setting
 from astrbot_plugin_private_companion.relationship_ledger import apply_relationship_event
+from tests.module_source_index import user_memory_mixin_tree, user_memory_source_text
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def _load_methods(*names: str) -> dict[str, Any]:
-    tree = ast.parse((ROOT / "user_memory.py").read_text(encoding="utf-8"))
+    tree = user_memory_mixin_tree(ROOT)
     owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "UserMemoryMixin")
     namespace: dict[str, Any] = {
         "Any": Any,

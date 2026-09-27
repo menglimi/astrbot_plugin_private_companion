@@ -240,7 +240,12 @@ class CreativeChatToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0, payload["bookshelf"]["reading_archive_count"])
 
     def test_creative_read_tool_is_registered(self) -> None:
-        source = (Path(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8")
+        # llm_tool 注册函数经拆分分布在 main.py 与 main_*.py 域 mixin，聚合源码断言。
+        root = Path(__file__).resolve().parents[1]
+        source = "\n".join(
+            p.read_text(encoding="utf-8")
+            for p in [root / "main.py", *sorted(root.glob("main_*.py"))]
+        )
         self.assertIn('@filter.llm_tool(name="pc_view_creative_work")', source)
 
     def test_unread_specific_work_response_is_blocked(self) -> None:

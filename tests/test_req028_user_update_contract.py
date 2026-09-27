@@ -10,6 +10,7 @@ from typing import Any
 import unittest
 
 
+from tests.module_source_index import class_body_defs_for_file, user_memory_mixin_tree
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -69,10 +70,16 @@ def _single_line(value: Any, limit: int = 80) -> str:
 
 
 def _load_update_user() -> Any:
+    # page_api_users_groups.py 拆分后 update_user 落在 page_api_users_groups_part*.py，
+    # 按宿主族聚合类体定位（module_source_index），断言语义不变。
     path = ROOT / "page_api_users_groups.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "PrivateCompanionPageApiUsersGroupsMixin")
-    method = next(node for node in owner.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "update_user")
+    method = next(
+        node
+        for node in class_body_defs_for_file(
+            ROOT, "page_api_users_groups.py", "PrivateCompanionPageApiUsersGroupsMixin"
+        )
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "update_user"
+    )
     namespace: dict[str, Any] = {
         "Any": Any,
         "allowed_expression_bands": allowed_expression_bands,
@@ -98,7 +105,7 @@ UPDATE_USER, REQUEST = _load_update_user()
 
 def _load_interaction_settler() -> Any:
     path = ROOT / "user_memory.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    tree = user_memory_mixin_tree(ROOT)
     owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "UserMemoryMixin")
     method = next(
         node

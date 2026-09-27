@@ -188,15 +188,17 @@ class EmotionE4AfterglowConditionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0, host.saved)
 
     def test_afterglow_decay_is_monotonic(self) -> None:
-        source = (ROOT / "daily_state.py").read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "DailyStateMixin")
-        methods = {
-            node.name: node
-            for node in owner.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name in {"_memory_afterglow_decay", "_condition_effective_energy_delta"}
-        }
+        # 宿主类 daily_state.py 已按域拆分，方法体可能落在 daily_state_*.py。
+        # 用 module_source_index 聚合扫描「宿主 + 全部域模块」，断言语义不变。
+        sys.path.insert(0, str(ROOT / "tests"))
+        from module_source_index import find_methods
+
+        methods = find_methods(
+            ROOT,
+            "daily_state",
+            "DailyStateMixin",
+            {"_memory_afterglow_decay", "_condition_effective_energy_delta"},
+        )
         module = ast.Module(body=list(methods.values()), type_ignores=[])
         ast.fix_missing_locations(module)
         namespace = {
@@ -212,8 +214,9 @@ class EmotionE4AfterglowConditionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([-8, -4, -2], values)
 
     def test_afterglow_is_only_requested_from_the_private_message_path(self) -> None:
-        private_pipeline = (ROOT / "message_pipeline.py").read_text(encoding="utf-8")
-        proactive = (ROOT / "proactive_message.py").read_text(encoding="utf-8")
+        from module_source_index import file_family_source_text
+        private_pipeline = file_family_source_text(ROOT, "message_pipeline.py")
+        proactive = file_family_source_text(ROOT, "proactive_message.py")
         self.assertIn("await self._memory_companion_apply_emotional_drift(", private_pipeline)
         self.assertIn("user=fast_user", private_pipeline)
         self.assertNotIn("_memory_companion_apply_emotional_drift", proactive)

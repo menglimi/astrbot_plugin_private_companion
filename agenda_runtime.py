@@ -32,6 +32,7 @@ try:
     from .unified_agenda import build_unified_agenda, format_agenda_context
     from .agenda_disclosure_policy import AgendaDisclosurePolicy
     from .runtime_scene_resolver import RuntimeSceneResolver
+    from .helpers import _single_line
 except ImportError:
     from activity_capture import ActivityCapture
     from agenda_contracts import (
@@ -58,6 +59,7 @@ except ImportError:
     from unified_agenda import build_unified_agenda, format_agenda_context
     from agenda_disclosure_policy import AgendaDisclosurePolicy
     from runtime_scene_resolver import RuntimeSceneResolver
+    from helpers import _single_line
 
 
 class AgendaRuntimeMixin:
@@ -313,7 +315,7 @@ class AgendaRuntimeMixin:
         evidence = {
             "source_type": "manual" if source == "manual" else "message",
             "source_id": target,
-            "quote": _single_line(note or action, 240) if "_single_line" in globals() else str(note or action)[:240],
+            "quote": _single_line(note or action, 240),
             "observed_at": now.isoformat(timespec="seconds"),
             "actor": source,
         }

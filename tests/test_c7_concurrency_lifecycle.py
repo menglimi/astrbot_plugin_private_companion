@@ -7,7 +7,16 @@ import sys
 import types
 import unittest
 
+from tests.module_source_index import user_memory_source_text, file_family_source_text
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _page_api_family_source() -> str:
+    """page_api.py 的方法已随域拆分分散到 page_api_*.py，跨族聚合拼接源码。"""
+    return "\n".join(
+        (ROOT / name).read_text(encoding="utf-8")
+        for name in ["page_api.py", *sorted(p.name for p in ROOT.glob("page_api_*.py"))]
+    )
 
 PACKAGE_NAME = "c7_companion_test_package"
 package = types.ModuleType(PACKAGE_NAME)
@@ -39,8 +48,13 @@ class OutboxLifecycleTests(unittest.TestCase):
 
 class CompanionConcurrencyStaticTests(unittest.TestCase):
     def test_data_lock_external_awaits_use_temporary_release_context(self):
-        main_source = (ROOT / "main.py").read_text(encoding="utf-8")
-        pipeline_source = (ROOT / "message_pipeline.py").read_text(encoding="utf-8")
+        # _temporarily_release_data_lock 已随 main.py 拆分迁至 main_lifecycle.py，
+        # 跨宿主族聚合源码断言（86ebc90 范本）。
+        main_source = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in [ROOT / "main.py", *sorted(ROOT.glob("main_*.py"))]
+        )
+        pipeline_source = file_family_source_text(ROOT, "message_pipeline.py")
         self.assertIn("async def _temporarily_release_data_lock", main_source)
         # Official v6.0.4b moves passive handlers into message_pipeline.py.
         self.assertGreaterEqual(pipeline_source.count("async with self._temporarily_release_data_lock()"), 7)
@@ -49,8 +63,9 @@ class CompanionConcurrencyStaticTests(unittest.TestCase):
 
     def test_untracked_main_background_tasks_are_not_left_in_message_paths(self):
         source = "\n".join(
-            (ROOT / name).read_text(encoding="utf-8")
-            for name in ("main.py", "message_pipeline.py", "daily_state_tick.py", "user_memory.py")
+            [(ROOT / name).read_text(encoding="utf-8")
+             for name in ("main.py", "message_pipeline.py", "daily_state_tick.py")]
+            + [user_memory_source_text(ROOT)]
         )
         for marker in (
             "asyncio.create_task(self._refine_inbound_emotion_with_model",
@@ -62,7 +77,7 @@ class CompanionConcurrencyStaticTests(unittest.TestCase):
 
     def test_chat_side_background_boundaries_consume_failures_and_keep_http_errors(self):
         sources = {
-            name: (ROOT / name).read_text(encoding="utf-8")
+            name: file_family_source_text(ROOT, name)
             for name in (
                 "config_migration.py",
                 "news_exploration.py",
@@ -79,12 +94,14 @@ class CompanionConcurrencyStaticTests(unittest.TestCase):
         for name in ("news_exploration.py", "private_image.py", "tts_enhancement.py", "user_memory.py"):
             self.assertIn("_create_lifecycle_background_task", sources[name])
 
-        page_source = sources["page_api.py"]
+        # page_api.py 的方法已随域拆分分散到 page_api_*.py，
+        # 单文件扫描会漏（86ebc90 范本：跨宿主族聚合）。
+        page_source = _page_api_family_source()
         self.assertIn("def _exception_error", page_source)
         self.assertIn("status_code=500", page_source)
 
     def test_page_error_response_is_non_success_status_without_changing_success_payload_shape(self):
-        source = (ROOT / "page_api.py").read_text(encoding="utf-8")
+        source = _page_api_family_source()
         self.assertIn('return {"success": True, "data": data, "ts": int(time.time())}', source)
         self.assertIn("def _safe_error_message", source)
         self.assertIn('"success": False', source)

@@ -269,5 +269,5 @@ __all__ = [
     "settle_joke_boundary",
     "correct_mood_for_member",
     "joke_guard_suggestion",
-    "BLOCK_THRESHOLD",
+    "_BLOCK_THRESHOLD",
 ]

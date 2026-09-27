@@ -13,6 +13,7 @@ from astrbot_plugin_private_companion.group_observation import GroupObservationM
 from astrbot_plugin_private_companion.group_wakeup import GroupWakeupMixin
 from astrbot_plugin_private_companion.page_api import PrivateCompanionPageApi
 from astrbot_plugin_private_companion.private_image import PrivateImageMixin
+from tests.module_source_index import file_family_source_text
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -415,7 +416,7 @@ class GroupImageUnderstandingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('enable_group_image_wakeup: "图片命中唤醒 Bot"', script)
         self.assertIn('group_image: "群聊图片"', script)
         self.assertIn('group_image_vision: "群聊图片识别"', script)
-        message_pipeline_source = (ROOT / "message_pipeline.py").read_text(encoding="utf-8")
+        message_pipeline_source = file_family_source_text(ROOT, "message_pipeline.py")
         self.assertIn(
             'image_wakeup = await image_wakeup_getter(event, sender_id=sender_id)',
             message_pipeline_source,

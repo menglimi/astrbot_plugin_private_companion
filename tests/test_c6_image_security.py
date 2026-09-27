@@ -41,6 +41,8 @@ def _install_astrbot_stubs() -> None:
                 setattr(api.logger, method_name, lambda *args, **kwargs: None)
     event = ensure_module("astrbot.api.event")
     event.AstrMessageEvent = getattr(event, "AstrMessageEvent", object)
+    # page_api.py 顶层 `from astrbot.api.event import MessageChain` 需要此桩。
+    event.MessageChain = getattr(event, "MessageChain", type("MessageChain", (), {"__init__": lambda self, *a, **k: None}))
     message_components = ensure_module("astrbot.api.message_components")
     message_components.Image = getattr(message_components, "Image", type("Image", (), {}))
     message_components.Plain = getattr(message_components, "Plain", type("Plain", (), {}))
@@ -57,6 +59,10 @@ def _install_astrbot_stubs() -> None:
     )
     agent_message.UserMessageSegment = getattr(
         agent_message, "UserMessageSegment", type("UserMessageSegment", (), {})
+    )
+    # private_image.py 顶层还需要 TextPart。
+    agent_message.TextPart = getattr(
+        agent_message, "TextPart", type("TextPart", (), {"__init__": lambda self, *a, **k: None})
     )
     astr_main_agent = ensure_module("astrbot.core.astr_main_agent")
     astr_main_agent.MainAgentBuildConfig = getattr(

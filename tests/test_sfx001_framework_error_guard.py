@@ -17,19 +17,25 @@ def _single_line(value: Any, limit: int = 1000) -> str:
 
 def _guard_host_type():
     """Load only the pure guard helpers, without importing AstrBot."""
-    source = (ROOT / "proactive_message.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    mixin = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "ProactiveMessageMixin")
+    # proactive_message.py 已按域拆分，方法体可能落在 proactive_message_*.py。
+    # 用 module_source_index 聚合扫描，断言语义不变。
+    import sys
+
+    sys.path.insert(0, str(ROOT / "tests"))
+    from module_source_index import find_method
+
     names = {
         "_looks_like_internal_provider_error_text",
         "_framework_agent_meta_summary_leak",
     }
     namespace: dict[str, Any] = {"Any": Any, "re": re, "_single_line": _single_line}
-    for node in mixin.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names:
-            module = ast.Module(body=[copy.deepcopy(node)], type_ignores=[])
-            ast.fix_missing_locations(module)
-            exec(compile(module, str(ROOT / "proactive_message.py"), "exec"), namespace)
+    for name in names:
+        node = find_method(ROOT, "proactive_message", "ProactiveMessageMixin", name)
+        if node is None:
+            raise KeyError(name)
+        module = ast.Module(body=[copy.deepcopy(node)], type_ignores=[])
+        ast.fix_missing_locations(module)
+        exec(compile(module, str(ROOT / "proactive_message.py"), "exec"), namespace)
 
     class GuardHost:
         def _is_proactive_delivery_receipt_text(self, _text: str) -> bool:

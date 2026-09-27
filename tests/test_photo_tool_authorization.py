@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tests.module_source_index import llm_tool_actions_source_text
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_photo_tool_uses_scope_without_legacy_private_target_permission() -> None:
-    source = (ROOT / "llm_tool_actions.py").read_text(encoding="utf-8")
+    source = llm_tool_actions_source_text(ROOT)
     commands = (ROOT / "command_handlers.py").read_text(encoding="utf-8")
     assert 'target_checker = getattr(self, "_is_target_private_user", None)' not in source
     assert '"status": "unauthorized"' in source

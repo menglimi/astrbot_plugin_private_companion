@@ -1,12 +1,14 @@
 import unittest
 from pathlib import Path
 
+from tests.module_source_index import file_family_source_text
+
 
 class GroupStatusLayerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         root = Path(__file__).resolve().parents[1]
-        cls.source = (root / "group_observation.py").read_text(encoding="utf-8")
+        cls.source = file_family_source_text(root, "group_observation.py")
 
     def test_status_exposes_global_group_allowlist_and_effective_layers(self) -> None:
         self.assertIn("群聊陪伴最终状态", self.source)

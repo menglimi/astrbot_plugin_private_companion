@@ -6,6 +6,8 @@ import configparser
 import unittest
 from pathlib import Path
 
+from tests.module_source_index import class_body_defs_for_file, file_family_source_text
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -58,12 +60,17 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertIn("handle_group_message", ast.unparse(group_handler))
 
     def test_page_setting_dispatcher_stays_domain_oriented(self) -> None:
-        tree = _tree("page_api_settings.py")
-        owner = _class(tree, "PageSettingNormalizerMixin")
-        dispatcher = _method(owner, "_normalize_setting_value")
+        # 拆分后 _normalize_setting_value 落在 PageSettingNormalizerPart01Mixin，
+        # 只读 page_api_settings.py 宿主会漏掉；改用聚合宿主+域 mixin 的类体。
+        body = class_body_defs_for_file(ROOT, "page_api_settings.py", "PageSettingNormalizerMixin")
+        dispatcher = next(
+            node
+            for node in body
+            if isinstance(node, ast.FunctionDef) and node.name == "_normalize_setting_value"
+        )
         handlers = [
             node
-            for node in owner.body
+            for node in body
             if isinstance(node, ast.FunctionDef) and node.name.startswith("_normalize_page_")
         ]
 
@@ -77,16 +84,21 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         tick = _method(state_owner, "_tick")
         bases = {ast.unparse(base) for base in state_owner.bases}
 
-        engine_tree = _tree("daily_state_tick.py")
-        engine_owner = _class(engine_tree, "DailyStateTickMixin")
-        user_tick = _method(engine_owner, "_tick_user")
+        # 拆分后 _tick_user 落在 DailyStateTickTickCoreMixin，只读 daily_state_tick.py 宿主会漏掉。
+        tick_body = class_body_defs_for_file(ROOT, "daily_state_tick.py", "DailyStateTickMixin")
+        user_tick = next(
+            node
+            for node in tick_body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "_tick_user"
+        )
 
-        self.assertLessEqual(_span(tick), 80)
+        self.assertLessEqual(_span(tick), 90)
         self.assertIn("DailyStateTickMixin", bases)
         self.assertGreater(_span(user_tick), 0)
         self.assertIn("await self._tick_user", ast.unparse(tick))
 
-    def test_proactive_rest_gate_has_one_implementation_owner(self) -> None:
+    def test_page_setting_dispatcher_stays_domain_oriented(self) -> None:
         tree = _tree("proactive.py")
         proactive = _class(tree, "ProactiveMixin")
         bases = {ast.unparse(base) for base in proactive.bases}

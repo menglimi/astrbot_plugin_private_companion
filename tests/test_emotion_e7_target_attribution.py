@@ -9,6 +9,7 @@ import re
 import sys
 from typing import Any
 import unittest
+from tests.module_source_index import user_memory_mixin_tree, user_memory_source_text
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,7 +52,7 @@ def _safe_int(value: Any, default: int = 0, minimum: int | None = None, maximum:
 
 def _load_user_memory_method(name: str, namespace: dict[str, Any]) -> Any:
     path = ROOT / "user_memory.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    tree = user_memory_mixin_tree(ROOT)
     owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "UserMemoryMixin")
     method = next(node for node in owner.body if isinstance(node, ast.FunctionDef) and node.name == name)
     module = ast.Module(body=[copy.deepcopy(method)], type_ignores=[])

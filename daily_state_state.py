@@ -1,0 +1,18 @@
+# -*- coding: utf-8 -*-
+from .daily_state_state_shared import (
+    DEFAULT_PERSONA_PROMPT_FALLBACK,
+    _now_ts,
+    _today_key,
+    logger,
+)
+from .daily_state_state_shared import logger
+from .daily_state_state_transition_compose_note import DailyStateStateTransitionComposeNoteMixin
+from .daily_state_state_sync_cleanup_repair import DailyStateStateSyncCleanupRepairMixin
+from .daily_state_state_state_formatting import DailyStateStateStateFormattingMixin
+from .daily_state_state_persona_prompt import DailyStateStatePersonaPromptMixin
+from .daily_state_state_health_manual_warmth import DailyStateStateHealthManualWarmthMixin
+from .daily_state_state_display_outfit_snapshot import DailyStateStateDisplayOutfitSnapshotMixin
+from .daily_state_state_detail_injection_cando_provider import DailyStateStateDetailInjectionCandoProviderMixin
+from .daily_state_state_condition_generation_cycle import DailyStateStateConditionGenerationCycleMixin
+class DailyStateStateMixin(DailyStateStateConditionGenerationCycleMixin, DailyStateStateDetailInjectionCandoProviderMixin, DailyStateStateDisplayOutfitSnapshotMixin, DailyStateStateHealthManualWarmthMixin, DailyStateStatePersonaPromptMixin, DailyStateStateStateFormattingMixin, DailyStateStateSyncCleanupRepairMixin, DailyStateStateTransitionComposeNoteMixin):
+    """state 域（从 DailyStateMixin 拆出）。"""

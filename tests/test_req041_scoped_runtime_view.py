@@ -22,6 +22,9 @@ from scoped_runtime_view import (
 
 ROOT = Path(__file__).resolve().parents[1]
 
+from tests.module_source_index import class_matches_host as _class_matches
+from tests.module_source_index import proactive_message_source_text, file_family_source_text
+
 
 def _approved_rule(rule_id: str, evidence_count: int = 1, *, kind: str = "private") -> dict:
     context = SimpleNamespace(
@@ -38,22 +41,47 @@ def _approved_rule(rule_id: str, evidence_count: int = 1, *, kind: str = "privat
 
 
 def _method_from(path: Path, class_name: str, method_name: str, globals_map: dict):
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    class_node = next(
-        item for item in tree.body if isinstance(item, ast.ClassDef) and item.name == class_name
-    )
-    method = next(
-        item for item in class_node.body
-        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == method_name
-    )
-    module = ast.Module(
-        body=[ast.ImportFrom(module="__future__", names=[ast.alias("annotations")], level=0), method],
-        type_ignores=[],
-    )
-    ast.fix_missing_locations(module)
-    namespace = dict(globals_map)
-    exec(compile(module, str(path), "exec"), namespace)
-    return namespace[method_name]
+    # 巨型模块拆分后，方法体可能已从 path 迁到同前缀的域 mixin 模块
+    # （main.py -> main_*.py，page_api.py -> page_api_*.py）。
+    # 优先在原 path 找；找不到则在其域模块族里找，保持原有执行语义。
+    candidates = [path]
+    if path.name == "main.py":
+        candidates.extend(sorted(path.parent.glob("main_*.py")))
+    elif path.name == "page_api.py":
+        candidates.extend(sorted(path.parent.glob("page_api_*.py")))
+    elif path.name == "user_memory.py":
+        candidates.extend(sorted(path.parent.glob("user_memory_*.py")))
+    for candidate in candidates:
+        tree = ast.parse(candidate.read_text(encoding="utf-8"), filename=str(candidate))
+        class_node = next(
+            (
+                item
+                for item in tree.body
+                if isinstance(item, ast.ClassDef) and _class_matches(item.name, class_name)
+            ),
+            None,
+        )
+        if class_node is None:
+            continue
+        method = next(
+            (
+                item
+                for item in class_node.body
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == method_name
+            ),
+            None,
+        )
+        if method is None:
+            continue
+        module = ast.Module(
+            body=[ast.ImportFrom(module="__future__", names=[ast.alias("annotations")], level=0), method],
+            type_ignores=[],
+        )
+        ast.fix_missing_locations(module)
+        namespace = dict(globals_map)
+        exec(compile(module, str(candidate), "exec"), namespace)
+        return namespace[method_name]
+    raise StopIteration(method_name)
 
 
 def _safe_int(value, default=0, minimum=0, maximum=None):
@@ -320,7 +348,8 @@ class BackgroundSnapshotTests(unittest.TestCase):
 class ConsumerWiringTests(unittest.TestCase):
     def test_passive_and_proactive_consumers_are_wired_to_scoped_snapshots(self) -> None:
         passive = (ROOT / "passive_state_pipeline.py").read_text(encoding="utf-8")
-        proactive = (ROOT / "proactive_message.py").read_text(encoding="utf-8")
+        # 重构后 proactive_message 的方法分散在宿主 + 各域模块，需联合扫描。
+        proactive = proactive_message_source_text(ROOT)
         self.assertLess(
             passive.index("private_user = scoped_getter(event, private_user)"),
             passive.index("preferred_address = _single_line("),
@@ -329,7 +358,7 @@ class ConsumerWiringTests(unittest.TestCase):
         self.assertIn("snapshot_getter(user, source=\"proactive_chat_bridge\")", proactive)
 
     def test_admin_nickname_and_style_write_person_facts(self) -> None:
-        page = (ROOT / "page_api_users_groups.py").read_text(encoding="utf-8")
+        page = file_family_source_text(ROOT, "page_api_users_groups.py")
         self.assertIn("_req041_update_unified_profile_facts", page)
         self.assertIn('profile_fact_changes["preferred_address"] = user["nickname"]', page)
         self.assertIn('profile_fact_changes["style"] = user["style"]', page)
@@ -337,13 +366,19 @@ class ConsumerWiringTests(unittest.TestCase):
         self.assertIn("user.pop(key, None)", page)
 
     def test_portrait_bridge_carries_the_formal_scoped_namespace(self) -> None:
-        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        # 方法已随域拆分分散在 main.py 与 main_*.py，跨宿主族聚合拼接。
+        source = "\n".join(
+            (ROOT / name).read_text(encoding="utf-8")
+            for name in sorted(p.name for p in ROOT.glob("main*.py"))
+        )
         self.assertIn('"private_companion_namespace_context"', source)
         self.assertIn('request["namespace_context"] = dict(namespace_context)', source)
         self.assertIn('request["namespace_context"] = namespace_context.to_dict()', source)
 
     def test_sync_save_invalidates_scoped_projection_before_persisting(self) -> None:
-        source = (ROOT / "core_store.py").read_text(encoding="utf-8")
+        # core_store.py 已按域拆分，_save_data_sync 等方法体落在 core_store_*.py，
+        # 需按宿主族聚合后再切片（与上面 page_api_users_groups.py 的取法一致）。
+        source = file_family_source_text(ROOT, "core_store.py")
         start = source.index("    def _save_data_sync(")
         method = source[start:source.index("    def _save_data_now_sync", start)]
         self.assertLess(method.index("_req041_schedule_scoped_sync"), method.index("_active_persona_scope"))

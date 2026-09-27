@@ -19,12 +19,18 @@ from astrbot_plugin_private_companion.conversation_prompt_section import (
 
 ROOT = Path(__file__).resolve().parents[1]
 
+from tests.module_source_index import (  # noqa: E402
+    main_source_text,
+    proactive_message_source_text,
+    user_memory_mixin_tree,
+)
+
 
 def _single_line(value: Any, limit: int = 80) -> str:
     return " ".join(str(value or "").split())[:limit]
 
 
-def _strip_internal_message_blocks(value: Any) -> str:
+def _strip_internal_message_blocks(value: Any, *, enabled: bool = True) -> str:
     return str(value or "")
 
 
@@ -37,7 +43,7 @@ def _runtime_persona_setting(owner: Any, key: str, default: Any = None) -> Any:
 
 def _relationship_prompt_probe() -> type:
     path = ROOT / "user_memory.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    tree = user_memory_mixin_tree(ROOT)
     owner = next(
         node
         for node in tree.body
@@ -223,8 +229,10 @@ class OwnerExclusiveRelationshipPromptTests(unittest.TestCase):
         self.assertEqual("人格 A 的关系。", records["persona-a"]["text"])
 
     def test_passive_and_proactive_paths_share_the_same_formatter(self) -> None:
-        main_source = (ROOT / "main.py").read_text(encoding="utf-8")
-        proactive_source = (ROOT / "proactive_message.py").read_text(encoding="utf-8")
+        # main.py 的方法也已随域拆分分散到 main_*.py，需跨宿主族聚合扫描。
+        main_source = main_source_text(ROOT)
+        # 重构后 proactive_message 的方法分散在宿主 + 各域模块，需联合扫描。
+        proactive_source = proactive_message_source_text(ROOT)
         self.assertIn('"relationship.owner_exclusive"', main_source)
         self.assertIn("_format_owner_exclusive_relationship_prompt", main_source)
         self.assertIn("_format_owner_exclusive_relationship_prompt", proactive_source)

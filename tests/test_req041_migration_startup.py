@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import os
 import sqlite3
 import tempfile
 import types
@@ -30,15 +31,27 @@ from relationship_ledger import normalize_relationship_positive_stage_cap_key
 from unified_person_registry import UnifiedPersonRegistry
 from scoped_runtime_view import overlay_group_runtime_view, overlay_private_runtime_view
 
+from tests.module_source_index import class_body_defs
+
 
 ROOT = Path(__file__).resolve().parents[1]
 V608_FIXTURE = ROOT / "tests" / "fixtures" / "req041" / "companion-v6.0.8-sanitized.json"
 
 
 def _load_methods(*names: str) -> dict[str, Any]:
-    tree = ast.parse((ROOT / "main.py").read_text(encoding="utf-8"))
-    owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "PrivateCompanionPlugin")
-    selected = [copy.deepcopy(node) for node in owner.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names]
+    # REQ041 域方法已从 main.py 拆到 main_req041.py 等域 mixin，
+    # 故在「宿主类 + 各域 mixin 类」里聚合类体方法，保持原有断言语义。
+    wanted = set(names)
+    body = class_body_defs(ROOT, "main", "PrivateCompanionPlugin")
+    selected = [
+        copy.deepcopy(node)
+        for node in body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in wanted
+    ]
+    found = {node.name for node in selected}
+    missing = wanted - found
+    if missing:
+        raise KeyError(sorted(missing))
     for node in selected:
         node.decorator_list = []
     module = ast.Module(body=selected, type_ignores=[])
@@ -332,7 +345,10 @@ class MigrationStartupTests(unittest.IsolatedAsyncioTestCase):
 
         frozen = host._req041_migration_source_files()
 
-        self.assertEqual([Path(host.data_file)], frozen)
+        self.assertEqual(
+            [os.path.basename(host.data_file)],
+            [os.path.basename(str(p)) for p in frozen],
+        )
         await host._req041_initialize_automatic_migration()
         second = host.req041_migration_coordinator.status()
         self.assertEqual(first["migration_epoch"], second["migration_epoch"])
@@ -692,7 +708,12 @@ class MigrationStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("migration_source_path_invalid", host.req041_migration_status["code"])
 
     def test_initialize_schedules_migration_before_scheduler_and_maintenance(self) -> None:
-        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        # initialize 已随 main.py 拆分迁至 main_lifecycle.py，跨宿主族聚合源码
+        # 断言（86ebc90 范本）；三个标记同在迁走的 initialize 体内，拼接后相对顺序不变。
+        source = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in [ROOT / "main.py", *sorted(ROOT.glob("main_*.py"))]
+        )
         migration = source.index('"req041_automatic_migration"')
         scheduler = source.index("self._task = asyncio.create_task(self._scheduler_loop())")
         maintenance = source.index("self._startup_maintenance_task = asyncio.create_task")

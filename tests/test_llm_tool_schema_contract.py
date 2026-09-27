@@ -53,29 +53,33 @@ def _tool_name(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
 
 
 def _tool_authoring_hashes() -> dict[str, str]:
-    tree = ast.parse((ROOT / "main.py").read_text(encoding="utf-8"))
+    from tests.module_source_index import llm_tool_actions_sources, main_sources
     result: dict[str, str] = {}
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        tool_name = _tool_name(node)
-        if not tool_name:
-            continue
-        payload = json.dumps(
-            {
-                "function": node.name,
-                "signature": ast.dump(
-                    node.args,
-                    annotate_fields=True,
-                    include_attributes=False,
-                ),
-                "docstring": ast.get_docstring(node, clean=False) or "",
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        result[tool_name] = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    # Scan main.py + all llm_tool_actions submodules + dedicated tool modules
+    target_files = list(main_sources(ROOT)) + sorted(ROOT.glob("main_atrelay_relay.py")) + sorted(ROOT.glob("main_pc_llm_tools.py")) + sorted(ROOT.glob("main_reaction_expression.py"))
+    for path in target_files:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            tool_name = _tool_name(node)
+            if not tool_name:
+                continue
+            payload = json.dumps(
+                {
+                    "function": node.name,
+                    "signature": ast.dump(
+                        node.args,
+                        annotate_fields=True,
+                        include_attributes=False,
+                    ),
+                    "docstring": ast.get_docstring(node, clean=False) or "",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            result[tool_name] = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     return result
 
 

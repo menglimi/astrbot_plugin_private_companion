@@ -174,7 +174,7 @@ class PromptAuthoringStaticCheckTests(unittest.TestCase):
         self._check_source(
             "def _render_labeled_section(section):\n"
             "    return f'【{section.title}】\\n{section.content}'\n",
-            filename="conversation_prompt_section.py",
+            filename="conversation_prompt_section_part02.py",
         )
         for entry in CI._PROMPT_AUTHORING_ALLOWLIST:
             self.assertTrue(str(entry.get("reason") or "").strip())

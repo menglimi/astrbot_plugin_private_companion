@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import unittest
+
+from tests.module_source_index import proactive_message_source_text
 from types import SimpleNamespace
 
 from astrbot_plugin_private_companion.wardrobe_photo import (
@@ -185,7 +187,7 @@ class AuthorWhitelistWiringTests(unittest.TestCase):
     def test_author_files_mention_footwear(self) -> None:
         from pathlib import Path
         root = Path(__file__).resolve().parents[1]
-        text = (root / "proactive_message.py").read_text(encoding="utf-8")
+        text = proactive_message_source_text(root)
         self.assertIn('"footwear": 140,', text)          # _normalize_daily_outfit_profile.limits
         self.assertIn('("footwear", "footwear"),', text)  # _daily_outfit_outfit_hint.fields
         self.assertIn('"footwear": 9,', text)             # cooldown_score 权重

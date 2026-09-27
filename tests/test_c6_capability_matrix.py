@@ -124,25 +124,33 @@ def _literal(node: ast.AST) -> object:
         return None
 
 
+def _page_api_family_sources() -> list[str]:
+    """page_api 宿主与全部域 mixin 模块源码（拆分后路由表可能位于任一域模块）。"""
+    return [
+        path.read_text(encoding="utf-8")
+        for path in sorted(ROOT.glob("page_api*.py"))
+    ]
+
+
 def _qzone_routes() -> list[tuple[str, str, str]]:
-    tree = _parse(ROOT / "page_api.py")
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.List):
-            continue
-        if not any(isinstance(target, ast.Name) and target.id == "routes" for target in node.targets):
-            continue
-        routes: list[tuple[str, str, str]] = []
-        for item in node.value.elts:
-            if not isinstance(item, ast.Tuple) or len(item.elts) < 3:
+    routes: list[tuple[str, str, str]] = []
+    for source in _page_api_family_sources():
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.List):
                 continue
-            path, handler, methods = item.elts[:3]
-            path_value = _literal(path)
-            handler_name = handler.attr if isinstance(handler, ast.Attribute) else None
-            method_values = _literal(methods)
-            if isinstance(path_value, str) and path_value.startswith("/qzone/") and handler_name and isinstance(method_values, list):
-                routes.extend((path_value, handler_name, str(method)) for method in method_values)
-        return routes
-    return []
+            if not any(isinstance(target, ast.Name) and target.id == "routes" for target in node.targets):
+                continue
+            for item in node.value.elts:
+                if not isinstance(item, ast.Tuple) or len(item.elts) < 3:
+                    continue
+                path, handler, methods = item.elts[:3]
+                path_value = _literal(path)
+                handler_name = handler.attr if isinstance(handler, ast.Attribute) else None
+                method_values = _literal(methods)
+                if isinstance(path_value, str) and path_value.startswith("/qzone/") and handler_name and isinstance(method_values, list):
+                    routes.extend((path_value, handler_name, str(method)) for method in method_values)
+    return routes
 
 
 def _llm_tool_names() -> set[str]:
@@ -224,7 +232,16 @@ class C6CapabilityMatrixTests(unittest.TestCase):
         schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
         self.assertIsInstance(schema, dict)
         schema_keys = set(schema)
-        source = _source("main.py", "page_api.py", "plugin_bootstrap.py")
+        # 拆分后 page_api / plugin_bootstrap 的配置投影与 bilibili 触发路由
+        # 已下沉到各自的 part 模块，这里按新模块位置登记同一组开关。
+        source = _source(
+            "main.py",
+            "page_api.py",
+            "plugin_bootstrap.py",
+            "page_api_config_part02.py",
+            "plugin_bootstrap_part04.py",
+            "news_exploration_bilibili_trigger_news.py",
+        )
         for task, config_key in OPTIONAL_TASKS.items():
             self.assertIn(config_key, schema_keys, f"optional C6 task {task} lost schema key {config_key}")
             self.assertRegex(source, rf"\b{re.escape(config_key)}\b", f"optional C6 task {task} is not routed")
@@ -238,15 +255,21 @@ class C6CapabilityMatrixTests(unittest.TestCase):
         self.assertTrue({"私聊陪伴", "主动陪伴"} <= mappings["陪伴"])
         self.assertTrue({"群陪伴", "群聊陪伴"} <= mappings["陪伴群"])
 
-        tree = _parse(ROOT / "proactive_engine.py")
+        # mixin 拆分后，方法分布在宿主 + 各域模块，改为家族扫描
+        family_sources = [
+            path.read_text(encoding="utf-8")
+            for path in sorted(ROOT.glob("proactive_engine*.py"))
+        ]
+        family_trees = [ast.parse(source) for source in family_sources]
         reason_window_methods = {
             node.name
+            for tree in family_trees
             for node in ast.walk(tree)
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "_reason_windows"
         }
         self.assertEqual(reason_window_methods, {"_reason_windows"})
-        source = (ROOT / "proactive_engine.py").read_text(encoding="utf-8")
-        self.assertGreaterEqual(source.count("_reason_windows("), 4)
+        family_source = "".join(family_sources)
+        self.assertGreaterEqual(family_source.count("_reason_windows("), 4)
 
     def test_c6_domain_entrypoints_are_still_reachable(self) -> None:
         source = _source(
@@ -254,14 +277,14 @@ class C6CapabilityMatrixTests(unittest.TestCase):
             "command_handlers.py",
             "extension_api_relationship.py",
             "news_exploration.py",
-            "page_api.py",
             "private_image.py",
             "reading_archive.py",
             "group_member_safety.py",
             "group_wakeup.py",
             "atrelay.py",
+            "main_atrelay_relay.py",
             "tts_enhancement.py",
-        )
+        ) + "\n".join(_page_api_family_sources())
         markers = {
             "QQ space": ("qzone", "QZONE_COOKIE"),
             "news": ("news", "NEWS_PROVIDER_ID"),

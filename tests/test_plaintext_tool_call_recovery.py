@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from tests.module_source_index import main_source_text
+
 from astrbot.api.message_components import Plain
 
 from astrbot_plugin_private_companion.llm_tool_actions import LlmToolActionsMixin
@@ -115,7 +117,8 @@ class PlaintextToolCallRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("parameters", sent_text)
 
     def test_main_hooks_recovery_before_tts_and_has_final_guard(self):
-        main_source = (Path(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8")
+        root = Path(__file__).resolve().parents[1]
+        main_source = main_source_text(root)
         self.assertIn("_recover_plaintext_photo_tool_call(event, resp, original_text)", main_source)
         self.assertIn("strip_plaintext_tool_calls_before_send", main_source)
 

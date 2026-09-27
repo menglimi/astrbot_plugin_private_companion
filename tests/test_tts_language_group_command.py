@@ -6,6 +6,9 @@ import unittest
 
 from astrbot_plugin_private_companion.interaction_utils import InteractionUtilsMixin
 from astrbot_plugin_private_companion.main import PrivateCompanionPlugin
+from astrbot_plugin_private_companion.main_companion_command import (
+    PrivateCompanionPluginCompanionCommandMixin,
+)
 from astrbot_plugin_private_companion.tts_enhancement import TtsEnhancementMixin
 from astrbot_plugin_private_companion.unified_profile_service import private_companion_gate
 
@@ -29,7 +32,7 @@ class _Event:
         self.stopped = True
 
 
-class _Harness(InteractionUtilsMixin, TtsEnhancementMixin):
+class _Harness(InteractionUtilsMixin, TtsEnhancementMixin, PrivateCompanionPluginCompanionCommandMixin):
     def __init__(self) -> None:
         self.require_private_opt_in = True
         self.target_user_ids = ["owner"]

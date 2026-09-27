@@ -21,6 +21,7 @@ from companion_interaction_expression import (  # noqa: E402
     expression_decision_prompt,
     resolve_expression_decision,
 )
+from tests.module_source_index import find_method, host_sources, user_memory_mixin_tree  # noqa: E402
 
 
 class Req028ExpressionContractTests(unittest.TestCase):
@@ -259,9 +260,8 @@ class Req028ExpressionContractTests(unittest.TestCase):
         self.assertNotIn("relationship_score", prompt)
 
     def test_legacy_relationship_fields_are_compatibility_only_for_expression(self) -> None:
-        source = (ROOT / "user_memory.py").read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "UserMemoryMixin")
+        tree = user_memory_mixin_tree(ROOT)
+        owner = tree.body[0]
         profile_method = next(node for node in owner.body if isinstance(node, ast.FunctionDef) and node.name == "_relationship_profile")
         constants = {node.value for node in ast.walk(profile_method) if isinstance(node, ast.Constant) and isinstance(node.value, str)}
         self.assertNotIn("persona_relationship", constants)
@@ -287,7 +287,15 @@ class Req028ExpressionContractTests(unittest.TestCase):
         source = (ROOT / "proactive.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
         owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "ProactiveMixin")
-        method = next(node for node in owner.body if isinstance(node, ast.FunctionDef) and node.name == "_current_relationship_gate_mode")
+        # 拆分后 _current_relationship_gate_mode 落在 proactive_core_part05.py 的 ProactivePart05Mixin 中，
+        # 需从聚合类体中查找。
+        from tests.module_source_index import class_body_defs_for_file
+        proactive_body = class_body_defs_for_file(ROOT, "proactive.py", "ProactiveMixin")
+        method = next(
+            node
+            for node in proactive_body
+            if isinstance(node, ast.FunctionDef) and node.name == "_current_relationship_gate_mode"
+        )
         constants = {node.value for node in ast.walk(method) if isinstance(node, ast.Constant) and isinstance(node.value, str)}
         self.assertNotIn("enable_relationship_state_machine", constants)
         module = ast.Module(
@@ -312,10 +320,14 @@ class Req028ExpressionContractTests(unittest.TestCase):
         self.assertEqual("backoff", gate(host, {"contact_preference": {"no_contact": True}}))
 
     def test_proactive_chat_bridge_preflight_consumes_expression_budget_and_boundary(self) -> None:
-        source = (ROOT / "proactive_message.py").read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "ProactiveMessageMixin")
-        method = next(node for node in owner.body if isinstance(node, ast.FunctionDef) and node.name == "_proactive_chat_bridge_preflight_block_reason")
+        # 重构后该方法位于 proactive_message 的某个域模块中，需跨模块联合定位。
+        method = find_method(
+            ROOT,
+            "proactive_message",
+            "ProactiveMessageMixin",
+            "_proactive_chat_bridge_preflight_block_reason",
+        )
+        self.assertIsNotNone(method, "_proactive_chat_bridge_preflight_block_reason 未在任何 proactive_message 域模块中找到")
         constants = {node.value for node in ast.walk(method) if isinstance(node, ast.Constant) and isinstance(node.value, str)}
         self.assertIn("_build_expression_decision_for_user", constants)
         self.assertIn("expression_proactive_budget_exhausted", constants)
@@ -370,8 +382,10 @@ class Req028ExpressionContractTests(unittest.TestCase):
         self.assertEqual("expression_contact_boundary", preflight(host, {"sent_today": 0}, now=100.0))
 
     def test_page_dto_marks_legacy_relationship_state_read_only(self) -> None:
-        page_source = (ROOT / "page_api.py").read_text(encoding="utf-8")
-        users_source = (ROOT / "page_api_users_groups.py").read_text(encoding="utf-8")
+        page_source = "".join((ROOT / p).read_text(encoding="utf-8") for p in ["page_api.py", *sorted(ROOT.glob("page_api_*.py"))])
+        # 拆分后该赋值落在 page_api_users_groups_part01.py，需聚合 users_groups 家族。
+        from tests.module_source_index import file_family_source_text
+        users_source = file_family_source_text(ROOT, "page_api_users_groups.py")
 
         self.assertIn('"current_interaction": interaction', page_source)
         self.assertIn('"expression_decision": expression', page_source)
@@ -397,8 +411,7 @@ class Req028ExpressionContractTests(unittest.TestCase):
             "proactive_message.py",
             "reading_archive.py",
             "main.py",
-            "user_memory.py",
-        )
+        ) + tuple(path.name for path in host_sources(ROOT, "user_memory"))
         for filename in runtime_files:
             with self.subTest(filename=filename):
                 tree = ast.parse((ROOT / filename).read_text(encoding="utf-8"))
@@ -412,9 +425,8 @@ class Req028ExpressionContractTests(unittest.TestCase):
                     )
 
     def test_expression_context_has_no_legacy_state_consumer_or_sync_adapter(self) -> None:
-        source = (ROOT / "user_memory.py").read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "UserMemoryMixin")
+        tree = user_memory_mixin_tree(ROOT)
+        owner = tree.body[0]
         methods = {
             node.name: node
             for node in owner.body

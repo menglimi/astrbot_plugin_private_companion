@@ -74,13 +74,13 @@ class ReplyTemperatureTests(unittest.TestCase):
         self.assertNotIn("do not reply", repr(constrained))
 
     def test_live_gate_keeps_p4_temperature_and_expression_hook_separate(self) -> None:
-        source = (ROOT / "main.py").read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        gate = next(
-            node for node in ast.walk(tree)
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == "enforce_p4_live_confinement_before_enrichment"
-        )
+        # main.py 的源码断言需跨宿主族聚合（方法已分散到 main_*.py）。
+        from tests.module_source_index import find_method, main_source_text
+
+        source = main_source_text(ROOT)
+
+        gate = find_method(ROOT, "main", "PrivateCompanionPlugin", "enforce_p4_live_confinement_before_enrichment")
+        assert gate is not None
         legacy_calls = [
             node for node in ast.walk(gate)
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
@@ -99,17 +99,16 @@ class ReplyTemperatureTests(unittest.TestCase):
             and node.func.id == "prompt_section"
         ]
         self.assertEqual([], direct_section_calls)
-        expression_hook = next(
-            node for node in ast.walk(tree)
-            if isinstance(node, ast.AsyncFunctionDef)
-            and node.name == "inject_unified_relationship_expression"
+        expression_hook = find_method(
+            ROOT, "main", "PrivateCompanionPlugin", "inject_unified_relationship_expression"
         )
+        assert expression_hook is not None
         self.assertIn("_private_companion_expression_decision", ast.unparse(expression_hook))
         self.assertIn("private_companion_expression_decision_v2", source)
-        helper = next(
-            node for node in ast.walk(tree)
-            if isinstance(node, ast.FunctionDef) and node.name == "_bounded_p4_reply_temperature_signals"
+        helper = find_method(
+            ROOT, "main", "PrivateCompanionPlugin", "_bounded_p4_reply_temperature_signals"
         )
+        assert helper is not None
         constants = {node.value for node in ast.walk(helper) if isinstance(node, ast.Constant) and type(node.value) is str}
         self.assertTrue({"energy", "mood", "schedule", "context"}.issubset(constants))
 

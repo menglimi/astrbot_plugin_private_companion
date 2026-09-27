@@ -16,11 +16,17 @@ class _Logger:
 def _astrbot_stubs() -> dict[str, types.ModuleType]:
     astrbot = types.ModuleType("astrbot")
     api = types.ModuleType("astrbot.api")
+    api_event = types.ModuleType("astrbot.api.event")
     core = types.ModuleType("astrbot.core")
     utils = types.ModuleType("astrbot.core.utils")
     astrbot_path = types.ModuleType("astrbot.core.utils.astrbot_path")
     quart = types.ModuleType("quart")
     api.logger = _Logger()
+    # page_api.py 顶层 `from astrbot.api.event import MessageChain` 需要此桩，
+    # 否则收集期即 ImportError。api 标为包以便按子模块名解析。
+    api.__path__ = []
+    api.event = api_event
+    api_event.MessageChain = type("MessageChain", (), {"__init__": lambda self, *a, **k: None})
     astrbot_path.get_astrbot_data_path = lambda: tempfile.gettempdir()
     quart.request = types.SimpleNamespace()
 
@@ -35,6 +41,7 @@ def _astrbot_stubs() -> dict[str, types.ModuleType]:
     return {
         "astrbot": astrbot,
         "astrbot.api": api,
+        "astrbot.api.event": api_event,
         "astrbot.core": core,
         "astrbot.core.utils": utils,
         "astrbot.core.utils.astrbot_path": astrbot_path,

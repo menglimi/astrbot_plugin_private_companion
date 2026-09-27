@@ -65,6 +65,65 @@ with mock.patch.dict(sys.modules, _runtime_stubs()):
         sys.modules[package_name] = package
     from astrbot_plugin_private_companion.page_api import PrivateCompanionPageApi
     PAGE_API_MODULE = sys.modules["astrbot_plugin_private_companion.page_api"]
+    # 本测试用桩模块环境导入，`with` 退出后 sys.modules 会被还原，
+    # mixin 子模块届时已不在其中。故在块内就把模块引用捕获下来。
+    _MRO_MODULES = tuple(
+        module
+        for module in (
+            sys.modules.get(getattr(klass, "__module__", ""))
+            for klass in PrivateCompanionPageApi.__mro__
+        )
+        if module is not None
+    )
+
+# 拆分后 `get_image_debug` 等方法体里的 `request` 解析到 **mixin 自己模块的全局**
+# （`page_api_media.py:27` 也有各自的 `from quart import request`）。只 patch 宿主
+# `PAGE_API_MODULE` 对已搬走的方法无效——方法会去取 werkzeug 的 LocalProxy 并抛
+# `RuntimeError: Not within a request context`。这里按宿主类 MRO 收集全部候选模块，
+# 对每个都打 patch，从而与「方法住在哪个 mixin」解耦。
+def _request_patch_targets() -> tuple[object, ...]:
+    targets: list[object] = []
+    seen: set[int] = set()
+    for module in _MRO_MODULES:
+        if id(module) in seen:
+            continue
+        if hasattr(module, "request"):
+            seen.add(id(module))
+            targets.append(module)
+    return tuple(targets)
+
+
+class _MultiModuleRequestPatch:
+    """在多个模块里把 ``request`` 全局替换为桩对象（退出时精确还原）。"""
+
+    def __init__(self, modules: tuple[object, ...], value: object) -> None:
+        self._modules = modules
+        self._value = value
+        self._active: list[tuple[object, object, bool]] = []
+
+    def __enter__(self) -> "_MultiModuleRequestPatch":
+        for module in self._modules:
+            had = hasattr(module, "request")
+            self._active.append((module, getattr(module, "request", None), had))
+            setattr(module, "request", self._value)
+        return self
+
+    def __exit__(self, *_exc: object) -> bool:
+        for module, original, had in reversed(self._active):
+            if had:
+                setattr(module, "request", original)
+            else:
+                delattr(module, "request")
+        self._active.clear()
+        return False
+
+
+def _patch_request(value: object) -> _MultiModuleRequestPatch:
+    """替换全部 MRO 模块的 ``request``；断言目标非空以防 patch 打空。"""
+    targets = _request_patch_targets()
+    assert targets, "未解析到任何声明了 request 的页面 API 模块"
+    return _MultiModuleRequestPatch(targets, value)
+
 
 
 class _ImageApi:
@@ -173,7 +232,7 @@ class ImageDebugPageApiTests(unittest.TestCase):
             )
             api = self._api(root)
             request_stub = SimpleNamespace(args={"trace": "trace-first", "limit": "240"})
-            with mock.patch.object(PAGE_API_MODULE, "request", request_stub):
+            with _patch_request(request_stub):
                 result = asyncio.run(api.get_image_debug())
 
         payload = result["data"]
@@ -201,7 +260,7 @@ class ImageDebugPageApiTests(unittest.TestCase):
             }
             _write_jsonl(root / "photo_debug" / "generation.jsonl", [row])
             request_stub = SimpleNamespace(args={"trace": "trace-payload", "limit": "240"})
-            with mock.patch.object(PAGE_API_MODULE, "request", request_stub):
+            with _patch_request(request_stub):
                 result = asyncio.run(self._api(root).get_image_debug())
 
         metadata = result["data"]["events"][0]["data"]["payloads"]["request"]

@@ -7,6 +7,9 @@ import unittest
 from astrbot_plugin_private_companion.interaction_utils import InteractionUtilsMixin
 from astrbot_plugin_private_companion.main import PrivateCompanionPlugin
 from astrbot_plugin_private_companion.core_store import CoreStoreMixin
+from astrbot_plugin_private_companion.main_companion_command import (
+    PrivateCompanionPluginCompanionCommandMixin,
+)
 from astrbot_plugin_private_companion.proactive import ProactiveMixin
 from astrbot_plugin_private_companion.unified_profile_service import (
     default_capabilities,
@@ -32,7 +35,7 @@ class _Event:
         self.stopped = True
 
 
-class _Harness(InteractionUtilsMixin):
+class _Harness(InteractionUtilsMixin, PrivateCompanionPluginCompanionCommandMixin):
     def __init__(self) -> None:
         self.require_private_opt_in = True
         capabilities = default_capabilities(grant_source="legacy_effective_migration")

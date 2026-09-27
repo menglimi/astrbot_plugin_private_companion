@@ -13,6 +13,8 @@ from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+from tests.module_source_index import file_family_source_text, page_api_source_text
+
 from astrbot_plugin_private_companion.persona_config import (
     PERSONA_SETTINGS_SCHEMA_VERSION,
     build_scope_manifest,
@@ -803,7 +805,7 @@ class WardrobeConfigTests(unittest.TestCase):
         self.assertEqual("黑色长风衣", settings["wardrobe_items"][0]["name"])
 
     def test_page_api_exposes_every_wardrobe_key(self) -> None:
-        source = (ROOT / "page_api.py").read_text(encoding="utf-8")
+        source = page_api_source_text(ROOT)
         for key in (
             "enable_wardrobe",
             "wardrobe_tendency",
@@ -833,7 +835,7 @@ class WardrobeConfigTests(unittest.TestCase):
             self.assertGreaterEqual(source.count(f'"{key}"'), minimum, key)
 
     def test_bootstrap_reads_wardrobe_config(self) -> None:
-        source = (ROOT / "plugin_bootstrap.py").read_text(encoding="utf-8")
+        source = file_family_source_text(ROOT, "plugin_bootstrap.py")
         for attr in (
             "self.enable_wardrobe",
             "self.wardrobe_tendency",
@@ -952,8 +954,8 @@ class WardrobePanelTests(unittest.TestCase):
         cls.module = (ROOT / "pages" / "companion-panel" / "js" / "features" / "wardrobe.js").read_text(
             encoding="utf-8"
         )
-        cls.api = (ROOT / "page_api.py").read_text(encoding="utf-8")
-        cls.api_settings = (ROOT / "page_api_settings.py").read_text(encoding="utf-8")
+        cls.api = page_api_source_text(ROOT)
+        cls.api_settings = file_family_source_text(ROOT, "page_api_settings.py")
 
     def test_panel_copies_are_byte_identical(self) -> None:
         for relative in ("app.js", "app.css", "index.html", "js/features/wardrobe.js"):
@@ -3274,8 +3276,18 @@ class WardrobeDraftEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         # 直接替换承载这个类的模块 globals：from package import submodule 在测试进程里
         # 有可能拿到一个陈旧的模块对象，patch 上去对真正执行的处理函数无效。
-        namespace = vars(sys.modules[PrivateCompanionPageApi.__module__])
-        return mock.patch.dict(namespace, {"request": _FakePageRequest(payload)})
+        import contextlib
+        import importlib
+        from pathlib import Path
+        from unittest import mock
+
+        pkg = PrivateCompanionPageApi.__module__.rsplit('.', 1)[0]
+        stack = contextlib.ExitStack()
+        for path in sorted(Path(__file__).resolve().parents[1].glob('page_api*.py')):
+            mod = importlib.import_module(f'{pkg}.{path.stem}')
+            if hasattr(mod, 'request'):
+                stack.enter_context(mock.patch.object(mod, 'request', _FakePageRequest(payload)))
+        return stack
 
     def _queue_plugin(self, root: Path, *, rows=None, outcome=None, reject=None):
         class _Plugin:
@@ -3487,7 +3499,7 @@ class WardrobeDraftRouteRegistrationTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.api = (ROOT / "page_api.py").read_text(encoding="utf-8")
+        cls.api = page_api_source_text(ROOT)
 
     def test_routes_are_registered(self) -> None:
         for route, handler in (
@@ -3553,7 +3565,7 @@ class WardrobeOutfitDraftPanelTests(unittest.TestCase):
             self.assertIn("data-wardrobe-draft-list", html)
 
     def test_module_only_calls_registered_endpoints(self) -> None:
-        api = (ROOT / "page_api.py").read_text(encoding="utf-8")
+        api = page_api_source_text(ROOT)
         for route in ("/wardrobe/drafts", "/wardrobe/draft-apply", "/wardrobe/draft-reject", "/wardrobe/asset-image"):
             self.assertIn('postJson("%s"' % route, self.module, route)
             self.assertIn('("%s"' % route, api, route)
@@ -4175,8 +4187,18 @@ class WardrobeIntentEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         from astrbot_plugin_private_companion.page_api import PrivateCompanionPageApi
 
-        namespace = vars(sys.modules[PrivateCompanionPageApi.__module__])
-        return mock.patch.dict(namespace, {"request": _FakePageRequest(payload)})
+        import contextlib
+        import importlib
+        from pathlib import Path
+        from unittest import mock
+
+        pkg = PrivateCompanionPageApi.__module__.rsplit('.', 1)[0]
+        stack = contextlib.ExitStack()
+        for path in sorted(Path(__file__).resolve().parents[1].glob('page_api*.py')):
+            mod = importlib.import_module(f'{pkg}.{path.stem}')
+            if hasattr(mod, 'request'):
+                stack.enter_context(mock.patch.object(mod, 'request', _FakePageRequest(payload)))
+        return stack
 
     def _intent_plugin(self, *, snapshot=None, cleared=False):
         class _Plugin:
@@ -4335,7 +4357,7 @@ class WardrobeIntentPanelTests(unittest.TestCase):
             self.assertNotIn("wardrobe-v2", html)
 
     def test_module_only_calls_registered_endpoints(self) -> None:
-        api = (ROOT / "page_api.py").read_text(encoding="utf-8")
+        api = page_api_source_text(ROOT)
         for route in ("/wardrobe/intent", "/wardrobe/intent-clear"):
             self.assertIn('postJson("%s"' % route, self.module, route)
             self.assertIn('("%s"' % route, api, route)

@@ -5,6 +5,7 @@ import json
 import unittest
 from pathlib import Path
 
+from tests.module_source_index import page_api_source_text
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -14,7 +15,7 @@ class WeatherConfigUiGroupingTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.html = (ROOT / "pages" / "陪伴面板" / "index.html").read_text(encoding="utf-8")
         cls.script = (ROOT / "pages" / "陪伴面板" / "app.js").read_text(encoding="utf-8")
-        cls.page_api = (ROOT / "page_api.py").read_text(encoding="utf-8")
+        cls.page_api = page_api_source_text(ROOT)
         cls.schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
 
     def test_runtime_settings_no_longer_contains_weather_form(self) -> None:

@@ -22,20 +22,32 @@ METHOD_NAMES = (
 
 
 def _load_methods() -> dict[str, Any]:
-    tree = ast.parse((ROOT / "main.py").read_text(encoding="utf-8"))
-    owner = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.ClassDef) and node.name == "PrivateCompanionPlugin"
-    )
-    selected = [
-        copy.deepcopy(node)
-        for node in owner.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name in METHOD_NAMES
-    ]
-    for node in selected:
-        node.decorator_list = []
+    # 方法经拆分分布在 main.py 与 main_*.py 域 mixin，跨宿主族聚合定位
+    # （module_source_index 风格），断言语义不变。
+    selected: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
+    seen: set[str] = set()
+    for path in [ROOT / "main.py", *sorted(ROOT.glob("main_*.py"))]:
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (OSError, SyntaxError):
+            continue
+        for node in tree.body:
+            if not isinstance(node, ast.ClassDef):
+                continue
+            if node.name != "PrivateCompanionPlugin" and not node.name.startswith(
+                "PrivateCompanionPlugin"
+            ):
+                continue
+            for child in node.body:
+                if (
+                    isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and child.name in METHOD_NAMES
+                    and child.name not in seen
+                ):
+                    stripped = copy.deepcopy(child)
+                    stripped.decorator_list = []
+                    selected.append(stripped)
+                    seen.add(child.name)
     module = ast.Module(body=selected, type_ignores=[])
     ast.fix_missing_locations(module)
     namespace = {
@@ -156,7 +168,10 @@ class SqliteWalOwnershipTests(unittest.IsolatedAsyncioTestCase):
             }
             self.assertTrue(all(mode == "delete" for _digest_value, mode in before.values()))
 
-            self.assertEqual(own_paths, set(host._sqlite_wal_candidate_paths()))
+            self.assertEqual(
+                {p.resolve() for p in own_paths},
+                {p.resolve() for p in host._sqlite_wal_candidate_paths()},
+            )
             await host._apply_sqlite_wal_optimizations()
 
             self.assertTrue(all(_journal_mode(path) == "wal" for path in own_paths))

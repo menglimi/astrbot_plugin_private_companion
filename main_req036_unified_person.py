@@ -1,0 +1,11 @@
+# -*- coding: utf-8 -*-
+from .main_req036_unified_person_shared import (
+    logger,
+)
+from .main_req036_unified_person_shared import logger
+from .main_req036_unified_person_part04 import PrivateCompanionPluginReq036UnifiedPersonPart04Mixin
+from .main_req036_unified_person_part03 import PrivateCompanionPluginReq036UnifiedPersonPart03Mixin
+from .main_req036_unified_person_part02 import PrivateCompanionPluginReq036UnifiedPersonPart02Mixin
+from .main_req036_unified_person_part01 import PrivateCompanionPluginReq036UnifiedPersonPart01Mixin
+class PrivateCompanionPluginReq036UnifiedPersonMixin(PrivateCompanionPluginReq036UnifiedPersonPart01Mixin, PrivateCompanionPluginReq036UnifiedPersonPart02Mixin, PrivateCompanionPluginReq036UnifiedPersonPart03Mixin, PrivateCompanionPluginReq036UnifiedPersonPart04Mixin):
+    """REQ036 统一人格域（从 PrivateCompanionPlugin 拆出）。"""

@@ -96,13 +96,13 @@ class _Event:
 class MimoVoiceCloneBridgeTests(unittest.IsolatedAsyncioTestCase):
     async def test_mimo_backend_works_without_astrbot_tts_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            root = Path(tmp).resolve()  # resolve to avoid Windows short path issues (XINGCH~1)
             plugin = _FakeMimoVoiceClonePlugin(root / "plugin_data" / "mimo" / "voice.wav")
             manager = _ToolManager(plugin)
             harness = _Harness(_Context(manager, provider=None))
 
             with patch(
-                "astrbot_plugin_private_companion.tts_enhancement.get_astrbot_data_path",
+                "astrbot_plugin_private_companion.tts_enhancement_tags_realtime.get_astrbot_data_path",
                 return_value=str(root),
             ):
                 components = await harness._process_tts_tags(
@@ -125,12 +125,12 @@ class MimoVoiceCloneBridgeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_together_companion_realtime_bridge_uses_mimo_without_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            root = Path(tmp).resolve()
             plugin = _FakeMimoVoiceClonePlugin(root / "plugin_data" / "mimo" / "together.wav")
             harness = _Harness(_Context(_ToolManager(plugin), provider=None))
 
             with patch(
-                "astrbot_plugin_private_companion.tts_enhancement.get_astrbot_data_path",
+                "astrbot_plugin_private_companion.tts_enhancement_tags_realtime.get_astrbot_data_path",
                 return_value=str(root),
             ):
                 result = await harness._synthesize_realtime_voice(

@@ -296,7 +296,10 @@ class CommandPhotoQuotaTests(unittest.IsolatedAsyncioTestCase):
         schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
         setting = schema["photo_action_config"]["items"]["command_photo_generation_max_daily"]
         script = (ROOT / "pages" / "陪伴面板" / "app.js").read_text(encoding="utf-8")
-        page_api = (ROOT / "page_api.py").read_text(encoding="utf-8")
+        page_api = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(ROOT.glob("page_api*.py"))
+        )
         page_api_settings = (ROOT / "page_api_settings.py").read_text(encoding="utf-8")
 
         self.assertEqual(setting["default"], -1)

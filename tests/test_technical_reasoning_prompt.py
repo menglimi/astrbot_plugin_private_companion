@@ -2,13 +2,15 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from tests.module_source_index import main_source_text, file_family_source_text
+
 
 class TechnicalReasoningPromptTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         root = Path(__file__).resolve().parents[1]
-        cls.main_source = (root / "main.py").read_text(encoding="utf-8")
-        cls.command_source = (root / "command_handlers.py").read_text(encoding="utf-8")
+        cls.main_source = main_source_text(root)
+        cls.command_source = file_family_source_text(root, "command_handlers.py")
 
     def test_plain_chat_only_injects_unit_guard_for_technical_questions(self) -> None:
         self.assertIn("def _format_technical_reasoning_prompt(", self.main_source)

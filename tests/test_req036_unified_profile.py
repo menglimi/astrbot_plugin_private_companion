@@ -17,6 +17,13 @@ from unittest.mock import AsyncMock
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+from tests.module_source_index import (  # noqa: E402
+    class_body_defs_for_file,
+    find_module_function,
+    host_source_text,
+)
+
 PACKAGE = "req036_companion"
 if PACKAGE not in sys.modules:
     module = types.ModuleType(PACKAGE)
@@ -73,10 +80,29 @@ def _person_projection(seed: str = "a") -> dict[str, Any]:
 
 
 def _load_method(name: str) -> Any:
-    source = (ROOT / "main.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "PrivateCompanionPlugin")
-    method = next(node for node in owner.body if isinstance(node, ast.AsyncFunctionDef) and node.name == name)
+    # 方法已随域拆分分散在 main.py 与 main_*.py，跨宿主族聚合定位。
+    owner = None
+    method = None
+    for path in sorted(ROOT.glob("main*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            # 宿主与所有域 mixin 类都以 PrivateCompanionPlugin 开头
+            if isinstance(node, ast.ClassDef) and node.name.startswith("PrivateCompanionPlugin"):
+                hit = next(
+                    (
+                        sub
+                        for sub in node.body
+                        if isinstance(sub, ast.AsyncFunctionDef) and sub.name == name
+                    ),
+                    None,
+                )
+                if hit is not None:
+                    owner, method = node, hit
+                    break
+        if method is not None:
+            break
+    if method is None:
+        raise AssertionError(f"未能在 main 族模块中定位方法 {name}")
     method = copy.deepcopy(method)
     method.decorator_list = []
     module = ast.Module(body=[method], type_ignores=[])
@@ -109,10 +135,27 @@ def _load_method(name: str) -> Any:
 
 
 def _load_sync_method(name: str) -> Any:
-    source = (ROOT / "main.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "PrivateCompanionPlugin")
-    method = next(node for node in owner.body if isinstance(node, ast.FunctionDef) and node.name == name)
+    # 方法已随域拆分分散在 main.py 与 main_*.py，跨宿主族聚合定位。
+    method = None
+    for path in sorted(ROOT.glob("main*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and node.name.startswith("PrivateCompanionPlugin"):
+                hit = next(
+                    (
+                        sub
+                        for sub in node.body
+                        if isinstance(sub, ast.FunctionDef) and sub.name == name
+                    ),
+                    None,
+                )
+                if hit is not None:
+                    method = hit
+                    break
+        if method is not None:
+            break
+    if method is None:
+        raise AssertionError(f"未能在 main 族模块中定位方法 {name}")
     method = copy.deepcopy(method)
     method.decorator_list = []
     module = ast.Module(body=[method], type_ignores=[])
@@ -137,9 +180,10 @@ REQ036_IS_DIRECTED = _load_sync_method("_req036_group_portrait_query_is_directed
 
 
 def _load_async_function(path: Path, name: str) -> Any:
-    source = path.read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    function = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == name)
+    # message_pipeline.py 拆分后 handle_private_message 落在 message_pipeline_part*.py，
+    # 按宿主族聚合定位模块级函数（module_source_index），断言语义不变。
+    function = find_module_function(ROOT, path.stem, name)
+    assert function is not None, f"{name} not found in {path.name} family"
     function = copy.deepcopy(function)
     function.decorator_list = []
     module = ast.Module(body=[function], type_ignores=[])
@@ -154,6 +198,27 @@ def _load_async_function(path: Path, name: str) -> Any:
         "_now_ts": lambda: 100.0,
         "_single_line": lambda value, limit=240: " ".join(str(value or "").split())[:limit],
     }
+    # handle_private_message 现已拆成「顺序编排壳 + 9 个阶段函数」（阶段下沉到
+    # message_pipeline_part02_partNN.py）。壳里引用的阶段名与 _StageNext 从真实模块
+    # 取，保证隔离 exec 的语义仍是「函数体逐字来自宿主 AST」。
+    _stage_names = (
+        "_handle_private_message_ingress",
+        "_handle_private_message_quickexit",
+        "_handle_private_message_fastlane",
+        "_handle_private_message_locked_head",
+        "_handle_private_message_lock_buffer",
+        "_handle_private_message_lock_state",
+        "_handle_private_message_lock_memory",
+        "_handle_private_message_lock_commit",
+        "_handle_private_message_tail",
+    )
+    from astrbot_plugin_private_companion import message_pipeline_part02 as _mp2  # noqa: PLC0415
+
+    for _stage_name in _stage_names:
+        _stage = getattr(_mp2, _stage_name, None)
+        if _stage is not None:
+            namespace[_stage_name] = _stage
+    namespace["_StageNext"] = _mp2._StageNext
     exec(compile(module, str(path), "exec"), namespace)
     return namespace[name]
 
@@ -162,10 +227,13 @@ REQ036_PRIVATE_HANDLER = _load_async_function(ROOT / "message_pipeline.py", "han
 
 
 def _load_event_dispatch_method(name: str) -> Any:
-    source = (ROOT / "event_dispatch.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "EventDispatchMixin")
-    method = next(node for node in owner.body if isinstance(node, ast.FunctionDef) and node.name == name)
+    # event_dispatch.py 拆分后方法落在 event_dispatch_*.py 的域 mixin 里，
+    # 按宿主族聚合类体（module_source_index），断言语义不变。
+    method = next(
+        node
+        for node in class_body_defs_for_file(ROOT, "event_dispatch.py", "EventDispatchMixin")
+        if isinstance(node, ast.FunctionDef) and node.name == name
+    )
     method = copy.deepcopy(method)
     module = ast.Module(body=[method], type_ignores=[])
     ast.fix_missing_locations(module)
@@ -199,10 +267,33 @@ EVENT_IS_RECENT_REQ036_DENIAL_ECHO = _load_event_dispatch_method("_event_is_rece
 EVENT_IS_INBOUND_CHAT_MESSAGE = _load_event_dispatch_method("_event_is_inbound_chat_message")
 
 
+def _main_family_source() -> str:
+    """main.py 的方法已随域拆分分散到 main_*.py，跨宿主族聚合拼接源码。"""
+    return "\n".join(
+        (ROOT / name).read_text(encoding="utf-8")
+        for name in sorted(p.name for p in ROOT.glob("main*.py"))
+    )
+
+
+def _main_family_owner() -> ast.ClassDef:
+    """跨 main 族模块合并宿主与各域 mixin 的方法体，供按方法名定位。"""
+    merged = ast.ClassDef(
+        name="PrivateCompanionPlugin",
+        bases=[],
+        keywords=[],
+        body=[],
+        decorator_list=[],
+    )
+    for path in sorted(ROOT.glob("main*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and node.name.startswith("PrivateCompanionPlugin"):
+                merged.body.extend(node.body)
+    return merged
+
+
 def _method_priority(name: str) -> int:
-    source = (ROOT / "main.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "PrivateCompanionPlugin")
+    owner = _main_family_owner()
     method = next(
         node
         for node in owner.body
@@ -227,10 +318,27 @@ def _method_priority(name: str) -> int:
 
 
 def _load_sync_plugin_method(name: str) -> Any:
-    source = (ROOT / "main.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "PrivateCompanionPlugin")
-    method = next(node for node in owner.body if isinstance(node, ast.FunctionDef) and node.name == name)
+    # 方法已随域拆分分散在 main.py 与 main_*.py，跨宿主族聚合定位。
+    method = None
+    for path in sorted(ROOT.glob("main*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and node.name.startswith("PrivateCompanionPlugin"):
+                hit = next(
+                    (
+                        sub
+                        for sub in node.body
+                        if isinstance(sub, ast.FunctionDef) and sub.name == name
+                    ),
+                    None,
+                )
+                if hit is not None:
+                    method = hit
+                    break
+        if method is not None:
+            break
+    if method is None:
+        raise AssertionError(f"未能在 main 族模块中定位方法 {name}")
     method = copy.deepcopy(method)
     module = ast.Module(body=[method], type_ignores=[])
     ast.fix_missing_locations(module)
@@ -250,10 +358,13 @@ REQ036_ACTIVE_REGISTRY = _load_sync_plugin_method("_active_unified_person_regist
 
 
 def _load_proactive_target_sync() -> Any:
-    source = (ROOT / "proactive.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "ProactiveMixin")
-    method = next(node for node in owner.body if isinstance(node, ast.FunctionDef) and node.name == "_sync_configured_targets")
+    # proactive.py 拆分后方法落在 proactive_core_*.py，按宿主族聚合类体
+    # （module_source_index），断言语义不变。
+    method = next(
+        node
+        for node in class_body_defs_for_file(ROOT, "proactive.py", "ProactiveMixin")
+        if isinstance(node, ast.FunctionDef) and node.name == "_sync_configured_targets"
+    )
     method = copy.deepcopy(method)
     module = ast.Module(body=[method], type_ignores=[])
     ast.fix_missing_locations(module)
@@ -273,14 +384,15 @@ REQ036_CONFIGURED_TARGET_SYNC = _load_proactive_target_sync()
 
 
 def _load_user_list_method() -> Any:
-    source = (ROOT / "page_api_users_groups.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    owner = next(
+    # page_api_users_groups.py 拆分后 list_users 落在 page_api_users_groups_part*.py，
+    # 按宿主文件名聚合类体（module_source_index），断言语义不变。
+    method = next(
         node
-        for node in tree.body
-        if isinstance(node, ast.ClassDef) and node.name == "PrivateCompanionPageApiUsersGroupsMixin"
+        for node in class_body_defs_for_file(
+            ROOT, "page_api_users_groups.py", "PrivateCompanionPageApiUsersGroupsMixin"
+        )
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "list_users"
     )
-    method = next(node for node in owner.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "list_users")
     module = ast.Module(body=[copy.deepcopy(method)], type_ignores=[])
     ast.fix_missing_locations(module)
     namespace: dict[str, Any] = {
@@ -737,18 +849,34 @@ class Req036CompanionTests(unittest.TestCase):
         self.assertNotIn("content", repr(user["unified_profile_capability_audit"]))
 
     def test_req039_group_path_uses_transient_projection_without_private_user_write(self) -> None:
-        source = (ROOT / "main.py").read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        plugin = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "PrivateCompanionPlugin")
-        capture = next(node for node in plugin.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "_capture_group_observation_event")
+        # gic 域拆分后目标方法分布到 main.py 与 main_*.py 域 mixin，跨宿主族聚合扫描（19a389c 范本）。
+        def _family_method(name: str, kind: type) -> ast.AST:
+            for path in [ROOT / "main.py", *sorted(ROOT.glob("main_*.py"))]:
+                if not path.is_file():
+                    continue
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.name)
+                for node in tree.body:
+                    if not isinstance(node, ast.ClassDef):
+                        continue
+                    if node.name != "PrivateCompanionPlugin" and not node.name.startswith("PrivateCompanionPlugin"):
+                        continue
+                    method = next(
+                        (sub for sub in node.body if isinstance(sub, kind) and sub.name == name),
+                        None,
+                    )
+                    if method is not None:
+                        return method
+            raise RuntimeError(f"未在 main.py / main_*.py 中定位 {name}")
+
+        capture = _family_method("_capture_group_observation_event", ast.AsyncFunctionDef)
         rendered = ast.unparse(capture)
         self.assertNotIn("_get_user", rendered)
         self.assertNotIn("group_inbound", rendered)
-        projection = next(node for node in plugin.body if isinstance(node, ast.FunctionDef) and node.name == "_req039_group_observation_projection")
+        projection = _family_method("_req039_group_observation_projection", ast.FunctionDef)
         projection_rendered = ast.unparse(projection)
         self.assertNotIn("_get_user", projection_rendered)
         self.assertIn("'projection_kind': 'group_observation'", projection_rendered)
-        expression = next(node for node in plugin.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "inject_unified_relationship_expression")
+        expression = _family_method("inject_unified_relationship_expression", ast.AsyncFunctionDef)
         expression_rendered = ast.unparse(expression)
         self.assertIn("group_id = '' if is_private", expression_rendered)
         self.assertIn("_req039_group_observation_projection", expression_rendered)
@@ -1639,15 +1767,23 @@ class Req036CompanionTests(unittest.TestCase):
         self.assertTrue(event.private_companion_req036_denied)
 
     def test_private_message_attaches_unified_identity_without_permission(self) -> None:
-        source = (ROOT / "message_pipeline.py").read_text(encoding="utf-8")
+        # message_pipeline.py 拆分后 handle_private_message 落在 message_pipeline_part*.py，
+        # 源码断言改读整族文本，断言语义不变。
+        source = host_source_text(ROOT, "message_pipeline")
         self.assertIn('source="private_auto"', source)
         self.assertNotIn("_req036_reject_unauthorized_private_event", source)
 
     def test_private_command_has_no_permission_rejection_path(self) -> None:
-        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        source = _main_family_source()
         start = source.index("    async def companion_command(")
         end = source.index("    async def group_companion_command(", start)
         command = source[start:end]
+        # companion_command 的引导与尾段分派步骤已随域拆分搬到
+        # main_companion_command.py（按文件名排在 main.py 之后，切片取不到）。
+        # 断言需并入该域模块，否则搬走后会空转。
+        domain = ROOT / "main_companion_command.py"
+        if domain.exists():
+            command += domain.read_text(encoding="utf-8")
         self.assertNotIn("_req036_reject_unauthorized_private_event", command)
         self.assertIn('source="private_command"', command)
 
@@ -1719,7 +1855,8 @@ class Req036CompanionTests(unittest.TestCase):
         self.assertIn("portrait_request_fields_invalid", validate_portrait_request(extra_field))
 
     def test_private_entry_has_no_capability_rejection(self) -> None:
-        source = (ROOT / "message_pipeline.py").read_text(encoding="utf-8")
+        # 同上：按宿主族拼接源码后切片，方法搬走也不空转。
+        source = host_source_text(ROOT, "message_pipeline")
         start = source.index("async def handle_private_message(")
         end = source.index("async def handle_group_message(", start)
         handler = source[start:end]
@@ -1728,9 +1865,7 @@ class Req036CompanionTests(unittest.TestCase):
         self.assertLess(handler.index("self._req036_attach_unified_profile_context("), handler.index("self._qzone_note_event_bot(event)"))
 
     def test_group_portrait_query_classifier_distinguishes_self_from_third_party(self) -> None:
-        source = (ROOT / "main.py").read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "PrivateCompanionPlugin")
+        owner = _main_family_owner()
         method = next(node for node in owner.body if isinstance(node, ast.FunctionDef) and node.name == "_req036_group_portrait_query_kind")
         method = copy.deepcopy(method)
         method.decorator_list = []
@@ -1802,7 +1937,7 @@ class Req036CompanionTests(unittest.TestCase):
         self.assertEqual([], host.replies)
 
     def test_req036_intercept_log_does_not_include_group_or_message_text(self) -> None:
-        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        source = _main_family_source()
         self.assertIn("group_hash=", source)
         self.assertIn("text_hash=", source)
         self.assertNotIn("群聊第三方画像查询已拦截: group=%s text=%s", source)
@@ -1815,9 +1950,7 @@ class Req036CompanionTests(unittest.TestCase):
         self.assertEqual([], host.replies)
 
     def test_bot_self_preference_query_stays_on_normal_group_reply_path(self) -> None:
-        source = (ROOT / "main.py").read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "PrivateCompanionPlugin")
+        owner = _main_family_owner()
         method = next(node for node in owner.body if isinstance(node, ast.FunctionDef) and node.name == "_req036_group_portrait_query_kind")
         method = copy.deepcopy(method)
         method.decorator_list = []

@@ -11,6 +11,8 @@ from unittest.mock import patch
 
 from astrbot_plugin_private_companion.llm_tool_actions import LlmToolActionsMixin
 
+from tests.module_source_index import host_sources
+
 
 TZ = timezone(timedelta(hours=8))
 NOW = datetime(2026, 7, 14, 10, 0, tzinfo=TZ).timestamp()
@@ -318,7 +320,10 @@ class MemoChatToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.plugin._memo_management_instruction_matches("取消删除"))
         self.assertTrue(self.plugin._memo_management_instruction_matches("完成第2个"))
         self.assertTrue(self.plugin._memo_management_instruction_matches("只看已完成"))
-        main_source = (Path(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8")
+        main_source = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in host_sources(Path(__file__).resolve().parents[1], "main")
+        )
         self.assertIn('@filter.llm_tool(name="pc_manage_memo")', main_source)
         self.assertIn("private_companion_memo_management_v1", main_source)
 

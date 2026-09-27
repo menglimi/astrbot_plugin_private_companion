@@ -4,22 +4,19 @@ import ast
 import unittest
 from pathlib import Path
 
+from module_source_index import iter_class_methods
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class EventDispatchRegistrationTests(unittest.TestCase):
     def test_main_module_registers_every_split_event_dispatch_hook(self) -> None:
-        main_tree = ast.parse((ROOT / "main.py").read_text(encoding="utf-8"))
-        main_class = next(
-            node
-            for node in main_tree.body
-            if isinstance(node, ast.ClassDef) and node.name == "PrivateCompanionPlugin"
-        )
+        # 事件钩子方法经域拆分分布在 main.py 与 main_*.py，跨宿主族聚合采集。
         methods = {
-            node.name: node
-            for node in main_class.body
-            if isinstance(node, ast.AsyncFunctionDef)
+            child.name: child
+            for child, _owner in iter_class_methods(ROOT, "main", "PrivateCompanionPlugin")
+            if isinstance(child, ast.AsyncFunctionDef)
         }
         expected = {
             "route_model_replacement_before_agent_hook": (

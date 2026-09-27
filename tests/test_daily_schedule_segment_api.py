@@ -306,7 +306,13 @@ class DailyScheduleSegmentApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("self._sensitive_location_denied_text()", source)
 
     def test_bare_reset_is_not_an_alias_for_full_plugin_reset(self):
-        source = Path(__file__).resolve().parents[1].joinpath("main.py").read_text(encoding="utf-8")
+        # 陪伴指令的尾段分派已随域拆分搬到 main_companion_command.py，
+        # 只读 main.py 会让断言在搬走后空转 —— 改为跨 main 族聚合。
+        root = Path(__file__).resolve().parents[1]
+        source = "\n".join(
+            (root / p.name).read_text(encoding="utf-8")
+            for p in sorted(root.glob("main*.py"))
+        )
         self.assertNotIn('{"重置插件", "重置", "全部重置"}', source)
         self.assertIn('if action in {"重置插件", "全部重置"}:', source)
         self.assertIn('_regenerate_daily_plan_segment_by_selector(\n                "当前",', source)

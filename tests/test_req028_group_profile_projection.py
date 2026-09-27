@@ -11,6 +11,11 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 
+from tests.module_source_index import (  # noqa: E402
+    class_body_defs_for_file,
+    file_family_source_text,
+)
+
 
 def _single_line(value: Any, limit: int = 1000) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()[:limit]
@@ -30,9 +35,8 @@ class _Logger:
 
 
 def _load_methods(filename: str, class_name: str, names: set[str]) -> dict[str, Any]:
-    source = (ROOT / filename).read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == class_name)
+    # 拆分后方法散落在宿主族的域 mixin 里，按宿主文件名聚合类体
+    # （module_source_index），断言语义不变。
     namespace: dict[str, Any] = {
         "Any": Any,
         "_single_line": _single_line,
@@ -44,7 +48,7 @@ def _load_methods(filename: str, class_name: str, names: set[str]) -> dict[str, 
         "deepcopy": copy.deepcopy,
         "_persona_value": lambda host, key, default=None: getattr(host, key, default),
     }
-    for node in owner.body:
+    for node in class_body_defs_for_file(ROOT, filename, class_name):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names:
             module = ast.Module(body=[copy.deepcopy(node)], type_ignores=[])
             ast.fix_missing_locations(module)
@@ -127,7 +131,9 @@ class GroupProfileProjectionTests(unittest.TestCase):
         self.assertEqual({}, group)
 
     def test_group_capture_is_behind_the_whitelisted_group_pipeline_gate(self) -> None:
-        source = (ROOT / "message_pipeline.py").read_text(encoding="utf-8")
+        # message_pipeline.py 拆分后 handle_group_message 落在 message_pipeline_part*.py，
+        # 源码断言改读整族文本，断言语义不变。
+        source = file_family_source_text(ROOT, "message_pipeline.py")
         gate = "if not group_id or not self._group_enabled_for_event(group_id):"
         capture = "await self._capture_group_observation_event("
         self.assertIn(gate, source)

@@ -770,8 +770,12 @@ process.stdout.write(JSON.stringify({{ precision, quick }}));
         self.assertEqual(json.loads(saved), {"DAILY_PLAN_PROVIDER_ID": "backup"})
 
     def test_reaction_library_analysis_exposes_token_limit_route(self) -> None:
-        page_api = Path(__file__).resolve().parents[1] / "page_api.py"
-        source = page_api.read_text(encoding="utf-8")
+        # page_api.py 的方法已随域拆分分散到 page_api_*.py，需跨族聚合扫描。
+        root = Path(__file__).resolve().parents[1]
+        source = "\n".join(
+            (root / name).read_text(encoding="utf-8")
+            for name in ["page_api.py", *sorted(p.name for p in root.glob("page_api_*.py"))]
+        )
         self.assertIn('task="reaction_library_analysis"', source)
         self.assertIn('error="model_token_limit_exceeded"', source)
         self.assertIn("_model_token_limit_should_skip_primary", source)

@@ -226,7 +226,7 @@ class PhotoReferenceLibraryTests(unittest.IsolatedAsyncioTestCase):
             ]
             harness.photo_persona_reference_image_path = str(persona)
 
-            with patch("astrbot_plugin_private_companion.proactive_message.logger.info") as info:
+            with patch("astrbot_plugin_private_companion.proactive_message_photo_generation.logger.info") as info:
                 selected = await harness._photo_persona_reference_image_for_kind_async(
                     "selfie",
                     selection_context="坐在电脑桌前看向镜头",
@@ -257,7 +257,7 @@ class PhotoReferenceLibraryTests(unittest.IsolatedAsyncioTestCase):
             ]
             harness.photo_persona_reference_image_path = str(persona)
 
-            with patch("astrbot_plugin_private_companion.proactive_message.logger.info") as info:
+            with patch("astrbot_plugin_private_companion.proactive_message_photo_generation.logger.info") as info:
                 selected = await harness._photo_persona_reference_image_for_kind_async(
                     "selfie",
                     selection_context="坐在电脑桌前看向镜头",

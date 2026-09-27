@@ -39,8 +39,8 @@ class QzoneModuleBoundaryTests(unittest.TestCase):
             "_qzone_get_cookies": "qzone_runtime",
             "_qzone_query_feeds": "qzone_feed",
             "_qzone_reply_my_comment": "qzone_comments",
-            "_qzone_record_published_post": "qzone_publish",
-            "_qzone_life_publish_daily_plan": "qzone_schedule",
+            "_qzone_record_published_post": "qzone_publish_part01",
+            "_qzone_life_publish_daily_plan": "qzone_schedule_part01",
             "_qzone_preflight_auto_publish": "qzone_auth",
             "_publish_qzone_text": "qzone_media",
         }

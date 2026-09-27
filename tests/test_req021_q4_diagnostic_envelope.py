@@ -6,8 +6,12 @@ import json
 import re
 from pathlib import Path
 
+from tests.module_source_index import find_methods, file_family_source_text, page_api_source_text
+
 
 ROOT = Path(__file__).resolve().parents[1]
+PAGE_API_HOST = ROOT / "page_api.py"
+PAGE_API_CLASS = "PrivateCompanionPageApi"
 MODULE_PATH = ROOT / "diagnostic_envelope.py"
 
 
@@ -103,12 +107,19 @@ def test_q4_legacy_history_is_projected_without_sensitive_fields() -> None:
 
 
 def test_q4_page_api_and_operations_contract_use_the_same_envelope() -> None:
-    page_api = (ROOT / "page_api.py").read_text(encoding="utf-8")
-    integration_status = (ROOT / "integration_status.py").read_text(encoding="utf-8")
+    page_api = page_api_source_text(ROOT)
+    # 拆分后方法可能挪到 integration_status_part*.py，聚合整族查找
+    integration_status = file_family_source_text(ROOT, "integration_status.py")
     app_js = (ROOT / "pages" / "陪伴面板" / "app.js").read_text(encoding="utf-8")
     provider_panel = (ROOT / "pages" / "陪伴面板" / "js" / "panels" / "provider-tree.js").read_text(encoding="utf-8")
-    tree = ast.parse(page_api)
-    methods = {node.name: ast.unparse(node) for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    # 方法可能被拆到 page_api_*.py 的域 mixin 里，按宿主类全族定位。
+    located = find_methods(
+        ROOT,
+        "page_api",
+        PAGE_API_CLASS,
+        ("run_troubleshooting_test", "test_image_api_endpoint", "test_provider"),
+    )
+    methods = {name: ast.unparse(node) for name, node in located.items()}
 
     for name in ("run_troubleshooting_test", "test_image_api_endpoint", "test_provider"):
         assert "_diagnostic_envelope" in methods[name]

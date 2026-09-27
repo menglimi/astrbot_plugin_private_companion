@@ -11,6 +11,7 @@ from astrbot_plugin_private_companion.constants import (
 )
 from astrbot_plugin_private_companion.main import PrivateCompanionExtensionAPI
 from astrbot_plugin_private_companion.page_api import PrivateCompanionPageApi
+from tests.module_source_index import page_api_source_text
 
 
 class _PluginHarness:
@@ -66,7 +67,7 @@ class HistoricalRelationshipImportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(WORLDBOOK_IMPORTANT_MEMORY_CAPACITY, len(normalized))
 
     def test_accepting_historical_observation_preserves_batch_provenance(self) -> None:
-        source = (Path(__file__).resolve().parents[1] / "page_api.py").read_text(encoding="utf-8")
+        source = page_api_source_text(Path(__file__).resolve().parents[1])
         self.assertIn('"import_batch_id": self._single_line(accepted.get("import_batch_id"), 120)', source)
         self.assertIn('import_batch_id = self._single_line(raw.get("import_batch_id"), 120)', source)
         self.assertIn('memory["import_batch_id"] = import_batch_id', source)

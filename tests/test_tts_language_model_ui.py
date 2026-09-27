@@ -14,7 +14,11 @@ class TtsLanguageModelUiTests(unittest.TestCase):
         cls.script = (ROOT / "pages" / "陪伴面板" / "app.js").read_text(encoding="utf-8")
         cls.css = (ROOT / "pages" / "陪伴面板" / "app.css").read_text(encoding="utf-8")
         cls.html = (ROOT / "pages" / "陪伴面板" / "index.html").read_text(encoding="utf-8")
-        cls.api = (ROOT / "page_api.py").read_text(encoding="utf-8")
+        # TTS 后端逻辑可能位于宿主或任一 page_api_* 域模块中，合并扫描家族文件。
+        cls.api = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(ROOT.glob("page_api*.py"))
+        )
 
     def test_model_page_has_dedicated_tts_section(self) -> None:
         self.assertIn('data-models-section="tts"', self.html)

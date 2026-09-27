@@ -100,31 +100,44 @@ async def _resume_story_handoff(_host: Any) -> None:
 
 
 def _load_lifecycle_source() -> tuple[dict[str, Any], ast.ClassDef]:
-    tree = ast.parse(MAIN_PATH.read_text(encoding="utf-8"))
-    owner = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.ClassDef) and node.name == "PrivateCompanionPlugin"
-    )
+    # 生命周期方法（__init__/initialize/terminate）已随 main.py 拆分迁至
+    # main_lifecycle.py 域 mixin，跨宿主族聚合扫描 main.py 与全部 main_*.py
+    # （与 test_wardrobe_detail_tool 的聚合扫描同款，提交 86ebc90 范本）。
     method_names = {"__init__", "initialize", "terminate"}
-    methods = [
-        copy.deepcopy(node)
-        for node in owner.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name in method_names
-    ]
+    source_method_names = method_names | {"_initialize_before_publication"}
+    methods: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
+    source_methods: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
+    owner: ast.ClassDef | None = None
+    getter = None
+    for path in [MAIN_PATH, *sorted(ROOT.glob("main_*.py"))]:
+        if not path.is_file():
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in tree.body:
+            if not isinstance(node, ast.ClassDef):
+                continue
+            if node.name != "PrivateCompanionPlugin" and not node.name.startswith("PrivateCompanionPlugin"):
+                continue
+            for sub in node.body:
+                if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)) and sub.name in method_names:
+                    methods.append(copy.deepcopy(sub))
+                if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)) and sub.name in source_method_names:
+                    source_methods.append(copy.deepcopy(sub))
+            if node.name == "PrivateCompanionPlugin":
+                owner = node
+        if getter is None and path == MAIN_PATH:
+            for node in tree.body:
+                if isinstance(node, ast.FunctionDef) and node.name == "get_private_companion_api":
+                    getter = copy.deepcopy(node)
+                    break
+    if owner is None or getter is None:
+        raise RuntimeError("未在 main.py / main_*.py 中定位宿主类或 get_private_companion_api")
     lifecycle_class = ast.ClassDef(
         name="PrivateCompanionPlugin",
         bases=[ast.Name(id="_LifecycleBase", ctx=ast.Load())],
         keywords=[],
         body=methods,
         decorator_list=[],
-    )
-    getter = next(
-        copy.deepcopy(node)
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef)
-        and node.name == "get_private_companion_api"
     )
     module = ast.Module(
         body=[
@@ -161,6 +174,9 @@ def _load_lifecycle_source() -> tuple[dict[str, Any], ast.ClassDef]:
         "logger": types.SimpleNamespace(
             debug=lambda *_args, **_kwargs: None,
             warning=lambda *_args, **_kwargs: None,
+            info=lambda *_args, **_kwargs: None,
+            error=lambda *_args, **_kwargs: None,
+            exception=lambda *_args, **_kwargs: None,
         ),
         "_single_line": lambda value, limit=240: " ".join(
             str(value or "").split()
@@ -168,7 +184,16 @@ def _load_lifecycle_source() -> tuple[dict[str, Any], ast.ClassDef]:
     }
     ast.fix_missing_locations(module)
     exec(compile(module, str(MAIN_PATH), "exec"), namespace)
-    return namespace, owner
+    # SOURCE_CLASS 供源码断言使用：用跨宿主族聚合方法合成视图（原为 main.py 宿主类节点）。
+    source_class = ast.ClassDef(
+        name="PrivateCompanionPlugin",
+        bases=[],
+        keywords=[],
+        body=source_methods,
+        decorator_list=[],
+    )
+    ast.fix_missing_locations(source_class)
+    return namespace, source_class
 
 
 LIFECYCLE, SOURCE_CLASS = _load_lifecycle_source()

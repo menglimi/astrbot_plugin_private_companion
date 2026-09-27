@@ -25,6 +25,23 @@ from astrbot_plugin_private_companion.conversation_prompt_section import (
 )
 
 
+def _page_api_domain_sources() -> list[str]:
+    """宿主 page_api.py + 全部 page_api_* 域 mixin 模块的源码。
+
+    页面 API 已按域拆分为多个文件，section key 的声明会随着方法一起搬家，
+    所以任何「扫描页面 API 源码」的断言都必须合并扫描全部域模块。
+    这里按文件 glob 动态发现域模块，新增域时无需再改本测试。
+    """
+    domain_paths = sorted(ROOT.glob("page_api_*.py"))
+    sources: list[str] = []
+    for path in [ROOT / "page_api.py", *domain_paths]:
+        try:
+            sources.append(path.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+    return sources
+
+
 class PageBackgroundPromptAuthoringTests(unittest.TestCase):
     def test_page_body_renderer_preserves_wire_bytes(self) -> None:
         content = "  第一行\n\nJSON: {\"ok\":true}\n尾部  "
@@ -60,7 +77,9 @@ class PageBackgroundPromptAuthoringTests(unittest.TestCase):
         )
 
     def test_page_llm_prompt_producers_declare_stable_section_keys(self) -> None:
-        source = inspect.getsource(page_api)
+        # 页面 API 已按域拆成多个 mixin 模块；section key 的声明跟着方法走，
+        # 因此要合并扫描宿主模块与各 mixin 模块。
+        source = "\n".join(_page_api_domain_sources())
         expected = (
             "background.reaction_library.analysis",
             "background.photo_reference_selection_trial",

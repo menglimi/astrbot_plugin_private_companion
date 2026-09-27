@@ -2,9 +2,19 @@ from __future__ import annotations
 
 import inspect
 import unittest
+from pathlib import Path
 
+from tests.module_source_index import file_family_source_text
 from astrbot_plugin_private_companion import creative, daily_review, dreaming, game_integration, planning
 from astrbot_plugin_private_companion.conversation_prompt_section import prompt_section
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _family_source(module_name: str) -> str:
+    """聚合模块族源码（门面 + 所有 part 文件），用于拆分后测试。"""
+    return file_family_source_text(ROOT, f"{module_name}.py")
 
 
 class BackgroundPromptAuthoringTests(unittest.TestCase):
@@ -60,7 +70,8 @@ class BackgroundPromptAuthoringTests(unittest.TestCase):
         }
 
         for module, keys in expected.items():
-            source = inspect.getsource(module)
+            mod_name = module.__name__.split(".")[-1]
+            source = _family_source(mod_name)
             for key in keys:
                 with self.subTest(module=module.__name__, key=key):
                     self.assertIn(f'key="{key}"', source)

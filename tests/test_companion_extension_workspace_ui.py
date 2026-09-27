@@ -3,6 +3,8 @@ from pathlib import Path
 
 from astrbot_plugin_private_companion.page_api import PrivateCompanionPageApi
 
+from tests.module_source_index import page_api_source_text
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PANEL_ROOTS = [ROOT / "pages" / "companion-panel", ROOT / "pages" / "陪伴面板"]
@@ -35,7 +37,7 @@ def test_creative_image_and_reality_are_conditional_companion_workspaces() -> No
 
 
 def test_image_workspace_is_served_only_through_companion_page_api() -> None:
-    source = (ROOT / "page_api.py").read_text(encoding="utf-8")
+    source = page_api_source_text(ROOT)
 
     assert '("/extensions/image/status", self.get_image_extension_status' in source
     assert "async def get_image_extension_status" in source

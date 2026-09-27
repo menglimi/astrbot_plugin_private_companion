@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import unittest
+from contextlib import ExitStack
 from copy import deepcopy
 from unittest.mock import patch
 
@@ -10,6 +12,23 @@ from astrbot_plugin_private_companion.daily_state import DailyStateMixin
 
 
 NOW = 1_752_289_200.0
+
+
+def _patch_now_ts(stack: ExitStack, value: float) -> int:
+    """把 `_now_ts` 打到 `daily_state*` 全族的每个模块上。
+
+    mixin 拆分后，方法用的是**自己所在模块**的 `_now_ts`（各模块各自
+    `from .helpers import _now_ts`）。只 patch 宿主 `daily_state` 会静默失效 ——
+    被搬到 `daily_state_skill_growth` 等模块的方法仍读真实时钟。
+    """
+    patched = 0
+    for name, module in list(sys.modules.items()):
+        if not name.startswith("astrbot_plugin_private_companion.daily_state"):
+            continue
+        if hasattr(module, "_now_ts"):
+            stack.enter_context(patch.object(module, "_now_ts", return_value=value))
+            patched += 1
+    return patched
 
 
 class PersonalGoalHarness(DailyStateMixin):
@@ -52,7 +71,8 @@ class PersonalGoalHarness(DailyStateMixin):
 
 class PersonalGoalProactiveTests(unittest.IsolatedAsyncioTestCase):
     async def settle(self, harness: PersonalGoalHarness) -> None:
-        with patch("astrbot_plugin_private_companion.daily_state._now_ts", return_value=NOW):
+        with ExitStack() as stack:
+            assert _patch_now_ts(stack, NOW) > 0, "没有 patch 到任何 daily_state* 模块的 _now_ts"
             await harness._maybe_settle_personal_goals(force=True)
 
     async def test_completed_matching_segment_advances_and_crosses_milestone(self) -> None:

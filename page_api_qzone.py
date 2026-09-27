@@ -6,7 +6,7 @@ from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any
 
-from quart import request
+from .page_api_shared import _page_api_host, _page_api_host_request as request
 
 from .qzone_recent_parser import parse_recent_feeds
 from .logging_util import get_module_logger

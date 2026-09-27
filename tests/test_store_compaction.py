@@ -8,6 +8,7 @@ from copy import deepcopy
 from unittest.mock import patch
 
 from astrbot_plugin_private_companion import core_store
+from astrbot_plugin_private_companion import core_store_shared
 from astrbot_plugin_private_companion.core_store import CoreStoreMixin
 
 
@@ -116,7 +117,10 @@ class StoreCompactionTests(unittest.IsolatedAsyncioTestCase):
         harness = _ControlTagSanitizerHarness(True)
         with (
             patch.object(core_store.time, "monotonic", side_effect=[100.0, 101.0, 800.0]),
-            patch.object(core_store.logger, "info") as info,
+            # 拆分后 _log_store_control_cleanup 落在 core_store_cleanup_compact.py，
+            # 其 logger 是 core_store_shared.logger（与 core_store.logger 不是同一对象），
+            # patch 必须指向实际持有绑定的模块，否则断言恒为 0 次调用。
+            patch.object(core_store_shared.logger, "info") as info,
         ):
             self.assertTrue(harness._log_store_control_cleanup("snapshot", 9))
             self.assertFalse(harness._log_store_control_cleanup("snapshot", 9))

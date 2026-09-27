@@ -79,7 +79,8 @@ class _Harness(MemoryCompanionAdapterMixin, DailyStateMixin):
 
 class MemoryCompanionScheduleFastContextTests(unittest.IsolatedAsyncioTestCase):
     def test_reply_context_source_contains_actor_binding_boundary(self) -> None:
-        source = (ROOT / "forward_message.py").read_text(encoding="utf-8")
+        from module_source_index import file_family_source_text
+        source = file_family_source_text(ROOT, "forward_message.py")
 
         self.assertIn("人物与动作优先逐项对应", source)
         self.assertIn("区分当前发言、引用作者和被提到的第三方", source)

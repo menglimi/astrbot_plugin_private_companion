@@ -5,4 +5,3 @@ try:
     from .agenda_disclosure_policy import *  # noqa: F401,F403
 except ImportError:
     from agenda_disclosure_policy import *  # noqa: F401,F403
-

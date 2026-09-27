@@ -16,15 +16,24 @@ from relationship_policy import relationship_stage_for_score
 
 
 def _class_method(path: Path, class_name: str, method_name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    owner = next(
-        node for node in tree.body
-        if isinstance(node, ast.ClassDef) and node.name == class_name
-    )
-    return deepcopy(next(
-        node for node in owner.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == method_name
-    ))
+    for src in [path, *(p for p in sorted(ROOT.glob("page_api_*.py")) if p != path)]:
+        try:
+            tree = ast.parse(src.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError):
+            continue
+        for owner in tree.body:
+            if not isinstance(owner, ast.ClassDef):
+                continue
+            try:
+                node = deepcopy(next(node for node in owner.body
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == method_name))
+            except StopIteration:
+                continue
+            # 标记来源文件：拆分后方法可能已搬离宿主到 page_api_*.py，
+            # get_source_segment 必须按实际所在文件取源码（先例同 test_relationship_system_pr）。
+            node._src_path = src  # type: ignore[attr-defined]
+            return node
+    raise AssertionError(f"method not found in page_api family: {method_name}")
 
 
 def _compile_static_method(path: Path, class_name: str, method_name: str) -> object:
@@ -43,13 +52,15 @@ def _compile_static_method(path: Path, class_name: str, method_name: str) -> obj
 
 class ChatCompanionIntimacyControlTests(unittest.TestCase):
     def test_projection_is_bounded_and_has_the_public_contract(self) -> None:
+        projection_node = _class_method(
+            ROOT / "page_api.py",
+            "PrivateCompanionPageApi",
+            "_relationship_intimacy_projection",
+        )
+        # 拆分后方法可能已搬离宿主，按实际所在文件取源码（先例：test_relationship_system_pr）
         projection_source = ast.get_source_segment(
-            (ROOT / "page_api.py").read_text(encoding="utf-8"),
-            _class_method(
-                ROOT / "page_api.py",
-                "PrivateCompanionPageApi",
-                "_relationship_intimacy_projection",
-            ),
+            projection_node._src_path.read_text(encoding="utf-8"),
+            projection_node,
         ) or ""
         self.assertIn("relationship_stage_for_score", projection_source)
         cases = {

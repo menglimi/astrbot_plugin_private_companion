@@ -664,8 +664,16 @@ class GroupMemberSafetySourceIntegrationTests(unittest.TestCase):
         self.assertIn('"reason": "module_missing"', main_source)
 
     def test_backend_routes_config_and_third_level_page_are_connected(self) -> None:
-        main_source = (ROOT / "main.py").read_text(encoding="utf-8")
-        api_source = (ROOT / "page_api.py").read_text(encoding="utf-8")
+        # guard_blocked_group_member_early 等符号已随 gic 域拆分迁至 main_group_inbound_capture.py，
+        # 跨宿主族聚合源码断言（86ebc90 范本：main.py + main_*.py 拼接）。
+        main_source = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in [ROOT / "main.py", *sorted(ROOT.glob("main_*.py"))]
+        )
+        api_source = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(ROOT.glob("page_api*.py"))
+        )
         script = (ROOT / "pages" / "陪伴面板" / "app.js").read_text(encoding="utf-8")
         schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
 

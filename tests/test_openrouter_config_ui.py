@@ -4,13 +4,16 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+from tests.module_source_index import page_api_source_text, file_family_source_text
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class OpenRouterConfigUiTests(unittest.TestCase):
     def test_page_setting_normalizer_accepts_openrouter_aliases(self) -> None:
-        source = (ROOT / "page_api_settings.py").read_text(encoding="utf-8")
+        # 拆分后 alias 块落在 page_api_settings_part02.py，只读 page_api_settings.py 宿主会漏掉。
+        source = file_family_source_text(ROOT, "page_api_settings.py")
         alias_block = source.split('if key in {"external_image_api_platform", "backup_external_image_api_platform"}', 1)[1].split(
             "return _SETTING_UNHANDLED", 1
         )[0]
@@ -20,7 +23,8 @@ class OpenRouterConfigUiTests(unittest.TestCase):
         self.assertIn('"openrouter"', alias_block)
 
     def test_manual_command_platform_choices_include_openrouter(self) -> None:
-        source = (ROOT / "command_handlers.py").read_text(encoding="utf-8")
+        # 拆分后 platform spec 落在 command_handlers_cm_snapshot_config.py，用 family 全文搜索。
+        source = file_family_source_text(ROOT, "command_handlers.py")
         for key in ("external_image_api_platform", "backup_external_image_api_platform"):
             spec = source.split(f'"{key}": {{', 1)[1].split(
                 '"backup_external_image_api_timeout_seconds"', 1
@@ -31,12 +35,12 @@ class OpenRouterConfigUiTests(unittest.TestCase):
                     self.assertIn(f'"{alias}": "openrouter"', spec)
 
     def test_runtime_endpoint_summary_uses_openrouter_label(self) -> None:
-        source = (ROOT / "page_api.py").read_text(encoding="utf-8")
+        source = page_api_source_text(ROOT)
         labels = source.split("platform_labels = {", 1)[1].split("}", 1)[0]
         self.assertIn('"openrouter": "OpenRouter"', labels)
 
     def test_404_is_classified_as_endpoint_mismatch_before_network(self) -> None:
-        source = (ROOT / "page_api.py").read_text(encoding="utf-8")
+        source = page_api_source_text(ROOT)
         rules = source.split("rules = [", 1)[1]
         endpoint_rule = rules.index('"endpoint_mismatch"')
         network_rule = rules.index('"network"')
@@ -65,7 +69,7 @@ class OpenRouterConfigUiTests(unittest.TestCase):
 
     def test_schema_and_runtime_whitelist_document_openrouter(self) -> None:
         schema = (ROOT / "_conf_schema.json").read_text(encoding="utf-8")
-        page_api = (ROOT / "page_api.py").read_text(encoding="utf-8")
+        page_api = page_api_source_text(ROOT)
         self.assertIn("auto、openai、openrouter", schema)
         self.assertIn('"openrouter": "OpenRouter"', page_api)
         self.assertIn('"auto", "openai", "openrouter"', page_api)

@@ -63,7 +63,7 @@ def test_metadata_declares_only_the_ascii_plugin_page_alias() -> None:
 
 
 def test_plugin_page_token_compat_shim_is_scoped_to_companion_pages() -> None:
-    source = (ROOT / "integration_status.py").read_text(encoding="utf-8")
+    source = (ROOT / "integration_status_part01.py").read_text(encoding="utf-8")
 
     assert "target_ttl_seconds = 6 * 60 * 60" in source
     assert 'token_plugin_name == "astrbot_plugin_private_companion"' in source

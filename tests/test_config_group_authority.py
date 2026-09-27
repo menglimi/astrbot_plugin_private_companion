@@ -305,7 +305,7 @@ class ConfigGroupAuthorityTests(unittest.TestCase):
         self.assertEqual("learn_and_use", items["portrait_global_mode"]["default"])
         self.assertTrue(items["enable_custom_relationship_stage_policy"]["default"])
 
-        bootstrap = (ROOT / "plugin_bootstrap.py").read_text(encoding="utf-8")
+        bootstrap = (ROOT / "plugin_bootstrap_part01.py").read_text(encoding="utf-8")
         self.assertIn(
             'self._cfg_bool(c, "enable_auto_user_profile_creation", True)',
             bootstrap,
@@ -940,8 +940,8 @@ class ConfigGroupAuthorityTests(unittest.TestCase):
         self.assertEqual([], config["photo_generation_allowed_scopes"])
 
     def test_removed_owner_companion_switch_stays_absent(self):
-        source = (ROOT / "plugin_bootstrap.py").read_text(encoding="utf-8")
-        page_api = (ROOT / "page_api.py").read_text(encoding="utf-8")
+        source = (ROOT / "plugin_bootstrap_part01.py").read_text(encoding="utf-8")
+        page_api = "".join((ROOT / p).read_text(encoding="utf-8") for p in ["page_api.py", *sorted(ROOT.glob("page_api_*.py"))])
         self.assertNotIn("owner_companion_enabled", source)
         self.assertNotIn('"owner_companion_enabled"', page_api)
         self.assertIn(

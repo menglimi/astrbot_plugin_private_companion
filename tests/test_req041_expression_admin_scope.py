@@ -23,6 +23,8 @@ from expression_scope_ownership import (
 
 ROOT = Path(__file__).resolve().parents[1]
 
+from tests.module_source_index import find_method
+
 
 class _Request:
     payload = {}
@@ -41,12 +43,11 @@ class _AsyncLock:
 
 
 def _method(name: str, globals_map: dict):
-    tree = ast.parse((ROOT / "page_api.py").read_text(encoding="utf-8"))
-    class_node = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "PrivateCompanionPageApi")
-    method = next(
-        node for node in class_node.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
-    )
+    # 表达域方法已拆到 page_api_expression.py 等域 mixin，
+    # 故在「宿主类 + 各域 mixin 类」里定位，保持原有执行语义。
+    method = find_method(ROOT, "page_api", "PrivateCompanionPageApi", name)
+    if method is None:
+        raise KeyError(name)
     module = ast.Module(
         body=[ast.ImportFrom(module="__future__", names=[ast.alias("annotations")], level=0), method],
         type_ignores=[],

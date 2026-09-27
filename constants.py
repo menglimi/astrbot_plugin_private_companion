@@ -108,6 +108,7 @@ MODEL_TASK_PROVIDER_KEYS = {
     "worldbook_registration": "RELATIONSHIP_ANALYSIS_PROVIDER_ID",
     "emotion_judgement": "EMOTION_JUDGEMENT_PROVIDER_ID",
     "memory_profile": "COMPANION_MEMORY_PROVIDER_ID",
+    "companion_memory": "COMPANION_MEMORY_PROVIDER_ID",
     "dialogue_episode": "DIALOGUE_EPISODE_PROVIDER_ID",
     "group_interject": "GROUP_INTERJECT_PROVIDER_ID",
     "group_episode": "GROUP_EPISODE_PROVIDER_ID",

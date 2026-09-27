@@ -13,6 +13,7 @@ import unittest
 
 from identity_namespace import NamespaceContext
 from migration_backfill import legacy_pending_reference
+from tests.module_source_index import class_body_defs_for_file, file_family_source_text
 from unified_person_registry import UnifiedPersonRegistry
 
 
@@ -38,13 +39,9 @@ class _Request:
 
 
 def _load_page_unlink():
+    # page_api_users_groups.py 拆分后方法落在 page_api_users_groups_part*.py，
+    # 按宿主文件名聚合类体（module_source_index），断言语义不变。
     path = ROOT / "page_api_users_groups.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    owner = next(
-        node for node in tree.body
-        if isinstance(node, ast.ClassDef)
-        and node.name == "PrivateCompanionPageApiUsersGroupsMixin"
-    )
     names = {
         "_identity_domain_summary",
         "_identity_pending_reference",
@@ -61,7 +58,10 @@ def _load_page_unlink():
         "update_pending_identity_review",
     }
     methods = [
-        copy.deepcopy(node) for node in owner.body
+        copy.deepcopy(node)
+        for node in class_body_defs_for_file(
+            ROOT, "page_api_users_groups.py", "PrivateCompanionPageApiUsersGroupsMixin"
+        )
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names
     ]
     for method in methods:
@@ -523,7 +523,10 @@ class IdentityAdminUiTests(unittest.TestCase):
         self.assertIn("暂不处理", english)
         self.assertIn("重新加入审核", english)
         self.assertNotIn('data-identity-action="confirm-pending"', english)
-        self.assertIn("不能绕过统一数据链直接删除", (ROOT / "page_api_users_groups.py").read_text(encoding="utf-8"))
+        self.assertIn(
+            "不能绕过统一数据链直接删除",
+            file_family_source_text(ROOT, "page_api_users_groups.py"),
+        )
         self.assertNotIn("identity.identity_key", english)
 
 

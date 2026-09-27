@@ -22,17 +22,21 @@ def _is_llm_tool(function: ast.AsyncFunctionDef) -> bool:
 class LlmToolReservedParameterTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.source = (ROOT / "main.py").read_text(encoding="utf-8")
-        cls.tree = ast.parse(cls.source)
-        cls.tools = {
-            node.name: node
-            for node in ast.walk(cls.tree)
-            if isinstance(node, ast.AsyncFunctionDef) and _is_llm_tool(node)
-        }
+        # LLM 工具已随 main.py 拆分迁至 main_*.py 域 mixin，跨宿主族聚合扫描
+        # main.py 与全部 main_*.py（与 test_wardrobe_detail_tool 的聚合扫描同款）。
+        cls.tools: dict[str, tuple[ast.AsyncFunctionDef, str]] = {}
+        for path in [ROOT / "main.py", *sorted(ROOT.glob("main_*.py"))]:
+            if not path.is_file():
+                continue
+            source = path.read_text(encoding="utf-8")
+            tree = ast.parse(source, filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.AsyncFunctionDef) and _is_llm_tool(node):
+                    cls.tools.setdefault(node.name, (node, source))
 
     def test_llm_tools_do_not_expose_framework_context_parameter(self) -> None:
         conflicts = []
-        for name, function in self.tools.items():
+        for name, (function, _source) in self.tools.items():
             argument_names = {
                 argument.arg
                 for argument in (*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs)
@@ -43,10 +47,10 @@ class LlmToolReservedParameterTests(unittest.TestCase):
         self.assertEqual([], conflicts)
 
     def test_reaction_lookup_uses_search_context_and_maps_it_internally(self) -> None:
-        function = self.tools["pc_find_reaction_image"]
+        function, source = self.tools["pc_find_reaction_image"]
         argument_names = {argument.arg for argument in function.args.args}
         docstring = ast.get_docstring(function) or ""
-        function_source = ast.get_source_segment(self.source, function) or ""
+        function_source = ast.get_source_segment(source, function) or ""
 
         self.assertIn("search_context", argument_names)
         self.assertIn("search_context(string)", docstring)

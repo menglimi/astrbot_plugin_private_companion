@@ -156,10 +156,24 @@ def test_legacy_entrypoints_are_effect_free_adapters() -> None:
         "_schedule_data_save",
     }
     for filename, function_name in expectations.items():
-        tree = ast.parse((root / filename).read_text(encoding="utf-8"))
+        if filename == "page_api.py":
+            # _apply_config_value 可能位于宿主或任一域 mixin 模块
+            sources = [
+                (root / name).read_text(encoding="utf-8")
+                for name in sorted(p.name for p in root.glob("page_api*.py"))
+            ]
+        elif filename == "main.py":
+            # 宿主方法已随域拆分分散到 main_*.py，需跨宿主族聚合定位
+            sources = [
+                (root / name).read_text(encoding="utf-8")
+                for name in sorted(p.name for p in root.glob("main*.py"))
+            ]
+        else:
+            sources = [(root / filename).read_text(encoding="utf-8")]
         function = next(
             node
-            for node in ast.walk(tree)
+            for source in sources
+            for node in ast.walk(ast.parse(source))
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
             and node.name == function_name
         )

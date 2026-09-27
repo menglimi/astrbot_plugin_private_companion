@@ -17,16 +17,42 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 
+from tests.module_source_index import find_method, llm_tool_actions_source_text  # noqa: E402
+
 
 def _single_line(value: Any, limit: int = 1000) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()[:limit]
 
 
 def _load_method(filename: str, class_name: str, name: str) -> Any:
-    source = (ROOT / filename).read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == class_name)
-    method = next(node for node in owner.body if isinstance(node, ast.AsyncFunctionDef) and node.name == name)
+    # 方法已随 main.py 拆分迁至 main_*.py 域 mixin（类名以 class_name 开头），
+    # 跨宿主族聚合扫描 main.py 与全部 main_*.py，与 test_wardrobe_detail_tool
+    # 的 _llm_tool_functions 聚合扫描同款（提交 86ebc90 范本）。
+    candidates = [ROOT / filename, *sorted(ROOT.glob("main_*.py"))]
+    target: Any = None
+    found_path: "Path | None" = None
+    for path in candidates:
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (OSError, SyntaxError):
+            continue
+        for node in tree.body:
+            if not isinstance(node, ast.ClassDef):
+                continue
+            if node.name != class_name and not node.name.startswith(class_name):
+                continue
+            for sub in node.body:
+                if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)) and sub.name == name:
+                    target = sub
+                    found_path = path
+                    break
+            if target is not None:
+                break
+        if target is not None:
+            break
+    if target is None:
+        raise ValueError(f"方法 {class_name}.{name} 未在 {filename} 或 main_*.py 中定位")
+    method = target
     namespace: dict[str, Any] = {
         "Any": Any,
         "AstrMessageEvent": Any,
@@ -36,7 +62,7 @@ def _load_method(filename: str, class_name: str, name: str) -> Any:
     }
     module = ast.Module(body=[copy.deepcopy(method)], type_ignores=[])
     ast.fix_missing_locations(module)
-    exec(compile(module, str(ROOT / filename), "exec"), namespace)
+    exec(compile(module, str(found_path), "exec"), namespace)
     return namespace[name]
 
 
@@ -44,12 +70,10 @@ PUBLIC_TOOL = _load_method("main.py", "PrivateCompanionPlugin", "pc_find_reactio
 
 
 def _load_reaction_impl() -> Any:
-    source = (ROOT / "llm_tool_actions.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "LlmToolActionsMixin")
-    method = next(
-        node for node in owner.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "_pc_find_reaction_image_impl"
+    method = find_method(
+        ROOT, "llm_tool_actions", "LlmToolActionsMixin", "_pc_find_reaction_image_impl"
     )
+    assert method is not None, "_pc_find_reaction_image_impl 未在 llm_tool_actions 族中定位"
     namespace: dict[str, Any] = {
         "Any": Any,
         "AstrMessageEvent": Any,
@@ -203,8 +227,12 @@ class ReactionSearchContextCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("", host.called_kwargs["search_context"])
 
     def test_internal_name_and_smart_imagechat_keyword_are_separated(self) -> None:
-        main_source = (ROOT / "main.py").read_text(encoding="utf-8")
-        impl_source = (ROOT / "llm_tool_actions.py").read_text(encoding="utf-8")
+        # 反应表情域方法随拆分迁至 main_reaction_expression.py，跨宿主族聚合源码断言。
+        main_source = "\n".join(
+            p.read_text(encoding="utf-8")
+            for p in [ROOT / "main.py", *sorted(ROOT.glob("main_*.py"))]
+        )
+        impl_source = llm_tool_actions_source_text(ROOT)
 
         self.assertIn("search_context: str = \"\"", main_source)
         self.assertIn("search_context=search_context", main_source)

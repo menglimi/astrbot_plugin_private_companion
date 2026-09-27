@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 
 from astrbot_plugin_private_companion.wardrobe_runtime import WardrobeMixin
+from tests.module_source_index import file_family_source_text
 
 ROOT = Path(__file__).resolve().parents[1]
 PANELS = ("pages/companion-panel", "pages/陪伴面板")
@@ -49,7 +50,7 @@ class SettingsReadPortTests(unittest.TestCase):
     """schema → config → 实例属性 → 读取口：少一环就是「面板保存当场生效、重启就没了」。"""
 
     def test_every_wardrobe_schema_key_is_materialized_at_bootstrap(self) -> None:
-        source = (ROOT / "plugin_bootstrap.py").read_text(encoding="utf-8")
+        source = file_family_source_text(ROOT, "plugin_bootstrap.py")
         for key in _wardrobe_schema():
             self.assertIn("self.%s = " % key.lower(), source, key)
 

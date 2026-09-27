@@ -14,6 +14,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 
+from tests.module_source_index import class_body_defs_for_file  # noqa: E402
+
 
 def _single_line(value: Any, limit: int = 1000) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()[:limit]
@@ -65,11 +67,11 @@ def _load_unified_profile_service():
 
 
 def _load_class_methods(filename: str, class_name: str, names: set[str], namespace: dict[str, Any]) -> dict[str, Any]:
+    # 拆分后方法散落在宿主族的域 mixin 里，按宿主文件名聚合类体
+    # （module_source_index），断言语义不变。
     path = ROOT / filename
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == class_name)
     scope = dict(namespace)
-    for node in owner.body:
+    for node in class_body_defs_for_file(ROOT, filename, class_name):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names:
             module = ast.Module(body=[copy.deepcopy(node)], type_ignores=[])
             ast.fix_missing_locations(module)
@@ -247,10 +249,8 @@ class Req027UserProfileRelationshipPolicyTests(unittest.TestCase):
         self.assertNotIn("owner", user)
         self.assertEqual(1, host.saved)
 
-        core_tree = ast.parse((ROOT / "core_store.py").read_text(encoding="utf-8"))
-        core_class = next(node for node in core_tree.body if isinstance(node, ast.ClassDef) and node.name == "CoreStoreMixin")
         auto_profile = next(
-            node for node in core_class.body
+            node for node in class_body_defs_for_file(ROOT, "core_store.py", "CoreStoreMixin")
             if isinstance(node, ast.FunctionDef) and node.name == "_ensure_auto_private_user_profile"
         )
         self.assertNotRegex(ast.unparse(auto_profile), r"\[['\"]relationship_score['\"]\]\s*=")

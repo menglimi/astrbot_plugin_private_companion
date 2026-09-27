@@ -14,7 +14,14 @@ from astrbot_plugin_private_companion.llm_tool_actions import (
     LlmToolActionsMixin,
     PHOTO_TOOL_SILENT_SENTINEL,
 )
-from astrbot_plugin_private_companion.main import PrivateCompanionPlugin
+from astrbot_plugin_private_companion.main import (
+    PrivateCompanionPlugin,
+    PrivateCompanionPluginTtsResponseMixin,
+    PrivateCompanionPluginPrivatePassivePromptMixin,
+    PrivateCompanionPluginUtilSmallMixin,
+    PrivateCompanionPluginOutboundPersistenceMixin,
+)
+from astrbot_plugin_private_companion.main_outbound_guard import PrivateCompanionPluginOutboundGuardMixin
 from astrbot_plugin_private_companion.event_dispatch import EventDispatchMixin
 from astrbot_plugin_private_companion.conversation_injection_plan import (
     get_conversation_injection_plan,
@@ -22,28 +29,30 @@ from astrbot_plugin_private_companion.conversation_injection_plan import (
 
 
 class _ToolHarness(TtsToolSanitizerMixin, TtsEnhancementMixin):
+    enabled = True
     enable_tts_enhancement = True
     tts_generation_mode = "fast_tag"
     tts_conversion_scope = "full"
     tts_voice_language = "ja"
     tts_delivery_mode = "voice_and_text"
     tts_foreign_text_mode = "translation"
+    data = {}
 
 
-class _ResponseHarness(TtsToolSanitizerMixin):
+class _ResponseHarness(
+    TtsToolSanitizerMixin,
+    TtsEnhancementMixin,
+    PrivateCompanionPluginTtsResponseMixin,
+    PrivateCompanionPluginPrivatePassivePromptMixin,
+    PrivateCompanionPluginUtilSmallMixin,
+    PrivateCompanionPluginOutboundPersistenceMixin,
+    PrivateCompanionPluginOutboundGuardMixin,
+    EventDispatchMixin,
+):
     enabled = True
+    enable_tts_enhancement = True
+    data = {}
     normalize_tts_enhancement_response = PrivateCompanionPlugin.normalize_tts_enhancement_response
-    _photo_tool_followup_is_redundant = LlmToolActionsMixin._photo_tool_followup_is_redundant
-    _photo_tool_followup_chain_has_visible_content = staticmethod(
-        PrivateCompanionPlugin._photo_tool_followup_chain_has_visible_content
-    )
-    suppress_empty_photo_tool_followup_before_send = (
-        PrivateCompanionPlugin.suppress_empty_photo_tool_followup_before_send
-    )
-    attach_reaction_expression_image_before_send = (
-        PrivateCompanionPlugin.attach_reaction_expression_image_before_send
-    )
-    _suppress_outbound_reply = EventDispatchMixin._suppress_outbound_reply
 
     @staticmethod
     def _build_result_from_chain(chain):

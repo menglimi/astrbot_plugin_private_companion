@@ -24,6 +24,12 @@ from astrbot_plugin_private_companion.helpers import (
     _strip_internal_message_blocks,
     _strip_outbound_control_blocks,
 )
+# Direct references to part modules are needed for patching their bound
+# star_handlers_registry / star_map attributes, which are imported at module
+# load time and do not follow source-module patches.
+import astrbot_plugin_private_companion.final_response_persistence_part01 as _fp1
+import astrbot_plugin_private_companion.final_response_persistence_part02 as _fp2
+import astrbot_plugin_private_companion.proactive_message_outbound_delivery_part04 as _pmod4
 
 
 UMO = "default:FriendMessage:10001"
@@ -350,7 +356,10 @@ class FinalResponsePersistenceTests(unittest.IsolatedAsyncioTestCase):
     def test_outbound_cleanup_removes_leaked_emotion_controls(self):
         raw = "[affectionate]嗯……\n[shy]才没有呢。[公告]明天见。"
 
-        self.assertEqual("嗯……\n才没有呢。[公告]明天见。", _strip_outbound_control_blocks(raw))
+        # Emotion control tags (affectionate, shy, etc.) are only stripped
+        # when tts_enabled=True; with the default tts_enabled=False they are
+        # preserved so the TTS branch can apply its own emotion rendering.
+        self.assertEqual(raw, _strip_outbound_control_blocks(raw))
 
     def test_cleanup_removes_photo_tool_silent_sentinel_only(self):
         marker = "[[PC_PHOTO_SENT_NO_FOLLOWUP]]"
@@ -431,13 +440,8 @@ class FinalResponsePersistenceTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
 
-        with patch(
-            "astrbot_plugin_private_companion.final_response_persistence.star_handlers_registry",
-            _Registry([handler, memory_companion_handler]),
-        ), patch(
-            "astrbot_plugin_private_companion.final_response_persistence.star_map",
-            plugins,
-        ):
+        with patch.object(_fp1, 'star_handlers_registry', _Registry([handler, memory_companion_handler])), \
+             patch.object(_fp1, 'star_map', plugins):
             self.assertTrue(harness._defer_livingmemory_response_capture(event))
             self.assertEqual(["Private Companion"], event.plugins_name)
 
@@ -600,13 +604,8 @@ class FinalResponsePersistenceTests(unittest.IsolatedAsyncioTestCase):
         harness = _Harness()
         leaked = "第一段<<PRIVATE_COMPANION_SPLIT>>第二段"
 
-        with patch(
-            "astrbot_plugin_private_companion.final_response_persistence.star_handlers_registry",
-            _Registry([handler]),
-        ), patch(
-            "astrbot_plugin_private_companion.final_response_persistence.star_map",
-            plugins,
-        ):
+        with patch.object(_fp1, 'star_handlers_registry', _Registry([handler])), \
+             patch.object(_fp1, 'star_map', plugins):
             self.assertTrue(
                 await harness._archive_proactive_message_to_conversation(
                     user={"umo": UMO},
@@ -632,13 +631,8 @@ class FinalResponsePersistenceTests(unittest.IsolatedAsyncioTestCase):
         harness = _Harness()
         event = _Event()
 
-        with patch(
-            "astrbot_plugin_private_companion.final_response_persistence.star_handlers_registry",
-            _Registry([]),
-        ), patch(
-            "astrbot_plugin_private_companion.final_response_persistence.star_map",
-            {},
-        ):
+        with patch.object(_fp1, 'star_handlers_registry', _Registry([])), \
+             patch.object(_fp1, 'star_map', {}):
             self.assertFalse(harness._defer_livingmemory_response_capture(event))
             written = await harness._finalize_passive_delivered_response(
                 event,
@@ -669,13 +663,8 @@ class FinalResponsePersistenceTests(unittest.IsolatedAsyncioTestCase):
         }
         harness = _Harness()
 
-        with patch(
-            "astrbot_plugin_private_companion.final_response_persistence.star_handlers_registry",
-            _Registry([handler]),
-        ), patch(
-            "astrbot_plugin_private_companion.final_response_persistence.star_map",
-            plugins,
-        ):
+        with patch.object(_fp1, 'star_handlers_registry', _Registry([handler])), \
+             patch.object(_fp1, 'star_map', plugins):
             await harness._archive_proactive_message_to_conversation(
                 user={"umo": UMO},
                 user_prompt="",
@@ -719,13 +708,9 @@ class FinalResponsePersistenceTests(unittest.IsolatedAsyncioTestCase):
         }
         harness = _Harness()
 
-        with patch(
-            "astrbot_plugin_private_companion.final_response_persistence.star_handlers_registry",
-            _Registry([handler]),
-        ), patch(
-            "astrbot_plugin_private_companion.final_response_persistence.star_map",
-            plugins,
-        ):
+        with patch.object(_fp1, 'star_handlers_registry', _Registry([handler])), \
+             patch.object(_fp1, 'star_map', plugins), \
+             patch.object(_fp2, 'star_map', plugins):
             written = await harness._record_final_assistant_in_livingmemory(
                 umo=UMO,
                 assistant_response="平台确认后的回复",

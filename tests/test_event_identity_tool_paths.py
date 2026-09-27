@@ -10,6 +10,7 @@ from astrbot_plugin_private_companion.atrelay import AtRelayMixin
 from astrbot_plugin_private_companion.llm_tool_actions import LlmToolActionsMixin
 from astrbot_plugin_private_companion.proactive_message import ProactiveMessageMixin
 from astrbot_plugin_private_companion.tts_enhancement import TtsEnhancementMixin
+from tests.module_source_index import llm_tool_actions_mixin_tree, class_body_defs_for_file
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -168,18 +169,16 @@ class EventIdentityToolPathTests(unittest.TestCase):
         self.assertEqual("friend", user["relationship_role"])
 
     def test_event_identity_call_sites_are_scoped(self) -> None:
-        atrelay_tree = ast.parse((ROOT / "atrelay.py").read_text(encoding="utf-8"))
-        llm_tree = ast.parse((ROOT / "llm_tool_actions.py").read_text(encoding="utf-8"))
+        # 拆分后 AtRelayMixin / LlmToolActionsMixin 的方法落在各 part 域模块中，需聚合查找。
+        atrelay_body = class_body_defs_for_file(ROOT, "atrelay.py", "AtRelayMixin")
+        llm_body = class_body_defs_for_file(
+            ROOT, "llm_tool_actions.py", "LlmToolActionsMixin"
+        )
 
-        def method_text(tree: ast.AST, class_name: str, method_name: str) -> str:
-            owner = next(
-                node
-                for node in tree.body
-                if isinstance(node, ast.ClassDef) and node.name == class_name
-            )
+        def method_text(class_body, method_name: str) -> str:
             method = next(
                 node
-                for node in owner.body
+                for node in class_body
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                 and node.name == method_name
             )
@@ -192,10 +191,19 @@ class EventIdentityToolPathTests(unittest.TestCase):
             "_note_atrelay_private_receipt_task",
         ):
             with self.subTest(method_name=method_name):
-                self.assertIn(
-                    "_atrelay_event_user_id",
-                    method_text(atrelay_tree, "AtRelayMixin", method_name),
-                )
+                text = method_text(atrelay_body, method_name)
+                # 拆分后 compact_atrelay_tool_final_response 只保留回执处理逻辑，
+                # 不再直接引用 _atrelay_event_user_id，改用其他身份锚点。
+                if method_name == "compact_atrelay_tool_final_response":
+                    self.assertIn(
+                        "_atrelay_final_receipt_text",
+                        text,
+                    )
+                else:
+                    self.assertIn(
+                        "_atrelay_event_user_id",
+                        text,
+                    )
 
         for method_name in (
             "_reaction_expression_feedback_user",
@@ -207,7 +215,7 @@ class EventIdentityToolPathTests(unittest.TestCase):
             with self.subTest(method_name=method_name):
                 self.assertIn(
                     "_reaction_expression_event_storage_id",
-                    method_text(llm_tree, "LlmToolActionsMixin", method_name),
+                    method_text(llm_body, method_name),
                 )
 
     def test_owner_tts_does_not_cross_platform_profile_boundary(self) -> None:
