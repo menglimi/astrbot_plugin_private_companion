@@ -175,6 +175,68 @@ class _Host:
 
 
 class PersonaResetSagaTests(unittest.TestCase):
+    def test_empty_default_reset_marker_starts_new_operation(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            host = _Host(root)
+            # The real store initializes this key to an empty dict.
+            host.data["_req041_persona_reset_saga"] = {}
+
+            result = asyncio.run(host._reset_current_persona_store(rebuild_today=False))
+
+            self.assertTrue(result["ok"])
+            self.assertEqual({}, host.data["users"])
+            self.assertEqual(3, result["generation"])
+            self.assertTrue(Path(result["backup_path"]).is_file())
+            calls = host.req041_scoped_projection_sync.calls
+            self.assertEqual(1, len(calls))
+            self.assertTrue(calls[0][1].startswith("req041-persona-reset-"))
+
+    def test_empty_marker_remote_failure_retains_confirmed_operation(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            host = _Host(root)
+            host.data["_req041_persona_reset_saga"] = {}
+            host.req041_scoped_projection_sync.ok = False
+
+            result = asyncio.run(host._reset_current_persona_store(rebuild_today=False))
+
+            self.assertFalse(result["ok"])
+            self.assertEqual("memory_unavailable", result["code"])
+            marker = host.data["_req041_persona_reset_saga"]
+            self.assertEqual("confirmed", marker["state"])
+            self.assertEqual(marker, host.persisted["_req041_persona_reset_saga"])
+            self.assertEqual(result["operation_id"], marker["operation_id"])
+            self.assertEqual("old-profile", host.data["users"]["person-a"]["secret"])
+
+    def test_invalid_reset_markers_remain_fail_closed(self) -> None:
+        valid = {
+            "state": "confirmed", "persona_id": scoped_persona_ref(""),
+            "operation_id": "existing-reset",
+        }
+        cases = (
+            ("invalid-type", "invalid", "", "persona_reset_saga_invalid"),
+            ("empty-list", [], "", "persona_reset_saga_invalid"),
+            ("false-boolean", False, "", "persona_reset_saga_invalid"),
+            ("wrong-state", {**valid, "state": "pending"}, "", "persona_reset_saga_conflict"),
+            ("wrong-persona", {**valid, "persona_id": "other"}, "", "persona_reset_saga_conflict"),
+            ("missing-operation", {**valid, "operation_id": ""}, "", "persona_reset_saga_conflict"),
+            ("operation-conflict", valid, "another-reset", "persona_reset_saga_conflict"),
+        )
+        for label, marker, operation_id, expected in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as root:
+                host = _Host(root)
+                host.data["_req041_persona_reset_saga"] = deepcopy(marker)
+                before = deepcopy(host.data)
+
+                result = asyncio.run(host._reset_current_persona_store(
+                    rebuild_today=False, operation_id=operation_id,
+                ))
+
+                self.assertFalse(result["ok"])
+                self.assertEqual(expected, result["code"])
+                self.assertEqual(before, host.data)
+                self.assertEqual([], host.req041_scoped_projection_sync.calls)
+                self.assertEqual([], list(Path(root).glob("backup-*.json")))
+
     def test_reset_uses_active_persona_target_sync_setting(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             host = _Host(root)

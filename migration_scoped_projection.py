@@ -581,7 +581,12 @@ class ScopedProjectionSynchronizer:
 
         context_map = {context.cache_scope(): context for context in contexts}
         for scope, context in context_map.items():
-            for record_kind in ("profile_fact", "memory", "rule", "evidence"):
+            # Match namespace policy; do not probe record kinds forbidden in this scope.
+            record_kinds = {
+                "persona_global": ("rule", "evidence"),
+                "group_shared": ("memory", "rule", "evidence"),
+            }.get(context.kind, ("profile_fact", "memory", "rule", "evidence"))
+            for record_kind in record_kinds:
                 listed = self._list(context, record_kind=record_kind, limit=1000)
                 if not isinstance(listed, dict) or listed.get("ok") is not True:
                     counts["errors"] += 1

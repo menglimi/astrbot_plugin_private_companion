@@ -4,6 +4,7 @@ from copy import deepcopy
 import unittest
 
 from migration_scoped_projection import ScopedProjectionSynchronizer
+from identity_namespace import AssurancePolicy
 from authoritative_private_memory import AuthoritativePrivateMemoryStore
 from expression_scope_ownership import bind_expression_item, bind_expression_profile
 from unified_person_registry import UnifiedPersonRegistry
@@ -24,6 +25,7 @@ class _Remote:
         self.rows: dict[tuple[str, str, str], dict] = {}
         self.group_erase_calls: list[tuple[str, str]] = []
         self.persona_erase_calls: list[tuple[str, str]] = []
+        self.list_calls: list[tuple[str, str]] = []
 
     @staticmethod
     def _key(context, kind: str, record_id: str) -> tuple[str, str, str]:
@@ -34,6 +36,15 @@ class _Remote:
         return {"ok": True, "code": "found" if row else "not_found", "record": deepcopy(row)}
 
     def list_records(self, context, *, record_kind: str, limit: int = 100):
+        self.list_calls.append((context.kind, record_kind))
+        # Match MemoryCompanion's policy instead of accepting every record kind.
+        purpose = {
+            "profile_fact": "profile_read", "memory": "memory_read",
+            "rule": "rule_read", "evidence": "rule_read",
+        }[record_kind]
+        decision = AssurancePolicy.authorize(context, purpose)
+        if not decision.allowed:
+            return {"ok": False, "code": decision.code}
         scope = context.cache_scope()
         records = [deepcopy(row) for (stored_scope, kind, _), row in self.rows.items() if stored_scope == scope and kind == record_kind]
         return {"ok": True, "code": "listed", "records": records[:limit]}
@@ -134,6 +145,60 @@ class ScopedProjectionTests(unittest.TestCase):
                 "members": {"10001": {"name": "A-in-group-b", "count": 1, "recent_phrases": ["gb-phrase"]}},
             },
         }
+
+    def test_empty_snapshot_sync_only_lists_persona_global_rules_and_evidence(self) -> None:
+        result = self.sync.sync_snapshot({})
+
+        self.assertTrue(result["ok"], result["error_codes"])
+        self.assertEqual(0, result["records"])
+        self.assertEqual(0, result["errors"])
+        self.assertEqual(
+            [("persona_global", "rule"), ("persona_global", "evidence")],
+            self.remote.list_calls,
+        )
+
+    def test_empty_group_sync_does_not_list_personal_profiles(self) -> None:
+        result = self.sync.sync_snapshot({"groups": {"group-a": {}}})
+
+        self.assertTrue(result["ok"], result["error_codes"])
+        self.assertEqual(0, result["records"])
+        self.assertEqual(0, result["errors"])
+        self.assertEqual(
+            [
+                ("persona_global", "rule"), ("persona_global", "evidence"),
+                ("group_shared", "memory"), ("group_shared", "rule"),
+                ("group_shared", "evidence"),
+            ],
+            self.remote.list_calls,
+        )
+
+    def test_private_and_group_member_sync_keep_all_record_kinds(self) -> None:
+        result = self.sync.sync_snapshot(self.snapshot)
+
+        self.assertTrue(result["ok"], result["error_codes"])
+        for kind in ("private", "group_member"):
+            with self.subTest(kind=kind):
+                listed = {record_kind for scope, record_kind in self.remote.list_calls if scope == kind}
+                self.assertEqual({"profile_fact", "memory", "rule", "evidence"}, listed)
+
+    def test_backend_list_failures_still_degrade_and_invalidate_ready_scopes(self) -> None:
+        self.assertTrue(self.sync.sync_snapshot(self.snapshot)["ok"])
+        _, contexts = self.sync.build_records(self.snapshot)
+        self.assertTrue(all(self.sync.is_ready(context) for context in contexts))
+        original_list = self.sync._list
+
+        def failing_list(context, *, record_kind, limit):
+            if context.kind == "persona_global" and record_kind == "rule":
+                return {"ok": False, "code": "test_store_unavailable"}
+            return original_list(context, record_kind=record_kind, limit=limit)
+
+        self.sync._list = failing_list
+        result = self.sync.sync_snapshot(self.snapshot)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(1, result["errors"])
+        self.assertEqual(["test_store_unavailable"], result["error_codes"])
+        self.assertTrue(all(not self.sync.is_ready(context) for context in contexts))
 
     def test_builds_private_group_shared_and_group_member_without_privilege_projection(self) -> None:
         records, contexts = self.sync.build_records(self.snapshot)

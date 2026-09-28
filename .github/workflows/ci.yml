@@ -40,9 +40,9 @@ jobs:
       - name: Install test runner
         run: python -m pip install pytest pytest-asyncio
       - name: Collect contract and migration suite
-        run: python -m pytest --collect-only -q tests/test_content_story_negotiation.py tests/test_migration_transaction.py tests/test_runtime_config_dispatcher.py tests/test_mro_duplicate_guard.py
+        run: python -m pytest --collect-only -q tests/test_content_story_negotiation.py tests/test_migration_transaction.py tests/test_runtime_config_dispatcher.py tests/test_mro_duplicate_guard.py tests/test_req041_persona_reset_saga.py tests/test_req041_scoped_projection.py
       - name: Run contract and migration suite
-        run: python -m pytest -q tests/test_content_story_negotiation.py tests/test_migration_transaction.py tests/test_runtime_config_dispatcher.py tests/test_mro_duplicate_guard.py
+        run: python -m pytest -q tests/test_content_story_negotiation.py tests/test_migration_transaction.py tests/test_runtime_config_dispatcher.py tests/test_mro_duplicate_guard.py tests/test_req041_persona_reset_saga.py tests/test_req041_scoped_projection.py
 
   architecture-and-artifact:
     runs-on: ubuntu-latest

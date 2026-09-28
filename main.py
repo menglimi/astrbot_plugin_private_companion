@@ -2879,7 +2879,7 @@ class PrivateCompanionPlugin(
                     if marker is not None and not isinstance(marker, dict):
                         return {"ok": False, "message": "人格重置恢复记录损坏", "code": "persona_reset_saga_invalid"}
                     clean_operation = _single_line(operation_id, 120)
-                    if isinstance(marker, dict):
+                    if isinstance(marker, dict) and marker:
                         marker_operation = _single_line(marker.get("operation_id"), 120)
                         if (
                             marker.get("state") != "confirmed"
