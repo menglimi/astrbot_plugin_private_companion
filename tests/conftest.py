@@ -101,6 +101,9 @@ if os.environ.get("ASTRBOT_CI_STUBS") == "1" and "astrbot" not in sys.modules:
     astrbot = _module("astrbot", package=True)
     api = _module("astrbot.api", package=True)
     event = _module("astrbot.api.event")
+    web = _module("astrbot.api.web")
+    agent = _module("astrbot.core.agent", package=True)
+    message = _module("astrbot.core.agent.message")
     core = _module("astrbot.core", package=True)
     utils = _module("astrbot.core.utils", package=True)
     paths = _module("astrbot.core.utils.astrbot_path")
@@ -108,8 +111,20 @@ if os.environ.get("ASTRBOT_CI_STUBS") == "1" and "astrbot" not in sys.modules:
     event.MessageChain = _Dummy
     event.AstrMessageEvent = _Dummy
     event.filter = _Dummy()
+    web.error_response = _Dummy()
+    web.json_response = _Dummy()
+    web.request = _Dummy()
+    class _Message:
+        @classmethod
+        def model_validate(cls, _value):
+            return cls()
+    message.Message = _Message
     paths.get_astrbot_data_path = lambda: Path(".")
+    paths.get_astrbot_plugin_data_path = lambda: Path(".")
     astrbot.api = api
+    api.web = web
+    core.agent = agent
+    agent.message = message
     core.utils = utils
 
     quart = _module("quart")
