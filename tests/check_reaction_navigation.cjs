@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
-const source = fs.readFileSync(__dirname + '/app.js', 'utf8');
+const source = fs.readFileSync(__dirname + '/../pages/companion-panel/app.js', 'utf8');
 function extract(name, next) {
   const start = source.indexOf('function ' + name + '(');
   assert(start >= 0);
