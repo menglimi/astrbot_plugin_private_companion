@@ -157,9 +157,18 @@ class DailyStateTickMixin:
                         save_sections.add("troubleshooting_test_results")
                     self._save_data_sync(sections=save_sections)
             return
-        now = _now_ts()
-        due_timer_id = self._due_internal_llm_timer_id(user, now=now)
         is_troubleshooting_for_send = self._is_troubleshooting_proactive_plan(user)
+        now = _now_ts()
+        platform_circuit_remaining = self._proactive_platform_send_circuit_remaining(now=now)
+        if platform_circuit_remaining > 0 and not is_troubleshooting_for_send:
+            async with self._data_lock:
+                current_for_circuit = self._get_user(str(user_id))
+                resume_at = now + platform_circuit_remaining
+                current_for_circuit["next_proactive_at"] = resume_at
+                current_for_circuit["planned_proactive_window_start_at"] = resume_at
+                self._save_data_sync(sections={"users"})
+            return
+        due_timer_id = self._due_internal_llm_timer_id(user, now=now)
         should_send, reason = self._should_send(user)
         if not should_send:
             async with self._data_lock:
@@ -1202,6 +1211,7 @@ class DailyStateTickMixin:
                 self._save_data_sync(
                     sections={
                         "users",
+                        "daily_state",
                         "proactive_candidate_pool",
                         "proactive_audit_log",
                         "troubleshooting_test_results",

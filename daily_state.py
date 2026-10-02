@@ -3008,6 +3008,40 @@ class DailyStateMixin(DailyStateTickMixin):
         if isinstance(user, dict):
             user["pending_proactive_send_retry"] = {}
 
+    def _record_proactive_platform_send_circuit(self, error_text: str, *, now: float) -> float:
+        compact_error = re.sub(r"\s+", "", str(error_text or "").lower())
+        if "retcode=1200" not in compact_error or "eventchecker" not in compact_error:
+            return 0.0
+        daily_state = self.data.setdefault("daily_state", {})
+        if not isinstance(daily_state, dict):
+            daily_state = {}
+            self.data["daily_state"] = daily_state
+        circuit = daily_state.get("proactive_platform_send_circuit")
+        window_started_at = _safe_float(circuit.get("window_started_at"), 0) if isinstance(circuit, dict) else 0
+        if not window_started_at or float(now) - window_started_at > 10 * 60:
+            failures = 1
+            window_started_at = float(now)
+        else:
+            failures = _safe_int(circuit.get("failures"), 0, 0, 1000) + 1
+        open_until = _safe_float(circuit.get("open_until"), 0) if isinstance(circuit, dict) else 0
+        if failures >= 2:
+            open_until = max(open_until, float(now) + 2 * 3600)
+        daily_state["proactive_platform_send_circuit"] = {
+            "kind": "onebot_event_checker_rejection",
+            "failures": failures,
+            "window_started_at": window_started_at,
+            "updated_at": float(now),
+            "open_until": open_until,
+        }
+        return open_until
+
+    def _proactive_platform_send_circuit_remaining(self, *, now: float) -> float:
+        data = getattr(self, "data", {})
+        daily_state = data.get("daily_state") if isinstance(data, dict) else None
+        circuit = daily_state.get("proactive_platform_send_circuit") if isinstance(daily_state, dict) else None
+        open_until = _safe_float(circuit.get("open_until"), 0) if isinstance(circuit, dict) else 0
+        return max(0.0, open_until - float(now))
+
     def _abandon_failed_proactive_retry_candidate(
         self,
         user: dict[str, Any],
@@ -3048,6 +3082,7 @@ class DailyStateMixin(DailyStateTickMixin):
         retry_profile = _single_line(user.get("planned_proactive_route_retry_profile"), 32) or "normal"
         retry_limit = 4 if retry_profile == "until_expiry" else 2
         clean_error = _single_line(error_text, 180)
+        platform_circuit_open_until = self._record_proactive_platform_send_circuit(clean_error, now=current)
         error_hint = ""
         if clean_error:
             compact_error = clean_error.lower()
@@ -3147,6 +3182,8 @@ class DailyStateMixin(DailyStateTickMixin):
             retry_delay_seconds = 5 * 60 if retry_count <= 1 else 12 * 60
         else:
             retry_delay_seconds = 8 * 60 if retry_count <= 1 else 20 * 60
+        if platform_circuit_open_until > current:
+            retry_delay_seconds = max(retry_delay_seconds, platform_circuit_open_until - current)
         planned_expire_at = _safe_float(delivery_snapshot.get("expire_at"), 0) if isinstance(delivery_snapshot, dict) else 0
         fresh_until_at = min(current + 72 * 3600, planned_expire_at) if planned_expire_at > current else current
         if fresh_until_at <= current + retry_delay_seconds:

@@ -11397,7 +11397,7 @@
       "BACKUP_EXTERNAL_IMAGE_API_BASE_URL": {
         "description": "备选在线图片 API 地址",
         "type": "string",
-        "hint": "主在线图片 API 失败后才会使用。支持 OpenRouter /api/v1/images + input_references、MiniMax /v1/image_generation、SenseNova U1 Fast、OpenAI 兼容 images、阿里云百炼、魔搭社区、豆包/火山方舟 Seedream 和 Gemini 图片接口。",
+        "hint": "主在线图片 API 失败后才会使用。支持 OpenRouter /api/v1/images + input_references、MiniMax /v1/image_generation、SenseNova 图片接口（模型名按服务端支持填写）、OpenAI 兼容 images、阿里云百炼、魔搭社区、豆包/火山方舟 Seedream 和 Gemini 图片接口。",
         "default": "",
         "condition": {
           "enable_photo_text_action": true,

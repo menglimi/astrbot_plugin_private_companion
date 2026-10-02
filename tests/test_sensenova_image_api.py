@@ -20,7 +20,22 @@ class SenseNovaEndpointConfigTests(unittest.TestCase):
         )
 
         self.assertEqual(endpoint["platform"], "sensenova")
-        self.assertEqual(endpoint["model"], "sensenova-u1-fast")
+        self.assertEqual(endpoint["model"], "senova-u1-fast")
+
+    def test_configured_sensenova_model_id_is_preserved(self) -> None:
+        plugin = PrivateCompanionPlugin.__new__(PrivateCompanionPlugin)
+
+        for model in ("SenseNova U1.5 Fast", "custom-image-edit-model"):
+            with self.subTest(model=model):
+                endpoint = plugin._normalize_external_image_api_endpoint(
+                    {
+                        "platform": "sensenova",
+                        "base_url": "https://token.sensenova.cn/v1",
+                        "api_key": "test-key-placeholder",
+                        "model": model,
+                    }
+                )
+                self.assertEqual(endpoint["model"], model)
 
 
 if __name__ == "__main__":

@@ -14060,8 +14060,6 @@ class PrivateCompanionPlugin(
                     endpoint["base_url"] = f"{normalized_root.rstrip('/')}/image_generation"
         if endpoint["platform"] == "auto" and ("token.sensenova.cn" in base_lower or model_lower in {"senova-u1-fast", "sensenova-u1-fast"}):
             endpoint["platform"] = "sensenova"
-        if endpoint["platform"] == "sensenova" and model_lower == "senova-u1-fast":
-            endpoint["model"] = "sensenova-u1-fast"
         return endpoint
 
     def _normalize_external_image_api_endpoints(self, value: Any) -> list[dict[str, Any]]:
