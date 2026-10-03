@@ -1567,6 +1567,12 @@ class CoreStoreMixin:
     @staticmethod
     def _store_path_is_raw_user_text(path: tuple[Any, ...]) -> bool:
         """Raw observations are evidence and must not be rewritten during persistence."""
+        # REQ-041 authoritative private memory carries a content_hash over its
+        # content. Rewriting any string here would invalidate that hash without
+        # recomputing it, and AuthoritativePrivateMemoryStore.read() then raises
+        # on every later read -- freezing the whole private memory layer.
+        if path and path[0] == "_req041_private_memory":
+            return True
         if "recent_phrases" in path:
             return True
         if len(path) >= 3 and path[0] == "memo_notes" and path[-1] in {"title", "content"}:
