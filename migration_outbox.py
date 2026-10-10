@@ -114,8 +114,8 @@ def _replayable_clause(alias: str = "") -> tuple[str, tuple[Any, ...]]:
     """
     column = f"{alias}." if alias else ""
     return (
-        f"{column}state IN ('pending','failed') AND {column}retry_count < ?",
-        (int(_OUTBOX_MAX_RETRIES),),
+        f"{column}state IN ('pending','failed')",
+        (),
     )
 
 
@@ -127,7 +127,7 @@ def _abandoned_clause(alias: str = "") -> tuple[str, tuple[Any, ...]]:
     """
     column = f"{alias}." if alias else ""
     return (
-        f"{column}state IN ('pending','failed') AND {column}retry_count >= ?",
+        f"{column}state = 'dead_letter' OR ({column}state IN ('pending','failed') AND {column}retry_count >= ?)",
         (int(_OUTBOX_MAX_RETRIES),),
     )
 
@@ -140,7 +140,7 @@ def _unresolved_clause(alias: str = "") -> tuple[str, tuple[Any, ...]]:
     已归档而静默擦除。日常重放进度/积压口径请用 _replayable_clause()。
     """
     column = f"{alias}." if alias else ""
-    return (f"{column}state IN ('pending','failed')", ())
+    return (f"{column}state IN ('pending','failed','dead_letter')", ())
 
 
 class MigrationOutbox:
@@ -348,7 +348,7 @@ class MigrationOutbox:
         )
         abandoned = sum(
             int(item.get("abandoned") or 0)
-            for state, item in states.items() if state in {"pending", "failed"}
+            for state, item in states.items() if state in {"pending", "failed", "dead_letter"}
         )
         return {"backlog": backlog, "abandoned": abandoned, "states": states}
 
@@ -989,9 +989,11 @@ class MigrationOutbox:
         error = _token(error_code, limit=80) or "target_write_failed"
         with self._transaction() as conn:
             changed = conn.execute(
-                """UPDATE outbox SET state='failed',retry_count=retry_count+1,error_code=?,updated_at=?
+                """UPDATE outbox SET
+                       state=CASE WHEN retry_count+1 >= ? THEN 'dead_letter' ELSE 'failed' END,
+                       retry_count=retry_count+1,error_code=?,updated_at=?
                    WHERE event_id=? AND migration_epoch=? AND state IN ('pending','failed')""",
-                (error, float(self._clock()), _token(event_id), _token(migration_epoch)),
+                (int(_OUTBOX_MAX_RETRIES), error, float(self._clock()), _token(event_id), _token(migration_epoch)),
             ).rowcount
             if changed != 1:
                 raise OutboxError("outbox_event_missing")

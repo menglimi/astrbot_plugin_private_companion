@@ -1581,10 +1581,15 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
     _pc_ensure = getattr(self, "_req041_ensure_scoped_projection_ready", None)
     if callable(_pc_ensure):
         try:
-            await asyncio.wait_for(_pc_ensure(), timeout=3.0)
+            _pc_ensure_task = asyncio.ensure_future(_pc_ensure())
+            _pc_ensure_task.add_done_callback(lambda _pc_t: _pc_t.cancelled() or _pc_t.exception())
         except Exception:
             logger.debug("ensure scoped projection ready failed", exc_info=True)
-    if _pc_pending is not None:
+    if _pc_pending is not None and not isinstance(_pc_pending, list):
+        _pc_pending = [_pc_pending]
+    elif _pc_pending is None:
+        _pc_pending = []
+    for _pc_pending in _pc_pending:
         _pc_settle = getattr(self, "_req041_settle_pending_candidate", None)
         if callable(_pc_settle):
             try:
@@ -1601,7 +1606,7 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
                         self._req041_pending_group_affinity = _pc_candidate
                     logger.debug("deferred group affinity settle failed after shielded timeout; candidate requeued")
 
-                await asyncio.wait_for(asyncio.shield(_pc_settle_task), timeout=3.0)
+                _pc_settle_task.add_done_callback(_pc_on_settle_done)
             except asyncio.TimeoutError:
                 _pc_settle_task.add_done_callback(_pc_on_settle_done)
                 logger.debug("deferred group affinity settle exceeded 3s; shielded task continues to completion")

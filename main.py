@@ -7998,7 +7998,17 @@ class PrivateCompanionPlugin(
             setattr(event, "req041_group_affinity_candidate", candidate)
             # 该候选的结算依赖 after_message_sent，而分段/流式回复下该钩子不会派发，
             # 因此这里暂存候选，在下一轮对话开始时补结算（那时回复必定已发送完成）。
-            self._req041_pending_group_affinity = (event, candidate)
+            _pc_slot = getattr(self, "_req041_pending_group_affinity", None)
+            if isinstance(_pc_slot, list):
+                pass
+            elif _pc_slot is None:
+                _pc_slot = []
+            else:
+                _pc_slot = [_pc_slot]
+            _pc_slot.append((event, candidate))
+            if len(_pc_slot) > 8:
+                logger.debug("group affinity pending slot exceeds 8; keeping all, drained on next round")
+            self._req041_pending_group_affinity = _pc_slot
         return candidate
 
     async def _req041_settle_pending_candidate(self, pending: Any) -> None:
@@ -8171,6 +8181,19 @@ class PrivateCompanionPlugin(
             status = getattr(self, "req041_migration_status", None)
             if isinstance(status, dict):
                 status.update({"state": "degraded", "code": "group_affinity_settlement_failed"})
+            _pc_slot = getattr(self, "_req041_pending_group_affinity", None)
+            if isinstance(_pc_slot, list):
+                pass
+            elif _pc_slot is None:
+                _pc_slot = []
+            else:
+                _pc_slot = [_pc_slot]
+            _pc_item = (event, getattr(event, "req041_group_affinity_candidate", None))
+            if _pc_item[1] is not None and _pc_item not in _pc_slot:
+                _pc_slot.append(_pc_item)
+            if len(_pc_slot) > 8:
+                logger.debug("group affinity pending slot exceeds 8; keeping all, drained on next round")
+            self._req041_pending_group_affinity = _pc_slot
             logger.warning(
                 "REQ-041 群好感度结算失败，已保持事件可重放: %s",
                 _single_line(exc, 160),
