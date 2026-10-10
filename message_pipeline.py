@@ -1601,8 +1601,16 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
                         _pc_exc = asyncio.CancelledError()
                     if _pc_exc is None:
                         return
-                    if getattr(self, "_req041_pending_group_affinity", None) is None:
-                        self._req041_pending_group_affinity = _pc_candidate
+                    _pc_back = getattr(self, "_req041_pending_group_affinity", None)
+                    if isinstance(_pc_back, list):
+                        pass
+                    elif _pc_back is None:
+                        _pc_back = []
+                    else:
+                        _pc_back = [_pc_back]
+                    if _pc_candidate is not None and _pc_candidate not in _pc_back:
+                        _pc_back.append(_pc_candidate)
+                    self._req041_pending_group_affinity = _pc_back
                     logger.debug("deferred group affinity settle failed after shielded timeout; candidate requeued")
 
                 await asyncio.wait_for(asyncio.shield(_pc_settle_task), timeout=3.0)
@@ -1610,12 +1618,28 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
                 _pc_settle_task.add_done_callback(_pc_on_settle_done)
                 logger.debug("deferred group affinity settle exceeded 3s; shielded task continues to completion")
             except Exception:
-                if getattr(self, "_req041_pending_group_affinity", None) is None:
-                    self._req041_pending_group_affinity = _pc_pending
+                _pc_back = getattr(self, "_req041_pending_group_affinity", None)
+                if isinstance(_pc_back, list):
+                    pass
+                elif _pc_back is None:
+                    _pc_back = []
+                else:
+                    _pc_back = [_pc_back]
+                if _pc_pending is not None and _pc_pending not in _pc_back:
+                    _pc_back.append(_pc_pending)
+                self._req041_pending_group_affinity = _pc_back
                 logger.debug("deferred group affinity settle failed; candidate requeued", exc_info=True)
         else:
-            if getattr(self, "_req041_pending_group_affinity", None) is None:
-                self._req041_pending_group_affinity = _pc_pending
+            _pc_back = getattr(self, "_req041_pending_group_affinity", None)
+            if isinstance(_pc_back, list):
+                pass
+            elif _pc_back is None:
+                _pc_back = []
+            else:
+                _pc_back = [_pc_back]
+            if _pc_pending is not None and _pc_pending not in _pc_back:
+                _pc_back.append(_pc_pending)
+            self._req041_pending_group_affinity = _pc_back
     _pc_pending = None
     async with self._data_lock:
         group = self._get_group(group_id)

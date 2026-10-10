@@ -8007,7 +8007,7 @@ class PrivateCompanionPlugin(
                 _pc_slot = [_pc_slot]
             _pc_slot.append((event, candidate))
             if len(_pc_slot) > 8:
-                logger.debug("group affinity pending slot exceeds 8; keeping all, drained on next round")
+                logger.warning("group affinity pending slot backlog=%d exceeds 8; keeping all until next drain", len(_pc_slot))
             self._req041_pending_group_affinity = _pc_slot
         return candidate
 
@@ -8192,7 +8192,7 @@ class PrivateCompanionPlugin(
             if _pc_item[1] is not None and _pc_item not in _pc_slot:
                 _pc_slot.append(_pc_item)
             if len(_pc_slot) > 8:
-                logger.debug("group affinity pending slot exceeds 8; keeping all, drained on next round")
+                logger.warning("group affinity pending slot backlog=%d exceeds 8; keeping all until next drain", len(_pc_slot))
             self._req041_pending_group_affinity = _pc_slot
             logger.warning(
                 "REQ-041 群好感度结算失败，已保持事件可重放: %s",
