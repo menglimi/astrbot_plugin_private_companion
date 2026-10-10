@@ -966,7 +966,6 @@ class RelationshipAccountStore:
                         0, 0, float(self._clock()), float(self._clock()),
                     ),
                 )
-            self._load_row(connection, context.identity_id)
             return self._reserve_group_affinity_tx(
                 connection, context, event_id=event, delta=numeric_delta,
                 weight=numeric_weight, allow_group_affinity=allow_group_affinity,
