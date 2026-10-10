@@ -114,8 +114,8 @@ def _replayable_clause(alias: str = "") -> tuple[str, tuple[Any, ...]]:
     """
     column = f"{alias}." if alias else ""
     return (
-        f"{column}state IN ('pending','failed')",
-        (),
+        f"{column}state IN ('pending','failed') AND {column}retry_count < ?",
+        (int(_OUTBOX_MAX_RETRIES),),
     )
 
 

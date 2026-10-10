@@ -1605,7 +1605,7 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
                         self._req041_pending_group_affinity = _pc_candidate
                     logger.debug("deferred group affinity settle failed after shielded timeout; candidate requeued")
 
-                _pc_settle_task.add_done_callback(_pc_on_settle_done)
+                await asyncio.wait_for(asyncio.shield(_pc_settle_task), timeout=3.0)
             except asyncio.TimeoutError:
                 _pc_settle_task.add_done_callback(_pc_on_settle_done)
                 logger.debug("deferred group affinity settle exceeded 3s; shielded task continues to completion")
