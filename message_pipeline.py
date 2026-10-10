@@ -1581,7 +1581,22 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
     _pc_ensure = getattr(self, "_req041_ensure_scoped_projection_ready", None)
     if callable(_pc_ensure):
         try:
-            await asyncio.wait_for(_pc_ensure(), timeout=3.0)
+            _pc_ensure_task = asyncio.ensure_future(_pc_ensure())
+            self._pc_ensure_task = _pc_ensure_task
+            await asyncio.wait_for(asyncio.shield(_pc_ensure_task), timeout=3.0)
+        except asyncio.CancelledError:
+            _pc_restore = getattr(self, "_req041_pending_group_affinity", None)
+            if _pc_restore is None:
+                _pc_restore = []
+            elif not isinstance(_pc_restore, list):
+                _pc_restore = [_pc_restore]
+            for _pc_item in (_pc_pending if isinstance(_pc_pending, list) else [_pc_pending]):
+                if _pc_item is not None and _pc_item not in _pc_restore:
+                    _pc_restore.append(_pc_item)
+            self._req041_pending_group_affinity = _pc_restore
+            raise
+        except asyncio.TimeoutError:
+            logger.debug("ensure scoped projection ready exceeded 3s; task keeps running uncancelled")
         except Exception:
             logger.debug("ensure scoped projection ready failed", exc_info=True)
     if _pc_pending is not None and not isinstance(_pc_pending, list):

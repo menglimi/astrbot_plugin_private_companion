@@ -6634,7 +6634,7 @@ class PrivateCompanionPlugin(
     async def _req041_ensure_scoped_projection_ready(self) -> None:
         """确保群聊好感度写路径所需的 scoped projection synchronizer 已建立。
 
-        synchronizer 只在后台重试任务 _req041_run_memory_scope_rebind() 里惰性创建，
+        synchronizer 由后台重试任务 _req041_run_memory_scope_rebind() 里惰性创建，
         而该任务在迁移处于 paused 或 replay 未就绪时会提前 return，不再重试。
         群聊好感度的准入是同步路径，拿不到 synchronizer 就会直接返回 None，
         导致准入永远失败（relationship_group_admissions 恒为 0）。
@@ -8006,8 +8006,9 @@ class PrivateCompanionPlugin(
             else:
                 _pc_slot = [_pc_slot]
             _pc_slot.append((event, candidate))
-            if len(_pc_slot) > 8:
-                logger.warning("group affinity pending slot backlog=%d exceeds 8; keeping all until next drain", len(_pc_slot))
+            if len(_pc_slot) > 64:
+                logger.warning("group affinity pending slot backlog=%d exceeds 64; dropping %d oldest", len(_pc_slot), len(_pc_slot) - 64)
+                _pc_slot = _pc_slot[-64:]
             self._req041_pending_group_affinity = _pc_slot
         return candidate
 
@@ -8191,8 +8192,9 @@ class PrivateCompanionPlugin(
             _pc_item = (event, getattr(event, "req041_group_affinity_candidate", None))
             if _pc_item[1] is not None and _pc_item not in _pc_slot:
                 _pc_slot.append(_pc_item)
-            if len(_pc_slot) > 8:
-                logger.warning("group affinity pending slot backlog=%d exceeds 8; keeping all until next drain", len(_pc_slot))
+            if len(_pc_slot) > 64:
+                logger.warning("group affinity pending slot backlog=%d exceeds 64; dropping %d oldest", len(_pc_slot), len(_pc_slot) - 64)
+                _pc_slot = _pc_slot[-64:]
             self._req041_pending_group_affinity = _pc_slot
             logger.warning(
                 "REQ-041 群好感度结算失败，已保持事件可重放: %s",

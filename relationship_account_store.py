@@ -68,7 +68,7 @@ PRIVATE_EVENT_REASONS = frozenset({
     "administrator_relationship_update",
     "relationship_state_normalized",
     "fast_interaction_warmth",
-    })
+})
 GROUP_DIRECT_REASON = "direct_group_interaction"
 GROUP_ZERO_REASONS = PRIVATE_EVENT_REASONS | frozenset({"group_inbound", GROUP_DIRECT_REASON})
 
