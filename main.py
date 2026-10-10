@@ -7821,7 +7821,10 @@ class PrivateCompanionPlugin(
     ) -> dict[str, Any] | None:
         if (
             not isinstance(relationship_user, dict)
-            or str(getattr(event, "req041_read_generation", "") or "") != "new"
+            # 群聊好感度写的是群成员在新存储里的账户，不读任何旧数据，因此不应被
+            # 「该身份是否已迁移完成」这道闸门挡住。群成员没有私聊关系、不会产生
+            # relationship 事件，若沿用该闸门会形成死锁（迁移需要事件 → 事件只能由
+            # 群聊好感度产生 → 群聊好感度又要求已迁移完成），群聊好感度将永久不可用。
             or getattr(self, "req041_dual_write_producer", None) is None
             or getattr(self, "req041_migration_replay", None) is None
             or getattr(self, "req041_relationship_store", None) is None

@@ -945,6 +945,27 @@ class RelationshipAccountStore:
         if not math.isfinite(numeric_weight) or numeric_weight < 0 or numeric_weight > 1:
             raise RelationshipStoreError("relationship_event_weight_invalid")
         with self._transaction() as connection:
+            # 群成员在旧存储里没有对应关系，因此首次群聊好感度结算时新存储里还没有它的账户。
+            # 这里按群成员语义补建一个零分账户（friend/normal），否则首次结算必然抛
+            # relationship_account_missing，导致群聊好感度永远无法生效。
+            if connection.execute(
+                "SELECT 1 FROM relationship_accounts WHERE identity_id=?",
+                (context.identity_id,),
+            ).fetchone() is None:
+                connection.execute(
+                    """INSERT INTO relationship_accounts(
+                           identity_id,relationship_role,relationship_mode,score,
+                           positive_stage_cap_key,daily_totals_json,ledger_json,
+                           last_effective_at,stage_key,revision,legacy_snapshot,
+                           created_at,updated_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        context.identity_id, "friend", "normal", 0,
+                        normalize_relationship_positive_stage_cap_key(""), "{}", "[]",
+                        0.0, relationship_stage_for_score(0)["phase"]["key"],
+                        0, 0, float(self._clock()), float(self._clock()),
+                    ),
+                )
             self._load_row(connection, context.identity_id)
             return self._reserve_group_affinity_tx(
                 connection, context, event_id=event, delta=numeric_delta,
