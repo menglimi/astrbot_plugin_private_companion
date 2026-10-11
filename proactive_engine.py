@@ -9810,14 +9810,14 @@ class ProactiveEngineMixin:
             local_available = bool((image_status.get("backends") or {}).get(selected_backend))
         else:
             local_available = bool((image_status.get("backends") or {}).get("comfyui")) or (
-                selected_backend == "auto" and bool((image_status.get("backends") or {}).get("sdgen"))
+                selected_backend in {"auto", "external_first"} and bool((image_status.get("backends") or {}).get("sdgen"))
             )
         if not local_available:
             return ""
         state = self._local_photo_generation_busy_state(force_refresh=force_refresh)
         if not state:
             return ""
-        if selected_backend == "auto" and bool((image_status.get("backends") or {}).get("external")):
+        if selected_backend in {"auto", "external_first"} and bool((image_status.get("backends") or {}).get("external")):
             return ""
         return (
             "电脑高负荷,已延后本地生图"
@@ -9868,7 +9868,7 @@ class ProactiveEngineMixin:
             selected_backend = _single_line(image_status.get("selected_backend"), 30)
             if selected_backend in {"comfyui", "sdgen"} and self._local_photo_generation_busy_state():
                 return False
-            if selected_backend == "auto" and self._local_photo_generation_busy_state():
+            if selected_backend in {"auto", "external_first"} and self._local_photo_generation_busy_state():
                 backends = image_status.get("backends") if isinstance(image_status.get("backends"), dict) else {}
                 if not bool(backends.get("external") or backends.get("tool_call")):
                     return False
