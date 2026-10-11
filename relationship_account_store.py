@@ -63,6 +63,11 @@ PRIVATE_EVENT_REASONS = frozenset({
     "schedule_adjustment",
     "support",
     "warmth",
+    "fast_inbound",
+    "fast_proactive_reply",
+    "administrator_relationship_update",
+    "relationship_state_normalized",
+    "fast_interaction_warmth",
 })
 GROUP_DIRECT_REASON = "direct_group_interaction"
 GROUP_ZERO_REASONS = PRIVATE_EVENT_REASONS | frozenset({"group_inbound", GROUP_DIRECT_REASON})
@@ -360,6 +365,94 @@ class RelationshipAccountStore:
         ).fetchone()
         if row is None:
             raise RelationshipNotFound("relationship_account_missing")
+        return row
+
+    def _ensure_transition_account_tx(
+        self,
+        connection: sqlite3.Connection,
+        context: NamespaceContext,
+        *,
+        operation_id: str,
+        actor: str,
+        relationship_role: str,
+        relationship_mode: str,
+        score: int,
+        positive_stage_cap_key: str,
+        daily_totals: dict[str, Any],
+        last_effective_at: float,
+        legacy_snapshot: bool,
+        now: float,
+    ) -> sqlite3.Row:
+        '''Create the transition account for a live event whose snapshot is not backfilled yet.
+
+        This helper performs no input validation or normalization: it never calls
+        _authorize, _token, the score/role/mode range checks or
+        _validated_legacy_runtime.  Callers must validate and normalize every
+        argument before the transaction is opened:
+
+        * replay_legacy_event authorizes the context, then normalizes/validates the
+          event id, reason whitelist, deltas, before/after scores, role, mode, stage
+          cap and legacy runtime totals, and only forwards those normalized values.
+        * admit_group_event authorizes the context, validates the event id, delta and
+          weight, and passes constant role/mode/score with an already normalized
+          stage cap and empty daily totals.
+
+        The helper only enforces the account lifecycle invariants shared with
+        create_account: a tombstone always wins over an existing row (tombstoned
+        identities are never resurrected), the first revision is 1, and exactly one
+        change row is written for audit.  The audit request hash is built from the
+        dedicated "transition_account_autocreate" operation so it can never collide
+        with a create_account operation id.
+        '''
+        tombstone = connection.execute(
+            "SELECT operation_id FROM relationship_account_tombstones WHERE identity_id=? AND migration_epoch=?",
+            (context.identity_id, context.migration_epoch),
+        ).fetchone()
+        if tombstone is not None:
+            raise RelationshipConflict("relationship_account_tombstoned")
+        existing = connection.execute(
+            "SELECT * FROM relationship_accounts WHERE identity_id=?", (context.identity_id,)
+        ).fetchone()
+        if existing is not None:
+            return existing
+        connection.execute(
+            """INSERT INTO relationship_accounts(
+                   identity_id,relationship_role,relationship_mode,score,positive_stage_cap_key,
+                   daily_totals_json,ledger_json,last_effective_at,stage_key,revision,legacy_snapshot,
+                   created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                context.identity_id, relationship_role, relationship_mode, score,
+                positive_stage_cap_key, _canonical(daily_totals), "[]", last_effective_at,
+                relationship_stage_for_score(score)["phase"]["key"], 1, int(bool(legacy_snapshot)),
+                now, now,
+            ),
+        )
+        request_hash = hashlib.sha256(_canonical({
+            "operation": "transition_account_autocreate",
+            "identity_id": context.identity_id,
+            "role": relationship_role,
+            "mode": relationship_mode,
+            "score": score,
+            "cap": positive_stage_cap_key,
+            "daily_totals": daily_totals,
+            "last_effective_at": last_effective_at,
+            "actor": actor,
+            "policy_version": context.policy_version,
+        }).encode("utf-8")).hexdigest()
+        connection.execute(
+            """INSERT INTO relationship_account_changes(
+                   operation_id,migration_epoch,request_hash,identity_id,actor,role_before,role_after,
+                   mode_before,mode_after,score_before,score_after,revision,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                operation_id, context.migration_epoch, request_hash, context.identity_id, actor,
+                "", relationship_role, "", relationship_mode, score, score, 1, now,
+            ),
+        )
+        row = connection.execute(
+            "SELECT * FROM relationship_accounts WHERE identity_id=?", (context.identity_id,)
+        ).fetchone()
+        assert row is not None
         return row
 
     def create_account(
@@ -672,7 +765,23 @@ class RelationshipAccountStore:
                 if previous["request_hash"] != request_hash:
                     raise RelationshipConflict("relationship_event_conflict")
                 return self._event_result(previous, connection)
-            account = self._account_from_row(self._load_row(connection, context.identity_id))
+            # 迁移期：某身份的第一条 legacy 事件到达时，新存储里还没有它的账户。
+            # 该事件自带重放所需的前置条件（score_before / role / mode / cap / totals），
+            # 因此按这些前置条件补建账户（分数取 score_before），而不是让整条身份的迁移线因缺账户而永久失败。
+            # 补建与 create_account 对齐：先查墓碑（命中即拒绝复活），revision 从 1 起，并写变更审计。
+            account = self._account_from_row(self._ensure_transition_account_tx(
+                connection, context,
+                operation_id="legacy_event_autocreate:" + event,
+                actor="migration",
+                relationship_role=role,
+                relationship_mode=mode,
+                score=before,
+                positive_stage_cap_key=cap,
+                daily_totals=totals,
+                last_effective_at=effective,
+                legacy_snapshot=True,
+                now=now,
+            ))
             if (
                 account["relationship_role"] != role
                 or account["relationship_mode"] != mode
@@ -945,8 +1054,37 @@ class RelationshipAccountStore:
         if not math.isfinite(numeric_weight) or numeric_weight < 0 or numeric_weight > 1:
             raise RelationshipStoreError("relationship_event_weight_invalid")
         with self._transaction() as connection:
-            self._load_row(connection, context.identity_id)
-            return self._reserve_group_affinity_tx(
+            # 群成员在旧存储里没有对应关系，因此首次群聊好感度结算时新存储里还没有它的账户。
+            # 补建只发生在准入确实通过（admitted_delta != 0）时，被拒绝的准入不落账户，
+            # 否则会建出 friend/normal/0 分的垃圾账户。补建与 create_account 对齐：
+            # 先查墓碑（命中即拒绝复活），revision 从 1 起，并写变更审计。
+            now = float(self._clock())
+            created_here = connection.execute(
+                "SELECT 1 FROM relationship_accounts WHERE identity_id=?",
+                (context.identity_id,),
+            ).fetchone() is None
+            if created_here:
+                self._ensure_transition_account_tx(
+                    connection, context,
+                    operation_id="group_admission_autocreate:" + event,
+                    actor="group_pipeline",
+                    relationship_role="friend",
+                    relationship_mode="normal",
+                    score=0,
+                    # A group member is an ordinary friend, so it inherits the
+                    # ordinary-user default ceiling: normalize("") -> the ledger
+                    # DEFAULT_RELATIONSHIP_POSITIVE_STAGE_CAP_KEY ("close").  This
+                    # intentionally differs from create_account's
+                    # "deeply_bonded" parameter default, which is the
+                    # admin/migration "no extra ceiling" fallback for callers that
+                    # are expected to pass the authoritative cap explicitly.
+                    positive_stage_cap_key=normalize_relationship_positive_stage_cap_key(""),
+                    daily_totals={},
+                    last_effective_at=0.0,
+                    legacy_snapshot=False,
+                    now=now,
+                )
+            admission = self._reserve_group_affinity_tx(
                 connection, context, event_id=event, delta=numeric_delta,
                 weight=numeric_weight, allow_group_affinity=allow_group_affinity,
                 group_daily_net_cap=group_daily_net_cap,
@@ -956,8 +1094,12 @@ class RelationshipAccountStore:
                 group_scope_daily_absolute_cap=group_scope_daily_absolute_cap,
                 group_event_cap=group_event_cap,
                 group_interaction_proof=group_interaction_proof,
-                now=float(self._clock()),
+                now=now,
             )
+            if created_here and admission.admitted_delta == 0:
+                # 被拒绝的准入不落账户；回滚本事务并沿用上游既有的 missing 语义。
+                raise RelationshipNotFound("relationship_account_missing")
+            return admission
 
     def group_admission(
         self,

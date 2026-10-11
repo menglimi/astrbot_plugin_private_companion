@@ -196,7 +196,8 @@ from .relationship_affinity_runtime import (
     normalize_group_allowlist,
     prepare_group_affinity_candidate,
 )
-from .identity_namespace import AssurancePolicy, NamespaceContext
+from .identity_namespace import AssurancePolicy, NamespaceContext, build_namespace_context
+from .relationship_event_policy import build_group_interaction_proof
 from .migration_scoped_projection import (
     ScopedProjectionSynchronizer,
     scoped_group_ref,
@@ -6562,6 +6563,9 @@ class PrivateCompanionPlugin(
             await asyncio.sleep(2.0)
 
     async def _req041_run_scoped_sync(self) -> None:
+        if self._req041_scoped_sync_paused():
+            self._req041_scoped_sync_requested = False
+            return
         while bool(getattr(self, "_req041_scoped_sync_requested", False)):
             self._req041_scoped_sync_requested = False
             result = await self._req041_sync_scoped_now()
@@ -6604,6 +6608,47 @@ class PrivateCompanionPlugin(
             return
         self._req041_scoped_sync_task = task
         task.add_done_callback(self._req041_scoped_sync_finished)
+
+    def _req041_scoped_sync_paused(self) -> bool:
+        """暂停期间读取代固定为 legacy，同步产物无人读取；跳过以免空转占用事件循环。"""
+        calls = int(getattr(self, "_req041_paused_calls", 0)) + 1
+        self._req041_paused_calls = calls
+        if calls % 128 != 1:
+            cached = getattr(self, "_req041_paused_flag", None)
+            if cached is not None:
+                return bool(cached)
+        coordinator = getattr(self, "req041_migration_coordinator", None)
+        reader = getattr(coordinator, "status", None)
+        if not callable(reader):
+            return False
+        try:
+            control = reader()
+        except Exception:
+            return False
+        if not isinstance(control, dict):
+            return False
+        paused = str(control.get("state") or "").strip() == "paused"
+        self._req041_paused_flag = paused
+        return paused
+
+    async def _req041_ensure_scoped_projection_ready(self) -> None:
+        """确保群聊好感度写路径所需的 scoped projection synchronizer 已建立。
+
+        synchronizer 由后台重试任务 _req041_run_memory_scope_rebind() 里惰性创建，
+        而该任务在迁移处于 paused 或 replay 未就绪时会提前 return，不再重试。
+        群聊好感度的准入是同步路径，拿不到 synchronizer 就会直接返回 None，
+        导致准入永远失败（relationship_group_admissions 恒为 0）。
+        这里在群消息处理前主动确保绑定一次（已建立则直接返回）。
+        """
+        if getattr(self, "req041_scoped_projection_sync", None) is not None:
+            return
+        rebind = getattr(self, "_req041_rebind_memory_scope_if_available", None)
+        if not callable(rebind):
+            return
+        try:
+            await rebind()
+        except Exception:
+            logger.debug("ensure scoped projection ready failed", exc_info=True)
 
     def _req041_scoped_context_for_user(
         self,
@@ -7810,6 +7855,80 @@ class PrivateCompanionPlugin(
                 return False
         return True
 
+    @staticmethod
+    def _req041_group_member_identity_ready(user: Any) -> bool:
+        if not isinstance(user, dict):
+            return False
+        person_id = str(user.get("unified_person_id") or "").strip()
+        subject = str(user.get("identity_subject_id") or user.get("user_id") or "").strip()
+        return bool(person_id and subject)
+
+    def _req041_group_member_affinity_user(
+        self,
+        event: AstrMessageEvent,
+        *,
+        group_id: str,
+    ) -> dict[str, Any] | None:
+        """Resolve one group speaker's identity from the group-side pipeline.
+
+        Pure group path: it never reads or writes the private ``users`` section.
+        It reuses the same transient group-speaker projection and the same
+        explicit unified-person attachment contract that the group observation
+        hook already uses, so a member who only ever interacted inside groups
+        gets a real ``unified_person_id`` without a DM user record.
+        """
+        sender_id = ""
+        sender_getter = getattr(self, "_event_sender_id", None)
+        if callable(sender_getter):
+            try:
+                sender_id = _single_line(sender_getter(event), 160)
+            except Exception:
+                sender_id = ""
+        if not sender_id:
+            try:
+                sender_id = _single_line(event.get_sender_id(), 160)
+            except Exception:
+                sender_id = ""
+        projection_getter = getattr(self, "_req039_group_observation_projection", None)
+        if not callable(projection_getter):
+            return None
+        sender_name = ""
+        name_getter = getattr(self, "_sender_display_name", None)
+        if callable(name_getter):
+            try:
+                sender_name = _single_line(name_getter(event), 80)
+            except Exception:
+                sender_name = ""
+        observed_user = projection_getter(
+            event, sender_id=sender_id or "", sender_name=sender_name,
+        )
+        if not isinstance(observed_user, dict):
+            return None
+        attacher = getattr(self, "_req036_attach_unified_profile_context", None)
+        if callable(attacher):
+            try:
+                attacher(event, user=observed_user, group_id=group_id, source="group_affinity")
+            except Exception:
+                return None
+        person_id = _single_line(observed_user.get("unified_person_id"), 80)
+        if not person_id:
+            return None
+        registry = self._active_unified_person_registry()
+        projection_subject = _single_line(observed_user.get("identity_subject_id"), 160)
+        subject = sender_id or projection_subject
+        if not subject or not registry.matches_person_subject(person_id, subject):
+            subject = projection_subject
+        if not subject or not registry.matches_person_subject(person_id, subject):
+            return None
+        return {
+            "user_id": subject,
+            "unified_person_id": person_id,
+            "identity_subject_id": subject,
+            "identity_platform_kind": _single_line(observed_user.get("identity_platform_kind"), 40),
+            "profile_origin": "group_observation",
+            "projection_kind": "group_member_affinity",
+        }
+
     def _req041_prepare_group_affinity_candidate(
         self,
         event: AstrMessageEvent,
@@ -7820,21 +7939,44 @@ class PrivateCompanionPlugin(
         forwarded: bool,
     ) -> dict[str, Any] | None:
         if (
-            not isinstance(relationship_user, dict)
-            or str(getattr(event, "req041_read_generation", "") or "") != "new"
-            or getattr(self, "req041_dual_write_producer", None) is None
+            # 群聊好感度写的是群成员在新存储里的账户，不读任何旧数据，因此不应被
+            # 「该身份是否已迁移完成」这道闸门挡住。群成员没有私聊关系、不会产生
+            # relationship 事件，若沿用该闸门会形成死锁（迁移需要事件 → 事件只能由
+            # 群聊好感度产生 → 群聊好感度又要求已迁移完成），群聊好感度将永久不可用。
+            getattr(self, "req041_dual_write_producer", None) is None
             or getattr(self, "req041_migration_replay", None) is None
             or getattr(self, "req041_relationship_store", None) is None
             or not bool(runtime_persona_setting(self, 'enable_custom_relationship_stage_policy', False))
         ):
             return None
+        member_user = relationship_user if isinstance(relationship_user, dict) else None
+        group_side_identity = False
+        if (
+            not isinstance(relationship_user, dict)
+            or not self._req041_group_member_identity_ready(member_user)
+        ):
+            # 群侧身份优先：只在群里互动的成员在私聊 users 段没有行，但群聊观察
+            # 链路已按统一身份契约为其建立了 unified_person 记录。
+            try:
+                resolver = getattr(self, "_req041_group_member_affinity_user", None)
+                member_user = resolver(event, group_id=group_id) if callable(resolver) else None
+            except Exception:
+                logger.debug("group member affinity user resolution failed", exc_info=True)
+                return None
+            group_side_identity = isinstance(member_user, dict)
+        if not isinstance(member_user, dict):
+            return None
         direction = "at_bot" if scene_trigger == "at_bot" else "reply_bot" if scene_trigger == "reply_bot" else ""
-        context = self._req041_scoped_context_for_user(
-            relationship_user,
-            kind="group_member",
-            group_id=group_id,
-            purpose="relationship_write",
-        )
+        try:
+            context = self._req041_scoped_context_for_user(
+                member_user,
+                kind="group_member",
+                group_id=group_id,
+                purpose="relationship_write",
+            )
+        except Exception:
+            logger.debug("scoped context resolution failed for group affinity candidate", exc_info=True)
+            return None
         if context is None:
             return None
         candidate = prepare_group_affinity_candidate(
@@ -7844,7 +7986,7 @@ class PrivateCompanionPlugin(
             enabled=bool(getattr(self, "enable_group_relationship_affinity", False)),
             inbound_event_id=self._event_message_id(event),
             directed_by=direction,
-            legacy_user_key=str(relationship_user.get("user_id") or ""),
+            legacy_user_key=str(member_user.get("user_id") or ""),
             inbound=self._event_is_inbound_chat_message(event),
             human_sender=self._req041_group_sender_is_human(event),
             forwarded=bool(forwarded),
@@ -7852,8 +7994,42 @@ class PrivateCompanionPlugin(
             historical=False,
         )
         if isinstance(candidate, dict):
+            candidate["group_member_side_identity"] = bool(group_side_identity)
             setattr(event, "req041_group_affinity_candidate", candidate)
+            # 该候选的结算依赖 after_message_sent，而分段/流式回复下该钩子不会派发，
+            # 因此这里暂存候选，在下一轮对话开始时补结算（那时回复必定已发送完成）。
+            _pc_slot = getattr(self, "_req041_pending_group_affinity", None)
+            if isinstance(_pc_slot, list):
+                pass
+            elif _pc_slot is None:
+                _pc_slot = []
+            else:
+                _pc_slot = [_pc_slot]
+            _pc_slot.append((event, candidate))
+            if len(_pc_slot) > 64:
+                logger.warning("group affinity pending slot backlog=%d exceeds 64; dropping %d oldest", len(_pc_slot), len(_pc_slot) - 64)
+                _pc_slot = _pc_slot[-64:]
+            self._req041_pending_group_affinity = _pc_slot
         return candidate
+
+    async def _req041_settle_pending_candidate(self, pending: Any) -> None:
+        """结算上一轮暂存的群聊好感度候选（在 _data_lock 之外调用）。
+
+        群聊好感度的结算原先只挂在 after_message_sent 上，而该钩子在分段/
+        流式回复路径下不会被派发，导致结算永远不执行。这里由消息管线在下一轮
+        对话开始时补结算（此时上一轮回复必定已经发送完成）。
+        """
+        if not (isinstance(pending, tuple) and len(pending) == 2):
+            return
+        event, candidate = pending
+        if not isinstance(candidate, dict):
+            return
+        try:
+            setattr(event, "req041_group_affinity_candidate", candidate)
+            await self._req041_settle_confirmed_group_affinity(event)
+        except Exception:
+            logger.warning("deferred group affinity settle failed", exc_info=True)
+            raise
 
     async def _req041_settle_confirmed_group_affinity(self, event: AstrMessageEvent) -> None:
         candidate = getattr(event, "req041_group_affinity_candidate", None)
@@ -7877,51 +8053,121 @@ class PrivateCompanionPlugin(
         store = getattr(self, "req041_relationship_store", None)
         if not isinstance(store, RelationshipAccountStore):
             return
+        settle_caps = {
+            "requested_delta": 4,
+            "group_daily_net_cap": int(getattr(self, "group_relationship_daily_net_cap", 2)),
+            "group_window_seconds": int(getattr(self, "group_relationship_window_minutes", 30)) * 60,
+            "group_window_absolute_cap": int(getattr(self, "group_relationship_window_absolute_cap", 1)),
+            "group_person_daily_absolute_cap": int(
+                getattr(self, "group_relationship_person_daily_absolute_cap", 4)
+            ),
+            "group_scope_daily_absolute_cap": int(
+                getattr(self, "group_relationship_scope_daily_absolute_cap", 20)
+            ),
+            "group_event_cap": 4,
+        }
         admission = await asyncio.to_thread(
             admit_confirmed_group_affinity,
             candidate,
             store,
             reply_succeeded=True,
-            requested_delta=4,
-            group_daily_net_cap=int(getattr(self, "group_relationship_daily_net_cap", 2)),
-            group_window_seconds=int(getattr(self, "group_relationship_window_minutes", 30)) * 60,
-            group_window_absolute_cap=int(getattr(self, "group_relationship_window_absolute_cap", 1)),
-            group_person_daily_absolute_cap=int(
-                getattr(self, "group_relationship_person_daily_absolute_cap", 4)
-            ),
-            group_scope_daily_absolute_cap=int(
-                getattr(self, "group_relationship_scope_daily_absolute_cap", 20)
-            ),
-            group_event_cap=4,
+            **settle_caps,
         )
         if admission is None:
             return
-        candidate["settled"] = True
         candidate["result_code"] = admission.code
         if admission.admitted_delta == 0:
+            # 被拒/预算耗尽：决策已经落库（admission 行），无需后续写入，直接标记已结算。
+            candidate["settled"] = True
             return
-        context = NamespaceContext(**candidate.get("context", {}))
+        context = build_namespace_context(candidate.get("context"))
+        if context is None:
+            candidate["settled"] = False
+            return
         user_key = str(candidate.get("legacy_user_key") or "")
+        legacy_ready = False
         async with self._data_lock:
             users = self.data.get("users") if isinstance(self.data.get("users"), dict) else {}
             user = users.get(user_key) if isinstance(users, dict) else None
-            if (
-                not isinstance(user, dict)
-                or str(user.get("unified_person_id") or "") != context.identity_id
-            ):
+            legacy_ready = (
+                isinstance(user, dict)
+                and str(user.get("unified_person_id") or "") == context.identity_id
+            )
+            if legacy_ready:
+                result = self._apply_relationship_event(
+                    user,
+                    admission.admitted_delta,
+                    reason_code="direct_group_interaction",
+                    event_id=admission.event_id,
+                    now=_now_ts(),
+                    req041_group_admission_event_id=admission.event_id,
+                )
+                candidate["legacy_result_code"] = str(result.get("code") or "")
+                if result.get("changed"):
+                    self._schedule_data_save(sections={"users"})
+        if not legacy_ready:
+            # 纯群成员在私聊 users 段没有记录，绝不为它补建用户行；分数落在新的
+            # 群成员关系账户（req041_relationship_store）里。
+            if not bool(candidate.get("group_member_side_identity")):
                 candidate["settled"] = False
                 raise RuntimeError("group_affinity_legacy_subject_mismatch")
-            result = self._apply_relationship_event(
-                user,
-                admission.admitted_delta,
-                reason_code="direct_group_interaction",
-                event_id=admission.event_id,
-                now=_now_ts(),
-                req041_group_admission_event_id=admission.event_id,
+            await self._req041_apply_group_side_affinity_admission(
+                candidate, admission, context, settle_caps,
             )
-            candidate["legacy_result_code"] = str(result.get("code") or "")
-            if result.get("changed"):
-                self._schedule_data_save(sections={"users"})
+        # 必须在分数真正写入之后才标记「已结算」：否则一旦中途被取消，
+        # settled 已为真而分数从未落库，这个候选就永久丢失了。
+        candidate["settled"] = True
+
+    async def _req041_apply_group_side_affinity_admission(
+        self,
+        candidate: dict[str, Any],
+        admission: Any,
+        context: NamespaceContext,
+        settle_caps: dict[str, Any],
+    ) -> None:
+        """Apply a reserved group admission to the new store for a group-only member.
+
+        A member that only ever interacted inside groups keeps no private
+        ``users`` record; its authoritative affinity lives in the relationship
+        account store instead.
+        """
+        store = getattr(self, "req041_relationship_store", None)
+        if not isinstance(store, RelationshipAccountStore):
+            candidate["settled"] = False
+            raise RuntimeError("group_affinity_relationship_store_unavailable")
+        proof = build_group_interaction_proof(
+            context,
+            event_id=str(admission.event_id or ""),
+            directed_by=str(candidate.get("directed_by") or ""),
+            inbound=candidate.get("inbound") is True,
+            human_sender=candidate.get("human_sender") is True,
+            bot_reply_succeeded=True,
+            forwarded=candidate.get("forwarded") is True,
+            echo=candidate.get("echo") is True,
+            historical=candidate.get("historical") is True,
+        )
+        result = await asyncio.to_thread(
+            store.apply_event,
+            context,
+            event_id=str(admission.event_id or ""),
+            actor="group_pipeline",
+            reason_code="direct_group_interaction",
+            delta=int(settle_caps.get("requested_delta") or 0),
+            weight=0.25,
+            allow_group_affinity=True,
+            group_daily_net_cap=int(settle_caps.get("group_daily_net_cap") or 0),
+            group_window_seconds=int(settle_caps.get("group_window_seconds") or 0),
+            group_window_absolute_cap=int(settle_caps.get("group_window_absolute_cap") or 0),
+            group_person_daily_absolute_cap=int(
+                settle_caps.get("group_person_daily_absolute_cap") or 0
+            ),
+            group_scope_daily_absolute_cap=int(
+                settle_caps.get("group_scope_daily_absolute_cap") or 0
+            ),
+            group_event_cap=int(settle_caps.get("group_event_cap") or 0),
+            group_interaction_proof=proof,
+        )
+        candidate["legacy_result_code"] = str(getattr(result, "code", "") or "")
 
     @filter.after_message_sent(priority=-105000)
     @_multi_persona_event_context
@@ -7936,6 +8182,20 @@ class PrivateCompanionPlugin(
             status = getattr(self, "req041_migration_status", None)
             if isinstance(status, dict):
                 status.update({"state": "degraded", "code": "group_affinity_settlement_failed"})
+            _pc_slot = getattr(self, "_req041_pending_group_affinity", None)
+            if isinstance(_pc_slot, list):
+                pass
+            elif _pc_slot is None:
+                _pc_slot = []
+            else:
+                _pc_slot = [_pc_slot]
+            _pc_item = (event, getattr(event, "req041_group_affinity_candidate", None))
+            if _pc_item[1] is not None and _pc_item not in _pc_slot:
+                _pc_slot.append(_pc_item)
+            if len(_pc_slot) > 64:
+                logger.warning("group affinity pending slot backlog=%d exceeds 64; dropping %d oldest", len(_pc_slot), len(_pc_slot) - 64)
+                _pc_slot = _pc_slot[-64:]
+            self._req041_pending_group_affinity = _pc_slot
             logger.warning(
                 "REQ-041 群好感度结算失败，已保持事件可重放: %s",
                 _single_line(exc, 160),
