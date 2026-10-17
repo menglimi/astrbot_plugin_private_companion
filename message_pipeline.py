@@ -1245,6 +1245,10 @@ async def handle_private_message(self: Any, event: Any, *args: Any, **kwargs: An
             self._maybe_refresh_dialogue_episode(user_id, user_snapshot),
             label="refresh_dialogue_episode_inbound",
         )
+        self._create_lifecycle_background_task(
+            self._maybe_resolve_open_loops_after_reply(user_id, user_snapshot),
+            label="resolve_open_loops_inbound",
+        )
 
 @_coalesce_event_data_saves
 async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any) -> Any:
