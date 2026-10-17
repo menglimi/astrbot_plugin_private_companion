@@ -30,13 +30,14 @@ class UserMemoryBackgroundPromptAuthoringTests(unittest.TestCase):
             "background.memory.response_review",
             "background.memory.dialogue_episode",
             "background.memory.profile",
+            "background.memory.open_loop_judge",
         )
 
         for key in keys:
             with self.subTest(key=key):
                 self.assertIn(f'key="{key}"', source)
         self.assertEqual(
-            5,
+            6,
             source.count("_render_user_memory_background_prompt(prompt)"),
         )
 

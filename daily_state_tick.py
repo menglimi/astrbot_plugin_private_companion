@@ -1690,6 +1690,7 @@ class DailyStateTickMixin:
                 delivered_text = self._visible_text_without_tts_reading(text, limit=500)
                 current_after_send["last_proactive_message"] = _single_line(delivered_text, 500)
                 current_after_send["last_proactive_sent_at"] = sent_at
+                self._stamp_open_loop_followup_asked(current_after_send, reason, sent_at)
                 current_after_send["last_proactive_delivery_umo"] = _single_line(
                     getattr(delivered, "delivery_umo", "") or send_umo_for_send,
                     180,
@@ -1886,6 +1887,7 @@ class DailyStateTickMixin:
             current["last_proactive_sent_at"] = current["last_sent"]
             current["last_companion_message_at"] = current["last_sent"]
             current["last_proactive_reason"] = reason
+            self._stamp_open_loop_followup_asked(current, reason, current["last_sent"])
             location_reason = _single_line(reason, 40)
             location_event_type = _single_line(current.get("planned_mobile_location_event_type"), 32)
             if (
