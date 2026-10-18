@@ -1574,6 +1574,88 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
         )
         continuation = bool(judged) if judged is not None else False
 
+    # 群聊好感度的延迟结算与投影同步器就绪检查必须在 _data_lock **之外**执行：
+    # 两者内部都会再次获取同一把 asyncio.Lock（不可重入），放在锁内会自死锁。
+    _pc_pending = getattr(self, "_req041_pending_group_affinity", None)
+    self._req041_pending_group_affinity = None
+    _pc_ensure = getattr(self, "_req041_ensure_scoped_projection_ready", None)
+    if callable(_pc_ensure):
+        try:
+            _pc_ensure_task = asyncio.ensure_future(_pc_ensure())
+            self._pc_ensure_task = _pc_ensure_task
+            await asyncio.wait_for(asyncio.shield(_pc_ensure_task), timeout=3.0)
+        except asyncio.CancelledError:
+            _pc_restore = getattr(self, "_req041_pending_group_affinity", None)
+            if _pc_restore is None:
+                _pc_restore = []
+            elif not isinstance(_pc_restore, list):
+                _pc_restore = [_pc_restore]
+            for _pc_item in (_pc_pending if isinstance(_pc_pending, list) else [_pc_pending]):
+                if _pc_item is not None and _pc_item not in _pc_restore:
+                    _pc_restore.append(_pc_item)
+            self._req041_pending_group_affinity = _pc_restore
+            raise
+        except asyncio.TimeoutError:
+            logger.debug("ensure scoped projection ready exceeded 3s; task keeps running uncancelled")
+        except Exception:
+            logger.debug("ensure scoped projection ready failed", exc_info=True)
+    if _pc_pending is not None and not isinstance(_pc_pending, list):
+        _pc_pending = [_pc_pending]
+    elif _pc_pending is None:
+        _pc_pending = []
+    for _pc_pending in _pc_pending:
+        _pc_settle = getattr(self, "_req041_settle_pending_candidate", None)
+        if callable(_pc_settle):
+            try:
+                _pc_settle_task = asyncio.ensure_future(_pc_settle(_pc_pending))
+
+                def _pc_on_settle_done(_pc_task, _pc_candidate=_pc_pending):
+                    try:
+                        _pc_exc = _pc_task.exception()
+                    except asyncio.CancelledError:
+                        _pc_exc = asyncio.CancelledError()
+                    if _pc_exc is None:
+                        return
+                    _pc_back = getattr(self, "_req041_pending_group_affinity", None)
+                    if isinstance(_pc_back, list):
+                        pass
+                    elif _pc_back is None:
+                        _pc_back = []
+                    else:
+                        _pc_back = [_pc_back]
+                    if _pc_candidate is not None and _pc_candidate not in _pc_back:
+                        _pc_back.append(_pc_candidate)
+                    self._req041_pending_group_affinity = _pc_back
+                    logger.debug("deferred group affinity settle failed after shielded timeout; candidate requeued")
+
+                await asyncio.wait_for(asyncio.shield(_pc_settle_task), timeout=3.0)
+            except asyncio.TimeoutError:
+                _pc_settle_task.add_done_callback(_pc_on_settle_done)
+                logger.debug("deferred group affinity settle exceeded 3s; shielded task continues to completion")
+            except Exception:
+                _pc_back = getattr(self, "_req041_pending_group_affinity", None)
+                if isinstance(_pc_back, list):
+                    pass
+                elif _pc_back is None:
+                    _pc_back = []
+                else:
+                    _pc_back = [_pc_back]
+                if _pc_pending is not None and _pc_pending not in _pc_back:
+                    _pc_back.append(_pc_pending)
+                self._req041_pending_group_affinity = _pc_back
+                logger.debug("deferred group affinity settle failed; candidate requeued", exc_info=True)
+        else:
+            _pc_back = getattr(self, "_req041_pending_group_affinity", None)
+            if isinstance(_pc_back, list):
+                pass
+            elif _pc_back is None:
+                _pc_back = []
+            else:
+                _pc_back = [_pc_back]
+            if _pc_pending is not None and _pc_pending not in _pc_back:
+                _pc_back.append(_pc_pending)
+            self._req041_pending_group_affinity = _pc_back
+    _pc_pending = None
     async with self._data_lock:
         group = self._get_group(group_id)
         scene = self._infer_group_scene(event, group, sender_id=sender_id, sender_name=sender_name, text=text)
@@ -2012,6 +2094,10 @@ async def handle_group_message(self: Any, event: Any, *args: Any, **kwargs: Any)
             text=text,
             group=group,
         )
+        # 群聊好感度准入依赖 scoped projection synchronizer，而它可能是惰性且尚未建立的；
+        # 补触发：群聊好感度延迟结算 + 投影同步器就绪检查。
+        # 两者都可能 await 迁移任务，因此必须有超时，且绝不能把异常抛进消息处理流程，
+        # 否则群消息处理会被挂起、机器人不再回复。
         affinity_preparer = getattr(self, "_req041_prepare_group_affinity_candidate", None)
         if (
             callable(affinity_preparer)

@@ -97,6 +97,52 @@ def _token(value: Any, *, limit: int = 128) -> str:
     return result
 
 
+# 单个事件的最大重放次数；超过后不再参与重放，避免它一直卡在队首阻塞其余事件。
+_OUTBOX_MAX_RETRIES = 5
+OUTBOX_MAX_RETRIES = _OUTBOX_MAX_RETRIES
+
+
+def _replayable_clause(alias: str = "") -> tuple[str, tuple[Any, ...]]:
+    """本模块「可重放集合（replayable）」的**唯一**定义。
+
+    可重放 := state ∈ {pending, failed} 且 retry_count < OUTBOX_MAX_RETRIES
+    被放弃 := state ∈ {pending, failed} 且 retry_count >= OUTBOX_MAX_RETRIES
+
+    pending() / backlog_for_stream() / safe_admin_summary()["backlog"] 都必须用本函数构造
+    谓词，不得再各自手写条件。被放弃集合定义见 _abandoned_clause()，二者是本集合的严格
+    补集（都限定在 pending/failed 内），合起来等于 _unresolved_clause()。
+    """
+    column = f"{alias}." if alias else ""
+    return (
+        f"{column}state IN ('pending','failed') AND {column}retry_count < ?",
+        (int(_OUTBOX_MAX_RETRIES),),
+    )
+
+
+def _abandoned_clause(alias: str = "") -> tuple[str, tuple[Any, ...]]:
+    """「被放弃集合（abandoned）」的**唯一**定义：重放上限之外、重放器不再尝试的事件。
+
+    它是 _replayable_clause() 在 pending/failed 内的严格补集，用于可见性与人工重排，
+    绝不代表事件已应用。详见 MigrationOutbox.count_abandoned / list_abandoned。
+    """
+    column = f"{alias}." if alias else ""
+    return (
+        f"{column}state = 'dead_letter' OR ({column}state IN ('pending','failed') AND {column}retry_count >= ?)",
+        (int(_OUTBOX_MAX_RETRIES),),
+    )
+
+
+def _unresolved_clause(alias: str = "") -> tuple[str, tuple[Any, ...]]:
+    """「未了结集合（unresolved）」的**唯一**定义：所有尚未成功应用的 pending/failed 事件。
+
+    等于可重放集合 ⊎ 被放弃集合，**刻意忽略重放上限**。仅用于不可逆的破坏性门禁
+    （retire_streams）：只要还有任何未应用 revision，无论是否已被上限放弃，都不能被当作
+    已归档而静默擦除。日常重放进度/积压口径请用 _replayable_clause()。
+    """
+    column = f"{alias}." if alias else ""
+    return (f"{column}state IN ('pending','failed','dead_letter')", ())
+
+
 class MigrationOutbox:
     """SQLite-backed single-process outbox with transactional idempotency."""
 
@@ -267,29 +313,44 @@ class MigrationOutbox:
         return dict(row) if row is not None else {}
 
     def safe_admin_summary(self, migration_epoch: str) -> dict[str, Any]:
-        """Return aggregate queue health; payloads and stream keys stay private."""
+        """Return aggregate queue health; payloads and stream keys stay private.
+
+        backlog 只统计**可重放集合**（_replayable_clause）：被上限放弃的事件不再把 backlog
+        永久钉住（migration_stability 依赖 backlog 归零），而是单独计入 abandoned，绝不静默
+        吞掉。states[state] 内的 replayable / abandoned 字段给出每个状态的同口径拆分。
+        """
         epoch = _token(migration_epoch)
         now = float(self._clock())
+        replayable_sql, replayable_params = _replayable_clause()
+        abandoned_sql, abandoned_params = _abandoned_clause()
         with self._connection() as conn:
             rows = conn.execute(
-                """SELECT state,COUNT(*) AS count,MIN(created_at) AS oldest_created_at,
-                          MAX(retry_count) AS max_retry_count
+                f"""SELECT state,COUNT(*) AS count,MIN(created_at) AS oldest_created_at,
+                          MAX(retry_count) AS max_retry_count,
+                          SUM(CASE WHEN {replayable_sql} THEN 1 ELSE 0 END) AS replayable_count,
+                          SUM(CASE WHEN {abandoned_sql} THEN 1 ELSE 0 END) AS abandoned_count
                    FROM outbox WHERE migration_epoch=? GROUP BY state ORDER BY state""",
-                (epoch,),
+                (*replayable_params, *abandoned_params, epoch),
             ).fetchall()
         states = {
             str(row["state"]): {
                 "count": int(row["count"] or 0),
                 "oldest_age_ms": round(max(0.0, now - float(row["oldest_created_at"] or now)) * 1000.0, 3),
                 "max_retry_count": int(row["max_retry_count"] or 0),
+                "replayable": int(row["replayable_count"] or 0),
+                "abandoned": int(row["abandoned_count"] or 0),
             }
             for row in rows
         }
         backlog = sum(
-            int(item.get("count") or 0)
+            int(item.get("replayable") or 0)
             for state, item in states.items() if state in {"pending", "failed"}
         )
-        return {"backlog": backlog, "states": states}
+        abandoned = sum(
+            int(item.get("abandoned") or 0)
+            for state, item in states.items() if state in {"pending", "failed", "dead_letter"}
+        )
+        return {"backlog": backlog, "abandoned": abandoned, "states": states}
 
     def set_epoch_state(self, migration_epoch: str, state: str, *, checkpoint: str | None = None) -> dict[str, Any]:
         epoch = _token(migration_epoch)
@@ -563,7 +624,14 @@ class MigrationOutbox:
         operation_id: str,
         reason_code: str,
     ) -> dict[str, Any]:
-        """Atomically close reconciled streams before destructive lifecycle work."""
+        """Atomically close reconciled streams before destructive lifecycle work.
+
+        门禁只认**未了结集合**（_unresolved_clause）：只要流内还存在任何尚未成功应用的
+        pending/failed 事件，就抛 outbox_stream_backlog —— 包括已被重放上限放弃的事件，
+        因为它们同样是**未应用 revision**，而 retirement 之后是不可逆的 purge。
+        这是刻意的保守口径，与可重放集合不同；被放弃事件可用 count_abandoned / list_abandoned
+        查看，用 requeue_abandoned 重新排入重放，或由管理员显式丢弃后放行。
+        """
         epoch = _token(migration_epoch)
         operation = _token(operation_id)
         reason = _token(reason_code, limit=80)
@@ -594,10 +662,11 @@ class MigrationOutbox:
                 ).fetchone()
                 if prior_stream is not None:
                     raise OutboxConflict("outbox_stream_retired")
+                unresolved_sql, unresolved_params = _unresolved_clause()
                 backlog = conn.execute(
-                    """SELECT COUNT(*) AS count FROM outbox
-                       WHERE migration_epoch=? AND stream_key=? AND state IN ('pending','failed')""",
-                    (epoch, stream),
+                    f"""SELECT COUNT(*) AS count FROM outbox
+                       WHERE migration_epoch=? AND stream_key=? AND {unresolved_sql}""",
+                    (epoch, stream, *unresolved_params),
                 ).fetchone()
                 if backlog is not None and int(backlog["count"]) != 0:
                     raise OutboxConflict("outbox_stream_backlog")
@@ -742,13 +811,21 @@ class MigrationOutbox:
         )
 
     def pending(self, migration_epoch: str, *, limit: int = 100) -> list[OutboxItem]:
+        """取本 epoch 可重放的事件（判据见 _replayable_clause，本模块唯一口径）。
+
+        注意 retry_count 上限：失败事件会被反复取回重放。如果不加上限，一个始终无法应用
+        的事件会一直排在队首（它的 created_at 最早），同批其余事件便永远得不到处理。
+        超过上限后进入 abandoned：仍保留在表内（state='failed'、error_code 可查），不再被
+        pending() 取回，可用 count_abandoned / list_abandoned 查看，用 requeue_abandoned 重排。
+        """
         epoch = _token(migration_epoch)
         safe_limit = max(1, min(1000, int(limit)))
+        replayable_sql, replayable_params = _replayable_clause()
         with self._connection() as conn:
             rows = conn.execute(
-                """SELECT * FROM outbox WHERE migration_epoch=? AND state IN ('pending','failed')
-                   ORDER BY stream_key,source_revision,created_at LIMIT ?""",
-                (epoch, safe_limit),
+                f"""SELECT * FROM outbox WHERE migration_epoch=? AND {replayable_sql}
+                    ORDER BY stream_key,source_revision,created_at LIMIT ?""",
+                (epoch, *replayable_params, safe_limit),
             ).fetchall()
         return [self._item(row) for row in rows]
 
@@ -763,14 +840,111 @@ class MigrationOutbox:
         return int(row["revision"]) if row is not None else 0
 
     def backlog_for_stream(self, stream_key: str, migration_epoch: str) -> int:
+        """该流仍会被重放器尝试处理的事件数（可重放集合，见 _replayable_clause）。"""
         stream, epoch = _token(stream_key), _token(migration_epoch)
+        replayable_sql, replayable_params = _replayable_clause()
         with self._connection() as conn:
             row = conn.execute(
-                """SELECT COUNT(*) AS count FROM outbox
-                   WHERE migration_epoch=? AND stream_key=? AND state IN ('pending','failed')""",
-                (epoch, stream),
+                f"""SELECT COUNT(*) AS count FROM outbox
+                    WHERE migration_epoch=? AND stream_key=? AND {replayable_sql}""",
+                (epoch, stream, *replayable_params),
             ).fetchone()
         return int(row["count"]) if row is not None else 0
+
+    def count_abandoned(self, migration_epoch: str) -> int:
+        """被 _OUTBOX_MAX_RETRIES 永久排除出重放（abandoned）的事件数量。
+
+        这些事件 state 仍是 'pending'/'failed' 且从未成功应用，只是 retry_count 已达/超上限，
+        pending() 与 backlog_for_stream() 都不再返回它们。它们**没有**被删除，也**不代表已应用**。
+
+        如何重新排入重放（二选一，均由管理员显式操作）：
+
+        1) 重新排队（推荐，等价于 requeue_abandoned()，把重试计数清零后交给重放器再试）::
+
+               UPDATE outbox
+                  SET state='pending', retry_count=0, error_code='', updated_at=:now
+                WHERE migration_epoch=:epoch
+                  AND state IN ('pending','failed') AND retry_count >= :max_retries;
+               -- 只救单条事件时追加: AND event_id=:event_id
+
+        2) 确认不可救、显式丢弃（此后不再属于 pending/failed，retire_streams 门禁才会放行）::
+
+               UPDATE outbox SET state='discarded', updated_at=:now
+                WHERE migration_epoch=:epoch AND event_id=:event_id;
+
+        第二种是唯一的"放弃数据"出口，必须人工确认；本模块不会自动丢弃。
+        """
+        epoch = _token(migration_epoch)
+        abandoned_sql, abandoned_params = _abandoned_clause()
+        with self._connection() as conn:
+            row = conn.execute(
+                f"SELECT COUNT(*) AS count FROM outbox WHERE migration_epoch=? AND {abandoned_sql}",
+                (epoch, *abandoned_params),
+            ).fetchone()
+        return int(row["count"]) if row is not None else 0
+
+    def list_abandoned(self, migration_epoch: str, *, limit: int = 100) -> list[OutboxItem]:
+        """列出被重放上限永久排除的事件明细，供人工核查与重排。
+
+        与 count_abandoned() 同一判据（_abandoned_clause）。返回项含 event_id / stream_key /
+        source_revision / retry_count / error_code，据此决定重排或显式丢弃，SQL 见
+        count_abandoned() 的 docstring。
+        """
+        epoch = _token(migration_epoch)
+        safe_limit = max(1, min(1000, int(limit)))
+        abandoned_sql, abandoned_params = _abandoned_clause()
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"""SELECT * FROM outbox WHERE migration_epoch=? AND {abandoned_sql}
+                    ORDER BY stream_key,source_revision,created_at LIMIT ?""",
+                (epoch, *abandoned_params, safe_limit),
+            ).fetchall()
+        return [self._item(row) for row in rows]
+
+    def requeue_abandoned(
+        self,
+        migration_epoch: str,
+        *,
+        event_ids: list[str] | tuple[str, ...] | None = None,
+        stream_keys: list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        """人工重排 abandoned 事件：retry_count 归零、state 置回 'pending'。
+
+        不传 event_ids / stream_keys 时重排本 epoch 全部 abandoned；传了则只处理其并集。
+        返回 {"requeued": n, "event_ids": [...]}。重排后事件重新进入可重放集合，会被
+        pending() 取走重放；这是让被上限放弃的事件"可救"的正式接口。
+        """
+        epoch = _token(migration_epoch)
+        if not epoch:
+            raise OutboxError("migration_epoch_invalid")
+        targets = sorted({_token(item) for item in (event_ids or ()) if _token(item)})
+        streams = sorted({_token(item) for item in (stream_keys or ()) if _token(item)})
+        abandoned_sql, abandoned_params = _abandoned_clause()
+        conditions = [f"migration_epoch=? AND {abandoned_sql}"]
+        params: list[Any] = [epoch, *abandoned_params]
+        if targets or streams:
+            scopes = []
+            if targets:
+                scopes.append("event_id IN (" + ",".join("?" for _ in targets) + ")")
+                params.extend(targets)
+            if streams:
+                scopes.append("stream_key IN (" + ",".join("?" for _ in streams) + ")")
+                params.extend(streams)
+            conditions.append("(" + " OR ".join(scopes) + ")")
+        with self._transaction() as conn:
+            rows = conn.execute(
+                f"SELECT event_id FROM outbox WHERE {' AND '.join(conditions)} "
+                "ORDER BY stream_key,source_revision,created_at",
+                tuple(params),
+            ).fetchall()
+            ids = [str(row["event_id"]) for row in rows]
+            if ids:
+                conn.execute(
+                    f"""UPDATE outbox SET state='pending',retry_count=0,error_code='',updated_at=?
+                        WHERE migration_epoch=? AND event_id IN ({",".join("?" for _ in ids)})""",
+                    (float(self._clock()), epoch, *ids),
+                )
+        return {"requeued": len(ids), "event_ids": ids}
 
     def stream_keys(self, migration_epoch: str) -> list[str]:
         epoch = _token(migration_epoch)
@@ -815,9 +989,11 @@ class MigrationOutbox:
         error = _token(error_code, limit=80) or "target_write_failed"
         with self._transaction() as conn:
             changed = conn.execute(
-                """UPDATE outbox SET state='failed',retry_count=retry_count+1,error_code=?,updated_at=?
+                """UPDATE outbox SET
+                       state=CASE WHEN retry_count+1 >= ? THEN 'dead_letter' ELSE 'failed' END,
+                       retry_count=retry_count+1,error_code=?,updated_at=?
                    WHERE event_id=? AND migration_epoch=? AND state IN ('pending','failed')""",
-                (error, float(self._clock()), _token(event_id), _token(migration_epoch)),
+                (int(_OUTBOX_MAX_RETRIES), error, float(self._clock()), _token(event_id), _token(migration_epoch)),
             ).rowcount
             if changed != 1:
                 raise OutboxError("outbox_event_missing")
@@ -884,6 +1060,6 @@ class MigrationOutbox:
 
 
 __all__ = [
-    "MAX_PAYLOAD_BYTES", "MIGRATION_STATES", "OUTBOX_STATES", "MigrationOutbox", "OutboxConflict",
-    "OutboxError", "OutboxItem", "RevisionGap", "StaleMigrationEpoch",
+    "MAX_PAYLOAD_BYTES", "MIGRATION_STATES", "OUTBOX_MAX_RETRIES", "OUTBOX_STATES", "MigrationOutbox",
+    "OutboxConflict", "OutboxError", "OutboxItem", "RevisionGap", "StaleMigrationEpoch",
 ]
