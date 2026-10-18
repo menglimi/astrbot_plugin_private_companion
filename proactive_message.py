@@ -11151,7 +11151,6 @@ class ProactiveMessageMixin(FinalResponsePersistenceMixin):
             prompt_text=prompt_text,
             request_text=prompt_text,
             session_key="daily_outfit",
-            image_size="1024x1024",
             allow_daily_outfit_reference=False,
             prompt_sections=prompt_sections,
         )

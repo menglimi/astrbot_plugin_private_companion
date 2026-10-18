@@ -1288,6 +1288,9 @@ class PrivateCompanionPageApi(
             ("/image/debug", self.get_image_debug, ["GET"], "Private Companion Page image generation debug trace"),
             ("/image_api/status", self.get_image_api_status, ["GET"], "Private Companion Page image API status"),
             ("/image_api/test", self.test_image_api_endpoint, ["POST"], "Private Companion Page test one image API endpoint"),
+            ("/comfyui/config", self.update_comfyui_config, ["POST"], "Private Companion Page native ComfyUI configuration"),
+            ("/comfyui/test", self.test_comfyui_connection, ["POST"], "Private Companion Page ComfyUI connection test"),
+            ("/comfyui/workflow", self.inspect_comfyui_workflow, ["POST"], "Private Companion Page ComfyUI workflow mapping"),
             ("/config/export", self.export_migration_config, ["GET"], "Private Companion Page export migration config"),
             ("/config/backups", self.list_migration_backups, ["GET"], "Private Companion Page list migration backups"),
             ("/config/restore", self.restore_migration_backup, ["POST"], "Private Companion Page restore migration backup"),
@@ -8611,6 +8614,8 @@ class PrivateCompanionPageApi(
 
     async def get_image_api_status(self) -> dict[str, Any]:
         try:
+            api_getter = getattr(self.plugin, "_image_companion_api", None)
+            image_api = api_getter() if callable(api_getter) else None
             async with self.plugin._data_lock:
                 raw_results = deepcopy(self.plugin.data.get("troubleshooting_test_results", {}))
             stored = raw_results if isinstance(raw_results, dict) else {}
@@ -8622,11 +8627,47 @@ class PrivateCompanionPageApi(
                 {
                     "items": items,
                     "backend": self._single_line(getattr(self.plugin, "photo_generation_backend", "auto"), 30) or "auto",
+                    "comfyui": image_api.get_comfyui_config()
+                    if callable(getattr(image_api, "get_comfyui_config", None)) else None,
+                    "comfyui_schema": image_api.get_comfyui_schema()
+                    if callable(getattr(image_api, "get_comfyui_schema", None)) else {},
                 }
             )
         except Exception as exc:
             logger.warning("获取生图 API 状态失败: %s", self._single_line(exc, 160), exc_info=True)
             return self._exception_error(str(exc))
+
+    async def update_comfyui_config(self) -> dict[str, Any]:
+        try:
+            payload = await request.get_json(silent=True) or {}
+            api = self.plugin._image_companion_api()
+            if not callable(getattr(api, "update_comfyui_config", None)):
+                return self._error("请安装或更新图像扩展以配置 ComfyUI")
+            config = await api.update_comfyui_config(payload.get("config"))
+            return self._ok({"comfyui": config, "config_saved": True})
+        except Exception as exc:
+            return self._error(str(exc))
+
+    async def test_comfyui_connection(self) -> dict[str, Any]:
+        try:
+            api = self.plugin._image_companion_api()
+            if not callable(getattr(api, "test_comfyui_connection", None)):
+                return self._error("ComfyUI 直连接口不可用")
+            return self._ok(await api.test_comfyui_connection())
+        except Exception as exc:
+            return self._error(str(exc))
+
+    async def inspect_comfyui_workflow(self) -> dict[str, Any]:
+        try:
+            payload = await request.get_json(silent=True) or {}
+            name = str(payload.get("workflow") or "").strip()
+            api = self.plugin._image_companion_api()
+            if not name or not callable(getattr(api, "analyze_comfyui_workflow", None)):
+                return self._error("请选择工作流并更新图像扩展")
+            result = await api.analyze_comfyui_workflow(self.plugin, name, use_model=bool(payload.get("use_model")), save=True)
+            return self._ok(result)
+        except Exception as exc:
+            return self._error(str(exc))
 
     async def test_image_api_endpoint(self) -> dict[str, Any]:
         payload = await request.get_json(silent=True) or {}
@@ -9207,7 +9248,7 @@ class PrivateCompanionPageApi(
         if preferred == "anima_master":
             segments.append(("Anima 绘图大师", 420))
             warnings.append("Anima 的生成、启动等待与重试由绘图大师配置控制，测试耗时为估算值。")
-        if preferred in {"auto", "external"} and external_available:
+        if preferred in {"auto", "external_first", "external"} and external_available:
             if ready_endpoint_queue:
                 for index, endpoint in enumerate(ready_endpoint_queue[:12]):
                     timeout_seconds = self._int(endpoint.get("timeout_seconds"), external_timeout, 20, 600)
@@ -9222,20 +9263,23 @@ class PrivateCompanionPageApi(
                 if backup_available:
                     segments.append(("备选在线图片 API", backup_timeout * 2))
                     warnings.append("已启用备选在线图片 API：主接口失败或超时后会再跑一轮备选接口，实际耗时可能明显长于单次测试观感。")
-        if preferred in {"auto", "comfyui"} and comfyui_available:
+        if preferred in {"auto", "external_first", "comfyui"} and comfyui_available:
             segments.append(("ComfyUI", comfyui_wait))
-        if preferred in {"auto", "sdgen"} and sdgen_available:
+        if preferred in {"auto", "external_first", "sdgen"} and sdgen_available:
             segments.append(("SDGen", 180))
             warnings.append("SDGen 调用由 SDGen 插件自身控制，本插件只能估算耗时，无法完全保证外层超时。")
 
+        if preferred == "auto":
+            segments.sort(key=lambda item: 0 if item[0] == "ComfyUI" else 2 if item[0] == "SDGen" else 1)
         estimated = sum(seconds for _, seconds in segments) + 30
         if not segments:
             estimated = max(45, external_timeout + 30, comfyui_wait + 30)
         test_timeout = min(900, max(45, estimated + 30))
         if estimated + 30 > test_timeout:
             warnings.append(f"估算完整回退链路约 {estimated}s，排障测试外层最多等待 {test_timeout}s；极端慢链路仍可能被测试层截断。")
-        if preferred == "auto" and len(segments) > 1:
-            warnings.append("当前为自动后端：真实出图可能按在线 API、ComfyUI、SDGen 依次回退，测试通过只代表本次命中的那条链路可用。")
+        if preferred in {"auto", "external_first"} and len(segments) > 1:
+            order = "ComfyUI、在线 API、SDGen" if preferred == "auto" else "在线 API、ComfyUI、SDGen"
+            warnings.append(f"当前为自动后端：真实出图按 {order} 依次尝试可用后端，已提交或结果不明时停止回退；测试通过只代表本次命中的那条链路可用。")
         if has_reference_source and workflow_kind not in {"selfie", "portrait", "自拍", "人像"}:
             warnings.append("已配置参考图，但本次测的是文生图；自拍、表情包、改图或 QQ 空间人物配图仍需单独测试参考图链路。")
         if workflow_kind in {"selfie", "portrait", "自拍", "人像"} and not reference_image_path and has_reference_source:
@@ -26129,7 +26173,7 @@ class PrivateCompanionPageApi(
                 text = str(value).strip()
                 if key == "photo_generation_backend":
                     text = text.lower()
-                    if text not in {"auto", "comfyui", "sdgen", "external", "tool_call", "nai", "anima_master"}:
+                    if text not in {"auto", "external_first", "comfyui", "sdgen", "external", "tool_call", "nai", "anima_master"}:
                         text = "auto"
                 elif key == "photo_generation_prompt_format":
                     normalizer = getattr(self.plugin, "_normalize_photo_generation_prompt_format", None)

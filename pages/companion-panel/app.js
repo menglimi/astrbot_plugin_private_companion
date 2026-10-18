@@ -3165,7 +3165,7 @@ const configDescriptions = {
   qzone_comment_inbox_max_replies_per_tick: "每次后台检查最多公开回复多少条新评论，建议保持 1，避免刷屏。",
   photo_action_max_daily: "每个私聊对象每天最多生成几张主动图片。真实生成成功就消耗额度，避免失败重试时反复生图。",
   proactive_photo_text_probability: "在主动生图可用、额度未用完，且本轮主动有生活画面或视觉切口时，把普通文字主动升级成带图的概率，按百分比填写。",
-  photo_generation_backend: "auto 会在在线图片 API 配置完整时优先尝试在线 API，失败后回退本地 ComfyUI/SDGen；未配置在线 API 时使用本地后端。comfyui/sdgen/external 可指定单一后端。tool_call 会调用其他插件注册的函数工具（需在下方填写工具名）。nai 会直连 NAI 生图插件（astrbot_plugin_nai_image），无需在线 API 与本地工作流。",
+  photo_generation_backend: "auto：ComfyUI → 在线 API → SDGen；external_first：在线 API → ComfyUI → SDGen。external、comfyui、sdgen 只使用对应后端。任务已提交或提交结果不明时停止自动回退。",
   COMFYUI_TEXT2IMG_WORKFLOW_NAME: "用于普通随手拍、风景、桌面小物等 photo_text 的 ComfyUI 工作流名。",
   COMFYUI_SELFIE_WORKFLOW_NAME: "用于自拍或人像类 photo_text 的 ComfyUI 工作流名。开启参考图一致性后，会按实际提交数量寻找匹配的 images=N 自拍/改图工作流；单图工作流只提交主参考，其余职责转为文字提示。",
   enable_photo_reference_image: "可选。开启后，自拍、人像、头像和角色表情包会自动使用今日穿搭图或下方人设参考图来保持外观一致；关闭后不自动读取固定参考图，只按提示词生成。用户显式发送或引用图片要求改图时不受影响。",
@@ -4613,7 +4613,7 @@ const featureSettingTypes = {
   segmented_proactive_group_log_base: { type: "number", min: 1.1, max: 10, step: 0.1 },
   proactive_chat_bridge_review_mode: { type: "select", options: [["local", "轻量本地（更即时）"], ["follow_proactive_review", "跟随主动终审（更稳）"]] },
   proactive_chat_bridge_collision_window_seconds: { type: "number", min: 10, max: 600, step: 10, unit: "秒" },
-  photo_generation_backend: { type: "select", options: [["auto", "auto"], ["comfyui", "ComfyUI"], ["sdgen", "SDGen"], ["external", "在线图片 API"], ["tool_call", "函数工具"], ["nai", "NAI 生图（直连）"], ["anima_master", "Anima 绘图大师（直连）"]] },
+  photo_generation_backend: { type: "select", options: [["auto", "ComfyUI → 在线 API → SDGen"], ["external_first", "在线 API → ComfyUI → SDGen"], ["external", "只用在线 API"], ["comfyui", "只用 ComfyUI"], ["sdgen", "只用 SDGen"], ["tool_call", "函数工具"], ["nai", "NAI 生图（直连）"], ["anima_master", "Anima 绘图大师（直连）"]] },
   external_image_api_platform: { type: "select", options: [["auto", "auto"], ["openai", "OpenAI 兼容"], ["openrouter", "OpenRouter"], ["agnes", "Agnes Image"], ["sensenova", "SenseNova 日日新"], ["minimax", "MiniMax"], ["bailian", "阿里云百炼"], ["modelscope", "魔搭社区"], ["doubao", "豆包/火山方舟"], ["gemini", "Gemini"]] },
   backup_external_image_api_platform: { type: "select", options: [["auto", "auto"], ["openai", "OpenAI 兼容"], ["openrouter", "OpenRouter"], ["agnes", "Agnes Image"], ["sensenova", "SenseNova 日日新"], ["minimax", "MiniMax"], ["bailian", "阿里云百炼"], ["modelscope", "魔搭社区"], ["doubao", "豆包/火山方舟"], ["gemini", "Gemini"]] },
   EXTERNAL_IMAGE_API_KEY: { type: "password" },
@@ -9593,7 +9593,7 @@ const setupGuideAdvancedItems = {
       caution: "生图比纯文字更容易失败，也更耗时。建议先把后端跑通，再把每日上限和触发概率调高。",
       dependencies: [
         { label: "在线 API", text: "选择 external/auto 时，请到“模型配置 → 生图模型”填写 API 地址、Key、模型和优先级队列。" },
-        { label: "ComfyUI", text: "选择 comfyui/auto 且想走本地生图时，需要安装 astrbot_plugin_comfyui，并填写文生图/自拍工作流名。" },
+        { label: "ComfyUI", text: "独立直连配置位于模型配置的生图模型页；也兼容 astrbot_plugin_comfyui 中间插件。" },
         { label: "SDGen", text: "选择 sdgen 时，需要安装 astrbot_plugin_SDGen 或 astrbot_plugin_sdgen，并在 SDGen 插件里配好 WebUI。" },
         { label: "NAI 生图", text: "选择 nai 时，需要安装 astrbot_plugin_nai_image，直接走 NAI 生图插件，无需在线 API 与本地工作流。" },
       ],
@@ -9605,7 +9605,7 @@ const setupGuideAdvancedItems = {
         { key: "photo_generation_private_friend_max_daily", type: "number", label: "其他陪伴用户私聊每日上限", placeholder: "-1（不限量）", min: -1, max: 100, step: 1, description: "-1 表示不限量，0 表示不允许，正数表示每日限额。", showWhen: (draft) => photoSettingVisibleForValues("photo_generation_private_friend_max_daily", draft) },
         { key: "photo_generation_group_max_daily", type: "number", label: "群聊生图每日上限", placeholder: "-1（不限量）", min: -1, max: 100, step: 1, description: "-1 表示不限量，0 表示不允许，正数表示每日限额。", showWhen: (draft) => photoSettingVisibleForValues("photo_generation_group_max_daily", draft) },
         { key: "photo_generation_proactive_max_daily", type: "number", label: "Bot 主动生图每日上限", placeholder: "-1（不限量）", min: -1, max: 100, step: 1, description: "-1 表示不限量，0 表示不允许，正数表示每日限额。" },
-        { key: "photo_generation_backend", type: "select", label: "生图后端", options: [["auto", "自动：在线 API → ComfyUI → SDGen"], ["external", "只用在线图片 API"], ["comfyui", "只用 ComfyUI"], ["sdgen", "只用 SDGen"], ["tool_call", "函数工具（调用其他插件的生图工具）"], ["nai", "只用 NAI 生图插件（直连）"], ["anima_master", "Anima 绘图大师（直连）"]], description: "这里仅选择后端；在线 API 凭据和队列统一在“模型配置 → 生图模型”维护。" },
+        { key: "photo_generation_backend", type: "select", label: "生图后端", options: [["auto", "自动：ComfyUI → 在线 API → SDGen"], ["external_first", "自动：在线 API → ComfyUI → SDGen"], ["external", "只用在线 API"], ["comfyui", "只用 ComfyUI"], ["sdgen", "只用 SDGen"], ["tool_call", "函数工具（调用其他插件的生图工具）"], ["nai", "只用 NAI 生图插件（直连）"], ["anima_master", "Anima 绘图大师（直连）"]], description: "连接、工作流和在线 API 队列位于模型配置的生图模型页。" },
         { key: "natural_language_photo_generation_mode", type: "select", label: "非指令生图处理方式", options: [["tool_first", "工具优先：主链调用 pc_generate_photo"], ["rule_fast", "规则快判：插件前置接管"], ["off", "关闭：不做前置接管"]], description: "注册生图工具后建议用工具优先；只有工具调用不稳定时再用规则快判。" },
         { key: "command_photo_generation_max_daily", type: "number", label: "用户请求每日上限", placeholder: "-1（不限量）", min: -1, max: 100, description: "显式陪伴生图指令与主链 pc_generate_photo 工具共用；-1 表示不限量，0 表示不允许用户请求生图/改图。", showWhen: (draft) => photoSettingVisibleForValues("command_photo_generation_max_daily", draft) },
         { key: "photo_generation_trace_max_size_kb", type: "number", label: "生图日志单文件大小（KB）", placeholder: "0", min: 0, max: 102400, description: "仅排障时开启；事件日志和逐次提示词调试文件可能包含会话标识、用户请求、完整提示词和本地参考图路径。0 表示全部关闭。" },
@@ -28829,8 +28829,8 @@ function photoSettingVisibleForValues(settingKey, values = {}) {
     "COMFYUI_SELFIE_WORKFLOW_NAME",
     "comfyui_photo_wait_seconds",
   ]);
-  const localBackends = new Set(["auto", "comfyui", "sdgen", "anima_master"]);
-  const onlineBackends = new Set(["auto", "external"]);
+  const localBackends = new Set(["auto", "external_first", "comfyui", "sdgen", "anima_master"]);
+  const onlineBackends = new Set(["auto", "external_first", "external"]);
   const onlineModelOnly = new Set([
     "external_image_api_platform",
     "EXTERNAL_IMAGE_API_BASE_URL",
@@ -28844,7 +28844,7 @@ function photoSettingVisibleForValues(settingKey, values = {}) {
 
   if (onlineModelOnly.has(settingKey)) return false;
   if (toolOnly.has(settingKey)) return backend === "tool_call";
-  if (comfyOnly.has(settingKey)) return ["auto", "comfyui"].includes(backend);
+  if (comfyOnly.has(settingKey)) return ["auto", "external_first", "comfyui"].includes(backend);
   if (settingKey === "enable_local_photo_load_guard") return localBackends.has(backend);
   if (["local_photo_cpu_busy_percent", "local_photo_memory_busy_percent", "local_photo_defer_minutes"].includes(settingKey)) {
     return localBackends.has(backend) && enabled("enable_local_photo_load_guard");
@@ -33368,6 +33368,104 @@ function syncModelsSectionControls() {
   return section;
 }
 
+function comfyuiConfigEditorHtml() {
+  const schema = state.imageApiStatus?.comfyui_schema || {};
+  const saved = state.imageApiStatus?.comfyui;
+  if (!saved) return `<section class="comfyui-config-panel"><h3>ComfyUI 独立连接</h3><p>${state.lazyLoaded.imageApiStatus ? "图像扩展尚未提供直连配置接口。" : "正在读取 ComfyUI 配置..."}</p><button type="button" data-comfyui-action="refresh">重新读取</button></section>`;
+  if (!state.comfyuiConfigDraft) state.comfyuiConfigDraft = structuredClone(saved);
+  const draft = state.comfyuiConfigDraft;
+  const fields = Object.fromEntries(Object.entries(schema).map(([key, meta]) => {
+    const value = draft[key] ?? meta.default;
+    const attr = `data-comfyui-field="${escapeHtml(key)}"`;
+    const label = { base_url: "服务地址", api_key: "访问密钥", text2img_workflow: "文生图工作流", selfie_workflow: "参考图工作流", workflows: "API 工作流文件", aspect: "画幅选择" }[key] || meta.description;
+    let control;
+    if (meta.type === "bool") {
+      control = `<input type="checkbox" role="switch" ${attr}${value ? " checked" : ""}><span class="comfyui-switch-track" aria-hidden="true"></span>`;
+    } else if (meta.options) {
+      const labels = { auto: "自动", workflow: "跟随工作流", portrait: "竖图", landscape: "横图", square: "方图" };
+      control = `<select ${attr}>${meta.options.map((option) => `<option value="${escapeHtml(option)}"${option === value ? " selected" : ""}>${escapeHtml(labels[option] || option)}</option>`).join("")}</select>`;
+    } else if (meta._special === "select_provider") {
+      const providers = state.availableProviders || [];
+      const known = providers.some((item) => item.id === value);
+      control = `<select ${attr}><option value="">复用陪伴生图提示词模型</option>${providers.map((item) => `<option value="${escapeHtml(item.id)}"${item.id === value ? " selected" : ""}>${escapeHtml(item.name || item.id)}</option>`).join("")}${value && !known ? `<option selected value="${escapeHtml(value)}">${escapeHtml(value)}</option>` : ""}</select>`;
+    } else if (meta.type === "list" || meta.type === "text") {
+      const text = meta.type === "list" ? JSON.stringify(value, null, 2) : value;
+      control = `<textarea ${attr} rows="${meta.type === "list" ? 5 : 3}" spellcheck="false"${meta.type === "list" ? ' class="comfyui-json-editor"' : ""}>${escapeHtml(text)}</textarea>`;
+    } else {
+      const bounds = { size_multiple: [1, 256], max_pixels: [4096, 67108864], timeout_seconds: [5, 1800], model_timeout_seconds: [5, 600] }[key];
+      control = `<input ${attr} type="${meta.secret ? "password" : meta.type === "int" ? "number" : "text"}" value="${escapeHtml(meta.secret ? "" : value)}"${bounds ? ` min="${bounds[0]}" max="${bounds[1]}" step="1"` : ""}${meta.secret ? ` autocomplete="new-password" placeholder="${saved.has_api_key ? "已配置；留空保留原密钥" : "可选"}"` : ""}>`;
+    }
+    const inspect = ["text2img_workflow", "selfie_workflow"].includes(key) ? `<button type="button" class="soft comfyui-inspect" data-comfyui-action="${key}">识别</button>` : "";
+    return [key, `<div class="comfyui-field${meta.type === "list" || meta.type === "text" ? " comfyui-wide" : ""}"><label class="${meta.type === "bool" ? "comfyui-toggle" : ""}"><span>${escapeHtml(label)}</span>${control}</label>${inspect}</div>`];
+  }));
+  const groups = [
+    ["连接", ["base_url", "api_key"]],
+    ["工作流", ["text2img_workflow", "selfie_workflow"]],
+    ["画幅与提示词", ["aspect", "prompt_provider_id", "rewrite_enabled", "random_seed"]],
+  ];
+  const primaryKeys = new Set(groups.flatMap(([, keys]) => keys));
+  const advancedKeys = Object.keys(fields).filter((key) => !primaryKeys.has(key));
+  return `<section class="comfyui-config-panel">
+    <header><div class="comfyui-title"><h3>ComfyUI</h3><span class="comfyui-status${saved.base_url ? " is-configured" : ""}">${saved.base_url ? "已配置直连" : "未配置"}</span></div><button type="button" class="soft" data-comfyui-action="test">测试连接</button></header>
+    ${groups.map(([title, keys]) => `<section class="comfyui-config-group"><h4>${title}</h4><div class="comfyui-config-grid">${keys.map((key) => fields[key] || "").join("")}</div></section>`).join("")}
+    <details class="comfyui-advanced"><summary>高级配置</summary><div class="comfyui-config-grid">${advancedKeys.map((key) => fields[key]).join("")}<label class="comfyui-toggle comfyui-clear-key"><span>清除已保存的访问密钥</span><input type="checkbox" role="switch" data-comfyui-clear-key><span class="comfyui-switch-track" aria-hidden="true"></span></label></div></details>
+    <div class="comfyui-config-actions"><button type="button" class="primary" data-comfyui-action="save">保存 ComfyUI 配置</button></div>
+    <output class="comfyui-config-result" aria-live="polite"></output>
+  </section>`;
+}
+
+function collectComfyuiConfig(root) {
+  const config = {};
+  const schema = state.imageApiStatus?.comfyui_schema || {};
+  root.querySelectorAll("[data-comfyui-field]").forEach((input) => {
+    const key = input.dataset.comfyuiField;
+    const type = schema[key]?.type;
+    if (key === "api_key" && !input.value.trim()) return;
+    config[key] = type === "bool" ? input.checked : type === "int" ? Number(input.value) : type === "list" ? JSON.parse(input.value || "[]") : input.value;
+  });
+  if (root.querySelector("[data-comfyui-clear-key]")?.checked) config.api_key = "";
+  return config;
+}
+
+function bindComfyuiConfigEditor(root) {
+  root.querySelectorAll("[data-comfyui-field]").forEach((input) => input.addEventListener("input", () => {
+    const draft = state.comfyuiConfigDraft;
+    if (!draft || input.dataset.comfyuiField === "api_key") return;
+    try { Object.assign(draft, collectComfyuiConfig(root)); } catch { /* Keep the editor's incomplete JSON draft. */ }
+  }));
+  root.querySelectorAll("[data-comfyui-action]").forEach((button) => button.addEventListener("click", async () => {
+    const action = button.dataset.comfyuiAction;
+    if (action === "refresh") {
+      await loadImageApiStatus(true).catch((error) => showToast(error.message, "error"));
+      return;
+    }
+    let config;
+    try { config = collectComfyuiConfig(root); } catch { showToast("工作流列表必须为有效 JSON 数组，修改内容已保留。", "error"); return; }
+    if (action === "save") {
+      const invalid = [...root.querySelectorAll("[data-comfyui-field]")].find((input) => !input.checkValidity());
+      if (invalid) {
+        const details = invalid.closest("details");
+        if (details) details.open = true;
+        invalid.reportValidity();
+        return;
+      }
+    }
+    const saved = state.imageApiStatus?.comfyui || {};
+    const dirty = Object.keys(config).some((key) => key !== "api_key" && JSON.stringify(config[key]) !== JSON.stringify(saved[key]));
+    if (action !== "save" && (dirty || config.api_key !== undefined)) { showToast("先保存 ComfyUI 配置，再测试连接或识别工作流。", "error"); return; }
+    const result = await runAction(() => action === "save" ? postJson("/comfyui/config", { config }) : action === "test" ? postJson("/comfyui/test", {}) : postJson("/comfyui/workflow", { workflow: saved[action] }), action === "save" ? "ComfyUI 配置已保存并应用" : "ComfyUI 检查已完成", button, { reload: false });
+    if (!result) return;
+    if (action === "save") {
+      state.imageApiStatus.comfyui = result.comfyui;
+      state.comfyuiConfigDraft = structuredClone(result.comfyui);
+      renderImageModelConfig();
+    } else {
+      const output = root.querySelector(".comfyui-config-result");
+      if (output) output.textContent = action === "test" ? `连接正常 · ComfyUI ${result.version || ""} · 执行中 ${result.running} · 排队 ${result.pending}` : Object.entries(result.mapping?.fields || {}).map(([name, field]) => `${name}: ${field.node_id}.${field.input_name}`).join("\n");
+    }
+  }));
+}
+
 function renderImageModelConfig() {
   if (!imageCompanionInstalled()) return;
   const summary = document.getElementById("imageModelSummary");
@@ -33381,8 +33479,9 @@ function renderImageModelConfig() {
   const passed = endpoints.filter((item, index) => Boolean(photoApiEndpointResult(item, index)?.ok));
   const backend = String(settings.photo_generation_backend || "auto");
   const backendOptions = [
-    ["auto", "自动：在线 API → ComfyUI → SDGen"],
-    ["external", "只用在线图片 API"],
+    ["auto", "自动：ComfyUI → 在线 API → SDGen"],
+    ["external_first", "自动：在线 API → ComfyUI → SDGen"],
+    ["external", "只用在线 API"],
     ["comfyui", "只用 ComfyUI"],
     ["sdgen", "只用 SDGen"],
     ["tool_call", "函数工具"],
@@ -33418,6 +33517,7 @@ function renderImageModelConfig() {
         ${backendOptions.map(([value, label]) => `<option value="${escapeHtml(value)}"${backend === value ? " selected" : ""}>${escapeHtml(label)}</option>`).join("")}
       </select>
     </section>
+    ${comfyuiConfigEditorHtml()}
     ${photoApiEndpointEditorHtml({
       showTests: true,
       title: "在线生图 API 队列",
@@ -33425,6 +33525,7 @@ function renderImageModelConfig() {
     })}
   `;
   bindPhotoApiEndpointEditor(document.getElementById("modelsImagePane"));
+  bindComfyuiConfigEditor(editor);
 }
 
 function renderProviders() {

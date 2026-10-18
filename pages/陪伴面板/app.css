@@ -34752,6 +34752,46 @@ input:checked + .rt2-switch-track.lg::after,
 .rt2-page .rt2-mi-device button { min-height: 29px; padding: 0 12px; border-radius: 999px; font-weight: 600; }
 .rt2-page .rt2-mi-mapping-row button { min-height: 32px; padding: 0 12px; }
 
+.comfyui-config-panel { margin: 24px 0; padding: 24px 0; border-block: 1px solid var(--line); color: var(--ink, #183453); }
+.comfyui-config-panel > header, .comfyui-title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.comfyui-config-panel > header { justify-content: space-between; margin-bottom: 4px; }
+.comfyui-config-panel h3 { margin: 0; font-size: 20px; letter-spacing: 0; }
+.comfyui-status { display: inline-flex; align-items: center; gap: 7px; color: var(--muted, #536786); font-size: 12px; font-weight: 600; }
+.comfyui-status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #6b7890; }
+.comfyui-status.is-configured::before { background: #16845a; }
+.comfyui-config-group { padding: 20px 0; border-bottom: 1px solid var(--line); }
+.comfyui-config-group h4 { margin: 0 0 14px; font-size: 14px; font-weight: 700; }
+.comfyui-config-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; }
+.comfyui-field { position: relative; min-width: 0; }
+.comfyui-config-grid label { display: flex; flex-direction: column; gap: 8px; min-width: 0; font-size: 13px; font-weight: 600; }
+.comfyui-config-grid label > span:first-child { color: var(--muted, #536786); }
+.comfyui-config-grid input:not([type="checkbox"]), .comfyui-config-grid select, .comfyui-config-grid textarea { width: 100%; min-width: 0; min-height: 44px; box-sizing: border-box; padding: 11px 13px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel, #fff); color: inherit; font: inherit; font-weight: 400; line-height: 1.5; letter-spacing: 0; caret-color: var(--blue, #1b4b87); transition: border-color .15s ease; }
+.comfyui-config-grid input::placeholder { color: #61728b; opacity: 1; }
+.comfyui-config-grid input:hover, .comfyui-config-grid select:hover, .comfyui-config-grid textarea:hover { border-color: var(--blue, #1b4b87); }
+.comfyui-config-panel :is(input, select, textarea, button, summary):focus-visible { outline: 2px solid var(--blue, #1b4b87); outline-offset: 3px; }
+.comfyui-config-grid textarea { resize: vertical; }
+.comfyui-config-grid .comfyui-json-editor { font-family: ui-monospace, Consolas, monospace; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.comfyui-config-grid .comfyui-wide { grid-column: 1 / -1; }
+.comfyui-config-grid .comfyui-toggle { position: relative; flex-direction: row; align-items: center; justify-content: space-between; gap: 16px; min-height: 44px; cursor: pointer; }
+.comfyui-toggle input[type="checkbox"] { position: absolute; right: 0; width: 38px; height: 24px; opacity: 0; margin: 0; cursor: pointer; }
+.comfyui-switch-track { position: relative; flex: 0 0 38px; width: 38px; height: 22px; border-radius: 11px; background: #77849a; pointer-events: none; transition: background .15s ease; }
+.comfyui-switch-track::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .15s ease; }
+.comfyui-toggle input:checked + .comfyui-switch-track { background: var(--blue, #1b4b87); }
+.comfyui-toggle input:checked + .comfyui-switch-track::after { transform: translateX(16px); }
+.comfyui-toggle input:focus-visible + .comfyui-switch-track { outline: 2px solid var(--blue, #1b4b87); outline-offset: 3px; }
+.comfyui-field:has(.comfyui-inspect) input { padding-right: 72px; }
+.comfyui-config-panel .comfyui-inspect { position: absolute; right: 6px; bottom: 5px; min-height: 34px; padding: 5px 12px; font-size: 12px; border-color: transparent; background: var(--blue-soft, #edf3fb); }
+.comfyui-advanced { padding-top: 16px; }
+.comfyui-advanced summary { cursor: pointer; font-size: 14px; font-weight: 600; padding: 8px 0; color: var(--blue, #1b4b87); }
+.comfyui-advanced[open] summary { margin-bottom: 14px; }
+.comfyui-config-grid .comfyui-clear-key > span:first-child { color: var(--danger, #ad3030); }
+.comfyui-config-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; margin-top: 24px; }
+.comfyui-config-panel button { min-height: 42px; border-radius: 6px; font-size: 14px; }
+.comfyui-config-result { display: block; white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 12px; font-size: 13px; line-height: 1.7; }
+.comfyui-config-result:empty { display: none; }
+@media (max-width: 640px) { .comfyui-config-grid { grid-template-columns: minmax(0, 1fr); gap: 14px; } .comfyui-config-panel { padding-block: 20px; } .comfyui-title { gap: 8px; } .comfyui-config-actions > button { width: 100%; } }
+@media (prefers-reduced-motion: reduce) { .comfyui-config-panel *, .comfyui-config-panel *::after { transition: none !important; } }
+
 /* reduce-motion 下关闭位移 */
 @media (prefers-reduced-motion: reduce) {
   .rt2-page button.primary, .rt2-page button.soft { transition: none; }
