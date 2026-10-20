@@ -5,6 +5,7 @@ import asyncio
 import json
 import time
 import unittest
+from pathlib import Path
 
 from astrbot_plugin_private_companion.user_memory import UserMemoryMixin
 
@@ -180,6 +181,26 @@ class OpenLoopAutoResolveTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("asked_ts", user["open_loop_followup_context"])
         harness._stamp_open_loop_followup_asked(user, "open_loop_followup", 456.0)
         self.assertEqual(456.0, user["open_loop_followup_context"]["asked_ts"])
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class OpenLoopWiringTests(unittest.TestCase):
+    def test_asked_timestamp_is_stamped_only_on_send_success_paths(self):
+        source = (ROOT / "daily_state_tick.py").read_text(encoding="utf-8")
+        self.assertEqual(2, source.count("self._stamp_open_loop_followup_asked("))
+
+    def test_picker_records_picked_ts_for_delivery_stamp(self):
+        source = (ROOT / "proactive_engine.py").read_text(encoding="utf-8")
+        self.assertEqual(1, source.count('"picked_ts": check_now'))
+
+    def test_inbound_pipeline_submits_reply_judgement(self):
+        source = (ROOT / "message_pipeline.py").read_text(encoding="utf-8")
+        self.assertEqual(
+            1,
+            source.count("_maybe_resolve_open_loops_after_reply(user_id, user_snapshot)"),
+        )
 
 
 if __name__ == "__main__":
