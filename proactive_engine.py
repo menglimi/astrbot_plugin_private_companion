@@ -7845,6 +7845,7 @@ class ProactiveEngineMixin:
                 "text": text,
                 "created_ts": created_at,
                 "created_at": datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S"),
+                "picked_ts": check_now,
                 "source": selected.get("source"),
                 "after_anonymous_area_departure": anonymous_linked,
             },

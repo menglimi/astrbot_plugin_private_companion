@@ -68,6 +68,7 @@ jobs:
           tests/test_req041_private_memory_persistence.py
           tests/test_persona_reset_ui.py
           tests/test_multi_persona_config_ui.py
+          tests/test_open_loop_auto_resolve.py
 
   architecture-and-artifact:
     runs-on: ubuntu-latest
