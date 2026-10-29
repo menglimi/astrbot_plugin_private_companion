@@ -893,3 +893,30 @@ def test_jev_mode_requires_an_endpoint_before_any_request(tmp_path):
     with pytest.raises(LayaClientError) as error:
         asyncio.run(service.decide({"message_kind": "text", "user_text": "你好"}))
     assert error.value.code == "laya_endpoint_missing"
+
+
+def test_jev_decisions_are_recorded_in_the_runtime_ledger(tmp_path, monkeypatch):
+    """The ledger DDL must accept the third backend, not just local and remote."""
+    from companion_v2.storage.runtime import StorageRuntime
+
+    jev_response(monkeypatch, jev_envelope())
+    store = LayaSettingsStore(tmp_path / "settings", "target", "role")
+    store.update(store.raw()["revision"], {"enabled": True, "mode": "jev",
+                                           "endpoint": "https://gateway.test/v1", "api_key": "jev-key"})
+    runtime = StorageRuntime.open(data_root=tmp_path / "runtime", installation_id="laya-jev-ledger")
+    try:
+        service = LayaDecisionService(store, runtime=runtime, origin_key="role-key",
+                                      client_factory=LayaDecisionClient)
+        service.set_trace(event_ref="reply-" + "a" * 32, source="conversation")
+        result = asyncio.run(service.decide({"message_kind": "text", "user_text": "你好"}))
+        assert result["status"] == "ok"
+        event = service.recent()["events"][0]
+        assert event["status"] == "ok"
+        assert event["mode"] == "jev"
+        assert event["decision"]["action"] == decision_document()["action"]
+        stored = runtime.read_one("SELECT mode, request_json FROM laya_decision_events WHERE event_id = ?",
+                                  (event["event_id"],))
+        assert stored["mode"] == "jev"
+        assert json.loads(stored["request_json"])["model"] == "jev-latest"
+    finally:
+        runtime.close()

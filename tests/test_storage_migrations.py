@@ -36,8 +36,9 @@ from companion_v2.storage.schema import (
     MIGRATION_V63_TO_V64_FINGERPRINT, MIGRATION_V63_TO_V64_ID, SCHEMA_VERSION_V64,
     MIGRATION_V64_TO_V65_FINGERPRINT, MIGRATION_V64_TO_V65_ID, SCHEMA_VERSION_V65,
     MIGRATION_V65_TO_V66_FINGERPRINT, MIGRATION_V65_TO_V66_ID, SCHEMA_VERSION_V66,
+    MIGRATION_V66_TO_V67_FINGERPRINT, MIGRATION_V66_TO_V67_ID, SCHEMA_VERSION_V67,
 )
-from tests.execution_support import remove_v21, remove_v22, remove_v31, remove_v32, remove_v33, remove_v34, remove_v35, remove_v36, remove_v52, remove_v53, remove_v55, remove_v57, remove_v58, remove_v59, remove_v60, remove_v61, remove_v62, remove_v63, remove_v64, remove_v65, remove_v66
+from tests.execution_support import remove_v21, remove_v22, remove_v31, remove_v32, remove_v33, remove_v34, remove_v35, remove_v36, remove_v52, remove_v53, remove_v55, remove_v57, remove_v58, remove_v59, remove_v60, remove_v61, remove_v62, remove_v63, remove_v64, remove_v65, remove_v66, remove_v67
 
 
 class StorageMigrationTests(unittest.TestCase):
@@ -484,6 +485,45 @@ class StorageMigrationTests(unittest.TestCase):
         indexes = {row["name"] for row in upgraded.read_all(
             "SELECT name FROM sqlite_master WHERE type = 'index'", ())}
         self.assertIn("relationship_anniversary_active_day_idx", indexes)
+
+    def test_v66_upgrade_accepts_jev_and_preserves_recorded_events(self) -> None:
+        runtime = self.open_runtime()
+        with runtime.transaction() as connection:
+            connection.execute("""INSERT INTO laya_decision_events
+                (event_id, origin_key, source, status, mode, enabled_fields_json, observed_at)
+                VALUES (?, ?, 'conversation', 'ok', 'remote', '{}', '2026-10-30T00:00:00+00:00')""",
+                ("a" * 32, "role-key"))
+        runtime.close()
+        with closing(sqlite3.connect(self.database)) as connection:
+            remove_v67(connection)
+            connection.execute("UPDATE runtime_metadata SET value = ? WHERE key = 'schema_version'",
+                               (SCHEMA_VERSION_V66,))
+            connection.commit()
+            # A v66 root rejects the third backend, which is why the rebuild exists.
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute("""INSERT INTO laya_decision_events
+                    (event_id, origin_key, source, status, mode, enabled_fields_json, observed_at)
+                    VALUES (?, ?, 'conversation', 'ok', 'jev', '{}', '2026-10-30T00:00:01+00:00')""",
+                    ("b" * 32, "role-key"))
+
+        upgraded = self.open_runtime()
+        migration = upgraded.read_one("SELECT * FROM schema_migrations WHERE migration_id = ?",
+                                      (MIGRATION_V66_TO_V67_ID,))
+        self.assertEqual((migration["from_version"], migration["to_version"], migration["fingerprint"]),
+                         (SCHEMA_VERSION_V66, SCHEMA_VERSION_V67, MIGRATION_V66_TO_V67_FINGERPRINT))
+        self.assertEqual(upgraded.read_one("SELECT mode FROM laya_decision_events WHERE event_id = ?",
+                                          ("a" * 32,))["mode"], "remote")
+        with upgraded.transaction() as connection:
+            connection.execute("""INSERT INTO laya_decision_events
+                (event_id, origin_key, source, status, mode, enabled_fields_json, observed_at)
+                VALUES (?, ?, 'conversation', 'ok', 'jev', '{}', '2026-10-30T00:00:01+00:00')""",
+                ("b" * 32, "role-key"))
+        self.assertEqual(upgraded.read_one("SELECT mode FROM laya_decision_events WHERE event_id = ?",
+                                          ("b" * 32,))["mode"], "jev")
+        upgraded.close()
+        reopened = self.open_runtime()
+        self.assertEqual(reopened.read_one(
+            "SELECT count(*) AS n FROM laya_decision_events", ())["n"], 2)
 
     def test_v52_upgrade_adds_response_diagnostics_and_rolls_back_on_failure(self):
         runtime = self.open_runtime()
