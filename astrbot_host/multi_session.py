@@ -453,7 +453,7 @@ class MultiHostSession:
                     fallback_on_refusal=common.fallback_on_refusal,
                     max_output_tokens=common.max_output_tokens, capabilities=REPLY_TASK_CAPABILITIES,
                     prompt_sections=expression_prompt_sections()),
-                    poke_reply_profile(common.provider_id, max_output_tokens=min(128, common.max_output_tokens)),
+                    poke_reply_profile(common.provider_id, max_output_tokens=min(1024, common.max_output_tokens)),
                     contact_profile(common.provider_id, max_output_tokens=common.max_output_tokens),
                     persona_judge_profile(common.provider_id, max_output_tokens=common.max_output_tokens),
                     reflection_profile(common.provider_id, max_output_tokens=common.max_output_tokens),

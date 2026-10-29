@@ -138,6 +138,14 @@ window.CompanionHostOptionsPage = (() => {
           <small>在已决定回应的戳一戳中，命中后使用模型生成。</small></div>
           <label class="host-options-percent"><input type="number" name="model_reply_probability" min="0" max="100" step="1"
             inputmode="numeric" data-wb-field="model_reply_probability" value="${percent(value.model_reply_probability)}"><span>%</span></label></div>
+        <div class="host-options-row"><div class="host-options-copy"><strong>拍一拍上下文接话</strong>
+          <small>默认关闭，仅群聊生效：拍一拍发生数秒后，模型查看最近几条群消息，有需要接的话题才回一句，否则保持安静。与上面的拍一拍回应相互独立。</small></div>
+          <label class="host-options-switch"><input type="checkbox" name="context_reply_enabled" data-wb-field="context_reply_enabled" ${value.context_reply_enabled ? "checked" : ""}>
+            <span>${value.context_reply_enabled ? "已开启" : "已关闭"}</span></label></div>
+        <div class="host-options-row"><div class="host-options-copy"><strong>上下文接话延迟秒数</strong>
+          <small>拍一拍后等待多少秒再查看群消息。0 = 瞬时快照（立即读取，先拍后说的话来不及进入上下文）；1–30 秒 = 等待后读取。</small></div>
+          <input class="host-options-number" type="number" name="context_delay_seconds" min="0" max="30" step="1"
+            inputmode="numeric" data-wb-field="context_delay_seconds" value="${value.context_delay_seconds}"></div>
         <label class="host-options-replies"><span><strong>可选回复</strong><small>每行一句，1–20 句；每句最多 120 字。</small></span>
           <textarea name="replies" rows="4" maxlength="2500" data-wb-field="replies">${replies}</textarea></label>
         <footer class="host-options-footer">${messageMarkup("poke")}
@@ -242,11 +250,17 @@ window.CompanionHostOptionsPage = (() => {
         const backTimes = Number(backTimesRaw);
         if (!Number.isInteger(backTimes) || backTimes < 1 || backTimes > 5)
           throw new Error("连续回戳次数请输入 1 到 5 之间的整数。");
+        const delayRaw = String(formElement(form, "context_delay_seconds")?.value ?? "");
+        const delaySeconds = Number(delayRaw);
+        if (!Number.isInteger(delaySeconds) || delaySeconds < 0 || delaySeconds > 30)
+          throw new Error("上下文接话延迟请输入 0 到 30 之间的整数。");
         changes = {enabled: !!formElement(form, "enabled")?.checked,
           trigger_probability: fraction(form, "trigger_probability"),
           back_probability: fraction(form, "back_probability"), back_times: backTimes,
           model_reply_enabled: !!formElement(form, "model_reply_enabled")?.checked,
-          model_reply_probability: fraction(form, "model_reply_probability"), replies};
+          model_reply_probability: fraction(form, "model_reply_probability"), replies,
+          context_reply_enabled: !!formElement(form, "context_reply_enabled")?.checked,
+          context_delay_seconds: delaySeconds};
       } else {
         changes = {};
         const labels = {max_forwards: "每条消息中的转发数", max_nodes: "节点数", max_depth: "嵌套深度"};
