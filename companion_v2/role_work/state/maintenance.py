@@ -29,6 +29,15 @@ from .cycle_prompts import INSTRUCTION as CYCLE_INSTRUCTION, MAINTENANCE as CYCL
 logger = getLogger(__name__)
 
 KIND = "role.state.maintain"
+# One ceiling, two derived layers. The declared budget is 180 s, so the model round
+# that fills it must expire first and leave the margin for parsing the returned JSON
+# and committing the state record. Before this the round inherited
+# ModelTaskProfile's untouched 60 s default: the task promised three minutes while its
+# only slow step was cut at one minute, and the operator's configured value had no
+# relation to the time the round could actually spend.
+STATE_BUDGET_SECONDS = 180
+STATE_MARGIN_SECONDS = 30
+STATE_PROVIDER_TIMEOUT_SECONDS = STATE_BUDGET_SECONDS - STATE_MARGIN_SECONDS
 PREFLIGHT_RETRY_SECONDS = 30
 # The local patrol reads state once per bound role and never calls a model; the
 # throttle only keeps the wake loop from re-reading configuration on every tick.
@@ -103,9 +112,9 @@ def _mood_instruction(*, enabled, axes, gate, reference, allowed, baseline, inte
         else "本轮不做情绪数值更新：保持上一轮各轴数值不变，只按当前材料更新 description。")
 
 
-def state_profile(provider, *, max_output_tokens=1024):
+def state_profile(provider, *, max_output_tokens=1024, timeout_seconds=STATE_PROVIDER_TIMEOUT_SECONDS):
     return ModelTaskProfile(KIND, Lane.BACKGROUND, provider, "保持原人格，维护自己的生活状态。",
-                            max_output_tokens=max_output_tokens)
+                            max_output_tokens=max_output_tokens, timeout_seconds=timeout_seconds)
 
 
 def _expression_preferences(settings):
@@ -149,7 +158,7 @@ class StateMaintenance:
         self._last_noted_inputs = {}
         self.registrations = (TaskRegistration(TaskDefinition(KIND, "role.state", KIND, Lane.BACKGROUND,
             side_effect=SideEffect.LOCAL, binding=ProviderBinding("role.state", "local", "1", "state-1"),
-            timeout_seconds=180, max_attempts=1, concurrency=1), self.validate),)
+            timeout_seconds=STATE_BUDGET_SECONDS, max_attempts=1, concurrency=1), self.validate),)
 
     def attach(self, app):
         self.app, self.service, self.tasks, self.gateway = app, app.role_state, app.tasks, app.gateway
@@ -606,7 +615,7 @@ class StateMaintenance:
         self.pending[key] = job
         try:
             require(self.tasks.submit(TaskSpec(key, context, KIND, digest(job), request_id,
-                job["at"], job["at"] + timedelta(seconds=180))))
+                job["at"], job["at"] + timedelta(seconds=STATE_BUDGET_SECONDS))))
             result = require(await self.runner.run(context, key))
             task = require(self.tasks.read(context, key))
             response = {"task_id": key, "state": task.state, "reason": task.reason}
