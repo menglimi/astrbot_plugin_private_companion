@@ -144,7 +144,7 @@ async def _poke_context_stream(controller, route, context, instruction, event_ke
             context, instruction, event_key, mode="context",
             recent_context=recent_lines)
         if not generated or not generated.strip():
-            import logging; logging.getLogger(__name__).warning("[B4] empty generated")
+            logger.info("[CompanionV2][poke-context] 模型判断无需接话（[SKIP] 或空），保持安静")
             return
         api = _transport(controller, route)
         try:

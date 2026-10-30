@@ -521,20 +521,20 @@
       "probability": {
         "description": "基础触发概率",
         "type": "float",
-        "default": 1,
+        "default": 1.0,
         "invisible": true
       },
       "private_probability": {
         "description": "私聊概率覆盖",
         "type": "float",
-        "default": -1,
+        "default": -1.0,
         "hint": "-1 继承基础概率，范围 0–1。",
         "invisible": true
       },
       "group_probability": {
         "description": "群聊概率覆盖",
         "type": "float",
-        "default": -1,
+        "default": -1.0,
         "hint": "-1 继承基础概率，范围 0–1。",
         "invisible": true
       },
@@ -680,7 +680,7 @@
       "trigger_probability": {
         "description": "回应概率",
         "type": "float",
-        "default": 1
+        "default": 1.0
       },
       "replies": {
         "description": "预设短句",
@@ -697,7 +697,7 @@
       "back_probability": {
         "description": "反戳概率",
         "type": "float",
-        "default": 0
+        "default": 0.0
       },
       "back_times": {
         "description": "连续回戳次数",
@@ -717,8 +717,8 @@
         "description": "模型即兴回复概率",
         "type": "float",
         "default": 0.3,
-        "minimum": 0,
-        "maximum": 1
+        "minimum": 0.0,
+        "maximum": 1.0
       },
       "context_reply_enabled": {
         "description": "启用拍一拍上下文接话",
