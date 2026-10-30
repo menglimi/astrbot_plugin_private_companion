@@ -324,15 +324,15 @@ class ContentAuthoringWorkflow:
             self._require_enabled(parent.context)
             if not execution.is_success:
                 raise TaskError(execution.failure.code, execution.failure.reason)
-            task = execution.unwrap().task
+            settled = execution.unwrap()
+            task = settled.task
             if task is None:
                 raise TaskError("content_authoring_capacity", "the dedicated writing task was not admitted")
             if task.state != "succeeded" or job.result is None:
                 # Report what stopped the round, not the supervisor's stop label: a
                 # model-level cut carries its own code, and only a task-level cut
                 # falls back to the supervised reason.
-                failure_code = execution.unwrap().failure_code
-                raise TaskError(failure_code or task.reason or "content_authoring_failed",
+                raise TaskError(settled.failure_code or task.reason or "content_authoring_failed",
                                 "the dedicated writing task did not finish")
             return job.result
         finally:
