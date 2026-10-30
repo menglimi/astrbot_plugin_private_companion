@@ -747,6 +747,18 @@ class AstrBotTextProvider:
                              self.provider_id)
                 return ProviderResponse("generated", captured_output=CapturedModelOutput("", "refusal"),
                                         usage=usage, receipt_ref=receipt, diagnostics=replace(diagnostics, parse_state="refusal"))
+            # A background body is decoded by its own owner, so one the output
+            # ceiling cut is handed up with ``length`` semantics instead of being
+            # dropped as an unparsable answer — the same classification the private
+            # memory owner receives. A reply is never captured: half a delivered
+            # message is not a message, so it stays an incomplete result.
+            if wire.output_format != "conversation" and observed:
+                ceiling = capture(observed[-1])
+                if ceiling.finish_reason == "length":
+                    logger.debug("[CompanionV2][开发者追踪] 模型正文被输出上限截断 provider=%s output_format=%s",
+                                 self.provider_id, wire.output_format)
+                    return ProviderResponse("generated", captured_output=ceiling, usage=usage, receipt_ref=receipt,
+                                            diagnostics=replace(diagnostics, parse_state="captured"))
             draft, calls = decode_response(response, wire)
             logger.debug("[CompanionV2][开发者追踪] 模型正文处理 provider=%s stage=decoded body=%r claims=%r tool_calls=%r",
                          self.provider_id, draft.text if draft is not None else None,
