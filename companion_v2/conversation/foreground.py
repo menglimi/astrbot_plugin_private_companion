@@ -370,7 +370,7 @@ class PromptRequest:
             raise ReferenceValidationError("native video input requires a captured original video")
         if self.response_format not in ("text", "json_object", "json_schema"):
             raise ReferenceValidationError("unsupported structured response mode")
-        if self.response_format != "text" and self.output_format not in ("memory_reflection", "content_authoring", "role_expression_learning", "role_expression_review", "role_state", "calendar_planning"):
+        if self.response_format != "text" and self.output_format not in ("memory_reflection", "content_authoring", "role_expression_learning", "role_expression_review", "role_state", "calendar_planning", "role_self_review"):
             raise ReferenceValidationError("structured response mode requires its task owner")
         if self.response_schema_json is not None:
             if not isinstance(self.response_schema_json, str) or len(self.response_schema_json) > 32768:

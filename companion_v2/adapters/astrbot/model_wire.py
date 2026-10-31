@@ -42,6 +42,15 @@ REPLY_CONTRACT = (
 BACKGROUND_OUTPUT_NOTES = {
     "role_state": "本轮是后台状态维护。只输出包含 energy、hunger、health、sleep、busy、mood、location、cycle、presence、online_mode、conditions 的完整 JSON 对象；字段类型遵循本轮状态协议，不写聊天回复。",
     "calendar_planning": "本轮是后台日程规划。仅输出本轮模式要求的 JSON 对象：daily/horizon 使用 items，refine 使用 detail，intervention 使用 changes；不写聊天回复或额外说明。",
+    "role_self_review": (
+        "本轮是后台自我复盘。只输出一个 JSON 对象，顶层只允许 summary 和 guidance 两个字段："
+        "summary 是不超过 800 字的字符串；guidance 是最多 2 条的数组，每条必须且只能包含 "
+        "kind、observation、next_action、confidence、evidence_handles、expires_at。"
+        "kind 只能取 try_next_time、keep、ask_user、no_change；confidence 是 0 到 1 的数字；"
+        "evidence_handles 必须只引用材料里实际出现的 evidence_handle（形如 e_…），至少一个；"
+        "expires_at 是带时区的 ISO 8601 时间且晚于当前时间；next_action 写成角色给自己留心的一句短提醒。"
+        "不要输出顶层 review、candidates、safety_check 等其它结构，不要 Markdown 围栏或解释。"
+    ),
 }
 
 

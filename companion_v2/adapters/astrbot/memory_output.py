@@ -26,7 +26,7 @@ def _field(value, name, default=None):
 
 def _structured_format(request):
     return {
-        "name": "content_authoring" if request.output_format == "content_authoring" else "memory_reflection",
+        "name": "content_authoring" if request.output_format == "content_authoring" else request.output_format,
         "strict": True,
         "schema": json.loads(request.response_schema_json),
     }

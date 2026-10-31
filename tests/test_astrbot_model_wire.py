@@ -113,6 +113,25 @@ class NativeModelTests(NativeFixture, unittest.IsolatedAsyncioTestCase):
             payload, _ = self.native.provider.client.state.calls[-1]
             self.assertEqual(payload["response_format"], {"type": "json_object"})
 
+    async def test_self_review_transmits_its_schema_and_names_the_fields_in_prompt(self):
+        """#407: the model must receive the exact shape, not guess it."""
+        envelope = await self.envelope()
+        request = replace(envelope.original, output_format="role_self_review",
+                          response_format="json_object",
+                          instruction="复盘最近的回复。")
+        wire = build_wire(replace(envelope, original=request))
+        prompt = wire.messages[0]["content"]
+        for expected in ("summary", "guidance", "kind", "next_action", "evidence_handles", "expires_at"):
+            self.assertIn(expected, prompt)
+        self.assertNotIn("claims", prompt)
+        async def respond(*_):
+            return completion('{"summary":"ok","guidance":[]}')
+        self.native.provider.client.state.behavior = respond
+        result = await self.native_model.generate(replace(envelope, original=request))
+        self.assertEqual(result.status, "generated")
+        payload, _ = self.native.provider.client.state.calls[-1]
+        self.assertEqual(payload["response_format"], {"type": "json_object"})
+
     async def test_model_wire_records_the_final_prompt_when_a_snapshot_sink_is_attached(self):
         envelope = await self.envelope()
         snapshots = []
