@@ -162,19 +162,24 @@ class ExpressionReplyPipelineTests(ExpressionFixture, HostFixture, unittest.Isol
         host = await self.start()
         app = host.application
         context = await self.seed(host)
-        for mode in learning.MODE_INSTRUCTIONS:
+        for mode in learning.MODE_GUIDANCE:
             with self.subTest(mode=mode):
                 self.configure_expression(app, {"private_learning_enabled": True, "learning_mode": mode})
                 manager = await self.learn_now(app, context)
                 envelope = next(item for item in reversed(self.called)
                                 if item.original.output_format == "role_expression_learning")
                 value = json.loads(materials(envelope, "role_expression_samples")[0].payload)
-                self.assertEqual(value["output_schema"], learning.SCHEMA)
-                self.assertIn(learning.MODE_INSTRUCTIONS[mode], envelope.original.instruction)
+                # This fixture's provider declares a 100-token ceiling, so the ask
+                # has to collapse to the one candidate that fits.
+                limit = learning.signal_limit(mode, 100)
+                self.assertEqual(limit, 1)
+                self.assertEqual(value["output_schema"], learning.schema(limit))
+                self.assertEqual(value["output_schema"]["properties"]["signals"]["maxItems"], limit)
+                self.assertIn(learning.mode_instruction(mode, limit), envelope.original.instruction)
                 self.assertEqual(len(value["samples"]), 6)
                 self.assertTrue(all(item["text"].startswith("嗯哼") for item in value["samples"]))
                 self.assertTrue(all(item["handle"].startswith("input:") for item in value["samples"]))
-                if mode != next(iter(learning.MODE_INSTRUCTIONS)):
+                if mode != next(iter(learning.MODE_GUIDANCE)):
                     self.assertTrue(value["existing_rules"])
         pending = manager.list(operator=self.core, context=context).unwrap()["items"]
         self.assertEqual(len(pending), 1, "the same abstract rule is deduplicated across modes")

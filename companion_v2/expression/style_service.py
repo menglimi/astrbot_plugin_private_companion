@@ -52,6 +52,11 @@ def expression_learning_profile(provider, *, max_output_tokens=2048):
         max_output_tokens=max_output_tokens)
 
 
+def learning_instruction(mode, limit):
+    """The model-facing contract for one run, bounded to the candidates it can afford."""
+    return PROMPT + "\n" + learning.FORM_INSTRUCTION + "\n" + learning.mode_instruction(mode, limit)
+
+
 def parse_output(raw, *, allowed_evidence, default_channels=None):
     """Bridge the candidate contract onto this service's error vocabulary."""
     try:
@@ -303,13 +308,17 @@ class ExpressionStyleService:
         context = job["context"]
         await self.guard(context, job["instruction"])
         run.validate()
+        mode = job["policy"].learning_mode
+        # The ceiling this run executes under is the registered profile's ceiling.
+        # Size the ask from it so a thinking model keeps the rest for its reasoning.
+        limit = learning.signal_limit(mode, self.gateway.router.profiles[KIND].max_output_tokens)
         material = {"sample_window": job["sample_document"], "source_channel": context.scope.kind.value,
                     "samples": job["catalogue"],
-                    "existing_rules": job["existing_rules"], "output_schema": learning.SCHEMA}
+                    "existing_rules": job["existing_rules"], "output_schema": learning.schema(limit)}
         request = PromptRequest(BackgroundPromptTrigger(job["request_key"], context.actor.principal,
             context.scope, job["at"]), job["instruction"], SealedForegroundContext(
                 (PromptMaterial(OWNER, "role_expression_samples", encode(material)),), (), ()),
-            PROMPT + "\n" + learning.FORM_INSTRUCTION + "\n" + learning.MODE_INSTRUCTIONS[job["policy"].learning_mode],
+            learning_instruction(mode, limit),
             context.role_binding, output_format="role_expression_learning")
         completion = await self.gateway.generate(run, request)
         try:

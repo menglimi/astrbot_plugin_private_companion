@@ -542,7 +542,7 @@ V2 自己执行回复批次时，由 `EvidencePromptCompiler.compile`（`compani
 | 人格工坊（数据层） | `companion_v2/persona_craft/` | 只有数据与校验、没有模型调用，因此没有提示词可盘 |
 | 日记 `writing_date` | `role_work/journal/prompts.py:83` | 只给日期与时区，没有星期；日记若要点出星期仍需模型自己算（与 2.2.0 修好的主动消息同类风险） |
 | 周期阶段提示拼接 | `role_work/state/maintenance.py:596` | `cycle_enabled` 时把所有阶段提示一次拼入，而不是只取当前阶段，是否有意未确认 |
-| `expression/learning.py:130 INSTRUCTION` | `expression/learning.py:130` | 生产无引用（仅测试）；实际生效的是 `style_service.PROMPT` + `MODE_INSTRUCTIONS` |
+| `expression/learning.py:130 INSTRUCTION` | `expression/learning.py:130` | 生产无引用（仅测试）；实际生效的是 `style_service.learning_instruction`（`PROMPT` + `FORM_INSTRUCTION` + `learning.mode_instruction`） |
 | `VIDEO_INSTRUCTION`（同名两份） | `conversation/media/understanding.py:64` | 无引用；真正注入的是 `media/video/narration.py:43` 的同名常量，易混 |
 | `media/video/models.py:26 INSTRUCTION` | `conversation/media/video/models.py:26` | 无引用，该模块只用于帧与预算校验 |
 | `SELF_REVIEW_INSTRUCTION` | `conversation/messages.py:57` | 只 import 未拼接：V2 自生成回复会带自评材料却没有对应指引，只有宿主背景段有 |
