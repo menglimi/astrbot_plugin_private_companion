@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 import unittest
 
 from tests import astrbot_data_root  # Isolate the SDK before importing the host.
-from astrbot.core.message.components import Plain, Record
+from astrbot.core.message.components import Image, Plain, Record
 from astrbot.core.message.message_event_result import MessageChain
 
 from astrbot_host.core_reply import (
@@ -244,6 +244,54 @@ class CoreReplyVoiceTests(unittest.IsolatedAsyncioTestCase):
         await event.send(MessageChain(chain=[Plain("你好")]))
         self.assertEqual([[type(part) for part in message.chain] for message in event.sent], [[Plain], [Record]])
         self.assertEqual(event.get_extra(CORE_REPLY_CONTEXT_EXTRA)["send_returns"], 2)
+
+    async def test_whole_reply_voice_survives_a_trailing_media_only_segment(self):
+        """A reply ends with an image: the joined speech must still be synthesized."""
+        event = FakeEvent()
+        policy = VoiceReplyPolicy(generation_mode="model_tag", segment_mode="whole")
+        prepared = {"context": object(), "event_id": "whole-media", "event_ref": "whole-media",
+                    "voice_reply_policy": policy}
+        rendered = []
+
+        async def renderer(_, text, **__):
+            rendered.append(text)
+            return {"type": "record", "data": {"file": "base64://YQ=="}}
+
+        parts = [MessageChain(chain=[Plain("<pc_tts>第一段。</pc_tts>第一段。")]),
+                 MessageChain(chain=[Image.fromURL("https://example.invalid/a.png")])]
+        async def prepare(current, message, check, index, count):
+            return await prepare_core_reply_voice_message(
+                event, current, message, renderer=renderer, delivery=None, authorize=check,
+                segment_index=index, segment_count=count)
+
+        prepare_core_reply_event(event, prepared, authorize=_allow, prepare_send=prepare)
+        output = [await prepare(prepared, message, _allow, index, len(parts))
+                  for index, message in enumerate(parts)]
+
+        self.assertEqual(rendered, ["第一段。"])
+        self.assertEqual([type(part) for part in output[0].chain], [Plain])
+        self.assertEqual([type(part) for part in output[1].chain], [Image, Record])
+
+    async def test_per_segment_voice_does_not_speak_a_media_only_segment(self):
+        """Only whole-reply mode waits for the turn; per-segment voice has no text here."""
+        event = FakeEvent()
+        policy = VoiceReplyPolicy(segment_mode="each")
+        prepared = {"context": object(), "event_id": "each-media", "voice_reply_policy": policy}
+        rendered = []
+
+        async def renderer(_, text, **__):
+            rendered.append(text)
+            return {"type": "record", "data": {"file": "base64://YQ=="}}
+
+        prepare_core_reply_event(event, prepared, authorize=_allow)
+        output = await prepare_core_reply_voice_message(
+            event, prepared, MessageChain(chain=[Image.fromURL("https://example.invalid/a.png")]),
+            renderer=renderer, delivery=None, authorize=_allow, segment_index=1, segment_count=2)
+
+        self.assertEqual(rendered, [])
+        self.assertEqual([type(part) for part in output.chain], [Image])
+        diagnostics = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)["_voice_reply_diagnostics"]
+        self.assertEqual(diagnostics[-1]["state"], "no_text")
 
 
 class FakeDelivery:

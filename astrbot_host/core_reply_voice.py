@@ -203,27 +203,32 @@ async def prepare_core_reply_voice_message(
                                        any(isinstance(component, Record) for component in chain)):
         note["state"] = "native_voice_exists"
         return message
+    segment_index = max(0, int(segment_index))
+    segment_count = max(1, int(segment_count))
+    # Whole-reply voice speaks the joined text of the turn, so a segment with no
+    # text of its own (a trailing image, say) still has to reach the bucket
+    # below: bailing out here dropped the speech collected so far and the turn
+    # ended silently.
+    whole = policy.segment_mode == "whole" and isinstance(core, dict)
     source = _plain_text(message)
-    if not source.strip():
+    if not source.strip() and not whole:
         note["state"] = "no_text"
         return message
 
     visible, spans, cleaned_message = _clean_plain_runs(message, policy)
-    if not visible.strip():
+    if not visible.strip() and not whole:
         note["state"] = "no_visible_text"
         return cleaned_message
-
-    segment_index = max(0, int(segment_index))
-    segment_count = max(1, int(segment_count))
     captured_speech = _captured_speech(core, getattr(message, "_companion_v2_voice_source", visible)) if not spans else ""
     candidates = speech_candidates(visible, (visible,), spans, policy)
     segment_speech = captured_speech or (candidates[0].strip() if candidates else "")
-    if policy.segment_mode == "whole" and isinstance(core, dict):
+    if whole:
         # Whole-reply voice waits until every text segment has been prepared,
         # then synthesizes the joined speech once.  Per-segment TTS cuts the
         # sentence context and produces noticeably flatter prosody.
         bucket = core.setdefault("_voice_whole_segments", {"visible": [], "speech": []})
-        bucket["visible"].append(visible)
+        if visible.strip():
+            bucket["visible"].append(visible)
         if segment_speech:
             bucket["speech"].append(segment_speech)
         if segment_index < segment_count - 1:
