@@ -206,7 +206,7 @@ class SharedModelProviderBootstrapTests(unittest.IsolatedAsyncioTestCase):
             config=self.config,
             context=NS(get_all_providers=lambda: [self.provider],
                        get_provider_by_id=lambda provider_id: self.provider if provider_id == "provider-a" else None),
-            native_types=NS(provider=FakeProvider),
+            native_types=NS(provider=FakeProvider, provider_types=(FakeProvider,)),
             settings_error=None,
             save_plugin_config=self.save_config,
             refresh_settings=lambda: None,

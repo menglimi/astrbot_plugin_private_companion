@@ -40,9 +40,14 @@ class ProviderSubclassTests(unittest.TestCase):
             get_provider_by_id=lambda provider_id: provider if provider_id == "native-model" else None,
             get_using_provider=lambda: provider,
         )
+        # ``NativeAdapterTypes`` exposes ``provider_types`` as a property that always
+        # carries the verified OpenAI class; a bare namespace without it made the
+        # catalog look at a shape the real assembly never produces, so the case went
+        # red on its own fixture instead of on a regression.
         native_types = SimpleNamespace(
             version="4.28.2",
             provider=ProviderOpenAIOfficial,
+            provider_types=(ProviderOpenAIOfficial,),
             video_provider_type=None,
             function_tool=FunctionTool,
             tool_set=ToolSet,
