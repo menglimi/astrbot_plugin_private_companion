@@ -194,6 +194,37 @@ class ProviderRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["data"]["external_token_sources"], {**sources, "main": main})
         self.assertNotEqual(response["data"]["summary"]["tokens"], main["totals"]["tokens"])
 
+    async def test_maintenance_adds_read_only_backup_disk_and_mobile_checks(self):
+        (await self.controller.initialize_profile()).unwrap()
+        runtime_root = Path(self.controller.runtime.data_root)
+        snapshot_id = "a" * 32
+        backup_directory = runtime_root / "backups"
+        backup_directory.mkdir(parents=True, exist_ok=True)
+        (backup_directory / f"companion-v2-{snapshot_id}.sqlite3").write_bytes(b"SQLite format 3\x00")
+        (backup_directory / f"companion-v2-{snapshot_id}.json").write_text(json.dumps({
+            "format": "companion-v2.installation-backup.v1", "snapshot_id": snapshot_id,
+            "created_at": "2026-10-30T12:00:00+00:00", "byte_size": 16,
+        }), encoding="utf-8")
+        extension_directory = runtime_root / "extensions" / "reality"
+        extension_directory.mkdir(parents=True, exist_ok=True)
+        (extension_directory / "config.json").write_text(json.dumps({
+            "mobile": {"enabled": True, "pairing_token": "secret-token-value"},
+        }), encoding="utf-8")
+
+        response = await self.call(PREFIX + "/maintenance")
+
+        self.assertEqual(response["status"], "ok", response)
+        checks = response["data"]["host_checks"]
+        self.assertTrue(checks["backup"]["available"])
+        self.assertEqual(checks["backup"]["snapshot_count"], 1)
+        self.assertEqual(checks["backup"]["latest_success_at"], "2026-10-30T12:00:00+00:00")
+        self.assertTrue(checks["backup"]["same_volume"])
+        self.assertGreater(checks["disk"]["data_root"]["free_bytes"], 0)
+        self.assertTrue(checks["mobile"]["available"])
+        self.assertTrue(checks["mobile"]["enabled"])
+        self.assertTrue(checks["mobile"]["pairing_token_configured"])
+        self.assertNotIn("secret-token-value", json.dumps(response, ensure_ascii=False))
+
     async def test_global_usage_is_not_read_before_dashboard_authorization(self):
         (await self.controller.initialize_profile()).unwrap()
         with patch("astrbot_host.model_api.read_astrbot_token_usage", new=AsyncMock()) as read_main:

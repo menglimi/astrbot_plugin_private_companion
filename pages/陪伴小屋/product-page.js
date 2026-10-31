@@ -305,9 +305,13 @@ window.CompanionProduct = (() => {
       preferenceSaveTimer = null;
       if (preferencesApplying || !bridgeReady) return;
       api("POST", "page/display-preferences", displayPreferencesSnapshot()).catch(error => {
-        console.warn("[CompanionV2] Display preferences were not saved", {
-          code:error?.code || "display_preferences_unavailable",
-        });
+        const code = error?.code || "display_preferences_unavailable";
+        /* 外观页承诺「同一账号换设备同步」。只写 console 的话用户以为已保存，
+           换设备才发现回到默认；这里保留诊断，同时走现有 changed() 通道让外壳
+           用 toast 给出可见失败提示。成功路径不变。 */
+        console.warn("[CompanionV2] Display preferences were not saved", {code});
+        if (typeof changed === "function") changed({kind:"display-preferences-error", code,
+          message:"外观偏好没有保存成功；刷新或换设备后可能仍是旧设置。"});
       });
     }, 120);
   }

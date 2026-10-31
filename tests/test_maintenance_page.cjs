@@ -888,6 +888,62 @@ test('maintenance groups troubleshooting content by workflow and uses responsive
   h.page.unmount();
 });
 
+test('maintenance checks backup, disk and mobile gateway from host status', async () => {
+  const base = {generated_at: localStamp(), summary: {calls: 0, tokens: 0}, totals: {}, daily: [], history: [],
+    recent: [], budget: {}, runtime: {}};
+  const failing = harness({
+    maintenance: {...base, host_checks: {
+      backup: {available: true, configured: false, snapshot_count: 0, latest_success_at: null,
+        same_volume: true, backup_root: 'C:\\runtime\\backups', data_root: 'C:\\runtime',
+        problem_count: 0, free_bytes: 8 * 1024 ** 3, total_bytes: 100 * 1024 ** 3},
+      disk: {available: true, data_root: {free_bytes: 8 * 1024 ** 3, total_bytes: 100 * 1024 ** 3},
+        backup_root: {free_bytes: 8 * 1024 ** 3, total_bytes: 100 * 1024 ** 3}},
+      mobile: {available: true, enabled: true, pairing_token_configured: false,
+        module_state: 'running', host: '0.0.0.0', port: 6322},
+    }},
+    voice: {providers: []}, image: {actions: []}, model: {tasks: [], providers: []},
+  });
+  failing.page.mount(failing.root, {activeView: 'diagnostics'});
+  await flush();
+  assert.match(failing.root.innerHTML, /还没有可用的备份快照/);
+  assert.match(failing.root.innerHTML, /备份与运行资料在同一块磁盘/);
+  assert.match(failing.root.innerHTML, /手机网关已启用但缺少配对令牌/);
+  assert.match(failing.root.innerHTML, /运行资料所在磁盘余量偏低/);
+  assert.match(failing.root.innerHTML, /data-diagnostic-category="backup"/);
+  failing.root.click('[data-diagnostic-category]', {diagnosticCategory: 'backup'});
+  assert.match(failing.root.innerHTML, /备份与磁盘工作区/);
+  assert.match(failing.root.innerHTML, /0 份快照/);
+  failing.root.click('[data-diagnostic-category]', {diagnosticCategory: 'mobile'});
+  assert.match(failing.root.innerHTML, /手机网关工作区/);
+  assert.match(failing.root.innerHTML, /缺少令牌/);
+  failing.page.unmount();
+
+  const healthy = harness({
+    maintenance: {...base, host_checks: {
+      backup: {available: true, configured: true, snapshot_count: 2, latest_success_at: new Date().toISOString(),
+        same_volume: false, backup_root: 'D:\\backups', data_root: 'C:\\runtime',
+        problem_count: 0, free_bytes: 100 * 1024 ** 3, total_bytes: 500 * 1024 ** 3},
+      disk: {available: true, data_root: {free_bytes: 100 * 1024 ** 3, total_bytes: 500 * 1024 ** 3},
+        backup_root: {free_bytes: 300 * 1024 ** 3, total_bytes: 1000 * 1024 ** 3}},
+      mobile: {available: true, enabled: true, pairing_token_configured: true,
+        module_state: 'running', host: '0.0.0.0', port: 6322},
+    }},
+    voice: {providers: []}, image: {actions: []}, model: {tasks: [], providers: []},
+  });
+  healthy.page.mount(healthy.root, {activeView: 'diagnostics'});
+  await flush();
+  assert.doesNotMatch(healthy.root.innerHTML, /还没有可用的备份快照/);
+  assert.doesNotMatch(healthy.root.innerHTML, /备份与运行资料在同一块磁盘/);
+  assert.doesNotMatch(healthy.root.innerHTML, /缺少配对令牌/);
+  assert.doesNotMatch(healthy.root.innerHTML, /磁盘余量偏低/);
+  healthy.root.click('[data-diagnostic-category]', {diagnosticCategory: 'backup'});
+  assert.match(healthy.root.innerHTML, /2 份快照/);
+  assert.match(healthy.root.innerHTML, /跨盘/);
+  healthy.root.click('[data-diagnostic-category]', {diagnosticCategory: 'mobile'});
+  assert.match(healthy.root.innerHTML, /已配对/);
+  healthy.page.unmount();
+});
+
 test('prompt route opens the editor directly and internal tabs update the route state', async () => {
   const h = harness({
     maintenance: {generated_at: localStamp(), summary: {calls: 0, tokens: 0}, totals: {}, daily: [], history: [],
