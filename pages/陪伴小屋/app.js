@@ -4652,8 +4652,9 @@ function replySearchLocation(entry){
   const understandingTab={media_permissions:'overview',context_image:'image',image_narration:'image',
     video_narration:'video',file_understanding:'file',forwards:'forwards'}[entry.section];
   if(understandingTab)return {next:'manage',tab:'understanding',understandingTab,root:'#contextImageWorkspace'};
-  return {next:'manage',tab:'expression',subtab:entry.section==='voice'?'voice':'',root:'#replyWorkspace',
-    expressionModule:entry.section==='voice'?'expression-voice':''};
+  const voiceSection=['voice','voice_channels'].includes(entry.section);
+  return {next:'manage',tab:'expression',subtab:voiceSection?'voice':'',root:'#replyWorkspace',
+    expressionModule:voiceSection?'expression-voice':''};
 }
 let visibleSearchResults=[];
 let activeSearchResultIndex=0;

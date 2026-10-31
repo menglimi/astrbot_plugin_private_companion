@@ -503,7 +503,7 @@ window.CompanionReplyPage = (() => {
 
   const expressionModuleSections = {
     "expression-text": ["segment", "style", "cleanup"],
-    "expression-voice": ["voice"],
+    "expression-voice": ["voice", "voice_channels"],
     "expression-platform": ["components", "checks"],
   };
   const expressionModuleDefaults = {
