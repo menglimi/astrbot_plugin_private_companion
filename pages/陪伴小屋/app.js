@@ -2297,7 +2297,7 @@ const QZONE_RESULT_REF_LIMIT=256;
 /* 建议只是建议。这句话在每一条建议上原样出现，页面别处也不得改口说日程
    已经被修改——真正的改动发生在生活页（归日历域），这里只记录那次改动的回执。 */
 const QZONE_SUGGESTION_NOTE='这只是建议，日程尚未修改；写回日程请在生活页完成，然后把回执编号填回来。';
-const QZONE_CREDENTIAL_STATES={ready:'已就绪',failed:'读取失败',manual_failed:'手动凭据不可用',unknown:'尚未使用'};
+const QZONE_CREDENTIAL_STATES={ready:'已就绪',failed:'读取失败',manual_failed:'手动凭据不可用',unknown:'尚未检查'};
 /* 场景 id 的中文名。它只是**兜底**：真正的目录来自 status 的 catalogue.scenes，
    这里那份只在宿主还没升级、目录里恰好缺某个名字时不至于露出英文 id。 */
 const QZONE_SCENE_NAMES={conversation:'对话',external_material:'外部资讯或材料',agenda:'日程与待办',
@@ -2305,6 +2305,9 @@ const QZONE_SCENE_NAMES={conversation:'对话',external_material:'外部资讯�
   free_expression:'自由表达'};
 /* 凭据来源只说「从哪来」，不写宿主的文件名——那是实现细节，也提醒不了用户做什么。 */
 const QZONE_CREDENTIAL_SOURCES={runtime:'取自当前 Bot 登录',manual:'取自手动放置的凭据',none:'没有可用来源'};
+/* 「没有可用来源」只有真的失败时才是实话：unknown 只表示这个进程还没读过一次
+   凭据（重启或重新装配后很正常），把它说成缺来源会让一个正常状态看起来像故障。 */
+const QZONE_CREDENTIAL_FAILED_STATES=['failed','manual_failed'];
 const QZONE_STATUS_REASONS={qzone_not_installed:'还没有安装',qzone_package_changed:'安装的不是内置的那个版本',
   qzone_not_active:'安装被暂停或丢弃了',qzone_role_disabled:'当前角色没有启用',
   qzone_consent_missing:'还没有授权任何能力',qzone_grant_missing:'缺少身份授权'};
@@ -2386,6 +2389,11 @@ const qzoneState={phase:'idle',status:null,feeds:{},scope:'friends',notice:null,
   suggestionReceiptFor:'',suggestionReceiptDraft:'',suggestionResultRefDraft:'',
   suggestionConfirmFor:''};
 function qzoneStatus(){const status=qzoneState.status;return status&&typeof status==='object'?status:null;}
+/* 凭据行的当前结论。缺字段按 unknown 处理：那是「不知道」，不是「失败」。 */
+function qzoneCredentialState(){
+  const credential=qzoneStatus()?.credential;
+  return credential&&typeof credential==='object'&&typeof credential.state==='string'?credential.state:'unknown';
+}
 function qzoneSettings(){
   const runtime=qzoneStatus()?.runtime;
   const settings=runtime&&typeof runtime==='object'?runtime.settings:null;
@@ -2803,11 +2811,18 @@ async function qzoneResolveSuggestion(id,suggestionState){
   await qzoneLoadStatus();
   qzoneNotice(applied?'已记录写回回执。':'已忽略这条日程建议。',false);
 }
+/* 凭据状态以**重读之后**的事实为准，不是这次 POST 的回执：刷新响应可能带的是
+   请求开始时那份状态。所以成功后无条件再读一次 status；提示语也跟着最终状态走，
+   不拿「请求成功」冒充「凭据可用」。 */
 async function qzoneRefreshCredentials(){
   const result=await qzoneFetch('POST','refresh-credentials',{},false);
   if(!result.ok){qzoneNotice(result.text,true);return;}
-  if(qzoneApplyStatus(result.data)){qzoneNotice('凭据状态已刷新。',false);return;}
-  await qzoneLoadStatus();
+  qzoneApplyStatus(result.data);
+  if(!await qzoneLoadStatus())return;
+  const state=qzoneCredentialState();
+  if(state==='ready')qzoneNotice('凭据已刷新。',false);
+  else if(state==='unknown')qzoneNotice('凭据还没有被读取，请稍后再试一次。',true);
+  else qzoneNotice('刷新凭据没有成功，请按下方原因处理。',true);
 }
 async function qzoneConfigure(enabled){
   const token=typeof qzoneStatus()?.edit_token==='string'?qzoneStatus().edit_token:'';
@@ -2853,10 +2868,14 @@ function qzoneCredentialMarkup(credential){
   const masked=typeof row.uin_masked==='string'?row.uin_masked:'';
   const reason=typeof row.reason==='string'?row.reason.trim():'';
   const tone=state==='ready'?'is-ok':state==='unknown'?'is-off':'is-warn';
+  /* 「没有可用来源」只在失败态出现；unknown 只意味着还没读过，不能替用户下结论。 */
+  const failed=QZONE_CREDENTIAL_FAILED_STATES.includes(state);
+  const showSource=state!=='unknown'&&(source!=='none'||failed);
   return `<div class="action-qzone-status-row">
     <span class="action-qzone-status-label">凭据</span>
     <span class="action-qzone-status-value"><span class="action-qzone-chip ${tone}">${escapeHTML(QZONE_CREDENTIAL_STATES[state]||'状态未知')}</span>`
-    +`<span>${escapeHTML(QZONE_CREDENTIAL_SOURCES[source]||'来源未知')}</span>`
+    +`${showSource?`<span>${escapeHTML(QZONE_CREDENTIAL_SOURCES[source]||'来源未知')}</span>`:''}`
+    +`${state==='unknown'?'<span class="action-qzone-reason">刷新凭据或读一次空间即可确认。</span>':''}`
     +`${masked?`<span>账号 ${escapeHTML(masked)}</span>`:''}`
     +`${reason?`<span class="action-qzone-reason">${escapeHTML(reason)}</span>`:''}</span>
     <button class="button small" type="button" data-qzone-action="refresh-credentials" ${qzoneState.busy?'disabled':''}>${I('key-round')}<span>刷新凭据</span></button>
