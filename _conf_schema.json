@@ -719,6 +719,20 @@
         "default": 0.3,
         "minimum": 0.0,
         "maximum": 1.0
+      },
+      "context_reply_enabled": {
+        "description": "启用拍一拍上下文接话",
+        "hint": "默认关闭。仅群聊生效：拍一拍发生数秒后，模型查看最近几条群消息，有需要接的话题才回一句，否则保持安静。与拍一拍回应相互独立。",
+        "type": "bool",
+        "default": false
+      },
+      "context_delay_seconds": {
+        "description": "上下文接话延迟秒数",
+        "hint": "拍一拍后等待多少秒再查看群消息（给刚被拍的人留出说话时间）。0 = 瞬时快照模式：拍一拍瞬间立即读取（先拍后说的话来不及进入上下文）；1–30 秒 = 等待后读取，能接住拍完紧跟的话。",
+        "type": "int",
+        "default": 5,
+        "minimum": 0,
+        "maximum": 30
       }
     }
   },

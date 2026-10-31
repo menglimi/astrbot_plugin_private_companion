@@ -326,6 +326,7 @@ class CompanionApplication:
         self.screen_peek = ScreenPeekService(runtime, notify=self.notify)
         self.authoring = ContentAuthoringWorkflow(runtime)
         self.poke_reply_model = PokeReplyModel(runtime, now=self.now)
+        self.poke_context_tasks = set()
         registrations = (
             TaskRegistration(TaskDefinition(REPLY_KIND, "conversation", REPLY_ACTION, Lane.FOREGROUND,
                 timeout_seconds=600, max_attempts=1, concurrency=self.worker_limit),
@@ -1015,7 +1016,7 @@ class CompanionApplication:
                 + self.image_review_service.active_handles
                 + self.image_narration.active_handles
                 + self.video_narration.active_handles
-                + self.poke_reply_model.active_handles
+                + self.poke_reply_model.active_handles + tuple(self.poke_context_tasks)
                 + self.screen_interpretation.active_handles
                 + self.screen_peek.active_handles
                 + (self.authoring.runner.active_handles if self.authoring.runner else ())
@@ -1045,6 +1046,8 @@ class CompanionApplication:
                 if pending:
                     await asyncio.wait(pending, timeout=0.25)
             await self.runner.close()
+            if self.poke_context_tasks:
+                await asyncio.wait(tuple(self.poke_context_tasks), timeout=1.0)
             await self.poke_reply_model.close()
             await self.authoring.close()
             await self.background.close(grace_seconds=grace_seconds)
