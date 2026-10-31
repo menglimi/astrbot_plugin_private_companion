@@ -26,6 +26,7 @@ from .management_identity import dashboard_operator
 from .core_reply_configuration import CORE_MANAGED_FIELDS, project_core_reply_configuration
 from .memory_diagnostics import process_memory_snapshot
 from .memory_linkage import read_external_memory_summary
+from .maintenance_checks import read_host_checks
 from .native_extensions.image_settings import read_image_settings, write_image_settings
 from .settings import HostControlError
 from .native_extensions.images import IMAGE_ACTIONS
@@ -522,6 +523,15 @@ class ModelWebAPI:
                 if isinstance(memory_source, dict):
                     memory_source["linkage"] = await read_external_memory_summary(
                         self.controller, _session.profile.target)
+                # Additive, read-only host facts.  They ride the existing
+                # maintenance read (the page already refreshes it) so no new
+                # polling path is introduced; a failure here must not hide the
+                # role-level accounting that already succeeded.
+                try:
+                    payload["host_checks"] = await asyncio.to_thread(
+                        read_host_checks, self.controller)
+                except Exception:
+                    logger.exception("[CompanionV2] 排障主机检查读取失败")
                 # External reads can take time; revalidate before returning the
                 # diagnostics rather than trusting the earlier authorization.
                 await asyncio.to_thread(manager.authorize, operator)
