@@ -77,6 +77,7 @@ window.CompanionLearningOverviewPage = (() => {
         rules: Number.isInteger(settings?.rules_per_turn) ? settings.rules_per_turn : null,
         learning: value(5)?.learning || null,
         review: value(2)?.status || null,
+        access: value(0)?.access || null,
       };
     });
     const selection=semantic?.global===true?{global:true}:semantic?.target&&semantic?.role
@@ -101,6 +102,7 @@ window.CompanionLearningOverviewPage = (() => {
     data.counts.scan = semanticResult.scan;
     data.learning = valid.map(result=>result.learning).find(item=>item&&typeof item==="object"&&item.state)||null;
     data.review = valid.map(result=>result.review).find(item=>item&&typeof item==="object"&&item.state)||null;
+    data.access = valid.map(result=>result.access).find(item=>item&&typeof item==="object"&&item.settings)||null;
     data.loading=false;
     render();
   }
@@ -155,6 +157,16 @@ window.CompanionLearningOverviewPage = (() => {
     return `每日复盘：${e(label)}${e(failure)}${e(last)}${e(next)}`;
   }
 
+  function growthLine(access) {
+    if (!access || typeof access !== "object" || !access.settings) return "";
+    const effective = access.effective || {};
+    if (effective.proposals_enabled?.allowed) return "";
+    const reason = effective.proposals_enabled?.reason || effective.read_enabled?.reason || "";
+    return reason
+      ? `成长链路：成长提案权限不可用（${reason}）；开启后角色才会提出技能或长期目标。`
+      : "成长链路：尚未开启成长提案权限；开启后角色才会提出技能或长期目标。";
+  }
+
   function growthCard(item) {
     const state=STAGES.find(([key])=>key===item.state);
     const title=item.unavailable_reason?"来源已不可读取":item.title||"未命名记录";
@@ -189,6 +201,7 @@ window.CompanionLearningOverviewPage = (() => {
       ${data.notice?`<p class="lh-inline-status${data.error?" is-error":""}" role="status">${e(data.notice)}</p>`:""}
       ${data.learning?`<p class="lh-inline-status" role="status">${learningLine(data.learning)}</p>`:""}
       ${data.review?`<p class="lh-inline-status" role="status">${reviewLine(data.review)}</p>`:""}
+      ${data.access?`<p class="lh-inline-status" role="status">${growthLine(data.access)}</p>`:""}
       <section class="lh-kpis" aria-label="学习数据">${cards.map(([label,value,detail,icon])=>`<article class="lh-kpi">
         <span class="lh-kpi-icon" aria-hidden="true"><i data-lucide="${icon}"></i></span><span class="lh-kpi-label">${label}</span>
         <strong>${e(value)}</strong><small>${label==="待裁决"?"进展 · 表达 · 指导":label==="培育中"?"技能与目标":label==="规则注入"?e(detail):label==="语义扫描"?"群词义整理间隔":""}</small></article>`).join("")}</section>

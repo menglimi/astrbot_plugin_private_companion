@@ -24,6 +24,7 @@ from . import rule_details
 from . import rule_support
 from .configuration import read_settings
 from .learning import DIMENSIONS, candidate_signature, form_identity, normalize_applicability
+from .private_scope import scope_family_keys
 from .sharing import MAX_IMPORT_SIGNALS, build_pack, normalize_pack
 
 
@@ -59,13 +60,19 @@ class ExpressionStyleManagement:
             operator.binding_revision, context.key, row["signal_id"], row["run_id"],
             row["state"], row["decision_key"], row["decided_at"], policy_revision])
 
+    def _family(self, context):
+        """Current scope plus earlier windows of the same participant."""
+        return scope_family_keys(self.runtime, context)
+
     def _row(self, signal_id, owner, context):
         if (type(signal_id) is not str or not signal_id.strip() or len(signal_id) > 512
                 or signal_id != signal_id.strip()):
             raise TaskError("expression_signal_invalid", "select an original style signal")
-        row = self.runtime.read_one("""SELECT * FROM expression_style_signals
-            WHERE signal_id = ? AND owner_key = ? AND scope_key = ?""",
-            (signal_id, digest(owner), digest(context.scope)))
+        keys = self._family(context)
+        row = self.runtime.read_one(
+            "SELECT * FROM expression_style_signals WHERE signal_id = ? AND owner_key = ? "
+            "AND scope_key IN (" + ",".join("?" * len(keys)) + ")",
+            (signal_id, digest(owner), *keys))
         if row is None:
             raise TaskError("expression_signal_unavailable", "style signal is unavailable in this role")
         return row
@@ -73,7 +80,7 @@ class ExpressionStyleManagement:
     def _run(self, row, owner, context):
         run = self.runtime.read_one("""SELECT * FROM expression_style_runs
             WHERE run_id = ? AND owner_key = ? AND scope_key = ?""",
-            (row["run_id"], digest(owner), digest(context.scope)))
+            (row["run_id"], digest(owner), row["scope_key"]))
         if run is None:
             raise TaskError("expression_signal_unavailable", "style run is unavailable in this role")
         try:
@@ -158,27 +165,41 @@ class ExpressionStyleManagement:
         at = self.management.ledger.now()
         with self.runtime.read_snapshot():
             owner, policy_revision = self._authorize(operator, context, at)
-            rows = self.runtime.read_all("""SELECT * FROM expression_style_signals
-                WHERE owner_key = ? AND scope_key = ? AND state = ?
+            owner_key = digest(owner)
+            keys = self._family(context)
+            placeholders = ",".join("?" * len(keys))
+            rows = self.runtime.read_all(f"""SELECT * FROM expression_style_signals
+                WHERE owner_key = ? AND scope_key IN ({placeholders}) AND state = ?
                   AND (? IS NULL OR dimension = ?)
                   AND (? IS NULL OR signal_id > ?) ORDER BY signal_id LIMIT ?""",
-                (digest(owner), digest(context.scope), state, dimension, dimension,
-                 after_id, after_id, limit + 1))
+                (owner_key, *keys, state, dimension, dimension, after_id, after_id, limit + 1))
             items = []
             # Adopted rules rotate by how recently they were injected, so the
             # review view reports that ledger: a rule used on every turn while
             # others wait is exactly the distribution this page has to show.
-            usage_map = style_rotation.usage(self.runtime, digest(owner), digest(context.scope)) \
-                if state in ("adopted", "retired") else {}
-            feedback_map = style_feedback.usage(self.runtime, digest(owner), digest(context.scope))
-            active_count = self.runtime.read_one("""SELECT COUNT(*) AS count FROM expression_style_signals
-                WHERE owner_key = ? AND scope_key = ? AND state IN ('pending', 'adopted')""",
-                (digest(owner), digest(context.scope)))
-            capacity = {"active": int(active_count["count"]) if active_count is not None else 0,
-                        "limit": read_settings(self.runtime, context).active_signal_limit}
-            counts = {item["state"]: item["count"] for item in self.runtime.read_all("""SELECT state, COUNT(*) AS count
-                FROM expression_style_signals WHERE owner_key = ? AND scope_key = ? GROUP BY state""",
-                (digest(owner), digest(context.scope)))}
+            usage_map = {}
+            if state in ("adopted", "retired"):
+                for scope_key in keys:
+                    for signal_id, (injections, last) in style_rotation.usage(
+                            self.runtime, owner_key, scope_key).items():
+                        previous = usage_map.get(signal_id, (0, None))
+                        latest = max((item for item in (previous[1], last) if item is not None),
+                                     default=None)
+                        usage_map[signal_id] = (previous[0] + injections, latest)
+            feedback_map = {}
+            for scope_key in keys:
+                feedback_map.update(style_feedback.usage(self.runtime, owner_key, scope_key))
+            capacity = {"active": 0, "limit": read_settings(self.runtime, context).active_signal_limit}
+            counts = {}
+            for scope_key in keys:
+                active_count = self.runtime.read_one("""SELECT COUNT(*) AS count FROM expression_style_signals
+                    WHERE owner_key = ? AND scope_key = ? AND state IN ('pending', 'adopted')""",
+                    (owner_key, scope_key))
+                capacity["active"] += int(active_count["count"]) if active_count is not None else 0
+                for item in self.runtime.read_all("""SELECT state, COUNT(*) AS count
+                        FROM expression_style_signals WHERE owner_key = ? AND scope_key = ? GROUP BY state""",
+                        (owner_key, scope_key)):
+                    counts[item["state"]] = counts.get(item["state"], 0) + item["count"]
             for row in rows[:limit]:
                 unavailable, evidence = None, []
                 applicability = None
