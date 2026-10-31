@@ -71,12 +71,21 @@ class QzoneAccess:
         self.application = application
         self.context = context
         self.service = service
+        # Kept for callers that resolve the conclusion themselves (a plain dict or a
+        # getter). With a service present, ``status()`` takes the conclusion from it,
+        # because a construction-time copy goes stale the moment the same request
+        # acquires a fresh credential.
         self.credential_state = credential_state
         self.runtime = application.runtime
         self.repository = CapabilityRepository(self.runtime)
         self.identities = PersistentIdentityDirectory(self.runtime)
         self.policy = ObjectAccessPolicy(self.runtime)
         self.package = package()
+
+    def _credential(self):
+        """The page-facing credential row, resolved when the status is built."""
+        state = self.credential_state() if callable(self.credential_state) else self.credential_state
+        return dict(state or {})
 
     def _access(self, operator, at, *, action="capability.view"):
         context = self.context
@@ -137,10 +146,18 @@ class QzoneAccess:
                       "qzone_consent_missing" if not any(consented.values()) else
                       "qzone_grant_missing" if not granted else "")
             runtime = self.service.status(self.context, at) if self.service is not None else {}
+            runtime = dict(runtime or {})
+            # ``QzoneService.status`` states the credential conclusion in the same
+            # read; it is presented at the top level because that is the row the
+            # page renders, and it must not lag behind an acquisition that already
+            # happened earlier in this request.
+            credential = runtime.pop("credential", None)
+            if credential is None:
+                credential = self._credential()
             return {"extension_id": EXTENSION, "package_version": self.package.package_version,
                     "installed": installed is not None, "active": active, "role_enabled": role_enabled,
                     "consented": consented, "invoke_granted": granted, "reason": reason,
-                    "credential": dict(self.credential_state or {}), "runtime": runtime,
+                    "credential": dict(credential or {}), "runtime": runtime,
                     "capabilities": list(CAPABILITIES),
                     "catalogue": catalogue((runtime or {}).get("settings")),
                     "edit_token": self._token((installed, selection, consents))}

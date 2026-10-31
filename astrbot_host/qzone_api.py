@@ -305,8 +305,10 @@ class QzoneWebAPI:
                 if service is None:
                     raise TaskError("qzone_unavailable", "QQ 空间扩展没有可用的宿主通道")
                 at = controller.now()
-                access = QzoneAccess(session.application, session.profile.target, service=service,
-                                     credential_state=getattr(service.transport, "last_credential_state", None))
+                # The credential conclusion travels with ``QzoneService.status`` so
+                # it is read when the status is built; capturing a snapshot here
+                # would make "refresh then report" answer with the old state.
+                access = QzoneAccess(session.application, session.profile.target, service=service)
                 result = call(access, service, at)
                 if hasattr(result, "__await__"):
                     result = await result
