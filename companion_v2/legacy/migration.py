@@ -64,6 +64,7 @@ from companion_v2.legacy.image_configuration_migration import convert_image_conf
 from companion_v2.legacy.image_companion_configuration import convert_image_companion_configuration
 from companion_v2.legacy.content_configuration import convert_content_configuration
 from companion_v2.legacy.memory_configuration import convert_memory_configuration
+from companion_v2.legacy.profile_source import primary_profile
 from companion_v2.legacy.native_extension_configuration import (
     SOURCE_PLUGINS, REGISTRY_PLUGINS, WRITABLE_PLUGINS, REVIEW_ONLY_PLUGINS,
     convert_native_extension_configuration, preview_value, review_configuration_differences,
@@ -75,6 +76,18 @@ from companion_v2.legacy.sqlite_snapshot import open_readonly_sqlite_snapshot
 # 而是「宿主配置里的一个插件配置段」，单独处理。
 _CONFIG_PREFIX = "host-config:"
 _PLUGIN_DATA_PREFIX = "plugin-data:"
+
+# ``companions.json`` is one V1 storage layout, not the storage itself: the authoritative
+# file or database is whatever ``storage_backend`` / ``storage_sqlite_path`` /
+# ``.storage-backend-state.json`` select (see ``profile_source.primary_profile``).  These
+# three sources all read that one primary profile, so the hard-coded catalog name must not
+# decide presence: a SQLite-only installation looked empty, and a leftover JSON file beside
+# a broken database looked ready.
+_PROFILE_SOURCES = frozenset({
+    "private.core_profiles",
+    "private.authoritative_memory",
+    "private.group_relationship_graph",
+})
 
 
 class MigrationState(str, Enum):
@@ -330,6 +343,9 @@ class LegacyMigration:
         # 宿主侧的插件配置（若拿得到）。给了它，「宿主配置段」这一条来源的存在性
         # 就不必依赖数据根里有没有转储——配置本来就在宿主的配置里。
         self.v1_configuration = v1_configuration if isinstance(v1_configuration, dict) else None
+        # One discovery pass asks the same question three times, and answering it reads
+        # the whole snapshot, so the resolved primary profile is kept per instance.
+        self._primary_profile = None
         self.v1_host_configuration_issue = str(v1_host_configuration_issue or "")[:160]
         self.v1_reality_configuration = (
             v1_reality_configuration if isinstance(v1_reality_configuration, dict) else None
@@ -389,6 +405,8 @@ class LegacyMigration:
         顺序要紧：先判在不在，再判能不能迁。「不在」比「没写转换器」更基础——
         把不存在的项报成 no_handler 会让人去找一份根本没有的数据。
         """
+        if entry.source_id in _PROFILE_SOURCES:
+            return self._inspect_profile(entry)
         present, located = _locate(self.v1_root, entry.source_paths)
         size = _size_of(located)
         configured = any(path.startswith(_CONFIG_PREFIX) for path in entry.source_paths)
@@ -488,6 +506,58 @@ class LegacyMigration:
             entry.source_id, entry.owner, entry.action.value, state.value,
             present, self._detail_for(entry, state), byte_size=size,
         )
+
+    def _inspect_profile(self, entry: LegacyCatalogEntry) -> SourceFinding:
+        """Locate one shared V1 profile source through its authoritative resolver."""
+        profile = self._primary()
+        state = self._state_for(entry)
+        # ``companions.json`` is not everything the entry declares: ``persona_profiles``
+        # is a source of its own and keeps being located the ordinary way.
+        secondary, secondary_paths = _locate(self.v1_root, tuple(
+            path for path in entry.source_paths if path != "companions.json"))
+        if profile.payload is not None:
+            return SourceFinding(
+                entry.source_id, entry.owner, entry.action.value, state.value,
+                (profile.selected_path(self.v1_root),) + secondary,
+                self._detail_for(entry, state),
+                byte_size=_size_of((profile.path,)) + _size_of(secondary_paths),
+            )
+        if profile.error == "core_profile_missing":
+            if secondary:
+                # No primary store, but the persona files are still importable.
+                return SourceFinding(
+                    entry.source_id, entry.owner, entry.action.value, state.value,
+                    secondary, self._detail_for(entry, state),
+                    byte_size=_size_of(secondary_paths),
+                )
+            # Nothing was ever stored here, so keep reporting absence, not breakage.
+            return SourceFinding(
+                entry.source_id, entry.owner, entry.action.value,
+                MigrationState.ABSENT.value, entry.source_paths,
+                self._detail_for(entry, MigrationState.ABSENT),
+            )
+        # The source is there, the selected store just cannot be read.  The resolver's
+        # code is quoted as-is: the data plan reports the same string for the same file.
+        return SourceFinding(
+            entry.source_id, entry.owner, entry.action.value,
+            MigrationState.UNREADABLE.value,
+            (profile.selected_path(self.v1_root),) if profile.path is not None
+            else entry.source_paths,
+            f"{self._detail_for(entry, MigrationState.UNREADABLE)}（{profile.error}）",
+            byte_size=_size_of((profile.path,)) if profile.path is not None else 0,
+        )
+
+    def _primary(self):
+        """Resolve the V1 primary profile once per discovery pass.
+
+        The three profile sources ask the same question, and answering it parses the
+        whole snapshot: resolving it per source read a 44 MB ``companions.json`` three
+        times in ``discover()`` and a fourth time in the data plan, on the request that
+        renders the migration page.
+        """
+        if self._primary_profile is None:
+            self._primary_profile = primary_profile(self.v1_root, self.v1_configuration)
+        return self._primary_profile
 
     @staticmethod
     def _state_for(entry: LegacyCatalogEntry) -> MigrationState:
