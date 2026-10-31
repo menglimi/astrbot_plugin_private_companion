@@ -14,8 +14,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
+      # On pull_request, checkout gives the merge commit GitHub built, and git show
+      # prints no diff for a merge commit by default -- this step would have nothing
+      # to check. Compare against its first parent (the base branch) instead: that
+      # range is exactly the lines the PR adds. The push event keeps the original
+      # command and still checks only the pushed commit.
       - name: Check patch whitespace
-        run: git show --check --oneline HEAD
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git show --check --oneline -m --first-parent HEAD
+          else
+            git show --check --oneline HEAD
+          fi
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
