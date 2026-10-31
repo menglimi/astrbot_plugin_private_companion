@@ -14,7 +14,7 @@ from companion_v2.foundation.refs import ScopeKind
 from companion_v2.model_gateway.models import ToolSpec
 
 from . import authoring, authoring_service
-from .authoring_tasks import DRAFT_KIND
+from .authoring_tasks import AUTHORING_BUDGET_SECONDS, DRAFT_KIND
 from .authoring_execution import AuthoringParent, LegacyAuthoringOperations
 
 
@@ -71,7 +71,7 @@ class ContentAuthoringWorkflow:
         # separately authorized by the native provider capability.
         self.registrations = (TaskRegistration(
             TaskDefinition(DRAFT_KIND, "content.authoring", "conversation.reply", Lane.BACKGROUND,
-                side_effect=SideEffect.NONE, timeout_seconds=180, max_attempts=1,
+                side_effect=SideEffect.NONE, timeout_seconds=AUTHORING_BUDGET_SECONDS, max_attempts=1,
                 concurrency=2, per_scope_concurrency=1), self.validate),)
 
     def attach(self, gateway, *, require_running=None):
@@ -305,7 +305,7 @@ class ContentAuthoringWorkflow:
         if DRAFT_KIND not in self.gateway.router.profiles:
             raise TaskError("model_task_unregistered", "the dedicated Content writing model route is unavailable")
         now = self.tasks.now()
-        deadline = min(parent.deadline_at, now + timedelta(seconds=180))
+        deadline = min(parent.deadline_at, now + timedelta(seconds=AUTHORING_BUDGET_SECONDS))
         if deadline <= now:
             raise TaskError("content_authoring_expired", "the original conversation has expired")
         action = job.authoring_request["action"]
@@ -324,11 +324,16 @@ class ContentAuthoringWorkflow:
             self._require_enabled(parent.context)
             if not execution.is_success:
                 raise TaskError(execution.failure.code, execution.failure.reason)
-            task = execution.unwrap().task
+            settled = execution.unwrap()
+            task = settled.task
             if task is None:
                 raise TaskError("content_authoring_capacity", "the dedicated writing task was not admitted")
             if task.state != "succeeded" or job.result is None:
-                raise TaskError(task.reason or "content_authoring_failed", "the dedicated writing task did not finish")
+                # Report what stopped the round, not the supervisor's stop label: a
+                # model-level cut carries its own code, and only a task-level cut
+                # falls back to the supervised reason.
+                raise TaskError(settled.failure_code or task.reason or "content_authoring_failed",
+                                "the dedicated writing task did not finish")
             return job.result
         finally:
             self._jobs.pop(task_id, None)
