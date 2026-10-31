@@ -1,10 +1,10 @@
 name: astrbot_plugin_private_companion
 display_name: 我会永远陪着你
 author: menglimi
-version: 7.0.4
+version: 7.0.5
 repo: https://github.com/menglimi/astrbot_plugin_private_companion
-description: 我会永远陪着你统一陪伴插件。普通回复使用 AstrBot 核心管线，整合会话、记忆、生活、主动任务与陪伴小屋，随包提供 Content、Image、Screen、Reality、Together、Game、Live 七项原生能力；角色维护全局默认，用户与群聊可单独细调。
-desc: 以角色为中心的陪伴插件，整合对话、记忆、生活和主动联系，并提供统一的陪伴小屋管理页。
+description: 将一切串联成角色的生活，一站式互联拟人化插件。普通对话沿用 AstrBot 核心回复管线，融合连续会话、记忆、生活与主动联系；随包内置 Content 创作、Image 生图、Screen 识屏、Reality 现实触及、Together 共同陪伴、Game 游戏、Live 直播七项能力，并由「陪伴小屋」统一管理。角色可设全局默认，私聊用户与群聊独立细调。
+desc: 将一切串联成角色的生活，一站式互联拟人化插件；整合记忆、主动联系与七项内置能力，支持私聊群聊细调。
 help: |
   私聊功能指令：
   - 陪伴 帮助 / 状态 / 能力列表 / 日程 / 主动判定

@@ -68,6 +68,8 @@ VOICE_AUDIO_MIME_TYPES = {
     ".mp3": "audio/mpeg", ".ogg": "audio/ogg", ".opus": "audio/ogg",
     ".wav": "audio/wav", ".webm": "audio/webm",
 }
+# 语音保存只写配置；宿主启停或切换时及时返回未写入，避免页面长时间等待。
+VOICE_SAVE_LOCK_WAIT_SECONDS = 2.0
 TTS_PROVIDER_LABELS = {
     "openai_tts_api": "OpenAI TTS(API)", "mimo_tts_api": "MiMo TTS(API)",
     "genie_tts": "Genie TTS", "edge_tts": "Edge TTS", "gsv_tts_selfhost": "GSV TTS(Local)",
@@ -823,12 +825,20 @@ class ModelWebAPI:
                         raise ValueError("invalid voice timeout")
                 elif type(value) is not str or len(value) > 128:
                     raise ValueError("invalid voice binding")
-            async with self.controller._control_lock:
+            lock = self.controller._control_lock
+            try:
+                await asyncio.wait_for(lock.acquire(), timeout=VOICE_SAVE_LOCK_WAIT_SECONDS)
+            except TimeoutError:
+                return self._response(Outcome.failed(
+                    "host_busy", "the companion host is starting or switching; nothing was written"))
+            try:
                 session, operator, _manager, _status = self._authorized()
                 saved = require(ReplyManagement(session.application, session.profile.target,
                     layer=ConfigLayer.ROLE).configure(operator, data))
                 return self._response(Outcome.success({**self._voice_projection(session, operator),
                     "replayed": saved["replayed"]}))
+            finally:
+                lock.release()
         except TaskError as error:
             return self._response(Outcome.failed(error.code, str(error)))
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):

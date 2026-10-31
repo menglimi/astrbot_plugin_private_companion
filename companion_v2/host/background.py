@@ -6,13 +6,20 @@ import asyncio
 
 from companion_v2.execution.models import require
 from companion_v2.execution.runner import ExactTaskRunner
+from companion_v2.execution.waiting import BackgroundTaskQueue
 
 
 class BackgroundCoordinator:
     def __init__(self, tasks, delivery, planners, *, notify):
         self.tasks, self.delivery, self.planners = tasks, delivery, tuple(planners)
         self.notify = notify
-        self.runner = ExactTaskRunner(tasks, frozenset(r.definition.kind for r in delivery.registrations), delivery.deliver)
+        # Share the real background lane with planners without dropping outbound work
+        # when another background task temporarily holds the last physical slot.
+        self.waiting = BackgroundTaskQueue(tasks)
+        self.runner = ExactTaskRunner(
+            tasks, frozenset(r.definition.kind for r in delivery.registrations),
+            delivery.deliver, waiting=self.waiting,
+        )
         self._workers = {}
         self._closed = False
 

@@ -9,6 +9,8 @@ from companion_v2.agenda.models import Frequency, Schedule
 from companion_v2.execution.models import TaskError, digest, encode
 from companion_v2.foundation.refs import SourceRef, VersionRef
 from companion_v2.proactive.calendar_events import CalendarContactEvents, SOURCE_OWNER
+from companion_v2.proactive.persona_judge import judge_request
+from companion_v2.proactive.prompts import evidence_materials
 from companion_v2.role_work.state.management import StateManagement
 from companion_v2.sources.models import SourceRecord
 from tests.contact_schedule_support import ContactScheduleFixture
@@ -208,3 +210,16 @@ class CalendarContactTests(ContactScheduleFixture, unittest.IsolatedAsyncioTestC
         self.assertEqual(plan_marker["purpose"], "life")
         self.assertEqual(plan_intents[0].purpose, "life")
         self.app.contact_schedule.calendar_events.validate(self.origin, plan_marker, self.clock.now())
+        records = self.app.proactive._records(self.origin, plan_intents[0].thought.evidence.sources, self.clock.now())
+        projected = evidence_materials(records)
+        request = judge_request({"context": self.origin, "purpose": "life", "body": "先放一放。",
+            "at": self.clock.now().isoformat(), "confidence": 0.9, "note": "",
+            "role_instruction": "保持原人格。", "cause_id": "review-plan", "observed_at": self.clock.now(),
+            "records": records, "thought": plan_intents[0].thought.summary})
+        reviewed = tuple(item for item in request.context.materials if item.purpose == "contact_evidence")
+        self.assertEqual(reviewed, projected)
+        material = json.loads(reviewed[0].payload)
+        self.assertEqual(material["event"], "role_plan_window_concluded")
+        self.assertNotIn("_receipt", material)
+        self.assertIn("不证明实际执行", material["meaning"])
+        self.assertIn("_receipt", json.loads(records[0].payload))

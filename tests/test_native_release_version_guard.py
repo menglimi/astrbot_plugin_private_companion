@@ -88,6 +88,24 @@ class NativeReleaseVersionGuardTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "baseline version is stale"):
                 verify_native_baseline("2.1.2", hashes, baseline)
 
+    def test_letter_hotfix_advances_without_allowing_downgrades_or_unversioned_changes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.source_tree(root)
+            refresh_native_baseline(root, "7.0.4")
+            screen = root / NATIVE_HASH_FILES["screen"][0]
+            screen.write_bytes(b"VALUE = 2\n")
+            refreshed = refresh_native_baseline(root, "7.0.4a")
+            self.assertEqual(refreshed["package_version"], "7.0.4a")
+            verify_native_baseline("7.0.4a", native_artifact_hashes(native_artifact_source_files(root)), refreshed)
+            with self.assertRaisesRegex(ValueError, "must advance"):
+                refresh_native_baseline(root, "7.0.4")
+            screen.write_bytes(b"VALUE = 3\n")
+            with self.assertRaisesRegex(ValueError, "must advance"):
+                refresh_native_baseline(root, "7.0.4a")
+            self.assertEqual(refresh_native_baseline(root, "7.0.4b")["package_version"], "7.0.4b")
+            self.assertEqual(refresh_native_baseline(root, "7.0.5")["package_version"], "7.0.5")
+
 
 if __name__ == "__main__":
     unittest.main()

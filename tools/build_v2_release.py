@@ -14,7 +14,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 CORE_ID = "astrbot_plugin_private_companion"
-VERSION = "7.0.4"
+VERSION = "7.0.5"
 RELEASE_SCHEMA = "companion.v2.release.v2"
 NATIVE_EXTENSION_FILES = {
     "content": ("companion_v2/content/assembly.py", "companion_v2/content/provider.py",
@@ -197,6 +197,14 @@ def verify_native_baseline(version, hashes, baseline):
                          + ", ".join(changed) + "; bump the release version, then refresh the native baseline")
 
 
+def release_version_key(version):
+    """Order the repository's letter hotfixes after their numeric release."""
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)([a-z]?)", version)
+    if not match:
+        raise ValueError("native capability baseline requires major.minor.patch with an optional letter revision")
+    return (*map(int, match.groups()[:3]), match.group(4))
+
+
 def refresh_native_baseline(root, version):
     path = root / NATIVE_CAPABILITY_BASELINE
     current_hashes = native_artifact_hashes(native_artifact_source_files(root))
@@ -209,12 +217,8 @@ def refresh_native_baseline(root, version):
                 or type(baseline.get("artifact_hashes")) is not dict):
             raise ValueError("native capability baseline is invalid")
         previous_version = baseline["package_version"]
-        match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", previous_version)
-        current = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", version)
-        if not match or not current:
-            raise ValueError("native capability baseline requires numeric major.minor.patch versions")
-        previous_key = tuple(map(int, match.groups()))
-        current_key = tuple(map(int, current.groups()))
+        previous_key = release_version_key(previous_version)
+        current_key = release_version_key(version)
         changed = baseline["artifact_hashes"] != current_hashes
         if current_key < previous_key or (changed and current_key <= previous_key):
             raise ValueError("native capability hashes changed; the release version must advance before refreshing")

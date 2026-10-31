@@ -1,4 +1,4 @@
-﻿"""One explicit opportunity, one supervised model decision, one durable delivery.
+"""One explicit opportunity, one supervised model decision, one durable delivery.
 
 Trusted producers, including the conversation scheduler, supply the cause and
 current persona; interrupted model work is never silently replayed.
@@ -700,6 +700,9 @@ class ProactiveContacts:
                 if administrator_test and result.is_success and result.unwrap().failure_code:
                     return Outcome.failed(result.unwrap().failure_code,
                                           "administrator diagnostic task failed before delivery")
+                if result.is_success and (result.unwrap().task is None or result.unwrap().task.state in ("created", "retry_scheduled")):
+                    task = require(self.tasks.discard_queued(task_id, reason="owner_unavailable"))
+                    return Outcome.success(RunResult(task))
                 return result
             finally:
                 self._pending.pop(task_id, None)
@@ -1275,7 +1278,11 @@ class ProactiveContacts:
         values = preferences.values
         if not values["enable_llm_proactive_persona_judge"]:
             return None, None
-        signature = signature_for(job.intent.purpose, body)
+        signature = signature_for(job.intent.purpose, body, review_context={
+            "role_instruction": job.role_instruction, "preference_token": job.preference_token,
+            "sources": job.intent.thought.evidence.sources, "source_hashes": job.source_hashes,
+            "thought": job.intent.thought.summary,
+            "dialogue_history": job.dialogue_history, "history": job.history, "last_reply": job.last_reply})
         if job.intent.purpose in exempt_purposes(preferences):
             return JudgeVerdict("send", 100, "该联系目的按配置豁免主动人格判定", signature, True), None
         cached = self.persona_judge.cached(job.context, signature, at,
@@ -1305,7 +1312,22 @@ class ProactiveContacts:
         if row is None or row["origin_key"] != spec.context.key:
             raise TaskError("contact_judge_unavailable", "judgement draft is unavailable")
         data = json.loads(row["record_json"])
-        if data.get("decision") != "judge_pending" or (data.get("judge") or {}).get("task_id") != spec.task_id:
+        judge = data.get("judge") or {}
+        if judge.get("task_id") != spec.task_id:
+            raise TaskError("contact_judge_unavailable", "judgement belongs to another task")
+        if data.get("decision") != "judge_pending":
+            # The same running attempt must be able to finish its atomic commit.
+            task = require(self.tasks.read(spec.context, spec.task_id))
+            receipt = self.operations.get("save-" + spec.task_id)
+            if (data.get("decision") in ("send", "skip") and judge.get("state") == "resolved"
+                    and judge.get("model_call_id") and not judge.get("failure")
+                    and task.state in ("running", "cancelling") and task.effect == "unknown"
+                    and task.attempt_id == judge.get("attempt_id") and receipt.is_success):
+                saved = receipt.unwrap()
+                if (saved.state is OperationState.COMPLETED and saved.operation.owner == JUDGE_KIND
+                        and saved.operation.scope == spec.context.scope
+                        and saved.parameter_hash == digest([spec.request_ref, judge["signature"]])):
+                    return True
             raise TaskError("contact_judge_unavailable", "draft already has a resolved judgement")
         return True
 
@@ -1328,20 +1350,33 @@ class ProactiveContacts:
                 purpose=data["purpose"])
             diagnostic = diagnostic_origin["_diagnostic"]
             _, batch, _ = self.schedule._origin(context, diagnostic["batch_id"], at)
-            refs = tuple(source_from_document(item) for item in data.get("sources", ()))
-            self._records(context, refs, at, hashes=tuple(data.get("source_hashes", ())))
         else:
             if not isinstance(origin, dict) or not origin.get("batch_id"):
                 raise TaskError("contact_judge_persona_unavailable", "judgement needs the original accepted persona")
             self.schedule.validate_origin(context, origin, at)
             _, batch, _ = self.schedule._origin(context, origin["batch_id"], at)
+        refs = tuple(source_from_document(item) for item in data.get("sources", ()))
+        records = self._records(context, refs, at, hashes=tuple(data.get("source_hashes", ())))
         preferences = require(self.preferences.read(context, observed_at=at))
         preferences.require_contact(data["purpose"], ignore_time_restrictions=diagnostic_origin is not None,
                                     ignore_master_switch=data.get("administrator_test") is True)
+        history, dialogue, last_reply = (), (), None
+        if not data.get("administrator_test") and any(
+                data.get(key) is not None for key in ("history", "dialogue_history", "last_reply")):
+            if self.history is None:
+                raise TaskError("contact_judge_history_unavailable", "judgement needs its original history owner")
+            if data.get("history") is not None:
+                history = self.history.read(data["history"], context, at, action=GROUP, round_metadata=True)
+            if data.get("dialogue_history") is not None:
+                dialogue = self.history.conversation.read(data["dialogue_history"], context, at,
+                                                          round_metadata=True)
+            if data.get("last_reply") is not None:
+                last_reply = self.history.verify_reply(data["last_reply"], context, at)
         entry = {"context": context, "purpose": data["purpose"], "body": row["body"], "at": stamp(at),
                  "note": preferences.values["note"], "confidence": data.get("decision_confidence", 1.0),
                  "role_instruction": batch["role_instruction"], "observed_at": at,
-                 "cause_id": run.task.task_id,
+                 "records": records, "thought": data.get("thought_summary"),
+                 "cause_id": run.task.task_id, "history": history, "dialogue": dialogue, "last_reply": last_reply,
                  "role_state": role_state_for_prompt(
                      self._role_state_summary(context, at), data["purpose"])}
         completion = await self.gateway.generate(run, judge_request(entry))
@@ -1366,6 +1401,8 @@ class ProactiveContacts:
         if allowed and diagnostic_image and pending_reaction_intent and offered is None:
             raise TaskError("proactive_diagnostic_image_unavailable",
                             "no authorized reaction image matched the diagnostic intent")
+        operation = OperationRef("save-" + run.task.task_id, JUDGE_KIND, context.scope,
+                                 VersionRef(contact_id, 1), run.task.task_id)
         with self.runtime.transaction() as connection:
             run.validate()
             current = connection.execute("""SELECT body, payload_hash, record_json FROM proactive_contacts
@@ -1405,9 +1442,12 @@ class ProactiveContacts:
             document["decision"] = "send" if allowed else "skip"
             document["judge"] = {**judge, "state": "resolved", "decision": decision, "score": score,
                                  "reason": reason, "allowed": allowed, "cached": False,
+                                 "attempt_id": run.claim.attempt_id,
                                  "model_call_id": completion.call_id, "failure": None}
             document["skip_reason"] = None if allowed else "persona_review"
             run.begin_effect()
+            require(self.operations.reserve(operation,
+                parameter_hash=digest([run.task.spec.request_ref, judge["signature"]]), observed_at=self.tasks.now()))
             connection.execute("UPDATE proactive_contacts SET record_json = ?, payload_hash = ? WHERE contact_id = ?",
                                (encode(document), payload_hash, contact_id))
             if not allowed and isinstance(origin, dict):
@@ -1419,6 +1459,9 @@ class ProactiveContacts:
             if allowed:
                 require(self.delivery.queue(self._part_request(contact_id, context, document, 0,
                     datetime.fromisoformat(document["opened_at"]))))
+            require(self.operations.transition(operation.operation_id, expected_state=OperationState.ACCEPTED,
+                next_state=OperationState.COMPLETED, observed_at=self.tasks.now()))
+            run.record_operation(operation.operation_id)
         self.notify()
         if allowed:
             # 判定放行与直接发送是同一件事的两条互斥分支：草稿在此之前一直压着不发，
@@ -1426,7 +1469,7 @@ class ProactiveContacts:
             # 提前推过去，会让牢插件记得一句角色从没说过的话。
             await self._push_contact(context, contact_id, row["body"], data.get("purpose"))
         return TaskResult("succeeded", effect="committed", result_ref=contact_id,
-                          receipt_ref="proactive-judgement:" + run.task.task_id)
+                          operation_id=operation.operation_id, receipt_ref=operation.operation_id)
 
     async def _push_contact(self, context, contact_id, body, purpose):
         """把刚排进投递的主动消息推给对外表达记忆的一方；失败不影响这次投递。
@@ -1458,6 +1501,7 @@ class ProactiveContacts:
             ),
             confidence=0.92,
             importance=0.58,
+            context=context,
         )
         await push_memory(self.memory_push, record)
 

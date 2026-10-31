@@ -1,5 +1,6 @@
 """TTS provider management and image config delegation use the real SDK with isolated data."""
 
+import asyncio
 from copy import deepcopy
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -374,6 +375,62 @@ class ProviderRouteTests(unittest.IsolatedAsyncioTestCase):
                                     payload=b'{"type": "fishaudio_tts_api", "id": "tts-b"}')
         self.assertEqual(duplicate["data"]["code"], "tts_provider_exists")
         self.assertEqual(self.native.provider.client.state.calls, [])
+
+    async def test_voice_save_busy_keeps_settings_and_can_retry_once_host_is_ready(self):
+        (await self.controller.initialize_profile()).unwrap()
+        status = (await self.call(PREFIX + "/voice"))["data"]
+        payload = json.dumps({"operation_key": "voice-lock-busy", "edit_token": status["edit_token"],
+                              "changes": {"voice_timeout_seconds": 45}}).encode()
+        lock = self.controller._control_lock
+        await lock.acquire()
+        try:
+            with patch("astrbot_host.model_api.VOICE_SAVE_LOCK_WAIT_SECONDS", 0.01):
+                busy = await asyncio.wait_for(self.call(PREFIX + "/voice/save", payload=payload), 1)
+            self.assertEqual(busy["data"]["code"], "host_busy", busy)
+            self.assertTrue(lock.locked(), "a refused save must not release the lifecycle owner's lock")
+        finally:
+            lock.release()
+        unchanged = (await self.call(PREFIX + "/voice"))["data"]
+        self.assertEqual(unchanged["edit_token"], status["edit_token"])
+        self.assertEqual(unchanged["timeout_seconds"], status["timeout_seconds"])
+        saved = await self.call(PREFIX + "/voice/save", payload=payload)
+        self.assertEqual(saved["status"], "ok", saved)
+        self.assertEqual(saved["data"]["timeout_seconds"], 45)
+        self.assertFalse(saved["data"]["replayed"])
+        replayed = await self.call(PREFIX + "/voice/save", payload=payload)
+        self.assertTrue(replayed["data"]["replayed"], replayed)
+        self.assertEqual(replayed["data"]["edit_token"], saved["data"]["edit_token"])
+
+    async def test_cancelled_voice_save_does_not_write_after_lock_is_released(self):
+        (await self.controller.initialize_profile()).unwrap()
+        status = (await self.call(PREFIX + "/voice"))["data"]
+        payload = json.dumps({"operation_key": "voice-lock-cancel", "edit_token": status["edit_token"],
+                              "changes": {"voice_timeout_seconds": 45}}).encode()
+        lock = self.controller._control_lock
+        await lock.acquire()
+        try:
+            task = asyncio.create_task(self.call(PREFIX + "/voice/save", payload=payload))
+            await asyncio.sleep(0)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertTrue(lock.locked())
+        finally:
+            lock.release()
+        await asyncio.sleep(0)
+        unchanged = (await self.call(PREFIX + "/voice"))["data"]
+        self.assertEqual(unchanged["edit_token"], status["edit_token"])
+        self.assertFalse(lock.locked())
+
+    async def test_voice_save_authorization_failure_releases_its_lock(self):
+        (await self.controller.initialize_profile()).unwrap()
+        status = (await self.call(PREFIX + "/voice"))["data"]
+        payload = json.dumps({"operation_key": "voice-lock-auth", "edit_token": status["edit_token"],
+                              "changes": {"voice_timeout_seconds": 45}}).encode()
+        refused = await self.call(PREFIX + "/voice/save", payload=payload, username="api_key:fixture")
+        self.assertEqual(refused["data"]["code"], "dashboard_identity_required", refused)
+        self.assertFalse(self.controller._control_lock.locked())
+        self.assertEqual((await self.call(PREFIX + "/voice"))["data"]["edit_token"], status["edit_token"])
 
     async def test_voice_test_returns_audio_for_inline_preview(self):
         (await self.controller.initialize_profile()).unwrap()

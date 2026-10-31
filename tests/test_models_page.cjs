@@ -543,6 +543,66 @@ test('switching to the voice tab lazily loads, saves, and plays a synthesized sa
   assert.deepEqual(revokedAudioUrls, ['blob:preview-1']);
 });
 
+test('a busy host preserves the voice draft and leaves save available', async () => {
+  const h = harness(), node = h.root();
+  h.page.mount(node);
+  h.requests[0].resolve(status());
+  await flush();
+  node.click('[data-model-tab]', {modelTab: 'voice'});
+  const voice = {languages: [{k: 'ja', n: '日语', bind: ''}], providers: [],
+    timeout_seconds: 30, voice_enabled: true, edit_token: TOKEN};
+  h.requests.find(r => r.route === 'model/voice').resolve(voice);
+  await flush();
+  node.change('[data-voice-timeout]', {value: '45', valueAsNumber: 45});
+  node.click('[data-voice-save]');
+  h.requests.at(-1).resolve({status: 'error', message: 'host_busy', data: {code: 'host_busy'}});
+  await flush();
+  assert.match(node.innerHTML, /本次没有写入，草稿已保留/);
+  assert.doesNotMatch(node.innerHTML, /data-voice-retry/);
+  assert.match(node.innerHTML, /data-voice-timeout value="45"/);
+  assert.doesNotMatch(node.innerHTML, /data-voice-save[^>]*disabled/);
+  node.click('[data-voice-save]');
+  const retry = h.requests.at(-1);
+  assert.equal(retry.values.changes.voice_timeout_seconds, 45);
+  retry.resolve({...voice, timeout_seconds: 45});
+  await flush();
+  assert.equal(h.page.isDirty(), false);
+  h.page.unmount();
+});
+
+test('a timed-out voice save reconciles with the same operation and retains uncertainty if the host is busy', async () => {
+  const h = harness(), node = h.root();
+  h.page.mount(node);
+  h.requests[0].resolve(status());
+  await flush();
+  node.click('[data-model-tab]', {modelTab: 'voice'});
+  const voice = {languages: [{k: 'ja', n: '日语', bind: ''}], providers: [],
+    timeout_seconds: 30, voice_enabled: true, edit_token: TOKEN};
+  h.requests.find(r => r.route === 'model/voice').resolve(voice);
+  await flush();
+  node.change('[data-voice-timeout]', {value: '45', valueAsNumber: 45});
+  node.click('[data-voice-save]');
+  const original = h.requests.at(-1);
+  original.reject(Object.assign(new Error('bridge_timeout'), {code: 'bridge_timeout'}));
+  await flush();
+  const automatic = h.requests.at(-1);
+  assert.notEqual(automatic, original);
+  assert.equal(automatic.values.operation_key, original.values.operation_key);
+  automatic.resolve({status: 'error', message: 'host_busy', data: {code: 'host_busy'}});
+  await flush();
+  assert.match(node.innerHTML, /原保存结果仍待核对/);
+  assert.match(node.innerHTML, /data-voice-retry/);
+  node.click('[data-voice-retry]');
+  const reconciliation = h.requests.at(-1);
+  assert.deepEqual(reconciliation.values, original.values);
+  reconciliation.resolve({...voice, timeout_seconds: 45, replayed: true});
+  await flush();
+  assert.match(node.innerHTML, /原保存已确认/);
+  assert.doesNotMatch(node.innerHTML, /data-voice-retry/);
+  assert.equal(h.page.isDirty(), false);
+  h.page.unmount();
+});
+
 test('a dashboard bridge inner voice result with status ok is kept as the result', async () => {
   const {page, requests, root, audioBlobs} = harness();
   const node = root();

@@ -10,8 +10,9 @@ from unittest.mock import patch
 from companion_v2.agenda.background import AgendaDispatchPolicy
 from companion_v2.agenda.models import AgendaError, AgendaTarget, Frequency, Schedule
 from companion_v2.delivery.service import DeliveryRequest
-from companion_v2.execution.models import SupervisorLimits
+from companion_v2.execution.models import ClaimResult, SupervisorLimits
 from companion_v2.execution.runner import TaskRun
+from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import SubjectKind, SubjectRef
 from companion_v2.identity_policy.models import AuthorizationTier
 from companion_v2.identity_policy.personas import ConversationRoute
@@ -77,6 +78,36 @@ class AgendaBackgroundTests(AgendaBackgroundFixture, unittest.IsolatedAsyncioTes
         app.notify()
         await asyncio.sleep(0.03)
         self.assertEqual(len(self.sent), 1)
+
+    async def test_outbound_waits_for_saturated_background_lane_without_losing_message(self):
+        host = await self.start()
+        app = host.application
+        original_claim = app.tasks.claim_task
+        busy = True
+        refused = []
+
+        def saturated_lane(context, task_id):
+            if busy and task_id.startswith("send-outbound-"):
+                refused.append(task_id)
+                return Outcome.success(ClaimResult(None, "task_lane_full"))
+            return original_claim(context, task_id)
+
+        # Simulate a concurrent background task holding the final lane slot.
+        with patch.object(app.tasks, "claim_task", saturated_lane):
+            occurrence, _ = self.reminder(app)
+            app.notify()
+            await self.until(lambda: len(refused) > 0)
+            self.assertEqual(self.sent, [])
+            row = self.delivery(occurrence)
+            self.assertIsNotNone(row)
+            self.assertEqual(app.tasks.read(DeliveryRequest.restore(row["request_json"]).context,
+                                            row["task_id"]).unwrap().attempt_no, 0)
+            busy = False
+            delivered = await self.delivered(app, occurrence)
+
+        self.assertEqual(delivered["state"], "delivered")
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.sent[0].text, "喝点水，休息一下。")
 
     async def test_future_due_timer_needs_no_manual_scan_or_notification(self):
         current = lambda: datetime.now(timezone.utc)

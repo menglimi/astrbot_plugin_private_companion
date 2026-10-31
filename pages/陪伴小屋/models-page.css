@@ -294,15 +294,19 @@
 .model-hrl .lg i.lo{background:var(--m-card2);box-shadow:inset 0 0 0 1px var(--m-line2)}
 /* ---- 语音 / 生图 ---- */
 .model-voice,.model-image{display:grid;gap:var(--sp-3);min-width:0}
-.model-vtabs{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--sp-2)}
-.model-vtabs button{display:flex;flex-direction:column;align-items:flex-start;gap:3px;border:1px solid var(--m-line);background:var(--m-card);border-radius:var(--r-md);padding:var(--sp-2) var(--sp-3);cursor:pointer;transition:.14s;text-align:left;font:inherit;color:inherit}
+.model-voice{grid-template-columns:minmax(0,1fr)}
+.model-voice>.model-card{min-width:0;grid-template-columns:minmax(0,1fr)}
+.model-voice select{max-width:100%}
+/* 长 Provider 名称按标签列宽省略，避免 min-content 撑宽整个配置页。 */
+.model-vtabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--sp-2)}
+.model-vtabs button{display:flex;flex-direction:column;align-items:flex-start;gap:3px;min-width:0;border:1px solid var(--m-line);background:var(--m-card);border-radius:var(--r-md);padding:var(--sp-2) var(--sp-3);cursor:pointer;transition:.14s;text-align:left;font:inherit;color:inherit}
 .model-vtabs button:hover{border-color:var(--m-accent3)}
 .model-vtabs button.on{border-color:var(--m-accent3);background:var(--m-sel)}
 .model-vtabs b{font-size:var(--fs-body);font-weight:600;display:flex;align-items:center;gap:var(--sp-2)}
 .model-vtabs .d{width:8px;height:8px;border-radius:50%;flex:none;display:inline-block}
-.model-vtabs small{font-size:var(--fs-micro);color:var(--m-ink3);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.model-vbar{display:flex;gap:var(--sp-2);align-items:flex-end;flex-wrap:wrap}
-.model-vbar .model-fd{flex:1;min-width:250px}
+.model-vtabs small{display:block;width:100%;font-size:var(--fs-micro);color:var(--m-ink3);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.model-vbar{display:flex;gap:var(--sp-2);align-items:flex-end;flex-wrap:wrap;min-width:0}
+.model-vbar .model-fd{flex:1;min-width:min(250px,100%);max-width:100%}
 .model-vmatrix{display:grid;border:1px solid var(--m-line);border-radius:var(--r-md);overflow:hidden;background:var(--m-card)}
 .model-vmatrix-head,.model-vmatrix-row{display:grid;grid-template-columns:minmax(72px,.55fr) repeat(var(--voice-channels,2),minmax(0,1fr));gap:var(--sp-2);align-items:center;padding:var(--sp-2) var(--sp-3)}
 .model-vmatrix-head{background:var(--m-card2);color:var(--m-ink3);font-size:var(--fs-micro)}
@@ -410,9 +414,9 @@
 .model-diag.no i{background:var(--m-card2);color:var(--m-ink3);box-shadow:inset 0 0 0 1px var(--m-line2)}
 .model-pv .rt{display:block;margin-top:var(--sp-1);font-size:var(--fs-micro);color:var(--m-ink3)}
 /* ---- TTS Provider 管理 / 生图路线与连接 ---- */
-.model-tts-group{display:grid;gap:var(--sp-2);margin-top:var(--sp-3);padding-top:var(--sp-3);border-top:1px solid var(--m-line)}
+.model-tts-group{display:grid;grid-column:1/-1;min-width:0;gap:var(--sp-2);margin-top:var(--sp-3);padding-top:var(--sp-3);border-top:1px solid var(--m-line)}
 .model-tts-group:first-child{margin-top:0;padding-top:0;border-top:0}
-.model-tts-group h4{margin:0;color:var(--m-ink);font-size:.83rem;letter-spacing:.02em}
+.model-tts-group h4{margin:0;color:var(--m-ink);font-size:.83rem;letter-spacing:0}
 .model-tts-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3)}
 .model-tts-fields textarea{min-height:8rem;resize:vertical;font-family:var(--font-mono,ui-monospace,monospace);line-height:1.45}
 .model-tts-test-result{display:grid;gap:.2rem;margin-top:var(--sp-3);padding:var(--sp-3);border:1px solid var(--m-line);border-radius:var(--r-xs);background:var(--m-card2)}

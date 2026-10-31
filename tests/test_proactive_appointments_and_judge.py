@@ -5,6 +5,7 @@ original calendar owner, and the judgement tests drive a second supervised
 background task that may only allow or withhold the sealed draft.
 """
 
+from dataclasses import replace
 from datetime import timedelta
 import json
 import unittest
@@ -15,6 +16,7 @@ from companion_v2.configuration.registry import FieldRegistry
 from companion_v2.execution.models import encode
 from companion_v2.model_gateway.routing import configuration_fields as model_fields
 from companion_v2.proactive import persona_judge
+from companion_v2.proactive.prompts import TOPIC_CONTINUITY_INSTRUCTION
 from companion_v2.proactive.configuration import GROUP, configuration_fields
 from companion_v2.proactive.service import persona_judge_profile
 from companion_v2.role_work.state.management import StateManagement
@@ -178,6 +180,73 @@ class JudgeFixture(ContactScheduleFixture):
 
 
 class PersonaJudgeTests(JudgeFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_judge_receives_the_composers_verified_dialogue_reply_and_evidence(self):
+        host, _ = await self.scheduled()
+        app = host.application
+        self.settings(app, {"enable_llm_proactive_persona_judge": True,
+            **{purpose + ".enabled": False for purpose in ("affection", "care", "play", "repair", "invitation")}}).unwrap()
+        self.advance(app, 1)
+        batch = host.receive(self.event("photo-correction", text="照片刚才发过啦，这次先不画。")).unwrap()
+        await self.done(app, batch)
+        self.advance(app, 60)
+        record = await self.judged(app)
+
+        self.assertTrue(record["judge"]["allowed"])
+        compose = self.contact_calls()[-1].original
+        reviewed = self.judge_calls[-1].original
+        owners = {"conversation.private_history", "delivery.history"}
+        expected = [(item.owner, item.payload) for item in compose.context.materials if item.owner in owners]
+        actual = [(item.owner, item.payload) for item in reviewed.context.materials if item.owner in owners]
+        self.assertTrue(expected)
+        self.assertEqual(actual, expected)
+        self.assertTrue(any("照片刚才发过啦，这次先不画。" in payload for _, payload in actual))
+        self.assertTrue(any("记住了。" in payload for _, payload in actual))
+        expected_evidence = [item for item in compose.context.materials if item.purpose == "contact_evidence"]
+        actual_evidence = [item for item in reviewed.context.materials if item.purpose == "contact_evidence"]
+        self.assertTrue(expected_evidence)
+        self.assertEqual(actual_evidence, expected_evidence)
+        self.assertIn(TOPIC_CONTINUITY_INSTRUCTION, compose.instruction)
+        self.assertIn(TOPIC_CONTINUITY_INSTRUCTION, reviewed.instruction)
+
+    async def test_judge_rejects_evidence_changed_after_composition(self):
+        host = await self.judged_host()
+        app = host.application
+        await self.until(lambda: len(self.contacts(app)) == 1)
+        row = self.contacts(app)[0]
+        document = json.loads(row["record_json"])
+        self.assertEqual(document["decision"], "judge_pending")
+        self.assertTrue(document["source_hashes"])
+        document["source_hashes"][0] = "changed-after-composition"
+        with app.runtime.transaction() as connection:
+            connection.execute("UPDATE proactive_contacts SET record_json=? WHERE contact_id=?",
+                               (encode(document), row["contact_id"]))
+
+        record = await self.judged(app)
+
+        self.assertEqual(record["decision"], "skip")
+        self.assertFalse(record["judge"]["allowed"])
+        self.assertEqual(self.judge_calls, [])
+        self.assertEqual(self.deliveries(app), ())
+
+    async def test_judge_does_not_read_a_history_snapshot_from_another_context(self):
+        host = await self.judged_host()
+        app = host.application
+        await self.until(lambda: len(self.contacts(app)) == 1)
+        row = self.contacts(app)[0]
+        document = json.loads(row["record_json"])
+        self.assertEqual(document["decision"], "judge_pending")
+        document["dialogue_history"]["context_key"] = "another-conversation"
+        with app.runtime.transaction() as connection:
+            connection.execute("UPDATE proactive_contacts SET record_json=? WHERE contact_id=?",
+                               (encode(document), row["contact_id"]))
+
+        record = await self.judged(app)
+
+        self.assertEqual(record["decision"], "skip")
+        self.assertFalse(record["judge"]["allowed"])
+        self.assertEqual(self.judge_calls, [])
+        self.assertEqual(self.deliveries(app), ())
+
     def test_judge_fields_are_registered_and_bounded(self):
         fields = {field.field_id: field for field in configuration_fields()}
         for name, default in (("enable_llm_proactive_persona_judge", False),
@@ -230,6 +299,16 @@ class PersonaJudgeTests(JudgeFixture, unittest.IsolatedAsyncioTestCase):
         status = app.proactive.observe(self.contact_context(), task_id).unwrap()
         self.assertEqual((status["skipped"], status["delivery"]), (True, None))
         self.assertEqual(self.deliveries(app), ())
+        judge_id = record["judge"]["task_id"]
+        await self.until(lambda: app.runtime.read_one(
+            "SELECT state FROM execution_tasks WHERE task_id=?", (judge_id,))[0] == "succeeded")
+        task = app.tasks.read(self.contact_context(), judge_id).unwrap()
+        self.assertEqual(task.effect, "committed")
+        self.assertEqual(task.operation_id, "save-" + judge_id)
+        self.assertEqual(app.proactive.operations.get(task.operation_id).unwrap().state.value, "completed")
+        self.assertFalse(app.proactive.validate_judge(task.spec, self.clock.now()).is_success)
+        self.assertFalse(app.proactive.validate_judge(replace(task.spec, task_id="another-judge"),
+            self.clock.now()).is_success)
 
     async def test_judgement_below_the_threshold_withholds_the_draft(self):
         async def low(envelope):
@@ -284,16 +363,37 @@ class UnwiredJudgeTests(JudgeFixture, unittest.IsolatedAsyncioTestCase):
 
 
 class JudgeCacheTests(JudgeFixture, unittest.IsolatedAsyncioTestCase):
-    async def test_repeated_body_reuses_the_cached_judgement(self):
+    async def test_repeated_body_is_reviewed_again_after_a_contact_was_sent(self):
         host = await self.judged_host(dedup_enabled=False, proactive_closing_contacts_threshold=9)
         app = host.application
         first = await self.judged(app)
         self.assertEqual(first["decision"], "send")
+        await self.delivery_state(app, self.contacts(app)[0]["task_id"], "delivered")
         self.advance(app, 120)
         await self.until(lambda: len(self.contacts(app)) == 2)
+        self.advance(app, 5)
+        app.contact_schedule.advance()
+        await self.until(lambda: self.records(app)[1]["decision"] != "judge_pending")
         second = self.records(app)[1]
         self.assertEqual(second["decision"], "send")
-        self.assertTrue(second["judge"]["cached"])
+        self.assertFalse(second["judge"]["cached"])
+        self.assertNotEqual(first["judge"]["signature"], second["judge"]["signature"])
+        self.assertEqual(len(self.judge_calls), 2)
+        history = [json.loads(item.payload) for item in self.judge_calls[-1].original.context.materials
+                   if item.purpose == "confirmed_background_message"]
+        self.assertTrue(any(item.get("text") == "刚想起上次的话题。" for item in history))
+
+    async def test_same_review_signature_can_still_use_the_cache(self):
+        host = await self.judged_host()
+        app = host.application
+        first = await self.judged(app)
+
+        cached = app.proactive.persona_judge.cached(self.contact_context(), first["judge"]["signature"],
+            self.clock.now(), ttl_minutes=180, threshold=62)
+
+        self.assertIsNotNone(cached)
+        self.assertTrue(cached.allowed)
+        self.assertTrue(cached.cached)
         self.assertEqual(len(self.judge_calls), 1)
 
     async def test_exempt_purpose_skips_the_judge_entirely(self):
@@ -311,6 +411,7 @@ class JudgeCacheTests(JudgeFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual((record["decision"], record["judge"]["decision"], record["judge"]["allowed"]),
                          ("send", "send", True))
         self.assertEqual(len(self.judge_calls), 1)
+        await self.delivery_state(app, self.contacts(app)[0]["task_id"], "delivered")
         self.assertEqual(len(self.sent), 2)
 
     async def test_judge_settings_have_no_daily_cap_field(self):

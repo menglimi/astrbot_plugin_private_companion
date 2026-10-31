@@ -119,7 +119,7 @@ class CalendarContactEvents:
                 "local_end": ends.astimezone(schedule.zone()).isoformat(),
                 "timezone": schedule.timezone_name, "duration_minutes": record["duration_minutes"],
                 "presence": record.get("presence", ""),
-                "meaning": "这是角色自己日程表上刚走完预定时间段的一项安排；计划时间结束不等于拿到活动完成回执，只按刚从这段安排里空出来或换个心情自然冒泡，不编造未记录的具体成果。"}
+                "meaning": "这是角色自己日程表上已过预定时间段的一项安排；不证明实际执行、刚忙完或取得成果。日程结束只是可选的联系机会，结合近期对话判断有没有值得分享的内容；同一件事没有真实新变化、话题已经收尾时，通常留白，不从计划标题续编进度。"}
         return {"event": "accepted_commitment_upcoming", "title": record["title"],
             "detail": record["detail"], "sequence": sequence,
             "starts_at": stamp(due), "local_start": due.astimezone(schedule.zone()).isoformat(),
@@ -315,8 +315,8 @@ class CalendarContactEvents:
                     summary = ("双方此前约定的时间段刚刚走完，可以顺着刚才的约定自然回味一句或轻轻关心对方现在怎么样；"
                                "时间过去不等于确认完成了约定内容，不合适就跳过。")
                 else:
-                    summary = ("角色日程表上的一段安排刚走完预定时间，可以像刚忙完手头这阵事、松口气那样自然冒个泡；"
-                               "只说从安排里空出来的心情或状态，不编造未记录的具体完成成果。")
+                    summary = ("角色日程表上的一段安排已过预定时间，这本身不证明活动执行或产生新进展。"
+                               "结合近期对话与真实记录，有自然的新内容才考虑分享；同一话题已经收尾或只是状态未变，可以留白。")
                 thought = Thought("calendar-transition-" + digest(marker), opportunity, ThoughtKind.CONVERSATION,
                     summary, EvidenceSnapshot(context.scope, at, (source,)), 1.0)
                 self._scans[scan_key] = (token, page_cursor, at)

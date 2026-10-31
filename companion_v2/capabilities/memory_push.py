@@ -29,7 +29,7 @@ from dataclasses import dataclass
 import logging
 from typing import Protocol
 
-from companion_v2.execution.models import digest
+from companion_v2.execution.models import TaskContext, digest
 
 
 logger = logging.getLogger(__name__)
@@ -68,8 +68,11 @@ class MemoryPushRecord:
     metadata: tuple[tuple[str, object], ...] = ()
     confidence: float | None = None
     importance: float | None = None
+    context: TaskContext | None = None
 
     def __post_init__(self):
+        if self.context is not None and not isinstance(self.context, TaskContext):
+            raise ValueError("memory push context must be a resolved task context")
         if self.kind not in PUSH_KINDS:
             raise ValueError("memory push needs a known record kind")
         if (not isinstance(self.memory_id, str) or not self.memory_id.strip()

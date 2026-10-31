@@ -12,7 +12,7 @@ from companion_v2.conversation.reply_settings import ROLE_SHARED_FIELDS, configu
 from companion_v2.conversation.segmentation import SegmentationPolicy
 from companion_v2.proactive.configuration import GROUP as CONTACT_GROUP, configuration_fields as contact_fields
 from companion_v2.proactive.preferences import ContactPreferences
-from companion_v2.proactive.prompts import (INSTRUCTION as CONTACT_INSTRUCTION, ORIGIN_INSTRUCTIONS,
+from companion_v2.proactive.prompts import (INSTRUCTION as CONTACT_INSTRUCTION, DEDUP_INSTRUCTION, ORIGIN_INSTRUCTIONS,
                                            PURPOSES, PURPOSE_INSTRUCTIONS, VOICE_INSTRUCTION, request_for)
 from companion_v2.proactive.persona_judge import INSTRUCTION as JUDGE_INSTRUCTION
 from companion_v2.proactive.service import role_state_for_prompt
@@ -244,7 +244,7 @@ class ProactiveStyleTests(unittest.TestCase):
 
         ordinary = request_for(self.contact_job(), (), preferences, history, last_reply=last_reply)
         self.assertIn("dedup_candidate", {item.purpose for item in ordinary.context.materials})
-        self.assertIn("只用标为 dedup_candidate", ordinary.instruction)
+        self.assertIn(DEDUP_INSTRUCTION, ordinary.instruction)
 
         for purpose in PURPOSES:
             with self.subTest(purpose=purpose):
@@ -264,7 +264,7 @@ class ProactiveStyleTests(unittest.TestCase):
                 self.assertNotIn("private interaction marker", material_text)
                 self.assertNotIn('"rhythm"', material_text)
                 self.assertNotIn("每日上限是保护边界", request.instruction)
-                self.assertNotIn("只用标为 dedup_candidate", request.instruction)
+                self.assertNotIn(DEDUP_INSTRUCTION, request.instruction)
                 self.assertIn("不要把缺少这些材料判为重复", request.instruction)
 
     def test_daily_greeting_gets_contextual_humanized_guidance(self):

@@ -5,6 +5,7 @@ window.CompanionModelsPage = (() => {
   const routing = ["provider", "fallback", "max_output_tokens"];
   const TASK_CONFIG_TIMEOUT_MS = 30000;
   const TASK_CONFIG_RETRY_TIMEOUT_MS = 30000;
+  const VOICE_SAVE_TIMEOUT_MS = 30000;
   const fields = ["provider", "fallback", "prompt", "max_output_tokens", "timeout_seconds", "replacement_rules", "fallback_on_refusal", "refusal_terms", "replacement_scope"];
   const fieldLabel = { provider: "主模型提供方", fallback: "备用模型提供方", prompt: "附加提示词",
     max_output_tokens: "输出上限", timeout_seconds: "请求超时", replacement_rules: "替换规则",
@@ -674,12 +675,29 @@ window.CompanionModelsPage = (() => {
       v.bad = true; v.notice = "语音超时需要设置为 1–120 秒。"; render(); return; }
     const ticket = version, command = retry ? v.pending : {operation_key: crypto.randomUUID(), edit_token: v.data.edit_token, changes: voiceChanges(v)};
     if (!command) return; v.pending = command; v.busy = true; v.bad = false; v.notice = "正在保存语音配置…"; render();
-    try { const data = await api("POST", path + "/voice/save", command); if (!current(ticket, s)) return;
+    let uncertain = retry;
+    try {
+      let data;
+      try { data = await api("POST", path + "/voice/save", command, VOICE_SAVE_TIMEOUT_MS); }
+      catch (err) {
+        if (err?.code !== "bridge_timeout" || retry || !current(ticket, s)) throw err;
+        uncertain = true;
+        v.notice = "保存超时，正在核对原保存结果…"; render();
+        data = await api("POST", path + "/voice/save", command, VOICE_SAVE_TIMEOUT_MS);
+      }
+      if (!current(ticket, s)) return;
       if (!Array.isArray(data.languages) || typeof data.edit_token !== "string") throw failure("invalid_response");
       v.data = data; v.draft = voiceDraft(data); v.pending = null; v.stale = false; v.notice = data.replayed ? "原保存已确认。" : "语音配置已保存，下一次语音回复生效。"; }
     catch (err) { if (!current(ticket, s)) return; v.bad = true;
-      if (err.confirmed) { v.pending = null; v.stale = true; }
-      v.notice = err.confirmed ? (fail(err, "保存未通过，请刷新核对配置。")) : "保存结果未确认，可重试同一请求核对结果。"; }
+      if (err.code === "host_busy") {
+        /* 核对请求没写入不代表最初的超时请求没写入，仍保留原操作。 */
+        if (!uncertain) { v.pending = null; v.stale = false; }
+        v.notice = uncertain ? "宿主正忙，原保存结果仍待核对，请稍后核对原保存结果。"
+          : "宿主正在启动或切换，请稍后重试；本次没有写入，草稿已保留。";
+      } else {
+        if (err.confirmed) { v.pending = null; v.stale = true; }
+        v.notice = err.confirmed ? (fail(err, "保存未通过，请刷新核对配置。")) : "保存结果未确认，可重试同一请求核对结果。";
+      } }
     finally { v.busy = false; if (current(ticket, s)) render(); } }
   function clearVoiceTest(v) { if (v.lastTest?.audioUrl && typeof window.URL?.revokeObjectURL === "function") window.URL.revokeObjectURL(v.lastTest.audioUrl); v.lastTest = null; }
   function voiceAudioUrl(result) {
@@ -803,8 +821,8 @@ window.CompanionModelsPage = (() => {
       ${items.length ? `<label class="model-fd"><span class="model-cap">编辑对象</span>
           <select data-tts-pick>${items.map(option => `<option value="${esc(option.id)}" ${option.id === (item && item.id) ? "selected" : ""}>${esc(option.id)} · ${esc(option.label)}${option.enable ? " · 已启用" : " · 停用"}${option.loaded ? "" : " · 未加载"}</option>`).join("")}</select></label>` : '<p class="model-empty">还没有可管理的语音服务。</p>'}
       ${item && values ? `<div class="model-tts-fields">
-          <label class="model-fd"><span class="model-cap">启用 <em>停用的语音服务不能被语种绑定使用</em></span>
-            <label class="model-switch"><input type="checkbox" data-tts-enable ${values.enable ? "checked" : ""}><i></i></label></label>
+          <div class="model-fd"><span class="model-cap">启用 <em>停用的语音服务不能被语种绑定使用</em></span>
+            <label class="model-switch"><input type="checkbox" aria-label="启用语音服务" data-tts-enable ${values.enable ? "checked" : ""}><i></i></label></div>
            ${fieldMarkup}
         </div>
          <div class="model-editor-actions">
@@ -915,7 +933,7 @@ window.CompanionModelsPage = (() => {
       <div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">按语种配置语音合成</span><h3>${esc(lang.n)}</h3></div>
           <span class="model-tag ${missing ? "r" : binding ? "g" : "n"}">${missing ? "绑定未加载" : binding ? "已加载" : "跟随会话"}</span>
           <button type="button" class="button small" data-voice-editor ${v.loading || v.busy ? "disabled" : ""}>${v.editorOpen ? "收起连接管理" : "新建 / 编辑连接"}</button></div>
-        <div class="model-vtabs">${v.data.languages.map(item => `<button type="button" data-voice-lang="${esc(item.k)}" class="${item.k === lang.k ? "on" : ""}"><b><i class="d" style="background:${dot(item)}"></i>${esc(item.n)}</b><small>${sub(item)}</small></button>`).join("")}</div>
+        <div class="model-vtabs">${v.data.languages.map(item => `<button type="button" data-voice-lang="${esc(item.k)}" class="${item.k === lang.k ? "on" : ""}" title="${sub(item)}"><b><i class="d" style="background:${dot(item)}"></i>${esc(item.n)}</b><small>${sub(item)}</small></button>`).join("")}</div>
         ${shared.length ? `<div class="model-sharewarn"><span style="flex:1">该语音服务同时绑定到${shared.map(item => item.n).join("、")}。V2 按语种独立保存，修改当前语种不会影响其他语种。</span>
           <button type="button" class="button small" data-voice-unbind ${v.busy || v.loading || v.pending ? "disabled" : ""}>解除${shared.map(item => item.n).join("、")}绑定</button></div>` : ""}
         <div class="model-vbar"><label class="model-fd"><span class="model-cap">${esc(lang.n)} 语音服务 <em>连接、凭据和声音由 AstrBot 语音配置管理</em></span>
