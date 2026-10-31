@@ -6,7 +6,11 @@ from dataclasses import replace
 from types import SimpleNamespace as NS
 import unittest
 
-from astrbot_host.video.gemini_provider import GeminiNativeVideoProvider
+try:
+    # google-genai 由宿主提供，requirements.txt 不声明它：契约环境里可能没有。
+    from astrbot_host.video.gemini_provider import GeminiNativeVideoProvider
+except ModuleNotFoundError:  # 只在没装宿主 SDK 的环境里发生，视频契约随之跳过。
+    GeminiNativeVideoProvider = None
 from companion_v2.adapters.astrbot.memory_output import capture, explicit_refusal
 from companion_v2.adapters.astrbot.provider import (AstrBotTextProvider, UsageTariff, _gemini_messages,
                                                     provider_fingerprint)
@@ -334,6 +338,7 @@ def make_video_adapter(providers):
     return adapter, native
 
 
+@unittest.skipUnless(GeminiNativeVideoProvider is not None, "google-genai 由宿主提供，未安装时跳过视频适配器契约")
 class NativeVideoProviderIdentityTests(unittest.IsolatedAsyncioTestCase):
     """宿主刷新注册表后的原生视频适配器：等价重建续接，真实变化拒绝。"""
 
@@ -432,6 +437,7 @@ class NativeVideoProviderIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("parameters_changed", str(raised.exception))
 
 
+@unittest.skipUnless(GeminiNativeVideoProvider is not None, "google-genai 由宿主提供，未安装时跳过视频适配器契约")
 class NativeVideoTextTaskTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
     """刷新后的文本任务（如主动联系）也必须继续走通原生视频适配器。"""
 
