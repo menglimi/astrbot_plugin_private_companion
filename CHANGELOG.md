@@ -1,5 +1,11 @@
 # 更新日志
 
+## 7.0.10 - 2026-11-01
+
+- 修复 `role.self_review` 的结构化输出契约没有真正传给模型（#407）：请求改为 JSON 对象模式，并在系统提示中明确给出顶层 `summary` + `guidance` 及每条候选的 `kind`、`observation`、`next_action`、`confidence`、`evidence_handles`、`expires_at` 字段、取值范围和 evidence_handle 格式，模型不再自行猜测结构后被 `invalid_shape` 拒绝。
+- 修复自我复盘失败后每 5 分钟重试、持续消耗 Token 的问题：`self_review_output_invalid` 等确定性输出契约失败改为 6 小时后再试，网络等临时失败仍保持 5 分钟；成功复盘后照常推进游标。
+- 结构化输出的 schema 名称跟随实际任务，不再把自我复盘标注成 `memory_reflection`。
+
 ## 7.0.9 - 2026-10-31
 
 - 合并 #390：群聊被明确 @ 时不再从工具表摘掉 `group.participation.choose`，改为在投递层延后工具步草稿；模型不会再因历史里的旧工具调用收到“未找到工具”，同一条回复也不会发送两次。

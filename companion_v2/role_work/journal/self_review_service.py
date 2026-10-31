@@ -39,6 +39,18 @@ CURSOR_PREFIX = "role.self_review.cursor.v1:"
 AUTO_APPLY_KINDS = frozenset({"try_next_time", "keep"})
 AUTO_ACTOR = "system:self-review"
 MIN_EVIDENCE = 2
+# A deterministic output-contract failure will not fix itself by asking again a
+# few minutes later: the same model with the same prompt returns the same shape.
+# Back off for hours instead of burning a full request every five minutes.
+OUTPUT_FAILURE_RETRY_SECONDS = 6 * 3600
+TRANSIENT_FAILURE_RETRY_SECONDS = 5 * 60
+
+
+def retry_delay(code):
+    """Seconds to wait before retrying one failed self-review run."""
+    return (OUTPUT_FAILURE_RETRY_SECONDS
+            if code in {"self_review_output_invalid", "self_review_material_changed"}
+            else TRANSIENT_FAILURE_RETRY_SECONDS)
 TERMINAL_AVAILABLE = frozenset({"self_review_private_audience_required"})
 PROMPT = (
     "只依据提供的证据，复盘最近一天这段私聊中有记录的角色工作、产出与回复：检查完成回执与送达回复是否支持结论、是否回应请求、表达不确定性、遵守来源和授权、是否把计划或提案说成完成，并回味相处时的语气温度、共情分寸与接话呼吸感（如哪里说得太生硬啰嗦、哪处贴心默契值得保持）。材料只覆盖本窗口留痕部分，不代表全天情况；不评价用户或第三方，不贴人格标签，不以一次失误推断长期问题，也不以材料缺失断言事情未发生。证据有限时减少建议或使用 no_change；每条指导引用实际 evidence_handle，next_action 具体、短而可执行（像角色私下对下次相处分寸的留心），expires_at 用带时区的短期 ISO 8601。输出仅是待审候选，不表示已修改提示、配置或记忆。"
@@ -165,7 +177,8 @@ class SelfReviewService:
         elif result["state"] == "no_reviewable_window":
             self.next_checks[context.key] = self.tasks.now() + timedelta(seconds=self.empty_retry_seconds)
         else:
-            self.next_checks[context.key] = self.tasks.now() + timedelta(minutes=5)
+            self.next_checks[context.key] = self.tasks.now() + timedelta(
+                seconds=retry_delay(result.get("code")))
         return result
 
     async def generate(self, run):
@@ -177,7 +190,8 @@ class SelfReviewService:
         request = PromptRequest(BackgroundPromptTrigger(job["request_key"], context.actor.principal,
             context.scope, job["at"]), job["instruction"], SealedForegroundContext(
                 (PromptMaterial(OWNER, "role_self_review_evidence", encode(material)),), (), ()),
-            PROMPT, context.role_binding, output_format=OUTPUT_FORMAT)
+            PROMPT, context.role_binding, output_format=OUTPUT_FORMAT,
+            response_format="json_object")
         completion = await self.gateway.generate(run, request)
         try:
             if completion.draft is None:
@@ -258,8 +272,9 @@ class SelfReviewService:
                 if not worker.cancelled():
                     error = worker.exception()
                     if error:
-                        self.results[key] = {"state": "failed", "code": getattr(error, "code", "self_review_failed")}
-                        self.next_checks[key] = self.tasks.now() + timedelta(minutes=5)
+                        code = getattr(error, "code", "self_review_failed")
+                        self.results[key] = {"state": "failed", "code": code}
+                        self.next_checks[key] = self.tasks.now() + timedelta(seconds=retry_delay(code))
         if self.workers or KIND not in self.gateway.router.profiles:
             return
         bindings = tuple(self.app.state_maintenance.bindings.values())
