@@ -148,7 +148,9 @@ window.CompanionLearningOverviewPage = (() => {
         <div class="lh-overview-lanes">${lanes}</div></section>
       ${data.confirming?`<div class="lh-review-confirm" role="alertdialog" aria-label="确认${ACTIONS[data.confirming.action]}"><span>${ACTIONS[data.confirming.action]}这条记录？</span><button type="button" data-lh-confirm="yes">确认${ACTIONS[data.confirming.action]}</button><button type="button" data-lh-confirm="no">取消</button></div>`:""}
       ${data.loading&&!data.growth.length?`<p class="lh-empty">正在读取…</p>`:""}
-      ${!data.loading&&!data.growth.length?`<p class="lh-empty">暂无成长记录</p>`:""}`;
+      ${!data.loading&&!data.growth.length&&!counts.pending&&!counts.active&&!counts.adopted
+        ?`<p class="lh-empty">学习还没有产出。每日复盘会在后台自动运行，表达学习可在「表达学习」点「立即学习」，成长记录需要先给对应用户开启成长提案权限。</p>`
+        :!data.loading&&!data.growth.length?`<p class="lh-empty">暂无成长记录</p>`:""}`;
     window.lucide?.createIcons({attrs:{"aria-hidden":"true"}});
   }
 

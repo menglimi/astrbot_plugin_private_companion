@@ -56,3 +56,32 @@ test("总览汇总全局学习队列、成长阶段和全局策略",async()=>{
   context.window.CompanionLearningOverviewPage.unmount();
   assert.equal(listeners.size,0);
 });
+
+test("总览为空时说明学习链路的三个入口",async()=>{
+  const bridge={apiGet:async(route,query)=>{
+    const data=route.endsWith("/style")?{items:[]}
+      :route.endsWith("/expression")?{settings:{rules_per_turn:2}}
+      :route==="semantic"?{settings:{learning_interval_seconds:21600}}
+      :{items:[]};
+    return {status:"ok",data};
+  }};
+  const window={CompanionProduct:{bridgeNow:()=>bridge,unwrap:value=>value.data}};
+  const context=vm.createContext({window,setTimeout,clearTimeout});
+  vm.runInContext(source,context);
+  const root={isConnected:true,innerHTML:"",addEventListener(){},removeEventListener(){}};
+  const flush=()=>new Promise(resolve=>setTimeout(resolve,0));
+  await context.window.CompanionLearningOverviewPage.mount(root,{
+    sources:[{growthApi:`/${HOST}/targets/profile-a/roles/role-a/growth`,
+      replyApi:`/${HOST}/targets/profile-a/roles/role-a/reply`,label:"私聊 · 角色 A"}],
+    semantic:{global:true},
+  });
+  for(let attempt=0;attempt<50;attempt++){
+    if(context.window.CompanionLearningOverviewPage.state?.loading===false)break;
+    await flush();
+  }
+  assert.equal(context.window.CompanionLearningOverviewPage.state.counts.pending,0);
+  assert.match(root.innerHTML,/学习还没有产出/);
+  assert.match(root.innerHTML,/立即学习/);
+  assert.match(root.innerHTML,/成长提案权限/);
+  context.window.CompanionLearningOverviewPage.unmount();
+});
