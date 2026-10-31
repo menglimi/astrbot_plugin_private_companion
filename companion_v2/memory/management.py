@@ -125,9 +125,15 @@ class MemoryManagement:
                 AND json_remove(context_json, '$.actor.policy_revision') = json_remove(?, '$.actor.policy_revision')
                 GROUP BY state""", (owner, encode(context)))}
         scope = context.scope
+        # Two writers record an authorized conversation input for memory: the host
+        # event adapter publishes ``conversation.host_input`` and the native core
+        # observation path publishes ``conversation.native_input``. Counting only
+        # one owner reports zero for windows that the other writer serves, so the
+        # overview counts both and deduplicates by source id.
         sources = self.writer.runtime.read_one(
-            """SELECT COUNT(*) AS count FROM sources s
-                WHERE s.owner = 'conversation.host_input' AND s.state = 'active'
+            """SELECT COUNT(DISTINCT s.source_id) AS count FROM sources s
+                WHERE s.owner IN ('conversation.host_input', 'conversation.native_input')
+                AND s.state = 'active'
                 AND (s.expires_at IS NULL OR s.expires_at > ?)
                 AND s.installation_id = ? AND s.platform = ? AND s.scope_kind = ? AND s.native_scope_id = ?
                 AND s.bot_id IS ? AND s.account_id IS ? AND s.conversation_id IS ? AND s.session_id IS ?
