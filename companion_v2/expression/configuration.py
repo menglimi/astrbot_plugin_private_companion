@@ -292,7 +292,37 @@ def main_companion_subject(runtime, context):
 
     snapshot = RoleProfileConfigurationOwner(runtime).read(profile_target_for(context), profile_fields())
     value = snapshot.fields[PROFILE_GROUP + ".main_companion_subject"].value
-    return value.strip() or None
+    explicit = value.strip() if type(value) is str else ""
+    if explicit:
+        return explicit
+    # 默认来源是"本人"，但单人部署往往从未填写主要陪伴者。角色只有一个私聊
+    # 参与者时，他就是事实上的本人；多于一个时不猜，仍要求显式配置，避免把
+    # 别人的私聊学进角色表达。
+    return _sole_private_participant(runtime, context)
+
+
+def _sole_private_participant(runtime, context):
+    """The role's only admitted private participant, or None when ambiguous."""
+    parameters = (context.role_binding.role.subject_id, context.scope.bot_id,
+                  context.scope.installation_id)
+    filter_sql = """json_extract(context_json, '$.role_binding.role.subject_id') = ?
+        AND json_extract(context_json, '$.role_binding.scope.bot_id') = ?
+        AND json_extract(context_json, '$.role_binding.scope.installation_id') = ?
+        AND json_extract(context_json, '$.audience.scope.kind') = 'private'
+        AND json_extract(context_json, '$.actor.subject.subject_id') IS NOT NULL"""
+    subjects = set()
+    for table in ("conversation_batches", "conversation_native_turns",
+                  "conversation_native_observations"):
+        try:
+            rows = runtime.read_all(f"""SELECT DISTINCT json_extract(context_json,
+                '$.actor.subject.subject_id') AS subject FROM {table}
+                WHERE {filter_sql} LIMIT 64""", parameters)
+        except Exception:
+            continue
+        subjects.update(row["subject"] for row in rows if row["subject"])
+        if len(subjects) > 1:
+            return None
+    return next(iter(subjects)) if len(subjects) == 1 else None
 
 
 def source_subject_allowed_for_context(runtime, context):

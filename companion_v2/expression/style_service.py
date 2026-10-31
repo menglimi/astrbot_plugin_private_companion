@@ -659,6 +659,13 @@ class ExpressionStyleService:
                 from .private_scope import role_private_contexts
                 candidates = role_private_contexts(self.runtime, self.tasks.identity,
                     self.samples.messages, context, at)
+                # The live binding is authoritative. Private-scope discovery can
+                # legitimately return nothing (identity bindings were rebuilt or
+                # the stored observation is gone); skipping the bound window would
+                # then disable automatic learning forever while the page still
+                # shows an empty rule library.
+                if not candidates:
+                    candidates = (context,)
                 for candidate in candidates:
                     if candidate.key in scanned_private:
                         continue
