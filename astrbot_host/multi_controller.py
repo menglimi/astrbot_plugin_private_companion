@@ -704,8 +704,14 @@ class AstrBotMultiController:
             report_parser_availability(logger)
         except Exception as error:
             logger.warning("[CompanionV2] 文档解析组件自检失败 error_type=%s", type(error).__name__)
-        from .knowledge_sources import attach_official_knowledge
+        from .knowledge_sources import attach_official_knowledge, import_configured_sources_at_startup
         attach_official_knowledge(self.session.application, self.context)
+        # 配置的世界书材料在启动时刷新一次；来源缺失或损坏只记日志，不拦启动，重复刷新按内容去重。
+        try:
+            import_configured_sources_at_startup(self.session.application.runtime, self.context,
+                                                 at=self.now())
+        except Exception as error:
+            logger.warning("[CompanionV2] 启动知识导入失败 error_type=%s", type(error).__name__)
         from .semantic_models import NativeSemanticModels, configured_slang_search_port
         self.session.application.attach_semantics(NativeSemanticModels(self.context, self.settings.common.provider_id,
             configured_slang_search_port(self.context, deepseek_provider_resolver=search_provider_resolver)),

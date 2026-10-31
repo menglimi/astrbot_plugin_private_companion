@@ -17,6 +17,7 @@ is no implicit global lookup in this module.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 import sqlite3
 
@@ -26,6 +27,8 @@ from companion_v2.knowledge.catalog import KnowledgeCatalog, SourceBinding
 from companion_v2.knowledge.configuration import read_installation_settings
 from companion_v2.knowledge.importer import (
     ImportPlan,
+    ImportResult,
+    ImportStatus,
     KnowledgeFormat,
     KnowledgeImporter,
     KnowledgeSourceSpec,
@@ -33,6 +36,8 @@ from companion_v2.knowledge.importer import (
 from companion_v2.knowledge.parsing import parse_knowledge_rows
 from companion_v2.knowledge.retrieval import KnowledgeCandidate
 
+
+logger = logging.getLogger(__name__)
 
 WORLDBOOK_DEFAULTS = (
     "config/plugin_upload_astrbot_plugin_worldbook_config.json",
@@ -89,17 +94,25 @@ def available_source_ids(data_root) -> frozenset[str]:
     return frozenset(identifiers)
 
 
-def import_plan(data_root, binding: SourceBinding, settings) -> ImportPlan | None:
-    """The configured import plan, or None when importing is switched off."""
+def import_plan(data_root, binding: SourceBinding, settings, *, include_knowledge_rows=True) -> ImportPlan | None:
+    """The configured import plan, or None when importing is switched off.
+
+    ``include_knowledge_rows`` is off for the start-up refresh: an AstrBot
+    knowledge base selected in ``knowledge.source_ids`` already reaches a turn
+    through :class:`AstrBotKnowledgeSources` (and, on the native reply chain,
+    through AstrBot itself), so storing the same chunks in the catalogue would
+    hand one document to the same prompt twice.
+    """
     if not settings.import_enabled:
         return None
     specs = []
     for path in worldbook_paths(data_root, settings):
         specs.append(KnowledgeSourceSpec(f"worldbook:{path}", KnowledgeFormat.WORLD_BOOK,
                                          str(path), binding, enabled=True))
-    for identifier in knowledge_base_ids(data_root, settings):
-        specs.append(KnowledgeSourceSpec(identifier, KnowledgeFormat.KNOWLEDGE_ROWS, identifier,
-                                         binding, enabled=True))
+    if include_knowledge_rows:
+        for identifier in knowledge_base_ids(data_root, settings):
+            specs.append(KnowledgeSourceSpec(identifier, KnowledgeFormat.KNOWLEDGE_ROWS, identifier,
+                                             binding, enabled=True))
     return ImportPlan(tuple(specs), KnowledgeSourceReader(data_root))
 
 
@@ -298,19 +311,18 @@ def attach_official_knowledge(application, host_context):
     return sources
 
 
-def import_configured_sources(runtime, *, data_root, binding: SourceBinding, at, settings=None):
+def import_configured_sources(runtime, *, data_root, binding: SourceBinding, at, settings=None,
+                              include_knowledge_rows=True):
     """One start-up or on-demand refresh; returns per-source results, never raises.
 
     The host calls this from its own lifecycle or a management command; nothing
     here runs inside a conversation turn.
     """
-    from companion_v2.knowledge.importer import ImportStatus
-
     if at is None:
         raise ValueError("import requires an explicit observation time")
     settings = settings if settings is not None else read_installation_settings(
         runtime, binding.installation_id)
-    plan = import_plan(data_root, binding, settings)
+    plan = import_plan(data_root, binding, settings, include_knowledge_rows=include_knowledge_rows)
     if plan is None:
         return ()
     importer = KnowledgeImporter(KnowledgeCatalog(runtime), entry_limit=settings.entry_limit,
@@ -320,9 +332,83 @@ def import_configured_sources(runtime, *, data_root, binding: SourceBinding, at,
     except Exception:
         # Import is additive background work: a storage problem must not take the
         # host lifecycle down, and the previous revisions stay readable.
-        from companion_v2.knowledge.importer import ImportResult
         return tuple(ImportResult(spec.source_id, ImportStatus.INVALID, code="import_unavailable")
                      for spec in plan.specs)
+
+
+def _astrbot_data_root(host_context=None):
+    """The AstrBot data root that ``knowledge.import_paths`` resolve against."""
+    root = AstrBotKnowledgeSources(host_context).data_root
+    if root is not None:
+        return Path(root)
+    try:
+        from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+        return Path(get_astrbot_data_path())
+    except Exception:
+        return None
+
+
+def _log_import_results(results):
+    """One count line plus one line per skipped source; never any content."""
+    if not results:
+        logger.info("[CompanionV2] 启动知识导入没有可读来源（未配置或路径全部缺失）")
+        return
+    counts = {status: 0 for status in ImportStatus}
+    entries = members = 0
+    for item in results:
+        counts[item.status] = counts[item.status] + 1
+        if item.status is ImportStatus.IMPORTED:
+            entries, members = entries + item.entries, members + item.member_entries
+    logger.info(
+        "[CompanionV2] 启动知识导入完成 来源=%d 导入=%d 未变=%d 缺失=%d 无效=%d 条目=%d 成员=%d",
+        len(results), counts[ImportStatus.IMPORTED], counts[ImportStatus.UNCHANGED],
+        counts[ImportStatus.MISSING], counts[ImportStatus.INVALID], entries, members)
+    for item in results:
+        if item.ok:
+            continue
+        reason = item.code or item.status.value
+        if item.status is ImportStatus.INVALID:
+            logger.warning("[CompanionV2] 启动知识导入跳过 source=%s reason=%s", item.source_id, reason)
+        else:
+            logger.info("[CompanionV2] 启动知识导入跳过 source=%s reason=%s", item.source_id, reason)
+
+
+def import_configured_sources_at_startup(runtime, host_context=None, *, data_root=None, at):
+    """Refresh the configured world-book material once while the host starts.
+
+    Imports are additive background work, so nothing here raises or delays a
+    start: a missing file, an unparsable one or a storage problem only reaches
+    the log, and the previous revisions stay readable.  Repeating it is harmless
+    because an unchanged source keeps its stored revision.
+
+    Only world-book origins are refreshed; the AstrBot knowledge bases selected
+    in ``knowledge.source_ids`` are read live by :class:`AstrBotKnowledgeSources`
+    and must not also be copied into the catalogue.
+    """
+    try:
+        settings = read_installation_settings(runtime, runtime.installation_id)
+    except Exception as error:
+        logger.warning("[CompanionV2] 启动知识导入读取设置失败 error_type=%s", type(error).__name__)
+        return ()
+    if not settings.import_enabled:
+        logger.info("[CompanionV2] 启动知识导入已关闭 knowledge.import_enabled=false")
+        return ()
+    if at is None:
+        logger.warning("[CompanionV2] 启动知识导入缺少观测时间，已跳过")
+        return ()
+    root = Path(data_root) if data_root is not None else _astrbot_data_root(host_context)
+    if root is None:
+        logger.warning("[CompanionV2] 启动知识导入找不到 AstrBot 数据根目录，已跳过")
+        return ()
+    try:
+        results = import_configured_sources(
+            runtime, data_root=root, binding=SourceBinding(runtime.installation_id), at=at,
+            settings=settings, include_knowledge_rows=False)
+    except Exception as error:
+        logger.warning("[CompanionV2] 启动知识导入失败 error_type=%s", type(error).__name__)
+        return ()
+    _log_import_results(results)
+    return results
 
 
 def _connect(path: Path):
@@ -334,6 +420,7 @@ def _connect(path: Path):
 __all__ = [
     "AstrBotKnowledgeSources", "KNOWLEDGE_BASE_DIR", "KnowledgeSourceReader", "SOURCE_PREFIXES", "WORLDBOOK_DEFAULTS",
     "attach_official_knowledge",
-    "available_source_ids", "import_configured_sources", "import_plan", "knowledge_base_ids",
+    "available_source_ids", "import_configured_sources", "import_configured_sources_at_startup",
+    "import_plan", "knowledge_base_ids",
     "worldbook_paths",
 ]

@@ -524,8 +524,14 @@ class AstrBotStagingController:
             ensure_image_access(self.runtime, self.session.profile.target, observed_at=self.now())
         except Exception as error:
             logger.warning("[CompanionV2] 生图能力授权补齐失败 error_type=%s", type(error).__name__)
-        from .knowledge_sources import attach_official_knowledge
+        from .knowledge_sources import attach_official_knowledge, import_configured_sources_at_startup
         attach_official_knowledge(self.session.application, self.context)
+        # 配置的世界书材料在启动时刷新一次；来源缺失或损坏只记日志，不拦启动，重复刷新按内容去重。
+        try:
+            import_configured_sources_at_startup(self.session.application.runtime, self.context,
+                                                 at=self.now())
+        except Exception as error:
+            logger.warning("[CompanionV2] 启动知识导入失败 error_type=%s", type(error).__name__)
         self.session.bridge.forward_intake = self.settings.forward_intake
         from .semantic_models import NativeSemanticModels, configured_slang_search_port
         self.session.application.attach_semantics(NativeSemanticModels(self.context, self.settings.provider_id,
