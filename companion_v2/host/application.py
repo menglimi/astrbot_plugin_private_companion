@@ -195,6 +195,9 @@ class ShutdownReport:
 
 class CompanionApplication:
     WAL_CHECKPOINT_INTERVAL_SECONDS = 30.0
+    # Expired model reservations only become eligible after twice their task
+    # timeout, so a one-minute maintenance pass never competes with live work.
+    BUDGET_RECLAIM_INTERVAL_SECONDS = 60.0
 
     def __init__(self, runtime, *, registry, profiles, providers, budget, sender, external=None,
                  policy=ConversationPolicy(), limits=SupervisorLimits(), split=single_part,
@@ -614,6 +617,12 @@ class CompanionApplication:
                     break
                 after_attempt_id = page.last_attempt_id
                 await asyncio.sleep(0)
+            # Original model reservations are fenced by attempt generation, so they
+            # are settled here rather than by the task recovery above. Anything a
+            # dead process left behind, or any call that ended without a usage
+            # receipt, is returned to its account once it clearly outlived its task.
+            recovered += self.gateway.ledger.recover(self.tasks)
+            self.gateway.ledger.reclaim_expired(self.tasks, limit=1000)
             while True:
                 page = self.background_waiting.recover(limit=32)
                 recovered += len(page)
@@ -878,6 +887,7 @@ class CompanionApplication:
             loop = asyncio.get_running_loop()
             next_contact_delivery_check = 0.0
             next_wal_checkpoint = loop.time()
+            next_budget_reclaim = loop.time() + self.BUDGET_RECLAIM_INTERVAL_SECONDS
             while self.state == "running":
                 self._wake.clear()
                 require(self.tasks.check_generation())
@@ -958,6 +968,14 @@ class CompanionApplication:
                         worker.add_done_callback(self._report_wal_checkpoint)
                         self._wal_checkpoint_worker = worker
                     next_wal_checkpoint = loop.time() + self.WAL_CHECKPOINT_INTERVAL_SECONDS
+                if loop.time() >= next_budget_reclaim:
+                    # Maintenance, not a request path: a superseded or shutting-down
+                    # controller simply leaves reclamation to the next startup.
+                    try:
+                        self.gateway.ledger.reclaim_expired(self.tasks)
+                    except TaskError as error:
+                        logger.debug("[CompanionV2] 模型过期预留回收跳过 code=%s", error.code)
+                    next_budget_reclaim = loop.time() + self.BUDGET_RECLAIM_INTERVAL_SECONDS
                 delivery_deadline = self.background.next_wake()
                 if delivery_deadline is not None:
                     deadline = min(deadline, delivery_deadline) if deadline else delivery_deadline

@@ -33,7 +33,7 @@ from companion_v2.execution.service import outcome
 from companion_v2.expression.configuration import read_settings as expression_settings
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import OperationRef, VersionRef, normalize_utc
-from companion_v2.model_gateway.models import ModelTaskProfile
+from companion_v2.model_gateway.models import ModelTaskProfile, is_released
 from companion_v2.relationships.private_access import REVOCABLE_ABSENCE_CODES
 from companion_v2.role_work.state import humanized
 from companion_v2.sources.repositories import SourceRepository
@@ -1724,12 +1724,15 @@ class ProactiveContacts:
                 model_task_ids.append(judge_task_id)
             placeholders = ",".join("?" for _ in model_task_ids)
             model_rows = self.runtime.read_all(f"""SELECT state, actual_tokens, actual_cost,
-                    reserved_tokens, reserved_cost, latency_ms FROM model_calls
+                    reserved_tokens, reserved_cost, latency_ms, receipt_ref FROM model_calls
                 WHERE task_id IN ({placeholders})""", tuple(model_task_ids))
             provider_calls = sum(row["state"] in ("dispatched", "generated", "unknown", "discarded")
                                  for row in model_rows)
             confirmed_calls = sum(row["actual_tokens"] is not None for row in model_rows)
             latency_values = [row["latency_ms"] for row in model_rows if row["latency_ms"] is not None]
+            outstanding = tuple(row for row in model_rows
+                                if row["actual_tokens"] is None and row["state"] in ("reserved", "dispatched", "unknown")
+                                and not is_released(row["receipt_ref"]))
             model_metrics = {"provider_calls": provider_calls,
                 "pending_reservations": sum(row["state"] == "reserved" for row in model_rows),
                 "unknown_calls": sum(row["state"] == "unknown" for row in model_rows),
@@ -1737,10 +1740,8 @@ class ProactiveContacts:
                 "tokens": sum(row["actual_tokens"] or 0 for row in model_rows),
                 "cost_microusd": (sum(row["actual_cost"] or 0 for row in model_rows)
                     if any(row["actual_cost"] is not None for row in model_rows) else None),
-                "held_tokens": sum(row["reserved_tokens"] for row in model_rows
-                    if row["actual_tokens"] is None and row["state"] in ("reserved", "dispatched", "unknown")),
-                "held_cost_microusd": sum(row["reserved_cost"] for row in model_rows
-                    if row["actual_cost"] is None and row["state"] in ("reserved", "dispatched", "unknown")),
+                "held_tokens": sum(row["reserved_tokens"] for row in outstanding),
+                "held_cost_microusd": sum(row["reserved_cost"] for row in outstanding),
                 "avg_latency_ms": round(sum(latency_values) / len(latency_values)) if latency_values else None}
             delivery_metrics = {"expected_parts": expected_parts, "created_parts": len(deliveries),
                 "delivered_parts": sum(state == "delivered" for state in states),

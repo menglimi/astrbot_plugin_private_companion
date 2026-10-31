@@ -21,7 +21,7 @@ from companion_v2.identity_policy.personas import PersonaBinding, PersonaSelecto
 from companion_v2.model_gateway.budget import BudgetLedger
 from companion_v2.model_gateway.failures import ModelFailure
 from companion_v2.model_gateway.models import (Amount, BudgetPolicy, CacheSignature, CapturedModelOutput,
-    LocalProvider, ModelTaskProfile, ProviderResponse)
+    LocalProvider, ModelTaskProfile, ProviderResponse, is_released)
 from companion_v2.model_gateway.perception import capability_instruction
 from companion_v2.model_gateway.routing import ModelRouter, configuration_fields
 from companion_v2.model_gateway.service import LocalModelGateway
@@ -741,6 +741,102 @@ class ModelBudgetTests(ModelFixture):
             self.ledger.recover(self.tasks)
         ledger.reconcile_usage("task-2", self.providers[0].binding, Amount(10, 15), receipt_ref="after-restart", observed_at=NOW)
         self.assertTrue(all(a["held_tokens"] == 0 for a in self.accounts()))
+
+    def test_expired_reclaim_releases_only_reservations_past_their_task_timeout(self):
+        stale = self.model_run("stale-call")
+        self.stage_plan(stale)
+        self.ledger.reserve(stale, call_id="stale-call", position=0,
+                            provider=self.providers[0].binding, amount=Amount(30, 100))
+        self.ledger.dispatch(stale, "stale-call")
+        old = (NOW - timedelta(seconds=301)).isoformat(timespec="microseconds")
+        with self.runtime.transaction() as connection:
+            connection.execute("UPDATE model_calls SET started_at = ? WHERE call_id = 'stale-call'", (old,))
+        self.tasks.finish(stale.claim, TaskResult("succeeded")).unwrap()
+        fresh = self.model_run("fresh-call")
+        self.stage_plan(fresh)
+        self.ledger.reserve(fresh, call_id="fresh-call", position=0,
+                            provider=self.providers[0].binding, amount=Amount(20, 50))
+        self.ledger.dispatch(fresh, "fresh-call")
+
+        report = self.ledger.reclaim_expired(self.tasks)
+
+        self.assertEqual((report["released_calls"], report["released_tokens"], report["released_cost_microusd"]),
+                         (1, 30, 100))
+        rows = {row["call_id"]: row for row in self.call_rows()}
+        self.assertEqual(rows["stale-call"]["state"], "dispatched")
+        self.assertTrue(rows["stale-call"]["receipt_ref"].startswith("local:released:expired-reservation"))
+        self.assertIsNone(rows["fresh-call"]["receipt_ref"])
+        self.assertTrue(all((a["held_tokens"], a["held_cost"]) == (20, 50) for a in self.accounts()))
+        self.assertEqual(self.ledger.reclaim_expired(self.tasks)["released_calls"], 0)
+        audit = self.ledger.reclaim_audit()
+        self.assertEqual((audit["released_calls"], audit["released_tokens"]), (1, 30))
+        self.assertIn("at", audit)
+
+    def test_reclaim_threshold_follows_the_owning_task_timeout(self):
+        registrations = tuple(TaskRegistration(replace(entry.definition, timeout_seconds=400), entry.validate)
+                              for entry in self.registrations)
+        supervisor = self.supervisor(registrations=registrations)
+        supervisor.attach(expected_generation=1).unwrap()
+        supervisor.submit(self.spec("slow-call")).unwrap()
+        claim = supervisor.claim(Lane.FOREGROUND).unwrap().claim
+        supervisor.begin(claim).unwrap()
+        run = TaskRun(supervisor, claim, supervisor.read(self.context, "slow-call").unwrap())
+        self.stage_plan(run)
+        self.ledger.reserve(run, call_id="slow-call", position=0,
+                            provider=self.providers[0].binding, amount=Amount(30, 100))
+        self.ledger.dispatch(run, "slow-call")
+        for age, expected in ((500, 0), (801, 1)):
+            with self.runtime.transaction() as connection:
+                connection.execute("UPDATE model_calls SET started_at = ? WHERE call_id = 'slow-call'",
+                                   ((NOW - timedelta(seconds=age)).isoformat(timespec="microseconds"),))
+            self.assertEqual(self.ledger.reclaim_expired(supervisor)["released_calls"], expected)
+
+    def test_release_is_idempotent_and_a_late_receipt_charges_only_once(self):
+        run = self.model_run()
+        self.stage_plan(run)
+        self.ledger.reserve(run, call_id="released-call", position=0,
+                            provider=self.providers[0].binding, amount=Amount(30, 100))
+        self.ledger.dispatch(run, "released-call")
+
+        released = self.ledger.release("released-call", observed_at=self.clock.now())
+        self.assertEqual((released.tokens, released.cost_microusd), (30, 100))
+        self.assertTrue(all(a["held_tokens"] == 0 for a in self.accounts()))
+        self.assertEqual(self.ledger.release("released-call", observed_at=self.clock.now()), Amount(0, 0))
+        self.ledger.settle("released-call", self.providers[0].binding,
+                           ProviderResponse("unknown", failure=ModelFailure.TRANSPORT),
+                           observed_at=self.clock.now())
+        self.assertTrue(is_released(self.call_rows()[0]["receipt_ref"]))
+        self.assertTrue(all(a["held_tokens"] == 0 for a in self.accounts()))
+
+        self.ledger.reconcile_usage("released-call", self.providers[0].binding, Amount(9, 21),
+                                    receipt_ref="late-receipt", observed_at=self.clock.now())
+        self.assertTrue(all((a["held_tokens"], a["spent_tokens"], a["spent_cost"]) == (0, 9, 21)
+                            for a in self.accounts()))
+        self.assertFalse(is_released(self.call_rows()[0]["receipt_ref"]))
+        with self.assertRaises(TaskError):
+            self.ledger.reconcile_usage("released-call", self.providers[0].binding, Amount(10, 21),
+                                        receipt_ref="changed", observed_at=self.clock.now())
+
+    def test_concurrent_release_of_one_reservation_returns_the_hold_once(self):
+        run = self.model_run()
+        self.stage_plan(run)
+        self.ledger.reserve(run, call_id="shared-call", position=0,
+                            provider=self.providers[0].binding, amount=Amount(70, 100))
+        self.ledger.dispatch(run, "shared-call")
+        other = BudgetLedger(self.open_runtime(), self.budget_policy)
+
+        def release(ledger):
+            return ledger.release("shared-call", observed_at=self.clock.now()).tokens
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = tuple(pool.map(release, (self.ledger, other)))
+        self.assertEqual(sorted(results), [0, 70])
+        self.assertTrue(all(a["held_tokens"] == 0 for a in self.accounts()))
+
+    def test_reclaim_requires_the_current_supervisor(self):
+        with self.assertRaises(TaskError) as error:
+            self.ledger.reclaim_expired(self.supervisor())
+        self.assertEqual(error.exception.code, "supervisor_fenced")
 
     def test_same_day_policy_change_cannot_reset_spending_or_expand_budget(self):
         run = self.model_run()
