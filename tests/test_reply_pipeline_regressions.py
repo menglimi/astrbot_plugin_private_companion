@@ -14,6 +14,8 @@ from companion_v2.conversation.text_processing import ReplyTextPolicy, text_poli
 from companion_v2.legacy.configuration_migration import (
     convert_configuration,
     convert_plugin_configuration,
+    plugin_configuration_defaults,
+    plugin_configuration_rules,
 )
 from tests.test_host_application import HostFixture
 from tests.test_role_tool_loop import answered
@@ -72,8 +74,13 @@ class ReplyPresetTests(unittest.TestCase):
         self.assertNotIn("，", json.loads(defaults["split_words"]))
         self.assertEqual(migrated, migrated_presentation(source, "group"))
         schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+        plugin_defaults = plugin_configuration_defaults()
         for key, item in schema["segmentation"]["items"].items():
             self.assertEqual(item["default"], asdict(SegmentationPolicy())[key], key)
+            self.assertEqual(plugin_defaults["segmentation." + key], item["default"], key)
+        split_rule = next(rule for rule in plugin_configuration_rules()
+                          if rule["target"] == "segmentation.split_words")
+        self.assertEqual(split_rule["contract"]["default"], defaults["split_words"])
 
     def test_profile_segmentation_overrides_the_plugin_defaults(self):
         source = json.loads((ROOT / "fixtures/reply_segmentation.v1.json").read_text(encoding="utf-8"))
