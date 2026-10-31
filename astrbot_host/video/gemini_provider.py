@@ -249,9 +249,16 @@ class GeminiNativeVideoProvider:
 
     def _usage(self, result):
         metadata = getattr(result, "usage_metadata", None)
-        prompt_tokens = getattr(metadata, "prompt_token_count", None)
-        output_tokens = getattr(metadata, "candidates_token_count", None)
-        cached_tokens = getattr(metadata, "cached_content_token_count", 0) if metadata else None
+        if metadata is None:
+            return None
+        # A counter the upstream did not report arrives as an explicit ``None``:
+        # the attribute exists, so ``getattr``'s default never applies. Relays
+        # omit the cached count on ordinary calls, and that alone used to discard
+        # the whole receipt. Read every counter the way the host's own
+        # ``_extract_usage`` does, so a missing counter cannot cost the receipt.
+        prompt_tokens = getattr(metadata, "prompt_token_count", None) or 0
+        output_tokens = getattr(metadata, "candidates_token_count", None) or 0
+        cached_tokens = getattr(metadata, "cached_content_token_count", None) or 0
         if (type(prompt_tokens) is not int or type(output_tokens) is not int
                 or type(cached_tokens) is not int or not 0 <= cached_tokens <= prompt_tokens
                 or not 0 <= prompt_tokens + output_tokens <= 10**12):
