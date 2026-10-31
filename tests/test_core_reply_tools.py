@@ -166,6 +166,14 @@ class CoreReplyToolsTests(ExternalFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.runtime.read_one("SELECT COUNT(*) n FROM model_rounds", ())["n"], 0)
         self.assertEqual(self.event.sent, [])
 
+    async def test_native_external_tool_remaps_a_changed_provider_binding(self):
+        changed = replace(self.bindings["device.play"], version="2", generation="host-reloaded")
+        self.bindings["device.play"] = changed
+        result = await self.call_native("device.play", {"query": "music"})
+        self.assertEqual(result["state"], "succeeded")
+        self.assertEqual(len(self.extension_calls), 1)
+        self.assertEqual(self.extension_calls[0].descriptor.binding, changed)
+
     async def test_unknown_external_action_cannot_be_replayed_under_another_id_or_event(self):
         async def unknown(invocation):
             return self.response(invocation, state="unknown")

@@ -316,14 +316,64 @@ class ExternalToolTests(ExternalFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(delivery2.queue_next(self.context, batch, deadline_at=self.deadline).failure.code,
                          "tool_owner_unavailable")
 
-    async def test_provider_generation_change_blocks_original_delivery(self):
+    async def test_provider_generation_change_remaps_instead_of_filtering(self):
         self.model_uses()
         batch = await self.generate()
-        self.bindings["device.read"] = replace(self.bindings["device.read"], generation="host-generation-2")
-        self.assertNotIn("device.read", {s.action for s in self.tools.catalog_for(self.context)})
-        self.assertEqual(self.delivery.queue_next(self.context, batch, deadline_at=self.deadline).failure.code,
-                         "external_provider_changed")
+        changed = replace(self.bindings["device.read"], version="2", generation="host-generation-2")
+        self.bindings["device.read"] = changed
+        self.assertIn("device.read", {s.action for s in self.tools.catalog_for(self.context)})
+        await self.deliver_next(batch)
         self.assertEqual(len(self.extension_calls), 1)
+
+    async def test_binding_change_is_remapped_once_and_dispatch_uses_the_current_binding(self):
+        _, run, completion = await self.stage()
+        changed = replace(self.bindings["device.read"], version="2", generation="host-generation-2")
+        self.bindings["device.read"] = changed
+        with self.assertLogs("companion_v2.conversation.external_tools", level="WARNING") as logs:
+            self.assertIn("device.read", {s.action for s in self.tools.catalog_for(self.context)})
+            exchange = await self.tools.execute_async(run, completion.call_id, completion.tool_calls[0])
+        self.assertEqual(json.loads(exchange.result_json)["state"], "succeeded")
+        self.assertEqual(len(self.extension_calls), 1)
+        self.assertEqual(self.extension_calls[0].descriptor.binding, changed)
+        self.assertEqual(len(logs.records), 1)
+        self.assertIn("host-generation-1", logs.output[0])
+        self.assertIn("host-generation-2", logs.output[0])
+
+    async def test_remapping_refuses_a_missing_provider(self):
+        _, run, completion = await self.stage()
+        self.bindings.pop("device.read")
+        self.assertNotIn("device.read", {s.action for s in self.tools.catalog_for(self.context)})
+        exchange = await self.tools.execute_async(run, completion.call_id, completion.tool_calls[0])
+        result = json.loads(exchange.result_json)
+        self.assertEqual((result["state"], result["code"]), ("failed", "external_provider_changed"))
+        self.assertEqual(self.extension_calls, [])
+
+    async def test_remapping_refuses_a_different_provider(self):
+        _, run, completion = await self.stage()
+        self.bindings["device.read"] = replace(self.bindings["device.read"], provider="other-provider")
+        self.assertNotIn("device.read", {s.action for s in self.tools.catalog_for(self.context)})
+        exchange = await self.tools.execute_async(run, completion.call_id, completion.tool_calls[0])
+        result = json.loads(exchange.result_json)
+        self.assertEqual((result["state"], result["code"]), ("failed", "external_provider_changed"))
+        self.assertEqual(self.extension_calls, [])
+
+    async def test_remapping_refuses_a_different_capability(self):
+        _, run, completion = await self.stage()
+        self.bindings["device.read"] = replace(self.bindings["device.read"], capability="device.play")
+        self.assertNotIn("device.read", {s.action for s in self.tools.catalog_for(self.context)})
+        exchange = await self.tools.execute_async(run, completion.call_id, completion.tool_calls[0])
+        result = json.loads(exchange.result_json)
+        self.assertEqual((result["state"], result["code"]), ("failed", "external_provider_changed"))
+        self.assertEqual(self.extension_calls, [])
+
+    async def test_a_stable_binding_logs_nothing_and_keeps_the_original_declaration(self):
+        _, run, completion = await self.stage()
+        with self.assertNoLogs("companion_v2.conversation.external_tools", level="WARNING"):
+            self.assertIn("device.read", {s.action for s in self.tools.catalog_for(self.context)})
+            exchange = await self.tools.execute_async(run, completion.call_id, completion.tool_calls[0])
+        self.assertEqual(json.loads(exchange.result_json)["state"], "succeeded")
+        self.assertEqual(self.extension_calls[0].descriptor.binding, self.bindings["device.read"])
+        self.assertEqual(self.extension._rebindings, {})
 
     async def test_pause_resume_role_disable_and_revoke_recheck_catalog_and_delivery(self):
         self.model_uses()

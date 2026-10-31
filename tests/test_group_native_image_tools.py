@@ -263,16 +263,26 @@ class GroupNativeImageToolTests(GroupImageToolFixture, unittest.IsolatedAsyncioT
         visible = next(m for m in self.view(self.context, batch).context.materials if m.purpose == "actual_tool_results")
         self.assertEqual(json.loads(visible.payload)[0]["result"], json.loads(exchange.result_json))
 
-    async def test_changed_provider_invalidates_old_group_history(self):
+    async def test_changed_provider_binding_remaps_without_hiding_group_image_history(self):
         self.model_uses(call())
         batch = await self.generate()
         await self.deliver_next(batch)
         other, next_batch = self.later_group_request()
         self.bindings["image.generate"] = replace(self.bindings["image.generate"], generation="replacement")
+        self.assertIn("image.generate", {t.action for t in self.tools.catalog_for(self.context)})
+        self.assertTrue(self.view(other, next_batch))
+        self.assertEqual(len(self.invocations), 1)
+
+    async def test_removed_image_provider_still_hides_the_tool_and_blocks_history(self):
+        self.model_uses(call())
+        batch = await self.generate()
+        await self.deliver_next(batch)
+        other, next_batch = self.later_group_request()
+        self.bindings.pop("image.generate")
+        self.assertNotIn("image.generate", {t.action for t in self.tools.catalog_for(self.context)})
         with self.assertRaises(TaskError) as error:
             self.view(other, next_batch)
         self.assertEqual(error.exception.code, "external_provider_changed")
-        self.assertNotIn("image.generate", {t.action for t in self.tools.catalog_for(self.context)})
         self.assertEqual(len(self.invocations), 1)
 
     async def assert_generated_revocation_blocks_text_history(self, target):
