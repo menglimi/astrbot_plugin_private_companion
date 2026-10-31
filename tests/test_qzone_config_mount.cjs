@@ -26,6 +26,10 @@
  * 工作台对未保存草稿的保存与恢复。
  *
  * 用 node --test 运行。
+ *
+ * 同一个「真跑 app.js」的装置也用来验凭据行：它是面板上另一处曾经说假话的
+ * 地方（「尚未使用 / 没有可用来源」）。刷新凭据的响应可能带着请求开始时的
+ * 旧快照，所以页面必须在成功之后重读一次状态，并且 unknown 只能说「尚未检查」。
  */
 "use strict";
 const assert = require("node:assert/strict");
@@ -144,7 +148,9 @@ const ROLE = {
 function qzoneStatus() {
   return {
     installed: true, active: true, role_enabled: true, package_version: "1.0.0",
-    credential: {state: "ok"},
+    /* 进程刚启动、还没取过一次凭据时的真实初值：unknown 只表示「还没检查」，
+       不是「没有可用来源」。 */
+    credential: {state: "unknown", source: "none", uin_masked: "", reason: ""},
     consent: {feed: true, like: true, comment: true, publish: true},
     runtime: {settings: {enabled: true, like_enabled: true, comment_enabled: true, publish_enabled: true}},
     catalogue: {scenes: {}, topics: []},
@@ -248,7 +254,8 @@ function harness({configEditorsCreatable = true} = {}) {
   const settle = async () => {
     for (let round = 0; round < 4; round += 1) await new Promise(resolve => setImmediate(resolve));
   };
-  return {context, document, run, host, live, mounted, qzoneEditors, settle, editors, requests, status, shell, loadFailure};
+  return {context, document, run, host, live, mounted, qzoneEditors, settle, editors, requests, status, shell, product,
+    loadFailure};
 }
 
 /* 加载期那一抛必须是启动段的那一抛：函数都在，页面还没开始跑。 */
@@ -408,4 +415,70 @@ test("配置编辑器创建失败时，挂载点换成一句实话而不是转�
   page.run("paintQzone()");
   assert.equal(page.live().length, 0, "创建失败时重画也不该建出空壳编辑器");
   assert.match(page.host().innerHTML, /class="config-editors-hint"/);
+});
+
+/* ---- 凭据行：说「尚未检查」，还是「没有可用来源」 ---------------------------- */
+
+test("凭据还没读过：显示「尚未检查」，只有失败才说「没有可用来源」", async () => {
+  const page = loadPage();
+  await enterActionPage(page);
+
+  const row = page.run("qzoneCredentialMarkup(qzoneStatus().credential)");
+  assert.match(row, /尚未检查/, "unknown 不该被写成「尚未使用」");
+  assert.match(row, /刷新凭据或读一次空间即可确认/, "unknown 要告诉用户下一步怎么做");
+  assert.doesNotMatch(row, /没有可用来源/, "还没检查过不能断言没有来源");
+  assert.match(page.document.getElementById("actionQzoneBody").innerHTML, /尚未检查/,
+    "状态行里应当直接显示这句实话");
+
+  /* 真的失败（比如没有可用的 OneBot 连接）才有资格说「没有可用来源」。 */
+  const failed = page.run(
+    "qzoneCredentialMarkup({state:'failed',source:'none',reason:'没有可用的 OneBot 连接'})");
+  assert.match(failed, /读取失败/);
+  assert.match(failed, /没有可用来源/);
+  assert.match(failed, /没有可用的 OneBot 连接/);
+});
+
+test("刷新凭据：响应带的是刷新前快照，也必须重读状态并按新结果说话", async () => {
+  const page = loadPage();
+  await enterActionPage(page);
+  const stale = {...page.status,
+    credential: {state: "unknown", source: "none", uin_masked: "", reason: ""}};
+  const fresh = {...page.status,
+    credential: {state: "ready", source: "runtime", uin_masked: "1******89", reason: ""}};
+  const calls = [];
+  page.product.request = async (method, route) => {
+    calls.push({method, route});
+    /* 模拟修复前的宿主：refresh 的成功响应里还带着刷新前的凭据状态。 */
+    return method === "POST" && /refresh-credentials$/.test(route) ? stale : fresh;
+  };
+
+  await page.run("qzoneRefreshCredentials()");
+
+  assert.deepEqual(calls.map(call => `${call.method} ${call.route}`),
+    ["POST qzone-extension/refresh-credentials", "GET qzone-extension/status"],
+    "刷新凭据之后必须再读一次状态");
+  assert.equal(page.run("qzoneState.status.credential.state"), "ready",
+    "页面采用了响应里的旧快照，而不是重读到的状态");
+  const notice = page.run("qzoneState.notice");
+  assert.equal(notice.error, false);
+  assert.match(notice.text, /凭据已刷新/);
+  const row = page.run("qzoneCredentialMarkup(qzoneStatus().credential)");
+  assert.match(row, /已就绪/);
+  assert.match(row, /取自当前 Bot 登录/);
+  assert.doesNotMatch(row, /尚未检查|没有可用来源/);
+});
+
+test("刷新后仍是 unknown：提示语不冒充「已刷新」", async () => {
+  const page = loadPage();
+  await enterActionPage(page);
+  const unknown = {...page.status,
+    credential: {state: "unknown", source: "none", uin_masked: "", reason: ""}};
+  page.product.request = async () => unknown;
+
+  await page.run("qzoneRefreshCredentials()");
+
+  const notice = page.run("qzoneState.notice");
+  assert.equal(notice.error, true);
+  assert.match(notice.text, /还没有被读取/);
+  assert.doesNotMatch(notice.text, /凭据已刷新/);
 });

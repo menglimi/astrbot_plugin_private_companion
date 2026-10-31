@@ -127,6 +127,19 @@ class QzoneService:
     def state(self, context):
         return self.store.read(owner_key(context))
 
+    def last_credential_state(self):
+        """The transport's latest page-facing credential conclusion, read now.
+
+        The host transport owns the session and re-binds this conclusion on every
+        acquisition, so a copy taken when a route was built goes stale the moment
+        that same request refreshes the session. Reading it here -- and never
+        probing the network -- keeps the page row honest without turning
+        ``/status`` into a blocking credential lookup. A transport that cannot
+        report a conclusion contributes an empty row rather than a made-up state.
+        """
+        state = getattr(self.transport, "last_credential_state", None)
+        return dict(state or {})
+
     def agenda_suggestions(self, context, *, limit=MAX_PENDING):
         """Pending suggestions this role is still waiting on an answer for."""
         return self.suggestions.pending(owner_key(context), limit=limit)
@@ -220,6 +233,10 @@ class QzoneService:
             settings_error = ""
         return {"settings": settings, "settings_error": settings_error,
                 "blocked_reason": block_reason(state, at=at), "auth_status": state.last_auth_status,
+                # The one source of truth for the page's credential row: read from
+                # the transport at call time, so a refresh-and-report response can
+                # never carry the conclusion from before that refresh.
+                "credential": self.last_credential_state(),
                 "publish_day": state.publish_day, "publish_count": state.publish_count,
                 "recent_publish_texts": list(state.recent_publish_texts),
                 # Open questions this role is waiting on; written back through the
