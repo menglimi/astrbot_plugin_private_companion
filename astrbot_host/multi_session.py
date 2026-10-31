@@ -1026,7 +1026,7 @@ class MultiHostSession:
                         health_material = await self._huawei_health_material(context, self.now())
                         from .external_memory import prepare_external_memory
                         external_memory = await prepare_external_memory(
-                            self.context, self.application, context, captured)
+                            self.bridge.context, self.application, context, captured)
                         prompt = build_core_reply_prompt(self.application, context, captured, at=self.now(),
                                                          keyword_materials=keyword_entries,
                                                          health_material=health_material,
