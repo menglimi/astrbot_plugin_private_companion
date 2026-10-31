@@ -1,12 +1,18 @@
+from datetime import datetime, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace as NS
 import unittest
 
+from companion_v2.configuration.models import ConfigLayer, ConfigTarget
 from companion_v2.conversation.media.output_settings import (
-    DEFAULTS, apply_prompts, configuration_fields, image_request_denial, is_rule_image_request,
-    parse_scene_presets, prompt_instruction,
+    DEFAULTS, GROUP, ImageOutputConfigurationOwner, apply_prompts, configuration_fields,
+    effective_settings, image_request_denial, is_rule_image_request, parse_scene_presets,
+    prompt_instruction,
 )
 from companion_v2.execution.models import TaskError
-from companion_v2.foundation.refs import ScopeKind, SubjectKind
+from companion_v2.foundation.refs import ScopeKind, SubjectKind, SubjectRef
+from companion_v2.storage.runtime import StorageRuntime
 
 
 class ImageOutputSettingsTests(unittest.TestCase):
@@ -101,6 +107,46 @@ class ImageOutputSettingsTests(unittest.TestCase):
         result = apply_prompts({"prompt": "selfie，穿家居服坐在书桌边"}, "image.generate", values)
         self.assertEqual(result["prompt"], "角色外观锚点\nanime illustration\n柔和夜间光线\nselfie，穿家居服坐在书桌边")
         self.assertEqual(result["negative_prompt"], "错误人物")
+
+    def test_blank_negative_prompt_falls_back_to_the_built_in_safe_default(self):
+        cases = (("image.generate", "text2img", "a quiet street at night"),
+                 ("image.generate", "selfie", "selfie in a cozy room"),
+                 ("image.edit", "edit", "repaint the background"))
+        for action, kind, prompt in cases:
+            for blank in ("", "   ", "\n"):
+                with self.subTest(kind=kind, blank=repr(blank)):
+                    values = {**DEFAULTS, kind + "_negative_prompt": blank}
+                    result = apply_prompts({"prompt": prompt}, action, values)
+                    self.assertEqual(result["negative_prompt"], DEFAULTS[kind + "_negative_prompt"])
+
+    def test_explicit_negative_prompt_still_wins_over_the_built_in_default(self):
+        values = {**DEFAULTS, "text2img_negative_prompt": "bad hands, extra fingers"}
+        result = apply_prompts({"prompt": "a cat on a windowsill"}, "image.generate", values)
+        self.assertEqual(result["negative_prompt"], "bad hands, extra fingers")
+
+    def test_unset_negative_prompt_uses_the_built_in_default(self):
+        values = {key: value for key, value in DEFAULTS.items() if key != "selfie_negative_prompt"}
+        result = apply_prompts({"prompt": "selfie by the window"}, "image.generate", values)
+        self.assertEqual(result["negative_prompt"], DEFAULTS["selfie_negative_prompt"])
+
+    def test_effective_settings_treat_stored_blank_negative_prompts_as_unset(self):
+        temporary = TemporaryDirectory(prefix="companion-v2-image-output-")
+        self.addCleanup(temporary.cleanup)
+        installation = "installation-image-output"
+        runtime = StorageRuntime.open(data_root=Path(temporary.name) / "v2", installation_id=installation)
+        self.addCleanup(runtime.close)
+        role = SubjectRef(installation, SubjectKind.BOT, "role-a")
+        target = ConfigTarget(installation, ConfigLayer.ROLE, role, bot_id="bot-a")
+        ImageOutputConfigurationOwner(runtime).write(
+            target, configuration_fields(), reset=(), expected_revision=0,
+            observed_at=datetime(2026, 10, 31, tzinfo=timezone.utc),
+            changes={GROUP + "." + kind + "_negative_prompt": ""
+                     for kind in ("text2img", "selfie", "edit")})
+        context = NS(scope=NS(installation_id=installation, bot_id="bot-a"),
+                     role_binding=NS(role=role))
+        values = effective_settings(runtime, context)
+        for kind in ("text2img", "selfie", "edit"):
+            self.assertEqual(values[kind + "_negative_prompt"], DEFAULTS[kind + "_negative_prompt"])
 
     def test_scene_presets_reject_duplicate_and_unbounded_values(self):
         duplicate = '[{"id":"home","name":"居家","prompt":"room"},{"id":"home","name":"卧室","prompt":"bedroom"}]'

@@ -78,6 +78,9 @@ const DEFAULTS = {
   voice_primary_mention_prompt: '',
   voice_provider_id: '', voice_zh_provider_id: '', voice_ja_provider_id: '',
   voice_en_provider_id: '', voice_extra_prompt: '', style_prompt: '',
+  voice_private_zh_provider_id: '', voice_private_ja_provider_id: '',
+  voice_private_en_provider_id: '', voice_group_zh_provider_id: '',
+  voice_group_ja_provider_id: '', voice_group_en_provider_id: '',
   enable_humanized_expression: false, humanized_expression_prompt: '',
 };
 const LIMITS = {
@@ -168,7 +171,8 @@ function harness() {
     'wakeup_cold_group', 'wakeup_fatigue', 'group_continuation', 'private_debounce',
     'silence_policy', 'group_air_guard',
     'private_closing', 'group_content_safety',
-    'context_image', 'image_narration', 'video_narration', 'file_understanding', 'forwards', 'voice', 'components', 'checks'];
+    'context_image', 'image_narration', 'video_narration', 'file_understanding', 'forwards', 'voice',
+    'voice_channels', 'components', 'checks'];
   const sectionTabs = sectionIds.map(id => {
     const tab = {dataset: {wbSection: id}, focus() {}, click() {
       listeners['settings:click']?.({target: {closest: selector => selector === '[data-wb-section]' ? tab : null}});
@@ -367,7 +371,7 @@ test('the card is split into labelled groups but keeps one save', async () => {
   const instance = live(harnessed);
   /* vm 上下文里的数组与宿主 realm 不同，比较前先过 plain()。 */
   const ids = plain(instance.state.container.groups.map(group => group.id));
-  assert.deepEqual(ids, ['segment', 'style', 'cleanup', 'voice', 'components', 'checks']);
+  assert.deepEqual(ids, ['segment', 'style', 'cleanup', 'voice', 'voice_channels', 'components', 'checks']);
   assert.ok(plain(instance.state.container.groups.find(group => group.id === 'voice').fields)
     .includes('voice_provider_id'));
   assert.ok(!ids.some(id => ['wakeup_direct', 'wakeup_interest', 'wakeup_members', 'wakeup_cold_group',
@@ -564,9 +568,39 @@ test('expression modules render only their own navigation and panels after every
   assert.match(h.slots.scope.innerHTML, /音色与 TTS 合成后端在「模型与连接」中配置/);
   assert.doesNotMatch(h.slots.scope.innerHTML, /核心回复|历史兼容|群唤醒/);
   html = h.slots.settings.innerHTML;
-  assert.doesNotMatch(html, /data-wb-section=|data-wb-section-panel=/);
+  assert.match(html, /data-wb-section="voice"/);
+  assert.match(html, /data-wb-section="voice_channels"/);
+  assert.match(html, /data-wb-section-panel="voice_channels"/);
+  assert.equal(instance.state.activeGroupId, 'voice');
   assert.match(html, /data-wb-row="voice_enabled"/);
+  assert.doesNotMatch(html, /data-wb-section="segment"|data-wb-section="components"|data-wb-section="checks"/);
   assert.doesNotMatch(html, /data-wb-row="reply_quote_enabled"|data-wb-row="enabled"/);
+  h.page.unmount();
+});
+
+test('voice channel overrides are reachable and save from the voice module', async () => {
+  const h = await loaded(harness());
+  h.page.setExpressionModule('expression-voice');
+  assert.equal(h.page.selectSection('voice_channels'), true);
+  const instance = live(h);
+  assert.equal(instance.state.activeGroupId, 'voice_channels');
+  const overrides = ['voice_private_zh_provider_id', 'voice_private_ja_provider_id',
+    'voice_private_en_provider_id', 'voice_group_zh_provider_id',
+    'voice_group_ja_provider_id', 'voice_group_en_provider_id'];
+  for (const name of overrides) {
+    assert.ok(instance.state.container.fields[name], `${name} is editable`);
+    assert.match(h.slots.settings.innerHTML, new RegExp(`data-wb-field="${name}"`));
+    instance.state.draft[name] = 'tts-a';
+  }
+  const saving = instance.save(false);
+  await drains();
+  assert.deepEqual(plain(h.requests[1].body.changes),
+    Object.fromEntries(overrides.map(name => [name, 'tts-a'])));
+  h.requests[1].resolve({result: {operation_id: 'voice-channels', replayed: false},
+    status: status(Object.fromEntries(overrides.map(name => [name, 'tts-a'])), 'f'.repeat(64))});
+  await saving;
+  await drains();
+  assert.equal(instance.state.base.voice_private_ja_provider_id, 'tts-a');
   h.page.unmount();
 });
 
