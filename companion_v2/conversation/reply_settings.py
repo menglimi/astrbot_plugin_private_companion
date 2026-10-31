@@ -68,6 +68,7 @@ GROUP_WAKEUP_DEFAULTS = {"group_wakeup_enabled": True, "group_wakeup_direct_word
                          "group_wakeup_debounce_pending_penalty": 65,
                          "group_wakeup_image_enabled": False,
                          "group_wakeup_image_weight": 0.2,
+                         "group_wakeup_image_default_guidance_enabled": True,
                          "group_wakeup_short_text_wait_ms": 15000, "group_wakeup_log_limit": 80}
 GROUP_WAKEUP_ADDED_FIELDS = frozenset(("group_wakeup_bot_name_enabled",
     "group_wakeup_generated_keyword_limit", "group_wakeup_topic_interest_max_boost",
@@ -219,7 +220,8 @@ def group_wakeup_settings(values):
     settings = {key: values.get(key, default) for key, default in GROUP_WAKEUP_DEFAULTS.items()}
     if any(type(settings[key]) is not bool for key in ("group_wakeup_enabled", "group_wakeup_question_enabled",
                                                     "group_wakeup_cold_group_enabled", "group_wakeup_bot_name_enabled",
-                                                    "group_wakeup_image_enabled")):
+                                                    "group_wakeup_image_enabled",
+                                                    "group_wakeup_image_default_guidance_enabled")):
         raise ConfigurationError("reply_configuration_invalid", "group wakeup switches must be boolean")
     for key in GROUP_WAKEUP_WORD_FIELDS:
         raw = settings[key]
