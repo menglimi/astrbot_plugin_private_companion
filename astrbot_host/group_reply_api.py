@@ -11,7 +11,7 @@ from companion_v2.conversation.reply_management import ReplyManagement
 from companion_v2.execution.models import TaskContext, TaskError, digest
 from companion_v2.expression.style_management import ExpressionStyleManagement
 from companion_v2.foundation.outcome import Outcome
-from companion_v2.foundation.refs import OperationRef, ScopeKind, ScopeRef, VersionRef
+from companion_v2.foundation.refs import OperationRef, RoleOwnerRef, ScopeKind, ScopeRef, VersionRef
 
 from .group_settings import GroupTarget, group_session_matches
 from .management_identity import dashboard_operator
@@ -253,6 +253,39 @@ class GroupReplyWebAPI:
                                                    "invalid UTF-8 group participation settings request"))
         return await self._run("participation_configure", data)
 
+    @staticmethod
+    def _empty_style_page(reason):
+        """A group that has no readable expression scope is an empty page.
+
+        The page shows one source per configured group, so failing the whole
+        request turns an expected "this group has not produced a V2 turn yet"
+        state into a page-level alert. Row-level unreadability is already
+        expressed with ``unavailable_reason``; the group-level empty state uses
+        the same field. Commands still require a real context.
+        """
+        return {"items": [], "counts": {}, "next_cursor": None, "unavailable_reason": reason}
+
+    @staticmethod
+    def _legacy_expression_count(controller, scope, role_id):
+        """Count old group rules stored in the pre-fix synthetic scope.
+
+        Old group imports used ``conversation_id = session_id = group_id``.
+        Those rows are neither listed nor injected at the runtime scope, so the
+        page would silently show no rules. The count is read-only diagnostic
+        data: rows are not moved here, because run/signal identities derive
+        from the scope and a careless migration would duplicate evidence and
+        rotation history.
+        """
+        legacy = ScopeRef(scope.installation_id, scope.platform, ScopeKind.GROUP,
+                          scope.native_scope_id, scope.bot_id, scope.account_id,
+                          scope.native_scope_id, scope.native_scope_id)
+        if digest(legacy) == digest(scope):
+            return 0
+        owner = RoleOwnerRef(scope.installation_id, scope.bot_id, role_id)
+        row = controller.runtime.read_one("""SELECT COUNT(*) AS count FROM expression_style_signals
+            WHERE owner_key = ? AND scope_key = ?""", (digest(owner), digest(legacy)))
+        return int(row["count"]) if row is not None else 0
+
     def _style_context(self, controller, session_id, binding, scope):
         from companion_v2.conversation.native_turns import latest_scope
         native = latest_scope(controller.runtime, scope)
@@ -358,11 +391,28 @@ class GroupReplyWebAPI:
                     raise TaskError("group_reply_target_required", "the native group target changed")
                 current = session.application.tasks.identity.resolve_role(scope, observed_at=controller.now())
                 if current.failure:
+                    if method == "list":
+                        if current.failure.code == "role_binding_missing":
+                            page = self._empty_style_page(current.failure.code)
+                            page["legacy_orphan_count"] = self._legacy_expression_count(
+                                controller, scope, self.role_id)
+                            return outcome_response(Outcome.success(page))
+                        # Installation, authorization and identity failures are
+                        # not an empty group and must stay visible.
+                        raise TaskError(current.failure.code, current.failure.reason)
                     raise TaskError("expression_group_context_required", "this group session has no original conversation yet")
                 binding = current.unwrap()
                 if binding.role != role:
                     raise TaskError("group_reply_role_changed", "the native group session selected another role")
-                context = self._style_context(controller, session_id, binding, scope)
+                try:
+                    context = self._style_context(controller, session_id, binding, scope)
+                except TaskError as error:
+                    if method == "list" and error.code == "expression_group_context_required":
+                        page = self._empty_style_page(error.code)
+                        page["legacy_orphan_count"] = self._legacy_expression_count(
+                            controller, scope, binding.role.subject_id)
+                        return outcome_response(Outcome.success(page))
+                    raise
                 operator = dashboard_operator(controller.runtime, username, at=controller.now())
                 manager = ExpressionStyleManagement(session.application)
                 if command:
@@ -377,6 +427,11 @@ class GroupReplyWebAPI:
                     if method == "list":
                         arguments["dimension"] = query.get("dimension") or None
                     result = getattr(manager, method)(operator=operator, context=context, **arguments)
+                    if method == "list" and result.is_success:
+                        page = result.unwrap()
+                        page["legacy_orphan_count"] = self._legacy_expression_count(
+                            controller, scope, binding.role.subject_id)
+                        result = Outcome.success(page)
                 return outcome_response(result)
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))

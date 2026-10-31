@@ -19,7 +19,7 @@ from companion_v2.configuration.owners import SparseConfigurationOwner
 from companion_v2.conversation.participation import (ACTION, CONFIG_GROUP as PARTICIPATION_GROUP,
     group_participation_settings)
 from companion_v2.expression.configuration import GROUP_SCOPE_GROUP
-from companion_v2.foundation.refs import ScopeKind, ScopeRef
+from companion_v2.foundation.refs import RoleOwnerRef, ScopeKind, ScopeRef
 from tests.group_host_support import GroupFixture, group_config
 from tests.native_adapter_support import completion
 from tests.test_group_participation import command
@@ -397,6 +397,55 @@ class GroupReplyHostAPITests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.clock.advance(timedelta(seconds=15))
         self.controller.session.application.notify()
         await wait_for_batch(self.controller.session, pending)
+
+    async def test_style_list_without_a_group_session_is_an_empty_page_but_commands_still_fail(self):
+        await self.start_host()
+        # A configured group that has never produced a V2 turn is an expected
+        # empty state, not a page-level read failure. The page must still know
+        # why it is empty.
+        listing = await self.request("/style", query="state=adopted&limit=50")
+        self.assertEqual(listing["status"], "ok", listing)
+        self.assertEqual(listing["data"]["items"], [])
+        self.assertEqual(listing["data"]["unavailable_reason"], "role_binding_missing")
+        self.assertIsNone(listing["data"]["next_cursor"])
+        self.assertEqual(listing["data"]["legacy_orphan_count"], 0)
+        # Authorization and identity errors are not swallowed by that fallback.
+        unauthenticated = await self.request("/style", username=None, query="state=adopted&limit=50")
+        self.assertEqual(unauthenticated["status"], "error", unauthenticated)
+        self.assertEqual(unauthenticated["data"]["code"], "dashboard_identity_required")
+        # Decisions still need a real conversation context and keep failing.
+        command = await self.request("/style/command", data={
+            "signal_id": "signal-missing", "action": "retire",
+            "view_token": "token", "operation_key": "group-style-command"})
+        self.assertEqual(command["status"], "error", command)
+        self.assertEqual(command["data"]["code"], "expression_group_context_required")
+
+    async def test_style_list_reports_old_synthetic_scope_rules_without_moving_them(self):
+        await self.start_host()
+        runtime = self.controller.runtime
+        target = self.controller.settings.target("group-a")
+        legacy = ScopeRef(runtime.installation_id, target.platform_id, ScopeKind.GROUP,
+            target.group_id, target.bot_id, target.account_id, target.group_id, target.group_id)
+        owner = digest(RoleOwnerRef(runtime.installation_id, target.bot_id, "role-a"))
+        now = self.clock.now().isoformat()
+        with runtime.transaction() as connection:
+            connection.execute("""INSERT INTO expression_style_runs
+                (run_id, owner_key, scope_key, sample_json, material_hash, summary, state, created_at, decided_at)
+                VALUES (?, ?, ?, '{}', 'synthetic', '旧版表达', 'decided', ?, ?)""",
+                ("legacy-expression:test", owner, digest(legacy), now, now))
+            connection.execute("""INSERT INTO expression_style_signals
+                (signal_id, run_id, owner_key, scope_key, dimension, observation, proposal,
+                 confidence, evidence_json, state, created_at, decided_at, ordinal)
+                VALUES (?, ?, ?, ?, 'diction', '旧版群规则', '继续使用', 1.0, '[]', 'adopted', ?, ?, 0)""",
+                ("legacy-signal:test", "legacy-expression:test", owner, digest(legacy), now, now))
+        listing = await self.request("/style", query="state=adopted&limit=50")
+        self.assertEqual(listing["status"], "ok", listing)
+        self.assertEqual(listing["data"]["items"], [])
+        self.assertEqual(listing["data"]["legacy_orphan_count"], 1)
+        # The diagnostic is read-only: the old row stays in its original scope.
+        row = runtime.read_one("SELECT scope_key FROM expression_style_signals WHERE signal_id = ?",
+                               ("legacy-signal:test",))
+        self.assertEqual(row["scope_key"], digest(legacy))
 
     async def test_invalid_json_identity_session_role_and_core_downgrade(self):
         await self.start_host()

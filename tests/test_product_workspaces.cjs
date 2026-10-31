@@ -301,6 +301,25 @@ test("server rejection envelopes stay confirmed through the product and workspac
   assert.equal(response.confirmed, true);
 });
 
+test("a bridge-only machine code is recovered and labeled with its workspace source", async () => {
+  /* The live Dashboard page bridge rejects with `new Error(message)` only:
+     a status=error envelope loses `data.code` before a workspace sees it. The
+     broker must recover the snake_case code and attach the source label so the
+     embedded page can explain which source failed. */
+  const h = await harness(null, [], {
+    getFailureEndpoint: "targets/first/roles/synthetic-role/persona",
+    getFailure: new Error("expression_group_context_required"),
+  });
+  h.product.mountWorkspace();
+  await h.request(h.persona, "GET", "persona", "persona-machine-code");
+  const response = h.persona.messages.find(message => message.requestId === "persona-machine-code");
+  assert.equal(response.ok, false);
+  assert.equal(response.code, "expression_group_context_required");
+  assert.match(response.sourceLabel, /私聊/);
+  assert.match(response.sourceLabel, /小伴/);
+  assert.equal(response.reason, "expression_group_context_required");
+});
+
 test("request timeouts are configurable and timeout diagnostics omit target and query identifiers", async () => {
   const h = await harness(null, [], {captureTimers: true, captureWarnings: true});
   h.timers.length = 0;

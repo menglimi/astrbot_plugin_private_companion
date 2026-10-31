@@ -32,6 +32,9 @@ window.CompanionExpressionSignalsPage = (() => {
     expression_export_invalid: "请选择不超过 200 条有效规则。",
     expression_export_empty: "没有来源仍有效的已启用规则可导出。",
     expression_operation_conflict: "导入操作编号已用于其他分享包，请重新预览。",
+    expression_group_context_required: "该群还没有可用于表达学习的对话，先在该群正常聊一次再读取。",
+    role_binding_missing: "这个来源还没有绑定角色，先在对应会话里正常聊一次，或重新读取角色与会话。",
+    group_reply_target_required: "这个群目标与当前账号或角色不匹配，请重新读取角色与会话。",
     staging_not_initialized: "角色数据尚未加载，请重新读取。",
     staging_host_terminated: "陪伴服务已停止，请重新读取。",
     dashboard_identity_required: "当前登录状态不可用，请重新打开陪伴小屋。",
@@ -63,6 +66,7 @@ window.CompanionExpressionSignalsPage = (() => {
   let writing = false;
   let notice = "";
   let error = false;
+  let readIssues = [];
   let confirming = null;
   let transferOpen = false;
   let transferBusy = false;
@@ -82,6 +86,13 @@ window.CompanionExpressionSignalsPage = (() => {
       Object.fromEntries(states.map(state => [state, {items: [], cursor: "", done: false, loaded: false}]))]));
   }
   const sourceLabel = source => source?.label || "未命名范围";
+  /* page bridge 只带 message 的旧形态也要能认出机器码；来源名优先用 broker
+     回填的标签，它对应本次请求实际选择的目标与角色。 */
+  const issueCode = problem => errorCode(problem?.code) || errorCode(problem?.message) || "";
+  const issueLabel = (source, problem) => {
+    const supplied = typeof problem?.sourceLabel === "string" ? problem.sourceLabel.trim() : "";
+    return supplied.slice(0, 160) || sourceLabel(source);
+  };
   const selectedImportSource = () => sources.find(source => source.key === importSourceKey) || sources[0] || null;
   function mounted(current = mountTicket) { return !!root?.isConnected && current === mountTicket; }
   async function bounded(promise) {
@@ -137,7 +148,7 @@ window.CompanionExpressionSignalsPage = (() => {
     const request = ++readTicket;
     const requestedFilter = filter;
     const requestedStateFilter = stateFilter;
-    if (!append) { pages = pageState(); items = []; capacity = null; capacityBySource = {}; countsBySource={}; confirming = null; notice = ""; error = false; selectedExportIds = new Set(); }
+    if (!append) { pages = pageState(); items = []; capacity = null; capacityBySource = {}; countsBySource={}; confirming = null; notice = ""; error = false; readIssues = []; selectedExportIds = new Set(); }
     const requestsToRead = sources.flatMap(source => Object.keys(pages[source.key] || {})
       .filter(state => !pages[source.key][state].loaded
         || append && pages[source.key][state].cursor && !pages[source.key][state].done)
@@ -151,16 +162,33 @@ window.CompanionExpressionSignalsPage = (() => {
     }));
     if (!mounted(current) || request !== readTicket || requestedFilter !== filter
         || requestedStateFilter !== stateFilter) return false;
-    const failures = [];
+    const discovered = [];
     results.forEach((result, index) => {
       const {source,state} = requestsToRead[index];
-      if (result.status === "rejected") { failures.push(reason(result.reason?.code)); return; }
+      if (result.status === "rejected") {
+        const code = issueCode(result.reason);
+        discovered.push({kind: "error", label: issueLabel(source, result.reason), code,
+          detail: reason(code || result.reason?.message)});
+        return;
+      }
       const page = result.value.page;
+      const target = pages[source.key][state];
+      if (typeof page.unavailable_reason === "string" && page.unavailable_reason) {
+        const code = errorCode(page.unavailable_reason);
+        discovered.push({kind: "unavailable", label: sourceLabel(source), code,
+          detail: reason(code || page.unavailable_reason)});
+        target.cursor = ""; target.done = true; target.loaded = true;
+        return;
+      }
       if(page.counts && typeof page.counts==="object") countsBySource[source.key]=page.counts;
       if (page.capacity && Number.isInteger(page.capacity.active) && Number.isInteger(page.capacity.limit)) {
         capacityBySource[source.key] = page.capacity;
       }
-      const target = pages[source.key][state];
+      if (Number.isInteger(page.legacy_orphan_count) && page.legacy_orphan_count > 0) {
+        discovered.push({kind: "legacy", label: sourceLabel(source), code: "legacy_expression_scope",
+          count: page.legacy_orphan_count,
+          detail: `${page.legacy_orphan_count} 条旧版群规则保存在旧作用域，暂未生效；需要单独迁移后才能读取和生效。`});
+      }
       const incoming = page.items.map(item => ({...item, _state: state, _source:source,
         _key:source.key + "::" + item.signal_id}));
       target.items = append ? target.items.concat(incoming) : incoming;
@@ -171,8 +199,26 @@ window.CompanionExpressionSignalsPage = (() => {
     const capacities=Object.values(capacityBySource);
     capacity=capacities.length?capacities.reduce((total,value)=>({active:total.active+value.active,limit:total.limit+value.limit}),{active:0,limit:0}):null;
     rebuildItems(); busy = false;
-    if (failures.length) { notice = failures.length === requestsToRead.length ? "规则暂时无法读取，请重新读取。" : "部分规则暂时无法读取，已显示可用记录。"; error = true; }
-    render(); return failures.length < requestsToRead.length;
+    readIssues = append ? readIssues.concat(discovered.filter(issue =>
+      !readIssues.some(existing => existing.kind === issue.kind && existing.label === issue.label)))
+      : discovered;
+    const failedCount = readIssues.filter(issue => issue.kind === "error").length;
+    const unavailableCount = readIssues.filter(issue => issue.kind === "unavailable").length;
+    const legacyRules = readIssues.filter(issue => issue.kind === "legacy")
+      .reduce((total, issue) => total + (Number(issue.count) || 0), 0);
+    if (failedCount) {
+      notice = failedCount === sources.length
+        ? "全部来源都没有读取成功，请检查来源配置后重新读取。"
+        : `${sources.length} 个来源中 ${failedCount} 个读取失败，已显示可用记录。`;
+      error = true;
+    } else if (legacyRules) {
+      notice = `${legacyRules} 条旧版群规则保存在旧作用域，暂未生效。`;
+      error = false;
+    } else if (unavailableCount) {
+      notice = `${unavailableCount} 个来源还没有可读取的表达学习记录，已显示其他来源。`;
+      error = false;
+    }
+    render(); return failedCount < sources.length;
   }
   function renderEvidence(item) {
     const evidence = Array.isArray(item.evidence) ? item.evidence : [];
@@ -287,6 +333,7 @@ window.CompanionExpressionSignalsPage = (() => {
     const rows = visible.map(renderItem).join("");
     const more = hasMore() ? `<button type="button" class="lh-signal-more lh-command" data-signal-more ${busy ? "disabled" : ""}>加载更多</button>` : "";
     const cap = capacity ? `待审与启用 ${capacity.active} / ${capacity.limit}` : `${items.length} 条`;
+    const issueList = readIssues.length ? `<details class="lh-signal-evidence"><summary>查看读取明细 · ${readIssues.length} 个来源</summary><ol>${readIssues.map(issue => `<li data-code="${e(issue.code)}"><b>${e(issue.label)}</b>：${e(issue.detail)}</li>`).join("")}</ol></details>` : "";
     const importTargets=sources.length>1?`<label class="lh-expression-transfer-target"><span>导入目标</span><select data-share-target aria-label="规则导入目标">${sources.map(source=>`<option value="${e(source.key)}" ${source.key===importSourceKey?"selected":""}>${e(sourceLabel(source))}</option>`).join("")}</select></label>`:"";
     const transfer = transferOpen ? `<section class="lh-expression-transfer" aria-label="表达规则分享与导入">
       <div class="lh-expression-transfer-head"><strong>表达规则分享</strong><button type="button" class="lh-refresh" data-share-close aria-label="收起" title="收起"><i data-lucide="chevron-up"></i></button></div>
@@ -308,7 +355,7 @@ window.CompanionExpressionSignalsPage = (() => {
       ${sources.length>1?`<label>记录来源<select data-rule-source-filter><option value="all">全部来源</option>${sources.map(source=>`<option value="${e(source.key)}" ${sourceFilter===source.key?"selected":""}>${e(sourceLabel(source))}</option>`).join("")}</select></label>`:""}</div>
       ${transfer}
       ${renderEditor()}
-      ${notice ? `<p class="lh-inline-status ${error ? "is-error" : ""}" role="status">${e(notice)}</p>` : ""}
+      ${notice ? `<div class="lh-inline-status ${error ? "is-error" : ""}" role="status"><span>${e(notice)}</span>${issueList}</div>` : ""}
       ${rows || `<div class="lh-signal-empty">${busy ? "正在读取…" : kindFilter!=="all"||sourceFilter!=="all"?"当前筛选下没有表达规则":stateFilter === "pending" ? "还没有待审候选" : stateFilter === "retired" ? "还没有停用的表达规则" : stateFilter==="rejected"?"还没有拒绝的表达规则":"还没有已启用表达规则"}</div>`}${more}</section>`;
     window.lucide?.createIcons({attrs: {"aria-hidden": "true"}});
   }
@@ -527,7 +574,7 @@ window.CompanionExpressionSignalsPage = (() => {
       key:String(source.key||source.scopeKey||value||index),scopeKey:source.scopeKey||source.key||"",apiBase:value}:null;}).filter(Boolean);
     apiBase=sources[0]?.apiBase||"";scopeKey=sources[0]?.scopeKey||"";importSourceKey=sources[0]?.key||"";
     filter = FILTERS.some(([key]) => key === options.state) ? options.state : "all";
-    items = []; pages = {}; capacity = null; notice = ""; busy = false; writing = false; error = false; confirming = null;
+    items = []; pages = {}; capacity = null; notice = ""; busy = false; writing = false; error = false; readIssues = []; confirming = null;
     transferOpen = false; transferBusy = false; transferNotice = ""; transferError = false; importJSON = ""; importPreview = null;
     exportPackage = null; selectedExportIds = new Set();
     editor=null;kindFilter="all";sourceFilter="all";stateFilter="active";
@@ -535,6 +582,6 @@ window.CompanionExpressionSignalsPage = (() => {
     window.addEventListener?.("companion-expression-updated", onUpdated); const current = ++mountTicket;
     if (sources.length) void read(current); else { notice = "没有可读取的表达规则来源。"; error = true; render(); }
   }
-  function unmount() { mountTicket++; readTicket++; root?.removeEventListener("click", onClick); root?.removeEventListener("change", onChange); root?.removeEventListener("input", onInput); window.removeEventListener?.("companion-expression-updated", onUpdated); root = null; apiBase = ""; scopeKey = ""; sources=[];items = []; pages = {}; capacity = null;capacityBySource={}; busy = false; writing = false; transferBusy = false; confirming = null; }
+  function unmount() { mountTicket++; readTicket++; root?.removeEventListener("click", onClick); root?.removeEventListener("change", onChange); root?.removeEventListener("input", onInput); window.removeEventListener?.("companion-expression-updated", onUpdated); root = null; apiBase = ""; scopeKey = ""; sources=[];items = []; pages = {}; capacity = null;capacityBySource={}; readIssues=[]; busy = false; writing = false; transferBusy = false; confirming = null; }
   return {mount, unmount, get state() { return {items, busy, notice, scopeKey, filter, capacity,sources}; }};
 })();
