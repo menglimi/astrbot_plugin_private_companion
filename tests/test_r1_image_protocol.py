@@ -502,15 +502,17 @@ class ImageConfigurationContractTests(unittest.TestCase):
 
 
 class MigrationContractTests(unittest.TestCase):
-    def migrated_endpoint(self, **overrides):
+    def migrated(self, **overrides):
         item = {"name": "Legacy", "platform": "openai", "base_url": "https://api.example.test/v1",
                 "model": "image-v1", "timeout_seconds": 120}
         item.update(overrides)
-        result = convert_image_configuration({"photo_action_config": {
+        return convert_image_configuration({"photo_action_config": {
             "photo_generation_backend": "external",
             "external_image_api_endpoints": [item],
         }})
-        return result.output_changes["endpoints"][0]
+
+    def migrated_endpoint(self, **overrides):
+        return self.migrated(**overrides).output_changes["endpoints"][0]
 
     def test_migration_does_not_invent_the_standard_quality(self):
         migrated = self.migrated_endpoint()
@@ -524,9 +526,13 @@ class MigrationContractTests(unittest.TestCase):
         self.assertEqual(migrated["quality"], "hd")
 
     def test_invalid_legacy_quality_falls_back_to_the_server_default(self):
-        migrated = self.migrated_endpoint(quality="ultra")
+        result = self.migrated(quality="ultra")
+        migrated = result.output_changes["endpoints"][0]
 
         self.assertEqual(migrated["quality"], "")
+        # 降级必须留痕：差异记录被删掉时，这里要能报出来。
+        self.assertEqual([(item["field"], item["kind"]) for item in result.differences],
+                         [("image.output.endpoints.1.quality", "invalid_value")])
 
 
 if __name__ == "__main__":

@@ -75,6 +75,16 @@ _PLATFORM_ALIASES = {
 # V1 never exposed an image quality knob.  A migrated endpoint therefore starts
 # on the service default instead of claiming ``standard``, a value only older
 # dall-e models accept; a quality the operator did write is kept as is.
+#
+# The save path owns the same vocabulary (``IMAGE_QUALITIES`` in
+# ``astrbot_host/native_extensions/image_native/output_configuration.py``) and this
+# package may not import ``astrbot_host`` (``companion_v2.foundation.isolation``),
+# so the two sets stay separate.
+# ``test_quality_vocabularies_match_the_save_path_exactly`` compares the sets in
+# both directions (the save side also accepts "" for "use the service default"),
+# so a value added to only one side fails there: a migration-only value would make
+# the save path reject the whole ``image.output`` write, and a save-only value
+# would be downgraded here into a spurious ``invalid_value`` difference.
 _IMAGE_QUALITIES = frozenset({"auto", "low", "medium", "high", "standard", "hd"})
 
 
@@ -608,3 +618,76 @@ def convert_image_configuration(config: dict) -> ImageConfigurationMigration:
 
     return ImageConfigurationMigration(preferences, preference_sources, output_changes,
                                        output_sources, tuple(differences))
+
+
+def _owns_output_backend(current) -> bool:
+    """Whether the saved V2 image output already owns an executable configuration."""
+    if not isinstance(current, dict):
+        return True
+    if current.get("enabled") is True or current.get("backend", "auto") != "auto":
+        return True
+    if current.get("legacy_backend"):
+        return True
+    if current.get("endpoints"):
+        return True
+    for name in ("sd_webui", "comfyui"):
+        value = current.get(name)
+        if not isinstance(value, dict):
+            continue
+        if any(value.get(key) for key in ("base_url", "api_key", "api_key_set", "parameters", "workflows")):
+            return True
+    return False
+
+
+def _owns_download_proxy(current) -> bool:
+    """Whether the operator already saved the V2 image download group.
+
+    ``current`` is the V2 page projection.  A never-touched network group is
+    projected as ``{"download_proxy_set": False}``, while every saved group also
+    carries ``use_environment_proxy`` (the save path always persists both keys).
+    Presence of that key -- not its value -- is what tells an explicit clear
+    (``{"download_proxy_set": False, "use_environment_proxy": False}``) apart from
+    "no V2 save yet", so a cleared proxy is preserved instead of being restored
+    from V1.  A non-empty ``download_proxy`` is accepted as well so a raw saved
+    configuration is recognized too.
+    """
+    network = current.get("network") if isinstance(current, dict) else None
+    if not isinstance(network, dict):
+        return False
+    return ("use_environment_proxy" in network
+            or bool(network.get("download_proxy") or network.get("download_proxy_set")))
+
+
+def plan_image_output_changes(current, changes):
+    """Decide which migrated V1 image groups may still be written into V2.
+
+    The migration can be re-run, so it runs against an image output configuration
+    the operator may already have edited in the new page.  Two mistakes are
+    possible and must be avoided in opposite directions:
+
+    * rewriting a group V2 already owns silently discards that edit -- the
+      download proxy is the one group a V2-only save can set on its own, without
+      any endpoint queue, so it cannot be inferred from the endpoint fields;
+    * skipping the whole intent because one group is owned would strand an
+      operator who has only touched that group: the endpoints of a not yet
+      migrated V1 configuration would never arrive.
+
+    A configuration V2 owns as a whole (a backend, a queue or a local connection)
+    still preserves the complete intent, exactly as before; only a proxy saved on
+    its own preserves that single group and lets the rest migrate.
+    """
+    if not isinstance(changes, dict) or not changes:
+        return {}, ()
+    if _owns_output_backend(current):
+        return {}, ({"field": "image.output", "kind": "preserved_v2",
+                     "before": "V1 图片模型与队列设置", "after": "V2 已有图片模型设置",
+                     "explain": "V2 已保存图片模型、端点队列或后端连接，为避免覆盖，本次保留 V2 设置。"},)
+    if "network" not in changes or not _owns_download_proxy(current):
+        return dict(changes), ()
+    writable = {field: value for field, value in changes.items() if field != "network"}
+    explain = "V2 已保存在线图片下载代理设置（含显式清空），为避免覆盖，本次保留 V2 设置。"
+    if writable:
+        explain += "其余 V1 图片设置照常迁移。"
+    return writable, ({"field": "image.output.network", "kind": "preserved_v2",
+                       "before": "V1 在线图片下载代理", "after": "V2 已保存的在线图片下载代理设置",
+                       "explain": explain},)

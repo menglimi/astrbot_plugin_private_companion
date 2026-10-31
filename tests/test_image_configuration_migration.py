@@ -99,6 +99,32 @@ class ImageConfigurationMigrationTests(unittest.TestCase):
         self.assertFalse(result.output_changes["enabled"])
         self.assertTrue(any(item["kind"] == "incomplete_backend" for item in result.differences))
 
+    def test_quality_vocabularies_match_the_save_path_exactly(self):
+        # 迁移端与保存端各写一份词表（companion_v2 的隔离规则不允许反向导入
+        # astrbot_host，保存端所在的镜像制品又被发布基线钉住）。这里直接比较
+        # 两个集合，而不是只遍历保存端：任一方向多出一个取值都会先红——迁移端
+        # 多出会让保存端整份拒绝 image.output，保存端多出会让迁入的端点被静默
+        # 降级成 invalid_value。空串只属于保存端，表示“用服务端默认”。
+        from astrbot_host.native_extensions.image_native.output_configuration import IMAGE_QUALITIES
+        from companion_v2.legacy.image_configuration_migration import _IMAGE_QUALITIES
+
+        self.assertEqual(IMAGE_QUALITIES, set(_IMAGE_QUALITIES) | {""})
+
+    def test_every_save_path_quality_reaches_the_endpoint_unchanged(self):
+        # 词表相等由上一个用例钉住；这里验证每个保存端取值迁入后都不被改写，
+        # 也不产生差异记录（例如将来给迁移加“归一化”时先红）。
+        from astrbot_host.native_extensions.image_native.output_configuration import IMAGE_QUALITIES
+
+        for quality in sorted(IMAGE_QUALITIES):
+            with self.subTest(quality=quality):
+                result = convert_image_configuration({"photo_action_config": {
+                    "external_image_api_endpoints": [{"name": "Quality", "platform": "openai",
+                        "base_url": "https://api.example.test/v1", "model": "image-v1",
+                        "quality": quality}],
+                }})
+                self.assertEqual(result.output_changes["endpoints"][0]["quality"], quality)
+                self.assertEqual(result.differences, ())
+
 
 if __name__ == "__main__":
     unittest.main()
