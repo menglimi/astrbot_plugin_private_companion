@@ -156,6 +156,30 @@ class CoreReplyGroupOwnerToolTests(NativeOwnerCalls, GroupFixture, unittest.Isol
         self.assertNotIn("payload", replay)
         self.assert_no_reply_work()
 
+    async def test_addressed_group_turn_still_offers_and_runs_the_participation_choice(self):
+        # Production called companion_v2_group_participation_choose on every @
+        # turn even after 7.0.1 stopped offering it there, so the host answered
+        # "tool not found" and the turn was wasted.  The tool must stay in the
+        # set so the call the model makes from history runs normally.
+        event = self.group_event(identifier="native-group-addressed", text="吃什么")
+        event.message_obj.message.append(NS(type="At", qq="100"))
+        admission = require(await self.controller.group_reply_candidate(event))
+        self.assertTrue(admission["admitted"], admission)
+        self.assertTrue(admission["mentioned"], admission)
+        prepared = require(await self.controller.prepare_core_reply(event, group_admission=admission))
+        prepared["group_admission"] = dict(admission)
+        prepare_core_reply_event(event, prepared,
+            authorize=lambda value: self.controller.authorize_core_reply(event, value))
+        request = NS(func_tool=None, system_prompt="原人格")
+        inject_core_reply_tools(event, request, application=self.app)
+        self.assertIsNotNone(request.func_tool.get_tool(native_tool_name("group.participation.choose")))
+        choice = await self.call(event, request, "group.participation.choose",
+                                 {"mode": "reply", "reason": "被点名"})
+        self.assertEqual(choice["state"], "succeeded", choice)
+        self.assertEqual(choice["payload"]["mode"], "reply")
+        self.assertEqual(event.get_extra(CORE_REPLY_CONTEXT_EXTRA)["group_participation"]["mode"], "reply")
+        self.assert_no_reply_work()
+
 
 class CoreReplySemanticOwnerToolTests(NativeOwnerCalls, MultiFixture, unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
