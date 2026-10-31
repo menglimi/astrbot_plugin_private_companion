@@ -35,6 +35,7 @@
 ### 文档与支持
 
 - 使用说明：[插件 Wiki](https://vue.syuan.org)
+- 开发者入口：[开发文档索引](docs/README.md) · [贡献指南](CONTRIBUTING.md) · [第三方扩展开发规范](docs/extension-development.md)
 - 源代码：[GitHub 仓库](https://github.com/menglimi/astrbot_plugin_private_companion)
 - 6.7.0 源码备份：[只读备份仓库](https://github.com/menglimi/astrbot_plugin_private_companion_legacy_6_7_0)
 - 问题反馈/交流群：QQ 群 `1097283005`
@@ -434,6 +435,7 @@ flowchart LR
 
 ### 5.7 外部记忆插件桥接
 
+- **通用 Provider 接口**：第三方插件可通过 `extension_api.register_memory_provider()` 注册召回、写入与统计回调，支持优先级、生命周期检查和注销。默认补充私聊记忆，并接收已完成的日记、梦境及主动消息记录；详见[接入文档与示例](docs/external-memory-provider.md)。
 - **我会牢牢记住你（MemoryCompanion）**：7.x 对外同时提供 **P6 只读状态契约**（固定 schema、契约指纹与有界计数）和正式 **Memory Page 接口**（能力描述、快照与相册语义），安装「我会牢牢记住你」时会自动识别为已连接并协同工作。
 
 ---
@@ -538,7 +540,7 @@ python -X utf8 tools/build_v2_release.py --output <安装目录以外的交付�
 & '<AstrBot>/backend/python/python.exe' -X utf8 tools/verify_v2_release.py --release <交付目录> --extract-to <新的验收目录> --host-check
 ```
 
-更多工程规范见 [仓库布局说明](docs/REPOSITORY_LAYOUT.md)、[核心回复管线设计](docs/V2_CORE_REPLY_PATH_DESIGN.md) 与 [陪伴小屋前端说明](pages/陪伴小屋/README.md)。
+贡献流程见 [贡献指南](CONTRIBUTING.md)；第三方作者请从[开发文档索引](docs/README.md)进入，并阅读[扩展开发规范](docs/extension-development.md)与[外部记忆 Provider 接口](docs/external-memory-provider.md)。架构参考见 [仓库布局说明](docs/REPOSITORY_LAYOUT.md)、[核心回复管线设计](docs/V2_CORE_REPLY_PATH_DESIGN.md) 与 [陪伴小屋前端说明](pages/陪伴小屋/README.md)。
 
 ### 8.3 致谢
 

@@ -94,7 +94,7 @@ LEGACY_PROVIDER_IDS = frozenset("astrbot_plugin_" + name + "_companion" for name
     ("content", "image", "reality", "screen", "together", "game", "live_stream"))
 CORE_DIRS = ("companion_v2", "astrbot_host", "pages", "docs", "tests", "fixtures", "tools")
 ROOT_FILES = {
-    "metadata.yaml", "_conf_schema.json", "README.md", "CHANGELOG.md",
+    "metadata.yaml", "_conf_schema.json", "README.md", "CHANGELOG.md", "CONTRIBUTING.md",
     "requirements.txt", "requirements-optional-input.txt", "requirements-optional-mic.txt",
     "pyproject.toml", "LICENSE", "NOTICE", "logo.png", ".editorconfig",
 }

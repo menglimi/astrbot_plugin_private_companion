@@ -394,6 +394,8 @@ class JournalMemoryPushTests(MemoryPluginDeclaration, HostFixture, unittest.Isol
         task = (await self.write()).unwrap().task
         self.assertEqual(task.state, "succeeded")
         record, = captured.records
+        self.assertIsNotNone(record.context)
+        self.assertEqual(record.context.scope, SCOPE)
 
         port = memory_push_provider(None)
         await port.push(record)
@@ -439,6 +441,16 @@ class ProactiveMemoryPushTests(MemoryPluginDeclaration, ContactFixture, unittest
         self.assertEqual(call["kwargs"]["metadata"]["clean_visible_text"], self.visible())
         self.assertEqual(call["kwargs"]["metadata"]["event_type"], "proactive_message")
         self.assertEqual(call["kwargs"]["metadata"]["contact_id"], self.contact_id(app))
+
+    async def test_completed_contact_retains_context_for_generic_providers(self):
+        port = RecordingPort()
+        app = await self.enabled(memory_push=port)
+        task = (await self.contact(app)).unwrap().task
+        self.assertEqual(task.state, "succeeded")
+        record, = port.records
+        self.assertIsNotNone(record.context)
+        self.assertEqual(record.context.scope, SCOPE)
+        self.assertEqual(record.context.role_binding.role, ROLE)
 
     async def test_a_skipped_opportunity_is_never_written_to_memory(self):
         """模型决定这次不发：什么都没发生，记忆里也不能多出一句话。"""

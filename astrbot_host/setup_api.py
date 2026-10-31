@@ -1043,7 +1043,7 @@ class SetupWebAPI:
                             raise TaskError("proactive_diagnostic_unavailable",
                                             "the active host has no synthetic diagnostic event registry")
                         candidate = await synthetic_producer(context, purpose, at=now,
-                                                             test_id=attempt_id, variant=variant)
+                            test_id=attempt_id, variant=variant, role_instruction=instruction)
                     elif variant == "mobile_location":
                         native_extensions = getattr(self.controller, "native_extensions", None)
                         reality = (native_extensions.active_service("reality")

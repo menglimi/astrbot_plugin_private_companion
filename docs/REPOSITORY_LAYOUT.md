@@ -24,36 +24,25 @@
 
 ## 运行目录同步
 
-源码是唯一可编辑副本；AstrBot 运行目录
-（`C:\Users\99505\.astrbot\data\plugins\astrbot_plugin_private_companion`）
-是构建产物，不在那里直接改。`tools/sync_runtime.py` 提供检查、计划和应用三步：
+源码工作树是唯一可编辑副本；AstrBot 插件安装目录是部署副本，不要在那里直接修改源码。`tools/sync_runtime.py` 提供检查、计划和应用三步：
 
 ```powershell
-cd Z:\CompanionUpgrade\source\astrbot_plugin_private_companion
-python tools/sync_runtime.py --check   # 差异存在时退出码为 1
-python tools/sync_runtime.py --plan    # 备份将被覆盖的运行文件并生成 plan.json
-python tools/sync_runtime.py --apply --plan-path <plan.json>
+Set-Location <源码仓库>
+python -X utf8 tools/sync_runtime.py --check
+python -X utf8 tools/sync_runtime.py --plan
+python -X utf8 tools/sync_runtime.py --apply --plan-path <plan.json>
 ```
 
-`--plan` 的备份写在仓库外
-`Z:\CompanionUpgrade\backups\runtime-sync-<时间>\before`。运行目录的 `data/`、
-`__pycache__/`、`.git/` 和构建生成的 `RELEASE_FILES.json` 不在同步范围内。
-未经构建和定向测试的源码不直接应用；应用后仍按发布流程重载并核对。
+`--check` 在存在差异时返回非零状态；`--plan` 会生成计划并在仓库外备份将覆盖的运行文件。运行数据、缓存、Git 元数据和生成清单不属于源码同步范围。先构建并完成定向测试，再应用同步计划；应用后按发布流程重载并核对。
 
 ## 工作树、备份与归档边界
 
-| 路径 | 角色 |
+| 内容 | 处理方式 |
 | --- | --- |
-| `Z:\CompanionUpgrade\source\astrbot_plugin_private_companion` | 唯一维护源码与工作树 |
-| `Z:\CompanionUpgrade\releases` | 已验证交付包，只读 |
-| `Z:\CompanionUpgrade\backups` | 源码快照与运行同步备份，只读 |
-| `Z:\CompanionUpgrade\archive` | 历史现场与一次性整理，只读 |
-| `C:\Users\99505\.astrbot\data\plugin_data\astrbot_plugin_private_companion` | V1 用户数据，迁移只读来源，不得修改 |
-| `C:\Users\99505\.astrbot\data\plugins\astrbot_plugin_private_companion_v2` | V1 旧运行/设计目录，冻结，不加载、不编辑 |
+| 当前源码工作树 | 唯一维护来源；修改前确认所在分支或 worktree。 |
+| 已验证交付包 | 只读发布产物；新版本从当前源码重新构建。 |
+| 源码快照与同步备份 | 放在源码仓库及插件扫描目录之外，并作为恢复材料只读保存。 |
+| 历史归档与旧版运行目录 | 仅在明确迁移或审计任务中读取；不作为日常开发副本。 |
+| 用户运行数据 | 迁移时按迁移流程读取；测试中使用隔离数据根，不能连接或改写生产数据。 |
 
-顶层目录地图与规则见 `Z:\CompanionUpgrade\README.md`。不要在顶层再建开发副本；
-需要并行开发时在源码仓库内使用分支或 worktree，并把副本放在 AstrBot 插件扫描目录之外。
-
-> `Z:\CompanionUpgrade\archive\20261024-consolidation\archive\development-workspace`
-> 同时是本仓库的 Git 公共对象库（当前 `source` 是它的链接 worktree）。它不能删除或移动；
-> 若要把对象库迁出归档，先用 `git worktree repair` 处理，再从 `source` 验证 `git status`。
+不要在 AstrBot 插件扫描目录内创建开发副本。并行开发可使用分支或 Git worktree；若仓库使用链接 worktree，共享 Git 对象库是仓库的一部分，不要单独删除或移动。需要迁移工作树时，按 Git worktree 命令修复链接并确认状态后再继续。

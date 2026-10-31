@@ -331,6 +331,29 @@ def _same_config_value(left, right):
         return left == right
 
 
+#: AstrBot 会把 0（自动）的上下文长度在运行时补成具体数值。
+#:
+#: 装配时捕获到的 ``max_context_tokens`` 可能还是 0；普通聊天之后宿主把它写成
+#: 供应商实际的窗口大小。这不是“模型配置被替换”，只是自动补全，不能据此拦住
+#: 主动联系等后台任务。超出这个集合的字段仍按原规则比较。
+AUTO_FILLED_CONFIG_KEYS = frozenset({"max_context_tokens"})
+
+
+def _is_auto_value(value):
+    return value in (0, None, "", "auto")
+
+
+def _is_concrete_limit(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _auto_filled_equivalent(key, expected, actual):
+    """同一个字段的“自动（0）”与“已补全的具体值”视为等价。"""
+    return (key in AUTO_FILLED_CONFIG_KEYS
+            and ((_is_auto_value(expected) and _is_concrete_limit(actual))
+                 or (_is_concrete_limit(expected) and _is_auto_value(actual))))
+
+
 #: 主回复任务的模型能力要求：只需要文本。
 #:
 #: “能不能用工具”是**每一轮**的运行时决定（``model_gateway/service.py`` 在真的要
@@ -398,6 +421,8 @@ class AstrBotTextProvider:
                      else "gemini" if native_kind.startswith("googlegenai") else "native")
         self.config = deepcopy(self.native.provider_config)
         self.config_hash = digest(self.config)
+        # 自动补全后的上下文长度快照：只用于后续漂移比较，不写回宿主配置。
+        self._auto_resolved = {}
         self.model = self.native.get_model()
         self.client = self.native.client
         self.parameters = frozenset(getattr(self.native, "default_params", {}))
@@ -455,8 +480,15 @@ class AstrBotTextProvider:
         config = getattr(provider, "provider_config", None)
         if not isinstance(config, dict):
             return ("provider_config",)
-        return tuple(sorted(key for key, value in self.config.items()
-                            if key not in config or not _same_config_value(config[key], value)))
+        expected = {**self.config, **self._auto_resolved}
+        drifted = []
+        for key, value in expected.items():
+            if key not in config:
+                drifted.append(key)
+            elif (not _same_config_value(config[key], value)
+                  and not _auto_filled_equivalent(key, value, config[key])):
+                drifted.append(key)
+        return tuple(sorted(drifted))
 
     def _same_provider_kind(self, provider):
         """未登记或重新导入的宿主类，至少要是同一种 Provider 类型。"""
@@ -486,6 +518,11 @@ class AstrBotTextProvider:
                 detail += " (changed_keys: " + ", ".join(drifted) + ")"
             raise TaskError("host_provider_changed", detail)
         self.native, self.client = current, current.client
+        # 宿主把“自动”补成具体值之后，把具体值记进快照；以后再变才继续判为漂移。
+        for key in AUTO_FILLED_CONFIG_KEYS & set(self.config):
+            resolved = current.provider_config.get(key)
+            if _is_concrete_limit(resolved) and _is_auto_value(self.config[key]):
+                self._auto_resolved[key] = resolved
 
     def _estimate(self, envelope, wire):
         estimated = wire.input_estimate()

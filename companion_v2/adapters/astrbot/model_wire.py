@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 import base64
 import json
+import re
 from types import MappingProxyType
 
 from companion_v2.conversation.foreground import ClaimKind, DraftClaim, ModelDraft
@@ -55,6 +56,23 @@ def strict_json(text):
     def constant(_):
         raise ValueError("nonfinite JSON number")
     return json.loads(text, object_pairs_hook=pairs, parse_constant=constant)
+
+
+_CODE_FENCE = re.compile(r"\A```[A-Za-z0-9_+.-]*[ \t]*\r?\n?(.*?)\r?\n?```[ \t]*\Z", re.S)
+
+
+def unwrap_code_fence(text):
+    """Strip exactly one Markdown fence that wraps the whole response.
+
+    Some relays drop ``response_format=json_object`` yet still ask the model for
+    JSON, and Claude-style replies come back as ```json … ```. Only a response
+    that is *entirely* one fence is unwrapped; any explanation outside the fence
+    still reaches the strict parser and is rejected, so the contract stays tight.
+    """
+    if not isinstance(text, str):
+        return text
+    match = _CODE_FENCE.match(text.strip())
+    return match.group(1).strip() if match is not None else text
 
 
 def tool_alias(action):
@@ -353,7 +371,7 @@ def decode_text_response(raw_text, wire):
     """Decode a completed text response from a native non-OpenAI provider."""
     if not isinstance(raw_text, str) or len(raw_text) > 131072:
         raise ValueError("final result exceeds the wire limit")
-    value = strict_json(raw_text)
+    value = strict_json(unwrap_code_fence(raw_text))
     if wire.output_format != "conversation":
         if not isinstance(value, dict) or len(raw_text) > 65536:
             raise ValueError("private writing requires a bounded structured result")

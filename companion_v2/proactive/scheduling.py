@@ -678,7 +678,12 @@ class ContactSchedule:
                 EvidenceSnapshot(context.scope, at, (event.source,)), 1.0)
             return (context, opportunity, (ContactIntent("chat", thought),), batch["role_instruction"],
                     {**origin, "burst_event": burst.document()})
-        if self._recent_attempt_blocking(context, at, interval, include_skips=True):
+        # A skipped draft did not contact the recipient. Pace all model attempts
+        # by the base interval, and reserve the unanswered slowdown for attempts
+        # that may actually send. Otherwise a skip near the next slot can consume
+        # that slot's entire short window without any message having left.
+        if (self._recent_attempt_blocking(context, at, base_interval, include_skips=True)
+                or self._recent_attempt_blocking(context, at, interval)):
             self._note_window(context, row, at, "rhythm", "skipped", "recent_attempt_cooldown")
             return None
         expires = opened + min(interval, timedelta(minutes=5))
@@ -701,7 +706,7 @@ class ContactSchedule:
         intents = []
         if chat_reason is None:
             thought = Thought("conversation-check-in", opportunity, ThoughtKind.CONVERSATION,
-                "这是一次低压力的主动联系机会。可以从角色自己的想法、兴趣或真实对话里自然开口；不要求依赖最近某条消息或具体事件。只把来源支持的内容写成事实，不虚构角色刚做过的事、共同经历或用户当前状态。优先写一条简短、无需回复的消息；重复、突兀或会打扰时跳过。",
+                "这是一次低压力的主动联系机会。可以从角色自己的想法、兴趣或真实对话里自然开口；不要求依赖最近某条消息或具体事件。先找一个此刻想分享的小念头、具体感想或轻问题，简短说到位，不要求对方立即回复。自己的主观想法不需要活动完成回执；涉及刚做过的事、共同经历或用户状态时仍以材料为据。候选不贴切时可从人格兴趣换个独立切口；确实无话可说、只是重述旧话或越过明确边界时跳过。",
                 EvidenceSnapshot(context.scope, at, (event.source,)), 1.0)
             intents.append(ContactIntent("chat", thought))
         if relationship_candidate is not None:
@@ -954,8 +959,9 @@ class ContactSchedule:
         raise TaskError("contact_diagnostic_source_required",
                          f"当前没有可核验的「{PURPOSES[purpose]}」真实生产器契机；本次不会使用空证据或通用文案")
 
-    async def synthetic_diagnostic_candidate(self, context, purpose, *, at=None, test_id, variant=None):
-        """Build a one-shot synthetic scenario without creating chat history or evidence."""
+    async def synthetic_diagnostic_candidate(self, context, purpose, *, at=None, test_id, variant=None,
+                                             role_instruction=None):
+        """Build a one-shot synthetic scenario without requiring chat history."""
         if purpose not in PURPOSES:
             raise TaskError("unknown_contact_purpose", "contact purpose must be registered")
         if variant is not None and (purpose != "environment" or variant not in SYNTHETIC_ENVIRONMENT_EVENTS):
@@ -966,9 +972,12 @@ class ContactSchedule:
             raise TaskError("setup_private_window_required", "the proactive diagnostic requires the confirmed private window")
         at = at or self.tasks.now()
         row = self.latest_conversation(context)
-        if row is None:
-            raise TaskError("contact_diagnostic_source_required", "the selected purpose has no completed conversation source")
-        _origin, batch, event = self._origin(context, row["batch_id"], at)
+        if row is not None:
+            _origin, batch, event = self._origin(context, row["batch_id"], at)
+            role_instruction = batch["role_instruction"]
+        elif not isinstance(role_instruction, str) or not role_instruction.strip():
+            raise TaskError("contact_diagnostic_source_required",
+                            "a current persona instruction is required when no conversation is available")
         scenario = (SYNTHETIC_ENVIRONMENT_EVENTS[variant] if variant is not None
                     else SYNTHETIC_DIAGNOSTIC_EVENTS[purpose])
         opportunity = Opportunity("diagnostic-synthetic-" + digest([context.key, test_id]),
@@ -977,21 +986,31 @@ class ContactSchedule:
             ThoughtKind.CONVERSATION, "本轮联系情境：" + scenario,
             EvidenceSnapshot(context.scope, at), 1.0)
         route = self._diagnostic_route("synthetic_event", "合成测试事件", variant or purpose)
-        diagnostic_origin = {"_diagnostic": {
-            "route_id": "synthetic_event", "purpose": purpose, "batch_id": row["batch_id"],
-            "event_key": event.scoped_key,
-            "event_hash": digest([event, context.key, batch["role_instruction"]]),
-            "role_hash": digest(batch["role_instruction"])},
+        if row is not None:
+            diagnostic = {"route_id": "synthetic_event", "purpose": purpose, "batch_id": row["batch_id"],
+                "event_key": event.scoped_key,
+                "event_hash": digest([event, context.key, role_instruction]),
+                "role_hash": digest(role_instruction)}
+        else:
+            scenario_hash = digest(scenario)
+            diagnostic = {"route_id": "synthetic_event", "purpose": purpose, "batch_id": None,
+                "event_key": "diagnostic-no-conversation-" + digest([context.key, test_id]),
+                "event_hash": digest(["synthetic-diagnostic", context.key, purpose, test_id,
+                                      scenario_hash, digest(role_instruction)]),
+                "role_hash": digest(role_instruction), "source_mode": "no_conversation"}
+        diagnostic_origin = {"_diagnostic": diagnostic,
             "synthetic_event": {"test_id": test_id, "scenario_hash": digest(scenario)}}
         return {"opportunity": opportunity, "intents": (ContactIntent(purpose, thought),),
-                "role_instruction": batch["role_instruction"], "route": route,
+                "role_instruction": role_instruction, "route": route,
                 "diagnostic_origin": diagnostic_origin}
 
-    def validate_diagnostic_origin(self, context, origin, at, *, purpose=None):
+    def validate_diagnostic_origin(self, context, origin, at, *, purpose=None, role_instruction=None):
         if type(origin) is not dict or type(origin.get("_diagnostic")) is not dict:
             raise TaskError("contact_diagnostic_source_changed", "diagnostic contact lost its producer receipt")
         receipt = origin["_diagnostic"]
-        if set(receipt) != {"route_id", "purpose", "batch_id", "event_key", "event_hash", "role_hash"}:
+        required_receipt = {"route_id", "purpose", "batch_id", "event_key", "event_hash", "role_hash"}
+        no_conversation = receipt.get("source_mode") == "no_conversation"
+        if set(receipt) != required_receipt | ({"source_mode"} if no_conversation else set()):
             raise TaskError("contact_diagnostic_source_changed", "diagnostic producer receipt is invalid")
         route_purposes = {
             "synthetic_event": set(PURPOSES),
@@ -1010,6 +1029,8 @@ class ContactSchedule:
         if (route_id not in route_purposes or receipt["purpose"] not in route_purposes[route_id]
                 or (purpose is not None and receipt["purpose"] != purpose)):
             raise TaskError("contact_diagnostic_source_changed", "diagnostic producer does not match its selected purpose")
+        if no_conversation and route_id != "synthetic_event":
+            raise TaskError("contact_diagnostic_source_changed", "only synthetic diagnostics may omit conversation history")
         expected_keys = {"_diagnostic"} if route_id == "conversation_scheduler" else {"_diagnostic", route_id}
         if set(origin) != expected_keys:
             raise TaskError("contact_diagnostic_source_changed", "diagnostic producer marker does not match its route")
@@ -1019,6 +1040,17 @@ class ContactSchedule:
                     or not isinstance(marker.get("test_id"), str)
                     or not isinstance(marker.get("scenario_hash"), str)):
                 raise TaskError("contact_diagnostic_source_changed", "synthetic test marker is invalid")
+            if no_conversation:
+                if (receipt["batch_id"] is not None or self.latest_conversation(context) is not None
+                        or receipt["event_key"] != "diagnostic-no-conversation-" +
+                            digest([context.key, marker["test_id"]])
+                        or receipt["event_hash"] != digest(["synthetic-diagnostic", context.key,
+                            receipt["purpose"], marker["test_id"], marker["scenario_hash"], receipt["role_hash"]])
+                        or not isinstance(role_instruction, str) or not role_instruction.strip()
+                        or digest(role_instruction) != receipt["role_hash"]):
+                    raise TaskError("contact_conversation_changed",
+                                    "the source-free diagnostic no longer matches its persona or empty conversation")
+                return
         elif route_id == "reality_location_event":
             marker = origin.get(route_id)
             if (type(marker) is not dict
@@ -1030,9 +1062,12 @@ class ContactSchedule:
                     or not isinstance(marker.get("place_fingerprint"), str)
                     or not marker["place_fingerprint"]):
                 raise TaskError("contact_diagnostic_source_changed", "mobile location diagnostic receipt is invalid")
-        _, batch, event = self._origin(context, receipt["batch_id"], at)
+        current, batch, event = self._origin(context, receipt["batch_id"], at)
+        expected_event_hash = (digest([event, context.key, batch["role_instruction"]])
+                               if route_id == "synthetic_event" else
+                               current.get("event_hash") or event.input_hash)
         if (event.scoped_key != receipt["event_key"]
-                or digest([event, context.key, batch["role_instruction"]]) != receipt["event_hash"]
+                or expected_event_hash != receipt["event_hash"]
                 or digest(batch["role_instruction"]) != receipt["role_hash"]):
             raise TaskError("contact_conversation_changed", "diagnostic contact lost its original conversation or persona")
 
@@ -1207,11 +1242,11 @@ class ContactSchedule:
     def _recent_attempt_blocking(self, context, at, cooldown, *, include_skips=False):
         """True if a recent contact task ran inside the cooldown window.
 
-        When ``include_skips`` is False, a model ``skip`` retires its own
-        opportunity ID without locking out every subsequent producer; the
-        ordinary conversation slot still waits out its full interval after any
-        attempt so a skipped event does not immediately fall through to a
-        generic conversation slot.
+        When ``include_skips`` is False, a model ``skip`` retires only its own
+        opportunity ID. Ordinary slots check all attempts at the base interval,
+        then use the longer unanswered interval only for non-skipped attempts.
+        This avoids both immediate fallback after a skip and treating silence
+        from an unsent draft as another unanswered contact.
         """
         if include_skips:
             return self.runtime.read_one("""SELECT 1 FROM execution_tasks WHERE origin_key = ? AND kind = ?

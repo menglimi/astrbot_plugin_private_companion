@@ -1,4 +1,8 @@
-"""读「我会牢牢记住你」自己的声明，判定谁在对外提供记忆。
+"""判定当前哪个插件负责模型侧记忆。
+
+第三方可通过公开 API 注册并声明 handles_model_memory=True，活动注册优先。
+没有这类注册时，继续使用下面的 MemoryCompanion 兼容发现路径；补充型 provider
+不改变模型侧归属。
 
 ## 探测什么，不探测什么
 
@@ -41,6 +45,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+from .memory_providers import memory_provider_registry
 
 from companion_v2.capabilities.ownership import (
     MemoryOwnership,
@@ -210,6 +216,7 @@ def _from_modules(seen: str) -> MemoryOwnerHandle:
 def read_memory_owner(context) -> MemoryOwnerHandle:
     """本进程内当前谁在向模型提供记忆，以及它在服务时的那个句柄。
 
+    显式注册的模型侧 provider 优先；以下为旧桥的兼容发现规则。
     注册表是权威：它给出的模块对象就是宿主当前装载的那一个，所以只用它来读声明。
     ``sys.modules`` 只是兜底，而且只在注册表**说不出话**时才看——独立运行、或宿主
     没有注册表接口。这一步的顺序很重要：被停用的插件常常还留在 ``sys.modules``
@@ -219,6 +226,12 @@ def read_memory_owner(context) -> MemoryOwnerHandle:
     两边都不说话。
     """
 
+    providers = memory_provider_registry(context)
+    entry = providers.select(handles_model_memory=True) if providers is not None else None
+    if entry is not None:
+        return MemoryOwnerHandle(MemoryOwnership(owner=RENDER_EXTERNAL, reason=REASON_EXTERNAL_ACTIVE,
+            module=type(entry.plugin).__module__, provider=entry.provider_id,
+            display_name=entry.display_name), entry)
     registered = _from_registry(context)
     if registered is not None:
         if registered.ownership.delegated:

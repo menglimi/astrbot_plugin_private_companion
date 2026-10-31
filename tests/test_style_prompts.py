@@ -181,7 +181,8 @@ class ProactiveStyleTests(unittest.TestCase):
         self.assertIn("不是要完成的目标", request.instruction)
         self.assertIn("联系偏密时", request.instruction)
         self.assertIn("紧急时效信息", request.instruction)
-        self.assertIn("联系较少也不意味着需要凑数", request.instruction)
+        self.assertIn("联系稀疏、间隔已经拉开时", request.instruction)
+        self.assertIn("无需提高到必须有重要事件的门槛", request.instruction)
 
     def test_recent_contact_timing_guides_short_gap_expression(self):
         preferences = ContactPreferences(snapshot=None, values=PREF_VALUES, observed_at=NOW)
@@ -295,10 +296,12 @@ class ProactiveStyleTests(unittest.TestCase):
         self.assertFalse(materials["contact_intent"]["is_weekend"])
         self.assertEqual(materials["contact_intent"]["period"], "早上")
         self.assertEqual(materials["communication_state"]["last_input_at"], job.interaction["last_input_at"])
-        self.assertIn("深夜、凌晨没有近期真实互动时", request.instruction)
-        self.assertIn("普通新闻、生活分享、随感和闲聊优先 skip", request.instruction)
+        self.assertIn("夜间让内容与发送密度更轻", request.instruction)
+        self.assertIn("不只因深夜或暂未回复就一概 skip", request.instruction)
+        self.assertIn("也不因有新素材就连续发送", request.instruction)
         self.assertIn("不从时间或沉默推断已睡", request.instruction)
-        self.assertIn("已接受约定的提醒和官方紧急预警按各自时机判断", request.instruction)
+        self.assertIn("有独立内容、自然问候或已接受的约定时按本身的价值判断", request.instruction)
+        self.assertIn("明确启用的夜间问候和官方紧急预警仍按各自时机判断", request.instruction)
         self.assertIn("没有新关键词、用户尚未发言或无法确认对方此刻状态，都不单独构成跳过理由", request.instruction)
 
     def test_contact_intent_publishes_weekday_instead_of_model_arithmetic(self):
@@ -446,8 +449,8 @@ class PromptGuardTests(unittest.TestCase):
         self.assertEqual(role_state_for_prompt(summary, None), summary)
 
     def test_proactive_prompt_rejects_status_reports_and_invented_habits(self):
-        self.assertIn("角色状态只是底色", CONTACT_INSTRUCTION)
-        self.assertIn("不要把状态字段改写成连续近况播报", CONTACT_INSTRUCTION)
+        self.assertIn("角色状态用于让语气与当前生活贴合", CONTACT_INSTRUCTION)
+        self.assertIn("相同数值或小幅变化不逐条播报", CONTACT_INSTRUCTION)
         self.assertIn("人格中的「关心健康/监督饮食」本身不是证据", CONTACT_INSTRUCTION)
         self.assertIn("不假定对方刚刚或经常有某种饮食", PURPOSE_INSTRUCTIONS["play"])
         self.assertIn("不凭空说「你又/总是/老是", DEFAULT_PROMPT)

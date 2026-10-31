@@ -91,13 +91,38 @@ class ExecutionTests(ExecutionFixture):
         limits = json.loads(self.runtime.read_one("SELECT limits_json FROM task_supervisor", ())['limits_json'])
         self.assertEqual(limits["retained_tasks"], expanded.retained_tasks)
 
-    def test_start_rejects_capacity_decrease_and_other_limit_changes(self):
+    def test_start_adopts_lane_and_queue_capacity_increases_without_clearing_work(self):
+        running = self.running(kind="fixture.effect")
+        self.tasks.begin_effect(running).unwrap()
+        self.tasks.record_operation(running, "original-operation").unwrap()
+        queued = self.submit("queued", kind="fixture.background")
+        expanded = replace(self.limits, foreground_slots=3, background_slots=3, queued_per_lane=16)
+        next_supervisor = self.supervisor(limits=expanded)
+
+        self.assertEqual(next_supervisor.start(expected_generation=1).unwrap(), 2)
+        self.assertEqual(next_supervisor.read(self.context, queued.task_id).unwrap(), queued)
+        self.assertEqual(self.tasks.check_generation().failure.code, "supervisor_fenced")
+        self.assertEqual(next_supervisor.recover().unwrap(), (running.task_id,))
+        retained = next_supervisor.read(self.context, running.task_id).unwrap()
+        self.assertEqual((retained.state, retained.operation_id, retained.effect),
+                         ("uncertain", "original-operation", "unknown"))
+        self.assertTrue(next_supervisor.observe(self.context, running.task_id).unwrap()["slot_held"])
+        self.assertEqual(next_supervisor.claim(Lane.BACKGROUND).unwrap().claim.task_id, queued.task_id)
+        attached = self.supervisor(limits=expanded)
+        self.assertEqual(attached.attach(expected_generation=2).unwrap(), 2)
+        self.assertEqual(self.supervisor().attach(expected_generation=2).failure.code,
+                         "supervisor_generation_conflict")
+
+    def test_start_rejects_capacity_decreases_even_when_another_capacity_increases(self):
         for changed in (replace(self.limits, retained_tasks=self.limits.retained_tasks - 1),
-                        replace(self.limits, background_slots=self.limits.background_slots + 1)):
+                        replace(self.limits, foreground_slots=self.limits.foreground_slots - 1),
+                        replace(self.limits, queued_per_lane=self.limits.queued_per_lane - 1,
+                                background_slots=self.limits.background_slots + 1)):
             with self.subTest(changed=changed):
                 next_supervisor = self.supervisor(limits=changed)
                 self.assertEqual(next_supervisor.start(expected_generation=1).failure.code,
                                  "supervisor_limits_changed")
+                self.assertEqual(self.tasks.check_generation().unwrap(), 1)
 
     def test_large_trusted_catalog_preserves_uniqueness_and_execution_limits(self):
         registrations = tuple(TaskRegistration(replace(self.foreground, kind=f"fixture.domain-{index}"),

@@ -1204,6 +1204,14 @@ window.CompanionProduct = (() => {
       if(typeof window.navigate==="function") window.navigate("manage", route.tab, route.subtab || "");
       return;
     }
+    if(message.kind==="open-settings"){
+      /* Only the identity directory may ask for its own settings dialog, and
+         only for the fixed key this build renders. */
+      if(context.kind!=="identity"||message.target!=="private-access")return;
+      try{ valid(); }catch{ return; }
+      window.CompanionIdentitySettings?.open?.(message.target);
+      return;
+    }
     if(message.kind!=="request"||typeof message.requestId!=="string"||message.requestId.length>80)return;
     const startedAt=Date.now();
     let method="",path="",timeoutMs=DEFAULT_API_TIMEOUT_MS;
@@ -1221,7 +1229,7 @@ window.CompanionProduct = (() => {
         if(!allowed)throw fail("invalid_response");
         mapped=path==="acquaintance"?relative(catalog.acquaintance_api):path;
       } else if(context.kind==="identity") {
-        const allowed=(method==="GET"&&["acquaintance","acquaintance/authorization","acquaintance/settings"].includes(path))
+        const allowed=(method==="GET"&&["acquaintance","acquaintance/authorization","acquaintance/settings","acquaintance/strangers"].includes(path))
            ||(method==="POST"&&["acquaintance/authorization","acquaintance/settings","acquaintance/identity","acquaintance/admin-name"].includes(path));
         if(!allowed)throw fail("invalid_response");
         mapped=relative(context.api)+path.slice("acquaintance".length);

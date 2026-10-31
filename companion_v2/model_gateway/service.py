@@ -159,6 +159,7 @@ class LocalModelGateway:
             for reference in references:
                 require(sources.validate_reference(reference, observed_at=self.tasks.now()))
 
+        contract_fallback_used = False
         for provider_position, provider in enumerate(plan.providers):
             provider_envelope = replace(envelope,
                 model_override=envelope.model_override if provider_position == 0 else "",
@@ -327,6 +328,19 @@ class LocalModelGateway:
                     diagnostics.parsed.chars if diagnostics is not None and diagnostics.parsed is not None else "unavailable",
                     diagnostics.visible.chars if diagnostics is not None and diagnostics.visible is not None else "unavailable",
                     prefix_committed)
+                if (not prefix_committed and not contract_fallback_used
+                        and failure is ModelFailure.WIRE_DECODE and usage_known
+                        and provider_position + 1 < len(plan.providers)):
+                    # 结构化任务拿不到合法 JSON，但这次调用的用量已由 Provider 确认：
+                    # 没有已发出的正文前缀，也没有执行过工具，换备用模型重试一次不会
+                    # 造成重复投递；这一次的用量照常入账，不计入"未知不可重试"。
+                    contract_fallback_used = True
+                    logger.warning(
+                        "[CompanionV2] 结构化输出不符合契约，用量已确认，切换备用模型重试 "
+                        "task=%s provider=%s phase=%s parse_state=%s",
+                        run.task.task_id, provider.binding.provider, phase,
+                        diagnostics.parse_state if diagnostics is not None else "unavailable")
+                    continue
                 raise TaskError("model_usage_unknown", "provider processing is unknown; no fallback was dispatched")
         raise TaskError("model_not_started", "configured providers confirmed they did not process the request")
 

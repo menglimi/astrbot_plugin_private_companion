@@ -13,6 +13,7 @@ from typing import Any
 from companion_v2.product import CORE_COMPONENTS, PRODUCT_DISPLAY_NAME, PRODUCT_ID, PRODUCT_VERSION
 from companion_v2.capabilities.models import CapabilityDesiredState
 from companion_v2.capabilities.repositories import CapabilityRepository
+from companion_v2.adapters.astrbot.memory_providers import ExternalMemoryProviderRegistry, PROVIDER_API_VERSION
 from companion_v2.diagnostics.readonly_status import read_p6_readonly_status
 from .memory_page_api import MemoryPageAPI
 from .integration_catalog import BUNDLED_EXTENSIONS, EXTERNAL_PROVIDERS
@@ -218,8 +219,9 @@ class IntegrationRegistry:
 
 
 class UnifiedCompanionExtensionAPI:
-    """Public metadata facade; conversation/operation authority stays in the host."""
+    """Public extension facade; conversation/operation authority stays in the host."""
     api_version = "companion.product.v1"
+    memory_provider_api_version = PROVIDER_API_VERSION
 
     def __init__(self, controller):
         self.controller = controller
@@ -232,6 +234,27 @@ class UnifiedCompanionExtensionAPI:
         from .native_extensions.reality.host_delivery import RealityHostDelivery
         self._reality_context = RealityHostContext(controller, self._mobile_together)
         self._reality_delivery = RealityHostDelivery(self._reality_context)
+        self._memory_providers = ExternalMemoryProviderRegistry(controller.context,
+            host_active=lambda: not getattr(controller, "_terminated", False))
+
+    def register_memory_provider(self, provider_id, *, plugin, read=None, write=None, summary=None,
+                                 display_name="", priority=0, handles_model_memory=False,
+                                 is_active=None, timeout_seconds=5.0):
+        """Register callbacks owned by a live Star; return an opaque removal token."""
+        if getattr(self.controller, "_terminated", False):
+            raise ValueError("memory provider host is stopped")
+        return self._memory_providers.register(provider_id, plugin=plugin, read=read, write=write,
+            summary=summary, display_name=display_name, priority=priority,
+            handles_model_memory=handles_model_memory, is_active=is_active, timeout_seconds=timeout_seconds)
+
+    def unregister_memory_provider(self, registration_id):
+        return self._memory_providers.unregister(registration_id)
+
+    def list_memory_providers(self):
+        return self._memory_providers.snapshot()
+
+    def close_memory_providers(self):
+        self._memory_providers.close()
 
     async def generate_reality_touch_text(self, prompt, **kwargs):
         return await self._reality_context.generate(prompt, **kwargs)
@@ -269,6 +292,9 @@ class UnifiedCompanionExtensionAPI:
 
     def mobile_pairing_candidates(self):
         return self._mobile_together.pairing_candidates()
+
+    def mobile_core_pairing_candidates(self):
+        return self._mobile_together.core_pairing_candidates()
 
     def reality_mobile_context(self, user_id):
         """Return the verified V2 identity used by the native Reality gateway.

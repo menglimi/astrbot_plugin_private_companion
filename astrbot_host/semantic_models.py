@@ -210,6 +210,21 @@ class NativeSemanticModels:
 
     async def analyze(self, identifier, prompt, images=()):
         provider = self.resolve(identifier, "analysis")
+        if images:
+            config = getattr(provider, "provider_config", {})
+            if "image" not in (config.get("modalities") or ()):
+                candidates = list(self.providers("analysis"))
+                if self.default_analysis:
+                    try:
+                        candidates.insert(0, self.resolve(self.default_analysis, "analysis"))
+                    except TaskError:
+                        pass
+                provider = next((candidate for candidate in candidates
+                    if "image" in (getattr(candidate, "provider_config", {}).get("modalities") or ())
+                    and callable(getattr(candidate, "text_chat", None))), None)
+                if provider is None:
+                    raise TaskError("semantic_vision_provider_unavailable",
+                                    "image analysis requires a configured vision provider")
         kwargs = {"prompt": prompt, "max_tokens": 1400}
         if images:
             kwargs["image_urls"] = list(images)

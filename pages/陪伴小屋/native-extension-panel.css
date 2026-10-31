@@ -106,6 +106,25 @@
 .mobile-pairing-token { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
 .mobile-pairing-token input { flex: 1; min-width: 0; padding: var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--ink); background: var(--t-surface, var(--bg)); font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; user-select: all; }
 .mobile-gateway-card [data-mobile-token-result] { overflow-wrap: anywhere; }
+.mobile-connection-overview { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(260px, .85fr); gap: var(--sp-4); margin-bottom: var(--sp-5); align-items: stretch; }
+.mobile-gateway-card, .mobile-recent-card { display: grid; align-content: start; gap: var(--sp-4); min-width: 0; padding: var(--sp-4); margin: 0; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--t-surface, var(--bg)); }
+.mobile-gateway-head h3, .mobile-recent-head h3, .mobile-config-heading h3 { margin: var(--sp-1) 0 0; color: var(--ink); font-size: var(--fs-title); }
+.mobile-gateway-card p, .mobile-recent-card p { margin: 0; color: var(--secondary); line-height: 1.7; }
+.mobile-gateway-lifecycle { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--sp-3); padding-top: var(--sp-3); border-top: 1px solid var(--line); }
+.mobile-gateway-lifecycle p { margin: 0; color: var(--muted); font-size: var(--fs-micro); }
+.mobile-gateway-lifecycle > div { display: flex; flex-wrap: wrap; gap: var(--sp-2); justify-content: flex-end; }
+.mobile-recent-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
+.mobile-recent-list { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.mobile-recent-list li { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-3); padding: var(--sp-3) 0; border-top: 1px solid var(--line); }
+.mobile-recent-list li > div { min-width: 0; }
+.mobile-recent-list strong { display: block; color: var(--ink); font-size: var(--fs-tiny); }
+.mobile-recent-list p { margin-top: 3px; color: var(--secondary); font-size: var(--fs-micro); overflow-wrap: anywhere; }
+.mobile-recent-list time { flex: 0 0 auto; color: var(--muted); font-size: var(--fs-micro); }
+.mobile-recent-empty { padding: var(--sp-4) 0; border-top: 1px solid var(--line); color: var(--muted) !important; font-size: var(--fs-tiny); }
+.mobile-config-heading { margin: var(--sp-5) 0 var(--sp-3); padding-top: var(--sp-4); border-top: 1px solid var(--line); }
+.mobile-config-heading p { margin: var(--sp-1) 0 0; color: var(--muted); font-size: var(--fs-micro); }
+.is-mobile-connection .native-extension-search { margin-bottom: var(--sp-3); }
+.is-mobile-connection .native-extension-group > h3 { display: none; }
 .mobile-config-sections { display: grid; gap: var(--sp-3); }
 .mobile-config-section { border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--t-surface); }
 .mobile-config-section > summary { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); cursor: pointer; padding: var(--sp-3) var(--sp-4); list-style: none; }
@@ -240,6 +259,13 @@
 .native-extension-savebar p { margin: 0; color: var(--muted); font-size: var(--fs-micro); line-height: 1.7; }
 .native-extension-savebar p.is-error { color: var(--t-status-error); }
 .native-extension-savebar > div { display: flex; gap: var(--sp-2); flex-shrink: 0; }
+@media (max-width: 820px) { .mobile-connection-overview { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 520px) {
+  .mobile-gateway-facts { grid-template-columns: minmax(0, 1fr); }
+  .mobile-gateway-lifecycle { grid-template-columns: minmax(0, 1fr); }
+  .mobile-gateway-lifecycle > div { justify-content: flex-start; }
+  .mobile-recent-list li { flex-direction: column; gap: 3px; }
+}
 .native-extension-empty { display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-3); padding: var(--sp-5) 0; line-height: 1.8; }
 .native-extension-empty p { margin: 0; color: var(--muted); }
 .native-extension-no-results { padding: var(--sp-5) 0; color: var(--muted); }

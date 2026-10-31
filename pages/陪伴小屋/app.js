@@ -4188,6 +4188,9 @@ function openIdentitySettings(kind){
   icons();
   return true;
 }
+/* 用户目录自己的「新用户默认权限」入口：工作区标题旁的按钮只负责转发，
+   弹窗和配置控件仍由外壳这一份实现，避免两套控件写同一个配置组。 */
+window.CompanionIdentitySettings = {open: openIdentitySettings};
 /* 主动与联系。整页交给 contact-page.js：它的主体是一个钟面（一天 24 格的节律），
    套进配置控制台的分区卡片会把钟面压成一张卡里的图，所以它自带页头与轨道。
    挂载点在 render() 的 manage 分支里，与事实与经历同一套处理。 */

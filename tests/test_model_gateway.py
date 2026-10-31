@@ -231,6 +231,28 @@ class ModelGatewayTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(observed["calls"][0]["failure"]["code"], ModelFailure.REFUSAL.value)
         self.assertNotIn("denied by policy", json.dumps(observed["plan"]))
 
+    async def test_contract_failure_with_known_usage_retries_the_fallback(self):
+        # 结构化任务拿到非法 JSON，但用量已由 Provider 确认、也没有已发出的正文：
+        # 换备用模型重试一次，不算“未知不可重试”。
+        self.responses["primary"] = ProviderResponse("unknown", usage=Amount(12, 30),
+            failure=ModelFailure.WIRE_DECODE, receipt_ref="primary:bad-json")
+
+        completion = await self.gateway.generate(self.model_run(), self.request())
+
+        self.assertEqual(completion.draft.text, "private draft")
+        self.assertEqual([name for name, _ in self.called], ["primary", "fallback"])
+        observed = self.gateway.observe(self.context, "task-1").unwrap()
+        self.assertEqual(observed["calls"][0]["failure"]["code"], ModelFailure.WIRE_DECODE.value)
+
+    async def test_contract_failure_without_usage_is_not_retried(self):
+        self.responses["primary"] = ProviderResponse("unknown", failure=ModelFailure.WIRE_DECODE)
+
+        with self.assertRaises(TaskError) as raised:
+            await self.gateway.generate(self.model_run(), self.request())
+
+        self.assertEqual(raised.exception.code, "model_usage_unknown")
+        self.assertEqual([name for name, _ in self.called], ["primary"])
+
     async def test_configured_refusal_terms_do_not_intercept_when_disabled(self):
         self.patch_model(refusal_terms="cannot help with that")
         self.responses["primary"] = ProviderResponse(

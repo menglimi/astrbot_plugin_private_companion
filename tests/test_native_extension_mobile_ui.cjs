@@ -83,6 +83,49 @@ test("mobile connection partitions settings into collapsible cards without dropp
   panel.stop();
 });
 
+test("mobile connection page displays a paired device from the management snapshot", async () => {
+  const {window} = context(), root = fakeRoot(), record = extensionRecord({
+    configuration: {mobile: {enabled: true, running: true, bound_port: 6322,
+      allowed_user_id: "42", core_user_id: "42", pairing_token_configured: true}},
+    mobile_observations: [{user_id: "42", connections: [{device_name: "测试手机",
+      last_seen_at: 1_798_650_000, online: true}], device: {}, location: {}, activity: {}, telemetry: {}}],
+  });
+  window.CompanionProduct = {
+    request: async () => ({extensions: {reality: record}}),
+    extension: () => ({owner: "companion_v2", assembled: true, desired_state: "active", installed_revision: 1}),
+    errorLabel: () => "", target: () => ({scope_kind: "private", participant_id: "42"}),
+    refreshIntegrations: async () => {},
+  };
+  const panel = window.CompanionNativeExtensionPanel.mount(root, {extensionId: "reality", onlyGroup: "mobile"});
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.match(root.innerHTML, /已配对终端/);
+  assert.match(root.innerHTML, /测试手机 · 在线/);
+  assert.match(root.innerHTML, /data-mobile-refresh/);
+  panel.stop();
+});
+
+test("mobile health reachability is not presented as an active pairing", async () => {
+  for (const activeSessions of [0, 1]) {
+    const {window} = context(), root = fakeRoot(), record = extensionRecord({
+      configuration: {mobile: {enabled: true, running: true, bound_port: 6322,
+        active_sessions: activeSessions, allowed_user_id: "42", core_user_id: "42",
+        pairing_token_configured: true}},
+      mobile_observations: [{user_id: "42", connections: [], device: {}, location: {}, activity: {}, telemetry: {}}],
+    });
+    window.CompanionProduct = {
+      request: async () => ({extensions: {reality: record}}),
+      extension: () => ({owner: "companion_v2", assembled: true, desired_state: "active", installed_revision: 1}),
+      errorLabel: () => "", target: () => ({scope_kind: "private", participant_id: "42"}),
+      refreshIntegrations: async () => {},
+    };
+    const panel = window.CompanionNativeExtensionPanel.mount(root, {extensionId: "reality", onlyGroup: "mobile"});
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.match(root.innerHTML, activeSessions ? /会话未匹配当前对象/ : /等待手机配对/);
+    assert.match(root.innerHTML, activeSessions ? /核对手机与插件使用的私聊账号/ : /健康检查成功只代表网关在线/);
+    panel.stop();
+  }
+});
+
 test("MiHome device rows expose status and power only after control policy permits the alias", () => {
   function recordWithPolicy(allowed) {
     const record = extensionRecord();

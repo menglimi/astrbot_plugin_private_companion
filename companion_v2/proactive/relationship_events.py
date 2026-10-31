@@ -65,7 +65,9 @@ class RelationshipContactEvents:
         marker = {"mode": mode, "purposes": list(purposes), "event_key": event.scoped_key,
                   "event_hash": event.input_hash, "expires_at": stamp(opportunity.expires_at)}
         summary = ("这是一次按私聊节律开放的关系主动联系窗口；联系目的只表示表达方向，不表示用户最近说过对应的话。"
-                   "结合角色人格和可用对话连续性，自然表达或跳过；不得把沉默、旧情绪、推测的感受或未发生的约定写成事实。"
+                   "由角色带来自己的具体感想、亲近表达、轻问题或邀请，不需要等用户先表达同样的情绪，也不需要先有重大事件。"
+                   "结合关系距离与近期交流决定怎样开口；候选不合适时可换个同样符合本轮目的的切口，确实重复或越界时再跳过。"
+                   "不得把沉默、旧情绪、推测的感受或未发生的约定写成事实。"
                    if mode == "slot" else
                    "这是已确认私聊窗口中的关系主动联系机会；真实私聊只作背景，由角色自己发起自然表达，不当成刚收到的新输入，也不把用途标签当成事实。")
         sources = (source,) if source is not None else ()

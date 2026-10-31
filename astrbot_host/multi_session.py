@@ -798,6 +798,16 @@ class MultiHostSession:
                         context, captured.instruction, at=captured.at, settings=settings)
                     if reason and not group_high_intensity.allows(reason, closeout):
                         reason = ""
+                    if not reason and facts["has_image"] and self.core_reply_observations is not None:
+                        try:
+                            self.core_reply_observations.media(event, {
+                                "context": context, "native_input": captured,
+                                "event_id": captured.event_id,
+                                "turn_id": "core-reply:" + digest([context.key, captured.event_id]),
+                            }, collection_only=True)
+                        except Exception as error:
+                            logger.warning("[CompanionV2] 群表情后台收录调度降级 error_type=%s",
+                                           type(error).__name__)
                     from companion_v2.conversation.reply_settings import group_wakeup_settings
                     wakeup = group_wakeup_settings(settings)
                     return Outcome.success({"admitted": bool(reason), "reason": reason,
@@ -1014,9 +1024,13 @@ class MultiHostSession:
                                 logger.warning("[CompanionV2] 关键词材料未注入 error_type=%s",
                                                type(error).__name__)
                         health_material = await self._huawei_health_material(context, self.now())
+                        from .external_memory import prepare_external_memory
+                        external_memory = await prepare_external_memory(
+                            self.context, self.application, context, captured)
                         prompt = build_core_reply_prompt(self.application, context, captured, at=self.now(),
                                                          keyword_materials=keyword_entries,
-                                                         health_material=health_material)
+                                                         health_material=health_material,
+                                                         external_memory=external_memory)
                         prompt_instruction = getattr(prompt, "context_instruction", prompt.instruction)
                         stable_prompt_instruction = getattr(prompt, "stable_instruction", "")
                         context_sections = prompt.sections
