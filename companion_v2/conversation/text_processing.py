@@ -193,6 +193,22 @@ _CONTROL_TAG_SPECS = (
     ("personality_sync", True, ()),
     ("tts", False, ("pc_tts",)),
     ("thinking", False, ()),
+    # The host itself injects <system_reminder> blocks and keeps them as
+    # first-class conversation content:
+    #   astrbot/core/astr_main_agent.py:1033
+    #       "<system_reminder>" + "\n".join(system_parts) + "</system_reminder>"
+    #   astrbot/builtin_stars/astrbot/group_chat_context.py:33-39  group context
+    #   astrbot/dashboard/services/chat_service.py:446  recognises the prefix
+    ("system_reminder", False, ()),
+    # AstrBot names <think> as a real provider spelling beside <thinking>
+    # (astrbot/core/provider/sources/openai_source.py:862 comment, and the regex
+    # r"<(think|thinking)>" at :864), so registering only the long spelling
+    # covered half of what its own parser accepts.
+    # <reasoning> is deliberately NOT registered: nothing in AstrBot 4.29.1
+    # produces it — there is no such literal anywhere in the tree, and
+    # gemini_source.py:527-529 reads reasoning from the structured
+    # ``part.thought`` flag rather than from text tags.
+    ("think", False, ()),
     ("timer", False, ()),
     ("private_companion_context", False, ()),
     ("core_memory", False, ()),

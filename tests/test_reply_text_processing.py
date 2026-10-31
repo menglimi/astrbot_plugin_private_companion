@@ -273,6 +273,47 @@ class ReplyTextProcessingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             expansion.replace_text("a" * 200)
 
+    def test_host_and_provider_control_tag_families_are_registered(self):
+        # The host injects <system_reminder> blocks itself
+        # (astrbot/core/astr_main_agent.py:1033, and
+        # astrbot/builtin_stars/astrbot/group_chat_context.py:33-39), and AstrBot
+        # names <think> beside <thinking> as a real provider spelling
+        # (astrbot/core/provider/sources/openai_source.py:862 comment, :864 regex).
+        #
+        # <reasoning> is deliberately NOT covered and NOT asserted here: nothing in
+        # AstrBot 4.29.1 produces it.  There is no such literal anywhere in the
+        # tree, and Gemini reads reasoning from the structured ``part.thought``
+        # flag instead of a text tag (gemini_source.py:527-529).  Registering it
+        # would be speculation.
+        for spelled in (
+            "<system_reminder>群聊上下文</system_reminder>正文",
+            "正文<system_reminder>群聊上下文</system_reminder>",
+            "&lt;system_reminder&gt;x&lt;/system_reminder&gt;正文",
+            "＜system_reminder＞x＜/system_reminder＞正文",
+            "<think>hmm</think>正文",
+            "正文</think>",
+        ):
+            with self.subTest(spelled=spelled):
+                self.assertEqual(strip_internal_expression_protocol(spelled), "正文")
+
+        # Registering the family must not borrow the truncate authorisation the
+        # prompt-only blocks have: an unclosed tail is prose the model still wrote.
+        self.assertEqual(
+            strip_internal_expression_protocol("正文<think>还没想完"),
+            "正文<think>还没想完")
+
+        # Code examples and delivery sentinels keep their existing exemptions.
+        self.assertEqual(
+            strip_internal_expression_protocol("看这个`<think>示例</think>`就行"),
+            "看这个`<think>示例</think>`就行")
+        self.assertEqual(
+            strip_internal_expression_protocol("正文<think>x</think>[[PCTTS:abc123]]"),
+            "正文[[PCTTS:abc123]]")
+
+        # The long spelling that was already registered keeps working unchanged.
+        self.assertEqual(
+            strip_internal_expression_protocol("<thinking>hmm</thinking>正文"), "正文")
+
 
 if __name__ == "__main__":
     unittest.main()
