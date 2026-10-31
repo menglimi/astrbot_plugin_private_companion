@@ -241,26 +241,58 @@ def build_wire(envelope, *, model_name=""):
     return wire
 
 
+def _field(value, name, default=None):
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _responses_function_calls(completion):
+    """Return raw Responses ``function_call`` items in output order."""
+    output = _field(completion, "output", ())
+    if not isinstance(output, (list, tuple)):
+        return ()
+    return tuple(item for item in output if _field(item, "type") == "function_call")
+
+
 def _decode_host_parsed_response(response, wire):
     """Decode a normalized AstrBot response without a ChatCompletion object.
 
     OpenAI-compatible Responses API providers return an ``LLMResponse`` whose
     ``raw_completion`` is a Responses object with ``output`` items instead of
     ``choices``. AstrBot has already normalized text and function calls onto
-    the response, so validate those fields rather than assuming ChatCompletions.
+    the response, but its parser repairs invalid argument JSON to ``{}``; the
+    original ``function_call.arguments`` text is therefore validated here so a
+    malformed effectful call can never execute as a zero-argument operation.
     """
     names = list(response.tools_call_name or ())
     arguments = list(response.tools_call_args or ())
     identifiers = list(response.tools_call_ids or ())
+    original_calls = _responses_function_calls(response.raw_completion)
     if names or arguments or identifiers:
         if (len(names) != len(arguments) or len(names) != len(identifiers)
                 or not 1 <= len(names) <= 8):
             raise ValueError("incomplete or unbounded tool result")
+        if original_calls and len(original_calls) != len(names):
+            raise ValueError("native tool result differs from its original completion")
         calls = []
-        for call_id, name, raw_arguments in zip(identifiers, names, arguments):
+        for position, (call_id, name, raw_arguments) in enumerate(zip(identifiers, names, arguments)):
             if type(call_id) is not str or not call_id or type(name) is not str or name not in wire.aliases:
                 raise ValueError("model requested an undeclared tool")
-            if isinstance(raw_arguments, str):
+            if original_calls:
+                original = original_calls[position]
+                if _field(original, "call_id") != call_id or _field(original, "name") != name:
+                    raise ValueError("native tool result differs from its original completion")
+                source_arguments = _field(original, "arguments", "{}")
+                if isinstance(source_arguments, str):
+                    parsed_arguments = strict_json(source_arguments)
+                elif isinstance(source_arguments, dict):
+                    parsed_arguments = source_arguments
+                else:
+                    raise ValueError("model tool arguments must be an object")
+                if parsed_arguments != raw_arguments:
+                    raise ValueError("native tool result differs from its original completion")
+            elif isinstance(raw_arguments, str):
                 parsed_arguments = strict_json(raw_arguments)
             elif isinstance(raw_arguments, dict):
                 parsed_arguments = raw_arguments
@@ -272,6 +304,8 @@ def _decode_host_parsed_response(response, wire):
         if len({call.call_id for call in calls}) != len(calls):
             raise ValueError("duplicate tool call id")
         return None, tuple(calls)
+    if original_calls:
+        raise ValueError("incomplete tool result")
     return decode_text_response(response.completion_text, wire)
 
 

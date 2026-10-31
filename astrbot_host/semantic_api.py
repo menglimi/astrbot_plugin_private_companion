@@ -184,6 +184,14 @@ class SemanticWebAPI:
                         WHERE v.owner=? AND v.kind=? AND v.model=? AND v.revision=i.revision AND i.enabled=1""",(owner,kind,result["model_binding"])).fetchone()[0]
                     result["catalog"][kind] = {"enabled":counts.get("1",0),"disabled":counts.get("0",0),
                                                "total":sum(counts.values()),"embedded":embedded}
+                    if kind == "reaction":
+                        # Match the UI's pending-only analyze action across the entire catalog,
+                        # rather than counting only the current 24-item page.
+                        result["catalog"][kind]["pending"] = db.execute(
+                            """SELECT COUNT(*) FROM items WHERE owner=? AND kind='reaction'
+                               AND json_extract(payload, '$.analysis')='pending'""",
+                            (owner,)
+                        ).fetchone()[0]
             result["reaction_collection"] = (service.store.reaction_collection_summary(reaction_owner)
                                              if context else {"totals": {}, "recent": []})
         return result
