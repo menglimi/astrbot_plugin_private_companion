@@ -354,6 +354,44 @@ def _auto_filled_equivalent(key, expected, actual):
                  or (_is_concrete_limit(expected) and _is_auto_value(actual))))
 
 
+def provider_class_matches(provider, expected_types):
+    """宿主刷新注册表时会重新导入适配器模块，类对象随之更换。
+
+    模块与限定名都相同的类仍视为同一个宿主类；一旦换到别的类（例如同一
+    ID 下替换了 Provider 类型）则拒绝。
+    """
+    if provider is None:
+        return False
+    if isinstance(provider, expected_types):
+        return True
+    actual = type(provider)
+    return any(actual.__module__ == expected.__module__
+               and actual.__qualname__ == expected.__qualname__
+               for expected in expected_types)
+
+
+def provider_config_drift(expected, provider, auto_resolved=None):
+    """列出被宿主改动或删除的已捕获配置键，绝不返回值本身。
+
+    宿主刷新注册表时会重新合并 Provider 配置，并可能补写 ``modalities``
+    这类派生字段。只比较装配时捕获的键：新增字段不构成替换，改动或删除
+    已捕获的字段才是。``auto_resolved`` 记录宿主把“自动（0）”补成具体值
+    之后的结果；同一个字段的自动值与补全值互为等价，不算替换。
+    """
+    config = getattr(provider, "provider_config", None)
+    if not isinstance(config, dict):
+        return ("provider_config",)
+    snapshot = {**expected, **(auto_resolved or {})}
+    drifted = []
+    for key, value in snapshot.items():
+        if key not in config:
+            drifted.append(key)
+        elif (not _same_config_value(config[key], value)
+              and not _auto_filled_equivalent(key, value, config[key])):
+            drifted.append(key)
+    return tuple(sorted(drifted))
+
+
 #: 主回复任务的模型能力要求：只需要文本。
 #:
 #: “能不能用工具”是**每一轮**的运行时决定（``model_gateway/service.py`` 在真的要
@@ -455,41 +493,6 @@ class AstrBotTextProvider:
                              self.reserve, self.generate, transport=transport, default_streaming=self.streaming,
                              supports_model_override=True, model=self.model)
 
-    def _provider_class_matches(self, provider):
-        """宿主刷新注册表时会重新导入适配器模块，类对象随之更换。
-
-        模块与限定名都相同的类仍视为同一个宿主类；一旦换到别的类（例如同一
-        ID 下替换了 Provider 类型）则拒绝。
-        """
-        if provider is None:
-            return False
-        if isinstance(provider, self.provider_types):
-            return True
-        actual = type(provider)
-        return any(actual.__module__ == expected.__module__
-                   and actual.__qualname__ == expected.__qualname__
-                   for expected in self.provider_types)
-
-    def _config_drift(self, provider):
-        """列出被宿主改动或删除的已捕获配置键，绝不返回值本身。
-
-        宿主刷新注册表时会重新合并 Provider 配置，并可能补写 ``modalities``
-        这类派生字段。只比较装配时捕获的键：新增字段不构成替换，改动或删除
-        已捕获的字段才是。
-        """
-        config = getattr(provider, "provider_config", None)
-        if not isinstance(config, dict):
-            return ("provider_config",)
-        expected = {**self.config, **self._auto_resolved}
-        drifted = []
-        for key, value in expected.items():
-            if key not in config:
-                drifted.append(key)
-            elif (not _same_config_value(config[key], value)
-                  and not _auto_filled_equivalent(key, value, config[key])):
-                drifted.append(key)
-        return tuple(sorted(drifted))
-
     def _same_provider_kind(self, provider):
         """未登记或重新导入的宿主类，至少要是同一种 Provider 类型。"""
         expected = str(self.config.get("type") or "")
@@ -500,14 +503,14 @@ class AstrBotTextProvider:
         current = self.context.get_provider_by_id(self.provider_id)
         if current is None:
             raise TaskError("host_provider_changed", "original host provider is unavailable")
-        if not self._provider_class_matches(current) and not (
+        if not provider_class_matches(current, self.provider_types) and not (
                 looks_like_text_provider(current) and self._same_provider_kind(current)):
             raise TaskError("host_provider_changed", "original host provider is unavailable")
         # AstrBot may rebuild provider instances when its provider registry is
         # refreshed. That is not a provider change if the model, configuration
         # and accepted parameters are still the same. Rebind the live instance
         # instead of failing every background task admitted before the refresh.
-        drifted = self._config_drift(current)
+        drifted = provider_config_drift(self.config, current, self._auto_resolved)
         parameters = frozenset(getattr(current, "default_params", {}) or {})
         if current.get_model() != self.model or drifted or parameters != self.parameters:
             if drifted:
