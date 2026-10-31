@@ -1,4 +1,19 @@
-"""Adapters for the text providers currently loaded by AstrBot."""
+"""Adapters for the text providers currently loaded by AstrBot.
+
+Two different limits live here and must not be derived from each other:
+
+* ``model.max_output_tokens`` is the default output budget of a task: how long
+  the next request should be unless the task configuration says otherwise;
+* a provider's ``maximum_output_tokens`` is an assertion about what that
+  provider accepts in one call, so it decides whether a task configuration is
+  valid at all.
+
+Sharing one number used to mean a task could never ask for more than the global
+default, and raising it was refused in the provider's name even though nobody
+had ever declared a ceiling for that provider. Undeclared providers therefore
+carry the product ceiling; an explicit per-provider declaration still wins and
+may be smaller.
+"""
 
 from dataclasses import dataclass, replace
 import json
@@ -15,7 +30,7 @@ logger = getLogger(__name__)
 class TextProviderSettings:
     provider_id: str
     tariff: UsageTariff
-    maximum_output_tokens: int = 2048
+    maximum_output_tokens: int = MAX_MODEL_OUTPUT_TOKENS
     maximum_input_estimate: int = 131072
     output_parameter: str = "max_tokens"
     streaming: bool = False
@@ -94,6 +109,11 @@ def assemble_providers(context, *, bridge, native_types, primary_id, additional=
 
     ``additional`` remains a compatibility layer for existing installations that
     saved per-provider limits or tariffs. It no longer controls availability.
+
+    ``defaults`` supplies the shared tariff, input estimate, output parameter and
+    streaming choice. Its ``maximum_output_tokens`` is deliberately not copied to
+    providers that declare no limit of their own: that field is a task budget,
+    while the provider ceiling is the product ceiling ``MAX_MODEL_OUTPUT_TOKENS``.
     """
     additional = tuple(additional)
     overrides = {item.provider_id: item for item in additional}
@@ -130,7 +150,8 @@ def assemble_providers(context, *, bridge, native_types, primary_id, additional=
         candidates.append((provider_id, native, adapter_kind))
 
     for provider_id, native, adapter_kind in candidates:
-        settings = overrides.get(provider_id) or replace(defaults, provider_id=provider_id)
+        settings = overrides.get(provider_id) or replace(defaults, provider_id=provider_id,
+                                                        maximum_output_tokens=MAX_MODEL_OUTPUT_TOKENS)
         try:
             if context.get_provider_by_id(provider_id) is not native:
                 raise TaskError("host_provider_changed", "AstrBot provider changed during model assembly")
