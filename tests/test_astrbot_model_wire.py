@@ -56,7 +56,7 @@ class NativeModelTests(NativeFixture, unittest.IsolatedAsyncioTestCase):
         await self.native_model.probe()
         payload, _ = self.native.provider.client.state.calls[-1]
         self.assertNotIn("stream", payload)
-        self.assertEqual(payload["max_tokens"], 8)
+        self.assertEqual(payload["max_tokens"], 256)
 
     async def test_state_and_planning_use_json_mode_and_end_with_their_task_contract(self):
         envelope = await self.envelope()

@@ -87,7 +87,7 @@ class ProviderProbeContractTests(NativeFixture, unittest.IsolatedAsyncioTestCase
         self.assertNotIn("stream", request["extra_body"])
         self.assertEqual(request["model"], "fixture")
         self.assertEqual(request["messages"], [{"role": "user", "content": "Reply OK."}])
-        self.assertEqual(request[output_parameter], 8)
+        self.assertEqual(request[output_parameter], 256)
         other_parameter = "max_tokens" if output_parameter == "max_completion_tokens" else "max_completion_tokens"
         self.assertNotIn(other_parameter, request)
         self.assertEqual(request["extra_body"], original_extra_body)

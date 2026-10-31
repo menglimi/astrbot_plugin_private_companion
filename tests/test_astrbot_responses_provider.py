@@ -470,7 +470,7 @@ class ChatCompletionsRegressionTests(NativeFixture, unittest.IsolatedAsyncioTest
     async def test_chat_completions_probe_and_generate_stay_unchanged(self):
         await self.native_model.probe()
         payload, _tools = self.native.provider.client.state.calls[-1]
-        self.assertEqual(payload["max_tokens"], 8)
+        self.assertEqual(payload["max_tokens"], provider_module.PROBE_OUTPUT_TOKENS)
         self.assertNotIn("input", payload)
 
         response = await self.native_model.generate(await self.envelope())

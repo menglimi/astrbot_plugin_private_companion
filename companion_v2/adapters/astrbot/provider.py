@@ -26,6 +26,11 @@ from .response_diagnostics import observe_completion
 from .provider_transport import definitely_not_sent, rejected_before_generation
 
 
+# Reasoning models count hidden thinking tokens against the same completion budget.
+# A tiny probe cap (previously 8) can return only reasoning and no visible text.
+PROBE_OUTPUT_TOKENS = 256
+
+
 RESERVED_EXTRA = frozenset({"model", "messages", "tools", "functions", "function_call", "tool_choice",
     "stream", "stream_options", "max_tokens", "max_completion_tokens", "max_output_tokens", "n",
     "response_format", "extra_body"})
@@ -540,7 +545,7 @@ class AstrBotTextProvider:
         elif self.kind != "openai":
             # Gemini 客户端没有 OpenAI 的 with_options；重试次数由 request_max_retries 控制。
             payload = {"model": self.model, "messages": [{"role": "user", "content": "Reply OK."}],
-                       "max_tokens": 8}
+                       "max_tokens": PROBE_OUTPUT_TOKENS}
             result = await native._query(payload, None, request_max_retries=1)
         else:
             native.client = self.client.with_options(max_retries=0)
@@ -549,7 +554,7 @@ class AstrBotTextProvider:
             # AstrBot 的 `_query` 固定以 stream=False 调用原生 client；payload 里
             # 再带 stream 会触发 `multiple values for keyword argument 'stream'`。
             payload = {"model": self.model, "messages": [{"role": "user", "content": "Reply OK."}],
-                       self.output_parameter: 8}
+                       self.output_parameter: PROBE_OUTPUT_TOKENS}
             result = await native._query(payload, None, request_max_retries=1)
         self._current()
         if result is None:

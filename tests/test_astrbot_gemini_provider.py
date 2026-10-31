@@ -97,7 +97,7 @@ class GeminiTextProviderTests(unittest.IsolatedAsyncioTestCase):
         await provider.probe()
         payload, _tools, retries = native.calls[0]
         self.assertEqual(retries, 1)
-        self.assertEqual(payload["max_tokens"], 8)
+        self.assertEqual(payload["max_tokens"], 256)
 
     async def test_probe_sends_the_gemini_payload(self):
         provider, native = make_provider()
@@ -106,7 +106,7 @@ class GeminiTextProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(tools)
         self.assertEqual(retries, 1)
         self.assertEqual(payload["model"], "gemini-3.8-flash")
-        self.assertEqual(payload["max_tokens"], 8)
+        self.assertEqual(payload["max_tokens"], 256)
         self.assertEqual(payload["messages"], [{"role": "user", "content": "Reply OK."}])
 
     async def test_token_usage_is_rated_like_openai_usage(self):
