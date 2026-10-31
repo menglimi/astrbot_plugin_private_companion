@@ -19,12 +19,20 @@ from .contract import CONFIGURABLE_DECISION_FIELDS
 DEFAULT_DECISION_FIELDS = {name: True for name in CONFIGURABLE_DECISION_FIELDS}
 
 
+# The model each backend pins when the operator leaves `remote_model` empty.
+# Local and SystemOne use Laya's own checkpoints; a Jev gateway serves `jev-latest`.
+MODE_MODELS = {"local": "multilingual", "remote": "multilingual", "jev": "jev-latest"}
+
+
 DEFAULTS = {
     "enabled": False,
     "mode": "local",
     "local_model_path": "",
     "endpoint": "",
     "api_key": "",
+    # Named apart from the historical `model` key, which older settings files
+    # carried without any effect; adopting it would silently retarget a server.
+    "remote_model": "",
     "timeout_seconds": 20,
     # 0 disables the host-side gate. Values are percentages because the model
     # page exposes a familiar 0-100 control; Laya reports a 0-1 probability.
@@ -182,9 +190,9 @@ class LayaSettingsStore:
     def _validate(values: dict) -> None:
         if type(values["enabled"]) is not bool:
             raise LayaSettingsError("laya_config_invalid", "enabled 必须是布尔值")
-        if values["mode"] not in {"local", "remote"}:
-            raise LayaSettingsError("laya_config_invalid", "mode 必须是 local 或 remote")
-        for key in ("endpoint", "api_key", "local_model_path"):
+        if values["mode"] not in MODE_MODELS:
+            raise LayaSettingsError("laya_config_invalid", "mode 必须是 local、remote 或 jev")
+        for key in ("endpoint", "api_key", "local_model_path", "remote_model"):
             if type(values[key]) is not str or len(values[key]) > 4096:
                 raise LayaSettingsError("laya_config_invalid", f"{key} 配置无效")
         if type(values["timeout_seconds"]) is not int or isinstance(values["timeout_seconds"], bool) or not 1 <= values["timeout_seconds"] <= 120:
@@ -209,7 +217,8 @@ class LayaSettingsStore:
             "mode": values["mode"],
             "local_model_path": values["local_model_path"],
             "endpoint": values["endpoint"],
-            "default_model": "multilingual",
+            "remote_model": values["remote_model"],
+            "default_model": values["remote_model"] or MODE_MODELS[values["mode"]],
             "api_key_set": bool(values["api_key"]),
             "timeout_seconds": values["timeout_seconds"],
             "followup_confidence_threshold": values["followup_confidence_threshold"],

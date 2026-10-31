@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from .client import LayaClientError, LayaDecisionClient
 from .contract import LayaDecision
-from .store import LayaSettingsStore
+from .store import MODE_MODELS, LayaSettingsStore
 
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,7 @@ _SAFE_FAILURE_REASONS = {
     "laya_inference_failed": "Laya 本地推理失败。",
     "laya_inference_timeout": "Laya 本地判断超时，本轮继续普通回复流程。",
     "laya_transport_failed": "Laya 服务连接失败。",
+    "laya_auth_failed": "判断服务鉴权失败。",
     "laya_response_invalid": "Laya 返回格式无效。",
     "laya_response_too_large": "Laya 响应超过允许大小。",
     "laya_contract_invalid": "Laya 返回了插件合同之外的分类。",
@@ -167,12 +168,12 @@ class LayaDecisionService:
         return self.store.update(revision, changes)
 
     def _client(self, values: dict) -> LayaDecisionClient:
-        if values["mode"] == "remote" and not values["endpoint"].strip():
-            raise LayaClientError("laya_endpoint_missing", "远程模式需要填写 Laya SystemOne 服务地址")
+        if values["mode"] != "local" and not values["endpoint"].strip():
+            raise LayaClientError("laya_endpoint_missing", "远程或 Jev 模式需要填写判断服务地址")
         if self.client_factory is None:
             raise LayaClientError("laya_client_unavailable", "Laya 执行适配器暂不可用，本轮继续普通回复流程")
         return self.client_factory(mode=values["mode"], endpoint=values["endpoint"],
-                                   local_model_path=values["local_model_path"],
+                                   local_model_path=values["local_model_path"], model=values["remote_model"],
                                    api_key=values["api_key"], timeout_seconds=values["timeout_seconds"])
 
     async def test(self) -> dict:
@@ -191,7 +192,8 @@ class LayaDecisionService:
         decision = result.document()
         self._record(test_values, "ok", round((perf_counter() - started) * 1000), decision=decision,
                      trace=getattr(client, "last_trace", None))
-        return {"status": "ok", "mode": values["mode"], "default_model": "multilingual",
+        return {"status": "ok", "mode": values["mode"],
+                "default_model": values["remote_model"] or MODE_MODELS[values["mode"]],
                 "decision": decision}
 
     async def decide(self, facts: dict) -> dict:
