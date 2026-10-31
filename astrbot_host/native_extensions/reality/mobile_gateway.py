@@ -123,12 +123,29 @@ class MobileGatewayMixin:
         hours = self._cfg_int('mobile.session_ttl_hours', 168, 1, 720)
         return hours * 60 * 60
 
+    def _mobile_core_user_id(self) -> str:
+        getter = getattr(self, 'v2_host_api', None)
+        api = getter() if callable(getter) else None
+        core_ids_getter = getattr(api, 'mobile_core_pairing_candidates', None) if api is not None else None
+        if not callable(core_ids_getter):
+            return ''
+        try:
+            values = core_ids_getter()
+        except Exception:
+            values = []
+        candidates = {_clean(item, 120) for item in values if _clean(item, 120)} \
+            if isinstance(values, (list, tuple, set)) else set()
+        return next(iter(candidates)) if len(candidates) == 1 else ''
+
     def _mobile_allowed_user_id(self) -> str:
         configured = self._cfg_str('mobile.allowed_user_id', '')
         if configured:
             return configured
         getter = getattr(self, 'v2_host_api', None)
         api = getter() if callable(getter) else None
+        core_ids_getter = getattr(api, 'mobile_core_pairing_candidates', None) if api is not None else None
+        if callable(core_ids_getter):
+            return self._mobile_core_user_id()
         ids_getter = getattr(api, 'mobile_pairing_candidates', None)
         try:
             values = ids_getter() if callable(ids_getter) else []

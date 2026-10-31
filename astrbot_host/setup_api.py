@@ -521,6 +521,13 @@ class SetupWebAPI:
             provider_id = data["provider_id"]
             if type(provider_id) is not str or not provider_id.strip() or len(provider_id) > 512:
                 raise ValueError("invalid provider")
+        except TaskError as error:
+            return self._error(error.code, str(error))
+        except (ValueError, TypeError, KeyError, OSError, UnicodeError):
+            return self._error("setup_model_invalid", "choose a loaded AstrBot text provider and retry")
+
+        stage = "provider_validation"
+        try:
             status = self._status_document()
             if status["step"] != "model":
                 raise TaskError("setup_step_order_invalid", "confirm the core administrator window before choosing a model")
@@ -549,13 +556,16 @@ class SetupWebAPI:
                 ]
             if model_settings.get("fallback_provider_id") == provider_id:
                 model_settings["fallback_provider_id"] = ""
+            stage = "config_persistence"
             save(candidate)
+            stage = "settings_refresh"
             refresh = getattr(self.controller, "refresh_settings", None)
             if callable(refresh):
                 refresh()
             settings_error = getattr(self.controller, "settings_error", None)
             if settings_error is not None:
                 raise TaskError(settings_error.code, str(settings_error))
+            stage = "profile_initialization"
             initialized = await self.controller.initialize_profile()
             if initialized.failure is not None:
                 if initialized.failure.code != "host_must_stop":
@@ -570,8 +580,11 @@ class SetupWebAPI:
                 "prepared": True, "status": self._status_document()}))
         except TaskError as error:
             return self._error(error.code, str(error))
-        except (ValueError, TypeError, KeyError, OSError, UnicodeError):
-            return self._error("setup_model_invalid", "choose a loaded AstrBot text provider and retry")
+        except Exception as error:
+            logger.warning("[CompanionV2] Initial model setup failed stage=%s error_type=%s",
+                           stage, type(error).__name__)
+            return self._error("setup_model_apply_failed",
+                               "the selected provider was accepted, but setup could not save or initialize it")
 
     async def reconnect_host(self):
         try:
@@ -1030,7 +1043,7 @@ class SetupWebAPI:
                             raise TaskError("proactive_diagnostic_unavailable",
                                             "the active host has no synthetic diagnostic event registry")
                         candidate = await synthetic_producer(context, purpose, at=now,
-                                                             test_id=attempt_id, variant=variant)
+                            test_id=attempt_id, variant=variant, role_instruction=instruction)
                     elif variant == "mobile_location":
                         native_extensions = getattr(self.controller, "native_extensions", None)
                         reality = (native_extensions.active_service("reality")

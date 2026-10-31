@@ -4,7 +4,10 @@ from collections.abc import Mapping
 from typing import Any
 
 from companion_v2.adapters.astrbot.memory_owner import read_memory_owner
+from companion_v2.adapters.astrbot.memory_providers import memory_provider_registry
 from companion_v2.foundation.refs import ScopeKind
+
+from .external_memory import memory_read_request
 
 
 V2_PLUGIN_ID = "astrbot_plugin_private_companion"
@@ -47,7 +50,26 @@ async def read_external_memory_summary(controller, context) -> dict[str, Any]:
     database, generic search, or unscoped memory APIs.
     """
 
-    owner = read_memory_owner(getattr(controller, "context", None))
+    native_context = getattr(controller, "context", None)
+    providers = memory_provider_registry(native_context)
+    entry = providers.select("summary") if providers is not None else None
+    if entry is not None:
+        if context.scope.kind is not ScopeKind.PRIVATE:
+            return _unavailable("unsupported_scope", entry.provider_id, entry.display_name, "private_target_required")
+        try:
+            request = memory_read_request(context, purpose="summary", max_chars=0)
+            raw = await providers.invoke(entry, "summary", request)
+            if (not isinstance(raw, Mapping) or not isinstance(raw.get("counts"), Mapping)
+                    or raw.get("state", "ready") != "ready" or raw.get("ok", True) is not True):
+                raise ValueError("memory summary requires counts")
+            counts = {key: _count(raw["counts"].get(key)) for key in (*SUMMARY_CATEGORIES, "total")}
+        except Exception:
+            return _unavailable("unavailable", entry.provider_id, entry.display_name, "summary_read_failed")
+        return {"state": "ready", "provider": entry.provider_id, "display_name": entry.display_name,
+                "reason": "", "counts": counts,
+                "categories": [{"key": key, "count": counts[key]} for key in SUMMARY_CATEGORIES]}
+
+    owner = read_memory_owner(native_context)
     provider = owner.ownership.provider or ""
     display_name = owner.ownership.display_name or "记忆插件"
     if not owner.ownership.delegated or owner.handle is None:

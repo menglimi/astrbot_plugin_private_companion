@@ -318,15 +318,19 @@ class CoreReplyObservations:
                 if not done.cancelled() and done.exception() is None else None)
         return pending
 
-    def media(self, event, prepared):
+    def media(self, event, prepared, *, collection_only=False):
         """Capture direct native images after admission; generation never awaits it."""
         if self._closed:
             return None
+        context = prepared["context"]
+        if collection_only:
+            semantic = getattr(self.session.application.tools, "semantic", None)
+            if semantic is None or not semantic.reaction_collection_allowed(context, prepared["turn_id"]):
+                return None
         from .core_reply_media import capture_native_input_images, frozen_image_locators
         locators = frozen_image_locators(event)
         if not locators:
             return None
-        context = prepared["context"]
 
         async def capture():
             try:
@@ -340,7 +344,8 @@ class CoreReplyObservations:
                     self.session.application.notify()
                 return image_event
             except Exception as error:
-                logger.warning("[CompanionV2] 核心媒体后台观察降级 error_type=%s", type(error).__name__)
+                logger.warning("[CompanionV2] 核心媒体后台观察降级 error_type=%s code=%s",
+                               type(error).__name__, getattr(error, "code", "unavailable"))
                 return None
 
         task = asyncio.create_task(capture(), name="companion-v2-native-media-observation")

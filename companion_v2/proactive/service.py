@@ -442,7 +442,7 @@ class ProactiveContacts:
         return origin
 
     def _continuity(self, context, history, interaction, origin, at, *, last_reply=None,
-                    dialogue_history=None, diagnostic_origin=None):
+                    dialogue_history=None, diagnostic_origin=None, diagnostic_role_instruction=None):
         if history is not None:
             if self.history is None:
                 raise TaskError("delivery_history_unavailable", "contact requires its original history owner")
@@ -461,7 +461,8 @@ class ProactiveContacts:
             if self.schedule is None:
                 raise TaskError("contact_schedule_unavailable", "diagnostic contact requires its original scheduler")
             self.schedule.validate_diagnostic_origin(context, diagnostic_origin, at,
-                purpose=(diagnostic_origin.get("_diagnostic") or {}).get("purpose"))
+                purpose=(diagnostic_origin.get("_diagnostic") or {}).get("purpose"),
+                role_instruction=diagnostic_role_instruction)
         elif origin is not None:
             if self.schedule is None:
                 raise TaskError("contact_schedule_unavailable", "automatic contact requires its original scheduler")
@@ -627,7 +628,7 @@ class ProactiveContacts:
                                    if self.history is not None and not administrator_test else None)
                     if diagnostic_origin is not None:
                         self.schedule.validate_diagnostic_origin(context, diagnostic_origin, at,
-                                                                 purpose=intents[0].purpose)
+                            purpose=intents[0].purpose, role_instruction=role_instruction)
                     else:
                         self._continuity(context, history, interaction, automatic_origin, at)
                     feasible, originals, records_by_id = [], {}, {}
@@ -754,7 +755,8 @@ class ProactiveContacts:
         self._records(job.context, job.intent.thought.evidence.sources, at, hashes=job.source_hashes)
         self._continuity(job.context, job.history, job.interaction, job.automatic_origin, at,
                          last_reply=job.last_reply, dialogue_history=job.dialogue_history,
-                         diagnostic_origin=job.diagnostic_origin)
+                         diagnostic_origin=job.diagnostic_origin,
+                         diagnostic_role_instruction=job.role_instruction)
         return True
 
     def _contact_request_fits(self, run, request):
@@ -1041,6 +1043,9 @@ class ProactiveContacts:
                 "history": job.history, "interaction": job.interaction, "automatic_origin": job.automatic_origin,
                 "dialogue_history": job.dialogue_history,
                 "diagnostic_origin": job.diagnostic_origin,
+                "diagnostic_role_instruction": (job.role_instruction if job.diagnostic_origin is not None
+                    and (job.diagnostic_origin.get("_diagnostic") or {}).get("source_mode") == "no_conversation"
+                    else None),
                 "last_reply": job.last_reply, "dedup_reason": dedup_reason,
                 "skip_reason": skip_reason, "model_skip_reason": model_skip_reason,
                 "decision_confidence": decision_confidence,
@@ -1347,9 +1352,16 @@ class ProactiveContacts:
             raise TaskError("contact_judge_persona_unavailable", "judgement needs the original accepted persona")
         if diagnostic_origin is not None:
             self.schedule.validate_diagnostic_origin(context, diagnostic_origin, at,
-                purpose=data["purpose"])
+                purpose=data["purpose"], role_instruction=data.get("diagnostic_role_instruction"))
             diagnostic = diagnostic_origin["_diagnostic"]
-            _, batch, _ = self.schedule._origin(context, diagnostic["batch_id"], at)
+            if diagnostic.get("source_mode") == "no_conversation":
+                role_instruction = data.get("diagnostic_role_instruction")
+                if not isinstance(role_instruction, str) or not role_instruction.strip():
+                    raise TaskError("contact_judge_persona_unavailable",
+                                    "judgement needs the original diagnostic persona")
+                batch = {"role_instruction": role_instruction}
+            else:
+                _, batch, _ = self.schedule._origin(context, diagnostic["batch_id"], at)
         else:
             if not isinstance(origin, dict) or not origin.get("batch_id"):
                 raise TaskError("contact_judge_persona_unavailable", "judgement needs the original accepted persona")
@@ -1543,7 +1555,8 @@ class ProactiveContacts:
                                    administrator_test=administrator_test)
         self._continuity(request.context, data.get("history"), data.get("interaction"), data.get("automatic_origin"), at,
                          last_reply=data.get("last_reply"), dialogue_history=data.get("dialogue_history"),
-                         diagnostic_origin=data.get("diagnostic_origin"))
+                         diagnostic_origin=data.get("diagnostic_origin"),
+                         diagnostic_role_instruction=data.get("diagnostic_role_instruction"))
         if data.get("diagnostic_origin") is not None:
             refs = tuple(source_from_document(item) for item in data.get("sources", ()))
             self._records(request.context, refs, at, hashes=tuple(data.get("source_hashes", ())))

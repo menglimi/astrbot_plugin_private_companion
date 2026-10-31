@@ -74,6 +74,16 @@ class GroupReplyAdmission:
         live = self._live_core_events.get(self._key(context), ())
         return any(other != event_id for other in live)
 
+    def _sample(self, context, reason, probability, event_id, at, text):
+        # Repeat observations of one event must keep the same decision. Include
+        # the authorized window/role so independent bots do not share a draw.
+        if probability <= 0:
+            return False
+        if probability >= 1:
+            return True
+        key = [context.key, reason, event_id or [stamp(at), text]]
+        return int(digest(key)[:16], 16) / (1 << 64) < probability
+
     def observe(self, context, *, text, speaker_id, received_at, event_id=None):
         reset = boundary(self.runtime, context.scope)
         if reset is not None and stamp(received_at) <= reset["reset_at"]:
@@ -123,8 +133,9 @@ class GroupReplyAdmission:
             return continuation["candidate_reason"]
         if not wakeup["group_wakeup_enabled"]:
             return ""
-        if (wakeup["group_wakeup_image_enabled"] and wakeup["group_wakeup_image_weight"] > 0
-                and has_image):
+        if (wakeup["group_wakeup_image_enabled"] and has_image
+                and self._sample(context, "image_interest", wakeup["group_wakeup_image_weight"],
+                                 event_id, at, compact)):
             return "image_interest"
         if not compact or not any(char.isalnum() for char in compact):
             return ""
@@ -154,8 +165,9 @@ class GroupReplyAdmission:
             return "question"
         if any(word.casefold() in compact.casefold() for word in wakeup["group_wakeup_context_words"]):
             return "context_word"
-        if (wakeup["group_wakeup_interest_probability"] > 0
-                and any(word.casefold() in compact.casefold() for word in wakeup["group_wakeup_interest_keywords"])):
+        if (any(word.casefold() in compact.casefold() for word in wakeup["group_wakeup_interest_keywords"])
+                and self._sample(context, "interest", wakeup["group_wakeup_interest_probability"],
+                                 event_id, at, compact)):
             return "interest"
         if participation["enable_group_interjection"]:
             from .group_interjection import openings

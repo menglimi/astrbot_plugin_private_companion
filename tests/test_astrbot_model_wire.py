@@ -34,6 +34,44 @@ class NativeModelTests(NativeFixture, unittest.IsolatedAsyncioTestCase):
             self.native_model._current()
         self.assertEqual(error.exception.code, "host_provider_changed")
 
+    async def test_auto_context_length_backfill_is_not_a_provider_change(self):
+        # 装配时 max_context_tokens 还是 0（自动），宿主在普通聊天后补成具体值；
+        # 这属于自动补全，不是模型配置被替换。
+        original = self.native.provider
+        original.provider_config["max_context_tokens"] = 0
+        self.native_model = self.make_model()
+        envelope = await self.envelope()
+        replacement = type(original)()
+        replacement.provider_config = {**replacement.provider_config,
+                                       "max_context_tokens": 262144}
+        self.native.provider = replacement
+
+        response = await self.native_model.generate(envelope)
+        self.assertEqual(response.status, "generated")
+        self.assertEqual(len(replacement.client.state.calls), 1)
+        self.assertIs(self.native_model.native, replacement)
+
+        # 补全后的具体值再被改掉，才算真正的配置变化。
+        replacement.provider_config = {**replacement.provider_config,
+                                       "max_context_tokens": 131072}
+        with self.assertRaises(TaskError) as error:
+            self.native_model._current()
+        self.assertIn("max_context_tokens", str(error.exception))
+
+    async def test_context_limit_backfilled_during_generation_survives_response_recheck(self):
+        original = self.native.provider
+        original.provider_config["max_context_tokens"] = 0
+        self.native_model = self.make_model()
+
+        async def backfill(_payload, _tools):
+            original.provider_config["max_context_tokens"] = 262144
+            return completion()
+
+        original.client.state.behavior = backfill
+        response = await self.native_model.generate(await self.envelope())
+        self.assertEqual(response.status, "generated")
+        self.assertEqual(len(original.client.state.calls), 1)
+
     async def test_task_profile_prompt_keeps_the_host_persona_guard(self):
         envelope = await self.envelope()
         request = replace(envelope.original, role_instruction="角色稳定档案：温和、细心。",
@@ -146,6 +184,28 @@ class NativeModelTests(NativeFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, ())
         self.assertTrue(draft.text)
         self.assertEqual(draft.claims[0].statement, draft.text)
+
+    async def test_single_code_fence_around_the_whole_object_is_unwrapped(self):
+        # 中转不透传 response_format 时，Claude 常回 ```json … ```；整段就是一个围栏才剥。
+        wire = build_wire(await self.envelope())
+        for fenced in ("```json\n" + REPLY_CONTRACT_EXAMPLE + "\n```",
+                       "```\n" + REPLY_CONTRACT_EXAMPLE + "\n```",
+                       "  ```JSON\n" + REPLY_CONTRACT_EXAMPLE + "```  "):
+            with self.subTest(fenced=fenced[:24]):
+                response = NS(raw_completion=NS(choices=[NS(finish_reason="stop", message=NS(tool_calls=None))]),
+                              completion_text=fenced, tools_call_ids=[], tools_call_name=[],
+                              tools_call_args=[])
+                draft, calls = decode_response(response, wire)
+                self.assertEqual(calls, ())
+                self.assertEqual(draft.claims[0].statement, draft.text)
+
+    async def test_prose_outside_the_fence_is_still_rejected(self):
+        wire = build_wire(await self.envelope())
+        for text in ("好的：\n```json\n" + REPLY_CONTRACT_EXAMPLE + "\n```",
+                     "```json\n" + REPLY_CONTRACT_EXAMPLE + "\n```\n以上是结果。"):
+            with self.subTest(text=text[:24]), self.assertRaises(ValueError):
+                decode_response(NS(raw_completion=NS(choices=[NS(finish_reason="stop", message=NS(tool_calls=None))]),
+                    completion_text=text, tools_call_ids=[], tools_call_name=[], tools_call_args=[]), wire)
 
     async def test_responses_api_shape_is_decoded_from_host_parsed_text(self):
         wire = build_wire(await self.envelope())

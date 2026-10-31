@@ -95,6 +95,37 @@ class MobileTogetherBridge:
                 continue
         return tuple(current)
 
+    def core_pairing_candidates(self):
+        """Return exact private targets whose V2 identity is a core administrator."""
+        runtime = getattr(self.controller, "runtime", None)
+        if runtime is None:
+            return ()
+        from companion_v2.identity_policy.models import AuthorizationTier
+        try:
+            rows = runtime.read_all(
+                "SELECT subject_id FROM subject_access_tiers "
+                "WHERE subject_kind = 'human' AND tier = ?",
+                (AuthorizationTier.CORE.value,),
+            )
+        except Exception:
+            return ()
+        core_subjects = {str(row["subject_id"]) for row in rows}
+        if not core_subjects:
+            return ()
+        matches = []
+        for user_id in self.pairing_candidates():
+            try:
+                resolved = self._target_context(user_id)
+            except TaskError:
+                continue
+            context = resolved[2] if isinstance(resolved, tuple) and len(resolved) == 3 else None
+            subject = getattr(getattr(context, "actor", None), "subject", None)
+            kind = getattr(getattr(subject, "kind", None), "value", "")
+            subject_id = getattr(subject, "subject_id", "")
+            if kind == "human" and subject_id in core_subjects:
+                matches.append(user_id)
+        return tuple(sorted(set(matches)))
+
     def _running_session(self):
         controller = self.controller
         session = getattr(controller, "session", None)

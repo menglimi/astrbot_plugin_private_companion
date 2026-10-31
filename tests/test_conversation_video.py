@@ -19,6 +19,7 @@ from companion_v2.sources.dependencies import key
 from tests.audio_support import FakeRecord
 from tests.animation_support import animation_bytes
 from tests.native_adapter_support import completion, final_text
+from tests.image_delivery_support import user_content
 from tests.test_conversation_images import FakeImage
 from tests.video_support import VideoFixture, FakeVideo, video_bytes
 from companion_v2.conversation.media.video.narration import video_narration_profile
@@ -28,7 +29,7 @@ class ConversationVideoTests(VideoFixture, unittest.IsolatedAsyncioTestCase):
     async def test_unavailable_native_video_is_explained_and_status_survives_tool_continuation(self):
         views = []
         async def respond(payload, _):
-            content = payload["messages"][2]["content"]
+            content = user_content(payload)
             if isinstance(content, list):
                 views.append(content[1:])
                 user_text = content[0]["text"]
@@ -214,7 +215,7 @@ class ConversationVideoTests(VideoFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.done(host.application, batch))["state"], "complete")
         calls = self.native.provider.client.state.calls
         self.assertEqual(len(calls), 1)
-        content = calls[0][0]["messages"][2]["content"]
+        content = user_content(calls[0][0])
         parts = content if isinstance(content, list) else []
         self.assertFalse(any(part.get("type") in ("image_url", "video_data") for part in parts))
         user_text = parts[0]["text"] if parts else content

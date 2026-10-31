@@ -11,6 +11,7 @@ different responses, so the reason has to reach the log.
 
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from companion_v2.adapters.astrbot.provider import UsageTariff
 from companion_v2.adapters.astrbot.provider_catalog import TextProviderSettings, assemble_providers
@@ -65,6 +66,27 @@ def warning_lines(logs):
 
 
 class CatalogUnavailableReasonTests(unittest.TestCase):
+    def test_native_provider_registered_for_text_and_video_uses_text_adapter(self):
+        native = CatalogProvider("gemini-native")
+        video_calls = []
+        native_types = SimpleNamespace(
+            version="4.29.1", provider=CatalogProvider, provider_types=(CatalogProvider,),
+            is_text_provider=lambda item: isinstance(item, CatalogProvider),
+            video_provider_type=CatalogProvider,
+            video_provider_factory=lambda *args: video_calls.append(args),
+            function_tool=object, tool_set=object,
+        )
+        adapter = SimpleNamespace(native=native, _current=lambda: None)
+        with patch("companion_v2.adapters.astrbot.provider_catalog.AstrBotTextProvider",
+                   return_value=adapter) as text_factory:
+            adapters = assemble_providers(context([native]), bridge=None, native_types=native_types,
+                primary_id="unused-primary",
+                defaults=TextProviderSettings("unused-primary", UsageTariff(0, 0, 0)))
+
+        self.assertEqual(adapters, (adapter,))
+        self.assertEqual(video_calls, [])
+        self.assertEqual(text_factory.call_args.kwargs["binding"].capability, "model.text")
+
     def test_a_refused_provider_names_the_contract_it_violated(self):
         refused = CatalogProvider("relay/deepseek", provider_config={"custom_extra_body": {"tools": []}})
         with self.assertLogs(LOGGER, level="WARNING") as logs:

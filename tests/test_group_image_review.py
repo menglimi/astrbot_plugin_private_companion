@@ -32,7 +32,7 @@ class ReviewConfigurationTests(unittest.TestCase):
         self.assertEqual(names[len(DEFAULTS):], ("review_provider", "review_dual_provider"))
         for field in fields:
             self.assertEqual((field.consumer_id, field.owner_id, field.layers, field.apply_mode),
-                             (GROUP, GROUP, (ConfigLayer.WINDOW,), ApplyMode.IMMEDIATE))
+                             (GROUP, GROUP, (ConfigLayer.ROLE, ConfigLayer.WINDOW), ApplyMode.IMMEDIATE))
         registry = FieldRegistry(version="image-review.v1", fields=fields)
         self.assertEqual({f.field_id for f in registry.group(GROUP)}, {f.field_id for f in fields})
     def test_declared_bounds_are_the_ones_enforced(self):

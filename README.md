@@ -24,7 +24,7 @@
 | --- | --- |
 | 插件名 | `astrbot_plugin_private_companion` |
 | 显示名 | 我会永远陪着你 |
-| 当前版本 | `7.0.5`（7.x 架构线，内部领域标识 `private_companion.v2`） |
+| 当前版本 | `7.0.7`（7.x 架构线，内部领域标识 `private_companion.v2`） |
 | AstrBot 版本 | `>= 4.27.2` |
 | 声明支持平台 | `aiocqhttp`（OneBot v11）、`qq_official`、`qq_official_webhook` |
 | 管理入口 | AstrBot 插件扩展页「陪伴小屋」（支持低配设备开启「性能模式」切换为轻量状态页） |
@@ -35,6 +35,7 @@
 ### 文档与支持
 
 - 使用说明：[插件 Wiki](https://vue.syuan.org)
+- 开发者入口：[开发文档索引](docs/README.md) · [贡献指南](CONTRIBUTING.md) · [第三方扩展开发规范](docs/extension-development.md)
 - 源代码：[GitHub 仓库](https://github.com/menglimi/astrbot_plugin_private_companion)
 - 6.7.0 源码备份：[只读备份仓库](https://github.com/menglimi/astrbot_plugin_private_companion_legacy_6_7_0)
 - 问题反馈/交流群：QQ 群 `1097283005`
@@ -163,6 +164,8 @@ https://github.com/menglimi/astrbot_plugin_private_companion
 7.x 继续使用原仓库和插件名 `astrbot_plugin_private_companion`，通过现有安装原地更新即可，**不要并行安装第二份同名插件，也不要先删除原数据目录**。
 
 #### 升级六步流程
+
+供执行迁移和首次配置的 Agent 使用的操作顺序、确认边界和回执核验步骤见 [Agent 首次配置与旧版迁移手册](docs/AGENT_MIGRATION_AND_SETUP.md)。
 
 1. **准备可验证的回退材料**：备份插件配置文件和原数据目录；使用过独立记忆或其他伴侣拓展的，一并备份其配置与数据。从发布页下载「6.7.0 回退包」附件并核对下方 SHA-256。
 2. **原地更新插件**：在 AstrBot 插件管理中将插件更新至 7.x 并按提示重载；离线更新时先停止 AstrBot，用新版交付包替换插件代码目录，保留原配置与数据目录。
@@ -432,6 +435,7 @@ flowchart LR
 
 ### 5.7 外部记忆插件桥接
 
+- **通用 Provider 接口**：第三方插件可通过 `extension_api.register_memory_provider()` 注册召回、写入与统计回调，支持优先级、生命周期检查和注销。默认补充私聊记忆，并接收已完成的日记、梦境及主动消息记录；详见[接入文档与示例](docs/external-memory-provider.md)。
 - **我会牢牢记住你（MemoryCompanion）**：7.x 对外同时提供 **P6 只读状态契约**（固定 schema、契约指纹与有界计数）和正式 **Memory Page 接口**（能力描述、快照与相册语义），安装「我会牢牢记住你」时会自动识别为已连接并协同工作。
 
 ---
@@ -536,7 +540,7 @@ python -X utf8 tools/build_v2_release.py --output <安装目录以外的交付�
 & '<AstrBot>/backend/python/python.exe' -X utf8 tools/verify_v2_release.py --release <交付目录> --extract-to <新的验收目录> --host-check
 ```
 
-更多工程规范见 [仓库布局说明](docs/REPOSITORY_LAYOUT.md)、[核心回复管线设计](docs/V2_CORE_REPLY_PATH_DESIGN.md) 与 [陪伴小屋前端说明](pages/陪伴小屋/README.md)。
+贡献流程见 [贡献指南](CONTRIBUTING.md)；第三方作者请从[开发文档索引](docs/README.md)进入，并阅读[扩展开发规范](docs/extension-development.md)与[外部记忆 Provider 接口](docs/external-memory-provider.md)。架构参考见 [仓库布局说明](docs/REPOSITORY_LAYOUT.md)、[核心回复管线设计](docs/V2_CORE_REPLY_PATH_DESIGN.md) 与 [陪伴小屋前端说明](pages/陪伴小屋/README.md)。
 
 ### 8.3 致谢
 

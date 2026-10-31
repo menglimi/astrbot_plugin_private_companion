@@ -45,6 +45,12 @@ async function harness(name, viewport = {width:1360, height:900}, panelOptions =
   await page.addStyleTag({content:css});
   await page.evaluate(({records, name}) => {
     window.records = structuredClone(records); window.requests = [];
+    window.confirmationRequests = []; window.confirmationResult = false; window.nativeConfirmCalls = 0;
+    window.confirm = () => { window.nativeConfirmCalls++; return true; };
+    window.CompanionConfirm = async options => {
+      window.confirmationRequests.push(options);
+      return window.confirmationResult;
+    };
     window.providers = Object.fromEntries(Object.keys(records).map(key => [key, {capability_id:key,
       extension_id:key, owner:"companion_v2", desired_state:"active", assembled:true, installed_revision:7}]));
     function merge(target, updates) {
@@ -299,10 +305,19 @@ test("mobile pairing generates and reveals a token once, while rotation is expli
     assert.equal(await page.getByRole("button", {name:"轮换配对令牌", exact:true}).isVisible(), true);
     assert.match(await page.locator("[data-mobile-token-result]").textContent(), /复制令牌/);
     assert.match(await page.locator(".mobile-gateway-status").textContent(), /health/);
-    await page.evaluate(() => { window.confirm = () => true; });
     await page.getByRole("button", {name:"轮换配对令牌", exact:true}).click();
+    await page.waitForFunction(() => window.confirmationRequests.length === 1);
+    await page.waitForFunction(() => !window.panel.actionBusy);
+    assert.equal((await page.evaluate(() => window.requests.filter(item => item.endpoint === "extensions/action").length)), 1);
+    assert.equal(await page.evaluate(() => window.nativeConfirmCalls), 0);
+    await page.evaluate(() => { window.confirmationResult = true; });
+    await page.getByRole("button", {name:"轮换配对令牌", exact:true}).click();
+    await page.waitForFunction(() => window.requests.filter(item => item.endpoint === "extensions/action").length === 2);
     const requests = await page.evaluate(() => window.requests.filter(item => item.endpoint === "extensions/action"));
     assert.deepEqual(requests.map(item => item.body.payload), [{rotate:false}, {rotate:true}]);
+    const confirmation = await page.evaluate(() => window.confirmationRequests.at(-1));
+    assert.equal(confirmation.title, "轮换手机配对令牌？");
+    assert.equal(confirmation.danger, true);
     assert.equal(await token.inputValue(), "synthetic-mobile-token");
   } finally { await page.close(); }
 });

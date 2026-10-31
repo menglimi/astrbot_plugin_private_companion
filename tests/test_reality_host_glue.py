@@ -409,6 +409,16 @@ class RealityHostGlueTests(unittest.IsolatedAsyncioTestCase):
         finally:
             _mobile_request_state.reset(marker)
 
+    async def test_reality_page_snapshot_exposes_active_mobile_pairing(self):
+        self.mobile_session(name="测试手机")
+
+        snapshot = self.runtime._reality_touch_page_snapshot()
+
+        observation = next(row for row in snapshot["mobile_observations"] if row["user_id"] == "200")
+        self.assertEqual(len(observation["connections"]), 1)
+        self.assertEqual(observation["connections"][0]["device_name"], "测试手机")
+        self.assertTrue(observation["connections"][0]["online"])
+
     async def upload_mobile_samples(self, token):
         self.runtime.config["mobile"]["activity_enabled"] = True
         self.runtime.health_enabled = True

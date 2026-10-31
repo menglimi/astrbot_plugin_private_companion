@@ -123,14 +123,17 @@ class TaskSupervisor:
             if row and row["limits_json"] != encode(self.limits):
                 previous = json.loads(row["limits_json"])
                 current = asdict(self.limits)
-                retained_only_increase = (
+                capacity_only_increase = (
                     set(previous) == set(current)
-                    and previous.get("retained_tasks", 0) < current["retained_tasks"]
-                    and all(previous[key] == value for key, value in current.items() if key != "retained_tasks")
+                    and all(type(previous[key]) is int and previous[key] <= value
+                            for key, value in current.items())
                 )
                 retained = connection.execute("SELECT COUNT(*) FROM execution_tasks").fetchone()[0]
-                if not retained_only_increase or retained > current["retained_tasks"]:
-                    raise TaskError("supervisor_limits_changed", "only a safe retained-task capacity increase can be adopted at startup")
+                if not capacity_only_increase or retained > current["retained_tasks"]:
+                    raise TaskError("supervisor_limits_changed", "only safe task capacity increases can be adopted at startup")
+                # A larger lane or queue budget does not invalidate retained
+                # work. The new generation still fences previous supervisors;
+                # existing attempts continue to hold their original slots.
             generation = expected_generation + 1
             connection.execute("""INSERT INTO task_supervisor VALUES (1, ?, ?, ?)
                 ON CONFLICT(singleton) DO UPDATE SET generation = excluded.generation,

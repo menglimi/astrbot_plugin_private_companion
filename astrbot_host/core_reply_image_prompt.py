@@ -47,21 +47,12 @@ def core_image_tool_contract(action, description, parameters, *, reference_limit
     if action not in _PURPOSES:
         return description, parameters
     description = _PURPOSES[action] + "；返回图片原件与操作回执，生成成功本身不代表已发送。"
-    if action == "image.edit" and type(reference_limit) is int and reference_limit > 0:
-        description += (f"当前生图路线最多接收 {reference_limit} 张参考图；达到上限时优先保留 identity，"
-                        "把服装、姿态或场景要求写入 prompt，不要为同时满足多个用途盲目提交更多图片。")
     properties = parameters.get("properties", {})
     prompt = properties.get("prompt")
     if isinstance(prompt, dict):
         prompt["description"] = ("本次画面或修改要求，按图片调用偏好的格式书写；"
                                   "有身份参考图时只写动作、镜头、场景、光线和用户明确要求的变化，"
                                   "不要重复或改写参考图已有的固定外貌；自拍写明 selfie。")
-    if action == "image.edit" and type(reference_limit) is int and reference_limit > 0:
-        for name in ("reference_ids", "reference_indices", "reference_roles"):
-            reference = properties.get(name)
-            if isinstance(reference, dict):
-                reference["description"] = (str(reference.get("description") or "").rstrip("。")
-                                             + f"；当前路线最多选择 {reference_limit} 张，优先 identity")
     return description, parameters
 
 

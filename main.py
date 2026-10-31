@@ -1218,14 +1218,17 @@ class PrivateCompanionV2StagingPlugin(Star):
         try:
             getter = getattr(event, "get_result", None)
             result = getter() if callable(getter) else None
-            chain = getattr(result, "chain", None) if result is not None else None
             from companion_v2.conversation.text_processing import strip_internal_expression_protocol
-            for part in chain or ():
-                text = getattr(part, "text", None)
-                if isinstance(text, str):
-                    cleaned = strip_internal_expression_protocol(text)
-                    if cleaned != text:
-                        part.text = cleaned
+            # Both the sendable chain and the provider chain can carry the raw
+            # model text; strip every plain part of each so a result assembled
+            # after the response observer still cannot leak the protocol.
+            for owner in (result, getattr(result, "result_chain", None)):
+                for part in getattr(owner, "chain", None) or ():
+                    text = getattr(part, "text", None)
+                    if isinstance(text, str):
+                        cleaned = strip_internal_expression_protocol(text)
+                        if cleaned != text:
+                            part.text = cleaned
         except Exception:
             pass
         self._adopt_core_reply_delivery(event)
@@ -1289,6 +1292,10 @@ class PrivateCompanionV2StagingPlugin(Star):
             logger.info("[CompanionV2] 窗口临时上下文已清理")
 
     async def terminate(self) -> None:
+        extension_api = getattr(self, "extension_api", None)
+        close_memory = getattr(extension_api, "close_memory_providers", None)
+        if callable(close_memory):
+            close_memory()
         debounce_manager = getattr(self, "_private_debounce", None)
         if debounce_manager is not None:
             try:

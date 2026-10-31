@@ -162,9 +162,13 @@ window.CompanionSetup = (() => {
       core_access_required: "当前账号没有管理权限。",
       staging_not_initialized: "角色数据尚未就绪，请先在账号与会话中初始化。",
       staging_host_terminated: "插件已停止，请重新打开插件页面。",
+      supervisor_fenced: "宿主刚刚重启或重载，刚才的保存没有生效；已重新读取档案，请再保存一次。",
+      supervisor_generation_conflict: "宿主状态已更新，刚才的保存没有生效；已重新读取档案，请再保存一次。",
       bridge_timeout: "连接超时，请重新读取；原操作结果需要核对。",
       invalid_response: "服务返回的数据不完整，请重新读取。",
       setup_progress_unavailable: "读取设置进度失败（已保留上次结果）；点「重新读取」再试一次，仍失败请查看 AstrBot 日志。",
+      setup_model_invalid: "请选择当前已加载的文本模型后再试。",
+      setup_model_apply_failed: "模型已通过校验，但保存或初始化没有完成。请查看 AstrBot 日志并重新读取状态。",
       model_route_unavailable: "当前小屋角色没有可编辑的模型路由，请切换到已关联私聊的人格。",
       model_route_scope_changed: "小屋角色已经切换，请重新读取当前角色的模型路由后再保存。",
       legacy_plan_stale: "配置在执行前已更新；重新执行会先重新试算再写入。",
@@ -3342,8 +3346,19 @@ window.CompanionSetup = (() => {
       changes[name] = value;
     }
     if (!Object.keys(changes).length) throw new Error(profileOverwrite ? "先选择至少一个有内容的字段。" : "所选字段已有内容；打开“覆盖已有字段”后再保存。");
-    await api("POST", "/profile/save", {target, operation_key: operationKey("setup-profile"),
-      edit_token: current.edit_token, changes});
+    const post = token => api("POST", "/profile/save", {target, operation_key: operationKey("setup-profile"),
+      edit_token: token, changes});
+    try {
+      await post(current.edit_token);
+    } catch (error) {
+      /* 向导前面几步会重启宿主，页面上的 edit_token 属于上一代 supervisor；
+         直接保存会被 check_generation 判为 supervisor_fenced。重新读取一次
+         档案拿到新 token 后重试一次，避免用户对着“操作未完成”反复点。 */
+      if (!["supervisor_fenced", "supervisor_generation_conflict"].includes(error?.code)) throw error;
+      const refreshed = await api("GET", "/profile").then(value => value?.[target]).catch(() => null);
+      if (!refreshed?.edit_token) throw error;
+      await post(refreshed.edit_token);
+    }
     profileState = await api("GET", "/profile");
     profileSelected = new Set();
     notice = `已保存 ${Object.keys(changes).length} 项${target === "role_profile" ? "角色设定" : "熟人卡资料"}。`;

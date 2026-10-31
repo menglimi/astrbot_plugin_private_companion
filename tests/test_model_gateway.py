@@ -100,6 +100,27 @@ class ModelFixture(ExecutionFixture):
 
 
 class ModelGatewayTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_captured_provider_overrides_and_independent_checks_keep_separate_rounds(self):
+        ceiling = Amount(100_000, 1_000_000)
+        self.ledger = BudgetLedger(self.runtime, BudgetPolicy(ceiling, ceiling, ceiling, ceiling, ceiling))
+        self.gateway = LocalModelGateway(self.router, self.ledger, self.tasks)
+        run = self.model_run(kind="fixture.background")
+        request = self.request()
+        session = self.gateway.open_session(run, request, independent_providers=("fallback", ""))
+
+        first = await session.generate(session.plan.envelope.original)
+        second = await session.generate(session.plan.envelope.original)
+
+        self.assertEqual([name for name, _ in self.called], ["fallback", "primary"])
+        self.assertTrue(first.draft)
+        self.assertTrue(second.draft)
+        rounds = self.runtime.read_all("SELECT round_no FROM model_rounds WHERE task_id=? ORDER BY round_no",
+                                       (run.task.task_id,))
+        self.assertEqual([row["round_no"] for row in rounds], [0, 1])
+        with self.assertRaises(TaskError) as error:
+            self.gateway.open_session(run, request)
+        self.assertEqual(error.exception.code, "model_request_already_started")
+
     async def test_proactive_prompt_archive_keeps_only_the_latest_ten_model_wires(self):
         ceiling = Amount(100_000, 1_000_000)
         self.ledger = BudgetLedger(self.runtime, BudgetPolicy(ceiling, ceiling, ceiling, ceiling, ceiling))
@@ -230,6 +251,28 @@ class ModelGatewayTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
         observed = self.gateway.observe(self.context, "task-1").unwrap()
         self.assertEqual(observed["calls"][0]["failure"]["code"], ModelFailure.REFUSAL.value)
         self.assertNotIn("denied by policy", json.dumps(observed["plan"]))
+
+    async def test_contract_failure_with_known_usage_retries_the_fallback(self):
+        # 结构化任务拿到非法 JSON，但用量已由 Provider 确认、也没有已发出的正文：
+        # 换备用模型重试一次，不算“未知不可重试”。
+        self.responses["primary"] = ProviderResponse("unknown", usage=Amount(12, 30),
+            failure=ModelFailure.WIRE_DECODE, receipt_ref="primary:bad-json")
+
+        completion = await self.gateway.generate(self.model_run(), self.request())
+
+        self.assertEqual(completion.draft.text, "private draft")
+        self.assertEqual([name for name, _ in self.called], ["primary", "fallback"])
+        observed = self.gateway.observe(self.context, "task-1").unwrap()
+        self.assertEqual(observed["calls"][0]["failure"]["code"], ModelFailure.WIRE_DECODE.value)
+
+    async def test_contract_failure_without_usage_is_not_retried(self):
+        self.responses["primary"] = ProviderResponse("unknown", failure=ModelFailure.WIRE_DECODE)
+
+        with self.assertRaises(TaskError) as raised:
+            await self.gateway.generate(self.model_run(), self.request())
+
+        self.assertEqual(raised.exception.code, "model_usage_unknown")
+        self.assertEqual([name for name, _ in self.called], ["primary"])
 
     async def test_configured_refusal_terms_do_not_intercept_when_disabled(self):
         self.patch_model(refusal_terms="cannot help with that")

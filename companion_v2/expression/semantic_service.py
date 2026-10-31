@@ -512,11 +512,17 @@ class SemanticService:
             return "reactions_collection_group_enabled", "reactions_collection_group_probability", "group_capture"
         return None
 
+    def reaction_collection_allowed(self, context, turn_id):
+        fields = self._reaction_collection_fields(context)
+        settings = self.store.settings()
+        if fields is None or self.closed or not settings["enabled"] or not settings[fields[0]]:
+            return False
+        sample = int(digest(["reaction-capture-sample.v1", self.reaction_owner(context), turn_id])[:16], 16) / 2**64
+        return sample < settings[fields[1]]
+
     def schedule_native_reaction_collection(self, context, turn_id, event):
         """Read captured originals on a worker before the existing collection flow."""
-        fields = self._reaction_collection_fields(context)
-        cfg = self.store.settings()
-        if fields is None or self.closed or not cfg["enabled"] or not cfg[fields[0]]:
+        if not self.reaction_collection_allowed(context, turn_id):
             return
         key = "native-reaction-prepare:" + digest(turn_id)
         if key in self.background:
@@ -543,8 +549,7 @@ class SemanticService:
         if fields is None:
             return
         enabled_field, probability_field, source = fields
-        settings = self.store.settings()
-        if self.closed or not settings["enabled"] or not settings[enabled_field]:
+        if not self.reaction_collection_allowed(context, batch_id):
             return
         direct_sources = ({image.source for image in native_images} if native_images is not None else
             {material.source for material in request.context.materials
@@ -559,9 +564,6 @@ class SemanticService:
         self.reaction_capture_runs = {key: at for key, at in self.reaction_capture_runs.items()
                                       if now - at < 600}
         if run_key in self.reaction_capture_runs or key in self.background:
-            return
-        sample = int(digest(["reaction-capture-sample.v1", owner, batch_id])[:16], 16) / 2**64
-        if sample >= settings[probability_field]:
             return
         try:
             images = (native_images if native_images is not None else

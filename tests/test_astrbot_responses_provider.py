@@ -17,7 +17,8 @@ from astrbot.core.provider.sources.openai_source import ProviderOpenAIOfficial
 from companion_v2.adapters.astrbot import provider as provider_module
 from companion_v2.adapters.astrbot.model_wire import ModelWire, REPLY_CONTRACT_EXAMPLE, build_wire, tool_alias
 from companion_v2.adapters.astrbot.provider import (
-    AstrBotTextProvider, UsageTariff, _chat_image_urls, _responses_image_urls, provider_fingerprint,
+    AstrBotTextProvider, PROBE_OUTPUT_TOKENS, UsageTariff, _chat_image_urls, _responses_image_urls,
+    provider_fingerprint,
 )
 from companion_v2.adapters.astrbot.provider_catalog import TextProviderSettings, assemble_providers
 from companion_v2.conversation.foreground import PromptMaterial, PromptRequest, SealedForegroundContext
@@ -198,7 +199,7 @@ class ResponsesProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(state.calls), 1)
         call = state.calls[0]
         self.assertEqual(call["input"], [{"type": "message", "role": "user", "content": "Reply OK."}])
-        self.assertEqual(call["max_output_tokens"], 8)
+        self.assertEqual(call["max_output_tokens"], PROBE_OUTPUT_TOKENS)
         self.assertNotIn("messages", call)
         self.assertNotIn("max_tokens", call)
         self.assertNotIn("max_completion_tokens", call)
@@ -470,7 +471,7 @@ class ChatCompletionsRegressionTests(NativeFixture, unittest.IsolatedAsyncioTest
     async def test_chat_completions_probe_and_generate_stay_unchanged(self):
         await self.native_model.probe()
         payload, _tools = self.native.provider.client.state.calls[-1]
-        self.assertEqual(payload["max_tokens"], provider_module.PROBE_OUTPUT_TOKENS)
+        self.assertEqual(payload["max_tokens"], PROBE_OUTPUT_TOKENS)
         self.assertNotIn("input", payload)
 
         response = await self.native_model.generate(await self.envelope())

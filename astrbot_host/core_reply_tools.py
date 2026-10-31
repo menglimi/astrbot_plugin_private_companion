@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 import asyncio
 import json
+import logging
 import re
 from typing import Any
 
@@ -25,6 +26,9 @@ from companion_v2.model_gateway.models import ToolSpec
 
 from .core_reply import CORE_REPLY_CONTEXT_EXTRA
 from .core_reply_tool_execution import executor_for, supports_native_external
+
+
+logger = logging.getLogger(__name__)
 
 
 MEMORY_READ_ACTIONS = frozenset({
@@ -270,8 +274,13 @@ class CoreReplyToolSession:
             offered.extend(_OfferedTool(spec, "weather") for spec in weather.catalog_for(context))
         semantic = getattr(tools, "semantic", None)
         if semantic is not None:
-            offered.extend(_OfferedTool(spec, "semantic")
-                           for spec in semantic.catalog_for(context, self.turn_id, mount_stable=True))
+            try:
+                semantic_tools = tuple(semantic.catalog_for(context, self.turn_id, mount_stable=True))
+            except Exception as error:
+                logger.warning("[CompanionV2] 语义工具目录暂不可用，继续挂载其他能力 error_type=%s",
+                               type(error).__name__)
+            else:
+                offered.extend(_OfferedTool(spec, "semantic") for spec in semantic_tools)
             news = getattr(semantic, "news_context", None)
             if news is not None:
                 offered.extend(_OfferedTool(spec, "news") for spec in news.catalog_for(context))
@@ -583,6 +592,12 @@ def inject_core_reply_tools(event, req, *, application):
         session = CoreReplyToolSession(event, state, application)
         state["_tool_session"] = session
     from .core_reply_image_prompt import core_image_tools, inject_core_image_prompt
+    # Consent is scoped to the exact AstrBot conversation. A new conversation id
+    # (persona switch, restart, new private session) makes every retained image
+    # capability invisible until it is provisioned for this scope again, so do it
+    # here, on the real event context, before the catalogue is filtered.
+    from .image_access import ensure_image_access
+    ensure_image_access(application.runtime, session.context, observed_at=application.tasks.now())
     offered, image_values = core_image_tools(session, session.catalog())
     semantic = getattr(application.tools, "semantic", None)
     if semantic is not None:

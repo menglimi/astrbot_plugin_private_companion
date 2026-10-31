@@ -182,7 +182,7 @@ def group_hints(request, context, settings, recent, reply_batches, *, native=Fal
     if (wakeup["group_wakeup_image_enabled"] and wakeup["group_wakeup_image_weight"] > 0
             and getattr(request, "images", ())):
         instruction += ("\n本轮当前授权输入含有图片时，可把图片中与你明确兴趣或正在讨论的话题相关的内容"
-            "作为额外唤醒线索；参考权重 "
+            "作为额外唤醒线索；图片候选抽取概率 "
             f"{round(wakeup['group_wakeup_image_weight'] * 100)}%。先依据本轮真实图片材料判断是否相关，"
             "图片本身不代表有人在叫你，也不要求接话；仅有历史附件元数据时不要当作看见了图片内容。"
             "若本轮图片清楚呈现对角色的直接称呼或唤醒词，可按强于普通兴趣图片的线索判断是否在叫你："
@@ -211,8 +211,8 @@ def group_hints(request, context, settings, recent, reply_batches, *, native=Fal
             + json.dumps(wakeup["group_wakeup_owner_direct_words"], ensure_ascii=False)
             + " 可作为直接叫你的线索，但仍须看是否正在对你说话；这不赋予其他授权或私聊资料访问权。")
     chance = round(wakeup["group_wakeup_interest_probability"] * 100)
-    instruction += (f"兴趣话题自主接话宜低频，管理员参考强度约 {chance}%；"
-        "这是表达倾向，不要求按固定概率抽签，也不能因单次命中就抢话。"
+    instruction += (f"兴趣话题自主接话宜低频，兴趣候选抽取概率为 {chance}%；"
+        "候选筛选已由程序完成，不需再次抽签；仍须判断是否适合接话，不能因单次命中就抢话。"
         f"可在本轮判断中从原人格明确的兴趣与技能、已授权群历史、group_memory 和实际提供的群黑话含义，"
         f"提炼最多 {wakeup['group_wakeup_generated_keyword_limit']} 个不同兴趣线索；没有这些材料就不补造。"
         "成员的爱好不是你的爱好，公共群记忆不是新的角色设定；候选仅用于本轮判断，不必向群列举或持久化。"

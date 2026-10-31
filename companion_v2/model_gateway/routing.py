@@ -140,7 +140,7 @@ class ModelRouter:
         return (primary.binding.provider, match.model if match and match.model else primary.model,
                 providers)
 
-    def resolve(self, run: TaskRun, request: PromptRequest) -> ResolvedModelPlan:
+    def resolve(self, run: TaskRun, request: PromptRequest, *, provider_id=None) -> ResolvedModelPlan:
         task = run.validate()
         context = task.spec.context
         profile = self.profiles.get(task.spec.kind)
@@ -153,15 +153,20 @@ class ModelRouter:
                               context.role_binding.role, context.scope)
         snapshot = require(self.configuration.read(context.actor, target=target,
                            group_id=profile.group, observed_at=run.supervisor.now()))
-        provider_default = self.provider_default(context, profile, snapshot)
+        provider_default = self.provider_default(context, profile, snapshot) if provider_id is None else None
         routed_snapshot = self.apply_provider_default(profile, snapshot, provider_default)
         values = {name.rsplit(".", 1)[1]: item.value for name, item in routed_snapshot.fields.items()}
         fallback_field = routed_snapshot.fields[profile.group + ".fallback"]
-        if values["fallback"] and values["fallback"] == values["provider"] and fallback_field.explicit:
+        if provider_id is None and values["fallback"] and values["fallback"] == values["provider"] and fallback_field.explicit:
             raise TaskError("model_fallback_duplicate", "fallback must select a different provider")
         evaluated_at = run.supervisor.now()
         try:
-            match, selected, in_scope = self._route_selection(profile, values, context, request, evaluated_at)
+            if provider_id is None:
+                match, selected, in_scope = self._route_selection(profile, values, context, request, evaluated_at)
+            else:
+                if provider_id not in self.providers:
+                    raise TaskError("model_provider_unavailable", "the selected review provider has no local adapter")
+                match, selected, in_scope = None, (self.providers[provider_id],), False
         except TaskError:
             # TaskError is itself a ValueError, but its stable code is the
             # product diagnostic we need to preserve (for example, an
@@ -192,6 +197,7 @@ class ModelRouter:
                              "explicit": item.explicit, "revision": item.source_revision}
                        for key, item in routed_snapshot.fields.items()},
             "provider_default": provider_default or profile.default_provider,
+            "provider_override": provider_id,
             "providers": [asdict(p.binding) for p in selected],
             "role_revision": context.role_binding.revision,
             "role_prompt_hash": digest(request.role_instruction),

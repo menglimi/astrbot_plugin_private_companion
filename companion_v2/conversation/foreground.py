@@ -308,6 +308,7 @@ class PromptRequest:
     # The captured host persona survives a task-role reference substitution so
     # the native role guard still compares the host window, not the self page.
     role_guard_instruction: str | None = None
+    user_input_image_sources: tuple[SourceRef, ...] = ()
 
     @property
     def host_role_instruction(self) -> str:
@@ -319,6 +320,12 @@ class PromptRequest:
         if self.role_guard_instruction is not None and (
                 type(self.role_guard_instruction) is not str or len(self.role_guard_instruction) > 65536):
             raise ReferenceValidationError("host role guard instruction must be bounded text")
+        if (type(self.user_input_image_sources) is not tuple
+                or any(not isinstance(source, SourceRef) for source in self.user_input_image_sources)
+                or len(set(self.user_input_image_sources)) != len(self.user_input_image_sources)
+                or any(source not in {image.source for image in self.images}
+                       for source in self.user_input_image_sources)):
+            raise ReferenceValidationError("user input image labels must reference this request's original images")
         if (type(self.perception_options) is not tuple or len(self.perception_options) != 3
                 or any(type(value) is not bool for value in self.perception_options)):
             raise ReferenceValidationError("perception options must be captured booleans")
