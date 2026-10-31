@@ -15,7 +15,8 @@ test("总览汇总全局学习队列、成长阶段和全局策略",async()=>{
     const data=route.endsWith("/progress")?{items:[{},{}]}
       :route.endsWith("/self-review")?{items:[{kind:"ask_user"}]}
       :route.endsWith("/style")?{items:query.state==="pending"?[{},{}]:[{},{},{},{}]}
-      :route.endsWith("/expression")?{settings:{rules_per_turn:2}}
+      :route.endsWith("/expression")?{settings:{rules_per_turn:2},
+        learning:{state:"insufficient_samples",available:1,required:2}}
       :route==="semantic"?{settings:{learning_interval_seconds:21600}}
       :{items:[{growth_id:"one",kind:"skill",state:"active",title:"面向与发声",revision:2,
         source_count:3,updated_at:"2026-10-07T08:00:00+00:00",progress_note:"完成基础练习"}]};
@@ -53,6 +54,8 @@ test("总览汇总全局学习队列、成长阶段和全局策略",async()=>{
   assert.match(root.innerHTML,/面向与发声/);
   assert.match(root.innerHTML,/每轮 2 条/);
   assert.match(root.innerHTML,/6 小时/);
+  assert.match(root.innerHTML,/表达学习/);
+  assert.match(root.innerHTML,/样本不足/);
   context.window.CompanionLearningOverviewPage.unmount();
   assert.equal(listeners.size,0);
 });
@@ -60,7 +63,8 @@ test("总览汇总全局学习队列、成长阶段和全局策略",async()=>{
 test("总览为空时说明学习链路的三个入口",async()=>{
   const bridge={apiGet:async(route,query)=>{
     const data=route.endsWith("/style")?{items:[]}
-      :route.endsWith("/expression")?{settings:{rules_per_turn:2}}
+      :route.endsWith("/expression")?{settings:{rules_per_turn:2},
+        learning:{state:"insufficient_samples",available:1,required:2}}
       :route==="semantic"?{settings:{learning_interval_seconds:21600}}
       :{items:[]};
     return {status:"ok",data};

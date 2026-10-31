@@ -624,6 +624,43 @@ class ExpressionStyleService:
         self.app.notify()
         return {"state": "queued"}
 
+    def status(self, context):
+        """Read-only view of why this exact window is or is not learning.
+
+        The page otherwise only has counts: a window stuck on
+        ``source_not_selected``/``insufficient_samples``/``capacity_reached``
+        looks identical to one that never ran. Everything here is bounded and
+        derives from the same policy the scheduler uses.
+        """
+        at = self.tasks.now()
+        work_key = self._work_key(context)
+        state = dict(self.results.get(work_key) or {})
+        policy = self._policy(context, at)
+        group = context.scope.kind is ScopeKind.GROUP
+        try:
+            _, closed_at = self._cursor(context)
+        except TaskError:
+            closed_at = None
+        worker = self.workers.get(work_key)
+        scan_minutes = policy.group_scan_interval_minutes if group else policy.scan_interval_minutes
+        try:
+            due = self.due(context, at, scan_minutes=scan_minutes)
+        except TaskError:
+            due = False
+        return {
+            "state": state.get("state", "not_run"),
+            "code": state.get("code"),
+            "available": state.get("available"),
+            "required": state.get("required"),
+            "active": self._active_signal_count(context),
+            "limit": policy.active_signal_limit,
+            "last_run_at": stamp(closed_at) if closed_at is not None else None,
+            "due": due,
+            "worker": bool(worker is not None and not worker.done()),
+            "learning_enabled": policy.group_learning_enabled if group else policy.private_learning_enabled,
+            "sample_review_enabled": policy.sample_review_enabled,
+        }
+
     def advance(self):
         if self.closed:
             return
