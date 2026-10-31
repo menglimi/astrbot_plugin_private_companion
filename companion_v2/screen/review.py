@@ -12,6 +12,16 @@ from .models import SCREEN_EXTENSION, ScreenMediaKind
 from .repositories import ScreenRepository
 
 
+# 装配/启用状态回答的是「现在能不能采」，不是「这份记录归谁看」。它没就绪
+# 时给出空记录加原因，让页面引导去装配；授权与核心权限错误仍然照常抛出，
+# 否则会把真实的授权问题伪装成「还没有记录」。
+_DEFERRED_ACCESS = frozenset((
+    "capability_not_installed",
+    "capability_not_admissible",
+    "capability_role_not_enabled",
+))
+
+
 class ScreenObservationReview:
     def __init__(self, application, context):
         self.app, self.context = application, context
@@ -52,7 +62,15 @@ class ScreenObservationReview:
             offset += len(rows)
 
     def latest(self, operator, at):
-        self._access(operator, at)
+        try:
+            self._access(operator, at)
+        except TaskError as error:
+            if error.code not in _DEFERRED_ACCESS:
+                raise
+            with self.runtime.read_snapshot():
+                _, latest_attempt = self._last_capture()
+            return {"observation": None, "reason": error.code,
+                    "latest_attempt": latest_attempt}
         with self.runtime.read_snapshot():
             last, latest_attempt = self._last_capture()
             if last is None:

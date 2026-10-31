@@ -136,6 +136,24 @@ class ScreenAccessAPITests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await self.call(route=PREFIX + suffix, query=query))["data"]["code"],
                 "screen_access_request_invalid")
 
+    async def test_unassembled_review_reports_a_reason_instead_of_an_authorization_failure(self):
+        await self.start()
+        with patch.object(self.controller.session.application.tasks, "authorize_context",
+                          return_value=Outcome.success(True)):
+            result = await self.call(route=PREFIX + "/last-observation")
+        self.assertEqual(result["status"], "ok", result)
+        self.assertIsNone(result["data"]["observation"])
+        self.assertEqual(result["data"]["reason"], "capability_not_installed")
+        self.assertIn("latest_attempt", result["data"])
+
+    async def test_review_still_raises_real_authorization_failures(self):
+        await self.start()
+        with patch.object(self.controller.session.application.tasks, "authorize_context",
+                          return_value=Outcome.failed("authorization_denied", "denied")):
+            result = await self.call(route=PREFIX + "/last-observation")
+        self.assertEqual(result["status"], "error", result)
+        self.assertEqual(result["data"]["code"], "authorization_denied")
+
 
 if __name__ == "__main__":
     unittest.main()
