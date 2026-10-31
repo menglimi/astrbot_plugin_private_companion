@@ -20,7 +20,9 @@ test("总览汇总全局学习队列、成长阶段和全局策略",async()=>{
         learning:{state:"insufficient_samples",available:1,required:2}}
       :route==="semantic"?{settings:{learning_interval_seconds:21600}}
       :{items:[{growth_id:"one",kind:"skill",state:"active",title:"面向与发声",revision:2,
-        source_count:3,updated_at:"2026-10-07T08:00:00+00:00",progress_note:"完成基础练习"}]};
+        source_count:3,updated_at:"2026-10-07T08:00:00+00:00",progress_note:"完成基础练习"}],
+        access:{settings:{read_enabled:true,proposals_enabled:false},
+          effective:{read_enabled:{allowed:true},proposals_enabled:{allowed:false,reason:"authorization_missing"}}}};
     return {status:"ok",data};
   }};
   const window={CompanionProduct:{bridgeNow:()=>bridge,unwrap:value=>value.data}};
@@ -59,6 +61,7 @@ test("总览汇总全局学习队列、成长阶段和全局策略",async()=>{
   assert.match(root.innerHTML,/样本不足/);
   assert.match(root.innerHTML,/每日复盘/);
   assert.match(root.innerHTML,/最近一次已产出/);
+  assert.match(root.innerHTML,/成长提案权限不可用/);
   context.window.CompanionLearningOverviewPage.unmount();
   assert.equal(listeners.size,0);
 });
@@ -72,7 +75,9 @@ test("总览为空时说明学习链路的三个入口",async()=>{
       :route.endsWith("/expression")?{settings:{rules_per_turn:2},
         learning:{state:"insufficient_samples",available:1,required:2}}
       :route==="semantic"?{settings:{learning_interval_seconds:21600}}
-      :{items:[]};
+      :{items:[],
+        access:{settings:{read_enabled:true,proposals_enabled:false},
+          effective:{read_enabled:{allowed:true},proposals_enabled:{allowed:false,reason:"authorization_missing"}}}};
     return {status:"ok",data};
   }};
   const window={CompanionProduct:{bridgeNow:()=>bridge,unwrap:value=>value.data}};
