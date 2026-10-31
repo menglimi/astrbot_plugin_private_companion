@@ -1251,7 +1251,11 @@ window.CompanionProduct = (() => {
       const result=await bounded(method==="GET"?bridge.apiGet(mapped,message.body):bridge.apiPost(mapped,message.body),timeoutMs);valid();
       send({kind:"response",requestId:message.requestId,ok:true,data:result});
     } catch(error){
-      const code=typeof error?.code==="string"?error.code.slice(0,80):"";
+      /* 宿主页面桥对 status=error 只抛出 `new Error(message)`，不带 `code`；
+         后端偏偏把机器码放在 message 上。这里回填一次，否则工作区只能看到
+         一串英文码，无法翻译成来源级原因。 */
+      const messageCode=typeof error?.message==="string"&&CODE.test(error.message)?error.message.slice(0,80):"";
+      const code=(typeof error?.code==="string"&&error.code?error.code.slice(0,80):"")||messageCode;
       const rawReason=[error?.reason,error?.message].find(value=>typeof value==="string"&&value.trim());
       const reason=rawReason?rawReason.replace(/[\u0000-\u001f\u007f]/g," ").slice(0,1200):"";
       const expectedCode=code&&(Object.hasOwn(errors,code)||/(?:_invalid|_required|_denied|_conflict|_changed|_not_found|_unavailable|_running|_forbidden|_expired|_not_initialized)$/.test(code));
@@ -1259,9 +1263,17 @@ window.CompanionProduct = (() => {
         method,endpoint:diagnosticEndpoint(path),elapsed_ms:Date.now()-startedAt,
         timeout_ms:timeoutMs,code:code||"unknown",confirmed:false,
       });
+      /* 一次失败只属于实际请求的那条来源路由，不能拿主页面当前选中的
+         目标冒充；先从 endpoint 里的 target/role 反查标签，再退回当前选择。 */
+      const routeTarget=/(?:^|\/)targets\/([^/]+)\/roles\/([^/]+)(?:\/|$)/.exec(path||"");
+      const routeOwner=routeTarget?catalog?.targets?.find(item=>item.target_id===routeTarget[1]):null;
+      const routeRole=routeOwner?.roles?.find(item=>item.role_id===routeTarget[2]);
+      const sourceLabel=routeOwner?[targetLabel(routeOwner),routeRole?roleLabel(routeRole):""].filter(Boolean).join(" · ")
+        :[target()?targetLabel(target()):"",role()?roleLabel(role()):""].filter(Boolean).join(" · ");
       send({kind:"response",requestId:message.requestId,ok:false,
         error:errors[code]||reason||"请求未完成，请刷新核对当前状态后重试。",
-        code:code||undefined,reason:reason||undefined,confirmed:error?.confirmed===true});
+        code:code||undefined,reason:reason||undefined,sourceLabel:sourceLabel||undefined,
+        confirmed:error?.confirmed===true});
     }
   });
   function extensionsMarkup(ids) {
