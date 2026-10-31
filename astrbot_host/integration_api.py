@@ -14,6 +14,11 @@ from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import OperationRef, ScopeKind, ScopeRef, VersionRef
 from companion_v2.identity_policy.object_access import ObjectAccessPolicy
 
+from .capability_role_selection import (
+    AUTO_ROLE_EXTENSIONS,
+    enable_role,
+    lifecycle_role_identity,
+)
 from .management_identity import dashboard_operator
 from .integration_registry import UnifiedCompanionExtensionAPI
 from .native_extensions.builtins import MANAGED_EXTENSIONS
@@ -85,10 +90,19 @@ class IntegrationWebAPI:
 
             data = json.loads(raw.decode("utf-8"), object_pairs_hook=unique)
             expected_fields = {"extension_id", "action", "expected_revision", "operation_key"}
-            if type(data) is not dict or set(data) != expected_fields:
+            role_fields = {"role_id", "target_id"}
+            if type(data) is not dict or set(data) not in (expected_fields, expected_fields | role_fields):
                 raise ValueError("lifecycle command fields are incomplete or unknown")
             extension_id, action = data["extension_id"], data["action"]
             revision, operation_key = data["expected_revision"], data["operation_key"]
+            role_id, target_id = data.get("role_id"), data.get("target_id")
+            if (role_id is None) != (target_id is None):
+                raise ValueError("role_id and target_id must be supplied together")
+            if role_id is not None and any(
+                    type(value) is not str or not 1 <= len(value) <= 160
+                    or any(not (char.isascii() and (char.isalnum() or char in "._:-")) for char in value)
+                    for value in (role_id, target_id)):
+                raise ValueError("role_id and target_id must be bounded stable identifiers")
             if extension_id not in MANAGED_EXTENSIONS:
                 raise ValueError("only V2 bundled extensions can be managed here")
             if action not in ("assemble", "update", "pause", "resume", "uninstall"):
@@ -150,9 +164,15 @@ class IntegrationWebAPI:
 
                 receipt = require(result)
                 await registry.reconcile_service(extension_id)
+                role_selection = None
+                if action == "assemble" and extension_id in AUTO_ROLE_EXTENSIONS:
+                    identity = lifecycle_role_identity(controller, role_id=role_id, target_id=target_id)
+                    if identity is not None:
+                        role, bot_id = identity
+                        role_selection = enable_role(runtime, extension_id, role, bot_id, observed_at)
                 installation = require(CapabilityRepository(runtime).installation(extension_id=extension_id))
                 return outcome_response(Outcome.success({"receipt": receipt, "installation": installation,
-                    "runtime": registry.status(extension_id)}))
+                    "role_selection": role_selection, "runtime": registry.status(extension_id)}))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):

@@ -796,11 +796,11 @@ test("bundled Image and Screen furniture use the V2 lifecycle route and never li
   const lifecycle = h.calls.find(call => call.endpoint === "integration/lifecycle");
   assert.equal(lifecycle.method, "POST");
   assert.equal(JSON.stringify(lifecycle.body), JSON.stringify({extension_id: "image", action: "assemble",
-    expected_revision: 0, operation_key: "image-assemble"}));
+    expected_revision: 0, operation_key: "image-assemble", role_id: "synthetic-role", target_id: "first"}));
   await h.product.manageExtension("screen", "update", 4, "screen-sync");
   const update = h.calls.filter(call => call.endpoint === "integration/lifecycle").at(-1);
   assert.equal(JSON.stringify(update.body), JSON.stringify({extension_id: "companion.screen.native", action: "update",
-    expected_revision: 4, operation_key: "screen-sync"}));
+    expected_revision: 4, operation_key: "screen-sync", role_id: "synthetic-role", target_id: "first"}));
   assert.equal(h.calls.at(-1).endpoint, "integration/manifest", "家具状态来自真实 V2 manifest 刷新");
 });
 
@@ -812,7 +812,7 @@ test("Content, Reality, Together, Game and Live share the V2 lifecycle route", a
     await h.product.manageExtension(name, "pause", 3, name + "-pause");
     const command = h.calls.filter(call => call.endpoint === "integration/lifecycle").at(-1);
     assert.equal(JSON.stringify(command.body), JSON.stringify({extension_id:name, action:"pause",
-      expected_revision:3, operation_key:name + "-pause"}));
+      expected_revision:3, operation_key:name + "-pause", role_id:"synthetic-role", target_id:"first"}));
   }
 });
 

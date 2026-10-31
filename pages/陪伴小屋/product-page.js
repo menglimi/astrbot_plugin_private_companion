@@ -740,6 +740,10 @@ window.CompanionProduct = (() => {
         || typeof operationKey !== "string" || !operationKey) throw fail("integration_lifecycle_request_invalid");
     const result = await api("POST", "integration/lifecycle", {
       extension_id: item.extension_id, action, expected_revision: expectedRevision, operation_key: operationKey,
+      // 装配后由服务端补一次角色启用；装配按钮开在当前角色的小屋里，所以把
+      // 当前选中的角色和目标一起送过去，避免多角色安装时猜默认角色。
+      ...(selected.role_id && selected.target_id
+        ? {role_id: selected.role_id, target_id: selected.target_id} : {}),
     });
     await refreshIntegrations();
     return result;

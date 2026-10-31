@@ -149,6 +149,55 @@ test("版本变化时仅通过确认后提交精确旧包信息升级", async ()
   assert.doesNotMatch(node.innerHTML, /data-screen-access-action="upgrade"/);
 });
 
+test("核心管理员的授权面板用角色启用/停用按钮替代恒真的撤回", async () => {
+  const {node, calls} = harness({request: async (method, path, body) => method === "GET"
+    ? {installed: true, active: true, role_enabled: false, role_revision: 0, auto_consent: true,
+      invokable: false, consented: true, can_manage: true, edit_token: "edit-a",
+      reason: "capability_role_disabled"}
+    : {replayed: false, status: {installed: true, active: true, role_enabled: body.enabled,
+      role_revision: body.expected_revision + 1, auto_consent: true, invokable: body.enabled,
+      consented: true, can_manage: true, edit_token: "edit-b"}}});
+  await settle();
+  assert.match(node.innerHTML, /启用此角色/);
+  assert.doesNotMatch(node.innerHTML, /撤回当前私聊授权/);
+  assert.doesNotMatch(node.innerHTML, /data-screen-access-action="enable"/);
+  node.fire("role-enable");
+  await settle();
+  const enable = calls.filter(call => call.method === "POST").at(-1);
+  assert.equal(enable.path, "/screen-access/role-selection");
+  assert.equal(JSON.stringify(enable.body), JSON.stringify({operation_key: "screen-role-operation-a",
+    expected_revision: 0, enabled: true}));
+  assert.match(node.innerHTML, /停用此角色/);
+  assert.match(node.innerHTML, /已启用/);
+  node.fire("role-disable");
+  await settle();
+  assert.equal(calls.filter(call => call.method === "POST").at(-1).body.enabled, false);
+  assert.match(node.innerHTML, /启用此角色/);
+  assert.match(node.innerHTML, /未启用/);
+});
+
+test("核心管理员未装配时按钮显示未装配，角色冲突给出可读文案", async () => {
+  let installed = false;
+  const {node, calls} = harness({request: async (method) => {
+    if (method === "GET") return {installed, active: installed, role_enabled: false, role_revision: 0,
+      auto_consent: true, invokable: false, consented: true, can_manage: true, edit_token: "edit-a",
+      reason: installed ? "capability_role_disabled" : "capability_not_installed"};
+    throw Object.assign(new Error("capability_role_revision_conflict"),
+      {code: "capability_role_revision_conflict"});
+  }});
+  await settle();
+  assert.match(node.innerHTML, /未装配/);
+  assert.doesNotMatch(node.innerHTML, /撤回当前私聊授权/);
+  installed = true;
+  node.fire("refresh");
+  await settle();
+  assert.match(node.innerHTML, /启用此角色/);
+  node.fire("role-enable");
+  await settle();
+  assert.match(node.innerHTML, /角色启用状态已变化/);
+  assert.equal(calls.filter(call => call.method === "POST").length, 1);
+});
+
 test("已确认的屏幕授权在路由返回时先保留，再重新核对", async () => {
   const {node, calls, page} = harness({request: async (method) => method === "GET"
     ? {invokable: true, consented: true, can_manage: true, edit_token: "edit-a"}

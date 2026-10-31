@@ -309,6 +309,29 @@ class MultiIntegrationTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         self.assertFalse(provider["update_available"])
         self.assertEqual(provider["installed_package_version"], current_package.package_version)
 
+    async def test_assemble_enables_only_the_requesting_role(self):
+        await self.start_host()
+        response = await self.request(PREFIX + "/integration/lifecycle", method="POST", body={
+            "extension_id": "companion.screen.native", "action": "assemble", "expected_revision": 0,
+            "operation_key": "screen.assemble-role", "role_id": "role-a", "target_id": "first",
+        })
+        self.assertEqual(response["status"], "ok", response)
+        selection = response["data"]["role_selection"]
+        self.assertTrue(selection["enabled"])
+        self.assertEqual((selection["role"]["subject_id"], selection["bot_id"]), ("role-a", "bot-a"))
+        rows = self.controller.runtime.read_all(
+            "SELECT role_id, bot_id, enabled FROM capability_role_selections WHERE extension_id = ?",
+            ("companion.screen.native",),
+        )
+        self.assertEqual([(row["role_id"], row["bot_id"], row["enabled"]) for row in rows],
+                         [("role-a", "bot-a", 1)])
+        context = self.controller.authority.context("first", "role-a")
+        projection = CapabilityRepository(self.controller.runtime).projection(
+            extension_id="companion.screen.native",
+            role=context.role_binding.role, scope=context.scope,
+        ).unwrap()
+        self.assertTrue(projection.role_selection.enabled)
+
     async def test_bundled_lifecycle_rejects_non_core_dashboard_user(self):
         await self.controller.initialize_profile()
         operator = dashboard_operator(self.controller.runtime, "admin", at=support.NOW)

@@ -113,9 +113,10 @@ class ScreenAccess:
                 "installed_package_version": installed.package_version if installed else None,
                 "installed_artifact_hash": installed.artifact_hash if installed else None,
                 "installed_revision": installed.revision if installed else None,
-                "installed": installed is not None, "active": active, "role_enabled": role_enabled,
+                "installed": installed is not None, "active": active,
+                "role_enabled": role_enabled, "role_revision": selection.revision if selection else 0,
                 "read_consented": read_consented, "process_consented": process_consented,
-                "consented": read_consented and process_consented,
+                "consented": read_consented and process_consented, "auto_consent": core,
                 "invokable": invokable, "can_manage": can_manage,
                 "reason": reason, "edit_token": self._token(state)}
 
@@ -145,6 +146,9 @@ class ScreenAccess:
             if command["edit_token"] != self._token(state):
                 raise TaskError("screen_access_changed", "refresh Screen access before saving")
             installed, selection, consents = state
+            if not command["enabled"] and (
+                    installed is None or installed.desired_state is CapabilityDesiredState.DISCARDED):
+                raise TaskError("capability_not_installed", "the Screen extension has not been assembled")
             if command["enabled"]:
                 require(self.repository.register_descriptor(self.package, registered_at=at))
                 if installed is None:

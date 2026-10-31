@@ -8,6 +8,10 @@ from companion_v2.capabilities.reality_camera import ACTION as CAMERA_ACTION, Re
 from companion_v2.execution.models import TaskError
 from companion_v2.foundation.outcome import Outcome
 
+from .capability_role_selection import (
+    set_role_selection,
+    validate_role_selection_command,
+)
 from .management_identity import dashboard_operator
 
 
@@ -37,6 +41,8 @@ class RealityAccessWebAPI:
             label = action.removeprefix("reality.").replace(".", " ")
             routes.extend(((route, status, ["GET"], f"Read scoped Reality {label} access"),
                            (route + "/configure", configure, ["POST"], f"Set scoped Reality {label} consent")))
+        routes.append((PREFIX + "/role-selection", self.role_selection, ["POST"],
+                       "Enable or disable Reality for one Bot role"))
         return routes
 
     def _handlers(self, action):
@@ -77,7 +83,16 @@ class RealityAccessWebAPI:
                           if action == CAMERA_ACTION else
                           access_type(session.application, session.profile.target, descriptor.package, capability=action))
                 at = controller.now()
-                result = access.status(operator, at) if command is None else access.configure(operator, command, at)
+                if command is None:
+                    result = access.status(operator, at)
+                elif "expected_revision" in command:
+                    validate_role_selection_command(command, error_code="reality_request_invalid")
+                    selection = set_role_selection(
+                        controller, operator, "reality", session.profile.target, command, at)
+                    result = {"replayed": selection.replayed,
+                              "status": access.status(operator, at)}
+                else:
+                    result = access.configure(operator, command, at)
                 if command is not None:
                     await registry.reconcile_service("reality")
                 result["runtime"] = registry.status("reality")
@@ -99,25 +114,36 @@ class RealityAccessWebAPI:
     async def configure_camera(self):
         return await self._configure(CAMERA_ACTION)
 
+    async def role_selection(self):
+        from .web_api import outcome_response
+        try:
+            return await self._run(await self._command_body(), action=ACTION)
+        except (ValueError, TypeError, KeyError, UnicodeError):
+            return outcome_response(Outcome.failed(
+                "reality_request_invalid", "invalid Reality role selection command"))
+
     async def _configure(self, action):
         from .web_api import outcome_response
         try:
-            raw = await request.body()
-            if len(raw) > 4096:
-                raise ValueError("request is too large")
-
-            def unique(pairs):
-                result = {}
-                for key, value in pairs:
-                    if key in result:
-                        raise ValueError("duplicate field")
-                    result[key] = value
-                return result
-
-            command = json.loads(raw.decode("utf-8"), object_pairs_hook=unique,
-                parse_constant=lambda _: (_ for _ in ()).throw(ValueError("nonfinite value")))
-            if type(command) is not dict:
-                raise ValueError("command must be an object")
-            return await self._run(command, action=action)
+            return await self._run(await self._command_body(), action=action)
         except (ValueError, TypeError, KeyError, UnicodeError):
             return outcome_response(Outcome.failed("reality_request_invalid", "invalid Reality access command"))
+
+    async def _command_body(self):
+        raw = await request.body()
+        if len(raw) > 4096:
+            raise ValueError("request is too large")
+
+        def unique(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("duplicate field")
+                result[key] = value
+            return result
+
+        command = json.loads(raw.decode("utf-8"), object_pairs_hook=unique,
+            parse_constant=lambda _: (_ for _ in ()).throw(ValueError("nonfinite value")))
+        if type(command) is not dict:
+            raise ValueError("command must be an object")
+        return command

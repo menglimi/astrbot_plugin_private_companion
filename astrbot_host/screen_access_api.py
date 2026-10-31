@@ -8,6 +8,10 @@ from companion_v2.capabilities.screen_access import ACTION, PROVIDER, ScreenAcce
 from companion_v2.execution.models import TaskError
 from companion_v2.foundation.outcome import Outcome
 
+from .capability_role_selection import (
+    set_role_selection,
+    validate_role_selection_command,
+)
 from .management_identity import dashboard_operator
 
 
@@ -22,6 +26,8 @@ class ScreenAccessWebAPI:
         from .screen_observation_api import ScreenObservationWebAPI
         return [(prefix, self.status, ["GET"], "Read scoped native Screen access"),
                 (prefix + "/configure", self.configure, ["POST"], "Set scoped native Screen consent"),
+                (prefix + "/role-selection", self.role_selection, ["POST"],
+                 "Enable or disable native Screen for one Bot role"),
                 *ScreenObservationWebAPI(self.controller).routes(prefix)]
 
     async def _run(self, command=None):
@@ -50,7 +56,16 @@ class ScreenAccessWebAPI:
                 at = controller.now()
                 operator = dashboard_operator(controller.runtime, username, at=at)
                 service = ScreenAccess(session.application, session.profile.target, descriptor)
-                result = service.status(operator, at) if command is None else service.configure(operator, command, at)
+                if command is None:
+                    result = service.status(operator, at)
+                elif "expected_revision" in command:
+                    validate_role_selection_command(command, error_code="screen_access_request_invalid")
+                    selection = set_role_selection(
+                        controller, operator, "companion.screen.native", session.profile.target, command, at)
+                    result = {"replayed": selection.replayed,
+                              "status": service.status(operator, at)}
+                else:
+                    result = service.configure(operator, command, at)
                 return outcome_response(Outcome.success(result))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
@@ -60,26 +75,37 @@ class ScreenAccessWebAPI:
     async def status(self):
         return await self._run()
 
+    async def role_selection(self):
+        from .web_api import outcome_response
+        try:
+            return await self._run(await self._command_body())
+        except (ValueError, TypeError, KeyError, UnicodeError):
+            return outcome_response(Outcome.failed(
+                "screen_access_request_invalid", "invalid Screen role selection command"))
+
     async def configure(self):
         from .web_api import outcome_response
         try:
-            raw = await request.body()
-            if len(raw) > 4096:
-                raise ValueError("request is too large")
-            def unique(pairs):
-                result = {}
-                for key, value in pairs:
-                    if key in result:
-                        raise ValueError("duplicate field")
-                    result[key] = value
-                return result
-            command = json.loads(raw.decode("utf-8"), object_pairs_hook=unique,
-                parse_constant=lambda _: (_ for _ in ()).throw(ValueError("nonfinite value")))
-            if type(command) is not dict:
-                raise ValueError("command must be an object")
-            return await self._run(command)
+            return await self._run(await self._command_body())
         except (ValueError, TypeError, KeyError, UnicodeError):
             return outcome_response(Outcome.failed("screen_access_request_invalid", "invalid Screen access command"))
+
+    async def _command_body(self):
+        raw = await request.body()
+        if len(raw) > 4096:
+            raise ValueError("request is too large")
+        def unique(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("duplicate field")
+                result[key] = value
+            return result
+        command = json.loads(raw.decode("utf-8"), object_pairs_hook=unique,
+            parse_constant=lambda _: (_ for _ in ()).throw(ValueError("nonfinite value")))
+        if type(command) is not dict:
+            raise ValueError("command must be an object")
+        return command
 
 
 __all__ = ["PREFIX", "ScreenAccessWebAPI"]
