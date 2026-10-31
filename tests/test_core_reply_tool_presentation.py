@@ -100,6 +100,14 @@ class MediaToolPresentationTests(unittest.IsolatedAsyncioTestCase):
         authored = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)["_voice_authored"]
         self.assertEqual(len(authored["spans"]), 1)
 
+    async def test_group_participation_choice_defers_the_tool_step_prose_too(self):
+        # A group turn that calls choose(reply) and also writes prose must not
+        # send that prose: AstrBot would deliver it and then deliver the reply
+        # generated after the tool, which is the duplicate send the group path
+        # used to avoid by removing the tool from the turn's tool set.
+        _, shown = await self.run_search("companion_v2_group_participation_choose")
+        self.assertEqual(shown, ["生日快乐。"])
+
     async def test_other_tools_keep_native_progress_prose(self):
         _, shown = await self.run_search("other_search")
         self.assertEqual(shown, ["生日快乐。", "生日快乐。"])
