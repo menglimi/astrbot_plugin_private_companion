@@ -8,6 +8,7 @@ from astrbot.core.provider.sources.fishaudio_tts_api_source import ProviderFishA
 from astrbot.core.provider.sources.openai_source import ProviderOpenAIOfficial
 from astrbot_host.core_reply import CORE_REPLY_CONTEXT_EXTRA, inject_core_reply_prompt
 from astrbot_host.core_reply_perception import (
+    _group_participation_hint,
     inject_core_reply_perception_context,
     inject_core_reply_perception_policy,
 )
@@ -347,6 +348,30 @@ class CoreReplyPerceptionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["environment"]["chat_route"]["status"], "unavailable")
         self.assertEqual(payload["environment"]["configured_input_modalities"]["status"],
                          "not_explicitly_declared")
+
+
+class GroupParticipationHintTests(unittest.TestCase):
+    def hint(self, admission):
+        value = prepared()
+        value["group_admission"] = admission
+        return _group_participation_hint(value)
+
+    def test_addressed_turn_states_the_reply_decision_without_naming_a_missing_tool(self):
+        # The explicit @ already decided this turn replies and the participation
+        # tool is not mounted, so the hint must not invite a choose call it cannot
+        # serve; it has to point at the reply itself.
+        hint = self.hint({"admitted": True, "mentioned": True, "reason": "mention", "reasons": ["mention"]})
+        self.assertIn("明确 @ 了你", hint)
+        self.assertIn("直接写出要说的话", hint)
+        self.assertNotIn("group.participation.choose", hint)
+
+    def test_candidate_turn_keeps_the_original_participation_instruction(self):
+        hint = self.hint({"admitted": True, "mentioned": False, "reason": "question", "reasons": ["question"]})
+        self.assertIn("本轮没有明确 @", hint)
+        self.assertIn("group.participation.choose", hint)
+
+    def test_turn_without_an_admission_gets_no_hint(self):
+        self.assertEqual(self.hint(None), "")
 
 
 if __name__ == "__main__":

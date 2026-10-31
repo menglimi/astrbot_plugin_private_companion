@@ -85,11 +85,16 @@ def observe_core_tool_dispatch_begin(event, run_context):
         _restore_tool_reply(state)
         # A binding error leaves the tool unavailable; it must never substitute
         # a model-supplied ID or execute an operation under a guessed identity.
+        restore_tools = lambda: None
         try:
             if active_core_runner(event, run_context) is runner:
-                from .core_reply_tools import observe_core_tool_calls
+                from .core_reply_tools import bind_withheld_core_tools, observe_core_tool_calls
                 response = args[1] if len(args) > 1 else kwargs.get("llm_response")
                 observe_core_tool_calls(event, response, run_context)
+                # A call this turn deliberately withholds (an explicit @ mounts no
+                # participation tool) must be answered, not reported as missing.
+                restore_tools = bind_withheld_core_tools(
+                    event, args[0] if args else kwargs.get("req"), response)
         except Exception as error:
             logger.warning("[CompanionV2] 核心工具调用绑定暂不可用 error_type=%s", type(error).__name__)
         try:
@@ -104,6 +109,9 @@ def observe_core_tool_dispatch_begin(event, run_context):
         except (asyncio.CancelledError, GeneratorExit):
             restore_core_tool_dispatch(event, run_context)
             raise
+        finally:
+            # The batch is over; the next provider call must see the catalogue again.
+            restore_tools()
 
     async def observed_step(*args, **kwargs):
         failed = False

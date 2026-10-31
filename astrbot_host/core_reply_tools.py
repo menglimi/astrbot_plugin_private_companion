@@ -90,6 +90,18 @@ def _field(prepared, name, default=None):
     return prepared.get(name, default) if isinstance(prepared, Mapping) else getattr(prepared, name, default)
 
 
+def addressed_group_turn(prepared):
+    """Whether an explicit ``@`` already selected this group turn for a reply.
+
+    Some platforms expose an ``@`` component whose ID does not match AstrBot's
+    account_id, so the admission reason is authoritative too.
+    """
+    admission = _field(prepared, "group_admission", {}) or {}
+    return (admission.get("mentioned") is True
+            or admission.get("reason") in {"mention", "mention_all", "native_wakeup"}
+            or "mention" in (admission.get("reasons") or ()))
+
+
 def native_call_id(wrapper, action, arguments):
     """Use the actual assistant tool call, never a model-supplied routing field."""
     event = getattr(getattr(wrapper, "context", None), "event", None)
@@ -187,6 +199,23 @@ class CoreReplyFunctionTool(FunctionTool):
         return await self._session.call(self._action, context, kwargs)
 
 
+class CoreReplyWithheldTool(FunctionTool):
+    """Answer one call this turn withholds, keeping the exact same schema.
+
+    It lives only for the dispatch of that batch and never reaches a provider, so
+    the tool list the model sees stays the catalogue's. Answering instead of
+    executing is the whole point: the call cannot decide, write or send anything.
+    """
+
+    def __init__(self, session, spec):
+        super().__init__(name=native_tool_name(spec.action), description=spec.description,
+                         parameters=json.loads(spec.parameters_json))
+        self._session, self._action = session, spec.action
+
+    async def call(self, context, **kwargs):
+        return encode(self._session.withheld_result(self._action))
+
+
 class CoreReplyToolSession:
     """Bind tools to the admitted native event without creating a reply batch."""
 
@@ -249,16 +278,10 @@ class CoreReplyToolSession:
                     offered.extend(_OfferedTool(spec, owner) for spec in reader.catalog_for(context))
         else:
             participation = getattr(tools, "group_participation", None)
-            admission = _field(self.prepared, "group_admission", {}) or {}
             # An explicit @ already selected this turn for a reply. Offering
             # the participation tool there lets AstrBot send the visible text
             # first and then run the tool, producing a duplicate final send.
-            # Some platforms expose an @ component whose ID does not match
-            # AstrBot's account_id, so the admission reason is authoritative too.
-            addressed = (admission.get("mentioned") is True
-                         or admission.get("reason") in {"mention", "mention_all", "native_wakeup"}
-                         or "mention" in (admission.get("reasons") or ()))
-            if participation is not None and not addressed:
+            if participation is not None and not addressed_group_turn(self.prepared):
                 offered.extend(_OfferedTool(spec, "participation") for spec in participation.catalog_for(context))
                 behavior = getattr(participation, "behavior", None)
                 if behavior is not None and _field(self.prepared, "native_input") is not None:
@@ -298,6 +321,40 @@ class CoreReplyToolSession:
         if self.context.scope.kind is ScopeKind.GROUP and self.group_tool_profile in ("lean", "standard"):
             return group_tool_manifest(offered, self.group_tool_profile)
         return tuple(offered)
+
+    def withheld_spec(self, name):
+        """The spec behind a native name this turn deliberately withholds.
+
+        An explicit ``@`` turn mounts no participation or behavior tools, but the
+        model still sees its own calls to them in the conversation history and
+        repeats the ritual. The dispatch layer answers such a call with this
+        schema instead of letting the host report a tool that does not exist.
+        """
+        if self.context.scope.kind is not ScopeKind.GROUP or not addressed_group_turn(self.prepared):
+            return None
+        participation = getattr(self.application.tools, "group_participation", None)
+        if participation is None:
+            return None
+        from companion_v2.conversation.behavior.service import CATALOG as BEHAVIOR_CATALOG
+        behavior = BEHAVIOR_CATALOG if _field(self.prepared, "native_input") is not None else ()
+        return next((spec for spec in (*participation.catalog, *behavior)
+                     if native_tool_name(spec.action) == name), None)
+
+    def withheld_result(self, action):
+        """Answer one withheld call truthfully, without deciding or sending anything.
+
+        ``group.participation.choose`` on an addressed turn asks for a decision
+        the ``@`` already made, so the answer states that outcome and asks for the
+        reply itself. Nothing is recorded and no business tool runs, which is what
+        lets the catalogue stay exactly as the design specifies.
+        """
+        if action == "group.participation.choose":
+            return {"state": "failed", "effect": "none", "code": "core_tool_not_offered",
+                    "action": action, "participation": {"mode": "reply", "basis": "explicit_mention"},
+                    "instruction": "本轮消息明确 @ 了你，参与决定已经是回复，本轮工具集因此不含它。"
+                                   "这次调用没有执行也不会执行；不要再调用它，也不必再声明参与，直接写出要说的话。"}
+        return {"state": "failed", "effect": "none", "code": "core_tool_not_offered", "action": action,
+                "instruction": "本轮工具集不含这个工具。这次调用没有执行也不会执行；不要重复调用，用已有材料继续回复。"}
 
     def choose_participation(self, wrapper, arguments):
         from companion_v2.conversation.native_participation import AUTONOMOUS_REASONS, native_participation_turn
@@ -578,6 +635,33 @@ class CoreReplyToolSession:
                                                        **common, **parameters))
         return {"state": "succeeded", "effect": "committed", "payload": receipt,
                 "operation_id": receipt.operation_id}
+
+
+def bind_withheld_core_tools(event, request, response):
+    """Mount one-turn answers for the calls this turn deliberately withholds.
+
+    AstrBot resolves an unavailable tool by answering ``Tool ... not found``,
+    which spends a whole model round and writes that error into the history the
+    next turn imitates. The tool keeps its exact schema but executes nothing, and
+    the returned callable restores the request's own tool set, so every provider
+    call still sees the catalogue as designed.
+    """
+    state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
+    session = state.get("_tool_session") if isinstance(state, dict) else None
+    tools = getattr(request, "func_tool", None)
+    if not isinstance(session, CoreReplyToolSession) or tools is None:
+        return lambda: None
+    specs = []
+    for name in getattr(response, "tools_call_name", ()) or ():
+        if not isinstance(name, str) or tools.get_tool(name) is not None:
+            continue
+        spec = session.withheld_spec(name)
+        if spec is not None and spec.action not in {known.action for known in specs}:
+            specs.append(spec)
+    if not specs:
+        return lambda: None
+    request.func_tool = ToolSet(tools=[*tools.tools, *(CoreReplyWithheldTool(session, spec) for spec in specs)])
+    return lambda: setattr(request, "func_tool", tools)
 
 
 def inject_core_reply_tools(event, req, *, application):

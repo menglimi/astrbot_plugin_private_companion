@@ -174,8 +174,14 @@ def _setting_instructions(prepared):
 
 def _group_participation_hint(prepared):
     admission = prepared.get("group_admission")
-    if not isinstance(admission, Mapping) or admission.get("mentioned"):
+    if not isinstance(admission, Mapping):
         return ""
+    if admission.get("mentioned"):
+        # The explicit @ already decided this turn replies and the participation
+        # tool is not mounted here, so say so. Otherwise the model copies the
+        # choose call its own history taught it and spends a round on a tool this
+        # turn does not have.
+        return "本轮消息明确 @ 了你，参与决定已经确定为回复：直接写出要说的话，不必先声明参与。"
     from companion_v2.conversation.group_admission import REASONS
 
     reason = admission.get("reason")
