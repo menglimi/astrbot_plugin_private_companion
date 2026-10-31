@@ -83,8 +83,8 @@ async def read_external_memory_summary(controller, context) -> dict[str, Any]:
     if producer is None:
         return _unavailable("unavailable", provider, display_name, "v2_registration_unavailable")
     try:
-        register = getattr(owner.handle, "register_private_companion_memory_summary_reader", None)
-        create_context = getattr(owner.handle, "create_private_companion_memory_summary_context", None)
+        register = getattr(owner.handle, "register_private_companion", None)
+        create_context = getattr(owner.handle, "create_user_memory_context", None)
         read_summary = getattr(owner.handle, "read_user_memory_summary", None)
         if not all(callable(method) for method in (register, create_context, read_summary)):
             return _unavailable("unavailable", provider, display_name, "summary_contract_unavailable")
@@ -108,7 +108,8 @@ async def read_external_memory_summary(controller, context) -> dict[str, Any]:
         error = str(raw.get("error_code") or "summary_not_ready")
         allowed = {"bridge_disabled", "bridge_exception", "bridge_method_unavailable", "bridge_unavailable",
                    "invalid_store_response", "invalid_bridge_response", "missing_user_id", "store_query_failed",
-                   "store_unavailable", "session_identity_mismatch"}
+                   "store_unavailable", "session_identity_mismatch", "requester_context_required",
+                   "requester_identity_mismatch"}
         return _unavailable("unavailable", provider, display_name, error if error in allowed else "summary_not_ready")
     raw_counts = raw.get("counts") if isinstance(raw.get("counts"), Mapping) else {}
     counts = {key: _count(raw_counts.get(key)) for key in (*SUMMARY_CATEGORIES, "total")}

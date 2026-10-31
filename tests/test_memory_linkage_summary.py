@@ -11,11 +11,11 @@ class SummaryBridge:
         self.raw = raw
         self.calls = []
 
-    def register_private_companion_memory_summary_reader(self, producer):
+    def register_private_companion(self, producer):
         self.calls.append(("register", producer))
         return "summary-capability"
 
-    def create_private_companion_memory_summary_context(self, capability, **identity):
+    def create_user_memory_context(self, capability, **identity):
         self.calls.append(("context", capability, identity))
         return "summary-context"
 
@@ -32,7 +32,7 @@ class ExternalMemorySummaryTests(unittest.IsolatedAsyncioTestCase):
         context = SimpleNamespace(get_all_stars=lambda: [metadata])
         controller = SimpleNamespace(context=context)
         owner = SimpleNamespace(
-            ownership=SimpleNamespace(delegated=True, provider="astrbot_plugin_remember_you",
+            ownership=SimpleNamespace(delegated=True, provider="astrbot_plugin_memory_companion",
                                       display_name="记忆插件"),
             handle=bridge,
         )
@@ -54,6 +54,7 @@ class ExternalMemorySummaryTests(unittest.IsolatedAsyncioTestCase):
             result = await read_external_memory_summary(controller, context)
 
         self.assertEqual(result["state"], "ready")
+        self.assertEqual(result["provider"], "astrbot_plugin_memory_companion")
         self.assertEqual(result["counts"], {"profile": 2, "preference": 3, "relationship": 1,
                                              "private_conversation": 4, "other": 0, "total": 10})
         self.assertNotIn("summaries", result)
@@ -88,6 +89,27 @@ class ExternalMemorySummaryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["state"], "unsupported_scope")
         self.assertEqual(bridge.calls, [])
+
+
+class MemoryCompanionContractTests(unittest.TestCase):
+    """Guard the real cross-plugin surface this adapter probes.
+
+    The optional provider is not a CI dependency, so an absent or unimportable
+    plugin skips instead of failing; a renamed method on an installed plugin fails.
+    """
+
+    CONTRACT_METHODS = ("register_private_companion", "create_user_memory_context",
+                        "read_user_memory_summary")
+
+    def test_installed_provider_bridge_exposes_the_summary_contract(self):
+        try:
+            from astrbot_plugin_memory_companion.core.bridge import MemoryCompanionBridge
+        except Exception as error:  # 插件未安装或依赖缺失时不影响本仓库门禁
+            self.skipTest(f"astrbot_plugin_memory_companion is not importable here: {error}")
+        for name in self.CONTRACT_METHODS:
+            with self.subTest(attribute=name):
+                self.assertTrue(callable(getattr(MemoryCompanionBridge, name, None)),
+                                f"MemoryCompanionBridge.{name} must stay callable")
 
 
 if __name__ == "__main__":
