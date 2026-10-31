@@ -145,9 +145,24 @@ class OfficialAdapterTests(OfficialFixture, unittest.IsolatedAsyncioTestCase):
             session_route(f"{ACCOUNT}:GroupMessage:{GROUP_OPENID}"),
             (ACCOUNT, "group", GROUP_OPENID))
         self.assertNotEqual(route_id("test-openid"), route_id("test-openid-2"))
-        for invalid in ("0", "0300", "bad:id", " bad", "bad id"):
+        self.assertEqual(route_id("0721"), "0721")
+        for invalid in ("0", "bad:id", " bad", "bad id"):
             with self.assertRaises(ValueError):
                 route_id(invalid)
+
+    async def test_numeric_official_instance_with_leading_zero_is_a_valid_account_key(self):
+        platform = OfficialPlatform()
+        platform.metadata.id = "0721"
+        event = self.official_event()
+        event.platform_meta = platform.meta()
+
+        self.assertEqual(event_account_id(event), "0721")
+        settings = MultiHostSettings.parse(multi_config(
+            accounts=[{"platform_id": "0721", "account_id": "0721", "bot_id": "bot-test"}],
+            targets=[{"target_id": "official-private", "platform_id": "0721",
+                      "account_id": "0721", "bot_id": "bot-test", "participant_id": "*"}],
+            personas=[{"bot_id": "bot-test", "persona_id": "星缘-私聊", "role_id": "星缘"}]))
+        self.assertEqual(settings.accounts[0].self_id, "0721")
 
     async def test_official_role_mapping_accepts_opaque_accounts_and_peers(self):
         config = multi_config(

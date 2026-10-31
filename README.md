@@ -24,7 +24,7 @@
 | --- | --- |
 | 插件名 | `astrbot_plugin_private_companion` |
 | 显示名 | 我会永远陪着你 |
-| 当前版本 | `7.0.5`（7.x 架构线，内部领域标识 `private_companion.v2`） |
+| 当前版本 | `7.0.7`（7.x 架构线，内部领域标识 `private_companion.v2`） |
 | AstrBot 版本 | `>= 4.27.2` |
 | 声明支持平台 | `aiocqhttp`（OneBot v11）、`qq_official`、`qq_official_webhook` |
 | 管理入口 | AstrBot 插件扩展页「陪伴小屋」（支持低配设备开启「性能模式」切换为轻量状态页） |
@@ -163,6 +163,8 @@ https://github.com/menglimi/astrbot_plugin_private_companion
 7.x 继续使用原仓库和插件名 `astrbot_plugin_private_companion`，通过现有安装原地更新即可，**不要并行安装第二份同名插件，也不要先删除原数据目录**。
 
 #### 升级六步流程
+
+供执行迁移和首次配置的 Agent 使用的操作顺序、确认边界和回执核验步骤见 [Agent 首次配置与旧版迁移手册](docs/AGENT_MIGRATION_AND_SETUP.md)。
 
 1. **准备可验证的回退材料**：备份插件配置文件和原数据目录；使用过独立记忆或其他伴侣拓展的，一并备份其配置与数据。从发布页下载「6.7.0 回退包」附件并核对下方 SHA-256。
 2. **原地更新插件**：在 AstrBot 插件管理中将插件更新至 7.x 并按提示重载；离线更新时先停止 AstrBot，用新版交付包替换插件代码目录，保留原配置与数据目录。

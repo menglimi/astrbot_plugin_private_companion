@@ -464,19 +464,21 @@ test("display labels preserve names while internal role and executor keys stay o
 test("the account workspace relays account discovery, mappings, relationship discoveries and startup", async () => {
   const h = await harness();
   h.product.mountWorkspace();
-  for (const [method, endpoint] of [["GET", "accounts"], ["POST", "accounts"], ["POST", "accounts/model-provider"], ["POST", "host/start"]]) {
+  for (const [method, endpoint] of [["GET", "accounts"], ["POST", "accounts"], ["POST", "accounts/model-provider"],
+    ["POST", "accounts/window-link"], ["POST", "accounts/window-unlink"], ["POST", "host/start"]]) {
     await h.request(h.host, method, endpoint);
     assert.equal(h.host.messages.at(-1).ok, true);
   }
   await h.request(h.host, "GET", "acquaintance");
   assert.equal(h.host.messages.at(-1).ok, true);
   assert.deepEqual(h.calls.map(call => `${call.method} ${call.endpoint}`),
-    ["GET accounts", "POST accounts", "POST accounts/model-provider", "POST host/start", "GET acquaintance"]);
+    ["GET accounts", "POST accounts", "POST accounts/model-provider", "POST accounts/window-link",
+      "POST accounts/window-unlink", "POST host/start", "GET acquaintance"]);
   await h.request(h.host, "GET", "accounts/session");
   await h.request(h.host, "POST", "accounts/session/extra");
   await h.request(h.host, "POST", "acquaintance");
   await h.request(h.host, "GET", "acquaintance/authorization");
-  assert.equal(h.calls.length, 5);
+  assert.equal(h.calls.length, 7);
   assert.equal(h.host.messages.at(-1).ok, false);
 });
 
@@ -735,7 +737,7 @@ test("requests in flight during a mapping refresh receive a bounded stale-scope 
   assert.equal(h.relationships.messages.at(-1).code, "scope_changed");
 });
 
-test("account editor cannot relay manual runtime operations or native window edits", async () => {
+test("account editor cannot relay manual runtime operations or native session edits", async () => {
   const h = await harness();
   h.product.mountWorkspace();
   for (const endpoint of ["host/probe", "host/initialize", "host/stop", "accounts/session"]) {

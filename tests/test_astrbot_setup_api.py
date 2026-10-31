@@ -609,6 +609,30 @@ class AstrBotSetupFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.config["model"]["provider_id"], "native-model")
         self.assertIsNone(self.controller.runtime)
 
+    async def test_model_selection_accepts_namespaced_astrbot_provider_id(self):
+        provider_id = "deepseek/deepseek-flash"
+        provider = FakeProvider()
+        provider.provider_config["id"] = provider_id
+        provider.meta = lambda: NS(id=provider_id, name=provider_id)
+        providers = {"native-model": self.native.provider, provider_id: provider}
+        self.native.get_all_providers = lambda: list(providers.values())
+        self.native.get_provider_by_id = lambda selected: providers.get(selected)
+        await self.enter_model_step()
+
+        result = await self.call("model", {"provider_id": provider_id})
+
+        self.assertEqual(result["status"], "ok", result)
+        self.assertEqual(self.config["model"]["provider_id"], provider_id)
+
+    async def test_model_apply_failure_is_not_misreported_as_invalid_provider(self):
+        await self.enter_model_step()
+        self.controller.save_plugin_config = Mock(side_effect=ValueError("fixture write failure"))
+
+        result = await self.call("model", {"provider_id": "native-model"})
+
+        self.assertEqual(result["data"]["code"], "setup_model_apply_failed")
+        self.assertEqual(self.config["model"]["provider_id"], "native-model")
+
     async def test_model_setup_uses_all_loaded_providers_without_registering_them(self):
         secondary = FakeProvider()
         secondary.provider_config["id"] = "secondary-model"

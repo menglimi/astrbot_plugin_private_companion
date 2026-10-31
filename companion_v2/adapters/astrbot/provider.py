@@ -576,7 +576,7 @@ class AstrBotTextProvider:
             # extra_body 并被服务端拒绝。这里直接复用宿主的真实转换器。
             payload, _ = await native._prepare_chat_payload(
                 prompt="Reply OK.", contexts=[], model=self.model)
-            payload["max_output_tokens"] = 8
+            payload["max_output_tokens"] = PROBE_OUTPUT_TOKENS
             result = await native._query(payload, None, request_max_retries=1)
         elif self.kind != "openai":
             # Gemini 客户端没有 OpenAI 的 with_options；重试次数由 request_max_retries 控制。

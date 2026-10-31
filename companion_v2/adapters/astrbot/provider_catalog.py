@@ -102,10 +102,12 @@ def assemble_providers(context, *, bridge, native_types, primary_id, additional=
     candidates = []
     seen = set()
     for native in inventory:
-        if native_types.video_provider_type is not None and isinstance(native, native_types.video_provider_type):
-            adapter_kind = "video"
-        elif _text_provider(native_types, native):
+        # This catalog builds fallback text adapters; a provider registered for
+        # both surfaces (such as native Gemini) belongs to the text lane here.
+        if _text_provider(native_types, native):
             adapter_kind = "text"
+        elif native_types.video_provider_type is not None and isinstance(native, native_types.video_provider_type):
+            adapter_kind = "video"
         else:
             continue
         try:

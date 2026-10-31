@@ -165,6 +165,8 @@ window.CompanionSetup = (() => {
       bridge_timeout: "连接超时，请重新读取；原操作结果需要核对。",
       invalid_response: "服务返回的数据不完整，请重新读取。",
       setup_progress_unavailable: "读取设置进度失败（已保留上次结果）；点「重新读取」再试一次，仍失败请查看 AstrBot 日志。",
+      setup_model_invalid: "请选择当前已加载的文本模型后再试。",
+      setup_model_apply_failed: "模型已通过校验，但保存或初始化没有完成。请查看 AstrBot 日志并重新读取状态。",
       model_route_unavailable: "当前小屋角色没有可编辑的模型路由，请切换到已关联私聊的人格。",
       model_route_scope_changed: "小屋角色已经切换，请重新读取当前角色的模型路由后再保存。",
       legacy_plan_stale: "配置在执行前已更新；重新执行会先重新试算再写入。",

@@ -129,7 +129,7 @@ def build_wire(envelope, *, model_name=""):
         stream_contract = "\n" + STREAM_REPLY_INSTRUCTION
         contract += stream_contract
     reply_images = {"e_" + digest(i.source): i.source for i in request.images} if request.reply_images else {}
-    if reply_images:
+    if request.reply_images:
         contract += "\n" + REPLY_IMAGE_INSTRUCTION
     if request.output_format == "conversation":
         action_names = {"text": "文字", "image": "表情图", "voice_only": "仅语音",
@@ -168,6 +168,8 @@ def build_wire(envelope, *, model_name=""):
                 metadata = {"image_evidence": handle,
                     "parent_source_id": image.parent.source_id, "component_position": image.descriptor.position,
                     "coverage": "one_static_image"}
+                if original.source in request.user_input_image_sources:
+                    metadata["image_origin"] = "user_input"
                 if reply_images:
                     metadata["sendable_image"] = "e_" + digest(original.source)
                 if isinstance(original, PromptAnimation):
