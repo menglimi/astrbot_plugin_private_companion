@@ -948,6 +948,8 @@ test('maintenance offers today, total, date drilldown, ranked detail, cache and 
             reason_code: 'staging_not_accepting', observed_at: localStamp(), scope: 'current_role'},
           {event_ref: 'fedcba0987654321fedcba0987654321', channel: 'private',
             reason_code: 'conversation_task_failed', code: 'model_budget_exhausted', observed_at: localStamp(), scope: 'current_role'},
+          {event_ref: 'abcdef1234567890abcdef1234567890', channel: 'group',
+            reason_code: 'core_reply_send_denied', code: 'host_client_offline', observed_at: localStamp(), scope: 'current_role'},
         ],
         conversation: [{created_at: localStamp(), batch_state: 'closed', flow_state: 'blocked', flow_reason: 'provider_failure',
           input_count: 2, part_count: 2, delivered_parts: 1, failed_parts: 1, unknown_parts: 0, pending_parts: 0}],
@@ -984,6 +986,8 @@ test('maintenance offers today, total, date drilldown, ranked detail, cache and 
   assert.match(root.innerHTML, /运行态势/);
   assert.match(root.innerHTML, /Token 统计管理/);
   assert.match(root.innerHTML, /V2 当前没有接收入站消息/);
+  assert.match(root.innerHTML, /已生成回复，发送前复核未通过/);
+  assert.match(root.innerHTML, /该账号的原生连接已断开/);
   assert.match(root.innerHTML, /当前角色 · 私聊/);
   assert.match(root.innerHTML, /120/);
   assert.match(root.innerHTML, /周期对比/);

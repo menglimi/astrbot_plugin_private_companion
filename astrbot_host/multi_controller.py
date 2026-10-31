@@ -1065,7 +1065,16 @@ class AstrBotMultiController:
                                       ("model_gateway",))
         return task, model
 
-    def target_for_event(self, event):
+    def target_for_event(self, event, *, connected=True):
+        """The configured target this native event belongs to, if any.
+
+        ``connected=False`` keeps the routing answer and drops the liveness
+        probe: an event whose settings still map it to a target stays that
+        target's even while the account has no client to send with.  Callers
+        that report *why* a reply cannot be delivered need the difference,
+        because an unconfigured route and a disconnected account are not the
+        same refusal.
+        """
         if not isinstance(event, self.native_types.event) or self.settings is None:
             return None
         try:
@@ -1075,7 +1084,8 @@ class AstrBotMultiController:
                 target = self.settings.group_target(route.platform_id, route.account_id, route.group_id)
                 platform = self.context.get_platform_inst(meta.id)
                 if (target is None or platform is None or platform.get_client() is not event.bot
-                        or not native_client_connected(platform, route.account_id, event.bot)):
+                        or (connected and not native_client_connected(
+                            platform, route.account_id, event.bot))):
                     return None
                 return target
             sender, login = event_peer_id(event), event_account_id(event)
@@ -1138,6 +1148,28 @@ class AstrBotMultiController:
             return False
         return bool(self._accepting and not self._terminated and self.session is not None
                     and self.session.application.state == "running" and self.target_for_event(event) is not None)
+
+    def _delivery_denial(self, event, route):
+        """Why a reply that was already admitted cannot be sent now.
+
+        Intake needs one yes/no answer; a written reply needs the same gate
+        plus a reason an operator can act on.  A route that no longer maps
+        here, a host that stopped, and an account whose native client just
+        went away all refuse the send, and one code for all three hides the
+        only case that recovers by itself.
+        """
+        if route is None:
+            return Outcome.failed("host_not_claimed", "the native event is outside the active configured targets")
+        if self._terminated:
+            return Outcome.failed("host_terminated", "the shared host is stopping or terminated")
+        session = self.session
+        if session is None or session.application.state != "running":
+            return Outcome.failed("host_not_running", "the shared host is not running")
+        if not self._accepting:
+            return Outcome.failed("host_not_accepting", "the shared host is not accepting replies")
+        if self.target_for_event(event) is not None:
+            return Outcome.failed("host_not_claimed", "the native event is outside the active configured targets")
+        return Outcome.failed("host_client_offline", "this account's native client is not connected")
 
     async def receive_notice(self, event):
         from .pokes import is_poke_notice, receive_poke
@@ -1259,11 +1291,14 @@ class AstrBotMultiController:
             else:
                 requested_target = prepared_or_target
             session = self.session
-            target = self.target_for_event(event)
-            if requested_target is not None and requested_target != target:
+            # Route identity first, then liveness: the target the caller
+            # snapshotted at admission is compared with the configured route,
+            # so a dropped client cannot masquerade as a changed target.
+            target = self.target_for_event(event, connected=False)
+            if target is not None and requested_target is not None and requested_target != target:
                 raise TaskError("host_target_mismatch", "the requested core reply target is not the current native route")
-            if not self.claims(event) or session is None or target is None:
-                return Outcome.failed("host_not_claimed", "the native event is outside the active configured targets")
+            if not self.claims(event) or session is None:
+                return self._delivery_denial(event, target)
             return await session.authorize_core_reply(event, target, prepared)
         except TaskError as error:
             return Outcome.failed(error.code, str(error))

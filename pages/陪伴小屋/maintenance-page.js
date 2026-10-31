@@ -108,8 +108,27 @@ window.CompanionMaintenancePage = (() => {
     inbound_processing_failed: "入站处理失败",
     conversation_task_failed: "对话任务失败",
     conversation_task_expired: "对话任务超时",
+    core_reply_send_denied: "已生成回复，发送前复核未通过",
   })[value] || ("未回复 · " + String(value || "原因未知"));
-  const failureName = value => ({
+  // 复核拒绝的是“这条已经写好的回复”，原因码决定用户该修什么：
+  // 连接断开等下一次就好，目标被删除需要改配置。
+  const denialName = value => ({
+    host_client_offline: "该账号的原生连接已断开",
+    host_not_claimed: "事件已不在配置目标内",
+    host_not_accepting: "V2 已停止接收",
+    host_not_running: "V2 未运行",
+    host_terminated: "V2 正在停止",
+    host_target_mismatch: "本轮目标已改变",
+    core_reply_target_changed: "本轮目标已改变",
+    core_reply_event_changed: "原生事件已改变",
+    core_reply_context_changed: "身份或路由已改变",
+    core_reply_instruction_changed: "人格提示词已改变",
+    host_persona_changed: "人格已改变",
+    message_withdrawn: "触发消息已撤回",
+    group_llm_blocked: "该群已开启模型封锁",
+    private_access_dialogue_denied: "该用户已失去对话权限",
+  })[value];
+  const failureName = value => denialName(value) || ({
     model_budget_exhausted: "插件本地硬预算已触发",
     model_budget_soft_deferred: "插件本地软限额已触发",
     model_budget_policy_changed: "模型预算策略已变化",

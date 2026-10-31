@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace as NS
 import unittest
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 from companion_v2.execution.models import TaskError
 from companion_v2.foundation.outcome import Outcome
@@ -627,6 +627,26 @@ class MainCoreReplyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(new_authorize.await_args.args[:2], (event, target))
         self.assertEqual(event.sent, ["recovered core reply"])
         self.assertEqual((state["send_attempts"], state["send_returns"], state["send_unknown"]), (1, 1, 0))
+
+
+    async def test_denied_send_names_the_gate_and_says_the_reply_was_not_sent(self):
+        plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
+        plugin.staging = NS(now=lambda: None)
+        plugin._record_no_reply = Mock()
+        event = CoreReplyEvent()
+        prepared = {"event_ref": "offline-event", "origin_key": "origin", "channel": "group"}
+
+        callbacks = plugin._core_reply_delivery_callbacks(event, prepared, target=None)
+        with patch.object(ENTRY.logger, "warning") as warning:
+            callbacks["on_denied"](prepared, TaskError(
+                "host_client_offline", "this account's native client is not connected"))
+
+        self.assertEqual(plugin._record_no_reply.call_args.args[1], "core_reply_send_denied")
+        self.assertEqual(plugin._record_no_reply.call_args.kwargs["code"], "host_client_offline")
+        template, *arguments = warning.call_args.args
+        self.assertIn("这条已生成的回复没有发出", template)
+        self.assertEqual(arguments[1], "host_client_offline")
+        self.assertEqual(arguments[2], ENTRY.CORE_REPLY_SEND_DENIAL_HINTS["host_client_offline"])
 
 
 if __name__ == "__main__":
