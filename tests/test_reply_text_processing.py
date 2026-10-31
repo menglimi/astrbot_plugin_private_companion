@@ -221,6 +221,21 @@ class ReplyTextProcessingTests(unittest.TestCase):
         facts = ("甲。", "乙。")
         self.assertEqual(presentation.clean_parts(facts, statements=("甲。乙。",)), facts)
 
+    def test_words_cleanup_handles_fullwidth_and_halfwidth_entries(self):
+        presentation = policy(content_cleanup_enabled=True, content_cleanup_scope="trailing",
+                              content_cleanup_words=json.dumps(["。", "."]))
+        self.assertEqual(presentation.clean_parts(("甲。乙。", "丙.丁.")), ("甲。乙", "丙.丁"))
+
+    def test_empty_word_list_falls_back_to_the_configured_regex_rule(self):
+        presentation = policy(content_cleanup_enabled=True, content_cleanup_scope="trailing",
+                              content_cleanup_words="[]", content_cleanup_rule=r"[。.．\s]")
+        self.assertEqual(presentation.clean_parts(("甲。乙。 \n", "丙.丁．")), ("甲。乙", "丙.丁"))
+
+    def test_empty_word_list_applies_the_regex_rule_to_every_position(self):
+        presentation = policy(content_cleanup_enabled=True, content_cleanup_scope="all",
+                              content_cleanup_words="[]", content_cleanup_rule=r"[。.]")
+        self.assertEqual(presentation.clean_parts(("甲。乙.丙",)), ("甲乙丙",))
+
     def test_regex_cleanup_zero_width_and_execution_budget(self):
         presentation = policy(content_cleanup_enabled=True, content_cleanup_mode="regex",
                               content_cleanup_rule=r"[。!]+")
