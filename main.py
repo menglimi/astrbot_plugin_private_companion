@@ -1136,6 +1136,21 @@ class PrivateCompanionV2StagingPlugin(Star):
     async def observe_companion_core_tool_done(self, event: AstrMessageEvent, tool, tool_args, tool_result):
         observe_core_tool_finished(event, tool)
 
+    # The agent boundary is the last chance to make the history legal: the SDK
+    # converts req.contexts into run_context.messages right after the request
+    # hooks, and one unanswered assistant tool call fails the turn on every
+    # provider of the fallback chain at once. Lowest priority runs last, so this
+    # sees every other plugin's rewrite of the same request.
+    @filter.on_llm_request(priority=-1000000)
+    async def repair_companion_core_request_history(self, event: AstrMessageEvent, req):
+        from .astrbot_host.core_reply_history_guard import repair_request_history
+        repair_request_history(event, req)
+
+    @filter.on_agent_begin(priority=-1000000)
+    async def repair_companion_core_runner_history(self, event: AstrMessageEvent, run_context):
+        from .astrbot_host.core_reply_history_guard import repair_run_context_history
+        repair_run_context_history(event, run_context)
+
     @filter.after_message_sent(priority=1000000)
     async def observe_companion_core_reply_sent(self, event: AstrMessageEvent):
         from .astrbot_host.core_reply_voice_authoring import restore_core_voice_authoring
