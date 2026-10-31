@@ -18,6 +18,34 @@ from .response_diagnostics import ResponseDiagnostics
 
 MAX_TOOL_CATALOG = 64
 
+# A model call whose provider never returned a usage receipt would otherwise keep
+# its ceiling in ``held_tokens`` for the lifetime of the installation. The
+# reservation is returned to the account by writing this marker into the existing
+# ``receipt_ref`` column, so no schema change is needed and a late trusted usage
+# receipt can still replace it. Callers must never guess usage from the reserved
+# amount: this marker means "the hold ended, the tokens are still unconfirmed".
+RELEASE_RECEIPT_PREFIX = "local:released:"
+RELEASE_WITHOUT_USAGE = "no-usage-receipt"
+RELEASE_EXPIRED = "expired-reservation"
+RELEASE_REASONS = (RELEASE_WITHOUT_USAGE, RELEASE_EXPIRED)
+
+
+def is_released(receipt_ref) -> bool:
+    """Return whether this call's reservation was already returned to its account."""
+    return type(receipt_ref) is str and receipt_ref.startswith(RELEASE_RECEIPT_PREFIX)
+
+
+def released_receipt(reason: str, receipt_ref: str | None = None) -> str:
+    """Build the durable release marker, keeping any real provider receipt beside it."""
+    if reason not in RELEASE_REASONS:
+        raise ValueError("a reservation release needs a fixed reason")
+    marker = RELEASE_RECEIPT_PREFIX + reason
+    if receipt_ref is None:
+        return marker
+    if type(receipt_ref) is not str or not receipt_ref or is_released(receipt_ref):
+        raise ValueError("a release marker wraps one real provider receipt")
+    return marker + ":" + receipt_ref
+
 
 @dataclass(frozen=True)
 class Amount:

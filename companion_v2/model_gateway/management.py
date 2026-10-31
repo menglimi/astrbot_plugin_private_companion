@@ -652,6 +652,7 @@ class ModelManagement:
                         reports[key].add_hour(row)
                 recent_rows = self.app.runtime.read_all(f"""WITH samples AS (
                     SELECT c.state, c.position, c.actual_tokens, c.reserved_tokens,
+                        c.receipt_ref,
                         c.actual_cost, c.input_tokens, c.cached_input_tokens, c.cache_creation_tokens, c.output_tokens,
                         c.latency_ms, c.finished_at, c.started_at, r.created_at, t.kind, c.provider_json,
                         f.code AS failure_code, d.summary_json AS response_summary_json,
@@ -704,10 +705,15 @@ class ModelManagement:
                       "spent_tokens": plugin_usage["spent_tokens"],
                       "held_tokens": plugin_usage["held_tokens"]}
             reservations = self.app.gateway.ledger.reservation_sources(today_account)
+            released = self.app.gateway.ledger.released_usage(today_account)
             pending = [item for item in reservations if item["state"] not in ("reserved", "dispatched")]
             budget.update(reservation_sources=reservations,
                           pending_usage_calls=sum(item["calls"] for item in pending),
                           pending_usage_tokens=sum(item["held_tokens"] for item in pending),
+                          released_calls=released["calls"],
+                          released_tokens=released["tokens"],
+                          released_cost_microusd=released["cost_microusd"],
+                          reclaim=self.app.gateway.ledger.reclaim_audit(),
                           remaining_tokens=(max(0, budget["limit_tokens"] - budget["spent_tokens"] - budget["held_tokens"])
                                             if policy.enabled else None))
             soft = effective_soft(self.app.runtime, self.context, self.app.gateway.ledger.soft)
