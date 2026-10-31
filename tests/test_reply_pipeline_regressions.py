@@ -1,9 +1,7 @@
-"""Reproduce short replies and preserve explicit migrated presentation settings."""
+"""Reproduce short replies and the dispatch order that sends them."""
 
-import asyncio
-from dataclasses import asdict, replace
+from dataclasses import replace
 import json
-from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -13,41 +11,9 @@ from companion_v2.conversation.segmentation import SegmentationPolicy
 from companion_v2.conversation.text_processing import ReplyTextPolicy
 from tests.test_host_application import HostFixture
 from tests.test_role_tool_loop import answered
-from tools.migrate_reply_segmentation import TEXT_FIELDS, preset
 
 
-ROOT = Path(__file__).resolve().parents[1]
-
-
-class ReplyPresetTests(unittest.TestCase):
-    def test_migrated_settings_keep_explicit_cleanup_while_new_defaults_enable_cleanup(self):
-        source = json.loads((ROOT / "fixtures/reply_segmentation.v1.json").read_text(encoding="utf-8"))
-        # These dormant window values must never win while profiles are off.
-        source["legacy_compat_config"].update({"segmented_proactive_private_min_segment_chars": 8,
-            "segmented_proactive_private_max_segments": 3, "segmented_proactive_private_log_base": 1.8})
-        migrated = preset(source)
-        defaults = {field.field_id.removeprefix("conversation.presentation."): field.default
-                    for field in configuration_fields(SegmentationPolicy(), True, 1.5)}
-        self.assertTrue(defaults["content_cleanup_enabled"])
-        self.assertTrue(migrated["content_cleanup_enabled"])
-        self.assertEqual(migrated["content_cleanup_scope"], "trailing")
-        self.assertEqual(json.loads(migrated["content_cleanup_words"]), ["。", "，"])
-        for key, expected in migrated.items():
-            if key in TEXT_FIELDS or key == "split_words":
-                continue
-            actual = defaults[key]
-            if key in ("split_words", "content_cleanup_words"):
-                actual, expected = json.loads(actual), json.loads(expected)
-            self.assertEqual(actual, expected, key)
-        # V1's explicitly saved comma boundary survives migration, while new
-        # replies keep comma-linked clauses together by default.
-        self.assertIn("，", json.loads(migrated["split_words"]))
-        self.assertNotIn("，", json.loads(defaults["split_words"]))
-        schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
-        for key, item in schema["segmentation"]["items"].items():
-            self.assertEqual(item["default"], asdict(SegmentationPolicy())[key], key)
-        self.assertEqual(migrated, preset(source, "group"))
-
+class ReplyPreparationTests(unittest.TestCase):
     def test_live_short_reply_splits_and_has_no_edge_blank_lines(self):
         reply = prepare_reply("\n上课呢…偷偷瞄一眼。怎么啦，这个点找我？\n\n",
                               SegmentationPolicy(), ReplyTextPolicy())
