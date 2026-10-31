@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 from tests import astrbot_data_root  # Establish isolation before the SDK import.
 from astrbot_host.account_session_api import AccountSessionWebAPI
+from astrbot_host.bootstrap_provider import supported_text_provider, text_provider_predicate
 from tests.group_host_support import group_config
 
 
@@ -199,6 +200,18 @@ class SharedModelProviderBootstrapTests(unittest.IsolatedAsyncioTestCase):
             def meta(self):
                 return NS(id="provider-a", name="Shared model")
 
+        class NativeTypes:
+            """Mirror the live NativeAdapterTypes shape: a bound method, not a type.
+
+            ``provider_types`` stays declared as on main, so the fixture keeps both
+            the provider classes and the live callable checker in sync.
+            """
+
+            provider_types = (FakeProvider,)
+
+            def is_text_provider(self, provider):
+                return isinstance(provider, self.provider_types)
+
         self.provider = FakeProvider()
         self.config = group_config()
         self.config.setdefault("model", {})["provider_id"] = ""
@@ -206,7 +219,7 @@ class SharedModelProviderBootstrapTests(unittest.IsolatedAsyncioTestCase):
             config=self.config,
             context=NS(get_all_providers=lambda: [self.provider],
                        get_provider_by_id=lambda provider_id: self.provider if provider_id == "provider-a" else None),
-            native_types=NS(provider=FakeProvider, provider_types=(FakeProvider,)),
+            native_types=NativeTypes(),
             settings_error=None,
             save_plugin_config=self.save_config,
             refresh_settings=lambda: None,
@@ -214,8 +227,10 @@ class SharedModelProviderBootstrapTests(unittest.IsolatedAsyncioTestCase):
             status=lambda: {"state": "uninitialized"},
         )
         self.api = AccountSessionWebAPI(self.controller)
+        self.saved = 0
 
     def save_config(self, candidate):
+        self.saved += 1
         self.config.clear()
         self.config.update(candidate)
 
@@ -239,6 +254,37 @@ class SharedModelProviderBootstrapTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["data"]["model"]["provider_id"], "provider-a")
         self.assertIn({"id": "provider-a", "name": "Shared model"}, result["data"]["model"]["providers"])
         self.controller.initialize_profile.assert_awaited_once()
+
+    async def test_save_shared_provider_works_with_callable_text_predicate(self):
+        expected_type = text_provider_predicate(self.controller.native_types)
+        self.assertTrue(callable(expected_type))
+        self.assertFalse(isinstance(expected_type, type))
+        self.assertTrue(supported_text_provider(self.provider, expected_type))
+
+        result = await self.call(provider_id="provider-a")
+
+        self.assertEqual(result["status"], "ok", result)
+        self.assertEqual(self.saved, 1)
+        self.assertEqual(self.config["model"]["provider_id"], "provider-a")
+        self.assertTrue(result["data"]["saved"])
+
+    async def test_save_shared_provider_never_returns_account_config_invalid(self):
+        before = deepcopy(self.config)
+        for body in ({"provider_id": "missing-provider"}, {"provider_id": 123}):
+            result = await self.call(**body)
+            self.assertEqual(result["status"], "error", result)
+            self.assertNotEqual(result["data"]["code"], "account_config_invalid", result)
+            self.assertEqual(self.config, before)
+
+        # The id is listed but AstrBot no longer returns the instance; the
+        # validation must report an unavailable provider, not an account error.
+        self.controller.context = NS(
+            get_all_providers=lambda: [self.provider], get_provider_by_id=lambda _provider_id: None)
+        result = await self.call(provider_id="provider-a")
+        self.assertEqual(result["status"], "error", result)
+        self.assertNotEqual(result["data"]["code"], "account_config_invalid", result)
+        self.assertEqual(self.config, before)
+        self.controller.initialize_profile.assert_not_awaited()
 
     async def test_unknown_shared_provider_is_rejected_without_overwriting_config(self):
         before = deepcopy(self.config)
