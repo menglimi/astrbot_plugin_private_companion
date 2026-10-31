@@ -39,6 +39,20 @@ class RunResult:
     retry_at: datetime | None = None
     refused: str | None = None
 
+    @property
+    def stop_code(self) -> str | None:
+        """Return the stable code that ended this attempt, or None when it succeeded.
+
+        Owners of a bounded child read this instead of the outer outcome: a
+        handler error is reported as a successful `Outcome` carrying the code
+        here, so `Outcome.failure` alone would miss every model-level stop.
+        """
+        if self.failure_code:
+            return self.failure_code
+        if self.task is None:
+            return self.refused or "task_not_admitted"
+        return None if self.task.state == "succeeded" else (self.task.reason or "task_stopped")
+
 
 @dataclass(frozen=True)
 class TaskRun:
