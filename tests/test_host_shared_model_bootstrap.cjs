@@ -9,7 +9,7 @@ const source = fs.readFileSync(path.join(__dirname, "..", "pages", "\u5bbf\u4e3b
 const functions = source.slice(source.indexOf("  function modelProviderName"),
   source.indexOf("  function editorRow"));
 
-function harness(model, saveResult = null) {
+function harness(model, saveResult = null, status = null) {
   const nodes = new Map(), calls = {api: [], notices: [], reads: 0};
   const $ = id => {
     if (!nodes.has(id)) nodes.set(id, {id, innerHTML: "", value: "", textContent: "", disabled: false,
@@ -26,6 +26,7 @@ function harness(model, saveResult = null) {
     __read: () => { calls.reads++; },
   };
   const preamble = `let busy = false, modelSaving = false;
+    let status = ${JSON.stringify(status)};
     let modelConfig = ${JSON.stringify(model)};
     const accountApi = "accounts";
     const $ = globalThis.__$;
@@ -58,6 +59,34 @@ test("shared model panel lists loaded providers and requires a selection", () =>
   h.sandbox.renderSharedModel();
   assert.equal(h.nodes.get("shared-model-provider").value, "p1");
   assert.equal(h.nodes.get("save-shared-model").disabled, false);
+});
+
+test("shared model options do not repeat the id when the provider has no name", () => {
+  const h = harness({provider_id: "", providers: [
+    {id: "p1", name: "p1"},
+    {id: "p2", name: "Provider Two"},
+    {id: "p3", name: ""},
+  ]});
+  h.sandbox.renderSharedModel();
+  const html = h.nodes.get("shared-model-provider").innerHTML;
+  assert.doesNotMatch(html, /p1（p1）/);
+  assert.match(html, /<option value="p1">p1<\/option>/);
+  assert.match(html, /<option value="p2">Provider Two（p2）<\/option>/);
+  assert.match(html, /<option value="p3">p3<\/option>/);
+});
+
+test("running host note no longer promises prepare-and-start after saving", () => {
+  const model = {provider_id: "p1", providers: [{id: "p1", name: "Provider One"}]};
+
+  const idle = harness(model);
+  idle.sandbox.renderSharedModel();
+  assert.match(idle.nodes.get("shared-model-note").textContent, /准备并启动/);
+
+  const running = harness(model, null, {state: "running", accepting: true});
+  running.sandbox.renderSharedModel();
+  const note = running.nodes.get("shared-model-note").textContent;
+  assert.doesNotMatch(note, /准备并启动/);
+  assert.match(note, /宿主已在运行/);
 });
 
 test("saving the shared model calls the bootstrap endpoint and reports readiness", async () => {

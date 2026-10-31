@@ -60,6 +60,7 @@
     account_config_running: "角色映射正在应用，请稍候再读取状态。",
     account_config_invalid: "绑定配置不完整或会话来源已变化，请重新核对。",
     account_config_save_failed: "保存失败，请检查插件数据目录是否可写后重试。",
+    account_model_provider_invalid: "共享启动模型请求没有通过校验（与角色映射、会话来源无关），请刷新后重试；若仍失败，请到插件配置里设置模型。",
     account_model_provider_failed: "共享启动模型保存失败，请刷新状态并检查插件配置后重试。",
     account_session_unavailable: "这个会话已切换或不在当前目录中，请刷新。",
     account_session_persona_pinned: "AstrBot 已固定此会话人格，请在角色映射中调整。",
@@ -1281,8 +1282,12 @@
     const configured = String(modelConfig?.configured_provider_id || "");
     const source = String(modelConfig?.provider_source || "");
     const previous = select.value;
-    select.innerHTML = `<option value="">请选择已加载的文本模型</option>${providers.map(provider =>
-      `<option value="${escapeHTML(provider.id)}">${escapeHTML(provider.name || provider.id)}（${escapeHTML(provider.id)}）</option>`).join("")}`;
+    select.innerHTML = `<option value="">请选择已加载的文本模型</option>${providers.map(provider => {
+      const name = String(provider.name || "");
+      const label = name && name !== provider.id
+        ? `${escapeHTML(name)}（${escapeHTML(provider.id)}）` : escapeHTML(provider.id);
+      return `<option value="${escapeHTML(provider.id)}">${label}</option>`;
+    }).join("")}`;
     const desired = providers.some(item => item.id === previous) ? previous
       : providers.some(item => item.id === current) ? current : "";
     select.value = desired;
@@ -1305,7 +1310,10 @@
       note.textContent = `已保存的启动模型 ${current} 当前不可用，请重新选择。`;
       note.dataset.kind = "error";
     } else {
-      note.textContent = `当前启动模型：${modelProviderName(current)}。保存角色映射后即可点「准备并启动」。`;
+      const running = isAccepting() || status?.state === "running";
+      note.textContent = running
+        ? `当前启动模型：${modelProviderName(current)}。宿主已在运行，保存后将在下次启动或重载时生效。`
+        : `当前启动模型：${modelProviderName(current)}。保存角色映射后即可点「准备并启动」。`;
       note.dataset.kind = "info";
     }
   }

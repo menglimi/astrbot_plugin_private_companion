@@ -15,8 +15,8 @@ from companion_v2.execution.models import TaskError, digest
 from .multi_settings import MultiHostSettings
 from .native import remember_session_settings
 from .settings import HostControlError
-from .bootstrap_provider import (resolve_bootstrap_provider, text_provider_catalog,
-                                 text_provider_predicate)
+from .bootstrap_provider import (resolve_bootstrap_provider, supported_text_provider,
+                                 text_provider_catalog, text_provider_predicate)
 
 
 PREFIX = "/astrbot_plugin_private_companion/accounts"
@@ -417,16 +417,18 @@ class AccountSessionWebAPI:
             self._admin()
             body = await self._body()
             if set(body) != {"provider_id"} or type(body.get("provider_id")) is not str:
-                raise TaskError("account_config_invalid", "choose exactly one shared model provider")
+                raise TaskError("account_model_provider_invalid", "choose exactly one shared model provider")
             provider_id = body["provider_id"].strip()
             if not provider_id or len(provider_id) > 512:
-                raise TaskError("account_config_invalid", "the shared model provider id is invalid")
+                raise TaskError("account_model_provider_invalid", "the shared model provider id is invalid")
             available = {item["id"] for item in self._model_view()["providers"]}
             expected_type = text_provider_predicate(getattr(self.controller, "native_types", None))
             provider = (self.controller.context.get_provider_by_id(provider_id)
                         if getattr(self.controller, "context", None) is not None else None)
-            if (provider_id not in available or expected_type is None
-                    or not isinstance(provider, expected_type)):
+            # ``expected_type`` may be NativeAdapterTypes.is_text_provider, a bound
+            # method; never use it as the second argument of isinstance().
+            if (provider is None or provider_id not in available
+                    or not supported_text_provider(provider, expected_type)):
                 raise TaskError("host_provider_unavailable",
                                 "choose a loaded AstrBot text provider supported by V2")
             config = self.controller.config
@@ -440,7 +442,8 @@ class AccountSessionWebAPI:
             candidate = deepcopy(dict(config))
             model_settings = candidate.setdefault("model", {})
             if type(model_settings) is not dict:
-                raise TaskError("account_config_invalid", "the plugin model settings have an invalid shape")
+                raise TaskError("account_model_provider_invalid",
+                                "the plugin model settings have an invalid shape")
             model_settings["provider_id"] = provider_id
             profiles = model_settings.get("additional_providers")
             if type(profiles) is list:
@@ -478,11 +481,18 @@ class AccountSessionWebAPI:
                 "initialization_error": initialization_error,
                 "status": self.controller.status()}}
         except TaskError as error:
-            return self._error(error.code, str(error))
+            # ``_admin``/``_body`` are shared helpers and still raise the generic
+            # account code; this endpoint owns a separate code so the page never
+            # blames role mappings or session sources for a model problem.
+            code = ("account_model_provider_invalid" if error.code == "account_config_invalid"
+                    else error.code)
+            return self._error(code, str(error))
         except HostControlError as error:
             return self._error(error.code, str(error))
         except (ValueError, TypeError, KeyError, UnicodeError):
-            return self._error("account_config_invalid", "the shared model provider could not be validated")
+            logger.exception("V2 shared model provider update could not be validated")
+            return self._error("account_model_provider_invalid",
+                               "the shared model provider could not be validated")
         except OSError:
             return self._error("account_config_save_failed", "the shared model provider could not be saved")
         except Exception as error:
