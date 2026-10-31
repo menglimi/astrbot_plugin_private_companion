@@ -4,6 +4,19 @@ import json
 
 from companion_v2.model_gateway.models import CapturedModelOutput
 
+from .response_diagnostics import native_finish_reason
+
+
+# Translate recognized provider endings; missing metadata retains the previous
+# default, while an explicit but unknown ending is not a confirmed stop.
+_CAPTURED_FINISH_REASONS = {
+    "stop": "stop",
+    "length": "length",
+    "content_filter": "refusal",
+    "tool_calls": "invalid",
+    "function_call": "invalid",
+}
+
 
 def _field(value, name, default=None):
     if isinstance(value, dict):
@@ -28,6 +41,8 @@ def explicit_refusal(completion):
             return False
         return (bool(getattr(message, "refusal", None))
                 or getattr(choice, "finish_reason", None) == "content_filter")
+    if native_finish_reason(completion) == "content_filter":
+        return True
     # Responses 的归一化 LLMResponse 没有 choices：拒绝体现在 output 的
     # refusal content part，或 incomplete_details.reason=content_filter。
     raw = getattr(completion, "raw_completion", None)
@@ -81,6 +96,9 @@ def capture(completion):
             return CapturedModelOutput(body, "invalid")
         if explicit_refusal(completion):
             return CapturedModelOutput(body, "refusal")
+        native_reason = native_finish_reason(completion)
+        if native_reason is not None:
+            return CapturedModelOutput(body, _CAPTURED_FINISH_REASONS.get(native_reason, "invalid"))
         return CapturedModelOutput(body, _normalized_finish_reason(completion))
     choice = choices[0]
     message = getattr(choice, "message", None)

@@ -1,9 +1,12 @@
 """AstrBot 的原生 Google GenAI provider 也必须能被 V2 文本适配器包装。"""
 
+import enum
 from types import SimpleNamespace as NS
 import unittest
 
+from companion_v2.adapters.astrbot.memory_output import capture, explicit_refusal
 from companion_v2.adapters.astrbot.provider import AstrBotTextProvider, UsageTariff, _gemini_messages
+from companion_v2.adapters.astrbot.response_diagnostics import native_finish_reason, observe_completion
 from companion_v2.execution.models import ProviderBinding
 
 
@@ -122,6 +125,58 @@ class GeminiTextProviderTests(unittest.IsolatedAsyncioTestCase):
         enriched = _gemini_messages(messages)
         self.assertEqual(enriched[1]["name"], "weather.lookup")
         self.assertNotIn("name", messages[1])
+
+
+class FinishReason(enum.Enum):
+    """google.genai.types.FinishReason 的形状：枚举成员，str() 带类名前缀。"""
+
+    STOP = "STOP"
+    MAX_TOKENS = "MAX_TOKENS"
+    SAFETY = "SAFETY"
+
+
+def native_completion(reason, text="好的"):
+    """AstrBot 原生 Gemini 调用返回的 LLMResponse：归一化正文 + 原始 SDK 响应。"""
+
+    return NS(id="gemini-response-1", completion_text=text, tools_call_name=[], tools_call_ids=[],
+              tools_call_args=[], raw_completion=NS(candidates=[NS(finish_reason=reason)]))
+
+
+class NativeFinishReasonTests(unittest.TestCase):
+    """原生 provider 的结束原因只能从 SDK 响应里读，不能退回成「正常说完」。"""
+
+    def test_candidate_reason_is_reported_in_the_gateway_classification(self):
+        for reason, expected in ((FinishReason.STOP, "stop"), (FinishReason.MAX_TOKENS, "length"),
+                                 (FinishReason.SAFETY, "content_filter")):
+            with self.subTest(reason=reason):
+                self.assertEqual(observe_completion(native_completion(reason)).finish_reason, expected)
+
+    def test_truncated_native_reply_is_captured_as_length_instead_of_stop(self):
+        self.assertEqual(capture(native_completion(FinishReason.MAX_TOKENS)).finish_reason, "length")
+        self.assertEqual(capture(native_completion(FinishReason.SAFETY)).finish_reason, "refusal")
+        self.assertTrue(explicit_refusal(native_completion(FinishReason.SAFETY, "")))
+        self.assertFalse(explicit_refusal(native_completion(FinishReason.MAX_TOKENS, "半句")))
+        self.assertEqual(capture(native_completion(FinishReason.STOP)).finish_reason, "stop")
+
+    def test_plain_string_reason_from_another_sdk_build_is_accepted(self):
+        self.assertEqual(native_finish_reason(native_completion("MAX_TOKENS")), "length")
+        self.assertEqual(native_finish_reason(native_completion("FinishReason.MAX_TOKENS")), "length")
+
+    def test_completion_without_a_candidate_keeps_the_previous_classification(self):
+        bare = NS(completion_text="好的")
+        self.assertIsNone(native_finish_reason(bare))
+        self.assertEqual(observe_completion(bare).finish_reason, "missing")
+        self.assertEqual(capture(bare).finish_reason, "stop")
+
+    def test_unmapped_reason_is_unknown_rather_than_guessed(self):
+        self.assertEqual(observe_completion(native_completion("MALFORMED_FUNCTION_CALL")).finish_reason, "unknown")
+        self.assertEqual(capture(native_completion("MALFORMED_FUNCTION_CALL")).finish_reason, "invalid")
+
+    def test_openai_choices_still_decide_when_the_completion_has_them(self):
+        completion = NS(choices=[NS(finish_reason="length", message=NS(content="半句"))],
+                        raw_completion=NS(candidates=[NS(finish_reason=FinishReason.STOP)]))
+        self.assertEqual(observe_completion(completion).finish_reason, "length")
+        self.assertEqual(capture(completion).finish_reason, "length")
 
 
 if __name__ == "__main__":
