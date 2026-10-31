@@ -11,11 +11,16 @@ import unittest
 
 from companion_v2.conversation.self_review_context import (MAX_ITEMS, SELF_REVIEW_INSTRUCTION,
     SNAPSHOT_VERSION, ConversationSelfReviewContext)
+from companion_v2.configuration.registry import FieldRegistry
 from companion_v2.execution.models import TaskError, stamp
+from companion_v2.model_gateway.routing import configuration_fields
 from companion_v2.role_work.journal import self_review
 from companion_v2.role_work.journal.self_review_evidence import (MAX_EVIDENCE, MAX_WINDOW_HOURS,
     ReviewEvidence, ReviewWindow, SelfReviewEvidenceCatalog, evidence_handles, window_document)
+from companion_v2.role_work.journal.self_review_service import OUTPUT_FORMAT, self_review_profile
 from companion_v2.storage.schema import SCHEMA_VERSION
+from tests.test_host_application import HostFixture
+from tests.test_role_tool_loop import answered
 
 
 NOW = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)
@@ -267,6 +272,62 @@ class SelfReviewRegistrationTests(unittest.TestCase):
         self.assertEqual(registered.domains, ("role.self_review",))
         self.assertFalse(registered.shareable)
         self.assertTrue(registered.private_owner_without_grant)
+
+
+class SelfReviewRunTests(HostFixture, unittest.IsolatedAsyncioTestCase):
+    """The enqueued daily review must also pass its own prompt boundary.
+
+    Registering the read action made the task marshallable; this keeps the next
+    hop honest: the owner still has to build a prompt whose host-selected output
+    format the foreground boundary accepts.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.profiles += (self_review_profile("primary", max_output_tokens=64),)
+        self.registry = FieldRegistry(version="self-review.v1",
+                                      fields=configuration_fields(self.profiles))
+
+    async def test_the_daily_review_completes_with_its_own_output_format(self):
+        seen = []
+
+        async def respond(envelope):
+            seen.append(envelope.original.output_format)
+            if envelope.original.output_format != OUTPUT_FORMAT:
+                return answered("收到，继续聊。")
+            material = json.loads(envelope.original.context.materials[0].payload)
+            handles = [item["handle"] for item in material["evidence"]]
+            return answered(json.dumps({"summary": "本窗口有两条已送达回复。", "guidance": [{
+                "kind": "keep", "observation": "两段回复都先回应了请求。",
+                "next_action": "保持先回应再补充的节奏。", "confidence": 0.7,
+                "evidence_handles": handles[:1],
+                "expires_at": (self.clock.now() + timedelta(hours=6)).isoformat()}]},
+                ensure_ascii=False))
+
+        host = await self.start()
+        app = host.application
+        batch = host.receive(self.event()).unwrap()
+        self.advance(app)
+        self.assertEqual((await self.done(app, batch))["state"], "complete")
+        context = self.context(app, batch)
+        app.state_maintenance.bind(context, "原角色人格提示")
+        self.model_behavior = respond
+        report = await app.self_review.run(context, "原角色人格提示")
+        self.assertEqual(report["state"], "succeeded", report)
+        self.assertEqual(seen, [OUTPUT_FORMAT])
+        self.assertEqual(app.runtime.read_one("SELECT COUNT(*) n FROM role_self_review_runs", ())["n"], 1)
+        item = dict(app.runtime.read_one("SELECT kind, state FROM role_self_review_items", ()))
+        self.assertEqual((item["kind"], item["state"]), ("keep", "accepted"))
+
+        # Accepted guidance keeps its evidence readable: a later private reply
+        # rechecks the cited reply and injects it without another write.
+        later = host.receive(self.event("after-review")).unwrap()
+        self.advance(app)
+        self.assertEqual((await self.done(app, later))["state"], "complete")
+        injected = [envelope for envelope in self.called
+                    if envelope.original.output_format == "conversation"
+                    and any(material.owner == "role.self_review" for material in envelope.original.context.materials)]
+        self.assertEqual(len(injected), 1)
 
 
 if __name__ == "__main__":
