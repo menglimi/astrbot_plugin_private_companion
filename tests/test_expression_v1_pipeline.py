@@ -5,6 +5,7 @@ All providers, users and platform receipts are synthetic. No V1 data is read.
 
 import asyncio
 from dataclasses import replace
+from datetime import datetime, timedelta
 import json
 import unittest
 from unittest.mock import patch
@@ -20,7 +21,8 @@ from companion_v2.execution.runner import RunResult
 from companion_v2.expression import learning
 from companion_v2.expression.configuration import (GROUP, PRIVATE_GROUP, private_target_for,
     read_settings, target_for)
-from companion_v2.expression.review import expression_review_profile, reviewed_text
+from companion_v2.expression.review import (ExpressionDraftReview, REVIEW_BUDGET_SECONDS,
+    REVIEW_PROVIDER_TIMEOUT_SECONDS, REVIEW_WAIT_SECONDS, expression_review_profile, reviewed_text)
 from companion_v2.expression.sharing import build_pack
 from companion_v2.expression.style_management import ExpressionStyleManagement
 from companion_v2.expression.style_service import expression_learning_profile
@@ -353,7 +355,7 @@ class ExpressionReplyPipelineTests(ExpressionFixture, HostFixture, unittest.Isol
                         stopped.set()
                 self.model_behavior = model
                 before = len(self.sent)
-                with patch("companion_v2.expression.review.REVIEW_TIMEOUT_SECONDS", 0.1):
+                with patch("companion_v2.expression.review.REVIEW_WAIT_SECONDS", 0.1):
                     await self.reply(host, "failed-" + failure)
                 self.assertTrue(entered.is_set())
                 self.assertEqual([item.text.strip() for item in self.sent[before:]], ORIGINAL.splitlines())
@@ -376,6 +378,36 @@ class ExpressionReplyPipelineTests(ExpressionFixture, HostFixture, unittest.Isol
         self.assertEqual(len(self.sent), before, "a cancelled parent never sends its draft")
         self.assertFalse(app.expression_draft_review.active_handles)
         self.assertEqual(app.runtime.read_one("SELECT COUNT(*) n FROM execution_tasks WHERE kind = 'role.expression.review' AND state IN ('created', 'running', 'retry_scheduled')", ())["n"], 0)
+
+    async def test_review_budget_exhaustion_keeps_original_and_is_logged(self):
+        host = await self.start()
+        app = host.application
+        self.configure_expression(app, {"private_learning_enabled": False})
+        self.adopt_pack(app)
+        entered = asyncio.Event()
+        async def held_review(envelope):
+            if envelope.original.output_format == "role_expression_review":
+                entered.set()
+                await asyncio.Event().wait()
+            return answered(ORIGINAL)
+        self.model_behavior = held_review
+        before = len(self.sent)
+        with patch("companion_v2.expression.review.REVIEW_WAIT_SECONDS", 0.1), \
+                self.assertLogs("companion_v2.expression.review", level="INFO") as captured:
+            await self.reply(host, "budget-exhausted")
+        self.assertTrue(entered.is_set())
+        self.assertEqual([item.text.strip() for item in self.sent[before:]], ORIGINAL.splitlines())
+        skipped = [record for record in captured.records
+                   if "expression_review_budget_exhausted" in record.getMessage()]
+        self.assertEqual([record.levelname for record in skipped], ["INFO"])
+        self.assertIn("kind=role.expression.review", skipped[0].getMessage())
+        row = app.runtime.read_one("SELECT created_at, deadline_at FROM execution_tasks "
+                                   "WHERE kind = 'role.expression.review' ORDER BY created_at DESC LIMIT 1", ())
+        self.assertAlmostEqual((datetime.fromisoformat(row["deadline_at"])
+                                - datetime.fromisoformat(row["created_at"])).total_seconds(),
+                               REVIEW_BUDGET_SECONDS, delta=1)
+        self.assertFalse(app.expression_draft_review.active_handles)
+        self.assertFalse(app.expression_draft_review.pending)
 
     async def test_optional_expression_read_failure_does_not_block_reply(self):
         host = await self.start()
@@ -413,6 +445,16 @@ class ExpressionReviewContractTests(unittest.TestCase):
         self.assertEqual(reviewed_text(rewrite, original, (), (original,)), original)
         safe = json.dumps({"decision": "rewrite", "text": "好呀，明天 8 点见面？"}, ensure_ascii=False)
         self.assertEqual(reviewed_text(safe, draft, (claim,)), "好呀，明天 8 点见面？")
+
+    def test_every_review_budget_derives_from_one_ceiling(self):
+        self.assertLess(REVIEW_PROVIDER_TIMEOUT_SECONDS, REVIEW_BUDGET_SECONDS)
+        self.assertLess(REVIEW_BUDGET_SECONDS, REVIEW_WAIT_SECONDS)
+        for contact in (False, True):
+            profile = expression_review_profile("primary", max_output_tokens=100, contact=contact)
+            self.assertEqual(profile.timeout_seconds, REVIEW_PROVIDER_TIMEOUT_SECONDS)
+        registrations = ExpressionDraftReview(None).registrations
+        self.assertEqual({registration.definition.timeout_seconds for registration in registrations},
+                         {REVIEW_BUDGET_SECONDS})
 
 
 class ExpressionGroupPipelineTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
