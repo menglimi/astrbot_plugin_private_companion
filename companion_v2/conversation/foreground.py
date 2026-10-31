@@ -379,7 +379,7 @@ class PromptRequest:
                 raise ReferenceValidationError("response schema requires an object")
         if self.response_format == "json_schema" and self.response_schema_json is None:
             raise ReferenceValidationError("strict structured response requires a schema")
-        if self.output_format not in ("conversation", "journal", "journal_derivatives", "journal_selection", "role_reading", "role_state", "memory_reflection", "content_authoring", "proactive_contact", "calendar_planning", "role_growth_progress", "image_review", "screen_interpretation", "role_expression_learning", "role_expression_review"):
+        if self.output_format not in ("conversation", "journal", "journal_derivatives", "journal_selection", "role_reading", "role_state", "memory_reflection", "content_authoring", "proactive_contact", "calendar_planning", "role_growth_progress", "role_self_review", "image_review", "screen_interpretation", "role_expression_learning", "role_expression_review"):
 
             raise ReferenceValidationError("prompt output format must be host-selected")
         if self.role_binding.scope != self.event.scope:

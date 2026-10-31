@@ -32,6 +32,9 @@ from .self_review_evidence import SelfReviewEvidenceCatalog, evidence_handles, w
 
 KIND = "role.self_review"
 OWNER = "role.self_review"
+# The host selects the prompt output format; every owner that builds a
+# PromptRequest must use a format registered by that boundary.
+OUTPUT_FORMAT = "role_self_review"
 CURSOR_PREFIX = "role.self_review.cursor.v1:"
 AUTO_APPLY_KINDS = frozenset({"try_next_time", "keep"})
 AUTO_ACTOR = "system:self-review"
@@ -174,7 +177,7 @@ class SelfReviewService:
         request = PromptRequest(BackgroundPromptTrigger(job["request_key"], context.actor.principal,
             context.scope, job["at"]), job["instruction"], SealedForegroundContext(
                 (PromptMaterial(OWNER, "role_self_review_evidence", encode(material)),), (), ()),
-            PROMPT, context.role_binding, output_format="role_self_review")
+            PROMPT, context.role_binding, output_format=OUTPUT_FORMAT)
         completion = await self.gateway.generate(run, request)
         try:
             if completion.draft is None:
