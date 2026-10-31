@@ -12,7 +12,7 @@ from companion_v2.conversation.foreground import PromptRequest
 from companion_v2.execution.models import TaskError, digest, require
 from companion_v2.execution.runner import TaskRun
 
-from .models import LocalProvider, ModelEnvelope, ModelTaskProfile
+from .models import LocalProvider, MAX_MODEL_OUTPUT_TOKENS, ModelEnvelope, ModelTaskProfile
 from .refusal import parse_refusal_terms
 from .replacement_rules import checked_rules, match_route, validate_targets
 
@@ -35,7 +35,7 @@ def configuration_fields(profiles: tuple[ModelTaskProfile, ...]) -> tuple[FieldD
             ("replacement_scope", ValueKind.TEXT, profile.replacement_scope),
         ):
             boundaries = ({"minimum": 1, "maximum": 600} if suffix == "timeout_seconds" else
-                          {"minimum": 1, "maximum": 32768} if kind is ValueKind.INTEGER else {})
+                          {"minimum": 1, "maximum": MAX_MODEL_OUTPUT_TOKENS} if kind is ValueKind.INTEGER else {})
             if suffix == "refusal_terms":
                 boundaries = {"maximum_chars": 4096}
             fields.append(FieldDefinition(profile.group + "." + suffix, profile.group, CONSUMER,

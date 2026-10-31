@@ -3,6 +3,7 @@
 window.CompanionModelsPage = (() => {
   const PREFIX = "/astrbot_plugin_private_companion/";
   const routing = ["provider", "fallback", "max_output_tokens"];
+  const MAX_MODEL_OUTPUT_TOKENS = 65536;
   const TASK_CONFIG_TIMEOUT_MS = 30000;
   const TASK_CONFIG_RETRY_TIMEOUT_MS = 30000;
   const VOICE_SAVE_TIMEOUT_MS = 30000;
@@ -123,9 +124,9 @@ window.CompanionModelsPage = (() => {
   const available = (s, task) => s.status.providers.filter(p => task.capabilities.every(cap => p.capabilities.includes(cap)));
   const effective = (task, draft, name) => draft.inherited[name] ? task.fields[name].inherited_value : draft.values[name];
   const providerFor = (task, draft) => coreReply(task) ? "" : effective(task, draft, "provider");
-  const limitFor = (s, task, draft) => Math.min(32768, ...["provider", "fallback"]
+  const limitFor = (s, task, draft) => Math.min(MAX_MODEL_OUTPUT_TOKENS, ...["provider", "fallback"]
     .map(name => effective(task, draft, name)).filter(Boolean)
-    .map(id => s.status.providers.find(provider => provider.id === id)?.max_output_tokens || 32768));
+    .map(id => s.status.providers.find(provider => provider.id === id)?.max_output_tokens || MAX_MODEL_OUTPUT_TOKENS));
   function fitLimit(s, task, draft) { const limit = limitFor(s, task, draft);
     if (effective(task, draft, "max_output_tokens") <= limit) return false;
     draft.values.max_output_tokens = limit; draft.inherited.max_output_tokens = false; return true; }
@@ -243,7 +244,7 @@ window.CompanionModelsPage = (() => {
     : (patch.reset.includes(name) ? task.fields[name].inherited_value : task.fields[name].value);
   function validatePatch(task, p) { if (!Object.keys(p.changes).length && !p.reset.length) return false;
     if (Object.hasOwn(p.changes, "prompt") && (typeof p.changes.prompt !== "string" || p.changes.prompt.length > 8000)) return false;
-    if (Object.hasOwn(p.changes, "max_output_tokens") && (!Number.isInteger(p.changes.max_output_tokens) || p.changes.max_output_tokens < 1 || p.changes.max_output_tokens > 32768)) return false;
+    if (Object.hasOwn(p.changes, "max_output_tokens") && (!Number.isInteger(p.changes.max_output_tokens) || p.changes.max_output_tokens < 1 || p.changes.max_output_tokens > MAX_MODEL_OUTPUT_TOKENS)) return false;
     if (Object.hasOwn(p.changes, "timeout_seconds") && (!Number.isInteger(p.changes.timeout_seconds) || p.changes.timeout_seconds < 1 || p.changes.timeout_seconds > 600)) return false;
     if (Object.hasOwn(p.changes, "replacement_scope") && !["plugin", "conversation", "all"].includes(p.changes.replacement_scope)) return false;
     if (Object.hasOwn(p.changes, "fallback_on_refusal") && typeof p.changes.fallback_on_refusal !== "boolean") return false;

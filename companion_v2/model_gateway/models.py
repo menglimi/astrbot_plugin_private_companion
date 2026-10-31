@@ -17,6 +17,7 @@ from .response_diagnostics import ResponseDiagnostics
 
 
 MAX_TOOL_CATALOG = 64
+MAX_MODEL_OUTPUT_TOKENS = 65_536
 
 
 @dataclass(frozen=True)
@@ -119,7 +120,7 @@ class ModelTaskProfile:
             _opaque(getattr(self, name), field=name)
         if not isinstance(self.lane, Lane) or not isinstance(self.default_prompt, str):
             raise ValueError("model tasks require an explicit lane and task prompt")
-        if type(self.max_output_tokens) is not int or not 1 <= self.max_output_tokens <= 32768:
+        if type(self.max_output_tokens) is not int or not 1 <= self.max_output_tokens <= MAX_MODEL_OUTPUT_TOKENS:
             raise ValueError("output ceiling is outside the local model profile")
         if self.default_fallback:
             _opaque(self.default_fallback, field="default_fallback")
@@ -384,7 +385,7 @@ class LocalProvider:
             raise ValueError("local provider requires a binding and a cooperative async handler")
         if not callable(self.reserve) or inspect.iscoroutinefunction(self.reserve):
             raise ValueError("reservation estimator must be a bounded synchronous adapter function")
-        if type(self.maximum_output_tokens) is not int or not 1 <= self.maximum_output_tokens <= 32768:
+        if type(self.maximum_output_tokens) is not int or not 1 <= self.maximum_output_tokens <= MAX_MODEL_OUTPUT_TOKENS:
             raise ValueError("provider output limit must be explicit")
         if not self.capabilities or len(set(self.capabilities)) != len(self.capabilities):
             raise ValueError("provider capabilities must be explicit and unique")
