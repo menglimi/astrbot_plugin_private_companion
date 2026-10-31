@@ -5,12 +5,14 @@ from __future__ import annotations
 import base64
 from collections import OrderedDict
 from collections.abc import Mapping
+from copy import deepcopy
 from uuid import uuid4
 
 from google.genai import types
 
 from companion_v2.adapters.astrbot.model_wire import build_wire, decode_text_response, strict_json
-from companion_v2.adapters.astrbot.provider import UsageTariff, provider_fingerprint
+from companion_v2.adapters.astrbot.provider import (UsageTariff, provider_class_matches,
+                                                    provider_config_drift, provider_fingerprint)
 from companion_v2.adapters.astrbot.provider_catalog import TextProviderSettings
 from companion_v2.execution.models import ProviderBinding, TaskError, digest, encode
 from companion_v2.model_gateway.models import Amount, LocalProvider, ProviderResponse, ToolCall
@@ -33,6 +35,10 @@ class GeminiNativeVideoProvider:
         self.model = native.get_model()
         self.version = native_types.version
         self.fingerprint = provider_fingerprint(native)
+        # 装配时捕获的配置键：宿主刷新注册表时重新合并配置不算换了 Provider，
+        # 改动或删除这些键才是。值本身只留在内存，不进错误与日志。
+        self.config = deepcopy(native.provider_config)
+        self.parameters = frozenset(getattr(native, "default_params", {}) or ())
         self.binding = ProviderBinding("model.native_video", self.provider_id, self.version,
                                        self.fingerprint)
         # Native continuation signatures stay inside this adapter. They never
@@ -41,11 +47,44 @@ class GeminiNativeVideoProvider:
         self._current()
 
     def _current(self):
-        if (self.context.get_provider_by_id(self.provider_id) is not self.native
-                or not isinstance(self.native, self.native_types.video_provider_type)
-                or self.native.get_model() != self.model
-                or provider_fingerprint(self.native) != self.fingerprint):
-            raise TaskError("host_provider_changed", "native video model changed during the request")
+        """跟随一次宿主注册表刷新，仍然对真实的 Provider 变化报错。
+
+        AstrBot 刷新 Provider 注册表或重载引擎时会重建 Provider 实例（也可能
+        重新导入适配器模块，类对象随之更换）。只要模型、已捕获的配置键和可用
+        参数都没变，这就不是换了 Provider：适配器改挂到新实例上，并刷新自己
+        的指纹与 binding，避免注册表刷新后每个后台任务都永久失配。
+
+        真正变化仍然拒绝：能力类型、模型、已捕获的配置键或参数任一不同，都会
+        抛出 ``host_provider_changed``，并在消息里带上诊断字段。整次重绑定在
+        一个同步步骤内完成（中间没有 await），并发任务不会读到更新到一半的
+        引用。
+        """
+        current = self.context.get_provider_by_id(self.provider_id)
+        if current is None:
+            raise TaskError("host_provider_changed",
+                            "native video provider is unavailable (provider_id: "
+                            + self.provider_id + ")")
+        if not provider_class_matches(current, (self.native_types.video_provider_type,)):
+            raise TaskError("host_provider_changed",
+                            "native video provider type changed during the request")
+        model = current.get_model()
+        fingerprint = provider_fingerprint(current)
+        if current is self.native and model == self.model and fingerprint == self.fingerprint:
+            return
+        drifted = provider_config_drift(self.config, current)
+        parameters = frozenset(getattr(current, "default_params", {}) or ())
+        if model != self.model or drifted or parameters != self.parameters:
+            problems = []
+            if model != self.model:
+                problems.append("model_changed")
+            if drifted:
+                problems.append("changed_keys: " + ", ".join(drifted))
+            if parameters != self.parameters:
+                problems.append("parameters_changed")
+            raise TaskError("host_provider_changed",
+                            "native video provider was replaced (" + "; ".join(problems) + ")")
+        self.native, self.fingerprint = current, fingerprint
+        self.binding = ProviderBinding("model.native_video", self.provider_id, self.version, fingerprint)
 
     def local_provider(self):
         return LocalProvider(self.binding, ("text", "tools", "image", "video"), self.maximum_output_tokens,
