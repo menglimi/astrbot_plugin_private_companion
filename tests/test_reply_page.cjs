@@ -617,6 +617,56 @@ test('word-list chips add and remove entries while saving the existing wire form
   assert.deepEqual(plain(JSON.parse(instance.state.draft.content_cleanup_words)), original);
 });
 
+test('the registered newline default of the file formats opens as entries and saves clean', async () => {
+  /* 后端注册默认值是多行文本（companion_v2/conversation/media/understanding.py），
+     不是 JSON 数组。编辑器只认 JSON 的话这里会读成 0 个词条、valid=false，
+     整张「文件理解」卡连保存都会被拦。 */
+  const registered = '文本\nPDF\nWord（DOCX）\nExcel（XLSX）\nPowerPoint（PPTX）';
+  const expected = ['文本', 'PDF', 'Word（DOCX）', 'Excel（XLSX）', 'PowerPoint（PPTX）'];
+  const harnessed = harness();
+  harnessed.page.mount(harnessed.root, {view: 'perception', perceptionModule: 'file'});
+  await drains();
+  harnessed.requests[0].resolve(status({file_understanding_format_groups: registered}));
+  await drains();
+  const instance = live(harnessed);
+  const field = instance.state.container.fields.file_understanding_format_groups;
+  assert.equal(field.input, 'word-list');
+  assert.equal(harnessed.workbench.valid(field, instance.state.draft.file_understanding_format_groups),
+    true, 'the registered default must parse into entries the editor can validate');
+  assert.deepEqual(plain(JSON.parse(instance.state.draft.file_understanding_format_groups)), expected);
+  assert.deepEqual(plain(JSON.parse(instance.state.base.file_understanding_format_groups)), expected);
+  assert.equal(instance.dirty(), false, 'reading the backend default is not a pending edit');
+  assert.match(harnessed.slots.settings.innerHTML,
+    /data-wb-word-list="file_understanding_format_groups"/);
+
+  /* 快捷添加从同一份归一化结果起手：删一项再点「文本」加回来，仍是 5 类而不是 1 类。 */
+  const removeFirst = {dataset: {wbWordRemove: 'file_understanding_format_groups', wbWordIndex: '0'}};
+  harnessed.listeners['settings:click']({target: {closest: selector =>
+    selector === '[data-wb-word-remove]' ? removeFirst : null}});
+  assert.deepEqual(plain(JSON.parse(instance.state.draft.file_understanding_format_groups)),
+    expected.slice(1));
+  const quickAdd = {dataset: {wbWordValue: '文本', wbWordField: 'file_understanding_format_groups'}};
+  harnessed.listeners['settings:click']({target: {closest: selector =>
+    selector === '[data-wb-word-value]' ? quickAdd : null}});
+  assert.deepEqual(plain(JSON.parse(instance.state.draft.file_understanding_format_groups)),
+    [...expected.slice(1), '文本']);
+
+  /* 只改同段的其他开关：默认的换行串不能被当成新改动重发。 */
+  instance.state.draft.file_understanding_format_groups =
+    instance.state.base.file_understanding_format_groups;
+  instance.state.draft.file_understanding_enabled = true;
+  const saving = instance.save(false);
+  await drains();
+  assert.deepEqual(plain(harnessed.requests[1].body.changes), {file_understanding_enabled: true});
+  harnessed.requests[1].resolve({result: {operation_id: 'word-list', replayed: false},
+    status: status({file_understanding_format_groups: registered,
+      file_understanding_enabled: true}, 'f'.repeat(64))});
+  await saving;
+  await drains();
+  assert.equal(instance.dirty(), false);
+  harnessed.page.unmount();
+});
+
 test('replacement pairs and component order are edited without JSON controls', async () => {
   const harnessed = await loaded(harness());
   const instance = live(harnessed);
