@@ -94,6 +94,25 @@ DEFAULTS = {
 }
 
 
+NEGATIVE_PROMPT_KINDS = ("text2img", "selfie", "edit")
+
+
+def negative_prompt_default(values, kind):
+    """Resolve one negative prompt, treating a blank override as unset.
+
+    Editors and migrations can store an explicit empty string.  In
+    ``safe_default`` mode such a blank value must not replace the built-in
+    safety prompt, so only a non-blank configured value keeps precedence.
+    """
+    value = values.get(kind + "_negative_prompt")
+    return value if type(value) is str and value.strip() else DEFAULTS[kind + "_negative_prompt"]
+
+
+def negative_prompt_defaults(values):
+    return {kind + "_negative_prompt": negative_prompt_default(values, kind)
+            for kind in NEGATIVE_PROMPT_KINDS}
+
+
 def configuration_fields():
     return tuple(FieldDefinition(GROUP + "." + key, GROUP, GROUP,
         ValueKind.BOOLEAN if type(value) is bool else ValueKind.INTEGER if type(value) is int
@@ -125,7 +144,9 @@ def effective_settings(runtime, context):
                           context.role_binding.role, bot_id=context.scope.bot_id)
     snapshot = ImageOutputConfigurationOwner(runtime).read(target, configuration_fields())
     values = {key.rsplit(".", 1)[-1]: item.value for key, item in snapshot.fields.items()}
-    return {**DEFAULTS, **values}
+    values = {**DEFAULTS, **values}
+    values.update(negative_prompt_defaults(values))
+    return values
 
 
 def _is_core_actor(runtime, actor):
@@ -237,7 +258,7 @@ def apply_prompts(arguments, action, values):
     blocks = [values[kind + "_fixed_prompt"], style, values["style_prompt"], *scene_prompts, original]
     delimiter = "\n" if values["prompt_format"] == "natural" else ", "
     result["prompt"] = delimiter.join(block.strip() for block in blocks if block.strip())
-    defaults = values[kind + "_negative_prompt"]
+    defaults = negative_prompt_default(values, kind)
     negative = defaults if values["negative_mode"] == "safe_default" else (
         delimiter.join(block for block in (defaults, values["negative_prompt"]) if block)
         if values["negative_mode"] == "merge" else values["negative_prompt"])
