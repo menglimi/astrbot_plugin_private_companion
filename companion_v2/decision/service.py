@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import json
 import logging
 import re
+import sqlite3
 from time import perf_counter
 from uuid import uuid4
 
@@ -48,11 +49,11 @@ def _safe_log_reason(reason_code, reason):
     return _SAFE_FAILURE_REASONS.get(reason_code, "Laya 调用失败；详细信息请查看 AstrBot 开发者日志。")
 
 
-def _diagnostic_json(value, limit):
+def _diagnostic_json(value, limit, *, sort_keys=False):
     if value is None:
         return None
     try:
-        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=sort_keys)
     except (TypeError, ValueError, RecursionError):
         encoded = json.dumps({"unavailable": True}, separators=(",", ":"))
     if len(encoded) <= limit:
@@ -64,6 +65,21 @@ def _diagnostic_json(value, limit):
         if len(bounded) <= limit:
             return bounded
         preview = preview[:len(preview) // 2]
+
+
+def _write_failure_detail(error):
+    """Describe a row the database refused without quoting the row.
+
+    SQLite's own message names the table, column or CHECK that rejected the write
+    (``CHECK constraint failed: mode IN ('local', 'remote')``) and never repeats
+    the stored values, so it is the one piece of a rejected ledger write that an
+    operator can act on. Anything else keeps its type name only.
+    """
+
+    if not isinstance(error, sqlite3.Error):
+        return "-"
+    detail = " ".join(str(error).split())
+    return detail[:160] or "-"
 
 
 def _intervention_trace(client):
@@ -137,7 +153,8 @@ class LayaDecisionService:
                 connection.execute("UPDATE laya_decision_events SET processing_json = ? WHERE event_id = ?",
                                    (_diagnostic_json(processing, 16384), event_id))
         except Exception as error:
-            logger.warning("Laya 决策应用结果写入失败 code=%s", type(error).__name__)
+            logger.warning("Laya 决策应用结果写入失败 code=%s detail=%s",
+                           type(error).__name__, _write_failure_detail(error))
 
     def status(self) -> dict:
         status = self.store.read()
@@ -285,8 +302,11 @@ class LayaDecisionService:
         if self.runtime is None or self.origin_key is None:
             return
         try:
-            decision_json = json.dumps(decision, ensure_ascii=False, separators=(",", ":")) if decision else None
-            enabled_fields_json = json.dumps(values["decision_fields"], sort_keys=True, separators=(",", ":"))
+            # 这两列的宽度由 laya_decision_events 的 CHECK 定死：超限的 JSON 会被库
+            # 直接拒绝，整条台账连同一句「写入失败」一起消失。改成带上 truncated 标记
+            # 的预览后，行还在，读者也知道自己看到的是被截断的文档。
+            decision_json = _diagnostic_json(decision, 4096) if decision else None
+            enabled_fields_json = _diagnostic_json(values["decision_fields"], 2048, sort_keys=True)
             safe_reason = _safe_log_reason(reason_code, reason) if reason_code else None
             trace = trace if isinstance(trace, dict) else {}
             processing = dict(trace.get("processing") or {})
@@ -311,4 +331,5 @@ class LayaDecisionService:
                     ORDER BY observed_at DESC, rowid DESC LIMIT -1 OFFSET 2000)""", (self.origin_key,))
             self._last_recorded_event_id = event_id
         except Exception as error:
-            logger.warning("Laya 决策记录写入失败 code=%s", type(error).__name__)
+            logger.warning("Laya 决策记录写入失败 code=%s detail=%s",
+                           type(error).__name__, _write_failure_detail(error))
