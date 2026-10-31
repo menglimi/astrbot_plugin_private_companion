@@ -297,6 +297,11 @@ class LocalModelGateway:
                         # The ceiling cut this body and the format needs a whole
                         # result. Naming the ceiling keeps one glance enough to tell
                         # it from a refused or malformed answer.
+                        logger.warning("[CompanionV2] 模型输出被上限截断，任务拒绝不完整结果 task=%s kind=%s "
+                                       "output_format=%s max_output_tokens=%d provider=%s raw_chars=%d",
+                                       run.task.task_id, plan.audit["profile"]["kind"],
+                                       envelope.original.output_format, envelope.max_output_tokens,
+                                       provider.binding.provider, len(captured.text))
                         self.ledger.discard(call_id, failure=ModelFailure.WIRE_DECODE, observed_at=self.tasks.now())
                         raise TaskError("model_output_truncated",
                                         "the output ceiling cut this result before its contract was complete")
