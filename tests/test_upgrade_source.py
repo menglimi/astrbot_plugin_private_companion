@@ -1,5 +1,6 @@
 """Exercise the real import-before-schema boundary without a live installation."""
 
+import hashlib
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -9,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 from astrbot_host.upgrade_source import (
     CONFIG_NAME, preserve_before_schema, preserved_configuration_path,
+    usable_preserved_configuration_path,
 )
 from astrbot_host.legacy_config import read_v1_host_configuration
 
@@ -200,3 +202,112 @@ class UpgradeReviewTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(result["binding_confirmed"])
                 self.assertEqual(read_binding(controller.binding_root).persona_id, "private-persona")
                 controller.apply_bindings.assert_awaited_once_with(candidate)
+
+
+class UpgradeArchiveResilienceTests(unittest.TestCase):
+    """Damage inside ``.private-companion-upgrade`` must not stop the plugin loading.
+
+    ``preserve_host_configuration`` runs at import time (``main.py``), so every
+    raise from this module is an ``ImportError`` for the whole plugin — and
+    ``star_manager`` keeps the archive on a failed load, so the next restart
+    fails identically.  The verified-source guard still has to raise for the
+    migration reader; only the import hook degrades.
+    """
+
+    LEGACY = {"basic_config": {"target_user_ids": ["123"], "LLM_PROVIDER_ID": "provider-a"}}
+
+    def setUp(self):
+        self._temporary = TemporaryDirectory()
+        self.addCleanup(self._temporary.cleanup)
+        self.config = Path(self._temporary.name) / "config"
+        self.config.mkdir()
+        self.live = self.config / CONFIG_NAME
+        self.live.write_text(json.dumps(self.LEGACY), encoding="utf-8")
+        self.archive = self.config / ".private-companion-upgrade"
+
+    def _pointer(self):
+        return json.loads((self.archive / "source.json").read_text(encoding="utf-8"))
+
+    def _assert_recovers(self):
+        recovered = preserve_before_schema(self.config)
+        self.assertIsNotNone(recovered, "the import hook must still return a source")
+        self.assertEqual(recovered.read_bytes(), self.live.read_bytes())
+        self.assertEqual(self._pointer()["sha256"], recovered.stem)
+        return recovered
+
+    def test_deleted_archive_file_still_lets_the_hook_finish(self):
+        preserve_before_schema(self.config).unlink()
+        self._assert_recovers()
+
+    def test_tampered_archive_file_still_lets_the_hook_finish(self):
+        saved = preserve_before_schema(self.config)
+        original = saved.read_bytes()
+        saved.write_bytes(original[:-8] + b" " * 8)  # same length, different bytes
+        self._assert_recovers()
+
+    def test_truncated_pointer_still_lets_the_hook_finish(self):
+        preserve_before_schema(self.config)
+        (self.archive / "source.json").write_text('{"format": "x"', encoding="utf-8")
+        self._assert_recovers()
+
+    def test_non_hex_fingerprint_still_lets_the_hook_finish(self):
+        preserve_before_schema(self.config)
+        (self.archive / "source.json").write_text(
+            json.dumps({"format": "private-companion.upgrade-source.v1", "sha256": "NOTHEX"}),
+            encoding="utf-8")
+        self._assert_recovers()
+
+    def test_archive_that_is_no_longer_legacy_still_lets_the_hook_finish(self):
+        preserve_before_schema(self.config)
+        # A pointer that is internally consistent but no longer names a legacy
+        # document: only the shape check can notice this one.
+        raw = json.dumps({"performance": {}, "storage": {}}).encode("utf-8")
+        sha = hashlib.sha256(raw).hexdigest()
+        (self.archive / (sha + ".json")).write_bytes(raw)
+        (self.archive / "source.json").write_text(
+            json.dumps({"format": "private-companion.upgrade-source.v1", "sha256": sha}),
+            encoding="utf-8")
+        self._assert_recovers()
+
+    def test_pruned_live_config_with_a_broken_archive_returns_no_source(self):
+        preserve_before_schema(self.config)
+        (self.archive / "source.json").write_text('{"format": "x"', encoding="utf-8")
+        self.live.write_text(json.dumps({"performance": {}, "storage": {}}), encoding="utf-8")
+        with self.assertLogs("astrbot_host.upgrade_source", level="WARNING") as logs:
+            self.assertIsNone(preserve_before_schema(self.config))
+        self.assertIn(".private-companion-upgrade", "\n".join(logs.output))
+
+    def test_unreadable_archive_is_reported_not_swallowed(self):
+        preserve_before_schema(self.config)
+        (self.archive / "source.json").write_text('{"format": "x"', encoding="utf-8")
+        with self.assertLogs("astrbot_host.upgrade_source", level="WARNING") as logs:
+            self.assertIsNone(usable_preserved_configuration_path(self.config))
+        report = "\n".join(logs.output)
+        self.assertIn("JSONDecodeError", report)
+        self.assertIn(".private-companion-upgrade", report)
+
+    def test_healthy_archive_is_never_rewritten(self):
+        saved = preserve_before_schema(self.config)
+        contents = saved.read_bytes()
+        pointer = (self.archive / "source.json").read_bytes()
+        self.assertEqual(preserve_before_schema(self.config), saved)
+        self.assertEqual(saved.read_bytes(), contents)
+        self.assertEqual((self.archive / "source.json").read_bytes(), pointer)
+
+    def test_changed_archive_still_raises_for_the_migration_reader(self):
+        saved = preserve_before_schema(self.config)
+        saved.write_text("{}", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            preserved_configuration_path(self.config)
+
+    def test_audit_copy_mismatch_is_not_a_load_failure(self):
+        saved = preserve_before_schema(self.config)
+        # A later, defaulted snapshot of the live file: same role as the existing
+        # test, except the audit destination already exists with other bytes.
+        defaulted = {"basic_config": {"target_user_ids": [], "LLM_PROVIDER_ID": ""}}
+        self.live.write_text(json.dumps(defaulted), encoding="utf-8")
+        fingerprint = hashlib.sha256(self.live.read_bytes()).hexdigest()
+        (self.archive / (fingerprint + ".json")).write_text("{}", encoding="utf-8")
+        with self.assertLogs("astrbot_host.upgrade_source", level="WARNING"):
+            self.assertEqual(preserve_before_schema(self.config), saved)
+        self.assertEqual(saved.read_bytes(), json.dumps(self.LEGACY).encode("utf-8"))

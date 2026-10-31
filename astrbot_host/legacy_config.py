@@ -6,7 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from .upgrade_source import is_legacy_configuration, preserved_configuration_path
+from .upgrade_source import is_legacy_configuration, usable_preserved_configuration_path
 
 
 V1_PLUGIN_DATA_NAME = "astrbot_plugin_private_companion"
@@ -69,7 +69,7 @@ def v1_host_config_path(data_root) -> Path | None:
     for directory in _config_directories(data_root):
         # The import-before-schema hook has already selected the complete source.
         # A normalized live file may retain legacy marker keys while losing values.
-        preserved = preserved_configuration_path(directory)
+        preserved = usable_preserved_configuration_path(directory)
         if preserved is not None:
             return preserved
         path = directory / V1_HOST_CONFIG_NAME
