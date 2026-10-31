@@ -752,9 +752,13 @@ class ReplyTextPolicy:
 
     def _clean_scoped(self, text, deadline, scopes, *, left_edge=True, right_edge=True,
                       allow_leading=True, allow_trailing=True):
+        # 词表模式只有真的配置了词条时才按词表清理。空词表必须退回下面的正则
+        # 规则：否则「文字整理」开着、词表为空时除首尾空白外什么都不做，
+        # 用户填的正则规则永远没有入口。
+        words = self.words() if self.content_cleanup_mode == "words" else ()
         if "all" in scopes:
-            if self.content_cleanup_mode == "words":
-                for word in self.words():
+            if words:
+                for word in words:
                     text = text.replace(word, "")
                 return text
             pattern = _pattern(self.content_cleanup_rule)
@@ -764,8 +768,8 @@ class ReplyTextPolicy:
                 return pattern.sub("", text, timeout=deadline - monotonic())
             except TimeoutError as error:
                 raise ValueError("presentation cleanup pattern exceeded its execution budget") from error
-        if self.content_cleanup_mode == "words":
-            words = sorted(set(self.words()), key=len, reverse=True)
+        if words:
+            words = sorted(set(words), key=len, reverse=True)
             if "leading" in scopes and allow_leading:
                 text = text.lstrip()
                 while text:
