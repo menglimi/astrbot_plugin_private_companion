@@ -14,6 +14,7 @@ from companion_v2.role_work.life.management import RoleLifeManagement
 from .budget import effective_soft
 from .cache_diagnostics import checked_signature, event_severity, signature_changes, signature_snapshot
 from .core_observations import availability_summary, observations_for_role, request_rows
+from .models import MAX_MODEL_OUTPUT_TOKENS
 from .reply_efficiency import reply_efficiency_report
 from .refusal import canonical_refusal_terms
 from .replacement_rules import checked_rules, validate_targets
@@ -767,7 +768,7 @@ class ModelManagement:
                 or type(values["prompt"]) is not str
                 or len(values["prompt"]) > 8000 or type(values["max_output_tokens"]) is not int
                 or type(values["fallback_on_refusal"]) is not bool
-                or not 1 <= values["max_output_tokens"] <= 32768
+                or not 1 <= values["max_output_tokens"] <= MAX_MODEL_OUTPUT_TOKENS
                 or type(values["timeout_seconds"]) is not int or not 1 <= values["timeout_seconds"] <= 600
                 or values["replacement_scope"] not in ("all", "plugin", "conversation")):
             raise TaskError("model_configuration_invalid", "check task prompt and output token limit")

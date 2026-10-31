@@ -5,6 +5,7 @@ import json
 from logging import getLogger
 
 from companion_v2.execution.models import ProviderBinding, TaskError
+from companion_v2.model_gateway.models import MAX_MODEL_OUTPUT_TOKENS
 from .provider import AstrBotTextProvider, UsageTariff, provider_fingerprint
 
 logger = getLogger(__name__)
@@ -21,13 +22,20 @@ class TextProviderSettings:
 
     def __post_init__(self):
         if (type(self.provider_id) is not str or not self.provider_id.strip()
-                or self.provider_id != self.provider_id.strip() or len(self.provider_id) > 512
-                or not isinstance(self.tariff, UsageTariff)
-                or type(self.maximum_output_tokens) is not int or not 1 <= self.maximum_output_tokens <= 32768
-                or type(self.maximum_input_estimate) is not int or not 1024 <= self.maximum_input_estimate <= 1000000
-                or self.output_parameter not in ("max_tokens", "max_completion_tokens")
-                or type(self.streaming) is not bool):
-            raise ValueError("invalid additional model provider profile")
+                or self.provider_id != self.provider_id.strip() or len(self.provider_id) > 512):
+            raise ValueError("model provider ID is invalid")
+        if not isinstance(self.tariff, UsageTariff):
+            raise ValueError("model provider tariff is invalid")
+        if (type(self.maximum_output_tokens) is not int
+                or not 1 <= self.maximum_output_tokens <= MAX_MODEL_OUTPUT_TOKENS):
+            raise ValueError("model provider output limit is invalid")
+        if (type(self.maximum_input_estimate) is not int
+                or not 1024 <= self.maximum_input_estimate <= 1000000):
+            raise ValueError("model provider input estimate is invalid")
+        if self.output_parameter not in ("max_tokens", "max_completion_tokens"):
+            raise ValueError("model provider output parameter is invalid")
+        if type(self.streaming) is not bool:
+            raise ValueError("model provider streaming switch is invalid")
 
 
 def _provider_id(native):

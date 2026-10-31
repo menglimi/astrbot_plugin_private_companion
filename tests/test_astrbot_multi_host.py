@@ -42,6 +42,14 @@ class _Query(dict):
 
 
 class MultiSettingsTests(unittest.TestCase):
+    def test_model_output_limit_uses_the_same_ceiling_as_runtime(self):
+        config = multi_config()
+        config["model"]["max_output_tokens"] = 65_536
+        self.assertEqual(MultiHostSettings.parse(config).common.max_output_tokens, 65_536)
+        config["model"]["max_output_tokens"] = 65_537
+        with self.assertRaises(ValueError):
+            MultiHostSettings.parse(config)
+
     def test_follow_window_mapping_applies_only_when_it_is_the_bot_single_mapping(self):
         from astrbot_host.multi_settings import PersonaMapping
 
@@ -200,6 +208,20 @@ class LegacyStagingReceiptTests(unittest.TestCase):
 
 
 class MultiHostTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_saved_large_output_limit_prepares_and_reloads(self):
+        prepared = await self.controller.initialize_profile()
+        self.assertTrue(prepared.is_success, prepared.failure)
+        await self.controller.terminate()
+
+        config = multi_config()
+        config["model"]["max_output_tokens"] = 50_000
+        self.controller = self.make_controller(config)
+        loaded = await self.controller.load_existing()
+        self.assertTrue(loaded.is_success, loaded.failure)
+        self.assertTrue(loaded.unwrap()["loaded"])
+        self.assertEqual(self.controller.session.application.router.profiles["conversation.reply"].max_output_tokens,
+                         50_000)
+
     async def test_legacy_default_mapping_routes_the_window_selected_persona(self):
         config = multi_config()
         config["multi_host"]["personas"] = [
