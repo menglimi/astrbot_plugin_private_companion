@@ -4,7 +4,7 @@ import enum
 from types import SimpleNamespace as NS
 import unittest
 
-from companion_v2.adapters.astrbot.memory_output import capture
+from companion_v2.adapters.astrbot.memory_output import capture, explicit_refusal
 from companion_v2.adapters.astrbot.provider import AstrBotTextProvider, UsageTariff, _gemini_messages
 from companion_v2.adapters.astrbot.response_diagnostics import native_finish_reason, observe_completion
 from companion_v2.execution.models import ProviderBinding
@@ -154,6 +154,8 @@ class NativeFinishReasonTests(unittest.TestCase):
     def test_truncated_native_reply_is_captured_as_length_instead_of_stop(self):
         self.assertEqual(capture(native_completion(FinishReason.MAX_TOKENS)).finish_reason, "length")
         self.assertEqual(capture(native_completion(FinishReason.SAFETY)).finish_reason, "refusal")
+        self.assertTrue(explicit_refusal(native_completion(FinishReason.SAFETY, "")))
+        self.assertFalse(explicit_refusal(native_completion(FinishReason.MAX_TOKENS, "半句")))
         self.assertEqual(capture(native_completion(FinishReason.STOP)).finish_reason, "stop")
 
     def test_plain_string_reason_from_another_sdk_build_is_accepted(self):
@@ -168,7 +170,7 @@ class NativeFinishReasonTests(unittest.TestCase):
 
     def test_unmapped_reason_is_unknown_rather_than_guessed(self):
         self.assertEqual(observe_completion(native_completion("MALFORMED_FUNCTION_CALL")).finish_reason, "unknown")
-        self.assertEqual(capture(native_completion("MALFORMED_FUNCTION_CALL")).finish_reason, "stop")
+        self.assertEqual(capture(native_completion("MALFORMED_FUNCTION_CALL")).finish_reason, "invalid")
 
     def test_openai_choices_still_decide_when_the_completion_has_them(self):
         completion = NS(choices=[NS(finish_reason="length", message=NS(content="半句"))],

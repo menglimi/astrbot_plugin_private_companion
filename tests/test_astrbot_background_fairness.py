@@ -24,7 +24,8 @@ class BackgroundFairnessTests(MultiLifeFixture, unittest.IsolatedAsyncioTestCase
         manager = self.state_manager(target)
         before = manager.status(operator).unwrap()
         manager.command(operator, dict(action="configure", operation_key="enable-state",
-            edit_token=before["edit_token"], changes={"enabled": True})).unwrap()
+            edit_token=before["edit_token"], role_edit_token=before["role_edit_token"],
+            changes={"enabled": True})).unwrap()
         return self.context(target)
 
     def queued(self, app, kind):
