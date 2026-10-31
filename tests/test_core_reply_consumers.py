@@ -98,6 +98,9 @@ class CorePrivateConsumerTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         owner.observe = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("derived card unavailable"))
         prepared = await self.prepared("consumer-observer-failed", "嗯哼，那就这样说定啦")
         owner.observe = original
+        # Source capture finishes before the optional background role rebind.
+        # Learning consumes that binding, so wait for it as the host does.
+        await asyncio.gather(*tuple(self.controller.session.core_reply_maintenance._pending))
         context = prepared["context"]
         self.bind_expression_owner(context)
         ExpressionConfigurationOwner(self.app.runtime).write(target_for(context), configuration_fields(),
