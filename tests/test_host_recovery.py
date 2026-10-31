@@ -118,6 +118,46 @@ class HostRecoveryTests(HostFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(app.flow.row(batch)["state"], "closed")
         self.assertEqual(len(self.sent), 1)
 
+    async def test_startup_reclaims_a_reservation_whose_task_never_reported(self):
+        host = await self.start()
+        app = host.application
+        batch = host.receive(self.event()).unwrap()
+        self.advance(app)
+        await self.done(app, batch)
+        call = dict(app.runtime.read_one(
+            "SELECT * FROM model_calls ORDER BY finished_at DESC LIMIT 1", ()))
+        old = (NOW - timedelta(hours=2)).isoformat(timespec="microseconds")
+        with app.runtime.transaction() as connection:
+            connection.execute("UPDATE execution_tasks SET kind = 'calendar.plan' WHERE task_id = ?",
+                               (call["task_id"],))
+            connection.execute("""UPDATE model_calls SET state = 'unknown', actual_tokens = NULL,
+                actual_cost = NULL, receipt_ref = NULL, started_at = ?, finished_at = ?
+                WHERE call_id = ?""", (old, old, call["call_id"]))
+            connection.execute("""UPDATE model_budget_accounts SET held_tokens = held_tokens + ?,
+                held_cost = held_cost + ? WHERE account_key IN
+                (SELECT account_key FROM model_call_accounts WHERE call_id = ?)""",
+                (call["reserved_tokens"], call["reserved_cost"], call["call_id"]))
+            linked = tuple(row["account_key"] for row in connection.execute(
+                "SELECT account_key FROM model_call_accounts WHERE call_id = ?", (call["call_id"],)))
+            placeholders = ",".join("?" for _ in linked)
+            held = connection.execute(
+                "SELECT account_key, held_tokens FROM model_budget_accounts WHERE account_key IN ("
+                + placeholders + ")", linked).fetchall()
+        self.assertTrue(linked)
+        self.assertTrue(all(row["held_tokens"] >= call["reserved_tokens"] for row in held))
+        await app.close()
+
+        new = await self.start(self.host(runtime=self.open_runtime()), 1, 1)
+        rebuilt = dict(new.application.runtime.read_one(
+            "SELECT * FROM model_calls WHERE call_id = ?", (call["call_id"],)))
+        self.assertEqual(rebuilt["state"], "unknown")
+        self.assertTrue(rebuilt["receipt_ref"].startswith("local:released:expired-reservation"))
+        after = new.application.runtime.read_all(
+            "SELECT account_key, held_tokens FROM model_budget_accounts WHERE account_key IN ("
+            + placeholders + ")", linked)
+        self.assertTrue(all(row["held_tokens"] == 0 for row in after))
+        self.assertEqual(new.application.gateway.ledger.reclaim_audit()["released_calls"], 1)
+
     async def test_restart_fences_started_generation_without_requesting_a_new_draft(self):
         host = await self.start(self.host(policy=ConversationPolicy(0, 0, 180, 0)))
         app = host.application

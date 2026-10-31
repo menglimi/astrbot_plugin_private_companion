@@ -2,6 +2,7 @@
 
 import json
 
+from .models import is_released
 from .response_diagnostics import checked_response_diagnostics
 from datetime import timedelta
 
@@ -69,9 +70,16 @@ def _recent(row):
             row["response_summary_json"] if "response_summary_json" in row.keys() else None),
         "at": row["finished_at"] or row["started_at"] or row["created_at"]}
     if "reserved_tokens" in row.keys():
+        released = is_released(row["receipt_ref"]) if "receipt_ref" in row.keys() else False
+        if released:
+            usage_state = "released"
+        elif row["actual_tokens"] is not None:
+            usage_state = "settled"
+        else:
+            usage_state = "awaiting_receipt"
         result["reserved_tokens"] = row["reserved_tokens"]
-        result["held_tokens"] = row["reserved_tokens"] if row["actual_tokens"] is None else 0
-        result["usage_state"] = "settled" if row["actual_tokens"] is not None else "awaiting_receipt"
+        result["held_tokens"] = 0 if released or row["actual_tokens"] is not None else row["reserved_tokens"]
+        result["usage_state"] = usage_state
     for name in ("execution_path", "usage_scope", "token_availability", "cost_availability", "cache_availability", "signature_scope"):
         if name in row.keys():
             result[name] = row[name]
