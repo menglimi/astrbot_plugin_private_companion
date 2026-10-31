@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta
 import json
+from logging import getLogger
 
 from companion_v2.conversation.foreground import (BackgroundPromptTrigger, PromptMaterial, PromptRequest,
     SealedForegroundContext)
@@ -34,6 +35,8 @@ from . import rule_support
 from .configuration import (application_subject_allowed_for_context, read_settings,
                             source_subject_allowed_for_context)
 from .style_evidence import INPUT_SAMPLE_SOURCE, MAX_WINDOW_HOURS, sample_document, sample_handles
+
+logger = getLogger(__name__)
 
 KIND = "role.expression.learn"
 OWNER = "role.expression.learn"
@@ -121,6 +124,24 @@ class ExpressionStyleService:
             WHERE owner_key = ? AND scope_key = ? AND state IN ('pending', 'adopted')""",
             (digest(self.samples.role_owner(context)), digest(context.scope)))
         return int(row["count"]) if row is not None else 0
+
+    def _note_skipped(self, identifier, job, receipt):
+        """Say which earlier attempt owns this batch instead of only skipping it.
+
+        ``already_attempted`` is the written idempotency rule: one model call per
+        material batch. The state of that earlier attempt decides what the skip
+        means — "already learned" or "locked by a run that never finished" — and
+        without it both look like the same silence until new samples change
+        ``material_hash``.
+        """
+        state = getattr(receipt, "state", None)
+        completed = state is OperationState.COMPLETED
+        material = str(job.get("material_hash") or "")
+        record = logger.info if completed else logger.warning
+        record("[CompanionV2] 表达学习跳过同一批素材 task=%s previous=%s updated_at=%s material=%s mode=%s",
+               identifier, getattr(state, "value", "missing"),
+               getattr(receipt, "updated_at", None), material[:12],
+               getattr(job.get("policy"), "learning_mode", "unknown"))
 
     def _bound(self, context, instruction):
         """Accept a live private binding or re-derive the same group scope.
@@ -287,7 +308,9 @@ class ExpressionStyleService:
         work_key = self._work_key(context)
         request_key = digest([work_key, job["material_hash"], job["policy"].learning_mode])
         identifier = self.identifier(context, request_key)
-        if self.operations.get(identifier).is_success:
+        previous = self.operations.get(identifier)
+        if previous.is_success:
+            self._note_skipped(identifier, job, previous.value)
             self.results[work_key] = {"state": "already_attempted", "task_id": identifier}
             return self.results[work_key]
         with self.runtime.transaction():
@@ -295,6 +318,7 @@ class ExpressionStyleService:
                 VersionRef(identifier, 1), identifier),
                 parameter_hash=digest([work_key, request_key]), observed_at=job["at"]))
             if reservation.replayed:
+                self._note_skipped(identifier, job, reservation.value)
                 self.results[work_key] = {"state": "already_attempted", "task_id": identifier}
                 return self.results[work_key]
             if context.scope.kind is ScopeKind.GROUP:
