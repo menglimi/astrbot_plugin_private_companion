@@ -9,7 +9,7 @@ from logging import getLogger
 from time import perf_counter
 from uuid import uuid4
 
-from companion_v2.conversation.foreground import PromptRequest
+from companion_v2.conversation.foreground import ModelDraft, PromptRequest
 from companion_v2.execution.models import TaskContext, TaskError, digest, encode, require, stamp
 from companion_v2.execution.runner import TaskRun
 from companion_v2.execution.service import TaskSupervisor, outcome
@@ -41,6 +41,11 @@ TASK_ROLE_REFERENCE_KINDS = frozenset({
     "conversation.image_narration", "conversation.video_narration",
     "conversation.context_image_caption",
 })
+# Output formats whose owner checks the parts that arrived whole, so a body cut off
+# by the model's output ceiling is still worth handing to it. Every other format
+# needs a whole result and hears the ceiling's own code instead. The private memory
+# owner is not listed: it has always received its raw body through the capture path.
+CEILING_BODY_FORMATS = frozenset({"calendar_planning"})
 
 
 def _redact_prompt_media(value):
@@ -272,9 +277,26 @@ class LocalModelGateway:
                     if not prefix_committed and plan.audit["fallback_on_refusal"] and provider_position + 1 < len(plan.providers):
                         continue
                     raise TaskError("model_refused", "provider explicitly refused the request")
-                if response.captured_output is not None and envelope.original.output_format != "memory_reflection":
-                    self.ledger.discard(call_id)
-                    raise TaskError("model_capture_unavailable", "unvalidated output requires its private memory owner")
+                captured = response.captured_output
+                draft = response.draft
+                if captured is not None and envelope.original.output_format != "memory_reflection":
+                    if captured.finish_reason != "length":
+                        self.ledger.discard(call_id)
+                        raise TaskError("model_capture_unavailable", "unvalidated output requires its private memory owner")
+                    if envelope.original.output_format not in CEILING_BODY_FORMATS:
+                        # The ceiling cut this body and the format needs a whole
+                        # result. Naming the ceiling keeps one glance enough to tell
+                        # it from a refused or malformed answer.
+                        self.ledger.discard(call_id, failure=ModelFailure.WIRE_DECODE, observed_at=self.tasks.now())
+                        raise TaskError("model_output_truncated",
+                                        "the output ceiling cut this result before its contract was complete")
+                    # The owner validates the parts that arrived whole, so the body
+                    # becomes its draft unchanged: the gateway does not judge it.
+                    logger.warning("[CompanionV2] 模型正文被输出上限截断，交由任务取舍 task=%s kind=%s "
+                                   "output_format=%s raw_chars=%d", run.task.task_id,
+                                   plan.audit["profile"]["kind"], envelope.original.output_format,
+                                   len(captured.text))
+                    draft = ModelDraft(captured.text, ())
                 if response.tool_calls and not envelope.tools:
                     self.ledger.discard(call_id)
                     raise TaskError("model_tools_unavailable", "no tool dispatch is allowed for this model round")
@@ -286,7 +308,7 @@ class LocalModelGateway:
                         WHERE task_id = ? AND round_no = ?""", (
                         "tools" if response.tool_calls else "final", call_id, encode(response.tool_calls),
                         run.task.task_id, round_no))
-                return ModelCompletion(call_id, response.draft, usage_known, response.tool_calls, response.captured_output)
+                return ModelCompletion(call_id, draft, usage_known, response.tool_calls, captured)
             if prefix_committed or response.status != "not_started":
                 diagnostics = response.diagnostics
                 failure = response.failure or (diagnostics.failure if diagnostics is not None else None)

@@ -20,7 +20,8 @@ from companion_v2.foundation.refs import SourceRef, SubjectKind, SubjectRef, Ver
 from companion_v2.identity_policy.personas import PersonaBinding, PersonaSelector, SelectorKind
 from companion_v2.model_gateway.budget import BudgetLedger
 from companion_v2.model_gateway.failures import ModelFailure
-from companion_v2.model_gateway.models import Amount, BudgetPolicy, CacheSignature, LocalProvider, ModelTaskProfile, ProviderResponse
+from companion_v2.model_gateway.models import (Amount, BudgetPolicy, CacheSignature, CapturedModelOutput,
+    LocalProvider, ModelTaskProfile, ProviderResponse)
 from companion_v2.model_gateway.perception import capability_instruction
 from companion_v2.model_gateway.routing import ModelRouter, configuration_fields
 from companion_v2.model_gateway.service import LocalModelGateway
@@ -590,6 +591,61 @@ class ModelGatewayTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
             await self.gateway.generate(run, self.request())
         self.assertEqual(error.exception.code, "consumer_generation_conflict")
         self.assertEqual(self.called, [])
+
+
+class ModelTruncationTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
+    """A body cut off by the output ceiling belongs to the format that validates it.
+
+    The transport only states what happened (``length``). Deciding whether a
+    partial body is still usable belongs to the workflow that owns the result and
+    re-validates a complete contract before writing anything, exactly like the
+    private memory owner that has always received its raw body.
+    """
+
+    def truncated(self, text='{"items":[{"title":"练琴"'):
+        return ProviderResponse("generated", captured_output=CapturedModelOutput(text, "length"),
+                                usage=Amount(15, 40), receipt_ref="receipt-primary")
+
+    async def test_a_truncated_body_reaches_the_format_that_validates_it(self):
+        self.responses["primary"] = self.truncated()
+
+        completion = await self.gateway.generate(self.model_run(),
+            replace(self.request(), output_format="calendar_planning"))
+
+        # The owner re-validates each part, so the raw body arrives as its draft
+        # while the classification stays visible on the completion.
+        self.assertEqual(completion.draft.text, '{"items":[{"title":"练琴"')
+        self.assertEqual(completion.draft.claims, ())
+        self.assertEqual(completion.captured_output.finish_reason, "length")
+        # The provider was charged for this round; the receipt is not a zero.
+        self.assertEqual(self.call_rows()[0]["state"], "generated")
+
+    async def test_a_truncated_reply_is_never_handed_to_the_conversation_contract(self):
+        # Half a reply and half a JSON object are both unusable as a delivered
+        # message, and only the ceiling is to blame, so the code must say so.
+        self.responses["primary"] = self.truncated()
+
+        with self.assertRaises(TaskError) as caught:
+            await self.gateway.generate(self.model_run(), self.request())
+        self.assertEqual(caught.exception.code, "model_output_truncated")
+        self.assertEqual(self.call_rows()[0]["state"], "discarded")
+
+    async def test_an_unusable_capture_still_requires_its_private_memory_owner(self):
+        self.responses["primary"] = ProviderResponse("generated",
+            captured_output=CapturedModelOutput("", "invalid"), usage=Amount(15, 40), receipt_ref="receipt-primary")
+
+        with self.assertRaises(TaskError) as caught:
+            await self.gateway.generate(self.model_run(),
+                replace(self.request(), output_format="calendar_planning"))
+        self.assertEqual(caught.exception.code, "model_capture_unavailable")
+
+    async def test_a_private_memory_reflection_keeps_its_captured_body(self):
+        self.responses["primary"] = self.truncated('{"facts": [')
+
+        completion = await self.gateway.generate(self.model_run(),
+            replace(self.request(), output_format="memory_reflection"))
+
+        self.assertEqual(completion.captured_output.text, '{"facts": [')
 
 
 class ModelBudgetTests(ModelFixture):
