@@ -194,11 +194,20 @@ window.CompanionWorkbench = (() => {
   }
 
   const choiceText = (item, value) => (item.choices && item.choices[value]) || value;
+  /* 词条/顺序列表在网线上有两种历史写法：编辑器写出的 JSON 数组串，以及后端
+     注册默认值那种用换行、中英文逗号或分号分隔的纯文本。只认 JSON 会把默认值
+     读成 0 个词条、让整张卡判为非法；非 JSON 文本按同一组分隔符回退。 */
+  const WORD_LIST_SPLIT = /[\r\n,，;；]+/;
   const parseStringList = value => {
-    try {
-      const parsed = JSON.parse(String(value ?? ""));
-      return Array.isArray(parsed) && parsed.every(item => typeof item === "string") ? parsed : null;
-    } catch { return null; }
+    const text = String(value ?? "").trim();
+    if (!text) return [];
+    if (text.startsWith("[")) {
+      try {
+        const parsed = JSON.parse(text);
+        return Array.isArray(parsed) && parsed.every(item => typeof item === "string") ? parsed : null;
+      } catch {}
+    }
+    return text.split(WORD_LIST_SPLIT).map(item => item.trim()).filter(Boolean);
   };
   const parseLineList = value => String(value ?? "").split(/\r\n|\n|\r/)
     .map(line => line.trim()).filter(Boolean).map(line => {
@@ -998,6 +1007,17 @@ window.CompanionWorkbench = (() => {
       normalizeDraft = null,
     } = spec;
     const wireName = outbound || (name => name);
+    /* 读取快照时先把词条字段收敛成编辑器写出的 JSON 数组串，draft 与 base 都从
+       这份值派生。只归一草稿会让默认的换行串永远显示成「有改动」，保存时还会
+       把默认值当成新值重发；只归一默认值又会让快捷添加拿到空列表（5 类变 1 类）。 */
+    const normalizeWordLists = (values, fields = state.container?.fields || {}) => {
+      for (const [name, item] of Object.entries(fields)) {
+        if (item?.input === "word-list" && typeof values?.[name] === "string") {
+          values[name] = JSON.stringify(parseStringList(values[name]));
+        }
+      }
+      return values;
+    };
     const draftFrom = (settings, status) => {
       const draft = {...settings};
       if (normalizeDraft) normalizeDraft(draft, status);
@@ -2224,6 +2244,7 @@ window.CompanionWorkbench = (() => {
            统一成 edit_token，后续只读这一个名字；发送时再翻回 writeTokenKey。 */
         if (tokenKey !== "edit_token") value.edit_token = token;
         if (valuesKey !== "settings") value.settings = settings;
+        normalizeWordLists(value.settings, nextContainer.fields);
         const changed = state.status && state.status.edit_token !== value.edit_token;
         state.status = value;
         state.container = nextContainer;
@@ -2397,6 +2418,7 @@ window.CompanionWorkbench = (() => {
           }
           state.status = fresh;
           state.container = buildContainer(fresh);
+          normalizeWordLists(fresh.settings, state.container.fields);
           state.draft = draftFrom(fresh.settings, fresh);
           state.base = {...fresh.settings};
           state.stale = false;
@@ -2566,6 +2588,9 @@ window.CompanionWorkbench = (() => {
   }
 
   return {create, errors, LAYER_LABELS, contract, valid, toDisplay, fromDisplay, choiceText,
+    /* 词条解析也对外：配置覆盖自检要拿它验证注册默认值读得懂，避免审计脚本
+       再写一份解析规则、和页面一起写错。 */
+    parseStringList,
     /* 有草稿没保存的实例清单（含分区标题，用于提示语）。 */
     dirtyEditors: () => [...LIVE].flatMap(entry => {
       try {

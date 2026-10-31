@@ -15,10 +15,16 @@
 import importlib
 import json
 import pathlib
+import re
 import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+# 专用编辑器的控件声明写在页面自己的 inputs 映射里。这里只匹配字面量
+# `name: "word-list"`；工作台内核里的 `item.input === "word-list"` 判断不在
+# 这批页面里，不会误收。
+WORD_LIST_DECLARATION = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*:\s*\"word-list\"")
 
 # 分区 → 注册表所在模块。**加分区时这里也要加**，否则该组完全不参与自检。
 MODULES = {
@@ -145,7 +151,7 @@ process.stdout.write(JSON.stringify(c.window.CompanionConfigEditors.spec));
 
 
 def backend_fields(module_name):
-    """该模块声明的字段短名，按 field_id 去掉 group_id 前缀切。
+    """该模块声明的字段短名与注册默认值，按 field_id 去掉 group_id 前缀切。
 
     模块名可以带 ``:函数名``。一个模块里可能有多个字段提供函数（技能组就是从
     ``growth.configuration`` 拆出去的），而 ``configuration_fields()`` 只返回其中
@@ -166,9 +172,31 @@ def backend_fields(module_name):
         if isinstance(fields, tuple) and fields and not hasattr(fields[0], "field_id"):
             fields = fields[0]
     if not fields:
-        return None, set()
+        return None, set(), {}
     group = fields[0].group_id
-    return group, {field.field_id.removeprefix(group + ".") for field in fields}
+    by_name = {field.field_id.removeprefix(group + "."): field for field in fields}
+    return group, set(by_name), {name: field.default for name, field in by_name.items()}
+
+
+def word_list_parsed(values):
+    """让页面自己的解析器判断注册默认值能读成几个词条。
+
+    这里不重写一遍解析规则：回归要守的是「编辑器真的读得懂」，而不是审计脚本
+    和前端各写一份、一起写错还互相点头。返回每项的解析结果（列表或 None）。
+    """
+    script = """
+const fs=require('fs'),vm=require('vm');
+const root='pages/陪伴小屋/';
+const c=vm.createContext({window:{},document:{},sessionStorage:{},Intl,Date,Object});
+vm.runInContext(fs.readFileSync(root+'workbench-page.js','utf8'),c);
+const values=JSON.parse(process.argv[1]);
+process.stdout.write(JSON.stringify(values.map(value => c.window.CompanionWorkbench.parseStringList(value))));
+"""
+    result = subprocess.run(["node", "-e", script, json.dumps(values, ensure_ascii=False)],
+                            cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
+    if result.returncode != 0:
+        raise SystemExit("前端 parseStringList 加载失败:\n" + result.stderr)
+    return json.loads(result.stdout)
 
 
 def main():
@@ -188,11 +216,11 @@ def main():
     # 不重复计数（否则总数会比注册表多出这几项）。
     asserted_groups = set()
     for module_name in MODULES.values():
-        group, short = backend_fields(module_name)
+        group, short, _ = backend_fields(module_name)
         if short:
             asserted_groups.add(group)
     for kind, entry in DEDICATED_EDITORS.items():
-        group, short = backend_fields(entry["module"])
+        group, short, _ = backend_fields(entry["module"])
         if not short:
             problems.append(f"分区 {kind}: {entry['module']} 没声明字段")
             continue
@@ -211,7 +239,7 @@ def main():
             problems.append(f"分区 {kind} ({group}): 承接页面里找不到任何字段名，控件可能已被删掉")
 
     for kind, module_name in MODULES.items():
-        group, short = backend_fields(module_name)
+        group, short, _ = backend_fields(module_name)
         if not short:
             problems.append(f"分区 {kind}: {module_name} 没声明字段")
             continue
@@ -243,6 +271,39 @@ def main():
         if sections:
             for name in sorted(short - sections - excused):
                 problems.append(f"{kind} ({group}): 字段 {name} 没落进任何段落（sections 缺）")
+
+    # 词条编辑器（word-list）的注册默认值必须读得懂。后端允许换行/逗号/分号
+    # 分隔的旧写法，前端若只认 JSON 数组，默认值会被读成 0 个词条、valid=false，
+    # 整张卡连保存都会被拦（conversation.presentation 的
+    # file_understanding_format_groups 就是这样漏掉的）。判断用页面自己的
+    # parseStringList，不在这里重写解析规则。
+    editors = [(kind, module_name, None) for kind, module_name in MODULES.items()]
+    editors += [(kind, entry["module"], entry) for kind, entry in DEDICATED_EDITORS.items()]
+    values, origins, seen_groups = [], [], set()
+    for kind, module_name, entry in editors:
+        group, _, defaults = backend_fields(module_name)
+        if group in seen_groups:
+            continue
+        seen_groups.add(group)
+        if kind in spec:
+            names = [name for name, control in (spec[kind].get("inputs") or {}).items()
+                     if control == "word-list"]
+        else:
+            pages = (entry or {}).get("pages", ())
+            sources = [(ROOT / page).read_text(encoding="utf-8") for page in pages
+                       if (ROOT / page).is_file()]
+            names = sorted(set(WORD_LIST_DECLARATION.findall("\n".join(sources))))
+        for name in names:
+            value = defaults.get(name)
+            if not isinstance(value, str) or not value:
+                continue
+            values.append(value)
+            origins.append(f"{group}.{name}")
+    if values:
+        for origin, words in zip(origins, word_list_parsed(values)):
+            if words is None:
+                problems.append(f"{origin}: word-list 默认值编辑器解析不了"
+                                "（会显示 0 个词条并拦住整张卡保存）")
 
     if problems:
         print(f"发现 {len(problems)} 处覆盖缺口：")
