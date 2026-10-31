@@ -34,6 +34,15 @@ window.CompanionNativeExtensionPanel = (() => {
   const secret = name => /token|secret|password|cookie|api_key|access_key|sessdata|auth_code/i.test(name);
   const keyOf = path => JSON.stringify(path);
   const at = (value, path) => path.reduce((item, key) => item?.[key], value);
+  /* settings-schema.json 用 condition 描述字段可见性，形如
+     {"enabled": true} 或 {"enabled": true, "amap_reverse_geocode_enabled": true}。
+     只用到了「同级字段严格等于期望值」这一种结构，所以这里按 AND 求值；
+     没有 condition 或值缺失时，前者视为可见、后者视为不满足。 */
+  function conditionMet(condition, values) {
+    if (condition == null) return true;
+    if (typeof condition !== "object" || Array.isArray(condition)) return false;
+    return Object.entries(condition).every(([key, expected]) => values?.[key] === expected);
+  }
   function put(value, path, item) {
     let target = value;
     path.forEach((key, index) => {
@@ -163,10 +172,13 @@ window.CompanionNativeExtensionPanel = (() => {
         this.root.innerHTML = `<div class="native-extension-empty"><strong>暂时读取不到设置</strong><p role="status">${escape(errorText(error))}</p><button class="button small" type="button" data-native-reload>重新读取</button></div>`;
       }
     }
-    field(key, field, value, path, parent) {
+    field(key, field, value, path, parent, scope = this.draft) {
+      /* condition 不满足的字段不渲染：值仍留在 draft 里（collect 从 draft 复制），
+         用户为「暂时关掉开关」而填过的令牌、地址不会被保存时清空。 */
+      if (!conditionMet(field.condition, scope)) return "";
       const title = label(field, key), kind = field.type, hint = field.hint || "";
       if (kind === "object") return `<fieldset class="native-extension-nested"><legend>${escape(title)}</legend>${hint ? `<p class="native-extension-hint">${escape(hint)}</p>` : ""}${Object.entries(field.items || {}).map(([child, descriptor]) =>
-        this.field(child, descriptor, value?.[child], [...path, child], parent)).join("")}</fieldset>`;
+        this.field(child, descriptor, value?.[child], [...path, child], parent, value)).join("")}</fieldset>`;
       if (kind === "template_list") {
         const templateNames = Object.keys(field.templates || {}), rows = Array.isArray(value) ? value : [];
         const templateSelector = templateNames.length > 1 ? `<select aria-label="新增条目类型" data-native-template-kind="${escape(keyOf(path))}">${templateNames.map(name => `<option value="${escape(name)}">${escape(field.templates[name].name || name)}</option>`).join("")}</select>` : "";
@@ -174,7 +186,7 @@ window.CompanionNativeExtensionPanel = (() => {
           const templateName = field.templates?.[row.__template_key] ? row.__template_key : templateNames[0];
           const template = field.templates?.[templateName] || {items:{}};
           return `<section class="native-extension-template"><header><strong>${escape(row.name || template.name || "条目")} <span>${index + 1}</span></strong><button class="button small" type="button" data-native-remove="${escape(keyOf([...path, index]))}" aria-label="移除第 ${index + 1} 个${escape(title)}">移除</button></header>${Object.entries(template.items || {}).map(([child, descriptor]) =>
-            this.field(child, descriptor, row[child] ?? descriptor.default, [...path, index, child], parent)).join("")}</section>`;
+            this.field(child, descriptor, row[child] ?? descriptor.default, [...path, index, child], parent, row)).join("")}</section>`;
         }).join("") || `<p class="native-extension-hint">还没有条目，添加后即可逐项配置。</p>`}</div><div class="native-extension-template-actions">${templateSelector}<button class="button small" type="button" data-native-add="${escape(keyOf(path))}">添加${escape(title)}</button></div></fieldset>`;
       }
       const index = this.fields.length, id = `native-${this.name}-${this.instance}-${index}`;
@@ -204,11 +216,12 @@ window.CompanionNativeExtensionPanel = (() => {
       if (!this.groups.some(group => group.id === this.group)) this.group = this.groups[0]?.id || "";
       const controls = this.groups.map(group => {
         const content = group.fields.map(([key, field]) => {
+          if (field.type === "object" && !conditionMet(field.condition, this.draft)) return "";
           if (field.type === "object" && this.onlyGroup === "mobile" && group.id === "mobile") {
             return this.mobileConfiguration(key, field, this.draft[key], group.id);
           }
           return field.type === "object"
-            ? Object.entries(field.items || {}).map(([child, descriptor]) => this.field(child, descriptor, this.draft[key]?.[child], [key, child], group.id)).join("")
+            ? Object.entries(field.items || {}).map(([child, descriptor]) => this.field(child, descriptor, this.draft[key]?.[child], [key, child], group.id, this.draft[key])).join("")
             : this.field(key, field, this.draft[key], [key], group.id);
         }).join("");
         return `<section class="native-extension-group" data-native-group-panel="${escape(group.id)}" ${group.id !== this.group ? "hidden" : ""}><h3>${escape(group.title)}</h3>${group.hint ? `<p class="native-extension-hint">${escape(group.hint)}</p>` : ""}${content}</section>`;
@@ -237,7 +250,9 @@ window.CompanionNativeExtensionPanel = (() => {
       return `<div class="mobile-config-sections">${groups.map(group => {
         const open = this.mobileOpen.has(group.id);
         const body = group.fields.map(([child, descriptor]) =>
-          this.field(child, descriptor, value?.[child], [key, child], parent)).join("");
+          this.field(child, descriptor, value?.[child], [key, child], parent, value)).join("");
+        /* 整组字段都被 condition 隐藏时连折叠壳一起收起来，免得留下空分组。 */
+        if (!body) return "";
         return `<details class="mobile-config-section" data-mobile-config-section="${escape(group.id)}" ${open ? "open" : ""}>`
           + `<summary><span><strong>${escape(group.title)}</strong><small>${escape(group.summary)}</small></span>`
           + `<span class="mobile-config-chevron" aria-hidden="true"></span></summary>`
@@ -671,5 +686,5 @@ window.CompanionNativeExtensionPanel = (() => {
     for (const panel of sessions.values()) panel.stop();
     sessions.clear();
   }
-  return {mount, unmount, prune, refreshStatus};
+  return {mount, unmount, prune, refreshStatus, conditionMet};
 })();
