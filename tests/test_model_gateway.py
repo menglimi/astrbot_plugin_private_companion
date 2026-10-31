@@ -100,6 +100,27 @@ class ModelFixture(ExecutionFixture):
 
 
 class ModelGatewayTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_captured_provider_overrides_and_independent_checks_keep_separate_rounds(self):
+        ceiling = Amount(100_000, 1_000_000)
+        self.ledger = BudgetLedger(self.runtime, BudgetPolicy(ceiling, ceiling, ceiling, ceiling, ceiling))
+        self.gateway = LocalModelGateway(self.router, self.ledger, self.tasks)
+        run = self.model_run(kind="fixture.background")
+        request = self.request()
+        session = self.gateway.open_session(run, request, independent_providers=("fallback", ""))
+
+        first = await session.generate(session.plan.envelope.original)
+        second = await session.generate(session.plan.envelope.original)
+
+        self.assertEqual([name for name, _ in self.called], ["fallback", "primary"])
+        self.assertTrue(first.draft)
+        self.assertTrue(second.draft)
+        rounds = self.runtime.read_all("SELECT round_no FROM model_rounds WHERE task_id=? ORDER BY round_no",
+                                       (run.task.task_id,))
+        self.assertEqual([row["round_no"] for row in rounds], [0, 1])
+        with self.assertRaises(TaskError) as error:
+            self.gateway.open_session(run, request)
+        self.assertEqual(error.exception.code, "model_request_already_started")
+
     async def test_proactive_prompt_archive_keeps_only_the_latest_ten_model_wires(self):
         ceiling = Amount(100_000, 1_000_000)
         self.ledger = BudgetLedger(self.runtime, BudgetPolicy(ceiling, ceiling, ceiling, ceiling, ceiling))

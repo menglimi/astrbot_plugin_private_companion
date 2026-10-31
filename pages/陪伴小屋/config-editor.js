@@ -343,7 +343,10 @@ window.CompanionConfigEditors = (() => {
       },
       helps: {
         enable_group_nsfw_private_fallback: "这是审核总开关：关闭时跳过审核并按原流程发送群图；开启后只有判定安全的图片才会留在群内。明确判定不适合群聊时，会移除群内图片，并在请求者有已授权私聊通道时尝试私聊投递。",
-        group_nsfw_image_review_mode: "选择具体的审核模型扩展后才会真正调用。",
+        group_nsfw_image_review_mode: "单模型使用下方审核模型；双模型复核需要两份有效结论，第二审核模型留空时无法判定安全。",
+        review_provider: "留空跟随图片审核任务路由；指定时使用所选视觉模型。旧版 astrbot_first 等策略名不是模型 ID，请重新选择。",
+        review_dual_provider: "双模型复核时使用；请选择另一视觉模型。",
+        group_nsfw_image_review_timeout_seconds: "每个审核模型的最长等待时间；双模型分别计时。任务模型档案中设置的更短超时仍会生效。",
         group_nsfw_image_review_max_dimension: "0 表示按原尺寸送审。",
         group_nsfw_image_review_failure_action: "处理超时、模型不可用或无法判定：私聊选项会保留群聊文字，并在请求者私聊已授权时尝试投递原图；仅文字选项不会私聊投递。明确判定不适合群聊时的私聊回退不受此项影响。",
         group_nsfw_image_review_custom_prompt: "留空使用内置提示词；只补充判定尺度，不能放宽既有边界。",

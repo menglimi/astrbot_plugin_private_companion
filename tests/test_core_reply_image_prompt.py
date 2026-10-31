@@ -216,8 +216,12 @@ class CoreReplyImagePromptTests(unittest.IsolatedAsyncioTestCase):
         description, parameters = core_image_tool_contract("image.edit", "", {
             "properties": {"reference_ids": {"description": "已保存参考素材 ID"}},
         }, reference_limit=1)
-        self.assertIn("最多接收 1 张参考图", description)
-        self.assertIn("优先 identity", parameters["properties"]["reference_ids"]["description"])
+        second_description, second_parameters = core_image_tool_contract("image.edit", "", {
+            "properties": {"reference_ids": {"description": "已保存参考素材 ID"}},
+        }, reference_limit=4)
+        self.assertNotIn("最多接收", description)
+        self.assertEqual(description, second_description)
+        self.assertEqual(parameters, second_parameters)
 
     async def test_reference_changes_only_update_temporary_user_context(self):
         self.inject()

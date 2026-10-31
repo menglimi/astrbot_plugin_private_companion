@@ -100,7 +100,7 @@ class LocalModelGateway:
         return replace(request, role_instruction=reference, role_guard_instruction=guard)
 
     def open_session(self, run: TaskRun, request: PromptRequest, *, tools: tuple[ToolSpec, ...] = (),
-                     tool_filters: tuple[dict, ...] = ()):
+                     tool_filters: tuple[dict, ...] = (), independent_providers=None):
         """Open the one model session and decide this round's effective tools.
 
         This is the **single** authority for the tool-capability gate.  Callers
@@ -116,12 +116,18 @@ class LocalModelGateway:
             raise ValueError("gateway must execute against its original supervisor")
         if len(tools) > MAX_TOOL_CATALOG or len({tool.action for tool in tools}) != len(tools):
             raise ValueError("tool registration requires a bounded unique catalog")
+        if independent_providers is not None and (
+                type(independent_providers) is not tuple or not 1 <= len(independent_providers) <= 2
+                or any(type(value) is not str for value in independent_providers) or tools):
+            raise ValueError("independent checks require one or two captured providers and no tools")
         with self.runtime.transaction() as connection:
             run.validate()
             if connection.execute("SELECT 1 FROM model_requests WHERE task_id = ?", (run.task.task_id,)).fetchone():
                 raise TaskError("model_request_already_started", "inspect the original model calls instead of regenerating")
             request = self._task_role_request(run, request)
-            plan = self.router.resolve(run, request)
+            plans = (tuple(self.router.resolve(run, request, provider_id=value or None)
+                           for value in independent_providers) if independent_providers is not None else ())
+            plan = plans[0] if plans else self.router.resolve(run, request)
             if tools and any("tools" not in provider.capabilities for provider in plan.providers):
                 # 与宿主同语义（tool_loop_agent_runner：``modalities`` 不含
                 # ``tool_use`` 时只清空本轮 tools，不判整轮失败）。这里丢弃目录并
@@ -140,9 +146,12 @@ class LocalModelGateway:
                                           "tool_actions": [tool.action for tool in tools],
                                           "tool_filters": list(tool_filters[:128])})
             self.router.adopt(run, plan)
+            if plans:
+                plan = replace(plan, audit={**plan.audit,
+                    "independent_checks": [item.audit for item in plans]})
             connection.execute("INSERT INTO model_requests VALUES (?, ?, ?, ?)",
                                (run.task.task_id, digest(request), encode(plan.audit), stamp(self.tasks.now())))
-        return ModelSession(self, run, plan, tools)
+        return ModelSession(self, run, plan, tools, independent_plans=plans)
 
     async def _generate(self, run, plan, envelope, round_no, on_reply_prefix=None, reply_prefix_ready=None):
         def before_dispatch():
@@ -373,7 +382,7 @@ class LocalModelGateway:
                 LEFT JOIN model_call_diagnostics d USING(call_id)
                 WHERE c.task_id = ? ORDER BY c.position""", (task_id,))
             return {"state": "observed", "transport": audit["transport"], "plan": audit,
-                    "calls": [{"position": row["position"], "round": row["position"] // 2,
+                    "calls": [{"call_id": row["call_id"], "position": row["position"], "round": row["position"] // 2,
                                "provider_position": row["position"] % 2, "state": row["state"],
                                "provider": json.loads(row["provider_json"]),
                                "reserved_tokens": row["reserved_tokens"], "reserved_cost_microusd": row["reserved_cost"],
@@ -394,10 +403,11 @@ class LocalModelGateway:
 class ModelSession:
     """One in-memory continuation controller; a restart cannot reopen its plan."""
 
-    def __init__(self, gateway, run, plan, tools):
+    def __init__(self, gateway, run, plan, tools, *, independent_plans=()):
         self.gateway = gateway
         self.run = run
         self.plan = plan
+        self.independent_plans = independent_plans
         self.tools = tools
         self.round_no = 0
         self.history = ()
@@ -415,6 +425,8 @@ class ModelSession:
         if self.closed or self.busy or self.round_no > 8:
             raise TaskError("model_session_closed", "original model session cannot generate again")
         original = self.plan.envelope.original
+        if self.independent_plans and (request != original or history):
+            self._context_mismatch("independent_check_input")
         reasons = [name for name, pair in (("event", (request.event, original.event)),
                 ("role_binding", (request.role_binding, original.role_binding)),
                 ("audios", (request.audios, original.audios)), ("videos", (request.videos, original.videos)),
@@ -471,6 +483,13 @@ class ModelSession:
             self.pending = completion.tool_calls
             self.round_no += 1
             self.closed = completion.draft is not None or completion.captured_output is not None
+            if self.independent_plans:
+                # These are separate, predeclared classifications of the same
+                # sealed input. A failed or unknown call closes the session in
+                # the exception path; it can never be replayed as another check.
+                self.closed = completion.draft is None or self.round_no >= len(self.independent_plans)
+                if not self.closed:
+                    self.plan = self.independent_plans[self.round_no]
             return completion
         except BaseException:
             self.closed = True

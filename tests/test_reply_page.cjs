@@ -26,7 +26,7 @@ const DEFAULTS = {
   group_wakeup_enabled: true, group_wakeup_direct_words: '[]',
   group_wakeup_context_words: '[]', group_wakeup_interest_keywords: '[]',
   group_wakeup_question_enabled: false, group_wakeup_bot_name: '',
-  group_wakeup_primary_member_ids: '[]', group_wakeup_owner_direct_words: '[]',
+  group_wakeup_primary_member_ids: '[]', group_wakeup_owner_direct_words: '[]', group_tool_profile: 'full',
   group_wakeup_interest_probability: 0.18, group_wakeup_question_threshold: 65,
   group_wakeup_cold_group_enabled: false, group_wakeup_cold_group_threshold: 65,
   group_wakeup_cold_group_idle_minutes: 25, group_wakeup_cooldown_seconds: 90,
@@ -383,6 +383,7 @@ test('the card is split into labelled groups but keeps one save', async () => {
   assert.equal(instance.state.container.fields.forward_message_adaptation_enabled, undefined);
   /* 段落只是阅读顺序：仍然只有一个 edit_token、一次保存。 */
   assert.equal(instance.state.container.fields.enabled.editable.includes('window'), true);
+  assert.equal(instance.state.container.fields.group_tool_profile, undefined);
   assert.ok(plain(instance.state.container.groups.find(group => group.id === 'segment').fields)
     .includes('part_gap_mode'), 'message spacing is part of the segmentation workspace');
   assert.equal(harnessed.page.selectSection('timing'), true, 'the old timing jump resolves to segmentation');
@@ -658,26 +659,25 @@ test('replacement pairs and component order are edited without JSON controls', a
 });
 
 test('reply expression, perception, and decision settings partition every field exactly once', async () => {
-  const harnessed = await loaded(harness());
-  const expression = plain(live(harnessed).state.container.groups.flatMap(group => group.fields));
-  harnessed.page.mount(harnessed.root, {view: 'decision'});
-  await drains();
-  harnessed.requests[1].resolve(status());
-  await drains();
-  const decision = plain(live(harnessed).state.container.groups.flatMap(group => group.fields));
-  assert.deepEqual(plain(live(harnessed).state.container.groups.map(group => group.id)),
+  const expressionHarness = await loaded(harness());
+  const expression = plain(live(expressionHarness).state.container.groups.flatMap(group => group.fields));
+  const decisionHarness = await loaded(harness(), 'decision');
+  const decisionState = live(decisionHarness).state.container;
+  const decision = plain(decisionState.groups.flatMap(group => group.fields));
+  assert.ok(decision.includes('group_tool_profile'));
+  assert.deepEqual(plain(decisionState.fields.group_tool_profile.choices),
+    {full: '完整工具', standard: '常用工具', lean: '精简工具'});
+  assert.deepEqual(plain(decisionState.groups.map(group => group.id)),
     ['wakeup_direct', 'wakeup_interest', 'wakeup_members', 'wakeup_cold_group', 'wakeup_fatigue',
       'group_continuation', 'private_debounce', 'silence_policy', 'group_air_guard', 'private_closing', 'group_content_safety']);
-  harnessed.page.mount(harnessed.root, {view: 'perception'});
-  await drains();
-  harnessed.requests[2].resolve(status());
-  await drains();
-  const perception = plain(live(harnessed).state.container.groups.flatMap(group => group.fields));
+  const perceptionHarness = await loaded(harness(), 'perception');
+  const perceptionState = live(perceptionHarness).state.container;
+  const perception = plain(perceptionState.groups.flatMap(group => group.fields));
   const exposed = [...expression, ...perception, ...decision];
   assert.equal(exposed.length, new Set(exposed).size, 'a setting must not be duplicated across modules');
   assert.deepEqual([...exposed].sort(), Object.keys(DEFAULTS)
     .filter(name => name !== 'rules_enabled' && name !== 'file_understanding_formats').sort());
-  assert.deepEqual(plain(live(harnessed).state.container.groups.map(group => group.id)),
+  assert.deepEqual(plain(perceptionState.groups.map(group => group.id)),
     ['media_permissions', 'context_image', 'image_narration', 'video_narration', 'file_understanding', 'forwards']);
   assert.deepEqual(perception, ['image_understanding_private_enabled', 'image_understanding_group_enabled',
     'video_understanding_private_enabled', 'video_understanding_group_enabled',
@@ -693,10 +693,10 @@ test('reply expression, perception, and decision settings partition every field 
     'file_understanding_format_groups', 'file_understanding_max_size_mb',
     'file_understanding_max_chars', 'file_understanding_timeout_seconds', 'file_understanding_prompt',
     'forward_message_adaptation_enabled']);
-  assert.equal(harnessed.page.selectSection('segment'), false);
-  assert.equal(harnessed.page.selectSection('context_image'), true);
-  assert.equal(harnessed.page.selectSection('forwards'), true);
-  harnessed.page.unmount();
+  assert.equal(perceptionHarness.page.selectSection('segment'), false);
+  assert.equal(perceptionHarness.page.selectSection('context_image'), true);
+  assert.equal(perceptionHarness.page.selectSection('forwards'), true);
+  perceptionHarness.page.unmount();
 });
 
 test('decision view edits the same reply route and omits expression-only tools', async () => {
