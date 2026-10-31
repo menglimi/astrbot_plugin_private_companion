@@ -51,7 +51,7 @@ from companion_v2.foundation.refs import AudienceRef, ScopeKind, ScopeRef
 from companion_v2.identity_policy.models import AuthenticatedHostPrincipal, AuthorizationTier
 from companion_v2.identity_policy.personas import ConversationRoute
 from companion_v2.identity_policy.personas import RuntimeIdentity
-from companion_v2.model_gateway.models import ModelTaskProfile
+from companion_v2.model_gateway.models import MAX_MODEL_OUTPUT_TOKENS, ModelTaskProfile
 from companion_v2.model_gateway.routing import configuration_fields
 from companion_v2.memory.reflection import reflection_profile
 from companion_v2.proactive.service import contact_profile, persona_judge_profile
@@ -438,13 +438,15 @@ class MultiHostSession:
             binding=ProviderBinding("model.text", common.provider_id, native_types.version, provider_fingerprint),
             provider_id=common.provider_id, version=native_types.version, provider_type=native_types.provider_types,
             function_tool_type=native_types.function_tool, tool_set_type=native_types.tool_set,
-            tariff=common.tariff, maximum_output_tokens=common.max_output_tokens,
+            # Provider ceiling, not the default budget: the budgets below travel with
+            # each task profile, so sharing one number caps every task at the default.
+            tariff=common.tariff, maximum_output_tokens=MAX_MODEL_OUTPUT_TOKENS,
             maximum_input_estimate=common.maximum_input_estimate, output_parameter=common.output_parameter,
             streaming=common.streaming)
         self.model._current()
         self.models = (self.model,) + assemble_providers(native_context, bridge=self.bridge,
             native_types=native_types, primary_id=common.provider_id, additional=common.additional_providers,
-            defaults=TextProviderSettings(common.provider_id, common.tariff, common.max_output_tokens,
+            defaults=TextProviderSettings(common.provider_id, common.tariff, MAX_MODEL_OUTPUT_TOKENS,
                 common.maximum_input_estimate, common.output_parameter, common.streaming))
         fallback_provider_id, replacement_rules = loaded_routing(common.fallback_provider_id,
             common.replacement_rules, (model.binding.provider for model in self.models))

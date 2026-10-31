@@ -315,6 +315,7 @@
       },
       "max_output_tokens": {
         "description": "最大输出 Token",
+        "hint": "这是各任务的默认输出预算，不是所选 Provider 的能力上限：陪伴小屋的任务模型编辑器可按任务改到 Provider 允许的上限（未单独声明上限的 Provider 取 65536）。思考型模型把思考也算进这份预算，正文常在几百字处被截断，按任务调大即可。",
         "type": "int",
         "default": 2048
       },

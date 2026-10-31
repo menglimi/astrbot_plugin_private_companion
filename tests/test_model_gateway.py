@@ -21,7 +21,7 @@ from companion_v2.identity_policy.personas import PersonaBinding, PersonaSelecto
 from companion_v2.model_gateway.budget import BudgetLedger
 from companion_v2.model_gateway.failures import ModelFailure
 from companion_v2.model_gateway.models import (Amount, BudgetPolicy, CacheSignature, CapturedModelOutput,
-    LocalProvider, ModelTaskProfile, ProviderResponse, is_released)
+    LocalProvider, MAX_MODEL_OUTPUT_TOKENS, ModelTaskProfile, ProviderResponse, is_released)
 from companion_v2.model_gateway.perception import capability_instruction
 from companion_v2.model_gateway.routing import ModelRouter, configuration_fields
 from companion_v2.model_gateway.service import LocalModelGateway
@@ -633,6 +633,52 @@ class ModelGatewayTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TaskError) as error:
             await self.gateway.generate(run, self.request())
         self.assertEqual(error.exception.code, "consumer_generation_conflict")
+        self.assertEqual(self.called, [])
+
+
+class ProviderCeilingTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
+    """A task may raise its output limit up to what its Provider accepts.
+
+    The Provider ceiling used to be a copy of the global default budget, so a task
+    could never ask for more than that default and the refusal blamed the selected
+    Provider. These cases keep the two ideas apart: raise the task above the default
+    budget and the request carries it, up to the product ceiling; exceed a Provider's
+    own declared ceiling and it is still refused.
+    """
+
+    def gateway_at(self, ceiling, *, reserve_tokens):
+        providers = tuple(replace(provider, maximum_output_tokens=ceiling) for provider in self.providers)
+        self.router = ModelRouter(self.configuration, self.profiles, providers)
+        self.router.start(expected_generation=1)
+        # A larger ceiling needs a reservation that covers it; the budget itself is
+        # not the subject of these cases.
+        self.estimate = Amount(reserve_tokens, 100)
+        roomy = BudgetPolicy(*(Amount(1_000_000, 1_000_000) for _ in range(4)),
+                             background=Amount(1_000_000, 1_000_000))
+        return LocalModelGateway(self.router, BudgetLedger(self.runtime, roomy), self.tasks)
+
+    async def test_a_task_limit_above_the_default_budget_reaches_the_provider(self):
+        self.patch_model(max_output_tokens=4096)
+
+        await self.gateway_at(MAX_MODEL_OUTPUT_TOKENS, reserve_tokens=5000).generate(self.model_run(), self.request())
+
+        self.assertEqual(self.called[0][1].max_output_tokens, 4096)
+
+    async def test_a_task_limit_can_reach_the_product_ceiling(self):
+        self.patch_model(max_output_tokens=MAX_MODEL_OUTPUT_TOKENS)
+
+        await self.gateway_at(MAX_MODEL_OUTPUT_TOKENS, reserve_tokens=MAX_MODEL_OUTPUT_TOKENS).generate(
+            self.model_run(), self.request())
+
+        self.assertEqual(self.called[0][1].max_output_tokens, MAX_MODEL_OUTPUT_TOKENS)
+
+    async def test_a_declared_provider_ceiling_still_refuses_a_larger_task_limit(self):
+        self.patch_model(max_output_tokens=4096)
+
+        with self.assertRaises(TaskError) as error:
+            await self.gateway_at(1024, reserve_tokens=5000).generate(self.model_run(), self.request())
+
+        self.assertEqual(error.exception.code, "model_output_limit")
         self.assertEqual(self.called, [])
 
 
