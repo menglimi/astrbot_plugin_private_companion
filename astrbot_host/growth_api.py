@@ -84,6 +84,13 @@ class GrowthWebAPI:
                     if not settings.is_success:
                         return outcome_response(settings)
                     result.unwrap()["access"] = settings.unwrap()
+                if result.is_success and method == "list" and self_review_request:
+                    service = getattr(session.application, "self_review", None)
+                    if service is not None:
+                        try:
+                            result.unwrap()["status"] = service.status(session.profile.target)
+                        except (TaskError, ValueError, TypeError):
+                            pass
                 response = outcome_response(result)
                 if result.is_success and method == "list" and not self_review_request:
                     response["data"].update(operator_name=username,

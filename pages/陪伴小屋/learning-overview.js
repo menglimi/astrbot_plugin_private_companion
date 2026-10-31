@@ -76,6 +76,7 @@ window.CompanionLearningOverviewPage = (() => {
         adopted: (value(4)?.items||[]).length,
         rules: Number.isInteger(settings?.rules_per_turn) ? settings.rules_per_turn : null,
         learning: value(5)?.learning || null,
+        review: value(2)?.status || null,
       };
     });
     const selection=semantic?.global===true?{global:true}:semantic?.target&&semantic?.role
@@ -99,6 +100,7 @@ window.CompanionLearningOverviewPage = (() => {
     data.counts.rules = configured?.rules ?? null;
     data.counts.scan = semanticResult.scan;
     data.learning = valid.map(result=>result.learning).find(item=>item&&typeof item==="object"&&item.state)||null;
+    data.review = valid.map(result=>result.review).find(item=>item&&typeof item==="object"&&item.state)||null;
     data.loading=false;
     render();
   }
@@ -134,6 +136,25 @@ window.CompanionLearningOverviewPage = (() => {
     return `表达学习：${e(label)}${e(counts)}${e(failure)}${e(last)}`;
   }
 
+  const REVIEW_STATES = {
+    not_run: "还没运行过",
+    failed: "上次失败",
+    blocked: "来源校验未通过",
+    no_reviewable_window: "暂无可复盘窗口",
+    already_attempted: "该窗口已复盘过",
+    succeeded: "最近一次已产出",
+    completed: "最近一次已产出",
+  };
+  function reviewLine(item) {
+    if (!item || typeof item !== "object" || !item.state) return "";
+    const label = REVIEW_STATES[item.state] || item.state;
+    const failure = item.code ? ` · ${item.code}` : "";
+    const last = item.last_run_at ? ` · 上次 ${when(item.last_run_at)}` : "";
+    const next = item.state === "failed" && item.next_check_at
+      ? ` · 下次 ${when(item.next_check_at)}` : "";
+    return `每日复盘：${e(label)}${e(failure)}${e(last)}${e(next)}`;
+  }
+
   function growthCard(item) {
     const state=STAGES.find(([key])=>key===item.state);
     const title=item.unavailable_reason?"来源已不可读取":item.title||"未命名记录";
@@ -167,6 +188,7 @@ window.CompanionLearningOverviewPage = (() => {
       <button type="button" class="lh-refresh" data-lh-refresh aria-label="重新读取" title="重新读取" ${data.loading||data.writing?"disabled":""}><i data-lucide="refresh-cw"></i></button></div>
       ${data.notice?`<p class="lh-inline-status${data.error?" is-error":""}" role="status">${e(data.notice)}</p>`:""}
       ${data.learning?`<p class="lh-inline-status" role="status">${learningLine(data.learning)}</p>`:""}
+      ${data.review?`<p class="lh-inline-status" role="status">${reviewLine(data.review)}</p>`:""}
       <section class="lh-kpis" aria-label="学习数据">${cards.map(([label,value,detail,icon])=>`<article class="lh-kpi">
         <span class="lh-kpi-icon" aria-hidden="true"><i data-lucide="${icon}"></i></span><span class="lh-kpi-label">${label}</span>
         <strong>${e(value)}</strong><small>${label==="待裁决"?"进展 · 表达 · 指导":label==="培育中"?"技能与目标":label==="规则注入"?e(detail):label==="语义扫描"?"群词义整理间隔":""}</small></article>`).join("")}</section>
