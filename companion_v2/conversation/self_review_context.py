@@ -9,7 +9,7 @@ never a stable fact about anyone, and never overrides the current request.
 from datetime import datetime
 import json
 
-from companion_v2.execution.models import TaskError, digest, require, stamp
+from companion_v2.execution.models import TaskError, digest, stamp
 from companion_v2.foundation.refs import ScopeKind, SourceRef, SubjectKind
 
 from .foreground import ContextContribution, ContributionState
@@ -93,7 +93,9 @@ class ConversationSelfReviewContext:
             closed_at = datetime.fromisoformat(window["closed_at"])
         except (TypeError, ValueError):
             raise TaskError("self_review_context_changed", "stored guidance window is invalid") from None
-        require(self.catalog.resolve_handles(handles, opened_at, closed_at, context, at))
+        # resolve_handles either returns True or raises its own TaskError; it is
+        # not an Outcome, so it must not be unwrapped with require().
+        self.catalog.resolve_handles(handles, opened_at, closed_at, context, at)
         payload = json.dumps({"basis": "accepted_self_review_guidance", "kind": row["kind"],
             "observation": row["observation"], "next_action": row["next_action"],
             "expires_at": row["expires_at"]}, ensure_ascii=False, sort_keys=True,

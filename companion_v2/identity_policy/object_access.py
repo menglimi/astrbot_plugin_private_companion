@@ -59,6 +59,12 @@ DEFAULT_ACTIONS = (
     ActionDefinition("proactive.contact", ("proactive",), shareable=False),
     ActionDefinition("role.journal.write", ("role.journal",), shareable=False),
     ActionDefinition("role.growth.read", ("role.growth",), shareable=False),
+    # The scheduled daily review only reads the role's own recorded behaviour in
+    # the exact private window it is bound to, so that window's verified owner can
+    # run it without a per-window grant. The evidence catalog still rechecks the
+    # private scope and exact audience on every read, and no other window opens.
+    ActionDefinition("role.self_review.read", ("role.self_review",), shareable=False,
+                     private_owner_without_grant=True),
     # A verified private route can read its own expression samples and rules;
     # group tasks still require a grant for the exact speaker and group.
     ActionDefinition("role.expression.read", ("role.expression",), shareable=False,

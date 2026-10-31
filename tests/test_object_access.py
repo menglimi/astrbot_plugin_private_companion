@@ -8,7 +8,8 @@ import unittest
 
 from companion_v2.foundation.refs import ReferenceValidationError, ScopeKind, ScopeRef, SubjectKind, SubjectRef
 from companion_v2.identity_policy.models import AuthenticatedHostPrincipal, AuthorizationTier
-from companion_v2.identity_policy.object_access import ObjectAccessPolicy
+from companion_v2.identity_policy.object_access import DEFAULT_ACTIONS, ActionRegistry, ObjectAccessPolicy
+from companion_v2.identity_policy.personas import ConversationRoute, PersonaDirectory
 from companion_v2.identity_policy.repository import PersistentIdentityDirectory
 from companion_v2.storage.runtime import StorageRuntime
 
@@ -18,8 +19,14 @@ INSTALLATION = "object-access-installation"
 USER = SubjectRef(INSTALLATION, SubjectKind.HUMAN, "user-a")
 OTHER = SubjectRef(INSTALLATION, SubjectKind.HUMAN, "user-b")
 PRINCIPAL = AuthenticatedHostPrincipal(INSTALLATION, "host", "onebot", "account-a")
+OTHER_PRINCIPAL = AuthenticatedHostPrincipal(INSTALLATION, "host", "onebot", "account-b")
 SCOPE = ScopeRef(INSTALLATION, "onebot", ScopeKind.PRIVATE, "window-a")
 OTHER_SCOPE = ScopeRef(INSTALLATION, "onebot", ScopeKind.GROUP, "group-b")
+SELF_REVIEW_ACTION = "role.self_review.read"
+SELF_REVIEW_SCOPE = ScopeRef(INSTALLATION, "onebot", ScopeKind.PRIVATE, "user-a", "bot-a", "login-a",
+                             "conversation-a", "session-a")
+SELF_REVIEW_GROUP = ScopeRef(INSTALLATION, "onebot", ScopeKind.GROUP, "group-b", "bot-a", "login-a",
+                             "conversation-b", "session-b")
 
 
 class ObjectAccessTests(unittest.TestCase):
@@ -196,3 +203,75 @@ class ObjectAccessTests(unittest.TestCase):
         self.assertFalse(self.access().is_success)
         self.assertEqual(self.runtime.read_all("SELECT * FROM object_access_shares", ()), ())
         self.assertIsNone(self.runtime.read_one("SELECT * FROM access_objects WHERE object_key = 'memo:d'", ()))
+
+
+class SelfReviewAccessTests(unittest.TestCase):
+    """The daily review task action is a real, private-owner-only contract.
+
+    The supervisor's ``_authorize`` admits a task through
+    ``ObjectAccessPolicy.scope_access(..., allow_private_owner=True)``, so an
+    action missing from ``DEFAULT_ACTIONS`` fails every enqueue with
+    ``unknown_access_action`` however much evidence was collected first.
+    """
+
+    def setUp(self):
+        self.temporary = TemporaryDirectory(prefix="companion-v2-self-review-access-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name) / "v2-data"
+        self.runtime = StorageRuntime.open(data_root=self.root, installation_id=INSTALLATION)
+        self.addCleanup(self.runtime.close)
+        self.identity = PersistentIdentityDirectory(self.runtime)
+        self.policy = ObjectAccessPolicy(self.runtime)
+        self.personas = PersonaDirectory(self.runtime)
+        self.identity.bind(binding_id="self-review-owner", principal=PRINCIPAL, subject=USER,
+                           valid_from=NOW, expected_revision=self.identity.revision)
+        self.identity.bind(binding_id="self-review-other", principal=OTHER_PRINCIPAL, subject=OTHER,
+                           valid_from=NOW, expected_revision=self.identity.revision)
+        self.owner = self.identity.resolve_authenticated(PRINCIPAL, observed_at=NOW).unwrap()
+        self.other = self.identity.resolve_authenticated(OTHER_PRINCIPAL, observed_at=NOW).unwrap()
+        self.personas.register_route(ConversationRoute(SELF_REVIEW_SCOPE, user=USER), observed_at=NOW)
+        self.personas.register_route(ConversationRoute(SELF_REVIEW_GROUP, group_id="group-b"), observed_at=NOW)
+
+    def access(self, actor=None, *, scope=SELF_REVIEW_SCOPE, allow_private_owner=True):
+        return self.policy.scope_access(actor or self.owner, scope=scope, action=SELF_REVIEW_ACTION,
+                                        observed_at=NOW, allow_private_owner=allow_private_owner)
+
+    def tier(self, tier):
+        self.policy.set_tier(USER, tier, expected_revision=self.policy.revision, observed_at=NOW)
+
+    def test_self_review_read_is_registered_as_a_private_feature(self):
+        definition = ActionRegistry().get(SELF_REVIEW_ACTION)
+        self.assertIn(SELF_REVIEW_ACTION, {item.action for item in DEFAULT_ACTIONS})
+        self.assertIsNotNone(definition)
+        self.assertEqual(definition.domains, ("role.self_review",))
+        self.assertFalse(definition.core_only)
+        self.assertFalse(definition.shareable)
+        self.assertTrue(definition.private_owner_without_grant)
+        # Registering the read action must not invent any sibling authority.
+        self.assertIsNone(ActionRegistry().get("role.self_review.write"))
+
+    def test_the_private_owner_runs_the_review_without_a_grant_and_core_keeps_it(self):
+        # Default (STANDARD) identity: the verified private route owner enters by
+        # ownership alone; the same subject holds no capability grant at all.
+        self.assertFalse(self.identity.authorize(
+            self.owner, scope=SELF_REVIEW_SCOPE, capability=SELF_REVIEW_ACTION, observed_at=NOW).is_success)
+        self.assertTrue(self.access().is_success)
+        # Ownership is not a feature bypass: without the private-owner route the
+        # same default identity is still refused.
+        self.assertEqual(self.access(allow_private_owner=False).failure.code, "authorization_denied")
+        # A core installation member may always run it.
+        self.tier(AuthorizationTier.CORE)
+        self.assertTrue(self.access().is_success)
+
+    def test_an_unrelated_identity_or_a_group_window_is_still_denied(self):
+        # Another authenticated person cannot borrow this private window's review.
+        self.assertEqual(self.access(self.other).failure.code, "authorization_denied")
+        self.assertEqual(self.access(self.other, allow_private_owner=False).failure.code,
+                         "authorization_denied")
+        # A group route has no private owner, so a default identity cannot open it.
+        self.assertEqual(self.access(scope=SELF_REVIEW_GROUP).failure.code, "authorization_denied")
+        # Granting a different capability never opens this one.
+        self.identity.issue_grant(grant_id="self-review-unrelated", subject=USER, scope=SELF_REVIEW_SCOPE,
+                                  capability="role.growth.read", tier=AuthorizationTier.STANDARD,
+                                  valid_from=NOW, expected_revision=self.identity.revision)
+        self.assertEqual(self.access(allow_private_owner=False).failure.code, "authorization_denied")

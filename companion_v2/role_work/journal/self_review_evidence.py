@@ -21,13 +21,12 @@ from datetime import datetime, timedelta
 import json
 
 from companion_v2.execution.models import TaskContext, TaskError, digest, require, stamp
-from companion_v2.foundation.refs import ScopeKind, SourceRef, SubjectKind, VersionRef
+from companion_v2.foundation.refs import ScopeKind, SourceRef, SubjectKind
 from companion_v2.memory.activity_receipts import TABLES
 from companion_v2.storage.models import OperationState
 
 
 READ_ACTION = "role.self_review.read"
-REPLY_OWNER = "conversation.confirmed_reply"
 REPLY_LIMIT = 24
 RECEIPT_LIMIT = 8
 MAX_EVIDENCE = 24
@@ -103,25 +102,29 @@ class SelfReviewEvidenceCatalog:
         """Read the window once; every entry is rechecked against its original receipt."""
         self._authorize(context, at)
         opened_at = at - self.window
+        receipts = []
         with self.runtime.read_snapshot():
             self._owner().authorize(context, at)
-            evidence = []
-            for row in self._reply_rows(context, opened_at, at):
-                try:
-                    evidence.append(self._reply(context, row, at))
-                except TaskError:
-                    continue
+            replies = tuple(self._reply_rows(context, opened_at, at))
             for handle, stream, operation_id in self._receipt_references(context):
-                if len(evidence) >= MAX_EVIDENCE:
-                    break
                 try:
-                    evidence.append(self._receipt(context, handle, stream, operation_id, at))
+                    receipts.append(self._receipt(context, handle, stream, operation_id, at))
                 except TaskError:
                     continue
-            return ReviewWindow(opened_at, at, tuple(evidence[:MAX_EVIDENCE]))
+        # A confirmed reply is read back through the memory owner, which
+        # publishes the quote as a durable source before returning it. That
+        # write cannot run inside the read snapshot above, so replies are
+        # resolved after the snapshot closes; each one rechecks its own receipt.
+        evidence = []
+        for row in replies:
+            try:
+                evidence.append(self._reply(context, row, at))
+            except TaskError:
+                continue
+        return ReviewWindow(opened_at, at, tuple((evidence + receipts)[:MAX_EVIDENCE]))
 
     def _reply_rows(self, context, opened_at, at):
-        rows = self.runtime.read_all("""SELECT h.part_id, h.history_sequence, b.context_json
+        rows = self.runtime.read_all("""SELECT h.part_id, h.history_sequence, h.delivered_at, b.context_json
             FROM conversation_sent_history h
             JOIN conversation_parts p ON p.part_id = h.part_id
             JOIN conversation_batches b ON b.batch_id = h.batch_id
@@ -153,14 +156,15 @@ class SelfReviewEvidenceCatalog:
     def _original(row):
         return TaskContext.restore(json.loads(row["context_json"]))
 
-    def _confirmed_text(self, row, original, at):
+    def _confirmed_text(self, row, original):
         """Reuse the memory owner's own delivery proof instead of re-deriving it."""
         owner = getattr(self._owner(), "confirmed_reply_sources", None)
         if owner is None:
             raise TaskError("self_review_reply_owner_unavailable",
                             "the confirmed reply owner is not attached")
-        reference = SourceRef("sent:" + row["part_id"], REPLY_OWNER, original.scope,
-                              VersionRef(row["part_id"], 1), at)
+        # The owner stamps its reference at delivery time; building one from the
+        # review timestamp makes every receipt finally look like another reply.
+        reference = owner.reference(row)
         return owner.materialize(original, reference).payload
 
     def _reply(self, context, row, at):
@@ -170,7 +174,7 @@ class SelfReviewEvidenceCatalog:
             return ReviewEvidence(self.reply_handle(context, row["part_id"]), "reply",
                 _trim("角色在本会话经 AstrBot 发送返回的一段回复（未获平台送达确认）：" + item["text"]))
         original = self._original(row)
-        text = self._confirmed_text(row, original, at)
+        text = self._confirmed_text(row, original)
         return ReviewEvidence(self.reply_handle(context, row["part_id"]), "reply",
                               _trim("角色在本会话确认送达的一段回复：" + text))
 
@@ -227,19 +231,22 @@ class SelfReviewEvidenceCatalog:
         descriptions = {}
         with self.runtime.read_snapshot():
             self._owner().authorize(context, at)
-            for row in self._reply_rows(context, opened_at, closed_at):
-                handle = self.reply_handle(context, row["part_id"])
-                if handle not in unresolved:
-                    continue
-                item = self._reply(context, row, at)
-                descriptions[handle] = item.payload
-                unresolved.discard(handle)
+            replies = tuple(self._reply_rows(context, opened_at, closed_at))
             for handle, stream, operation_id in self._receipt_references(context):
                 if handle not in unresolved:
                     continue
                 item = self._receipt(context, handle, stream, operation_id, at)
                 descriptions[handle] = item.payload
                 unresolved.discard(handle)
+        # Confirmed replies publish their quote through the memory owner, so
+        # they are resolved after the read snapshot (see collect()).
+        for row in replies:
+            handle = self.reply_handle(context, row["part_id"])
+            if handle not in unresolved:
+                continue
+            item = self._reply(context, row, at)
+            descriptions[handle] = item.payload
+            unresolved.discard(handle)
         if unresolved:
             raise TaskError("self_review_evidence_changed",
                             "original self-review evidence is no longer available")
