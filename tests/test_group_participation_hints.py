@@ -93,6 +93,18 @@ class GroupParticipationHintTests(unittest.TestCase):
         self.assertIn("表情包优先理解其情绪和表达", hint)
         self.assertNotIn("图片中与你明确兴趣", self.hints(settings=settings, native=True))
 
+    def test_image_only_messages_get_a_default_restraint_hint_unless_disabled(self):
+        """抽中候选不等于必须接话：默认提示只在开启时追加。"""
+        settings = {"group_wakeup_image_enabled": True, "group_wakeup_image_weight": 0.35}
+        image_only = self.hints(settings=settings, images=(object(),))
+        self.assertIn("图片唤醒默认克制", image_only)
+        self.assertIn("不构成接话理由", image_only)
+        with_text = self.hints(settings=settings, images=(object(),), current_text="看这个")
+        self.assertIn("以文字内容为判断主体", with_text)
+        disabled = self.hints(settings={**settings, "group_wakeup_image_default_guidance_enabled": False},
+                              images=(object(),))
+        self.assertNotIn("图片唤醒默认克制", disabled)
+
     def test_dense_group_replies_prompt_a_configured_cooldown_for_weak_candidates(self):
         recent = [dict(type="native_group_reply", turn_id=str(index),
                        returned_at=(NOW - timedelta(seconds=seconds)).isoformat())

@@ -36,6 +36,7 @@ from .astrbot_host.core_reply import (
     adopt_core_reply_event,
     inject_core_reply_prompt,
     prepare_core_reply_event,
+    repair_tool_call_history,
     restore_core_reply_event,
     restore_core_reply_prepared,
 )
@@ -1066,6 +1067,15 @@ class PrivateCompanionV2StagingPlugin(Star):
             return
         self._adopt_core_reply_delivery(event)
         self._apply_private_follow_ups_to_request(event, req)
+        # Repair an unpaired tool-call batch before the provider sees it: a
+        # missing tool result makes the whole request fail with a 400 and the
+        # provider fallback then answers without tools at all.
+        try:
+            removed = repair_tool_call_history(getattr(req, "contexts", None))
+        except Exception:
+            removed = 0
+        if removed:
+            logger.warning("[CompanionV2] 修复缺少工具结果的历史轮次 batches=%s", removed)
         prepared = state.get("prepared")
         try:
             with measure_core_preparation(event, "request_authorization", now=self.staging.now):

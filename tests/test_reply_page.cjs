@@ -34,6 +34,7 @@ const DEFAULTS = {
   group_wakeup_bot_name_enabled: true, group_wakeup_generated_keyword_limit: 24,
   group_wakeup_topic_interest_max_boost: 45, group_wakeup_debounce_pending_penalty: 65,
   group_wakeup_image_enabled: false, group_wakeup_image_weight: 0.2,
+  group_wakeup_image_default_guidance_enabled: true,
   group_wakeup_short_text_wait_ms: 15000, group_wakeup_log_limit: 80,
   group_air_guard_enabled: true, group_high_intensity_enabled: false,
   group_air_guard_window_seconds: 60,
