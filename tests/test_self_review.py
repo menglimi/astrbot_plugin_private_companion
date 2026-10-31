@@ -240,5 +240,34 @@ class SelfReviewStorageTests(unittest.TestCase):
                 StorageRuntime.open(data_root=root, installation_id="self-review-test")
 
 
+class SelfReviewRegistrationTests(unittest.TestCase):
+    """The task's declared read action is a real, private-owner authorization."""
+
+    def test_the_daily_review_declares_the_registered_private_owner_action(self):
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+
+        from companion_v2.identity_policy.object_access import ActionRegistry
+        from companion_v2.role_work.journal.self_review_evidence import READ_ACTION
+        from companion_v2.role_work.journal.self_review_service import SelfReviewService
+        from companion_v2.storage.runtime import StorageRuntime
+
+        with TemporaryDirectory(prefix="companion-v2-self-review-registration-") as temporary:
+            runtime = StorageRuntime.open(data_root=Path(temporary) / "v2-data",
+                                          installation_id="self-review-registration")
+            try:
+                self.assertEqual(READ_ACTION, "role.self_review.read")
+                definition = SelfReviewService(runtime).registrations[0].definition
+            finally:
+                runtime.close()
+        self.assertEqual(definition.kind, "role.self_review")
+        self.assertEqual(definition.action, READ_ACTION)
+        registered = ActionRegistry().get(definition.action)
+        self.assertIsNotNone(registered)
+        self.assertEqual(registered.domains, ("role.self_review",))
+        self.assertFalse(registered.shareable)
+        self.assertTrue(registered.private_owner_without_grant)
+
+
 if __name__ == "__main__":
     unittest.main()
