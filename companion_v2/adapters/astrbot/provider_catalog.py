@@ -44,6 +44,29 @@ def _text_provider(native_types, native):
     return isinstance(native, getattr(native_types, "provider_types", ()) or ())
 
 
+UNAVAILABLE_REASON_CHARS = 180
+
+
+def _unavailable_detail(error):
+    """Bounded single-line reason for one provider the catalog cannot wrap.
+
+    The type name alone cannot separate a configuration refusal from a defect:
+    ``AstrBotTextProvider`` raises ``ValueError`` for a wrong class, an
+    unusable streaming request and an overriding ``custom_extra_body``, while
+    this module raises ``TaskError`` when the host swaps the provider during
+    assembly. Every one of those messages is a fixed contract string written by
+    this plugin, never user text, so quoting it is safe; anything unrecognized
+    keeps the historical type name only.
+    """
+    if isinstance(error, TaskError):
+        return f"{type(error).__name__} code={error.code}"
+    if isinstance(error, (TypeError, ValueError)):
+        reason = " ".join(str(error).split())[:UNAVAILABLE_REASON_CHARS]
+        if reason:
+            return f"{type(error).__name__}: {reason}"
+    return type(error).__name__
+
+
 def loaded_routing(fallback_provider_id, replacement_rules, provider_ids):
     """Keep saved default routes only while their AstrBot providers are loaded."""
     available = frozenset(provider_ids)
@@ -87,7 +110,9 @@ def assemble_providers(context, *, bridge, native_types, primary_id, additional=
             continue
         try:
             provider_id = _provider_id(native)
-        except (AttributeError, TypeError, ValueError):
+        except (AttributeError, TypeError, ValueError) as error:
+            logger.warning("Loaded AstrBot provider has no readable ID and stays unavailable to V2 (%s)",
+                           _unavailable_detail(error))
             continue
         if not provider_id or provider_id in seen or provider_id == primary_id:
             continue
@@ -117,7 +142,7 @@ def assemble_providers(context, *, bridge, native_types, primary_id, additional=
             if provider_id in overrides:
                 raise
             logger.warning("Loaded AstrBot %s provider %s is unavailable to V2 (%s)", adapter_kind,
-                           provider_id, type(error).__name__)
+                           provider_id, _unavailable_detail(error))
             continue
         adapters.append(adapter)
     return tuple(adapters)
