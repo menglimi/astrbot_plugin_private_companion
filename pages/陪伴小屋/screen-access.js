@@ -10,6 +10,7 @@ window.CompanionScreenAccess = (() => {
     capability_not_installed:"当前尚未启用屏幕陪伴。",
     capability_not_active:"屏幕陪伴能力已暂停或移除，需要先恢复能力。",
     capability_role_disabled:"当前 Bot 的这个人格尚未启用屏幕陪伴。",
+    capability_role_not_enabled:"当前 Bot 的这个人格尚未启用屏幕陪伴。",
     screen_read_consent_missing:"当前私聊尚未允许读取屏幕原件。",
     screen_process_consent_missing:"当前私聊尚未允许处理屏幕画面。",
     screen_tool_unavailable:"屏幕采集工具尚未进入当前对话。",
