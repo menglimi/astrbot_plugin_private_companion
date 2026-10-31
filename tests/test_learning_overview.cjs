@@ -13,7 +13,8 @@ test("总览汇总全局学习队列、成长阶段和全局策略",async()=>{
   const bridge={apiGet:async(route,query)=>{
     calls.push({route,query});
     const data=route.endsWith("/progress")?{items:[{},{}]}
-      :route.endsWith("/self-review")?{items:[{kind:"ask_user"}]}
+      :route.endsWith("/self-review")?{items:[{kind:"ask_user"}],
+        status:{state:"succeeded",last_run_at:"2026-10-31T02:00:00+00:00"}}
       :route.endsWith("/style")?{items:query.state==="pending"?[{},{}]:[{},{},{},{}]}
       :route.endsWith("/expression")?{settings:{rules_per_turn:2},
         learning:{state:"insufficient_samples",available:1,required:2}}
@@ -56,6 +57,8 @@ test("总览汇总全局学习队列、成长阶段和全局策略",async()=>{
   assert.match(root.innerHTML,/6 小时/);
   assert.match(root.innerHTML,/表达学习/);
   assert.match(root.innerHTML,/样本不足/);
+  assert.match(root.innerHTML,/每日复盘/);
+  assert.match(root.innerHTML,/最近一次已产出/);
   context.window.CompanionLearningOverviewPage.unmount();
   assert.equal(listeners.size,0);
 });
@@ -63,6 +66,9 @@ test("总览汇总全局学习队列、成长阶段和全局策略",async()=>{
 test("总览为空时说明学习链路的三个入口",async()=>{
   const bridge={apiGet:async(route,query)=>{
     const data=route.endsWith("/style")?{items:[]}
+      :route.endsWith("/self-review")?{items:[],
+        status:{state:"failed",code:"self_review_output_invalid",
+          last_run_at:"2026-10-31T02:00:00+00:00",next_check_at:"2026-10-31T08:00:00+00:00"}}
       :route.endsWith("/expression")?{settings:{rules_per_turn:2},
         learning:{state:"insufficient_samples",available:1,required:2}}
       :route==="semantic"?{settings:{learning_interval_seconds:21600}}
@@ -87,5 +93,7 @@ test("总览为空时说明学习链路的三个入口",async()=>{
   assert.match(root.innerHTML,/学习还没有产出/);
   assert.match(root.innerHTML,/立即学习/);
   assert.match(root.innerHTML,/成长提案权限/);
+  assert.match(root.innerHTML,/每日复盘：上次失败/);
+  assert.match(root.innerHTML,/self_review_output_invalid/);
   context.window.CompanionLearningOverviewPage.unmount();
 });

@@ -263,6 +263,29 @@ class SelfReviewService:
         _, closed_at = self._cursor(context)
         return closed_at is None or at - closed_at >= timedelta(seconds=self.scan_seconds)
 
+    def status(self, context):
+        """Bounded, read-only view of this role's daily review state."""
+        at = self.tasks.now()
+        report = dict(self.results.get(context.key) or {})
+        try:
+            _, closed_at = self._cursor(context)
+        except TaskError:
+            closed_at = None
+        worker = self.workers.get(context.key)
+        try:
+            due = self.due(context, at)
+        except TaskError:
+            due = False
+        return {
+            "state": report.get("state", "not_run"),
+            "code": report.get("code"),
+            "last_run_at": stamp(closed_at) if closed_at is not None else None,
+            "due": due,
+            "worker": bool(worker is not None and not worker.done()),
+            "next_check_at": stamp(self.next_checks[context.key])
+                if context.key in self.next_checks else None,
+        }
+
     def advance(self):
         if self.closed:
             return
