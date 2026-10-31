@@ -64,11 +64,44 @@ def _developer_payload(payload):
     return _developer_content(payload)
 
 
+def _gemini_audio_part(item):
+    """把 OpenAI 形状的音频条目换成 AstrBot 的 Gemini 转换认得的那一种。
+
+    AstrBot 的 payload 循环对 user 消息里非 ``text`` / ``image_url`` 的条目一律当作
+    音频，直接读 ``item["audio_url"]["url"]``；把 ``input_audio`` 递过去就是一个
+    KeyError，整轮调用失败。Gemini 的音频只接受 data URL，所以这里就地产出那种形状。
+    """
+
+    if not isinstance(item, dict) or item.get("type") != "input_audio":
+        return item
+    audio = item.get("input_audio")
+    if not isinstance(audio, dict):
+        return item
+    data = audio.get("data")
+    if not isinstance(data, str) or not data:
+        return item
+    # 宿主从 URL 的 mime 段读格式，任何分隔符都会把解析切错。
+    fmt = "".join(char for char in str(audio.get("format") or "wav").lower() if char.isalnum()) or "wav"
+    return {"type": "audio_url", "audio_url": {"url": "data:audio/" + fmt + ";base64," + data}}
+
+
+def _gemini_content(content):
+    if not isinstance(content, list):
+        return content
+    converted, changed = [], False
+    for item in content:
+        part = _gemini_audio_part(item)
+        changed = changed or part is not item
+        converted.append(part)
+    return converted if changed else content
+
+
 def _gemini_messages(messages):
     """AstrBot 的 Gemini 转换用 ``message["name"]`` 回填 function_response。
 
     OpenAI 的工具结果只带 ``tool_call_id``，所以这里按同一次对话里的
-    tool_calls 把函数名补回去；没有可补的内容时原样返回。
+    tool_calls 把函数名补回去；音频条目同时换成宿主认得的形状。没有可补的内容时
+    原样返回。
     """
     names = {}
     for message in messages:
@@ -76,14 +109,17 @@ def _gemini_messages(messages):
             function = call.get("function") or {}
             if isinstance(call.get("id"), str) and isinstance(function.get("name"), str):
                 names[call["id"]] = function["name"]
-    if not names:
-        return messages
-    enriched = []
+    enriched, changed = [], False
     for message in messages:
+        current = message
         if message.get("role") == "tool" and message.get("tool_call_id") in names:
-            message = {**message, "name": names[message["tool_call_id"]]}
-        enriched.append(message)
-    return enriched
+            current = {**current, "name": names[message["tool_call_id"]]}
+        content = _gemini_content(current.get("content"))
+        if content is not current.get("content"):
+            current = {**current, "content": content}
+        changed = changed or current is not message
+        enriched.append(current)
+    return enriched if changed else messages
 
 
 def _chat_image_urls(messages):

@@ -128,6 +128,22 @@ class GeminiTextProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(enriched[1]["name"], "weather.lookup")
         self.assertNotIn("name", messages[1])
 
+    async def test_voice_material_reaches_gemini_as_a_data_url_part(self):
+        messages = [{"role": "user", "content": [
+            {"type": "text", "text": "听一下这段"},
+            {"type": "input_audio", "input_audio": {"data": "QUJD", "format": "wav"}},
+        ]}]
+        converted = _gemini_messages(messages)
+        self.assertEqual(converted[0]["content"][0], {"type": "text", "text": "听一下这段"})
+        self.assertEqual(converted[0]["content"][1],
+                         {"type": "audio_url", "audio_url": {"url": "data:audio/wav;base64,QUJD"}})
+        # 宿主拿到的是副本：原始 wire 载荷不能被就地改写。
+        self.assertEqual(messages[0]["content"][1]["type"], "input_audio")
+
+    async def test_text_only_messages_are_returned_unchanged(self):
+        messages = [{"role": "user", "content": "在吗"}]
+        self.assertIs(_gemini_messages(messages), messages)
+
 
 class FinishReason(enum.Enum):
     """google.genai.types.FinishReason 的形状：枚举成员，str() 带类名前缀。"""
