@@ -29,6 +29,12 @@ class ExpressionLearningScheduleTests(MultiFixture, unittest.IsolatedAsyncioTest
             await asyncio.sleep(0.01)
         state = service.results.get(service._work_key(context)) or {}
         self.assertTrue(service.workers, f"expression learning did not start: {state}")
+        status = service.status(context)
+        self.assertTrue(status["learning_enabled"])
+        self.assertTrue(status["due"] is False)
+        self.assertIsInstance(status["worker"], bool)
+        self.assertEqual(status["limit"], 60)
+        self.assertIsInstance(status["state"], str)
 
 
 if __name__ == "__main__":

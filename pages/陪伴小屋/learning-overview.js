@@ -75,6 +75,7 @@ window.CompanionLearningOverviewPage = (() => {
         active: growthItems.filter(item=>item.state==="active").length,
         adopted: (value(4)?.items||[]).length,
         rules: Number.isInteger(settings?.rules_per_turn) ? settings.rules_per_turn : null,
+        learning: value(5)?.learning || null,
       };
     });
     const selection=semantic?.global===true?{global:true}:semantic?.target&&semantic?.role
@@ -97,6 +98,7 @@ window.CompanionLearningOverviewPage = (() => {
     const configured = valid.find(result=>Number.isInteger(result.rules));
     data.counts.rules = configured?.rules ?? null;
     data.counts.scan = semanticResult.scan;
+    data.learning = valid.map(result=>result.learning).find(item=>item&&typeof item==="object"&&item.state)||null;
     data.loading=false;
     render();
   }
@@ -106,6 +108,30 @@ window.CompanionLearningOverviewPage = (() => {
     if (seconds % 3600 === 0) return `${seconds / 3600} 小时`;
     if (seconds % 60 === 0) return `${seconds / 60} 分钟`;
     return `${seconds} 秒`;
+  }
+
+  const LEARNING_STATES = {
+    not_run: "还没运行过",
+    waiting_for_new_messages: "等待新消息",
+    waiting_for_sample_review: "等待样本审核",
+    insufficient_samples: "样本不足",
+    source_not_selected: "当前私聊未选中为学习来源",
+    learning_disabled: "该窗口未开启表达学习",
+    capacity_reached: "待审与启用规则已达上限",
+    daily_budget_reached: "今日群聊学习批次已用完",
+    failed: "上次学习失败",
+    blocked: "来源校验未通过",
+  };
+  function learningLine(item) {
+    if (!item || typeof item !== "object" || !item.state) return "";
+    const label = LEARNING_STATES[item.state] || item.state;
+    const counts = item.state === "capacity_reached" && Number.isInteger(item.active)
+      ? `（${item.active}/${item.limit ?? "?"} 条规则）`
+      : Number.isInteger(item.available)
+        ? `（${item.available}/${Number.isInteger(item.required) ? item.required : "?"} 条样本）` : "";
+    const failure = item.code ? ` · ${item.code}` : "";
+    const last = item.last_run_at ? ` · 上次 ${when(item.last_run_at)}` : "";
+    return `表达学习：${e(label)}${e(counts)}${e(failure)}${e(last)}`;
   }
 
   function growthCard(item) {
@@ -140,6 +166,7 @@ window.CompanionLearningOverviewPage = (() => {
     root.innerHTML=`<div class="lh-overview-toolbar"><span>${data.errors?"部分记录归属暂不可用":`汇总 ${sources.length} 个记录归属`}</span>
       <button type="button" class="lh-refresh" data-lh-refresh aria-label="重新读取" title="重新读取" ${data.loading||data.writing?"disabled":""}><i data-lucide="refresh-cw"></i></button></div>
       ${data.notice?`<p class="lh-inline-status${data.error?" is-error":""}" role="status">${e(data.notice)}</p>`:""}
+      ${data.learning?`<p class="lh-inline-status" role="status">${learningLine(data.learning)}</p>`:""}
       <section class="lh-kpis" aria-label="学习数据">${cards.map(([label,value,detail,icon])=>`<article class="lh-kpi">
         <span class="lh-kpi-icon" aria-hidden="true"><i data-lucide="${icon}"></i></span><span class="lh-kpi-label">${label}</span>
         <strong>${e(value)}</strong><small>${label==="待裁决"?"进展 · 表达 · 指导":label==="培育中"?"技能与目标":label==="规则注入"?e(detail):label==="语义扫描"?"群词义整理间隔":""}</small></article>`).join("")}</section>

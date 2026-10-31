@@ -237,12 +237,20 @@ class ReplyManagement:
             if local_key in snapshot.fields and not snapshot.fields[local_key].explicit:
                 settings[name] = shared.values.get(role_key, DEFAULTS[name])
                 resolved_defaults[name] = settings[name]
+        learning = {}
+        service = getattr(self.app, "expression_style", None)
+        if service is not None and self.context is not None:
+            try:
+                learning = service.status(self.context)
+            except (TaskError, ConfigurationError):
+                learning = {}
         return {"settings": settings,
                 "defaults": resolved_defaults, "edit_token": snapshot.edit_token,
                 "revision": snapshot.revision, "configuration_token": snapshot.resolution_token,
                 "apply_mode": "immediate", "group_id": group,
                 "scope": target.layer.value, "layers": layers_of(target),
-                "provenance": provenance_of(snapshot, group), "fields": fields}
+                "provenance": provenance_of(snapshot, group), "fields": fields,
+                "learning": learning}
 
     @outcome
     def expression_configure(self, operator, data):
