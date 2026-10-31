@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from astrbot_host.setup_state import SCHEMA_VERSION, SetupStateStore
+from astrbot_host.setup_state import SCHEMA_VERSION, SetupStateStore, SetupStepsIncomplete
 
 
 class SetupStateTests(unittest.TestCase):
@@ -67,6 +67,24 @@ class SetupStateTests(unittest.TestCase):
         self.assertEqual(state["skipped"], ["group"])
         state = self.store.begin_proactive_test(attempt_id="attempt-3", started_at="2026-10-05T00:00:00+00:00")
         self.assertEqual(state["proactive_test"]["attempt_id"], "attempt-3")
+
+    def test_unfinished_guide_and_unreplayable_attempt_are_different_errors(self):
+        # Same store, two unrelated refusals. The host route has to tell them
+        # apart, so they must not be the same exception class.
+        self.store.complete("model")
+        with self.assertRaises(SetupStepsIncomplete) as unfinished:
+            self.store.begin_proactive_test(attempt_id="attempt-a", started_at="2026-10-05T00:00:00+00:00")
+        self.assertIsInstance(unfinished.exception, ValueError)
+        self.assertIn("guided setup steps", str(unfinished.exception))
+
+        for step in ("knowledge", "relationships", "proactive", "life", "group"):
+            self.store.complete(step, skipped=True)
+        self.store.begin_proactive_test(attempt_id="attempt-b", started_at="2026-10-05T00:00:00+00:00")
+        with self.assertRaises(ValueError) as replay:
+            self.store.begin_proactive_test(attempt_id="attempt-c", started_at="2026-10-05T00:00:00+00:00")
+        self.assertNotIsInstance(replay.exception, SetupStepsIncomplete)
+        self.assertIn("cannot be replayed", str(replay.exception))
+
 
 
 if __name__ == "__main__":

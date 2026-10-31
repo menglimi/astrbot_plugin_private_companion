@@ -51,6 +51,10 @@ window.CompanionProduct = (() => {
     setup_conversation_unavailable:"还没有跟它说过话，先在这个对象的私聊里发一条消息。",
     setup_test_confirmation_invalid:"测试记录已变化，请刷新后确认收到的是本次测试消息。",
     setup_test_non_replayable:"这次测试已经发送过，请在收到后确认；本次不会重发。",
+    /* 引导没走完和「测试已经跑过」是两件无关的事：前者要做的是去补步骤，
+       后者要做的才是去确认已经发出去的那条。少了这一行，新码会落进
+       fail() 的兜底「暂不可读取，请刷新核对。」——用户会以为页面读不到数据。 */
+    setup_steps_incomplete:"还有引导步骤没有完成，请先完成（或跳过）剩下的步骤，再做这次测试。",
     staging_delivery_not_enabled:"这个运行实例没有可用的 OneBot 私聊通道。请核对绑定的 Bot 账号、私聊对象和人格。",
     staging_delivery_window_invalid:"当前 OneBot 投递通道配置无效，请核对账号与目标。",
     staging_delivery_profile_required:"这个窗口的角色配置尚未就绪，请重新读取账号与会话。",

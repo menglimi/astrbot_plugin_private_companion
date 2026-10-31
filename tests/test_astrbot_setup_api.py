@@ -1002,6 +1002,52 @@ class AstrBotSetupFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(connected["status"], "ok", connected)
         self.assertTrue(connected["data"]["status"]["host"]["accepting"])
 
+    async def test_unfinished_guide_is_not_reported_as_an_unreplayable_test(self):
+        # A fresh install: the guide is still open, and no attempt has ever run.
+        # Reporting setup_test_non_replayable here sent the operator looking for a
+        # replay problem while proactive_test was still null.
+        await self.enter_model_step()
+        self.assertEqual((await self.call("model", {"provider_id": "native-model"}))["status"], "ok")
+        self.assertEqual((await self.call("complete", {"step": "model", "skipped": False}))["status"], "ok")
+        self.assertEqual((await self.call("complete", {"step": "knowledge", "skipped": True}))["status"], "ok")
+        self.assertEqual((await self.call("complete", {"step": "relationships", "skipped": True}))["status"], "ok")
+        await self.prepare_trusted_conversation_source()
+        self.prepare_contact_model()
+        model_calls_before = len(self.native.provider.client.state.calls)
+
+        result = await self.call("proactive_test", {"enable_proactive": True})
+
+        self.assertEqual(result["status"], "error", result)
+        self.assertEqual(result["data"]["code"], "setup_steps_incomplete", result)
+        self.assertEqual(result["message"], "setup_steps_incomplete")
+        self.assertIn("guided setup steps", result["reason"])
+        self.assertIsNone(self.api.progress.read()["proactive_test"])
+        # Nothing was dispatched and no attempt was recorded: the refusal happened
+        # before the test could start, exactly like the null receipt says.
+        self.assertEqual(len(self.native.provider.client.state.calls), model_calls_before)
+
+    async def test_a_started_test_still_reports_the_non_replayable_code(self):
+        # The genuine replay refusal must keep its original code and message.
+        await self.enter_model_step()
+        self.assertEqual((await self.call("model", {"provider_id": "native-model"}))["status"], "ok")
+        for step, skipped in (("model", False), ("knowledge", True), ("relationships", True),
+                              ("proactive", True), ("life", True), ("group", True)):
+            self.assertEqual((await self.call("complete", {"step": step, "skipped": skipped}))["status"], "ok")
+        await self.prepare_trusted_conversation_source()
+        self.prepare_contact_model()
+        self.native.platform.client._api._wsr_api.error = TimeoutError("the message may have been sent")
+
+        first = await self.call("proactive_test", {"enable_proactive": True})
+        self.assertEqual(first["data"]["state"], "started", first)
+        receipt = await self.wait_for_test()
+        self.assertEqual(receipt["state"], "unknown", receipt)
+
+        again = await self.call("proactive_test", {"enable_proactive": True})
+
+        self.assertEqual(again["status"], "error", again)
+        self.assertEqual(again["data"]["code"], "setup_test_non_replayable", again)
+        self.assertIn("cannot be replayed", again["reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

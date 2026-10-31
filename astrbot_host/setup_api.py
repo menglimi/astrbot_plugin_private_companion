@@ -27,7 +27,7 @@ from .identity_derivation import derive_bot_id, derive_role_id, normalize_person
 from .management_identity import dashboard_operator
 from .persona_catalog import available_personas
 from .settings import HostControlError
-from .setup_state import SETUP_STEPS, SetupStateStore
+from .setup_state import SETUP_STEPS, SetupStateStore, SetupStepsIncomplete
 from .display_names import display_names
 
 
@@ -945,6 +945,13 @@ class SetupWebAPI:
                 attempt_id = uuid4().hex
                 try:
                     self.progress.begin_proactive_test(attempt_id=attempt_id, started_at=started)
+                except SetupStepsIncomplete as error:
+                    # "The guide is not finished" and "this attempt already ran and
+                    # cannot be replayed" have nothing in common. Collapsing both
+                    # into setup_test_non_replayable told the operator to hunt a
+                    # replay problem while proactive_test was still null, i.e. while
+                    # no attempt had ever existed.
+                    raise TaskError("setup_steps_incomplete", str(error)) from error
                 except ValueError as error:
                     raise TaskError("setup_test_non_replayable", str(error)) from error
                 self._test_task = asyncio.create_task(self._execute_proactive_test(username, attempt_id),
