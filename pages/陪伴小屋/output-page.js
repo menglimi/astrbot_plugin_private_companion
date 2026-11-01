@@ -20,6 +20,7 @@ window.CompanionOutputPage=(()=>{
     generated_image_missing:"选中的图片已经不在图库中，请刷新后重试。"};
   let root=null,abort=null,ticket=0,scope="",base=null,draft=null,revision="",busy="",notice="",bad=false,hostRegistered=false,expanded=new Set(),tests=new Map(),testKeys=new Map(),observation=null,observationBusy=false,observationError="",sceneEditorOpen=false,sceneDraft=null,sceneError="",sceneSaving=false;
   let albumItems=[],albumCursor=null,albumLoaded=false,albumLoading=false,albumError="",albumSelected=-1,albumSelectedIds=new Set(),albumNotice="",albumBusy="";
+  let naiStatus=null;
   const product=()=>window.CompanionProduct;
   const esc=value=>String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const endpointLabel=item=>String(item?.name||"").trim()||String(item?.model||"").trim()||"未命名模型";
@@ -108,6 +109,11 @@ window.CompanionOutputPage=(()=>{
     }catch(error){
       if(!live(id))return;
       albumError=ERRORS[error?.code]||ERRORS[error?.message]||error?.message||"产出图库暂不可读";
+      if(!albumItems.length){
+        updatePreviewFromAlbum();
+        const status=root.querySelector(".output-image-status span");
+        if(status)status.textContent=product()?.role()?.image_material_api?"最近产出暂不可读，请重新读取":"选择账号与人格后显示最近产出";
+      }
     }finally{if(live(id)){albumLoading=false;renderAlbum();}}
   }
   function renderAlbumLightbox(){
@@ -277,7 +283,18 @@ window.CompanionOutputPage=(()=>{
   function selector(){
     const host=root?.querySelector("[data-output-native-selector]");
     if(!host)return;
-    host.innerHTML=draft?`<div class="output-native-route-summary"><strong>文生图与改图独立路由</strong><span>每个功能的模型与优先级在「模型与连接 → 生图模型」分别设置。</span></div><label class="output-backend-enable"><input type="checkbox" data-output-native-field="enabled"${draft.enabled?" checked":""}${busy?" disabled":""}>启用 V2 生图后端</label>${!hostRegistered&&draft.enabled?`<div class="output-config-unavailable" role="status">当前 V2 工具目录尚未接入此图片提供方。<button type="button" class="button small" data-output-native-action="reconnect"${busy?" disabled":""}>重连 V2 执行器</button></div>`:""}${actions()}`:`<div class="output-config-unavailable" role="status">${esc(notice||"正在读取生图模型配置…")}</div>`;
+    host.innerHTML=draft?`<div class="output-native-route-summary"><strong>文生图与改图独立路由</strong><span>每个功能的模型与优先级在「模型与连接 → 生图模型」分别设置。</span></div><label class="output-backend-enable"><input type="checkbox" data-output-native-field="enabled"${draft.enabled?" checked":""}${busy?" disabled":""}>启用 V2 生图后端</label>${!hostRegistered&&draft.enabled?`<div class="output-config-unavailable" role="status">当前 V2 工具目录尚未接入此图片提供方。<button type="button" class="button small" data-output-native-action="reconnect"${busy?" disabled":""}>重连 V2 执行器</button></div>`:""}`:`<div class="output-config-unavailable" role="status"><span>${esc(notice||"正在读取生图模型配置…")}</span>${!product()?.role()?.model_api?`<button type="button" class="output-inline-link" data-go="manage" data-manage="host">账号与会话 ${icon("arrow-up-right")}</button>`:""}</div>`;
+  }
+  function naiBackend(){
+    const status=naiStatus||{},labels={generate:"文生图",edit:"参考图改图"};
+    const service=status.call_mode==="openai"?(status.api_profile==="starbridge"?"星桥（Almoon）":"OpenAI 兼容接口"):"nai.sta1n.cn 直连";
+    const reason=!naiStatus?(busy?"正在检测 NAI 插件…":"NAI 状态暂不可读，请重新检测"):!status.installed?"未检测到已启用的 NAI 生图插件":!status.available?"NAI 尚未就绪，请检查插件的陪伴联动开关与接口配置":"已就绪";
+    const format=status.prompt_format==="nai"?"NAI 英文标签":status.prompt_format==="natural"?"英文自然语言":"跟随 NAI 插件";
+    const fields=[["接入服务",service],["生图模型",status.default_model||"跟随 NAI 插件"],["画风",status.artist_slot_name||"跟随 NAI 插件当前画风"],["默认尺寸",status.default_size||"跟随 NAI 插件"],["提示词格式",format],["参考图模式",status.call_mode==="direct"?"当前接入方式不支持":({vibe:"氛围参考（不固定人物身份）",img2img:"图生图",director:"精准参考"})[status.reference_mode]||"跟随 NAI 插件"]];
+    return `<section class="output-capability-card output-nai-backend" data-output-nai><header class="output-capability-heading"><h2>NAI 后端</h2><span role="status">${esc(reason)}</span><button type="button" class="output-icon-button" data-output-native-action="refresh" title="重新检测 NAI 插件" aria-label="重新检测 NAI 插件"${busy?" disabled":""}>${icon("refresh-cw")}</button></header><div class="output-endpoint-guidance"><p>模型、画风槽位、尺寸、采样参数和默认负面提示词均沿用「NAI 生图插件」的配置；地址与密钥也由 NAI 插件管理。</p><p>人物和服装按陪伴当前角色与本次要求绘制，不套用 NAI 的固定角色模板；不叠加下方的画面风格。提示词格式跟随 NAI 的「陪伴直连提示词模式」。</p></div>${status.installed?`<dl class="output-nai-defaults">${fields.map(([label,value])=>`<div class="output-native-field"><dt>${label}</dt><dd>${esc(value)}</dd></div>`).join("")}</dl>`:""}<div class="output-nai-operations">${Object.entries(labels).map(([operation,label])=>{
+      const selected=draft?.operation_routes?.[operation]?.includes("nai"),supported=status.operations?.includes(operation);
+      return `<label class="output-native-check"><input type="checkbox" data-output-nai-operation="${operation}"${selected?" checked":""}${!draft||busy||(!supported&&!selected)?" disabled":""}>${label}${operation==="edit"&&status.available&&!supported?"（当前接入方式不支持）":""}</label>`;
+    }).join("")}</div>${draft?actions():""}</section>`;
   }
   function queue(){
     if(!draft)return `<div class="output-config-unavailable" role="status"><span>${esc(notice||"正在读取生图后端…")}</span><button type="button" class="button small" data-output-native-action="refresh">重新读取</button></div>`;
@@ -301,7 +318,8 @@ window.CompanionOutputPage=(()=>{
   function render(){
     if(!root?.isConnected)return;
     selector();
-    const queueHost=root.querySelector("#outputBackendWorkspace"),localHost=root.querySelector("#outputLocalWorkspace");
+    const naiHost=root.querySelector("#outputNaiWorkspace"),queueHost=root.querySelector("#outputBackendWorkspace"),localHost=root.querySelector("#outputLocalWorkspace");
+    if(naiHost)naiHost.innerHTML=naiBackend();
     if(queueHost)queueHost.innerHTML=queue();
     if(localHost)localHost.innerHTML=local();
     root.querySelectorAll("[data-output-native-notice]").forEach(host=>{host.textContent=notice;host.hidden=!notice;host.classList.toggle("is-error",bad);});
@@ -330,14 +348,21 @@ window.CompanionOutputPage=(()=>{
     if(busy)return;
     const id=ticket;busy="read";notice="";render();
     try{
-      if(!product()?.role()?.model_api)throw Error("当前角色尚未绑定模型配置接口");
+      if(!product()?.role()?.model_api){
+        base=draft=null;revision="";hostRegistered=false;naiStatus=null;bad=false;
+        notice="请先在「账号与会话」配置账号并绑定人格，再选择当前角色的生图后端。";
+        const data=await product().request("GET","integration/manifest");
+        if(live(id))naiStatus=data?.nai||null;
+        return;
+      }
       const data=await product().request("GET",endpoint());
       if(!live(id))return;
       if(!data?.settings||typeof data.revision!=="string")throw Error("返回的生图后端配置不完整");
       base=clone(data.settings);draft=clone(data.settings);revision=data.revision;hostRegistered=data.host_registered===true;bad=false;
+      naiStatus=data.nai||null;
       if(!expanded.size&&draft.endpoints[0])expanded.add(draft.endpoints[0].id);
       void refreshReviewModels(id);
-    }catch(error){if(live(id)){bad=true;notice=ERRORS[error.code]||ERRORS[error.message]||error.message||"生图后端暂不可读";}}
+    }catch(error){if(live(id)){bad=true;notice=!product()?.role()?.model_api?"NAI 状态暂不可读；请重新检测，或先在「账号与会话」完成账号与人格配置。":ERRORS[error.code]||ERRORS[error.message]||error.message||"生图后端暂不可读";}}
     finally{if(live(id)){busy="";render();}}
   }
   async function save(){
@@ -347,6 +372,7 @@ window.CompanionOutputPage=(()=>{
       const data=await product().request("POST",endpoint()+"/save",{revision,changes:clone(draft)});
       if(!live(id))return;
       base=clone(data.settings);draft=clone(data.settings);revision=data.revision;hostRegistered=data.host_registered===true;bad=false;
+      naiStatus=data.nai||null;
       notice="生图后端已保存";
     }catch(error){if(live(id)){bad=true;notice=ERRORS[error.code]||ERRORS[error.message]||"保存结果尚未确认，请重新读取核对。";}}
     finally{if(live(id)){busy="";render();}}
@@ -388,6 +414,15 @@ window.CompanionOutputPage=(()=>{
   }
   function input(event){
     const target=event.target;
+    if(target.matches("[data-output-nai-operation]")&&draft&&!busy){
+      const operation=target.dataset.outputNaiOperation;
+      if(!["generate","edit"].includes(operation))return;
+      draft.operation_routes??={generate:[],edit:[]};
+      const routes=draft.operation_routes[operation]||[];
+      draft.operation_routes[operation]=target.checked?[...new Set([...routes,"nai"])]:routes.filter(route=>route!=="nai");
+      if(target.checked)draft.enabled=true;
+      render();return;
+    }
     if(target.matches("[data-output-album-select-all]")){selectAllAlbums(target.checked);return;}
     if(target.matches("[data-output-album-select]")){toggleAlbumSelection(target.dataset.outputAlbumSelect,target.checked);return;}
     if(target.matches("[data-output-scene-index][data-output-scene-field]")&&Array.isArray(sceneDraft)){
@@ -472,7 +507,7 @@ window.CompanionOutputPage=(()=>{
     if(action==="remove"&&index>=0){draft.endpoints.splice(index,1);for(const operation of ["generate","edit"])if(Array.isArray(draft.operation_routes?.[operation]))draft.operation_routes[operation]=draft.operation_routes[operation].filter(route=>route!==`online:${identifier}`);}
     render();
   }
-  function unmount(){ticket++;abort?.abort();abort=null;root=null;draft=base=null;busy="";scope="";observation=null;observationBusy=false;sceneEditorOpen=false;sceneDraft=null;sceneSaving=false;albumItems=[];albumCursor=null;albumLoaded=false;albumLoading=false;albumError="";albumSelected=-1;albumSelectedIds=new Set();albumNotice="";albumBusy="";}
+  function unmount(){ticket++;abort?.abort();abort=null;root=null;draft=base=null;naiStatus=null;busy="";scope="";observation=null;observationBusy=false;sceneEditorOpen=false;sceneDraft=null;sceneSaving=false;albumItems=[];albumCursor=null;albumLoaded=false;albumLoading=false;albumError="";albumSelected=-1;albumSelectedIds=new Set();albumNotice="";albumBusy="";}
   function mount(node){
     unmount();root=node;scope=product()?.scopeKey?.()||"";expanded=new Set();tests=new Map();testKeys=new Map();notice="";bad=false;observation=null;observationError="";sceneError="";
     if(!root)return;
