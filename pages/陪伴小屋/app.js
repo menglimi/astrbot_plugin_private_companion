@@ -4697,9 +4697,32 @@ let visibleSearchResults=[];
 let activeSearchResultIndex=0;
 let searchScope='all';
 const SEARCH_RESULT_LIMIT=50;
+let searchRenderTimer=null;
+function scheduleSearchRender(){
+  clearTimeout(searchRenderTimer);
+  searchRenderTimer=setTimeout(()=>{searchRenderTimer=null;renderSearch();},60);
+}
+function flushSearchRender(){
+  if(!searchRenderTimer)return;
+  clearTimeout(searchRenderTimer);searchRenderTimer=null;renderSearch();
+}
 function normalizeSearchText(text){return String(text??'').normalize('NFKC').toLocaleLowerCase();}
 function searchTerms(query){return normalizeSearchText(query).trim().split(/[\s,，;；、\/|]+/).filter(Boolean);}
+function escapeRegExp(text){return String(text).replace(/[.*+?^${}()|[\]\\]/g,"\\$&");}
+/* 结果里标出命中片段：搜索框只显示关键词，用户仍要能看出这条为什么被选中。
+   逐段 escape，只有 <mark> 是我们加的标签。 */
+function markSearchText(value,terms){
+  const raw=String(value??"");
+  if(!terms.length)return escapeHTML(raw);
+  const pattern=new RegExp("("+terms.map(escapeRegExp).join("|")+")","gi");
+  return raw.split(pattern).map((part,index)=>index%2
+    ?`<mark>${escapeHTML(part)}</mark>`
+    :escapeHTML(part)).join("");
+}
+let searchEntryCache=null;
+function invalidateSearchIndex(){searchEntryCache=null;}
 function searchableConfigEntries(){
+  if(searchEntryCache)return searchEntryCache;
   const editors=window.CompanionConfigEditors?.searchEntries?.()||[];
   const replies=window.CompanionReplyPage?.searchEntries?.()||[];
   const hostOptions=window.CompanionHostOptionsPage?.searchEntries?.()||[];
@@ -4709,7 +4732,7 @@ function searchableConfigEntries(){
   const memories=window.CompanionMemorySettingsSection?.searchEntries?.()||[];
   const perceptions=window.CompanionNativePerceptionPage?.searchEntries?.()||[];
   const seen=new Set();
-  return [...editors,...replies,...hostOptions,...states,...memories,...perceptions].map(entry=>{
+  searchEntryCache=[...editors,...replies,...hostOptions,...states,...memories,...perceptions].map(entry=>{
     const location=entry.group==='conversation.presentation'
       ?replySearchLocation(entry)
       :configSearchLocation(entry);
@@ -4717,35 +4740,45 @@ function searchableConfigEntries(){
     const key=JSON.stringify([entry.group,entry.section,entry.field]);
     if(seen.has(key))return null;
     seen.add(key);
-    return {kind:'setting',entry,location};
+    return {kind:'setting',entry,location,texts:{
+      label:normalizeSearchText(entry.label),
+      field:normalizeSearchText(entry.field),
+      sectionTitle:normalizeSearchText(entry.sectionTitle),
+      groupTitle:normalizeSearchText(entry.groupTitle),
+      help:normalizeSearchText(entry.help),
+      aliases:(Array.isArray(entry.aliases)?entry.aliases:[]).map(normalizeSearchText),
+    }};
   }).filter(Boolean);
+  return searchEntryCache;
 }
-function textSearchScore(value,term,weights){
-  const text=normalizeSearchText(value);
+function scoreNormalizedText(text,term,weights){
   if(!text)return 0;
   if(text===term)return weights[0];
   if(text.startsWith(term))return weights[1];
   if(text.includes(term))return weights[2];
   return 0;
 }
-function settingSearchScore(entry,terms,query){
-  const aliases=Array.isArray(entry.aliases)?entry.aliases:[];
+function textSearchScore(value,term,weights){
+  return scoreNormalizedText(normalizeSearchText(value),term,weights);
+}
+function settingSearchScore(result,terms,query){
+  const {entry,texts}=result;
   const fields=[
-    [entry.label,[120,94,72]],
-    [entry.field,[84,68,50]],
-    [entry.sectionTitle,[62,48,36]],
-    [entry.groupTitle,[54,42,30]],
-    [entry.help,[22,18,14]],
+    [texts.label,[120,94,72]],
+    [texts.field,[84,68,50]],
+    [texts.sectionTitle,[62,48,36]],
+    [texts.groupTitle,[54,42,30]],
+    [texts.help,[22,18,14]],
   ];
   let score=0;
   for(const term of terms){
     let best=0;
-    for(const [value,weights] of fields)best=Math.max(best,textSearchScore(value,term,weights));
-    for(const alias of aliases)best=Math.max(best,textSearchScore(alias,term,[82,62,46]));
+    for(const [value,weights] of fields)best=Math.max(best,scoreNormalizedText(value,term,weights));
+    for(const alias of texts.aliases)best=Math.max(best,scoreNormalizedText(alias,term,[82,62,46]));
     if(!best)return -1;
     score+=best;
   }
-  if(normalizeSearchText(entry.label)===query)score+=32;
+  if(texts.label===query)score+=32;
   return score;
 }
 function pageSearchScore(data,terms,query){
@@ -4766,7 +4799,7 @@ function rankedSearchResults(query){
   const pages=searchIndex.map((data,order)=>({kind:'page',data,score:pageSearchScore(data,terms,normalized),order}))
     .filter(result=>result.score>0);
   const settings=searchableConfigEntries().map((result,order)=>({...result,
-    score:settingSearchScore(result.entry,terms,normalized),order})).filter(result=>result.score>0);
+    score:settingSearchScore(result,terms,normalized),order})).filter(result=>result.score>0);
   return [...pages,...settings].sort((left,right)=>right.score-left.score
     ||(left.kind===right.kind?left.order-right.order:left.kind==='setting'?-1:1));
 }
@@ -4793,17 +4826,30 @@ function activateSearchSelection(){
 function handleGlobalSearchKeydown(event){
   if(event.isComposing||event.keyCode===229)return;
   if(event.key==='Escape'){
+    if(searchRenderTimer){clearTimeout(searchRenderTimer);searchRenderTimer=null;}
     event.preventDefault();$('#searchDialog')?.close?.();return;
   }
   if(event.key==='ArrowDown'||event.key==='ArrowUp'){
     event.preventDefault();moveSearchSelection(event.key==='ArrowDown'?1:-1);return;
   }
+  if(event.key==='PageDown'||event.key==='PageUp'){
+    event.preventDefault();moveSearchSelection(event.key==='PageDown'?5:-5);return;
+  }
+  if(event.key==='Home'||event.key==='End'){
+    event.preventDefault();
+    if(visibleSearchResults.length){
+      activeSearchResultIndex=event.key==='Home'?0:visibleSearchResults.length-1;
+      updateSearchSelection();
+    }
+    return;
+  }
   if(event.key==='Enter'){
-    event.preventDefault();activateSearchSelection();
+    event.preventDefault();flushSearchRender();activateSearchSelection();
   }
 }
 function setSearchScope(scope){
   if(!['all','settings','pages'].includes(scope))return false;
+  if(searchRenderTimer){clearTimeout(searchRenderTimer);searchRenderTimer=null;}
   searchScope=scope;activeSearchResultIndex=0;renderSearch();return true;
 }
 function renderSearch(){
@@ -4836,10 +4882,10 @@ function renderSearch(){
       const pageLabels={identity:'关系网','identity-people':'用户','identity-groups':'群聊','identity-access':'访问规则','identity-feelings':'关系与情感',contact:'主动联系',expression:'表达',governance:'自我',diary:'日记与生活',output:'产出',models:'模型与连接',perception:'感知',decision:'决策',action:'行动',learning:'学习与反思'};
       const context=['配置项',pageLabels[location.tab]||location.tab,
         entry.sectionTitle,entry.field].filter(Boolean).join(' · ');
-      return `<button id="search-option-${index}" class="search-result" type="button" role="option" aria-selected="${selected}" data-search-result="${index}">${I('sliders-horizontal')}<span><strong>${escapeHTML(entry.label)}</strong><small>${escapeHTML(context)}</small></span></button>`;
+      return `<button id="search-option-${index}" class="search-result" type="button" role="option" aria-selected="${selected}" data-search-result="${index}">${I('sliders-horizontal')}<span><strong>${markSearchText(entry.label,terms)}</strong><small>${markSearchText(context,terms)}</small></span></button>`;
     }
     const [title,description,icon]=result.data;
-    return `<button id="search-option-${index}" class="search-result" type="button" role="option" aria-selected="${selected}" data-search-result="${index}">${I(icon)}<span><strong>${escapeHTML(title)}</strong><small>${escapeHTML(`页面 · ${description}`)}</small></span></button>`;
+    return `<button id="search-option-${index}" class="search-result" type="button" role="option" aria-selected="${selected}" data-search-result="${index}">${I(icon)}<span><strong>${markSearchText(title,terms)}</strong><small>${markSearchText(`页面 · ${description}`,terms)}</small></span></button>`;
   }).join('');
   const emptyMessage=searchScope==='settings'&&!terms.length
     ?'输入设置名称、用途或字段键查找配置项。'
@@ -4980,7 +5026,7 @@ function openTokenTaskSettings(kind){
   });
   return true;
 }
-function openSearch(){if($('#detailDialog').open)closeDetail();searchScope='all';$('#globalSearch').value='';renderSearch();$('#searchDialog').showModal();$('#globalSearch').focus();}
+function openSearch(){if($('#detailDialog').open)closeDetail();searchScope='all';if(searchRenderTimer){clearTimeout(searchRenderTimer);searchRenderTimer=null;}invalidateSearchIndex();$('#globalSearch').value='';renderSearch();$('#searchDialog').showModal();$('#globalSearch').focus();}
 document.addEventListener('click',event=>{
   const el=event.target.closest('button,a');if(!el)return;
   if(el.hasAttribute('data-profile-avatar-remove')){
@@ -5256,7 +5302,7 @@ $('#stageScene')?.addEventListener('keydown',event=>{
    （详情弹窗里仍会走到）。这里只在按钮存在时才绑，不硬取节点——
    硬取一个不存在的节点会在启动时抛错，整个页面脚本都不再执行。 */
 $('#resetButton')?.addEventListener('click',()=>showDetail('reset'));
-$('#globalSearch').addEventListener('input',renderSearch);
+$('#globalSearch').addEventListener('input',scheduleSearchRender);
 $('#globalSearch').addEventListener('keydown',handleGlobalSearchKeydown);
 document.addEventListener('keydown',event=>{
   if(handleRoomEditorKey(event))return;
