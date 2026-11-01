@@ -1,5 +1,6 @@
 """The AstrBot-owned reply path still executes V2's configured voice policy."""
 
+from dataclasses import asdict
 from types import SimpleNamespace as NS
 import unittest
 
@@ -13,9 +14,13 @@ from astrbot_host.core_reply import (
     inject_core_reply_prompt,
     prepare_core_reply_event,
 )
+from astrbot_host.core_reply_outbound import prepare_core_reply_outbound_message
+from astrbot_host.core_reply_reaction_delivery import prepare_core_reaction_message
+from astrbot_host.core_reply_segmentation import prepare_core_reply_segmentation
 from astrbot_host.core_reply_voice import prepare_core_reply_voice_message, voice_prompt_instruction
-from astrbot_host.core_reply_voice import observe_core_voice_response
+from astrbot_host.core_reply_voice import capture_core_voice_message, observe_core_voice_response
 from astrbot.core.provider.entities import LLMResponse
+from companion_v2.conversation.segmentation import SegmentationPolicy
 from companion_v2.conversation.voice_reply import VoiceReplyPolicy
 from companion_v2.foundation.outcome import Outcome
 
@@ -194,6 +199,153 @@ class CoreReplyVoiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output.get_plain_text(), "抱歉，不是故意。称呼嘛。")
         self.assertNotIn("pcc_tts", output.get_plain_text())
 
+    def test_unclosed_voice_tag_never_reaches_visible_text(self):
+        """02:25 的第 3 条气泡：<pc_tts> 没有闭合时标签字面量不得随正文下发。"""
+        event = FakeEvent()
+        core = {"prepared": {"event_ref": "unclosed", "voice_reply_policy":
+                             VoiceReplyPolicy(generation_mode="model_tag", language="ja")}}
+        event.set_extra(CORE_REPLY_CONTEXT_EXTRA, core)
+
+        output = capture_core_voice_message(event, MessageChain(chain=[Plain("正文<pc_tts>よるのおやすみ")]))
+
+        self.assertEqual(output.get_plain_text(), "正文よるのおやすみ")
+        self.assertNotIn("tts", output.get_plain_text().casefold())
+        self.assertEqual(capture_core_voice_message(event, "正文<pc_tts>よるのおやすみ"), "正文よるのおやすみ")
+        self.assertNotIn("_voice_authored", core)
+
+    async def test_segmented_delivery_removes_an_unclosed_voice_tag_before_the_platform_send(self):
+        """契约守护：生产接线的分段出口对未闭合标签只发送清理后的正文。
+
+        这条用例在生产同款 ``prepare_send`` 下也通过 origin/main 的实现
+        （``prepare_core_reply_voice_message`` 自己没有 policy 分支/无语音分支都会清洗），
+        所以它守护的是"分段出口的可见文本契约"，不承担旧实现必红的判别力。
+        """
+        event = FakeEvent()
+        prepared = {"context": object(), "event_id": "segmented", "event_ref": "segmented",
+                    "channel": "private",
+                    "segmentation_settings": {**asdict(SegmentationPolicy()),
+                                              "part_gap_mode": "fixed", "part_gap_ms": 0},
+                    "voice_reply_policy": VoiceReplyPolicy(generation_mode="model_tag", language="ja")}
+        prepare_core_reply_event(event, prepared, authorize=_allow,
+                                 prepare_send=_production_prepare_send(event, _unexpected_voice_render))
+        prepare_core_reply_segmentation(event)
+        activate_core_reply_delivery_guard(event)
+
+        await event.send(MessageChain(chain=[Plain("正文<pc_tts>よるのおやすみ")]))
+
+        self.assertEqual(len(event.sent), 1)
+        delivered = event.sent[0].get_plain_text()
+        self.assertNotIn("pc_tts", delivered)
+        self.assertNotIn("tts", delivered.casefold())
+        self.assertEqual(delivered, "正文よるのおやすみ")
+
+    async def test_native_voice_chain_still_cleans_an_unclosed_voice_tag_before_the_platform_send(self):
+        """链上已有原生 Record 时语音准备会提前返回，清理必须发生在平台发送之前。
+
+        ``prepare_core_reply_voice_message`` 见到 ``Record`` 就以 ``native_voice_exists``
+        原样返回，此时 ``capture_core_voice_message`` 是最后一道清洗；没有本改动时
+        ``<pc_tts>`` 字面量会随这条分段消息下发。
+        """
+        event = FakeEvent()
+        prepared = {"context": object(), "event_id": "native-voice", "event_ref": "native-voice",
+                    "channel": "private",
+                    "segmentation_settings": {**asdict(SegmentationPolicy()),
+                                              "part_gap_mode": "fixed", "part_gap_ms": 0},
+                    "voice_reply_policy": VoiceReplyPolicy(generation_mode="model_tag", language="ja")}
+        prepare_core_reply_event(event, prepared, authorize=_allow,
+                                 prepare_send=_production_prepare_send(event, _unexpected_voice_render))
+        prepare_core_reply_segmentation(event)
+        activate_core_reply_delivery_guard(event)
+
+        await event.send(MessageChain(chain=[Plain("正文<pc_tts>よるのおやすみ"),
+                                            Record(file="base64://YQ==")]))
+
+        self.assertEqual(len(event.sent), 1)
+        delivered = event.sent[0]
+        self.assertEqual([type(part) for part in delivered.chain], [Plain, Record])
+        self.assertEqual(delivered.get_plain_text(), "正文よるのおやすみ")
+        self.assertNotIn("pc_tts", delivered.get_plain_text())
+        diagnostics = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)["_voice_reply_diagnostics"]
+        self.assertEqual(diagnostics[-1]["state"], "native_voice_exists")
+
+    def test_unclosed_voice_tag_is_removed_when_voice_is_plain_generated(self):
+        event = FakeEvent()
+        core = {"prepared": {"event_ref": "plain", "voice_reply_policy": VoiceReplyPolicy()}}
+        event.set_extra(CORE_REPLY_CONTEXT_EXTRA, core)
+
+        output = capture_core_voice_message(event, MessageChain(chain=[Plain("正文<pc_tts>よるのおやすみ")]))
+
+        self.assertEqual(output.get_plain_text(), "正文よるのおやすみ")
+
+    def test_unclosed_voice_tag_cleanup_keeps_the_rest_of_the_chain(self):
+        event = FakeEvent()
+        core = {"prepared": {"event_ref": "media", "voice_reply_policy":
+                             VoiceReplyPolicy(generation_mode="model_tag", language="ja")}}
+        event.set_extra(CORE_REPLY_CONTEXT_EXTRA, core)
+        image = Image.fromURL("https://example.invalid/a.png")
+
+        output = capture_core_voice_message(
+            event, MessageChain(chain=[Plain("正文<pc_tts>よる"), image]))
+
+        self.assertEqual([type(part) for part in output.chain], [Plain, Image])
+        self.assertEqual(output.get_plain_text(), "正文よる")
+
+    def test_paired_voice_tag_keeps_its_speech_and_still_hides_the_wrapper(self):
+        event = FakeEvent()
+        policy = VoiceReplyPolicy(generation_mode="model_tag", language="ja", foreign_text_mode="translation")
+        core = {"prepared": {"event_ref": "paired", "voice_reply_policy": policy}}
+        event.set_extra(CORE_REPLY_CONTEXT_EXTRA, core)
+
+        output = capture_core_voice_message(
+            event, MessageChain(chain=[Plain("<pc_tts>おやすみ</pc_tts>晚安，好好睡")]))
+
+        self.assertEqual(output.get_plain_text(), "晚安，好好睡")
+        self.assertEqual(core["_voice_authored"]["visible"], "晚安，好好睡")
+        self.assertEqual(core["_voice_authored"]["spans"], ((0, "おやすみ"),))
+
+    def test_unpaired_voice_wrapper_variants_are_removed_from_visible_text(self):
+        variants = (("未闭合开标签", "正文<pc_tts>よるのおやすみ", "正文よるのおやすみ"),
+                    ("孤立的闭标签", "正文</tts>后续", "正文后续"),
+                    ("标签内空白", "< pc_tts >空白变体", "空白变体"),
+                    ("大写标签名", "大写变体<PC_TTS>", "大写变体"),
+                    ("全角尖括号", "全角＜pc_tts＞变体", "全角变体"),
+                    ("开闭标签名混用", "<pc_tts>混用</tts>结尾", "混用结尾"))
+        for name, source, expected in variants:
+            with self.subTest(variant=name):
+                event = FakeEvent()
+                core = {"prepared": {"event_ref": "variant", "voice_reply_policy":
+                                     VoiceReplyPolicy(generation_mode="model_tag", language="ja")}}
+                event.set_extra(CORE_REPLY_CONTEXT_EXTRA, core)
+
+                output = capture_core_voice_message(event, MessageChain(chain=[Plain(source)]))
+
+                self.assertEqual(output.get_plain_text(), expected)
+                self.assertNotIn("_voice_authored", core)
+
+    def test_voice_cleanup_log_reports_wrapper_pairing_without_the_text(self):
+        cases = (("model_tag 未配对", VoiceReplyPolicy(generation_mode="model_tag", language="ja"),
+                  "正文<pc_tts>よるのおやすみ", "正文よるのおやすみ",
+                  "pairing=unpaired", "paired_wrappers=0 stray_tags=1"),
+                 ("plain 成对", VoiceReplyPolicy(),
+                  "<pc_tts>おやすみ</pc_tts>晚安", "おやすみ晚安",
+                  "pairing=paired", "paired_wrappers=1 stray_tags=0"))
+        for name, policy, source, visible, pairing, counts in cases:
+            with self.subTest(case=name):
+                event = FakeEvent()
+                core = {"prepared": {"event_ref": "pairing", "voice_reply_policy": policy}}
+                event.set_extra(CORE_REPLY_CONTEXT_EXTRA, core)
+
+                with self.assertLogs("astrbot", level="INFO") as captured:
+                    output = capture_core_voice_message(event, MessageChain(chain=[Plain(source)]))
+
+                self.assertEqual(output.get_plain_text(), visible)
+                line = next(line for line in captured.output if "stage=voice_cleanup" in line)
+                self.assertIn("state=voice_wrapper_cleanup", line)
+                self.assertIn(pairing, line)
+                self.assertIn(counts, line)
+                self.assertNotIn(visible, line)
+                self.assertNotIn(source, line)
+
     async def test_captured_performance_is_preserved_after_visible_reply_is_segmented(self):
         event = FakeEvent()
         policy = VoiceReplyPolicy(generation_mode="model_tag", segment_mode="each")
@@ -307,3 +459,22 @@ class FakeDelivery:
 
 async def _allow(*_):
     return Outcome.success(True)
+
+
+async def _unexpected_voice_render(*_, **__):
+    raise AssertionError("voice reply must not render while the chain already carries a Record")
+
+
+def _production_prepare_send(event, renderer):
+    """Mirror main.py's ``prepare_send`` callback: reaction, voice, then outbound."""
+    async def prepare(current, message, authorize, segment_index, segment_count):
+        message = await prepare_core_reaction_message(
+            event, message, authorize=authorize,
+            segment_index=segment_index, segment_count=segment_count)
+        message = await prepare_core_reply_voice_message(
+            event, current, message, renderer=renderer, delivery=None, authorize=authorize,
+            segment_index=segment_index, segment_count=segment_count)
+        return prepare_core_reply_outbound_message(
+            event, current, message, segment_index=segment_index)
+
+    return prepare
