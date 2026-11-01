@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from astrbot.api.web import request
@@ -22,6 +23,7 @@ from .capability_role_selection import (
 from .management_identity import dashboard_operator
 from .integration_registry import UnifiedCompanionExtensionAPI
 from .native_extensions.builtins import MANAGED_EXTENSIONS
+from .native_extensions.image_native.nai_backend import NAIImageBackend
 
 
 PREFIX = "/astrbot_plugin_private_companion"
@@ -64,7 +66,9 @@ class IntegrationWebAPI:
                         action="memory.manage",
                         observed_at=controller.now(),
                     ))
-                return {"status": "ok", "message": "", "data": UnifiedCompanionExtensionAPI(controller).manifest()}
+                data = UnifiedCompanionExtensionAPI(controller).manifest()
+                data["nai"] = NAIImageBackend(controller.context, Path(controller.data_root) / "nai").status()
+                return {"status": "ok", "message": "", "data": data}
         except TaskError as error:
             from .web_api import outcome_response
 

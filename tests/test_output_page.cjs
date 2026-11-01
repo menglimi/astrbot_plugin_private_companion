@@ -31,6 +31,8 @@ function fixture(nai = null) {
   const requests = [];
   let observabilityFailure = false;
   let reconnectFailureCode = "";
+  let outputFailure = false;
+  let manifestFailure = false;
   const listeners = new Map();
   let outputSettings = {backend: "auto", enabled: false, endpoints: [], comfyui: {}, sd_webui: {},
     operation_routes: {generate: [], edit: []}};
@@ -42,12 +44,17 @@ function fixture(nai = null) {
       relative: value => value,
       async request(method, endpoint, body) {
         requests.push({method, endpoint, body});
+        if (endpoint === "integration/manifest") {
+          if (manifestFailure) throw Object.assign(new Error("network failed"), {code: "network_error"});
+          return {nai};
+        }
         if (endpoint === "model/image/observability") {
           if (observabilityFailure) throw Object.assign(new Error("network failed"), {code: "network_error"});
           return {images: {total: 1, items: []}, content: {available: true, works_count: 2,
             candidate_count: 1, updated_at: "2026-10-12T04:05:00Z"}};
         }
         if (endpoint === "model/image/output/save") outputSettings = body.changes;
+        if (endpoint === "model/image/output" && outputFailure) throw new Error("角色配置暂不可读");
         if (endpoint === "model/image/output" || endpoint === "model/image/output/save")
           return {settings: outputSettings, nai, revision: "r1", host_registered: false};
         if (endpoint === "model/image/output/reconnect") {
@@ -86,6 +93,9 @@ function fixture(nai = null) {
       listeners.get("input")({target});
     },
     failObservability(value) {observabilityFailure = value;},
+    clearRole() {delete role.model_api; delete role.image_material_api;},
+    failOutput(value) {outputFailure = value;},
+    failManifest(value) {manifestFailure = value;},
     failReconnect(code) {reconnectFailureCode = code;},
     clickReconnect() {
       const target = {disabled: false, dataset: {outputNativeAction: "reconnect"}};
@@ -166,6 +176,58 @@ test("NAI direct mode keeps unsupported edit controls disabled", async () => {
   const html = state.single.get("[data-output-native-selector]").innerHTML;
   assert.match(html, /data-output-nai-operation="edit" disabled/);
   assert.doesNotMatch(html, /data-output-nai-operation="generate" disabled/);
+  state.page.unmount();
+});
+
+test("NAI remains visible before account and persona setup without saving any routes", async () => {
+  const state = fixture({installed: true, available: true, call_mode: "direct",
+    default_model: "nai-diffusion-4-5-full", operations: ["generate"]});
+  state.clearRole();
+  state.page.mount(state.root);
+  await new Promise(resolve => setImmediate(resolve));
+  const html = state.single.get("[data-output-native-selector]").innerHTML;
+  assert.match(html, /NAI 生图插件/);
+  assert.match(html, /已就绪/);
+  assert.match(html, /nai-diffusion-4-5-full/);
+  assert.match(html, /配置账号并绑定人格/);
+  assert.match(html, /data-manage="host"/);
+  assert.match(html, /data-output-nai-operation="generate" disabled/);
+  assert.match(html, /data-output-nai-operation="edit" disabled/);
+  assert.equal(state.single.get(".output-image-status span").textContent, "选择账号与人格后显示最近产出");
+  state.toggleNai("generate", true);
+  state.clickAction("save");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(state.requests.some(item => item.endpoint === "integration/manifest"));
+  assert.ok(state.requests.every(item => item.method === "GET"));
+  assert.ok(state.requests.every(item => !item.endpoint.startsWith("model/")));
+  state.page.unmount();
+});
+
+test("a failed role configuration read keeps the NAI section visible with disabled controls", async () => {
+  const state = fixture({installed: true, available: true, call_mode: "direct", operations: ["generate"]});
+  state.failOutput(true);
+  state.page.mount(state.root);
+  await new Promise(resolve => setImmediate(resolve));
+  const html = state.single.get("[data-output-native-selector]").innerHTML;
+  assert.match(html, /角色配置暂不可读/);
+  assert.match(html, /NAI 生图插件/);
+  assert.match(html, /NAI 状态暂不可读/);
+  assert.doesNotMatch(html, /未检测到已启用/);
+  assert.match(html, /data-output-nai-operation="generate" disabled/);
+  state.page.unmount();
+});
+
+test("unconfigured NAI rereads do not retain a stale ready state after a detection failure", async () => {
+  const state = fixture({installed: true, available: true, call_mode: "direct", operations: ["generate"]});
+  state.clearRole();
+  state.page.mount(state.root);
+  await new Promise(resolve => setImmediate(resolve));
+  state.failManifest(true);
+  await state.page.refresh();
+  const html = state.single.get("[data-output-native-selector]").innerHTML;
+  assert.match(html, /NAI 状态暂不可读/);
+  assert.doesNotMatch(html, /已就绪/);
+  assert.match(html, /data-output-nai-operation="generate" disabled/);
   state.page.unmount();
 });
 
