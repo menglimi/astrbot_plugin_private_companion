@@ -102,6 +102,46 @@ class LocalModelGateway:
         guard = request.role_guard_instruction if request.role_guard_instruction is not None else request.role_instruction
         return replace(request, role_instruction=reference, role_guard_instruction=guard)
 
+    def estimate(self, run: TaskRun, request: PromptRequest):
+        """Read-only: would this request fit the route it would be dispatched on?
+
+        ``open_session`` replaces the captured persona with the task role
+        reference before it resolves the route and reserves the provider, so a
+        caller that preflights the request it captured judges a different
+        envelope. That cuts both ways: a host persona longer than the self page
+        lets a window through that still fails at dispatch, and a shorter one
+        trims — or rejects — a window that would have fitted. This applies the
+        same substitution first, then resolves the same read-only route and asks
+        the first provider to reserve the same envelope ``_generate`` reserves,
+        so the request judged here is exactly the one ``generate`` would send.
+
+        Only the primary route is preflighted: a fallback is a later execution
+        route with its own model override, so judging it with the primary
+        envelope would reject a fitting primary for no reason.
+
+        Nothing is recorded here: no ``model_requests`` row, no adopted plan, no
+        budget hold, no ledger entry and no request leaving the process. Only an
+        exception from ``reserve`` means "does not fit"; a routing error is a
+        real failure and is raised unchanged. It returns the fit flag and the
+        declared ceiling, not an amount: what dispatch still enforces on top of
+        ``reserve`` (its ``Amount`` contract, the declared output ceiling) is not
+        repeated here, so a third-party adapter that breaks that contract still
+        fails at dispatch, not in this preflight.
+        """
+        request = self._task_role_request(run, request)
+        plan = self.router.resolve(run, request)
+        if not plan.providers:
+            return True, None
+        provider = plan.providers[0]
+        ceiling = provider.maximum_input_estimate
+        try:
+            provider.reserve(replace(plan.envelope, provider_capabilities=provider.capabilities))
+        except Exception:
+            logger.debug("[CompanionV2][开发者追踪] 预检未通过模型档案 task=%s provider=%s",
+                         run.task.task_id, provider.binding, exc_info=True)
+            return False, ceiling
+        return True, ceiling
+
     def open_session(self, run: TaskRun, request: PromptRequest, *, tools: tuple[ToolSpec, ...] = (),
                      tool_filters: tuple[dict, ...] = (), independent_providers=None):
         """Open the one model session and decide this round's effective tools.
