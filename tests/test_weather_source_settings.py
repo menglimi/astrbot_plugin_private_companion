@@ -15,9 +15,11 @@ from cryptography.hazmat.primitives import serialization
 from tests import test_host_options_api as host_fixture
 from astrbot_host.weather_settings import CachedWeatherPort, configured_weather_ports
 from companion_v2.agenda.planning_config import WeatherLocation
+from companion_v2.agenda.weather_tools import WeatherTools
 
 
 KEY = "0123456789abcdef0123456789abcdef"
+ROTATED_KEY = "abcdef0123456789abcdef0123456789"
 HOST = "example.re.qweatherapi.com"
 
 
@@ -62,6 +64,41 @@ class WeatherSourceSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restored.port._credentials.host, HOST)
         self.assertEqual(alert._credentials.host, HOST)
         self.assertNotIn(KEY, json.dumps(await self.source()))
+
+    async def test_model_weather_tool_follows_source_save_rotation_and_clear(self):
+        # 装配时 LocalRoleTools 与规划页拿到同一个端口，且 WeatherTools 把它冻在
+        # 实例上（conversation/tool_loop.py、agenda/weather_tools.py）。保存后必须
+        # 一起换成新端口，否则 weather.current 仍走旧数据源与旧凭据。
+        previous, _alerts = configured_weather_ports(self.config)
+        previous.cache[WeatherLocation("旧地点", 31.2, 121.4)] = (0, object())
+        self.application.tools = NS(weather=WeatherTools(previous, None))
+        tool = self.application.tools.weather
+        self.assertIs(tool.port, previous)
+
+        response = await self.save({"provider": "qweather", "api_host": HOST, "credential": KEY})
+        self.assertEqual(response["status"], "ok", response)
+        self.assertEqual(response["data"]["apply_mode"], "immediate")
+        self.assertIs(tool.port, self.application.calendar_planning.weather_port)
+        self.assertIsNot(tool.port, previous)
+        self.assertEqual(tool.port.provider, "qweather")
+        self.assertEqual(tool.port.port._credentials.host, HOST)
+        self.assertEqual(tool.port.cache, {})
+        self.assertEqual(previous.cache, {})
+
+        # 轮换凭据后工具请求头里是新 Key，而不是构造时那一份。
+        response = await self.save({"credential": ROTATED_KEY})
+        self.assertEqual(response["status"], "ok", response)
+        self.assertEqual(tool.port.port._credentials.headers(datetime.now(timezone.utc)),
+                         {"X-QW-Api-Key": ROTATED_KEY})
+        self.assertIs(tool.port, self.application.calendar_planning.weather_port)
+
+        # 清除页面凭据后工具不再持有已删除的 Key，并随数据源退回 Open-Meteo。
+        cleared = await self.save({"clear_credentials": True})
+        self.assertEqual(cleared["status"], "ok", cleared)
+        self.assertEqual(cleared["data"]["credential_source"], "none")
+        self.assertIs(tool.port, self.application.calendar_planning.weather_port)
+        self.assertEqual(tool.port.provider, "open-meteo")
+        self.assertIsNone(getattr(tool.port.port, "_credentials", None))
 
     async def test_blank_credential_retains_secret_and_source_change_replaces_cache(self):
         await self.save({"api_host": HOST, "credential": KEY})

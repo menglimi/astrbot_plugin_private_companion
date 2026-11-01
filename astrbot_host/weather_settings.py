@@ -207,4 +207,17 @@ class WeatherHostSettings:
                     retry_at = getattr(events, "retry_at", None)
                     if retry_at is not None:
                         retry_at.clear()
+            # 模型侧工具在装配时就把端口冻进 ``LocalRoleTools.weather.port``
+            # （见 conversation.tool_loop、agenda.weather_tools），保存后不重绑会让
+            # ``weather.current`` 一直走旧数据源，并继续持有已轮换或已清除的凭据。
+            # 新端口自带空缓存，旧端口的缓存也没有消费者了，顺手清掉避免被仍持有
+            # 旧对象的路径读回过期观测。
+            tools = getattr(app, "tools", None)
+            tool = getattr(tools, "weather", None) if tools is not None else None
+            if tool is not None:
+                previous = getattr(tool, "port", None)
+                tool.port = weather
+                stale_cache = getattr(previous, "cache", None)
+                if previous is not weather and stale_cache is not None:
+                    stale_cache.clear()
         return {"saved": True, **self.view()}
