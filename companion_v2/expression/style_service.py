@@ -143,6 +143,16 @@ class ExpressionStyleService:
                getattr(receipt, "updated_at", None), material[:12],
                getattr(job.get("policy"), "learning_mode", "unknown"))
 
+    def _warn_binding(self, branch, context, detail):
+        """Name the exact check that refused this source window.
+
+        The page only ever shows ``expression_binding_changed``, so without the
+        branch a stale snapshot and a real re-binding look identical in the log.
+        """
+        logger.warning("[CompanionV2] 表达学习来源校验未通过 branch=%s window=%s kind=%s role=%s detail=%s",
+                       branch, context.key[:12], context.scope.kind.value,
+                       context.role_binding.role.subject_id, detail)
+
     def _bound(self, context, instruction):
         """Accept a live private binding or re-derive the same group scope.
 
@@ -150,10 +160,19 @@ class ExpressionStyleService:
         member is intentionally allowed to change while the learning window
         remains the same group/role route. Private contexts still require the
         original actor and audience through the exact context key.
+
+        Window comparisons use ``TaskContext.same_window``: the snapshots this
+        method re-reads keep the ``policy_revision`` they were stored with,
+        while the identity directory advances that revision for every unrelated
+        bind or grant. Only a different key — participant, conversation, role
+        or audience — may fail the check.
         """
         bound = self.app.state_maintenance.bindings.get(context.key)
         if bound is not None:
-            if bound[:2] != (context, instruction):
+            same_window = bound[0].same_window(context)
+            if not same_window or bound[1] != instruction:
+                self._warn_binding("live_binding", context,
+                                   "role_instruction_changed" if same_window else "window")
                 raise TaskError("expression_binding_changed", "the original role is no longer bound")
             return bound[2]
         from companion_v2.conversation.native_turns import latest as native_latest
@@ -161,11 +180,19 @@ class ExpressionStyleService:
         if native is not None:
             try:
                 original = TaskContext.restore(json.loads(native["context_json"]))
-            except (TypeError, ValueError, KeyError):
+            except (TypeError, ValueError, KeyError) as corrupt:
+                # Stored data that no longer parses is not a re-bound role; the
+                # detail names it so the two causes stay apart in the log.
+                self._warn_binding("native_context", context,
+                                   "corrupt_context:" + type(corrupt).__name__)
                 raise TaskError("expression_binding_changed", "the original native conversation is invalid") from None
             current = self.tasks.identity.resolve_role(context.scope, observed_at=self.tasks.now())
-            if (original != context or native["role_instruction"] != instruction
-                    or not current.is_success or current.unwrap() != context.role_binding):
+            role_current = current.is_success and current.unwrap() == context.role_binding
+            changed = [name for name, differs in (("window", not original.same_window(context)),
+                                                  ("role_instruction", native["role_instruction"] != instruction),
+                                                  ("role", not role_current)) if differs]
+            if changed:
+                self._warn_binding("native_role", context, ",".join(changed))
                 raise TaskError("expression_binding_changed", "the original native role is no longer bound")
             return None
         if context.scope.kind is ScopeKind.GROUP:
@@ -189,20 +216,34 @@ class ExpressionStyleService:
                  context.role_binding.role.installation_id, context.role_binding.role.kind.value,
                  context.role_binding.role.subject_id, context.role_binding.revision))
             if row is None:
+                self._warn_binding("group_batch_missing", context, "no stored batch for this group route")
                 raise TaskError("expression_binding_changed", "the original group conversation is no longer current")
             try:
                 original = TaskContext.restore(json.loads(row["context_json"]))
-            except (TypeError, ValueError, KeyError):
+            except (TypeError, ValueError, KeyError) as corrupt:
+                self._warn_binding("group_context", context,
+                                   "corrupt_context:" + type(corrupt).__name__)
                 raise TaskError("expression_binding_changed", "the original group conversation is invalid") from None
+            # A group window admits another member as the latest-turn author, so
+            # only the scope and the role binding are compared here. Both are
+            # already free of the actor's installation-wide policy revision.
             if original.scope != context.scope or original.role_binding != context.role_binding:
+                self._warn_binding("group_scope", context, "scope" if original.scope != context.scope
+                                   else "role_binding")
                 raise TaskError("expression_binding_changed", "the original group role is no longer bound")
         else:
             row = self.runtime.read_one("SELECT context_json FROM conversation_batches WHERE origin_key = ?",
                                         (context.key,))
-            if row is None or TaskContext.restore(json.loads(row["context_json"])) != context:
+            original = None if row is None else TaskContext.restore(json.loads(row["context_json"]))
+            if original is None or not original.same_window(context):
+                self._warn_binding("private_batch", context, "missing" if original is None else
+                                   f"stored_policy_revision={original.actor.policy_revision} "
+                                   f"observed_policy_revision={context.actor.policy_revision}")
                 raise TaskError("expression_binding_changed", "the original conversation is no longer current")
         current = self.tasks.identity.resolve_role(context.scope, observed_at=self.tasks.now())
         if not current.is_success or current.unwrap() != context.role_binding:
+            self._warn_binding("current_role", context, "stored_role_binding" if current.is_success
+                               else "resolve_role:" + str(getattr(current.failure, "code", "missing")))
             raise TaskError("expression_binding_changed", "the original role is no longer bound")
         return None
 
@@ -210,6 +251,17 @@ class ExpressionStyleService:
         check = self._bound(context, instruction)
         if check is not None:
             await check(context.scope, context.role_binding, instruction)
+
+    def _live_window(self, context):
+        """The live binding of this window as ``(context, instruction)``, or ``None``.
+
+        Scheduler candidates are restored from stored batches and native turns,
+        which keep the ``policy_revision`` they were written with. When the host
+        still holds this window, that binding is the current authority for it and
+        must be scanned instead of the older copy.
+        """
+        bound = self.app.state_maintenance.bindings.get(context.key)
+        return None if bound is None else (bound[0], bound[1])
 
     def prepare(self, context, instruction, at):
         self.app.require_running()
@@ -584,15 +636,21 @@ class ExpressionStyleService:
                     break
         return tuple(candidates)
 
-    def _scan(self, context, instruction, at):
-        """Prepare one due window; returns True when a worker was started."""
+    def _scan(self, context, instruction, at, work_key=None):
+        """Prepare one due window; returns True when a worker was started.
+
+        ``work_key`` is authoritative when the caller already resolved it from
+        the discovered candidate: a group window is scanned through its live
+        binding, and both spellings must report one place, not two.
+        """
+        work_key = self._work_key(context) if work_key is None else work_key
         if self.next_checks.get(context.key, at) > at:
             return False
         self.next_checks[context.key] = at + timedelta(seconds=60)
         policy = self._policy(context, at)
         active_count = self._active_signal_count(context)
         if active_count >= policy.active_signal_limit:
-            self.results[self._work_key(context)] = {"state": "capacity_reached", "limit": policy.active_signal_limit}
+            self.results[work_key] = {"state": "capacity_reached", "limit": policy.active_signal_limit}
             return False
         scan_minutes = (policy.group_scan_interval_minutes if context.scope.kind is ScopeKind.GROUP
                         else policy.scan_interval_minutes)
@@ -602,9 +660,9 @@ class ExpressionStyleService:
             return False
         key, _ = self._cursor(context)
         self._advance_cursor(key, at)
-        self.workers[self._work_key(context)] = asyncio.create_task(
+        self.workers[work_key] = asyncio.create_task(
             self.run(context, instruction), name="companion:expression-learn")
-        self.workers[self._work_key(context)].add_done_callback(lambda done: self.app.notify())
+        self.workers[work_key].add_done_callback(lambda done: self.app.notify())
         return True
 
     def start(self, context, instruction):
@@ -707,23 +765,38 @@ class ExpressionStyleService:
                     if candidate.key in scanned_private:
                         continue
                     scanned_private.add(candidate.key)
-                    source_instruction = (instruction if candidate.key == context.key
-                                          else self._private_instruction(candidate))
+                    # Restored candidates keep the policy revision they were
+                    # stored with. Prefer the live binding for the same window so
+                    # this scan never compares an older snapshot of a window the
+                    # host still owns against its current authority.
+                    live = self._live_window(candidate)
+                    if live is not None:
+                        candidate, source_instruction = live
+                    else:
+                        source_instruction = (instruction if candidate.key == context.key
+                                              else self._private_instruction(candidate))
                     if source_instruction and self._scan(candidate, source_instruction, at):
                         return
             except TaskError as error:
                 self.results[self._work_key(context)] = {"state": "blocked", "code": error.code}
         # Group learning is opt-in per group and runs after the private queue.
-        for context in group_contexts:
+        for candidate in group_contexts:
             at = self.tasks.now()
+            # The group work key belongs to the role and the window, so the
+            # discovered candidate and the live binding that replaces it report
+            # to the same entry. Resolve it once from the candidate, before the
+            # scope can be swapped, instead of recomputing it per call site.
+            work_key = self._work_key(candidate)
             try:
+                live = self._live_window(candidate)
+                context = live[0] if live is not None else candidate
                 instruction = self._group_instruction(context, at)
                 if instruction is None:
                     continue
-                if self._scan(context, instruction, at):
+                if self._scan(context, instruction, at, work_key):
                     return
             except TaskError as error:
-                self.results[self._work_key(context)] = {"state": "blocked", "code": error.code}
+                self.results[work_key] = {"state": "blocked", "code": error.code}
 
     def _group_instruction(self, context, at):
         """A group run needs its own switch and the exact current role prompt."""
