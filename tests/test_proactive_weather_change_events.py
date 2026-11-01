@@ -23,12 +23,13 @@ class WeatherChangeContactTests(ContactScheduleFixture, unittest.IsolatedAsyncio
         if location:
             before = manager.status(self.core).unwrap()
             manager.command(self.core, dict(action="configure", operation_key="weather-change-location",
-                edit_token=before["edit_token"], changes={"planning_weather_location": location})).unwrap()
+                edit_token=before["edit_token"], role_edit_token=before["role_edit_token"],
+                changes={"planning_weather_location": location})).unwrap()
         self.settings(app, {"chat.enabled": False, "weather_change_enabled": enabled}).unwrap()
         return app, context, manager
 
-    def snapshot(self, location, *, code, condition, temperature=22, wind=12, age=10):
-        return WeatherSnapshot("open-meteo", location.name, self.clock.now() - timedelta(minutes=age),
+    def snapshot(self, location, *, code, condition, temperature=22, wind=12, age=10, provider="open-meteo"):
+        return WeatherSnapshot(provider, location.name, self.clock.now() - timedelta(minutes=age),
                                temperature, condition, 75, wind, (), code)
 
     async def sampled(self, app, port, count):
@@ -64,7 +65,7 @@ class WeatherChangeContactTests(ContactScheduleFixture, unittest.IsolatedAsyncio
             async def fetch(self, location):
                 self.calls += 1
                 return test.snapshot(location, code=0 if self.calls == 1 else 61,
-                                     condition="晴" if self.calls == 1 else "小雨")
+                                     condition="晴" if self.calls == 1 else "小雨", provider="qweather")
 
         port = WeatherPort()
         app.contact_schedule.weather_change_events.port = port
@@ -82,10 +83,12 @@ class WeatherChangeContactTests(ContactScheduleFixture, unittest.IsolatedAsyncio
         materials = [json.loads(item.payload) for item in request.context.materials if item.owner == SOURCE_OWNER]
         self.assertEqual(len(materials), 1)
         self.assertEqual(materials[0]["event"], "role_location_weather_change")
+        self.assertEqual(materials[0]["provider"], "qweather")
         self.assertEqual(materials[0]["previous"]["weather_code"], 0)
+        self.assertEqual(materials[0]["current"]["provider"], "qweather")
         self.assertEqual(materials[0]["current"]["weather_code"], 61)
         self.assertNotIn("_receipt", materials[0])
-        self.assertIn("不能称为突发灾害", request.instruction)
+        self.assertIn("不称灾害、预警或趋势", request.instruction)
         self.assertEqual(json.loads(self.contacts(app)[0]["record_json"])["purpose"], "environment")
 
         await app.close()
@@ -146,7 +149,7 @@ class WeatherChangeContactTests(ContactScheduleFixture, unittest.IsolatedAsyncio
         await self.sampled(app, port, 1)
         before = manager.status(self.core).unwrap()
         manager.command(self.core, dict(action="configure", operation_key="weather-change-new-location",
-            edit_token=before["edit_token"],
+            edit_token=before["edit_token"], role_edit_token=before["role_edit_token"],
             changes={"planning_weather_location": new_location_json})).unwrap()
 
         self.advance(app, 3600)

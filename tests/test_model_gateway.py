@@ -21,7 +21,7 @@ from companion_v2.identity_policy.personas import PersonaBinding, PersonaSelecto
 from companion_v2.model_gateway.budget import BudgetLedger
 from companion_v2.model_gateway.failures import ModelFailure
 from companion_v2.model_gateway.models import (Amount, BudgetPolicy, CacheSignature, CapturedModelOutput,
-    LocalProvider, ModelTaskProfile, ProviderResponse, is_released)
+    LocalProvider, MAX_MODEL_OUTPUT_TOKENS, ModelTaskProfile, ProviderResponse, is_released)
 from companion_v2.model_gateway.perception import capability_instruction
 from companion_v2.model_gateway.routing import ModelRouter, configuration_fields
 from companion_v2.model_gateway.service import LocalModelGateway
@@ -50,7 +50,7 @@ class ModelFixture(ExecutionFixture):
         self.ledger = BudgetLedger(self.runtime, self.budget_policy)
         self.gateway = LocalModelGateway(self.router, self.ledger, self.tasks)
 
-    def provider(self, name):
+    def provider(self, name, reserve=None):
         async def generate(envelope):
             self.called.append((name, envelope))
             response = self.responses.get(name)
@@ -59,7 +59,13 @@ class ModelFixture(ExecutionFixture):
             return response or ProviderResponse("generated", ModelDraft("private draft", ()), Amount(15, 40), "receipt-" + name)
 
         return LocalProvider(ProviderBinding("model.text", name, "1", "local-1"), ("text",), 100,
-                             lambda envelope: self.estimate, generate)
+                             reserve or (lambda envelope: self.estimate), generate)
+
+    def gateway_with(self, *providers):
+        self.providers = providers
+        self.router = ModelRouter(self.configuration, self.profiles, self.providers)
+        self.router.start(expected_generation=1)
+        self.gateway = LocalModelGateway(self.router, self.ledger, self.tasks)
 
     def request(self, context=None):
         context = context or self.context
@@ -444,6 +450,51 @@ class ModelGatewayTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("private credential", json.dumps(report))
         self.assertNotIn("private credential", str(tuple(self.runtime.read_one("SELECT * FROM model_call_failures", ()))))
 
+    async def test_a_local_limit_keeps_its_own_code_instead_of_a_generic_estimation_failure(self):
+        def reserve(envelope):
+            raise TaskError("host_model_limit_input", "input limit exceeded: estimated=2048 maximum=1024")
+
+        self.gateway_with(self.provider("primary", reserve), self.provider("fallback"))
+        run = self.model_run()
+
+        with self.assertLogs("companion_v2.model_gateway.service", level="WARNING") as captured:
+            with self.assertRaises(TaskError) as error:
+                await self.gateway.generate(run, self.request())
+
+        self.assertEqual(error.exception.code, "host_model_limit_input")
+        self.assertIn("estimated=2048", str(error.exception))
+        message = "\n".join(captured.output)
+        self.assertIn("code=host_model_limit_input", message)
+        self.assertIn("error_type=TaskError", message)
+        # 数值要出现在 WARNING 里：线上日志级别就足以判断差多少。
+        self.assertIn("estimated=2048", message)
+        self.assertIn("maximum=1024", message)
+        # 越界不静默换 provider，也不写 model_calls：台账里留下的是可执行的那个 code。
+        self.assertEqual(self.called, [])
+        self.assertEqual(self.call_rows(), ())
+        rounds = self.runtime.read_all(
+            "SELECT round_no, state, call_id FROM model_rounds WHERE task_id = ?", (run.task.task_id,))
+        self.assertEqual([(row["round_no"], row["state"], row["call_id"]) for row in rounds], [(0, "started", None)])
+
+    async def test_an_unexpected_reserve_error_keeps_its_error_type_and_its_message_private(self):
+        def reserve(envelope):
+            raise ValueError("duplicate offered tool")
+
+        self.gateway_with(self.provider("primary", reserve), self.provider("fallback"))
+        run = self.model_run()
+
+        with self.assertLogs("companion_v2.model_gateway.service", level="WARNING") as captured:
+            with self.assertRaises(TaskError) as error:
+                await self.gateway.generate(run, self.request())
+
+        self.assertEqual(error.exception.code, "model_estimation_failed")
+        self.assertIn("ValueError", str(error.exception))
+        self.assertNotIn("details omitted", str(error.exception))
+        self.assertNotIn("duplicate offered tool", str(error.exception))
+        self.assertIn("error_type=ValueError", "\n".join(captured.output))
+        self.assertEqual(self.called, [])
+        self.assertEqual(self.call_rows(), ())
+
     async def test_revocation_discards_late_draft_but_records_actual_usage(self):
         async def revoke(envelope):
             self.identity.revoke_binding(self.important.binding_id, expected_revision=self.identity.revision, revoked_at=NOW)
@@ -633,6 +684,52 @@ class ModelGatewayTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TaskError) as error:
             await self.gateway.generate(run, self.request())
         self.assertEqual(error.exception.code, "consumer_generation_conflict")
+        self.assertEqual(self.called, [])
+
+
+class ProviderCeilingTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
+    """A task may raise its output limit up to what its Provider accepts.
+
+    The Provider ceiling used to be a copy of the global default budget, so a task
+    could never ask for more than that default and the refusal blamed the selected
+    Provider. These cases keep the two ideas apart: raise the task above the default
+    budget and the request carries it, up to the product ceiling; exceed a Provider's
+    own declared ceiling and it is still refused.
+    """
+
+    def gateway_at(self, ceiling, *, reserve_tokens):
+        providers = tuple(replace(provider, maximum_output_tokens=ceiling) for provider in self.providers)
+        self.router = ModelRouter(self.configuration, self.profiles, providers)
+        self.router.start(expected_generation=1)
+        # A larger ceiling needs a reservation that covers it; the budget itself is
+        # not the subject of these cases.
+        self.estimate = Amount(reserve_tokens, 100)
+        roomy = BudgetPolicy(*(Amount(1_000_000, 1_000_000) for _ in range(4)),
+                             background=Amount(1_000_000, 1_000_000))
+        return LocalModelGateway(self.router, BudgetLedger(self.runtime, roomy), self.tasks)
+
+    async def test_a_task_limit_above_the_default_budget_reaches_the_provider(self):
+        self.patch_model(max_output_tokens=4096)
+
+        await self.gateway_at(MAX_MODEL_OUTPUT_TOKENS, reserve_tokens=5000).generate(self.model_run(), self.request())
+
+        self.assertEqual(self.called[0][1].max_output_tokens, 4096)
+
+    async def test_a_task_limit_can_reach_the_product_ceiling(self):
+        self.patch_model(max_output_tokens=MAX_MODEL_OUTPUT_TOKENS)
+
+        await self.gateway_at(MAX_MODEL_OUTPUT_TOKENS, reserve_tokens=MAX_MODEL_OUTPUT_TOKENS).generate(
+            self.model_run(), self.request())
+
+        self.assertEqual(self.called[0][1].max_output_tokens, MAX_MODEL_OUTPUT_TOKENS)
+
+    async def test_a_declared_provider_ceiling_still_refuses_a_larger_task_limit(self):
+        self.patch_model(max_output_tokens=4096)
+
+        with self.assertRaises(TaskError) as error:
+            await self.gateway_at(1024, reserve_tokens=5000).generate(self.model_run(), self.request())
+
+        self.assertEqual(error.exception.code, "model_output_limit")
         self.assertEqual(self.called, [])
 
 

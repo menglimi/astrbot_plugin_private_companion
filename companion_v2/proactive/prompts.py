@@ -579,14 +579,50 @@ def contact_output(text, *, official_alert=None, require_confidence=False):
     return data["text"], (data.get("reaction_intent") or "").strip() or None
 
 
+# 排除说法两个方向都要认得：「除目标镇街外」和「目标镇街之外」是同一句话，
+# 只认其中一侧就会把明确排除了目标镇街的原文当成覆盖证据。这里保持显式动词表
+# 而不改成正向声明白名单：真实的官方标题常常只有「大风蓝色预警」这类没有覆盖
+# 动词的句子，正向白名单会误伤它们；维持「出现排除即拒绝」的关闭式判定，只会
+# 更保守，不会多发送。
+#
+# 但「就近」必须真的是目标镇街自己在被否定，不能顺带扫到隔壁那一句去：
+# 目标在后时，否定词到目标之间不能跨句（「本次预警不包含台风影响，目标镇街需
+# 防范大风」否定的是台风，目标只是下一句的主语）；目标在前时，两者中间不能夹
+# 「其他/周边/其余」这类指别处的区域词（「目标镇街发布大风预警，周边地区不受
+# 影响」否定的是周边）。否则目标镇街明明在预警里，却被当成未覆盖而漏发。
+_EXCLUSION_BEFORE = r"(?:除|不含|不包括|不包含|未覆盖|未涵盖|不覆盖|不涉及|不在|排除)"
+_EXCLUSION_AFTER = (
+    r"(?:除外|以外|之外|不在|不包含|不包括|不含|不涉及|不属于|不适用"
+    r"|未覆盖|未涵盖|未列入|未被.{0,8}覆盖|不受影响|未受影响|(?<![未不没])被排除|排除在外|剔除)")
+_EXCLUSION_EN = (
+    r"\b(?:outside|except(?:ing)?|excluding|excludes?"
+    r"|unaffected|excluded|not\s+(?:covered|included|applicable|affected))")
+# 指向别处的区域词：出现就说明被否定的是它们，目标镇街不跟着一起被排除。
+# 「局部/部分」不算——它们说的是目标镇街自己的一部分，仍属于排除目标。
+_OTHER_AREA = r"(?:其他|其它|其余|周边|附近|邻近|临近|相邻|外围|别处|别的)"
+_OTHER_AREA_EN = r"\b(?:other|others|elsewhere|surrounding|nearby|neighbou?ring)\b"
+_CLAUSE_BREAK = r"[，。；！？\n]"
+_CLAUSE_BREAK_EN = r"[.,;!?\n]"
+
+
+def _excludes_target(original, target):
+    """排除说法只认落在目标地点自己身上的那一种。"""
+    return bool(
+        re.search(rf"{target}(?:(?!{_OTHER_AREA}).){{0,12}}{_EXCLUSION_AFTER}", original)
+        or re.search(rf"{_EXCLUSION_BEFORE}(?:(?!{_CLAUSE_BREAK}).){{0,16}}{target}", original)
+        or re.search(rf"{target}(?:(?!{_OTHER_AREA_EN}).){{0,12}}{_EXCLUSION_EN}",
+                     original, re.IGNORECASE)
+        or re.search(rf"{_EXCLUSION_EN}(?:(?!{_CLAUSE_BREAK_EN}).){{0,24}}{target}",
+                     original, re.IGNORECASE))
+
+
 def _coverage_supported(alert, area, quote):
     target = re.escape(area)
     sources = tuple(alert.get(field, "") for field in ("headline", "description", "instruction"))
     if any(type(source) is not str for source in sources):
         return False
     original = "\n".join(sources)
-    if (re.search(rf"(?:除|不含|不包括|未覆盖|不覆盖|不涉及|不在).{{0,16}}{target}", original)
-            or re.search(rf"{target}.{{0,8}}(?:除外|不在|不包括|未覆盖|未列入|不受影响)", original)):
+    if _excludes_target(original, target):
         return False
     for field in ("headline", "description", "instruction"):
         source = alert.get(field, "")

@@ -21,8 +21,10 @@ from companion_v2.expression import feedback as style_feedback
 from companion_v2.expression import learning as style_learning
 from companion_v2.expression import style_rotation
 from companion_v2.expression import rule_details
+from companion_v2.foundation.refs import ScopeKind
 
 from .foreground import ContextContribution, ContributionState
+from .scope_family import group_identity_key, scope_family_keys
 
 
 SNAPSHOT_VERSION = "conversation.expression-style-context.v2"
@@ -81,32 +83,104 @@ class ConversationExpressionStyleContext:
                     else "expression_style_context_unavailable"}
         return {**snapshot, "references": references, "truncated": truncated}
 
+    def _family(self, context):
+        """Every scope digest whose rules this conversation may read.
+
+        A group owns its expression rules across AstrBot's conversation
+        rotations, including the synthetic identity scope the V1 group import
+        wrote under; a private participant owns only their own windows. The
+        review page resolves the same family, so both agree on what is usable.
+        """
+        return scope_family_keys(self.runtime, context)
+
+    def _owns_rule_scope(self, scope_key, context):
+        """Whether a self-contained rule's window is this conversation's rule.
+
+        The current window and the group's synthetic V1 identity scope are
+        answered without a query, so an ordinary group turn reads no extra
+        windows. Only a rule stored in a window this group used earlier has to
+        resolve the family, and then the same family the review page uses
+        decides it.
+        """
+        if scope_key == digest(context.scope) or scope_key == group_identity_key(context.scope):
+            return True
+        return context.scope.kind is ScopeKind.GROUP and scope_key in self._family(context)
+
+    def _adopted_rows(self, owner_key, scope_keys):
+        """Adopted rules of exactly these windows, bounded like the pool scan."""
+        placeholders = ",".join("?" * len(scope_keys))
+        return self.runtime.read_all(f"""SELECT s.signal_id, s.run_id, s.scope_key,
+                s.applicability_json, s.evidence_json, r.sample_json
+            FROM expression_style_signals s JOIN expression_style_runs r ON r.run_id = s.run_id
+            WHERE s.owner_key = ? AND s.state = 'adopted'
+              AND s.scope_key IN ({placeholders})
+            ORDER BY s.signal_id LIMIT ?""", (owner_key, *scope_keys, MAX_POOL_SCAN + 1))
+
+    def _has_family_rules(self, owner_key, own_keys):
+        """Whether this owner adopted any rule outside the windows read here.
+
+        One indexed probe keeps an ordinary group turn at a constant number of
+        reads: the scope-family scan only runs when the owner really keeps
+        rules in another window. Without the probe, a role with a large adopted
+        backlog in one group would make every other group's turn scan it.
+        """
+        placeholders = ",".join("?" * len(own_keys))
+        return self.runtime.read_one(f"""SELECT 1 FROM expression_style_signals
+            WHERE owner_key = ? AND state = 'adopted'
+              AND scope_key NOT IN ({placeholders}) LIMIT 1""", (owner_key, *own_keys)) is not None
+
     def _ordered(self, context, at, rules_per_turn, candidate_limit, decay_hours, *, channel):
         owner_key = digest(self.catalog.role_owner(context))
         scope_key = digest(context.scope)
-        if context.scope.kind.value == "private":
+        # A group also owns the synthetic identity scope its V1 import wrote
+        # under; these two windows are read directly, so an ordinary group turn
+        # never loads the rules of another window.
+        own = {scope_key}
+        if context.scope.kind is ScopeKind.GROUP:
+            identity = group_identity_key(context.scope)
+            if identity is not None:
+                own.add(identity)
+        own_keys = tuple(sorted(own))
+        family = None
+        if context.scope.kind is ScopeKind.GROUP:
+            rows = list(self._adopted_rows(owner_key, own_keys))
+            # Resolve the family only when the owner really keeps rules in
+            # another window, then read just those rows. Filtering a bounded
+            # scan of *all* adopted rules in Python would let another group's
+            # backlog push this group's rules out of the pool.
+            if self._has_family_rules(owner_key, own_keys):
+                family = self._family(context)
+                rest = tuple(key for key in family if key not in own)
+                if rest:
+                    rows.extend(self._adopted_rows(owner_key, rest))
+        else:
+            # A private dialogue rule may be re-read from an earlier window of
+            # the same participant, so the pool cannot be narrowed by scope.
             rows = self.runtime.read_all("""SELECT s.signal_id, s.run_id, s.scope_key,
                     s.applicability_json, s.evidence_json, r.sample_json
                 FROM expression_style_signals s JOIN expression_style_runs r ON r.run_id = s.run_id
                 WHERE s.owner_key = ? AND s.state = 'adopted'
                 ORDER BY s.signal_id LIMIT ?""", (owner_key, MAX_POOL_SCAN + 1))
-        else:
-            rows = self.runtime.read_all("""SELECT s.signal_id, s.run_id, s.scope_key,
-                    s.applicability_json, s.evidence_json, r.sample_json
-                FROM expression_style_signals s JOIN expression_style_runs r ON r.run_id = s.run_id
-                WHERE s.owner_key = ? AND s.scope_key = ? AND s.state = 'adopted'
-                ORDER BY s.signal_id LIMIT ?""", (owner_key, scope_key, MAX_POOL_SCAN + 1))
         pool, scopes = [], set()
         for row in rows:
             try:
                 window = json.loads(row["sample_json"])
+                source_kind = window.get("source_kind", "confirmed_reply")
                 if context.scope.kind.value == "private":
-                    if window.get("source_kind") in ("shared_pack", "legacy_expression"):
+                    if source_kind in ("shared_pack", "legacy_expression"):
                         eligible = row["scope_key"] == scope_key
                     else:
                         source = self.catalog.evidence_context(window, context)
                         eligible = self.catalog.private_source_available(source, context, at)
+                elif source_kind in ("shared_pack", "legacy_expression"):
+                    # These rules carry their own text, so they belong to the
+                    # group and follow it through conversation rotations. The
+                    # rows above already come from exactly these two sources.
+                    eligible = row["scope_key"] in own or (
+                        family is not None and row["scope_key"] in family)
                 else:
+                    # A dialogue rule is re-read from the live window it was
+                    # captured in, so it stays bound to that exact window.
                     eligible = row["scope_key"] == scope_key
             except Exception:
                 eligible = False
@@ -131,9 +205,16 @@ class ConversationExpressionStyleContext:
                 scopes.add(row["scope_key"])
         if not pool:
             return [], False
+        # Rotation counters live under the scope a rule was learned in. The pool
+        # now spans a group's windows, so combine their counters exactly like
+        # the review page does: sum the injections, keep the most recent use.
         usage_map = {}
-        for source_scope in scopes:
-            usage_map.update(style_rotation.usage(self.runtime, owner_key, source_scope))
+        for source_scope in sorted(scopes):
+            for identifier, (injections, last) in style_rotation.usage(
+                    self.runtime, owner_key, source_scope).items():
+                previous = usage_map.get(identifier, (0, None))
+                usage_map[identifier] = (previous[0] + injections,
+                    max((item for item in (previous[1], last) if item is not None), default=None))
         # The sample is drawn once here and sealed into the turn, so re-reading the
         # turn reproduces exactly the same rules.
         picked = style_rotation.sample(pool, usage_map=usage_map,
@@ -220,13 +301,13 @@ class ConversationExpressionStyleContext:
             raise TaskError("expression_style_context_changed", "stored style window is invalid")
         if source_kind == "legacy_expression":
             from companion_v2.expression.legacy_import import evidence
-            if row["scope_key"] != digest(context.scope):
+            if not self._owns_rule_scope(row["scope_key"], context):
                 raise TaskError("expression_style_context_changed", "legacy style belongs to another scope")
             evidence(window, handles)
             basis = "adopted_legacy_expression"
         elif source_kind == "shared_pack":
-            if (row["scope_key"] != digest(context.scope) or handles or window.get("handles")
-                    or window.get("characters") != 0):
+            if (not self._owns_rule_scope(row["scope_key"], context) or handles
+                    or window.get("handles") or window.get("characters") != 0):
                 raise TaskError("expression_style_context_changed", "shared style rule is invalid")
             basis = "adopted_shared_expression"
         else:
