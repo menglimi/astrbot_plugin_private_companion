@@ -326,6 +326,12 @@ class NativeImageProvider:
                     or not isinstance(image_prompt["negative"], str)):
                 raise NativeImageError("invalid_image_prompt_preferences")
             envelope["image_prompt"] = image_prompt
+        nai_prompt = value.get("nai_prompt")
+        if nai_prompt is not None:
+            if (not isinstance(nai_prompt, dict) or set(nai_prompt) != {"positive", "negative"}
+                    or any(not isinstance(nai_prompt[key], str) for key in ("positive", "negative"))):
+                raise NativeImageError("invalid_image_prompt_preferences")
+            envelope["nai_prompt"] = nai_prompt
         invocation = ImageInvocation(scope, value["invocation_id"], value["invocation_id"], value["origin_key"],
                                      operation, arguments["prompt"], negative_prompt=arguments.get("negative_prompt", ""),
                                      reference_ids=(tuple(ref.reference_id for ref in refs)
