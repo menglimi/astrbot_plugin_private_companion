@@ -471,12 +471,6 @@ class NativeExtensionRegistry(AstrBotToolPort):
                                        {**preferences, "style": "custom", "style_prompt": ""})
             request["nai_prompt"] = {"positive": nai_prompts["prompt"],
                                     "negative": request["arguments"].get("negative_prompt", "")}
-            validator = getattr(self.image_extension_api(), "validate_output_prompt", None)
-            if callable(validator):
-                from .image_native.nai_backend import PROMPT_ERRORS
-                code = validator(request)
-                if code:
-                    raise TaskError(code, PROMPT_ERRORS.get(code, "NAI 生图配置与本次请求不匹配。"))
         if invocation.descriptor.tool.action == TOGETHER_CREATE_ACTION:
             if self.persona_guard is None:
                 raise TaskError("native_persona_guard_missing", "room creation requires a verified host persona")

@@ -4,7 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace as NS
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from astrbot_host.native_extensions.image_native.extension import ImageExtensionAPI
 from astrbot_host.native_extensions.image_native.nai_backend import NAIImageBackend
@@ -116,9 +116,8 @@ class NAIBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.requests[0]["prompt_text"], "1girl, silver hair, green eyes")
         self.assertEqual(self.requests[0]["negative"], "")
 
-    async def test_invalid_tags_never_dispatch_or_fall_back_to_another_paid_backend(self):
-        self.api.validate_companion_prompt = lambda request: {
-            "valid": False, "reason": "nai_prompt_format_invalid"}
+    async def test_prompts_are_dispatched_without_calling_a_legacy_validator(self):
+        self.api.validate_companion_prompt = Mock(side_effect=AssertionError("unexpected preflight"))
         router = OutputRoutingBackend(
             {"enabled": True, "backend": "auto", "sd_webui": {"base_url": "http://example.test"},
              "operation_routes": {"generate": ["nai", "sd_webui"], "edit": []}},
@@ -126,24 +125,16 @@ class NAIBackendTests(unittest.IsolatedAsyncioTestCase):
         with patch("astrbot_host.native_extensions.image_native.output_routing.NativeTransportBackend") as local:
             local.return_value.operations = ("generate",)
             local.return_value.execute = AsyncMock()
-            with self.assertRaisesRegex(NativeImageError, "nai_prompt_format_invalid"):
-                await router.execute(self.invocation(), (), self.dispatch)
+            result = await router.execute(self.invocation(envelope={
+                "nai_prompt": {"positive": "银发女孩坐在窗边", "negative": "不要黑发"},
+            }), (), self.dispatch)
             local.return_value.execute.assert_not_awaited()
-        self.assertEqual(self.fences, 0)
-        self.api.generate_for_companion.assert_not_awaited()
-
-    def test_configuration_preflight_returns_a_specific_repairable_prompt_error(self):
-        self.api.validate_companion_prompt = lambda request: {
-            "valid": False, "reason": "nai_prompt_format_invalid"}
-        api = ImageExtensionAPI(data_root=self.root, config_path=self.root / "preflight.json",
-                                version="test", context=self.context)
-        self.addCleanup(api.close)
-        api.save_output_configuration(api.output_configuration()["revision"], {
-            "enabled": True, "backend": "nai", "operation_routes": {"generate": ["nai"], "edit": []}})
-        code = api.validate_output_prompt({"action": "image.generate",
-                                          "arguments": {"prompt": "银发女孩"}})
-        self.assertEqual(code, "nai_prompt_format_invalid")
-        self.api.generate_for_companion.assert_not_awaited()
+        self.assertEqual(self.requests[0]["prompt_text"], "银发女孩坐在窗边")
+        self.assertEqual(self.requests[0]["negative"], "不要黑发")
+        self.assertEqual(result.images, (image_bytes("blue"),))
+        self.assertEqual(self.fences, 1)
+        self.api.validate_companion_prompt.assert_not_called()
+        self.api.generate_for_companion.assert_awaited_once()
 
     async def test_authority_revocation_prevents_the_plugin_call(self):
         async def revoked():

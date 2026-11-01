@@ -10,14 +10,6 @@ from .owner import checked
 from .types import BackendResult, NativeImageError, inspect_image
 
 PLUGIN_NAME = "astrbot_plugin_nai_image"
-PROMPT_ERRORS = {
-    "nai_prompt_format_invalid": "NAI 使用英文标签模式，请依据本轮人物、动作和场景改写为英文 NAI 标签后重试；"
-                                 "角色本人出镜时保留人设里的发型发色、瞳色和种族等外貌特征。本次尚未提交生图。",
-    "nai_identity_reference_mode": "NAI 的氛围参考不能固定人物身份，请先在 NAI 插件切换为精准参考或图生图。"
-                                   "不要换用不带身份参考的生成来绕过本次一致性要求。",
-    "nai_prompt_language_invalid": "NAI 当前使用英文自然语言模式，请根据本轮人物与场景改写为英文描述后重试。"
-                                    "本次尚未提交生图请求。",
-}
 
 
 class NAIImageBackend:
@@ -42,7 +34,7 @@ class NAIImageBackend:
         result = {"installed": False, "available": False, "reason": "nai_plugin_unavailable",
                   "call_mode": "", "api_profile": "", "default_model": "",
                   "default_style": "", "default_size": "", "prompt_format": "",
-                  "artist_slot_name": "", "reference_mode": "", "prompt_contract_version": 0, "operations": []}
+                  "artist_slot_name": "", "reference_mode": "", "operations": []}
         try:
             api = self._api()
             if api is None:
@@ -65,7 +57,6 @@ class NAIImageBackend:
                                          else "natural" if status.get("prompt_format") else ""),
                           artist_slot_name=str(status.get("artist_slot_name", ""))[:80],
                           reference_mode=str(status.get("reference_mode", ""))[:40],
-                          prompt_contract_version=(1 if status.get("companion_prompt_contract_version") == 1 else 0),
                           operations=operations)
         except Exception:
             result.update(available=False, reason="nai_status_unavailable", operations=[])
@@ -74,25 +65,6 @@ class NAIImageBackend:
     @property
     def operations(self):
         return tuple(self.status()["operations"])
-
-    def validate_prompt(self, prompt, negative="", roles=()):
-        """Reject known prompt and identity mismatches before image dispatch.
-
-        Args:
-            prompt: Content prepared for the selected NAI mode.
-            negative: Explicit exclusions from the image request.
-            roles: The intended roles of any selected references.
-
-        Raises:
-            NativeImageError: The installed plugin rejects the local contract.
-        """
-        validator = getattr(self._api(), "validate_companion_prompt", None)
-        if callable(validator):
-            result = validator({"prompt_text": prompt, "negative": negative, "reference_roles": list(roles)})
-            if result.get("valid") is False:
-                code = result.get("reason")
-                raise NativeImageError(code if code in PROMPT_ERRORS else "nai_prompt_format_invalid",
-                                       unconfirmed=False)
 
     async def execute(self, invocation, references, before_dispatch):
         api = self._api()
@@ -104,7 +76,6 @@ class NAIImageBackend:
         prompt = prepared.get("positive", invocation.prompt)
         negative = prepared.get("negative", invocation.negative_prompt)
         roles = [reference.role for reference in references]
-        self.validate_prompt(prompt, negative, roles)
         request = {"prompt_text": prompt, "negative": negative,
                    "workflow_kind": invocation.operation,
                    "session_key": invocation.scope_key, "reference_roles": roles,

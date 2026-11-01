@@ -55,7 +55,7 @@ with tempfile.TemporaryDirectory(prefix="output-page-qa-") as data_root:
   const album=[1,2].map(id=>({image_id:"image-"+id,created_at:"2026-10-07T03:00:00Z",action:"image.generate",width:768,height:1024,thumbnail:imageUrl}));
   let daily=null,failImage=false,orderConflict=false,sceneConflict=false,backendRevision=1;
   let backend={enabled:true,backend:"auto",operation_routes:{generate:["online:endpoint-a"],edit:["online:endpoint-a"]},endpoints:[{id:"endpoint-a",name:"主用端点",enabled:true,platform:"openai",model:"image-qa",base_url:"https://example.invalid/v1",width:1024,height:1024,timeout_seconds:180,api_key:"",api_key_set:true}],comfyui:{base_url:"",timeout_seconds:300,workflows:{},api_key:"",api_key_set:false},sd_webui:{base_url:"",timeout_seconds:300,parameters:{},api_key:"",api_key_set:false}};
-  const nai={installed:true,available:true,call_mode:"direct",default_model:"nai-diffusion-4-5-full",default_size:"竖图",prompt_format:"nai",artist_slot_name:"主画风",prompt_contract_version:1,operations:["generate"]};
+  const nai={installed:true,available:true,call_mode:"direct",default_model:"nai-diffusion-4-5-full",default_size:"竖图",prompt_format:"nai",artist_slot_name:"主画风",operations:["generate"]};
   const posts=[],imageRequests=[],receipts=new Map();
   const snapshot=()=>({settings:structuredClone(backend),nai,revision:"revision-"+backendRevision,host_registered:true});
   const inventory=()=>({references:structuredClone(references),wardrobe:structuredClone(wardrobe),daily_outfit:structuredClone(daily),scene_presets:JSON.parse(sections["image.output"].settings.scene_presets_json),settings:{references:structuredClone(sections["photo.reference"].settings),wardrobe:structuredClone(sections.wardrobe.settings)}});

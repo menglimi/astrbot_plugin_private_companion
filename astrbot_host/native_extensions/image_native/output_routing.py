@@ -15,7 +15,7 @@ from urllib.parse import urlsplit, urlunsplit
 import aiohttp
 
 from .backends import NativeTransportBackend
-from .nai_backend import NAIImageBackend, PROMPT_ERRORS
+from .nai_backend import NAIImageBackend
 from .output_configuration import accepted_request_fields
 from .owner import checked
 from .types import BackendResult, NativeImageError, fingerprint
@@ -598,8 +598,6 @@ class OutputRoutingBackend:
                 if dispatched:
                     # A transport failure after the fence is never retried: the
                     # provider may already have executed and billed the request.
-                    raise
-                if isinstance(exc, NativeImageError) and exc.code in PROMPT_ERRORS:
                     raise
                 if isinstance(exc, NativeImageError) and exc.code in ABORTING_CODES:
                     raise
