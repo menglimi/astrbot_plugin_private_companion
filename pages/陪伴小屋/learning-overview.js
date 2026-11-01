@@ -123,6 +123,7 @@ window.CompanionLearningOverviewPage = (() => {
     learning_disabled: "该窗口未开启表达学习",
     capacity_reached: "待审与启用规则已达上限",
     daily_budget_reached: "今日群聊学习批次已用完",
+    already_attempted: "本批素材已学习，等待新消息",
     failed: "上次学习失败",
     blocked: "来源校验未通过",
   };
