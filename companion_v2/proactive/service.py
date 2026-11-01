@@ -498,6 +498,38 @@ class ProactiveContacts:
             raise TaskError("contact_source_changed", "contact evidence changed after selection")
         return tuple(records)
 
+    @staticmethod
+    def _dangling_after_own_reply(job, segments):
+        """True when a proactive turn only continues the role's own last reply.
+
+        ``contacts_since_last_input`` counts proactive contacts, not passive
+        replies.  After the role spoke last and the user stayed silent, a new
+        slot can therefore open immediately; starting it with ``哦？/那/照这么``
+        reads as the role answering itself instead of opening a new turn.
+        Such a message is skipped rather than sent as a dangling half-dialogue.
+        """
+        if not segments:
+            return False
+        last = job.last_reply or {}
+        interaction = job.interaction or {}
+        try:
+            replied_at = datetime.fromisoformat(last["observed_at"])
+            input_at = datetime.fromisoformat(interaction["last_input_at"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        if replied_at <= input_at:
+            return False
+        openers = ("哦", "噢", "嗯", "啊", "唉", "那", "所以", "照这么", "这么说",
+                   "然后", "不过", "可是", "而且", "说到", "接着", "对", "是嘛",
+                   "真的", "确实", "也是", "还有")
+        for part in segments[:2]:
+            text = part.strip().strip("。，！？!?…~～、,.;:： ")
+            if not text or len(text) > 12:
+                continue
+            if any(text == opener or text.startswith(opener) for opener in openers):
+                return True
+        return False
+
     def _duplicate(self, context, body, preferences, at, *, purpose, contact_id="", origin=None,
                    administrator_test=False):
         if not body or (not administrator_test and not preferences.dedup_applies(purpose, origin)) or self.history is None:
@@ -978,6 +1010,11 @@ class ProactiveContacts:
                 body, reaction_intent = None, None
                 segments = ()
                 presentation_reason = "forbidden_word"
+            dangling_reason = None
+            if body is not None and self._dangling_after_own_reply(job, segments):
+                body, reaction_intent = None, None
+                segments = ()
+                dangling_reason = "continuation_after_silence"
             dedup_reason = None
             if body is not None and self._duplicate(job.context, body, preferences, self.tasks.now(),
                     purpose=job.intent.purpose, origin=source_origin,
@@ -994,7 +1031,9 @@ class ProactiveContacts:
                     presentation_reason = "persona_judge"
             skip_reason = None
             if body is None:
-                if dedup_reason:
+                if dangling_reason:
+                    skip_reason = dangling_reason
+                elif dedup_reason:
                     skip_reason = "duplicate"
                 elif confidence_skip:
                     skip_reason = "low_confidence"
