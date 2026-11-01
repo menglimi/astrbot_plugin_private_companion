@@ -96,6 +96,43 @@ class OfficialAlertContactTests(ContactScheduleFixture, unittest.IsolatedAsyncio
         self.assertEqual(contact_output(output(coverage="covered", coverage_quote="目标镇街发布预警"),
                                         official_alert=alert), ("请留意。", None))
 
+    def test_coverage_guard_rejects_exclusions_naming_the_target_first(self):
+        """「目标镇街之外」和「除目标镇街外」是同一句排除，必须同样拒绝。"""
+        def output(quote):
+            return json.dumps({"decision": "send", "text": "请留意。", "coverage": "covered",
+                               "coverage_quote": quote}, ensure_ascii=False)
+        body = {"alert_area": "目标镇街", "alert": {"headline": "大风预警",
+            "description": "", "instruction": ""}}
+        for description, quote in (
+                ("全市发布大风预警，目标镇街以外地区不受影响。", "目标镇街以外地区不受影响"),
+                ("本次预警覆盖目标镇街之外的其他区域。", "目标镇街之外的其他区域"),
+                ("目标镇街不属于本次预警范围。", "目标镇街不属于本次预警范围"),
+                ("目标镇街不适用于本次预警。", "目标镇街不适用于本次预警"),
+                ("目标镇街被排除在本次预警范围外。", "目标镇街被排除在本次预警范围外"),
+                ("目标镇街未覆盖到，请注意其他区域。", "目标镇街未覆盖到"),
+                ("目标镇街不在本次预警覆盖范围内。", "目标镇街不在本次预警覆盖范围内"),
+                ("目标镇街未受影响。", "目标镇街未受影响")):
+            with self.subTest(description=description):
+                body["alert"]["description"] = description
+                self.assertEqual(contact_output(output(quote), official_alert=body), (None, None))
+        # 正向说法不能被误伤：只有「排除」才拒绝，覆盖原句照旧放行。
+        for description, quote in (("目标镇街发布大风预警，请注意防范。", "目标镇街发布大风预警"),
+                                   ("目标镇街处于本次预警范围内。", "目标镇街处于本次预警范围内")):
+            with self.subTest(description=description):
+                body["alert"]["description"] = description
+                self.assertEqual(contact_output(output(quote), official_alert=body), ("请留意。", None))
+        # 英文通告同样要认得正反两个方向。
+        english = {"alert_area": "Vienna", "alert": {"headline": "Wind warning",
+            "description": "", "instruction": ""}}
+        for description, quote in (("Vienna is outside the warning area.", "Vienna is outside the warning area"),
+                                   ("The warning excludes Vienna and its suburbs.", "The warning excludes Vienna")):
+            with self.subTest(description=description):
+                english["alert"]["description"] = description
+                self.assertEqual(contact_output(output(quote), official_alert=english), (None, None))
+        english["alert"]["description"] = "Vienna is covered by the wind warning."
+        self.assertEqual(contact_output(output("Vienna is covered by the wind warning"),
+                                        official_alert=english), ("请留意。", None))
+
     async def test_excluded_target_is_skipped_even_when_model_requests_send(self):
         app, _ = await self.setup_alerts()
         row = self.alert()

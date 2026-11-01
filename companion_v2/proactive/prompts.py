@@ -578,14 +578,30 @@ def contact_output(text, *, official_alert=None, require_confidence=False):
     return data["text"], (data.get("reaction_intent") or "").strip() or None
 
 
+# 排除说法两个方向都要认得：「除目标镇街外」和「目标镇街之外」是同一句话，
+# 只认其中一侧就会把明确排除了目标镇街的原文当成覆盖证据。这里保持显式动词表
+# 而不改成正向声明白名单：真实的官方标题常常只有「大风蓝色预警」这类没有覆盖
+# 动词的句子，正向白名单会误伤它们；维持「出现排除就近即拒绝」的关闭式判定，
+# 只会更保守，不会多发送。
+_EXCLUSION_BEFORE = r"(?:除|不含|不包括|不包含|未覆盖|未涵盖|不覆盖|不涉及|不在|排除)"
+_EXCLUSION_AFTER = (
+    r"(?:除外|以外|之外|不在|不包含|不包括|不含|不涉及|不属于|不适用"
+    r"|未覆盖|未涵盖|未列入|未被.{0,8}覆盖|不受影响|未受影响|(?<![未不没])被排除|排除在外|剔除)")
+_EXCLUSION_EN = (
+    r"\b(?:outside|except(?:ing)?|excluding|excludes?"
+    r"|unaffected|excluded|not\s+(?:covered|included|applicable|affected))")
+
+
 def _coverage_supported(alert, area, quote):
     target = re.escape(area)
     sources = tuple(alert.get(field, "") for field in ("headline", "description", "instruction"))
     if any(type(source) is not str for source in sources):
         return False
     original = "\n".join(sources)
-    if (re.search(rf"(?:除|不含|不包括|未覆盖|不覆盖|不涉及|不在).{{0,16}}{target}", original)
-            or re.search(rf"{target}.{{0,8}}(?:除外|不在|不包括|未覆盖|未列入|不受影响)", original)):
+    if (re.search(rf"{_EXCLUSION_BEFORE}.{{0,16}}{target}", original)
+            or re.search(rf"{target}.{{0,12}}{_EXCLUSION_AFTER}", original)
+            or re.search(rf"{_EXCLUSION_EN}.{{0,24}}{target}", original, re.IGNORECASE)
+            or re.search(rf"{target}.{{0,12}}{_EXCLUSION_EN}", original, re.IGNORECASE)):
         return False
     for field in ("headline", "description", "instruction"):
         source = alert.get(field, "")
