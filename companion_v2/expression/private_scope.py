@@ -1,55 +1,16 @@
-"""Role-wide private expression scopes derived from currently bound identities."""
+"""Private-chat expression scope helpers.
+
+Only private concerns live here: the participants bound to this role and the
+private source contexts that belong to them. Scope-family resolution -- for both
+private participants and group ownership -- lives in
+``companion_v2.conversation.scope_family`` so the review page and reply
+injection share one implementation instead of two entries.
+"""
 
 import json
 
-from companion_v2.execution.models import TaskContext, digest
+from companion_v2.execution.models import TaskContext
 from companion_v2.foundation.refs import ScopeKind
-
-
-def scope_family_keys(runtime, context):
-    """Scope digests of this participant's current and earlier private windows.
-
-    AstrBot rotates ``conversation_id``/``session_id`` frequently. Expression
-    rules are learned per participant and role, not per one conversation id, so
-    the review page must still find rules learned in the previous window. Only
-    the exact same installation, platform, bot, account, native scope, kind and
-    role qualify; another participant never enters the family.
-    """
-    keys = [digest(context.scope)]
-    scope = context.scope
-    if scope.kind is not ScopeKind.PRIVATE:
-        return tuple(keys)
-    parameters = (scope.installation_id, scope.platform, scope.bot_id, scope.account_id,
-                  scope.native_scope_id)
-    filter_sql = """json_extract(context_json, '$.role_binding.scope.installation_id') = ?
-        AND json_extract(context_json, '$.role_binding.scope.platform') = ?
-        AND json_extract(context_json, '$.role_binding.scope.bot_id') = ?
-        AND json_extract(context_json, '$.role_binding.scope.account_id') = ?
-        AND json_extract(context_json, '$.role_binding.scope.native_scope_id') = ?
-        AND json_extract(context_json, '$.audience.scope.kind') = 'private'"""
-    for table in ("conversation_native_turns", "conversation_batches"):
-        try:
-            rows = runtime.read_all(f"""SELECT context_json FROM {table}
-                WHERE {filter_sql} ORDER BY rowid DESC LIMIT 512""", parameters)
-        except Exception:
-            continue
-        for row in rows:
-            try:
-                candidate = TaskContext.restore(json.loads(row["context_json"]))
-            except (TypeError, ValueError, KeyError):
-                continue
-            if (candidate.scope.kind is not ScopeKind.PRIVATE
-                    or candidate.scope.installation_id != scope.installation_id
-                    or candidate.scope.platform != scope.platform
-                    or candidate.scope.bot_id != scope.bot_id
-                    or candidate.scope.account_id != scope.account_id
-                    or candidate.scope.native_scope_id != scope.native_scope_id
-                    or candidate.role_binding.role != context.role_binding.role):
-                continue
-            key = digest(candidate.scope)
-            if key not in keys:
-                keys.append(key)
-    return tuple(keys)
 
 
 def private_people(runtime, identity, context, at):

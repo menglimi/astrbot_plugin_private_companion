@@ -8,10 +8,12 @@ from companion_v2.configuration.models import ConfigLayer, ConfigTarget, Configu
 from companion_v2.conversation.participation import CONFIG_GROUP as PARTICIPATION_GROUP
 from companion_v2.conversation.participation import CONFIG_OWNER as PARTICIPATION_OWNER
 from companion_v2.conversation.reply_management import ReplyManagement
+from companion_v2.conversation.scope_family import group_identity_scope, group_scope_keys
 from companion_v2.execution.models import TaskContext, TaskError, digest
 from companion_v2.expression.style_management import ExpressionStyleManagement
 from companion_v2.foundation.outcome import Outcome
-from companion_v2.foundation.refs import OperationRef, RoleOwnerRef, ScopeKind, ScopeRef, VersionRef
+from companion_v2.foundation.refs import (OperationRef, RoleOwnerRef, ScopeKind, ScopeRef, SubjectKind,
+                                         SubjectRef, VersionRef)
 
 from .group_settings import GroupTarget, group_session_matches
 from .management_identity import dashboard_operator
@@ -299,19 +301,21 @@ class GroupReplyWebAPI:
 
     @staticmethod
     def _legacy_expression_count(controller, scope, role_id):
-        """Count old group rules stored in the pre-fix synthetic scope.
+        """Count old group rules this group still cannot read.
 
-        Old group imports used ``conversation_id = session_id = group_id``.
-        Those rows are neither listed nor injected at the runtime scope, so the
-        page would silently show no rules. The count is read-only diagnostic
-        data: rows are not moved here, because run/signal identities derive
-        from the scope and a careless migration would duplicate evidence and
-        rotation history.
+        Old group imports used ``conversation_id = session_id = group_id``. The
+        group scope family now includes that identity scope, so those rows are
+        listed, decided and injected like any other group rule and must not be
+        reported as "not yet effective". The counter stays as a read-only
+        diagnostic for rows the family cannot resolve; it never moves a row,
+        because run and signal identities derive from the scope and a careless
+        migration would duplicate evidence and rotation history.
         """
-        legacy = ScopeRef(scope.installation_id, scope.platform, ScopeKind.GROUP,
-                          scope.native_scope_id, scope.bot_id, scope.account_id,
-                          scope.native_scope_id, scope.native_scope_id)
-        if digest(legacy) == digest(scope):
+        legacy = group_identity_scope(scope)
+        if legacy is None:
+            return 0
+        role = SubjectRef(scope.installation_id, SubjectKind.BOT, role_id)
+        if digest(legacy) in group_scope_keys(controller.runtime, scope, role):
             return 0
         owner = RoleOwnerRef(scope.installation_id, scope.bot_id, role_id)
         row = controller.runtime.read_one("""SELECT COUNT(*) AS count FROM expression_style_signals
