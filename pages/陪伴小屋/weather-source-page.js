@@ -53,10 +53,12 @@ window.CompanionWeatherSourcePage = (() => {
       ? {kind, source, text:`${source} · ${kind} 已配置`}
       : {kind, source, text:"尚未配置和风凭据"};
   };
-  const signedReady = value => (
-    value?.credential_kind === "signed_jwt" && value?.credential_source === "environment"
-  ) || Boolean(value?.settings?.jwt_credential_id && value?.settings?.jwt_project_id
-    && value?.settings?.has_jwt_private_key);
+  /* has_credential 由宿主按凭据真实可用性判定（环境变量半配置、私钥不可读均为
+     false），是「已配置」的唯一依据；字段齐全不等于可用，不能单看 kind/source。 */
+  const signedReady = value => Boolean(value?.has_credential)
+    && ((value?.credential_kind === "signed_jwt" && value?.credential_source === "environment")
+      || Boolean(value?.settings?.jwt_credential_id && value?.settings?.jwt_project_id
+        && value?.settings?.has_jwt_private_key));
   const dirty = () => !!draft && (!status
     ? draft.credential !== "" || draft.jwt_private_key !== "" || pending || stale
     : draft.credential !== "" || draft.jwt_private_key !== "" || Object.keys(status.settings).some(key => String(draft[key]) !== String(status.settings[key])));
@@ -175,7 +177,10 @@ window.CompanionWeatherSourcePage = (() => {
       if (mode === "signed_jwt") {
         const kid = text(draft.jwt_credential_id), project = text(draft.jwt_project_id);
         const privateKey = text(draft.jwt_private_key) || status.settings.has_jwt_private_key;
-        const environmentSigned = status.credential_kind === "signed_jwt" && status.credential_source === "environment";
+        /* 只有宿主确认可用的环境签名组才能留空保存；半配置或私钥不可读
+           （has_credential=false）仍要补齐 kid、sub 和私钥。 */
+        const environmentSigned = status.has_credential
+          && status.credential_kind === "signed_jwt" && status.credential_source === "environment";
         if (!environmentSigned && (!kid || !project || !privateKey)) {
           message = "私钥自动签发需要同时填写 JWT 凭据 ID（kid）、项目 ID（sub）和 Ed25519 私钥。";
           render(); return;

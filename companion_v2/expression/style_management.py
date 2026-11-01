@@ -17,6 +17,7 @@ from companion_v2.execution.service import outcome
 from companion_v2.foundation.refs import RoleOwnerRef, ScopeKind
 from companion_v2.identity_policy.object_access import ObjectAccessPolicy
 
+from ..conversation.scope_family import scope_family_keys
 from ..role_work.growth.management import RoleGrowthManagement
 from . import feedback as style_feedback
 from . import style_rotation
@@ -24,7 +25,6 @@ from . import rule_details
 from . import rule_support
 from .configuration import read_settings
 from .learning import DIMENSIONS, candidate_signature, form_identity, normalize_applicability
-from .private_scope import scope_family_keys
 from .sharing import MAX_IMPORT_SIGNALS, build_pack, normalize_pack
 
 
@@ -61,14 +61,21 @@ class ExpressionStyleManagement:
             row["state"], row["decision_key"], row["decided_at"], policy_revision])
 
     def _family(self, context):
-        """Current scope plus earlier windows of the same participant."""
+        """Current window plus the earlier windows of the same owner.
+
+        A private family is the participant's own windows; a group family is
+        every window of that group and role, including the synthetic identity
+        scope the V1 group import wrote under. Both the review page and reply
+        injection resolve the family here, so a rule can never be listed but
+        unusable, or usable but unlisted.
+        """
         return scope_family_keys(self.runtime, context)
 
-    def _row(self, signal_id, owner, context):
+    def _row(self, signal_id, owner, context, *, keys=None):
         if (type(signal_id) is not str or not signal_id.strip() or len(signal_id) > 512
                 or signal_id != signal_id.strip()):
             raise TaskError("expression_signal_invalid", "select an original style signal")
-        keys = self._family(context)
+        keys = keys if keys is not None else self._family(context)
         row = self.runtime.read_one(
             "SELECT * FROM expression_style_signals WHERE signal_id = ? AND owner_key = ? "
             "AND scope_key IN (" + ",".join("?" * len(keys)) + ")",
@@ -283,7 +290,8 @@ class ExpressionStyleManagement:
         at = self.management.ledger.now()
         with self.runtime.transaction() as connection:
             owner, policy_revision = self._authorize(operator, context, at)
-            row = self._row(signal_id, owner, context)
+            keys = self._family(context)
+            row = self._row(signal_id, owner, context, keys=keys)
             decision_key = digest([operator.subject, context.key, operation_key, signal_id, action])
             if row["decision_key"] == decision_key and row["state"] == self._target(action):
                 return {"signal_id": signal_id, "state": row["state"], "replayed": True}
@@ -302,16 +310,22 @@ class ExpressionStyleManagement:
             if action in ("adopt", "restore", "reconsider"):
                 self._basis(row, owner, context, at)
             if action in ("restore", "reconsider"):
-                capacity = self.runtime.read_one("""SELECT COUNT(*) AS count FROM expression_style_signals
-                    WHERE owner_key = ? AND scope_key = ? AND state IN ('pending', 'adopted')""",
-                    (digest(owner), digest(context.scope)))
+                # The active-rule budget belongs to the family, exactly as the
+                # review page counts it: restoring a rule stored in an earlier
+                # window of the same group cannot exceed the configured limit.
+                placeholders = ",".join("?" * len(keys))
+                capacity = self.runtime.read_one(f"""SELECT COUNT(*) AS count FROM expression_style_signals
+                    WHERE owner_key = ? AND scope_key IN ({placeholders})
+                      AND state IN ('pending', 'adopted')""", (digest(owner), *keys))
                 if capacity["count"] >= read_settings(self.runtime, context).active_signal_limit:
                     raise TaskError("expression_capacity_reached", "retire an unused rule before restoring another")
+            # Decide the stored row in the window it belongs to; a group rule
+            # learned in an earlier window keeps its own scope and evidence.
             changed = connection.execute("""UPDATE expression_style_signals
                 SET state = ?, decided_at = ?, decided_by = ?, decision_key = ?
                 WHERE signal_id = ? AND owner_key = ? AND scope_key = ? AND state = ?""",
                 (self._target(action), stamp(at), operator.subject.subject_id, decision_key,
-                 signal_id, digest(owner), digest(context.scope), row["state"]))
+                 signal_id, digest(owner), row["scope_key"], row["state"]))
             if changed.rowcount != 1:
                 raise TaskError("expression_decided", "style signal changed during decision")
             self.app.notify()
@@ -379,9 +393,14 @@ class ExpressionStyleManagement:
         at = self.management.ledger.now()
         with self.runtime.read_snapshot():
             owner, _ = self._authorize(operator, context, at)
-            rows = self.runtime.read_all("""SELECT * FROM expression_style_signals
-                WHERE owner_key = ? AND scope_key = ? AND state = 'adopted' ORDER BY signal_id""",
-                (digest(owner), digest(context.scope)))
+            # Export what the review page shows: the adopted rules of this
+            # conversation's family, so a group rule learned in an earlier
+            # window can still be shared.
+            keys = self._family(context)
+            placeholders = ",".join("?" * len(keys))
+            rows = self.runtime.read_all(f"""SELECT * FROM expression_style_signals
+                WHERE owner_key = ? AND scope_key IN ({placeholders})
+                  AND state = 'adopted' ORDER BY signal_id""", (digest(owner), *keys))
             if signal_ids is not None:
                 selected = set(signal_ids)
                 rows = [row for row in rows if row["signal_id"] in selected]

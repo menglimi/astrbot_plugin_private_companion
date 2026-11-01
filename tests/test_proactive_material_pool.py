@@ -13,6 +13,7 @@ from companion_v2.proactive.material_pool import (read_active_material_pool, rea
                                                   read_proactive_contact_traces, read_role_material_pool,
                                                   read_shared_material_pool)
 from companion_v2.proactive.news_events import SOURCE_OWNER as NEWS_OWNER
+from companion_v2.proactive.official_alert_events import SOURCE_OWNER as ALERT_OWNER
 
 
 NOW = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
@@ -28,7 +29,58 @@ def record(owner, source_id, payload, *, expires_at=None):
     )
 
 
+def alert_payload(alert, *, city="目标城市"):
+    return json.dumps({"event": "role_location_official_weather_alert", "provider": "qweather",
+                       "role_location": "角色所在地", "alert_city": city, "alert_area": "目标镇街",
+                       "alert": alert, "attributions": [],
+                       "source_url": "https://www.qweather.com/"}, ensure_ascii=False)
+
+
 class ProactiveMaterialPoolTests(unittest.TestCase):
+    def project_alert(self, alert, *, city="目标城市"):
+        sources = Mock()
+        sources.list_readable_current.return_value = (
+            record(ALERT_OWNER, "alert-1", alert_payload(alert, city=city)),)
+        schedule = NS(contacts=NS(sources=sources), runtime=NS(read_one=Mock(return_value=None)),
+                      tasks=NS(identity=object()))
+        context = NS(key="private-a", scope=NS(kind=ScopeKind.PRIVATE, key="private-a"),
+                     audience=NS(recipients=("recipient-a",)), actor=object())
+
+        result = read_material_pool(schedule, context, observed_at=NOW, settings={})
+
+        self.assertEqual(result["count"], 1)
+        item = result["items"][0]
+        self.assertEqual(item["source"], "官方气象预警")
+        return item
+
+    def test_official_alert_material_reads_stored_headline_and_chinese_severity(self):
+        item = self.project_alert({"identifier": "alert-1", "headline": "大风蓝色预警",
+            "event_name": "大风", "sender_name": "当地气象台", "severity": "moderate",
+            "message_type": "alert", "supersedes": [], "description": "目标镇街发布大风预警。",
+            "instruction": "注意防范"})
+
+        self.assertEqual(item["title"], "大风蓝色预警")
+        self.assertEqual(item["detail"], "目标镇街发布大风预警。")
+        self.assertEqual(item["note"], "目标城市 · 较重")
+        self.assertNotIn("moderate", item["note"])
+
+    def test_official_alert_material_maps_each_severity_and_falls_back_to_event_name(self):
+        for severity, label in (("minor", "一般"), ("moderate", "较重"), ("severe", "严重"),
+                                ("extreme", "特别严重"), ("unknown", "未知")):
+            with self.subTest(severity=severity):
+                item = self.project_alert({"headline": "", "event_name": "大风",
+                                           "severity": severity, "description": ""})
+                self.assertEqual(item["title"], "大风")
+                self.assertEqual(item["note"], "目标城市 · " + label)
+
+    def test_official_alert_material_keeps_legacy_title_and_level_keys(self):
+        item = self.project_alert({"title": "旧版预警标题", "level": "severe",
+                                   "text": "旧版预警正文"})
+
+        self.assertEqual(item["title"], "旧版预警标题")
+        self.assertEqual(item["detail"], "旧版预警正文")
+        self.assertEqual(item["note"], "目标城市 · 严重")
+
     def test_projects_current_sources_and_hides_balance_amount_by_default(self):
         news_payload = json.dumps({"title": "天气提醒", "summary": "下午可能有雨", "source": "天气台",
                                    "category": "趣事",

@@ -34,7 +34,7 @@ from companion_v2.identity_policy.personas import RuntimeIdentity
 from companion_v2.conversation.content.authoring_tasks import authoring_profiles
 from companion_v2.identity_policy.repository import PersistentIdentityDirectory
 from companion_v2.model_gateway.budget import BudgetSoftPolicy
-from companion_v2.model_gateway.models import BudgetPolicy, ModelTaskProfile
+from companion_v2.model_gateway.models import BudgetPolicy, MAX_MODEL_OUTPUT_TOKENS, ModelTaskProfile
 from companion_v2.role_work.journal.writing import writing_profiles
 from companion_v2.proactive.service import contact_profile, persona_judge_profile
 from companion_v2.role_work.reader import reading_profile
@@ -276,7 +276,7 @@ class AstrBotStagingSession:
         self.model = AstrBotTextProvider(context, bridge=self.bridge, binding=binding,
             provider_id=profile.provider_id, version=native_types.version, provider_type=native_types.provider_types,
             function_tool_type=native_types.function_tool, tool_set_type=native_types.tool_set,
-            tariff=profile.tariff, maximum_output_tokens=profile.max_output_tokens,
+            tariff=profile.tariff, maximum_output_tokens=MAX_MODEL_OUTPUT_TOKENS,
             maximum_input_estimate=profile.maximum_input_estimate, output_parameter=profile.output_parameter,
             streaming=profile.streaming)
         if self.model.native is not native:
@@ -284,7 +284,7 @@ class AstrBotStagingSession:
         self.model._current()
         self.models = (self.model,) + assemble_providers(context, bridge=self.bridge, native_types=native_types,
             primary_id=profile.provider_id, additional=additional_providers,
-            defaults=TextProviderSettings(profile.provider_id, profile.tariff, profile.max_output_tokens,
+            defaults=TextProviderSettings(profile.provider_id, profile.tariff, MAX_MODEL_OUTPUT_TOKENS,
                 profile.maximum_input_estimate, profile.output_parameter, profile.streaming))
         fallback_provider_id, replacement_rules = loaded_routing(fallback_provider_id, replacement_rules,
             (model.binding.provider for model in self.models))

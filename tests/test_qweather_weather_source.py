@@ -192,7 +192,7 @@ class QWeatherWeatherPortTests(unittest.IsolatedAsyncioTestCase):
         snapshot, calls = await self._fetch(self._port(), body())
         request = next(item for item in calls if item[0] == "request")
         self.assertEqual(request[1], "https://example.xy.qweatherapi.com/v7/weather/now")
-        self.assertEqual(request[2], {"location": "121.47,31.23"})
+        self.assertEqual(request[2], {"location": "121.47,31.23", "lang": "zh"})
         self.assertFalse(request[4])
         self.assertEqual(next(item for item in calls if item[0] == "options")[1:],
                          (TOTAL_TIMEOUT_SECONDS, False))

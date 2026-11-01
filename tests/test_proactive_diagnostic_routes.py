@@ -10,6 +10,7 @@ from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import ScopeKind, ScopeRef, SourceRef, VersionRef
 from companion_v2.proactive.contact_models import ContactIntent
 from companion_v2.proactive.models import EvidenceSnapshot, Opportunity, Thought, ThoughtKind
+from companion_v2.proactive.official_alert_events import NO_CURRENT_ALERT
 from companion_v2.proactive.scheduling import ContactSchedule
 from tests.test_management_access import NOW
 
@@ -174,6 +175,28 @@ class ProactiveDiagnosticRouteTests(unittest.IsolatedAsyncioTestCase):
                 else:
                     producer.select.assert_called_once()
                     producer.prepare.assert_awaited_once()
+
+    async def test_empty_official_alert_poll_is_skipped_not_a_source_failure(self):
+        """轮询成功但没有生效中的预警是常态，不能写成来源失败。"""
+        schedule = self.schedule()
+        notes = []
+        schedule._note_window = lambda _context, _row, _at, stage, outcome, reason, **options: notes.append(
+            (stage, outcome, reason))
+        opportunity = Opportunity("official-alert-poll", self.scope, NOW, NOW + timedelta(minutes=5))
+        plan = (self.context, opportunity, (), self.batch["role_instruction"],
+                {"batch_id": "latest-batch", "official_alert_pending": {"location_hash": "hash"}})
+
+        schedule.official_alert_events.prepare = AsyncMock(return_value=NO_CURRENT_ALERT)
+        self.assertIsNone(await schedule._run(plan))
+        self.assertEqual(notes, [("source_preparation", "skipped", "official_alert_none_current")])
+
+        # 真实的获取失败仍按失败记录并保留原有失败码与重试语义。
+        notes.clear()
+        schedule.official_alert_events.prepare = AsyncMock(return_value=None)
+        result = await schedule._run(plan)
+        self.assertFalse(result.is_success)
+        self.assertEqual(result.failure.code, "contact_official_alert_unavailable")
+        self.assertEqual(notes, [("source_preparation", "failed", "contact_official_alert_unavailable")])
 
     async def test_news_source_can_only_satisfy_news_and_missing_source_is_not_synthesized(self):
         schedule = self.schedule()

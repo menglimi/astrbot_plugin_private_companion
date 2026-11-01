@@ -6,13 +6,21 @@ inherits by default. A later run asked the same question and was cut after 123
 visible characters because the model spent the rest of the ceiling on its own
 reasoning. Asking for the product maximum regardless of the ceiling is the bug
 these tests pin down.
+
+The same batch has to fit the *input* ceiling as well: a window's newest 80
+reference rules can exceed the default 131072-byte ceiling on their own once
+JSON-escaped by the adapter's wire (2026-11-01), so the batch trims them instead
+of failing. The floor keeps the priors deduplication needs, and the round bound
+is derived from the same read limit and the same two-thirds step. Both are the
+same budget question, so the trim policy is pinned here.
 """
 
 import unittest
 
 from companion_v2.expression import learning
 from companion_v2.expression.configuration import MODES
-from companion_v2.expression.style_service import learning_instruction
+from companion_v2.expression.style_service import (MAX_TRIM_ROUNDS, MIN_EXISTING_RULES, RULE_READ_LIMIT,
+    learning_instruction, reference_rule_priority, trim_reference_rules, trim_rounds)
 
 
 class LearningBudgetTests(unittest.TestCase):
@@ -69,6 +77,69 @@ class LearningBudgetTests(unittest.TestCase):
         self.assertIn(learning.FORM_INSTRUCTION, instruction)
         self.assertIn(f"{limit}条", instruction)
         self.assertIn(str(learning.text_budget(limit)), instruction)
+
+
+class ReferenceRuleTrimTests(unittest.TestCase):
+    """The reference rules are the material one batch can afford to lose."""
+
+    def test_one_step_keeps_the_affordable_rules_in_stored_order(self):
+        # Plain values rank like the lowest state, so value order falls back to
+        # the stored newest-first order and the step behaves as a prefix.
+        rules = tuple(range(RULE_READ_LIMIT))
+        kept = trim_reference_rules(rules)
+        self.assertEqual(kept, list(rules)[:len(kept)], "the stored order is newest first")
+        self.assertLess(len(kept), len(rules))
+
+    def test_a_lowest_value_window_keeps_the_newest_prefix(self):
+        rules = tuple({"signal_id": index, "state": "rejected"} for index in range(RULE_READ_LIMIT))
+        kept = trim_reference_rules(rules)
+        self.assertEqual(kept, list(rules)[:len(kept)], "equal value falls back to recency")
+
+    def test_an_older_adopted_rule_outranks_a_newer_rejected_one(self):
+        # The adopted rule sits at the oldest end of a newest-first window: a
+        # recency-only trim would drop it before any rejected rule.
+        rules = [{"signal_id": index, "state": "rejected"} for index in range(RULE_READ_LIMIT)]
+        rules[-1] = {"signal_id": "adopted", "state": "adopted"}
+        kept = trim_reference_rules(rules)
+        self.assertIn("adopted", [rule["signal_id"] for rule in kept])
+        self.assertEqual(kept, [rule for rule in rules if rule in kept],
+                         "the priority order must not reorder the prompt")
+        self.assertEqual(len(kept), max(MIN_EXISTING_RULES, len(rules) * 2 // 3))
+        # adopted 先于 pending，pending 先于其余状态
+        self.assertLess(reference_rule_priority({"state": "adopted"}),
+                        reference_rule_priority({"state": "pending"}))
+        self.assertLess(reference_rule_priority({"state": "pending"}),
+                        reference_rule_priority({"state": "rejected"}))
+
+    def test_a_missing_or_unknown_state_ranks_lowest(self):
+        rules = [{"signal_id": index} for index in range(RULE_READ_LIMIT)]
+        rules[-1] = {"signal_id": "retired", "state": "retired"}
+        kept = trim_reference_rules(rules)
+        self.assertEqual(kept, list(rules)[:len(kept)], "unknown states are the cheapest to drop")
+
+    def test_the_floor_is_never_crossed(self):
+        for count in range(MIN_EXISTING_RULES + 1):
+            with self.subTest(count=count):
+                self.assertEqual(len(trim_reference_rules(tuple(range(count)))), count)
+        for count in (9, 12, 40, RULE_READ_LIMIT):
+            with self.subTest(count=count):
+                self.assertGreaterEqual(len(trim_reference_rules(tuple(range(count)))),
+                                        MIN_EXISTING_RULES)
+
+    def test_the_round_bound_reaches_the_floor_from_a_full_window(self):
+        # The bound exists so a pathological estimate cannot loop, not to leave a
+        # request that still does not fit: a full window must land on the floor.
+        rules = tuple(range(RULE_READ_LIMIT))
+        for _ in range(MAX_TRIM_ROUNDS):
+            rules = trim_reference_rules(rules)
+        self.assertEqual(len(rules), MIN_EXISTING_RULES)
+
+    def test_the_round_bound_follows_the_read_limit(self):
+        # Not six by decree: the bound is whatever the same step needs from the
+        # window the service actually reads, so raising the read limit raises it.
+        self.assertEqual(MAX_TRIM_ROUNDS, trim_rounds(RULE_READ_LIMIT))
+        self.assertGreater(trim_rounds(RULE_READ_LIMIT * 2), MAX_TRIM_ROUNDS)
+        self.assertEqual(trim_rounds(MIN_EXISTING_RULES), 0)
 
 
 if __name__ == "__main__":

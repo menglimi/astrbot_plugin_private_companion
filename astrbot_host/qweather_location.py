@@ -5,7 +5,7 @@ import math
 
 from companion_v2.agenda.planning_config import WeatherLocation
 
-from .qweather_credentials import MAX_RESPONSE_BYTES
+from .qweather_credentials import MAX_RESPONSE_BYTES, RESPONSE_LANGUAGE
 
 
 ENDPOINT = "/geo/v2/city/lookup"
@@ -36,7 +36,7 @@ async def resolve_qweather_location(session, location, credentials, at):
     # fine. The lookup is left worldwide; ``adm`` still narrows it when the role has a
     # configured city, and the ordering below keeps the familiar domestic place first
     # when a name repeats.
-    params = {"location": location.name, "number": 10, "lang": "zh"}
+    params = {"location": location.name, "number": 10, "lang": RESPONSE_LANGUAGE}
     if location.alert_city:
         params["adm"] = location.alert_city
     url = f"https://{credentials.host}{ENDPOINT}"

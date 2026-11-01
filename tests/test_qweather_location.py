@@ -74,7 +74,8 @@ class QWeatherLocationTests(unittest.IsolatedAsyncioTestCase):
         # No "range": the lookup must not be confined to one country.
         self.assertEqual(calls[0][1]["params"], {"location": self.location.name,
             "number": 10, "lang": "zh", "adm": "测试市"})
-        self.assertEqual(calls[1][0], f"https://{API_HOST}/v7/weather/now/56.78,12.34")
+        self.assertEqual(calls[1][0], f"https://{API_HOST}/v7/weather/now")
+        self.assertEqual(calls[1][1]["params"], {"location": "56.78,12.34", "lang": "zh"})
 
     async def test_a_role_abroad_resolves_without_a_country_filter(self):
         """``range=cn`` made the whole chain unavailable for any role outside China."""
@@ -121,6 +122,7 @@ class QWeatherLocationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(observation.alerts, ())
         self.assertEqual(calls[0][0], f"https://{API_HOST}/geo/v2/city/lookup")
         self.assertEqual(calls[1][0], f"https://{API_HOST}/weatheralert/v1/current/12.34/56.78")
+        self.assertEqual(calls[1][1]["params"], {"lang": "zh"})
 
     async def test_unresolvable_name_fails_closed_before_weather_request(self):
         calls = []

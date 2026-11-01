@@ -19,7 +19,8 @@ import aiohttp
 from companion_v2.agenda.planning_config import WeatherLocation
 from companion_v2.proactive.external_materials import parse_weather_response
 
-from .qweather_credentials import MAX_RESPONSE_BYTES, credentials_from_environment
+from .qweather_credentials import (MAX_RESPONSE_BYTES, RESPONSE_LANGUAGE,
+                                   credentials_from_environment)
 from .qweather_location import resolve_qweather_location
 
 
@@ -177,7 +178,8 @@ class QWeatherWeatherPort:
         async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
             location = await resolve_qweather_location(session, location, self._credentials, at)
             url = f"https://{self._credentials.host}{ENDPOINT}"
-            params = {"location": f"{location.longitude:.2f},{location.latitude:.2f}"}
+            params = {"location": f"{location.longitude:.2f},{location.latitude:.2f}",
+                      "lang": RESPONSE_LANGUAGE}
             async with session.get(url, params=params, headers=self._credentials.headers(at),
                                   allow_redirects=False) as response:
                 if (response.status != 200 or response.content_length is not None
