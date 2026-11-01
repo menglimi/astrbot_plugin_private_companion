@@ -136,7 +136,7 @@ class ExpressionReplyPipelineTests(ExpressionFixture, HostFixture, unittest.Isol
         self.expression_profiles()
         self.model_behavior = self.expression_model
 
-    async def seed(self, host, *, count=6):
+    async def seed(self, host, *, count=6, prompt="原角色人格提示"):
         app = host.application
         context = self.selected_context()
         owner = RoleProfileConfigurationOwner(app.runtime)
@@ -148,7 +148,8 @@ class ExpressionReplyPipelineTests(ExpressionFixture, HostFixture, unittest.Isol
         self.configure_expression(app, {"private_learning_enabled": False}, context)
         batch = None
         for index in range(count):
-            batch = host.receive(self.event("seed-" + str(index), text="嗯哼，那就这么定啦。" + str(index))).unwrap()
+            batch = host.receive(self.event("seed-" + str(index), text="嗯哼，那就这么定啦。" + str(index),
+                                            prompt=prompt)).unwrap()
         self.advance(app)
         await self.done(app, batch)
         return self.context(app, batch)

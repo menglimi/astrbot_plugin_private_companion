@@ -1017,6 +1017,8 @@ button.summary-record:hover strong,.summary-memory:hover>strong,.summary-note:ho
 .search-result[aria-selected=true]{background:var(--t-accent-quiet);color:var(--ink)}
 .search-result[aria-selected=true]>svg{color:var(--t-accent-ink)}
 .search-result>span{min-width:0}
+.search-result mark{background:var(--t-accent-quiet);color:inherit;border-radius:2px;padding:0 1px}
+.search-result small mark{background:var(--t-accent-quiet);color:inherit}
 .search-result small{display:block;line-height:1.55;overflow-wrap:anywhere}
 .search-empty{display:grid;gap:var(--sp-2);line-height:1.7}
 .search-empty::before{content:"";width:26px;height:1px;margin:0 auto var(--sp-1);background:var(--t-line-firm)}
@@ -5432,6 +5434,9 @@ body.state-connected{min-width:320px}
 .wb-source-option>span{display:grid;gap:2px;min-width:0}
 .wb-source-option b{min-width:0;color:var(--t-text-strong);font-size:var(--fs-tiny);font-weight:600;overflow-wrap:anywhere}
 .wb-source-option small{color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.45;overflow-wrap:anywhere}
+.wb-source-option.is-disabled{opacity:.55;cursor:default}
+.wb-source-option.is-disabled:hover{background:none}
+.wb-source-whole-hint{color:var(--t-accent-ink)}
 .wb-source-missing{padding:var(--sp-1);border:1px dashed var(--t-line-firm);border-radius:var(--r-xs);color:var(--t-risk-ink)}
 .wb-source-count{justify-self:end;color:var(--t-text-faint);font-size:var(--fs-micro);font-variant-numeric:tabular-nums}
 .wb-textarea-wrap{display:grid;gap:var(--sp-1);min-width:0}

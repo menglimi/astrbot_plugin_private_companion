@@ -390,6 +390,10 @@ class LocalProvider:
     maximum_output_tokens: int
     reserve: Callable[[ModelEnvelope], Amount]
     generate: Callable[[ModelEnvelope], Awaitable[ProviderResponse]]
+    # 适配器自己声明的输入预估上限。owner 侧要在发请求前判断材料装不装得下，
+    # 只能从这里读；`reserve` 只回答"装不下"，说不出被拒的那条线在哪。
+    # 默认值与宿主配置的默认值一致，本地测试适配器可以不管这个字段。
+    maximum_input_estimate: int = 131072
     transport: str = "local_test_adapter"
     default_streaming: bool = False
     supports_model_override: bool = False
@@ -415,6 +419,8 @@ class LocalProvider:
             raise ValueError("reservation estimator must be a bounded synchronous adapter function")
         if type(self.maximum_output_tokens) is not int or not 1 <= self.maximum_output_tokens <= MAX_MODEL_OUTPUT_TOKENS:
             raise ValueError("provider output limit must be explicit")
+        if type(self.maximum_input_estimate) is not int or not 1024 <= self.maximum_input_estimate <= 1_000_000:
+            raise ValueError("provider input limit must be explicit")
         if not self.capabilities or len(set(self.capabilities)) != len(self.capabilities):
             raise ValueError("provider capabilities must be explicit and unique")
         for capability in self.capabilities:

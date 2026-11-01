@@ -8,10 +8,12 @@ from companion_v2.configuration.models import ConfigLayer, ConfigTarget, Configu
 from companion_v2.conversation.participation import CONFIG_GROUP as PARTICIPATION_GROUP
 from companion_v2.conversation.participation import CONFIG_OWNER as PARTICIPATION_OWNER
 from companion_v2.conversation.reply_management import ReplyManagement
+from companion_v2.conversation.scope_family import group_identity_scope, group_scope_keys
 from companion_v2.execution.models import TaskContext, TaskError, digest
 from companion_v2.expression.style_management import ExpressionStyleManagement
 from companion_v2.foundation.outcome import Outcome
-from companion_v2.foundation.refs import OperationRef, RoleOwnerRef, ScopeKind, ScopeRef, VersionRef
+from companion_v2.foundation.refs import (OperationRef, RoleOwnerRef, ScopeKind, ScopeRef, SubjectKind,
+                                         SubjectRef, VersionRef)
 
 from .group_settings import GroupTarget, group_session_matches
 from .management_identity import dashboard_operator
@@ -25,6 +27,12 @@ INTERJECTION_FIELDS = (
     "enable_group_interjection_feedback",
     "group_interject_feedback_window_seconds",
 )
+
+# A configured group that has never bound a role, or that has no original V2
+# conversation, is an expected empty state rather than a read failure.
+# Installation, authorization and identity failures are not empty groups, so
+# only these codes degrade into an empty page.
+DEGRADED_STYLE_REASONS = ("role_binding_missing", "expression_group_context_required")
 
 
 class GroupReplyWebAPI:
@@ -254,32 +262,60 @@ class GroupReplyWebAPI:
         return await self._run("participation_configure", data)
 
     @staticmethod
-    def _empty_style_page(reason):
+    def _empty_style_page(reason, *, samples=False):
         """A group that has no readable expression scope is an empty page.
 
         The page shows one source per configured group, so failing the whole
         request turns an expected "this group has not produced a V2 turn yet"
         state into a page-level alert. Row-level unreadability is already
         expressed with ``unavailable_reason``; the group-level empty state uses
-        the same field. Commands still require a real context.
+        the same field. The samples reader additionally aggregates one
+        ``runtime`` block per source, so that page keeps the zeroed shape of a
+        readable source instead of leaving the block undefined. Commands still
+        require a real context.
         """
-        return {"items": [], "counts": {}, "next_cursor": None, "unavailable_reason": reason}
+        page = {"items": [], "counts": {}, "next_cursor": None, "unavailable_reason": reason}
+        if samples:
+            # Stable defaults for a source whose session cannot be read yet.
+            # The field names align with the runtime contract the samples page
+            # reads: it aggregates every source the same way and already
+            # tolerates both the old and the new shape of the hosted
+            # ``status()`` payload.
+            page.update(sample_review_enabled=False, runtime={
+                "last_result": None, "running": False, "learning_enabled": False,
+                "application_enabled": False, "minimum_samples": 0, "eligible_samples": 0,
+                "new_messages": None, "required_new_messages": None,
+                "group_batches_today": 0, "group_daily_batch_limit": 0})
+        return page
+
+    def _degraded_style_page(self, controller, scope, reason, *, samples, role_id):
+        """Empty page for an expected "no readable scope" state.
+
+        Only ``list`` reports the legacy-scope diagnostic; the samples page has
+        no equivalent column.
+        """
+        page = self._empty_style_page(reason, samples=samples)
+        if not samples:
+            page["legacy_orphan_count"] = self._legacy_expression_count(controller, scope, role_id)
+        return page
 
     @staticmethod
     def _legacy_expression_count(controller, scope, role_id):
-        """Count old group rules stored in the pre-fix synthetic scope.
+        """Count old group rules this group still cannot read.
 
-        Old group imports used ``conversation_id = session_id = group_id``.
-        Those rows are neither listed nor injected at the runtime scope, so the
-        page would silently show no rules. The count is read-only diagnostic
-        data: rows are not moved here, because run/signal identities derive
-        from the scope and a careless migration would duplicate evidence and
-        rotation history.
+        Old group imports used ``conversation_id = session_id = group_id``. The
+        group scope family now includes that identity scope, so those rows are
+        listed, decided and injected like any other group rule and must not be
+        reported as "not yet effective". The counter stays as a read-only
+        diagnostic for rows the family cannot resolve; it never moves a row,
+        because run and signal identities derive from the scope and a careless
+        migration would duplicate evidence and rotation history.
         """
-        legacy = ScopeRef(scope.installation_id, scope.platform, ScopeKind.GROUP,
-                          scope.native_scope_id, scope.bot_id, scope.account_id,
-                          scope.native_scope_id, scope.native_scope_id)
-        if digest(legacy) == digest(scope):
+        legacy = group_identity_scope(scope)
+        if legacy is None:
+            return 0
+        role = SubjectRef(scope.installation_id, SubjectKind.BOT, role_id)
+        if digest(legacy) in group_scope_keys(controller.runtime, scope, role):
             return 0
         owner = RoleOwnerRef(scope.installation_id, scope.bot_id, role_id)
         row = controller.runtime.read_one("""SELECT COUNT(*) AS count FROM expression_style_signals
@@ -391,15 +427,15 @@ class GroupReplyWebAPI:
                     raise TaskError("group_reply_target_required", "the native group target changed")
                 current = session.application.tasks.identity.resolve_role(scope, observed_at=controller.now())
                 if current.failure:
-                    if method == "list":
-                        if current.failure.code == "role_binding_missing":
-                            page = self._empty_style_page(current.failure.code)
-                            page["legacy_orphan_count"] = self._legacy_expression_count(
-                                controller, scope, self.role_id)
-                            return outcome_response(Outcome.success(page))
+                    if method in ("list", "list_samples") and current.failure.code in DEGRADED_STYLE_REASONS:
+                        page = self._degraded_style_page(controller, scope, current.failure.code,
+                                                         samples=method == "list_samples", role_id=self.role_id)
+                        return outcome_response(Outcome.success(page))
+                    if method in ("list", "list_samples"):
                         # Installation, authorization and identity failures are
                         # not an empty group and must stay visible.
                         raise TaskError(current.failure.code, current.failure.reason)
+                    # Decisions still need a real conversation context.
                     raise TaskError("expression_group_context_required", "this group session has no original conversation yet")
                 binding = current.unwrap()
                 if binding.role != role:
@@ -407,10 +443,10 @@ class GroupReplyWebAPI:
                 try:
                     context = self._style_context(controller, session_id, binding, scope)
                 except TaskError as error:
-                    if method == "list" and error.code == "expression_group_context_required":
-                        page = self._empty_style_page(error.code)
-                        page["legacy_orphan_count"] = self._legacy_expression_count(
-                            controller, scope, binding.role.subject_id)
+                    if method in ("list", "list_samples") and error.code in DEGRADED_STYLE_REASONS:
+                        page = self._degraded_style_page(controller, scope, error.code,
+                                                         samples=method == "list_samples",
+                                                         role_id=binding.role.subject_id)
                         return outcome_response(Outcome.success(page))
                     raise
                 operator = dashboard_operator(controller.runtime, username, at=controller.now())

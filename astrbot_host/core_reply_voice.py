@@ -14,6 +14,7 @@ from companion_v2.conversation.voice_reply import (
     speech_candidates,
     speech_chunks,
     strip_voice_markup,
+    voice_wrapper_pairing,
 )
 from .core_reply import CORE_REPLY_CONTEXT_EXTRA
 from companion_v2.conversation.voice_markup import slice_speech, visible_speech
@@ -74,7 +75,21 @@ def capture_core_voice_message(event, message):
     if spans:
         core["_voice_authored"] = {"visible": visible, "spans": spans, "cursor": 0, "used": set()}
         return cleaned
-    return message
+    source = _plain_text(message)
+    if visible == source:
+        return message
+    # 未配对/未闭合的语音包装已经被 separate_spoken 去掉；这里如果退回原始消息，
+    # 字面量 <pc_tts> 就会随正文发给用户，因为下游协议清洗刻意排除了 tts 家族。
+    # plain 生成模式下成对标签也走这条分支，所以 state 只描述"清理了包装"，
+    # 由 pairing 区分成对/未成对，避免把成对标签误记成 unpaired。
+    paired, stray = voice_wrapper_pairing(source)
+    pairing = "unpaired" if stray else ("paired" if paired else "other")
+    logger.info("[CompanionV2][media] stage=voice_cleanup event_ref=%s media=voice "
+                "state=voice_wrapper_cleanup pairing=%s paired_wrappers=%d stray_tags=%d "
+                "removed_chars=%d visible_chars=%d",
+                prepared.get("event_ref", "unknown"), pairing, paired, stray,
+                len(source) - len(visible), len(visible))
+    return cleaned
 
 
 def _captured_speech(core, visible):

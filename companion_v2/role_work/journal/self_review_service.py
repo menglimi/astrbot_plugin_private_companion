@@ -36,6 +36,13 @@ OWNER = "role.self_review"
 # PromptRequest must use a format registered by that boundary.
 OUTPUT_FORMAT = "role_self_review"
 CURSOR_PREFIX = "role.self_review.cursor.v1:"
+# The status view may only report states the dashboard already labels. A restart
+# keeps the cursor but loses the in-memory report, so a settled window has to be
+# described as `succeeded` ("最近一次已产出") and never as `not_run`.
+SETTLED_STATE = "succeeded"
+# The newest non-success outcome is kept on disk together with its stable code:
+# after a restart the dashboard can still say why the daily review is not moving.
+OUTCOME_PREFIX = "role.self_review.outcome.v1:"
 AUTO_APPLY_KINDS = frozenset({"try_next_time", "keep"})
 AUTO_ACTOR = "system:self-review"
 MIN_EVIDENCE = 2
@@ -51,6 +58,14 @@ def retry_delay(code):
     return (OUTPUT_FAILURE_RETRY_SECONDS
             if code in {"self_review_output_invalid", "self_review_material_changed"}
             else TRANSIENT_FAILURE_RETRY_SECONDS)
+
+
+def failure_code(value):
+    """Stable diagnostic code for a failed run: an error or a stored reason."""
+    code = getattr(value, "code", value)
+    return code if type(code) is str and code else "self_review_failed"
+
+
 TERMINAL_AVAILABLE = frozenset({"self_review_private_audience_required"})
 PROMPT = (
     "只依据提供的证据，复盘最近一天这段私聊中有记录的角色工作、产出与回复：检查完成回执与送达回复是否支持结论、是否回应请求、表达不确定性、遵守来源和授权、是否把计划或提案说成完成，并回味相处时的语气温度、共情分寸与接话呼吸感（如哪里说得太生硬啰嗦、哪处贴心默契值得保持）。材料只覆盖本窗口留痕部分，不代表全天情况；不评价用户或第三方，不贴人格标签，不以一次失误推断长期问题，也不以材料缺失断言事情未发生。证据有限时减少建议或使用 no_change；每条指导引用实际 evidence_handle，next_action 具体、短而可执行（像角色私下对下次相处分寸的留心），expires_at 用带时区的短期 ISO 8601。输出仅是待审候选，不表示已修改提示、配置或记忆。"
@@ -171,14 +186,21 @@ class SelfReviewService:
             self.committed.discard(identifier)
 
     async def _run_scheduled(self, context, instruction, cursor_key, at):
-        result = await self.run(context, instruction)
+        try:
+            result = await self.run(context, instruction)
+        except Exception as error:
+            # Remember the failure before re-raising it: the retry deadline and,
+            # later, a restarted process both explain the window from this record.
+            self._record_failure(context, "failed", failure_code(error), at)
+            raise
         if result["state"] in {"succeeded", "completed", "already_attempted"}:
             self._advance_cursor(cursor_key, at)
         elif result["state"] == "no_reviewable_window":
             self.next_checks[context.key] = self.tasks.now() + timedelta(seconds=self.empty_retry_seconds)
         else:
-            self.next_checks[context.key] = self.tasks.now() + timedelta(
-                seconds=retry_delay(result.get("code")))
+            code = failure_code(result.get("code"))
+            self._record_failure(context, "failed", code, at)
+            self.next_checks[context.key] = self.tasks.now() + timedelta(seconds=retry_delay(code))
         return result
 
     async def generate(self, run):
@@ -236,9 +258,12 @@ class SelfReviewService:
                 self.gateway.ledger.discard(completion.call_id)
             raise
 
+    def _metadata_key(self, prefix, context):
+        return prefix + digest([self.evidence.receipts.life.owner(context), context.scope])
+
     def _cursor(self, context):
         """Persisted review cursor: the last closed window this role was reviewed over."""
-        key = CURSOR_PREFIX + digest([self.evidence.receipts.life.owner(context), context.scope])
+        key = self._metadata_key(CURSOR_PREFIX, context)
         with self.runtime.transaction() as connection:
             row = connection.execute("SELECT value FROM runtime_metadata WHERE key = ?", (key,)).fetchone()
         if row is None:
@@ -252,6 +277,40 @@ class SelfReviewService:
             raise TaskError("self_review_cursor_invalid", "self-review cursor is invalid") from None
         return key, closed_at
 
+    def _last_failure(self, context):
+        """Newest failed or blocked run recorded before this process started.
+
+        The check covers the required fields only, so a record written by a later
+        version (extra keys) still explains the window; otherwise one added field
+        would silently degrade every older record back to the bare cursor view.
+        """
+        row = self.runtime.read_one("SELECT value FROM runtime_metadata WHERE key = ?",
+                                    (self._metadata_key(OUTCOME_PREFIX, context),))
+        if row is None:
+            return None
+        try:
+            value = json.loads(row["value"])
+            if type(value) is not dict:
+                raise ValueError
+            state, code, at_raw = value.get("state"), value.get("code"), value.get("at")
+            if (state not in ("failed", "blocked") or type(code) is not str or not code
+                    or type(at_raw) is not str):
+                raise ValueError
+            at = datetime.fromisoformat(at_raw)
+            if at.tzinfo is None or at.utcoffset() is None:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise TaskError("self_review_outcome_invalid", "self-review outcome is invalid") from None
+        return at, state, code
+
+    def _record_failure(self, context, state, code, at):
+        """Keep the newest non-success outcome so a restart can still explain it."""
+        with self.runtime.transaction() as connection:
+            connection.execute("""INSERT INTO runtime_metadata(key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+                (self._metadata_key(OUTCOME_PREFIX, context),
+                 encode({"state": state, "code": code, "at": stamp(at)})))
+
     def _advance_cursor(self, key, closed_at):
         with self.runtime.transaction() as connection:
             connection.execute("""INSERT INTO runtime_metadata(key, value) VALUES (?, ?)
@@ -264,21 +323,37 @@ class SelfReviewService:
         return closed_at is None or at - closed_at >= timedelta(seconds=self.scan_seconds)
 
     def status(self, context):
-        """Bounded, read-only view of this role's daily review state."""
+        """Bounded, read-only view of this role's daily review state.
+
+        Only this process' reports are in memory; the cursor and the last
+        recorded failure outlive it. A restarted process therefore restores the
+        newest of the two instead of pairing a persisted ``last_run_at`` with a
+        fresh ``not_run``.
+        """
         at = self.tasks.now()
         report = dict(self.results.get(context.key) or {})
         try:
             _, closed_at = self._cursor(context)
         except TaskError:
             closed_at = None
+        state, code = report.get("state", "not_run"), report.get("code")
+        if not report:
+            try:
+                failure = self._last_failure(context)
+            except TaskError:
+                failure = None
+            if failure is not None and (closed_at is None or failure[0] > closed_at):
+                _, state, code = failure
+            elif closed_at is not None:
+                state = SETTLED_STATE
         worker = self.workers.get(context.key)
         try:
             due = self.due(context, at)
         except TaskError:
             due = False
         return {
-            "state": report.get("state", "not_run"),
-            "code": report.get("code"),
+            "state": state,
+            "code": code,
             "last_run_at": stamp(closed_at) if closed_at is not None else None,
             "due": due,
             "worker": bool(worker is not None and not worker.done()),
@@ -295,7 +370,7 @@ class SelfReviewService:
                 if not worker.cancelled():
                     error = worker.exception()
                     if error:
-                        code = getattr(error, "code", "self_review_failed")
+                        code = failure_code(error)
                         self.results[key] = {"state": "failed", "code": code}
                         self.next_checks[key] = self.tasks.now() + timedelta(seconds=retry_delay(code))
         if self.workers or KIND not in self.gateway.router.profiles:
@@ -325,6 +400,7 @@ class SelfReviewService:
                 return
             except TaskError as error:
                 self.results[context.key] = {"state": "blocked", "code": error.code}
+                self._record_failure(context, "blocked", error.code, at)
 
     def cancel_running(self):
         for worker in self.workers.values():

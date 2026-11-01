@@ -37,6 +37,7 @@ MAX_RESPONSE_BYTES = 1024 * 1024
 DEFAULT_MODEL = MODE_MODELS["local"]
 SYSTEMONE_PATH = "/v1/systemone"
 CHAT_COMPLETIONS_PATH = "/v1/chat/completions"
+WORKERS_AI_PATH = "/ai/run"
 
 
 from companion_v2.decision.client import LayaClientError
@@ -52,6 +53,55 @@ def _endpoint(value: str, target: str = SYSTEMONE_PATH) -> str:
     if not path.endswith(target):
         path += target[len("/v1"):] if path.endswith("/v1") else target
     return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, ""))
+
+
+def _workers_ai_endpoint(value: str) -> str:
+    """Cloudflare Workers AI accepts the model in the body of ``<account>/ai/run``.
+
+    Unlike SystemOne and the OpenAI-compatible gateway, this endpoint must not
+    receive a ``/v1/...`` suffix, so the operator may paste the run address, the
+    ``/ai`` root, or only the account base.
+    """
+    raw = str(value or "").strip()
+    parsed = urlsplit(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise LayaClientError("laya_endpoint_invalid", "Laya 服务地址必须是 HTTP(S) 地址")
+    path = parsed.path.rstrip("/")
+    if path.endswith(WORKERS_AI_PATH):
+        return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, ""))
+    if "/v1/" in path or path.endswith("/v1"):
+        raise LayaClientError(
+            "laya_endpoint_invalid",
+            "Workers AI 地址不需要 /v1 后缀；请填 "
+            "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/run")
+    if path.endswith("/ai"):
+        path += "/run"
+    elif "/accounts/" in path:
+        path += WORKERS_AI_PATH
+    else:
+        raise LayaClientError(
+            "laya_endpoint_invalid",
+            "Cloudflare Workers AI 地址应形如 "
+            "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/run")
+    return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, ""))
+
+
+def _answers_document(value):
+    """Accept the answers document, or a JSON string carrying it, inside ``result``."""
+    if not isinstance(value, dict):
+        return {"answers": {}}
+    if isinstance(value.get("answers"), dict):
+        return value
+    for key in ("response", "content", "text", "output"):
+        text = value.get(key)
+        if isinstance(text, str) and text.strip().startswith("{"):
+            try:
+                parsed = json.loads(text)
+            except ValueError:
+                continue
+            if isinstance(parsed, dict) and isinstance(parsed.get("answers"), dict):
+                return parsed
+    return value
 
 
 def _source_key(local_model_path=""):
@@ -361,8 +411,14 @@ def _safe_error_text(raw: bytes, secret: str) -> str:
         text = raw.decode("utf-8", errors="replace")
         document = json.loads(text)
         if isinstance(document, dict):
-            detail = document.get("detail") or document.get("error") or document
-            text = detail if isinstance(detail, str) else json.dumps(detail, ensure_ascii=False)
+            errors = document.get("errors")
+            if isinstance(errors, list) and errors and isinstance(errors[0], dict):
+                message = errors[0].get("message")
+                text = (str(message) if isinstance(message, str) and message.strip()
+                        else json.dumps(errors[0], ensure_ascii=False))
+            else:
+                detail = document.get("detail") or document.get("error") or document
+                text = detail if isinstance(detail, str) else json.dumps(detail, ensure_ascii=False)
     except (TypeError, ValueError):
         text = raw.decode("utf-8", errors="replace")
     if secret:
@@ -411,13 +467,35 @@ class _JevTransport:
         return _parse_document(content)
 
 
+class _WorkersAITransport:
+    """Cloudflare Workers AI: the decision document travels inside ``input``."""
+
+    def __init__(self, model: str):
+        self.model = model
+
+    def payload(self, model_state: str, questions: dict) -> dict:
+        return {"model": self.model, "input": {"state": model_state, "questions": questions}}
+
+    def document(self, raw: str) -> dict:
+        envelope = _parse_document(raw)
+        if envelope.get("success") is False:
+            errors = envelope.get("errors")
+            message = ""
+            if isinstance(errors, list) and errors and isinstance(errors[0], dict):
+                message = str(errors[0].get("message") or "")
+            raise LayaClientError("laya_response_invalid",
+                                  "Cloudflare Workers AI 拒绝了该次判断" + (f"：{message}" if message else ""))
+        return _answers_document(envelope.get("result"))
+
+
 class LayaDecisionClient:
     runtime_status = staticmethod(local_runtime_status)
 
     def __init__(self, *, mode: str = "local", endpoint: str = "", api_key: str = "",
                  timeout_seconds: int = 8, local_model_path: str = "", model: str = ""):
         if mode not in MODE_MODELS:
-            raise LayaClientError("laya_mode_invalid", "Laya 接入方式必须是 local、remote 或 jev")
+            raise LayaClientError("laya_mode_invalid",
+                                  "Laya 接入方式必须是 local、remote、jev 或 workers_ai")
         self.mode = mode
         self.local_model_path = local_model_path
         self.model = str(model or "").strip() or MODE_MODELS[mode]
@@ -427,6 +505,9 @@ class LayaDecisionClient:
         elif mode == "jev":
             self.endpoint = _endpoint(endpoint, CHAT_COMPLETIONS_PATH)
             self.transport = _JevTransport(self.model)
+        elif mode == "workers_ai":
+            self.endpoint = _workers_ai_endpoint(endpoint)
+            self.transport = _WorkersAITransport(self.model)
         self.api_key = api_key
         self.timeout_seconds = timeout_seconds
         self.last_trace = {}

@@ -1317,12 +1317,150 @@ test('knowledge source checkmarks survive saving and rereading newline-separated
   assert.match(harnessed.painted.knowledge, /data-wb-source-id="doc:kb-1:doc-1"[^>]*checked/);
   assert.match(harnessed.painted.knowledge, /data-wb-source-id="kb:missing"[^>]*checked/);
   assert.match(harnessed.painted.knowledge, /已选 2 \/ 16 项/);
-  assert.doesNotMatch(harnessed.painted.knowledge, /data-wb-source-id="kb:kb-1"[^>]*checked/);
+  /* 逐篇令牌选满这个库时，父级按「已全选」显示勾选；写回值仍是逐篇令牌，
+     不会被折叠成 kb:kb-1，否则以后新增的文档会被顺带纳入引用。 */
+  assert.match(harnessed.painted.knowledge, /data-wb-source-base="kb-1"[^>]*checked/);
   const reading = instance.refresh(true);
   await drains();
   harnessed.requests[2].resolve(status);
   await reading;
   assert.match(harnessed.painted.knowledge, /data-wb-source-id="doc:kb-1:doc-1"[^>]*checked/);
+});
+
+/* ==== 世界知识来源：整库 / 逐篇 / 半选 ==== */
+
+const kbDocuments = count => Array.from({length: count}, (_, index) => ({
+  id: `doc:kb-1:doc-${index + 1}`, doc_id: `doc-${index + 1}`,
+  name: `资料${index + 1}.md`, file_type: 'md', chunk_count: index + 1,
+}));
+
+/* 一个库有 3 篇文档时，父级与子项的组合才分得出「整库 / 选满 / 选一部分」。 */
+const knowledgePayload = (documents, sourceIds) => {
+  const response = payload('knowledge', {source_ids: sourceIds});
+  response.sections.knowledge.knowledge_sources = [{
+    id: 'kb:kb-1', type: 'knowledge_base', kb_id: 'kb-1', name: '星河设定', emoji: '📚',
+    doc_count: documents.length,
+    chunk_count: documents.reduce((sum, doc) => sum + doc.chunk_count, 0),
+    documents,
+  }];
+  return response;
+};
+
+async function loadedSources(documents, sourceIds) {
+  const harnessed = harness(['knowledge']);
+  const [instance] = await loaded(harnessed, ['knowledge'],
+    {knowledge: {response: knowledgePayload(documents, sourceIds)}});
+  return {harnessed, instance, painted: harnessed.painted.knowledge};
+}
+
+/* 半选属性只能由 JS 设置，把这段实现单独取出来验证。 */
+const sourceIndeterminate = (() => {
+  const start = workbench.indexOf('  const syncSourceIndeterminate');
+  const end = workbench.indexOf('  /* 把一次复选框点击换算成新的 source_ids', start);
+  return vm.runInNewContext(`() => { ${workbench.slice(start, end)}
+    return syncSourceIndeterminate; }`)();
+})();
+
+test('a whole knowledge base renders checked with documents disabled and a hint', async () => {
+  const {painted} = await loadedSources(kbDocuments(3), 'kb:kb-1');
+  assert.match(painted, /<section class="wb-source-group" data-wb-source-state="whole">/);
+  assert.match(painted, /data-wb-source-base="kb-1"[^>]*checked/);
+  assert.match(painted, /data-wb-source-id="doc:kb-1:doc-1"[^>]* disabled/);
+  assert.match(painted, /data-wb-source-id="doc:kb-1:doc-2"[^>]* disabled/);
+  assert.doesNotMatch(painted, /data-wb-source-id="doc:kb-1:doc-1"[^>]*checked/);
+  assert.match(painted, /整库引用中：本库 3 篇文档整体参与引用。需要逐篇选择时，请先取消整库。/);
+  assert.match(painted, /已选 1 \/ 16 项/);
+});
+
+test('a partially selected knowledge base renders a mixed parent without checked', async () => {
+  const {painted} = await loadedSources(kbDocuments(3),
+    'doc:kb-1:doc-1\ndoc:kb-1:doc-2');
+  assert.match(painted, /<section class="wb-source-group" data-wb-source-state="partial">/);
+  assert.match(painted, /data-wb-source-base="kb-1"[^>]*aria-checked="mixed"/);
+  assert.match(painted, /data-wb-source-base="kb-1"[^>]*data-wb-source-state="partial"/);
+  assert.doesNotMatch(painted, /data-wb-source-base="kb-1"[^>]* checked/);
+  assert.match(painted, /逐篇引用 · 已选 2\/3 篇/);
+  assert.doesNotMatch(painted, /整库引用中/);
+});
+
+test('a fully selected knowledge base renders the parent checked but keeps document tokens', async () => {
+  const {painted} = await loadedSources(kbDocuments(3),
+    'doc:kb-1:doc-1\ndoc:kb-1:doc-2\ndoc:kb-1:doc-3');
+  assert.match(painted, /<section class="wb-source-group" data-wb-source-state="full">/);
+  assert.match(painted, /data-wb-source-base="kb-1"[^>]*checked/);
+  assert.match(painted, /data-wb-source-id="doc:kb-1:doc-1"[^>]*checked/);
+  assert.match(painted, /data-wb-source-id="doc:kb-1:doc-2"[^>]*checked/);
+  assert.match(painted, /data-wb-source-id="doc:kb-1:doc-3"[^>]*checked/);
+  assert.match(painted, /逐篇引用 · 已选 3\/3 篇/);
+  assert.doesNotMatch(painted, /aria-checked="mixed"/);
+});
+
+test('a legacy value mixing kb: and doc: renders as whole instead of checking both', async () => {
+  const {painted} = await loadedSources(kbDocuments(3),
+    'kb:kb-1\ndoc:kb-1:doc-1\ndoc:kb-1:doc-2');
+  assert.match(painted, /<section class="wb-source-group" data-wb-source-state="whole">/);
+  assert.match(painted, /data-wb-source-base="kb-1"[^>]*checked/);
+  assert.match(painted, /data-wb-source-id="doc:kb-1:doc-1"[^>]* disabled/);
+  assert.doesNotMatch(painted, /data-wb-source-id="doc:kb-1:doc-1"[^>]*checked/);
+  assert.match(painted, /整库引用中/);
+});
+
+test('partial parent input is marked indeterminate after the list is rendered', () => {
+  const inputs = [{indeterminate: false}, {indeterminate: false}];
+  sourceIndeterminate({querySelectorAll: selector => {
+    assert.equal(selector, 'input[data-wb-source-state="partial"]');
+    return inputs;
+  }});
+  assert.ok(inputs.every(input => input.indeterminate === true));
+});
+
+test('resolveSourceToggle keeps whole and document references mutually exclusive', () => {
+  const {workbench: kernel} = harness([]);
+  const docs = ['doc-1', 'doc-2', 'doc-3'];
+  const other = 'doc:kb-2:doc-9';
+
+  /* 取消整库：同库逐篇一起清掉，别的库不动。 */
+  const cancelled = kernel.resolveSourceToggle(
+    `kb:kb-1\ndoc:kb-1:doc-1\n${other}`,
+    {kbId: 'kb-1', checked: false, docIds: docs, limit: 16});
+  assert.equal(cancelled.accepted, true);
+  assert.equal(cancelled.value, other);
+
+  /* 半选状态点父级 = 全选：逐篇换成一条整库令牌。 */
+  const whole = kernel.resolveSourceToggle(
+    'doc:kb-1:doc-1\ndoc:kb-1:doc-2',
+    {kbId: 'kb-1', checked: true, docIds: docs, limit: 16});
+  assert.equal(whole.accepted, true);
+  assert.equal(whole.value, 'kb:kb-1');
+
+  /* 逐篇选满后点父级 = 取消：结果为空，而不是留下三条 doc:。 */
+  const cleared = kernel.resolveSourceToggle(
+    'doc:kb-1:doc-1\ndoc:kb-1:doc-2\ndoc:kb-1:doc-3',
+    {kbId: 'kb-1', checked: false, docIds: docs, limit: 16});
+  assert.equal(cleared.accepted, true);
+  assert.equal(cleared.value, '');
+
+  /* 点子项：写出 doc: 令牌；历史值里的 kb: 兜底删掉。 */
+  const picked = kernel.resolveSourceToggle(
+    'kb:kb-1',
+    {kbId: 'kb-1', docId: 'doc:kb-1:doc-2', checked: true, docIds: docs, limit: 16});
+  assert.equal(picked.accepted, true);
+  assert.equal(picked.value, 'doc:kb-1:doc-2');
+
+  /* 选中最后一篇也不自动折叠成 kb:，覆盖率语义保持不变。 */
+  const completed = kernel.resolveSourceToggle(
+    'doc:kb-1:doc-1\ndoc:kb-1:doc-2',
+    {kbId: 'kb-1', docId: 'doc-3', checked: true, docIds: docs, limit: 16});
+  assert.equal(completed.accepted, true);
+  assert.equal(completed.value, 'doc:kb-1:doc-1\ndoc:kb-1:doc-2\ndoc:kb-1:doc-3');
+
+  /* 超过 source_limit：拒绝这一次勾选，值原样返回。 */
+  const limited = kernel.resolveSourceToggle(
+    'doc:kb-1:doc-1',
+    {kbId: 'kb-1', docId: 'doc-2', checked: true, docIds: docs, limit: 1});
+  assert.equal(limited.accepted, false);
+  assert.equal(limited.value, 'doc:kb-1:doc-1');
+  assert.match(limited.notice, /最多读取 1 个来源/);
 });
 
 test('the rest gate mode and dream afterglow are edited as selects, not free text', async () => {

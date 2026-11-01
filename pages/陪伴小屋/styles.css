@@ -540,6 +540,8 @@ button.summary-record:hover strong,.summary-memory:hover>strong,.summary-note:ho
 .search-result[aria-selected=true]{background:var(--t-accent-quiet);color:var(--ink)}
 .search-result[aria-selected=true]>svg{color:var(--t-accent-ink)}
 .search-result>span{min-width:0}
+.search-result mark{background:var(--t-accent-quiet);color:inherit;border-radius:2px;padding:0 1px}
+.search-result small mark{background:var(--t-accent-quiet);color:inherit}
 .search-result small{display:block;line-height:1.55;overflow-wrap:anywhere}
 .search-empty{display:grid;gap:var(--sp-2);line-height:1.7}
 .search-empty::before{content:"";width:26px;height:1px;margin:0 auto var(--sp-1);background:var(--t-line-firm)}

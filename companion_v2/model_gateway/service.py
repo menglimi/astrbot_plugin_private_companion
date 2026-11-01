@@ -46,6 +46,9 @@ TASK_ROLE_REFERENCE_KINDS = frozenset({
 # needs a whole result and hears the ceiling's own code instead. The private memory
 # owner is not listed: it has always received its raw body through the capture path.
 CEILING_BODY_FORMATS = frozenset({"calendar_planning"})
+# 本地估算越界是可测的确定性结论，不是"估不出来"：把 adapter 的这两个 code 原样交给
+# 任务台账，运维才分得清该调输入上限还是输出上限（由 provider._estimate 产出）。
+PROVIDER_LIMIT_CODES = frozenset({"host_model_limit_input", "host_model_limit_output"})
 
 
 def _redact_prompt_media(value):
@@ -98,6 +101,46 @@ class LocalModelGateway:
         # must keep checking the captured AstrBot persona behind the window.
         guard = request.role_guard_instruction if request.role_guard_instruction is not None else request.role_instruction
         return replace(request, role_instruction=reference, role_guard_instruction=guard)
+
+    def estimate(self, run: TaskRun, request: PromptRequest):
+        """Read-only: would this request fit the route it would be dispatched on?
+
+        ``open_session`` replaces the captured persona with the task role
+        reference before it resolves the route and reserves the provider, so a
+        caller that preflights the request it captured judges a different
+        envelope. That cuts both ways: a host persona longer than the self page
+        lets a window through that still fails at dispatch, and a shorter one
+        trims — or rejects — a window that would have fitted. This applies the
+        same substitution first, then resolves the same read-only route and asks
+        the first provider to reserve the same envelope ``_generate`` reserves,
+        so the request judged here is exactly the one ``generate`` would send.
+
+        Only the primary route is preflighted: a fallback is a later execution
+        route with its own model override, so judging it with the primary
+        envelope would reject a fitting primary for no reason.
+
+        Nothing is recorded here: no ``model_requests`` row, no adopted plan, no
+        budget hold, no ledger entry and no request leaving the process. Only an
+        exception from ``reserve`` means "does not fit"; a routing error is a
+        real failure and is raised unchanged. It returns the fit flag and the
+        declared ceiling, not an amount: what dispatch still enforces on top of
+        ``reserve`` (its ``Amount`` contract, the declared output ceiling) is not
+        repeated here, so a third-party adapter that breaks that contract still
+        fails at dispatch, not in this preflight.
+        """
+        request = self._task_role_request(run, request)
+        plan = self.router.resolve(run, request)
+        if not plan.providers:
+            return True, None
+        provider = plan.providers[0]
+        ceiling = provider.maximum_input_estimate
+        try:
+            provider.reserve(replace(plan.envelope, provider_capabilities=provider.capabilities))
+        except Exception:
+            logger.debug("[CompanionV2][开发者追踪] 预检未通过模型档案 task=%s provider=%s",
+                         run.task.task_id, provider.binding, exc_info=True)
+            return False, ceiling
+        return True, ceiling
 
     def open_session(self, run: TaskRun, request: PromptRequest, *, tools: tuple[ToolSpec, ...] = (),
                      tool_filters: tuple[dict, ...] = (), independent_providers=None):
@@ -179,10 +222,23 @@ class LocalModelGateway:
                          run.task.task_id, round_no, provider.binding, position, envelope.original.output_format)
             try:
                 amount = provider.reserve(provider_envelope)
+            except TaskError as error:
+                # 越界是本地可测的确定性结论，不是未知的上游状态：保留 adapter 的稳定
+                # code，但不把 provider 报文与提示词正文带进日志或 reason。这两个 limit
+                # code 的 reason 由适配器按估算值与上限生成，可以原样记录。
+                detail = f" detail={error}" if error.code in PROVIDER_LIMIT_CODES else ""
+                logger.warning("[CompanionV2] 模型网关预留失败 task=%s round=%d provider=%s code=%s error_type=%s%s",
+                               run.task.task_id, round_no, provider.binding, error.code, type(error).__name__, detail)
+                if error.code in PROVIDER_LIMIT_CODES:
+                    raise
+                raise TaskError("model_estimation_failed",
+                                f"local reservation estimation failed ({error.code})") from error
             except Exception as error:
-                logger.debug("[CompanionV2][开发者追踪] 模型网关预估失败 task=%s round=%d provider=%s error_type=%s",
-                             run.task.task_id, round_no, provider.binding, type(error).__name__, exc_info=True)
-                raise TaskError("model_estimation_failed", "local reservation estimation failed; details omitted") from error
+                # 真·内部错误：保留 error_type，同样不转发异常正文。
+                logger.warning("[CompanionV2] 模型网关预估异常 task=%s round=%d provider=%s error_type=%s",
+                               run.task.task_id, round_no, provider.binding, type(error).__name__, exc_info=True)
+                raise TaskError("model_estimation_failed",
+                                f"local reservation estimation failed ({type(error).__name__})") from error
             if not isinstance(amount, Amount):
                 raise TaskError("model_estimation_failed", "adapter did not provide a reservation ceiling")
             if amount.tokens < envelope.max_output_tokens:
@@ -297,6 +353,11 @@ class LocalModelGateway:
                         # The ceiling cut this body and the format needs a whole
                         # result. Naming the ceiling keeps one glance enough to tell
                         # it from a refused or malformed answer.
+                        logger.warning("[CompanionV2] 模型输出被上限截断，任务拒绝不完整结果 task=%s kind=%s "
+                                       "output_format=%s max_output_tokens=%d provider=%s raw_chars=%d",
+                                       run.task.task_id, plan.audit["profile"]["kind"],
+                                       envelope.original.output_format, envelope.max_output_tokens,
+                                       provider.binding.provider, len(captured.text))
                         self.ledger.discard(call_id, failure=ModelFailure.WIRE_DECODE, observed_at=self.tasks.now())
                         raise TaskError("model_output_truncated",
                                         "the output ceiling cut this result before its contract was complete")

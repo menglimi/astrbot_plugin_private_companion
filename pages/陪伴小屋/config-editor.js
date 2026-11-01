@@ -1693,6 +1693,8 @@ window.CompanionConfigEditors = (() => {
     invalid_precision: "数值精度超出允许范围。",
     invalid_weight: "该权重需为正数。",
     configuration_request_invalid: "请求格式有误，请刷新后重试。",
+    route_not_found: "当前页面请求的功能路由未注册；请把插件升级到最新版并重启 AstrBot 后重新打开。",
+    "未找到该路由": "当前页面请求的功能路由未注册；请把插件升级到最新版并重启 AstrBot 后重新打开。",
     busy_gate_settings_invalid: "繁忙闸门的关键词需要是短词，且每一项不超过 64 个。",
     qzone_scene_list_invalid: "QQ 空间主题的场景清单只能用半角逗号分隔、不能重复，且只能填该主题自己的场景；请对照该主题段落说明里的可选值。",
     image_quota_scope_invalid: "额度按安装与角色生效，请选择一个已初始化的私聊对象。",

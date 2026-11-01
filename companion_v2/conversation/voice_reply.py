@@ -105,6 +105,16 @@ def _strip_stray_voice_tags(text):
     return _BARE_STRAY_TAG.sub("", _STRAY_TAG.sub("", text))
 
 
+def voice_wrapper_pairing(text):
+    """Count well-formed voice wrappers and the stray tag tokens left over."""
+    if type(text) is not str:
+        return 0, 0
+    paired = sum(1 for match in _TAG.finditer(text) if _matching_voice_tags(match))
+    remaining = _STRAY_TAG.sub("", text)
+    tokens = len(_STRAY_TAG.findall(text)) + len(_BARE_STRAY_TAG.findall(remaining))
+    return paired, max(tokens - 2 * paired, 0)
+
+
 def _has_chinese_translation(text):
     visible = _strip_stray_voice_tags(text)
     visible = "".join(controlled_parts(visible)[0]).strip()
