@@ -25,9 +25,12 @@ class QWeatherAlertPort:
             raise ValueError("QWeather query clock must be timezone aware")
         timeout = aiohttp.ClientTimeout(total=6)
         async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
-            location = await resolve_qweather_location(session, location, self._credentials, at)
+            # A name-only role location is resolved only to address the request; the
+            # observation keeps the configured location, because the downstream guards
+            # compare it field by field with the configured one.
+            query = await resolve_qweather_location(session, location, self._credentials, at)
             url = (f"https://{self._credentials.host}/weatheralert/v1/current/"
-                   f"{location.latitude:.2f}/{location.longitude:.2f}")
+                   f"{query.latitude:.2f}/{query.longitude:.2f}")
             async with session.get(url, headers=self._credentials.headers(at),
                                   allow_redirects=False) as response:
                 if (response.status != 200 or response.content_length is not None

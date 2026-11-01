@@ -132,6 +132,61 @@ class QWeatherPortTests(unittest.IsolatedAsyncioTestCase):
             "iat": int(NOW.timestamp()) - 30, "exp": int(NOW.timestamp()) + 870})
         self.assertEqual(observation.attributions, tuple(ATTRIBUTIONS))
 
+    async def test_name_only_location_keeps_the_configured_location_in_its_observation(self):
+        """A geocoded query point must not replace the configured role location.
+
+        A location may be configured by name alone. Resolving it is an addressing
+        detail of the request; if the resolved coordinates became the observation's
+        location, the downstream guards would compare it with the configured one
+        field by field, never match, and drop every official alert.
+        """
+        location = WeatherLocation("角色所在地", None, None, "测试市", "测试区域")
+        geocoded = {"code": "200", "location": [{"name": "角色所在地", "lat": "31.23", "lon": "121.47"}]}
+        calls = []
+
+        def reply(raw):
+            class Content:
+                async def read(self, limit):
+                    return raw
+
+            class Reply:
+                status = 200
+                content_length = None
+                content = Content()
+
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *_):
+                    return None
+
+            return Reply()
+
+        class Session:
+            def __init__(self, *, timeout, trust_env):
+                self.pending = [reply(json.dumps(geocoded).encode("utf-8")),
+                                reply(json.dumps(response(alert())).encode("utf-8"))]
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            def get(self, url, *, headers, allow_redirects, params=None):
+                calls.append((url, params))
+                return self.pending.pop(0)
+
+        with patch("astrbot_host.qweather_alerts.aiohttp.ClientSession", Session):
+            observation = await self.port.fetch(location)
+
+        self.assertEqual(calls[0][1]["location"], "角色所在地")
+        self.assertEqual(calls[1][0],
+                         "https://example.xy.qweatherapi.com/weatheralert/v1/current/31.23/121.47")
+        self.assertEqual(observation.location, location)
+        self.assertEqual((observation.location.latitude, observation.location.longitude), (None, None))
+        self.assertEqual(len(active_official_alerts(observation, location, NOW)), 1)
+
     async def test_host_rejects_non_qweather_destination(self):
         with self.assertRaises(ValueError):
             QWeatherCredentials(api_host="localhost", credential_id="KID123",
