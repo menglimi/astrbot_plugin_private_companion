@@ -61,6 +61,8 @@ window.CompanionWorkbench = (() => {
     host_persona_changed: "角色人格已变化，请重新读取角色状态。",
     bridge_timeout: "连接超时，请核对连接后重试。",
     invalid_response: "返回数据不完整，请刷新核对。",
+    route_not_found: "当前页面请求的功能路由未注册；请把插件升级到最新版并重启 AstrBot 后重新打开。",
+    "未找到该路由": "当前页面请求的功能路由未注册；请把插件升级到最新版并重启 AstrBot 后重新打开。",
     /* 表达学习分区（expression-page.js）走这个内核渲染，它的域内码放在这里，
        避免分区再自带一张会与内核漂移的第二份表。 */
     expression_settings_invalid: "组合不合法：单批取样条数不能小于最低样本数，候选池不能小于每轮注入规则数；也请核对各项数值范围。",
