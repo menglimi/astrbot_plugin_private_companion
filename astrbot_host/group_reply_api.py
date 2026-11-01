@@ -62,6 +62,14 @@ class GroupReplyWebAPI:
                  "Decide a group expression signal")]
 
     @staticmethod
+    def _account(bridge, selected):
+        account = bridge.accounts.get((selected.platform_id, selected.account_id))
+        if account is None:
+            raise TaskError("host_account_unavailable",
+                            "该群绑定的机器人账号当前未连接，请先在「账号与会话」中核对并恢复连接后重试")
+        return account
+
+    @staticmethod
     def _session(group_id, *, allowed=()):
         query = request.query
         if set(query.keys()) - {"session_id", *allowed} or any(
@@ -116,7 +124,7 @@ class GroupReplyWebAPI:
                 session_id = self._session(selected.group_id)
                 operator = dashboard_operator(controller.runtime, username, at=controller.now())
                 bridge = session.bridge.groups
-                account = bridge.accounts[(selected.platform_id, selected.account_id)]
+                account = self._account(bridge, selected)
                 conversation_id, role, _ = await bridge._role(account, session_id)
                 if role.subject_id != self.role_id or role.installation_id != controller.runtime.installation_id:
                     raise TaskError("group_reply_role_changed", "the native group session selected another role")
@@ -417,7 +425,7 @@ class GroupReplyWebAPI:
                     raise TaskError("group_reply_target_required", "the configured group/role is unavailable")
                 session_id = self._session(selected.group_id, allowed=allowed - {"session_id"})
                 bridge = session.bridge.groups
-                account = bridge.accounts[(selected.platform_id, selected.account_id)]
+                account = self._account(bridge, selected)
                 conversation_id, role, _ = await bridge._role(account, session_id)
                 if role.subject_id != self.role_id or role.installation_id != controller.runtime.installation_id:
                     raise TaskError("group_reply_role_changed", "the native group session selected another role")
