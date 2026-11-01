@@ -3523,7 +3523,7 @@ function renderOutputOriginal(){
           </section>
           <section class="output-config-panel" id="output-panel-creation" role="tabpanel" aria-labelledby="output-tab-creation" tabindex="0" data-output-panel hidden>
             <div class="output-creation-grid">
-              <article class="output-content-library"><header><h2>Content 作品库</h2><button type="button" class="output-inline-link" data-go="manage" data-manage="models">模型与连接 ${I('arrow-up-right')}</button></header><div class="output-content-status">${outputProviderLine('content','Content 授权')}</div><div class="output-content-stats"><div><strong data-output-content-stat="works">—</strong><span>已关联作品</span></div><div><strong data-output-content-stat="candidates">—</strong><span>续写候选稿</span></div><div><strong data-output-content-stat="updated">—</strong><span>最近更新</span></div></div></article>
+              <article class="output-content-library"><header><h2>Content 作品库</h2><button type="button" class="output-inline-link" data-go="manage" data-manage="models">模型与连接 ${I('arrow-up-right')}</button></header><div class="output-content-status">${outputProviderLine('content','Content 授权')}${contentAssembleButton()}</div><div class="output-content-stats"><div><strong data-output-content-stat="works">—</strong><span>已关联作品</span></div><div><strong data-output-content-stat="candidates">—</strong><span>续写候选稿</span></div><div><strong data-output-content-stat="updated">—</strong><span>最近更新</span></div></div></article>
               <article class="output-authoring-card output-workbench-block"><header><h2>原生创作</h2><span class="output-status-chip">按角色生效 · 私聊</span></header><div id="contentAuthoringWorkspace" data-output-config aria-label="原生创作与方向">${consoleLoading('正在读取原生创作设置…')}</div></article>
             </div>
             <div class="output-route-note"><strong>模型路线</strong><button type="button" class="output-inline-link" data-go="manage" data-manage="models">打开模型与连接 ${I('arrow-up-right')}</button></div>
@@ -4517,6 +4517,7 @@ async function runBundledExtensionAction(capabilityId,action){
     syncFurnitureScene();
     renderShell();
     if($('#detailDialog')?.open)showDetail(`cap-${capabilityId}`);
+    else if(action==='assemble')render();
   }
 }
 function bundledCapabilitySurface(key){
@@ -4539,6 +4540,19 @@ function bundledCapabilitySurface(key){
       +button('参考素材与相册','data-go="manage" data-manage="output" data-output-target="materials"','small')
     :button('屏幕采集与会话授权','data-go="manage" data-manage="perception" data-perception-tab-target="config-screen"','small');
   return `<section class="extension-live-panel"><h3>V2 内置能力</h3><p>${escapeHTML(item.reason||'由陪伴插件 V2 本体提供；调用时使用当前角色和会话授权。')}</p><div class="dialog-actions">${lifecycle}</div><p class="product-muted">卸载会解除装配并保留 V2 中的数据；重新装配后可继续使用。</p></section>${destinations?`<section class="extension-live-panel"><h3>${key==='image'?'图像设置':'设备与授权'}</h3><div class="dialog-actions">${destinations}</div></section>`:''}`;
+}
+function contentWorkspaceSurface(){
+  const surface=bundledCapabilitySurface('content');
+  const open=button('打开 Content 作品库','data-go="manage" data-manage="output" data-output-target="creation"','small');
+  if(!surface)return `<p>能力目录暂未读到，先到「模型与连接」核对 Content 内置能力。</p><div class="dialog-actions">${open}${button('模型与连接','data-go="manage" data-manage="models"','small')}</div>`;
+  return surface+`<section class="extension-live-panel"><h3>作品库</h3><p>装配后可打开原稿、作品与续写候选；未装配时仍保留已有数据。</p><div class="dialog-actions">${open}</div></section>`;
+}
+function contentAssembleButton(){
+  const item=product.extension('content');
+  if(!item)return button('打开能力目录','data-home-section="furniture"','small');
+  const assembled=item.assembled===true&&item.desired_state!=='discarded';
+  if(assembled)return '';
+  return button('装配 Content 拓展','data-builtin-extension="content" data-builtin-extension-action="assemble"','small primary');
 }
 function capabilitySurface(key){
   if(['content','image','screen'].includes(key))return bundledCapabilitySurface(key);
@@ -4577,7 +4591,10 @@ function showDetail(id){
   if(id==='roles'||id==='permissions'||id.startsWith('person-')){navigate('manage','identity');return;}
   if(id==='discoveries'){navigate('manage','perception');activatePerceptionTab('config-news',{scroll:true});return;}
   if(id==='album'){navigate('manage','output');activateOutputTab('materials',{focus:true,scroll:true});return;}
-  if(id==='books'){navigate('manage','output');activateOutputTab('creation',{focus:true,scroll:true});return;}
+  /* 创作书架和其他家具走同一条路：先给「装配 / 暂停 / 卸载」的真实状态弹层，
+     装好之后才提供进入作品库的入口。直接跳产出页会让未装配的用户落在
+     一张只有「Content 授权：未装配」的静态卡片上，再也找不到装配按钮。 */
+  if(id==='books'){openDetailDialog('创作书架',contentWorkspaceSurface());return;}
   const cap=id==='books'?'content':id==='album'?'image':id==='discoveries'?'news':id.startsWith('cap-')?id.slice(4):null;
   if(['reality','together','game','live'].includes(cap)){
     const label=product.capability(cap)?.label||({reality:'现实触及',together:'一起房间',game:'游戏棋桌',live:'直播与表演'})[cap];
