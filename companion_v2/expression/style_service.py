@@ -1002,6 +1002,10 @@ class ExpressionStyleService:
             "trim_reason": state.get("trim_reason"),
             "active": self._active_signal_count(context),
             "limit": policy.active_signal_limit,
+            # The configured ceiling on rules injected per turn; the overview
+            # page shows it next to the adopted count, and no local window
+            # setting carries it.
+            "rules_per_turn": policy.rules_per_turn,
             "last_run_at": stamp(closed_at) if closed_at is not None else None,
             "due": due,
             "worker": running,
