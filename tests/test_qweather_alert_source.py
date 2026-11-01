@@ -64,6 +64,28 @@ class AlertContractTests(unittest.TestCase):
         self.assertEqual(active_official_alerts(observation, WeatherLocation("新地点", 31.23, 121.47), NOW), ())
         self.assertEqual(active_official_alerts(observation, LOCATION, NOW + timedelta(minutes=11)), ())
 
+    def test_update_that_has_not_taken_effect_does_not_retire_a_current_alert(self):
+        """未生效或已过期的 update/cancel 不能把仍在有效期内的预警提前作废。"""
+        original = alert("blue")
+        rows = (
+            alert("future-update", kind="update", supersedes=("blue",),
+                  effective=NOW + timedelta(hours=2), expires=NOW + timedelta(hours=3)),
+            alert("stale-update", kind="update", supersedes=("blue",),
+                  effective=NOW - timedelta(hours=3), expires=NOW - timedelta(minutes=1)),
+            alert("future-cancel", kind="cancel", supersedes=("blue",),
+                  effective=NOW + timedelta(hours=2), expires=NOW + timedelta(hours=3)),
+        )
+        for pending in rows:
+            with self.subTest(row=pending["id"]):
+                observation = normalize_qweather_alerts(response(original, pending), LOCATION, NOW)
+                self.assertEqual([item.identifier for item in active_official_alerts(observation, LOCATION, NOW)],
+                                 ["blue"])
+        # 已生效的更新照旧取代原预警，修复不能放松正常的 update 语义。
+        effective = alert("update", kind="update", supersedes=("blue",))
+        observation = normalize_qweather_alerts(response(original, effective), LOCATION, NOW)
+        self.assertEqual([item.identifier for item in active_official_alerts(observation, LOCATION, NOW)],
+                         ["update"])
+
     def test_unknown_or_inconsistent_response_fails_closed(self):
         for payload in (
             {"metadata": {"zeroResult": True, "attributions": ATTRIBUTIONS}, "alerts": [alert()]},

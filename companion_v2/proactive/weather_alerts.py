@@ -121,7 +121,11 @@ def active_official_alerts(observation, location, at):
     if (type(observation) is not AlertObservation or observation.location != location
             or at.tzinfo is None or not -FUTURE_TOLERANCE <= at - observation.queried_at <= MAX_OBSERVATION_AGE):
         return ()
+    # 只有已经生效且尚未过期的 update/cancel 才能作废旧预警。接口可能在同一次
+    # 响应里给出生效时间在未来的更新（或一条早已过期的更新行）；旧实现无条件
+    # 收集 supersedes，会把仍在有效期内的原预警提前作废，导致这段空窗期静默漏报。
     canceled = {identifier for item in observation.alerts if item.message_type in {"update", "cancel"}
+                and item.effective_at <= at < item.expires_at
                 for identifier in item.supersedes}
     return tuple(item for item in observation.alerts
                  if item.message_type != "cancel" and item.identifier not in canceled
