@@ -35,6 +35,7 @@ from companion_v2.conversation.content.authoring_tasks import authoring_profiles
 from companion_v2.identity_policy.repository import PersistentIdentityDirectory
 from companion_v2.model_gateway.budget import BudgetSoftPolicy
 from companion_v2.model_gateway.models import BudgetPolicy, MAX_MODEL_OUTPUT_TOKENS, ModelTaskProfile
+from companion_v2.model_gateway.output_defaults import with_thinking_margins
 from companion_v2.role_work.journal.writing import writing_profiles
 from companion_v2.proactive.service import contact_profile, persona_judge_profile
 from companion_v2.role_work.reader import reading_profile
@@ -314,6 +315,8 @@ class AstrBotStagingSession:
                     screen_interpretation_profile(profile.provider_id), *narration_profiles,
                     *native_video_profiles) + self.writing_profiles + (self.reading_profile,) + authoring_profiles(
                         profile.provider_id, draft_tokens=profile.max_output_tokens)
+        # The host budget is a reply budget; structural tasks register a larger default.
+        profiles = with_thinking_margins(profiles)
         registry_fields = configuration_fields(profiles)
         registry_ids = {item.field_id for item in registry_fields}
         registry_fields += tuple(field for field in relay_configuration_fields()

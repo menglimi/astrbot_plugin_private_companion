@@ -17,7 +17,7 @@ from .core_observations import availability_summary, observations_for_role, requ
 from .models import MAX_MODEL_OUTPUT_TOKENS
 from .reply_efficiency import reply_efficiency_report
 from .refusal import canonical_refusal_terms
-from .replacement_rules import checked_rules, validate_targets
+from .replacement_rules import checked_rules, output_capabilities, validate_targets
 from .usage import MAIN_CHAIN_KIND, ModelUsageReport, usage_source
 
 
@@ -394,10 +394,31 @@ class ModelManagement:
             result.append(item)
         return result
 
+    def _effective_output_ceiling(self, fields):
+        """The strictest output capability of every provider the route can reach.
+
+        Routing may send one request to the primary provider, to the fallback,
+        or to a replacement-rule target, so the ceiling shown here is computed
+        with the same helper dispatch uses. The editor therefore displays the
+        exact value a registry default will be clamped to at send time.
+        """
+        values = {name: fields[name]["value"] for name in FIELDS}
+        return min(output_capabilities(values, self.app.router.providers),
+                   default=MAX_MODEL_OUTPUT_TOKENS)
+
     def _project(self, operator, profile, layer=ConfigLayer.ROLE):
         current, inherited, provider_default = self._snapshots(operator, profile, layer)
         fields = {name: _field(current.fields[profile.group + "." + name],
                                inherited.fields[profile.group + "." + name]) for name in FIELDS}
+        # A registry default may exceed a provider's declared capability; routing
+        # clamps it at dispatch time. Show the value that will actually be sent so
+        # the editor and the maintenance check agree with the dispatched envelope.
+        ceiling = self._effective_output_ceiling(fields)
+        limit = fields["max_output_tokens"]
+        if limit["source"] == "default":
+            limit["value"] = min(limit["value"], ceiling)
+        if limit["inherited_source"] == "default":
+            limit["inherited_value"] = min(limit["inherited_value"], ceiling)
         if provider_default is not None:
             for name in ("provider", "fallback"):
                 if name == "fallback" and profile.default_fallback:
@@ -779,6 +800,17 @@ class ModelManagement:
                 or values["replacement_scope"] not in ("all", "plugin", "conversation")):
             raise TaskError("model_configuration_invalid", "check task prompt and output token limit")
         selected = [values["provider"]] + ([values["fallback"]] if values["fallback"] else [])
+        # Routing treats a value saved on *any* configuration layer as the user's
+        # contract (``source is not None``); ``explicit`` only marks the layer being
+        # edited. Use the same basis here, including the value a reset inherits, so
+        # an unrelated edit cannot save a task that dispatch would refuse later.
+        limit_field = current.fields[profile.group + ".max_output_tokens"]
+        if "max_output_tokens" in changes:
+            limit_explicit = True
+        elif "max_output_tokens" in reset:
+            limit_explicit = inherited.fields[profile.group + ".max_output_tokens"].source is not None
+        else:
+            limit_explicit = limit_field.source is not None
         fallback_explicit = ("fallback" in changes or
                              ("fallback" not in reset and current.fields[profile.group + ".fallback"].explicit))
         if fallback_explicit and len(set(selected)) != len(selected):
@@ -789,16 +821,19 @@ class ModelManagement:
                 raise TaskError("model_provider_unavailable", "the provider has no registered V2 adapter")
             if not set(profile.capabilities).issubset(provider.capabilities):
                 raise TaskError("model_capability_mismatch", "the provider lacks task capabilities")
-            if values["max_output_tokens"] > provider.maximum_output_tokens:
+            if limit_explicit and values["max_output_tokens"] > provider.maximum_output_tokens:
                 # Only a provider ceiling can refuse a task limit, so the message names
                 # the field, the provider and that ceiling; the rejected value stays out
                 # of the text, and an undeclared provider never produces this error.
+                # An inherited registry default is not refused here: routing clamps it
+                # to the provider capability, so unrelated edits stay saveable.
                 raise TaskError("model_output_limit",
                                 f"max_output_tokens is limited to {provider.maximum_output_tokens}"
                                 " by provider " + provider_id)
         try:
             validate_targets(checked_rules(values["replacement_rules"]), self.app.router.providers,
-                             capabilities=profile.capabilities, max_output_tokens=values["max_output_tokens"])
+                             capabilities=profile.capabilities,
+                             max_output_tokens=values["max_output_tokens"] if limit_explicit else None)
         except ValueError as error:
             raise TaskError("model_route_invalid", str(error)) from error
         return {profile.group + "." + name: value for name, value in changes.items()}, tuple(
