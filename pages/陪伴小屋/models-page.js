@@ -1612,8 +1612,13 @@ window.CompanionModelsPage = (() => {
     if (!config) return `<div class="model-img-loading" role="status">${esc(i.configNotice || "尚未读取生图模型配置。")}<button type="button" class="button small" data-img-config-refresh>读取模型配置</button></div>`;
     const operation = imageCurrentOperation(i), routes = config.operation_routes[operation] || [], current = new Set(routes);
     const choices = [...config.endpoints.filter(item => !current.has(`online:${item.id}`)).map(item => [`online:${item.id}`, `${imageEndpointLabel(item, "图片模型")} · ${item.model || item.id}`]),
-      ...Object.entries(IMAGE_LOCAL_LABELS).filter(([key]) => !current.has(key)).map(([key, label]) => [key, label])];
+      ...Object.entries(IMAGE_LOCAL_LABELS).filter(([key]) => !current.has(key)
+        && (key !== "nai" || i.config.nai?.operations?.includes(operation))).map(([key, label]) => [key, label])];
     const dirty = imageConfigDirty(i), locked = i.configSaving || i.configLoading || !!i.endpointTesting;
+    const nai = i.config.nai, naiSupported = nai?.available && nai.operations?.includes(operation);
+    const naiState = !nai ? "状态暂不可读" : !nai.available ? "插件尚未就绪" :
+      !naiSupported ? "当前接入方式不支持此功能" : [nai.default_model, nai.default_size].filter(Boolean).join(" · ") || "已就绪";
+    const naiSource = current.has("nai") ? "" : `<div class="model-img-nai-source" data-img-nai-source><div><strong>NAI 生图插件</strong><span>${esc(naiState)}</span></div><button type="button" class="button small" data-img-nai-add${locked || !naiSupported ? " disabled" : ""}><i data-lucide="plus" aria-hidden="true"></i>加入${IMAGE_VIEWS[i.view || "generate"].label}队列</button></div>`;
     const legacyOptions = config.legacy_options || {}, selectedWorkflows = legacyOptions.image_companion_selected_workflows || {};
     const extraWorkflows = legacyOptions.image_companion_extra_workflows || [];
     const workflowLabels = {generate: "文生图", edit: "改图", mask_edit: "蒙版局部改图"};
@@ -1629,6 +1634,7 @@ window.CompanionModelsPage = (() => {
     return `<section class="model-img-route-editor" aria-label="生图模型与优先级">
       ${migrationBanner}
       <header class="model-imgconfig-head"><div><span class="model-eb">${operation === "generate" ? "文本提示生成图片" : "参考图片编辑"}</span><h3>${IMAGE_VIEWS[i.view || "generate"].label}模型与优先级</h3><p>${operation === "generate" ? "按列表顺序选择文生图模型；首个成功执行的模型结束本次尝试。" : "普通改图与蒙版局部改图共用模型队列；不支持当前操作的模型会跳过。"}</p></div><label class="model-img-enable"><input type="checkbox" data-img-config-field="enabled"${config.enabled ? " checked" : ""}${locked ? " disabled" : ""}>启用 V2 生图后端</label></header>
+      ${naiSource}
       <div class="model-img-main"><div class="model-img-sectionhead"><div><b>当前功能的模型顺序</b><span>数字越小越先尝试 · 使用上下移按钮调整优先级</span></div><span class="model-tag">${routes.length} 个模型</span></div>
         <div class="model-img-routes">${routes.map((route, index) => imageRouteCard(i, route, index, config)).join("") || '<div class="model-img-empty">此功能尚未配置模型。添加在线图片模型或本地后端后，调用会按此列表顺序尝试。</div>'}</div>
         <div class="model-img-addbar"><label><span>添加已配置模型</span><select data-img-route-choice aria-label="选择要加入当前功能的模型"${locked || !choices.length ? " disabled" : ""}><option value="">选择模型或后端</option>${choices.map(([value, label]) => `<option value="${esc(value)}">${esc(label)}</option>`).join("")}</select></label><button type="button" class="button small" data-img-route-add${locked || !choices.length ? " disabled" : ""}>添加</button><button type="button" class="button small primary" data-img-model-add${locked || config.endpoints.length >= (i.config.limits?.max_endpoints || 24) ? " disabled" : ""}>新增在线模型</button></div>
@@ -1793,7 +1799,18 @@ window.CompanionModelsPage = (() => {
     }
     if (t.closest("[data-img-route-add]") && i.configDraft && !i.configSaving) {
       const choice = root?.querySelector("[data-img-route-choice]")?.value, queue = i.configDraft.operation_routes[imageCurrentOperation(i)];
-      if (choice && !queue.includes(choice)) queue.push(choice);
+      if (choice && !queue.includes(choice)) {
+        queue.push(choice);
+        if (choice === "nai") i.configDraft.enabled = true;
+      }
+      render(); return;
+    }
+    if (t.closest("[data-img-nai-add]") && i.configDraft && !i.configSaving && !i.configLoading && !i.endpointTesting) {
+      const operation = imageCurrentOperation(i), nai = i.config?.nai;
+      if (!nai?.available || !nai.operations?.includes(operation)) return;
+      const queue = i.configDraft.operation_routes[operation];
+      if (!queue.includes("nai")) queue.push("nai");
+      i.configDraft.enabled = true;
       render(); return;
     }
     if (t.closest("[data-img-model-add]") && i.configDraft && !i.configSaving) {

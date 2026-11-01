@@ -946,6 +946,46 @@ test('NAI routes show plugin defaults in each operation queue without duplicate 
   page.unmount();
 });
 
+test('NAI has a visible add entry that enables output and blocks unsupported direct editing', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  page.mount(node);
+  requests[0].resolve(status());
+  await flush();
+  node.click('[data-model-tab]', {modelTab: 'image'});
+  requests.find(item => item.route === 'model/image').resolve({actions: [], enabled: {
+    'image.generate': true, 'image.edit': true, 'image.mask_edit': false,
+  }});
+  await flush();
+  const config = {
+    revision: 'nai-add-r1', nai: {available: true, call_mode: 'direct',
+      default_model: 'nai-diffusion-4-5-full', operations: ['generate']},
+    settings: {enabled: false, backend: 'auto', endpoints: [], comfyui: {}, sd_webui: {},
+      operation_routes: {generate: [], edit: []}},
+  };
+  requests.find(item => item.route.endsWith('/image/output')).resolve(config);
+  await flush();
+  assert.match(node.innerHTML, /data-img-nai-source/);
+  assert.match(node.innerHTML, /加入文生图队列/);
+  node.click('[data-img-nai-add]');
+  assert.match(node.innerHTML, /data-img-route-card="nai"/);
+  assert.match(node.innerHTML, /生图后端已启用/);
+  node.click('[data-img-config-save]');
+  const saved = requests.find(item => item.route.endsWith('/image/output/save'));
+  assert.ok(saved);
+  assert.equal(saved.values.changes.enabled, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(saved.values.changes.operation_routes)),
+    {generate: ['nai'], edit: []});
+  saved.resolve({...config, revision: 'nai-add-r2', settings: saved.values.changes});
+  await flush();
+  node.click('[data-img-view]', {imgView: 'edit'});
+  assert.match(node.innerHTML, /当前接入方式不支持此功能/);
+  assert.match(node.innerHTML, /data-img-nai-add disabled/);
+  node.click('[data-img-nai-add]');
+  assert.doesNotMatch(node.innerHTML, /data-img-route-card="nai"/);
+  page.unmount();
+});
+
 test('switching tabs round-trip keeps the functional matrix without reloading', async () => {
   const {page, requests, root} = harness();
   const node = root();

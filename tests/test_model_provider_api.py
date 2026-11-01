@@ -49,6 +49,7 @@ class FakeProviderManager:
 
 class FakeImageExtensionAPI:
     def __init__(self):
+        self.nai = None
         self.revision = "a" * 64
         self.configuration = {"enabled": False, "backend": "auto",
             "endpoints": [], "sd_webui": {"base_url": "", "api_key_set": False, "timeout_seconds": 300},
@@ -62,7 +63,7 @@ class FakeImageExtensionAPI:
         return {"status": "succeeded", "operation_id": "test-operation", "elapsed_ms": 42, "error": ""}
 
     def output_configuration(self):
-        return {"revision": self.revision, "settings": deepcopy(self.configuration), "live": False,
+        return {"revision": self.revision, "settings": deepcopy(self.configuration), "nai": self.nai, "live": False,
                 "limits": {"max_endpoints": 24}, "supported_backends": ["auto", "online_api", "comfyui", "sd_webui"],
                 "supported_platforms": ["auto", "openai", "minimax"]}
 
@@ -679,6 +680,28 @@ class ProviderRouteTests(unittest.IsolatedAsyncioTestCase):
         fake.configuration["endpoints"][1]["name"] = "  夜间线路  "
         preferred = model_api.ModelWebAPI(self.controller)._preferred_image_projection(registry)
         self.assertEqual(preferred["name"], "夜间线路")
+
+    async def test_image_status_projects_nai_defaults_and_follows_queue_availability(self):
+        import astrbot_host.model_api as model_api
+
+        fake = FakeImageExtensionAPI()
+        fake.nai = {"available": True, "default_model": "nai-diffusion-4-5-full",
+                    "operations": ["generate"], "api_key": "must-not-escape"}
+        fake.configuration.update(
+            enabled=True, endpoints=[{"id": "backup", "enabled": True, "model": "backup-model"}],
+            operation_routes={"generate": ["comfyui", "nai", "online:backup"], "edit": []})
+        registry = NS(image_extension_api=lambda: fake)
+        api = model_api.ModelWebAPI(self.controller)
+        preferred = api._preferred_image_projection(registry)
+        self.assertEqual(preferred, {"model": "nai-diffusion-4-5-full", "name": "NAI 生图插件",
+                                     "route": "nai", "enabled": True})
+        self.assertNotIn("must-not-escape", json.dumps(preferred))
+        fake.nai["default_model"] = "nai-diffusion-5-full"
+        self.assertEqual(api._preferred_image_projection(registry)["model"], "nai-diffusion-5-full")
+        fake.nai["available"] = False
+        self.assertEqual(api._preferred_image_projection(registry)["route"], "online:backup")
+        fake.configuration["enabled"] = False
+        self.assertFalse(api._preferred_image_projection(registry)["enabled"])
 
     async def test_image_status_distinguishes_unsupported_routes_from_stale_declarations(self):
         (await self.controller.initialize_profile()).unwrap()

@@ -166,6 +166,7 @@ test("NAI output controls read plugin status and save independent generation and
   const saved = state.requests.find(item => item.endpoint.endsWith("/save"));
   assert.deepEqual(JSON.parse(JSON.stringify(saved.body.changes.operation_routes)),
     {generate: ["nai"], edit: []});
+  assert.equal(saved.body.changes.enabled, true);
   state.page.unmount();
 });
 

@@ -417,6 +417,7 @@ window.CompanionOutputPage=(()=>{
       draft.operation_routes??={generate:[],edit:[]};
       const routes=draft.operation_routes[operation]||[];
       draft.operation_routes[operation]=target.checked?[...new Set([...routes,"nai"])]:routes.filter(route=>route!=="nai");
+      if(target.checked)draft.enabled=true;
       render();return;
     }
     if(target.matches("[data-output-album-select-all]")){selectAllAlbums(target.checked);return;}
