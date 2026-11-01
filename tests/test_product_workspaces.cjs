@@ -11,6 +11,7 @@ const shellHtml = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/in
 const shellCss = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/shell.css"), "utf8");
 const sidebarSource = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/home-sidebar.js"), "utf8");
 const source = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/product-page.js"), "utf8");
+const designerMemorySource = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/persona-designer-memory.js"), "utf8");
 const relationshipApi = "host/targets/first/roles/role-first/relationships";
 const groupMemoryApi = "host/targets/first/roles/role-first/group-memory";
 
@@ -90,6 +91,7 @@ async function harness(savedTheme = null, extensions = [], options = {}) {
       },
       apiPost: async (endpoint, body) => {
         calls.push({method: "POST", endpoint, body});
+        if (options.postResponder) return options.postResponder(endpoint, body);
         if (options.postFailure) throw options.postFailure;
         return {status: "ok", data: {preferences: body}};
       },
@@ -130,6 +132,7 @@ async function harness(savedTheme = null, extensions = [], options = {}) {
     : clearTimeout;
   const pageConsole = options.captureWarnings ? {warn: (...args) => warnings.push(args)} : console;
   const pageFetch = options.fetch || (async (...args) => {fetchCalls.push(args); return {ok: true, json: async () => ({})};});
+  if (options.designerMemory) vm.runInNewContext(designerMemorySource, {window});
   vm.runInNewContext(source, {window, document, URL, navigator: {language: "zh-CN"},
     setTimeout: pageSetTimeout, clearTimeout: pageClearTimeout, console: pageConsole,
     fetch: pageFetch,
@@ -155,11 +158,11 @@ async function harness(savedTheme = null, extensions = [], options = {}) {
     return owner;
   }
   const identity = addFrame("identity"), relationships = addFrame("relationships"), host = addFrame("host"), persona = addFrame("persona");
-  function request(owner, method, endpoint, requestId = "request-1", timeoutMs) {
+  function request(owner, method, endpoint, requestId = "request-1", timeoutMs, body = {}) {
     return events.message({source: owner.contentWindow, data: {channel: "companion-workspace",
-      kind: "request", requestId, method, path: endpoint, body: {}, timeoutMs}});
+      kind: "request", requestId, method, path: endpoint, body, timeoutMs}});
   }
-  return {product, calls, timers, warnings, loadedScripts, fetchCalls, frames, addFrame, identity, relationships, host, persona, events, request, document, stageRole, navigations, updates, catalog,
+  return {product, calls, timers, warnings, loadedScripts, fetchCalls, frames, addFrame, identity, relationships, host, persona, events, request, document, window, stageRole, navigations, updates, catalog,
     largeText: () => largeText,
     setDirectory(directory) {nextDirectory = directory;},
     hostTheme(isDark) {
@@ -173,6 +176,54 @@ async function harness(savedTheme = null, extensions = [], options = {}) {
       return resolve;
     }};
 }
+
+test("designer is installation scoped and available before companion setup; relays only its allowlist", async () => {
+  const h = await harness(null, [], {directoryUnavailable: true, designerMemory: true, lazyBundles: true});
+  assert.match(h.product.workspace("designer"), /product-workspace-frame/);
+  const designer = h.addFrame("designer"); h.product.mountWorkspace();
+  await h.request(designer, "GET", "designer/options");
+  assert.equal(h.calls.at(-1).endpoint, "persona-designer/options");
+  const before = h.calls.length;
+  await h.request(designer, "POST", "persona/command");
+  assert.equal(designer.messages.at(-1).ok, false);
+  await h.request(h.persona, "GET", "designer/client-state");
+  assert.equal(h.persona.messages.at(-1).ok, false);
+  assert.equal(h.calls.length, before);
+});
+
+test("designer state and late replies survive remount while leaving the extension clears memory", async () => {
+  let resolve;
+  const h = await harness(null, [], {designerMemory: true, lazyBundles: true,
+    postResponder: endpoint => endpoint === "persona-designer/turn"
+      ? new Promise(done => { resolve = done; }) : {status: "ok", data: {}}});
+  const designer = h.addFrame("designer"); h.product.mountWorkspace();
+  const snapshot = {version: 1, activeMode: "create", sessions: {create: {input: "still typing"}}};
+  await h.request(designer, "POST", "designer/client-state", "cache", undefined, snapshot);
+  const turn = h.request(designer, "POST", "designer/turn", "turn", 135000, {request_id: "a".repeat(32)});
+  await new Promise(done => setImmediate(done));
+  designer.isConnected = false; h.frames.splice(h.frames.indexOf(designer), 1);
+  const replacement = h.addFrame("designer"); h.product.mountWorkspace();
+  resolve({reply: "late result"}); await turn;
+  await h.request(replacement, "GET", "designer/client-state", "restored");
+  assert.equal(replacement.messages.at(-1).data.state.sessions.create.input, "still typing");
+  await h.request(replacement, "GET", "designer/client-result", "receipt", undefined, {id: "turn:" + "a".repeat(32)});
+  assert.equal(replacement.messages.at(-1).data.data.reply, "late result");
+  assert.equal(h.calls.filter(call => call.endpoint === "persona-designer/turn").length, 1);
+  assert.equal(h.calls.filter(call => call.endpoint === "persona-designer/drafts").length, 0);
+  h.events.pagehide(); h.events.pageshow();
+  await h.request(replacement, "GET", "designer/client-state", "fresh");
+  assert.equal(replacement.messages.at(-1).data.state, null);
+});
+
+test("optional designer UI failure leaves the core account workspace usable", async () => {
+  const h = await harness(null, [], {lazyBundles: true});
+  const designer = h.addFrame("designer"); h.product.mountWorkspace();
+  await h.request(designer, "GET", "designer/options");
+  assert.equal(designer.messages.at(-1).code, "persona_designer_unavailable");
+  await h.request(h.host, "GET", "host/status");
+  assert.equal(h.host.messages.at(-1).ok, true);
+  assert.equal(h.calls.at(-1).endpoint, "host/status");
+});
 
 test("directory and relationship workspaces both mount and receive appearance updates", async () => {
   const h = await harness();

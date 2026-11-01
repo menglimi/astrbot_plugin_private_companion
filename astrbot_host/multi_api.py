@@ -355,3 +355,9 @@ class MultiHostWebAPI:
                                handler, methods, description)
                               for path, handler, methods, description in ImageMaterialsWebAPI(view).routes())
         self._register_routes(register, routes)
+        try:
+            from .optional_persona_designer import register_optional_designer
+            register_optional_designer(self, register)
+        except Exception as error:
+            import logging
+            logging.getLogger(__name__).warning("[CompanionV2] 新的她未加载 error_type=%s", type(error).__name__)
