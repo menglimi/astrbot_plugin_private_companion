@@ -79,11 +79,44 @@ window.CompanionExpressionSignalsPage = (() => {
   let editor = null;
   let kindFilter = "all";
   let sourceFilter = "all";
+  let pendingUpdate = false;
 
+  /* 每个 (来源, 状态) 一份分页记录：`cursors` 是已经读过的页游标（第 1 页是 ""），
+     刷新时按它原地重读同一批页；`cursor` 是下一页的游标。 */
   function pageState() {
     const states = [stateFilter === "active" ? "adopted" : stateFilter];
     return Object.fromEntries(sources.map(source => [source.key,
-      Object.fromEntries(states.map(state => [state, {items: [], cursor: "", done: false, loaded: false}]))]));
+      Object.fromEntries(states.map(state => [state,
+        {items: [], cursors: [""], cursor: "", done: false, loaded: false}]))]));
+  }
+  /* 同一页内的行合并：按 key 就地更新、旧行不撤。
+     刷新时后端的窗口会比上一次短（时间窗在滚动），撤掉旧行等于用户眼前少了几条。 */
+  function mergeRows(previous, incoming) {
+    const merged = previous.slice();
+    const positions = new Map(merged.map((row, position) => [row._key, position]));
+    incoming.forEach(row => {
+      const position = positions.get(row._key);
+      if (position === undefined) {positions.set(row._key, merged.length); merged.push(row);}
+      else merged[position] = row;
+    });
+    return merged;
+  }
+  function dedupeRows(rows) {
+    const seen = new Set();
+    return rows.filter(row => {
+      if (seen.has(row._key)) return false;
+      seen.add(row._key); return true;
+    });
+  }
+  /* 阅读位置：列表本身不滚动（整页滚），所以记住窗口位置，重读完成后复位。
+     `#homeShell{overflow-anchor:none}` 关掉了浏览器的滚动锚定，页面得自己补。 */
+  function rememberScroll() {
+    return typeof window.scrollY === "number" && Number.isFinite(window.scrollY) ? window.scrollY : null;
+  }
+  function restoreScroll(value) {
+    if (value === null || typeof window.scrollTo !== "function") return;
+    if (Math.abs((Number(window.scrollY) || 0) - value) <= 1) return;
+    window.scrollTo(0, value);
   }
   const sourceLabel = source => source?.label || "未命名范围";
   /* page bridge 只带 message 的旧形态也要能认出机器码；来源名优先用 broker
@@ -132,76 +165,160 @@ window.CompanionExpressionSignalsPage = (() => {
   }
   function rebuildItems() {
     const seen = new Set();
-    items = Object.values(pages).flatMap(page => Object.values(page).flatMap(state => state.items)).filter(item => {
-      const id = String(item?._key || item?.signal_id || "");
-      if (!id || seen.has(id)) return false;
-      seen.add(id); return true;
-    }).sort((left, right) => {
+    /* 跨来源按 signal_id 去重：同一条规则可能被同一角色的多个窗口同时列出，并排两张
+       一模一样的卡（各带一个可用按钮）只会让人以为规则重复了。
+       但只对「全部来源」生效——筛到某个来源时必须保留该来源自己的那一份，
+       否则幸存的总是来源顺序里的第一张，筛第二个来源会看到空列表。 */
+    const crossSource = sourceFilter === "all";
+    items = Object.values(pages).flatMap(page => Object.values(page).flatMap(state => state.items))
+      .filter(item => sourceFilter === "all" || item._source.key === sourceFilter)
+      .filter(item => {
+        const id = crossSource ? String(item?.signal_id || item?._key || "") : String(item?._key || "");
+        if (!id || seen.has(id)) return false;
+        seen.add(id); return true;
+      }).sort((left, right) => {
       const a = Date.parse(left.decided_at || left.created_at || "") || 0;
       const b = Date.parse(right.decided_at || right.created_at || "") || 0;
       return b - a || String(right.signal_id).localeCompare(String(left.signal_id));
     });
   }
   function hasMore() { return Object.values(pages).some(page => Object.values(page).some(value => value.cursor && !value.done)); }
-  async function read(current = mountTicket, {append = false} = {}) {
-    if (!mounted(current) || !sources.length || writing || editor || (append && busy)) return false;
+  /* 需要读哪些页：
+       reset   每个 (来源,状态) 只读第 1 页；
+       append  只读「还有下一页」的那几页，游标各取各的；
+       refresh 把已经读过的页（`cursors`）按原样重读一遍，不再只读第 1 页。 */
+  function pagesToRead(mode) {
+    const wanted = [];
+    sources.forEach(source => Object.entries(pages[source.key] || {}).forEach(([state, page]) => {
+      if (mode === "reset") {wanted.push({source, state, cursors: [""]}); return;}
+      if (mode === "append") {
+        if (page.cursor && !page.done) wanted.push({source, state, cursors: [page.cursor]});
+        return;
+      }
+      /* 还没成功读过（首次读取失败）的来源也要在刷新里重试第 1 页。 */
+      wanted.push({source, state, cursors: page.loaded && page.cursors.length ? page.cursors.slice() : [""]});
+    }));
+    return wanted;
+  }
+  /* 按游标列表逐页读。中途某页读不到就停在该页：已经读到的行仍然有效，
+     `next` 会停在失败的那页游标上，「加载更多」下次会重试它。 */
+  async function readChain(source, state, cursors) {
+    const rows = [], used = [];
+    let next = "", meta = null, failure = null, unavailable = "";
+    for (const cursor of cursors) {
+      let page;
+      try {
+        page = await api("GET", source.apiBase + "/style", queryFor(state, cursor));
+      } catch (problem) {
+        const code = issueCode(problem);
+        failure = {code, label: issueLabel(source, problem), detail: reason(code || problem?.message)};
+        break;
+      }
+      if (!Array.isArray(page.items)) {
+        failure = {code: "invalid_response", label: sourceLabel(source), detail: reason("invalid_response")};
+        break;
+      }
+      if (!meta) meta = page;
+      if (typeof page.unavailable_reason === "string" && page.unavailable_reason) {
+        unavailable = page.unavailable_reason;
+        break;
+      }
+      used.push(cursor);
+      rows.push(...page.items.map(item => ({...item, _state: state, _source: source,
+        _key: source.key + "::" + item.signal_id})));
+      next = typeof page.next_cursor === "string" && page.next_cursor ? page.next_cursor : "";
+    }
+    return {source, state, rows, next, used, meta, failure, unavailable};
+  }
+  /* 读取有三种模式：
+       reset   换筛选/状态/首次挂载：重建页记录，只读第 1 页（用户主动重置）；
+       append  「加载更多」：往后读一页并追加；
+       refresh 重新读取 / 写操作后 / 跨工作区通知：按已读游标原地重读同一批页，
+               按 key 合并，**不减少**已经显示的行。
+     除用户主动切筛选外，任何刷新路径都不走 reset —— 那是「列表被打回第一页」的根源。 */
+  async function read(current = mountTicket, options = {}) {
+    const mode = typeof options === "string" ? options
+      : options.append === true ? "append" : options.mode || "reset";
+    const reset = mode === "reset";
+    if (!mounted(current) || !sources.length || writing || editor || (!reset && busy)) return false;
     const request = ++readTicket;
     const requestedFilter = filter;
     const requestedStateFilter = stateFilter;
-    if (!append) { pages = pageState(); items = []; capacity = null; capacityBySource = {}; countsBySource={}; confirming = null; notice = ""; error = false; readIssues = []; selectedExportIds = new Set(); }
-    const requestsToRead = sources.flatMap(source => Object.keys(pages[source.key] || {})
-      .filter(state => !pages[source.key][state].loaded
-        || append && pages[source.key][state].cursor && !pages[source.key][state].done)
-      .map(state => ({source,state})));
+    const anchor = reset ? null : rememberScroll();
+    if (reset) {
+      pages = pageState(); items = []; capacity = null; capacityBySource = {}; countsBySource = {};
+      confirming = null; notice = ""; error = false; readIssues = []; selectedExportIds = new Set();
+    }
+    const requestsToRead = pagesToRead(mode);
     if (!requestsToRead.length) { busy = false; rebuildItems(); render(); return true; }
     busy = true; render();
-    const results = await Promise.allSettled(requestsToRead.map(async ({source,state}) => {
-      const page = await api("GET", source.apiBase + "/style", queryFor(state, pages[source.key][state].cursor));
-      if (!Array.isArray(page.items)) throw Object.assign(new Error("invalid_response"), {code: "invalid_response"});
-      return {source,state,page};
-    }));
+    const results = await Promise.allSettled(requestsToRead.map(({source, state, cursors}) =>
+      readChain(source, state, cursors)));
     if (!mounted(current) || request !== readTicket || requestedFilter !== filter
         || requestedStateFilter !== stateFilter) return false;
     const discovered = [];
     results.forEach((result, index) => {
       const {source,state} = requestsToRead[index];
+      const target = pages[source.key][state];
       if (result.status === "rejected") {
         const code = issueCode(result.reason);
         discovered.push({kind: "error", label: issueLabel(source, result.reason), code,
           detail: reason(code || result.reason?.message)});
         return;
       }
-      const page = result.value.page;
-      const target = pages[source.key][state];
-      if (typeof page.unavailable_reason === "string" && page.unavailable_reason) {
-        const code = errorCode(page.unavailable_reason);
+      const value = result.value;
+      if (value.unavailable) {
+        const code = errorCode(value.unavailable);
         discovered.push({kind: "unavailable", label: sourceLabel(source), code,
-          detail: reason(code || page.unavailable_reason)});
-        target.cursor = ""; target.done = true; target.loaded = true;
+          detail: reason(code || value.unavailable)});
+        /* 刷新时这条来源刚刚变得不可读：已经显示的行留着（上一刻还是有效的），
+           只在整表重置时清空。 */
+        if (reset) { target.cursor = ""; target.done = true; target.loaded = true; }
         return;
       }
-      if(page.counts && typeof page.counts==="object") countsBySource[source.key]=page.counts;
-      if (page.capacity && Number.isInteger(page.capacity.active) && Number.isInteger(page.capacity.limit)) {
+      if (value.failure) {
+        discovered.push({kind: "error", label: value.failure.label, code: value.failure.code,
+          detail: value.failure.detail});
+        /* 首页就没读到：旧行与旧游标都不能动，否则等于把用户的列表清空。 */
+        if (!value.used.length) return;
+      }
+      const page = value.meta;
+      if(page?.counts && typeof page.counts==="object") countsBySource[source.key]=page.counts;
+      if (page?.capacity && Number.isInteger(page.capacity.active) && Number.isInteger(page.capacity.limit)) {
         capacityBySource[source.key] = page.capacity;
       }
-      if (Number.isInteger(page.legacy_orphan_count) && page.legacy_orphan_count > 0) {
+      if (Number.isInteger(page?.legacy_orphan_count) && page.legacy_orphan_count > 0) {
         discovered.push({kind: "legacy", label: sourceLabel(source), code: "legacy_expression_scope",
           count: page.legacy_orphan_count,
           detail: `${page.legacy_orphan_count} 条旧版群规则保存在旧作用域，暂未生效；需要单独迁移后才能读取和生效。`});
       }
-      const incoming = page.items.map(item => ({...item, _state: state, _source:source,
-        _key:source.key + "::" + item.signal_id}));
-      target.items = append ? target.items.concat(incoming) : incoming;
-      target.cursor = typeof page.next_cursor === "string" && page.next_cursor ? page.next_cursor : "";
+      if (reset) {
+        target.items = dedupeRows(value.rows);
+        target.cursors = value.used.length ? value.used.slice() : [""];
+      } else if (mode === "append") {
+        target.items = dedupeRows(target.items.concat(value.rows));
+        target.cursors = target.cursors.concat(value.used);
+      } else {
+        target.items = mergeRows(target.items, value.rows);
+        /* 链中某页失败时保留原来的游标列表：否则失败的页与它后面的页会被永久踢出
+           刷新范围，已显示的行就再也不会被刷新到。 */
+        if (!value.failure && value.used.length) target.cursors = value.used.slice();
+      }
+      target.cursor = value.next;
       target.done = !target.cursor;
       target.loaded = true;
     });
     const capacities=Object.values(capacityBySource);
     capacity=capacities.length?capacities.reduce((total,value)=>({active:total.active+value.active,limit:total.limit+value.limit}),{active:0,limit:0}):null;
     rebuildItems(); busy = false;
-    readIssues = append ? readIssues.concat(discovered.filter(issue =>
-      !readIssues.some(existing => existing.kind === issue.kind && existing.label === issue.label)))
-      : discovered;
+    readIssues = (reset || mode === "refresh") ? discovered : readIssues.concat(discovered.filter(issue =>
+      !readIssues.some(existing => existing.kind === issue.kind && existing.label === issue.label)));
+    /* 勾选与确认条跟着刷新走：状态已经变了的规则可能不再出现在当前列表里。 */
+    if (!reset) {
+      const present = new Set(items.map(item => item._key));
+      if (selectedExportIds.size) selectedExportIds = new Set([...selectedExportIds].filter(key => present.has(key)));
+      if (confirming && !present.has(confirming)) confirming = null;
+    }
     const failedCount = readIssues.filter(issue => issue.kind === "error").length;
     const unavailableCount = readIssues.filter(issue => issue.kind === "unavailable").length;
     const legacyRules = readIssues.filter(issue => issue.kind === "legacy")
@@ -215,10 +332,19 @@ window.CompanionExpressionSignalsPage = (() => {
       notice = `${legacyRules} 条旧版群规则保存在旧作用域，暂未生效。`;
       error = false;
     } else if (unavailableCount) {
-      notice = `${unavailableCount} 个来源还没有可读取的表达学习记录，已显示其他来源。`;
+      /* 全部来源都不可读时没有「其他来源」可言，别给一句自相矛盾的提示。 */
+      notice = unavailableCount === sources.length
+        ? "全部来源都还没有可读取的表达学习记录。"
+        : `${unavailableCount} 个来源还没有可读取的表达学习记录，已显示其他来源。`;
       error = false;
+    } else if (!reset) {
+      /* 刷新成功后把上一轮的失败提示收掉。 */
+      notice = ""; error = false;
     }
-    render(); return failedCount < sources.length;
+    render();
+    if (anchor !== null) restoreScroll(anchor);
+    if (pendingUpdate && mounted(current)) { pendingUpdate = false; void read(current, "refresh"); }
+    return failedCount < sources.length;
   }
   function renderEvidence(item) {
     const evidence = Array.isArray(item.evidence) ? item.evidence : [];
@@ -311,7 +437,7 @@ window.CompanionExpressionSignalsPage = (() => {
       await api("POST", draft.item._source.apiBase + "/style/revise", {signal_id:draft.item.signal_id,
         view_token:draft.item.view_token,operation_key:draft.operationKey || (draft.operationKey=operationKey("revise")),changes:draft.changes});
       if (!mounted(current)) return;
-      editor = null; writing = false; await read(current);
+      editor = null; writing = false; await read(current, "refresh");
       notice = "表达规则已更新。"; error = false; render();
     } catch (problem) {
       if (!mounted(current)) return;
@@ -359,6 +485,19 @@ window.CompanionExpressionSignalsPage = (() => {
       ${rows || `<div class="lh-signal-empty">${busy ? "正在读取…" : kindFilter!=="all"||sourceFilter!=="all"?"当前筛选下没有表达规则":stateFilter === "pending" ? "还没有待审候选" : stateFilter === "retired" ? "还没有停用的表达规则" : stateFilter==="rejected"?"还没有拒绝的表达规则":"还没有已启用表达规则"}</div>`}${more}</section>`;
     window.lucide?.createIcons({attrs: {"aria-hidden": "true"}});
   }
+  /* 动作成功后就地把这条从它所在的状态页里摘掉：动作本身已经把它移出这个状态桶了。
+     随后的 refresh 会原地更新其余已加载的页，不会把列表打回第一页。 */
+  function applyDecision(item) {
+    const page = pages[item._source?.key]?.[item._state];
+    if (page) page.items = page.items.filter(row => row._key !== item._key);
+    items = items.filter(row => row._key !== item._key);
+    if (selectedExportIds.has(item._key)) {
+      const kept = new Set(selectedExportIds);
+      kept.delete(item._key);
+      selectedExportIds = kept;
+    }
+    if (confirming === item._key) confirming = null;
+  }
   async function command(id, action) {
     const item = items.find(row => row._key === id);
     if (!item || !Array.isArray(item.actions) || !item.actions.includes(action) || busy) return;
@@ -378,7 +517,8 @@ window.CompanionExpressionSignalsPage = (() => {
     }
     if (!mounted(current) || request !== readTicket) return;
     busy = false; writing = false; confirming = null;
-    const refreshed = await read(current);
+    if (!resultError) applyDecision(item);
+    const refreshed = await read(current, "refresh");
     if (!mounted(current)) return;
     if (refreshed) { notice = resultNotice; error = resultError; }
     render();
@@ -455,7 +595,7 @@ window.CompanionExpressionSignalsPage = (() => {
     }
     if (!mounted(current)) return;
     transferBusy = false;
-    if (!transferError) await read(current);
+    if (!transferError) await read(current, "refresh");
     render();
   }
   async function copyExport() {
@@ -492,8 +632,8 @@ window.CompanionExpressionSignalsPage = (() => {
     if (stateButton) { const next = STATE_FILTERS.some(([key]) => key === stateButton.dataset.signalState) ? stateButton.dataset.signalState : "active"; if (next !== stateFilter) { stateFilter = next; void read(mountTicket); } return; }
     const filterButton = event.target.closest("[data-signal-filter]");
     if (filterButton) { const next = FILTERS.some(([key]) => key === filterButton.dataset.signalFilter) ? filterButton.dataset.signalFilter : "all"; if (next !== filter) { filter = next; void read(mountTicket); } return; }
-    if (event.target.closest("[data-signal-refresh]")) { void read(mountTicket); return; }
-    if (event.target.closest("[data-signal-more]")) { void read(mountTicket, {append: true}); return; }
+    if (event.target.closest("[data-signal-refresh]")) { void read(mountTicket, "refresh"); return; }
+    if (event.target.closest("[data-signal-more]")) { void read(mountTicket, "append"); return; }
     const action = event.target.closest("[data-signal-action]");
     if (action) { if (action.dataset.signalAction === "retire") { confirming = action.dataset.id; render(); } else void command(action.dataset.id, action.dataset.signalAction); return; }
     const confirm = event.target.closest("[data-signal-confirm]");
@@ -505,7 +645,7 @@ window.CompanionExpressionSignalsPage = (() => {
     const kind = event.target.closest("[data-rule-kind-filter]");
     if (kind) {kindFilter=kind.value;render();return;}
     const source = event.target.closest("[data-rule-source-filter]");
-    if (source) {sourceFilter=source.value;render();return;}
+    if (source) {sourceFilter=source.value;rebuildItems();render();return;}
     const destination=event.target.closest("[data-share-target]");
     if(destination){importSourceKey=destination.value;importPreview=null;transferNotice="";transferError=false;return;}
     const checkbox = event.target.closest("[data-signal-export]");
@@ -529,15 +669,25 @@ window.CompanionExpressionSignalsPage = (() => {
       transferNotice = "文件读取失败。"; transferError = true; render();
     });
   }
+  /* 分享面板两个按钮的就地同步。为什么不能只靠 render()：
+     浏览器不会给 disabled 的按钮派发 click，而文本域在粘贴时并不重绘页面，
+     如果只在 render() 里写 disabled，粘贴完「预览导入」会一直是灰的——粘贴这条路就整条走不通。
+     也不整块重绘：重绘会重建 textarea，粘贴后的光标与焦点都会丢。 */
+  function syncTransferButtons() {
+    const preview = root?.querySelector("[data-share-preview]");
+    if (preview) preview.disabled = transferBusy || !importJSON.trim();
+    const apply = root?.querySelector("[data-share-apply]");
+    if (apply) apply.disabled = transferBusy || !importPreview?.importable_rule_count;
+  }
   function onInput(event) {
     if (updateDraft(event.target)) return;
     const textarea = event.target.closest("[data-share-import-json]");
     if (!textarea) return;
     importJSON = textarea.value; importPreview = null; transferNotice = ""; transferError = false;
+    /* 粘贴/清空立刻同步按钮：有内容即可预览，清空回灰；改动内容后旧预览作废，提交按钮随之变灰。 */
+    syncTransferButtons();
     const preview = root?.querySelector(".lh-expression-import-preview");
     if (preview) preview.remove();
-    const apply = root?.querySelector("[data-share-apply]");
-    if (apply) apply.disabled = true;
   }
   function updateDraft(target) {
     if (!editor || writing) return false;
@@ -564,8 +714,12 @@ window.CompanionExpressionSignalsPage = (() => {
     }
     editor.operationKey=null; return true;
   }
+  /* 其他工作区（素材审核 / 学习完成）会把这件事广播过来。这里只做「原地刷新」：
+     读取在途时先记下来，等这一轮读完再补一次，避免把并发读叠成两次全量重读。 */
   function onUpdated(event) {
-    if (sources.some(source=>source.scopeKey===event.detail?.scopeKey)) void read(mountTicket);
+    if (!sources.some(source=>source.scopeKey===event.detail?.scopeKey)) return;
+    if (busy || writing) {pendingUpdate = true; return;}
+    void read(mountTicket, "refresh");
   }
   function mount(host, options = {}) {
     unmount(); root = host;
@@ -577,11 +731,20 @@ window.CompanionExpressionSignalsPage = (() => {
     items = []; pages = {}; capacity = null; notice = ""; busy = false; writing = false; error = false; readIssues = []; confirming = null;
     transferOpen = false; transferBusy = false; transferNotice = ""; transferError = false; importJSON = ""; importPreview = null;
     exportPackage = null; selectedExportIds = new Set();
-    editor=null;kindFilter="all";sourceFilter="all";stateFilter="active";
+    editor=null;kindFilter="all";sourceFilter="all";stateFilter="active";pendingUpdate=false;
     root?.addEventListener("click", onClick); root?.addEventListener("change", onChange); root?.addEventListener("input", onInput);
     window.addEventListener?.("companion-expression-updated", onUpdated); const current = ++mountTicket;
     if (sources.length) void read(current); else { notice = "没有可读取的表达规则来源。"; error = true; render(); }
   }
-  function unmount() { mountTicket++; readTicket++; root?.removeEventListener("click", onClick); root?.removeEventListener("change", onChange); root?.removeEventListener("input", onInput); window.removeEventListener?.("companion-expression-updated", onUpdated); root = null; apiBase = ""; scopeKey = ""; sources=[];items = []; pages = {}; capacity = null;capacityBySource={}; readIssues=[]; busy = false; writing = false; transferBusy = false; confirming = null; }
-  return {mount, unmount, get state() { return {items, busy, notice, scopeKey, filter, capacity,sources}; }};
+  function unmount() { mountTicket++; readTicket++; root?.removeEventListener("click", onClick); root?.removeEventListener("change", onChange); root?.removeEventListener("input", onInput); window.removeEventListener?.("companion-expression-updated", onUpdated); root = null; apiBase = ""; scopeKey = ""; sources=[];items = []; pages = {}; capacity = null;capacityBySource={}; readIssues=[]; busy = false; writing = false; transferBusy = false; confirming = null; pendingUpdate = false; }
+  /* 测试专用：页内行状态的只读快照（items 只留 key 字段），不要拿它回写页面状态。 */
+  function snapshotPages() {
+    return Object.fromEntries(Object.entries(pages).map(([sourceKey, byState]) => [sourceKey,
+      Object.fromEntries(Object.entries(byState).map(([state, value]) => [state, {
+        items: value.items.map(item => ({_key: item._key, signal_id: item.signal_id})),
+        cursors: value.cursors.slice(), cursor: value.cursor, done: value.done, loaded: value.loaded,
+      }]))]));
+  }
+  return {mount, unmount, get state() { return {items, busy, notice, scopeKey, filter, capacity,sources}; },
+    _internals: {rows: snapshotPages}};
 })();
