@@ -33,12 +33,14 @@ jobs:
         with:
           node-version: '22'
       - name: Install contract test dependencies
-        run: python -m pip install PyYAML regex Pillow httpx aiohttp
+        run: python -m pip install PyYAML regex Pillow httpx aiohttp 'cryptography>=42'
       - name: Check generated page and migration contracts
         run: |
           python -X utf8 tools/sync_framework_page.py --check
-          python -X utf8 -m unittest -q tests.test_release_secret_detection tests.test_native_release_version_guard tests.test_configuration_migration tests.test_reply_pipeline_regressions tests.test_image_configuration_migration tests.test_image_output_migration_guard tests.test_r1_image_protocol tests.test_r1_image_round1fix tests.test_proactive_weather_change_events
+          python -X utf8 -m unittest -q tests.test_release_secret_detection tests.test_native_release_version_guard tests.test_configuration_migration tests.test_reply_pipeline_regressions tests.test_image_configuration_migration tests.test_image_output_migration_guard tests.test_r1_image_protocol tests.test_r1_image_round1fix tests.test_proactive_diagnostic_routes tests.test_proactive_weather_change_events
           node --test tests/test_page_route.cjs tests/test_models_page.cjs tests/test_qzone_config_mount.cjs
+      - name: Check weather provider contracts
+        run: python -X utf8 -m unittest -q tests.test_qweather_weather_source tests.test_qweather_alert_source tests.test_weather_migration
       - name: Check native provider adapter contract
         run: python -X utf8 -m unittest -q tests.test_astrbot_gemini_provider
       - name: Build current plugin source

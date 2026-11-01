@@ -45,13 +45,16 @@ class ProactiveDiagnosticRouteTests(unittest.IsolatedAsyncioTestCase):
         schedule._origin = lambda _context, _batch_id, _at: ({"batch_id": "latest-batch"}, self.batch, self.event)
         schedule._diagnostic_preferences = lambda preferences: preferences
         schedule.events = NS(select=Mock(return_value=(None, False)))
+        schedule.growth_events = NS(select=Mock(return_value=(None, False)))
+        schedule.journal_events = NS(select=Mock(return_value=(None, False)))
+        schedule.calendar_events = NS(select=Mock(return_value=(None, False)),
+                                      select_transitions=Mock(return_value=(None, False)))
+        schedule.reminiscence_events = NS(select=Mock(return_value=(None, False)))
         schedule.greeting_events = NS(select=Mock(return_value=None))
         schedule.date_events = NS(select=Mock(return_value=None))
-        schedule.journal_events = NS(select=Mock(return_value=(None, False)))
         schedule.screen_events = NS(select=Mock(return_value=None), diagnostic=AsyncMock(return_value=(None, [])))
         schedule.screen_peek = object()
         schedule.relationship_events = NS(select=Mock(return_value=None))
-        schedule.calendar_events = NS(select=Mock(return_value=(None, False)))
         schedule.meal_events = NS(select=Mock(return_value=None))
         schedule.news_events = self.producer()
         schedule.official_alert_events = self.producer()
