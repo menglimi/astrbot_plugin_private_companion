@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from urllib.parse import quote
 
 # Redirect SDK import-time data into the existing host fixture's temporary root.
 from tests import test_astrbot_staging_host as host_support
@@ -228,6 +229,18 @@ class GrowthManagementHostTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decided["data"]["items"], [])
         self.assertEqual((await self.request(suffix="/self-review", query="state=all"))["data"]["code"],
                          "self_review_query_invalid")
+        # The list cursor is "<created_at>|<item_id>" and travels as one query value,
+        # so the host layer must decode the encoded separator and UTC offset.
+        cursor = stamp(NOW) + "|self-review:" + "0" * 64 + ":item:0"
+        forwarded = await self.request(suffix="/self-review",
+            query="state=active&after_id=" + quote(cursor, safe=""))
+        self.assertEqual(forwarded["status"], "ok", forwarded)
+        self.assertEqual(forwarded["data"]["items"], [])
+        # A bare item id is the cursor of the previous hash-ordered list: the page has
+        # to re-read instead of resuming it.
+        legacy = await self.request(suffix="/self-review",
+            query="state=active&after_id=" + quote("self-review:" + "0" * 64 + ":item:0", safe=""))
+        self.assertEqual(legacy["data"]["code"], "self_review_query_invalid")
         self.assertEqual((await self.request(suffix="/self-review", username=None))["data"]["code"],
                          "dashboard_identity_required")
 
