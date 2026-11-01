@@ -11,7 +11,7 @@ from astrbot.api.web import PluginRequest, bind_request_context
 from starlette.requests import Request
 
 from astrbot_host.management_identity import dashboard_operator
-from companion_v2.execution.models import TaskContext, digest
+from companion_v2.execution.models import TaskContext, digest, encode
 from companion_v2.identity_policy.models import AuthorizationTier
 from companion_v2.identity_policy.object_access import ObjectAccessPolicy
 from companion_v2.configuration.models import ConfigLayer, ConfigTarget
@@ -420,29 +420,50 @@ class GroupReplyHostAPITests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(command["status"], "error", command)
         self.assertEqual(command["data"]["code"], "expression_group_context_required")
 
-    async def test_style_list_reports_old_synthetic_scope_rules_without_moving_them(self):
+    async def test_style_list_reads_old_synthetic_scope_rules_without_moving_them(self):
         await self.start_host()
+        # A V1 group expression import wrote its rules under the synthetic group
+        # identity scope (conversation_id = session_id = group id). That scope is
+        # part of the group's scope family now, so the page reads those rules in
+        # place instead of reporting them as "not yet effective".
+        await self.receive_group()
         runtime = self.controller.runtime
         target = self.controller.settings.target("group-a")
         legacy = ScopeRef(runtime.installation_id, target.platform_id, ScopeKind.GROUP,
             target.group_id, target.bot_id, target.account_id, target.group_id, target.group_id)
         owner = digest(RoleOwnerRef(runtime.installation_id, target.bot_id, "role-a"))
         now = self.clock.now().isoformat()
+        handle = "legacy-expression-rule:test:evidence:0"
+        text = "旧版群里说惯的那句话"
+        window = {"opened_at": now, "closed_at": now, "handles": [handle],
+                  "characters": len(text), "source_kind": "legacy_expression",
+                  "legacy": {"source_kind": "group", "source_id": "v1-group-source", "samples": [],
+                             "evidence": {handle: text}, "rules": {}}}
+        applicability = {"channels": ["group"], "relationship_stages": ["any"],
+                         "emotion_gates": ["any"], "intent": "any", "keywords": []}
         with runtime.transaction() as connection:
             connection.execute("""INSERT INTO expression_style_runs
                 (run_id, owner_key, scope_key, sample_json, material_hash, summary, state, created_at, decided_at)
-                VALUES (?, ?, ?, '{}', 'synthetic', '旧版表达', 'decided', ?, ?)""",
-                ("legacy-expression:test", owner, digest(legacy), now, now))
+                VALUES (?, ?, ?, ?, 'synthetic', '旧版表达', 'decided', ?, ?)""",
+                ("legacy-expression:test", owner, digest(legacy), encode(window), now, now))
             connection.execute("""INSERT INTO expression_style_signals
                 (signal_id, run_id, owner_key, scope_key, dimension, observation, proposal,
-                 confidence, evidence_json, state, created_at, decided_at, ordinal)
-                VALUES (?, ?, ?, ?, 'diction', '旧版群规则', '继续使用', 1.0, '[]', 'adopted', ?, ?, 0)""",
-                ("legacy-signal:test", "legacy-expression:test", owner, digest(legacy), now, now))
+                 applicability_json, confidence, evidence_json, state, created_at, decided_at, decided_by,
+                 decision_key, ordinal)
+                VALUES (?, ?, ?, ?, 'diction', '旧版群规则', '继续使用', ?, 1.0, ?, 'adopted', ?, ?,
+                        'legacy_migration', 'legacy:adopted', 0)""",
+                ("legacy-signal:test", "legacy-expression:test", owner, digest(legacy),
+                 encode(applicability), encode([handle]), now, now))
         listing = await self.request("/style", query="state=adopted&limit=50")
         self.assertEqual(listing["status"], "ok", listing)
-        self.assertEqual(listing["data"]["items"], [])
-        self.assertEqual(listing["data"]["legacy_orphan_count"], 1)
-        # The diagnostic is read-only: the old row stays in its original scope.
+        items = listing["data"]["items"]
+        self.assertEqual([item["signal_id"] for item in items], ["legacy-signal:test"])
+        self.assertIsNone(items[0]["unavailable_reason"])
+        self.assertEqual(items[0]["source_kind"], "legacy_expression")
+        self.assertEqual(items[0]["actions"], ["retire"])
+        # The family already covers the old scope, so no row is an orphan.
+        self.assertEqual(listing["data"]["legacy_orphan_count"], 0)
+        # Reading is still read-only: the old row keeps its original scope.
         row = runtime.read_one("SELECT scope_key FROM expression_style_signals WHERE signal_id = ?",
                                ("legacy-signal:test",))
         self.assertEqual(row["scope_key"], digest(legacy))
