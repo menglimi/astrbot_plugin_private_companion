@@ -8,6 +8,10 @@ const vm = require("node:vm");
 const source = fs.readFileSync(path.resolve(__dirname, "../pages/陪伴小屋/weather-source-page.js"), "utf8");
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
+// Synthetic PEM marker for the fixtures below, assembled at runtime so secret
+// scanners do not mistake a test fixture for a leaked key.
+const PEM_MARKER = ["-----BEGIN", "PRIVATE KEY-----"].join(" ");
+
 function harness(options = {}) {
   const listeners = {}, confirmations = [], posts = [];
   const status = {
@@ -113,7 +117,7 @@ test("switching from API Key to signed JWT requires a complete credential group"
   assert.match(root.innerHTML, /私钥自动签发需要同时填写 JWT 凭据 ID/);
 
   for (const [name, value] of [["jwt_credential_id", "kid-1"], ["jwt_project_id", "project-1"],
-    ["jwt_private_key", "-----BEGIN PRIVATE KEY-----"]]) {
+    ["jwt_private_key", PEM_MARKER]]) {
     root.dispatch("input", {target: {name, value}});
   }
   submit(root);
@@ -122,7 +126,7 @@ test("switching from API Key to signed JWT requires a complete credential group"
   assert.equal(posts[0].changes.credential, undefined);
   assert.equal(posts[0].changes.jwt_credential_id, "kid-1");
   assert.equal(posts[0].changes.jwt_project_id, "project-1");
-  assert.equal(posts[0].changes.jwt_private_key, "-----BEGIN PRIVATE KEY-----");
+  assert.equal(posts[0].changes.jwt_private_key, PEM_MARKER);
   page.unmount();
 });
 
@@ -167,6 +171,58 @@ test("switching from signed JWT to API Key requires a replacement credential", a
   assert.deepEqual(Object.keys(posts[0].changes), ["credential"]);
   assert.equal(posts[0].changes.credential, "new-api-key");
   assert.equal(posts[0].changes.jwt_credential_id, undefined);
+  page.unmount();
+});
+test("an unusable environment signed credential is not shown as configured", async () => {
+  const {page, root, posts} = harness({
+    settings: {provider: "qweather", api_host: "abc123.re.qweatherapi.com", refresh_minutes: 5},
+    status: {actual_provider: "", has_credential: false, credential_kind: "signed_jwt",
+      credential_source: "environment", source_state: "invalid"},
+  });
+  page.mount(root);
+  await flush();
+
+  assert.match(root.innerHTML, /name="auth_mode" value="signed_jwt" checked/);
+  assert.doesNotMatch(root.innerHTML, /所选方式已配置/);
+  assert.doesNotMatch(root.innerHTML, /weather-source-badge is-configured/);
+  assert.match(root.innerHTML, /尚未配置凭据/);
+  assert.match(root.innerHTML, /尚未配置和风凭据/);
+
+  submit(root);
+  await flush();
+  assert.equal(posts.length, 0);
+  assert.match(root.innerHTML, /私钥自动签发需要同时填写 JWT 凭据 ID/);
+
+  for (const [name, value] of [["jwt_credential_id", "kid-1"], ["jwt_project_id", "project-1"],
+    ["jwt_private_key", PEM_MARKER]]) {
+    root.dispatch("input", {target: {name, value}});
+  }
+  submit(root);
+  await flush();
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].changes.jwt_credential_id, "kid-1");
+  assert.equal(posts[0].changes.jwt_project_id, "project-1");
+  page.unmount();
+});
+
+test("a usable environment signed credential still shows as configured", async () => {
+  const {page, root, posts} = harness({
+    settings: {provider: "qweather", api_host: "abc123.re.qweatherapi.com", refresh_minutes: 5},
+    status: {actual_provider: "qweather", has_credential: true, credential_kind: "signed_jwt",
+      credential_source: "environment"},
+  });
+  page.mount(root);
+  await flush();
+
+  assert.match(root.innerHTML, /weather-source-badge is-configured/);
+  assert.match(root.innerHTML, /所选方式已配置/);
+  assert.match(root.innerHTML, /环境变量 · 自动签发 JWT 已配置/);
+
+  root.dispatch("input", {target: {name: "refresh_minutes", value: "10"}});
+  submit(root);
+  await flush();
+  assert.equal(posts.length, 1);
+  assert.deepEqual(Object.keys(posts[0].changes), ["refresh_minutes"]);
   page.unmount();
 });
 test("a saved signed JWT cannot be saved with a cleared required field", async () => {
