@@ -48,10 +48,11 @@ class ImageConfig(dict):
 
 
 class ImageExtensionAPI:
-    def __init__(self, *, data_root: Path, config_path: Path, version: str):
+    def __init__(self, *, data_root: Path, config_path: Path, version: str, context=None):
         self.data_dir = Path(data_root).resolve() / "extensions" / "image"
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.config = ImageConfig(config_path)
+        self.context = context
         self.enabled = True
         self._native_v2_provider = build_provider(self, version=version)
         if self._native_v2_provider is None:

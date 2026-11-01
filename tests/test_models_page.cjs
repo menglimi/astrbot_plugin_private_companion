@@ -919,6 +919,33 @@ test('image page separates generation and editing model queues and saves paramet
   assert.match(node.innerHTML, /已注册，可由后续真实任务调用/);
 });
 
+test('NAI routes show plugin defaults in each operation queue without duplicate credentials', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  page.mount(node);
+  requests[0].resolve(status());
+  await flush();
+  node.click('[data-model-tab]', {modelTab: 'image'});
+  requests.find(item => item.route === 'model/image').resolve({actions: [], enabled: {
+    'image.generate': true, 'image.edit': true, 'image.mask_edit': false,
+  }});
+  await flush();
+  requests.find(item => item.route.endsWith('/image/output')).resolve({
+    revision: 'nai-r1', nai: {available: true, api_profile: 'starbridge', call_mode: 'openai',
+      default_model: 'nai-diffusion-5-full', default_size: '竖图', operations: ['generate', 'edit']},
+    settings: {enabled: true, backend: 'nai', endpoints: [], comfyui: {}, sd_webui: {},
+      operation_routes: {generate: ['nai'], edit: ['nai']}},
+  });
+  await flush();
+  assert.match(node.innerHTML, /data-img-route-card="nai"/);
+  assert.match(node.innerHTML, /星桥（Almoon）/);
+  assert.match(node.innerHTML, /nai-diffusion-5-full/);
+  assert.doesNotMatch(node.innerHTML, /data-img-config-field="nai\.(api_key|base_url)"/);
+  node.click('[data-img-view]', {imgView: 'edit'});
+  assert.match(node.innerHTML, /可用于参考图改图/);
+  page.unmount();
+});
+
 test('switching tabs round-trip keeps the functional matrix without reloading', async () => {
   const {page, requests, root} = harness();
   const node = root();

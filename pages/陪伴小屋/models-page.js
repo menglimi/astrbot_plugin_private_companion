@@ -1202,7 +1202,7 @@ window.CompanionModelsPage = (() => {
   const IMAGE_LABELS = {"image.generate": "文生图", "image.edit": "参考图改图", "image.mask_edit": "蒙版局部改图"};
   const IMAGE_VIEWS = {generate: {label: "文生图", operation: "generate", actions: ["image.generate"]},
     edit: {label: "改图", operation: "edit", actions: ["image.edit", "image.mask_edit"]}};
-  const IMAGE_LOCAL_LABELS = {comfyui: "ComfyUI", sd_webui: "SD WebUI"};
+  const IMAGE_LOCAL_LABELS = {comfyui: "ComfyUI", sd_webui: "SD WebUI", nai: "NAI 生图插件"};
   const IMAGE_DIAGNOSTICS = {native_registry_unavailable: "V2 原生能力注册表尚未就绪",
     native_extension_unavailable: "Image 模块未创建，启动过程未提供具体错误码",
     native_provider_unavailable: "Image 模块没有创建生图 Provider",
@@ -1232,6 +1232,7 @@ window.CompanionModelsPage = (() => {
     if (["auto", "online_api"].includes(selected)) routes.push(...(config.endpoints || []).map(item => `online:${item.id}`));
     if (["auto", "comfyui"].includes(selected)) routes.push("comfyui");
     if (["auto", "sd_webui"].includes(selected)) routes.push("sd_webui");
+    if (selected === "nai") routes.push("nai");
     return {generate: [...routes], edit: [...routes]};
   };
   const IMAGE_PLATFORMS = {auto: "自动识别", openai: "OpenAI 兼容", openrouter: "OpenRouter", agnes: "Agnes", sensenova: "商汤日日新", minimax: "MiniMax", bailian: "阿里云百炼", modelscope: "魔搭社区", doubao: "火山引擎 / 豆包", gemini: "Google Gemini"};
@@ -1499,7 +1500,10 @@ window.CompanionModelsPage = (() => {
   const imageCurrentOperation = i => IMAGE_VIEWS[i.view || "generate"].operation;
   const imageEndpointLabel = (item, fallback = "未命名图片模型") =>
     String(item?.name || "").trim() || String(item?.model || "").trim() || fallback;
-  function imageRouteAvailable(config, route, operation) {
+  function imageRouteAvailable(config, route, operation, nai = null) {
+    if (route === "nai") return !nai?.available ? "NAI 插件未就绪" :
+      !config.enabled ? "生图后端已关闭" : nai.operations?.includes(operation) ?
+        (operation === "generate" ? "可用于文生图" : "可用于参考图改图") : "当前接入方式不支持";
     if (route.startsWith("online:")) {
       const endpoint = config.endpoints.find(item => item.id === route.slice(7));
       if (!endpoint) return "模型配置缺失";
@@ -1556,6 +1560,11 @@ window.CompanionModelsPage = (() => {
     const disabled = i.configSaving || i.configLoading || !!i.endpointTesting;
     const expanded = i.expandedImageRoutes?.[ref] ?? index === 0;
     const controls = `<div class="model-img-route-tools"><button type="button" class="output-icon-button" data-img-route-move="up" data-img-route-index="${index}" aria-label="上移优先级"${disabled || index === 0 ? " disabled" : ""}><i data-lucide="arrow-up" aria-hidden="true"></i></button><button type="button" class="output-icon-button" data-img-route-move="down" data-img-route-index="${index}" aria-label="下移优先级"${disabled || index === (config.operation_routes[imageCurrentOperation(i)] || []).length - 1 ? " disabled" : ""}><i data-lucide="arrow-down" aria-hidden="true"></i></button><button type="button" class="output-icon-button" data-img-route-remove="${esc(ref)}" aria-label="从当前功能移除" title="从当前功能移除"${disabled ? " disabled" : ""}><i data-lucide="x" aria-hidden="true"></i></button></div>`;
+    if (ref === "nai") {
+      const status = i.config?.nai || {}, support = imageRouteAvailable(config, ref, imageCurrentOperation(i), status);
+      const service = status.call_mode === "openai" ? (status.api_profile === "starbridge" ? "星桥（Almoon）" : "OpenAI 兼容接口") : "nai.sta1n.cn 直连";
+      return `<article class="model-img-route" data-img-route-card="nai"><header><span class="model-img-priority">${index + 1}</span><div class="model-img-route-title"><strong>NAI 生图插件</strong><div class="model-img-route-meta"><span>${esc(status.default_model || service)}</span></div></div><span class="model-img-route-support ${imageRouteSupportTone(support)}">${esc(support)}</span>${controls}</header><div class="model-note">配置来源：NAI 生图插件 · ${esc(service)}${status.default_size ? ` · ${esc(status.default_size)}` : ""}</div></article>`;
+    }
     if (ref.startsWith("online:")) {
       const endpointId = ref.slice(7), endpointIndex = config.endpoints.findIndex(item => item.id === endpointId), item = config.endpoints[endpointIndex];
       if (!item) return `<article class="model-img-route"><header><span class="model-img-priority">${index + 1}</span><strong>模型配置缺失</strong>${controls}</header></article>`;

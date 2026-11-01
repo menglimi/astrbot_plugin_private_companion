@@ -15,6 +15,7 @@ from urllib.parse import urlsplit, urlunsplit
 import aiohttp
 
 from .backends import NativeTransportBackend
+from .nai_backend import NAIImageBackend
 from .output_configuration import accepted_request_fields
 from .owner import checked
 from .types import BackendResult, NativeImageError, fingerprint
@@ -490,10 +491,11 @@ class OnlineImageBackend:
 
 
 class OutputRoutingBackend:
-    def __init__(self, settings, directory):
+    def __init__(self, settings, directory, *, context=None):
         self.config = json.loads(json.dumps(settings))
         self.backend = settings["backend"]
         self.directory = Path(directory)
+        self.context = context
         self.revision = fingerprint(settings)
         self._closed = False
 
@@ -523,6 +525,9 @@ class OutputRoutingBackend:
                     if endpoint and endpoint.get("enabled"):
                         yield OnlineImageBackend(endpoint, self.config.get("network", {}))
                     continue
+                if route == "nai":
+                    yield NAIImageBackend(self.context, self.directory / "nai")
+                    continue
                 if route in {"comfyui", "sd_webui"}:
                     try:
                         yield NativeTransportBackend(route, self.config.get(route, {}), self.directory / route)
@@ -531,6 +536,8 @@ class OutputRoutingBackend:
             return
 
         selected = self.backend
+        if selected == "nai":
+            yield NAIImageBackend(self.context, self.directory / "nai")
         if selected in {"auto", "online_api"}:
             for endpoint in self.config.get("endpoints", []):
                 if endpoint.get("enabled"):

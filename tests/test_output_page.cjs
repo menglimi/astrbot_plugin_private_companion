@@ -17,7 +17,7 @@ const selectors = [
   "[data-output-native-notice]",
 ];
 
-function fixture() {
+function fixture(nai = null) {
   const nodes = new Map(selectors.map(selector => [selector, [{textContent: "初始值", hidden: false,
     classList: {toggle() {}}}]]));
   const single = new Map([
@@ -26,26 +26,30 @@ function fixture() {
     ["[data-output-preview-image]", {hidden: true, src: "", alt: "", removeAttribute() {}}],
     [".output-image-frame", {dataset: {}}],
     [".output-image-status span", {textContent: ""}],
+    ["[data-output-native-selector]", {innerHTML: ""}],
   ]);
   const requests = [];
   let observabilityFailure = false;
   let reconnectFailureCode = "";
   const listeners = new Map();
+  let outputSettings = {backend: "auto", enabled: false, endpoints: [], comfyui: {}, sd_webui: {},
+    operation_routes: {generate: [], edit: []}};
   const role = {model_api: "model", image_material_api: "image-materials"};
   const window = {
     CompanionProduct: {
       scopeKey: () => "role-a",
       role: () => role,
       relative: value => value,
-      async request(method, endpoint) {
-        requests.push({method, endpoint});
+      async request(method, endpoint, body) {
+        requests.push({method, endpoint, body});
         if (endpoint === "model/image/observability") {
           if (observabilityFailure) throw Object.assign(new Error("network failed"), {code: "network_error"});
           return {images: {total: 1, items: []}, content: {available: true, works_count: 2,
             candidate_count: 1, updated_at: "2026-10-12T04:05:00Z"}};
         }
-        if (endpoint === "model/image/output") return {settings: {backend: "auto", enabled: false,
-          endpoints: [], comfyui: {}, sd_webui: {}}, revision: "r1", host_registered: false};
+        if (endpoint === "model/image/output/save") outputSettings = body.changes;
+        if (endpoint === "model/image/output" || endpoint === "model/image/output/save")
+          return {settings: outputSettings, nai, revision: "r1", host_registered: false};
         if (endpoint === "model/image/output/reconnect") {
           if (reconnectFailureCode) throw Object.assign(new Error(reconnectFailureCode), {code: reconnectFailureCode});
           return {reconnected: true, host_registered: true};
@@ -76,6 +80,11 @@ function fixture() {
     Object, String, Array, Map, Set, Error};
   vm.runInNewContext(source, context, {filename: "output-page.js"});
   return {page: window.CompanionOutputPage, nodes, single, requests, root,
+    toggleNai(operation, checked) {
+      const target = {matches: selector => selector === "[data-output-nai-operation]",
+        dataset: {outputNaiOperation: operation}, checked};
+      listeners.get("input")({target});
+    },
     failObservability(value) {observabilityFailure = value;},
     failReconnect(code) {reconnectFailureCode = code;},
     clickReconnect() {
@@ -127,6 +136,36 @@ test("Reconnect failures show a specific V2 session recovery hint", async () => 
 
   assert.equal(state.nodes.get("[data-output-native-notice]")[0].textContent,
     "V2 当前会话仍在停止，请稍等片刻后再重连。");
+  state.page.unmount();
+});
+
+test("NAI output controls read plugin status and save independent generation and edit routes", async () => {
+  const state = fixture({installed: true, available: true, call_mode: "openai",
+    api_profile: "starbridge", default_model: "nai-diffusion-5-full", operations: ["generate", "edit"]});
+  state.page.mount(state.root);
+  await new Promise(resolve => setImmediate(resolve));
+  const host = state.single.get("[data-output-native-selector]");
+  assert.match(host.innerHTML, /星桥（Almoon）/);
+  assert.match(host.innerHTML, /nai-diffusion-5-full/);
+  assert.doesNotMatch(host.innerHTML, /data-output-nai-operation="edit"[^>]*disabled/);
+  state.toggleNai("generate", true);
+  state.toggleNai("edit", true);
+  state.toggleNai("edit", false);
+  state.clickAction("save");
+  await new Promise(resolve => setImmediate(resolve));
+  const saved = state.requests.find(item => item.endpoint.endsWith("/save"));
+  assert.deepEqual(JSON.parse(JSON.stringify(saved.body.changes.operation_routes)),
+    {generate: ["nai"], edit: []});
+  state.page.unmount();
+});
+
+test("NAI direct mode keeps unsupported edit controls disabled", async () => {
+  const state = fixture({installed: true, available: true, call_mode: "direct", operations: ["generate"]});
+  state.page.mount(state.root);
+  await new Promise(resolve => setImmediate(resolve));
+  const html = state.single.get("[data-output-native-selector]").innerHTML;
+  assert.match(html, /data-output-nai-operation="edit" disabled/);
+  assert.doesNotMatch(html, /data-output-nai-operation="generate" disabled/);
   state.page.unmount();
 });
 
