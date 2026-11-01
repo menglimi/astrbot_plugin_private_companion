@@ -50,7 +50,8 @@ class OfficialAlertContactTests(ContactScheduleFixture, unittest.IsolatedAsyncio
         manager = StateManagement(app, context)
         before = manager.status(self.core).unwrap()
         manager.command(self.core, dict(action="configure", operation_key="official-alert-location",
-            edit_token=before["edit_token"], changes={"planning_weather_location":
+            edit_token=before["edit_token"], role_edit_token=before["role_edit_token"],
+            changes={"planning_weather_location":
                 ALERT_LOCATION_JSON if alert_scope else LOCATION_JSON})).unwrap()
         self.settings(app, {"chat.enabled": False, "official_weather_alert_enabled": enabled}).unwrap()
         return app, context
@@ -122,7 +123,11 @@ class OfficialAlertContactTests(ContactScheduleFixture, unittest.IsolatedAsyncio
         self.model_behavior = wrong_coverage
         self.advance(app, 60)
 
-        candidate = await app.contact_schedule.diagnostic_candidate(context, "environment", at=self.clock.now())
+        # Exposure is per producer: a variant-less environment diagnostic is the
+        # weather producer and hard-fails without a weather port, so the alert
+        # producer has to be named explicitly.
+        candidate = await app.contact_schedule.diagnostic_candidate(
+            context, "environment", at=self.clock.now(), variant="official_alert")
         self.assertEqual(candidate["route"]["id"], "official_alert_event")
         result = await app.proactive.contact(context, candidate["opportunity"], candidate["intents"],
             role_instruction=candidate["role_instruction"], selection_seed="confirmed-alert-diagnostic",
@@ -137,6 +142,12 @@ class OfficialAlertContactTests(ContactScheduleFixture, unittest.IsolatedAsyncio
 
     async def test_opt_in_and_attribution_is_program_added(self):
         app, _ = await self.setup_alerts(enabled=False)
+        # Relationship purposes share the chat slot and are on by default: leaving
+        # them enabled lets the disabled tick spend the single background slot on a
+        # relationship contact, so the enabled tick is never planned and the alert
+        # is never polled.
+        self.settings(app, {"affection.enabled": False, "care.enabled": False, "play.enabled": False,
+                            "repair.enabled": False, "invitation.enabled": False}).unwrap()
         port = AlertPort(self.clock, [[self.alert()]])
         app.contact_schedule.official_alert_events.port = port
         self.advance(app, 60)
