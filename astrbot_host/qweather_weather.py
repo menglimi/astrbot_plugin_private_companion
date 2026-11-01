@@ -10,6 +10,7 @@ timeout, no redirects, capped body -- because a provider misbehaving must not be
 runtime problem for the role.
 """
 
+import asyncio
 import json
 from datetime import datetime, timezone
 
@@ -25,6 +26,13 @@ from .qweather_location import resolve_qweather_location
 
 ENDPOINT = "/v7/weather/now"
 
+# The callers bound a whole weather read at 6-7s (companion_v2/agenda/weather_reading.py,
+# weather_tools.py), while a name-only role location costs two requests: the geo lookup
+# and the observation. Two per-request timeouts could therefore always overshoot the
+# caller's budget twice over on a slow network, so the adapter spends one total budget
+# that both requests share.
+TOTAL_TIMEOUT_SECONDS = 5
+
 # QWeather "now" icon codes -> WMO codes. Grouped by the icon's hundreds digit, which
 # is what QWeather's own icon set is organised by (1xx clear, 3xx rain, 4xx snow...),
 # so a code this table has not seen still lands in the right family instead of failing
@@ -36,11 +44,28 @@ _WMO_BY_QWEATHER_ICON = {
     316: 65, 317: 65, 318: 65, 350: 80, 351: 82, 399: 61,
     400: 71, 401: 73, 402: 75, 403: 75, 404: 66, 405: 66, 406: 66, 407: 71,
     408: 73, 409: 75, 410: 75, 456: 85, 457: 86, 499: 73,
-    500: 45, 501: 48, 502: 45, 503: 45, 504: 45, 507: 45, 508: 45, 509: 45,
+    # 500-515 are mist, fog, haze, sand and dust. WMO only has 45/48 for fog and no
+    # code at all for haze or dust, so the whole family lands on 45: it is the least
+    # wrong sky for the consumers, and 48 stays reserved for rime fog (QWeather's icon
+    # set has no rime icon, so nothing maps to 48). 501 is fog proper, not rime, which
+    # is what it used to claim.
+    500: 45, 501: 45, 502: 45, 503: 45, 504: 45, 507: 45, 508: 45, 509: 45,
     510: 45, 511: 45, 512: 45, 513: 45, 514: 45, 515: 45,
-    900: 95, 901: 95, 999: 0,
+    # 900/901 are temperature extremes ("热"/"冷"), not sky phenomena. Mapping them to
+    # the thunder branch made a hot afternoon look like a thunderstorm. Any dry code
+    # is really arbitrary here; 0 and 3 keep the change detector from reporting a sky
+    # change while the provider's own text remains the visible condition.
+    900: 0, 901: 3,
+    # 999 means "unknown". It used to publish an unknown sky as clear (0), which both
+    # displayed the wrong condition and could trigger the weather-change contact. No
+    # code is the honest answer; with no text label the observation then fails closed.
+    999: None,
 }
-_FAMILY_FALLBACK = {1: 2, 2: 2, 3: 80, 4: 73, 5: 45, 9: 95}
+_FAMILY_FALLBACK = {1: 2, 2: 2, 3: 80, 4: 73, 5: 45}
+# Icons whose WMO code cannot name them on its own (haze and dust have no WMO sky
+# code) or which are not sky states at all (temperature extremes, "unknown"). A blank
+# text label there must fail instead of inventing a sky from the mapped code.
+_NO_SKY_LABEL_ICONS = frozenset({502, 503, 504, 507, 508, 900, 901, 999})
 
 # Only reached when QWeather sends an observation with no text label, which would
 # otherwise fail the shared parser and discard a reading the icon already describes.
@@ -52,11 +77,17 @@ _LABEL_BY_WMO = {
 }
 
 
+def _icon_number(icon):
+    """The icon as an integer when it is one, else ``None`` (the API sends strings)."""
+    if type(icon) is str and icon.isdigit():
+        return int(icon)
+    return icon if type(icon) is int else None
+
+
 def weather_code_for(icon):
     """Map a QWeather icon code onto the WMO scale, or ``None`` when unusable."""
-    if type(icon) is str and icon.isdigit():
-        icon = int(icon)
-    if type(icon) is not int or icon < 0:
+    icon = _icon_number(icon)
+    if icon is None or icon < 0:
         return None
     if icon in _WMO_BY_QWEATHER_ICON:
         return _WMO_BY_QWEATHER_ICON[icon]
@@ -84,14 +115,18 @@ def normalize_qweather_now(payload, location):
     temperature = _number(now.get("temp"))
     if temperature is None:
         raise ValueError("QWeather temperature is unavailable")
-    code = weather_code_for(now.get("icon"))
+    icon = _icon_number(now.get("icon"))
+    code = weather_code_for(icon)
     condition = now.get("text")
     if type(condition) is not str:
         condition = ""
     condition = condition.strip()
     if not condition:
         # The icon already names the sky. Losing a whole observation over a missing
-        # label would be the tail wagging the dog.
+        # label would be the tail wagging the dog. Icons that are not sky states (see
+        # _NO_SKY_LABEL_ICONS) cannot do that, so there a missing label stays a failure.
+        if icon in _NO_SKY_LABEL_ICONS:
+            raise ValueError("QWeather condition is unavailable")
         condition = _LABEL_BY_WMO.get(code, "")
     if not condition:
         raise ValueError("QWeather condition is unavailable")
@@ -131,7 +166,15 @@ class QWeatherWeatherPort:
         if type(location) is not WeatherLocation:
             raise ValueError("QWeather weather query requires an explicit role location")
         at = self._now()
-        timeout = aiohttp.ClientTimeout(total=6)
+        try:
+            return await asyncio.wait_for(self._fetch(location, at), TOTAL_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError as error:
+            # Reported like every other unavailable response, so the callers' existing
+            # fail-closed path applies instead of a provider-specific exception.
+            raise ValueError("QWeather current weather timed out") from error
+
+    async def _fetch(self, location, at):
+        timeout = aiohttp.ClientTimeout(total=TOTAL_TIMEOUT_SECONDS)
         async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
             location = await resolve_qweather_location(session, location, self._credentials, at)
             url = f"https://{self._credentials.host}{ENDPOINT}"
