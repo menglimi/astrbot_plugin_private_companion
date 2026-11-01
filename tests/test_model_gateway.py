@@ -50,7 +50,7 @@ class ModelFixture(ExecutionFixture):
         self.ledger = BudgetLedger(self.runtime, self.budget_policy)
         self.gateway = LocalModelGateway(self.router, self.ledger, self.tasks)
 
-    def provider(self, name):
+    def provider(self, name, reserve=None):
         async def generate(envelope):
             self.called.append((name, envelope))
             response = self.responses.get(name)
@@ -59,7 +59,13 @@ class ModelFixture(ExecutionFixture):
             return response or ProviderResponse("generated", ModelDraft("private draft", ()), Amount(15, 40), "receipt-" + name)
 
         return LocalProvider(ProviderBinding("model.text", name, "1", "local-1"), ("text",), 100,
-                             lambda envelope: self.estimate, generate)
+                             reserve or (lambda envelope: self.estimate), generate)
+
+    def gateway_with(self, *providers):
+        self.providers = providers
+        self.router = ModelRouter(self.configuration, self.profiles, self.providers)
+        self.router.start(expected_generation=1)
+        self.gateway = LocalModelGateway(self.router, self.ledger, self.tasks)
 
     def request(self, context=None):
         context = context or self.context
@@ -443,6 +449,51 @@ class ModelGatewayTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report["calls"][0]["failure"]["code"], ModelFailure.ADAPTER.value)
         self.assertNotIn("private credential", json.dumps(report))
         self.assertNotIn("private credential", str(tuple(self.runtime.read_one("SELECT * FROM model_call_failures", ()))))
+
+    async def test_a_local_limit_keeps_its_own_code_instead_of_a_generic_estimation_failure(self):
+        def reserve(envelope):
+            raise TaskError("host_model_limit_input", "input limit exceeded: estimated=2048 maximum=1024")
+
+        self.gateway_with(self.provider("primary", reserve), self.provider("fallback"))
+        run = self.model_run()
+
+        with self.assertLogs("companion_v2.model_gateway.service", level="WARNING") as captured:
+            with self.assertRaises(TaskError) as error:
+                await self.gateway.generate(run, self.request())
+
+        self.assertEqual(error.exception.code, "host_model_limit_input")
+        self.assertIn("estimated=2048", str(error.exception))
+        message = "\n".join(captured.output)
+        self.assertIn("code=host_model_limit_input", message)
+        self.assertIn("error_type=TaskError", message)
+        # 数值要出现在 WARNING 里：线上日志级别就足以判断差多少。
+        self.assertIn("estimated=2048", message)
+        self.assertIn("maximum=1024", message)
+        # 越界不静默换 provider，也不写 model_calls：台账里留下的是可执行的那个 code。
+        self.assertEqual(self.called, [])
+        self.assertEqual(self.call_rows(), ())
+        rounds = self.runtime.read_all(
+            "SELECT round_no, state, call_id FROM model_rounds WHERE task_id = ?", (run.task.task_id,))
+        self.assertEqual([(row["round_no"], row["state"], row["call_id"]) for row in rounds], [(0, "started", None)])
+
+    async def test_an_unexpected_reserve_error_keeps_its_error_type_and_its_message_private(self):
+        def reserve(envelope):
+            raise ValueError("duplicate offered tool")
+
+        self.gateway_with(self.provider("primary", reserve), self.provider("fallback"))
+        run = self.model_run()
+
+        with self.assertLogs("companion_v2.model_gateway.service", level="WARNING") as captured:
+            with self.assertRaises(TaskError) as error:
+                await self.gateway.generate(run, self.request())
+
+        self.assertEqual(error.exception.code, "model_estimation_failed")
+        self.assertIn("ValueError", str(error.exception))
+        self.assertNotIn("details omitted", str(error.exception))
+        self.assertNotIn("duplicate offered tool", str(error.exception))
+        self.assertIn("error_type=ValueError", "\n".join(captured.output))
+        self.assertEqual(self.called, [])
+        self.assertEqual(self.call_rows(), ())
 
     async def test_revocation_discards_late_draft_but_records_actual_usage(self):
         async def revoke(envelope):

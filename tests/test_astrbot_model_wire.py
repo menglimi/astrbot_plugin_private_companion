@@ -709,6 +709,26 @@ class NativeModelTests(NativeFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await provider.generate(envelope)).status, "not_started")
         self.assertEqual(self.native.provider.client.state.calls, [])
 
+    async def test_the_input_and_output_ceilings_keep_separate_codes_and_numbers(self):
+        """「装不下」有两个不同的处置动作，不能共用一个不说数值的 code。"""
+        envelope = await self.envelope()
+        with self.assertRaises(TaskError) as error:
+            self.make_model(maximum_input_estimate=1024).reserve(envelope)
+        self.assertEqual(error.exception.code, "host_model_limit_input")
+        message = str(error.exception)
+        self.assertIn("maximum=1024", message)
+        self.assertRegex(message, r"estimated=\d+")
+        # reason 只带配置数值，不带提示词正文。
+        self.assertNotIn("你好", message)
+        self.assertNotIn(envelope.original.role_instruction, message)
+
+        for budget in (0, -1, 101):
+            with self.subTest(budget=budget):
+                with self.assertRaises(TaskError) as error:
+                    self.make_model().reserve(replace(envelope, max_output_tokens=budget))
+                self.assertEqual(error.exception.code, "host_model_limit_output")
+                self.assertIn("allowed=1..100", str(error.exception))
+
     async def test_assembled_tool_round_keeps_owner_and_final_reply(self):
         snapshot = await self.capture()
         async def respond(payload, tools):

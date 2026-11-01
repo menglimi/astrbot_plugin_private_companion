@@ -532,9 +532,16 @@ class AstrBotTextProvider:
         structured = response_format(envelope.original)
         if structured is not None:
             estimated += len(encode(structured).encode("utf-8"))
-        if (estimated > self.maximum_input_estimate or type(envelope.max_output_tokens) is not int
+        # 输入越界与输出预算越界是两种不同的处置动作（调输入上限 / 调输出上限），
+        # 因此分成两个 code；reason 只带配置数值，不带提示词正文。
+        if estimated > self.maximum_input_estimate:
+            raise TaskError("host_model_limit_input",
+                            f"input limit exceeded: estimated={estimated} maximum={self.maximum_input_estimate}")
+        if (type(envelope.max_output_tokens) is not int
                 or not 1 <= envelope.max_output_tokens <= self.maximum_output_tokens):
-            raise TaskError("host_model_limit", "request exceeds its declared input/output profile")
+            raise TaskError("host_model_limit_output",
+                            f"output limit exceeded: budget={envelope.max_output_tokens} "
+                            f"allowed=1..{self.maximum_output_tokens}")
         return estimated
 
     def reserve(self, envelope):
