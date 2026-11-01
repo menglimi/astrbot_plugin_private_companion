@@ -283,16 +283,16 @@ window.CompanionOutputPage=(()=>{
   function selector(){
     const host=root?.querySelector("[data-output-native-selector]");
     if(!host)return;
-    host.innerHTML=draft?`<div class="output-native-route-summary"><strong>文生图与改图独立路由</strong><span>每个功能的模型与优先级在「模型与连接 → 生图模型」分别设置。</span></div><label class="output-backend-enable"><input type="checkbox" data-output-native-field="enabled"${draft.enabled?" checked":""}${busy?" disabled":""}>启用 V2 生图后端</label>${naiBackend()}${!hostRegistered&&draft.enabled?`<div class="output-config-unavailable" role="status">当前 V2 工具目录尚未接入此图片提供方。<button type="button" class="button small" data-output-native-action="reconnect"${busy?" disabled":""}>重连 V2 执行器</button></div>`:""}${actions()}`:`<div class="output-config-unavailable" role="status"><span>${esc(notice||"正在读取生图模型配置…")}</span>${!product()?.role()?.model_api?`<button type="button" class="output-inline-link" data-go="manage" data-manage="host">账号与会话 ${icon("arrow-up-right")}</button>`:""}</div>${naiBackend()}`;
+    host.innerHTML=draft?`<div class="output-native-route-summary"><strong>文生图与改图独立路由</strong><span>每个功能的模型与优先级在「模型与连接 → 生图模型」分别设置。</span></div><label class="output-backend-enable"><input type="checkbox" data-output-native-field="enabled"${draft.enabled?" checked":""}${busy?" disabled":""}>启用 V2 生图后端</label>${!hostRegistered&&draft.enabled?`<div class="output-config-unavailable" role="status">当前 V2 工具目录尚未接入此图片提供方。<button type="button" class="button small" data-output-native-action="reconnect"${busy?" disabled":""}>重连 V2 执行器</button></div>`:""}`:`<div class="output-config-unavailable" role="status"><span>${esc(notice||"正在读取生图模型配置…")}</span>${!product()?.role()?.model_api?`<button type="button" class="output-inline-link" data-go="manage" data-manage="host">账号与会话 ${icon("arrow-up-right")}</button>`:""}</div>`;
   }
   function naiBackend(){
     const status=naiStatus||{},labels={generate:"文生图",edit:"参考图改图"};
     const service=status.call_mode==="openai"?(status.api_profile==="starbridge"?"星桥（Almoon）":"OpenAI 兼容接口"):"nai.sta1n.cn 直连";
     const reason=!naiStatus?(busy?"正在检测 NAI 插件…":"NAI 状态暂不可读，请重新检测"):!status.installed?"未检测到已启用的 NAI 生图插件":!status.available?"NAI 尚未就绪，请检查插件的陪伴联动开关与接口配置":"已就绪";
-    return `<section class="output-nai-backend" data-output-nai><header><h3>NAI 生图插件</h3><button type="button" class="output-icon-button" data-output-native-action="refresh" title="重新检测 NAI 插件" aria-label="重新检测 NAI 插件"${busy?" disabled":""}>${icon("refresh-cw")}</button></header><p role="status">${esc(reason)}${status.installed?` · ${esc(service)}${status.default_model?` · ${esc(status.default_model)}`:""}`:""}</p><div>${Object.entries(labels).map(([operation,label])=>{
+    return `<section class="output-nai-backend" data-output-nai><header><h2>NAI 后端</h2><button type="button" class="output-icon-button" data-output-native-action="refresh" title="重新检测 NAI 插件" aria-label="重新检测 NAI 插件"${busy?" disabled":""}>${icon("refresh-cw")}</button></header><p role="status">${esc(reason)}</p>${status.installed?`<dl class="output-nai-defaults"><div><dt>配置来源</dt><dd>NAI 生图插件</dd></div><div><dt>接入服务</dt><dd>${esc(service)}</dd></div><div><dt>生图模型</dt><dd>${esc(status.default_model||"未读取")}</dd></div><div><dt>默认尺寸</dt><dd>${esc(status.default_size||"跟随 NAI 插件")}</dd></div></dl>`:""}<div class="output-nai-operations">${Object.entries(labels).map(([operation,label])=>{
       const selected=draft?.operation_routes?.[operation]?.includes("nai"),supported=status.operations?.includes(operation);
       return `<label class="output-native-check"><input type="checkbox" data-output-nai-operation="${operation}"${selected?" checked":""}${!draft||busy||(!supported&&!selected)?" disabled":""}>${label}${operation==="edit"&&status.available&&!supported?"（当前接入方式不支持）":""}</label>`;
-    }).join("")}</div></section>`;
+    }).join("")}</div>${draft?actions():""}</section>`;
   }
   function queue(){
     if(!draft)return `<div class="output-config-unavailable" role="status"><span>${esc(notice||"正在读取生图后端…")}</span><button type="button" class="button small" data-output-native-action="refresh">重新读取</button></div>`;
@@ -316,7 +316,8 @@ window.CompanionOutputPage=(()=>{
   function render(){
     if(!root?.isConnected)return;
     selector();
-    const queueHost=root.querySelector("#outputBackendWorkspace"),localHost=root.querySelector("#outputLocalWorkspace");
+    const naiHost=root.querySelector("#outputNaiWorkspace"),queueHost=root.querySelector("#outputBackendWorkspace"),localHost=root.querySelector("#outputLocalWorkspace");
+    if(naiHost)naiHost.innerHTML=naiBackend();
     if(queueHost)queueHost.innerHTML=queue();
     if(localHost)localHost.innerHTML=local();
     root.querySelectorAll("[data-output-native-notice]").forEach(host=>{host.textContent=notice;host.hidden=!notice;host.classList.toggle("is-error",bad);});

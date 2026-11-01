@@ -41,8 +41,8 @@ with tempfile.TemporaryDirectory(prefix="output-page-qa-") as data_root:
         sections[name] = {"group_id":group,"scope":fields[0].layers[-1].value,"layers":[layer.value for layer in fields[0].layers],"settings":settings,"fields":contract_of(registry,group),"edit_token":"a"*64,"provenance":{key:{"layer":None,"explicit":False,"revision":0} for key in settings}}
     print(json.dumps({"assets":assets,"sections":sections},ensure_ascii=False))
 `;
-  const result = spawnSync(path.join(HOST_ROOT,"backend/python/python.exe"),["-X","utf8","-c",script],{
-    cwd:ROOT,encoding:"utf8",maxBuffer:4*1024*1024,env:{...process.env,PYTHONPATH:[ROOT,path.join(HOST_ROOT,"backend/app")].join(path.delimiter),PYTHONIOENCODING:"utf-8"}});
+  const result = spawnSync(process.env.COMPANION_PYTHON || path.join(HOST_ROOT,"backend/python/python.exe"),["-X","utf8","-c",script],{
+    cwd:ROOT,encoding:"utf8",maxBuffer:4*1024*1024,env:{...process.env,PYTHONPATH:[ROOT,HOST_ROOT,path.join(HOST_ROOT,"backend/app")].join(path.delimiter),PYTHONIOENCODING:"utf-8"}});
   assert.equal(result.status,0,result.stderr); return JSON.parse(result.stdout);
 }
 
@@ -54,14 +54,15 @@ with tempfile.TemporaryDirectory(prefix="output-page-qa-") as data_root:
   const wardrobe=[{item_id:"wardrobe-a",name:"燕麦色风衣",description:"",tags:["日常"],asset_id:"ref-a",state:"active",revision:1}];
   const album=[1,2].map(id=>({image_id:"image-"+id,created_at:"2026-10-07T03:00:00Z",action:"image.generate",width:768,height:1024,thumbnail:imageUrl}));
   let daily=null,failImage=false,orderConflict=false,sceneConflict=false,backendRevision=1;
-  let backend={enabled:true,backend:"auto",endpoints:[{id:"endpoint-a",name:"主用端点",enabled:true,platform:"openai",model:"image-qa",base_url:"https://example.invalid/v1",width:1024,height:1024,timeout_seconds:180,api_key:"",api_key_set:true}],comfyui:{base_url:"",timeout_seconds:300,workflows:{},api_key:"",api_key_set:false},sd_webui:{base_url:"",timeout_seconds:300,parameters:{},api_key:"",api_key_set:false}};
+  let backend={enabled:true,backend:"auto",operation_routes:{generate:["online:endpoint-a"],edit:["online:endpoint-a"]},endpoints:[{id:"endpoint-a",name:"主用端点",enabled:true,platform:"openai",model:"image-qa",base_url:"https://example.invalid/v1",width:1024,height:1024,timeout_seconds:180,api_key:"",api_key_set:true}],comfyui:{base_url:"",timeout_seconds:300,workflows:{},api_key:"",api_key_set:false},sd_webui:{base_url:"",timeout_seconds:300,parameters:{},api_key:"",api_key_set:false}};
+  const nai={installed:true,available:true,call_mode:"direct",default_model:"nai-diffusion-4-5-full",default_size:"竖图",operations:["generate"]};
   const posts=[],imageRequests=[],receipts=new Map();
-  const snapshot=()=>({settings:structuredClone(backend),revision:"revision-"+backendRevision,host_registered:true});
+  const snapshot=()=>({settings:structuredClone(backend),nai,revision:"revision-"+backendRevision,host_registered:true});
   const inventory=()=>({references:structuredClone(references),wardrobe:structuredClone(wardrobe),daily_outfit:structuredClone(daily),scene_presets:JSON.parse(sections["image.output"].settings.scene_presets_json),settings:{references:structuredClone(sections["photo.reference"].settings),wardrobe:structuredClone(sections.wardrobe.settings)}});
   function api(method,endpoint,body,query){
     if(method==="GET"){
       if(endpoint==="page/targets")return ok({installation_id:"synthetic-installation",targets:[{target_id:"first",scope_kind:"private",participant_id:"200",platform_id:"qq-main",account_id:"100",bot_id:"bot-a",roles:[{role_id:"role-a",role_name:"澄汐",config_api:"/"+HOST+"/"+ROLE+"/config",model_api:"/"+HOST+"/"+ROLE+"/model",image_material_api:"/"+HOST+"/"+ROLE+"/image-materials"}]}]});
-      if(endpoint==="integration/manifest")return ok({extensions:["image","content"].map(id=>({capability_id:id,extension_id:id,owner:"companion_v2",label:id,integration_state:"connected",assembled:true,enabled:true,runtime_ready:true,integration_label:"可用"})),providers:[],summary:{connected_count:2,extension_ready_count:2,provider_count:0}});
+      if(endpoint==="integration/manifest")return ok({nai,extensions:["image","content"].map(id=>({capability_id:id,extension_id:id,owner:"companion_v2",label:id,integration_state:"connected",assembled:true,enabled:true,runtime_ready:true,integration_label:"可用"})),providers:[],summary:{connected_count:2,extension_ready_count:2,provider_count:0}});
       if(endpoint===ROLE+"/config")return ok({sections:Object.fromEntries(Object.entries(sections).filter(([kind])=>!query.sections||query.sections.split(",").includes(kind)).map(([kind,value])=>[kind,structuredClone(value)]))});
       if(endpoint===ROLE+"/model/image/output")return ok(snapshot());
       if(endpoint===ROLE+"/model/image/review/providers")return ok({providers:[{id:"vision-a",name:"视觉审核"}]});
@@ -153,8 +154,8 @@ with tempfile.TemporaryDirectory(prefix="output-page-qa-") as data_root:
     const frame=page.frames().find(item=>item.url().includes(PREFIX));assert.ok(frame);
     const assertTitle=async()=>assert.equal(await frame.locator(".shell-panel-head h1, .shell-panel-head h2").first().innerText(),"产出");
     const open=async id=>{
-      if(await frame.locator(".output-back-link").isVisible())await frame.locator(".output-back-link").click();
-      await frame.locator(id==="capabilities"?'[data-output-open="capabilities"]':`[data-output-tab="${id}"]`).first().click();await assertTitle();
+      await frame.locator(`[data-output-tab="${id}"]`).click();await assertTitle();
+      assert.equal(await frame.locator(".output-config-tabs").isVisible(),true);
     };
     const screenshots=[];
     const capture=async name=>{
@@ -182,13 +183,26 @@ with tempfile.TemporaryDirectory(prefix="output-page-qa-") as data_root:
     const saveBackend=async()=>{await frame.locator('[data-output-native-action="save"]:visible').first().click();await frame.locator('[data-output-native-notice]:visible').first().filter({hasText:"生图后端已保存"}).waitFor();};
     await frame.locator('.output-image-frame[data-image-state="ready"]').waitFor();
     await frame.locator('#imageControlWorkspace [data-wb-field="group_max_daily"]').waitFor();await assertTitle();
+    assert.equal(await frame.locator("#output-tab-capabilities").innerText(),"模型路线");
+    assert.equal(await frame.locator("#outputNaiWorkspace").isVisible(),false);
     await frame.locator('[data-wb-field="group_max_daily"]').fill("2");await saveCard("quota");assert.equal(sections.quota.settings.group_max_daily,2);
     await frame.locator('[data-wb-field="group_nsfw_image_review_mode"][value="dual"]').check();await saveCard("image_review");assert.equal(sections.image_review.settings.group_nsfw_image_review_mode,"dual");
     await frame.locator('[data-output-mode="image"]').focus();await page.keyboard.press("ArrowRight");await frame.locator("#output-preview-story").waitFor({state:"visible"});
     await frame.locator('.output-preview-action[data-output-open="creation"]').click();await assertTitle();
     await frame.locator('[data-wb-field="direction_prompt"]').fill("窗边雨夜，短篇随笔");await saveCard("content.authoring");assert.equal(sections["content.authoring"].settings.direction_prompt,"窗边雨夜，短篇随笔");
     await open("capabilities");
-    await frame.getByText("端点按列表顺序排列",{exact:false}).waitFor();
+    await frame.locator("#outputNaiWorkspace h2").filter({hasText:"NAI 后端"}).waitFor();
+    assert.match(await frame.locator(".output-nai-defaults").innerText(),/nai-diffusion-4-5-full/);
+    assert.equal(await frame.locator('[data-output-nai-operation="edit"]').isDisabled(),true);
+    await frame.locator('[data-output-nai-operation="generate"]').check();await saveBackend();
+    assert.deepEqual(backend.operation_routes.generate,["online:endpoint-a","nai"]);
+    await frame.locator('[data-output-nai-operation="generate"]').uncheck();await saveBackend();
+    assert.deepEqual(backend.operation_routes.generate,["online:endpoint-a"]);
+    await frame.locator("#output-tab-capabilities").focus();await page.keyboard.press("ArrowLeft");
+    await frame.locator("#output-panel-visual").waitFor({state:"visible"});
+    assert.equal(await frame.locator("#output-tab-visual").evaluate(node=>document.activeElement===node),true);
+    await open("capabilities");
+    await frame.getByText("此处管理模型连接",{exact:false}).waitFor();
     await frame.getByText("会真实提交一张图片生成请求",{exact:false}).waitFor();
     await frame.locator('[data-output-native-field="endpoints.0.platform"]').waitFor();
     assert.equal(await frame.locator('[data-output-native-field="endpoints.0.base_url"]').getAttribute("placeholder"),"https://api.example.com/v1");
@@ -198,9 +212,36 @@ with tempfile.TemporaryDirectory(prefix="output-page-qa-") as data_root:
     await platform.focus();await platform.selectOption("minimax");assert.equal(await platform.evaluate(node=>document.activeElement===node),true);
     await frame.getByText("MiniMax 使用 /image_generation",{exact:false}).waitFor();await platform.selectOption("openai");
     await frame.locator('[data-output-native-field="endpoints.0.name"]').fill("真实保存主端点");await frame.locator('[data-output-native-action="add"]').click();
-    await frame.locator('[data-output-native-field="endpoints.1.name"]').fill("备用端点");await frame.locator('[data-output-native-action="up"]').last().click();await saveBackend();assert.equal(backend.endpoints[0].name,"备用端点");
+    await frame.locator('[data-output-native-field="endpoints.1.name"]').fill("备用端点");await saveBackend();assert.equal(backend.endpoints[1].name,"备用端点");
     await frame.locator('[data-output-native-action="test"][data-output-endpoint="endpoint-a"]').click();await frame.locator(".output-endpoint-result").filter({hasText:"最近测试通过"}).waitFor();
-    await frame.locator('[data-output-native-action="remove"]').first().click();await saveBackend();assert.equal(backend.endpoints.length,1);
+    await frame.locator('[data-output-native-action="remove"]').last().click();await saveBackend();assert.equal(backend.endpoints.length,1);
+    if(process.argv.includes("--routes-only")){
+      await frame.locator('[data-output-nai-operation="generate"]').check();await saveBackend();
+      assert.deepEqual(backend.operation_routes.generate,["online:endpoint-a","nai"]);
+      for(const width of [1559,960,390,320]){
+        await page.setViewportSize({width,height:1000});
+        await frame.evaluate(width=>{document.documentElement.dataset.typeScale=width<1000?"xl":"m";},width);
+        for(const id of ["visual","capabilities"]){
+          await open(id);
+          assert.equal(await frame.locator("#output-tab-capabilities").isVisible(),true);
+          assert.equal(await frame.locator("#output-tab-visual").isVisible(),true);
+          assert.equal(await frame.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,`overflow ${id} ${width}`);
+          const clipped=await frame.locator(".output-page button:visible").evaluateAll(nodes=>nodes.filter(node=>node.scrollWidth>node.clientWidth+2).map(node=>node.textContent));
+          assert.deepEqual(clipped,[],`clipped ${id} ${width}`);
+          await capture(`${id}-${width}`);
+        }
+      }
+      await page.reload();
+      const reloaded=page.frames().find(item=>item.url().includes(PREFIX));
+      await reloaded.locator("#output-tab-capabilities").click();
+      await reloaded.locator('[data-output-nai-operation="generate"]:checked').waitFor();
+      assert.equal(await reloaded.locator('[data-output-nai-operation="edit"]').isDisabled(),true);
+      assert.deepEqual(errors,[]);
+      const report={result:"PASS",posts:posts.length,viewports:[1559,960,390,320],checks:["host sandbox and token","persistent model route tab and keyboard navigation","NAI defaults and independent route saves","unsupported NAI editing disabled","backend endpoints and synthetic endpoint test","desktop and mobile layout","reload persistence","nonblank screenshots"],screenshots,output};
+      await fs.writeFile(path.join(output,"report.json"),JSON.stringify(report,null,2)+"\n","utf8");
+      console.log(JSON.stringify({...report,screenshots:screenshots.length},null,2));
+      return;
+    }
     await frame.locator('[data-output-native-action="manage-scenes"]').click();await frame.locator('[data-output-scene-field="name"]').first().fill("睡前卧室");await frame.locator('[data-output-native-action="add-scene"]').click();
     await frame.locator('[data-output-scene-field="name"]').last().fill("雨夜窗边");await frame.locator('[data-output-scene-field="prompt"]').last().fill("rainy window, quiet evening");sceneConflict=true;await frame.locator('[data-output-native-action="save-scenes"]').click();
     await frame.locator("#outputScenePresetEditor [role=status]").filter({hasText:"配置已经更新"}).waitFor();
@@ -250,7 +291,7 @@ with tempfile.TemporaryDirectory(prefix="output-page-qa-") as data_root:
     await page.reload();const reloaded=page.frames().find(item=>item.url().includes(PREFIX));await reloaded.locator('[data-wb-field="group_max_daily"]').waitFor();assert.equal(await reloaded.locator('[data-wb-field="group_max_daily"]').inputValue(),"2");
     failImage=true;await page.reload();const failed=page.frames().find(item=>item.url().includes(PREFIX));await failed.locator('.output-image-frame[data-image-state="unavailable"]').waitFor();assert.equal(await failed.locator('[data-output-preview-image]').isVisible(),false);
     assert.ok(imageRequests.length);assert.ok(imageRequests.every(url=>new URL(url,"http://127.0.0.1").searchParams.get("asset_token")===TOKEN));assert.deepEqual(errors,[]);
-    const report={result:"PASS",posts:posts.length,viewports:[1559,960,390,320],checks:["host sandbox and token","shared title","quota and review save","authoring direction","backend queue and endpoint test","scene edit and removal","scene conflict recovery preserves draft","style and prompt preferences","usage and gallery conflict","upload and album registration","wardrobe and daily outfit","theme and mobile layout","reload persistence","image fallback","nonblank full-panel screenshots"],screenshots,output};
+    const report={result:"PASS",posts:posts.length,viewports:[1559,960,390,320],checks:["host sandbox and token","persistent model route tab and keyboard navigation","NAI defaults and independent route saves","unsupported NAI editing disabled","shared title","quota and review save","authoring direction","backend endpoints and endpoint test","scene edit and removal","scene conflict recovery preserves draft","style and prompt preferences","usage and gallery conflict","upload and album registration","wardrobe and daily outfit","theme and mobile layout","reload persistence","image fallback","nonblank full-panel screenshots"],screenshots,output};
     await fs.writeFile(path.join(output,"report.json"),JSON.stringify(report,null,2)+"\n","utf8");
     console.log(JSON.stringify({...report,screenshots:screenshots.length},null,2));
   }finally{if(browser)await browser.close();await new Promise(resolve=>server.close(resolve));}

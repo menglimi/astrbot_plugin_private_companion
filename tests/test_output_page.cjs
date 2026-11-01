@@ -27,6 +27,7 @@ function fixture(nai = null) {
     [".output-image-frame", {dataset: {}}],
     [".output-image-status span", {textContent: ""}],
     ["[data-output-native-selector]", {innerHTML: ""}],
+    ["#outputNaiWorkspace", {innerHTML: ""}],
   ]);
   const requests = [];
   let observabilityFailure = false;
@@ -154,7 +155,7 @@ test("NAI output controls read plugin status and save independent generation and
     api_profile: "starbridge", default_model: "nai-diffusion-5-full", operations: ["generate", "edit"]});
   state.page.mount(state.root);
   await new Promise(resolve => setImmediate(resolve));
-  const host = state.single.get("[data-output-native-selector]");
+  const host = state.single.get("#outputNaiWorkspace");
   assert.match(host.innerHTML, /星桥（Almoon）/);
   assert.match(host.innerHTML, /nai-diffusion-5-full/);
   assert.doesNotMatch(host.innerHTML, /data-output-nai-operation="edit"[^>]*disabled/);
@@ -174,7 +175,7 @@ test("NAI direct mode keeps unsupported edit controls disabled", async () => {
   const state = fixture({installed: true, available: true, call_mode: "direct", operations: ["generate"]});
   state.page.mount(state.root);
   await new Promise(resolve => setImmediate(resolve));
-  const html = state.single.get("[data-output-native-selector]").innerHTML;
+  const html = state.single.get("#outputNaiWorkspace").innerHTML;
   assert.match(html, /data-output-nai-operation="edit" disabled/);
   assert.doesNotMatch(html, /data-output-nai-operation="generate" disabled/);
   state.page.unmount();
@@ -186,8 +187,9 @@ test("NAI remains visible before account and persona setup without saving any ro
   state.clearRole();
   state.page.mount(state.root);
   await new Promise(resolve => setImmediate(resolve));
-  const html = state.single.get("[data-output-native-selector]").innerHTML;
-  assert.match(html, /NAI 生图插件/);
+  const html = state.single.get("[data-output-native-selector]").innerHTML
+    + state.single.get("#outputNaiWorkspace").innerHTML;
+  assert.match(html, /NAI 后端/);
   assert.match(html, /已就绪/);
   assert.match(html, /nai-diffusion-4-5-full/);
   assert.match(html, /配置账号并绑定人格/);
@@ -209,9 +211,10 @@ test("a failed role configuration read keeps the NAI section visible with disabl
   state.failOutput(true);
   state.page.mount(state.root);
   await new Promise(resolve => setImmediate(resolve));
-  const html = state.single.get("[data-output-native-selector]").innerHTML;
+  const html = state.single.get("[data-output-native-selector]").innerHTML
+    + state.single.get("#outputNaiWorkspace").innerHTML;
   assert.match(html, /角色配置暂不可读/);
-  assert.match(html, /NAI 生图插件/);
+  assert.match(html, /NAI 后端/);
   assert.match(html, /NAI 状态暂不可读/);
   assert.doesNotMatch(html, /未检测到已启用/);
   assert.match(html, /data-output-nai-operation="generate" disabled/);
@@ -225,7 +228,7 @@ test("unconfigured NAI rereads do not retain a stale ready state after a detecti
   await new Promise(resolve => setImmediate(resolve));
   state.failManifest(true);
   await state.page.refresh();
-  const html = state.single.get("[data-output-native-selector]").innerHTML;
+  const html = state.single.get("#outputNaiWorkspace").innerHTML;
   assert.match(html, /NAI 状态暂不可读/);
   assert.doesNotMatch(html, /已就绪/);
   assert.match(html, /data-output-nai-operation="generate" disabled/);
