@@ -73,6 +73,20 @@ def core_image_tools(session, offered):
         return offered, None
     try:
         values = effective_settings(session.application.runtime, session.context)
+        from . import model_route_material
+        reader = getattr(model_route_material, "_image_configuration", None)
+        try:
+            configuration = (reader(getattr(session.application, "native_tool_port", None))
+                             if callable(reader) else None)
+        except Exception:
+            configuration = None
+        if configuration:
+            nai = configuration.get("nai") or {}
+            _, routes = model_route_material._image_routes(configuration["settings"], "generate")
+            if routes and routes[0] == "nai" and nai.get("available"):
+                mode = nai.get("prompt_format")
+                if mode in {"nai", "natural"}:
+                    values = {**values, "prompt_format": mode, "nai_backend": True}
         denial = image_request_denial(session.application.runtime, session.context, values)
     except Exception as error:
         logger.warning("[CompanionV2] 核心生图偏好暂不可用 error_type=%s", type(error).__name__)
