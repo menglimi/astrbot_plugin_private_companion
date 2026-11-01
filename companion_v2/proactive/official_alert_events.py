@@ -25,6 +25,13 @@ MEANING = ("这是和风天气对管理员配置的角色所在地提供的官�
            "仅当原文明确覆盖整个配置城市或明确包含目标镇街，且没有排除目标镇街时才发送。")
 
 
+class _NoCurrentAlert:
+    """本轮轮询成功，但当前没有生效中的预警（与获取失败区分）。"""
+
+
+NO_CURRENT_ALERT = _NoCurrentAlert()
+
+
 def attribution_suffix(attributions):
     return "\n\n来源：和风天气 " + SOURCE_URL + "\n" + "\n".join(attributions)
 
@@ -196,7 +203,9 @@ class OfficialAlertContactEvents:
         self.retry_at.pop(context.key, None)
         candidate = self._candidate(context, configured[1], at)
         if candidate is None:
-            return None
+            # 没有生效中的预警是常态（接口 zeroResult 或刚被取消），调用方要按
+            # 「本轮无候选」处理，不能当成获取失败去写来源不可用的诊断。
+            return NO_CURRENT_ALERT
         row, opportunity = candidate
         record = self._record(context, row, opportunity)
         require(self.contacts.sources.publish(record, observed_at=at))
