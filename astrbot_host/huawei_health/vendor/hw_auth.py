@@ -604,7 +604,8 @@ class HuaweiAuth:
         fatal = [n for n in missing if n in REQUIRED_COOKIES]
         if fatal:
             raise HuaweiAuthError(
-                "缺少必要的 cookie：%s。请把六项都填上，或改用整段 JSON 导出。"
+                "缺少必要的 cookie：%s。关键项在登录域 .id1.cloud.huawei.com 下，"
+                "不会出现在 health 域的导出里；请切到该域导出，或改用六项分填。"
                 % "、".join(fatal))
         if missing:
             self._log("warning", "导入的 cookie 里缺少：%s（如登录失败请补齐）" % "、".join(missing))
