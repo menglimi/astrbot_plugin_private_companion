@@ -185,6 +185,44 @@ class WeatherSourceSettingsTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response["status"], "ok", response)
             self.assertEqual(self.config["weather"]["api_host"], HOST)
 
+    async def test_half_configured_environment_credentials_are_not_reported_as_configured(self):
+        # has_credential 是页面「已配置」徽标的唯一依据；半组无法认证，必须与
+        # source_state 的「配置待完善」一起显示为未配置。
+        with patch.dict(os.environ, {"QWEATHER_API_KEY": KEY}):
+            view = await self.source()
+            self.assertFalse(view["has_credential"], view)
+            self.assertEqual(view["source_state"], "invalid")
+            self.assertEqual(view["credential_source"], "environment")
+        with patch.dict(os.environ, {"QWEATHER_DEVELOPER_ID": "Q123456789"}):
+            view = await self.source()
+            self.assertFalse(view["has_credential"], view)
+            self.assertEqual(view["source_state"], "invalid")
+        with patch.dict(os.environ, {"QWEATHER_PRIVATE_KEY_FILE": "/missing/key.pem"}):
+            view = await self.source()
+            self.assertFalse(view["has_credential"], view)
+            self.assertEqual(view["source_state"], "invalid")
+        # 完整且可用的一组仍显示已配置。
+        with patch.dict(os.environ, {"QWEATHER_API_HOST": HOST, "QWEATHER_API_KEY": KEY}):
+            view = await self.source()
+            self.assertTrue(view["has_credential"], view)
+            self.assertEqual(view["source_state"], "configured")
+            self.assertEqual(view["credential_kind"], "api_key")
+
+    async def test_half_configured_environment_host_edit_does_not_require_a_replacement_credential(self):
+        # 半配置的环境组没有可用凭据可替换；补 Host 时不应误报「替换环境 Host 必须
+        # 填写凭据」，而是交给端口校验说明配置无效。
+        with patch.dict(os.environ, {"QWEATHER_API_KEY": KEY}):
+            response = await self.save({"api_host": HOST})
+            self.assertEqual(response["status"], "error", response)
+            self.assertNotEqual(response["message"], "weather_source_credential_required")
+            self.assertEqual(response["message"], "weather_source_invalid")
+            self.assertEqual(self.saved, [])
+            response = await self.save({"api_host": HOST, "credential": KEY})
+            self.assertEqual(response["status"], "ok", response)
+            self.assertEqual(self.config["weather"]["api_host"], HOST)
+            self.assertEqual(self.config["weather"]["credential"], KEY)
+            self.assertEqual(response["data"]["credential_source"], "plugin")
+
     async def test_conflict_and_failed_persistence_leave_original_ports(self):
         current = await self.source()
         await self.save({"refresh_minutes": 15})

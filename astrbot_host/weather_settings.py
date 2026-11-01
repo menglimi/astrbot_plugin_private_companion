@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 
 from companion_v2.execution.models import TaskError, digest
 
-from .qweather_credentials import HOST_PATTERN, read_credentials
+from .qweather_credentials import HOST_PATTERN, credentials_from_environment, read_credentials
 from .qweather_weather import configured_qweather_weather_port
 from .qweather_alerts import configured_qweather_alert_port
 
@@ -105,7 +105,13 @@ class WeatherHostSettings:
         credential_kind = ("signed_jwt" if signed else
                            "api_key" if values and values["API_KEY"] else
                            "jwt" if values and values.get("JWT_TOKEN") else "none")
-        has_credential = bool(values and any(values[name] for name in values if name != "API_HOST"))
+        # 页面用 has_credential 决定是否显示「已配置」。半组（只填了 API Key、只填了
+        # 开发者 ID 等）无法认证任何请求，若仍按「有字段即已配置」就会和 source_state
+        # 的「配置待完善」同时出现。这里复用适配器的真实可用性判定，避免两处规则漂移。
+        try:
+            has_credential = credentials_from_environment(label="host", config=config) is not None
+        except (ValueError, TypeError, KeyError, OSError):
+            has_credential = False
         try:
             weather, alerts = configured_weather_ports(config)
         except (ValueError, TypeError, KeyError, OSError):
@@ -175,7 +181,10 @@ class WeatherHostSettings:
                     raise TaskError("weather_source_invalid", "check the assigned QWeather API Host") from None
             # A provider-only save continues to use environment credentials. Editing
             # their host or credential deliberately creates a complete host-owned group.
-            if (current["credential_source"] == "environment"
+            # 只有环境组完整可用时才需要这个保护；半配置的环境组本来就没有可用的
+            # 凭据可替换，用户补 Host 时交给下面的端口校验给出通用的配置无效提示，
+            # 而不是误报「替换环境 Host 必须填写凭据」。
+            if (current["credential_source"] == "environment" and current["has_credential"]
                     and (credential or signed_changes or "api_host" in changes)):
                 if not section.get("api_host"):
                     section["api_host"] = current["settings"]["api_host"]
