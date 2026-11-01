@@ -10,6 +10,7 @@ timeout, no redirects, capped body -- because a provider misbehaving must not be
 runtime problem for the role.
 """
 
+import asyncio
 import json
 from datetime import datetime, timezone
 
@@ -23,6 +24,13 @@ from .qweather_location import resolve_qweather_location
 
 
 ENDPOINT = "/v7/weather/now"
+
+# The callers bound a whole weather read at 6-7s (companion_v2/agenda/weather_reading.py,
+# weather_tools.py), while a name-only role location costs two requests: the geo lookup
+# and the observation. Two per-request timeouts could therefore always overshoot the
+# caller's budget twice over on a slow network, so the adapter spends one total budget
+# that both requests share.
+TOTAL_TIMEOUT_SECONDS = 5
 
 # QWeather "now" icon codes -> WMO codes. Grouped by the icon's hundreds digit, which
 # is what QWeather's own icon set is organised by (1xx clear, 3xx rain, 4xx snow...),
@@ -157,7 +165,15 @@ class QWeatherWeatherPort:
         if type(location) is not WeatherLocation:
             raise ValueError("QWeather weather query requires an explicit role location")
         at = self._now()
-        timeout = aiohttp.ClientTimeout(total=6)
+        try:
+            return await asyncio.wait_for(self._fetch(location, at), TOTAL_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError as error:
+            # Reported like every other unavailable response, so the callers' existing
+            # fail-closed path applies instead of a provider-specific exception.
+            raise ValueError("QWeather current weather timed out") from error
+
+    async def _fetch(self, location, at):
+        timeout = aiohttp.ClientTimeout(total=TOTAL_TIMEOUT_SECONDS)
         async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
             location = await resolve_qweather_location(session, location, self._credentials, at)
             url = f"https://{self._credentials.host}{ENDPOINT}"

@@ -1,5 +1,6 @@
 """QWeather current-weather adapter: code mapping, normalization and port selection."""
 
+import asyncio
 import base64
 import json
 import os
@@ -11,7 +12,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives import serialization
 
 from astrbot_host.qweather_credentials import QWeatherCredentials, credentials_from_environment
-from astrbot_host.qweather_weather import (QWeatherWeatherPort, configured_qweather_weather_port,
+from astrbot_host.qweather_weather import (TOTAL_TIMEOUT_SECONDS, QWeatherWeatherPort,
+                                           configured_qweather_weather_port,
                                            normalize_qweather_now, weather_code_for)
 from astrbot_host.weather import OpenMeteoWeatherPort
 from companion_v2.agenda.planning_config import WeatherLocation
@@ -192,7 +194,8 @@ class QWeatherWeatherPortTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request[1], "https://example.xy.qweatherapi.com/v7/weather/now")
         self.assertEqual(request[2], {"location": "121.47,31.23"})
         self.assertFalse(request[4])
-        self.assertEqual(next(item for item in calls if item[0] == "options")[1:], (6, False))
+        self.assertEqual(next(item for item in calls if item[0] == "options")[1:],
+                         (TOTAL_TIMEOUT_SECONDS, False))
         self.assertEqual(next(item for item in calls if item[0] == "limit")[1], 65537)
         self.assertEqual(snapshot.weather_code, 61)
 
@@ -210,6 +213,64 @@ class QWeatherWeatherPortTests(unittest.IsolatedAsyncioTestCase):
     async def test_fetch_requires_an_explicit_role_location(self):
         with self.assertRaises(ValueError):
             await self._port().fetch("31.23,121.47")
+
+
+class FetchBudgetTests(unittest.IsolatedAsyncioTestCase):
+    """One total budget covers the geo lookup and the observation together."""
+
+    async def test_slow_geo_lookup_does_not_start_a_fresh_timeout_for_the_observation(self):
+        completed = []
+        geocoded = {"code": "200",
+                    "location": [{"name": "角色所在地", "lat": "31.23", "lon": "121.47"}]}
+
+        class SlowReply:
+            status = 200
+            content_length = None
+
+            def __init__(self, payload, index):
+                self.raw = json.dumps(payload).encode("utf-8")
+                self.content = self
+                self.index = index
+
+            async def __aenter__(self):
+                await asyncio.sleep(0.1)
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def read(self, limit):
+                completed.append(self.index)
+                return self.raw[:limit]
+
+        class Session:
+            def __init__(self, *, timeout, trust_env):
+                self.replies = [SlowReply(geocoded, 0), SlowReply(body(), 1)]
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            def get(self, url, **kwargs):
+                return self.replies.pop(0)
+
+        port = QWeatherWeatherPort(QWeatherCredentials(
+            api_host="example.xy.qweatherapi.com", api_key=API_KEY), now=lambda: NOW)
+        location = WeatherLocation("角色所在地", None, None)
+        with patch("astrbot_host.qweather_weather.aiohttp.ClientSession", Session), patch(
+                "astrbot_host.qweather_weather.TOTAL_TIMEOUT_SECONDS", 0.15, create=True):
+            with self.assertRaisesRegex(ValueError, "timed out"):
+                await port.fetch(location)
+
+        # The lookup fitted inside the budget; the observation got the remainder, not
+        # another full timeout, so it was cancelled and never completed.
+        self.assertEqual(completed, [0])
+
+    def test_the_adapter_budget_fits_inside_the_callers_weather_window(self):
+        # companion_v2/agenda/weather_reading.py waits 6s for the whole weather read.
+        self.assertLess(TOTAL_TIMEOUT_SECONDS, 6)
 
 
 class PortSelectionTests(unittest.TestCase):
