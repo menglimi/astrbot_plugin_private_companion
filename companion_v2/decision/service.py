@@ -121,6 +121,16 @@ def _apply_followup_confidence_gate(decision: LayaDecision, facts: dict, thresho
                                                 "effective_action": "silent"}
 
 
+def _ledger_mode(mode):
+    """The decision ledger predates Workers AI; that backend shares the remote row.
+
+    ``laya_decision_events.mode`` carries a CHECK constraint for the three
+    original backends, so a call from the Workers AI transport would otherwise
+    lose its whole ledger row instead of being recorded.
+    """
+    return "remote" if mode == "workers_ai" else mode
+
+
 class LayaDecisionService:
     def __init__(self, store: LayaSettingsStore, *, runtime=None, origin_key=None, client_factory=None):
         self.store = store
@@ -324,7 +334,7 @@ class LayaDecisionService:
                     (event_id, origin_key, batch_id, source, status, mode, reason_code, reason, elapsed_ms,
                      decision_json, enabled_fields_json, request_json, response_json, processing_json, observed_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (event_id, self.origin_key, self.event_ref, self.source, status, values["mode"],
+                    (event_id, self.origin_key, self.event_ref, self.source, status, _ledger_mode(values["mode"]),
                      str(reason_code)[:96] if reason_code else None, str(safe_reason)[:1000] if safe_reason else None,
                      elapsed_ms, decision_json, enabled_fields_json, request_json, response_json, processing_json,
                      datetime.now(timezone.utc).isoformat()))
