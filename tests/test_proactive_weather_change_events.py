@@ -23,7 +23,8 @@ class WeatherChangeContactTests(ContactScheduleFixture, unittest.IsolatedAsyncio
         if location:
             before = manager.status(self.core).unwrap()
             manager.command(self.core, dict(action="configure", operation_key="weather-change-location",
-                edit_token=before["edit_token"], changes={"planning_weather_location": location})).unwrap()
+                edit_token=before["edit_token"], role_edit_token=before["role_edit_token"],
+                changes={"planning_weather_location": location})).unwrap()
         self.settings(app, {"chat.enabled": False, "weather_change_enabled": enabled}).unwrap()
         return app, context, manager
 
@@ -85,7 +86,7 @@ class WeatherChangeContactTests(ContactScheduleFixture, unittest.IsolatedAsyncio
         self.assertEqual(materials[0]["previous"]["weather_code"], 0)
         self.assertEqual(materials[0]["current"]["weather_code"], 61)
         self.assertNotIn("_receipt", materials[0])
-        self.assertIn("不能称为突发灾害", request.instruction)
+        self.assertIn("不称灾害、预警或趋势", request.instruction)
         self.assertEqual(json.loads(self.contacts(app)[0]["record_json"])["purpose"], "environment")
 
         await app.close()
@@ -146,7 +147,7 @@ class WeatherChangeContactTests(ContactScheduleFixture, unittest.IsolatedAsyncio
         await self.sampled(app, port, 1)
         before = manager.status(self.core).unwrap()
         manager.command(self.core, dict(action="configure", operation_key="weather-change-new-location",
-            edit_token=before["edit_token"],
+            edit_token=before["edit_token"], role_edit_token=before["role_edit_token"],
             changes={"planning_weather_location": new_location_json})).unwrap()
 
         self.advance(app, 3600)
