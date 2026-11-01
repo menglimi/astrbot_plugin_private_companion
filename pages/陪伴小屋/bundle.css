@@ -5432,6 +5432,9 @@ body.state-connected{min-width:320px}
 .wb-source-option>span{display:grid;gap:2px;min-width:0}
 .wb-source-option b{min-width:0;color:var(--t-text-strong);font-size:var(--fs-tiny);font-weight:600;overflow-wrap:anywhere}
 .wb-source-option small{color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.45;overflow-wrap:anywhere}
+.wb-source-option.is-disabled{opacity:.55;cursor:default}
+.wb-source-option.is-disabled:hover{background:none}
+.wb-source-whole-hint{color:var(--t-accent-ink)}
 .wb-source-missing{padding:var(--sp-1);border:1px dashed var(--t-line-firm);border-radius:var(--r-xs);color:var(--t-risk-ink)}
 .wb-source-count{justify-self:end;color:var(--t-text-faint);font-size:var(--fs-micro);font-variant-numeric:tabular-nums}
 .wb-textarea-wrap{display:grid;gap:var(--sp-1);min-width:0}

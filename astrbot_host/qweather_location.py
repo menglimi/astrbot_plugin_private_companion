@@ -5,7 +5,7 @@ import math
 
 from companion_v2.agenda.planning_config import WeatherLocation
 
-from .qweather_credentials import MAX_RESPONSE_BYTES
+from .qweather_credentials import MAX_RESPONSE_BYTES, RESPONSE_LANGUAGE
 
 
 ENDPOINT = "/geo/v2/city/lookup"
@@ -17,7 +17,8 @@ async def resolve_qweather_location(session, location, credentials, at):
     if location.latitude is not None and location.longitude is not None:
         return location
 
-    params = {"location": location.name, "range": "cn", "number": 10, "lang": "zh"}
+    params = {"location": location.name, "range": "cn", "number": 10,
+              "lang": RESPONSE_LANGUAGE}
     if location.alert_city:
         params["adm"] = location.alert_city
     url = f"https://{credentials.host}{ENDPOINT}"

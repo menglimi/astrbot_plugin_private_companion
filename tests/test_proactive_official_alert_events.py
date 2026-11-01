@@ -50,7 +50,8 @@ class OfficialAlertContactTests(ContactScheduleFixture, unittest.IsolatedAsyncio
         manager = StateManagement(app, context)
         before = manager.status(self.core).unwrap()
         manager.command(self.core, dict(action="configure", operation_key="official-alert-location",
-            edit_token=before["edit_token"], changes={"planning_weather_location":
+            edit_token=before["edit_token"], role_edit_token=before["role_edit_token"],
+            changes={"planning_weather_location":
                 ALERT_LOCATION_JSON if alert_scope else LOCATION_JSON})).unwrap()
         self.settings(app, {"chat.enabled": False, "official_weather_alert_enabled": enabled}).unwrap()
         return app, context
@@ -96,6 +97,88 @@ class OfficialAlertContactTests(ContactScheduleFixture, unittest.IsolatedAsyncio
         self.assertEqual(contact_output(output(coverage="covered", coverage_quote="目标镇街发布预警"),
                                         official_alert=alert), ("请留意。", None))
 
+    def test_coverage_guard_rejects_exclusions_naming_the_target_first(self):
+        """「目标镇街之外」和「除目标镇街外」是同一句排除，必须同样拒绝。"""
+        def output(quote):
+            return json.dumps({"decision": "send", "text": "请留意。", "coverage": "covered",
+                               "coverage_quote": quote}, ensure_ascii=False)
+        body = {"alert_area": "目标镇街", "alert": {"headline": "大风预警",
+            "description": "", "instruction": ""}}
+        for description, quote in (
+                ("全市发布大风预警，目标镇街以外地区不受影响。", "目标镇街以外地区不受影响"),
+                ("本次预警覆盖目标镇街之外的其他区域。", "目标镇街之外的其他区域"),
+                ("目标镇街不属于本次预警范围。", "目标镇街不属于本次预警范围"),
+                ("目标镇街不适用于本次预警。", "目标镇街不适用于本次预警"),
+                ("目标镇街被排除在本次预警范围外。", "目标镇街被排除在本次预警范围外"),
+                ("目标镇街未覆盖到，请注意其他区域。", "目标镇街未覆盖到"),
+                ("目标镇街不在本次预警覆盖范围内。", "目标镇街不在本次预警覆盖范围内"),
+                ("目标镇街未受影响。", "目标镇街未受影响")):
+            with self.subTest(description=description):
+                body["alert"]["description"] = description
+                self.assertEqual(contact_output(output(quote), official_alert=body), (None, None))
+        # 正向说法不能被误伤：只有「排除」才拒绝，覆盖原句照旧放行。
+        for description, quote in (("目标镇街发布大风预警，请注意防范。", "目标镇街发布大风预警"),
+                                   ("目标镇街处于本次预警范围内。", "目标镇街处于本次预警范围内")):
+            with self.subTest(description=description):
+                body["alert"]["description"] = description
+                self.assertEqual(contact_output(output(quote), official_alert=body), ("请留意。", None))
+        # 英文通告同样要认得正反两个方向。
+        english = {"alert_area": "Vienna", "alert": {"headline": "Wind warning",
+            "description": "", "instruction": ""}}
+        for description, quote in (("Vienna is outside the warning area.", "Vienna is outside the warning area"),
+                                   ("The warning excludes Vienna and its suburbs.", "The warning excludes Vienna")):
+            with self.subTest(description=description):
+                english["alert"]["description"] = description
+                self.assertEqual(contact_output(output(quote), official_alert=english), (None, None))
+        english["alert"]["description"] = "Vienna is covered by the wind warning."
+        self.assertEqual(contact_output(output("Vienna is covered by the wind warning"),
+                                        official_alert=english), ("请留意。", None))
+
+    def test_coverage_guard_only_rejects_exclusions_of_the_target_itself(self):
+        """排除要落在目标镇街自己身上：指向周边/其他区域的否定不算排除。"""
+        def output(quote):
+            return json.dumps({"decision": "send", "text": "请留意。", "coverage": "covered",
+                               "coverage_quote": quote}, ensure_ascii=False)
+        body = {"alert_area": "目标镇街", "alert": {"headline": "大风预警",
+            "description": "", "instruction": ""}}
+        # 目标镇街在先、被否定的是别的区域/别的灾种：目标仍在预警里，必须放行。
+        for description in ("目标镇街发布大风预警，周边地区不受影响",
+                            "目标镇街发布大风预警，其他镇街不受影响",
+                            "目标镇街发布大风预警，其他区域不在影响范围",
+                            "本次预警不包含台风影响，目标镇街需防范大风"):
+            with self.subTest(description=description):
+                body["alert"]["description"] = f"{description}。"
+                self.assertEqual(contact_output(output(description), official_alert=body),
+                                 ("请留意。", None))
+        # 原修复要覆盖的排除句照旧拒绝：目标在前与目标在后两个方向都算。
+        for description in ("全市发布大风预警，目标镇街以外地区不受影响。",
+                            "本次预警覆盖目标镇街之外的其他区域。",
+                            "目标镇街不属于本次预警范围。",
+                            "目标镇街不适用于本次预警。",
+                            "目标镇街被排除在本次预警范围外。",
+                            "目标镇街未覆盖到，请注意其他区域。",
+                            "目标镇街不在本次预警覆盖范围内。",
+                            "除目标镇街外，本次大风预警覆盖全市。",
+                            "目标镇街部分地区未覆盖。",
+                            "目标镇街未受影响。"):
+            with self.subTest(description=description):
+                body["alert"]["description"] = description
+                self.assertEqual(contact_output(output(description), official_alert=body), (None, None))
+        # 英文同样只认否定目标是其本身的那一种。
+        english = {"alert_area": "Vienna", "alert": {"headline": "Wind warning",
+            "description": "", "instruction": ""}}
+        for description in ("Vienna is outside the warning area.",
+                            "The warning excludes Vienna and its suburbs."):
+            with self.subTest(description=description):
+                english["alert"]["description"] = description
+                self.assertEqual(contact_output(output(description), official_alert=english), (None, None))
+        for description in ("Vienna is covered by the wind warning.",
+                            "The warning excludes storms; Vienna is still affected."):
+            with self.subTest(description=description):
+                english["alert"]["description"] = description
+                self.assertEqual(contact_output(output(description), official_alert=english),
+                                 ("请留意。", None))
+
     async def test_excluded_target_is_skipped_even_when_model_requests_send(self):
         app, _ = await self.setup_alerts()
         row = self.alert()
@@ -122,7 +205,11 @@ class OfficialAlertContactTests(ContactScheduleFixture, unittest.IsolatedAsyncio
         self.model_behavior = wrong_coverage
         self.advance(app, 60)
 
-        candidate = await app.contact_schedule.diagnostic_candidate(context, "environment", at=self.clock.now())
+        # Exposure is per producer: a variant-less environment diagnostic is the
+        # weather producer and hard-fails without a weather port, so the alert
+        # producer has to be named explicitly.
+        candidate = await app.contact_schedule.diagnostic_candidate(
+            context, "environment", at=self.clock.now(), variant="official_alert")
         self.assertEqual(candidate["route"]["id"], "official_alert_event")
         result = await app.proactive.contact(context, candidate["opportunity"], candidate["intents"],
             role_instruction=candidate["role_instruction"], selection_seed="confirmed-alert-diagnostic",
@@ -137,6 +224,12 @@ class OfficialAlertContactTests(ContactScheduleFixture, unittest.IsolatedAsyncio
 
     async def test_opt_in_and_attribution_is_program_added(self):
         app, _ = await self.setup_alerts(enabled=False)
+        # Relationship purposes share the chat slot and are on by default: leaving
+        # them enabled lets the disabled tick spend the single background slot on a
+        # relationship contact, so the enabled tick is never planned and the alert
+        # is never polled.
+        self.settings(app, {"affection.enabled": False, "care.enabled": False, "play.enabled": False,
+                            "repair.enabled": False, "invitation.enabled": False}).unwrap()
         port = AlertPort(self.clock, [[self.alert()]])
         app.contact_schedule.official_alert_events.port = port
         self.advance(app, 60)
@@ -154,6 +247,43 @@ class OfficialAlertContactTests(ContactScheduleFixture, unittest.IsolatedAsyncio
                         if item.owner == SOURCE_OWNER)
         self.assertNotIn("_receipt", json.loads(material.payload))
         self.assertEqual(json.loads(material.payload)["alert"]["headline"], "大风预警")
+
+    async def test_update_after_a_skipped_contact_reaches_the_role_again(self):
+        """首条被跳过不等于已经联系过：同 chain 的升级版本必须还能生成联系。"""
+        app, _ = await self.setup_alerts()
+        first = self.alert()
+        first["description"] = "全市部分镇街发布大风预警，请注意防范。"
+        update = self.alert("alert-2", kind="update", supersedes=("alert-1",))
+        update["severity"] = "extreme"
+        update["description"] = "目标镇街发布大风预警，请注意防范。"
+        quotes = iter(["全市部分镇街发布大风预警", "目标镇街发布大风预警"])
+
+        async def send_with_quote(envelope):
+            if isinstance(envelope.original.event, BackgroundPromptTrigger) and any(
+                    item.owner == SOURCE_OWNER for item in envelope.original.context.materials):
+                return answered(json.dumps({"decision": "send", "text": "请留意预警。",
+                    "coverage": "covered", "coverage_quote": next(quotes)}, ensure_ascii=False))
+            if isinstance(envelope.original.event, BackgroundPromptTrigger):
+                return answered('{"decision":"send","text":"刚想起上次的话题。"}')
+            return "记住了。"
+
+        self.model_behavior = send_with_quote
+        port = AlertPort(self.clock, [[first], [update]])
+        app.contact_schedule.official_alert_events.port = port
+        self.advance(app, 60)
+        await self.until(lambda: len(self.contacts(app)) == 1)
+        skipped = json.loads(self.contacts(app)[0]["record_json"])
+        self.assertEqual((skipped["decision"], skipped["skip_reason"]), ("skip", "source_coverage"))
+        self.assertEqual(app.runtime.read_one("SELECT COUNT(*) FROM background_deliveries", ())[0], 0)
+
+        self.clock.advance(timedelta(minutes=5))
+        app.contact_schedule.advance()
+        await self.until(lambda: port.calls == 2 and not app.contact_schedule.active_handles)
+        self.assertEqual(len(self.contacts(app)), 2)
+        sent = json.loads(self.contacts(app)[1]["record_json"])
+        self.assertEqual(sent["decision"], "send")
+        marker = sent["automatic_origin"]["official_alert_event"]
+        self.assertEqual((marker["alert_id"], marker["chain_id"]), ("alert-2", "alert-1"))
 
     async def test_update_chain_does_not_repeat_after_restart(self):
         app, _ = await self.setup_alerts()

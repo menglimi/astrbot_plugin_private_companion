@@ -46,6 +46,12 @@ SOURCE_LABELS = {
     NEWS_OWNER: "资讯源",
     SCREEN_OWNER: "授权屏幕回执",
 }
+# Stored alerts carry the CAP severity enum, but the material page is for
+# administrators. Reuse the wording the management UI already shows for the
+# same levels (pages/陪伴小屋/state-contact.js) instead of leaking the English
+# enum into the note.
+ALERT_SEVERITY_LABELS = {"minor": "一般", "moderate": "较重", "severe": "严重",
+                         "extreme": "特别严重", "unknown": "未知"}
 THOUGHT_ORIGINS = {
     "relationship_event": "关系话题",
     "reminiscence_event": "旧忆回响",
@@ -84,6 +90,11 @@ def _weather(value):
     if type(humidity) in (int, float):
         parts.append(f"湿度 {humidity:g}%")
     return " · ".join(part for part in parts if part)
+
+
+def _alert_severity(value):
+    raw = _text(value, 40).lower()
+    return ALERT_SEVERITY_LABELS.get(raw, raw)
 
 
 def _record_projection(record, settings, at):
@@ -150,8 +161,12 @@ def _record_projection(record, settings, at):
         note = ""
     elif owner == ALERT_OWNER:
         alert = body.get("alert") if isinstance(body.get("alert"), dict) else {}
-        title = _text(alert.get("title") or alert.get("name"), 160) or "官方气象预警"
-        severity = _text(alert.get("severity") or alert.get("level"), 40)
+        # Stored alerts are released dataclasses (headline/event_name), not the
+        # title/name keys some older payloads used; read the real fields first
+        # and keep the legacy keys as a fallback so old rows still render.
+        title = (_text(alert.get("headline"), 160) or _text(alert.get("event_name"), 160)
+                 or _text(alert.get("title"), 160) or _text(alert.get("name"), 160) or "官方气象预警")
+        severity = _alert_severity(alert.get("severity") or alert.get("level"))
         detail = _text(alert.get("description") or alert.get("text"), 360)
         note = " · ".join(part for part in (_text(body.get("alert_city"), 64), severity) if part)
     elif owner == BALANCE_OWNER:

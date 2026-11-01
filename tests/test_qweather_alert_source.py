@@ -64,6 +64,28 @@ class AlertContractTests(unittest.TestCase):
         self.assertEqual(active_official_alerts(observation, WeatherLocation("新地点", 31.23, 121.47), NOW), ())
         self.assertEqual(active_official_alerts(observation, LOCATION, NOW + timedelta(minutes=11)), ())
 
+    def test_update_that_has_not_taken_effect_does_not_retire_a_current_alert(self):
+        """未生效或已过期的 update/cancel 不能把仍在有效期内的预警提前作废。"""
+        original = alert("blue")
+        rows = (
+            alert("future-update", kind="update", supersedes=("blue",),
+                  effective=NOW + timedelta(hours=2), expires=NOW + timedelta(hours=3)),
+            alert("stale-update", kind="update", supersedes=("blue",),
+                  effective=NOW - timedelta(hours=3), expires=NOW - timedelta(minutes=1)),
+            alert("future-cancel", kind="cancel", supersedes=("blue",),
+                  effective=NOW + timedelta(hours=2), expires=NOW + timedelta(hours=3)),
+        )
+        for pending in rows:
+            with self.subTest(row=pending["id"]):
+                observation = normalize_qweather_alerts(response(original, pending), LOCATION, NOW)
+                self.assertEqual([item.identifier for item in active_official_alerts(observation, LOCATION, NOW)],
+                                 ["blue"])
+        # 已生效的更新照旧取代原预警，修复不能放松正常的 update 语义。
+        effective = alert("update", kind="update", supersedes=("blue",))
+        observation = normalize_qweather_alerts(response(original, effective), LOCATION, NOW)
+        self.assertEqual([item.identifier for item in active_official_alerts(observation, LOCATION, NOW)],
+                         ["update"])
+
     def test_unknown_or_inconsistent_response_fails_closed(self):
         for payload in (
             {"metadata": {"zeroResult": True, "attributions": ATTRIBUTIONS}, "alerts": [alert()]},
@@ -114,14 +136,15 @@ class QWeatherPortTests(unittest.IsolatedAsyncioTestCase):
             async def __aexit__(self, *_):
                 return None
 
-            def get(self, url, *, headers, allow_redirects):
-                calls.append((url, headers, allow_redirects, self.assert_options))
+            def get(self, url, *, params, headers, allow_redirects):
+                calls.append((url, params, headers, allow_redirects, self.assert_options))
                 return Reply()
 
         with patch("astrbot_host.qweather_alerts.aiohttp.ClientSession", Session):
             observation = await self.port.fetch(LOCATION)
-        url, headers, redirects, options = calls[0]
+        url, params, headers, redirects, options = calls[0]
         self.assertEqual(url, "https://example.xy.qweatherapi.com/weatheralert/v1/current/31.23/121.47")
+        self.assertEqual(params, {"lang": "zh"})
         self.assertEqual((redirects, options), (False, (6, False)))
         token = headers["Authorization"].removeprefix("Bearer ")
         header, payload, signature = token.split(".")
@@ -221,8 +244,8 @@ class QWeatherPortTests(unittest.IsolatedAsyncioTestCase):
             async def __aexit__(self, *_):
                 return None
 
-            def get(self, url, *, headers, allow_redirects):
-                calls.append((url, headers, allow_redirects, self.options))
+            def get(self, url, *, params, headers, allow_redirects):
+                calls.append((url, params, headers, allow_redirects, self.options))
                 return Reply()
 
         api_key = "0123456789abcdef0123456789abcdef"
@@ -230,8 +253,9 @@ class QWeatherPortTests(unittest.IsolatedAsyncioTestCase):
             api_key=api_key), now=lambda: NOW)
         with patch("astrbot_host.qweather_alerts.aiohttp.ClientSession", Session):
             observation = await port.fetch(LOCATION)
-        url, headers, redirects, options = calls[0]
+        url, params, headers, redirects, options = calls[0]
         self.assertEqual(url, "https://example.xy.qweatherapi.com/weatheralert/v1/current/31.23/121.47")
+        self.assertEqual(params, {"lang": "zh"})
         self.assertEqual(headers, {"X-QW-Api-Key": api_key})
         self.assertEqual((redirects, options), (False, (6, False)))
         self.assertEqual(observation.alerts, ())

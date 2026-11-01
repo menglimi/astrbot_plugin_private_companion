@@ -82,8 +82,11 @@ class SelfReviewCadenceTests(unittest.IsolatedAsyncioTestCase):
         service.tasks = SimpleNamespace(now=lambda: now)
         service.run = AsyncMock(return_value={"state": "failed"})
         service._advance_cursor = Mock()
+        service._record_failure = Mock()
         context = SimpleNamespace(key="role-one")
 
         await service._run_scheduled(context, "instruction", "cursor", now)
         service._advance_cursor.assert_not_called()
         self.assertEqual(service.next_checks[context.key], now + timedelta(minutes=5))
+        service._record_failure.assert_called_once_with(
+            context, "failed", "self_review_failed", now)

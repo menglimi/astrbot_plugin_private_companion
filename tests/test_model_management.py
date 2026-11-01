@@ -655,3 +655,16 @@ class ModelManagementTests(HostFixture, unittest.IsolatedAsyncioTestCase):
             "露骨性行为", "没办法提交这个请求", "这个请求没办法提交",
             "The prompt could not be submitted", "request could not be submitted")))
         self.assertFalse(field["explicit"])
+
+    async def test_output_limit_refusal_names_the_field_the_provider_and_its_ceiling(self):
+        # 拒绝只来自 Provider 的显式上限，报文必须能看出是哪一档上限；被拒的配置值
+        # 本身不进报文。
+        before = self.manager.status(self.core, layer="window").unwrap()
+        refused = self.manager.configure(self.core, self.request(before, changes={
+            "max_output_tokens": 101}, key="above-provider-ceiling"))
+
+        self.assertEqual(refused.failure.code, "model_output_limit")
+        self.assertIn("max_output_tokens", refused.failure.reason)
+        self.assertIn("primary", refused.failure.reason)
+        self.assertIn("100", refused.failure.reason)
+        self.assertNotIn("101", refused.failure.reason)

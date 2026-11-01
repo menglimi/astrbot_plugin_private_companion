@@ -69,7 +69,8 @@ class QWeatherLocationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[0][0], f"https://{API_HOST}/geo/v2/city/lookup")
         self.assertEqual(calls[0][1]["params"]["location"], self.location.name)
         self.assertEqual(calls[0][1]["params"]["adm"], "测试市")
-        self.assertEqual(calls[1][0], f"https://{API_HOST}/v7/weather/now/56.78,12.34")
+        self.assertEqual(calls[1][0], f"https://{API_HOST}/v7/weather/now")
+        self.assertEqual(calls[1][1]["params"], {"location": "56.78,12.34", "lang": "zh"})
 
     async def test_official_alerts_resolve_name_before_querying_qweather(self):
         alerts = {"metadata": {"zeroResult": True}, "alerts": []}
@@ -82,6 +83,7 @@ class QWeatherLocationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(observation.alerts, ())
         self.assertEqual(calls[0][0], f"https://{API_HOST}/geo/v2/city/lookup")
         self.assertEqual(calls[1][0], f"https://{API_HOST}/weatheralert/v1/current/12.34/56.78")
+        self.assertEqual(calls[1][1]["params"], {"lang": "zh"})
 
     async def test_unresolvable_name_fails_closed_before_weather_request(self):
         calls = []
