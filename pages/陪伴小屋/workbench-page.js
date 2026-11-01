@@ -246,6 +246,74 @@ window.CompanionWorkbench = (() => {
     if (value === " " || folded === "<space>") return "空格";
     return value;
   };
+  /* 世界知识来源令牌：`kb:<kbId>` 是整库引用，`doc:<kbId>:<docId>` 是逐篇引用。
+     后端对同一个库只认一种：kb: 在就忽略同库的 doc:。所以页面写值时两者必须互斥，
+     否则会出现「界面上库已取消，运行时仍在按 doc: 读这个库」的错觉。
+     逐篇选满也不折叠成 kb:——折叠会把以后新增的文档一并纳入，改变覆盖率。 */
+  const SOURCE_TOKEN_SPLIT = /[\r\n,;，；]+/;
+  const parseSourceTokens = value => String(value ?? "").split(SOURCE_TOKEN_SPLIT)
+    .map(token => token.trim()).filter(Boolean);
+  const sourceTokenKbId = token => {
+    const text = String(token ?? "");
+    return text.startsWith("kb:") ? text.slice(3)
+      : text.startsWith("doc:") ? text.slice(4).split(":")[0] : "";
+  };
+  const sourceDocToken = (kbId, docId) => {
+    const text = String(docId ?? "");
+    return text.startsWith("doc:") ? text : `doc:${String(kbId ?? "")}:${text}`;
+  };
+  /* 一个库在清单里的四种状态：整库引用、逐篇选满、逐篇选了一部分、没选。
+     `docIds` 传目录里的文档令牌（或裸 docId），两种写法都能识别。 */
+  const sourceGroupState = (rawValue, {kbId, docIds = []} = {}) => {
+    const key = String(kbId ?? "");
+    const tokens = new Set(parseSourceTokens(rawValue));
+    if (tokens.has(`kb:${key}`)) return "whole";
+    const docs = (Array.isArray(docIds) ? docIds : []).map(id => sourceDocToken(key, id));
+    if (!docs.length) return "none";
+    const chosen = docs.filter(token => tokens.has(token)).length;
+    return chosen === 0 ? "none" : chosen === docs.length ? "full" : "partial";
+  };
+  /* 半选（indeterminate）只有 JS 属性表达得了，HTML 属性做不到。
+     重绘后与就地更新后都要调用一次，否则用户会看到「部分选中」被画成未选中。 */
+  const syncSourceIndeterminate = root => {
+    const inputs = root?.querySelectorAll?.('input[data-wb-source-state="partial"]') || [];
+    for (const input of inputs) input.indeterminate = true;
+  };
+  /* 把一次复选框点击换算成新的 source_ids 文本。纯函数：不读 DOM、不改状态，
+     事件处理器与测试共用同一份裁决，避免界面显示与写回值各算一套。
+     返回 accepted=false 时 value 原样返回，调用方据此回滚这一次勾选。 */
+  function resolveSourceToggle(rawValue, {kbId, docId, checked, docIds = [], limit = 16} = {}) {
+    const key = String(kbId ?? "");
+    const original = String(rawValue ?? "");
+    const tokens = parseSourceTokens(original);
+    const docTokens = new Set((Array.isArray(docIds) ? docIds : [])
+      .map(id => sourceDocToken(key, id)).filter(Boolean));
+    /* 目录里已消失的旧文档令牌也算这个库的逐篇引用，取消时要一并清掉。 */
+    const sameKbDoc = token => docTokens.has(token)
+      || (token.startsWith("doc:") && sourceTokenKbId(token) === key);
+    const wholeToken = `kb:${key}`;
+    let next;
+    if (docId) {
+      const token = sourceDocToken(key, docId);
+      next = tokens.filter(item => item !== token && item !== wholeToken);
+      if (checked) next.push(token);
+    } else if (checked) {
+      /* 勾父级 = 整库引用：同库逐篇换成一条 kb:，避免后端忽略它们却仍留在值里。 */
+      next = tokens.filter(item => item !== wholeToken && !sameKbDoc(item));
+      next.push(wholeToken);
+    } else {
+      /* 取消父级 = 这个库彻底不引用：整库与同库逐篇都要删。
+         只删 kb: 会让「界面已取消、运行时仍按 doc: 读」的问题复现。 */
+      next = tokens.filter(item => item !== wholeToken && !sameKbDoc(item));
+    }
+    /* 重复令牌不增加含义，后端也按首次出现去重；写回时收敛。 */
+    next = [...new Set(next)];
+    const maximum = Number(limit || 16);
+    if (next.length > maximum) {
+      return {value: original, accepted: false, notice: `最多读取 ${maximum} 个来源。`};
+    }
+    return {value: next.join("\n"), accepted: true, notice: ""};
+  }
   /* 自我页的三种「轻结构」文本：生日（年份可省、可标农历）、口吻示例（一句一行）
      与词条（顿号分隔的自由文本）。它们在注册表里仍是 TEXT，值按原样保存；
      控件只负责把结构化编辑翻译回字符串，真源始终是 data-wb-field 那一个控件。 */
@@ -492,13 +560,12 @@ window.CompanionWorkbench = (() => {
       return `<select data-wb-field="${e(item.name)}"${dis}>${options}</select>`;
     }
     if (item.kind === "text" && item.input === "source-checklist") {
-      const selected = new Set(String(value ?? "").split(/[\r\n,;，；]+/)
-        .map(identifier => identifier.trim()).filter(Boolean));
+      const selected = new Set(parseSourceTokens(value));
       const sources = item.catalog?.(state.status) || [];
       const selectedLimit = Number(state.draft?.source_limit || 16);
-      const option = (id, label, detail, attributes = "") =>
-        `<label class="wb-source-option"><input type="checkbox" data-wb-field="${e(item.name)}"`
-        + ` data-wb-source-id="${e(id)}"${attributes} ${selected.has(id) ? "checked" : ""}${dis}>`
+      const option = (id, label, detail, attributes = "", {checked = selected.has(id), muted = false} = {}) =>
+        `<label class="wb-source-option${muted ? " is-disabled" : ""}"><input type="checkbox" data-wb-field="${e(item.name)}"`
+        + ` data-wb-source-id="${e(id)}"${attributes} ${checked ? "checked" : ""}${muted || locked ? " disabled" : ""}>`
         + `<span><b>${e(label)}</b>${detail ? `<small>${e(detail)}</small>` : ""}</span></label>`;
       const rows = sources.map(source => {
         if (source.type === "missing") {
@@ -507,14 +574,32 @@ window.CompanionWorkbench = (() => {
         }
         const kbId = String(source.kb_id || "");
         const docs = Array.isArray(source.documents) ? source.documents : [];
+        const docIds = docs.map(doc => doc.id);
+        /* 父级代表整库：整库令牌在、或逐篇已选满，才显示为已勾选；
+           只选了一部分时父级不勾选，改用半选表达「本库只引用一部分」。 */
+        const groupState = sourceGroupState(value, {kbId, docIds});
+        const chosenDocs = docIds.filter(id => selected.has(id)).length;
+        const plainDetail = `${Number(source.doc_count || docs.length)} 篇文档 · ${Number(source.chunk_count || 0)} 段`;
+        const detail = groupState === "full" || groupState === "partial"
+          ? `逐篇引用 · 已选 ${chosenDocs}/${docs.length} 篇` : plainDetail;
         const base = option(source.id, `${source.emoji ? source.emoji + " " : ""}${source.name || kbId}`,
-          `${Number(source.doc_count || docs.length)} 篇文档 · ${Number(source.chunk_count || 0)} 段`,
-          ` data-wb-source-base="${e(kbId)}"`);
+          detail,
+          ` data-wb-source-base="${e(kbId)}" data-wb-source-detail="${e(plainDetail)}"`
+          + (groupState === "partial" ? ` aria-checked="mixed" data-wb-source-state="partial"` : ""),
+          {checked: groupState === "whole" || groupState === "full"});
         const docRows = docs.map(doc => option(doc.id, doc.name || doc.doc_id,
           `${doc.file_type || "文档"} · ${Number(doc.chunk_count || 0)} 段`,
-          ` data-wb-source-document="${e(kbId)}"`)).join("");
-        return `<section class="wb-source-group">${base}${source.description
-          ? `<p>${e(source.description)}</p>` : ""}${docRows ? `<div class="wb-source-documents">${docRows}</div>` : ""}</section>`;
+          ` data-wb-source-document="${e(kbId)}"`,
+          /* 整库引用时逐篇令牌即便残留在值里也不生效，界面不再同时显示勾选。 */
+          {muted: groupState === "whole",
+            checked: groupState === "whole" ? false : selected.has(doc.id)})).join("");
+        /* 整库模式下单篇选择不生效，先说明再置灰，否则用户会以为勾不动是坏了。 */
+        const hint = groupState === "whole" && docs.length
+          ? `<p class="wb-source-whole-hint">整库引用中：本库 ${docs.length} 篇文档整体参与引用。需要逐篇选择时，请先取消整库。</p>`
+          : "";
+        return `<section class="wb-source-group" data-wb-source-state="${groupState}">${base}${hint}`
+          + `${source.description ? `<p>${e(source.description)}</p>` : ""}`
+          + `${docRows ? `<div class="wb-source-documents">${docRows}</div>` : ""}</section>`;
       }).join("");
       const empty = state.status?.knowledge_sources_available === false
         ? "AstrBot 知识库暂不可用" : "暂无 AstrBot 知识库";
@@ -1333,6 +1418,8 @@ window.CompanionWorkbench = (() => {
       wireFieldDescriptions(root);
       /* 台词气泡的 textarea 按内容自动长高；重绘后统一量一次。 */
       growQuotes(root);
+      /* 半选只能靠 DOM 属性设置，刚插入的元素要补一次。 */
+      syncSourceIndeterminate(root);
     }
 
     function conflictMarkup() {
@@ -1530,7 +1617,58 @@ window.CompanionWorkbench = (() => {
       root.removeEventListener("mouseout", onUnhover);
     }
 
-
+    /* 勾选后只更新这一个来源清单：整卡重绘会夺走刚点过的复选框焦点。
+       父级半选与置灰都按「库状态」重算，保证就地更新与整页重绘结果一致。 */
+    function applySourceValue(control, raw) {
+      if (!control) return;
+      const selected = new Set(parseSourceTokens(raw));
+      for (const base of [...(control.querySelectorAll("[data-wb-source-base]") || [])]) {
+        const section = base.closest(".wb-source-group");
+        if (!section) continue;
+        const kbId = base.dataset.wbSourceBase || "";
+        const docs = [...(section.querySelectorAll("[data-wb-source-document]") || [])];
+        const docIds = docs.map(input => input.dataset.wbSourceId);
+        const groupState = sourceGroupState(raw, {kbId, docIds});
+        section.dataset.wbSourceState = groupState;
+        base.checked = groupState === "whole" || groupState === "full";
+        base.indeterminate = groupState === "partial";
+        if (groupState === "partial") {
+          base.setAttribute("aria-checked", "mixed");
+          base.dataset.wbSourceState = "partial";
+        } else {
+          base.removeAttribute("aria-checked");
+          delete base.dataset.wbSourceState;
+        }
+        const baseLabel = base.closest(".wb-source-option");
+        const detail = baseLabel?.querySelector("small");
+        if (detail) {
+          const chosen = docIds.filter(id => selected.has(id)).length;
+          detail.textContent = groupState === "full" || groupState === "partial"
+            ? `逐篇引用 · 已选 ${chosen}/${docIds.length} 篇`
+            : base.dataset.wbSourceDetail || "";
+        }
+        for (const input of docs) {
+          input.checked = groupState === "whole" ? false : selected.has(input.dataset.wbSourceId);
+          input.disabled = groupState === "whole" || locked();
+          input.closest(".wb-source-option")?.classList.toggle("is-disabled", groupState === "whole");
+        }
+        let hint = section.querySelector(".wb-source-whole-hint");
+        if (groupState === "whole" && docs.length) {
+          if (!hint) {
+            hint = document.createElement("p");
+            hint.className = "wb-source-whole-hint";
+            baseLabel?.after?.(hint);
+          }
+          hint.textContent = `整库引用中：本库 ${docs.length} 篇文档整体参与引用。需要逐篇选择时，请先取消整库。`;
+        } else if (hint) {
+          hint.remove();
+        }
+      }
+      const maximum = Number(state.draft?.source_limit || 16);
+      const count = control.querySelector(".wb-source-count");
+      if (count) count.textContent = `已选 ${new Set(parseSourceTokens(raw)).size} / ${maximum} 项`;
+      syncSourceIndeterminate(control);
+    }
 
     function onInput(event) {
       const el = event.target;
@@ -1562,33 +1700,30 @@ window.CompanionWorkbench = (() => {
       const item = state.container.fields[name];
       if (item.input === "source-checklist" && el.type === "checkbox") {
         const control = el.closest(".wb-source-picker");
-        const baseId = el.dataset.wbSourceBase;
-        const docKbId = el.dataset.wbSourceDocument;
-        if (el.checked && baseId) {
-          [...(control?.querySelectorAll("[data-wb-source-document]") || [])]
-            .filter(input => input.dataset.wbSourceDocument === baseId)
-            .forEach(input => { input.checked = false; });
-        } else if (el.checked && docKbId) {
-          const base = [...(control?.querySelectorAll("[data-wb-source-base]") || [])]
-            .find(input => input.dataset.wbSourceBase === docKbId);
-          if (base) base.checked = false;
-        }
-        const options = [...(control?.querySelectorAll("[data-wb-source-id]:checked") || [])];
+        const kbId = el.dataset.wbSourceBase || el.dataset.wbSourceDocument || "";
         const maximum = Number(state.draft.source_limit || 16);
-        if (options.length > maximum) {
-          el.checked = false;
-          state.notice = `最多读取 ${maximum} 个来源。`;
+        /* 文档级复选框带 data-wb-source-document；父级带 data-wb-source-base。 */
+        const docIds = [...(control?.querySelectorAll("[data-wb-source-document]") || [])]
+          .filter(input => input.dataset.wbSourceDocument === kbId)
+          .map(input => input.dataset.wbSourceId);
+        const result = resolveSourceToggle(state.draft[name], {
+          kbId,
+          docId: el.dataset.wbSourceDocument ? el.dataset.wbSourceId : undefined,
+          checked: el.checked, docIds, limit: maximum,
+        });
+        if (!result.accepted) {
+          /* 回滚这一次勾选：草稿没动，重绘会按原值恢复勾选态。 */
+          el.checked = !el.checked;
+          state.notice = result.notice;
           state.bad = true; state.ok = false;
           paint();
           return;
         }
-        const raw = options.map(input => input.dataset.wbSourceId).join("\n");
-        state.draft[name] = raw;
+        state.draft[name] = result.value;
         state.savedState = ""; state.ok = false;
         const row = el.closest(".wb-field");
-        if (row) row.classList.toggle("is-dirty", state.base && raw !== state.base[name]);
-        const count = control?.querySelector(".wb-source-count");
-        if (count) count.textContent = `已选 ${options.length} / ${maximum} 项`;
+        if (row) row.classList.toggle("is-dirty", state.base && result.value !== state.base[name]);
+        applySourceValue(control, result.value);
         return;
       }
       if (item.input === "identity-checklist" && el.type === "checkbox") {
@@ -2588,6 +2723,8 @@ window.CompanionWorkbench = (() => {
   }
 
   return {create, errors, LAYER_LABELS, contract, valid, toDisplay, fromDisplay, choiceText,
+    /* 来源清单的点击裁决是纯函数，事件处理器与测试共用它，避免界面与写回值各算一套。 */
+    resolveSourceToggle,
     /* 词条解析也对外：配置覆盖自检要拿它验证注册默认值读得懂，避免审计脚本
        再写一份解析规则、和页面一起写错。 */
     parseStringList,
