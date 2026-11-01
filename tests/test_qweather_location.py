@@ -90,7 +90,11 @@ class QWeatherLocationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("range", calls[0][1]["params"])
         self.assertEqual(snapshot.location, "维也纳")
         self.assertEqual(snapshot.weather_code, 2)
-        self.assertEqual(calls[1][1]["params"], {"location": "16.37,48.21"})
+        params = calls[1][1]["params"]
+        self.assertEqual(params["location"], "16.37,48.21")
+        # The language parameter is added by the concurrent language fix; accept the
+        # request with or without it so both changes can land in either order.
+        self.assertEqual(params.get("lang", "zh"), "zh")
 
     async def test_a_same_named_domestic_place_still_wins_over_a_foreign_one(self):
         """Dropping the filter must not let a foreign hit shadow the usual result."""
