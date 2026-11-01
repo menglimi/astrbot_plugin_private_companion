@@ -529,24 +529,6 @@ class ExpressionStyleService:
                 (self._progress_key(context), encode({"day": day, "batches": count + 1,
                                                      "input_sequence": latest_sequence, "sequence_basis": "source_row"})))
 
-    def status(self, context):
-        at = self.tasks.now()
-        policy = self._policy(context, at)
-        progress = self._progress(context)
-        group = context.scope.kind is ScopeKind.GROUP
-        count = self._global_group_batches(self._day(at)) if group else 0
-        worker = self.workers.get(self._work_key(context))
-        new_messages = self.samples.new_inputs(context, at, after_sequence=progress["input_sequence"],
-            window_hours=policy.window_hours, member_ids=policy.selected_members)[0] if group else None
-        return {"last_result": self.results.get(self._work_key(context)), "running": worker is not None and not worker.done(),
-                "learning_enabled": policy.group_learning_enabled if group else policy.private_learning_enabled,
-                "application_enabled": policy.applies_to(context) and (group or
-                    application_subject_allowed_for_context(self.runtime, context)),
-                "learning_mode": policy.learning_mode,
-                "minimum_samples": policy.group_min_samples if group else policy.min_samples,
-                "group_batches_today": count, "group_daily_batch_limit": policy.group_daily_batch_limit,
-                "new_messages": new_messages, "required_new_messages": policy.group_new_messages if group else None}
-
     def due(self, context, at, *, scan_minutes=None):
         _, closed_at = self._cursor(context)
         if closed_at is None:
@@ -631,6 +613,9 @@ class ExpressionStyleService:
         ``source_not_selected``/``insufficient_samples``/``capacity_reached``
         looks identical to one that never ran. Everything here is bounded and
         derives from the same policy the scheduler uses.
+
+        合并说明：此前同名 ``status`` 定义了两份，只有本页面视图生效；旧运行时
+        字段（running、last_result、预算与开关）已合并回这里。
         """
         at = self.tasks.now()
         work_key = self._work_key(context)
@@ -642,11 +627,16 @@ class ExpressionStyleService:
         except TaskError:
             closed_at = None
         worker = self.workers.get(work_key)
+        running = worker is not None and not worker.done()
         scan_minutes = policy.group_scan_interval_minutes if group else policy.scan_interval_minutes
         try:
             due = self.due(context, at, scan_minutes=scan_minutes)
         except TaskError:
             due = False
+        progress = self._progress(context)
+        count = self._global_group_batches(self._day(at)) if group else 0
+        new_messages = self.samples.new_inputs(context, at, after_sequence=progress["input_sequence"],
+            window_hours=policy.window_hours, member_ids=policy.selected_members)[0] if group else None
         return {
             "state": state.get("state", "not_run"),
             "code": state.get("code"),
@@ -656,9 +646,19 @@ class ExpressionStyleService:
             "limit": policy.active_signal_limit,
             "last_run_at": stamp(closed_at) if closed_at is not None else None,
             "due": due,
-            "worker": bool(worker is not None and not worker.done()),
+            "worker": running,
             "learning_enabled": policy.group_learning_enabled if group else policy.private_learning_enabled,
             "sample_review_enabled": policy.sample_review_enabled,
+            "last_result": self.results.get(work_key),
+            "running": running,
+            "learning_mode": policy.learning_mode,
+            "minimum_samples": policy.group_min_samples if group else policy.min_samples,
+            "group_batches_today": count,
+            "group_daily_batch_limit": policy.group_daily_batch_limit,
+            "new_messages": new_messages,
+            "required_new_messages": policy.group_new_messages if group else None,
+            "application_enabled": policy.applies_to(context) and (group or
+                application_subject_allowed_for_context(self.runtime, context)),
         }
 
     def advance(self):
