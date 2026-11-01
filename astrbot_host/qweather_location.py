@@ -10,6 +10,19 @@ from .qweather_credentials import MAX_RESPONSE_BYTES
 
 ENDPOINT = "/geo/v2/city/lookup"
 
+# The lookup is global (see below), so a name that also exists abroad could otherwise
+# win on relevance alone. The request pins the API's language to Chinese (``lang``),
+# which makes ``country`` the stable domestic marker used here. The preference only orders
+# candidates: a role abroad whose name exists nowhere in China (维也纳) still resolves,
+# and a genuinely ambiguous one can be pinned with the location's alert city.
+_HOME_COUNTRY = "中国"
+
+
+def _match_order(result, name):
+    """Exact spelling first, then domestic, then QWeather's own relevance order."""
+    return (0 if result.get("name") == name else 1,
+            0 if result.get("country") == _HOME_COUNTRY else 1)
+
 
 async def resolve_qweather_location(session, location, credentials, at):
     if type(location) is not WeatherLocation:
@@ -17,7 +30,13 @@ async def resolve_qweather_location(session, location, credentials, at):
     if location.latitude is not None and location.longitude is not None:
         return location
 
-    params = {"location": location.name, "range": "cn", "number": 10, "lang": "zh"}
+    # ``range`` limits the search to one country. It used to be pinned to ``cn``, which
+    # made a role outside mainland China impossible to geocode: the whole weather chain
+    # then reported itself unavailable even though the credentials and the name were
+    # fine. The lookup is left worldwide; ``adm`` still narrows it when the role has a
+    # configured city, and the ordering below keeps the familiar domestic place first
+    # when a name repeats.
+    params = {"location": location.name, "number": 10, "lang": "zh"}
     if location.alert_city:
         params["adm"] = location.alert_city
     url = f"https://{credentials.host}{ENDPOINT}"
@@ -34,9 +53,8 @@ async def resolve_qweather_location(session, location, credentials, at):
     results = payload.get("location") if type(payload) is dict and payload.get("code") == "200" else None
     if type(results) is not list or not results:
         raise ValueError("QWeather location could not be resolved")
-    for result in results:
-        if type(result) is not dict:
-            continue
+    for result in sorted((item for item in results if type(item) is dict),
+                         key=lambda item: _match_order(item, location.name)):
         try:
             latitude, longitude = float(result["lat"]), float(result["lon"])
         except (KeyError, TypeError, ValueError, OverflowError):

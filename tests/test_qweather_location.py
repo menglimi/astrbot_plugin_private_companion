@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from astrbot_host.qweather_alerts import QWeatherAlertPort
 from astrbot_host.qweather_credentials import QWeatherCredentials
+from astrbot_host.qweather_location import resolve_qweather_location
 from astrbot_host.qweather_weather import QWeatherWeatherPort
 from companion_v2.agenda.planning_config import WeatherLocation
 
@@ -15,6 +16,9 @@ NOW = datetime(2026, 9, 30, 7, 0, tzinfo=timezone.utc)
 API_HOST = "example.xy.qweatherapi.com"
 API_KEY = "0123456789abcdef0123456789abcdef"
 GEOCODED = {"code": "200", "location": [{"name": "测试区域", "lat": "12.34", "lon": "56.78"}]}
+VIENNA = {"code": "200", "location": [{
+    "name": "维也纳", "id": "101010100", "lat": "48.20849", "lon": "16.37208",
+    "adm2": "维也纳", "adm1": "维也纳", "country": "奥地利"}]}
 
 
 class Reply:
@@ -67,9 +71,40 @@ class QWeatherLocationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot.provider, "qweather")
         self.assertEqual(snapshot.weather_code, 61)
         self.assertEqual(calls[0][0], f"https://{API_HOST}/geo/v2/city/lookup")
-        self.assertEqual(calls[0][1]["params"]["location"], self.location.name)
-        self.assertEqual(calls[0][1]["params"]["adm"], "测试市")
+        # No "range": the lookup must not be confined to one country.
+        self.assertEqual(calls[0][1]["params"], {"location": self.location.name,
+            "number": 10, "lang": "zh", "adm": "测试市"})
         self.assertEqual(calls[1][0], f"https://{API_HOST}/v7/weather/now/56.78,12.34")
+
+    async def test_a_role_abroad_resolves_without_a_country_filter(self):
+        """``range=cn`` made the whole chain unavailable for any role outside China."""
+        calls = []
+        session = Session([Reply(VIENNA), Reply({"code": "200", "now": {
+            "temp": "8", "text": "多云", "icon": "101", "humidity": "72",
+            "windSpeed": "15", "obsTime": "2026-09-30T09:00+02:00"}})], calls)
+        location = WeatherLocation("维也纳", None, None)
+        port = QWeatherWeatherPort(self.credentials, now=lambda: NOW)
+        with patch("astrbot_host.qweather_weather.aiohttp.ClientSession", return_value=session):
+            snapshot = await port.fetch(location)
+
+        self.assertNotIn("range", calls[0][1]["params"])
+        self.assertEqual(snapshot.location, "维也纳")
+        self.assertEqual(snapshot.weather_code, 2)
+        self.assertEqual(calls[1][1]["params"], {"location": "16.37,48.21"})
+
+    async def test_a_same_named_domestic_place_still_wins_over_a_foreign_one(self):
+        """Dropping the filter must not let a foreign hit shadow the usual result."""
+        domestic = {"name": "同名", "lat": "31.23", "lon": "121.47",
+                    "adm2": "同名市", "adm1": "某省", "country": "中国"}
+        foreign = {"name": "同名", "lat": "48.20", "lon": "16.37",
+                   "adm2": "同名", "adm1": "同名", "country": "奥地利"}
+        calls = []
+        session = Session([Reply({"code": "200", "location": [foreign, domestic]})], calls)
+
+        resolved = await resolve_qweather_location(session, WeatherLocation("同名", None, None),
+                                                  self.credentials, NOW)
+
+        self.assertEqual((resolved.latitude, resolved.longitude), (31.23, 121.47))
 
     async def test_official_alerts_resolve_name_before_querying_qweather(self):
         alerts = {"metadata": {"zeroResult": True}, "alerts": []}
