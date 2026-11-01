@@ -37,7 +37,7 @@ jobs:
       - name: Check generated page and migration contracts
         run: |
           python -X utf8 tools/sync_framework_page.py --check
-          python -X utf8 -m unittest -q tests.test_release_secret_detection tests.test_native_release_version_guard tests.test_configuration_migration tests.test_reply_pipeline_regressions tests.test_image_configuration_migration tests.test_image_output_migration_guard tests.test_r1_image_protocol tests.test_r1_image_round1fix
+          python -X utf8 -m unittest -q tests.test_release_secret_detection tests.test_native_release_version_guard tests.test_configuration_migration tests.test_reply_pipeline_regressions tests.test_image_configuration_migration tests.test_image_output_migration_guard tests.test_r1_image_protocol tests.test_r1_image_round1fix tests.test_proactive_diagnostic_routes
           node --test tests/test_page_route.cjs tests/test_models_page.cjs tests/test_qzone_config_mount.cjs
       - name: Check native provider adapter contract
         run: python -X utf8 -m unittest -q tests.test_astrbot_gemini_provider
