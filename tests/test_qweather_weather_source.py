@@ -29,9 +29,29 @@ def body(**overrides):
 
 class WeatherCodeMappingTests(unittest.TestCase):
     def test_known_icons_map_to_their_wmo_code(self):
-        for icon, expected in ((100, 0), (104, 3), (305, 61), (400, 71), (501, 48), (999, 0)):
+        for icon, expected in ((100, 0), (104, 3), (305, 61), (400, 71), (900, 0), (901, 3)):
             with self.subTest(icon=icon):
                 self.assertEqual(weather_code_for(icon), expected)
+
+    def test_fog_haze_and_dust_share_the_fog_code_and_never_rime(self):
+        """QWeather 501 is fog, not rime; 502-508 are haze, sand and dust.
+
+        WMO has no dust code, so the family shares 45 and the rime code 48 is never
+        produced by any QWeather icon.
+        """
+        for icon in (500, 501, 502, 503, 504, 507, 508, 509, 510, 511, 512, 513, 514, 515):
+            with self.subTest(icon=icon):
+                self.assertEqual(weather_code_for(icon), 45)
+
+    def test_temperature_extremes_are_not_thunderstorms(self):
+        """900 (热) / 901 (冷) describe temperature, not a sky, and certainly not thunder."""
+        self.assertEqual(weather_code_for(900), 0)
+        self.assertEqual(weather_code_for(901), 3)
+
+    def test_unknown_icon_is_not_clear_sky(self):
+        self.assertIsNone(weather_code_for(999))
+        self.assertIsNone(weather_code_for("999"))
+        self.assertIsNone(weather_code_for(950))  # no 9xx family guess either
 
     def test_unknown_icon_falls_back_to_its_family_not_to_failure(self):
         """A code this table has never seen must still yield a usable sky."""
@@ -93,6 +113,22 @@ class NormalizeTests(unittest.TestCase):
                                           LOCATION)
         self.assertEqual(snapshot.condition, "小雨")
         self.assertEqual(snapshot.weather_code, 61)
+
+    def test_unknown_icon_is_never_published_as_clear_sky(self):
+        # The provider's text is still a real label, but no code is claimed, so the
+        # weather-change detector cannot see "晴" where nothing is actually known.
+        snapshot = normalize_qweather_now({"code": "200",
+            "now": {**body()["now"], "icon": "999", "text": "未知"}}, LOCATION)
+        self.assertIsNone(snapshot.weather_code)
+        self.assertEqual(snapshot.condition, "未知")
+
+    def test_icons_that_are_not_sky_states_fail_closed_without_a_label(self):
+        # Haze/dust have no label-bearing WMO code; 900/901/999 are not sky states.
+        for icon in ("999", "900", "901", "502", "503", "504", "507", "508"):
+            with self.subTest(icon=icon):
+                with self.assertRaises(ValueError):
+                    normalize_qweather_now({"code": "200",
+                        "now": {**body()["now"], "icon": icon, "text": " "}}, LOCATION)
 
     def test_observation_with_neither_label_nor_usable_icon_is_rejected(self):
         with self.assertRaises(ValueError):
