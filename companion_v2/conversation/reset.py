@@ -92,7 +92,12 @@ def background_current(runtime, delivery_id, scope):
 
 
 def source_current(runtime, reference):
-    """Only temporary/raw recall uses this check; durable evidence still reads its source."""
+    """Only temporary/raw recall uses this check; durable evidence still reads its source.
+
+    Callers rechecking evidence that was already stored (memory provenance, a
+    learned rule's samples) must not gate it on this boundary: see
+    :func:`durable_reset_at`.
+    """
     saved = boundary(runtime, reference.scope)
     if saved is None:
         return True
@@ -103,6 +108,26 @@ def source_current(runtime, reference):
                                (reference.version.lineage_id,))
     return (batch_current(runtime, row["batch_id"], reference.scope) if row is not None
             else stamp(reference.issued_at) > saved["reset_at"])
+
+
+def durable_reset_at(runtime, scope):
+    """The reset moment stored evidence of this window predates, if there is one.
+
+    ``/reset`` ends the temporary conversation context: raw recall, in-flight
+    batches, session atoms and pending observations. Evidence that was already
+    stored for a durable fact or a learned rule is not revoked by it: that
+    evidence keeps reading its governed source (state, expiry, content hash,
+    withdrawal) and the audience, role and scope it was captured under, so the
+    boundary only dates it. A caller can therefore label such evidence as
+    historical instead of hiding it. Returns ``None`` when the window was not
+    reset, and also when the boundary itself cannot be read: dating evidence is
+    informational, so a damaged boundary must not revoke it.
+    """
+    try:
+        saved = boundary(runtime, scope)
+    except TaskError:
+        return None
+    return None if saved is None else saved["reset_at"]
 
 
 def _clear_group_observations(connection, window):
