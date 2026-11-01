@@ -233,7 +233,7 @@ class FetchBudgetTests(unittest.IsolatedAsyncioTestCase):
                 self.index = index
 
             async def __aenter__(self):
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.05 if self.index == 0 else 0.4)
                 return self
 
             async def __aexit__(self, *_):
@@ -260,7 +260,7 @@ class FetchBudgetTests(unittest.IsolatedAsyncioTestCase):
             api_host="example.xy.qweatherapi.com", api_key=API_KEY), now=lambda: NOW)
         location = WeatherLocation("角色所在地", None, None)
         with patch("astrbot_host.qweather_weather.aiohttp.ClientSession", Session), patch(
-                "astrbot_host.qweather_weather.TOTAL_TIMEOUT_SECONDS", 0.15, create=True):
+                "astrbot_host.qweather_weather.TOTAL_TIMEOUT_SECONDS", 0.2, create=True):
             with self.assertRaisesRegex(ValueError, "timed out"):
                 await port.fetch(location)
 
