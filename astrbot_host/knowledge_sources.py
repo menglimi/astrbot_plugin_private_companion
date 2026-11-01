@@ -142,6 +142,8 @@ class KnowledgeSourceReader:
         database = self.data_root / KNOWLEDGE_BASE_DIR / kb_id / "doc.db"
         if not kb_id or not database.is_file():
             return None
+        if doc_id is None and limit is not None:
+            return self._knowledge_rows_by_document(kb_id, database, limit)
         rows = []
         connection = _connect(database)
         try:
@@ -160,6 +162,80 @@ class KnowledgeSourceReader:
         finally:
             connection.close()
         return rows
+
+    def _knowledge_rows_by_document(self, kb_id: str, database: Path, limit: int):
+        """整库引用：在预算内按文档公平分配，而不是只读库头的前 ``limit`` 段。
+
+        先只扫一遍 ``(id, metadata)`` 记下每篇文档的段数并排出文档顺序，再用
+        该段数模拟轮次配额（每轮翻倍）算出每篇实际该取几段，最后第二遍扫描
+        只保留配额内的行。整库 chunk 不会全部读进内存，也不会每轮重扫一次库。
+
+        返回按“第几段”分层交错排列：先取每篇第 1 段，再取每篇第 2 段，依此类
+        推，层内按文档顺序、文档内按 chunk id 升序。这样调用方按字符预算截断
+        时，库里的每篇文档都能先拿到代表段，而不是被前几篇大文档占满。
+        """
+        counts = {}
+        first_seen = []
+        connection = _connect(database)
+        try:
+            for row in connection.execute("select id, metadata from documents order by id asc"):
+                key = _document_key(row["metadata"])
+                if key is None:
+                    continue
+                if key not in counts:
+                    counts[key] = 0
+                    first_seen.append(key)
+                counts[key] += 1
+        finally:
+            connection.close()
+        order, known = [], set()
+        for item in self._document_order(kb_id):
+            if item in counts and item not in known:
+                known.add(item)
+                order.append(item)
+        for item in first_seen:
+            if item not in known:
+                known.add(item)
+                order.append(item)
+        if not order:
+            return []
+        quotas = _fair_quotas(counts, order, limit)
+        rows = {key: [] for key in order}
+        connection = _connect(database)
+        try:
+            for row in connection.execute("select text, metadata from documents order by id asc"):
+                key = _document_key(row["metadata"])
+                if key is None or quotas.get(key, 0) <= 0:
+                    continue
+                quotas[key] -= 1
+                rows[key].append({"text": row["text"], "metadata": row["metadata"]})
+        finally:
+            connection.close()
+        depth = max(len(item) for item in rows.values())
+        return [rows[key][level] for level in range(depth) for key in order if level < len(rows[key])]
+
+    def _document_order(self, kb_id: str):
+        """kb.db 里该库的文档顺序；读不到时返回空，由调用方回退为首次出现顺序。"""
+        database = self.data_root / KNOWLEDGE_BASE_DIR / "kb.db"
+        if not database.is_file():
+            return ()
+        order, seen = [], set()
+        try:
+            connection = _connect(database)
+        except (OSError, sqlite3.Error):
+            return ()
+        try:
+            for row in connection.execute(
+                    "select doc_id from kb_documents where kb_id = ? order by rowid", (kb_id,)):
+                doc_id = str(row["doc_id"] or "").strip()
+                if doc_id and doc_id not in seen:
+                    seen.add(doc_id)
+                    order.append(doc_id)
+        except (OSError, sqlite3.Error):
+            return ()
+        finally:
+            connection.close()
+        return tuple(order)
 
 
 class AstrBotKnowledgeSources:
@@ -409,6 +485,45 @@ def import_configured_sources_at_startup(runtime, host_context=None, *, data_roo
         return ()
     _log_import_results(results)
     return results
+
+
+def _document_key(metadata):
+    """chunk 所属文档 id；损坏到无法归属的行返回 None（下游解析同样会丢弃它）。"""
+    if metadata is None or metadata == "":
+        return ""
+    try:
+        decoded = json.loads(metadata) if isinstance(metadata, str) else metadata
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    value = decoded.get("kb_doc_id")
+    if value is None:
+        return ""
+    return value if isinstance(value, str) else None
+
+
+def _fair_quotas(counts, order, limit):
+    """整库引用的配额：每轮配额翻倍，先保证每篇至少一段，再把预算分给还有余量的文档。"""
+    remaining = max(0, int(limit))
+    quota = max(1, remaining // len(order))
+    taken = {key: 0 for key in order}
+    while remaining > 0:
+        progressed = False
+        for key in order:
+            if remaining <= 0:
+                break
+            spare = counts[key] - taken[key]
+            if spare <= 0:
+                continue
+            given = min(quota, spare, remaining)
+            taken[key] += given
+            remaining -= given
+            progressed = True
+        if not progressed:
+            break
+        quota *= 2
+    return taken
 
 
 def _connect(path: Path):

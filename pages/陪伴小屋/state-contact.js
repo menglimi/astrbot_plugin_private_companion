@@ -152,6 +152,7 @@ window.CompanionStateContact = (() => {
     contact_conversation_changed:["私聊已变化，待发送计划已取消","等待当前私聊完成后重新评估。"],
     scheduler_heartbeat_missing:["尚未收到主动调度心跳","确认插件已启动且主动联系模型已登记。"],
     scheduler_heartbeat_stale:["主动调度心跳已中断","检查插件调度器是否异常或已停止。"],
+    official_alert_none_current:["本轮没有生效中的官方预警","预警轮询正常；有新的官方预警时会再联系，无需处理。"],
   };
   const scheduleStages={permission:"权限",settings:"设置",conversation:"会话",sources:"来源",rhythm:"节律",
     validation:"校验",candidate:"候选",delivery_admission:"发送准入",busy_gate:"忙碌门槛",task_queue:"任务队列",scheduler:"调度器"};

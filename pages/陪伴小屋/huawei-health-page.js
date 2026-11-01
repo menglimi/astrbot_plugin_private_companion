@@ -18,6 +18,9 @@ window.CompanionHuaweiHealthPage = (() => {
   const active = ticket => root?.isConnected && ticket === generation;
   const errorText = failure => {
     const code = failure?.data?.code || failure?.code || failure?.message || "";
+    if (code === "huawei_health_cookie_invalid") {
+      return `Cookie 导入失败：${String(failure?.reason || "请核对格式与关键项后重试。").slice(0, 300)}`;
+    }
     return ({
       dashboard_identity_required: "请从已登录的 AstrBot 管理页面打开陪伴小屋。",
       staging_not_initialized: "角色数据尚未就绪，请先完成账号与会话映射并启动。",
@@ -161,6 +164,7 @@ window.CompanionHuaweiHealthPage = (() => {
         </section>
         <section><h5>方式二 · Cookie 导入</h5>
           <p>从已登录的 <code>health.cloud.huawei.com</code> 导出 Cookie。可填下方六项，或直接粘贴 Cookie-Editor 导出的整段 JSON。</p>
+          <p>关键项 <code>CASTGC</code>、<code>sid</code>、<code>hwid_cas_sid</code> 在登录域 <code>.id1.cloud.huawei.com</code> 下，不在 health 域；Cookie-Editor 里要切到该域再导出，只导 health 域会缺项并被拒绝。</p>
           <div class="hw-health-cookie-grid">${cookieNames.map(name => `<label>${esc(name)}<input data-hw-cookie="${esc(name)}" autocomplete="off"></label>`).join("")}</div>
           <textarea data-hw-cookie-json rows="3" placeholder='Cookie-Editor JSON，可留空'></textarea>
           <div class="hw-health-actions"><button class="button small primary" type="button" data-hw-action="cookie-import" ${busy ? "disabled" : ""}>导入 Cookie</button><button class="button small" type="button" data-hw-action="cookie-clear" ${busy ? "disabled" : ""}>清除 Cookie</button></div>

@@ -35,7 +35,7 @@ from .reminiscence_events import ReminiscenceContactEvents
 from .rhythm import SLOT_WINDOW, ContactRhythm
 from .weather_events import WeatherContactEvents
 from .weather_change_events import WeatherChangeContactEvents
-from .official_alert_events import OfficialAlertContactEvents
+from .official_alert_events import NO_CURRENT_ALERT, OfficialAlertContactEvents
 from .balance_events import BalanceContactEvents
 from .news_events import NewsContactEvents
 from .screen_events import ScreenContactEvents
@@ -799,7 +799,9 @@ class ContactSchedule:
         preferences = self._diagnostic_preferences(preferences)
 
         def finish(candidate, route):
-            if candidate is None:
+            # 官方预警在「轮询成功但没有生效中的预警」时返回明确的无候选标记，
+            # 与获取失败区分；诊断只关心有没有可用的来源证据。
+            if candidate is None or candidate is NO_CURRENT_ALERT:
                 return None
             opportunity, intents, marker = candidate
             # The environment panel can explicitly probe the external-news
@@ -1361,6 +1363,14 @@ class ContactSchedule:
                 origin["weather_change_event"] = marker
             if "official_alert_pending" in origin:
                 prepared = await self.official_alert_events.prepare(context, origin["official_alert_pending"])
+                if prepared is NO_CURRENT_ALERT:
+                    # 本轮轮询成功但没有生效中的预警：这是官方预警的常态，不是
+                    # 来源故障。记成 skipped 让管理端知道轮询正常，避免周期性
+                    # 误报「检查失败／来源不可用」并误导凭据排查。
+                    self._note_window(context, {"batch_id": origin.get("batch_id")}, self.tasks.now(),
+                                      "source_preparation", "skipped", "official_alert_none_current",
+                                      purpose=purpose)
+                    return None
                 if prepared is None:
                     return self._record_worker_result(context, origin,
                         Outcome.failed("contact_official_alert_unavailable", "official alert was not verified"),

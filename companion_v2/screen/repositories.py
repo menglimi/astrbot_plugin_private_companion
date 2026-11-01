@@ -9,11 +9,12 @@ import json
 import sqlite3
 
 from companion_v2.capabilities.repositories import CapabilityRepository
+from companion_v2.execution.models import digest
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import (
     AssetRef, AudienceRef, ReferenceValidationError, ScopeRef, SourceRef, SubjectRef, VersionRef,
 )
-from companion_v2.identity_policy.models import ResolvedIdentity
+from companion_v2.identity_policy.models import AuthorizationTier, ResolvedIdentity
 from companion_v2.identity_policy.ports import IdentityAuthorizationPort
 from companion_v2.sources.models import AssetRecord, SourceRecord
 from companion_v2.sources.repositories import AssetRepository, SourceRepository
@@ -500,6 +501,19 @@ class ScreenRepository:
             access = self._authorizer.authorize(
                 resolved, scope=reference.source.scope, capability=capability, observed_at=observed_at,
             )
+            if (not access.is_success and access.failure.code in
+                    ("authorization_denied", "scope_not_granted")):
+                # Consent is the user's explicit authorization in this exact
+                # scope; the identity grant is only its mirror. An upgrade can
+                # leave an active consent without that mirror, which used to
+                # surface as "the Dashboard identity has no permission" on the
+                # proactive Screen test. Restore the mirror instead of blaming
+                # the operator, and never resurrect an explicitly revoked grant
+                # (its id already exists, so issuance fails closed).
+                repaired = self._mirror_consented_grant(
+                    resolved, reference.source.scope, capability, observed_at)
+                if repaired is not None and repaired.is_success:
+                    access = repaired
             if not access.is_success:
                 return Outcome(failure=access.failure)
             identity = access.unwrap()
@@ -511,6 +525,25 @@ class ScreenRepository:
         installation = self._capabilities.installation(extension_id=SCREEN_EXTENSION).unwrap()
         stamps.append((installation.revision, role.subject_id, role_selection.unwrap().revision))
         return Outcome.success(_hash(json.dumps(stamps, ensure_ascii=False)))
+
+    def _mirror_consented_grant(self, resolved, scope, capability, observed_at):
+        """Re-issue the identity grant that an active consent already implies."""
+        issuer = getattr(self._authorizer, "issue_grant", None)
+        revision = getattr(self._authorizer, "revision", None)
+        if not callable(issuer) or type(revision) is not int:
+            return None
+        try:
+            grant_id = "screen-access:mirror:" + digest([
+                resolved.subject.kind.value, resolved.subject.subject_id,
+                scope.installation_id, scope.platform, scope.kind.value, scope.native_scope_id,
+                scope.bot_id, scope.account_id, scope.conversation_id, scope.session_id, capability])
+            issuer(grant_id=grant_id, subject=resolved.subject, scope=scope,
+                   capability=capability, tier=AuthorizationTier.STANDARD,
+                   valid_from=observed_at, expected_revision=revision)
+        except Exception:  # existing (possibly revoked) grant, or a concurrent policy write
+            return None
+        return self._authorizer.authorize(resolved, scope=scope, capability=capability,
+                                          observed_at=observed_at)
 
     def _capture_row(self, capture_id: str) -> sqlite3.Row | None:
         return self._runtime.read_one("SELECT * FROM screen_captures WHERE capture_id = ?", (capture_id,))
