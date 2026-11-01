@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import fields, is_dataclass
 from datetime import datetime
 from enum import Enum
+import inspect
 import json
+import logging
 from typing import Any, TYPE_CHECKING
 
 from astrbot.api.web import request
@@ -77,6 +79,34 @@ def outcome_response(result: Outcome, *, message: str = "") -> dict[str, Any]:
     return {"status": "ok", "message": message, "data": _json_value(result.unwrap())}
 
 
+logger = logging.getLogger(__name__)
+
+
+def http_handler(handler):
+    """Wrap a route handler so the dashboard always receives its JSON envelope.
+
+    Unhandled exceptions used to escape into the ASGI server's 500 path. They
+    now become the same ``{status, message, data}`` error every other route
+    returns, which keeps one malformed request from producing a framework-level
+    error response. Serialization itself stays with the host: the plugin never
+    writes ``Content-Length`` for these JSON bodies.
+    """
+
+    async def respond(*args, **kwargs):
+        try:
+            value = handler(*args, **kwargs)
+            if inspect.isawaitable(value):
+                value = await value
+        except Exception as error:  # noqa: BLE001 - the dashboard must get JSON, not a broken pipe
+            logger.warning("[CompanionV2] 面板接口未处理异常 handler=%s error_type=%s",
+                           getattr(handler, "__name__", "unknown"), type(error).__name__)
+            return {"status": "error", "message": "plugin_web_internal_error",
+                    "reason": "the panel request failed", "data": {"code": "plugin_web_internal_error"}}
+        return value
+
+    return respond
+
+
 class StagingWebAPI:
     """Own only this controller's route handlers, including partial registration cleanup."""
 
@@ -135,8 +165,9 @@ class StagingWebAPI:
             all_routes += HostOptionsWebAPI(self.controller).routes()
             all_routes += StorageWebAPI(self.controller).routes()
             for route, handler, methods, description in all_routes:
-                register(route, handler, methods, description)
-                self._registered_routes.append((route, handler))
+                wrapped = http_handler(handler)
+                register(route, wrapped, methods, description)
+                self._registered_routes.append((route, wrapped))
         except Exception:
             if snapshot is not None:
                 registered[:] = snapshot
