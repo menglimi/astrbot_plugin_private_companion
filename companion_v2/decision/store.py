@@ -21,7 +21,11 @@ DEFAULT_DECISION_FIELDS = {name: True for name in CONFIGURABLE_DECISION_FIELDS}
 
 # The model each backend pins when the operator leaves `remote_model` empty.
 # Local and SystemOne use Laya's own checkpoints; a Jev gateway serves `jev-latest`.
-MODE_MODELS = {"local": "multilingual", "remote": "multilingual", "jev": "jev-latest"}
+MODE_MODELS = {"local": "multilingual", "remote": "multilingual", "jev": "jev-latest",
+               # Cloudflare's own decision model draws on the daily Workers AI
+               # neuron allowance; third-party models such as typesafe/jev are
+               # billed separately and need an override here.
+               "workers_ai": "@cf/cloudflare/clef"}
 
 
 DEFAULTS = {
@@ -191,7 +195,8 @@ class LayaSettingsStore:
         if type(values["enabled"]) is not bool:
             raise LayaSettingsError("laya_config_invalid", "enabled 必须是布尔值")
         if values["mode"] not in MODE_MODELS:
-            raise LayaSettingsError("laya_config_invalid", "mode 必须是 local、remote 或 jev")
+            raise LayaSettingsError("laya_config_invalid",
+                                   "mode 必须是 local、remote、jev 或 workers_ai")
         for key in ("endpoint", "api_key", "local_model_path", "remote_model"):
             if type(values[key]) is not str or len(values[key]) > 4096:
                 raise LayaSettingsError("laya_config_invalid", f"{key} 配置无效")
