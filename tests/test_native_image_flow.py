@@ -3,7 +3,9 @@
 import base64
 from dataclasses import replace
 import json
+from types import SimpleNamespace as NS
 import unittest
+from unittest.mock import AsyncMock
 
 from companion_v2.capabilities.models import CapabilityAuthorizationState
 from companion_v2.capabilities.repositories import CapabilityRepository
@@ -17,6 +19,7 @@ from tests.test_conversation_images import image_bytes
 from tests.test_host_application import HostFixture
 from tests.test_management_access import NOW, SCOPE
 from tests.test_role_tool_loop import answered, requested
+from astrbot_host.native_extensions.image_native.output_routing import OutputRoutingBackend
 
 
 class NativeImageFlowTests(NativeImageFixture, HostFixture, unittest.IsolatedAsyncioTestCase):
@@ -94,6 +97,43 @@ class NativeImageFlowTests(NativeImageFixture, HostFixture, unittest.IsolatedAsy
         self.assertNotIn("data:image/", str([tuple(r) for r in sources]))
         self.assertEqual(host.receive(self.event()).unwrap(), batch)
         self.assertEqual(len(self.sent), 1)
+
+    async def test_nai_tags_and_character_features_survive_generation_adoption_and_delivery(self):
+        requests = []
+        output = self.image_directory / "nai-output.png"
+
+        async def generate(_owner, request):
+            requests.append(request)
+            output.write_bytes(image_bytes("green"))
+            return {"handled": True, "image_path": str(output)}
+
+        api = NS(status=lambda: {"call_mode": "direct", "prompt_format": "nai tag模式"},
+                 capability_status=lambda owner: {"available": True},
+                 generate_for_companion=AsyncMock(side_effect=generate))
+        native = NS(get_registered_star=lambda name: NS(activated=True, star_cls=NS(extension_api=api)))
+        self.image_owner.backend = OutputRoutingBackend(
+            {"enabled": True, "backend": "nai", "operation_routes": {"generate": ["nai"], "edit": []}},
+            self.image_directory / "routes", context=native)
+
+        async def model(envelope):
+            if not envelope.tool_history:
+                self.assertIn("发型发色、瞳色和外貌识别点", envelope.original.instruction)
+                return requested(ToolCall("nai-generate", "image.generate", encode({
+                    "prompt": "1girl, silver hair, green eyes, fox ears, selfie, garden"})))
+            return self.image_answer(envelope)
+
+        self.model_behavior = model
+        host, batch, context = await self.complete_image()
+        self.assertEqual(len(requests), 1)
+        self.assertIn("silver hair, green eyes, fox ears", requests[0]["prompt_text"])
+        self.assertNotIn("photorealistic", requests[0]["prompt_text"])
+        self.assertEqual(requests[0]["negative"], "")
+        self.assertEqual(requests[0]["character_source"], "companion")
+        self.assertNotIn("size", requests[0])
+        self.assertEqual(base64.b64decode(self.sent[0].images[0].data_base64), image_bytes("green"))
+        saved = host.application.messages.generated_images.read_batch(batch, context, self.clock.now())
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0].source.scope, context.scope)
 
     async def test_edit_uses_same_origin_saved_artifact_and_only_selected_output_is_sent(self):
         async def model(envelope):

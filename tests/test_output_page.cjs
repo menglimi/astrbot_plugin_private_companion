@@ -156,6 +156,8 @@ test("NAI output controls read plugin status and save independent generation and
   state.page.mount(state.root);
   await new Promise(resolve => setImmediate(resolve));
   const host = state.single.get("#outputNaiWorkspace");
+  assert.match(host.innerHTML, /output-capability-card output-nai-backend/);
+  assert.match(host.innerHTML, /采样参数和默认负面提示词均沿用/);
   assert.match(host.innerHTML, /星桥（Almoon）/);
   assert.match(host.innerHTML, /nai-diffusion-5-full/);
   assert.doesNotMatch(host.innerHTML, /data-output-nai-operation="edit"[^>]*disabled/);

@@ -221,7 +221,9 @@ def prompt_instruction(values):
         return "当前角色已关闭用户请求生图和改图；按本轮话题自然回应，图片请求可简短说明暂不能执行。"
     formats = {"traditional": "使用简洁的英文画面标签，以逗号分隔",
                "natural": "使用连贯的自然语言描述构图、人物与场景",
-               "nai": "使用 NAI 标签格式，可用花括号表达强调，避免聊天句式"}
+               "nai": "使用逗号分隔的英文 NAI 标签，可用 NAI 权重语法，避免中文描述和聊天句式"}
+    if values.get("nai_backend"):
+        formats["natural"] = "使用连贯的英文自然语言描述构图、人物与场景"
     trigger = (
         "用户用自然语言要新图片、画图、自拍、头像或改图时，使用本轮开放的图片工具完成，无需特定指令。"
         "“来张自拍看看”“想看你现在的穿搭”已经表达了看图需求；承接尚未完成的同一请求时，"
@@ -230,6 +232,8 @@ def prompt_instruction(values):
         "玩笑、讨论摄影或泛泛问近况仍按普通聊天理解，已完成的请求不因后续应声重复生图。"
         "上一轮图片工具明确失败且本轮用户要求重试时，重新调用工具；unknown 表示结果未确认，不能换调用编号重放同一操作。"
         "角色本人出镜时，按当前人设与已知对话展开外观、穿搭、动作和场景；"
+        "没有身份参考图时，将人设中已经明确的种族、发型发色、瞳色和外貌识别点写入画面提示词，"
+        "不要只写一个普通女孩或随机补成另一个角色；用户明确要求其他人物或纯风景时不套用角色外貌。"
         "近期明确换装或换景优先，缺少的细节可自然创作，不把生成画面说成现实观测。"
         "自拍画面在 prompt 中写明 selfie，以便应用角色的自拍提示词。"
         "图片请求以实际图片工具结果接续，不用反复确认、只说稍等或改邀其他活动代替。"
@@ -238,7 +242,10 @@ def prompt_instruction(values):
     scene = ("可用场景预设：" + "、".join(item["name"] + "（ID:" + item["id"] + "）" for item in presets)
              + "。场景与用户要求吻合时，可在图片工具 prompt 中标记 [场景预设:名称]；"
                "宿主会替换为对应画面提示词，不要把标记写入解释或回复。" if presets else "")
-    return "图片调用偏好：" + trigger + "\n图片 prompt 应" + formats[values["prompt_format"]] + "。" + scene
+    backend = ("\n当前使用 NAI 生图，提示词格式来自 NAI 插件；模型、画风、尺寸和采样沿用 NAI，"
+               "不要自行追加写实照片风格或另一套画师串。"
+               if values.get("nai_backend") else "")
+    return "图片调用偏好：" + trigger + "\n图片 prompt 应" + formats[values["prompt_format"]] + "。" + backend + scene
 
 
 def apply_prompts(arguments, action, values):

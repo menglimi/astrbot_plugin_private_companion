@@ -24,6 +24,8 @@ class NAIBackendTests(unittest.IsolatedAsyncioTestCase):
             status=lambda: {"call_mode": self.mode, "reference_supported": self.mode == "openai",
                             "api_profile": "starbridge", "default_model": "nai-diffusion-5-full",
                             "default_style": "custom", "default_size": "竖图",
+                            "prompt_format": "nai tag模式", "reference_mode": "director",
+                            "artist_slot_name": "主画风",
                             "api_key": "must-not-be-projected"},
             capability_status=lambda owner: {"available": self.available, "reason": "ready"},
             generate_for_companion=AsyncMock(side_effect=self.generate),
@@ -55,6 +57,9 @@ class NAIBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(status["available"])
         self.assertEqual(status["operations"], ["generate", "edit"])
         self.assertEqual(status["api_profile"], "starbridge")
+        self.assertEqual(status["prompt_format"], "nai")
+        self.assertEqual(status["artist_slot_name"], "主画风")
+        self.assertEqual(status["reference_mode"], "director")
         self.assertNotIn("api_key", status)
         self.mode = "direct"
         self.assertEqual(self.backend.operations, ("generate",))
@@ -99,6 +104,46 @@ class NAIBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request["strength"], 0.6)
         self.assertEqual(request["size"], "832x1216")
         self.assertTrue(all(not Path(path).exists() for path in request["reference_image_paths"]))
+
+    async def test_nai_uses_its_own_prompt_variant_without_companion_style_or_defaults(self):
+        router = OutputRoutingBackend(
+            {"enabled": True, "backend": "nai", "operation_routes": {"generate": ["nai"], "edit": []}},
+            self.root / "routes", context=self.context)
+        await router.execute(self.invocation(envelope={
+            "image_prompt": {"positive": "photorealistic, other style", "negative": "host defaults"},
+            "nai_prompt": {"positive": "1girl, silver hair, green eyes", "negative": ""},
+        }), (), self.dispatch)
+        self.assertEqual(self.requests[0]["prompt_text"], "1girl, silver hair, green eyes")
+        self.assertEqual(self.requests[0]["negative"], "")
+
+    async def test_invalid_tags_never_dispatch_or_fall_back_to_another_paid_backend(self):
+        self.api.validate_companion_prompt = lambda request: {
+            "valid": False, "reason": "nai_prompt_format_invalid"}
+        router = OutputRoutingBackend(
+            {"enabled": True, "backend": "auto", "sd_webui": {"base_url": "http://example.test"},
+             "operation_routes": {"generate": ["nai", "sd_webui"], "edit": []}},
+            self.root / "routes", context=self.context)
+        with patch("astrbot_host.native_extensions.image_native.output_routing.NativeTransportBackend") as local:
+            local.return_value.operations = ("generate",)
+            local.return_value.execute = AsyncMock()
+            with self.assertRaisesRegex(NativeImageError, "nai_prompt_format_invalid"):
+                await router.execute(self.invocation(), (), self.dispatch)
+            local.return_value.execute.assert_not_awaited()
+        self.assertEqual(self.fences, 0)
+        self.api.generate_for_companion.assert_not_awaited()
+
+    def test_configuration_preflight_returns_a_specific_repairable_prompt_error(self):
+        self.api.validate_companion_prompt = lambda request: {
+            "valid": False, "reason": "nai_prompt_format_invalid"}
+        api = ImageExtensionAPI(data_root=self.root, config_path=self.root / "preflight.json",
+                                version="test", context=self.context)
+        self.addCleanup(api.close)
+        api.save_output_configuration(api.output_configuration()["revision"], {
+            "enabled": True, "backend": "nai", "operation_routes": {"generate": ["nai"], "edit": []}})
+        code = api.validate_output_prompt({"action": "image.generate",
+                                          "arguments": {"prompt": "银发女孩"}})
+        self.assertEqual(code, "nai_prompt_format_invalid")
+        self.api.generate_for_companion.assert_not_awaited()
 
     async def test_authority_revocation_prevents_the_plugin_call(self):
         async def revoked():

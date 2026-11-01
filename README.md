@@ -24,7 +24,7 @@
 | --- | --- |
 | 插件名 | `astrbot_plugin_private_companion` |
 | 显示名 | 我会永远陪着你 |
-| 当前版本 | `7.0.12`（7.x 架构线，内部领域标识 `private_companion.v2`） |
+| 当前版本 | `7.0.13`（7.x 架构线，内部领域标识 `private_companion.v2`） |
 | AstrBot 版本 | `>= 4.27.2` |
 | 声明支持平台 | `aiocqhttp`（OneBot v11）、`qq_official`、`qq_official_webhook` |
 | 管理入口 | AstrBot 插件扩展页「陪伴小屋」（支持低配设备开启「性能模式」切换为轻量状态页） |

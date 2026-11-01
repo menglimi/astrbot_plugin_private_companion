@@ -12,6 +12,7 @@ from .bootstrap import build_provider
 from .output_configuration import public_configuration, save_configuration, settings
 from .output_routing import OnlineImageBackend
 from .owner import NativeImageOwner
+from .nai_backend import NAIImageBackend
 from .types import ImageInvocation, NativeImageError
 
 
@@ -67,6 +68,34 @@ class ImageExtensionAPI:
     def save_output_configuration(self, revision: str, changes: dict):
         return save_configuration(self, revision, changes)
 
+    def validate_output_prompt(self, request):
+        """Preflight the first usable route without performing generation.
+
+        Args:
+            request: The host-owned request with prepared prompt variants.
+
+        Returns:
+            A known NAI error code, or an empty string when no mismatch is found.
+        """
+        provider = self.companion_v2_native()
+        operation = request["action"].split(".", 1)[1]
+        routes = getattr(provider.owner.backend, "_routes", None)
+        if not callable(routes):
+            return ""
+        for backend in routes(operation):
+            if operation not in backend.operations:
+                continue
+            if isinstance(backend, NAIImageBackend):
+                prepared = request.get("nai_prompt") or request.get("image_prompt") or {}
+                args = request["arguments"]
+                try:
+                    backend.validate_prompt(prepared.get("positive", args["prompt"]),
+                                            prepared.get("negative", args.get("negative_prompt", "")),
+                                            args.get("reference_roles", ()))
+                except NativeImageError as error:
+                    return error.code
+            break
+        return ""
     async def test_output_endpoint(self, endpoint_id: str, operation_key: str, *, before_dispatch):
         source = settings(self)
         endpoint = next((item for item in source["endpoints"] if item["id"] == endpoint_id), None)
