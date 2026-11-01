@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from logging import getLogger
 from uuid import uuid4
 
 from astrbot.api.message_components import Plain
 from astrbot.core.message.message_event_result import MessageChain
 
-from companion_v2.conversation.text_processing import strip_internal_expression_protocol
+from companion_v2.conversation.text_processing import plan_leak_guard, strip_internal_expression_protocol
 from companion_v2.execution.models import TaskError, digest, encode, require
 from companion_v2.foundation.refs import OperationRef, SourceRef, VersionRef
 from companion_v2.sources.models import SourceRecord
 from companion_v2.storage.models import OperationState
 from companion_v2.storage.repositories import OperationRepository
+
+
+logger = getLogger(__name__)
 
 
 class RealityHostDelivery:
@@ -26,6 +30,11 @@ class RealityHostDelivery:
             # This path calls the host context directly rather than event.send,
             # so the core presentation boundary may not have seen its text.
             text = strip_internal_expression_protocol(text)
+            gated, plan_spans, plan_reasons = plan_leak_guard(text)
+            if plan_spans:
+                logger.warning("[CompanionV2] reality 直发正文移除计划文本 spans=%s reasons=%s head=%r",
+                               plan_spans, plan_reasons, text[:40])
+                text = gated
         if not isinstance(text, str) or not text.strip() or not isinstance(operation_key, str) or not operation_key:
             raise TaskError("reality_delivery_invalid", "Reality delivery needs its original operation key and text")
         original = self.contexts.target(user_id, umo=umo)

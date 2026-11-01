@@ -179,6 +179,16 @@ class ReplySegmentationTests(unittest.TestCase):
         self.assertIn("那句“", quoted, parts)
         self.assertIn("什么”", quoted, parts)
 
+    def test_isolated_protocol_token_is_not_its_own_bubble(self):
+        # 2026-11-01 现场：上游漏出的「hthought」被切成一条 8 字气泡。
+        policy = SegmentationPolicy(enabled=True, llm_controlled=False, rule_mode="regex",
+                                    rule_regex=r".*?[。？！\n]+|.+$", threshold=500,
+                                    min_segment_chars=1, max_segments=7)
+        source = "hthought\n 呜……抱歉，梦话了。晚安吧"
+        self.assertEqual(policy.parts(source), (" 呜……抱歉，梦话了。", "晚安吧"))
+        # 整条回复只有一个协议词时保持原文，交给发送出口的闸门处理。
+        self.assertEqual(policy.parts("hthought"), ("hthought",))
+
     def test_prompt_uses_v1_placeholder_and_policy_validates_types(self):
         policy = replace(self.policy, prompt="只在需要时用 {{ split_marker }}。")
         self.assertIn(f"只在需要时用 {MARKER}。", policy.instruction)

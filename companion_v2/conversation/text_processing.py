@@ -464,6 +464,382 @@ def strip_internal_expression_protocol(text):
     return strip_paired_control_blocks(text)
 
 
+# --- 出站计划文本闸门 --------------------------------------------------------
+# 上游偶尔把隐藏的思维链/计划写进普通正文：首行一个协议词（hthought），随后
+# 是英文计划，最后才是台词。这里只认可识别的泄露形态，并且采用"强标记解锁
+# 弱删除"的双信号门：本条里没有强标记时一个字都不动，正常英文回复（技术解释、
+# 引用他人原话、成语）因此不会被截断。保护范围是 fenced code、URL、分段标记
+# 与已登记控制/语音标签的成对标；markdown 的整段保护会连泄露原文一起藏起来，
+# 实测会漏掉大部分样本。
+#
+# 调用约定：闸门与 strip_internal_expression_protocol 相邻，正常顺序是先 strip
+# 再闸门（真标签先被吃掉）。闸门自己也保护标签 span，所以即使被单独调用（新
+# 发送点直接挂纯函数）也不会把成对标签拆开、把载荷留成可见正文。
+#
+# 已知中转标记：模型用 "h" 前缀把内部步骤写进正文（现场样本只有 hthought）。
+# 这批词没有英文含义，整行出现即可判强。
+_RELAY_PROTOCOL_TOKENS = frozenset(
+    {"hthought", "hthinking", "hthink", "hreasoning", "hscratchpad", "hcot"})
+# 语义词本身不是协议：ascot/apricot/mascot 以 cot 结尾，afterthought 以 thought
+# 结尾，unthinking 以 thinking 结尾。它们只有在同时出现弱标记或中日文正文时才
+# 按协议词处理，其余情况一律当正文（不做任何后缀匹配）。
+_SEMANTIC_PLAN_WORDS = frozenset({"thought", "thinking", "reasoning", "scratchpad", "cot"})
+_PROTOCOL_TOKEN_LINE = re.compile(r"(?m)^[ \t]*([a-z][a-z0-9_]{2,31})[ \t\r]*$")
+_PROTOCOL_TOKEN = re.compile(r"[a-z][a-z0-9_]{2,31}")
+_INTERNAL_SECTION_NAME = re.compile(
+    r"`[^`\n]{0,80}?<\s*(?:companion_v2|private_companion)_[a-z0-9_]+\s*>[^`\n]{0,80}?`"
+    r"|<\s*(?:companion_v2|private_companion)_[a-z0-9_]+\s*>")
+_INTERNAL_TAG_NAME = re.compile(r"<\s*([a-z0-9_]+)")
+# 已登记的控制标签是协议，不是计划文本：它们由 strip_internal_expression_protocol
+# 成对处理，闸门即使先于它运行也不能拆散标签配对。
+_REGISTERED_CONTROL_NAMES = frozenset(name.casefold() for name in _CONTROL_TAG_NAMES)
+_INTERNAL_NAMESPACE_TOOL = re.compile(
+    r"(?i)\b(?:call|emit|invoke|use)\s+`((?:newapi_|emit_text|companion_v2_|private_companion_)"
+    r"[A-Za-z0-9_.]{2,})`")
+# 弱信号只扩大删除区间，并在没有强信号时仅供观测。
+_WEAK_PLAN_SIGNALS = (
+    ("note_that", re.compile(r"(?i)\bnote that\b")),
+    ("so_no_tag", re.compile(r"(?i)\bso no\b.{0,60}?\btag\b")),
+    ("meta_verb", re.compile(
+        r"(?i)\b(?:let'?s|let us)\s+(?:craft|emit|output|produce|answer|write|call|use|keep)\b")),
+    ("backticked_call", re.compile(r"(?i)\b(?:call|emit|invoke|use)\s+`[A-Za-z_][A-Za-z0-9_.]{2,}`")),
+)
+_FENCE_LINE = re.compile(r"(?m)^ {0,3}(`{3,}|~{3,})([^\n]*)$")
+_PLAN_URL = re.compile(r"(?:https?://|www\.)[^\s<>。！？，]+")
+_CJK = re.compile(r"[\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff]")
+_CJK_EDGE = "…—~～，,、；;：:。！？!?　"
+_PLAN_CLAUSE_EDGE = "。！？!?；;…\n"
+
+
+def _protocol_token_kind(token):
+    """Classify a bare protocol-shaped word; relay markers are unambiguous."""
+    if token in _RELAY_PROTOCOL_TOKENS:
+        return "relay"
+    if token in _SEMANTIC_PLAN_WORDS:
+        return "semantic"
+    return None
+
+
+def is_isolated_protocol_token(text):
+    """Whether a whole segment is one bare relay marker such as ``hthought``.
+
+    ``thought``/``reasoning``/``cot`` on their own are ordinary English words and
+    stay valid replies, and a whole segment carries no plan context that could
+    prove otherwise.  Any other word (``ascot``, ``afterthought``, ``unthinking``)
+    is prose: only exact relay markers qualify, never a suffix match.
+    """
+    if type(text) is not str:
+        return False
+    token = text.strip()
+    return _PROTOCOL_TOKEN.fullmatch(token) is not None and token in _RELAY_PROTOCOL_TOKENS
+
+
+def _plan_fence_ranges(text):
+    """Pair fenced code blocks line by line; a regex here backtracks quadratically."""
+    ranges, opener, start = [], "", 0
+    for match in _FENCE_LINE.finditer(text):
+        marker, info = match.group(1), match.group(2)
+        if not opener:
+            opener, start = marker, match.start()
+        elif marker[0] == opener[0] and len(marker) >= len(opener) and not info.strip():
+            ranges.append((start, match.end()))
+            opener = ""
+    return ranges
+
+
+_PLAN_TAG_TOKEN = re.compile(
+    rf"(?P<close>{_CONTROL_LITERAL_LT}\s*/\s*(?:{_CONTROL_REGISTERED_PATTERN})\s*{_CONTROL_LITERAL_GT}"
+    rf"|{_CONTROL_ESCAPED_LT}\s*/\s*(?:{_CONTROL_REGISTERED_PATTERN})\s*{_CONTROL_ESCAPED_GT})"
+    rf"|(?P<open>{_CONTROL_LITERAL_LT}\s*(?:{_CONTROL_REGISTERED_PATTERN})\b[^<>]*?{_CONTROL_LITERAL_GT}"
+    rf"|{_CONTROL_ESCAPED_LT}\s*(?:{_CONTROL_REGISTERED_PATTERN})\b[^<>]*?{_CONTROL_ESCAPED_GT})",
+    re.IGNORECASE,
+)
+
+
+def _plan_tag_ranges(text):
+    """Keep registered control/voice tag spans whole so a removal cannot split a pair.
+
+    ``<pc_tts>`` begins exactly at the boundary the gate deletes from and its
+    payload is CJK, so an unprotected run removed the opening tag and left
+    ``</pc_tts>`` together with the spoken line in the visible reply.  Both tag
+    tokens and every paired block between them are protected.  A lone tag name
+    written inside inline code is a mention (``So no `<pc_reaction_expression>`
+    tag``), not protocol, and stays deletable with the plan it belongs to.
+    """
+    if _CONTROL_CANDIDATE_PATTERN.search(text) is None:
+        return ()
+    inline = _plan_backtick_pairs(text)
+    spans, opens = [], []
+    for match in _PLAN_TAG_TOKEN.finditer(text):
+        if match.group("close") is None and any(
+                left < match.start() and match.end() <= right for left, right in inline):
+            continue
+        spans.append(match.span())
+        if match.group("close") is not None:
+            pending = opens.pop() if opens else None
+            if pending is not None and match.end() - pending <= _CONTROL_PAIRED_PAYLOAD_LIMIT:
+                spans.append((pending, match.end()))
+        else:
+            opens.append(match.start())
+    return spans
+
+
+def _plan_protected_ranges(text):
+    """Only fenced code, URLs, reserved tokens and registered tag spans stay intact.
+
+    Markdown-wide protection is deliberately absent: it hides the leaked sample
+    together with the prose around it.  The segmentation marker is protected so
+    the gate can never eat a boundary before the splitter consumed it, and every
+    registered control/voice tag span is protected so a paired wrapper cannot be
+    cut in half (see ``_plan_tag_ranges``).
+    """
+    ranges = _plan_fence_ranges(text)
+    ranges.extend(match.span() for match in _PLAN_URL.finditer(text))
+    ranges.extend(control_token_ranges(text))
+    ranges.extend(_plan_tag_ranges(text))
+    return _merged(ranges)
+
+
+def _plan_masked(text, ranges):
+    chunks, cursor = [], 0
+    for start, stop in ranges:
+        chunks.append(text[cursor:start])
+        chunks.append(" " * (stop - start))
+        cursor = stop
+    chunks.append(text[cursor:])
+    return "".join(chunks)
+
+
+def _plan_backtick_pairs(text):
+    """Inline-code spans: a tag name written there is an example, not protocol."""
+    if "`" not in text:
+        return ()
+    pairs, stack = [], []
+    for index, char in enumerate(text):
+        if char != "`":
+            continue
+        if stack:
+            pairs.append((stack.pop(), index))
+        else:
+            stack.append(index)
+    return tuple(pairs)
+
+
+def _plan_quoted_pairs(text):
+    """Offsets between backticks and quotes: plan words quoted there are speech."""
+    pairs = list(_plan_backtick_pairs(text))
+    for opener, closer in (("“", "”"), ("「", "」")):
+        stack = []
+        for index, char in enumerate(text):
+            if char == opener:
+                stack.append(index)
+            elif char == closer and stack:
+                pairs.append((stack.pop(), index))
+    quotes = [index for index, char in enumerate(text) if char == '"']
+    pairs.extend(zip(quotes[0::2], quotes[1::2]))
+    return tuple(pairs)
+
+
+def _plan_prefix_start(text, offset):
+    """Keep the body in front of the markers and drop the English plan clause."""
+    position = offset
+    while position > 0:
+        char = text[position - 1]
+        if char in _PLAN_CLAUSE_EDGE or _CJK.match(char) is not None:
+            break
+        position -= 1
+    return position
+
+
+def _plan_body_start(text, offset, pairs):
+    """First CJK body character after the markers, ignoring quoted plan text."""
+    for match in _CJK.finditer(text, offset):
+        position = match.start()
+        if any(left <= position <= right for left, right in pairs):
+            continue
+        # 「喂，」「唔……」这类开场语气词属于正文，接缝向前回溯。
+        while position > offset and (text[position - 1] in _CJK_EDGE
+                                     or _CJK.match(text[position - 1]) is not None):
+            position -= 1
+        return position
+    return len(text)
+
+
+def _plan_removal(text, protected, spans):
+    """Delete only the judged intervals; code fences and URLs are kept verbatim."""
+    editable = []
+    for start, stop in _merged(spans):
+        cursor = start
+        for left, right in protected:
+            if right <= cursor or left >= stop:
+                continue
+            if left > cursor:
+                editable.append((cursor, min(left, stop)))
+            cursor = max(cursor, right)
+        if cursor < stop:
+            editable.append((cursor, stop))
+    chunks, cursor = [], 0
+    for start, stop in _merged(editable):
+        left = text[cursor:start].rstrip(" \t")
+        arc = stop
+        while arc < len(text) and text[arc] in " \t":
+            arc += 1
+        right = text[arc:arc + 1]
+        # 接缝处收成一个空格，避免删段后留下双空格或把两个词粘在一起。
+        # 左边界是闭合标签时（成对 <pc_tts>…</pc_tts> 后面接正文）不加空格：
+        # 标签由语音管线消费，插空格会改变用户可见正文。
+        spacer = (" " if left and right and left[-1] != ">"
+                  and not left.endswith("\n") and right not in "\n" + _CJK_EDGE else "")
+        chunks.append(left)
+        chunks.append(spacer)
+        cursor = arc
+    chunks.append(text[cursor:])
+    return "".join(chunks).strip(" \t\r\n，,、;；")
+
+
+def _plan_quoted_body(text, pairs, protected):
+    """Fallback body for a plan that only quotes the reply.
+
+    A model that writes ``Let's reply "晚安，做个好梦".`` leaves the whole turn
+    plan-shaped: every CJK character that could start the body sits inside the
+    quotes, so deleting the plan would remove everything.  Rather than silencing
+    the turn, keep the quoted line itself (the actual reply) as the body.
+    """
+    chunks, accepted = [], []
+    for left, right in sorted(pairs, key=lambda item: (item[0], -item[1])):
+        if any(start < right and left < stop for start, stop in protected):
+            continue
+        if any(start <= left and right <= stop for start, stop in accepted):
+            continue
+        body = text[left + 1:right].strip()
+        if not body or _CJK.search(body) is None:
+            continue
+        accepted.append((left, right))
+        chunks.append(body)
+    return " ".join(chunks)
+
+
+# 多段计划：一段删掉后，下一段可能仍然满足强标记形态（被标签、URL 等隔开），
+# 这里做有界多轮，直到没有新命中或上限耗尽；标签 span 始终受保护，多轮不会拆标签。
+_PLAN_GUARD_PASSES = 4
+
+
+def _plan_leak_guard_pass(text):
+    """One deletion pass: first strong marker to the first unquoted body character."""
+    protected = _plan_protected_ranges(text)
+    masked = _plan_masked(text, protected)
+    weak = tuple(name for name, pattern in _WEAK_PLAN_SIGNALS if pattern.search(masked) is not None)
+    # 语义词（thought/thinking/cot…）单独出现时就是普通英文；只有本条里另有弱标记
+    # 或中日文正文时才当中转标记，避免 ascot/apricot/mascot/unthinking 这类误杀。
+    contextual = bool(weak) or _CJK.search(masked) is not None
+    marks = []
+    for match in _PROTOCOL_TOKEN_LINE.finditer(masked):
+        token = match.group(1)
+        kind = _protocol_token_kind(token)
+        if kind is None or (kind == "semantic" and not contextual):
+            continue
+        # 标签 span 在 masked 里是空格：`</pc_tts>hthought` 这种「计划段贴着标签
+        # 收尾」的形态在这里变成行首 token，多轮处理后与行首形态同一条规则即可覆盖。
+        marks.append((match.start(), match.end(), "line", f"protocol_token_line:{token}"))
+    for match in _INTERNAL_SECTION_NAME.finditer(masked):
+        tag = _INTERNAL_TAG_NAME.search(match.group(0))
+        if tag is not None and tag.group(1).casefold() in _REGISTERED_CONTROL_NAMES:
+            continue
+        marks.append((match.start(), match.end(), "mention", "internal_section_name"))
+    for match in _INTERNAL_NAMESPACE_TOOL.finditer(masked):
+        marks.append((match.start(), match.end(), "mention", f"internal_namespace_tool:{match.group(1)}"))
+    if not marks:
+        return text, (), tuple(f"weak_only:{name}" for name in weak)
+    marks.sort()
+    reasons = list(dict.fromkeys(label for _, _, _, label in marks))
+    reasons.extend(f"weak:{name}" for name in weak)
+    pairs = _plan_quoted_pairs(masked)
+    mentions = [(start, stop) for start, stop, kind, label in marks if label == "internal_section_name"
+                and _CJK.search(masked[:start]) is not None
+                and _CJK.search(masked[stop:]) is not None]
+    if mentions and len(mentions) == len(marks):
+        # 正文中间提到内部段落名：只删这个名字，句子与正文都保留。
+        cleaned = _plan_removal(text, protected, mentions)
+        if cleaned == text:
+            return text, (), tuple(reasons)
+        return cleaned, _merged(mentions), ("inline_mention", *reasons)
+    # 删除终点只由「正文之前」的标记决定：正文之后再出现的计划段不会把已存在的
+    # 正文一起吞掉，而是留给下一轮。每轮只把终点扩到「在正文之前」的最后一处标记，
+    # 避免对每个标记都重扫一遍正文（长正文会退化成二次方）。
+    end = marks[0][1]
+    body = _plan_body_start(masked, end, pairs)
+    while True:
+        extended = end
+        for mark_start, mark_end, _kind, _label in marks[1:]:
+            if mark_start >= body:
+                break
+            if mark_end > extended:
+                extended = mark_end
+        if extended == end:
+            break
+        end = extended
+        body = _plan_body_start(masked, end, pairs)
+    start = (_plan_prefix_start(masked, marks[0][0])
+             if _CJK.search(masked[:marks[0][0]]) is not None else 0)
+    stop = max(body, end)
+    cleaned = _plan_removal(text, protected, ((start, stop),))
+    if not cleaned.strip():
+        # 删除后为空且引号内含中日文时，保留引号内正文（计划把正文用引号或
+        # 反引号包住的情形）：宁可接缝不完美，也不让整轮静默。
+        quoted = _plan_quoted_body(text, pairs, protected)
+        if quoted:
+            return quoted, _merged(((start, stop),)), (*reasons, "quoted_body_fallback")
+    if cleaned == text:
+        return text, (), tuple(reasons)
+    return cleaned, _merged(((start, stop),)), tuple(reasons)
+
+
+def plan_leak_guard(text):
+    """Remove recognizable model plan text; return (cleaned, removed_spans, reasons).
+
+    A strong signal unlocks deletion: an exact relay token line (``hthought``),
+    an internal section name (``R2``), or an internal-namespace tool call (``R3``).
+    Semantic words (``thought``/``thinking``/``reasoning``/``scratchpad``/``cot``)
+    count only when the same message also carries a weak signal or CJK body;
+    no suffix matching is used, so ``ascot``/``afterthought``/``unthinking`` stay
+    ordinary prose.  Weak signals (``note that`` / ``so no … tag`` / ``Let's +
+    元话语`` / any backticked call) only extend the removed interval and are
+    reported; they never delete on their own.  Without a strong signal the text
+    comes back unchanged, which is what keeps ordinary English replies intact.
+
+    Deletion never crosses a fenced block, URL, segmentation marker or a
+    registered control/voice tag span (paired ``<pc_tts>…</pc_tts>`` survives
+    whole).  A plan that quotes the reply keeps that quoted body instead of
+    silencing the turn, and a bounded number of passes removes later plan
+    segments that only become visible once the first one is gone.  An empty
+    result means the whole reply was plan text: the caller drops it exactly like
+    other fully removed bodies.  ``reasons`` starting with ``weak_only:`` reports
+    a plan-shaped message the gate deliberately did not touch.  ``spans`` always
+    describe the first pass and are for logging only.
+    """
+    if type(text) is not str or not text.strip() or len(text) > MAX_TEXT:
+        return text, (), ()
+    cleaned, spans, reasons = _plan_leak_guard_pass(text)
+    if not spans:
+        return text, (), reasons
+    collected = list(reasons)
+    passes = 1
+    for _pass in range(_PLAN_GUARD_PASSES - 1):
+        if not cleaned.strip():
+            break
+        following, following_spans, following_reasons = _plan_leak_guard_pass(cleaned)
+        if not following_spans:
+            break
+        passes += 1
+        collected.extend(reason for reason in following_reasons if reason not in collected)
+        cleaned = following
+    if passes > 1:
+        collected.append(f"passes:{passes}")
+    if cleaned == text:
+        return text, (), tuple(collected)
+    return cleaned, spans, tuple(collected)
+
+
 def _partial_protocol_match(pattern, text):
     match = pattern.search(text, partial=True)
     if match is not None and match.partial and match.start() == match.end():

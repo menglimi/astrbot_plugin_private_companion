@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
+import hashlib
 import json
 import logging
 import re
@@ -16,6 +17,7 @@ from companion_v2.conversation.text_processing import (
     OUTPUT_TEXT_FIELDS,
     InternalExpressionProtocolFilter,
     ReplyTextPolicy,
+    plan_leak_guard,
     strip_internal_expression_protocol,
 )
 from companion_v2.sources.privacy import redact_text
@@ -137,6 +139,14 @@ def strip_plaintext_tool_calls(text, allowed_names):
 def present_text_parts(text, presentation, split=None, *, tool_names=()):
     """Apply V2 output guards and formatting before text reaches AstrBot's sender."""
     text = strip_internal_expression_protocol(text)
+    # 计划文本闸门紧跟标签清理：真标签先被吃掉，判定时仍能看到泄露形态。
+    # 整段都是计划时 cleaned 为空串，交由调用方的 note_removed_text 处理。
+    plan_text, plan_spans, plan_reasons = plan_leak_guard(text)
+    if plan_spans:
+        logger.warning("[CompanionV2] 出站正文移除计划文本 spans=%s reasons=%s sha256=%s head=%r",
+                       plan_spans, plan_reasons,
+                       hashlib.sha256(text.encode("utf-8")).hexdigest()[:12], text[:40])
+        text = plan_text
     text, _removed_tool_calls = strip_plaintext_tool_calls(text, tool_names)
     if presentation is not None:
         text, leaked = presentation.framework_guard(text)

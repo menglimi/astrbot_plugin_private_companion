@@ -17,6 +17,7 @@ from astrbot_host.core_reply_segmentation import (
     prepare_core_reply_segmentation, prepare_core_reply_streaming_boundary,
 )
 from companion_v2.conversation.segmentation import SegmentationPolicy
+from companion_v2.conversation.voice_reply import VoiceReplyPolicy, separate_spoken
 from companion_v2.execution.models import TaskError
 from companion_v2.foundation.outcome import Outcome
 from tests.test_astrbot_core_reply import FakeEvent
@@ -350,6 +351,78 @@ class CoreReplyPresentationTests(unittest.IsolatedAsyncioTestCase):
         await event.send("第一段。第二段。")
         self.assertEqual(sender.await_count, 1)
         self.assertEqual(str(sender.await_args.args[0]), "第一段")
+
+    async def test_plan_text_is_removed_at_the_native_send_boundary(self):
+        event = self.prepare({})
+        activate_core_reply_delivery_guard(event)
+        source = MessageChain(chain=[Plain(
+            "hthought\n Let's call `newapi_emit_text_v1`. 什么可爱啊，别乱用这种词形容我。")])
+        await event.send(source)
+        self.assertEqual(self.texts(event), ["什么可爱啊，别乱用这种词形容我。"])
+        self.assertEqual(self.observed, ["什么可爱啊，别乱用这种词形容我。"])
+        # 原始结果对象不被就地改写，对齐上面既有断言的写法。
+        self.assertIn("hthought", source.chain[0].text)
+
+    async def test_plan_only_turn_is_not_sent(self):
+        event = self.prepare({})
+        activate_core_reply_delivery_guard(event)
+        await event.send(MessageChain(chain=[Plain("Let's call `newapi_emit_text_v1` now.")]))
+        self.assertEqual(event.sent, [])
+        self.assertTrue(event.get_extra(CORE_REPLY_CONTEXT_EXTRA)["_text_presentation_removed"])
+        self.assertEqual(self.authorize.await_count, 0)
+
+    async def test_plan_prefix_keeps_a_paired_voice_tag_intact(self):
+        # 删除终点不得落在语音标签内：否则开标签被吃掉，</pc_tts> 与朗读原文
+        # 会变成可见正文。闸门必须把整个成对标当保护区。
+        event = self.prepare({})
+        activate_core_reply_delivery_guard(event)
+        await event.send(MessageChain(chain=[Plain(
+            "hthought\n Let's call `newapi_emit_text_v1`.\n"
+            "<pc_tts>おやすみ</pc_tts>晚安，好好睡。")]))
+        visible = self.texts(event)
+        self.assertEqual(visible, ["<pc_tts>おやすみ</pc_tts>晚安，好好睡。"])
+        self.assertEqual(visible[0].count("<pc_tts>"), visible[0].count("</pc_tts>"))
+        self.assertNotIn("hthought", visible[0])
+        self.assertNotIn("newapi_emit_text_v1", visible[0])
+        # 标签内容仍由语音管线消费：成对标能被 separate_spoken 识别为朗读候选，
+        # 且可见正文里不留任何标签字符。
+        spoken_visible, spoken = separate_spoken(
+            visible[0], VoiceReplyPolicy(generation_mode="model_tag", language="ja"))
+        self.assertEqual([text for _offset, text in spoken], ["おやすみ"])
+        self.assertNotIn("<pc_tts>", spoken_visible)
+        self.assertNotIn("</pc_tts>", spoken_visible)
+
+    async def test_plan_prefix_keeps_a_paired_reaction_tag_for_the_reactor(self):
+        event = self.prepare({})
+        activate_core_reply_delivery_guard(event)
+        await event.send(MessageChain(chain=[Plain(
+            'hthought\n Let\'s call `newapi_emit_text_v1`. '
+            '<pc_reaction_expression>{"emotion":"无奈"}</pc_reaction_expression>哼，才不笨呢。')]))
+        visible = self.texts(event)
+        self.assertEqual(visible, ["哼，才不笨呢。"])
+        self.assertNotIn("pc_reaction_expression", visible[0])
+        self.assertNotIn("emotion", visible[0])
+
+    async def test_dropped_protocol_segment_renumbers_voice_segment_index(self):
+        # 协议段被丢弃后 segment_index/count 重算：三段文本里中间段是孤立协议词，
+        # 被分段层丢掉后 voice_segment_index 与 voice_segment_count 必须按最终分泡数重算。
+        seen = []
+
+        async def sender(message, *args, **kwargs):
+            core = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
+            body = message.get_plain_text() if hasattr(message, "get_plain_text") else str(message)
+            seen.append((body, core.get("voice_segment_index"), core.get("voice_segment_count")))
+            event.sent.append(((message,), kwargs))
+            return "sent"
+
+        policy = SegmentationPolicy(enabled=True, llm_controlled=False, rule_mode="paragraphs",
+                                    min_segment_chars=1, max_segments=7)
+        event = self.prepare({}, segmentation=policy, sender=sender)
+        activate_core_reply_delivery_guard(event)
+        await event.send(MessageChain(chain=[Plain("第一段。\n\nhthought\n\n第二段。")]))
+        self.assertEqual([body for body, _index, _count in seen], ["第一段。", "第二段。"])
+        self.assertEqual([(index, count) for _body, index, count in seen], [(0, 2), (1, 2)])
+        self.assertEqual(len(seen), 2)
 
     async def test_intentionally_removed_reply_is_not_reported_as_a_send_failure(self):
         from tests.test_main_no_reply import ENTRY

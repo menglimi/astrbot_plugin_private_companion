@@ -9,7 +9,7 @@ import re
 import regex
 
 from .segment_control import LLM_SEGMENT_MARKER, controlled_parts, protected_ranges
-from .text_processing import literal_ranges
+from .text_processing import is_isolated_protocol_token, literal_ranges
 
 
 DEFAULT_SPLIT_WORDS = ("。", "？", "！", "~", "～", "?", ".", "!", ";", "；", "……", "）", "…")
@@ -388,7 +388,10 @@ class SegmentationPolicy:
             parts.append(text[start:end])
             start = end
         tail = text[start:]
-        if tail:
+        # 孤立的协议词（上游漏出的「hthought」之类）自成一段时不成泡，也不并回正文；
+        # 只有还剩别的正文才丢，否则原样返回，保住“回复完整”的既有语义。
+        parts = [part for part in parts if not is_isolated_protocol_token(part)]
+        if tail and not is_isolated_protocol_token(tail):
             if parts and _visible_length(tail) < self.min_segment_chars:
                 parts[-1] += tail
             else:

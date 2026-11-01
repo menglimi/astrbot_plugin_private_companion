@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from logging import getLogger
 
 from .foreground import ClaimKind
-from .text_processing import strip_internal_expression_protocol
+from .text_processing import plan_leak_guard, strip_internal_expression_protocol
 from .voice_reply import separate_spoken, speech_candidates, speech_decisions
 
 
@@ -46,6 +46,13 @@ def prepare_reply(text, segmentation, presentation, voice=None, *, statements=()
     raw_text = text
     text = strip_internal_expression_protocol(text)
     protocol_text = text
+    # 上游可能把隐藏的计划写进正文；判定与原生发送出口共用同一个纯函数。
+    text, plan_spans, plan_reasons = plan_leak_guard(text)
+    if plan_spans:
+        logger.debug("[CompanionV2][开发者追踪] 正文流水线 stage=plan_leak spans=%s reasons=%s raw=%r visible=%r",
+                     plan_spans, plan_reasons, protocol_text, text)
+        if not text.strip():
+            raise ValueError("presentation removed all visible reply text")
     text, leaked = presentation.framework_guard(text)
     framework_text = text
     if leaked:

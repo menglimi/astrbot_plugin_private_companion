@@ -5,14 +5,17 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import is_dataclass
+import hashlib
 from inspect import isawaitable
 import json
+import logging
 from typing import Any
 
 from companion_v2.execution.models import TaskContext, TaskError, encode, require
 from companion_v2.foundation.outcome import Outcome
 
 
+logger = logging.getLogger(__name__)
 CORE_REPLY_CONTEXT_EXTRA = "_companion_v2_core_reply_context"
 
 
@@ -85,6 +88,17 @@ def sent_core_text(message: Any) -> str:
         if body.strip() not in text:
             text = text + ("\n" if text else "") + body
     return text
+
+
+def observe_native_send(state: Mapping, part: Any) -> None:
+    """One INFO per native send: the only trace of the bubbles a reply really became."""
+    prepared = state.get("prepared") if isinstance(state, Mapping) else None
+    event_ref = prepared.get("event_ref", "unknown") if isinstance(prepared, Mapping) else "unknown"
+    text = sent_core_text(part) or ""
+    kinds = [str(getattr(component, "type", None) or type(component).__name__)
+             for component in (getattr(part, "chain", None) or ())]
+    logger.info("[CompanionV2] 原生发送 event_ref=%s sha256=%s head=%r components=%s",
+                event_ref, hashlib.sha256(text.encode("utf-8")).hexdigest()[:12], text[:40], kinds)
 
 
 def is_core_reply_stream(event: Any) -> bool:
@@ -198,6 +212,7 @@ def prepare_core_reply_event(
                 notify_delivery("started")
                 from .core_reply_behavior import observe_core_behavior_delivery
                 observe_core_behavior_delivery(event, part, "started")
+                observe_native_send(state, part)
                 try:
                     result = await state["_original_send"](wire, *args, **kwargs)
                 except BaseException:

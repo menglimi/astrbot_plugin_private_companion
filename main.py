@@ -1277,6 +1277,25 @@ class PrivateCompanionV2StagingPlugin(Star):
                 for part in getattr(getattr(response, "result_chain", None), "chain", ()) or ():
                     if type(getattr(part, "text", None)) is str:
                         part.text, _ = clean_reply_text(part.text)
+            # 计划文本要在这条响应进入历史与语音之前清掉：否则下一轮 prompt 会把
+            # 「hthought + 英文计划」当成助手正文回放，等于自我示范。
+            from companion_v2.conversation.text_processing import (
+                plan_leak_guard, strip_internal_expression_protocol)
+            source = strip_internal_expression_protocol(getattr(response, "completion_text", "") or "")
+            gated, plan_spans, plan_reasons = plan_leak_guard(source)
+            if plan_spans:
+                core_state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
+                prepared_state = core_state.get("prepared") if isinstance(core_state, dict) else None
+                logger.warning("[CompanionV2] 回复正文命中计划文本闸门 event_ref=%r spans=%s reasons=%s head=%r",
+                               prepared_state.get("event_ref", "unknown") if isinstance(prepared_state, dict)
+                               else "unknown", plan_spans, plan_reasons, source[:40])
+                response.completion_text = gated
+                # 3 元组：(cleaned, spans, reasons)；这里只要 cleaned。
+                # 下面的 setter 已经重写了 result_chain 的 Plain（SDK 语义），
+                # 这个循环只是兜底非 Plain-only 的响应形态，不能吞掉返回值其它字段。
+                for part in getattr(getattr(response, "result_chain", None), "chain", ()) or ():
+                    if type(getattr(part, "text", None)) is str:
+                        part.text = plan_leak_guard(part.text)[0]
         from .astrbot_host.core_reply_voice import observe_core_voice_response
         observe_core_voice_response(event, response)
         observe_native_host_response(self.staging, event, response)

@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 from tests.test_main_no_reply import ENTRY
 from astrbot.core.config import DEFAULT_CONFIG
 from astrbot.core.message.components import Image, Plain, Record
-from astrbot.core.message.message_event_result import MessageEventResult, ResultContentType
+from astrbot.core.message.message_event_result import MessageChain, MessageEventResult, ResultContentType
 from astrbot.core.pipeline.process_stage.stage import ProcessStage
 from astrbot.core.pipeline.respond.stage import RespondStage
 from astrbot.core.pipeline.result_decorate import stage as decorate_module
@@ -48,10 +48,12 @@ class PipelineEvent(AstrMessageEvent):
 
 
 class CoreAgentFixture:
-    def __init__(self, plugin, *, streaming=False, response_text=None):
+    def __init__(self, plugin, *, streaming=False, response_text=None, result_chain=False):
         self.plugin, self.streaming = plugin, streaming
         self.response_text = response_text
+        self.result_chain = result_chain
         self.requests = []
+        self.responses = []
 
     async def process(self, event):
         # The actual runner selects streaming before on_llm_request.
@@ -70,7 +72,10 @@ class CoreAgentFixture:
         else:
             text = self.response_text if self.response_text is not None else "嘿嘿！\n\n再摸一下！"
             if self.response_text is not None:
-                response = LLMResponse(role="assistant", completion_text=text)
+                response = LLMResponse(
+                    role="assistant", completion_text=text,
+                    result_chain=MessageChain(chain=[Plain(text)]) if self.result_chain else None)
+                self.responses.append(response)
                 await self.plugin.observe_companion_model_session(event, response)
                 text = response.completion_text
             result = MessageEventResult().message(text)
@@ -81,7 +86,8 @@ class CoreAgentFixture:
 
 class CoreReplyPipelineTests(unittest.IsolatedAsyncioTestCase):
     async def run_pipeline(self, *, streaming=False, authorize=None, segmented=False, tts=False, dual=False,
-                           presentation=None, companion_segmenting=False, voice_policy=None, response_text=None):
+                           presentation=None, companion_segmenting=False, voice_policy=None, response_text=None,
+                           result_chain=False):
         plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
         target = NS(key="target", target_id="target")
         observed = []
@@ -133,7 +139,8 @@ class CoreReplyPipelineTests(unittest.IsolatedAsyncioTestCase):
                                   get_using_tts_provider_async=get_tts_provider)))
         process = ProcessStage()
         process.ctx = pipeline_context
-        agent = CoreAgentFixture(plugin, streaming=streaming, response_text=response_text)
+        agent = CoreAgentFixture(plugin, streaming=streaming, response_text=response_text,
+                                 result_chain=result_chain)
         process.agent_sub_stage = agent
         decorate = decorate_module.ResultDecorateStage()
         await decorate.initialize(pipeline_context)
@@ -209,6 +216,28 @@ class CoreReplyPipelineTests(unittest.IsolatedAsyncioTestCase):
                          [("哈哈", "send_returned"), ("再摸一下", "send_returned")])
         self.assertEqual(plugin.staging.authorize_core_reply.await_count, 4)
         self.assertIs(event.send.__func__, PipelineEvent.send)
+
+    async def test_plan_text_is_removed_before_history_and_native_send(self):
+        # on_llm_response 里的闸门必须在历史写入、语音观测与分段之前生效。
+        plugin, event, agent = await self.run_pipeline(
+            response_text="hthought\n Let's call `newapi_emit_text_v1` now. 嘿嘿！\n\n再摸一下！")
+        bodies = [c.text for chain in event.sent for c in chain if isinstance(c, Plain)]
+        self.assertEqual(bodies, ["嘿嘿！\n\n再摸一下！"])
+        self.assertEqual(plugin.staging.session.core_reply_observations.outputs,
+                         [("嘿嘿！\n\n再摸一下！", "send_returned")])
+
+    async def test_plan_text_is_removed_from_completion_text_and_result_chain(self):
+        # 真实入口（带 result_chain 的 LLMResponse）上钩子不能抛异常，且
+        # completion_text 与 chain 里的 Plain 都要被清理。plan_leak_guard 返回
+        # 3 元组，按 2 元组解包会在这一条上直接 ValueError。
+        leak = "hthought\n Let's call `newapi_emit_text_v1` now. 嘿嘿！\n\n再摸一下！"
+        plugin, event, agent = await self.run_pipeline(response_text=leak, result_chain=True)
+        response = agent.responses[0]
+        self.assertEqual(response.completion_text, "嘿嘿！\n\n再摸一下！")
+        self.assertEqual([part.text for part in response.result_chain.chain if isinstance(part, Plain)],
+                         ["嘿嘿！\n\n再摸一下！"])
+        bodies = [c.text for chain in event.sent for c in chain if isinstance(c, Plain)]
+        self.assertEqual(bodies, ["嘿嘿！\n\n再摸一下！"])
 
     async def test_native_tts_dual_output_keeps_one_observation_for_the_same_body(self):
         plugin, event, agent = await self.run_pipeline(tts=True, dual=True, companion_segmenting=True)
