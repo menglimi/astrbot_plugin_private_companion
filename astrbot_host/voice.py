@@ -3,13 +3,14 @@
 import asyncio
 import base64
 import inspect
+import os
 import re
 import logging
 from pathlib import Path
 import struct
 from dataclasses import replace
 
-from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
+from astrbot.core.utils.astrbot_path import get_astrbot_data_path, get_astrbot_temp_path
 
 from companion_v2.conversation.voice_reply import (
     VoiceReplyPolicy, requested_voice_language, with_voice_override,
@@ -19,6 +20,135 @@ from companion_v2.foundation.refs import ScopeKind
 
 logger = logging.getLogger(__name__)
 MAX_VOICE_BYTES = 8_000_000
+DEFAULT_MIMO_TOOL_NAME = "mimo_tts_speak"
+
+
+def _mimo_plugin_from_handler(handler):
+    """Find the plugin object behind a registered tool handler."""
+    pending, visited = [handler], set()
+    while pending:
+        current = pending.pop(0)
+        if current is None or id(current) in visited:
+            continue
+        visited.add(id(current))
+        owner = getattr(current, "__self__", None)
+        if owner is not None:
+            pending.append(owner)
+        pending.extend(list(getattr(current, "args", ()) or ()))
+        wrapped = getattr(current, "func", None)
+        if wrapped is not None and wrapped is not current:
+            pending.append(wrapped)
+        if (callable(getattr(current, "synthesize_text", None))
+                or callable(getattr(current, "text_to_speech", None))):
+            return current
+    return None
+
+
+def _find_mimo_voice_clone(context, scope):
+    """Resolve the V1-style MiMo Voice Clone tool bridge without importing it."""
+    getter = getattr(context, "get_llm_tool_manager", None)
+    if not callable(getter):
+        return None
+    try:
+        manager = getter()
+    except Exception:
+        return None
+    if manager is None:
+        return None
+    tool = None
+    for name in ("get_tool", "get_func"):
+        method = getattr(manager, name, None)
+        if not callable(method):
+            continue
+        try:
+            tool = method(DEFAULT_MIMO_TOOL_NAME)
+        except Exception:
+            tool = None
+        if tool is not None:
+            break
+    if tool is None:
+        return None
+    plugin = _mimo_plugin_from_handler(getattr(tool, "handler", None))
+    if plugin is None:
+        return None
+    return _MimoVoiceCloneAdapter(plugin, scope)
+
+
+class _MimoVoiceCloneAdapter:
+    """Expose MiMo Voice Clone's public service as a TTS-provider-shaped object."""
+
+    name = "MiMo TTS Voice Clone plugin"
+    provider_type = "tts"
+    model_name = "mimo-v2.5-tts-voiceclone"
+
+    def __init__(self, plugin, scope):
+        self.plugin = plugin
+        self.scope = scope
+
+    def get_model(self):
+        return self.model_name
+
+    def _event_user_id(self):
+        return str(getattr(self.scope, "session_id", "") or "").strip()
+
+    def _event_session_id(self):
+        kind = "GroupMessage" if getattr(getattr(self.scope, "kind", None), "value", "") == "group" else "FriendMessage"
+        return f"{getattr(self.scope, 'platform', '')}:{kind}:{getattr(self.scope, 'session_id', '')}"
+
+    @staticmethod
+    def _supported_kwargs(method, values):
+        try:
+            signature = inspect.signature(method)
+        except (TypeError, ValueError):
+            return values
+        if any(parameter.kind == inspect.Parameter.VAR_KEYWORD
+               for parameter in signature.parameters.values()):
+            return values
+        return {key: value for key, value in values.items() if key in signature.parameters}
+
+    @staticmethod
+    async def _await_result(result):
+        return await result if inspect.isawaitable(result) else result
+
+    @staticmethod
+    def _audio_path_from_result(result):
+        if isinstance(result, (list, tuple)):
+            result = result[0] if result else ""
+        if isinstance(result, os.PathLike):
+            return os.fspath(result)
+        if isinstance(result, str):
+            return result.strip()
+        for attribute in ("audio_path", "output_path", "path", "file", "url"):
+            value = getattr(result, attribute, "")
+            if isinstance(value, os.PathLike):
+                return os.fspath(value)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    async def get_audio(self, text):
+        synthesize = getattr(self.plugin, "synthesize_text", None)
+        if callable(synthesize):
+            kwargs = self._supported_kwargs(synthesize, {
+                "voice_name": None,
+                "context": "",
+                "user_id": self._event_user_id(),
+                "group_id": self._event_session_id(),
+                "split": False,
+            })
+            result = await self._await_result(synthesize(str(text or ""), **kwargs))
+            return self._audio_path_from_result(result)
+        compatibility = getattr(self.plugin, "text_to_speech", None)
+        if callable(compatibility):
+            kwargs = self._supported_kwargs(compatibility, {
+                "voice_name": "",
+                "context": "",
+                "target_umo": self._event_session_id(),
+                "session_id": self._event_session_id(),
+            })
+            result = await self._await_result(compatibility(str(text or ""), **kwargs))
+            return self._audio_path_from_result(result)
+        return ""
 
 
 def tts_provider_catalog(context):
@@ -179,11 +309,14 @@ def _finalize_streamed_wav(audio):
     return audio
 
 
-def _read_audio(path_value):
+def _read_audio(path_value, *, allow_data=False):
     if not isinstance(path_value, (str, Path)) or not str(path_value):
         return None
     path = Path(path_value).resolve(strict=True)
-    if not path.is_relative_to(Path(get_astrbot_temp_path()).resolve()) or not path.is_file():
+    roots = [Path(get_astrbot_temp_path()).resolve()]
+    if allow_data:
+        roots.append(Path(get_astrbot_data_path()).resolve())
+    if not any(path.is_relative_to(root) for root in roots) or not path.is_file():
         return None
     with path.open("rb") as stream:
         audio = stream.read(MAX_VOICE_BYTES + 1)
@@ -194,6 +327,21 @@ class NativeVoiceReply:
     def __init__(self, context):
         self.context = context
 
+    async def _synthesize(self, provider, text, timeout_seconds, *, allow_data=False):
+        if provider is None:
+            return None
+        async def synthesize():
+            method = getattr(provider, "get_audio", None) or getattr(provider, "synthesize_text", None)
+            if not callable(method):
+                return None
+            result = method(text.strip()) if inspect.iscoroutinefunction(method) else await asyncio.to_thread(
+                method, text.strip())
+            path = await result if inspect.isawaitable(result) else result
+            if isinstance(path, (list, tuple)):
+                path = path[0] if path else None
+            return await asyncio.to_thread(_read_audio, path, allow_data=allow_data)
+        return await asyncio.wait_for(synthesize(), timeout=timeout_seconds)
+
     async def render(self, task_context, text, *, provider_id="", timeout_seconds=30,
                      model_override="", voice_override=""):
         scope = task_context.scope
@@ -201,34 +349,33 @@ class NativeVoiceReply:
         umo = f"{scope.platform}:{kind}:{scope.session_id}"
         try:
             provider = None
+            explicit_missing = False
             if provider_id:
                 candidate = self.context.get_provider_by_id(provider_id)
                 if candidate is not None and candidate in self.context.get_all_tts_providers():
                     provider = candidate
                 else:
+                    explicit_missing = True
                     logger.warning("[CompanionV2] 指定 TTS Provider 未加载，回退默认语音服务 provider=%s", provider_id)
-            if provider is None:
+            if provider is None and not explicit_missing:
                 getter = getattr(self.context, "get_using_tts_provider_async", None)
                 if callable(getter):
                     provider = await getter(umo)
                 else:
                     provider = self.context.get_using_tts_provider(umo)
-            if provider is None:
-                logger.warning("[CompanionV2] TTS Provider 不可用 reason=not_selected")
+            if explicit_missing:
                 return None
-            if model_override or voice_override:
+            if provider is not None and (model_override or voice_override):
                 provider = _provider_with_overrides(provider, model_override, voice_override)
-            async def synthesize():
-                method = getattr(provider, "get_audio", None) or getattr(provider, "synthesize_text", None)
-                if not callable(method):
-                    return None
-                result = method(text.strip()) if inspect.iscoroutinefunction(method) else await asyncio.to_thread(method, text.strip())
-                path = await result if inspect.isawaitable(result) else result
-                if isinstance(path, (list, tuple)):
-                    path = path[0] if path else None
-                return await asyncio.to_thread(_read_audio, path)
-
-            audio = await asyncio.wait_for(synthesize(), timeout=timeout_seconds)
+            audio = await self._synthesize(provider, text, timeout_seconds)
+            if audio is None:
+                # V2 normally uses AstrBot's TTS provider. The V1 MiMo Voice
+                # Clone integration was a tool bridge, not a provider; keep it
+                # as an explicit fallback when no host provider can synthesize.
+                mimo = _find_mimo_voice_clone(self.context, scope)
+                if mimo is not None:
+                    logger.info("[CompanionV2] AstrBot TTS 不可用，尝试 MiMo Voice Clone 工具桥")
+                    audio = await self._synthesize(mimo, text, timeout_seconds, allow_data=True)
             if audio is not None:
                 return {"type": "record", "data": {"file": "base64://" + base64.b64encode(audio).decode("ascii")}}
         except Exception as error:
