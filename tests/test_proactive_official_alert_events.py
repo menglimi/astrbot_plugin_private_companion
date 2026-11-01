@@ -192,6 +192,43 @@ class OfficialAlertContactTests(ContactScheduleFixture, unittest.IsolatedAsyncio
         self.assertNotIn("_receipt", json.loads(material.payload))
         self.assertEqual(json.loads(material.payload)["alert"]["headline"], "大风预警")
 
+    async def test_update_after_a_skipped_contact_reaches_the_role_again(self):
+        """首条被跳过不等于已经联系过：同 chain 的升级版本必须还能生成联系。"""
+        app, _ = await self.setup_alerts()
+        first = self.alert()
+        first["description"] = "全市部分镇街发布大风预警，请注意防范。"
+        update = self.alert("alert-2", kind="update", supersedes=("alert-1",))
+        update["severity"] = "extreme"
+        update["description"] = "目标镇街发布大风预警，请注意防范。"
+        quotes = iter(["全市部分镇街发布大风预警", "目标镇街发布大风预警"])
+
+        async def send_with_quote(envelope):
+            if isinstance(envelope.original.event, BackgroundPromptTrigger) and any(
+                    item.owner == SOURCE_OWNER for item in envelope.original.context.materials):
+                return answered(json.dumps({"decision": "send", "text": "请留意预警。",
+                    "coverage": "covered", "coverage_quote": next(quotes)}, ensure_ascii=False))
+            if isinstance(envelope.original.event, BackgroundPromptTrigger):
+                return answered('{"decision":"send","text":"刚想起上次的话题。"}')
+            return "记住了。"
+
+        self.model_behavior = send_with_quote
+        port = AlertPort(self.clock, [[first], [update]])
+        app.contact_schedule.official_alert_events.port = port
+        self.advance(app, 60)
+        await self.until(lambda: len(self.contacts(app)) == 1)
+        skipped = json.loads(self.contacts(app)[0]["record_json"])
+        self.assertEqual((skipped["decision"], skipped["skip_reason"]), ("skip", "source_coverage"))
+        self.assertEqual(app.runtime.read_one("SELECT COUNT(*) FROM background_deliveries", ())[0], 0)
+
+        self.clock.advance(timedelta(minutes=5))
+        app.contact_schedule.advance()
+        await self.until(lambda: port.calls == 2 and not app.contact_schedule.active_handles)
+        self.assertEqual(len(self.contacts(app)), 2)
+        sent = json.loads(self.contacts(app)[1]["record_json"])
+        self.assertEqual(sent["decision"], "send")
+        marker = sent["automatic_origin"]["official_alert_event"]
+        self.assertEqual((marker["alert_id"], marker["chain_id"]), ("alert-2", "alert-1"))
+
     async def test_update_chain_does_not_repeat_after_restart(self):
         app, _ = await self.setup_alerts()
         port = AlertPort(self.clock, [[self.alert()],

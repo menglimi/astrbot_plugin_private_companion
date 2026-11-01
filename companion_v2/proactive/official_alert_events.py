@@ -94,18 +94,52 @@ class OfficialAlertContactEvents:
                 ON CONFLICT(origin_key) DO UPDATE SET location_hash=excluded.location_hash,
                 checked_at=excluded.checked_at""", (context.key, location_hash, stamp(at)))
 
+    def _contacted_chains(self, context, location_hash):
+        """Chains that already produced a sendable contact in this window.
+
+        The chain identity alone is the wrong dedupe key: a contact that was
+        skipped (model skip, coverage guard, quota) never reached the user, so a
+        later version of the same chain - an upgrade with a new id, a new issue
+        time or a higher severity - must still be able to contact them.  Only
+        records that carried a body (``send`` or its pending persona judgement)
+        count as contacted; a skipped record does not.
+        """
+        rows = self.runtime.read_all("""SELECT json_extract(record_json,
+            '$.automatic_origin.official_alert_event.chain_id') AS chain_id
+            FROM proactive_contacts WHERE origin_key = ?
+            AND json_extract(record_json, '$.decision') IN ('send', 'judge_pending')
+            AND json_extract(record_json,
+                '$.automatic_origin.official_alert_event.location_hash') = ?""",
+            (context.key, location_hash))
+        return {row["chain_id"] for row in rows if row["chain_id"]}
+
+    @staticmethod
+    def _alert_opportunity(context, location_hash, row, alert):
+        """One opportunity per alert version, not per polling pass.
+
+        The version keeps an unchanged warning from being retried on every poll
+        after a skip, while a new version in the same chain gets a fresh task id
+        and can therefore be reconsidered.
+        """
+        version = digest([row["alert_id"], alert.get("issued_at"), alert.get("severity")])
+        queried = datetime.fromisoformat(row["queried_at"])
+        return Opportunity("official-alert-" + digest(
+            [context.key, location_hash, row["chain_id"], version]), context.scope, queried,
+            min(queried + MAX_OBSERVATION_AGE, datetime.fromisoformat(alert["expires_at"])))
+
     def _candidate(self, context, location_hash, at):
         rows = self.runtime.read_all("""SELECT * FROM proactive_official_alerts WHERE origin_key = ?
             AND location_hash = ? AND state = 'current' ORDER BY queried_at DESC, alert_id""",
             (context.key, location_hash))
+        contacted = self._contacted_chains(context, location_hash)
         for row in rows:
+            if row["chain_id"] in contacted:
+                continue
             queried = datetime.fromisoformat(row["queried_at"])
             alert = json.loads(row["alert_json"])
             if at - queried > MAX_OBSERVATION_AGE or at >= datetime.fromisoformat(alert["expires_at"]):
                 continue
-            opportunity = Opportunity("official-alert-" + digest([context.key, location_hash, row["chain_id"]]),
-                context.scope, queried, min(queried + MAX_OBSERVATION_AGE,
-                                           datetime.fromisoformat(alert["expires_at"])))
+            opportunity = self._alert_opportunity(context, location_hash, row, alert)
             task_id = self.contacts.task_id(context, opportunity)
             if (self.runtime.read_one("SELECT 1 FROM execution_tasks WHERE task_id = ?", (task_id,))
                     or self.runtime.read_one("SELECT 1 FROM proactive_contacts WHERE task_id = ?", (task_id,))):
@@ -203,11 +237,8 @@ class OfficialAlertContactEvents:
 
     @staticmethod
     def _candidate_opportunity(context, row):
-        queried = datetime.fromisoformat(row["queried_at"])
-        alert = json.loads(row["alert_json"])
-        return Opportunity("official-alert-" + digest([context.key, row["location_hash"], row["chain_id"]]),
-            context.scope, queried, min(queried + MAX_OBSERVATION_AGE,
-                                       datetime.fromisoformat(alert["expires_at"])))
+        return OfficialAlertContactEvents._alert_opportunity(
+            context, row["location_hash"], row, json.loads(row["alert_json"]))
 
     def validate(self, context, marker, at):
         if type(marker) is not dict or set(marker) != {"alert_id", "chain_id", "location_hash", "source"}:
