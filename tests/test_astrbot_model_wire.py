@@ -704,6 +704,10 @@ class NativeModelTests(NativeFixture, unittest.IsolatedAsyncioTestCase):
             with self.subTest(key=key), self.assertRaises(ValueError): self.make_model()
         self.native.provider.provider_config["custom_extra_body"] = {}
         provider = self.make_model(maximum_input_estimate=1024)
+        # The owner-side preflight reads this value; a dropped injection would
+        # silently fall back to the default and record a ceiling production is not
+        # running under.
+        self.assertEqual(provider.local_provider().maximum_input_estimate, 1024)
         envelope = await self.envelope()
         with self.assertRaises(TaskError): provider.reserve(envelope)
         self.assertEqual((await provider.generate(envelope)).status, "not_started")

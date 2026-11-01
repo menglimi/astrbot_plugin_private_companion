@@ -14,6 +14,7 @@ distribution that starved one conversation no longer needs a code change.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 import json
 from logging import getLogger
@@ -60,6 +61,33 @@ LEARN_BUDGET_SECONDS = 180
 LEARN_MARGIN_SECONDS = 30
 LEARN_PROVIDER_TIMEOUT_SECONDS = LEARN_BUDGET_SECONDS - LEARN_MARGIN_SECONDS
 
+# A window reads the newest rules for deduplication, but a window that
+# accumulated hundreds of them cannot always encode all of them inside the
+# model's declared input estimate: one production window held 128 rules and the
+# newest 80 alone were 1.42× the default 131072-byte ceiling once JSON-escaped by
+# the adapter's wire. The rules are the cheapest material to lose, so a run trims
+# them rather than failing. The floor keeps enough priors to deduplicate at all;
+# below it a batch would propose rules the window already adopted.
+RULE_READ_LIMIT = 80
+MIN_EXISTING_RULES = 8
+
+# Not every rule is equally useful to a batch that can only afford part of the
+# window: an adopted or pending rule is a prior a new candidate must not
+# duplicate, while a rejected or retired one no longer describes the voice and is
+# only kept by recency. Lower values are kept first; ties keep the stored order.
+RULE_STATE_PRIORITY = {"adopted": 0, "pending": 1}
+LOWEST_RULE_PRIORITY = 2
+
+
+def reference_rule_priority(rule):
+    """The deduplication value of one reference rule; lower values are kept first.
+
+    Rules are mappings read from storage, but ``trim_rounds`` passes a ``range``
+    only to measure the step, so anything that is not a rule mapping ranks lowest.
+    """
+    state = rule.get("state") if isinstance(rule, Mapping) else None
+    return RULE_STATE_PRIORITY.get(state, LOWEST_RULE_PRIORITY)
+
 
 def expression_learning_profile(provider, *, max_output_tokens=2048):
     return ModelTaskProfile(KIND, Lane.BACKGROUND, provider,
@@ -70,6 +98,40 @@ def expression_learning_profile(provider, *, max_output_tokens=2048):
 def learning_instruction(mode, limit):
     """The model-facing contract for one run, bounded to the candidates it can afford."""
     return PROMPT + "\n" + learning.FORM_INSTRUCTION + "\n" + learning.mode_instruction(mode, limit)
+
+
+def trim_reference_rules(rules):
+    """One trim step: the reference subset a batch can still afford.
+
+    The subset keeps the highest deduplication value first: adopted and pending
+    rules outrank every other state, and within one priority the newest rule
+    wins because ``existing_rules`` arrives newest first. The floor stops the
+    trimming while deduplication still has priors to compare against. Kept rules
+    keep their stored newest-first order, so the prompt reads the same way at
+    every step even after several trims.
+    """
+    keep = max(MIN_EXISTING_RULES, len(rules) * 2 // 3)
+    ranked = sorted(range(len(rules)), key=lambda index: (reference_rule_priority(rules[index]), index))
+    return [rules[index] for index in sorted(ranked[:keep])]
+
+
+def trim_rounds(limit):
+    """How many trim steps a full read window needs to reach the floor.
+
+    Derived from the same step ``trim_reference_rules`` applies instead of being
+    chosen, so raising ``RULE_READ_LIMIT`` cannot leave a run reporting a profile
+    conflict while a smaller subset would still have fitted.
+    """
+    rounds, count = 0, limit
+    while count > MIN_EXISTING_RULES:
+        count = len(trim_reference_rules(range(count)))
+        rounds += 1
+    return rounds
+
+
+# A bound keeps a pathological estimate from looping forever; it is exactly the
+# number of steps the read window needs, never fewer than the trim policy uses.
+MAX_TRIM_ROUNDS = trim_rounds(RULE_READ_LIMIT)
 
 
 def parse_output(raw, *, allowed_evidence, default_channels=None):
@@ -252,8 +314,8 @@ class ExpressionStyleService:
         owner_key, scope_key = digest(self.samples.role_owner(context)), digest(context.scope)
         existing_rows = self.runtime.read_all("""SELECT signal_id, dimension, observation, proposal, applicability_json, state
             FROM expression_style_signals WHERE owner_key = ? AND scope_key = ?
-              ORDER BY created_at DESC, signal_id LIMIT 80""",
-            (owner_key, scope_key))
+              ORDER BY created_at DESC, signal_id LIMIT ?""",
+            (owner_key, scope_key, RULE_READ_LIMIT))
         existing_rules = tuple({"signal_id": row["signal_id"],
                                 "dimension": row["dimension"], "observation": row["observation"][:800],
                                 "proposal": row["proposal"][:1200],
@@ -339,11 +401,57 @@ class ExpressionStyleService:
                 # budget is ``model_timeout``, and that is what the last result has
                 # to say: the material batch is not retried after it.
                 report["code"] = result.failure_code
+            # A run that had to trim its reference rules says so here; otherwise
+            # the difference between "the window held 80 rules" and "the model was
+            # sent 8 of them" is invisible after the task succeeds.
+            observation = self.pending.get(identifier) or {}
+            if observation.get("trimmed_rules"):
+                report["trimmed_rules"] = observation["trimmed_rules"]
+                report["trim_reason"] = observation.get("trim_reason")
+                report["input_ceiling"] = observation.get("input_ceiling")
             self.results[work_key] = report
             return report
         finally:
             self.pending.pop(identifier, None)
             self.committed.discard(identifier)
+
+    def _request(self, job, rules, limit):
+        """The sealed request for one batch of reference rules.
+
+        Only ``existing_rules`` varies between trim rounds: the window, samples,
+        catalogue, ask and output schema stay exactly what the batch prepared.
+        """
+        context = job["context"]
+        material = {"sample_window": job["sample_document"], "source_channel": context.scope.kind.value,
+                    "samples": job["catalogue"],
+                    "existing_rules": rules, "output_schema": learning.schema(limit)}
+        return PromptRequest(BackgroundPromptTrigger(job["request_key"], context.actor.principal,
+            context.scope, job["at"]), job["instruction"], SealedForegroundContext(
+                (PromptMaterial(OWNER, "role_expression_samples", encode(material)),), (), ()),
+            learning_instruction(job["policy"].learning_mode, limit),
+            context.role_binding, output_format="role_expression_learning")
+
+    def _request_fits(self, run, request):
+        """Ask the gateway whether this request fits, without sending it.
+
+        The gateway records ``model_requests`` before it reserves the provider, so
+        a prompt that exceeds the model's input ceiling cannot be retried inside
+        the same task. ``gateway.estimate`` performs the same role replacement
+        ``open_session`` performs before it resolves the route, so what is
+        preflighted here is the request ``generate`` would actually send — a self
+        page that is shorter than the captured persona can no longer trim a window
+        that fits.
+
+        This preflight only covers the primary route and only answers "did
+        ``reserve`` raise". What the dispatch enforces afterwards (the adapter's
+        ``Amount`` contract and the declared output ceiling) is not checked here,
+        so a third-party provider that breaks that contract still fails at
+        dispatch time rather than being trimmed for it.
+        """
+        fits, ceiling = self.gateway.estimate(run, request)
+        if not fits:
+            logger.debug("[CompanionV2] 表达学习材料超过模型档案 task=%s", run.task.task_id)
+        return fits, ceiling
 
     async def generate(self, run):
         job = self.pending[run.task.task_id]
@@ -354,14 +462,30 @@ class ExpressionStyleService:
         # The ceiling this run executes under is the registered profile's ceiling.
         # Size the ask from it so a thinking model keeps the rest for its reasoning.
         limit = learning.signal_limit(mode, self.gateway.router.profiles[KIND].max_output_tokens)
-        material = {"sample_window": job["sample_document"], "source_channel": context.scope.kind.value,
-                    "samples": job["catalogue"],
-                    "existing_rules": job["existing_rules"], "output_schema": learning.schema(limit)}
-        request = PromptRequest(BackgroundPromptTrigger(job["request_key"], context.actor.principal,
-            context.scope, job["at"]), job["instruction"], SealedForegroundContext(
-                (PromptMaterial(OWNER, "role_expression_samples", encode(material)),), (), ()),
-            learning_instruction(mode, limit),
-            context.role_binding, output_format="role_expression_learning")
+        rules = job["existing_rules"]
+        request = self._request(job, rules, limit)
+        # The material is fixed before the first request, but whether it fits is
+        # only known from the route. Trim the reference rules instead of letting
+        # the reservation fail the whole batch, and record why the run sent fewer
+        # than it read. The samples are never trimmed: they are the evidence.
+        for attempt in range(MAX_TRIM_ROUNDS + 1):
+            fits, ceiling = self._request_fits(run, request)
+            if fits:
+                break
+            if attempt == MAX_TRIM_ROUNDS or len(rules) <= MIN_EXISTING_RULES:
+                logger.warning("[CompanionV2] 表达学习材料超出模型档案 task=%s rules=%d ceiling=%s",
+                               run.task.task_id, len(rules), ceiling)
+                raise TaskError("expression_model_profile_exceeded",
+                                "the expression learning prompt exceeds the selected model input or output profile")
+            rules = trim_reference_rules(rules)
+            job["trimmed_rules"] = len(job["existing_rules"]) - len(rules)
+            job["trim_reason"] = "model_input_budget"
+            job["input_ceiling"] = ceiling
+            request = self._request(job, rules, limit)
+        if job.get("trimmed_rules"):
+            logger.info("[CompanionV2] 表达学习材料超出模型档案，已按预算裁剪参考规则 "
+                        "task=%s rules=%d trimmed=%d ceiling=%s",
+                        run.task.task_id, len(rules), job["trimmed_rules"], job["input_ceiling"])
         completion = await self.gateway.generate(run, request)
         try:
             if completion.draft is None:
@@ -652,6 +776,10 @@ class ExpressionStyleService:
             "code": state.get("code"),
             "available": state.get("available"),
             "required": state.get("required"),
+            # A succeeded run may still have sent fewer reference rules than the
+            # window holds; these two fields are how the page can say so.
+            "trimmed_rules": state.get("trimmed_rules"),
+            "trim_reason": state.get("trim_reason"),
             "active": self._active_signal_count(context),
             "limit": policy.active_signal_limit,
             "last_run_at": stamp(closed_at) if closed_at is not None else None,

@@ -491,6 +491,7 @@ class AstrBotTextProvider:
                      "astrbot_gemini" if self.kind == "gemini" else "astrbot_native")
         return LocalProvider(self.binding, capabilities, self.maximum_output_tokens,
                              self.reserve, self.generate, transport=transport, default_streaming=self.streaming,
+                             maximum_input_estimate=self.maximum_input_estimate,
                              supports_model_override=True, model=self.model)
 
     def _same_provider_kind(self, provider):
