@@ -43,6 +43,8 @@ jobs:
         run: python -X utf8 -m unittest -q tests.test_qweather_weather_source tests.test_qweather_alert_source tests.test_weather_migration
       - name: Check native provider adapter contract
         run: python -X utf8 -m unittest -q tests.test_astrbot_gemini_provider
+      - name: Check NAI gateway accounting and retry boundaries
+        run: python -X utf8 -m unittest -q tests.test_nai_gateway tests.test_nai_backend
       - name: Build current plugin source
         run: python -X utf8 tools/build_v2_release.py --output "$RUNNER_TEMP/companion-release"
       - name: Verify assembled archive

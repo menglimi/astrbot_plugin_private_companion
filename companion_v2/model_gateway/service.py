@@ -83,6 +83,10 @@ class LocalModelGateway:
         self.runtime = tasks.runtime
         self.role_reference = TaskRoleReference(self.runtime)
 
+    def image_session(self, run, invocation):
+        from .images import ImageModelSession
+        return ImageModelSession(self, run, invocation)
+
     async def generate(self, run: TaskRun, request: PromptRequest) -> ModelCompletion:
         session = self.open_session(run, request)
         # open_session may replace the captured persona with the task role

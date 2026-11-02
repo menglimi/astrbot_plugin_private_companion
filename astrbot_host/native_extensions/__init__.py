@@ -507,6 +507,11 @@ class NativeExtensionRegistry(AstrBotToolPort):
                     if self.content is not None and invocation.descriptor.tool.action in CONTENT_ACTIONS else nullcontext())
                 with binding:
                     kwargs = {"before_dispatch": before_dispatch}
+                    image_session = None
+                    if (action in IMAGE_ACTIONS and self.application is not None
+                            and "model_call" in inspect.signature(method).parameters):
+                        image_session = self.application.gateway.image_session(invocation.task_run, invocation)
+                        kwargs["model_call"] = image_session.execute
                     if image_references is not None:
                         parameters = inspect.signature(method).parameters
                         if {"host_references", "fetch_reference"}.issubset(parameters):
@@ -516,7 +521,11 @@ class NativeExtensionRegistry(AstrBotToolPort):
                             kwargs.update(host_references=image_references.offers, fetch_reference=fetch_reference)
                         elif invocation.descriptor.tool.action == "image.mask_edit":
                             raise TaskError("native_reference_reader_unavailable", "the image provider does not accept host image references")
-                    result = await method(json_document(document), **kwargs)
+                    try:
+                        result = await method(json_document(document), **kwargs)
+                    finally:
+                        if image_session is not None:
+                            image_session.close()
                 return result, guarded
             finally:
                 active = False
