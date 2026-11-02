@@ -100,3 +100,19 @@
 @media(prefers-reduced-motion:reduce){
   .decision-page *{scroll-behavior:auto;animation:none;transition:none}
 }
+
+/* 防骚扰：设置表单与黑名单目录 */
+.guard-panel{display:flex;flex-direction:column;gap:var(--sp-3)}
+.guard-settings{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:var(--sp-2);align-items:end}
+.guard-settings label{display:flex;flex-direction:column;gap:var(--sp-1);font-size:var(--fs-2);color:var(--muted)}
+.guard-settings label.guard-switch{flex-direction:row;align-items:center;gap:var(--sp-1)}
+.guard-settings label.guard-wide{grid-column:1/-1}
+.guard-settings input[type=number],.guard-settings textarea{width:100%}
+.guard-directory{border:1px solid var(--line);border-radius:var(--r-2);overflow:hidden}
+.guard-heading{display:flex;justify-content:space-between;align-items:center;padding:var(--sp-2) var(--sp-3)}
+.guard-heading h3{margin:0;font-size:var(--fs-3)}
+.guard-table{width:100%;border-collapse:collapse;font-size:var(--fs-2)}
+.guard-table th,.guard-table td{text-align:left;padding:var(--sp-2) var(--sp-3);border-top:1px solid var(--line);vertical-align:top}
+.guard-table td small{display:block;color:var(--muted);overflow-wrap:anywhere}
+.guard-table code{overflow-wrap:anywhere}
+.decision-empty-row{color:var(--muted);text-align:center}
