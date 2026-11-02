@@ -40,7 +40,7 @@ from companion_v2.proactive.service import contact_profile, persona_judge_profil
 from companion_v2.role_work.reader import reading_profile
 from companion_v2.model_gateway.routing import configuration_fields
 from companion_v2.memory.reflection import reflection_profile
-from companion_v2.role_work.state.maintenance import state_profile
+from companion_v2.role_work.state.maintenance import state_output_budget, state_profile
 from companion_v2.agenda.planning import planning_profile
 from companion_v2.role_work.growth.progress import growth_progress_profile
 from companion_v2.role_work.journal.self_review_service import self_review_profile
@@ -106,9 +106,11 @@ class NativeAdapterTypes:
         return (self.provider,) + tuple(self.text_provider_types)
 
     def is_text_provider(self, provider):
-        """Registered class or the public AstrBot text-provider surface."""
+        """Registered class, public text surface, or public text_chat fallback."""
         from .provider import looks_like_text_provider
-        return isinstance(provider, self.provider_types) or looks_like_text_provider(provider)
+        return (isinstance(provider, self.provider_types)
+                or looks_like_text_provider(provider)
+                or callable(getattr(provider, "text_chat", None)))
 
     def __post_init__(self):
         check_version(self.version)
@@ -276,7 +278,7 @@ class AstrBotStagingSession:
         self.model = AstrBotTextProvider(context, bridge=self.bridge, binding=binding,
             provider_id=profile.provider_id, version=native_types.version, provider_type=native_types.provider_types,
             function_tool_type=native_types.function_tool, tool_set_type=native_types.tool_set,
-            tariff=profile.tariff, maximum_output_tokens=profile.max_output_tokens,
+            tariff=profile.tariff, maximum_output_tokens=max(profile.max_output_tokens, 8192),
             maximum_input_estimate=profile.maximum_input_estimate, output_parameter=profile.output_parameter,
             streaming=profile.streaming)
         if self.model.native is not native:
@@ -284,7 +286,7 @@ class AstrBotStagingSession:
         self.model._current()
         self.models = (self.model,) + assemble_providers(context, bridge=self.bridge, native_types=native_types,
             primary_id=profile.provider_id, additional=additional_providers,
-            defaults=TextProviderSettings(profile.provider_id, profile.tariff, profile.max_output_tokens,
+            defaults=TextProviderSettings(profile.provider_id, profile.tariff, max(profile.max_output_tokens, 8192),
                 profile.maximum_input_estimate, profile.output_parameter, profile.streaming))
         fallback_provider_id, replacement_rules = loaded_routing(fallback_provider_id, replacement_rules,
             (model.binding.provider for model in self.models))
@@ -304,7 +306,7 @@ class AstrBotStagingSession:
                     contact_profile(profile.provider_id, max_output_tokens=profile.max_output_tokens),
                     persona_judge_profile(profile.provider_id, max_output_tokens=profile.max_output_tokens),
                     reflection_profile(profile.provider_id, max_output_tokens=profile.max_output_tokens),
-                    state_profile(profile.provider_id, max_output_tokens=profile.max_output_tokens),
+                    state_profile(profile.provider_id, max_output_tokens=state_output_budget(profile.max_output_tokens, self.models)),
                     planning_profile(profile.provider_id, max_output_tokens=profile.max_output_tokens),
                     growth_progress_profile(profile.provider_id, max_output_tokens=profile.max_output_tokens),
                     self_review_profile(profile.provider_id, max_output_tokens=profile.max_output_tokens),

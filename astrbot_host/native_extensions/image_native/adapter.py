@@ -10,7 +10,8 @@ from .output_configuration import MAX_TASK_TIMEOUT_SECONDS, task_timeout_seconds
 from .package import package_hash
 from .references import (EDIT_REFERENCE_ROLES, ReferenceSelectionError, edit_role,
                          select_edit_tickets)
-from .types import ImageInvocation, NativeImageError, ReferenceImage, ReferenceOffer, document, fingerprint, require_text
+from .types import (MAX_REFERENCE_IMAGES, ImageInvocation, NativeImageError, ReferenceImage,
+                    ReferenceOffer, document, fingerprint, require_text)
 from .waiting import deadline_timestamp, wait_for_output
 
 
@@ -142,23 +143,24 @@ class NativeImageProvider:
                 raise NativeImageError("invalid_image_arguments")
         if "reference_ids" in args:
             references = args["reference_ids"]
-            if (type(references) is not list or len(references) > 8
+            if (type(references) is not list or len(references) > MAX_REFERENCE_IMAGES
                     or any(type(item) is not str or not item or len(item) > 128 for item in references)
                     or len(set(references)) != len(references)):
                 raise NativeImageError("invalid_reference_ids")
         if operation == "edit" and "reference_roles" in args:
             roles = args["reference_roles"]
-            if (type(roles) is not list or not 1 <= len(roles) <= 8
+            if (type(roles) is not list or not 1 <= len(roles) <= MAX_REFERENCE_IMAGES
                     or any(role not in EDIT_REFERENCE_ROLES for role in roles)):
                 raise NativeImageError("invalid_reference_roles")
         if operation == "edit" and "reference_indices" in args:
             indices = args["reference_indices"]
-            if (type(indices) is not list or len(indices) > 8
-                    or any(type(index) is not int or not 0 <= index < 8 for index in indices)
+            if (type(indices) is not list or len(indices) > MAX_REFERENCE_IMAGES
+                    or any(type(index) is not int or not 0 <= index < MAX_REFERENCE_IMAGES
+                           for index in indices)
                     or len(set(indices)) != len(indices)):
                 raise NativeImageError("invalid_reference_indices")
         if operation == "mask_edit":
-            if (any(type(args.get(name)) is not int or not 0 <= args[name] < 8
+            if (any(type(args.get(name)) is not int or not 0 <= args[name] < MAX_REFERENCE_IMAGES
                     for name in ("source_index", "mask_index"))
                     or args["source_index"] == args["mask_index"]):
                 raise NativeImageError("invalid_mask_reference_indices")
@@ -206,7 +208,7 @@ class NativeImageProvider:
 
     @staticmethod
     def _host_references(values):
-        if type(values) not in (tuple, list) or len(values) > 8:
+        if type(values) not in (tuple, list) or len(values) > MAX_REFERENCE_IMAGES:
             raise NativeImageError("native_references_invalid")
         required = {"reference_handle", "reference_id", "source_key", "content_hash", "position"}
         result = []
@@ -217,7 +219,7 @@ class NativeImageProvider:
                            ("reference_handle", "reference_id", "source_key", "content_hash"))
                     or len(item["content_hash"]) != 64
                     or any(char not in "0123456789abcdef" for char in item["content_hash"])
-                    or type(item["position"]) is not int or not 0 <= item["position"] < 8):
+                    or type(item["position"]) is not int or not 0 <= item["position"] < MAX_REFERENCE_IMAGES):
                 raise NativeImageError("native_references_invalid")
             if "roles" in item:
                 roles = item["roles"]

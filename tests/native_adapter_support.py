@@ -203,8 +203,9 @@ class NativeFixture(HostFixture):
         self.bridge.session_persona_override_lookup = lookup
 
     def make_model(self, **changes):
+        provider_type = changes.pop("provider_type", FakeProvider)
         return AstrBotTextProvider(self.native, bridge=self.bridge, binding=self.providers[0].binding,
-            provider_id="native-model", version="4.27.2", provider_type=FakeProvider,
+            provider_id="native-model", version="4.27.2", provider_type=provider_type,
             function_tool_type=NS, tool_set_type=NS, tariff=UsageTariff(2000000, 1000000, 4000000),
             maximum_output_tokens=100, **changes)
 

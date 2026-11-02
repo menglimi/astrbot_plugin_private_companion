@@ -8,10 +8,11 @@ import hashlib
 import json
 import sqlite3
 
+from companion_v2.capabilities.privacy import is_core
 from companion_v2.capabilities.repositories import CapabilityRepository
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import (
-    AssetRef, AudienceRef, ReferenceValidationError, ScopeRef, SourceRef, SubjectRef, VersionRef,
+    AssetRef, AudienceRef, ReferenceValidationError, ScopeKind, ScopeRef, SourceRef, SubjectRef, VersionRef,
 )
 from companion_v2.identity_policy.models import ResolvedIdentity
 from companion_v2.identity_policy.ports import IdentityAuthorizationPort
@@ -490,24 +491,39 @@ class ScreenRepository:
         if not role_selection.is_success:
             return Outcome(failure=role_selection.failure)
         stamps: list[object] = []
-        for capability in (SCREEN_READ, SCREEN_PROCESS):
-            consent = self._capabilities.authorize(
-                extension_id=SCREEN_EXTENSION, capability_id=capability,
-                subject=resolved.subject, scope=reference.source.scope,
-            )
-            if not consent.is_success:
-                return Outcome(failure=consent.failure)
-            access = self._authorizer.authorize(
-                resolved, scope=reference.source.scope, capability=capability, observed_at=observed_at,
-            )
-            if not access.is_success:
-                return Outcome(failure=access.failure)
-            identity = access.unwrap()
-            stamps.append((
-                capability, identity.subject.kind.value, identity.subject.subject_id,
-                identity.binding_id, identity.binding_revision, identity.grant_id, identity.grant_revision,
-                consent.unwrap().revision,
-            ))
+        core_group = (reference.source.scope.kind is ScopeKind.GROUP
+                      and is_core(self._runtime, resolved.subject))
+        if core_group:
+            # Core administrators are the default audience for privacy
+            # capabilities and do not need a per-window consent row.  Re-resolve
+            # the binding so a mid-capture rebind still invalidates the stamp.
+            fresh = self._authorizer.resolve_authenticated(resolved.principal, observed_at=observed_at)
+            if not fresh.is_success:
+                return Outcome(failure=fresh.failure)
+            identity = fresh.unwrap()
+            if identity.subject != resolved.subject or not is_core(self._runtime, identity.subject):
+                return Outcome.failed("screen_core_changed", "core administrator identity changed")
+            stamps.append(("core-group", identity.subject.kind.value, identity.subject.subject_id,
+                           identity.binding_id, identity.binding_revision))
+        else:
+            for capability in (SCREEN_READ, SCREEN_PROCESS):
+                consent = self._capabilities.authorize(
+                    extension_id=SCREEN_EXTENSION, capability_id=capability,
+                    subject=resolved.subject, scope=reference.source.scope,
+                )
+                if not consent.is_success:
+                    return Outcome(failure=consent.failure)
+                access = self._authorizer.authorize(
+                    resolved, scope=reference.source.scope, capability=capability, observed_at=observed_at,
+                )
+                if not access.is_success:
+                    return Outcome(failure=access.failure)
+                identity = access.unwrap()
+                stamps.append((
+                    capability, identity.subject.kind.value, identity.subject.subject_id,
+                    identity.binding_id, identity.binding_revision, identity.grant_id, identity.grant_revision,
+                    consent.unwrap().revision,
+                ))
         installation = self._capabilities.installation(extension_id=SCREEN_EXTENSION).unwrap()
         stamps.append((installation.revision, role.subject_id, role_selection.unwrap().revision))
         return Outcome.success(_hash(json.dumps(stamps, ensure_ascii=False)))

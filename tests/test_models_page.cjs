@@ -291,6 +291,24 @@ test('switching a provider inline raises one queued change and posting saves tha
   assert.doesNotMatch(node.innerHTML, /项改动待保存/);
 });
 
+test('an explicit fallback equal to the primary is normalized instead of blocking the save', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  page.mount(node);
+  const data = status();
+  data.tasks[1].fields.fallback = {value: 'primary', inherited_value: '', source: 'window',
+    inherited_source: 'default', explicit: true};
+  requests[0].resolve(data);
+  await flush();
+  node.click('[data-model-sub]', {modelSub: 'cfg'});
+  node.change('[data-model-field]', {modelField: 'prompt', modelKind: 'memory.reflect', value: '保持简短'});
+  assert.match(node.innerHTML, /项改动待保存/);
+  node.click('[data-model-action]', {modelAction: 'save-one', modelKind: 'memory.reflect'});
+  const post = requests.find(request => request.method === 'POST');
+  assert.equal(post.values.changes.fallback, '', 'a duplicate fallback must be cleared explicitly');
+  assert.equal(post.values.changes.prompt, '保持简短');
+});
+
 test('multi-select assigns one provider to several tasks and keeps capability mismatches out', async () => {
   const {page, requests, root} = harness();
   const node = root();
@@ -1485,7 +1503,8 @@ test('Laya page exposes official local install, first-run download, and SystemOn
   node.change('[data-laya-field]', {layaField: 'followup_confidence_threshold', value: 55});
   node.change('[data-laya-field]', {layaField: 'local_model_path', value: 'C:/models/laya-finetuned'});
   assert.deepEqual(Array.from(page.changedFields()).sort(),
-    ['Laya · 判断能力需求', 'Laya · 连续接话置信阈值', 'Laya · 本地模型路径'].sort());
+    ['Laya · 判断能力需求', 'Laya · request_format', 'Laya · remote_model',
+     'Laya · 连续接话置信阈值', 'Laya · 本地模型路径'].sort());
   node.click('[data-laya-save]');
   const saveRequest = requests.find(item => item.method === 'POST' && item.route === 'model/laya/save');
   assert.equal(saveRequest.values.changes.decision_fields.tool_need, false);
@@ -1500,7 +1519,7 @@ test('Laya page exposes official local install, first-run download, and SystemOn
   await flush();
 
   node.change('[data-laya-field]', {layaField: 'mode', value: 'remote'});
-  assert.match(node.innerHTML, /SystemOne 服务地址/);
+  assert.match(node.innerHTML, /服务地址/);
   assert.match(node.innerHTML, /\/v1\/systemone/);
   assert.match(node.innerHTML, /复制服务启动命令/);
   assert.match(node.innerHTML, /data-laya-save/);

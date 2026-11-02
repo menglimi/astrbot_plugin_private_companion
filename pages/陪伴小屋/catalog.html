@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>功能地图 · 陪伴小屋</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --canvas: #f5f7f6;
+      --surface: #ffffff;
+      --ink: #20292b;
+      --muted: #687478;
+      --line: #dce3e1;
+      --accent: #12665a;
+      --accent-soft: #e2f1ec;
+      --warm: #b5573f;
+      --focus: #167b6d;
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --canvas: #171d1f;
+      --surface: #222a2c;
+      --ink: #ecf1ef;
+      --muted: #a9b6b3;
+      --line: #394447;
+      --accent: #69c9b4;
+      --accent-soft: #24433d;
+      --warm: #ef9d81;
+      --focus: #8ed9c7;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--canvas); color: var(--ink); font: 14px/1.5 system-ui, "Microsoft YaHei", sans-serif; }
+    button, input { font: inherit; }
+    button, a { -webkit-tap-highlight-color: transparent; }
+    button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    .shell { min-height: 100vh; display: grid; grid-template-columns: minmax(198px, 228px) minmax(0, 1fr); }
+    .sidebar { background: var(--surface); border-right: 1px solid var(--line); padding: 22px 12px; }
+    .brand { display: flex; align-items: center; gap: 11px; padding: 0 10px 24px; color: var(--ink); text-decoration: none; font-weight: 700; font-size: 16px; }
+    .brand-icon { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 7px; color: var(--accent); background: var(--accent-soft); }
+    .brand-icon svg, .icon-button svg, .back svg, .section-icon svg, .entry-link svg { width: 17px; height: 17px; flex: none; }
+    .side-label { padding: 0 10px 8px; color: var(--muted); font-size: 11px; font-weight: 700; }
+    .section-nav { width: 100%; min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 0; border-radius: 6px; padding: 7px 10px; color: var(--ink); background: transparent; text-align: left; cursor: pointer; }
+    .section-nav:hover, .section-nav:focus-visible { background: var(--accent-soft); color: var(--accent); }
+    .section-nav small { color: var(--muted); font-size: 11px; }
+    .main { min-width: 0; }
+    .toolbar { min-height: 65px; display: flex; align-items: center; gap: 15px; padding: 13px clamp(18px, 3vw, 40px); border-bottom: 1px solid var(--line); background: var(--surface); }
+    .back { width: 34px; height: 34px; display: grid; place-items: center; flex: none; border: 1px solid var(--line); border-radius: 6px; color: var(--ink); text-decoration: none; }
+    .back:hover, .icon-button:hover { color: var(--accent); background: var(--accent-soft); }
+    .crumb { min-width: 0; font-size: 13px; color: var(--muted); }
+    .crumb strong { color: var(--ink); font-weight: 600; }
+    .toolbar-spacer { flex: 1; }
+    .icon-button { width: 34px; height: 34px; display: grid; place-items: center; flex: none; border: 1px solid var(--line); border-radius: 6px; color: var(--ink); background: var(--surface); cursor: pointer; }
+    .content { max-width: 1120px; margin: 0 auto; padding: 30px clamp(18px, 3vw, 40px) 70px; }
+    .heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+    h1 { margin: 0; font-size: 25px; line-height: 1.25; font-weight: 700; }
+    .live { color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .live[data-state="running"]::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: var(--accent); }
+    .search { display: flex; align-items: center; gap: 9px; height: 41px; max-width: 440px; margin-bottom: 22px; border: 1px solid var(--line); border-radius: 6px; padding: 0 12px; color: var(--muted); background: var(--surface); }
+    .search:focus-within { border-color: var(--focus); }
+    .search svg { width: 17px; height: 17px; flex: none; }
+    .search input { min-width: 0; width: 100%; border: 0; outline: 0; color: var(--ink); background: transparent; }
+    .search input::placeholder { color: var(--muted); }
+    .group { margin: 0 0 28px; scroll-margin-top: 18px; }
+    .group-title { display: flex; align-items: baseline; gap: 10px; margin: 0 0 8px; padding-bottom: 9px; border-bottom: 1px solid var(--line); font-size: 16px; font-weight: 700; }
+    .group-title small { color: var(--muted); font-size: 11px; font-weight: 500; }
+    .entries { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 26px; }
+    .entry { min-width: 0; padding: 14px 2px; border-bottom: 1px solid var(--line); }
+    .entry-link { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; color: var(--ink); font-weight: 650; text-decoration: none; }
+    .entry-link:hover { color: var(--accent); }
+    .entry-link svg { width: 15px; height: 15px; color: var(--accent); }
+    .entry-desc { margin: 4px 0 0 22px; color: var(--muted); font-size: 12px; }
+    .sub-links { display: flex; flex-wrap: wrap; gap: 5px 14px; margin: 9px 0 0 22px; }
+    .sub-links a { color: var(--accent); font-size: 12px; text-decoration: none; }
+    .sub-links a:hover { text-decoration: underline; }
+    .empty { padding: 35px 0; color: var(--muted); }
+    @media (max-width: 780px) {
+      .shell { display: block; }
+      .sidebar { padding: 10px 16px; border-right: 0; border-bottom: 1px solid var(--line); }
+      .brand { padding: 0 0 8px; font-size: 14px; }
+      .brand-icon { width: 26px; height: 26px; }
+      .side-label { display: none; }
+      #sectionNav { display: flex; gap: 4px; overflow-x: auto; }
+      .section-nav { width: auto; min-height: 32px; flex: none; white-space: nowrap; }
+      .section-nav small { display: none; }
+      .content { padding-top: 23px; }
+    }
+    @media (max-width: 590px) {
+      .toolbar { min-height: 58px; }
+      .heading { align-items: start; flex-direction: column; gap: 7px; }
+      h1 { font-size: 21px; }
+      .live { white-space: normal; }
+      .entries { grid-template-columns: minmax(0, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" id="brandHome" href="./#life"><span class="brand-icon"><i data-lucide="house"></i></span><span>陪伴小屋</span></a>
+      <div class="side-label">分类</div>
+      <nav id="sectionNav" aria-label="功能分类"></nav>
+    </aside>
+    <main class="main">
+      <header class="toolbar">
+        <a class="back" id="backHome" href="./#life" title="返回小屋" aria-label="返回小屋"><i data-lucide="arrow-left"></i></a>
+        <span class="crumb">陪伴小屋 / <strong>功能地图</strong></span>
+        <span class="toolbar-spacer"></span>
+        <button class="icon-button" id="themeButton" type="button" title="切换主题" aria-label="切换主题"><i data-lucide="sun-moon"></i></button>
+      </header>
+      <div class="content">
+        <div class="heading"><h1>全部功能</h1><span class="live" id="liveState" role="status"></span></div>
+        <label class="search"><i data-lucide="search"></i><input id="searchInput" type="search" placeholder="搜索功能" aria-label="搜索功能"></label>
+        <div id="groups"></div>
+        <p class="empty" id="empty" hidden>没有找到对应功能。</p>
+      </div>
+    </main>
+  </div>
+  <script src="assets/lucide.min.js"></script>
+  <script>
+    const groups = [
+      ['开始与账号', [
+        ['开始使用', '首次连接与发送方式', 'rocket', '#manage/setup'],
+        ['账号与会话', 'Bot 账号与会话窗口', 'power', '#manage/host'],
+        ['模型与连接', '任务模型与备用模型', 'sliders-horizontal', '#manage/models'],
+        ['手机连接', '手机终端与网关', 'smartphone', '#manage/mobile'],
+        ['外观与设置', '主题与显示设置', 'palette', '#manage/appearance']
+      ]],
+      ['人物与关系', [
+        ['关系网', '用户与群聊的连接', 'network', '#manage/identity'],
+        ['用户', '用户目录与私聊权限', 'users-round', '#manage/identity-people'],
+        ['群聊', '群聊目录与成员', 'messages-square', '#manage/identity-groups'],
+        ['访问规则', '新成员与跨窗口权限', 'shield-check', '#manage/identity-access'],
+        ['关系与情感', '角色对关系的理解', 'heart-handshake', '#manage/identity-feelings'],
+        ['事实与经历', '记录与记忆策略', 'orbit', '#manage/memory', [['记录', 'records'], ['设置', 'settings']]]
+      ]],
+      ['对话与感知', [
+        ['感知', '环境、消息与媒体来源', 'scan-eye', '#manage/perception', [['环境', 'environment'], ['模型', 'models'], ['资讯', 'news'], ['屏幕', 'screen'], ['余额', 'balance'], ['召回', 'recall'], ['注入', 'injection']]],
+        ['理解', '消息与媒体理解', 'brain-circuit', '#manage/understanding', [['总览', 'overview'], ['图片', 'image'], ['视频', 'video'], ['文件', 'file'], ['转发', 'forwards']]],
+        ['决策', '回应时机与参与边界', 'brain', '#manage/decision'],
+        ['行动', '生活、社交与设备互动', 'play', '#manage/action'],
+        ['主动联系', '联系节奏与免打扰', 'heart-handshake', '#manage/contact'],
+        ['表达', '文字、语音与投递', 'message-square-more', '#manage/expression', [['文字与分段', 'text'], ['语音', 'voice'], ['表情与配图', 'reaction'], ['平台动作', 'platform'], ['群聊表达', 'group']]]
+      ]],
+      ['生活与成长', [
+        ['首页与小屋', '生活总览', 'house', '#life'],
+        ['状态与日程', '角色状态与日程', 'activity', '#life/state'],
+        ['日记与生活', '日记、睡眠与阅读', 'notebook-pen', '#life/diary', [['归档', 'archive'], ['阅读', 'reading'], ['睡眠', 'sleep'], ['回执', 'receipts']]],
+        ['家具与能力', '生活与拓展家具', 'armchair', '#life/directory'],
+        ['生活观察', '生活轨迹与交互', 'scan-eye', '#life/observation'],
+        ['学习与反思', '策略、学习与复盘', 'graduation-cap', '#manage/learning', [['总览', 'overview'], ['角色策略', 'strategy'], ['审阅中心', 'review'], ['成长链路', 'chain'], ['表达学习', 'expression'], ['行为模仿', 'behavior'], ['语义目录', 'semantic'], ['每日复盘', 'reflection']]]
+      ]],
+      ['角色与产出', [
+        ['自我', '角色档案与世界知识', 'user-round', '#manage/governance', [['角色档案', 'profile'], ['相处资料', 'relationship'], ['人格处理', 'questionnaire'], ['世界知识', 'knowledge']]],
+        ['产出', '图像、作品与素材', 'shapes', '#manage/output']
+      ]],
+      ['数据与维护', [
+        ['治理与维护', '诊断、缓存与巡护', 'settings-2', '#manage/maintenance', [['诊断', 'diagnostics'], ['缓存', 'cache'], ['效率', 'efficiency'], ['最近', 'recent'], ['提示词', 'prompts'], ['巡护', 'patrol']]],
+        ['资料与维护', '存储、备份与迁移', 'database', '#manage/data', [['存储', 'storage'], ['备份', 'backup'], ['迁移', 'migration']]]
+      ]]
+    ];
+    const token = new URLSearchParams(location.search).get('asset_token') || '';
+    function pageHref(route) {
+      const [path, hash] = ('./' + route).split('#');
+      return path + (token ? '?asset_token=' + encodeURIComponent(token) : '') + '#' + hash;
+    }
+    function icons() {
+      if (window.lucide) window.lucide.createIcons();
+    }
+    function readLive() {
+      const node = document.getElementById('liveState');
+      let live = null;
+      try { live = JSON.parse(localStorage.getItem('companion-catalog-snapshot') || 'null'); } catch {}
+      const running = live && live.state === 'running';
+      node.dataset.state = running ? 'running' : 'unknown';
+      node.textContent = running ? '小屋运行中' : '小屋状态未知';
+    }
+    function entryNode(entry) {
+      const [title, description, icon, route, subs] = entry;
+      const item = document.createElement('article');
+      item.className = 'entry';
+      const link = document.createElement('a');
+      link.className = 'entry-link';
+      link.href = pageHref(route);
+      const symbol = document.createElement('i');
+      symbol.dataset.lucide = icon;
+      link.append(symbol, document.createTextNode(title));
+      item.append(link);
+      const detail = document.createElement('p');
+      detail.className = 'entry-desc';
+      detail.textContent = description;
+      item.append(detail);
+      if (subs && subs.length) {
+        const subNav = document.createElement('nav');
+        subNav.className = 'sub-links';
+        subNav.setAttribute('aria-label', title + '分区');
+        for (const [label, section] of subs) {
+          const subLink = document.createElement('a');
+          subLink.href = pageHref(route + '/' + section);
+          subLink.textContent = label;
+          subNav.append(subLink);
+        }
+        item.append(subNav);
+      }
+      return item;
+    }
+    function render() {
+      const query = document.getElementById('searchInput').value.trim().toLocaleLowerCase();
+      const root = document.getElementById('groups');
+      const nav = document.getElementById('sectionNav');
+      root.replaceChildren();
+      nav.replaceChildren();
+      let visible = 0;
+      groups.forEach(([title, entries], index) => {
+        const matches = entries.filter(entry => [entry[0], entry[1], ...(entry[4] || []).map(sub => sub[0])].join(' ').toLocaleLowerCase().includes(query));
+        if (!matches.length) return;
+        visible += matches.length;
+        const id = 'group-' + index;
+        const section = document.createElement('section');
+        section.className = 'group';
+        section.id = id;
+        const heading = document.createElement('h2');
+        heading.className = 'group-title';
+        heading.textContent = title;
+        const count = document.createElement('small');
+        count.textContent = matches.length + ' 项';
+        heading.append(count);
+        const rows = document.createElement('div');
+        rows.className = 'entries';
+        matches.forEach(entry => rows.append(entryNode(entry)));
+        section.append(heading, rows);
+        root.append(section);
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'section-nav';
+        button.textContent = title;
+        const navCount = document.createElement('small');
+        navCount.textContent = String(matches.length);
+        button.append(navCount);
+        button.addEventListener('click', () => section.scrollIntoView({behavior: 'smooth', block: 'start'}));
+        nav.append(button);
+      });
+      document.getElementById('empty').hidden = visible !== 0;
+      icons();
+    }
+    document.getElementById('brandHome').href = pageHref('#life');
+    document.getElementById('backHome').href = pageHref('#life');
+    document.getElementById('searchInput').addEventListener('input', render);
+    document.getElementById('themeButton').addEventListener('click', () => {
+      document.documentElement.dataset.theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    });
+    window.addEventListener('storage', event => {
+      if (event.key === 'companion-catalog-snapshot') readLive();
+    });
+    readLive();
+    render();
+  </script>
+</body>
+</html>

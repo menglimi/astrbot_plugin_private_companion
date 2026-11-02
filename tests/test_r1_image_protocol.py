@@ -20,8 +20,10 @@ from astrbot_host.native_extensions.image_native.adapter import PLUGIN_ID
 from astrbot_host.native_extensions.image_native.extension import ImageExtensionAPI
 from astrbot_host.native_extensions.image_native.output_configuration import MAX_TASK_TIMEOUT_SECONDS
 from astrbot_host.native_extensions.image_native.output_routing import OnlineImageBackend, Rejected
-from astrbot_host.native_extensions.image_native.types import ImageInvocation, NativeImageError, ReferenceImage
+from astrbot_host.native_extensions.image_native.types import (MAX_REFERENCE_IMAGES as NATIVE_REFERENCE_IMAGES,
+                                                              ImageInvocation, NativeImageError, ReferenceImage)
 from companion_v2.capabilities.native import parse_manifest
+from companion_v2.conversation.media.models import MAX_REFERENCE_IMAGES as CORE_REFERENCE_IMAGES
 from companion_v2.legacy.image_configuration_migration import convert_image_configuration
 from companion_v2.product import PRODUCT_VERSION
 
@@ -527,6 +529,28 @@ class MigrationContractTests(unittest.TestCase):
         migrated = self.migrated_endpoint(quality="ultra")
 
         self.assertEqual(migrated["quality"], "")
+
+
+class ReferenceLimitContractTests(unittest.TestCase):
+    def test_provider_and_core_share_the_sixteen_reference_ceiling(self):
+        self.assertEqual(NATIVE_REFERENCE_IMAGES, CORE_REFERENCE_IMAGES)
+
+    def test_edit_binds_at_most_sixteen_references(self):
+        base = dict(scope_key="scope", request_id="request", invocation_id="invocation",
+                    origin_key="origin", operation="edit", prompt="edit")
+        ImageInvocation(**base, reference_ids=tuple("r%d" % index for index in range(16)))
+        with self.assertRaises(NativeImageError):
+            ImageInvocation(**base, reference_ids=tuple("r%d" % index for index in range(17)))
+
+    def test_legacy_reference_switch_migrates_to_the_sixteen_image_default(self):
+        result = convert_image_configuration({"photo_action_config": {
+            "photo_generation_backend": "external",
+            "external_image_api_endpoints": [{
+                "name": "Legacy", "platform": "openai", "base_url": "https://api.example.test/v1",
+                "model": "image-v1", "timeout_seconds": 120}],
+        }})
+
+        self.assertEqual(result.output_changes["endpoints"][0]["max_reference_images"], 16)
 
 
 if __name__ == "__main__":

@@ -40,8 +40,13 @@ def _text_provider(native_types, native):
     """Registered text class, or any provider exposing the AstrBot text surface."""
     checker = getattr(native_types, "is_text_provider", None)
     if callable(checker):
-        return bool(checker(native))
-    return isinstance(native, getattr(native_types, "provider_types", ()) or ())
+        if bool(checker(native)):
+            return True
+    elif isinstance(native, getattr(native_types, "provider_types", ()) or ()):
+        return True
+    # A provider may expose only the public text_chat method.  The adapter
+    # handles it through the compatibility transport instead of dropping it.
+    return callable(getattr(native, "text_chat", None))
 
 
 def loaded_routing(fallback_provider_id, replacement_rules, provider_ids):

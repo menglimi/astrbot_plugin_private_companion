@@ -485,8 +485,17 @@ class AstrBotMultiController:
                   str(error) if code.split("__", 1)[0] == "host_native_lookup_timeout"
                   or code in ("host_binding_changed", "account_config_save_failed", "account_config_persistence_unavailable",
                               "backup_restore_rollback_incomplete", "backup_restore_journal_unreadable",
-                              "backup_restore_startup_blocked") else
+                              "backup_restore_startup_blocked", "setup_binding_missing") else
                   "shared host configuration, native route or authority could not be verified")
+        if code == "host_control_failed":
+            # 把“在哪一层炸的”带回来：只有位置，不含任何配置值或会话内容。
+            frames = traceback.extract_tb(error.__traceback__) if error.__traceback__ else []
+            origin = ""
+            if frames:
+                last = frames[-1]
+                origin = " @ {} ({}:{})".format(last.name, last.filename.replace("\\", "/").rsplit("/", 1)[-1], last.lineno)
+            reason = "宿主操作异常中断：{} | operation={}{}；请把日志里「宿主操作异常」这一整段发出来。".format(
+                type(error).__name__, operation or "control", origin)
         self.last_failure = {"code": code, "reason": reason}
         if operation:
             self.last_failure["operation"] = operation
@@ -739,6 +748,12 @@ class AstrBotMultiController:
         async with self._lifecycle_lock:
             try:
                 self.refresh_settings()
+                settings = self.settings
+                if (settings is None or not getattr(settings, "targets", ())
+                        or not getattr(settings, "personas", ())):
+                    raise TaskError("setup_binding_missing",
+                        "还没有可加载的 Bot 账号与人格：请先在「账号与会话」绑定窗口并保存角色映射，"
+                        "再回来初始化。")
                 manifest, conversations = await self._probe()
                 previous_session = self.session
                 restore_running = bool(previous_session is not None

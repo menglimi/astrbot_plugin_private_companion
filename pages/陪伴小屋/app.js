@@ -213,7 +213,10 @@ function navigationMarkup(){
   const extras=navItems.map(([next,tab,icon,label])=>[next,tab,icon,label])
     .filter(([next,tab])=>!known.has(`${next}:${tab}`));
   if(extras.length)groups.push(['其他入口',extras]);
-  return groups.map(([group,items])=>`<section class="navigation-group"><h2>${group}</h2>${items.map(navigationButton).join('')}</section>`).join('');
+  const assetToken=new URLSearchParams(location.search).get('asset_token')||'';
+  const catalogHref='catalog.html'+(assetToken?`?asset_token=${encodeURIComponent(assetToken)}`:'');
+  return groups.map(([group,items])=>`<section class="navigation-group"><h2>${group}</h2>${items.map(navigationButton).join('')}</section>`).join('')
+    +`<section class="navigation-group"><h2>功能地图</h2><a class="navigation-link" href="${escapeHTML(catalogHref)}" title="按功能分类查看全部入口"><i data-lucide="layout-grid"></i><span>全部功能地图</span></a></section>`;
 }
 function navigationDestination(next,tab='',subtab=''){
   if(next==='library'||next==='activities'||next==='manage'&&tab==='capabilities'){
@@ -405,8 +408,21 @@ function syncFromHash(){
    「切换角色」按钮只会让人以为可以改。所以现在它是纯展示徽标，
    只在有真实角色（或预览示例角色）时显示名字，不提供切换。 */
 function pageHeading(title,subtitle,extra='',showRole=false){return `<div class="page-heading"><div class="page-heading-copy"><div class="title-line"><h1>${escapeHTML(title)}</h1>${showRole?`<span class="role-badge">${roleName()}</span>`:''}</div>${subtitle?`<p class="subtitle">${escapeHTML(subtitle)}</p>`:''}</div>${extra}</div>`;}
+function publishCatalogSnapshot(){
+  try{
+    const bridge=window.CompanionProduct;
+    const targets=bridge?.targets?.()||[];
+    const roles=targets.flatMap(target=>Array.isArray(target.roles)?target.roles:[]);
+    const snapshot={updatedAt:Date.now(),state:hostConnection.state,label:hostConnection.label,
+      detail:hostConnection.detail,targets:targets.length,roles:roles.length,
+      private_targets:targets.filter(target=>target.scope_kind==='private').length,
+      group_targets:targets.filter(target=>target.scope_kind==='group').length};
+    localStorage.setItem('companion-catalog-snapshot',JSON.stringify(snapshot));
+  }catch{}
+}
 function updateHostChrome(){
   hostConnection=product.connection();product.renderScope(configSnapshot.identity?.botName||'陪伴');
+  publishCatalogSnapshot();
   const badge=$('[data-host-badge]');
   if(badge){badge.className=`preview-badge host-${hostConnection.state}`;badge.innerHTML=`<span class="host-dot"></span><span class="host-label">${escapeHTML(hostConnection.label)}</span>`;badge.title=hostConnection.detail;}
   const footer=$('[data-host-status]');
@@ -4188,6 +4204,9 @@ function openIdentitySettings(kind){
   icons();
   return true;
 }
+/* 用户目录自己的「新用户默认权限」入口：工作区标题旁的按钮只负责转发，
+   弹窗和配置控件仍由外壳这一份实现，避免两套控件写同一个配置组。 */
+window.CompanionIdentitySettings = {open: openIdentitySettings};
 /* 主动与联系。整页交给 contact-page.js：它的主体是一个钟面（一天 24 格的节律），
    套进配置控制台的分区卡片会把钟面压成一张卡里的图，所以它自带页头与轨道。
    挂载点在 render() 的 manage 分支里，与事实与经历同一套处理。 */
@@ -4655,10 +4674,25 @@ function replySearchLocation(entry){
 let visibleSearchResults=[];
 let activeSearchResultIndex=0;
 let searchScope='all';
+let searchEntryCache=null;
+let searchEntryCacheAt=0;
+let searchRenderTimer=0;
 const SEARCH_RESULT_LIMIT=50;
+const SEARCH_ENTRY_CACHE_MS=1500;
+const SEARCH_INPUT_DELAY_MS=90;
 function normalizeSearchText(text){return String(text??'').normalize('NFKC').toLocaleLowerCase();}
 function searchTerms(query){return normalizeSearchText(query).trim().split(/[\s,，;；、\/|]+/).filter(Boolean);}
+function escapeSearchPattern(value){return String(value).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}
+function highlightSearchText(value,terms){
+  const text=String(value??'');
+  const parts=terms.filter(Boolean);
+  if(!parts.length)return escapeHTML(text);
+  const pattern=new RegExp(`(${parts.map(escapeSearchPattern).join('|')})`,'gi');
+  return text.split(pattern).map((part,index)=>index%2?`<mark>${escapeHTML(part)}</mark>`:escapeHTML(part)).join('');
+}
 function searchableConfigEntries(){
+  const now=Date.now();
+  if(searchEntryCache&&now-searchEntryCacheAt<SEARCH_ENTRY_CACHE_MS)return searchEntryCache;
   const editors=window.CompanionConfigEditors?.searchEntries?.()||[];
   const replies=window.CompanionReplyPage?.searchEntries?.()||[];
   const hostOptions=window.CompanionHostOptionsPage?.searchEntries?.()||[];
@@ -4668,7 +4702,7 @@ function searchableConfigEntries(){
   const memories=window.CompanionMemorySettingsSection?.searchEntries?.()||[];
   const perceptions=window.CompanionNativePerceptionPage?.searchEntries?.()||[];
   const seen=new Set();
-  return [...editors,...replies,...hostOptions,...states,...memories,...perceptions].map(entry=>{
+  const entries=[...editors,...replies,...hostOptions,...states,...memories,...perceptions].map(entry=>{
     const location=entry.group==='conversation.presentation'
       ?replySearchLocation(entry)
       :configSearchLocation(entry);
@@ -4678,7 +4712,11 @@ function searchableConfigEntries(){
     seen.add(key);
     return {kind:'setting',entry,location};
   }).filter(Boolean);
+  searchEntryCache=entries;
+  searchEntryCacheAt=now;
+  return entries;
 }
+function invalidateSearchCache(){searchEntryCache=null;searchEntryCacheAt=0;}
 function textSearchScore(value,term,weights){
   const text=normalizeSearchText(value);
   if(!text)return 0;
@@ -4687,7 +4725,7 @@ function textSearchScore(value,term,weights){
   if(text.includes(term))return weights[2];
   return 0;
 }
-function settingSearchScore(entry,terms,query){
+function settingSearchScore(entry,terms,query,location){
   const aliases=Array.isArray(entry.aliases)?entry.aliases:[];
   const fields=[
     [entry.label,[120,94,72]],
@@ -4705,6 +4743,8 @@ function settingSearchScore(entry,terms,query){
     score+=best;
   }
   if(normalizeSearchText(entry.label)===query)score+=32;
+  const currentTab=route==='manage'?manageTab:route==='life'?lifeTab:'';
+  if(location&&currentTab&&location.tab===currentTab)score+=18;
   return score;
 }
 function pageSearchScore(data,terms,query){
@@ -4725,7 +4765,7 @@ function rankedSearchResults(query){
   const pages=searchIndex.map((data,order)=>({kind:'page',data,score:pageSearchScore(data,terms,normalized),order}))
     .filter(result=>result.score>0);
   const settings=searchableConfigEntries().map((result,order)=>({...result,
-    score:settingSearchScore(result.entry,terms,normalized),order})).filter(result=>result.score>0);
+    score:settingSearchScore(result.entry,terms,normalized,result.location),order})).filter(result=>result.score>0);
   return [...pages,...settings].sort((left,right)=>right.score-left.score
     ||(left.kind===right.kind?left.order-right.order:left.kind==='setting'?-1:1));
 }
@@ -4755,11 +4795,19 @@ function handleGlobalSearchKeydown(event){
     event.preventDefault();$('#searchDialog')?.close?.();return;
   }
   if(event.key==='ArrowDown'||event.key==='ArrowUp'){
-    event.preventDefault();moveSearchSelection(event.key==='ArrowDown'?1:-1);return;
+    event.preventDefault();flushSearchRender();moveSearchSelection(event.key==='ArrowDown'?1:-1);return;
   }
   if(event.key==='Enter'){
-    event.preventDefault();activateSearchSelection();
+    event.preventDefault();flushSearchRender();activateSearchSelection();
   }
+}
+function scheduleSearchRender(){
+  clearTimeout(searchRenderTimer);
+  searchRenderTimer=setTimeout(()=>{searchRenderTimer=0;renderSearch();},SEARCH_INPUT_DELAY_MS);
+}
+function flushSearchRender(){
+  if(!searchRenderTimer)return;
+  clearTimeout(searchRenderTimer);searchRenderTimer=0;renderSearch();
 }
 function setSearchScope(scope){
   if(!['all','settings','pages'].includes(scope))return false;
@@ -4795,10 +4843,10 @@ function renderSearch(){
       const pageLabels={identity:'关系网','identity-people':'用户','identity-groups':'群聊','identity-access':'访问规则','identity-feelings':'关系与情感',contact:'主动联系',expression:'表达',governance:'自我',diary:'日记与生活',output:'产出',models:'模型与连接',perception:'感知',decision:'决策',action:'行动',learning:'学习与成长'};
       const context=['配置项',pageLabels[location.tab]||location.tab,
         entry.sectionTitle,entry.field].filter(Boolean).join(' · ');
-      return `<button id="search-option-${index}" class="search-result" type="button" role="option" aria-selected="${selected}" data-search-result="${index}">${I('sliders-horizontal')}<span><strong>${escapeHTML(entry.label)}</strong><small>${escapeHTML(context)}</small></span></button>`;
+      return `<button id="search-option-${index}" class="search-result" type="button" role="option" aria-selected="${selected}" data-search-result="${index}">${I('sliders-horizontal')}<span><strong>${highlightSearchText(entry.label,terms)}</strong><small>${highlightSearchText(context,terms)}</small></span></button>`;
     }
     const [title,description,icon]=result.data;
-    return `<button id="search-option-${index}" class="search-result" type="button" role="option" aria-selected="${selected}" data-search-result="${index}">${I(icon)}<span><strong>${escapeHTML(title)}</strong><small>${escapeHTML(`页面 · ${description}`)}</small></span></button>`;
+    return `<button id="search-option-${index}" class="search-result" type="button" role="option" aria-selected="${selected}" data-search-result="${index}">${I(icon)}<span><strong>${highlightSearchText(title,terms)}</strong><small>${highlightSearchText(`页面 · ${description}`,terms)}</small></span></button>`;
   }).join('');
   const emptyMessage=searchScope==='settings'&&!terms.length
     ?'输入设置名称、用途或字段键查找配置项。'
@@ -4939,7 +4987,7 @@ function openTokenTaskSettings(kind){
   });
   return true;
 }
-function openSearch(){if($('#detailDialog').open)closeDetail();searchScope='all';$('#globalSearch').value='';renderSearch();$('#searchDialog').showModal();$('#globalSearch').focus();}
+function openSearch(){if($('#detailDialog').open)closeDetail();searchScope='all';invalidateSearchCache();clearTimeout(searchRenderTimer);searchRenderTimer=0;$('#globalSearch').value='';renderSearch();$('#searchDialog').showModal();$('#globalSearch').focus();}
 document.addEventListener('click',event=>{
   const el=event.target.closest('button,a');if(!el)return;
   if(el.hasAttribute('data-profile-avatar-remove')){
@@ -5215,7 +5263,8 @@ $('#stageScene')?.addEventListener('keydown',event=>{
    （详情弹窗里仍会走到）。这里只在按钮存在时才绑，不硬取节点——
    硬取一个不存在的节点会在启动时抛错，整个页面脚本都不再执行。 */
 $('#resetButton')?.addEventListener('click',()=>showDetail('reset'));
-$('#globalSearch').addEventListener('input',renderSearch);
+$('#globalSearch').addEventListener('input',event=>{if(event.isComposing)return;scheduleSearchRender();});
+$('#globalSearch').addEventListener('compositionend',scheduleSearchRender);
 $('#globalSearch').addEventListener('keydown',handleGlobalSearchKeydown);
 document.addEventListener('keydown',event=>{
   if(handleRoomEditorKey(event))return;

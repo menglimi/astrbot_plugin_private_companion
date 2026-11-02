@@ -48,8 +48,9 @@ def core_image_tool_contract(action, description, parameters, *, reference_limit
         return description, parameters
     description = _PURPOSES[action] + "；返回图片原件与操作回执，生成成功本身不代表已发送。"
     if action == "image.edit" and type(reference_limit) is int and reference_limit > 0:
-        description += (f"当前生图路线最多接收 {reference_limit} 张参考图；达到上限时优先保留 identity，"
-                        "把服装、姿态或场景要求写入 prompt，不要为同时满足多个用途盲目提交更多图片。")
+        description += (f"当前生图路线最多接收 {reference_limit} 张参考图；"
+                        "达到上限时优先保留用户明确指向的本轮附图，其次保留 identity，"
+                        "把其余服装、姿态或场景要求写入 prompt，不要为同时满足多个用途盲目提交更多图片。")
     properties = parameters.get("properties", {})
     prompt = properties.get("prompt")
     if isinstance(prompt, dict):
@@ -61,7 +62,7 @@ def core_image_tool_contract(action, description, parameters, *, reference_limit
             reference = properties.get(name)
             if isinstance(reference, dict):
                 reference["description"] = (str(reference.get("description") or "").rstrip("。")
-                                             + f"；当前路线最多选择 {reference_limit} 张，优先 identity")
+                                             + f"；当前路线最多选择 {reference_limit} 张，优先用户指向的附图与 identity")
     return description, parameters
 
 
@@ -111,7 +112,7 @@ def _reference_date(session):
     return at.astimezone(ZoneInfo(timezone_name)).date().isoformat()
 
 
-def _identity_reference_guidance(material):
+def _identity_reference_guidance(material, reference_limit=None):
     """Tell the model when an identity anchor is available without copying IDs."""
     if not isinstance(material, Mapping):
         return ""
@@ -129,14 +130,49 @@ def _identity_reference_guidance(material):
         has_identity = True
     if not has_identity:
         return ""
+    if reference_limit == 1:
+        attachment_route = (
+            "当前改图路线只有一张参考图额度：用户指向本轮附图时，"
+            "用 reference_indices 选中该附图，reference_roles 写附图用途，把角色固定外貌写进 prompt；"
+            "用户没有指向附图、只要求角色自拍或穿搭时，才用 reference_ids 的 identity。"
+        )
+    else:
+        attachment_route = (
+            "用户本轮附了图，并说“这个/这张/照这个/同款/按这张来”时，附图本身也是改图依据："
+            "用 reference_indices 选中对应附图，reference_roles 先写附图的用途"
+            "（scene、style、pose、outfit 等），再按顺序追加 reference_ids 的 identity；"
+            "不要用 reference_indices=[] 把本轮附图排除。"
+            "只有用户没有指向本轮附图、或明确只要角色自己的新图时，"
+            "才用 reference_indices=[] 只选身份参考。"
+        )
     return (
         "当前参考材料有可用的 identity 身份参考；其中标注 base_identity 的素材应作为主身份锚点。"
         "角色本人自拍、穿搭照或需要保持人物一致时，"
         "优先调用 image.edit，使用 companion_v2_context 中对应的 reference_ids，"
-        "reference_indices=[]，并按所选顺序填写 reference_roles=[\"identity\"]。"
+        "并按所选顺序填写 reference_roles。"
+        + attachment_route +
         "只有没有可用身份参考，或用户明确要求全新角色时才使用 image.generate。"
         "选用身份参考后，prompt 只写动作、镜头、场景、光线和用户明确要求的变化；"
         "不要重复发色、眼睛、脸型、发饰等已由参考图提供的固定外貌，也不要无故换脸。"
+    )
+
+
+def _attachment_guidance(session):
+    """Name this turn's direct attachments so the model cannot silently drop them."""
+    from companion_v2.adapters.astrbot.native import NativeImageLocator
+    locators = getattr(session, "image_locators", ()) or ()
+    count = sum(1 for item in locators if isinstance(item, NativeImageLocator) or hasattr(item, "images"))
+    if count == 0:
+        return ""
+    indices = "0" if count == 1 else f"0 到 {count - 1}"
+    return (
+        f"本轮用户随消息附了 {count} 张图（按顺序对应 reference_indices 的 {indices}）。"
+        "如果这轮要改图、且用户指着附图说“这个/这张/照这个/同款/按这张来”，"
+        "附图就是改图依据：reference_indices 选中对应序号，"
+        "reference_roles 先写附图用途（scene、style、pose、outfit 等），"
+        "额度允许时再按顺序追加 reference_ids 的 identity；"
+        "不要用 reference_indices=[] 把本轮附图排除。"
+        "只有用户没有指向附图时，才用 reference_indices=[] 只选已存素材。"
     )
 
 
@@ -178,19 +214,29 @@ def inject_core_image_prompt(session, request, offered, values):
     # The rule match is a per-turn signal. Keeping it in system would flip the
     # whole cached prefix on every image request, so it rides the turn suffix
     # applied after the host clears turn context.
-    _record_turn_note(session, rule_hint)
+    attachment_hint = _attachment_guidance(session) if "image.edit" in actions else ""
+    _record_turn_note(session, "\n".join(part for part in (rule_hint, attachment_hint) if part))
     instruction = "\n".join(part for part in (
         prompt_instruction(values),
         "本轮图片工具：\n" + descriptions, _DELIVERY) if part)
     if reference_limit is not None:
-        instruction += (f"\n当前生图改图路线最多接收 {reference_limit} 张参考图。"
-                        "需要保持角色身份时优先选择 identity；如果上限不足，不要自动同时提交身份图和穿搭图，"
-                        "将其余服装、姿态或场景要求写进 prompt。")
+        instruction += f"\n当前生图改图路线最多接收 {reference_limit} 张参考图。"
+        if reference_limit == 1:
+            instruction += (
+                "只有一张额度时：用户指向本轮附图时，就用 reference_indices 选中该附图，"
+                "reference_roles 写附图用途，把角色固定外貌写进 prompt；"
+                "用户没有指向附图、只要求角色自拍或穿搭时才用 identity。")
+        else:
+            instruction += (
+                "用户指向本轮附图时，同时保留附图与 identity；额度不足时不要为了同时满足多个用途盲目提交，"
+                "将其余服装、姿态或场景要求写进 prompt。")
     if "image.edit" in actions:
         instruction += (
             "\n本轮参考素材位于 companion_v2_context.image_reference_material。"
-            "角色自拍有可用身份锚点时，可通过改图工具的 reference_ids 与 reference_roles=[\"identity\"] 保持人物一致；"
-            "仅采用已存素材时用 reference_indices=[]，避免带入本轮无关附图。"
+            "角色自拍有可用身份锚点时，可通过改图工具的 reference_ids 与 reference_roles 保持人物一致；"
+            "用户指向本轮附图时，先用 reference_indices 选中附图、reference_roles 先写附图用途，"
+            "额度允许时再按顺序追加 reference_ids 的 identity；"
+            "只有用户没有指向本轮附图、仅采用已存素材时才用 reference_indices=[]。"
             "没有可用身份图时，依照已知角色外观使用生成工具；只有改图工具可用且没有任何参考图时，"
             "简短说明需要图片参考，不猜素材 ID。\n" + IMAGE_REFERENCE_INSTRUCTION
         )
@@ -200,7 +246,7 @@ def inject_core_image_prompt(session, request, offered, values):
                 material = owner.prompt_material(session.context, local_date=_reference_date(session))
                 if isinstance(material, dict) and (material.get("references") or material.get("wardrobe")):
                     session.state["_image_reference_material"] = material
-                    route_guidance = _identity_reference_guidance(material)
+                    route_guidance = _identity_reference_guidance(material, reference_limit)
                     if route_guidance:
                         instruction += "\n" + route_guidance
             except Exception as error:

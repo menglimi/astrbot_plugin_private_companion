@@ -6,9 +6,10 @@ import unittest
 from astrbot_host.private_reply_followup import PrivateReplyFollowUps
 
 
-def event(text, seconds=0):
+def event(text, seconds=0, origin="private:session-1"):
     event = type("Event", (), {})()
     event.message_str = text
+    event.unified_msg_origin = origin
     event.created_at = datetime(2026, 10, 28, 6, 40, seconds, tzinfo=timezone.utc)
     return event
 
@@ -38,6 +39,15 @@ class PrivateReplyFollowUpTests(unittest.TestCase):
         now[0] = 16.0
         self.assertIsNone(manager.fold("target", event("晚了", 2), "晚了"))
         self.assertIsNone(manager.active_for("target"))
+
+    def test_finish_clears_the_session_when_lifecycle_uses_a_new_wrapper(self):
+        manager = PrivateReplyFollowUps()
+        first = event("第一轮")
+        manager.start("target", first, "event-1", ((first, "第一轮", first.created_at),))
+        wrapper = event("", 1)
+        self.assertTrue(manager.finish(wrapper))
+        self.assertIsNone(manager.active_for("target"))
+        self.assertIsNone(manager.fold("target", event("新消息", 2), "新消息"))
 
     def test_request_without_follow_up_still_closes_the_window(self):
         manager = PrivateReplyFollowUps()

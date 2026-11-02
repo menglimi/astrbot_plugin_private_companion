@@ -187,9 +187,22 @@ class CoreReplyImagePromptTests(unittest.IsolatedAsyncioTestCase):
         self.inject()
         prompt = self.request.system_prompt
         self.assertIn("优先调用 image.edit", prompt)
-        self.assertIn("reference_indices=[]", prompt)
-        self.assertIn('reference_roles=["identity"]', prompt)
+        self.assertIn("不要用 reference_indices=[] 把本轮附图排除", prompt)
+        self.assertIn("再按顺序追加 reference_ids 的 identity", prompt)
         self.assertIn("不要重复发色、眼睛、脸型、发饰", prompt)
+
+    def test_turn_attachment_hint_keeps_reference_indices_and_identity_together(self):
+        from companion_v2.adapters.astrbot.native import NativeImageLocator
+        self.session.image_locators = (NativeImageLocator(0, "https://multimedia.nt.qq.com.cn/image"),)
+        self.prepared["native_input"] = NS(text="我要看这个，你的版本",
+                                           at=self.prepared["native_input"].at)
+        self.inject()
+        note = self.state["_turn_notes"]["image"]
+        self.assertIn("本轮用户随消息附了 1 张图", note)
+        self.assertIn("reference_indices 选中对应序号", note)
+        self.assertIn("不要用 reference_indices=[] 把本轮附图排除", note)
+        # The per-turn attachment count must not enter the cached system prefix.
+        self.assertNotIn("本轮用户随消息附了 1 张图", self.request.system_prompt)
 
     def test_without_identity_reference_does_not_add_identity_route_guidance(self):
         self.references.prompt_material.return_value = {
@@ -213,11 +226,13 @@ class CoreReplyImagePromptTests(unittest.IsolatedAsyncioTestCase):
         self.inject()
 
         self.assertIn("最多接收 1 张参考图", self.request.system_prompt)
+        self.assertIn("只有一张额度时：用户指向本轮附图时", self.request.system_prompt)
+        self.assertIn("把角色固定外貌写进 prompt", self.request.system_prompt)
         description, parameters = core_image_tool_contract("image.edit", "", {
             "properties": {"reference_ids": {"description": "已保存参考素材 ID"}},
         }, reference_limit=1)
         self.assertIn("最多接收 1 张参考图", description)
-        self.assertIn("优先 identity", parameters["properties"]["reference_ids"]["description"])
+        self.assertIn("优先用户指向的附图", parameters["properties"]["reference_ids"]["description"])
 
     async def test_reference_changes_only_update_temporary_user_context(self):
         self.inject()

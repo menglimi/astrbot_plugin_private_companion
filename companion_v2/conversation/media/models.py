@@ -13,6 +13,10 @@ from companion_v2.foundation.refs import SourceRef
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_IMAGE_PIXELS = 16 * 1024 * 1024
 MAX_INPUT_IMAGES = 8
+# One image.edit call may bind this many current/saved references.  GPT image
+# models accept up to 16 input images; per-message intake stays bounded by
+# MAX_INPUT_IMAGES and the shared turn byte budget still caps the payload.
+MAX_REFERENCE_IMAGES = 16
 MAX_TURN_IMAGES = 8
 MAX_TURN_FRAMES = 16
 MAX_TURN_BYTES = 20 * 1024 * 1024

@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .types import NativeImageError, fingerprint
+from .types import MAX_REFERENCE_IMAGES, NativeImageError, fingerprint
 
 BACKENDS = {"auto", "online_api", "sd_webui", "comfyui"}
 # Keep the complete V1 provider vocabulary in the persisted contract.  A saved
@@ -237,7 +237,7 @@ def settings(plugin):
                 legacy = has_legacy_protocol_defaults(endpoint)
                 endpoint["quality"], endpoint["response_format"] = project_endpoint_fields(endpoint)
                 endpoint["legacy_protocol_defaults"] = legacy
-                endpoint.setdefault("max_reference_images", 1)
+                endpoint.setdefault("max_reference_images", MAX_REFERENCE_IMAGES)
                 endpoint.setdefault("size_label", f"{endpoint.get('width', 1024)}x{endpoint.get('height', 1024)}")
         result["operation_routes"] = _stored_operation_routes(result)
         return result
@@ -399,14 +399,14 @@ def save_configuration(plugin, revision, changes):
         ids.add(identifier)
         quality = item.get("quality", "")
         response_format = item.get("response_format", "")
-        max_reference_images = item.get("max_reference_images", 1)
+        max_reference_images = item.get("max_reference_images", MAX_REFERENCE_IMAGES)
         if (type(item.get("enabled")) is not bool or item.get("platform") not in PLATFORMS
                 or any(type(item.get(key)) is not str or len(item[key]) > 240 for key in ("name", "model"))
                 or any(type(item.get(key)) is not int or not 64 <= item[key] <= 8192 for key in ("width", "height"))
                 or ("size_label" in item and (not isinstance(item.get("size_label"), str)
                                                or len(item.get("size_label", "")) > 64))
                 or quality not in IMAGE_QUALITIES or response_format not in RESPONSE_FORMATS
-                or type(max_reference_images) is not int or not 0 <= max_reference_images <= 8):
+                or type(max_reference_images) is not int or not 0 <= max_reference_images <= MAX_REFERENCE_IMAGES):
             raise NativeImageError("invalid_configuration")
         clear_headers = item.get("clear_custom_headers", False)
         if type(clear_headers) is not bool:

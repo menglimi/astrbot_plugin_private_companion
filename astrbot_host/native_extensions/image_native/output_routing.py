@@ -17,7 +17,7 @@ import aiohttp
 from .backends import NativeTransportBackend
 from .output_configuration import accepted_request_fields
 from .owner import checked
-from .types import BackendResult, NativeImageError, fingerprint
+from .types import MAX_REFERENCE_IMAGES, BackendResult, NativeImageError, fingerprint
 
 OPENAI_COMPATIBLE_PLATFORMS = frozenset({"openai", "openrouter", "agnes", "sensenova", "doubao"})
 OPENAI_IMAGE_SUFFIXES = ("/images/generations", "/images/edits")
@@ -337,7 +337,7 @@ class OnlineImageBackend:
         if platform == "minimax":
             return ("generate",)
         if platform in OPENAI_COMPATIBLE_PLATFORMS:
-            return (("generate", "edit") if config.get("max_reference_images", 1) > 0
+            return (("generate", "edit") if config.get("max_reference_images", MAX_REFERENCE_IMAGES) > 0
                     else ("generate",))
         return ()
 
@@ -374,7 +374,7 @@ class OnlineImageBackend:
         elif accepted["quality"]:
             body["quality"] = accepted["quality"]
         if invocation.operation == "edit":
-            max_reference_images = config.get("max_reference_images", 1)
+            max_reference_images = config.get("max_reference_images", MAX_REFERENCE_IMAGES)
             if (type(max_reference_images) is not int or max_reference_images < 1
                     or len(references) > max_reference_images):
                 # Per-endpoint configuration, rejected before any I/O: nothing was

@@ -175,7 +175,7 @@ class HostApplyTests(IsolatedAsyncioTestCase):
         self.assertFalse(api._legacy_provider_available("speech.stt_provider_id", "text"))
         self.assertTrue(api._legacy_provider_available("speech.stt_provider_id", "stt"))
 
-    async def test_unavailable_provider_requires_reselection(self):
+    async def test_unavailable_provider_is_preserved_with_a_reselection_note(self):
         from astrbot_host.legacy_api import LegacyMigrationWebAPI
         from astrbot_host.native_extensions.settings import ExtensionSettings
         with TemporaryDirectory() as folder:
@@ -190,8 +190,11 @@ class HostApplyTests(IsolatedAsyncioTestCase):
                  "speech.tts_provider_id": "old-voice"},
                 "together.configuration", target_kind="native_extension_config")
             differences = []
-            self.assertIsNone(api._prepare_native_extension_config_intent(intent, differences, [], {}))
-            self.assertEqual(sum(item["kind"] == "provider_reselection_required"
+            prepared = api._prepare_native_extension_config_intent(intent, differences, [], {})
+            self.assertIsNotNone(prepared)
+            self.assertEqual(prepared.changes, {"conversation.chat_provider_id": "old-chat",
+                                                "speech.tts_provider_id": "old-voice"})
+            self.assertEqual(sum(item["kind"] == "provider_unavailable_preserved"
                                  for item in differences), 2)
 
     async def test_apply_saves_portable_values_and_preserves_newer_settings(self):

@@ -22,6 +22,10 @@ DEFAULT_DECISION_FIELDS = {name: True for name in CONFIGURABLE_DECISION_FIELDS}
 DEFAULTS = {
     "enabled": False,
     "mode": "local",
+    # native: Laya SystemOne flat body. cloudflare: Workers AI envelope with
+    # the state/questions nested under input.
+    "request_format": "native",
+    "remote_model": "",
     "local_model_path": "",
     "endpoint": "",
     "api_key": "",
@@ -184,8 +188,11 @@ class LayaSettingsStore:
             raise LayaSettingsError("laya_config_invalid", "enabled 必须是布尔值")
         if values["mode"] not in {"local", "remote"}:
             raise LayaSettingsError("laya_config_invalid", "mode 必须是 local 或 remote")
-        for key in ("endpoint", "api_key", "local_model_path"):
-            if type(values[key]) is not str or len(values[key]) > 4096:
+        if values.get("request_format", "native") not in {"native", "cloudflare"}:
+            raise LayaSettingsError("laya_config_invalid", "request_format 必须是 native 或 cloudflare")
+        for key in ("endpoint", "api_key", "local_model_path", "remote_model"):
+            limit = 256 if key == "remote_model" else 4096
+            if type(values[key]) is not str or len(values[key]) > limit:
                 raise LayaSettingsError("laya_config_invalid", f"{key} 配置无效")
         if type(values["timeout_seconds"]) is not int or isinstance(values["timeout_seconds"], bool) or not 1 <= values["timeout_seconds"] <= 120:
             raise LayaSettingsError("laya_config_invalid", "timeout_seconds 超出范围")
@@ -207,6 +214,8 @@ class LayaSettingsStore:
             "configuration_scope": "global",
             "enabled": values["enabled"],
             "mode": values["mode"],
+            "request_format": values.get("request_format", "native"),
+            "remote_model": values.get("remote_model", ""),
             "local_model_path": values["local_model_path"],
             "endpoint": values["endpoint"],
             "default_model": "multilingual",

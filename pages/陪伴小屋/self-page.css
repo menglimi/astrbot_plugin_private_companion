@@ -461,3 +461,18 @@ body.reduce-motion .role-profile-draft-dialog *::after{transition:none}
 @media(max-width:720px){
   .role-profile-draft-source-picks{grid-template-columns:1fr}
 }
+.role-profile-transfer-body{min-height:0;overflow:auto;padding:var(--sp-4) var(--sp-5)}
+.role-profile-transfer-note{margin:0 0 var(--sp-3);color:var(--t-text-faint);font-size:var(--fs-tiny);line-height:1.6}
+.role-profile-transfer-list{display:grid;gap:1px;border:1px solid var(--t-line);border-radius:var(--r-sm);overflow:hidden}
+.role-profile-transfer-row{display:grid;grid-template-columns:28px minmax(110px,180px) minmax(0,1fr) minmax(0,1fr);gap:var(--sp-2);align-items:start;padding:var(--sp-2) var(--sp-3);background:var(--t-surface);border-bottom:1px solid var(--t-line)}
+.role-profile-transfer-row:last-child{border-bottom:0}
+.role-profile-transfer-row.is-head{position:sticky;top:0;z-index:1;background:var(--t-surface-soft);color:var(--t-text-soft);font-size:var(--fs-micro)}
+.role-profile-transfer-row input{margin-top:3px}
+.role-profile-transfer-row strong{color:var(--t-text-strong);font-size:var(--fs-tiny);font-weight:650}
+.role-profile-transfer-value{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--t-text-soft);font-size:var(--fs-micro);line-height:1.55;max-height:6.5em;overflow:auto}
+.role-profile-transfer-value.is-imported{color:var(--t-accent-ink)}
+.role-profile-transfer-actions{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2);padding:var(--sp-3) var(--sp-5);border-top:1px solid var(--t-line);background:var(--t-surface)}
+.role-profile-transfer-count{color:var(--t-text-faint);font-size:var(--fs-micro)}
+.role-profile-transfer-spacer{flex:1}
+@media(max-width:650px){.role-profile-transfer-row{grid-template-columns:26px minmax(0,1fr)}.role-profile-transfer-row.is-head{display:none}.role-profile-transfer-value{grid-column:2;max-height:none}}
+
