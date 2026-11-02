@@ -20,6 +20,9 @@ from .core_reply import CORE_REPLY_CONTEXT_EXTRA
 from companion_v2.conversation.voice_markup import slice_speech, visible_speech
 
 
+SEGMENTED_TTS_BUDGET_SECONDS = 8.0
+
+
 def voice_prompt_instruction(policy, provider_instruction=""):
     if not isinstance(policy, VoiceReplyPolicy):
         return ""
@@ -297,7 +300,16 @@ async def prepare_core_reply_voice_message(
                 render_options["model_override"] = model_override
             if voice_override:
                 render_options["voice_override"] = voice_override
-            audio = await renderer(context, chunk, **render_options)
+            render = renderer(context, chunk, **render_options)
+            if segment_count > 1:
+                # A whole-reply voice is synthesized while the last text segment
+                # is waiting.  A slow or failing TTS endpoint must not hold that
+                # segment for a minute; cap the budget and degrade to text.
+                configured = float(policy.timeout_seconds or 0)
+                budget = min(configured, SEGMENTED_TTS_BUDGET_SECONDS) if configured > 0 else SEGMENTED_TTS_BUDGET_SECONDS
+                audio = await asyncio.wait_for(render, timeout=budget)
+            else:
+                audio = await render
             audio_data = audio.get("data") if isinstance(audio, dict) and audio.get("type") == "record" else None
             file_value = audio_data.get("file") if isinstance(audio_data, dict) else None
             if not isinstance(file_value, str) or not file_value.startswith("base64://"):
