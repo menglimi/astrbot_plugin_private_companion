@@ -37,7 +37,7 @@ from .settings import DELIVERY_AUTHORIZATION_TTL, INSTALLATION_PREFIX, PROFILE_P
 from .binding import describe_pin, event_identity, is_private_message, message_text, parse_bind_command
 from .calendar_command import receive_calendar_command
 from .binding_store import PendingBinding, binding_path, clear_binding, read_binding, write_binding
-from .news import configured_news_port, configured_search_port
+from .news import configured_news_port
 from .service_balance import configured_balance_port
 from .weather_settings import configured_weather_ports
 from .files.parsing import parser_availability
@@ -471,6 +471,35 @@ class AstrBotMultiController:
                 parked.participant_id, parked.persona_id, confirmed=True))
         return {"confirmed": True, "binding": self.binding_state()}
 
+    def reset_binding(self):
+        """Withdraw the confirmation so the reviewed window can be re-confirmed.
+
+        ``receive_binding`` refuses a rebind with "reset the first-run setup
+        first", but nothing implemented that reset: the confirmed file could only
+        be replaced by editing the data directory. Worse, deleting the file is
+        *not* a reset here -- ``binding_state`` then recovers the window from the
+        persistent identity ledger and still reports ``confirmed``, so the guide
+        jumps straight back to "已绑定".
+
+        So the file stays and only ``confirmed`` flips to ``False``. The page then
+        reads ``pending``, re-renders step 1 and its「确认此窗口」button re-pins
+        whatever mapping is current at that moment. Configured targets, personas,
+        the storage installation and every stored memory are untouched.
+        """
+        parked = self._parked_binding()
+        if parked is None or not parked.confirmed:
+            return {"reset": False, "reason": "setup_binding_missing",
+                    "detail": "there is no confirmed core administrator window to reset"}
+        try:
+            write_binding(self.binding_root, PendingBinding(
+                parked.platform_id, parked.account_id, parked.participant_id,
+                parked.persona_id, confirmed=False))
+        except (OSError, ValueError):
+            return {"reset": False, "reason": "setup_binding_write_failed",
+                    "detail": "the setup binding could not be rewritten"}
+        logger.info("[CompanionV2] 核心管理员窗口已重置为待确认 target=%s", parked.participant_id)
+        return {"reset": True, "binding": self.binding_state()}
+
     def _failure(self, error, *, operation=""):
         code = (error.code if isinstance(error, (TaskError, HostControlError)) else
                 "host_module_unavailable" if isinstance(error, ImportError) else "host_control_failed")
@@ -669,22 +698,14 @@ class AstrBotMultiController:
             image_settings_path=self.data_root / "model_image_routes.json",
             bundled_extensions=bundled_extensions, bundled_issues=bundled_issues,
             managed_extensions=MANAGED_EXTENSIONS)
-        search_settings = SearchSettingsStore(self.data_root)
-        search_provider_resolver = search_settings.selected_provider_id
-        def search_port_factory(context, query, result_count):
-            return configured_search_port(self.context, query=query, result_count=result_count,
-                task_context=context, topic="general",
-                deepseek_provider_resolver=search_provider_resolver,
-                source_priority=search_settings.source_priority())
+        search_provider_resolver = SearchSettingsStore(self.data_root).selected_provider_id
         self.session = MultiHostSession(self.runtime, self.context, settings=self.settings, personas=personas,
             authority=self.authority, native_types=self.native_types, provider_fingerprint=manifest["provider_fingerprint"],
             runtime_instance_id="astrbot-multi-" + uuid4().hex, native_tool_port=self.native_extensions, now=self.now,
             persona_window_snapshot_lookup=self.session_topology.persona_selection_snapshot,
             persona_window_snapshot_update=self.session_topology.update_persona_selection_snapshot,
             news_port=configured_news_port(self.config, context=self.context,
-                deepseek_provider_resolver=search_provider_resolver,
-                search_priority_resolver=search_settings.source_priority),
-            search_port_factory=search_port_factory,
+                deepseek_provider_resolver=search_provider_resolver),
             balance_port=configured_balance_port(self.config),
             weather_ports=configured_weather_ports(self.config),
             qzone_transport=build_qzone_transport(self.context, data_root=self.data_root),
