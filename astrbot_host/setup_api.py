@@ -774,6 +774,11 @@ class SetupWebAPI:
                 # 窗口目标没变时，角色漂移只修绑定、不阻断测试。
                 if not self._repair_parked_binding(target, context):
                     logger.warning("[CompanionV2] 管理员私聊窗口角色与绑定不一致，按当前窗口继续 code=host_persona_binding_changed")
+            else:
+                # The role can still match while the persona was renamed
+                # upstream; rewrite the parked persona key once target
+                # resolution has accepted the unique live mapping.
+                self._repair_parked_binding(target, context)
             return session, context, instruction, target
         else:
             context = session.profile.target
