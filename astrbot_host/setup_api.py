@@ -211,6 +211,7 @@ class SetupWebAPI:
             (PREFIX + "/upgrade", self.prepare_upgrade, ["POST"], "Confirm existing legacy account and persona mappings"),
             (PREFIX + "/targets", self.api_targets, ["GET"], "Read connected OneBot accounts and native personas"),
             (PREFIX + "/binding/confirm", self.confirm_binding, ["POST"], "Confirm the Companion V2 core administrator window"),
+            (PREFIX + "/binding/reset", self.reset_binding, ["POST"], "Release the confirmed core administrator window so it can be bound again"),
             (PREFIX + "/model", self.model, ["POST"], "Choose the initial Companion V2 text provider"),
             (PREFIX + "/model-tasks", self.model_tasks, ["GET"], "Read per-task model routes for the setup role"),
             (PREFIX + "/model-tasks/configure", self.configure_model_task, ["POST"], "Configure one setup-role model task"),
@@ -508,6 +509,40 @@ class SetupWebAPI:
             return self._error(error.code, str(error))
         except (ValueError, TypeError, KeyError, OSError):
             return self._error("setup_binding_confirmation_failed", "the pending private window could not be confirmed")
+
+    async def reset_binding(self):
+        """Release the confirmed core administrator window so it can be bound again.
+
+        ``receive_binding`` tells the operator to "reset the first-run setup" in
+        this guide before switching windows, but until now no route implemented
+        that: an already-confirmed window could only be replaced by editing the
+        plugin data directory by hand. Worse, the refusal named a control that
+        did not exist, so the command, the page and the docs each blamed another.
+
+        Only the *confirmation* is withdrawn. The configured mapping, the
+        storage installation and every stored memory stay exactly as they are;
+        after this call ``binding_state`` reports ``pending`` again and the
+        normal confirm flow re-pins the *currently* reviewed mapping. That is
+        what makes a renamed persona or a moved window fixable from the page
+        instead of by editing ``binding.json``.
+        """
+        try:
+            self._admin()
+            await self._body({"confirm"})
+            clear = getattr(self.controller, "reset_binding", None)
+            if not callable(clear):
+                raise TaskError("setup_binding_unavailable",
+                                "the active host cannot reset a private window")
+            result = clear()
+            if result.get("reset") is not True:
+                raise TaskError(result.get("reason", "setup_binding_missing"),
+                                result.get("detail", "there is no confirmed core administrator window to reset"))
+            return self._response(Outcome.success({"binding": self._binding(), "reset": True}))
+        except TaskError as error:
+            return self._error(error.code, str(error))
+        except (ValueError, TypeError, KeyError, OSError):
+            return self._error("setup_binding_reset_failed",
+                               "the confirmed private window could not be reset")
 
     async def model(self):
         try:

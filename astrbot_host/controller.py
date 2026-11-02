@@ -463,13 +463,11 @@ class AstrBotStagingController:
         weather_port, weather_alert_port = configured_weather_ports(self.config)
         from .model_settings import conversation_provider_resolver
         from .relay_tools import RelayToolPort
-        search_settings = SearchSettingsStore(self.data_root)
-        search_provider_resolver = search_settings.selected_provider_id
+        search_provider_resolver = SearchSettingsStore(self.data_root).selected_provider_id
         def search_port_factory(context, query, result_count):
             return configured_search_port(self.context, query=query, result_count=result_count,
                 task_context=context, topic="general",
-                deepseek_provider_resolver=search_provider_resolver,
-                source_priority=search_settings.source_priority())
+                deepseek_provider_resolver=search_provider_resolver)
         loaded = self.bootstrap.load(runtime_instance_id="astrbot-staging-" + uuid4().hex,
                                      review_only=review_only,
                                      native_tool_port=self.native_extensions,
@@ -478,8 +476,7 @@ class AstrBotStagingController:
                                      weather_alert_port=weather_alert_port,
                                      balance_port=configured_balance_port(self.config),
                                      news_port=configured_news_port(self.config, context=self.context,
-                                         deepseek_provider_resolver=search_provider_resolver,
-                                         search_priority_resolver=search_settings.source_priority),
+                                         deepseek_provider_resolver=search_provider_resolver),
                                      search_port_factory=search_port_factory,
                                      qzone_transport=self._qzone_transport(),
                                      solar_term_port=configured_solar_term_port(
@@ -933,6 +930,33 @@ class AstrBotStagingController:
             write_binding(self.binding_root, PendingBinding(parked.platform_id, parked.account_id,
                 parked.participant_id, parked.persona_id, confirmed=True))
         return {"confirmed": True, "binding": self.binding_state()}
+
+    def reset_binding(self) -> dict[str, Any]:
+        """Withdraw the confirmation so the reviewed window can be re-confirmed.
+
+        The parked binding is what the guide reads while nothing is pinned, so
+        flipping ``confirmed`` back to ``False`` puts step 1 back into its
+        "confirm this window" state. A pinned profile (``intent``) is a separate
+        document and deliberately untouched: it records the identity that day-one
+        review already approved, and ``receive_binding`` refuses to rebind on top
+        of it by design.
+        """
+        pinned = self._read_intent()
+        if pinned is not None:
+            return {"reset": False, "reason": "host_binding_exists",
+                    "detail": "这个安装已经固定过目标；要更换请先在宿主管理里停止并清除运行档。"}
+        parked = self._parked_binding()
+        if parked is None or not parked.confirmed:
+            return {"reset": False, "reason": "setup_binding_missing",
+                    "detail": "there is no confirmed core administrator window to reset"}
+        try:
+            write_binding(self.binding_root, PendingBinding(parked.platform_id, parked.account_id,
+                parked.participant_id, parked.persona_id, confirmed=False))
+        except (OSError, ValueError):
+            return {"reset": False, "reason": "setup_binding_write_failed",
+                    "detail": "the setup binding could not be rewritten"}
+        logger.info("[CompanionV2] 待确认绑定已重置")
+        return {"reset": True, "binding": self.binding_state()}
 
     def handles_binding(self, event: object) -> bool:
         """Whether this private message is part of the bind vocabulary.
