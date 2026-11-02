@@ -259,10 +259,30 @@ class AstrBotMultiController:
         if binding.persona_id:
             from .identity_derivation import normalize_persona_id
             wanted = normalize_persona_id(binding.persona_id)
-            if not any(persona.bot_id == match.bot_id
-                       and normalize_persona_id(persona.persona_id) == wanted
-                       for persona in settings.personas):
-                return None
+            exact = [persona for persona in settings.personas
+                     if persona.bot_id == match.bot_id
+                     and normalize_persona_id(persona.persona_id) == wanted]
+            if not exact:
+                # AstrBot can rename a persona in place.  The parked binding keeps
+                # the old name, so an exact comparison deadlocks setup before the
+                # existing repair path can run.  Accept a unique mapping whose
+                # role still carries the old name, or the only persona for this
+                # bot; multiple candidates stay rejected rather than guessed.
+                by_role = [persona for persona in settings.personas
+                           if persona.bot_id == match.bot_id
+                           and normalize_persona_id(persona.role_id) == wanted]
+                candidates = by_role or [persona for persona in settings.personas
+                                         if persona.bot_id == match.bot_id]
+                if len(candidates) != 1:
+                    explicit = [persona for persona in candidates
+                                if normalize_persona_id(persona.persona_id)]
+                    if len(explicit) == 1:
+                        candidates = explicit
+                if len(candidates) != 1:
+                    return None
+                logger.warning(
+                    "[CompanionV2] 管理员绑定的人格 %s 已不在当前映射中，按唯一映射 %s 继续",
+                    binding.persona_id, candidates[0].persona_id)
         return match
 
     async def proactive_diagnostic_target(self):
