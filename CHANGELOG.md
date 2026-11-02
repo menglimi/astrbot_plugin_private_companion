@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- 语音表演指令/风格强化改为可配置：`voice_direction_mode` 提供「关闭 / 自动识别 / IndexTTS2 / FishAudio」四档，默认自动；自动只在选中引擎明确支持时下发（FishAudio Drama 3、IndexTTS2），强制档位在引擎不匹配时不发指令。
 - 核心回复的提示词组装移到工作线程：私聊消息不再因为 `proactive_inspirations` 的依赖遍历在主线程读库而阻塞事件循环（曾出现 30–36s 事件循环停顿、群聊/私聊一起排队）。
 - 修复提醒工具的参数字段只有空 schema 的问题：`reminder.create` 现在声明 `schedule`（anchor/timezone_name/frequency）与 `message` 的类型和说明，并允许“关联已有便签”的第二种用法；工具说明同时要求用户明确要求未来提醒时必须调用 `reminder.create`，不得静默退化成 `memo.create`。
 - 修复日记重试在“结果未知”后仍显示为可重试的问题：书写回执新增 `retryable`（只有已结论的失败为真），页面只列出可重试的失败；当天只要有一次书写处于 unknown/处理中/已受理，就隐藏重试入口并说明原因。
