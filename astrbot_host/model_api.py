@@ -989,6 +989,21 @@ class ModelWebAPI:
                 return {}
             first_configured = None
             for route in routes:
+                if route == "nai":
+                    nai = projected.get("nai") or {}
+                    model = nai.get("default_model", "")
+                    candidate = {
+                        "model": model.strip() if isinstance(model, str) else "",
+                        "name": "NAI 生图插件",
+                        "route": route,
+                        "enabled": settings.get("enabled") is True and nai.get("available") is True
+                                   and "generate" in (nai.get("operations") or ()),
+                    }
+                    if first_configured is None:
+                        first_configured = candidate
+                    if candidate["enabled"]:
+                        return candidate
+                    continue
                 if not isinstance(route, str) or not route.startswith("online:"):
                     continue
                 endpoint = endpoints.get(route[7:])

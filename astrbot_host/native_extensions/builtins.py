@@ -135,7 +135,7 @@ def create_bundled_extension(data_root, name, *, now=None, context=None, control
         # Use the same identity for provider requests and persisted declarations.
         version = PRODUCT_VERSION + "+image." + image_package_hash()
         api = ImageExtensionAPI(data_root=root, config_path=root / "extensions" / name / "config.json",
-                                version=version)
+                                version=version, context=context)
         return BundledNativeLease(IMAGE_PACKAGE_ID, api.companion_v2_native(), api=api, factory=factory,
             package_version=version,
             furniture=FurnitureDescriptor(name, IMAGE_EXTENSION_ID, "画面工作室", name))

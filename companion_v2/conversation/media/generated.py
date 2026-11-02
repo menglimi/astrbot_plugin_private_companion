@@ -248,7 +248,7 @@ class GeneratedImages:
                JOIN conversation_batches b ON b.batch_id=i.batch_id WHERE """ + where,
             parameters)
         rows = self.runtime.read_all(
-            """SELECT i.action, i.state, i.error_code, i.created_at, i.finished_at
+            """SELECT i.action, i.state, i.error_code, i.created_at, i.finished_at, i.task_id
                FROM extension_tool_invocations i JOIN conversation_batches b ON b.batch_id=i.batch_id
                WHERE """ + where + " ORDER BY i.created_at DESC, i.invocation_id DESC LIMIT ?",
             (*parameters, limit))
@@ -256,6 +256,7 @@ class GeneratedImages:
         native_count, native_rows = diagnostics(self, context, limit=limit)
         rows = sorted([dict(row) for row in rows] + native_rows, key=lambda row: row["created_at"], reverse=True)[:limit]
         items = []
+        from companion_v2.model_gateway.images import image_failure
         for row in rows:
             elapsed_ms = None
             if row["finished_at"]:
@@ -265,7 +266,9 @@ class GeneratedImages:
                 except (TypeError, ValueError):
                     elapsed_ms = None
             items.append({"action": row["action"], "state": row["state"],
-                          "error_code": row["error_code"], "created_at": row["created_at"],
+                          "error_code": (image_failure(self.runtime, row["task_id"])
+                                         if row["state"] in ("failed", "unknown") else None) or row["error_code"],
+                          "created_at": row["created_at"],
                           "finished_at": row["finished_at"], "elapsed_ms": elapsed_ms})
         return {"total": int(count["total"] if count is not None else 0) + native_count, "items": tuple(items)}
 

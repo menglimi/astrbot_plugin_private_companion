@@ -3,15 +3,18 @@
 import base64
 from dataclasses import replace
 import json
+from types import SimpleNamespace as NS
 import unittest
+from unittest.mock import AsyncMock
 
 from companion_v2.capabilities.models import CapabilityAuthorizationState
 from companion_v2.capabilities.repositories import CapabilityRepository
 from companion_v2.conversation.delivery import DeliveryReceipt
 from companion_v2.conversation.flow import ConversationPolicy
 from companion_v2.conversation.media.reply import ImageReplyDraft
-from companion_v2.execution.models import TaskError, digest, encode
-from companion_v2.model_gateway.models import Amount, ProviderResponse, ToolCall
+from companion_v2.execution.models import TaskContext, TaskError, digest, encode
+from companion_v2.foundation.refs import AudienceRef
+from companion_v2.model_gateway.models import Amount, BudgetPolicy, ProviderResponse, ToolCall
 from tests.native_image_support import NativeImageFixture
 from tests.test_conversation_images import image_bytes
 from tests.test_host_application import HostFixture
@@ -94,6 +97,93 @@ class NativeImageFlowTests(NativeImageFixture, HostFixture, unittest.IsolatedAsy
         self.assertNotIn("data:image/", str([tuple(r) for r in sources]))
         self.assertEqual(host.receive(self.event()).unwrap(), batch)
         self.assertEqual(len(self.sent), 1)
+
+    def use_nai(self):
+        from astrbot_host.native_extensions.image_native.output_routing import OutputRoutingBackend
+        path = self.root.parent / "nai-generated.png"
+
+        async def generate(owner, request):
+            self.assertNotIn("api_key", request)
+            path.write_bytes(image_bytes("red"))
+            return {"handled": True, "image_path": str(path)}
+
+        self.nai_api = NS(status=lambda: {"call_mode": "direct"},
+            capability_status=lambda owner: {"available": True, "reason": ""},
+            generate_for_companion=AsyncMock(side_effect=generate))
+        self.image_context.get_registered_star = lambda name: NS(
+            activated=True, star_cls=NS(extension_api=self.nai_api))
+        self.image_owner.backend = OutputRoutingBackend(
+            {"enabled": True, "backend": "nai", "operation_routes": {"generate": ["nai"], "edit": []}},
+            self.root.parent / "nai-transport", context=self.image_context)
+
+    def nai_budget(self):
+        return BudgetPolicy(*(Amount(100000, 100000) for _ in range(5)), enabled=False)
+
+    async def test_nai_generation_is_accounted_adopted_and_counted_once_in_the_daily_quota(self):
+        self.use_nai()
+        host = await self.image_host(budget=self.nai_budget())
+        batch = host.receive(self.event()).unwrap()
+        self.assertEqual((await self.done(host.application, batch))["state"], "complete")
+        context = self.context(host.application, batch)
+        self.nai_api.generate_for_companion.assert_awaited_once()
+        self.assertEqual(len(self.sent[0].images), 1)
+        rows = self.runtime.read_all(
+            "SELECT * FROM model_calls WHERE json_extract(provider_json, '$.provider') = 'image.nai'", ())
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["state"], "generated")
+        self.assertIsNone(rows[0]["actual_cost"])
+        gate = host.application.messages.image_quota
+        self.assertEqual(gate._used(context, gate._classify_context(context), self.clock.now()), 1)
+        self.assertEqual(host.receive(self.event()).unwrap(), batch)
+        self.nai_api.generate_for_companion.assert_awaited_once()
+
+    async def test_core_reply_nai_call_uses_the_attached_supervisor_and_the_same_quota(self):
+        from astrbot_host.core_reply_tool_execution import executor_for
+        self.use_nai()
+        host = await self.image_host(budget=self.nai_budget())
+        # Capture a real bound context without creating a Companion reply task.
+        context = TaskContext(self.important, self.identity.resolve_role(SCOPE, observed_at=self.clock.now()).unwrap(),
+                              AudienceRef(SCOPE, (self.important.subject,)))
+        from companion_v2.configuration.models import ConfigLayer, ConfigTarget
+        from companion_v2.conversation.media.quota import GROUP, QUOTA_FIELDS, ImageQuotaConfigurationOwner
+        quota = ImageQuotaConfigurationOwner(self.runtime)
+        target = ConfigTarget(SCOPE.installation_id, ConfigLayer.ROLE, context.role_binding.role, bot_id=SCOPE.bot_id)
+        gate = host.application.messages.image_quota
+        quota.write(target, QUOTA_FIELDS,
+            changes={GROUP + "." + gate._classify_context(context) + "_max_daily": 1}, reset=(),
+            expected_revision=quota.read(target, QUOTA_FIELDS).revision, observed_at=self.clock.now())
+        owner = executor_for(host.application)
+        self.addAsyncCleanup(owner.close)
+        session = NS(context=context, turn_id="synthetic-core-turn", assert_current=lambda: None)
+        result = await owner.execute(session, "synthetic-core-image", "image.generate", {"prompt": "1girl, red dress"})
+        self.assertEqual(result["state"], "succeeded", result)
+        self.assertEqual(len(result["_images"]), 1)
+        self.nai_api.generate_for_companion.assert_awaited_once()
+        row = self.runtime.read_one(
+            "SELECT * FROM model_calls WHERE json_extract(provider_json, '$.provider') = 'image.nai'", ())
+        self.assertEqual(row["state"], "generated")
+        gate = host.application.messages.image_quota
+        self.assertEqual(gate._used(context, gate._classify_context(context), self.clock.now()), 1)
+        with self.assertRaises(TaskError) as caught:
+            await owner.execute(session, "another-core-image", "image.generate", {"prompt": "1girl"})
+        self.assertEqual(caught.exception.code, "image_quota_exhausted")
+        self.nai_api.generate_for_companion.assert_awaited_once()
+
+    async def test_hard_budget_nai_refusal_creates_no_remote_call_and_consumes_no_image_quota(self):
+        self.use_nai()
+        host = await self.image_host()
+        batch = host.receive(self.event()).unwrap()
+        self.assertEqual((await self.done(host.application, batch))["state"], "complete")
+        self.nai_api.generate_for_companion.assert_not_awaited()
+        row = self.runtime.read_one(
+            "SELECT * FROM model_calls WHERE json_extract(provider_json, '$.provider') = 'image.nai'", ())
+        self.assertEqual(row["state"], "not_started")
+        self.assertEqual(row["actual_cost"], 0)
+        gate = host.application.messages.image_quota
+        context = self.context(host.application, batch)
+        self.assertEqual(gate._used(context, gate._classify_context(context), self.clock.now()), 0)
+        observed = host.application.messages.generated_images.observability_page(context, self.clock.now())
+        self.assertEqual(observed["items"][0]["error_code"], "image_usage_unavailable")
 
     async def test_edit_uses_same_origin_saved_artifact_and_only_selected_output_is_sent(self):
         async def model(envelope):

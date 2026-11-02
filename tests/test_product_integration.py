@@ -182,6 +182,23 @@ class MultiIntegrationTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.native.registered_web_apis, [])
         self.assertEqual((await self.request(path))["data"]["code"], "staging_host_terminated")
 
+    async def test_manifest_detects_nai_before_account_setup_without_exposing_credentials(self):
+        generate = Mock(side_effect=AssertionError("discovery must not generate images"))
+        api = NS(
+            status=lambda: {"call_mode": "direct", "default_model": "nai-diffusion-4-5-full",
+                            "api_key": "must-not-escape"},
+            capability_status=lambda owner: {"available": True, "reason": "ready"},
+            generate_for_companion=generate,
+        )
+        self.native.get_registered_star = lambda name: NS(activated=True, star_cls=NS(extension_api=api))
+        result = await self.request(PREFIX + "/integration/manifest")
+        self.assertEqual(result["status"], "ok", result)
+        self.assertTrue(result["data"]["nai"]["available"])
+        self.assertEqual(result["data"]["nai"]["operations"], ["generate"])
+        self.assertNotIn("must-not-escape", json.dumps(result))
+        self.assertIsNone(self.controller.runtime)
+        generate.assert_not_called()
+
     async def test_scoped_relationship_growth_and_life_read_current_target_and_role(self):
         (await self.controller.initialize_profile()).unwrap()
         inventory = (await self.request(PREFIX + "/page/targets"))["data"]["targets"]
