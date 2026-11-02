@@ -31,6 +31,7 @@ window.CompanionReplyPage = (() => {
     voice_position: {before_text: "文字前", after_text: "文字后", after_media: "所有组件后"},
     voice_language: {zh: "中文", ja: "日语", en: "英语"},
     voice_foreign_text_mode: {original: "原文", translation: "中文译文", bilingual: "双语"},
+    voice_direction_mode: {off: "关闭", auto: "自动识别", indextts2: "IndexTTS2", fishaudio: "FishAudio"},
     file_understanding_formats: {text_only: "纯文本", text_and_documents: "文本与文档"},
   };
 
@@ -141,6 +142,7 @@ window.CompanionReplyPage = (() => {
       voice_conversion_scope: "语音转换范围",
       voice_segment_mode: "朗读段落（整段会等文字收齐后合成一次）", voice_delivery_mode: "发送形式", voice_position: "语音位置",
       voice_language: "语音语言", voice_foreign_text_mode: "外语文字",
+      voice_direction_mode: "表演指令 / 风格强化",
       voice_provider_id: "通用 TTS 扩展", voice_zh_provider_id: "中文 TTS 扩展",
       voice_ja_provider_id: "日语 TTS 扩展", voice_en_provider_id: "英语 TTS 扩展",
       voice_private_zh_provider_id: "私聊 · 中文 TTS", voice_private_ja_provider_id: "私聊 · 日语 TTS",
@@ -211,6 +213,8 @@ window.CompanionReplyPage = (() => {
       voice_probability: "按百分比编辑，后端按 0–1 的小数保存。",
       voice_trigger_keywords: "留空使用默认关键词。",
       voice_extra_prompt: "只补充朗读语气，不改变朗读内容。",
+      voice_direction_mode: "关闭时不添加任何表演指令；自动识别只在选中引擎明确支持时生效（FishAudio Drama 3 / IndexTTS2）；"
+        + "IndexTTS2 与 FishAudio 两档用于强制指定指令格式，引擎不匹配时不发指令。",
       voice_primary_mention_keywords: "仅当原生 @ 目标经身份库确认属于核心用户，且正文命中这些词时触发；逗号或换行分隔。",
       voice_primary_mention_probability: "在当前窗口语音概率基础上提高到此值；仅影响命中的本轮，并绕过本轮语音冷却。",
       voice_primary_mention_prompt: "核心用户定向语音时追加的表达提示；留空只使用角色原有语气。",
@@ -362,7 +366,7 @@ window.CompanionReplyPage = (() => {
        fields: ["forward_message_adaptation_enabled"]},
       {id: "voice", title: "语音与朗读", help: "",
        fields: ["voice_enabled", "voice_trigger_mode", "voice_generation_mode", "voice_conversion_scope", "voice_segment_mode",
-                "voice_delivery_mode", "voice_language", "voice_foreign_text_mode",
+                "voice_delivery_mode", "voice_language", "voice_foreign_text_mode", "voice_direction_mode",
                 "voice_provider_id", "voice_probability", "voice_cooldown_seconds",
                 "voice_max_speech_chars", "voice_timeout_seconds", "voice_zh_provider_id",
                 "voice_ja_provider_id", "voice_en_provider_id", "voice_trigger_keywords", "voice_position",
