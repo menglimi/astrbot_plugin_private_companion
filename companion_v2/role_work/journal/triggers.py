@@ -25,6 +25,9 @@ class JournalTriggerReceipt:
     selection_task_id: str | None = None
     writing_task_id: str | None = None
     failure_code: str | None = None
+    # 只有“已结论的失败”才允许显式重试。unknown/accepted/已成功都必须挡住，
+    # 页面据此决定要不要把这条放进重试列表，而不是只看 state == failed。
+    retryable: bool = False
 
 
 @dataclass(frozen=True)
@@ -145,8 +148,14 @@ class JournalTriggers:
             state = "failed"
             failed = writing or selection
             failure_code = failure_code or (failed.reason if failed else "journal_preparation_failed")
+        retryable = False
+        if state == "failed":
+            retryable = (operation.state is OperationState.COMPLETED
+                         and not self._unresolved((selection, writing))
+                         and not (writing is not None and writing.state == "succeeded"))
         return JournalTriggerReceipt(operation.operation.operation_id, state, replayed,
-            selection.task_id if selection else None, writing.task_id if writing else None, failure_code)
+            selection.task_id if selection else None, writing.task_id if writing else None, failure_code,
+            retryable)
 
     def inspect(self, context, target, operation_id):
         """Authorized metadata only; this never retries or returns stored prose."""
