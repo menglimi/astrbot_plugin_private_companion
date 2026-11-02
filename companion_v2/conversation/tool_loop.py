@@ -56,7 +56,10 @@ _SCHEDULE_SCHEMA = {
         "frequency": {"type": "string", "enum": ["once", "daily", "weekly", "monthly", "yearly"]},
         "interval": {"type": "integer", "minimum": 1},
         "count": {"type": "integer", "minimum": 1},
-        "fold": {"type": "integer", "enum": [0, 1]},
+        # 用最小/最大值而不是整数 enum：google-genai 的 Schema.enum 只接受字符串，
+        # 整数 enum 会让整条请求在本地构造期就失败（运行时校验仍在 agenda/models.py）。
+        "fold": {"type": "integer", "minimum": 0, "maximum": 1,
+                 "description": "夏令时重复时刻取哪一次：0=第一次，1=第二次；默认 0"},
         "gap_policy": {"type": "string", "enum": ["reject", "shift_forward"]},
     },
     "required": ["anchor", "timezone_name"],
