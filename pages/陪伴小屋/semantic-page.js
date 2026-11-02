@@ -60,7 +60,7 @@ window.CompanionSemanticPage = (() => {
   /* 这一页发送所有可编辑字段（不是只发改动），而 revision 冲突后必须重读
      才能拿到新版本号。重读会把 state 换成服务端的值，所以本地草稿要单独留一份，
      否则用户刚填的值会被服务端旧值覆盖。 */
-  let root,scope,abort,state,kind="reaction",view="all",after={},sessionId="",busy=false,editing=null,result=null,message="",generation=0,draft=null,conflict=false,selectedTarget=null,selectedSelection=null,selectedScopeKey="",globalSettingsOnly=false;
+  let root,scope,abort,state,kind="reaction",view="all",after={},loaded={},deletedIds=new Set(),sessionId="",busy=false,editing=null,result=null,message="",generation=0,draft=null,conflict=false,selectedTarget=null,selectedSelection=null,selectedScopeKey="",globalSettingsOnly=false;
   const visibleFlags = () => view === "expression"
     ? flags.filter(([id]) => reactionFlags.has(id))
     : view === "learning" ? flags.filter(([id]) => !reactionFlags.has(id) || id === "vision_review") : flags;
@@ -280,29 +280,106 @@ window.CompanionSemanticPage = (() => {
     if(typeof value!=="number"||!Number.isFinite(value))return "时间未知";
     try{return new Date(value*1000).toLocaleString();}catch(_){return "时间未知";}
   }
-  async function load(append=false){
-    if(!current()||!product.hosted()||(append&&busy))return;
+  /* 按 id 去重/合并：刷新时后端的窗口可能比上一次短，撤掉旧行等于用户眼前少了几条。 */
+  function dedupeRows(rows){
+    const seen=new Set();
+    return rows.filter(row=>{
+      const id=String(row?.id||"");
+      if(!id||seen.has(id))return false;
+      seen.add(id);return true;
+    });
+  }
+  function mergeRows(previous,incoming){
+    const merged=previous.slice();
+    const positions=new Map(merged.map((row,position)=>[String(row?.id||""),position]));
+    incoming.forEach(row=>{
+      const id=String(row?.id||"");
+      const position=positions.get(id);
+      if(position===undefined){if(id)positions.set(id,merged.length);merged.push(row);}
+      else merged[position]=row;
+    });
+    return merged;
+  }
+  /* 目录列表跟着整页滚，重绘前后把窗口位置复位（本页也受 overflow-anchor:none 影响）。 */
+  function rememberScroll(){
+    return typeof window.scrollY==="number"&&Number.isFinite(window.scrollY)?window.scrollY:null;
+  }
+  function restoreScroll(value){
+    if(value===null||typeof window.scrollTo!=="function")return;
+    if(Math.abs((Number(window.scrollY)||0)-value)<=1)return;
+    window.scrollTo(0,value);
+  }
+  /* 按游标列表逐页读一个 kind。中途某页读不到就停在上一页：已读到的行仍然有效，
+     下一页游标保持原样，下次「加载更多」会重试它。 */
+  async function readChain(type,cursors){
+    const rows=[];
+    let next="",meta=null,failed=false,failure=null;
+    for(const cursor of cursors){
+      let page;
+      try{page=await api("GET",{...selection(),kind:type,...(cursor?{after:cursor}:{})});}
+      catch(error){failed=true;failure=error;break;}
+      if(!Array.isArray(page?.items)){failed=true;break;}
+      if(!meta)meta=page;
+      rows.push(...page.items);
+      next=page.next_after||"";
+    }
+    return {type,rows,next,meta,failed,failure};
+  }
+  /* 读取有三种模式：
+       reset   首次挂载/换类型/换会话：重建页记录，只读第 1 页（用户主动重置）；
+       append  「加载更多」：往后读一页并追加；
+       refresh 写操作后/重新读取：按已读游标原地重读同一批页，按 id 合并，
+               **不减少**已经显示的条目，也不把草稿与编辑态清掉。
+     除用户主动切类型/会话外，任何刷新都不走 reset —— 那是「目录被打回第一页」的根源。 */
+  async function load(mode="reset"){
+    const append=mode==="append"||mode===true,refresh=mode==="refresh";
+    if(!current()||!product.hosted()||((append||refresh)&&busy))return;
     const ticket=++generation;
-    const old=append?state?.items||[]:[];
-    if(append||!state)message="";
-    busy=true;if(!append)state=null;render();
+    const previous=state;
+    const oldItems=previous?.items||[];
+    const scrollTop=(append||refresh)?rememberScroll():null;
+    if(!append&&!refresh)message="";
+    busy=true;if(!append&&!refresh)state=null;render();
     try{
       const group=target()?.scope_kind==="group";
       const kinds=view==="learning"?visibleKinds(group):[kind];
-      const fetchPages=()=>Promise.all(kinds.map(type=>append&&!after[type]
-        ?Promise.resolve({items:[],next_after:null})
-        :api("GET",{...selection(),kind:type,...(append&&after[type]?{after:after[type]}:{})})));
-      let pages=await fetchPages();
+      const cursorsFor=type=>refresh
+        ?(loaded[type]?.length?loaded[type].slice():[""])
+        :append?(after[type]?[after[type]]:[]):[""];
+      const fetchAll=()=>Promise.all(kinds.map(type=>readChain(type,cursorsFor(type))));
+      let chains=await fetchAll();
       if(!active(ticket))return;
-      if(!append&&!sessionId&&pages[0]&&!pages[0].selection_ready&&pages[0].sessions?.length){
-        sessionId=pages[0].sessions[0];pages=await fetchPages();
+      if(!append&&!refresh&&!sessionId&&chains[0]?.meta&&!chains[0].meta.selection_ready&&chains[0].meta.sessions?.length){
+        sessionId=chains[0].meta.sessions[0];chains=await fetchAll();
       }
       if(!active(ticket))return;
-      state={...pages[0],items:[...old,...pages.flatMap(page=>page.items||[])]};
-      after=Object.fromEntries(kinds.map((type,index)=>[type,pages[index]?.next_after||""]));
+      const fresh=chains.find(chain=>chain.meta)?.meta||null;
+      const failure=chains.find(chain=>chain.failure)?.failure||null;
+      if(!fresh){
+        /* 一页都没读到：旧内容原地保留，只提示这次没读到（保留具体错误码的翻译）。 */
+        message=failure?localized(failure,"读取失败，请重试。"):localized({code:"invalid_response"},"读取失败，请重试。");
+        return;
+      }
+      const incoming=chains.filter(chain=>!chain.failed||chain.rows.length).flatMap(chain=>chain.rows)
+        .filter(item=>!deletedIds.has(String(item?.id||"")));
+      chains.forEach(chain=>{
+        if(chain.failed)return;
+        if(!append&&!refresh)loaded[chain.type]=[""];
+        else if(append)loaded[chain.type]=(loaded[chain.type]||[""]).concat(cursorsFor(chain.type));
+        after[chain.type]=chain.next;
+      });
+      const rows=refresh?mergeRows(oldItems,incoming)
+        :append?dedupeRows([...oldItems,...incoming]):dedupeRows(incoming);
+      state={...fresh,items:rows};
+      /* 只要有一个类型没读到就要说清楚：否则用户只看到条目变少，不知道是读取失败。
+         具体原因（超时/模型失败/服务不可用）照旧翻译出来，不显示机器码。 */
+      if(failure){
+        const detail=localized(failure,"");
+        message=detail?`部分素材读取失败：${detail}`:"部分素材读取失败，已显示其余内容。";
+      }
     }
     catch(error){if(active(ticket))message=localized(error,"读取失败，请重试。");}
-    finally{if(active(ticket)){busy=false;render();}}
+    finally{if(active(ticket)){busy=false;render();if(scrollTop!==null)restoreScroll(scrollTop);}}
   }
   async function run(action,payload={}){
     if(busy||!current())return;
@@ -316,7 +393,12 @@ window.CompanionSemanticPage = (() => {
       editing=null;busy=false;
       /* 配置保存成功才清草稿；素材类操作不该动设置草稿。 */
       if(action==="configure")draft=null;
-      await load();
+      /* 删除掉的素材要记住：先就地摘掉，后续刷新若把旧数据返回来也不能再显示。 */
+      if(action==="delete"&&payload.id){
+        deletedIds.add(String(payload.id));
+        if(state)state={...state,items:(state.items||[]).filter(item=>String(item.id)!==String(payload.id))};
+      }
+      await load("refresh");
     }catch(error){
       if(!active(ticket))return;
       busy=false;
@@ -326,7 +408,7 @@ window.CompanionSemanticPage = (() => {
         conflict=true;
         draft={...(payload.changes||{})};
         message="这份配置已被别处修改。你填的值仍保留在下面，核对后再次保存即可按新版本写入。";
-        try{await load();}catch(_){render();return;}
+        try{await load("refresh");}catch(_){render();return;}
         return;
       }
       message=localized(error,"操作失败，请刷新核对。");
@@ -342,16 +424,16 @@ window.CompanionSemanticPage = (() => {
   function mount(node,options={}){
     unmount();root=node;selectedTarget=options.target||null;selectedSelection=options.selection||null;selectedScopeKey=typeof options.scopeKey==="string"?options.scopeKey:"";
     globalSettingsOnly=options.globalSettingsOnly===true;
-    scope=selectedScopeKey||product.scopeKey();state=null;result=null;after={};sessionId="";editing=null;message="";busy=false;
+    scope=selectedScopeKey||product.scopeKey();state=null;result=null;after={};loaded={};deletedIds=new Set();sessionId="";editing=null;message="";busy=false;
     view=["learning","expression"].includes(options?.view)?options.view:"all";
     kind=view==="learning"&&target()?.scope_kind==="group"?"slang":"reaction";abort=new AbortController();
     node.addEventListener("click",async event=>{
       const item=event.target.closest("[data-semantic-open]");if(item){kind=item.dataset.semanticKind||kind;open(item.dataset.semanticOpen);return;}
-      const tab=event.target.closest("[data-semantic-kind]");if(tab){kind=tab.dataset.semanticKind;result=null;editing=null;after={};message="";load();return;}
+      const tab=event.target.closest("[data-semantic-kind]");if(tab){kind=tab.dataset.semanticKind;result=null;editing=null;after={};loaded={};message="";load();return;}
       const command=event.target.closest("[data-semantic]")?.dataset.semantic;
       if(command==="close"){editing=null;render();}
       if(command==="retry")load();
-      if(command==="more")load(true);
+      if(command==="more")load("append");
       if(command==="reindex")run("reindex");
       if(command==="discard"){draft=null;conflict=false;message="已放弃草稿，显示当前已保存配置。";render();}
       if(command==="analyze"&&editing)run("analyze",{id:editing.id});
@@ -389,7 +471,7 @@ window.CompanionSemanticPage = (() => {
       }
     },{signal:abort.signal});
     node.addEventListener("change",event=>{
-      if(event.target.id==="semanticSession"){sessionId=event.target.value;result=null;editing=null;after={};message="";load();return;}
+      if(event.target.id==="semanticSession"){sessionId=event.target.value;result=null;editing=null;after={};loaded={};message="";load();return;}
       if(event.target.name==="kind"){kind=event.target.value;result=null;editing=null;return;}
       if(event.target.id!=="semanticFile"||!event.target.files?.length)return;
       importFiles(Array.from(event.target.files));
@@ -445,7 +527,7 @@ window.CompanionSemanticPage = (() => {
     if(failed)parts.push("失败 "+failed+" 张");
     message=parts.join("，")||"没有可识别的表情素材";
     if(failed&&!done)message=localized({code:lastError},"批量识别失败，请核对视觉模型配置后重试。");
-    await load();
+    await load("refresh");
   }
   async function importFiles(files) {
     if(busy||!current())return;
@@ -470,7 +552,7 @@ window.CompanionSemanticPage = (() => {
     if(created)parts.push("可点「批量识别待补全」补全空白字段");
     busy=false;message=parts.join("，")||"没有可导入的图片";
     if(failed&&lastError&&!created&&!duplicates)message=localized({code:lastError},"批量导入失败，请检查图片格式和大小。");
-    await load();
+    await load("refresh");
   }
   function readDataUrl(file) {
     return new Promise((resolve,reject)=>{
