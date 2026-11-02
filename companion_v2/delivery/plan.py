@@ -36,10 +36,17 @@ MAX_SPEECH_CHARS = 2000
 
 
 def _number(value, *, field_name):
-    """A platform message number or account id, in its canonical decimal form."""
-    if type(value) is not str or not value.isascii() or not value.isdecimal():
+    """A platform message number or account id, in its canonical decimal form.
+
+    OneBot v11 identifiers are signed; SnowLuma and some other implementations
+    return negative message ids, so the sign is part of the identifier.
+    """
+    if type(value) is not str or not value.isascii():
         raise ValueError(f"{field_name} requires the platform's decimal identifier")
-    if not 1 <= len(value) <= 20 or value.startswith("0"):
+    digits = value[1:] if value.startswith("-") else value
+    if not digits.isdecimal():
+        raise ValueError(f"{field_name} requires the platform's decimal identifier")
+    if not 1 <= len(digits) <= 20 or digits.startswith("0"):
         raise ValueError(f"{field_name} is outside the supported identifier range")
     return value
 

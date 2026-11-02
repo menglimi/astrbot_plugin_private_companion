@@ -1,4 +1,4 @@
-"""T45/T51: the sealed outbound plan, its configuration, encoding and delivery."""
+﻿"""T45/T51: the sealed outbound plan, its configuration, encoding and delivery."""
 
 import asyncio
 from dataclasses import replace
@@ -86,6 +86,18 @@ class OutboundPlanContractTests(unittest.TestCase):
         self.assertIsNone(outbound_plan(settings={"reply_quote_enabled": True}, scope_kind="group", sequence=1,
                                         first_text_sequence=1, text=REPLY_TEXT,
                                         inputs=(("event-1", "user-1"),)))
+
+    def test_negative_platform_message_ids_still_quote_and_address(self):
+        # OneBot v11 ids are signed: SnowLuma hands out negative message ids, and
+        # rejecting them silently disabled 引用触发消息 on those hosts.
+        settings = {"reply_quote_enabled": True}
+        quoted = outbound_plan(settings=settings, scope_kind="group", sequence=1, first_text_sequence=1,
+                               text=REPLY_TEXT, inputs=(("-7001", "-1625457822"),))
+        self.assertEqual(quoted.document(), {"quote": "-7001"})
+        addressed = outbound_plan(settings={"reply_mention_speaker_enabled": True}, scope_kind="group",
+                                  sequence=1, first_text_sequence=1, text=REPLY_TEXT,
+                                  inputs=(("-7001", "-1625457822"),))
+        self.assertEqual(addressed.document(), {"mentions": ["-1625457822"]})
 
     def test_addressing_follows_the_same_sealed_trigger(self):
         plan = outbound_plan(settings={"reply_mention_speaker_enabled": True}, scope_kind="group", sequence=1,
