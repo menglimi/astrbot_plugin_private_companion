@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from astrbot_host.news import (DEFAULT_AI_NEWS_FEED_LABEL, DEFAULT_AI_NEWS_FEED_URL,
+from astrbot_host.news import (DEFAULT_AI_NEWS_FEED_LABEL, DEFAULT_AI_NEWS_FEED_URL, AstrBotWebSearchNewsPort,
                                DeepSeekSearchNewsPort, NewsJsonPort, NewsRssPort, configured_news_port,
                                WebSearchNewsPort, configured_search_port, deepseek_api_key)
 from astrbot_host.news_parsing import parse_rss_news
@@ -975,7 +975,10 @@ class DeepSeekNewsAdapterTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(port.api_key, "provider-b-secret")
             self.assertEqual(deepseek_api_key(context, provider_id="missing"), "")
             missing = configured_search_port(context, query="科技", deepseek_provider_id="missing")
-            self.assertIsNone(missing)
+            # 选中的 Provider 没有 Key：回落到 AstrBot 里已经配好的搜索服务，
+            # 而不是让 web.search 直接不可用。
+            self.assertIsInstance(missing, AstrBotWebSearchNewsPort)
+            self.assertEqual(missing.provider, "tavily")
 
         router = configured_news_port({"news": {"source_kind": "host"}}, context=context,
                                       deepseek_provider_resolver=lambda: "deepseek_b")
@@ -986,6 +989,23 @@ class DeepSeekNewsAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(slang)
         self.assertEqual(slang.deepseek_provider_resolver(), "deepseek_b")
 
+    async def test_astrbot_search_is_preferred_without_an_explicit_selection(self):
+        context = SimpleNamespace(get_config=lambda **kwargs: {"provider_settings": {
+            "web_search": True, "websearch_provider": "tavily", "websearch_tavily_key": ["fixture-key"]}},
+            get_all_providers=lambda: [])
+        with patch.dict("os.environ", {"COMPANION_V2_DEEPSEEK_API_KEY": "environment-secret",
+                                        "DEEPSEEK_API_KEY": ""}):
+            port = configured_search_port(context, query="科技", result_count=2)
+        self.assertIsInstance(port, AstrBotWebSearchNewsPort)
+        self.assertEqual(port.provider, "tavily")
+
+    async def test_unreadable_selection_still_fails_closed(self):
+        context = SimpleNamespace(get_config=lambda **kwargs: {"provider_settings": {
+            "web_search": True, "websearch_provider": "tavily", "websearch_tavily_key": ["fixture-key"]}},
+            get_all_providers=lambda: [])
+        port = configured_search_port(context, query="科技",
+                                      deepseek_provider_id="invalid-search-provider-selection")
+        self.assertIsNone(port)
     async def test_v1_astrbot_search_provider_remains_a_fallback(self):
         from astrbot.core.tools import web_search_tools
 
