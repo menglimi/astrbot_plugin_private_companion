@@ -17,7 +17,14 @@ window.CompanionOutputPage=(()=>{
     generated_album_export_too_large:"选中的图片总大小超过导出上限，请少选几张。",
     generated_album_folder_unavailable:"V2 数据目录当前不可用。",
     generated_album_open_failed:"无法打开 V2 数据目录，请检查运行环境权限。",
-    generated_image_missing:"选中的图片已经不在图库中，请刷新后重试。"};
+    generated_image_missing:"选中的图片已经不在图库中，请刷新后重试。",
+    image_usage_unavailable:"NAI 未提供费用信息，当前金额硬限制下未提交请求",
+    nai_plugin_unavailable:"NAI 插件不可用，请检查启用和联动配置",
+    nai_generation_timed_out:"NAI 等待超时，结果未知，未重复生成",
+    nai_generation_failed:"NAI 调用未取得可确认结果，未重复生成",
+    nai_generation_unconfirmed:"NAI 未返回可确认的图片，未重复生成",
+    nai_generation_interrupted:"NAI 调用已中断，结果未知，未重复生成",
+    nai_output_unavailable:"NAI 返回的图片暂不可读取"};
   let root=null,abort=null,ticket=0,scope="",base=null,draft=null,revision="",busy="",notice="",bad=false,hostRegistered=false,expanded=new Set(),tests=new Map(),testKeys=new Map(),observation=null,observationBusy=false,observationError="",sceneEditorOpen=false,sceneDraft=null,sceneError="",sceneSaving=false;
   let albumItems=[],albumCursor=null,albumLoaded=false,albumLoading=false,albumError="",albumSelected=-1,albumSelectedIds=new Set(),albumNotice="",albumBusy="";
   let naiStatus=null;
@@ -263,7 +270,7 @@ window.CompanionOutputPage=(()=>{
     const status={queued:"排队中",running:"生成中",succeeded:"已完成",failed:"失败",unknown:"结果未确认"};
     const action={"image.generate":"文生图","image.edit":"改图","image.mask_edit":"蒙版改图"};
     const items=observation.items||[];
-    const rows=items.map(item=>`<li class="output-observation-row"><span class="output-observation-state is-${esc(item.state)}"></span><span class="output-observation-main"><strong>${esc(action[item.action]||item.action)}</strong><small>${esc(formatTime(item.created_at))}</small></span><span class="output-observation-result">${esc(status[item.state]||item.state)}${item.elapsed_ms==null?"":` · ${(item.elapsed_ms/1000).toFixed(1)} 秒`}${item.error_code?` · ${esc(item.error_code)}`:""}</span></li>`).join("");
+    const rows=items.map(item=>`<li class="output-observation-row"><span class="output-observation-state is-${esc(item.state)}"></span><span class="output-observation-main"><strong>${esc(action[item.action]||item.action)}</strong><small>${esc(formatTime(item.created_at))}</small></span><span class="output-observation-result">${esc(status[item.state]||item.state)}${item.elapsed_ms==null?"":` · ${(item.elapsed_ms/1000).toFixed(1)} 秒`}${item.error_code?` · ${esc(ERRORS[item.error_code]||item.error_code)}`:""}</span></li>`).join("");
     host.innerHTML=`<div class="output-observation-summary">${Number(observation.total)||0} 次调用 <span>最近 ${items.length} 条</span></div>${rows?`<ul class="output-observation-list">${rows}</ul>`:'<div class="output-observation-empty">当前角色还没有生图调用记录</div>'}`;
   }
   function updateContentSummary(content){
@@ -288,7 +295,7 @@ window.CompanionOutputPage=(()=>{
   function naiBackend(){
     const status=naiStatus||{},labels={generate:"文生图",edit:"参考图改图"};
     const service=status.call_mode==="openai"?(status.api_profile==="starbridge"?"星桥（Almoon）":"OpenAI 兼容接口"):"nai.sta1n.cn 直连";
-    const reason=!naiStatus?(busy?"正在检测 NAI 插件…":"NAI 状态暂不可读，请重新检测"):!status.installed?"未检测到已启用的 NAI 生图插件":!status.available?"NAI 尚未就绪，请检查插件的陪伴联动开关与接口配置":"已就绪";
+    const reason=!naiStatus?(busy?"正在检测 NAI 插件…":"NAI 状态暂不可读，请重新检测"):!status.installed?"未安装 NAI 生图插件":!status.available?({nai_plugin_disabled:"NAI 插件已停用，请先在插件管理中启用",nai_plugin_incompatible:"NAI 插件版本不支持陪伴联动，请先更新"})[status.reason]||"NAI 尚未就绪，请检查插件的陪伴联动开关与接口配置":"已就绪";
     const format=status.prompt_format==="nai"?"NAI 英文标签":status.prompt_format==="natural"?"英文自然语言":"跟随 NAI 插件";
     const fields=[["接入服务",service],["生图模型",status.default_model||"跟随 NAI 插件"],["画风",status.artist_slot_name||"跟随 NAI 插件当前画风"],["默认尺寸",status.default_size||"跟随 NAI 插件"],["提示词格式",format],["参考图模式",status.call_mode==="direct"?"当前接入方式不支持":({vibe:"氛围参考（不固定人物身份）",img2img:"图生图",director:"精准参考"})[status.reference_mode]||"跟随 NAI 插件"]];
     return `<section class="output-capability-card output-nai-backend" data-output-nai><header class="output-capability-heading"><h2>NAI 后端</h2><span role="status">${esc(reason)}</span><button type="button" class="output-icon-button" data-output-native-action="refresh" title="重新检测 NAI 插件" aria-label="重新检测 NAI 插件"${busy?" disabled":""}>${icon("refresh-cw")}</button></header><div class="output-endpoint-guidance"><p>模型、画风槽位、尺寸、采样参数和默认负面提示词均沿用「NAI 生图插件」的配置；地址与密钥也由 NAI 插件管理。</p><p>人物和服装按陪伴当前角色与本次要求绘制，不套用 NAI 的固定角色模板；不叠加下方的画面风格。提示词格式跟随 NAI 的「陪伴直连提示词模式」。</p></div>${status.installed?`<dl class="output-nai-defaults">${fields.map(([label,value])=>`<div class="output-native-field"><dt>${label}</dt><dd>${esc(value)}</dd></div>`).join("")}</dl>`:""}<div class="output-nai-operations">${Object.entries(labels).map(([operation,label])=>{
@@ -319,7 +326,10 @@ window.CompanionOutputPage=(()=>{
     if(!root?.isConnected)return;
     selector();
     const naiHost=root.querySelector("#outputNaiWorkspace"),queueHost=root.querySelector("#outputBackendWorkspace"),localHost=root.querySelector("#outputLocalWorkspace");
-    if(naiHost)naiHost.innerHTML=naiBackend();
+    if(naiHost){
+      naiHost.hidden=naiStatus?.installed===false;
+      naiHost.innerHTML=naiHost.hidden?"":naiBackend();
+    }
     if(queueHost)queueHost.innerHTML=queue();
     if(localHost)localHost.innerHTML=local();
     root.querySelectorAll("[data-output-native-notice]").forEach(host=>{host.textContent=notice;host.hidden=!notice;host.classList.toggle("is-error",bad);});
@@ -346,7 +356,7 @@ window.CompanionOutputPage=(()=>{
   }
   async function refresh(){
     if(busy)return;
-    const id=ticket;busy="read";notice="";render();
+    const id=ticket;busy="read";notice="";naiStatus=null;render();
     try{
       if(!product()?.role()?.model_api){
         base=draft=null;revision="";hostRegistered=false;naiStatus=null;bad=false;

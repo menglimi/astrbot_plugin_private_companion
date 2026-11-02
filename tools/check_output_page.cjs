@@ -198,6 +198,17 @@ with tempfile.TemporaryDirectory(prefix="output-page-qa-") as data_root:
     assert.deepEqual(backend.operation_routes.generate,["online:endpoint-a","nai"]);
     await frame.locator('[data-output-nai-operation="generate"]').uncheck();await saveBackend();
     assert.deepEqual(backend.operation_routes.generate,["online:endpoint-a"]);
+    nai.installed=false;nai.available=false;nai.operations=[];
+    await frame.getByRole("button",{name:"重新检测 NAI 插件",exact:true}).click();
+    await frame.locator("#outputNaiWorkspace").waitFor({state:"hidden"});
+    assert.equal(await frame.locator('[data-output-native-field="endpoints.0.base_url"]').isVisible(),true);
+    nai.installed=true;nai.reason="nai_plugin_disabled";
+    await frame.locator('#outputBackendWorkspace [data-output-native-action="refresh"]').click();
+    await frame.getByText("NAI 插件已停用，请先在插件管理中启用",{exact:true}).waitFor();
+    assert.equal(await frame.locator('[data-output-nai-operation="generate"]').isDisabled(),true);
+    nai.available=true;nai.reason="";nai.operations=["generate"];
+    await frame.getByRole("button",{name:"重新检测 NAI 插件",exact:true}).click();
+    await frame.getByText("已就绪",{exact:true}).waitFor();
     await frame.locator("#output-tab-capabilities").focus();await page.keyboard.press("ArrowLeft");
     await frame.locator("#output-panel-visual").waitFor({state:"visible"});
     assert.equal(await frame.locator("#output-tab-visual").evaluate(node=>document.activeElement===node),true);

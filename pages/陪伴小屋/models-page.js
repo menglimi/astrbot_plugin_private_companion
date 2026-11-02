@@ -1624,12 +1624,12 @@ window.CompanionModelsPage = (() => {
     const operation = imageCurrentOperation(i), routes = config.operation_routes[operation] || [], current = new Set(routes);
     const choices = [...config.endpoints.filter(item => !current.has(`online:${item.id}`)).map(item => [`online:${item.id}`, `${imageEndpointLabel(item, "图片模型")} · ${item.model || item.id}`]),
       ...Object.entries(IMAGE_LOCAL_LABELS).filter(([key]) => !current.has(key)
-        && (key !== "nai" || i.config.nai?.operations?.includes(operation))).map(([key, label]) => [key, label])];
+        && (key !== "nai" || i.config.nai?.available && i.config.nai?.operations?.includes(operation))).map(([key, label]) => [key, label])];
     const dirty = imageConfigDirty(i), locked = i.configSaving || i.configLoading || !!i.endpointTesting;
     const nai = i.config.nai, naiSupported = nai?.available && nai.operations?.includes(operation);
     const naiState = !nai ? "状态暂不可读" : !nai.available ? "插件尚未就绪" :
       !naiSupported ? "当前接入方式不支持此功能" : [nai.default_model, nai.default_size].filter(Boolean).join(" · ") || "已就绪";
-    const naiSource = current.has("nai") ? "" : `<div class="model-img-nai-source" data-img-nai-source><div><strong>NAI 生图插件</strong><span>${esc(naiState)}</span></div><button type="button" class="button small" data-img-nai-add${locked || !naiSupported ? " disabled" : ""}><i data-lucide="plus" aria-hidden="true"></i>加入${IMAGE_VIEWS[i.view || "generate"].label}队列</button></div>`;
+    const naiSource = current.has("nai") || nai?.installed === false ? "" : `<div class="model-img-nai-source" data-img-nai-source><div><strong>NAI 生图插件</strong><span>${esc(naiState)}</span></div><button type="button" class="button small" data-img-nai-add${locked || !naiSupported ? " disabled" : ""}><i data-lucide="plus" aria-hidden="true"></i>加入${IMAGE_VIEWS[i.view || "generate"].label}队列</button></div>`;
     const legacyOptions = config.legacy_options || {}, selectedWorkflows = legacyOptions.image_companion_selected_workflows || {};
     const extraWorkflows = legacyOptions.image_companion_extra_workflows || [];
     const workflowLabels = {generate: "文生图", edit: "改图", mask_edit: "蒙版局部改图"};

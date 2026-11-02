@@ -986,6 +986,33 @@ test('NAI has a visible add entry that enables output and blocks unsupported dir
   page.unmount();
 });
 
+test('an uninstalled NAI plugin has no add entry and preserves saved routes for removal', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  page.mount(node);
+  requests[0].resolve(status());
+  await flush();
+  node.click('[data-model-tab]', {modelTab: 'image'});
+  requests.find(item => item.route === 'model/image').resolve({actions: [], enabled: {
+    'image.generate': true, 'image.edit': false, 'image.mask_edit': false,
+  }});
+  await flush();
+  requests.find(item => item.route.endsWith('/image/output')).resolve({
+    revision: 'nai-missing', nai: {installed: false, available: false, operations: []},
+    settings: {enabled: true, backend: 'auto', endpoints: [], comfyui: {}, sd_webui: {},
+      operation_routes: {generate: ['nai'], edit: []}},
+  });
+  await flush();
+  assert.match(node.innerHTML, /data-img-route-card="nai"/);
+  assert.match(node.innerHTML, /NAI 插件未就绪/);
+  assert.doesNotMatch(node.innerHTML, /data-img-nai-source/);
+  node.click('[data-img-route-remove]', {imgRouteRemove: 'nai'});
+  assert.doesNotMatch(node.innerHTML, /data-img-route-card="nai"/);
+  assert.doesNotMatch(node.innerHTML, /data-img-nai-add/);
+  assert.doesNotMatch(node.innerHTML, /option value="nai"/);
+  page.unmount();
+});
+
 test('switching tabs round-trip keeps the functional matrix without reloading', async () => {
   const {page, requests, root} = harness();
   const node = root();

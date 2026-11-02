@@ -28,12 +28,14 @@ function fixture(nai = null) {
     [".output-image-status span", {textContent: ""}],
     ["[data-output-native-selector]", {innerHTML: ""}],
     ["#outputNaiWorkspace", {innerHTML: ""}],
+    ["#outputObservationWorkspace", {innerHTML: ""}],
   ]);
   const requests = [];
   let observabilityFailure = false;
   let reconnectFailureCode = "";
   let outputFailure = false;
   let manifestFailure = false;
+  let observationItems = [];
   const listeners = new Map();
   let outputSettings = {backend: "auto", enabled: false, endpoints: [], comfyui: {}, sd_webui: {},
     operation_routes: {generate: [], edit: []}};
@@ -51,7 +53,7 @@ function fixture(nai = null) {
         }
         if (endpoint === "model/image/observability") {
           if (observabilityFailure) throw Object.assign(new Error("network failed"), {code: "network_error"});
-          return {images: {total: 1, items: []}, content: {available: true, works_count: 2,
+          return {images: {total: 1, items: observationItems}, content: {available: true, works_count: 2,
             candidate_count: 1, updated_at: "2026-10-12T04:05:00Z"}};
         }
         if (endpoint === "model/image/output/save") outputSettings = body.changes;
@@ -94,6 +96,7 @@ function fixture(nai = null) {
       listeners.get("input")({target});
     },
     failObservability(value) {observabilityFailure = value;},
+    setObservations(value) {observationItems = value;},
     clearRole() {delete role.model_api; delete role.image_material_api;},
     failOutput(value) {outputFailure = value;},
     failManifest(value) {manifestFailure = value;},
@@ -150,6 +153,18 @@ test("Reconnect failures show a specific V2 session recovery hint", async () => 
   state.page.unmount();
 });
 
+test("NAI failures in the existing image log show a Chinese explanation", async () => {
+  const state = fixture();
+  state.setObservations([{action: "image.generate", state: "failed",
+    created_at: "2026-11-02T05:00:00Z", error_code: "image_usage_unavailable"}]);
+  state.page.mount(state.root);
+  await new Promise(resolve => setImmediate(resolve));
+  const html = state.single.get("#outputObservationWorkspace").innerHTML;
+  assert.match(html, /NAI 未提供费用信息，当前金额硬限制下未提交请求/);
+  assert.doesNotMatch(html, /image_usage_unavailable/);
+  state.page.unmount();
+});
+
 test("NAI output controls read plugin status and save independent generation and edit routes", async () => {
   const state = fixture({installed: true, available: true, call_mode: "openai",
     api_profile: "starbridge", default_model: "nai-diffusion-5-full", operations: ["generate", "edit"]});
@@ -180,6 +195,39 @@ test("NAI direct mode keeps unsupported edit controls disabled", async () => {
   const html = state.single.get("#outputNaiWorkspace").innerHTML;
   assert.match(html, /data-output-nai-operation="edit" disabled/);
   assert.doesNotMatch(html, /data-output-nai-operation="generate" disabled/);
+  state.page.unmount();
+});
+
+test("an uninstalled NAI plugin has no configuration controls or dead links", async () => {
+  const state = fixture({installed: false, available: false, operations: []});
+  state.page.mount(state.root);
+  await new Promise(resolve => setImmediate(resolve));
+  const host = state.single.get("#outputNaiWorkspace");
+  assert.equal(host.hidden, true);
+  assert.equal(host.innerHTML, "");
+  state.page.unmount();
+});
+
+test("an installed but disabled NAI plugin shows the repair action without enabling generation", async () => {
+  const state = fixture({installed: true, available: false, reason: "nai_plugin_disabled", operations: []});
+  state.page.mount(state.root);
+  await new Promise(resolve => setImmediate(resolve));
+  const host = state.single.get("#outputNaiWorkspace");
+  assert.equal(host.hidden, false);
+  assert.match(host.innerHTML, /NAI 插件已停用/);
+  assert.match(host.innerHTML, /data-output-nai-operation="generate" disabled/);
+  assert.doesNotMatch(host.innerHTML, /href=/);
+  state.page.unmount();
+});
+
+test("a role reread failure clears a previous NAI ready state", async () => {
+  const state = fixture({installed: true, available: true, operations: ["generate"]});
+  state.page.mount(state.root);
+  await new Promise(resolve => setImmediate(resolve));
+  state.failOutput(true);
+  await state.page.refresh();
+  assert.match(state.single.get("#outputNaiWorkspace").innerHTML, /NAI 状态暂不可读/);
+  assert.doesNotMatch(state.single.get("#outputNaiWorkspace").innerHTML, /已就绪/);
   state.page.unmount();
 });
 
