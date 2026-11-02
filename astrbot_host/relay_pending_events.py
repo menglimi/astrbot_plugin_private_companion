@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from companion_v2.foundation.refs import ScopeKind
 
 from .private_notice import prepare_relay_transport, send_group_notice, send_private_notice
-from .relay_pending import (claim_group, claim_private_receipts, finish,
+from .relay_pending import (claim_expired, claim_group, claim_private_receipts, finish,
                             mark_waiting_permission, requeue)
 
 
@@ -68,6 +68,21 @@ async def process_group_presence(controller, event, target, context):
             text=_text(task.get("text")), mention_id=str(task.get("mention_id") or ""))
         await asyncio.to_thread(finish, controller.runtime, task["id"],
                                 "sent" if result.get("state") == "delivered" else "failed")
+    # 带话一直没等到目标成员出现时，告诉发起窗口“已经撤回”，
+    # 而不是让那条委托在队列里无声过期。
+    expired = await asyncio.to_thread(claim_expired, controller.runtime, str(target.group_id))
+    for task in expired:
+        source_kind = str(task.get("source_kind") or "private")
+        source_id = str(task.get("source_id") or task.get("source_user") or "")
+        if not source_id:
+            continue
+        text = "你让我在群里带的那句话，对方一直没出现，我先撤回了。"
+        if source_kind == "group":
+            await _send_group(controller, event, platform_id=target.platform_id,
+                login=target.account_id, peer=source_id, text=text)
+        else:
+            await _send_private(controller, event, platform_id=target.platform_id,
+                login=target.account_id, peer=source_id, text=text)
 
 
 async def _report_receipt(controller, event, target, task, reply_text):

@@ -93,5 +93,22 @@ class RelayPendingEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("方便吗", self.api.calls[1][1]["message"][0]["data"]["text"])
 
 
+    async def test_expired_group_relay_notifies_source_once(self):
+        add_task(self.runtime, {
+            "kind": "group_wait", "state": "waiting", "group_id": "5005",
+            "target_user_id": "7777", "mention_id": "7777", "text": "看到后回我",
+            "source_kind": "private", "source_id": "1001", "source_user": "1001",
+            "expires_at": time.time() - 1, "signature": "expired-1",
+        })
+        target = SimpleNamespace(group_id="5005", platform_id="onebot", account_id="account")
+        context = SimpleNamespace(actor=SimpleNamespace(principal=SimpleNamespace(native_account_id="9999")))
+        await process_group_presence(self.controller, self.event, target, context)
+        self.assertEqual(self.api.calls[0][0], "send_private_msg")
+        self.assertEqual(self.api.calls[0][1]["user_id"], 1001)
+        self.assertIn("撤回", self.api.calls[0][1]["message"][0]["data"]["text"])
+        # 回报一次后任务已被取走，后续同群消息不会重复通知。
+        await process_group_presence(self.controller, self.event, target, context)
+        self.assertEqual(len(self.api.calls), 1)
+
 if __name__ == "__main__":
     unittest.main()
