@@ -2,7 +2,7 @@
 (() => {
   const $ = id => document.getElementById(id);
   const STAGES = ["positioning", "personality", "voice", "background", "review"];
-  const LABELS = {optimize: "人设优化", create: "从零设计"};
+  const LABELS = {optimize: "拟人优化", create: "创建人格"};
   const errors = {
     dashboard_identity_required: "请从已登录的 AstrBot 管理界面打开此页。",
     core_access_required: "当前账号没有管理本安装的权限。",
