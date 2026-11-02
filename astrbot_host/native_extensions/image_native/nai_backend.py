@@ -18,9 +18,12 @@ class NAIImageBackend:
         self.directory = Path(directory)
         self.config = {"id": "nai"}
 
-    def _api(self):
+    def _metadata(self):
         getter = getattr(self.context, "get_registered_star", None)
-        metadata = getter(PLUGIN_NAME) if callable(getter) else None
+        return getter(PLUGIN_NAME) if callable(getter) else None
+
+    def _api(self):
+        metadata = self._metadata()
         if metadata is None or getattr(metadata, "activated", True) is not True:
             return None
         api = getattr(getattr(metadata, "star_cls", None), "extension_api", None)
@@ -36,10 +39,17 @@ class NAIImageBackend:
                   "default_style": "", "default_size": "", "prompt_format": "",
                   "artist_slot_name": "", "reference_mode": "", "operations": []}
         try:
-            api = self._api()
-            if api is None:
+            metadata = self._metadata()
+            if metadata is None:
                 return result
             result["installed"] = True
+            if getattr(metadata, "activated", True) is not True:
+                result["reason"] = "nai_plugin_disabled"
+                return result
+            api = self._api()
+            if api is None:
+                result["reason"] = "nai_plugin_incompatible"
+                return result
             status = api.status()
             capability = api.capability_status(self)
             available = capability.get("available") is True
@@ -67,6 +77,12 @@ class NAIImageBackend:
         return tuple(self.status()["operations"])
 
     async def execute(self, invocation, references, before_dispatch):
+        if invocation.model_call is not None:
+            return await invocation.model_call("nai", invocation.operation,
+                lambda dispatch: self._execute(invocation, references, dispatch), before_dispatch)
+        return await self._execute(invocation, references, before_dispatch)
+
+    async def _execute(self, invocation, references, before_dispatch):
         api = self._api()
         if api is None or invocation.operation not in self.operations:
             raise NativeImageError("nai_plugin_unavailable", unconfirmed=False)
@@ -103,13 +119,31 @@ class NAIImageBackend:
                 raise NativeImageError("nai_plugin_unavailable", unconfirmed=False)
             # The existing owner fence must run before NAI can incur any charge.
             await checked(before_dispatch)
-            result = await api.generate_for_companion(self, request)
+            try:
+                result = await api.generate_for_companion(self, request)
+            except asyncio.CancelledError:
+                raise
+            except TimeoutError:
+                raise NativeImageError("nai_generation_timed_out", diagnostics=self._diagnostic(
+                    "nai_generation_timed_out")) from None
+            except Exception:
+                raise NativeImageError("nai_generation_failed", diagnostics=self._diagnostic(
+                    "nai_generation_failed")) from None
+        if isinstance(result, dict) and result.get("handled") is False and result.get("reason") == "disabled":
+            raise NativeImageError("nai_plugin_unavailable", unconfirmed=False,
+                                   diagnostics=self._diagnostic("nai_plugin_unavailable", confirmed=True))
         if not isinstance(result, dict) or result.get("handled") is not True or not result.get("image_path"):
-            raise NativeImageError("nai_generation_unconfirmed")
+            raise NativeImageError("nai_generation_unconfirmed", diagnostics=self._diagnostic(
+                "nai_generation_unconfirmed"))
         path = Path(result["image_path"])
         if not path.is_file() or not 0 < path.stat().st_size <= 50 * 1024 * 1024:
-            raise NativeImageError("nai_output_unavailable")
+            raise NativeImageError("nai_output_unavailable", diagnostics=self._diagnostic("nai_output_unavailable"))
         image = await asyncio.to_thread(path.read_bytes)
         inspect_image(image)
         return BackendResult(images=(image,), receipt={"backend": "nai", "plugin": PLUGIN_NAME,
                                                        "response_received": True})
+
+    @staticmethod
+    def _diagnostic(code, *, confirmed=False):
+        return ({"endpoint_id": "nai", "status": 0, "reason": code, "detail": "",
+                 "scope": "endpoint" if confirmed else "unconfirmed", "retry_after": ""},)

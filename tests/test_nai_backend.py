@@ -164,10 +164,41 @@ class NAIBackendTests(unittest.IsolatedAsyncioTestCase):
         with patch("astrbot_host.native_extensions.image_native.output_routing.NativeTransportBackend") as local:
             local.return_value.operations = ("generate",)
             local.return_value.execute = AsyncMock()
-            with self.assertRaises(TimeoutError):
+            with self.assertRaisesRegex(NativeImageError, "nai_generation_timed_out"):
                 await router.execute(self.invocation(), (), self.dispatch)
             local.return_value.execute.assert_not_awaited()
         self.api.generate_for_companion.assert_awaited_once()
+
+    async def test_confirmed_disabled_result_can_fall_back_without_repeating_a_paid_request(self):
+        self.api.generate_for_companion.side_effect = None
+        self.api.generate_for_companion.return_value = {"handled": False, "reason": "disabled"}
+        router = OutputRoutingBackend(
+            {"enabled": True, "backend": "auto", "sd_webui": {"base_url": "http://example.test"},
+             "operation_routes": {"generate": ["nai", "sd_webui"], "edit": []}},
+            self.root / "routes", context=self.context)
+        with patch("astrbot_host.native_extensions.image_native.output_routing.NativeTransportBackend") as local:
+            local.return_value.operations = ("generate",)
+            local.return_value.execute = AsyncMock(return_value="fallback")
+            self.assertEqual(await router.execute(self.invocation(), (), self.dispatch), "fallback")
+            local.return_value.execute.assert_awaited_once()
+        self.api.generate_for_companion.assert_awaited_once()
+
+    async def test_opaque_error_notes_cannot_be_used_as_proof_to_switch_backends(self):
+        self.api.generate_for_companion.side_effect = None
+        self.api.generate_for_companion.return_value = {
+            "handled": True, "image_path": "", "note": "401 unauthorized; must-not-save"}
+        router = OutputRoutingBackend(
+            {"enabled": True, "backend": "nai", "operation_routes": {"generate": ["nai", "sd_webui"], "edit": []}},
+            self.root / "routes", context=self.context)
+        with patch("astrbot_host.native_extensions.image_native.output_routing.NativeTransportBackend") as local:
+            local.return_value.operations = ("generate",)
+            local.return_value.execute = AsyncMock()
+            with self.assertRaises(NativeImageError) as caught:
+                await router.execute(self.invocation(), (), self.dispatch)
+            local.return_value.execute.assert_not_awaited()
+        self.assertTrue(caught.exception.unconfirmed)
+        self.assertEqual(caught.exception.diagnostics[0]["reason"], "nai_generation_unconfirmed")
+        self.assertNotIn("must-not-save", str(caught.exception.diagnostics))
 
     async def test_missing_result_is_unconfirmed_and_does_not_leak_plugin_messages(self):
         self.api.generate_for_companion.side_effect = None

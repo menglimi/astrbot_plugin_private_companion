@@ -232,16 +232,19 @@ class NativeImageProvider:
             raise NativeImageError("native_references_invalid")
         return tuple(sorted(result, key=lambda item: item["position"]))
 
-    async def execute(self, request: dict, *, before_dispatch, host_references=(), fetch_reference=None) -> dict:
+    async def execute(self, request: dict, *, before_dispatch, host_references=(), fetch_reference=None,
+                      model_call=None) -> dict:
         task = asyncio.current_task()
         self._tasks.add(task)
         try:
             return await self._execute(request, before_dispatch=before_dispatch,
-                                       host_references=host_references, fetch_reference=fetch_reference)
+                                       host_references=host_references, fetch_reference=fetch_reference,
+                                       model_call=model_call)
         finally:
             self._tasks.discard(task)
 
-    async def _execute(self, request: dict, *, before_dispatch, host_references=(), fetch_reference=None) -> dict:
+    async def _execute(self, request: dict, *, before_dispatch, host_references=(), fetch_reference=None,
+                       model_call=None) -> dict:
         value = self._request(request)
         # Snapshot the live budget once, before any I/O.  A dashboard save while
         # this task is running changes the next task only; it must never extend
@@ -335,7 +338,8 @@ class NativeImageProvider:
         invocation = ImageInvocation(scope, value["invocation_id"], value["invocation_id"], value["origin_key"],
                                      operation, arguments["prompt"], negative_prompt=arguments.get("negative_prompt", ""),
                                      reference_ids=(tuple(ref.reference_id for ref in refs)
-                                                    or tuple(offer.reference_id for offer in reference_offers)), envelope=envelope)
+                                                    or tuple(offer.reference_id for offer in reference_offers)),
+                                     envelope=envelope, model_call=model_call)
         operation = await self.owner.execute(invocation, references=refs, reference_offers=reference_offers,
                                              resolve_references=resolver, before_dispatch=before_dispatch)
         if operation["state"] == "pending":
