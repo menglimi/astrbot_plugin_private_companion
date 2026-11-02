@@ -21,10 +21,20 @@ from .helpers import _now_ts, _safe_float, _safe_int, _single_line
 
 
 _CV2_IMPORT_LOCK = threading.RLock()
+# The selected vision endpoint can be closed or retired independently of this
+# plugin (InvalidEndpoint.ClosedEndpoint). Keep the configured provider first,
+# then try other explicitly-image-capable providers before returning "看不清".
+_CAMERA_VISION_FALLBACK_IDS = (
+    "deepseek/deepseek-v4-flash-vision-exp",
+    "qhaigc/gemini-3-flash-preview",
+    "google_gemini/gemini-3.7-flash",
+)
 
 
 class RealityTouchCameraMixin:
     """Provide a privacy-bounded, single-frame camera capability."""
+
+    reality_touch_camera_vision_fallback_ids = _CAMERA_VISION_FALLBACK_IDS
 
     _REALITY_TOUCH_CAMERA_CONSENT_VERSION = 1
     _REALITY_TOUCH_CAMERA_CAPABILITY = "camera_single_frame"
@@ -791,11 +801,15 @@ class RealityTouchCameraMixin:
         jpeg_bytes = frame.get("jpeg_bytes")
         if not isinstance(jpeg_bytes, (bytes, bytearray)) or not jpeg_bytes:
             return fallback
-        provider_id = _single_line(getattr(self, "plugin_vision_provider_id", ""), 160)
         getter = getattr(getattr(self, "context", None), "get_provider_by_id", None)
-        provider = getter(provider_id) if provider_id and callable(getter) else None
-        supports_image = getattr(self, "_provider_supports_image", None)
-        if provider is None or (callable(supports_image) and not supports_image(provider)):
+        if not callable(getter):
+            return fallback
+        configured = _single_line(getattr(self, "plugin_vision_provider_id", ""), 160)
+        fallbacks = getattr(self, "reality_touch_camera_vision_fallback_ids", ()) or ()
+        candidates = tuple(dict.fromkeys(
+            item for item in (configured, *fallbacks) if _single_line(item, 160)
+        ))
+        if not candidates:
             return fallback
         food_requested = self._reality_touch_camera_food_request_matches(purpose)
         prompt = (
@@ -823,46 +837,54 @@ class RealityTouchCameraMixin:
             f"\n本次任务目的：{_single_line(purpose, 120)}"
         )
         data_url = "data:image/jpeg;base64," + base64.b64encode(bytes(jpeg_bytes)).decode("ascii")
-        started = time.time()
-        try:
-            call = provider.text_chat(prompt=prompt, image_urls=[data_url], max_tokens=420)
-            timeout = _safe_int(getattr(self, "reality_touch_camera_analysis_timeout_seconds", 25), 25, 5, 90)
-            result = await asyncio.wait_for(call, timeout=timeout)
-            completion = str(getattr(result, "completion_text", result) or "").strip()
-            recorder = getattr(self, "_record_llm_usage", None)
-            if callable(recorder):
-                recorder(
-                    provider_id=provider_id,
-                    task="reality_touch_camera",
-                    prompt=prompt,
-                    completion=completion,
-                    elapsed_ms=int((time.time() - started) * 1000),
-                    success=bool(completion),
-                    resp=result,
+        supports_image = getattr(self, "_provider_supports_image", None)
+        for provider_id in candidates:
+            provider = getter(provider_id)
+            if provider is None or (callable(supports_image) and not supports_image(provider)):
+                continue
+            started = time.time()
+            try:
+                call = provider.text_chat(prompt=prompt, image_urls=[data_url], max_tokens=420)
+                timeout = _safe_int(getattr(self, "reality_touch_camera_analysis_timeout_seconds", 25), 25, 5, 90)
+                result = await asyncio.wait_for(call, timeout=timeout)
+                completion = str(getattr(result, "completion_text", result) or "").strip()
+                recorder = getattr(self, "_record_llm_usage", None)
+                if callable(recorder):
+                    recorder(
+                        provider_id=provider_id,
+                        task="reality_touch_camera",
+                        prompt=prompt,
+                        completion=completion,
+                        elapsed_ms=int((time.time() - started) * 1000),
+                        success=bool(completion),
+                        resp=result,
+                    )
+                parsed = self._reality_touch_camera_json(completion)
+                if not parsed:
+                    raise ValueError("vision provider returned no structured observation")
+                return self._sanitize_reality_touch_camera_observation(
+                    parsed,
+                    local_brightness=_single_line(frame.get("brightness"), 16).lower(),
+                    width=_safe_int(frame.get("width"), 0, 0),
+                    height=_safe_int(frame.get("height"), 0, 0),
+                    analyzed=True,
+                    purpose=purpose,
                 )
-            parsed = self._reality_touch_camera_json(completion)
-            return self._sanitize_reality_touch_camera_observation(
-                parsed,
-                local_brightness=_single_line(frame.get("brightness"), 16).lower(),
-                width=_safe_int(frame.get("width"), 0, 0),
-                height=_safe_int(frame.get("height"), 0, 0),
-                analyzed=bool(parsed),
-                purpose=purpose,
-            )
-        except Exception as exc:
-            logger.warning("[PrivateCompanion] 现实触及摄像头完整视觉分析失败: %s", _single_line(exc, 180))
-            recorder = getattr(self, "_record_llm_usage", None)
-            if callable(recorder):
-                recorder(
-                    provider_id=provider_id,
-                    task="reality_touch_camera",
-                    prompt=prompt,
-                    completion="",
-                    elapsed_ms=int((time.time() - started) * 1000),
-                    success=False,
-                    error=str(exc),
-                )
-            return fallback
+            except Exception as exc:
+                logger.warning("[PrivateCompanion] 现实触及摄像头视觉分析失败 provider=%s: %s",
+                               provider_id, _single_line(exc, 180))
+                recorder = getattr(self, "_record_llm_usage", None)
+                if callable(recorder):
+                    recorder(
+                        provider_id=provider_id,
+                        task="reality_touch_camera",
+                        prompt=prompt,
+                        completion="",
+                        elapsed_ms=int((time.time() - started) * 1000),
+                        success=False,
+                        error=str(exc),
+                    )
+        return fallback
 
     def _record_reality_touch_camera_observation(
         self,
