@@ -60,6 +60,7 @@ let route='life', lifeTab='home', manageTab='host', selfPane='profile', libraryF
 let navigationIntent=0;
 let outputTabId='visual';
 let selfProfileSection='identity';
+let personaRecreationMode='questionnaire';
 let maintenancePane='';
 let dataPane='storage';
 let tokenTaskSettingsJump=0;
@@ -3743,7 +3744,7 @@ function renderGovernanceOriginal(){
   const tabs=[
     ['profile','user-round-pen','角色档案'],
     ['relationship','heart-handshake','相处资料'],
-    ['questionnaire','notebook-pen','人格问卷'],
+    ['questionnaire','notebook-pen','人格再造'],
     ['knowledge','book-open-text','世界知识']];
   const liveLabel=role?'已识别当前角色':connectionLabel;
   return `<div class="self-page${selfPane==='questionnaire'?' is-questionnaire-focus':''}">
@@ -4023,7 +4024,9 @@ function renderConfigEditors(){
   }
 }
 document.addEventListener('companion:role-profile-updated',()=>roleProfileConfigMount?.read?.());
-function renderPersonaPage(){return product.workspace("persona");}
+function renderPersonaPage(){
+  return `<nav class="section-chips" aria-label="人格再造模式">${[['questionnaire','人格问卷'],['designer','新的她']].map(([id,label])=>`<button type="button" class="section-chip${personaRecreationMode===id?' is-active':''}" data-persona-recreation="${id}" aria-pressed="${personaRecreationMode===id}">${label}</button>`).join('')}</nav>${product.workspace(personaRecreationMode==='designer'?'designer':'persona')}`;
+}
 function renderHostWorkspace(){return product.workspace("host");}
 function renderAppearancePageOriginal(){
   return `<div class="settings-heading"><div><h2>外观与设置</h2></div>${chip('仅影响拓展页','lavender')}</div><section class="panel content-panel appearance-card"><div data-appearance-inline>${appearancePanel()}</div></section>`;
@@ -4635,7 +4638,7 @@ const searchIndex=[
   ['生活观察','日记、梦境、生活轨迹、状态与交互影响','scan-eye','home-section','observation'],['家具与能力','基础生活与拓展家具，启用状态和连接','armchair','home-section','furniture'],
   ['首页与小屋','生活总览、观察与家具能力','house','life','home'],['日记与生活','日记、睡眠、阅读与作息配置','notebook-pen','life','diary'],['关系网','只查看用户与群聊之间的连接关系','network','manage','identity'],['用户','用户目录、逐人资料与私聊默认权限','users-round','manage','identity-people'],['群聊','群聊目录、群内成员与成员线索','messages-square','manage','identity-groups'],['共同经历','记录、原话、来源与记忆策略','orbit','manage','memory'],['作品与相册','原稿、照片与收藏','images','home-section','furniture'],['一起活动','共读、棋桌与通话','coffee','home-section','furniture'],['能力目录','可选拓展当前能不能用','blocks','home-section','furniture'],
   ['感知','环境、消息与媒体来源','scan-eye','manage','perception'],['决策','本轮上下文与群聊参与判断','brain','manage','decision'],['行动','生活行为与社交发布','play','manage','action'],['产出','图像生成与创作作品','shapes','manage','output'],['表达','文本、语音、表情与投递','message-square-more','manage','expression'],['自我','世界知识、角色设定与自身档案','user-round','manage','governance'],
-  ['开始使用','首次连接、选择对象与决定是否发送','rocket','manage','setup'],['人格问卷','结构化整理角色设定并保存多个版本','notebook-pen','manage','persona'],['外观与设置','主题、密度、圆角、字号与动效','palette','manage','appearance'],['主动联系','主动契机、联系节奏与免打扰','heart-handshake','manage','contact'],['事实与经历','事实、原话与群词义','orbit','manage','memory'],['模型与连接','公共模型与任务路由','sliders-horizontal','manage','models'],['运行诊断','运行状态与排障','settings-2','manage','maintenance'],['便签','下次去书店，找一本植物随笔','sticky-note',null,'notes'],['窗边的一页','照片与相关经历','image',null,'photo-window'],['创作书架','Content 能力状态','library-big',null,'cap-content'],['现实触及','Reality 设备与授权','radio','manage','perception'],
+  ['开始使用','首次连接、选择对象与决定是否发送','rocket','manage','setup'],['人格再造','人格问卷、优化已有设定或共创新人设','notebook-pen','manage','persona'],['外观与设置','主题、密度、圆角、字号与动效','palette','manage','appearance'],['主动联系','主动契机、联系节奏与免打扰','heart-handshake','manage','contact'],['事实与经历','事实、原话与群词义','orbit','manage','memory'],['模型与连接','公共模型与任务路由','sliders-horizontal','manage','models'],['运行诊断','运行状态与排障','settings-2','manage','maintenance'],['便签','下次去书店，找一本植物随笔','sticky-note',null,'notes'],['窗边的一页','照片与相关经历','image',null,'photo-window'],['创作书架','Content 能力状态','library-big',null,'cap-content'],['现实触及','Reality 设备与授权','radio','manage','perception'],
 ];
 const configSearchLocations={
   quota:{next:'manage',tab:'output',root:'#imageControlWorkspace'},image_review:{next:'manage',tab:'output',root:'#imageControlWorkspace'},
@@ -5054,6 +5057,14 @@ document.addEventListener('click',event=>{
       event.preventDefault();navigate(next,tab,subtab);return;
     }
     if(scrollToPageAnchor(hash)){event.preventDefault();return;}
+  }
+  if(el.dataset.personaRecreation){
+    if(!['questionnaire','designer'].includes(el.dataset.personaRecreation))return;
+    personaRecreationMode=el.dataset.personaRecreation;
+    paintPanel();
+    product.mountWorkspace();
+    requestAnimationFrame(()=>document.querySelector('[data-persona-recreation="'+personaRecreationMode+'"]')?.focus({preventScroll:true}));
+    return;
   }
   if(el.dataset.selfPane){
     const pane=el.dataset.selfPane;
