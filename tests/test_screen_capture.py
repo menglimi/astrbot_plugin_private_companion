@@ -5,7 +5,7 @@ from datetime import timedelta
 import unittest
 
 from companion_v2.capabilities import CapabilityAuthorizationState
-from companion_v2.foundation.refs import AudienceRef
+from companion_v2.foundation.refs import AudienceRef, ScopeKind, ScopeRef
 from companion_v2.screen import (
     SCREEN_EXTENSION, SCREEN_READ, ClockQuality, DeviceSnapshot,
     ScreenCaptureService, ScreenRepository,
@@ -149,6 +149,25 @@ class ScreenCaptureTests(G6Fixture):
         self.device = WrongDevice()
         self.assertEqual(self.capture().failure.code, "screen_capture_unknown")
         self.assertEqual(self.runtime.read_one("SELECT count(*) AS n FROM screen_captures", ())["n"], 0)
+
+    def test_core_admin_needs_no_scope_consent_or_grant(self):
+        scope = ScopeRef(self.scope.installation_id, "onebot", ScopeKind.PRIVATE, "private-core")
+        with self.runtime.transaction() as connection:
+            connection.execute(
+                """INSERT INTO subject_access_tiers (subject_kind, subject_id, tier, revision, updated_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(subject_kind, subject_id) DO UPDATE SET tier = excluded.tier""",
+                ("human", self.subject.subject_id, "core", 1, NOW.isoformat()),
+            )
+        service = ScreenCaptureService(screens=self.screens, operations=OperationRepository(self.runtime),
+                                       device=self.device, now=self.clock.now)
+        captured = asyncio.run(service.capture_once(request_id="request-core", scope=scope,
+            device_id="desktop-a", role=self.role, resolved=self.resolved,
+            audience=AudienceRef(scope, (self.subject,))))
+        self.assertTrue(captured.is_success, captured.failure)
+        self.assertEqual(self.device.calls, 1)
+        self.assertEqual(self.screens.read_image(captured.unwrap().capture.reference,
+            resolved=self.resolved, observed_at=NOW).unwrap(), IMAGE)
 
 
 if __name__ == "__main__":
