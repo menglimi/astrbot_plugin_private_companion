@@ -951,6 +951,9 @@ test('the functional page exposes the design subtabs and the situation map deriv
   assert.match(node.innerHTML, /可用模型/);
   assert.match(node.innerHTML, /对话回复/);
   assert.match(node.innerHTML, /按能力槽/);
+  assert.match(node.innerHTML, /模型提供方图例/);
+  assert.match(node.innerHTML, /class="model-mlgd-box"/);
+  assert.doesNotMatch(node.innerHTML, /class="model-mlgd-box" open/);
   node.click('[data-model-av]', {modelAv: 'lane'});
   assert.match(node.innerHTML, /前台/);
   assert.match(node.innerHTML, /后台/);

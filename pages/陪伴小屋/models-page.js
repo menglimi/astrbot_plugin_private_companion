@@ -1856,7 +1856,7 @@ window.CompanionModelsPage = (() => {
         ${items || '<p class="model-empty">没有匹配的任务。</p>'}</section>`; }).join("");
     const legend = (s.status?.providers || []).map(p => `<span><i style="background:${pillColor(p.id)}"></i><em>${esc(p.id)}</em></span>`).join("");
     return `<div class="model-subpane"><div class="model-kpis">${fnKpis(s)}</div>${sitFilters(s)}
-      <div class="model-mlgd legend">${legend}</div>
+      <details class="model-mlgd-box"><summary><span>模型提供方图例</span><small>${(s.status?.providers || []).length} 个 · 点击展开</small></summary><div class="model-mlgd legend">${legend}</div></details>
       <div class="model-rgrid">${list}</div>${testBar(s)}</div>`; }
   const probeLabel = result => result.status === "ok" ? `连接成功 · ${result.latency_ms} ms`
     : result.status === "testing" ? "测试中…" : errors[result.code] || "结果未知";
