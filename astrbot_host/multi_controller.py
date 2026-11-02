@@ -491,6 +491,35 @@ class AstrBotMultiController:
                 parked.participant_id, parked.persona_id, confirmed=True))
         return {"confirmed": True, "binding": self.binding_state()}
 
+    def reset_binding(self):
+        """Withdraw the confirmation so the reviewed window can be re-confirmed.
+
+        ``receive_binding`` refuses a rebind with "reset the first-run setup
+        first", but nothing implemented that reset: the confirmed file could only
+        be replaced by editing the data directory. Worse, deleting the file is
+        *not* a reset here -- ``binding_state`` then recovers the window from the
+        persistent identity ledger and still reports ``confirmed``, so the guide
+        jumps straight back to "已绑定".
+
+        So the file stays and only ``confirmed`` flips to ``False``. The page then
+        reads ``pending``, re-renders step 1 and its「确认此窗口」button re-pins
+        whatever mapping is current at that moment. Configured targets, personas,
+        the storage installation and every stored memory are untouched.
+        """
+        parked = self._parked_binding()
+        if parked is None or not parked.confirmed:
+            return {"reset": False, "reason": "setup_binding_missing",
+                    "detail": "there is no confirmed core administrator window to reset"}
+        try:
+            write_binding(self.binding_root, PendingBinding(
+                parked.platform_id, parked.account_id, parked.participant_id,
+                parked.persona_id, confirmed=False))
+        except (OSError, ValueError):
+            return {"reset": False, "reason": "setup_binding_write_failed",
+                    "detail": "the setup binding could not be rewritten"}
+        logger.info("[CompanionV2] 核心管理员窗口已重置为待确认 target=%s", parked.participant_id)
+        return {"reset": True, "binding": self.binding_state()}
+
     def _failure(self, error, *, operation=""):
         code = (error.code if isinstance(error, (TaskError, HostControlError)) else
                 "host_module_unavailable" if isinstance(error, ImportError) else "host_control_failed")
