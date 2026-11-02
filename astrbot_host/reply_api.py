@@ -42,13 +42,21 @@ class ReplyWebAPI:
                 (PREFIX + "/recalls", self.recalls, ["GET"],
                  "Read this window's withdrawn messages within the configured bound"),
                 (PREFIX + "/harassment", self.harassment, ["GET"],
-                 "Read anti-harassment settings and the blacklist directory"),
+                 "Read anti-harassment settings, directory and audit"),
                 (PREFIX + "/harassment/settings", self.harassment_settings, ["POST"],
-                 "Save anti-harassment thresholds"),
+                 "Save anti-harassment judgment and disposal settings"),
                 (PREFIX + "/harassment/block", self.harassment_block, ["POST"],
                  "Move one private user into the blacklist"),
                 (PREFIX + "/harassment/unblock", self.harassment_unblock, ["POST"],
-                 "Remove one private user from the blacklist")]
+                 "Remove one private user from the blacklist"),
+                (PREFIX + "/harassment/extend", self.harassment_extend, ["POST"],
+                 "Change one blacklist entry's expiry"),
+                (PREFIX + "/harassment/false-positive", self.harassment_false_positive, ["POST"],
+                 "Release a false positive and keep its evidence in the audit"),
+                (PREFIX + "/harassment/export", self.harassment_export, ["POST"],
+                 "Export anti-harassment settings, directory and audit"),
+                (PREFIX + "/harassment/import", self.harassment_import, ["POST"],
+                 "Import anti-harassment settings and directory")]
 
     def _tts_catalog(self):
         from .voice import tts_provider_catalog
@@ -315,7 +323,8 @@ class ReplyWebAPI:
             return outcome_response(Outcome.failed("recall_request_invalid", "invalid recall query"))
 
 
-    # ---- 防骚扰：决策页管理设置与黑名单目录 ----
+
+    # ---- 防骚扰：判断、处置与黑名单目录 ----
 
     def _harassment_runtime(self):
         controller = self.controller
@@ -329,7 +338,7 @@ class ReplyWebAPI:
     @staticmethod
     async def _harassment_body(fields):
         raw = await request.body()
-        if len(raw) > 20000:
+        if len(raw) > 200000:
             raise ValueError("harassment request is too large")
 
         def unique(pairs):
@@ -345,16 +354,20 @@ class ReplyWebAPI:
             raise ValueError("unexpected or missing harassment fields")
         return data
 
+    def _harassment_snapshot(self, runtime, policy):
+        return {"settings": policy.read_settings(runtime),
+                "entries": policy.entries(runtime),
+                "audit": policy.audit(runtime),
+                "reasons": policy.REASONS,
+                "reason_group": policy.REASON_GROUP}
+
     async def harassment(self):
         from .web_api import outcome_response
         from companion_v2.relationships import harassment as policy
         try:
             async with self.controller._control_lock:
                 runtime = self._harassment_runtime()
-                return outcome_response(Outcome.success({
-                    "settings": policy.read_settings(runtime),
-                    "entries": policy.entries(runtime),
-                }))
+                return outcome_response(Outcome.success(self._harassment_snapshot(runtime, policy)))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
 
@@ -367,9 +380,8 @@ class ReplyWebAPI:
                 raise ValueError("harassment changes must be an object")
             async with self.controller._control_lock:
                 runtime = self._harassment_runtime()
-                settings = policy.save_settings(runtime, data["changes"])
-                return outcome_response(Outcome.success({
-                    "settings": settings, "entries": policy.entries(runtime)}))
+                policy.save_settings(runtime, data["changes"])
+                return outcome_response(Outcome.success(self._harassment_snapshot(runtime, policy)))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
@@ -379,16 +391,19 @@ class ReplyWebAPI:
         from .web_api import outcome_response
         from companion_v2.relationships import harassment as policy
         try:
-            data = await self._harassment_body({"scope", "user_id", "reason"})
+            data = await self._harassment_body({"scope", "user_id", "hours", "note"})
             scope, user_id = data["scope"], data["user_id"]
             if type(scope) is not str or not scope or type(user_id) is not str or not user_id:
                 raise ValueError("block needs scope and user")
-            reason = data["reason"] if type(data["reason"]) is str and data["reason"] in {
-                "rate", "keyword", "manual"} else "manual"
+            hours = data["hours"] if type(data["hours"]) is int and 0 <= data["hours"] <= 8760 else 0
+            note = data["note"] if type(data["note"]) is str else ""
             async with self.controller._control_lock:
                 runtime = self._harassment_runtime()
-                policy.add_entry(runtime, scope=scope, user_id=user_id, reason=reason)
-                return outcome_response(Outcome.success({"entries": policy.entries(runtime)}))
+                policy.add_entry(runtime, scope=scope, user_id=user_id, kind="block",
+                                 reasons=("manual",), evidence=note[:200], hours=hours)
+                policy.record_audit(runtime, scope=scope, user_id=user_id, action="manual_block",
+                                    reasons=("manual",), evidence=note[:200])
+                return outcome_response(Outcome.success(self._harassment_snapshot(runtime, policy)))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
@@ -405,8 +420,107 @@ class ReplyWebAPI:
             async with self.controller._control_lock:
                 runtime = self._harassment_runtime()
                 policy.remove_entry(runtime, scope=scope, user_id=user_id)
-                return outcome_response(Outcome.success({"entries": policy.entries(runtime)}))
+                policy.record_audit(runtime, scope=scope, user_id=user_id, action="unblock",
+                                    reasons=())
+                return outcome_response(Outcome.success(self._harassment_snapshot(runtime, policy)))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
             return outcome_response(Outcome.failed("harassment_entry_invalid", "黑名单条目无效"))
+
+    async def harassment_extend(self):
+        from .web_api import outcome_response
+        from companion_v2.relationships import harassment as policy
+        try:
+            data = await self._harassment_body({"scope", "user_id", "hours"})
+            scope, user_id, hours = data["scope"], data["user_id"], data["hours"]
+            if type(scope) is not str or not scope or type(user_id) is not str or not user_id:
+                raise ValueError("extend needs scope and user")
+            if type(hours) is not int or not 0 <= hours <= 8760:
+                raise ValueError("extend hours is invalid")
+            async with self.controller._control_lock:
+                runtime = self._harassment_runtime()
+                policy.extend_entry(runtime, scope=scope, user_id=user_id, hours=hours)
+                policy.record_audit(runtime, scope=scope, user_id=user_id, action="extend",
+                                    reasons=(), evidence=f"{hours} 小时" if hours else "永久")
+                return outcome_response(Outcome.success(self._harassment_snapshot(runtime, policy)))
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
+            return outcome_response(Outcome.failed("harassment_entry_invalid", "黑名单条目无效"))
+
+    async def harassment_false_positive(self):
+        from .web_api import outcome_response
+        from companion_v2.relationships import harassment as policy
+        try:
+            data = await self._harassment_body({"scope", "user_id", "note"})
+            scope, user_id = data["scope"], data["user_id"]
+            if type(scope) is not str or not scope or type(user_id) is not str or not user_id:
+                raise ValueError("false positive needs scope and user")
+            note = data["note"] if type(data["note"]) is str else ""
+            async with self.controller._control_lock:
+                runtime = self._harassment_runtime()
+                entry = policy.entry_for(runtime, scope, user_id)
+                reasons = tuple(entry.get("reasons") or ()) if entry else ()
+                policy.remove_entry(runtime, scope=scope, user_id=user_id)
+                policy.record_audit(runtime, scope=scope, user_id=user_id, action="false_positive",
+                                    reasons=reasons, evidence=note[:200])
+                return outcome_response(Outcome.success(self._harassment_snapshot(runtime, policy)))
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
+            return outcome_response(Outcome.failed("harassment_entry_invalid", "黑名单条目无效"))
+
+    async def harassment_export(self):
+        from .web_api import outcome_response
+        from companion_v2.relationships import harassment as policy
+        try:
+            await self._harassment_body({"scope"})
+            async with self.controller._control_lock:
+                runtime = self._harassment_runtime()
+                return outcome_response(Outcome.success({
+                    "settings": policy.read_settings(runtime),
+                    "entries": policy.entries(runtime),
+                    "audit": policy.audit(runtime),
+                }))
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
+            return outcome_response(Outcome.failed("harassment_export_invalid", "导出请求无效"))
+
+    async def harassment_import(self):
+        from .web_api import outcome_response
+        from companion_v2.relationships import harassment as policy
+        try:
+            data = await self._harassment_body({"document"})
+            document = data["document"]
+            if type(document) is not dict:
+                raise ValueError("import document must be an object")
+            settings = document.get("settings")
+            entries = document.get("entries")
+            if settings is not None and type(settings) is not dict:
+                raise ValueError("import settings must be an object")
+            if entries is not None and type(entries) is not list:
+                raise ValueError("import entries must be a list")
+            async with self.controller._control_lock:
+                runtime = self._harassment_runtime()
+                if settings:
+                    policy.save_settings(runtime, {key: settings[key] for key in settings
+                                                   if key in policy.DEFAULTS})
+                for item in (entries or [])[:policy.MAX_ENTRIES]:
+                    if type(item) is not dict or type(item.get("scope")) is not str                             or type(item.get("user_id")) is not str:
+                        continue
+                    policy.add_entry(runtime, scope=item["scope"], user_id=item["user_id"],
+                                     kind="block" if item.get("kind") != "cooldown" else "cooldown",
+                                     reasons=tuple(item.get("reasons") or ()),
+                                     evidence=str(item.get("evidence") or "")[:300],
+                                     strike=int(item.get("strike") or 1),
+                                     hours=0 if not item.get("until") else max(
+                                         1, int((item["until"] - policy.now_value()) / 3600)))
+                policy.record_audit(runtime, scope="(import)", user_id="(import)", action="import",
+                                    reasons=(), evidence=f"{len(entries or [])} 条")
+                return outcome_response(Outcome.success(self._harassment_snapshot(runtime, policy)))
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
+            return outcome_response(Outcome.failed("harassment_import_invalid", "导入文件无效"))

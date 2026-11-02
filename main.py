@@ -275,6 +275,21 @@ class PrivateCompanionV2StagingPlugin(Star):
         return guard
 
     @staticmethod
+    def _harassment_features(event):
+        message = getattr(getattr(event, "message_obj", None), "message", None)
+        mentions = 0
+        media = False
+        if isinstance(message, (list, tuple)):
+            for part in message:
+                kind = getattr(part, "type", None)
+                name = getattr(kind, "value", kind)
+                if name == "At":
+                    mentions += 1
+                elif name in ("Image", "Record", "Video", "File"):
+                    media = True
+        return mentions, media
+
+    @staticmethod
     def _harassment_scope(event):
         origin = getattr(event, "unified_msg_origin", "")
         return str(origin or getattr(event, "session_id", "") or "")
@@ -772,13 +787,23 @@ class PrivateCompanionV2StagingPlugin(Star):
         channel = "private" if kind == "FriendMessage" else "group" if kind == "GroupMessage" else "unknown"
         if channel == "private":
             now = self.staging.now()
+            mentions, media = self._harassment_features(event)
             verdict = self._harassment_guard().check(
                 self.staging.runtime, scope=self._harassment_scope(event),
                 user_id=self._harassment_user(event),
                 text=str(getattr(event, "message_str", "") or ""),
+                mentions=mentions, media=media,
                 now=now.timestamp() if hasattr(now, "timestamp") else None)
             if verdict.get("blocked"):
-                # 名单在决策页管理；命中后本条静默丢弃，不再进入模型或记忆。
+                notice = verdict.get("notice") or ""
+                if notice:
+                    try:
+                        from astrbot.core.message.components import Plain
+                        from astrbot.core.message.message_event_result import MessageChain
+                        await event.send(MessageChain([Plain(notice)]))
+                    except Exception:
+                        pass
+                # 名单在决策页管理；命中后本条不再进入模型或记忆。
                 suppress_default_reply(event)
                 return
         if channel == "private" and getattr(target, "participant_id", None):
