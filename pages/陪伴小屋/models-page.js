@@ -1058,40 +1058,47 @@ window.CompanionModelsPage = (() => {
   async function layaRefreshQuiet(s, ticket) { try { const [data, history] = await Promise.all([api("GET", path + "/laya"), api("GET", path + "/laya/logs")]); if (current(ticket, s)) { s.laya.data = data; s.laya.draft = layaDraftFrom(data); s.laya.logs = history.events || []; } } catch {} }
   /* ---------- DeepSeek search binding ---------- */
   const searchDirty = x => !!x.data && !!x.draft
-    && x.draft.deepseek_provider_id !== x.data.deepseek_provider_id;
+    && (x.draft.deepseek_provider_id !== x.data.deepseek_provider_id
+        || (x.draft.source_priority || "auto") !== (x.data.source_priority || "auto"));
   async function searchRefresh(s) { const x = s.search, ticket = version; if (x.loading || x.busy) return;
     x.loading = true; x.notice = "正在读取搜索服务配置…"; render();
     try { const data = await api("GET", path + "/search"); if (!current(ticket, s)) return;
-      if (!searchDirty(x) || x.stale) x.draft = {deepseek_provider_id: data.deepseek_provider_id || ""};
+      if (!searchDirty(x) || x.stale) x.draft = {deepseek_provider_id: data.deepseek_provider_id || "", source_priority: data.source_priority || "auto"};
       x.data = data; x.loaded = true; x.stale = false; x.bad = false;
       x.notice = data.provider_available ? "已读取 DeepSeek 搜索 Provider。" : "当前选择的 Provider 未加载或已失效；搜索会改用 AstrBot 里配置的搜索服务。";
     } catch (err) { if (!current(ticket, s)) return; x.bad = true; x.notice = fail(err, "无法读取搜索服务配置。"); }
     finally { x.loading = false; if (current(ticket, s)) render(); } }
   async function searchSave(s) { const x = s.search; if (x.busy || x.loading || !x.data || x.stale || !searchDirty(x)) return;
-    const ticket = version, changes = {deepseek_provider_id: x.draft.deepseek_provider_id};
+    const ticket = version, changes = {deepseek_provider_id: x.draft.deepseek_provider_id,
+      source_priority: x.draft.source_priority || "auto"};
     x.busy = true; x.notice = "正在保存搜索服务配置…"; render();
     try { const data = await api("POST", path + "/search/save", {revision: x.data.revision, changes}); if (!current(ticket, s)) return;
-      x.data = data; x.draft = {deepseek_provider_id: data.deepseek_provider_id || ""}; x.stale = false; x.bad = false;
+      x.data = data; x.draft = {deepseek_provider_id: data.deepseek_provider_id || "", source_priority: data.source_priority || "auto"}; x.stale = false; x.bad = false;
       x.notice = data.provider_available ? "搜索 Provider 已保存，后续搜索立即生效。" : "配置已保存，但 Provider 当前不可用；搜索会改用 AstrBot 里配置的搜索服务。";
     } catch (err) { if (!current(ticket, s)) return; x.bad = true; x.notice = fail(err, "搜索服务配置保存未完成。"); }
     finally { x.busy = false; if (current(ticket, s)) render(); } }
-  function searchPane(s) { const x = s.search, data = x.data, draft = x.draft || {deepseek_provider_id: ""};
+  function searchPane(s) { const x = s.search, data = x.data, draft = x.draft || {deepseek_provider_id: "", source_priority: "auto"};
     const providers = data?.providers || [], selected = draft.deepseek_provider_id || "";
     const unavailable = selected && !providers.some(item => item.id === selected);
     return `<div class="model-subpane model-laya-pane">
-      <div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">网页搜索与内容抓取</span><h3>DeepSeek 搜索服务</h3><p class="model-note">搜索使用 DeepSeek 官方 Search / Fetch API，不对应聊天模型任务。API 密钥由 AstrBot Provider 管理；V2 只保存 Provider 标识。选择自动时沿用环境变量、当前 DeepSeek Provider 和 AstrBot 网页搜索回退。</p></div><button type="button" class="button small" data-search-refresh ${x.loading || x.busy ? "disabled" : ""}>刷新</button></div>
+      <div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">网页搜索与内容抓取</span><h3>DeepSeek 搜索服务</h3><p class="model-note">搜索使用 DeepSeek 官方 Search / Fetch API，不对应聊天模型任务。API 密钥由 AstrBot Provider 管理；V2 只保存 Provider 标识。优先级决定两条来源谁先试：自动＝优先 DeepSeek Provider（未选则 AstrBot 网页搜索）、优先 AstrBot＝先 AstrBot 网页搜索、优先 DeepSeek＝先 DeepSeek Provider。首选不可用时自动改用另一条。</p></div><button type="button" class="button small" data-search-refresh ${x.loading || x.busy ? "disabled" : ""}>刷新</button></div>
         <label class="model-fd"><span class="model-cap">DeepSeek API 凭据来源<em>只列出已加载且配置了 api.deepseek.com 的 Provider</em></span><select data-search-provider ${x.loading || x.busy || !data ? "disabled" : ""}>
           <option value="" ${selected ? "" : "selected"}>自动选择</option>${providers.map(item => `<option value="${esc(item.id)}" ${selected === item.id ? "selected" : ""}>${esc(item.name)} · ${esc(item.id)}</option>`).join("")}
           ${unavailable ? `<option value="${esc(selected)}" selected>${esc(selected)} · 当前不可用</option>` : ""}</select></label>
         ${data && !providers.length ? '<p class="model-note">未发现可用的 DeepSeek Provider。可在 AstrBot 模型提供方中配置官方 API，再刷新此页。</p>' : ""}
-        ${unavailable ? '<div class="model-alert">已选 Provider 当前不可用。请重新加载该 Provider，或改选其他来源。</div>' : ""}
+        ${unavailable ? '<div class="model-alert">已选 Provider 当前不可用；若 AstrBot 网页搜索已配置，搜索会改用它。</div>' : ""}
+        <label class="model-fd"><span class="model-cap">搜索来源优先级<em>只影响“先试谁”，首选不可用时自动改用另一条</em></span><select data-search-priority ${x.loading || x.busy || !data ? "disabled" : ""}>
+          ${[["auto","自动"],["astrbot","优先 AstrBot 网页搜索"],["deepseek","优先 DeepSeek Provider"]].map(([value,label])=>`<option value="${value}" ${(draft.source_priority || "auto") === value ? "selected" : ""}>${label}</option>`).join("")}</select></label>
         <div class="model-editor-actions"><button type="button" class="button primary" data-search-save ${!data || !searchDirty(x) || x.busy || x.loading || x.stale ? "disabled" : ""}>保存搜索配置</button></div>
         ${x.stale ? '<div class="model-alert">配置已在别处变化，请刷新后核对。</div>' : ""}${x.notice ? `<div class="model-notice${x.bad || unavailable ? " error" : ""}">${esc(x.notice)}</div>` : ""}
       </div>
     </div>`; }
   function searchInput(s, event) { const x = s.search, target = event.target;
-    if (!target.matches("[data-search-provider]") || !x.draft || x.loading || x.busy) return;
-    x.draft.deepseek_provider_id = target.value; x.bad = false; x.notice = "";
+    if (!x.draft || x.loading || x.busy) return;
+    if (target.matches("[data-search-provider]")) x.draft.deepseek_provider_id = target.value;
+    else if (target.matches("[data-search-priority]")) x.draft.source_priority = target.value;
+    else return;
+    x.bad = false; x.notice = "";
     if (event.type === "change") render(); }
   function searchClick(s, event) { const target = event.target;
     if (target.closest("[data-search-refresh]")) { searchRefresh(s); return; }

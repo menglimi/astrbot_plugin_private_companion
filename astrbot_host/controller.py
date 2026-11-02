@@ -463,11 +463,13 @@ class AstrBotStagingController:
         weather_port, weather_alert_port = configured_weather_ports(self.config)
         from .model_settings import conversation_provider_resolver
         from .relay_tools import RelayToolPort
-        search_provider_resolver = SearchSettingsStore(self.data_root).selected_provider_id
+        search_settings = SearchSettingsStore(self.data_root)
+        search_provider_resolver = search_settings.selected_provider_id
         def search_port_factory(context, query, result_count):
             return configured_search_port(self.context, query=query, result_count=result_count,
                 task_context=context, topic="general",
-                deepseek_provider_resolver=search_provider_resolver)
+                deepseek_provider_resolver=search_provider_resolver,
+                source_priority=search_settings.source_priority())
         loaded = self.bootstrap.load(runtime_instance_id="astrbot-staging-" + uuid4().hex,
                                      review_only=review_only,
                                      native_tool_port=self.native_extensions,
@@ -476,7 +478,8 @@ class AstrBotStagingController:
                                      weather_alert_port=weather_alert_port,
                                      balance_port=configured_balance_port(self.config),
                                      news_port=configured_news_port(self.config, context=self.context,
-                                         deepseek_provider_resolver=search_provider_resolver),
+                                         deepseek_provider_resolver=search_provider_resolver,
+                                         search_priority_resolver=search_settings.source_priority),
                                      search_port_factory=search_port_factory,
                                      qzone_transport=self._qzone_transport(),
                                      solar_term_port=configured_solar_term_port(

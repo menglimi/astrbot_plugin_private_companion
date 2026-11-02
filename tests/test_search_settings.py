@@ -46,5 +46,21 @@ class SearchSettingsTests(unittest.TestCase):
         self.assertNotIn("must-not-leak", json.dumps(status))
 
 
+    def test_source_priority_is_validated_and_saved_without_losing_provider(self):
+        store = SearchSettingsStore(self.root)
+        initial = store.read()
+        self.assertEqual(initial["source_priority"], "auto")
+        saved = store.update(initial["revision"], {"deepseek_provider_id": "deepseek_main",
+                                                   "source_priority": "astrbot"})
+        self.assertEqual(saved["source_priority"], "astrbot")
+        self.assertEqual(saved["deepseek_provider_id"], "deepseek_main")
+        self.assertEqual(store.source_priority(), "astrbot")
+        with self.assertRaises(SearchSettingsError) as error:
+            store.update(saved["revision"], {"source_priority": "network"})
+        self.assertEqual(error.exception.code, "search_config_invalid")
+        # 只改优先级时保留原有 Provider 选择。
+        kept = store.update(saved["revision"], {"source_priority": "deepseek"})
+        self.assertEqual(kept["deepseek_provider_id"], "deepseek_main")
+        self.assertEqual(kept["source_priority"], "deepseek")
 if __name__ == "__main__":
     unittest.main()
