@@ -70,6 +70,19 @@ class ImageOutputSettingsTests(unittest.TestCase):
         self.assertIn("校园日常", prompt_instruction(DEFAULTS))
         self.assertIn("[场景预设:名称]", prompt_instruction(DEFAULTS))
 
+    def test_character_features_are_required_only_when_the_role_appears(self):
+        instruction = prompt_instruction({**DEFAULTS, "prompt_format": "nai", "nai_backend": True})
+        self.assertIn("种族、发型发色、瞳色和外貌识别点", instruction)
+        self.assertIn("其他人物或纯风景时不套用角色外貌", instruction)
+        self.assertIn("画风、尺寸和采样沿用 NAI", instruction)
+        self.assertIn("专属角色词条和所属作品词时原样保留", instruction)
+
+    def test_nai_natural_mode_uses_english_without_changing_other_natural_mode(self):
+        self.assertIn("英文自然语言", prompt_instruction(
+            {**DEFAULTS, "prompt_format": "natural", "nai_backend": True}))
+        self.assertNotIn("英文自然语言", prompt_instruction(
+            {**DEFAULTS, "prompt_format": "natural"}))
+
     def test_natural_language_requests_include_selfies_and_pending_followups(self):
         for mode in ("tool", "rules"):
             with self.subTest(mode=mode):
