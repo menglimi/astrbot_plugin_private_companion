@@ -129,6 +129,14 @@ class RelayToolPort:
         application = self._app()
         return application.relay_settings.read(invocation.context, application.now())
 
+    def _actor_is_core(self, invocation, settings):
+        from companion_v2.capabilities.privacy import is_core
+        actor_id = invocation.context.actor.principal.native_account_id
+        return bool(
+            is_core(self._app().runtime, invocation.context.actor.subject)
+            or (settings.get("core_target_id") and actor_id == settings.get("core_target_id"))
+        )
+
     def _plan(self, invocation, destination_kind, destination_id, text, mention_id="",
               relay_style="", delay_until_seen=False, need_receipt=False,
               confirm_before_report=False):
@@ -148,7 +156,7 @@ class RelayToolPort:
         mention = mention_id.strip() if isinstance(mention_id, str) else ""
         settings = self._settings(invocation)
         actor_id = invocation.context.actor.principal.native_account_id
-        actor_is_core = actor_id == settings.get("core_target_id", "")
+        actor_is_core = self._actor_is_core(invocation, settings)
         style = relay_style if relay_style in {"original", "soft", "persona"} else (
             settings.get("default_style") if settings.get("default_style") in {"original", "soft", "persona"}
             else "persona")
@@ -667,7 +675,7 @@ class RelayToolPort:
         try:
             sender = relay_group if plan.destination_kind == "group" else relay_private
             result = await sender(controller, None, request=request, settings=settings,
-                actor_is_core=invocation.context.actor.principal.native_account_id == settings.get("core_target_id", ""),
+                actor_is_core=self._actor_is_core(invocation, settings),
                 actor_id=invocation.context.actor.subject.subject_id,
                 confirmed=confirmed or not plan.needs_confirm, base_route=route, transport=transport)
         except Exception:

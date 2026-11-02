@@ -193,6 +193,21 @@ class CoreReplyNativeSendTests(unittest.IsolatedAsyncioTestCase):
         self.platform.send_by_session.assert_not_awaited()
         self.assertEqual(self.observed, [])
 
+    async def test_mention_without_a_body_is_neither_sent_nor_a_crash(self):
+        # 引用/@ 只是装饰，不能单独成一条消息。native_reply_messages 现在可以返回
+        # 空元组，于是发送循环一次都不跑：循环里赋值的 result 必须在循环外有定义，
+        # 否则这里抛 UnboundLocalError，把「没什么可发」变成一次发送崩溃。
+        event, wrapper, tool = self.prepare()
+        result = await tool.call(wrapper, messages=[{"type": "mention_user", "mention_user_id": "200"}])
+        # 没有正文可发时不能谎称「找不到平台」：宿主的 send_message 把 falsy 返回
+        # 读成平台缺失，模型会以为发送失败并重试。这里必须是「已处理」。
+        self.assertTrue(result)
+        self.assertNotIn("error", str(result).lower())
+        self.platform.send_by_session.assert_not_awaited()
+        self.assertEqual(self.observed, [])
+        self.assertNotIn("started", self.stages)
+        self.assertEqual(event.get_extra(CORE_REPLY_CONTEXT_EXTRA)["send_attempts"], 0)
+
     async def test_current_reply_tool_rejects_cross_session_even_for_admin(self):
         event, wrapper, tool = self.prepare()
         event.role = "admin"

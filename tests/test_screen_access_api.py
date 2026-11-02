@@ -42,14 +42,14 @@ class ScreenAccessAPITests(unittest.IsolatedAsyncioTestCase):
         self.routes = {(path, methods[0]): handler
                        for path, handler, methods, _ in self.native.registered_web_apis}
 
-    async def call(self, *, body=None, username="admin", route=PREFIX, query=b""):
+    async def call(self, *, body=None, username="admin", route=PREFIX, query=b"", suffix="/configure"):
         method = "POST" if body is not None else "GET"
         payload = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else b""
 
         async def receive():
             return {"type": "http.request", "body": payload, "more_body": False}
 
-        request_route = route if method == "GET" else route + "/configure"
+        request_route = route if method == "GET" else route + suffix
         native = Request({"type": "http", "method": method, "path": request_route,
                           "headers": [], "query_string": query}, receive=receive)
         with bind_request_context(PluginRequest(native, username=username)):
@@ -99,6 +99,53 @@ class ScreenAccessAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(grant.state is GrantState.REVOKED for grant in owned))
         self.assertEqual(self.native.platform.client._api._wsr_api.calls, [])
 
+    async def test_revoke_without_assembly_is_an_error_instead_of_silent_completion(self):
+        await self.start()
+        status = (await self.call())["data"]
+        self.assertFalse(status["installed"])
+        revoked = await self.call(body={"operation_key": "screen-revoke-missing",
+            "edit_token": status["edit_token"], "enabled": False})
+        self.assertEqual(revoked["status"], "error", revoked)
+        self.assertEqual(revoked["data"]["code"], "capability_not_installed")
+        self.assertIsNone(self.controller.runtime.read_one(
+            "SELECT role_id FROM capability_role_selections WHERE extension_id = ?", (SCREEN_EXTENSION,)))
+
+    async def test_role_selection_route_requires_assembly_and_is_idempotent(self):
+        await self.start()
+        initial = (await self.call())["data"]
+        missing = await self.call(route=PREFIX, suffix="/role-selection", body={
+            "operation_key": "screen-role-missing", "expected_revision": 0, "enabled": True})
+        self.assertEqual(missing["data"]["code"], "capability_not_installed", missing)
+        enabled = await self.call(body={"operation_key": "screen-enable-for-role",
+            "edit_token": initial["edit_token"], "enabled": True})
+        self.assertEqual(enabled["status"], "ok", enabled)
+        current = (await self.call())["data"]
+        self.assertTrue(current["role_enabled"])
+        self.assertEqual(current["role_revision"], 1)
+        command = {"operation_key": "screen-role-disable",
+            "expected_revision": current["role_revision"], "enabled": False}
+        disabled = await self.call(route=PREFIX, suffix="/role-selection", body=command)
+        self.assertEqual(disabled["status"], "ok", disabled)
+        self.assertFalse(disabled["data"]["replayed"])
+        self.assertFalse(disabled["data"]["status"]["role_enabled"])
+        replay = await self.call(route=PREFIX, suffix="/role-selection", body=command)
+        self.assertEqual(replay["status"], "ok", replay)
+        self.assertTrue(replay["data"]["replayed"])
+        self.assertFalse(replay["data"]["status"]["role_enabled"])
+        self.assertEqual((await self.call())["data"]["role_revision"], 2)
+
+    async def test_role_selection_route_is_core_only(self):
+        await self.start()
+        operator = dashboard_operator(self.controller.runtime, "admin", at=support.NOW)
+        policy = ObjectAccessPolicy(self.controller.runtime)
+        policy.set_tier(operator.subject, AuthorizationTier.IMPORTANT,
+            expected_revision=policy.revision, observed_at=support.NOW)
+        denied = await self.call(route=PREFIX, suffix="/role-selection", body={
+            "operation_key": "screen-role-important", "expected_revision": 0, "enabled": True})
+        self.assertEqual(denied["data"]["code"], "core_access_required", denied)
+        self.assertIsNone(self.controller.runtime.read_one(
+            "SELECT role_id FROM capability_role_selections WHERE extension_id = ?", (SCREEN_EXTENSION,)))
+
     async def test_view_only_operator_gets_read_only_status_and_cannot_submit_consent(self):
         await self.start()
         operator = dashboard_operator(self.controller.runtime, "admin", at=support.NOW)
@@ -135,6 +182,24 @@ class ScreenAccessAPITests(unittest.IsolatedAsyncioTestCase):
                               ("/last-original", b"capture_id=a&capture_id=b")):
             self.assertEqual((await self.call(route=PREFIX + suffix, query=query))["data"]["code"],
                 "screen_access_request_invalid")
+
+    async def test_unassembled_review_reports_a_reason_instead_of_an_authorization_failure(self):
+        await self.start()
+        with patch.object(self.controller.session.application.tasks, "authorize_context",
+                          return_value=Outcome.success(True)):
+            result = await self.call(route=PREFIX + "/last-observation")
+        self.assertEqual(result["status"], "ok", result)
+        self.assertIsNone(result["data"]["observation"])
+        self.assertEqual(result["data"]["reason"], "capability_not_installed")
+        self.assertIn("latest_attempt", result["data"])
+
+    async def test_review_still_raises_real_authorization_failures(self):
+        await self.start()
+        with patch.object(self.controller.session.application.tasks, "authorize_context",
+                          return_value=Outcome.failed("authorization_denied", "denied")):
+            result = await self.call(route=PREFIX + "/last-observation")
+        self.assertEqual(result["status"], "error", result)
+        self.assertEqual(result["data"]["code"], "authorization_denied")
 
 
 if __name__ == "__main__":

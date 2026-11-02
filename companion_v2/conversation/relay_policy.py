@@ -15,6 +15,8 @@
 from dataclasses import dataclass
 
 DENIED_DISABLED = "relay_disabled"
+DENIED_MEMBER_DISABLED = "relay_member_disabled"
+DENIED_MEMBER_SENDER = "relay_member_sender_not_allowed"
 DENIED_TEXT_EMPTY = "relay_text_empty"
 DENIED_TEXT_TOO_LONG = "relay_text_too_long"
 DENIED_GROUP = "relay_group_not_allowed"
@@ -53,19 +55,19 @@ class RelayDecision:
 def decide(request: RelayRequest, *, actor_is_core: bool, core_target_id: str,
            allowed_targets=(), allowed_groups=(), enabled: bool = True,
            require_confirm: bool = True,
-           max_chars: int = MAX_TEXT_CHARS) -> RelayDecision:
+           max_chars: int = MAX_TEXT_CHARS,
+           member_relay_enabled: bool = True,
+           member_relay_max_chars: int = MAX_TEXT_CHARS,
+           member_relay_allowed_senders=(), actor_id: str = "") -> RelayDecision:
     """判定这次递话是否允许，以及要不要确认。
 
-    ``allowed_targets`` 是私聊白名单，``allowed_groups`` 是群聊白名单；
-    ``core_target_id`` 用于其他用户只能递给核心管理员本人这一条路径。
+    ``enabled`` controls the core administrator's outbound relay.
+    ``member_relay_enabled`` controls relay **to** the core administrator, which
+    is a separate default-on capability with its own text and sender limits.
     """
-    if not enabled:
-        return RelayDecision(False, DENIED_DISABLED, "当前窗口没有开启跨窗口递话")
     text = request.text if isinstance(request.text, str) else ""
     if not text.strip():
         return RelayDecision(False, DENIED_TEXT_EMPTY, "递话内容为空")
-    if len(text) > max(1, int(max_chars)):
-        return RelayDecision(False, DENIED_TEXT_TOO_LONG, f"递话内容超过 {max_chars} 字上限")
     kind = request.destination_kind if isinstance(request.destination_kind, str) else ""
     if kind not in {"private", "group"}:
         return RelayDecision(False, DENIED_TARGET, "递话目标类型无效")
@@ -76,6 +78,10 @@ def decide(request: RelayRequest, *, actor_is_core: bool, core_target_id: str,
         return RelayDecision(False, DENIED_SELF, "目标就是当前窗口，无需递话")
 
     if actor_is_core:
+        if not enabled:
+            return RelayDecision(False, DENIED_DISABLED, "当前窗口没有开启跨窗口递话")
+        if len(text) > max(1, int(max_chars)):
+            return RelayDecision(False, DENIED_TEXT_TOO_LONG, f"递话内容超过 {max_chars} 字上限")
         if kind == "group":
             if destination not in set(allowed_groups or ()):
                 return RelayDecision(False, DENIED_GROUP,
@@ -88,7 +94,16 @@ def decide(request: RelayRequest, *, actor_is_core: bool, core_target_id: str,
         return RelayDecision(True, ALLOWED, needs_confirm=bool(require_confirm),
                              audience="admin_target")
 
-    # 其他用户只能把话递给核心管理员的私聊窗口。
+    # 其他用户只能把话递给核心管理员的私聊窗口。这条路径不依赖发起窗口的
+    # “允许递话”开关；它默认开启，但受独立开关、发送者名单和长度限制。
+    if not member_relay_enabled:
+        return RelayDecision(False, DENIED_MEMBER_DISABLED, "当前窗口未开启向核心管理员递话")
+    senders = set(member_relay_allowed_senders or ())
+    if senders and actor_id not in senders:
+        return RelayDecision(False, DENIED_MEMBER_SENDER, "你不在可向核心管理员递话的名单中")
+    if len(text) > max(1, int(member_relay_max_chars)):
+        return RelayDecision(False, DENIED_TEXT_TOO_LONG,
+                             f"递话内容超过 {member_relay_max_chars} 字上限")
     if kind != "private":
         return RelayDecision(False, DENIED_GROUP, "其他用户不能向群聊递话")
     if not core_target_id:
@@ -101,6 +116,7 @@ def decide(request: RelayRequest, *, actor_is_core: bool, core_target_id: str,
 
 __all__ = [
     "RelayRequest", "RelayDecision", "decide",
-    "ALLOWED", "DENIED_DISABLED", "DENIED_TEXT_EMPTY", "DENIED_TEXT_TOO_LONG",
+    "ALLOWED", "DENIED_DISABLED", "DENIED_MEMBER_DISABLED", "DENIED_MEMBER_SENDER",
+    "DENIED_TEXT_EMPTY", "DENIED_TEXT_TOO_LONG",
     "DENIED_GROUP", "DENIED_TARGET", "DENIED_SELF", "MAX_TEXT_CHARS",
 ]

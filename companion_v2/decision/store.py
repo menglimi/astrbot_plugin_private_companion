@@ -19,6 +19,15 @@ from .contract import CONFIGURABLE_DECISION_FIELDS
 DEFAULT_DECISION_FIELDS = {name: True for name in CONFIGURABLE_DECISION_FIELDS}
 
 
+# The model each backend pins when the operator leaves `remote_model` empty.
+# Local and SystemOne use Laya's own checkpoints; a Jev gateway serves `jev-latest`.
+MODE_MODELS = {"local": "multilingual", "remote": "multilingual", "jev": "jev-latest",
+               # Cloudflare's own decision model draws on the daily Workers AI
+               # neuron allowance; third-party models such as typesafe/jev are
+               # billed separately and need an override here.
+               "workers_ai": "@cf/cloudflare/clef"}
+
+
 DEFAULTS = {
     "enabled": False,
     "mode": "local",
@@ -29,6 +38,9 @@ DEFAULTS = {
     "local_model_path": "",
     "endpoint": "",
     "api_key": "",
+    # Named apart from the historical `model` key, which older settings files
+    # carried without any effect; adopting it would silently retarget a server.
+    "remote_model": "",
     "timeout_seconds": 20,
     # 0 disables the host-side gate. Values are percentages because the model
     # page exposes a familiar 0-100 control; Laya reports a 0-1 probability.
@@ -218,7 +230,8 @@ class LayaSettingsStore:
             "remote_model": values.get("remote_model", ""),
             "local_model_path": values["local_model_path"],
             "endpoint": values["endpoint"],
-            "default_model": "multilingual",
+            "remote_model": values["remote_model"],
+            "default_model": values["remote_model"] or MODE_MODELS[values["mode"]],
             "api_key_set": bool(values["api_key"]),
             "timeout_seconds": values["timeout_seconds"],
             "followup_confidence_threshold": values["followup_confidence_threshold"],

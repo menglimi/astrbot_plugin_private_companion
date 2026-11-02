@@ -42,6 +42,7 @@ from companion_v2.conversation.media.image_narration import image_narration_prof
 from companion_v2.conversation.media.video.narration import video_narration_profile
 from companion_v2.conversation.media.understanding import intake_settings as file_intake_settings
 from companion_v2.screen.interpretation import screen_interpretation_profile
+from companion_v2.reality.model_profile import reality_text_profile
 from .settings import HostControlError
 from .huawei_health.service import get_huawei_health_service_for_root
 from companion_v2.conversation.voice_reply import VoiceReplyDelivery
@@ -51,7 +52,7 @@ from companion_v2.foundation.refs import AudienceRef, ScopeKind, ScopeRef
 from companion_v2.identity_policy.models import AuthenticatedHostPrincipal, AuthorizationTier
 from companion_v2.identity_policy.personas import ConversationRoute
 from companion_v2.identity_policy.personas import RuntimeIdentity
-from companion_v2.model_gateway.models import ModelTaskProfile
+from companion_v2.model_gateway.models import MAX_MODEL_OUTPUT_TOKENS, ModelTaskProfile
 from companion_v2.model_gateway.routing import configuration_fields
 from companion_v2.memory.reflection import reflection_profile
 from companion_v2.proactive.service import contact_profile, persona_judge_profile
@@ -453,7 +454,7 @@ class MultiHostSession:
                     fallback_on_refusal=common.fallback_on_refusal,
                     max_output_tokens=common.max_output_tokens, capabilities=REPLY_TASK_CAPABILITIES,
                     prompt_sections=expression_prompt_sections()),
-                    poke_reply_profile(common.provider_id, max_output_tokens=min(128, common.max_output_tokens)),
+                    poke_reply_profile(common.provider_id, max_output_tokens=min(1024, common.max_output_tokens)),
                     contact_profile(common.provider_id, max_output_tokens=common.max_output_tokens),
                     persona_judge_profile(common.provider_id, max_output_tokens=common.max_output_tokens),
                     reflection_profile(common.provider_id, max_output_tokens=common.max_output_tokens),
@@ -468,6 +469,7 @@ class MultiHostSession:
                     image_review_profile(common.provider_id),
                     context_caption_profile(common.provider_id),
                     screen_interpretation_profile(common.provider_id),
+                    reality_text_profile(common.provider_id),
                     *authoring_profiles(common.provider_id, draft_tokens=common.max_output_tokens),
                     *writing_profiles(common.provider_id, max_output_tokens=common.max_output_tokens),
                     *((image_narration_profile(next(model.binding.provider for model in self.models
@@ -1024,9 +1026,13 @@ class MultiHostSession:
                                 logger.warning("[CompanionV2] 关键词材料未注入 error_type=%s",
                                                type(error).__name__)
                         health_material = await self._huawei_health_material(context, self.now())
+                        from .external_memory import prepare_external_memory
+                        external_memory = await prepare_external_memory(
+                            self.bridge.context, self.application, context, captured)
                         prompt = build_core_reply_prompt(self.application, context, captured, at=self.now(),
                                                          keyword_materials=keyword_entries,
-                                                         health_material=health_material)
+                                                         health_material=health_material,
+                                                         external_memory=external_memory)
                         prompt_instruction = getattr(prompt, "context_instruction", prompt.instruction)
                         stable_prompt_instruction = getattr(prompt, "stable_instruction", "")
                         context_sections = prompt.sections

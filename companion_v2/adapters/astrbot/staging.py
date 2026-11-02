@@ -34,7 +34,7 @@ from companion_v2.identity_policy.personas import RuntimeIdentity
 from companion_v2.conversation.content.authoring_tasks import authoring_profiles
 from companion_v2.identity_policy.repository import PersistentIdentityDirectory
 from companion_v2.model_gateway.budget import BudgetSoftPolicy
-from companion_v2.model_gateway.models import BudgetPolicy, ModelTaskProfile
+from companion_v2.model_gateway.models import BudgetPolicy, MAX_MODEL_OUTPUT_TOKENS, ModelTaskProfile
 from companion_v2.role_work.journal.writing import writing_profiles
 from companion_v2.proactive.service import contact_profile, persona_judge_profile
 from companion_v2.role_work.reader import reading_profile
@@ -572,12 +572,12 @@ class AstrBotStagingSession:
         snapshot = self._configuration()
         adoption = require(app.configuration.application_status(target.actor, target=self.config_target,
             group_id=self.model_profile.group, observed_at=app.now()))
-        streaming_available = callable(getattr(self.model.native, "_query_stream", None))
+        streaming_available = self.model.streaming_supported
         report = {"state": app.state, "profile_hash": self.profile_hash,
             "delivery_mode": "onebot_private", "configuration_token": snapshot.resolution_token,
             "review_only": self.review_only,
             "configuration_application": adoption.state, "model_generation": adoption.generation,
-            "task_generation": app.tasks.generation, "model_transport": "astrbot_openai",
+            "task_generation": app.tasks.generation, "model_transport": self.model.local_provider().transport,
             "streaming": {"requested": self.profile.streaming, "available": streaming_available,
                           "ready": not self.profile.streaming or streaming_available,
                           "transport": "astrbot_native_query_stream" if streaming_available else None,

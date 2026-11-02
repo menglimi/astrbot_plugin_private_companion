@@ -1350,6 +1350,7 @@ window.CompanionContactPage = (() => {
   };
   const TEST_SKIP_REASONS = {
     duplicate:"与近期已发送内容重复", low_confidence:"模型把握不足，按沉默阈值暂缓发送",
+    continuation_after_silence:"刚回复过且用户未再发言，这次主动只是在接自己的话，已跳过",
     persona_review:"人格复核未放行", framework_guard:"正文含框架标记，发送前检查拦截",
     presentation_empty:"文字清理后正文为空", forbidden_word:"命中当前禁用词规则",
     source_coverage:"来源材料不足以支持当前表述", no_sendable_content:"处理后没有可发送正文",
@@ -1881,6 +1882,7 @@ window.CompanionContactPage = (() => {
     const usageLabels = {delivered:"已送达", partial:"部分送达", unconfirmed:"结果待确认", not_sent:"未发送",
       pending:"等待投递", failed:"投递失败", cancelled:"已取消", reviewing:"等待检视"};
     const skipLabels = {duplicate:"内容重复", low_confidence:"判断把握不足", persona_review:"人格复核未通过",
+      continuation_after_silence:"刚回复过且用户未再发言，避开自接话头",
       presentation_empty:"正文整理后为空", forbidden_word:"内容规则限制", model_decision:"模型选择暂不发送",
       source_coverage:"来源支撑不足", no_sendable_content:"没有可发送内容"};
     const modelSkipLabels = {insufficient_context:"上下文不足", no_natural_opening:"当前没有自然的开口",

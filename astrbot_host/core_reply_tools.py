@@ -248,16 +248,14 @@ class CoreReplyToolSession:
                     offered.extend(_OfferedTool(spec, owner) for spec in reader.catalog_for(context))
         else:
             participation = getattr(tools, "group_participation", None)
-            admission = _field(self.prepared, "group_admission", {}) or {}
-            # An explicit @ already selected this turn for a reply. Offering
-            # the participation tool there lets AstrBot send the visible text
-            # first and then run the tool, producing a duplicate final send.
-            # Some platforms expose an @ component whose ID does not match
-            # AstrBot's account_id, so the admission reason is authoritative too.
-            addressed = (admission.get("mentioned") is True
-                         or admission.get("reason") in {"mention", "mention_all", "native_wakeup"}
-                         or "mention" in (admission.get("reasons") or ()))
-            if participation is not None and not addressed:
+            # An explicit @ already selected this turn for a reply, but hiding
+            # the participation tool here does not stop the model from calling
+            # it: the call is in the conversation history, so the host answers
+            # "tool not found" and the turn is wasted. The duplicate send that
+            # hiding used to avoid is handled where the tool-step prose is
+            # deferred (core_reply_tool_dispatch), not by removing a tool the
+            # model is going to call.
+            if participation is not None:
                 offered.extend(_OfferedTool(spec, "participation") for spec in participation.catalog_for(context))
                 behavior = getattr(participation, "behavior", None)
                 if behavior is not None and _field(self.prepared, "native_input") is not None:
@@ -430,8 +428,19 @@ class CoreReplyToolSession:
                 result = await self.evidence()
             elif offered.owner == "external":
                 if action in ("image.edit", "image.mask_edit"):
-                    from .core_reply_media import prepare_native_input_images
-                    await prepare_native_input_images(self, wrapper)
+                    # An explicit empty inbound selection means this edit only
+                    # uses saved reference_ids. Capturing every current/quoted
+                    # image first can fail on an unrelated local quoted file
+                    # (host_image_location_invalid) before the reference edit
+                    # ever starts.
+                    only_saved_references = (
+                        action == "image.edit"
+                        and arguments.get("reference_indices") == []
+                        and bool(arguments.get("reference_ids"))
+                    )
+                    if not only_saved_references:
+                        from .core_reply_media import prepare_native_input_images
+                        await prepare_native_input_images(self, wrapper)
                 if action in ("reality.camera.observe", "content.work.create", "content.work.save_candidate"):
                     await self.wait_source()
                 result = await executor_for(self.application).execute(

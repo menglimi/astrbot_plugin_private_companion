@@ -8,6 +8,7 @@ from companion_v2.conversation.foreground import ContextContribution, Contributi
 from companion_v2.foundation.outcome import Outcome
 from tests.group_host_support import GroupFixture, group_config
 from tests.multi_host_support import MultiFixture
+from tests.native_adapter_support import FakeEvent
 
 
 class PrivateCoreReplyAdmissionTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
@@ -121,6 +122,28 @@ class PrivateCoreReplyAdmissionTests(MultiFixture, unittest.IsolatedAsyncioTestC
 
         self.assertFalse(authorized.is_success)
         self.assertEqual(authorized.failure.code, "core_reply_instruction_changed")
+
+    async def test_send_time_denial_keeps_an_unconfigured_route_as_not_claimed(self):
+        event = self.event(identifier="core-reply-unconfigured-route")
+        prepared = (await self.controller.prepare_core_reply(event)).unwrap()
+        stranger = FakeEvent(NS(platform=self.native.platforms["qq-main"]),
+                             event_id="core-reply-unconfigured-route", sender="999", login="100")
+
+        authorized = await self.controller.authorize_core_reply(stranger, prepared)
+
+        self.assertFalse(authorized.is_success)
+        self.assertEqual(authorized.failure.code, "host_not_claimed")
+        self.assertIsNone(self.controller.target_for_event(stranger, connected=False))
+
+    async def test_send_time_denial_reports_a_host_that_stopped_accepting(self):
+        event = self.event(identifier="core-reply-not-accepting")
+        prepared = (await self.controller.prepare_core_reply(event)).unwrap()
+        self.controller._accepting = False
+
+        authorized = await self.controller.authorize_core_reply(event, prepared)
+
+        self.assertFalse(authorized.is_success)
+        self.assertEqual(authorized.failure.code, "host_not_accepting")
 
     async def test_first_conversation_creation_failure_can_fall_back_without_stopping_event(self):
         self.native.conversations["qq-main"] = None
@@ -463,6 +486,23 @@ class GroupCoreReplyAdmissionTests(GroupFixture, unittest.IsolatedAsyncioTestCas
         rejected = await self.controller.prepare_core_reply(event, group_admission=changed_candidate)
         self.assertFalse(rejected.is_success)
         self.assertEqual(rejected.failure.code, "group_admission_changed")
+
+    async def test_send_time_denial_names_a_disconnected_account_not_a_missing_target(self):
+        event = self.group_event(identifier="core-reply-client-offline")
+        prepared = (await self.controller.prepare_core_reply(event)).unwrap()
+        # OneBot drops the account's reverse-WebSocket API entry while the
+        # message route itself stays configured.
+        clients = self.native.platforms["qq-main"].client._wsr_api_clients
+        offline = clients.pop("100")
+        try:
+            self.assertIsNotNone(self.controller.target_for_event(event, connected=False))
+            self.assertIsNone(self.controller.target_for_event(event))
+            authorized = await self.controller.authorize_core_reply(event, prepared)
+        finally:
+            clients["100"] = offline
+
+        self.assertFalse(authorized.is_success)
+        self.assertEqual(authorized.failure.code, "host_client_offline")
 
     async def test_first_group_grants_policy_revision_change_does_not_change_identity(self):
         event = self.group_event(target="group-b", identifier="first-group-core-policy")

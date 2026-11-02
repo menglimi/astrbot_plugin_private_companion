@@ -33,6 +33,7 @@ from companion_v2.identity_policy.models import (
 )
 from companion_v2.identity_policy.personas import ConversationRoute, PersonaBinding, PersonaDirectory, RuntimeIdentity, SelectorKind
 from companion_v2.identity_policy.repository import PersistentIdentityDirectory
+from companion_v2.model_gateway.models import MAX_MODEL_OUTPUT_TOKENS
 from companion_v2.relationships.private_access import REVOCABLE_ABSENCE_CODES, REVOCABLE_CAPABILITIES
 from companion_v2.screen import SCREEN_EXTENSION, SCREEN_PROCESS, SCREEN_READ
 from companion_v2.storage.models import OperationState
@@ -443,7 +444,9 @@ class AstrBotStagingBootstrap:
             binding=ProviderBinding("model.text", config.provider_id, types.version, config.provider_fingerprint),
             provider_id=config.provider_id, version=types.version, provider_type=types.provider_types,
             function_tool_type=types.function_tool, tool_set_type=types.tool_set, tariff=config.tariff,
-            maximum_output_tokens=config.max_output_tokens, maximum_input_estimate=config.maximum_input_estimate,
+            # The probe only needs the provider ceiling; the saved default budget is
+            # a task setting and must not be read as a provider capability here.
+            maximum_output_tokens=MAX_MODEL_OUTPUT_TOKENS, maximum_input_estimate=config.maximum_input_estimate,
             output_parameter=config.output_parameter, streaming=config.streaming)
         if provider.native is not native:
             raise TaskError("staging_provider_mismatch", "native provider changed during bootstrap assembly")

@@ -24,6 +24,11 @@ from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
 
 MAX_RESPONSE_BYTES = 65536
+# QWeather localises text to the location's official language unless a language is
+# named, so a role in Vienna would get German. The character's voice is Chinese, so
+# every request pins the same language. Values are lowercase; the API rejects unknown
+# or mixed-case values with HTTP 400 instead of falling back.
+RESPONSE_LANGUAGE = "zh"
 HOST_PATTERN = re.compile(r"[a-z0-9-]+(?:\.[a-z0-9-]+)*\.qweatherapi\.com\Z")
 IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
 API_KEY_PATTERN = re.compile(r"[A-Za-z0-9_-]{32}\Z")

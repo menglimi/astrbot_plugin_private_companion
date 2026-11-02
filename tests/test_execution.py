@@ -477,5 +477,33 @@ class ExecutionTests(ExecutionFixture):
         self.assertIsNotNone(self.claim())
 
 
+class SelfReviewActionAdmissionTests(ExecutionFixture):
+    """The daily review's declared action must survive real task admission."""
+
+    def test_private_owner_enqueue_uses_the_registered_self_review_action(self):
+        from companion_v2.role_work.journal.self_review_evidence import READ_ACTION
+        definition = replace(self.foreground, kind="fixture.self-review", action=READ_ACTION)
+        tasks = self.supervisor(registrations=(*self.registrations,
+                                               TaskRegistration(definition, self.validate_inputs)))
+        tasks.start(expected_generation=1).unwrap()
+        now = self.clock.now()
+        self.assertIn(READ_ACTION, tasks.policy.registry.definitions)
+        self.assertTrue(tasks.check_context_access(self.context, action=READ_ACTION, observed_at=now).is_success)
+        saved = tasks.submit(self.spec(kind="fixture.self-review")).unwrap()
+        self.assertEqual(saved.spec.kind, "fixture.self-review")
+        self.assertEqual(saved.spec.context, self.context)
+
+        # Another person cannot act on this private window's review, and the
+        # refusal happens before any task row is written.
+        binding = self.identity.resolve_role(SCOPE, observed_at=now).unwrap()
+        foreign = TaskContext(self.standard, binding, AudienceRef(SCOPE, (self.standard.subject,)))
+        self.assertEqual(tasks.check_context_access(foreign, action=READ_ACTION, observed_at=now).failure.code,
+                         "private_task_required")
+        self.assertEqual(tasks.submit(self.spec("task-foreign", kind="fixture.self-review",
+                                                context=foreign)).failure.code, "private_task_required")
+        self.assertEqual(self.runtime.read_one(
+            "SELECT COUNT(*) n FROM execution_tasks WHERE task_id = 'task-foreign'", ())["n"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

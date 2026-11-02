@@ -401,13 +401,6 @@
         "type": "bool",
         "default": true
       },
-      "vision_provider_id": {
-        "description": "视觉模型 Provider",
-        "type": "string",
-        "default": "",
-        "_special": "select_provider",
-        "hint": "可选。留空使用当前会话模型；当前模型不支持图片时，请选择支持图片输入的 Provider。"
-      },
       "duration_seconds": {
         "description": "作画倒计时秒数",
         "type": "int",

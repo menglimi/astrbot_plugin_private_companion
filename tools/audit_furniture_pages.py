@@ -22,6 +22,7 @@ PROVIDERS = (
 async def inventory(output: Path) -> dict:
     # Import the real SDK only after the caller has selected a temporary root.
     from astrbot.dashboard.services.plugin_page_service import PluginPageService
+    from tools.host_page_render import content_prefix, render_html
 
     plugins = Path(__file__).resolve().parents[2]
     service = PluginPageService(SimpleNamespace(plugin_store_path=str(plugins)))
@@ -35,13 +36,13 @@ async def inventory(output: Path) -> dict:
                   "source_entries": [str(p.relative_to(root)) for p in sorted(root.rglob("index.html"))]}
         for page in await service.discover_plugin_pages(plugin):
             entry = await service.resolve_plugin_page_file(plugin, page.name, "")
-            html = service.rewrite_plugin_page_html(entry.read_text(encoding="utf-8-sig"),
+            html = render_html(service, entry.read_text(encoding="utf-8-sig"),
                 name, page.name, "index.html", theme="light")
             saved = output / (capability + ".html")
             saved.write_text(html, encoding="utf-8", newline="\n")
             record["pages"].append({"name": page.name, "entry": str(entry),
                 "source_root": str(entry.parent), "rewritten_html": str(saved),
-                "asset_prefix": service.build_plugin_page_content_path(name, page.name, "")})
+                "asset_prefix": content_prefix(service, name, page.name)})
         report["providers"].append(record)
     (output / "inventory.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n",
                                            encoding="utf-8", newline="\n")

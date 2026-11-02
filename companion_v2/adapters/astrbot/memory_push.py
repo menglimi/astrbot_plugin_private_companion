@@ -1,4 +1,7 @@
-"""把 V2 已完成的记录推给「我会牢牢记住你」——唯一一处跨插件写入。
+"""把 V2 已完成的记录交给注册的 writer，未注册时兼容 MemoryCompanion。
+
+通用 writer 接收完整记录及原始会话身份，不使用旧桥的专用方法或内容截断。
+只有没有活动 writer 时才进入下面的兼容路径，调用失败不切换提供方。
 
 句柄来自 :func:`companion_v2.adapters.astrbot.memory_owner.read_memory_owner`：它读
 牢插件自己公开的声明，这里拿同一次探测交回的句柄调用它公开的 ``record_*`` 方法。
@@ -19,6 +22,9 @@ from __future__ import annotations
 import logging
 
 from companion_v2.adapters.astrbot.memory_owner import read_memory_owner
+from companion_v2.adapters.astrbot.memory_providers import (
+    PROVIDER_API_VERSION, memory_context_document, memory_provider_registry,
+)
 from companion_v2.capabilities.memory_push import (
     PUSH_PERSONA_LIFE,
     PUSH_PROACTIVE_MESSAGE,
@@ -52,6 +58,13 @@ class AstrBotMemoryPush:
         self._context = context
 
     async def push(self, record: MemoryPushRecord) -> str | None:
+        providers = memory_provider_registry(self._context)
+        entry = providers.select("write") if providers is not None else None
+        if entry is not None:
+            result = await providers.invoke(entry, "write", {
+                **record.document(), "schema": PROVIDER_API_VERSION, "source_plugin": PUSH_SOURCE_PLUGIN,
+                "context": memory_context_document(record.context) if record.context is not None else None})
+            return result if isinstance(result, str) and result else None
         owner = read_memory_owner(self._context)
         if not owner.ownership.delegated or owner.handle is None:
             # 牢插件不在／被停用／句柄读不到：当场放弃，不缓冲也不重试。V2 自己的库

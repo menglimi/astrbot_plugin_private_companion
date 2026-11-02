@@ -10,11 +10,12 @@ import sqlite3
 
 from companion_v2.capabilities.privacy import is_core
 from companion_v2.capabilities.repositories import CapabilityRepository
+from companion_v2.execution.models import digest
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import (
     AssetRef, AudienceRef, ReferenceValidationError, ScopeKind, ScopeRef, SourceRef, SubjectRef, VersionRef,
 )
-from companion_v2.identity_policy.models import ResolvedIdentity
+from companion_v2.identity_policy.models import AuthorizationTier, AuthorizedAccess, ResolvedIdentity
 from companion_v2.identity_policy.ports import IdentityAuthorizationPort
 from companion_v2.sources.models import AssetRecord, SourceRecord
 from companion_v2.sources.repositories import AssetRepository, SourceRepository
@@ -29,6 +30,20 @@ from .models import (
 )
 from .originals import ScreenImage, ScreenOriginalStore
 from .proactive_access import proactive_allowed
+
+
+class _CoreAuthorizer:
+    """Synthetic read access for the core administrator, who is default-authorized."""
+
+    def __init__(self, resolved: ResolvedIdentity) -> None:
+        self._resolved = resolved
+
+    def authorize(self, resolved, *, scope, capability, observed_at):
+        return Outcome.success(AuthorizedAccess(
+            subject=resolved.subject, scope=scope, capability=capability,
+            binding_id=resolved.binding_id, binding_revision=resolved.binding_revision,
+            grant_id="core-default", grant_revision=1, policy_revision=resolved.policy_revision,
+        ))
 
 
 @dataclass(frozen=True)
@@ -56,6 +71,30 @@ class ScreenRepository:
     @property
     def runtime(self) -> StorageRuntime:
         return self._runtime
+
+    def _reader_for(self, resolved: ResolvedIdentity):
+        return _CoreAuthorizer(resolved) if is_core(self._runtime, resolved.subject) else self._authorizer
+
+    def _core_access_failure(self, resolved: ResolvedIdentity, scope, observed_at):
+        """Core defaults apply only while no explicit revocation exists.
+
+        A missing consent/grant is fine for the core administrator (privacy.py);
+        an explicitly revoked row must still stop the read.
+        """
+        for capability in (SCREEN_READ, SCREEN_PROCESS):
+            consent = self._capabilities.consent(
+                extension_id=SCREEN_EXTENSION, capability_id=capability,
+                subject=resolved.subject, scope=scope,
+            )
+            if not consent.is_success and consent.failure.code == "capability_consent_revoked":
+                return consent.failure
+            access = self._authorizer.authorize(
+                resolved, scope=scope, capability=capability, observed_at=observed_at,
+            )
+            if not access.is_success and access.failure.code not in (
+                    "authorization_denied", "scope_not_granted"):
+                return access.failure
+        return None
 
     def admit_capture(
         self, reference: ScreenCaptureRef, *, role: SubjectRef,
@@ -137,12 +176,18 @@ class ScreenRepository:
                 return Outcome.failed("screen_capture_not_found", "the retained capture is absent")
             consent = self._capabilities.consent(extension_id=SCREEN_EXTENSION,
                 capability_id=SCREEN_READ, subject=resolved.subject, scope=reference.source.scope)
-            if not consent.is_success:
-                return Outcome(failure=consent.failure)
             access = self._authorizer.authorize(resolved, scope=reference.source.scope,
                 capability=SCREEN_READ, observed_at=observed_at)
-            if not access.is_success:
-                return Outcome(failure=access.failure)
+            if not is_core(self._runtime, resolved.subject):
+                if not consent.is_success:
+                    return Outcome(failure=consent.failure)
+                if not access.is_success:
+                    return Outcome(failure=access.failure)
+            else:
+                blocked = self._core_access_failure(resolved, reference.source.scope, observed_at)
+                if blocked is not None:
+                    return Outcome(failure=blocked)
+            reader = self._reader_for(resolved)
             source = self._runtime.read_one("""SELECT payload_json, content_hash FROM sources
                 WHERE source_id = ? AND lineage_id = ? AND source_revision = ?""", _source_key(reference))
             payload = json.loads(source["payload_json"]) if source is not None else None
@@ -154,7 +199,7 @@ class ScreenRepository:
             if not provenance.is_success:
                 return Outcome(failure=provenance.failure)
             asset = self._assets.read(reference.asset, resolved=resolved, capability=SCREEN_READ,
-                observed_at=observed_at, authorizer=self._authorizer)
+                observed_at=observed_at, authorizer=reader)
             if not asset.is_success:
                 return Outcome(failure=asset.failure)
             return Outcome.success((_capture_from_row(row, reference), payload))
@@ -466,17 +511,23 @@ class ScreenRepository:
             extension_id=SCREEN_EXTENSION, capability_id=SCREEN_READ,
             subject=resolved.subject, scope=reference.source.scope,
         )
-        if not consent.is_success:
+        core = is_core(self._runtime, resolved.subject)
+        if core:
+            blocked = self._core_access_failure(resolved, reference.source.scope, observed_at)
+            if blocked is not None:
+                return Outcome(failure=blocked)
+        elif not consent.is_success:
             return Outcome(failure=consent.failure)
+        reader = self._reader_for(resolved)
         source = self._sources.read(
             reference.source, resolved=resolved, capability=SCREEN_READ,
-            observed_at=observed_at, authorizer=self._authorizer,
+            observed_at=observed_at, authorizer=reader,
         )
         if not source.is_success:
             return Outcome(failure=source.failure)
         asset = self._assets.read(
             reference.asset, resolved=resolved, capability=SCREEN_READ,
-            observed_at=observed_at, authorizer=self._authorizer,
+            observed_at=observed_at, authorizer=reader,
         )
         if not asset.is_success:
             return Outcome(failure=asset.failure)
@@ -527,6 +578,25 @@ class ScreenRepository:
         installation = self._capabilities.installation(extension_id=SCREEN_EXTENSION).unwrap()
         stamps.append((installation.revision, role.subject_id, role_selection.unwrap().revision))
         return Outcome.success(_hash(json.dumps(stamps, ensure_ascii=False)))
+
+    def _mirror_consented_grant(self, resolved, scope, capability, observed_at):
+        """Re-issue the identity grant that an active consent already implies."""
+        issuer = getattr(self._authorizer, "issue_grant", None)
+        revision = getattr(self._authorizer, "revision", None)
+        if not callable(issuer) or type(revision) is not int:
+            return None
+        try:
+            grant_id = "screen-access:mirror:" + digest([
+                resolved.subject.kind.value, resolved.subject.subject_id,
+                scope.installation_id, scope.platform, scope.kind.value, scope.native_scope_id,
+                scope.bot_id, scope.account_id, scope.conversation_id, scope.session_id, capability])
+            issuer(grant_id=grant_id, subject=resolved.subject, scope=scope,
+                   capability=capability, tier=AuthorizationTier.STANDARD,
+                   valid_from=observed_at, expected_revision=revision)
+        except Exception:  # existing (possibly revoked) grant, or a concurrent policy write
+            return None
+        return self._authorizer.authorize(resolved, scope=scope, capability=capability,
+                                          observed_at=observed_at)
 
     def _capture_row(self, capture_id: str) -> sqlite3.Row | None:
         return self._runtime.read_one("SELECT * FROM screen_captures WHERE capture_id = ?", (capture_id,))

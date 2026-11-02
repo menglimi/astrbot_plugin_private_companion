@@ -13,12 +13,16 @@ test("总览汇总全局学习队列、成长阶段和全局策略",async()=>{
   const bridge={apiGet:async(route,query)=>{
     calls.push({route,query});
     const data=route.endsWith("/progress")?{items:[{},{}]}
-      :route.endsWith("/self-review")?{items:[{kind:"ask_user"}]}
+      :route.endsWith("/self-review")?{items:[{kind:"ask_user"}],
+        status:{state:"succeeded",last_run_at:"2026-10-31T02:00:00+00:00"}}
       :route.endsWith("/style")?{items:query.state==="pending"?[{},{}]:[{},{},{},{}]}
-      :route.endsWith("/expression")?{settings:{rules_per_turn:2}}
+      :route.endsWith("/expression")?{settings:{rules_per_turn:2},
+        learning:{state:"insufficient_samples",available:1,required:2}}
       :route==="semantic"?{settings:{learning_interval_seconds:21600}}
       :{items:[{growth_id:"one",kind:"skill",state:"active",title:"面向与发声",revision:2,
-        source_count:3,updated_at:"2026-10-07T08:00:00+00:00",progress_note:"完成基础练习"}]};
+        source_count:3,updated_at:"2026-10-07T08:00:00+00:00",progress_note:"完成基础练习"}],
+        access:{settings:{read_enabled:true,proposals_enabled:false},
+          effective:{read_enabled:{allowed:true},proposals_enabled:{allowed:false,reason:"authorization_missing"}}}};
     return {status:"ok",data};
   }};
   const window={CompanionProduct:{bridgeNow:()=>bridge,unwrap:value=>value.data}};
@@ -53,6 +57,11 @@ test("总览汇总全局学习队列、成长阶段和全局策略",async()=>{
   assert.match(root.innerHTML,/面向与发声/);
   assert.match(root.innerHTML,/每轮 2 条/);
   assert.match(root.innerHTML,/6 小时/);
+  assert.match(root.innerHTML,/表达学习/);
+  assert.match(root.innerHTML,/样本不足/);
+  assert.match(root.innerHTML,/每日复盘/);
+  assert.match(root.innerHTML,/最近一次已产出/);
+  assert.match(root.innerHTML,/成长提案权限不可用/);
   context.window.CompanionLearningOverviewPage.unmount();
   assert.equal(listeners.size,0);
 });

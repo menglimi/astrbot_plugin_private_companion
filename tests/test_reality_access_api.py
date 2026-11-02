@@ -84,7 +84,7 @@ class MobileSnapshot:
         return None
 
 
-async def request_api(native, path=PREFIX, *, body=None, username="admin", query=b""):
+async def request_api(native, path=PREFIX, *, body=None, username="admin", query=b"", suffix="/configure"):
     for original, scoped in getattr(native, "reality_test_paths", {}).items():
         if path == original or path.startswith(original + "/"):
             path = scoped + path.removeprefix(original)
@@ -95,7 +95,7 @@ async def request_api(native, path=PREFIX, *, body=None, username="admin", query
     async def receive():
         return {"type": "http.request", "body": payload, "more_body": False}
 
-    route = path if method == "GET" else path + "/configure"
+    route = path if method == "GET" else path + suffix
     request = Request({"type":"http", "method":method, "path":route,
                        "headers":[], "query_string":query}, receive=receive)
     handler = next(handler for registered, handler, methods, _ in native.registered_web_apis
@@ -278,6 +278,37 @@ class RealityAccessSingleTests(unittest.IsolatedAsyncioTestCase):
                          [ACTION])
         await self.controller.terminate()
         self.assertFalse(any(path.startswith(PREFIX) for path, *_ in self.native.registered_web_apis))
+
+    async def test_revoke_without_assembly_is_an_error_instead_of_silent_completion(self):
+        await self.start()
+        initial = (await request_api(self.native))["data"]
+        self.assertFalse(initial["installed"])
+        revoked = await request_api(self.native, body=command(initial, False, "revoke-missing"))
+        self.assertEqual(revoked["status"], "error", revoked)
+        self.assertEqual(revoked["data"]["code"], "capability_not_installed")
+
+    async def test_role_selection_route_requires_assembly_and_is_idempotent(self):
+        await self.start()
+        initial = (await request_api(self.native))["data"]
+        missing = await request_api(self.native, suffix="/role-selection", body={
+            "operation_key": "reality-role-missing", "expected_revision": 0, "enabled": True})
+        self.assertEqual(missing["data"]["code"], "capability_not_installed", missing)
+        enabled = await request_api(self.native, body=command(initial, True, "reality-enable-for-role"))
+        self.assertEqual(enabled["status"], "ok", enabled)
+        current = (await request_api(self.native))["data"]
+        self.assertTrue(current["role_enabled"])
+        self.assertEqual(current["role_revision"], 1)
+        command_body = {"operation_key": "reality-role-disable",
+            "expected_revision": current["role_revision"], "enabled": False}
+        disabled = await request_api(self.native, suffix="/role-selection", body=command_body)
+        self.assertEqual(disabled["status"], "ok", disabled)
+        self.assertFalse(disabled["data"]["replayed"])
+        self.assertFalse(disabled["data"]["status"]["role_enabled"])
+        replay = await request_api(self.native, suffix="/role-selection", body=command_body)
+        self.assertEqual(replay["status"], "ok", replay)
+        self.assertTrue(replay["data"]["replayed"])
+        self.assertFalse(replay["data"]["status"]["role_enabled"])
+        self.assertEqual((await request_api(self.native))["data"]["role_revision"], 2)
 
     async def test_read_only_status_does_not_acquire_or_read_location(self):
         await self.start()

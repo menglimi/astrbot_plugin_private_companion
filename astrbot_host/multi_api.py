@@ -1,6 +1,7 @@
 """Dashboard control and immutable per-owner administration routes."""
 
 from types import SimpleNamespace
+import logging
 
 from astrbot.api.web import request
 from companion_v2.execution.models import TaskError, digest
@@ -45,6 +46,8 @@ from .role_paths import HOST_PREFIX as PREFIX, role_legacy_paths
 from .performance_mode import performance_enabled, performance_status
 from .huawei_health.api import HuaweiHealthWebAPI
 
+
+logger = logging.getLogger(__name__)
 
 INSTALLATION_CONFIGURATION_SECTIONS = ("proactive.contact", "reaction", "budget")
 TARGET_CONFIGURATION_SECTIONS = tuple(name for name in SECTIONS
@@ -145,7 +148,7 @@ class MultiHostWebAPI:
         settings = self.controller.settings
         if settings is None:
             return []
-        return [{**vars(target), "scope_kind": "group" if isinstance(target, GroupTarget) else "private",
+        inventory = [{**vars(target), "scope_kind": "group" if isinstance(target, GroupTarget) else "private",
             "delivery_mode": settings.delivery_mode_for(target),
             "group_delivery_authorization": (self.controller.authority.group_delivery.status(target)
                 if isinstance(target, GroupTarget) and self.controller.authority is not None
@@ -192,6 +195,37 @@ class MultiHostWebAPI:
                                  "group" if isinstance(target, GroupTarget) else "private")}
             for role in sorted({p.role_id for p in settings.personas if p.bot_id == target.bot_id})]}
             for target in settings.all_targets]
+        self._ensure_role_routes(inventory)
+        return inventory
+
+    def _ensure_role_routes(self, inventory):
+        """Refresh per-role routes when a role was mapped after this host started.
+
+        ``register()`` builds one route per role known at boot. Saving a new
+        persona mapping later used to leave the page manifest advertising a
+        ``config_api`` (and every other per-role API) whose route did not exist;
+        AstrBot then answered "未找到该路由" on the role-profile tab. Refresh once
+        when the inventory proves a route is missing.
+        """
+        if getattr(self, "_role_routes_refresh_failed", False):
+            return
+        if getattr(self, "_refreshing_role_routes", False):
+            return
+        registered = {route for route, _ in self._registered_routes}
+        expected = {role.get("config_api") for target in inventory
+                    for role in target.get("roles", []) if role.get("config_api")}
+        if not expected or expected <= registered:
+            return
+        self._refreshing_role_routes = True
+        try:
+            self.controller.unregister_routes()
+            self.controller.register_routes()
+        except Exception:
+            self._role_routes_refresh_failed = True
+            logger.warning("[CompanionV2] 角色路由刷新失败 error_type=%s",
+                           "registration_failed")
+        finally:
+            self._refreshing_role_routes = False
 
     @staticmethod
     def _admin():

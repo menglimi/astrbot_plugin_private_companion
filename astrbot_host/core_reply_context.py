@@ -236,7 +236,8 @@ def _input_received_at(native_input, fallback):
     return getattr(native_input, "at", None) or getattr(native_input, "received_at", None) or fallback
 
 
-def build_core_reply_prompt(application, context, native_input, *, at, keyword_materials=(), health_material=None):
+def build_core_reply_prompt(application, context, native_input, *, at, keyword_materials=(), health_material=None,
+                            external_memory=None):
     """Build optional background independently; no failed section blocks reply."""
     blocks, stable_blocks, sections, expression_signal_ids = [], [], [], []
     measured, started = [], time.monotonic()
@@ -460,6 +461,9 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
         optional("memory", lambda: _material_section("当前私聊记忆", MEMORY_INSTRUCTION,
             _memory_materials(getattr(messages, "memory_context", None), context, native_input, at,
                               perception_settings()["calendar_timezone"])))
+        if external_memory is not None:
+            from .external_memory import external_memory_section
+            optional("external_memory", lambda: external_memory_section(external_memory, application, context))
         optional("legacy_memory", lambda: _material_section("迁入的历史资料",
             "这些是经过身份映射的旧版历史资料，保留各自时间与来源。旧偏好、旧情绪、未完话头和承诺只说明当时，"
             "不恢复旧任务或授权，也不当作当前状态；结合本轮表达自然回忆，需要更多细节时继续查询历史记忆。",

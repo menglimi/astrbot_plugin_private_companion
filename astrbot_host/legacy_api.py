@@ -38,6 +38,7 @@ from companion_v2.execution.models import TaskError, digest, require
 from companion_v2.configuration.models import ConfigLayer
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.legacy.migration import LegacyMigration, MigrationState, plugin_data_path
+from companion_v2.legacy.image_configuration_migration import plan_image_output_changes
 from companion_v2.legacy.reality_migration import (
     REALITY_SETTING_DEFAULTS,
     reality_setting_value,
@@ -3070,32 +3071,19 @@ class LegacyMigrationWebAPI:
         edit_tokens["image_output_config_state"] = revision
         scope_status.append({"scope": intent.scope, "group_id": intent.group_id,
                              "available": True, "reason": ""})
-        if self._image_output_has_configuration(settings):
-            differences.append({"field": "image.output", "kind": "preserved_v2",
-                                "before": "V1 图片模型与队列设置",
-                                "after": "V2 已有图片模型设置",
-                                "explain": "V2 已保存图片模型、端点队列或后端连接，为避免覆盖，本次保留 V2 设置。"})
+        # 保留哪些组由迁移层判定：整份保留与「只保留已由 V2 单独设置的下载代理」
+        # 都必须让未迁移的端点和后端照常写入，不能整份放弃。
+        changes, retained = plan_image_output_changes(settings, intent.changes)
+        differences.extend(retained)
+        if not changes:
             return None
-        edit_tokens[self._intent_key(intent)] = revision
-        return intent
-
-    @staticmethod
-    def _image_output_has_configuration(settings):
-        if not isinstance(settings, dict):
-            return True
-        if settings.get("enabled") is True or settings.get("backend", "auto") != "auto":
-            return True
-        if settings.get("legacy_backend"):
-            return True
-        if settings.get("endpoints"):
-            return True
-        for name in ("sd_webui", "comfyui"):
-            value = settings.get(name)
-            if not isinstance(value, dict):
-                continue
-            if any(value.get(key) for key in ("base_url", "api_key", "api_key_set", "parameters", "workflows")):
-                return True
-        return False
+        prepared = replace(intent, changes=changes,
+                           confidence={field: value for field, value in intent.confidence.items()
+                                       if field in changes},
+                           sources={field: value for field, value in intent.sources.items()
+                                    if field in changes})
+        edit_tokens[self._intent_key(prepared)] = revision
+        return prepared
 
     def _apply_image_output_intent(self, intent, expected_revision):
         api = self._image_extension_api()

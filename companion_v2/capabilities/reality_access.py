@@ -73,7 +73,8 @@ class RealitySnapshotAccess:
             ) == (self.package.package_id, self.package.package_version, self.package.artifact_hash)
             active = bool(same and installed.desired_state is CapabilityDesiredState.ACTIVE)
             role_enabled = bool(selection and selection.enabled)
-            consented = bool(is_core(self.runtime, self.context.actor.subject) or
+            core = is_core(self.runtime, self.context.actor.subject)
+            consented = bool(core or
                              (consent and consent["state"] == CapabilityAuthorizationState.ACTIVE.value))
             can_manage = bool(is_core(self.runtime, operator.subject) or
                 self.policy.scope_access(operator, scope=self.context.scope,
@@ -90,8 +91,10 @@ class RealitySnapshotAccess:
                       "camera_tool_unavailable" if self.capability != ACTION and not invokable else
                       "reality_tool_unavailable" if not invokable else "")
             return {"action": self.capability, "package_version": self.package.package_version,
-                    "installed": installed is not None, "role_enabled": role_enabled,
-                    "consented": consented, "invokable": invokable, "can_manage": can_manage, "reason": reason,
+                    "installed": installed is not None, "active": active,
+                    "role_enabled": role_enabled, "role_revision": selection.revision if selection else 0,
+                    "consented": consented, "auto_consent": core,
+                    "invokable": invokable, "can_manage": can_manage, "reason": reason,
                     "edit_token": self._token(state)}
 
     def configure(self, operator, command, at):
@@ -123,6 +126,8 @@ class RealitySnapshotAccess:
                 raise TaskError("reality_access_changed", "refresh the changed access settings before saving")
             installed, selection, consent = state
             enabled = command["enabled"]
+            if not enabled and (installed is None or installed.desired_state is CapabilityDesiredState.DISCARDED):
+                raise TaskError("capability_not_installed", "the Reality extension has not been assembled")
             if enabled:
                 require(self.repository.register_descriptor(self.package, registered_at=at))
                 if installed is None:

@@ -14,6 +14,7 @@ window.CompanionReplyPage = (() => {
   /* 枚举选项：注册表里这些字段是 TEXT，约束在 reply_settings.validate 里。
      选项必须与后端常量一致，否则保存会被拒绝。 */
   const choices = {
+    group_tool_profile: {full: "完整工具", standard: "常用工具", lean: "精简工具"},
       streaming_mode: {buffered: "收齐后分段发送", incremental: "边生成边分段发送"},
       rule_mode: {words: "词列表", regex: "正则表达式", sentences: "按句子", paragraphs: "按段落"},
       part_gap_mode: {fixed: "固定", random: "随机", log: "按文本长度"},
@@ -58,6 +59,7 @@ window.CompanionReplyPage = (() => {
       recall_forbidden_word_case_sensitive: "区分大小写",
       reply_diagnostic_limit: "近期回复诊断条数",
       group_wakeup_enabled: "启用群聊回应判断",
+      group_tool_profile: "群聊工具档位",
       group_wakeup_direct_words: "直呼词", group_wakeup_context_words: "上下文关联词",
       group_wakeup_interest_keywords: "兴趣关键词",
       group_wakeup_question_enabled: "识别问题与求助",
@@ -65,7 +67,7 @@ window.CompanionReplyPage = (() => {
       group_wakeup_bot_name: "角色在群里的名称",
       group_wakeup_primary_member_ids: "主要成员账号 ID",
       group_wakeup_owner_direct_words: "主要成员专属直呼词",
-      group_wakeup_interest_probability: "兴趣话题参与概率",
+      group_wakeup_interest_probability: "兴趣候选抽取概率",
       group_wakeup_question_threshold: "问题与求助阈值",
       group_wakeup_cold_group_enabled: "启用冷群重启判断",
       group_wakeup_cold_group_threshold: "冷群重启阈值",
@@ -221,7 +223,8 @@ window.CompanionReplyPage = (() => {
       group_wakeup_bot_name: "填写角色在群聊中使用的名称；同一角色的群聊共用，最多 40 字。",
       group_wakeup_primary_member_ids: "只接受平台账号数字 ID；同一角色的群聊共用这份主要成员名单。",
       group_wakeup_owner_direct_words: "只对上方主要成员账号生效。",
-      group_wakeup_interest_probability: "兴趣话题通过相关性判断后的参与概率。",
+      group_wakeup_interest_probability: "命中兴趣关键词后，按此概率进入模型参与判断；未抽中时不为该线索调用模型。0 表示关闭，1 表示全部进入，进入后仍可旁听。",
+      group_tool_profile: "完整保留可用工具；常用只挂群聊常用能力；精简会移除其他插件提供的工具，包括外部记忆与搜索。选择精简可减少工具开销，也会减少模型可调用的能力。",
       group_wakeup_question_threshold: "答疑开启时，问题与求助候选评分需达到此值才进入决策。其他成员正在交流、已有回答及近期已接话会降权；达到阈值仍可旁听。范围 0–100。",
       group_wakeup_cold_group_enabled: "开启后，群聊长时间安静时可把重新开场作为判断材料。",
       group_wakeup_cold_group_threshold: "冷群重新开场所需的参与强度参考值，范围 0–100。",
@@ -300,7 +303,7 @@ window.CompanionReplyPage = (() => {
                 "content_cleanup_rule", "content_cleanup_words", "content_replacement_enabled",
                 "content_replacements"]},
       {id: "wakeup_direct", title: "明确参与信号", help: "",
-       fields: ["group_wakeup_enabled", "group_wakeup_direct_words", "group_wakeup_context_words",
+       fields: ["group_wakeup_enabled", "group_tool_profile", "group_wakeup_direct_words", "group_wakeup_context_words",
                 "group_wakeup_question_enabled", "group_wakeup_question_threshold"]},
       {id: "wakeup_interest", title: "兴趣与概率参与", help: "",
        fields: ["group_wakeup_interest_keywords", "group_wakeup_interest_probability",
@@ -503,7 +506,7 @@ window.CompanionReplyPage = (() => {
 
   const expressionModuleSections = {
     "expression-text": ["segment", "style", "cleanup"],
-    "expression-voice": ["voice"],
+    "expression-voice": ["voice", "voice_channels"],
     "expression-platform": ["components", "checks"],
   };
   const expressionModuleDefaults = {
@@ -646,7 +649,7 @@ window.CompanionReplyPage = (() => {
   function summary(v) {
     return `${v.streaming ? (v.streaming_mode === "incremental" ? "边生成边分段发送" : "收齐后分段发送") : "完整响应"} · `
       + (v.enabled ? `${v.llm_controlled ? "模型 + 规则分段" : "规则分段"}，最多 ${v.max_segments} 条` : "单条回复")
-      + ` · 段间 ${v.part_gap_ms / 1000} 秒 · ${imageLabel(v.image_position)} · `
+      + ` · 段间 ${spacingLabel(v)} · ${imageLabel(v.image_position)} · `
       + `${v.enable_humanized_expression ? "拟人 Prompt 已开启" : "拟人 Prompt 关闭"} · `
       + (v.voice_enabled
         ? `${choiceText("voice_language", v.voice_language)}语音 · ${choiceText("voice_segment_mode", v.voice_segment_mode)}`

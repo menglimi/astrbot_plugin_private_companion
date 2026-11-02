@@ -2,6 +2,7 @@
 
 import json
 import asyncio
+from copy import deepcopy
 import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -609,6 +610,30 @@ class AstrBotSetupFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.config["model"]["provider_id"], "native-model")
         self.assertIsNone(self.controller.runtime)
 
+    async def test_model_selection_accepts_namespaced_astrbot_provider_id(self):
+        provider_id = "deepseek/deepseek-flash"
+        provider = FakeProvider()
+        provider.provider_config["id"] = provider_id
+        provider.meta = lambda: NS(id=provider_id, name=provider_id)
+        providers = {"native-model": self.native.provider, provider_id: provider}
+        self.native.get_all_providers = lambda: list(providers.values())
+        self.native.get_provider_by_id = lambda selected: providers.get(selected)
+        await self.enter_model_step()
+
+        result = await self.call("model", {"provider_id": provider_id})
+
+        self.assertEqual(result["status"], "ok", result)
+        self.assertEqual(self.config["model"]["provider_id"], provider_id)
+
+    async def test_model_apply_failure_is_not_misreported_as_invalid_provider(self):
+        await self.enter_model_step()
+        self.controller.save_plugin_config = Mock(side_effect=ValueError("fixture write failure"))
+
+        result = await self.call("model", {"provider_id": "native-model"})
+
+        self.assertEqual(result["data"]["code"], "setup_model_apply_failed")
+        self.assertEqual(self.config["model"]["provider_id"], "native-model")
+
     async def test_model_setup_uses_all_loaded_providers_without_registering_them(self):
         secondary = FakeProvider()
         secondary.provider_config["id"] = "secondary-model"
@@ -679,6 +704,48 @@ class AstrBotSetupFlowTests(unittest.IsolatedAsyncioTestCase):
         })
         self.assertEqual(saved["status"], "ok", saved)
         self.assertEqual(saved["data"]["task"]["configuration_layer"], "role")
+
+    async def test_reset_binding_releases_the_confirmed_window_and_keeps_the_mapping(self):
+        await self.controller.terminate()
+        self.config["staging"]["enabled"] = False
+        self.config["multi_host"] = {"enabled": True, "installation_id": "setup-reset"}
+        self.controller = AstrBotMultiController(self.native, self.config, self.root,
+                                                 native_types=self.types, now=lambda: NOW)
+        self.api = SetupWebAPI(self.controller)
+        self.native.persona_manager.get_persona_v3_by_id = lambda persona_id: (
+            self.native.persona if persona_id == "original" else None)
+        self.attach_config_writer()
+
+        await self.bind_core_window()
+        self.assertTrue(self.controller.binding_state()["confirmed"])
+        personas_before = deepcopy(self.config["multi_host"]["personas"])
+        targets_before = deepcopy(self.config["multi_host"]["targets"])
+
+        rejected = await self.call("reset_binding", {})
+        self.assertEqual(rejected["status"], "error", rejected)
+        self.assertTrue(self.controller.binding_state()["confirmed"],
+                        "被拒的请求不该改动状态")
+
+        reset = await self.call("reset_binding", {"confirm": True})
+        self.assertEqual(reset["status"], "ok", reset)
+        self.assertTrue(reset["data"]["reset"])
+        binding = self.controller.binding_state()
+        self.assertFalse(binding["confirmed"])
+        self.assertTrue(binding["pending"])
+        self.assertEqual(self.config["multi_host"]["personas"], personas_before,
+                         "重置绑定不能顺手删掉角色映射")
+        self.assertEqual(self.config["multi_host"]["targets"], targets_before,
+                         "重置绑定不能顺手删掉窗口目标")
+
+        again = await self.call("confirm_binding")
+        self.assertEqual(again["status"], "ok", again)
+        self.assertTrue(self.controller.binding_state()["confirmed"])
+        self.assertFalse(self.controller.binding_state()["pending"])
+
+    async def test_reset_binding_reports_a_missing_window_instead_of_pretending(self):
+        missing = await self.call("reset_binding", {"confirm": True})
+        self.assertEqual(missing["status"], "error", missing)
+        self.assertEqual(missing["data"]["code"], "setup_binding_missing")
 
     async def test_multi_mode_confirmation_seeds_the_first_private_target_and_persona(self):
         await self.controller.terminate()
@@ -1001,6 +1068,52 @@ class AstrBotSetupFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(connected["status"], "ok", connected)
         self.assertTrue(connected["data"]["status"]["host"]["accepting"])
+
+    async def test_unfinished_guide_is_not_reported_as_an_unreplayable_test(self):
+        # A fresh install: the guide is still open, and no attempt has ever run.
+        # Reporting setup_test_non_replayable here sent the operator looking for a
+        # replay problem while proactive_test was still null.
+        await self.enter_model_step()
+        self.assertEqual((await self.call("model", {"provider_id": "native-model"}))["status"], "ok")
+        self.assertEqual((await self.call("complete", {"step": "model", "skipped": False}))["status"], "ok")
+        self.assertEqual((await self.call("complete", {"step": "knowledge", "skipped": True}))["status"], "ok")
+        self.assertEqual((await self.call("complete", {"step": "relationships", "skipped": True}))["status"], "ok")
+        await self.prepare_trusted_conversation_source()
+        self.prepare_contact_model()
+        model_calls_before = len(self.native.provider.client.state.calls)
+
+        result = await self.call("proactive_test", {"enable_proactive": True})
+
+        self.assertEqual(result["status"], "error", result)
+        self.assertEqual(result["data"]["code"], "setup_steps_incomplete", result)
+        self.assertEqual(result["message"], "setup_steps_incomplete")
+        self.assertIn("guided setup steps", result["reason"])
+        self.assertIsNone(self.api.progress.read()["proactive_test"])
+        # Nothing was dispatched and no attempt was recorded: the refusal happened
+        # before the test could start, exactly like the null receipt says.
+        self.assertEqual(len(self.native.provider.client.state.calls), model_calls_before)
+
+    async def test_a_started_test_still_reports_the_non_replayable_code(self):
+        # The genuine replay refusal must keep its original code and message.
+        await self.enter_model_step()
+        self.assertEqual((await self.call("model", {"provider_id": "native-model"}))["status"], "ok")
+        for step, skipped in (("model", False), ("knowledge", True), ("relationships", True),
+                              ("proactive", True), ("life", True), ("group", True)):
+            self.assertEqual((await self.call("complete", {"step": step, "skipped": skipped}))["status"], "ok")
+        await self.prepare_trusted_conversation_source()
+        self.prepare_contact_model()
+        self.native.platform.client._api._wsr_api.error = TimeoutError("the message may have been sent")
+
+        first = await self.call("proactive_test", {"enable_proactive": True})
+        self.assertEqual(first["data"]["state"], "started", first)
+        receipt = await self.wait_for_test()
+        self.assertEqual(receipt["state"], "unknown", receipt)
+
+        again = await self.call("proactive_test", {"enable_proactive": True})
+
+        self.assertEqual(again["status"], "error", again)
+        self.assertEqual(again["data"]["code"], "setup_test_non_replayable", again)
+        self.assertIn("cannot be replayed", again["reason"])
 
 
 if __name__ == "__main__":

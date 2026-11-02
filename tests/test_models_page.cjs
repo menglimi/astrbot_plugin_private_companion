@@ -164,7 +164,7 @@ test('registered review, media and authoring tasks have searchable Chinese names
   const h = harness(), node = h.root(), data = status();
   const labels = {
     'proactive.judge': '主动联系复核',
-    'image_review': '图片审核',
+    'conversation.image_review': '图片审核',
     'conversation.context_image_caption': '图片摘要',
     'content.authoring.draft': '内容起草',
     'conversation.image_narration': '当前图片转述',
@@ -185,7 +185,7 @@ test('registered review, media and authoring tasks have searchable Chinese names
   }
   node.input('[data-model-search]', {value: '主动联系复核'});
   assert.match(node.innerHTML, /data-fncard="proactive.judge"/);
-  assert.doesNotMatch(node.innerHTML, /data-fncard="image_review"/);
+  assert.doesNotMatch(node.innerHTML, /data-fncard="conversation\.image_review"/);
   node.input('[data-model-search]', {value: ''});
   node.click('[data-model-sub]', {modelSub: 'map'});
   for (const [kind, label] of Object.entries(labels)) {
@@ -969,6 +969,9 @@ test('the functional page exposes the design subtabs and the situation map deriv
   assert.match(node.innerHTML, /可用模型/);
   assert.match(node.innerHTML, /对话回复/);
   assert.match(node.innerHTML, /按能力槽/);
+  assert.match(node.innerHTML, /模型提供方图例/);
+  assert.match(node.innerHTML, /class="model-mlgd-box"/);
+  assert.doesNotMatch(node.innerHTML, /class="model-mlgd-box" open/);
   node.click('[data-model-av]', {modelAv: 'lane'});
   assert.match(node.innerHTML, /前台/);
   assert.match(node.innerHTML, /后台/);
@@ -1530,5 +1533,67 @@ test('Laya page exposes official local install, first-run download, and SystemOn
   requests.filter(item => item.method === 'GET' && item.route === 'model').at(-1).resolve(status());
   await flush();
   assert.equal(page.isDirty(), false, 'discarded cached model scopes cannot block later navigation');
+  page.unmount();
+});
+
+test('Laya page offers a Jev judgment backend with its own address, key and model name', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  const layaStatus = overrides => ({enabled: true, mode: 'remote', endpoint: 'https://laya.test/v1',
+    remote_model: '', default_model: 'multilingual', api_key_set: true, timeout_seconds: 20,
+    followup_confidence_threshold: 0,
+    decision_fields: {turn_state: true, action: true, reply_intent: true, reply_style: true,
+      reply_form: true, segment_mode: true, tool_need: true},
+    package_installed: false, package_version: '', model_cache_ready: false,
+    model_cache_path: 'C:/cache/huggingface/hub', python_executable: 'C:/AstrBot/python.exe',
+    install_command: "& 'C:/AstrBot/python.exe' -m pip install 'laya==0.4.0'",
+    remote_install_command: '', remote_start_command: '', revision: 'laya-remote', ...overrides});
+
+  page.mount(node);
+  requests[0].resolve(status());
+  await flush();
+  node.click('[data-model-tab]', {modelTab: 'laya'});
+  requests.find(item => item.method === 'GET' && item.route === 'model/laya').resolve(layaStatus({}));
+  requests.find(item => item.method === 'GET' && item.route === 'model/laya/logs').resolve({events: []});
+  await flush();
+  assert.match(node.innerHTML, /<option value="jev"[^>]*>Jev 判断服务<\/option>/,
+    'the access-mode list offers the gateway backend');
+
+  node.change('[data-laya-field]', {layaField: 'mode', value: 'jev'});
+  assert.match(node.innerHTML, /判断服务地址/);
+  assert.match(node.innerHTML, /\/v1\/chat\/completions/);
+  assert.match(node.innerHTML, /判断模型名/);
+  assert.match(node.innerHTML, /留空使用 jev-latest/);
+  assert.match(node.innerHTML, /Jev 判断服务<\/h3>/);
+  assert.doesNotMatch(node.innerHTML, /pip install .*laya==0\.4\.0/, 'a gateway backend needs no local package');
+  assert.doesNotMatch(node.innerHTML, /data-laya-test[^>]*disabled/);
+
+  node.change('[data-laya-field]', {layaField: 'endpoint', value: 'https://jev.example.test/v1'});
+  node.change('[data-laya-field]', {layaField: 'remote_model', value: 'jev-1.14.0'});
+  node.change('[data-laya-field]', {layaField: 'api_key', value: 'jev-secret'});
+  assert.equal(page.isDirty(), true);
+  node.click('[data-laya-save]');
+  const saveRequest = requests.find(item => item.method === 'POST' && item.route === 'model/laya/save');
+  assert.equal(saveRequest.values.changes.mode, 'jev');
+  assert.equal(saveRequest.values.changes.endpoint, 'https://jev.example.test/v1');
+  assert.equal(saveRequest.values.changes.remote_model, 'jev-1.14.0');
+  assert.equal(saveRequest.values.changes.api_key, 'jev-secret');
+  saveRequest.resolve(layaStatus({mode: 'jev', endpoint: 'https://jev.example.test/v1',
+    remote_model: 'jev-1.14.0', default_model: 'jev-1.14.0', revision: 'laya-jev'}));
+  await flush();
+  assert.equal(page.isDirty(), false);
+  assert.match(node.innerHTML, /判断模型：<code>jev-1\.14\.0<\/code>/);
+
+  node.change('[data-laya-field]', {layaField: 'mode', value: 'local'});
+  assert.match(node.innerHTML, /pip install .*laya==0\.4\.0/);
+  assert.match(node.innerHTML, /本地检查点目录/);
+  assert.doesNotMatch(node.innerHTML, /判断服务地址/);
+  node.change('[data-laya-field]', {layaField: 'mode', value: 'jev'});
+
+  node.click('[data-laya-test]');
+  requests.find(item => item.method === 'POST' && item.route === 'model/laya/test')
+    .reject(new Error('laya_auth_failed'));
+  await flush();
+  assert.match(node.innerHTML, /判断服务鉴权失败/, 'a rejected key keeps its own actionable message');
   page.unmount();
 });

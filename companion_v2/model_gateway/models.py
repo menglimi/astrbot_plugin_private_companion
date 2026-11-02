@@ -17,6 +17,35 @@ from .response_diagnostics import ResponseDiagnostics
 
 
 MAX_TOOL_CATALOG = 64
+MAX_MODEL_OUTPUT_TOKENS = 65_536
+
+# A model call whose provider never returned a usage receipt would otherwise keep
+# its ceiling in ``held_tokens`` for the lifetime of the installation. The
+# reservation is returned to the account by writing this marker into the existing
+# ``receipt_ref`` column, so no schema change is needed and a late trusted usage
+# receipt can still replace it. Callers must never guess usage from the reserved
+# amount: this marker means "the hold ended, the tokens are still unconfirmed".
+RELEASE_RECEIPT_PREFIX = "local:released:"
+RELEASE_WITHOUT_USAGE = "no-usage-receipt"
+RELEASE_EXPIRED = "expired-reservation"
+RELEASE_REASONS = (RELEASE_WITHOUT_USAGE, RELEASE_EXPIRED)
+
+
+def is_released(receipt_ref) -> bool:
+    """Return whether this call's reservation was already returned to its account."""
+    return type(receipt_ref) is str and receipt_ref.startswith(RELEASE_RECEIPT_PREFIX)
+
+
+def released_receipt(reason: str, receipt_ref: str | None = None) -> str:
+    """Build the durable release marker, keeping any real provider receipt beside it."""
+    if reason not in RELEASE_REASONS:
+        raise ValueError("a reservation release needs a fixed reason")
+    marker = RELEASE_RECEIPT_PREFIX + reason
+    if receipt_ref is None:
+        return marker
+    if type(receipt_ref) is not str or not receipt_ref or is_released(receipt_ref):
+        raise ValueError("a release marker wraps one real provider receipt")
+    return marker + ":" + receipt_ref
 
 
 @dataclass(frozen=True)
@@ -119,7 +148,7 @@ class ModelTaskProfile:
             _opaque(getattr(self, name), field=name)
         if not isinstance(self.lane, Lane) or not isinstance(self.default_prompt, str):
             raise ValueError("model tasks require an explicit lane and task prompt")
-        if type(self.max_output_tokens) is not int or not 1 <= self.max_output_tokens <= 32768:
+        if type(self.max_output_tokens) is not int or not 1 <= self.max_output_tokens <= MAX_MODEL_OUTPUT_TOKENS:
             raise ValueError("output ceiling is outside the local model profile")
         if self.default_fallback:
             _opaque(self.default_fallback, field="default_fallback")
@@ -361,6 +390,10 @@ class LocalProvider:
     maximum_output_tokens: int
     reserve: Callable[[ModelEnvelope], Amount]
     generate: Callable[[ModelEnvelope], Awaitable[ProviderResponse]]
+    # 适配器自己声明的输入预估上限。owner 侧要在发请求前判断材料装不装得下，
+    # 只能从这里读；`reserve` 只回答"装不下"，说不出被拒的那条线在哪。
+    # 默认值与宿主配置的默认值一致，本地测试适配器可以不管这个字段。
+    maximum_input_estimate: int = 131072
     transport: str = "local_test_adapter"
     default_streaming: bool = False
     supports_model_override: bool = False
@@ -384,8 +417,10 @@ class LocalProvider:
             raise ValueError("local provider requires a binding and a cooperative async handler")
         if not callable(self.reserve) or inspect.iscoroutinefunction(self.reserve):
             raise ValueError("reservation estimator must be a bounded synchronous adapter function")
-        if type(self.maximum_output_tokens) is not int or not 1 <= self.maximum_output_tokens <= 32768:
+        if type(self.maximum_output_tokens) is not int or not 1 <= self.maximum_output_tokens <= MAX_MODEL_OUTPUT_TOKENS:
             raise ValueError("provider output limit must be explicit")
+        if type(self.maximum_input_estimate) is not int or not 1024 <= self.maximum_input_estimate <= 1_000_000:
+            raise ValueError("provider input limit must be explicit")
         if not self.capabilities or len(set(self.capabilities)) != len(self.capabilities):
             raise ValueError("provider capabilities must be explicit and unique")
         for capability in self.capabilities:

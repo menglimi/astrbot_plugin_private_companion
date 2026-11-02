@@ -76,6 +76,13 @@ class _CurrentReplyContext:
                 message_chain = await message_chain
         from .core_reply_voice import commit_pending_voice_claim, release_pending_voice_claim
         returned = 0
+        # native_reply_messages can return an empty tuple now that a quote or @
+        # with no body is dropped. This value is what AstrBot's tool turns into
+        # its own reply, and its `if not sent` branch reads a falsy one as
+        # "failed to find platform for session ...": consuming the decoration is
+        # a no-op success, not a platform failure, so the loop starts from a
+        # truthy result and every real send overwrites it.
+        result = True
         for part in native_reply_messages(tool._event, message_chain):
             try:
                 await state["_authorize_delivery"]()

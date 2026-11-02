@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import OrderedDict
 from datetime import timedelta
+from logging import getLogger
 
 from companion_v2.conversation.foreground import (
     BackgroundPromptTrigger,
@@ -15,7 +16,6 @@ from companion_v2.conversation.foreground import (
 from companion_v2.configuration.models import ConfigLayer, ConfigTarget
 from companion_v2.execution.models import (
     Lane,
-    ProviderBinding,
     SideEffect,
     TaskDefinition,
     TaskError,
@@ -37,6 +37,38 @@ from .understanding import media_scope_enabled
 KIND = "conversation.image_narration"
 OWNER = "conversation.image_narration"
 PROFILE_KIND = KIND
+logger = getLogger(__name__)
+# One ceiling, three derived layers. A reply turn stalls for at most
+# `private_image_vision_wait_seconds` (1-30 s, default 8) while this sidecar
+# reads the photos, so that wait is the ceiling and every inner layer derives
+# downward from it: the model round should expire first, the supervised task
+# second, the waiting reply last. The reply and the task follow the configured
+# wait on every call; the model round follows this profile's default (8 - 2 = 6)
+# or the saved ``model.conversation.image_narration.timeout_seconds``, so above
+# a 7 s wait the round expires first and below it the task does. Either way the
+# inner layer records its own reason instead of being cancelled by the waiting
+# reply, which cannot name what it interrupted.
+IMAGE_NARRATION_WAIT_SECONDS = 8
+IMAGE_NARRATION_MARGIN_SECONDS = 2
+IMAGE_NARRATION_HANDOFF_SECONDS = 1
+IMAGE_NARRATION_PROVIDER_TIMEOUT_SECONDS = IMAGE_NARRATION_WAIT_SECONDS - IMAGE_NARRATION_MARGIN_SECONDS
+IMAGE_NARRATION_BUDGET_SECONDS = IMAGE_NARRATION_WAIT_SECONDS - IMAGE_NARRATION_HANDOFF_SECONDS
+
+
+def image_narration_layers(wait_seconds):
+    """Return (provider, task, parent) seconds for one configured wait.
+
+    ``provider`` is the model-round budget this wait implies at the default
+    configuration; the round itself runs on ``image_narration_profile()
+    .timeout_seconds``, i.e. that default or the value saved on the model page.
+    Below 3 s the three layers collapse: a model round cannot be measured in a
+    shorter window, so the waiting reply stays the only honest fence.
+    """
+    wait = max(1, int(wait_seconds))
+    return (max(1, wait - IMAGE_NARRATION_MARGIN_SECONDS),
+            max(2, wait - IMAGE_NARRATION_HANDOFF_SECONDS), wait)
+
+
 PROMPT = """按原顺序逐张简短转述，供回复模型理解本轮图片；多图分别对应，不合并来源。每张图说明三项：
 图片类型：照片、截图、漫画、表情包、贴纸、GIF、其他或无法判断；依据画面形态和语境判断，不从文件名或格式猜测。
 可见内容：客观描述主体、动作、布局和清晰文字；表情包/贴纸/GIF保留关键表情、动作、文字梗，普通照片/截图优先保留内容和有用细节。
@@ -49,7 +81,8 @@ DIRECT_IMAGE_INSTRUCTION = (
 )
 
 
-def image_narration_profile(provider, *, max_output_tokens=320, timeout_seconds=15):
+def image_narration_profile(provider, *, max_output_tokens=320,
+                            timeout_seconds=IMAGE_NARRATION_PROVIDER_TIMEOUT_SECONDS):
     return ModelTaskProfile(PROFILE_KIND, Lane.BACKGROUND, provider,
         "把本轮已授权图片转述为简短、谨慎、来源对应的文字。",
         max_output_tokens=max_output_tokens, capabilities=("text", "image"),
@@ -67,9 +100,11 @@ class PrivateImageNarrationService:
         self.closed = False
         self.app = None
         self.registrations = (TaskRegistration(TaskDefinition(KIND, OWNER,
-            "conversation.reply", Lane.BACKGROUND, side_effect=SideEffect.LOCAL,
-            binding=ProviderBinding(OWNER, "local", "1", "image-narration-1"),
-            timeout_seconds=35, max_attempts=1, concurrency=2, per_scope_concurrency=1),
+            # The caption lives in this process's cache for the current reply turn
+            # only: nothing durable is written, so the task declares no side effect
+            # and may report a plain succeeded result.
+            "conversation.reply", Lane.BACKGROUND, side_effect=SideEffect.NONE,
+            timeout_seconds=IMAGE_NARRATION_BUDGET_SECONDS, max_attempts=1, concurrency=2, per_scope_concurrency=1),
             self.validate),)
 
     def attach(self, app):
@@ -198,17 +233,27 @@ class PrivateImageNarrationService:
                "cache_limit": settings.get("private_image_vision_cache_max_items", 300)}
         self.pending[task_id] = job
         at = self.tasks.now()
-        wait_seconds = settings.get("private_image_vision_wait_seconds", 8)
+        _, budget_seconds, wait_seconds = image_narration_layers(
+            settings.get("private_image_vision_wait_seconds", IMAGE_NARRATION_WAIT_SECONDS))
         try:
             with self.runtime.transaction():
                 require(self.tasks.submit(TaskSpec(task_id, context, KIND, batch_id, task_id,
-                    at, at + timedelta(seconds=max(2, wait_seconds + 1)))))
+                    at, at + timedelta(seconds=budget_seconds))))
             try:
                 result = await asyncio.wait_for(self.runner.run(context, task_id), timeout=wait_seconds)
             except TimeoutError:
+                logger.info("[CompanionV2] 图片转述超出等待预算，本轮不带转述继续 task=%s kind=%s code=%s "
+                            "wait_seconds=%s provider_seconds_default=%s budget_seconds=%s",
+                            task_id, KIND, "image_narration_wait_exhausted",
+                            wait_seconds, IMAGE_NARRATION_PROVIDER_TIMEOUT_SECONDS, budget_seconds)
                 self._mark_failure(cache_key)
                 return ""
-            if result.failure:
+            stopped = result.failure.code if result.failure else result.unwrap().stop_code
+            if stopped is not None:
+                logger.info("[CompanionV2] 图片转述未完成 task=%s kind=%s code=%s "
+                            "wait_seconds=%s provider_seconds_default=%s budget_seconds=%s",
+                            task_id, KIND, stopped,
+                            wait_seconds, IMAGE_NARRATION_PROVIDER_TIMEOUT_SECONDS, budget_seconds)
                 self._mark_failure(cache_key)
                 return ""
             caption = self.results.pop(task_id, "")
@@ -272,4 +317,5 @@ class PrivateImageNarrationService:
             await self.runner.close()
 
 
-__all__ = ["PrivateImageNarrationService", "KIND", "image_narration_profile"]
+__all__ = ["IMAGE_NARRATION_BUDGET_SECONDS", "IMAGE_NARRATION_PROVIDER_TIMEOUT_SECONDS",
+           "PrivateImageNarrationService", "KIND", "image_narration_layers", "image_narration_profile"]

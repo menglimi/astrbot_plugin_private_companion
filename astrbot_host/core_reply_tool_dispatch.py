@@ -5,6 +5,11 @@ import logging
 
 
 CORE_TOOL_DISPATCH_EXTRA = "_companion_v2_core_tool_dispatch"
+# Tool steps whose prose is a decision note or a draft, never the reply the turn
+# will send. AstrBot delivers that prose before running the tool and then
+# delivers the post-tool reply too, so each of these tools would otherwise
+# produce two visible replies.
+DEFERRED_TOOL_STEP = frozenset({"companion_v2_reaction_search", "companion_v2_group_participation_choose"})
 logger = logging.getLogger(__name__)
 
 
@@ -68,12 +73,12 @@ def observe_core_tool_dispatch_begin(event, run_context):
             names = getattr(response, "tools_call_name", ())
             if (not getattr(response, "is_chunk", False)
                     and getattr(response, "role", None) == "assistant" and names
-                    and set(names) == {"companion_v2_reaction_search"}):
-                # AstrBot emits tool-step prose before executing the search.
-                # Defer that draft until the final media reply; restore the exact
-                # response before dispatch so tool IDs, arguments and history stay intact.
-                # Streaming providers reach this same final response; the old
-                # ``not runner.streaming`` guard let a group/private streaming
+                    and set(names) <= DEFERRED_TOOL_STEP):
+                # AstrBot emits tool-step prose before executing the tool. Defer
+                # that draft until the final media reply; restore the exact
+                # response before dispatch so tool IDs, arguments and history stay
+                # intact. Streaming providers reach this same final response; the
+                # old ``not runner.streaming`` guard let a group/private streaming
                 # step send the draft and then send the post-tool reply again.
                 state["deferred_reply"] = (response, response.completion_text, response.result_chain)
                 # The SDK text setter mutates result_chain when one is attached.

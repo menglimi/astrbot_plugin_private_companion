@@ -15,9 +15,11 @@ from cryptography.hazmat.primitives import serialization
 from tests import test_host_options_api as host_fixture
 from astrbot_host.weather_settings import CachedWeatherPort, configured_weather_ports
 from companion_v2.agenda.planning_config import WeatherLocation
+from companion_v2.agenda.weather_tools import WeatherTools
 
 
 KEY = "0123456789abcdef0123456789abcdef"
+ROTATED_KEY = "abcdef0123456789abcdef0123456789"
 HOST = "example.re.qweatherapi.com"
 
 
@@ -62,6 +64,41 @@ class WeatherSourceSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restored.port._credentials.host, HOST)
         self.assertEqual(alert._credentials.host, HOST)
         self.assertNotIn(KEY, json.dumps(await self.source()))
+
+    async def test_model_weather_tool_follows_source_save_rotation_and_clear(self):
+        # 装配时 LocalRoleTools 与规划页拿到同一个端口，且 WeatherTools 把它冻在
+        # 实例上（conversation/tool_loop.py、agenda/weather_tools.py）。保存后必须
+        # 一起换成新端口，否则 weather.current 仍走旧数据源与旧凭据。
+        previous, _alerts = configured_weather_ports(self.config)
+        previous.cache[WeatherLocation("旧地点", 31.2, 121.4)] = (0, object())
+        self.application.tools = NS(weather=WeatherTools(previous, None))
+        tool = self.application.tools.weather
+        self.assertIs(tool.port, previous)
+
+        response = await self.save({"provider": "qweather", "api_host": HOST, "credential": KEY})
+        self.assertEqual(response["status"], "ok", response)
+        self.assertEqual(response["data"]["apply_mode"], "immediate")
+        self.assertIs(tool.port, self.application.calendar_planning.weather_port)
+        self.assertIsNot(tool.port, previous)
+        self.assertEqual(tool.port.provider, "qweather")
+        self.assertEqual(tool.port.port._credentials.host, HOST)
+        self.assertEqual(tool.port.cache, {})
+        self.assertEqual(previous.cache, {})
+
+        # 轮换凭据后工具请求头里是新 Key，而不是构造时那一份。
+        response = await self.save({"credential": ROTATED_KEY})
+        self.assertEqual(response["status"], "ok", response)
+        self.assertEqual(tool.port.port._credentials.headers(datetime.now(timezone.utc)),
+                         {"X-QW-Api-Key": ROTATED_KEY})
+        self.assertIs(tool.port, self.application.calendar_planning.weather_port)
+
+        # 清除页面凭据后工具不再持有已删除的 Key，并随数据源退回 Open-Meteo。
+        cleared = await self.save({"clear_credentials": True})
+        self.assertEqual(cleared["status"], "ok", cleared)
+        self.assertEqual(cleared["data"]["credential_source"], "none")
+        self.assertIs(tool.port, self.application.calendar_planning.weather_port)
+        self.assertEqual(tool.port.provider, "open-meteo")
+        self.assertIsNone(getattr(tool.port.port, "_credentials", None))
 
     async def test_blank_credential_retains_secret_and_source_change_replaces_cache(self):
         await self.save({"api_host": HOST, "credential": KEY})
@@ -147,6 +184,44 @@ class WeatherSourceSettingsTests(unittest.IsolatedAsyncioTestCase):
             response = await self.save({"credential": KEY})
             self.assertEqual(response["status"], "ok", response)
             self.assertEqual(self.config["weather"]["api_host"], HOST)
+
+    async def test_half_configured_environment_credentials_are_not_reported_as_configured(self):
+        # has_credential 是页面「已配置」徽标的唯一依据；半组无法认证，必须与
+        # source_state 的「配置待完善」一起显示为未配置。
+        with patch.dict(os.environ, {"QWEATHER_API_KEY": KEY}):
+            view = await self.source()
+            self.assertFalse(view["has_credential"], view)
+            self.assertEqual(view["source_state"], "invalid")
+            self.assertEqual(view["credential_source"], "environment")
+        with patch.dict(os.environ, {"QWEATHER_DEVELOPER_ID": "Q123456789"}):
+            view = await self.source()
+            self.assertFalse(view["has_credential"], view)
+            self.assertEqual(view["source_state"], "invalid")
+        with patch.dict(os.environ, {"QWEATHER_PRIVATE_KEY_FILE": "/missing/key.pem"}):
+            view = await self.source()
+            self.assertFalse(view["has_credential"], view)
+            self.assertEqual(view["source_state"], "invalid")
+        # 完整且可用的一组仍显示已配置。
+        with patch.dict(os.environ, {"QWEATHER_API_HOST": HOST, "QWEATHER_API_KEY": KEY}):
+            view = await self.source()
+            self.assertTrue(view["has_credential"], view)
+            self.assertEqual(view["source_state"], "configured")
+            self.assertEqual(view["credential_kind"], "api_key")
+
+    async def test_half_configured_environment_host_edit_does_not_require_a_replacement_credential(self):
+        # 半配置的环境组没有可用凭据可替换；补 Host 时不应误报「替换环境 Host 必须
+        # 填写凭据」，而是交给端口校验说明配置无效。
+        with patch.dict(os.environ, {"QWEATHER_API_KEY": KEY}):
+            response = await self.save({"api_host": HOST})
+            self.assertEqual(response["status"], "error", response)
+            self.assertNotEqual(response["message"], "weather_source_credential_required")
+            self.assertEqual(response["message"], "weather_source_invalid")
+            self.assertEqual(self.saved, [])
+            response = await self.save({"api_host": HOST, "credential": KEY})
+            self.assertEqual(response["status"], "ok", response)
+            self.assertEqual(self.config["weather"]["api_host"], HOST)
+            self.assertEqual(self.config["weather"]["credential"], KEY)
+            self.assertEqual(response["data"]["credential_source"], "plugin")
 
     async def test_conflict_and_failed_persistence_leave_original_ports(self):
         current = await self.source()

@@ -15,6 +15,7 @@ from companion_v2.configuration.models import ConfigurationError
 from companion_v2.configuration.registry import FieldRegistry
 from companion_v2.conversation.media.understanding import (
     DEFAULTS,
+    DOCUMENT_SUFFIXES,
     SCOPE_PERMISSION_FIELDS,
     TEXT_SUFFIXES,
     intake_fields,
@@ -49,6 +50,15 @@ class FileUnderstandingTests(unittest.IsolatedAsyncioTestCase):
             settings({**DEFAULTS, "file_understanding_formats": "all_files"})
 
     def test_format_groups_select_supported_types_and_keep_legacy_values(self):
+        # 注册默认值是换行分隔的多行文本；后端按同一组分隔符回退，应覆盖
+        # 15 个文本后缀 + 4 个文档后缀，共 19 个。
+        registered = settings(DEFAULTS)
+        self.assertEqual(len(TEXT_SUFFIXES), 15)
+        self.assertEqual(len(DOCUMENT_SUFFIXES), 4)
+        self.assertEqual(registered["file_understanding_allowed_suffixes"],
+                         TEXT_SUFFIXES | DOCUMENT_SUFFIXES)
+        self.assertEqual(len(registered["file_understanding_allowed_suffixes"]), 19)
+
         selected = settings({**DEFAULTS,
             "file_understanding_format_groups": json.dumps(["PDF", "Word（DOCX）"], ensure_ascii=False)})
         self.assertEqual(selected["file_understanding_allowed_suffixes"], {".pdf", ".docx"})

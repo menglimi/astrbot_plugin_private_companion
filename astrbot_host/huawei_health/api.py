@@ -14,6 +14,7 @@ from companion_v2.identity_policy.object_access import ObjectAccessPolicy
 
 from ..management_identity import dashboard_operator
 from .service import ensure_huawei_health_service
+from .vendor.hw_auth import HuaweiAuthError
 
 
 PREFIX = "/astrbot_plugin_private_companion/huawei-health"
@@ -128,6 +129,11 @@ class HuaweiHealthWebAPI:
             service = await self._service()
             count = await service.import_cookie(text, fields)
             return outcome_response(self._ok({"imported": count, "status": await service.status()}))
+        except HuaweiAuthError as error:
+            # Keep the specific reason (missing CASTGC/sid, mixed formats, bad
+            # JSON) instead of collapsing every import failure into one generic
+            # "check the format" message.
+            return self._failure(TaskError("huawei_health_cookie_invalid", str(error)))
         except (TaskError, ValueError, RuntimeError, OSError) as error:
             return self._failure(error)
         except Exception:

@@ -20,7 +20,8 @@ from companion_v2.model_gateway.models import ModelEnvelope
 from companion_v2.sources.dependencies import key
 from tests.animation_support import animation_bytes
 from tests.forward_support import ForwardFixture, node_raw, quoted_forward_raw
-from tests.image_delivery_support import attach_originals, image_reply, offered_images
+from tests.image_delivery_support import (attach_originals, image_reply, offered_images,
+                                          intercept_image_delivery_verification)
 from tests.native_adapter_support import completion, final_text
 from tests.test_conversation_images import FakeImage, image_bytes
 from tests.test_conversation_quotes import quote_raw
@@ -71,9 +72,30 @@ class ConversationImageDeliveryTests(ForwardFixture, unittest.IsolatedAsyncioTes
         self.assertNotIn("base64", record[0])
         self.assertNotIn("https://", record[0])
 
+    async def test_user_photo_origin_and_photo_request_guidance_reach_the_model(self):
+        host = await self.setup_host()
+        event = self.image_event()
+        event.message_obj.message[0].text = "来张照片"
+        batch = host.receive(await self.capture(event)).unwrap()
+        request = self.request(host.application, batch)
+        wire = build_wire(ModelEnvelope(request, "photo request", 100, "fixture"))
+        image_metadata = [json.loads(item["text"]) for item in wire.messages[-1]["content"]
+                          if item.get("type") == "text" and "image_evidence" in item["text"]]
+        system_prompt = "\n".join(message["content"] for message in wire.messages
+                                  if isinstance(message.get("content"), str))
+
+        self.assertEqual(len(image_metadata), 1)
+        self.assertEqual(image_metadata[0]["image_origin"], "user_input")
+        self.assertIn("默认不要选择 user_input 图片", system_prompt)
+        self.assertIn("用户对角色说“来张照片”“看看照片”", system_prompt)
+        self.assertIn("不得把用户手机相册上传的照片冒充成角色照片", system_prompt)
+        self.assertIn("sendable_image 只表示原件在技术上可回送", system_prompt)
+        self.assertIn("发一张你的照片/自拍/穿搭照", system_prompt)
+
     async def test_quoted_forward_animation_sends_full_original_and_keeps_memory_dependencies(self):
         body = animation_bytes(count=10)
         self.raw = quoted_forward_raw(nodes=[node_raw(images=(body,))])
+        self.native_model = self.make_model(maximum_input_estimate=300000)
         host = await self.setup_host()
         batch = host.receive(await self.capture(self.quote_event())).unwrap()
         app, context = host.application, self.context(host.application, batch)
@@ -165,8 +187,9 @@ class ConversationImageDeliveryTests(ForwardFixture, unittest.IsolatedAsyncioTes
             if not revoked and app.runtime.read_one("SELECT 1 FROM sources WHERE owner = ?", (OWNER,)):
                 app.messages.images.assets.revoke(asset, expected_governance_revision=1, observed_at=self.clock.now()).unwrap()
                 revoked = True
-        self.native.before_resolve = revoke
+        reached = intercept_image_delivery_verification(self.bridge, app.runtime, revoke)
         await self.done(app, batch)
+        self.assertTrue(reached())
         self.assertTrue(revoked)
         self.assertEqual(self.sends(), [])
         self.assertEqual(app.runtime.read_one("SELECT state FROM conversation_parts WHERE batch_id = ?", (batch,))[0], "failed")
@@ -182,9 +205,10 @@ class ConversationImageDeliveryTests(ForwardFixture, unittest.IsolatedAsyncioTes
                 with app.runtime.transaction() as connection:
                     connection.execute("UPDATE sources SET payload_json = ? WHERE source_id = ?", (json.dumps("changed"), record[0]))
                 changed = True
-        self.native.before_resolve = mutate
+        reached = intercept_image_delivery_verification(self.bridge, app.runtime, mutate)
         batch = host.receive(await self.capture(self.image_event())).unwrap()
         await self.done(app, batch)
+        self.assertTrue(reached())
         self.assertTrue(changed)
         self.assertEqual(self.sends(), [])
 
@@ -269,9 +293,10 @@ class ConversationImageDeliveryTests(ForwardFixture, unittest.IsolatedAsyncioTes
                     connection.execute("DELETE FROM source_dependencies WHERE dependent_id IN (SELECT source_id FROM sources WHERE owner = ?)", (OWNER,))
                     connection.execute("DELETE FROM sources WHERE owner = ?", (OWNER,))
                 removed = True
-        self.native.before_resolve = remove
+        reached = intercept_image_delivery_verification(self.bridge, app.runtime, remove)
         batch = host.receive(await self.capture(self.image_event())).unwrap()
         await self.done(app, batch)
+        self.assertTrue(reached())
         self.assertTrue(removed)
         self.assertEqual(self.sends(), [])
 
@@ -286,8 +311,9 @@ class ConversationImageDeliveryTests(ForwardFixture, unittest.IsolatedAsyncioTes
             if not revoked and app.runtime.read_one("SELECT 1 FROM sources WHERE owner = ?", (OWNER,)):
                 app.messages.sources.revoke(frame, expected_governance_revision=1, observed_at=self.clock.now()).unwrap()
                 revoked = True
-        self.native.before_resolve = revoke
+        reached = intercept_image_delivery_verification(self.bridge, app.runtime, revoke)
         await self.done(app, batch)
+        self.assertTrue(reached())
         self.assertTrue(revoked)
         self.assertEqual(self.sends(), [])
 

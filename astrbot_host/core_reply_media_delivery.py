@@ -1,7 +1,18 @@
 """Keep QQ voice and optional reaction attachments in supported messages."""
 
-from astrbot.core.message.components import BaseMessageComponent, ComponentType, Image, Record
+from astrbot.core.message.components import (
+    At,
+    AtAll,
+    BaseMessageComponent,
+    ComponentType,
+    Image,
+    Plain,
+    Record,
+    Reply,
+)
 from astrbot.core.message.message_event_result import MessageChain
+
+_DECORATION = (Reply, At, AtAll)
 
 
 class _OneBotEmojiImage(BaseMessageComponent):
@@ -17,6 +28,16 @@ def _derive(message, chain):
     return derive(chain) if callable(derive) else MessageChain(chain=chain)
 
 
+def _has_text(chain):
+    """True when the payload carries visible text."""
+    return any(isinstance(part, Plain) and part.text.strip() for part in chain)
+
+
+def _renders(chain):
+    """True when the payload still shows something once its quote/@ decoration is gone."""
+    return _has_text(chain) or any(not isinstance(part, (Plain, *_DECORATION)) for part in chain)
+
+
 def native_reply_messages(event, message):
     chain = getattr(message, "chain", None)
     if not isinstance(chain, (list, tuple)):
@@ -30,14 +51,29 @@ def native_reply_messages(event, message):
             isinstance(reaction, dict) and reaction.get("delivery_mode") != "same_message")
         if separate:
             if current:
-                groups.append(_derive(message, current))
+                groups.append(current)
                 current = []
-            groups.append(_derive(message, [part]))
+            groups.append([part])
         else:
             current.append(part)
     if current:
-        groups.append(_derive(message, current))
-    return tuple(groups)
+        groups.append(current)
+    # A quote or @ only decorates a body; it is not a message of its own. Sent
+    # alone it became an empty OneBot message holding just a reply segment, which
+    # QQ shows as 「暂不支持的消息类型」. Attach it to the payload that carries the
+    # visible text -- the voice bubble only speaks it -- and drop payloads that
+    # would render nothing at all.
+    headers, bodies = [], []
+    for group in groups:
+        if _renders(group):
+            bodies.append(group)
+        else:
+            headers.extend(part for part in group if isinstance(part, _DECORATION))
+    if not bodies:
+        return ()
+    target = next((index for index, group in enumerate(bodies) if _has_text(group)), 0)
+    bodies[target] = headers + bodies[target]
+    return tuple(_derive(message, group) for group in bodies)
 
 
 async def native_wire_message(event, message):

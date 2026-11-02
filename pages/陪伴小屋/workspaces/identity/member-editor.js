@@ -215,7 +215,12 @@
     return data;
   }
   function errorText(error, fallback = "操作未完成，请核对当前状态后重试。") {
-    return failureLabels[error?.code] || fallback;
+    const code = error?.code;
+    const label = failureLabels[code];
+    if (label) return label;
+    // Keep the machine code visible even when this page has no translation:
+    // the panel bridge sometimes only forwards ``message``.
+    return code ? `${fallback.replace(/。$/, "")}（${code}）` : fallback;
   }
   function sectionErrorText(state, section) {
     const failure = state.sectionErrors?.[section];

@@ -35,6 +35,7 @@
 ### 文档与支持
 
 - 使用说明：[插件 Wiki](https://vue.syuan.org)
+- 开发者入口：[开发文档索引](docs/README.md) · [贡献指南](CONTRIBUTING.md) · [第三方扩展开发规范](docs/extension-development.md)
 - 源代码：[GitHub 仓库](https://github.com/menglimi/astrbot_plugin_private_companion)
 - 6.7.0 源码备份：[只读备份仓库](https://github.com/menglimi/astrbot_plugin_private_companion_legacy_6_7_0)
 - 问题反馈/交流群：QQ 群 `1097283005`
@@ -163,6 +164,8 @@ https://github.com/menglimi/astrbot_plugin_private_companion
 7.x 继续使用原仓库和插件名 `astrbot_plugin_private_companion`，通过现有安装原地更新即可，**不要并行安装第二份同名插件，也不要先删除原数据目录**。
 
 #### 升级六步流程
+
+供执行迁移和首次配置的 Agent 使用的操作顺序、确认边界和回执核验步骤见 [Agent 首次配置与旧版迁移手册](docs/AGENT_MIGRATION_AND_SETUP.md)。
 
 1. **准备可验证的回退材料**：备份插件配置文件和原数据目录；使用过独立记忆或其他伴侣拓展的，一并备份其配置与数据。从发布页下载「6.7.0 回退包」附件并核对下方 SHA-256。
 2. **原地更新插件**：在 AstrBot 插件管理中将插件更新至 7.x 并按提示重载；离线更新时先停止 AstrBot，用新版交付包替换插件代码目录，保留原配置与数据目录。
@@ -345,7 +348,7 @@ flowchart LR
 
 #### 模型路由与治理统计口径
 
-- **共享启动与细分路由**：「模型与连接」明确区分共享启动模型、后台细分任务模型、**向量模型（Embedding）**、**候选重排（Rerank）**与**视觉理解模型**；本地 Laya 模式会自动检测 PyTorch 版本与 CUDA 可用性，并提供保留 CUDA 的安装指引。
+- **共享启动与细分路由**：「模型与连接」明确区分共享启动模型、后台细分任务模型、**向量模型（Embedding）**、**候选重排（Rerank）**与**视觉理解模型**；Laya 判断提供本地 Python 包、官方 SystemOne 服务与 Jev 判断服务（OpenAI 兼容 `chat/completions`）三种接入方式，共用同一套决策分类与置信阈值，本地模式会自动检测 PyTorch 版本与 CUDA 可用性，并提供保留 CUDA 的安装指引。
 - **真实观测，不造假数据**：「治理与维护」分别展示核心普通回复与插件后台任务的 Token 用量、Provider 实报的 Prompt Cache 命中率、缓存前缀结构签名检测，以及单次回复的 **TTFT（首字耗时）、工具执行耗时、首次/末次发送返回耗时**。宿主或上游未提供的费用或回执字段保持明确的「未知」状态，绝不伪装成 0 或已送达。
 
 ---
@@ -432,6 +435,7 @@ flowchart LR
 
 ### 5.7 外部记忆插件桥接
 
+- **通用 Provider 接口**：第三方插件可通过 `extension_api.register_memory_provider()` 注册召回、写入与统计回调，支持优先级、生命周期检查和注销。默认补充私聊记忆，并接收已完成的日记、梦境及主动消息记录；详见[接入文档与示例](docs/external-memory-provider.md)。
 - **我会牢牢记住你（MemoryCompanion）**：7.x 对外同时提供 **P6 只读状态契约**（固定 schema、契约指纹与有界计数）和正式 **Memory Page 接口**（能力描述、快照与相册语义），安装「我会牢牢记住你」时会自动识别为已连接并协同工作。
 
 ---
@@ -536,7 +540,7 @@ python -X utf8 tools/build_v2_release.py --output <安装目录以外的交付�
 & '<AstrBot>/backend/python/python.exe' -X utf8 tools/verify_v2_release.py --release <交付目录> --extract-to <新的验收目录> --host-check
 ```
 
-更多工程规范见 [仓库布局说明](docs/REPOSITORY_LAYOUT.md)、[核心回复管线设计](docs/V2_CORE_REPLY_PATH_DESIGN.md) 与 [陪伴小屋前端说明](pages/陪伴小屋/README.md)。
+贡献流程见 [贡献指南](CONTRIBUTING.md)；第三方作者请从[开发文档索引](docs/README.md)进入，并阅读[扩展开发规范](docs/extension-development.md)与[外部记忆 Provider 接口](docs/external-memory-provider.md)。架构参考见 [仓库布局说明](docs/REPOSITORY_LAYOUT.md)、[核心回复管线设计](docs/V2_CORE_REPLY_PATH_DESIGN.md) 与 [陪伴小屋前端说明](pages/陪伴小屋/README.md)。
 
 ### 8.3 致谢
 

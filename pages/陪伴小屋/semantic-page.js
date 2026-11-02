@@ -104,7 +104,9 @@ window.CompanionSemanticPage = (() => {
     const payload=item?.payload||{},itemKind=item?.kind||kind;
     return itemKind==="reaction"&&payload.analysis==="pending";
   }
-  function pendingAnalysisCount(){return (state?.items||[]).filter(pendingAnalysis).length;}
+  function pendingAnalysisCount(){
+    return state?.catalog?.reaction?.pending??0;
+  }
   function batchAnalyzeButton(){
     const count=pendingAnalysisCount();
     return '<button class="button" type="button" data-semantic="analyze-pending" '+(busy||!count?'disabled':'')+'>批量识别待补全'+(count?' ('+count+')':'')+'</button>';
@@ -396,12 +398,34 @@ window.CompanionSemanticPage = (() => {
   }
   async function analyzePending() {
     if(busy||!current())return;
-    const candidates=(state?.items||[]).filter(pendingAnalysis);
-    if(!candidates.length){message="当前列表没有待识别的表情素材。";render();return;}
-    const ticket=++generation,total=candidates.length;
+    const ticket=++generation;
+    const candidates=new Map((state?.items||[]).filter(pendingAnalysis).map(item=>[item.id,item]));
+    const seen=new Set();
+    let cursor=after.reaction||"";
+    busy=true;conflict=false;message="正在扫描全部表情素材…";render();
+    try{
+      // The catalog is cursor-paginated. Reading only state.items misses all
+      // unloaded pages, including when page one has no pending entries.
+      while(cursor){
+        if(!active(ticket))return;
+        if(seen.has(cursor))throw new Error("semantic_pagination_loop");
+        seen.add(cursor);
+        const page=await api("GET",{...selection(),kind:"reaction",after:cursor});
+        if(!active(ticket))return;
+        if(!Array.isArray(page?.items))throw new Error("semantic_pagination_invalid");
+        for(const item of page.items)if(pendingAnalysis(item))candidates.set(item.id,item);
+        cursor=page.next_after||"";
+        message="正在扫描全部表情素材，已发现 "+candidates.size+" 张待补全…";render();
+      }
+    }catch(error){
+      if(!active(ticket))return;
+      busy=false;message="剩余素材读取失败，尚未开始批量识别，请重试。";render();return;
+    }
+    const total=candidates.size;
+    if(!total){busy=false;message="没有需要补全的表情素材。";render();return;}
     let done=0,failed=0,lastError="";
-    busy=true;conflict=false;message="正在批量识别 0/"+total+"…";render();
-    for(const item of candidates){
+    message="正在批量识别 0/"+total+"…";render();
+    for(const item of candidates.values()){
       if(!active(ticket))return;
       try{
         const data=await api("POST",{...selection(),action:"analyze",id:item.id});

@@ -133,14 +133,18 @@ class WeatherChangeContactEvents:
                 (context.key, location_hash, encode(material), material["observed_at"], stamp(at),
                  encode(event) if event is not None else None, last_event_at))
 
+    @staticmethod
+    def _body(event):
+        return {"event": "role_location_weather_change", "provider": event["current"]["provider"],
+                "previous": event["previous"], "current": event["current"],
+                "change_kind": event["change_kind"], "meaning": MEANING}
+
     def _record(self, context, event):
         reference_id = "contact-weather-change-" + digest([context.key, event])
         reference = SourceRef(reference_id, SOURCE_OWNER, context.scope, VersionRef(reference_id, 1),
                               datetime.fromisoformat(event["opened_at"]),
                               datetime.fromisoformat(event["expires_at"]))
-        body = {"event": "role_location_weather_change", "provider": "open-meteo",
-                "previous": event["previous"], "current": event["current"],
-                "change_kind": event["change_kind"], "meaning": MEANING}
+        body = self._body(event)
         payload = encode({**body, "_receipt": {"context": json.loads(encode(context)), "event": event}})
         return SourceRecord(reference, context.audience, digest(payload), payload)
 
@@ -223,9 +227,7 @@ class WeatherChangeContactEvents:
             if (configured is None or row is None or row["location_hash"] != configured[1]
                     or json.loads(row["event_json"]) != event or event["location_hash"] != configured[1]
                     or not self._opportunity(context, event).opened_at <= at < self._opportunity(context, event).expires_at
-                    or body != {"event": "role_location_weather_change", "provider": "open-meteo",
-                                "previous": event["previous"], "current": event["current"],
-                                "change_kind": event["change_kind"], "meaning": MEANING}
+                    or body != self._body(event)
                     or record != self._record(context, event)):
                 raise ValueError("original weather change is no longer current")
         except TaskError:

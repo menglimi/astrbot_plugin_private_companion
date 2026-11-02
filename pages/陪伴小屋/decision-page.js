@@ -142,9 +142,9 @@ window.CompanionDecisionPage = (() => {
     if (view === "response") {
       return `<div class="decision-stats decision-stats-four">
         ${stat("专属直呼词", listCount(s, "group_wakeup_direct_words"), "同一角色的群聊共用")}
-        ${stat("兴趣参与概率", shown(s.group_wakeup_interest_probability), "命中兴趣话题后的参与概率")}
+        ${stat("兴趣候选概率", shown(s.group_wakeup_interest_probability), "候选通过筛选后仍可旁听")}
         ${stat("提问识别阈值", shown(s.group_wakeup_question_threshold), "0–100 · 越低越敏感")}
-        ${stat("图片相关性", flag(s, "group_wakeup_image_enabled"), `权重 ${shown(s.group_wakeup_image_weight)}`)}
+        ${stat("图片候选概率", flag(s, "group_wakeup_image_enabled"), `${shown(s.group_wakeup_image_weight)} 抽取概率`)}
       </div>`;
     }
     if (view === "tempo") {

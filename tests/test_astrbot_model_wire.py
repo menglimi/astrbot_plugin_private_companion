@@ -103,7 +103,7 @@ class NativeModelTests(NativeFixture, unittest.IsolatedAsyncioTestCase):
         await self.native_model.probe()
         payload, _ = self.native.provider.client.state.calls[-1]
         self.assertNotIn("stream", payload)
-        self.assertEqual(payload["max_tokens"], 8)
+        self.assertEqual(payload["max_tokens"], 256)
 
     async def test_state_and_planning_use_json_mode_and_end_with_their_task_contract(self):
         envelope = await self.envelope()
@@ -731,16 +731,62 @@ class NativeModelTests(NativeFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, "generated")
         self.assertIsNone(response.usage)
 
+    async def test_a_truncated_background_result_keeps_its_body_and_length_reason(self):
+        """The OpenAI wire must not lose the round the native wire now keeps.
+
+        The workflow owns the decision: half a planning object may still carry
+        complete items, and half a state object must be refused. A generic
+        "unknown" failure hides both cases from the log and the owner.
+        """
+        envelope = await self.envelope()
+        request = replace(envelope.original, output_format="calendar_planning", response_format="json_object")
+
+        async def respond(*_):
+            return completion('{"items":[{"title":"练琴"', finish="length")
+
+        self.native.provider.client.state.behavior = respond
+        response = await self.native_model.generate(replace(envelope, original=request))
+
+        self.assertEqual(response.status, "generated")
+        self.assertEqual(response.captured_output.text, '{"items":[{"title":"练琴"')
+        self.assertEqual(response.captured_output.finish_reason, "length")
+        self.assertEqual(response.usage, REPORTED_USAGE)
+        self.assertEqual(response.diagnostics.parse_state, "captured")
+
     async def test_reserved_config_overrides_and_unbounded_prompt_are_rejected_before_io(self):
         for key in ("messages", "model", "tools", "max_tokens", "max_completion_tokens", "stream", "n"):
             self.native.provider.provider_config["custom_extra_body"] = {key: 1}
             with self.subTest(key=key), self.assertRaises(ValueError): self.make_model()
         self.native.provider.provider_config["custom_extra_body"] = {}
         provider = self.make_model(maximum_input_estimate=1024)
+        # The owner-side preflight reads this value; a dropped injection would
+        # silently fall back to the default and record a ceiling production is not
+        # running under.
+        self.assertEqual(provider.local_provider().maximum_input_estimate, 1024)
         envelope = await self.envelope()
         with self.assertRaises(TaskError): provider.reserve(envelope)
         self.assertEqual((await provider.generate(envelope)).status, "not_started")
         self.assertEqual(self.native.provider.client.state.calls, [])
+
+    async def test_the_input_and_output_ceilings_keep_separate_codes_and_numbers(self):
+        """「装不下」有两个不同的处置动作，不能共用一个不说数值的 code。"""
+        envelope = await self.envelope()
+        with self.assertRaises(TaskError) as error:
+            self.make_model(maximum_input_estimate=1024).reserve(envelope)
+        self.assertEqual(error.exception.code, "host_model_limit_input")
+        message = str(error.exception)
+        self.assertIn("maximum=1024", message)
+        self.assertRegex(message, r"estimated=\d+")
+        # reason 只带配置数值，不带提示词正文。
+        self.assertNotIn("你好", message)
+        self.assertNotIn(envelope.original.role_instruction, message)
+
+        for budget in (0, -1, 101):
+            with self.subTest(budget=budget):
+                with self.assertRaises(TaskError) as error:
+                    self.make_model().reserve(replace(envelope, max_output_tokens=budget))
+                self.assertEqual(error.exception.code, "host_model_limit_output")
+                self.assertIn("allowed=1..100", str(error.exception))
 
     async def test_assembled_tool_round_keeps_owner_and_final_reply(self):
         snapshot = await self.capture()

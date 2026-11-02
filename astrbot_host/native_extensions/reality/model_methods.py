@@ -5,7 +5,13 @@ from .common import *
 class RealityModelMethods:
 
     def _provider_supports_image(self, provider: Any) -> bool:
-        return provider is not None and callable(getattr(provider, 'text_chat', None))
+        if provider is None or not callable(getattr(provider, 'text_chat', None)):
+            return False
+        config = getattr(provider, 'provider_config', None) or getattr(provider, 'config', None) or {}
+        modalities = config.get('modalities') if isinstance(config, dict) else getattr(config, 'modalities', None)
+        if isinstance(modalities, (list, tuple, set)):
+            return 'image' in modalities
+        return True
 
     @staticmethod
     def _provider_runtime_id(provider: Any) -> str:

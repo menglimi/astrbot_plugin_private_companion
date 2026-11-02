@@ -65,6 +65,11 @@ function extensionRecord(management = {}) {
 
 test("mobile connection partitions settings into collapsible cards without dropping fields", async () => {
   const {window} = context(), root = fakeRoot(), record = extensionRecord();
+  /* 这几项是 schema 里其它字段的 condition 开关：用例要核对「分组齐全、字段
+     一个都不丢」，得先让所有条件成立。关闭时隐藏字段的行为由
+     tests/test_native_extension_conditions.cjs 覆盖。 */
+  Object.assign(record.settings.mobile,
+    {enabled: true, amap_reverse_geocode_enabled: true, activity_enabled: true});
   window.CompanionProduct = {
     request: async () => ({extensions: {reality: record}}),
     extension: () => ({owner: "companion_v2", assembled: true, desired_state: "active", installed_revision: 1}),
