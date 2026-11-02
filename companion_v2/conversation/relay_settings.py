@@ -14,8 +14,8 @@ from companion_v2.execution.models import require
 GROUP = "conversation.relay"
 OWNER = GROUP
 DEFAULTS = {
-    # 默认关闭：跨窗口发送属于强能力，必须由管理员在这个窗口显式打开。
-    "enabled": False,
+    # 核心管理员向外递话默认开启，但仍只发白名单目标，且默认先确认。
+    "enabled": True,
     "require_confirm": True,
     "max_text_chars": 500,
     "allowed_targets": "",
@@ -25,9 +25,13 @@ DEFAULTS = {
     "multi_target_limit": 5,
     "default_style": "persona",
     "core_target_id": "",
+    # 其他人向核心管理员递话：独立默认开启，并限制发送者与正文长度。
+    "member_relay_enabled": True,
+    "member_relay_max_text_chars": 500,
+    "member_relay_allowed_senders": "",
 }
 LIMITS = {"max_text_chars": (20, 2000), "member_cache_minutes": (1, 1440),
-          "multi_target_limit": (1, 20)}
+          "multi_target_limit": (1, 20), "member_relay_max_text_chars": (20, 2000)}
 STYLES = frozenset(("original", "soft", "persona"))
 
 
@@ -39,16 +43,21 @@ def target_for(context):
 def validate(values):
     if type(values) is not dict or set(values) != set(DEFAULTS):
         raise ConfigurationError("relay_configuration_invalid", "provide the declared relay settings")
-    for name in ("enabled", "require_confirm", "prefer_relationship_names"):
+    for name in ("enabled", "require_confirm", "prefer_relationship_names", "member_relay_enabled"):
         if type(values[name]) is not bool:
             raise ConfigurationError("relay_configuration_invalid", f"{name} must be boolean")
-    for name in ("allowed_targets", "allowed_groups", "core_target_id"):
+    for name in ("allowed_targets", "allowed_groups", "core_target_id", "member_relay_allowed_senders"):
         if type(values[name]) is not str:
             raise ConfigurationError("relay_configuration_invalid", f"{name} must be text")
     low, high = LIMITS["max_text_chars"]
     if type(values["max_text_chars"]) is not int or not low <= values["max_text_chars"] <= high:
         raise ConfigurationError("relay_configuration_invalid",
                                  f"max_text_chars must be an integer from {low} to {high}")
+    low, high = LIMITS["member_relay_max_text_chars"]
+    if (type(values["member_relay_max_text_chars"]) is not int
+            or not low <= values["member_relay_max_text_chars"] <= high):
+        raise ConfigurationError("relay_configuration_invalid",
+                                 f"member_relay_max_text_chars must be an integer from {low} to {high}")
     low, high = LIMITS["member_cache_minutes"]
     if type(values["member_cache_minutes"]) is not int or not low <= values["member_cache_minutes"] <= high:
         raise ConfigurationError("relay_configuration_invalid",
