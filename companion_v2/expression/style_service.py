@@ -820,23 +820,59 @@ class ExpressionStyleService:
             logger.debug("[CompanionV2] 表达学习材料超过模型档案 task=%s", run.task.task_id)
         return fits, ceiling
 
+    def _ask_ceiling(self, run, job, rules):
+        """The output ceiling this batch sizes its declared candidate count from.
+
+        Only the resolved route knows what this window's saved ceiling is and
+        what the selected providers can emit, so ask it instead of the registered
+        profile default: the default is what an installation that never saved a
+        value inherits, and a route that carries less would be over-asked (the
+        first round is cut at that smaller ceiling and the call is paid for
+        nothing). ``gateway.output_ceiling`` performs the same resolution
+        ``open_session`` performs and records nothing.
+
+        A route peek that cannot answer only costs accuracy in the ask — the
+        stricter of the registered default and the provider capabilities — never
+        the batch: dispatch resolves the route again and still reports its own
+        error. The probe carries the widest ask on purpose; ``signal_limit`` only
+        shrinks the schema's ``maxItems`` and the instruction, and neither
+        selects a provider, so the ceiling does not depend on the limit it is
+        used to compute.
+        """
+        try:
+            reader = getattr(self.gateway, "output_ceiling", None)
+            routed = reader(run, self._request(job, rules, learning.MAX_SIGNALS_PER_RUN)) if callable(reader) else None
+        except (AttributeError, TypeError, ValueError, LookupError):
+            logger.debug("[CompanionV2] 表达学习读取路由输出上限失败，按注册档与 provider 能力退化估算 "
+                         "task=%s", run.task.task_id)
+            routed = None
+        if type(routed) is int and routed > 0:
+            return routed
+        registered = self.gateway.router.profiles[KIND].max_output_tokens
+        ceiling = registered if type(registered) is int and registered > 0 else 1
+        for provider in self.gateway.router.providers.values():
+            limit = provider.maximum_output_tokens
+            if type(limit) is int and limit > 0:
+                ceiling = min(ceiling, limit)
+        return max(1, ceiling)
+
     async def generate(self, run):
         job = self.pending[run.task.task_id]
         context = job["context"]
         await self.guard(context, job["instruction"])
         run.validate()
         mode = job["policy"].learning_mode
-        # The ceiling this run executes under is the registered profile's ceiling.
-        # Size the ask from it so a thinking model keeps the rest for its reasoning.
-        # The one degraded retry of a cut-off round arrives with its smaller ask
-        # already chosen, so both rounds travel through this same entry.
+        rules = job["existing_rules"]
+        # 本轮实际执行的路由上限（#456 的降载重试会把更小的 ask 预先放进 job）。
         limit = job.get("learn_limit")
         if limit is None:
-            limit = learning.signal_limit(mode, self.gateway.router.profiles[KIND].max_output_tokens)
-        # What this attempt asked for: ``run`` derives the retry's ask from it and
-        # reports the difference once the batch settles.
+            limit = learning.signal_limit(mode, self._ask_ceiling(run, job, rules))
         job["learn_limit"] = limit
         rules = job["existing_rules"]
+        # Size the ask from the ceiling this run really executes under, not from
+        # the registered profile default, so a thinking model keeps the rest of
+        # *that* number for its own reasoning and a smaller route is never
+        # over-asked.
         request = self._request(job, rules, limit)
         # The material is fixed before the first request, but whether it fits is
         # only known from the route. Trim the reference rules instead of letting
