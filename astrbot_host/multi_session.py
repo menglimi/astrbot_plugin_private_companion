@@ -1029,10 +1029,15 @@ class MultiHostSession:
                         from .external_memory import prepare_external_memory
                         external_memory = await prepare_external_memory(
                             self.bridge.context, self.application, context, captured)
-                        prompt = build_core_reply_prompt(self.application, context, captured, at=self.now(),
-                                                         keyword_materials=keyword_entries,
-                                                         health_material=health_material,
-                                                         external_memory=external_memory)
+                        prompt_at = self.now()
+                        # 组装提示词要遍历来源依赖并逐节点读库；放在事件循环上会
+                        # 让整条消息（以及同进程的群聊）一起卡住十几秒。
+                        # 这一步是纯读：放到工作线程，锁仍是同一把，顺序不变。
+                        prompt = await asyncio.to_thread(
+                            build_core_reply_prompt, self.application, context, captured, at=prompt_at,
+                            keyword_materials=keyword_entries,
+                            health_material=health_material,
+                            external_memory=external_memory)
                         prompt_instruction = getattr(prompt, "context_instruction", prompt.instruction)
                         stable_prompt_instruction = getattr(prompt, "stable_instruction", "")
                         context_sections = prompt.sections
