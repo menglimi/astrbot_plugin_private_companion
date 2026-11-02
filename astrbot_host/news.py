@@ -589,7 +589,7 @@ class AstrBotWebSearchNewsPort:
 
 def configured_search_port(context, *, query, result_count=8, search_url="", auth=None, task_context=None,
                            topic="news", deepseek_provider_id=None, deepseek_provider_resolver=None):
-    """Resolve V2 search through an explicit endpoint, DeepSeek, then AstrBot's V1 search provider."""
+    """Resolve V2 search through an explicit endpoint, the selected provider, then AstrBot's V1 search."""
     auth = auth or {}
     umo = _task_umo(task_context)
     if deepseek_provider_id is None and callable(deepseek_provider_resolver):
@@ -612,13 +612,24 @@ def configured_search_port(context, *, query, result_count=8, search_url="", aut
             return DeepSeekSearchNewsPort(api_key=api_key, query=query, result_count=result_count,
                                           search_url=configured_url)
         return WebSearchNewsPort(url=configured_url, query=query, result_count=result_count, **auth)
-    api_key = deepseek_api_key(context, umo, provider_id=deepseek_provider_id or None)
-    if api_key:
-        return DeepSeekSearchNewsPort(api_key=api_key, query=query, result_count=result_count)
+    if deepseek_provider_id == "invalid-search-provider-selection":
+        # 选择项本身读不出来：不猜、不静默换到别的 Provider。
+        return None
     if deepseek_provider_id:
+        api_key = deepseek_api_key(context, umo, provider_id=deepseek_provider_id)
+        if api_key:
+            return DeepSeekSearchNewsPort(api_key=api_key, query=query, result_count=result_count)
+        # 选中的 Provider 没有可用 Key 时，回落到 AstrBot 里已经配好的搜索服务，
+        # 而不是让 web.search 直接报“不可用”。
+        if astrbot_web_search_available(context, umo):
+            return AstrBotWebSearchNewsPort(context=context, query=query, result_count=result_count,
+                                            umo=umo, topic=topic)
         return None
     if astrbot_web_search_available(context, umo):
         return AstrBotWebSearchNewsPort(context=context, query=query, result_count=result_count, umo=umo, topic=topic)
+    api_key = deepseek_api_key(context, umo)
+    if api_key:
+        return DeepSeekSearchNewsPort(api_key=api_key, query=query, result_count=result_count)
     return None
 
 
