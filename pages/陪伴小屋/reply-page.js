@@ -649,7 +649,7 @@ window.CompanionReplyPage = (() => {
   function summary(v) {
     return `${v.streaming ? (v.streaming_mode === "incremental" ? "边生成边分段发送" : "收齐后分段发送") : "完整响应"} · `
       + (v.enabled ? `${v.llm_controlled ? "模型 + 规则分段" : "规则分段"}，最多 ${v.max_segments} 条` : "单条回复")
-      + ` · 段间 ${v.part_gap_ms / 1000} 秒 · ${imageLabel(v.image_position)} · `
+      + ` · 段间 ${spacingLabel(v)} · ${imageLabel(v.image_position)} · `
       + `${v.enable_humanized_expression ? "拟人 Prompt 已开启" : "拟人 Prompt 关闭"} · `
       + (v.voice_enabled
         ? `${choiceText("voice_language", v.voice_language)}语音 · ${choiceText("voice_segment_mode", v.voice_segment_mode)}`
