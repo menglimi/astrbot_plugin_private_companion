@@ -3,6 +3,7 @@
 ## 未发布
 
 - 核心回复的提示词组装移到工作线程：私聊消息不再因为 `proactive_inspirations` 的依赖遍历在主线程读库而阻塞事件循环（曾出现 30–36s 事件循环停顿、群聊/私聊一起排队）。
+- 修复提醒工具的参数字段只有空 schema 的问题：`reminder.create` 现在声明 `schedule`（anchor/timezone_name/frequency）与 `message` 的类型和说明，并允许“关联已有便签”的第二种用法；工具说明同时要求用户明确要求未来提醒时必须调用 `reminder.create`，不得静默退化成 `memo.create`。
 
 ## 7.0.13 - 2026-11-01
 
