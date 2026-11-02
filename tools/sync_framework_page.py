@@ -14,7 +14,7 @@ SOURCE = ROOT / "pages" / "陪伴小屋"
 PREVIEW = ROOT.parent / "astrbot_plugin_content_companion" / "design-previews" / "companion-v2"
 WORKSPACES = {"host": "宿主管理", "life": "日记与生活", "relationships": "关系与记忆", "identity": "关系与权限",
               # 人格问卷编辑版本化草稿，不写宿主人格；源码仍在既有工作区目录中。
-              "persona": "人物设定工坊"}
+              "persona": "人物设定工坊", "designer": "新的她"}
 TEXT = {".js", ".css", ".html", ".md", ".json"}
 
 

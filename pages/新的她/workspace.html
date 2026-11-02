@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>新的她 · 人格再造</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="/api/plugin/page/bridge-sdk.js" defer></script>
+  <script src="app.js?v=persona-recreation-20261101" defer></script>
+</head>
+<body>
+  <main class="designer">
+    <header class="workbench-head">
+      <div class="heading"><span class="mark" aria-hidden="true">她</span><div><h1>新的她</h1><p class="muted">一起推敲她的性格、来历，以及说话的方式。</p></div></div>
+      <div class="actions"><button id="choose-model" class="button" type="button">选择模型</button><button id="open-drafts" class="button" type="button">已存草稿</button><button id="retry-save" class="button" type="button" hidden>确认上次保存</button><button id="save-draft" class="button primary" type="button">保存草稿</button></div>
+    </header>
+    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+    <div class="mode-row">
+      <div class="mode-switch" role="group" aria-label="设计模式"><button type="button" data-mode="optimize" aria-pressed="true">人设优化</button><button type="button" data-mode="create" aria-pressed="false">从零设计</button></div>
+      <span class="memory-note">未保存的进度仅留在此扩展页，刷新或离开后清空。</span>
+    </div>
+    <nav class="stages" aria-label="共创阶段">
+      <button type="button" data-stage="positioning"><span>01</span>定位与关系</button>
+      <button type="button" data-stage="personality"><span>02</span>性格与反差</button>
+      <button type="button" data-stage="voice"><span>03</span>说话方式</button>
+      <button type="button" data-stage="background"><span>04</span>背景与偏好</button>
+      <button type="button" data-stage="review"><span>05</span>审核与试演</button>
+    </nav>
+    <div class="workbench">
+      <section class="conversation-column" aria-label="讨论人设">
+        <details id="source-panel" class="card source-panel" open>
+          <summary>作为起点的人设 <small id="source-count">0 字</small></summary>
+          <div class="card-body"><div class="section-heading"><p class="muted">粘贴已有设定，或选一份 AstrBot 人设。</p><button id="choose-persona" class="button small" type="button">选择人设</button></div><label class="sr-only" for="source-text">原人设文本</label><textarea id="source-text" rows="7" maxlength="30000" placeholder="把想优化的人设放在这里。先讨论值得调整的地方，再决定怎样改。"></textarea><small id="source-label" class="muted">可以直接编辑这份起点文本。</small></div>
+        </details>
+        <section class="card dialogue">
+          <div class="section-heading"><h2>一起设计</h2><span id="generation-state" class="muted" role="status"></span></div>
+          <div id="messages" class="messages" role="log" aria-label="人设设计对话" aria-live="polite" aria-relevant="additions"></div>
+          <div id="suggestions" class="suggestions" role="group" aria-label="可选回答"></div>
+          <form id="composer"><label class="sr-only" for="chat-input">你的想法</label><textarea id="chat-input" rows="3" maxlength="8000" placeholder="说说想保留或改变的地方，也可以让助手给几个方向。"></textarea><div class="composer-foot"><small class="muted">可随时改主意，或说“这部分你决定”。Ctrl / ⌘ + Enter 发送</small><div class="actions"><button id="retry-turn" class="button small" type="button" hidden>重试本轮</button><button id="stop-turn" class="button small" type="button" hidden>停止生成</button><button id="send-turn" class="button primary" type="submit" disabled>开始共创</button></div></div></form>
+        </section>
+      </section>
+      <section class="draft-column" aria-label="设定与人设稿">
+        <details class="card confirmed-panel" open><summary>已确认的设定 <small>可编辑</small></summary><div class="card-body"><label class="sr-only" for="confirmed">已确认的设定</label><textarea id="confirmed" rows="5" maxlength="16000" placeholder="聊清楚的设定会汇集在这里，你也可以直接修改。"></textarea></div></details>
+        <section class="card manuscript">
+          <div class="section-heading"><h2>人设稿</h2><button id="generate-draft" class="button small" type="button">整理成稿</button></div>
+          <label class="sr-only" for="draft-text">可编辑的人设正文</label><textarea id="draft-text" rows="17" maxlength="65536" placeholder="确认方向后，点击“整理成稿”。也可以在这里手动写下初稿。"></textarea>
+          <div class="draft-foot"><small id="draft-count" class="muted">0 字</small><div class="actions"><button id="compare" class="button small" type="button">对照原文</button><button id="tryout" class="button small" type="button">情景试演</button><button id="copy-draft" class="button small" type="button">复制正文</button><button id="save-version" class="button small" type="button">保存这一版</button></div></div>
+          <p class="footnote">保存后可继续编辑或复制，到 AstrBot 人格设置中自行填入。</p>
+        </section>
+        <details class="card lorebook-panel"><summary>单独保留的背景 <small>可选</small></summary><div class="card-body"><p class="muted">较长的世界观与故事放在这里，方便另存为世界知识。</p><label class="sr-only" for="lorebook">单独保留的背景条目</label><textarea id="lorebook" rows="5" maxlength="20000"></textarea><button id="copy-lorebook" class="button small" type="button">复制背景</button></div></details>
+      </section>
+    </div>
+    <dialog id="model-dialog" aria-labelledby="model-title"><form id="model-form"><div class="dialog-heading"><h2 id="model-title">选择共创模型</h2><button type="button" data-close class="close-button" aria-label="关闭">×</button></div><p class="muted">使用 AstrBot 已加载的文本模型，仅用于这里的人设设计。</p><label class="field" for="model-select">文本模型<select id="model-select" required></select></label><p id="model-empty" class="muted" hidden>还没有可用的文本模型，请先在 AstrBot 中配置并启用。</p><div class="dialog-foot"><button id="refresh-options" type="button" class="button">重新读取</button><button id="confirm-model" type="submit" class="button primary">使用此模型</button></div></form></dialog>
+    <dialog id="persona-dialog" aria-labelledby="persona-title"><form id="persona-form"><div class="dialog-heading"><h2 id="persona-title">选择人设</h2><button type="button" data-close class="close-button" aria-label="关闭">×</button></div><p class="muted">默认选中 AstrBot 配置使用的人设，载入后可在页面中修改。</p><label class="field" for="persona-select">AstrBot 人设<select id="persona-select" required></select></label><p id="persona-empty" class="muted" hidden>暂时没有读到人设，你仍可粘贴文本或从零设计。</p><p class="footnote">切换为另一人设会开启新的设计，请先保存当前草稿。重新载入同一人设会保留讨论与成稿。</p><div class="dialog-foot"><button id="refresh-personas" type="button" class="button">重新读取</button><button id="load-persona" type="submit" class="button primary">载入人设</button></div></form></dialog>
+    <dialog id="switch-persona-dialog" aria-labelledby="switch-persona-title"><div class="dialog-heading"><h2 id="switch-persona-title">为另一人设开始设计？</h2></div><p class="muted">当前讨论、已确认设定和成稿将被清空。如果还想保留，请先取消并点击“保存草稿”。已保存的版本仍可读取，AstrBot 中的人格不会改变。</p><div class="dialog-foot"><button type="button" data-close class="button">取消，继续编辑</button><button id="confirm-persona-switch" type="button" class="button primary">切换并开始新设计</button></div></dialog>
+    <dialog id="save-dialog" aria-labelledby="save-title"><form id="save-form"><div class="dialog-heading"><h2 id="save-title">保存当前模式的草稿</h2><button type="button" data-close class="close-button" aria-label="关闭">×</button></div><p class="muted">保存对话、设定、人设稿、输入内容及本次模型选择，供以后继续。</p><label class="field" for="draft-title">版本名称<input id="draft-title" type="text" maxlength="120" required></label><div class="dialog-foot"><button type="button" data-close class="button">取消</button><button id="confirm-save" type="submit" class="button primary">保存</button></div></form></dialog>
+    <dialog id="drafts-dialog" aria-labelledby="drafts-title"><div class="dialog-heading"><h2 id="drafts-title">已存草稿</h2><button type="button" data-close class="close-button" aria-label="关闭">×</button></div><p class="muted">读取会替换对应模式当前的编辑内容。</p><div id="draft-list" class="draft-list"></div><button id="more-drafts" class="button" type="button" hidden>更早的版本</button><div class="dialog-foot"><button id="new-design" type="button" class="button">新建一份</button></div></dialog>
+    <dialog id="reset-dialog" aria-labelledby="reset-title"><div class="dialog-heading"><h2 id="reset-title">重新开始当前模式</h2><button type="button" data-close class="close-button" aria-label="关闭">×</button></div><p class="muted">将清空当前模式的对话和编辑内容。如果还想继续使用这份设定，请先保存草稿。</p><div class="dialog-foot"><button type="button" data-close class="button">继续编辑</button><button id="confirm-reset" type="button" class="button primary">重新开始</button></div></dialog>
+    <dialog id="compare-dialog" class="compare-dialog" aria-labelledby="compare-title"><div class="dialog-heading"><h2 id="compare-title">原文与当前稿</h2><button type="button" data-close class="close-button" aria-label="关闭">×</button></div><div class="comparison"><section><h3>起点文本</h3><pre id="compare-source"></pre></section><section><h3>当前人设稿</h3><pre id="compare-draft"></pre></section></div></dialog>
+    <noscript>请启用 JavaScript 后使用人设设计。</noscript>
+  </main>
+</body>
+</html>

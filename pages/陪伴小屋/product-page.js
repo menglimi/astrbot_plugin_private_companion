@@ -932,11 +932,11 @@ window.CompanionProduct = (() => {
    * 其余工作区先检查目录，再检查当前对象对应的入口。
    */
   function workspace(name, tab="") {
-    if(!["host","life","relationships","identity","persona"].includes(name)) return "";
+    if(!["host","life","relationships","identity","persona","designer"].includes(name)) return "";
     const title = name === "identity"
       ? ({network:"关系网",people:"用户",groups:"群聊"}[tab] || "关系管理")
-      : {host:"账号与会话",life:"日记与生活",relationships:"人物与关系",persona:"人格问卷"}[name];
-    const available = name === "host" ? bridgeReady : !loading && !!catalog;
+      : {host:"账号与会话",life:"日记与生活",relationships:"人物与关系",persona:"人格问卷",designer:"新的她"}[name];
+    const available = ["host","designer"].includes(name) ? bridgeReady : !loading && !!catalog;
     if(!available) {
       /* 不用 I()：那是 app.js 里的顶层 const，product-page.js 是独立 IIFE，
          访问不到。这一块也不需要图标——一句状态加两个出口就够了。 */
@@ -946,13 +946,13 @@ window.CompanionProduct = (() => {
       </section>`;
     }
     if(name==="identity" && !catalog.acquaintance_api) return empty("关系网入口尚未加载，请重新读取角色与会话。");
-    if(name!=="host" && name!=="identity" && !role()?.[name+"_api"]) return empty(unavailable(name));
+    if(!["host","identity","designer"].includes(name) && !role()?.[name+"_api"]) return empty(unavailable(name));
     return `<section class="product-workspace" data-workspace="${name}" data-workspace-tab="${e(tab)}" data-load-state="loading" aria-busy="true"><div class="product-workspace-loading" role="status" aria-live="polite"><span class="product-workspace-spinner" aria-hidden="true"></span><span data-workspace-status>正在打开${e(title)}…</span><button class="button small" type="button" data-workspace-load-retry hidden>重试</button></div><iframe title="${title}工作区" class="product-workspace-frame" sandbox="allow-scripts allow-forms"></iframe></section>`;
   }
   /* 工作区仍由唯一公开页面承载，页内路由保留原有宿主桥上下文。 */
   function workspaceAddress(name, tab="") {
     return {host:"#manage",life:"#life/diary"+(["reading","sleep","receipts"].includes(tab)?"/"+tab:""),
-      relationships:"#manage/governance/relationship",identity:"#manage/identity",persona:"#manage/governance/questionnaire"}[name]||"";
+      relationships:"#manage/governance/relationship",identity:"#manage/identity",persona:"#manage/governance/questionnaire",designer:"#manage/governance/questionnaire"}[name]||"";
   }
   function unmountWorkspace() {
     for(const context of workspaceFrames.values())clearTimeout(context.loadTimer);
@@ -1071,7 +1071,7 @@ window.CompanionProduct = (() => {
     return pending;
   }
   function startWorkspace(owner, context) {
-    const title={host:"账号与会话",life:"日记与生活",relationships:"人物与关系",identity:"关系管理",persona:"人格问卷"}[context.kind]||"工作区";
+    const title={host:"账号与会话",life:"日记与生活",relationships:"人物与关系",identity:"关系管理",persona:"人格问卷",designer:"新的她"}[context.kind]||"工作区";
     setWorkspaceLoadState(owner,"loading",`正在打开${title}…`);
     clearTimeout(context.loadTimer);
     context.loadTimer=setTimeout(()=>{
@@ -1094,7 +1094,7 @@ window.CompanionProduct = (() => {
     return {key:scopeKey(),kind,tab:owner.parentElement.dataset.workspaceTab,
       scope_kind:selectedTarget?.scope_kind,
       accounts_api:catalog?.accounts_api,
-      api:kind==="identity"?catalog?.acquaintance_api
+      api:kind==="designer"?"/"+HOST+"/persona-designer":kind==="identity"?catalog?.acquaintance_api
         :groupArchive?selectedRole?.group_memory_api:selectedRole?.[kind+"_api"]};
   }
   function sendWorkspaceContext(owner, context) {
@@ -1110,12 +1110,12 @@ window.CompanionProduct = (() => {
       context.lifetime=previous.lifetime;
       // Account and person directories have installation scope. Keep their DOM
       // and in-flight reads while the selected role's routing context changes.
-      if (["host","identity"].includes(context.kind)) Object.assign(previous,context);
+      if (["host","identity","designer"].includes(context.kind)) Object.assign(previous,context);
       else {
         clearTimeout(previous.loadTimer);
         workspaceFrames.set(owner,context);
       }
-      if (!["host","identity"].includes(context.kind) && previous.key!==context.key) {
+      if (!["host","identity","designer"].includes(context.kind) && previous.key!==context.key) {
         setWorkspaceLoadState(owner,"loading","正在切换当前对象…");
         if(window.CompanionWorkspaceBundle?.[context.kind])owner.srcdoc=window.CompanionWorkspaceBundle[context.kind];
         else startWorkspace(owner,context);
@@ -1151,7 +1151,7 @@ window.CompanionProduct = (() => {
     if(!owner)return;
     const context=workspaceFrames.get(owner);
     const valid=()=>{if(!bridgeReady||workspaceFrames.get(owner)!==context||!owner.isConnected
-      || (!["host","identity"].includes(context.kind)&&scopeKey()!==context.key))throw fail("scope_changed");};
+      || (!["host","identity","designer"].includes(context.kind)&&scopeKey()!==context.key))throw fail("scope_changed");};
     const send=payload=>{if(workspaceFrames.get(owner)?.lifetime===context.lifetime&&owner.isConnected)
       owner.contentWindow.postMessage({channel:"companion-workspace",...payload},"*");};
     if(message.kind==="ready"){
@@ -1236,6 +1236,19 @@ window.CompanionProduct = (() => {
           || (method==="GET"&&path==="acquaintance"&&typeof catalog?.acquaintance_api==="string");
         if(!allowed)throw fail("invalid_response");
         mapped=path==="acquaintance"?relative(catalog.acquaintance_api):path;
+      } else if(context.kind==="designer") {
+        const memory=window.CompanionPersonaDesignerMemory;
+        if(!memory)throw fail("persona_designer_unavailable");
+        const local=(method==="GET"&&["designer/client-state","designer/client-result"].includes(path))
+          ||(method==="POST"&&["designer/client-state","designer/client-ack"].includes(path));
+        if(local){
+          const result=memory.handle(method,path,message.body);
+          send({kind:"response",requestId:message.requestId,ok:true,data:result});return;
+        }
+        const allowed=(method==="GET"&&["designer/options","designer/persona","designer/drafts","designer/draft"].includes(path))
+          ||(method==="POST"&&["designer/turn","designer/cancel","designer/drafts"].includes(path));
+        if(!allowed)throw fail("invalid_response");
+        mapped="persona-designer"+path.slice("designer".length);
       } else if(context.kind==="identity") {
         const allowed=(method==="GET"&&["acquaintance","acquaintance/authorization","acquaintance/settings","acquaintance/strangers"].includes(path))
            ||(method==="POST"&&["acquaintance/authorization","acquaintance/settings","acquaintance/identity","acquaintance/admin-name"].includes(path));
@@ -1249,14 +1262,21 @@ window.CompanionProduct = (() => {
         mapped=relative(context.api)+suffix;
       } else {
         const name=context.kind;
-        const personaStandardize=name==="persona"&&path==="persona/standardize"&&method==="POST";
-        if(!personaStandardize&&((path!==name&&path!==name+"/command")||(method==="GET")!==(path===name)))
+        const personaModelCall=name==="persona"&&method==="POST"
+          &&["persona/standardize","persona/tryouts","persona/style-rules"].includes(path);
+        if(!personaModelCall&&((path!==name&&path!==name+"/command")||(method==="GET")!==(path===name)))
           throw fail("invalid_response");
-        mapped=relative(context.api)+(personaStandardize?"/standardize":path===name?"":"/command");
+        mapped=relative(context.api)+(personaModelCall?path.slice(name.length):path===name?"":"/command");
       }
       // Preserve original response envelopes and error reasons for each workspace.
       timeoutMs=requestTimeout({timeoutMs:message.timeoutMs});
-      const result=await bounded(method==="GET"?bridge.apiGet(mapped,message.body):bridge.apiPost(mapped,message.body),timeoutMs);valid();
+      const execute=()=>bounded(method==="GET"?bridge.apiGet(mapped,message.body):bridge.apiPost(mapped,message.body),timeoutMs);
+      const retained=context.kind==="designer"&&method==="POST"&&["designer/turn","designer/drafts"].includes(path);
+      const id=path==="designer/turn"?message.body?.request_id:message.body?.id;
+      if(retained&&(typeof id!=="string"||!/^[a-f0-9]{32}$/.test(id)))throw fail("invalid_response");
+      const result=await (retained?window.CompanionPersonaDesignerMemory.run(
+        (path==="designer/turn"?"turn:":"save:")+id,execute,
+        path==="designer/turn"?()=>bridge.apiPost("persona-designer/cancel",{request_id:id}):undefined):execute());valid();
       send({kind:"response",requestId:message.requestId,ok:true,data:result});
     } catch(error){
       /* 宿主页面桥对 status=error 只抛出 `new Error(message)`，不带 `code`；
