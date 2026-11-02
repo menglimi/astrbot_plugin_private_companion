@@ -931,6 +931,33 @@ class AstrBotStagingController:
                 parked.participant_id, parked.persona_id, confirmed=True))
         return {"confirmed": True, "binding": self.binding_state()}
 
+    def reset_binding(self) -> dict[str, Any]:
+        """Withdraw the confirmation so the reviewed window can be re-confirmed.
+
+        The parked binding is what the guide reads while nothing is pinned, so
+        flipping ``confirmed`` back to ``False`` puts step 1 back into its
+        "confirm this window" state. A pinned profile (``intent``) is a separate
+        document and deliberately untouched: it records the identity that day-one
+        review already approved, and ``receive_binding`` refuses to rebind on top
+        of it by design.
+        """
+        pinned = self._read_intent()
+        if pinned is not None:
+            return {"reset": False, "reason": "host_binding_exists",
+                    "detail": "这个安装已经固定过目标；要更换请先在宿主管理里停止并清除运行档。"}
+        parked = self._parked_binding()
+        if parked is None or not parked.confirmed:
+            return {"reset": False, "reason": "setup_binding_missing",
+                    "detail": "there is no confirmed core administrator window to reset"}
+        try:
+            write_binding(self.binding_root, PendingBinding(parked.platform_id, parked.account_id,
+                parked.participant_id, parked.persona_id, confirmed=False))
+        except (OSError, ValueError):
+            return {"reset": False, "reason": "setup_binding_write_failed",
+                    "detail": "the setup binding could not be rewritten"}
+        logger.info("[CompanionV2] 待确认绑定已重置")
+        return {"reset": True, "binding": self.binding_state()}
+
     def handles_binding(self, event: object) -> bool:
         """Whether this private message is part of the bind vocabulary.
 

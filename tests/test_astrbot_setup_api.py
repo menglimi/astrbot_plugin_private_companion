@@ -2,6 +2,7 @@
 
 import json
 import asyncio
+from copy import deepcopy
 import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -703,6 +704,48 @@ class AstrBotSetupFlowTests(unittest.IsolatedAsyncioTestCase):
         })
         self.assertEqual(saved["status"], "ok", saved)
         self.assertEqual(saved["data"]["task"]["configuration_layer"], "role")
+
+    async def test_reset_binding_releases_the_confirmed_window_and_keeps_the_mapping(self):
+        await self.controller.terminate()
+        self.config["staging"]["enabled"] = False
+        self.config["multi_host"] = {"enabled": True, "installation_id": "setup-reset"}
+        self.controller = AstrBotMultiController(self.native, self.config, self.root,
+                                                 native_types=self.types, now=lambda: NOW)
+        self.api = SetupWebAPI(self.controller)
+        self.native.persona_manager.get_persona_v3_by_id = lambda persona_id: (
+            self.native.persona if persona_id == "original" else None)
+        self.attach_config_writer()
+
+        await self.bind_core_window()
+        self.assertTrue(self.controller.binding_state()["confirmed"])
+        personas_before = deepcopy(self.config["multi_host"]["personas"])
+        targets_before = deepcopy(self.config["multi_host"]["targets"])
+
+        rejected = await self.call("reset_binding", {})
+        self.assertEqual(rejected["status"], "error", rejected)
+        self.assertTrue(self.controller.binding_state()["confirmed"],
+                        "被拒的请求不该改动状态")
+
+        reset = await self.call("reset_binding", {"confirm": True})
+        self.assertEqual(reset["status"], "ok", reset)
+        self.assertTrue(reset["data"]["reset"])
+        binding = self.controller.binding_state()
+        self.assertFalse(binding["confirmed"])
+        self.assertTrue(binding["pending"])
+        self.assertEqual(self.config["multi_host"]["personas"], personas_before,
+                         "重置绑定不能顺手删掉角色映射")
+        self.assertEqual(self.config["multi_host"]["targets"], targets_before,
+                         "重置绑定不能顺手删掉窗口目标")
+
+        again = await self.call("confirm_binding")
+        self.assertEqual(again["status"], "ok", again)
+        self.assertTrue(self.controller.binding_state()["confirmed"])
+        self.assertFalse(self.controller.binding_state()["pending"])
+
+    async def test_reset_binding_reports_a_missing_window_instead_of_pretending(self):
+        missing = await self.call("reset_binding", {"confirm": True})
+        self.assertEqual(missing["status"], "error", missing)
+        self.assertEqual(missing["data"]["code"], "setup_binding_missing")
 
     async def test_multi_mode_confirmation_seeds_the_first_private_target_and_persona(self):
         await self.controller.terminate()
