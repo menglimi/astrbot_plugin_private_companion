@@ -73,7 +73,12 @@ class SessionTopology:
             try:
                 await self.observe(event)
             except Exception as error:
-                logger.warning("[CompanionV2] 会话目录后台更新失败 error_type=%s", type(error).__name__)
+                detail = str(error)
+                if "unsupported native event platform" in detail:
+                    logger.debug("[CompanionV2] 跳过非常规平台事件: %s", detail[:120])
+                else:
+                    logger.warning("[CompanionV2] 会话目录后台更新失败 error_type=%s detail=%s",
+                                   type(error).__name__, detail[:200])
 
         task = asyncio.create_task(record(), name="companion-v2-session-observation")
         self._pending.add(task)
