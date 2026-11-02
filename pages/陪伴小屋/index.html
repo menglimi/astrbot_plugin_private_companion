@@ -97,7 +97,7 @@
        其中相对地址；只有确认官方配置未开启性能模式后才由 performance-gate.js
        激活，低配置设备不会下载 3D 体素包和整套工作区脚本。 -->
   <template id="companion-full-assets">
-    <link rel="stylesheet" href="bundle.css?v=0bc099a59e5d88e6">
+    <link rel="stylesheet" href="bundle.css?v=cacba7aef554dbed">
 
 
 
@@ -159,7 +159,7 @@
     <script defer src="migration-config-review.js?v=consolidated-20261024-r1"></script>
     <script defer src="migration-config-table.js?v=migration-guided-20261025"></script>
     <script defer src="setup-guide.js?v=setup-guide-copy-20261028-r2"></script>
-    <script defer src="semantic-page.js?v=semantic-pagination-20261102"></script>
+    <script defer src="semantic-page.js?v=consolidated-20261024-r1"></script>
     <script defer src="perception-page.js?v=consolidated-20261024-r1"></script>
     <script defer src="perception-native-page.js?v=perception-dense-20261028-r29"></script>
 <script defer src="huawei-health-page.js?v=perception-dense-20261028-r29"></script>
@@ -170,7 +170,6 @@
 
     <script defer src="screen-observation.js?v=screen-retained-20261014"></script>
     <script defer src="screen-access.js?v=screen-retained-20261014"></script>
-    <script defer src="app.js?v=persona-create-humanize-20261102f"></script>
     <script defer src="room-editor.js?v=transient-time-preview-20261029-r2"></script>
     <script defer src="app.js?v=persona-processing-20261102"></script>
     <script defer src="memory-page.js?v=memory-repair-20261028"></script>
@@ -194,9 +193,8 @@
     <script defer src="config-editor.js?v=legacy-enum-normalize-20261027"></script>
     <script defer src="output-page.js?v=image-model-name-20261026"></script>
     <script defer src="role-profile-draft.js?v=role-profile-apply-storage-fallback-20261028"></script>
-    <script defer src="role-profile-transfer.js?v=role-profile-transfer-20261031"></script>
     <script defer src="role-profile-migration.js?v=migration-ui-20261015"></script>
-    <script defer src="decision-page.js?v=harassment-20261102"></script>
+    <script defer src="decision-page.js?v=harassment-v2-20261102"></script>
     <script defer src="expression-page.js?v=expression-completion-20261008"></script>
     <script defer src="models-page.js?v=search-priority-20261102"></script>
     <script defer src="image-materials-page.js?v=reference-usage-persistence-20261007"></script>
@@ -361,9 +359,10 @@
       <div id="shellNav" class="shell-nav"></div>
       <div class="rail-foot">
         <button class="shell-nav-link" id="searchButton" aria-label="搜索功能与内容" title="搜索 · Ctrl / ⌘ K"><i data-lucide="search"></i><span>搜索</span></button>
-        <!-- 「全部功能」是独立页面：把左栏放不下、以及散在各专题里的入口
-             按功能分组集中呈现，不再用小屏浮层临时兜底。 -->
-        <button class="shell-nav-link" data-open-navigation aria-label="全部功能" title="全部功能"><i data-lucide="layout-grid"></i><span>全部功能</span></button>
+        <!-- 「全部功能」浮层：小屏上左栏是一条可横滑的图标条，一次看不全；
+             这个按钮把同一份导航以网格铺开。分组与标签都取自左栏（见 shell.js），
+             不再维护第二套名字。 -->
+        <button class="shell-nav-link" data-open-navigation aria-haspopup="dialog" title="全部功能"><i data-lucide="layout-grid"></i><span>全部功能</span></button>
       </div>
     </nav>
     <div class="shell-body">
