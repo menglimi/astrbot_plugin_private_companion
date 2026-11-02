@@ -97,7 +97,7 @@
        其中相对地址；只有确认官方配置未开启性能模式后才由 performance-gate.js
        激活，低配置设备不会下载 3D 体素包和整套工作区脚本。 -->
   <template id="companion-full-assets">
-    <link rel="stylesheet" href="bundle.css?v=cd93c66a99430467">
+    <link rel="stylesheet" href="bundle.css?v=7552a1e5193c54d8">
 
 
 
@@ -357,10 +357,9 @@
       <div id="shellNav" class="shell-nav"></div>
       <div class="rail-foot">
         <button class="shell-nav-link" id="searchButton" aria-label="搜索功能与内容" title="搜索 · Ctrl / ⌘ K"><i data-lucide="search"></i><span>搜索</span></button>
-        <!-- 「全部功能」浮层：小屏上左栏是一条可横滑的图标条，一次看不全；
-             这个按钮把同一份导航以网格铺开。分组与标签都取自左栏（见 shell.js），
-             不再维护第二套名字。 -->
-        <button class="shell-nav-link" data-open-navigation aria-haspopup="dialog" title="全部功能"><i data-lucide="layout-grid"></i><span>全部功能</span></button>
+        <!-- 「全部功能」是独立页面：把左栏放不下、以及散在各专题里的入口
+             按功能分组集中呈现，不再用小屏浮层临时兜底。 -->
+        <button class="shell-nav-link" data-open-navigation aria-label="全部功能" title="全部功能"><i data-lucide="layout-grid"></i><span>全部功能</span></button>
       </div>
     </nav>
     <div class="shell-body">

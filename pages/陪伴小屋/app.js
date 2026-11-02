@@ -351,6 +351,12 @@ function navigate(next,tab,subtab='',{replace=false,scroll=true}={}){
        这样从地址栏进来也能落到同一屏。 */
     if(!same&&destination.next==='manage'&&destination.tab==='perception'&&destination.subtab)
       requestAnimationFrame(()=>activatePerceptionTab('config-'+destination.subtab,{scroll:false}));
+    if(!same&&destination.next==='manage'&&destination.tab==='understanding'&&destination.subtab)
+      requestAnimationFrame(()=>window.CompanionUnderstandingPage?.select?.(destination.subtab));
+    if(!same&&destination.next==='manage'&&destination.tab==='decision'&&destination.subtab)
+      requestAnimationFrame(()=>window.CompanionDecisionPage?.setView?.(destination.subtab));
+    if(!same&&destination.next==='manage'&&destination.tab==='contact'&&destination.subtab)
+      requestAnimationFrame(()=>document.querySelector(`#contactWorkspace [data-view="${destination.subtab}"]`)?.click());
     if(!same&&destination.next==='life'&&destination.tab==='state'&&destination.subtab)
       requestAnimationFrame(()=>window.CompanionStatePage?.openFeature?.(destination.subtab));
     if(scroll&&!same)window.scrollTo({top:0,behavior:'instant'});
@@ -753,6 +759,7 @@ function renderHomePanel(){
    复用同一批渲染函数，不重写——那些函数已经和后端合同对齐过，
    重写只会引入新的字段漂移。 */
 function renderSectionPanel(id){
+  if(id==='all')return `<div class="shell-panel-body">${renderAllFunctionsPage()}</div>`;
   const label=manageTabs.find(([tid])=>tid===id)?.[2]||'配置';
   const subtitle=manageSubtitles[id]??'当前对象与角色的专题设置。';
   const heading=id==='understanding'?'理解 · <span data-understanding-heading>总览</span>':id==='data'?'资料与维护':label;
@@ -764,6 +771,7 @@ function renderSectionPanel(id){
     models:renderModelsPage,maintenance:renderMaintenancePage,learning:renderLearningPage,
     mobile:renderMobileConnection,
     setup:renderSetupPage,host:renderHostPage,appearance:renderAppearancePage,
+    all:renderAllFunctionsPage,
     data:renderData}[id];
   if(!renderer)return renderHomePanel();
   return panelHead(heading,subtitle,'settings-2',button('回到小屋','data-shell-home'))
@@ -1760,6 +1768,7 @@ function renderAppearanceSurfaces(){
   icons();
 }
 const manageTabs=[
+  ['all','layout-grid','全部功能'],
   ['perception','scan-eye','感知'],['understanding','brain-circuit','理解'],['decision','brain','决策'],['action','play','行动'],['contact','heart-handshake','主动联系'],['expression','message-square-more','表达'],['output','shapes','产出'],['governance','user-round','自我'],
   ['identity','network','关系网'],['identity-people','users-round','用户'],['identity-groups','messages-square','群聊'],['identity-access','shield-check','访问规则'],['identity-feelings','heart-handshake','关系与情感'],['memory','orbit','事实与经历'],['learning','graduation-cap','学习与反思'],['models','sliders-horizontal','模型与连接'],['maintenance','settings-2','治理与维护'],['mobile','smartphone','手机连接'],
   ['setup','rocket','开始使用'],
@@ -4030,6 +4039,7 @@ function renderAppearancePageOriginal(){
 }
 /* 每页一句用户语言说明它管什么；不再用「配置子类/读写合同」这类内部词汇。 */
 const manageSubtitles={
+  all:'按功能整理全部入口；点卡片进入主页面，点标签直接到对应分段。',
   perception:'',
   understanding:'把消息、图片与关系线索整理成可核对的理解。',
   decision:'群聊中判断何时回应、如何参与并守住边界。',
@@ -4052,6 +4062,119 @@ const manageSubtitles={
   data:'',
   appearance:'',
 };
+/* 「全部功能」页的功能目录。每一项对应一个真实入口；subs 是同一页里的分段，
+   直接落到工作台的具体分区，避免用户先打开页面再找标签。 */
+const allFunctionsGroups=[
+  ['开始与账号',[
+    ['setup','rocket','开始使用','首次连接、选择对象与决定发送方式'],
+    ['host','power','账号与会话','Bot 账号、人格映射与会话窗口'],
+    ['models','sliders-horizontal','模型与连接','任务模型、备用模型与后台预算'],
+    ['mobile','smartphone','手机连接','手机陪伴终端配对与网关'],
+    ['appearance','palette','外观与设置','主题、密度、圆角、字号与动效'],
+  ]],
+  ['人物与关系',[
+    ['identity','network','关系网','用户与群聊之间的连接关系'],
+    ['identity-people','users-round','用户','用户目录、逐人资料与私聊默认权限'],
+    ['identity-groups','messages-square','群聊','群聊目录、群成员与成员线索'],
+    ['identity-access','shield-check','访问规则','新私聊成员的默认权限与跨窗口递话'],
+    ['identity-feelings','heart-handshake','关系与情感','角色对用户和群聊的关系理解'],
+    ['memory','orbit','事实与经历','事实、原话、来源与记忆策略',[
+      ['记录','records'],['设置','settings']]],
+  ]],
+  ['对话与感知',[
+    ['perception','scan-eye','感知','环境、消息与媒体来源',[
+      ['环境','environment'],['模型','models'],['资讯','news'],['屏幕','screen'],
+      ['余额','balance'],['召回','recall'],['注入','injection']]],
+    ['understanding','brain-circuit','理解','消息、图片、文件与转发理解',[
+      ['总览','overview'],['图片','image'],['视频','video'],['文件','file'],['转发','forwards']]],
+    ['decision','brain','决策','群聊中何时回应、如何参与并守住边界'],
+    ['action','play','行动','生活行为、社交发布与设备互动'],
+    ['contact','heart-handshake','主动联系','主动契机、联系节奏与免打扰'],
+    ['expression','message-square-more','表达','文字风格、语音、表情与投递',[
+      ['文字与分段','text'],['语音','voice'],['表情与配图','reaction'],
+      ['平台动作','platform'],['群聊表达','group']]],
+  ]],
+  ['生活与成长',[
+    ['life:home','house','首页与小屋','生活总览、今日安排与家具入口'],
+    ['life:state','activity','状态与日程','角色状态、日程、天气与位置'],
+    ['life:diary','notebook-pen','日记与生活','日记、睡眠、阅读与归档',[
+      ['归档','archive'],['阅读','reading'],['睡眠','sleep'],['回执','receipts']]],
+    ['life:directory','armchair','家具与能力','基础生活与拓展家具目录'],
+    ['life:observation','scan-eye','生活观察','角色生活轨迹与交互影响'],
+    ['learning','graduation-cap','学习与反思','表达学习、成长链路、行为模仿与语义',[
+      ['总览','overview'],['角色策略','strategy'],['审阅中心','review'],['成长链路','chain'],
+      ['表达学习','expression'],['行为模仿','behavior'],['语义目录','semantic'],['每日复盘','reflection']]],
+  ]],
+  ['角色与产出',[
+    ['governance','user-round','自我','角色档案、人格问卷与世界知识',[
+      ['角色档案','profile'],['相处资料','relationship'],['人格问卷','questionnaire'],['世界知识','knowledge']]],
+    ['output','shapes','产出','图像生成、作品、素材与创作'],
+  ]],
+  ['数据与维护',[
+    ['maintenance','settings-2','治理与维护','运行诊断、缓存、效率与巡护',[
+      ['诊断','diagnostics'],['缓存','cache'],['效率','efficiency'],['最近','recent'],
+      ['提示词','prompts'],['巡护','patrol']]],
+    ['data','database','资料与维护','存储、备份与迁移',[
+      ['存储','storage'],['备份','backup'],['迁移','migration']]],
+  ]],
+];
+function renderAllFunctionsPage(){
+  const groups=allFunctionsGroups.map(([title,items],index)=>{
+    const sectionId=`all-function-group-${index}`;
+    const cards=items.map(([key,icon,name,description,subs=[]])=>{
+      const life=key.startsWith('life:');
+      const next=life?'life':'manage', tab=life?key.slice('life:'.length):key;
+      const target=`${next}|${tab}`;
+      const chips=subs.length?`<div class="all-function-subs" aria-label="${escapeHTML(name)}的分段">${subs.map(([label,sub])=>
+        `<button type="button" class="all-function-sub" data-all-go="${target}|${escapeHTML(sub)}">${escapeHTML(label)}</button>`).join('')}</div>`:'';
+      const searchText=normalizeSearchText([name,description,...subs.map(([label])=>label)].join(' '));
+      return `<article class="all-function-card" data-all-search="${escapeHTML(searchText)}">
+        <header><span class="all-function-icon">${I(icon)}</span>
+          <span class="all-function-copy"><strong>${escapeHTML(name)}</strong><small>${escapeHTML(description)}</small></span></header>
+        <div class="all-function-card-actions">${button('打开',`data-all-go="${target}"`,'small')}</div>
+        ${chips}</article>`;
+    }).join('');
+    const preview=items.slice(0,4).map(([, , name])=>`<span>${escapeHTML(name)}</span>`).join('')
+      +(items.length>4?`<span>+${items.length-4}</span>`:'');
+    return `<details class="all-function-fold" id="${sectionId}"${index===0?' open':''}>
+      <summary class="all-function-fold-head">
+        <span class="all-function-fold-kicker">功能分组</span>
+        <span class="all-function-fold-title"><strong>${escapeHTML(title)}</strong><small>${items.length} 个入口</small></span>
+        <span class="all-function-fold-preview" aria-hidden="true">${preview}</span>
+        <span class="all-function-fold-toggle" aria-hidden="true">展开</span>
+      </summary>
+      <div class="all-function-fold-body"><div class="all-function-grid">${cards}</div></div>
+    </details>`;
+  }).join('');
+  const nav=allFunctionsGroups.map(([title],index)=>
+    `<button type="button" data-all-jump="all-function-group-${index}">${escapeHTML(title)}</button>`).join('');
+  return `<div class="all-functions-page">
+    <header class="all-functions-head"><div><p class="eyebrow">配置与功能</p><h1>全部功能</h1>
+      <p>把分散在各处的入口集中到一页，按功能分组；展开分组进入主页面，小标签直达分段。</p></div>
+      <div class="all-functions-actions">${button('回到小屋','data-shell-home','small')}${button(I('search')+' 搜索全部功能','data-open-search','small')}</div></header>
+    <nav class="all-functions-section-nav" aria-label="功能分组">${nav}</nav>
+    <label class="all-functions-filter"><span>筛选功能</span>
+      <input type="search" data-all-filter placeholder="功能名、说明或分段" autocomplete="off" />
+      <small data-all-filter-count></small></label>
+    ${groups}</div>`;
+}
+function filterAllFunctions(value){
+  const query=normalizeSearchText(value).trim();
+  let visible=0;
+  document.querySelectorAll?.('.all-function-fold').forEach(section=>{
+    let shown=0;
+    section.querySelectorAll?.('.all-function-card').forEach(card=>{
+      const hit=!query||(card.dataset.allSearch||'').includes(query);
+      card.hidden=!hit;
+      if(hit)shown+=1;
+    });
+    section.hidden=shown===0;
+    if(query)section.open=true;
+    visible+=shown;
+  });
+  const count=document.querySelector?.('[data-all-filter-count]');
+  if(count)count.textContent=query?`${visible} 个入口`:'';
+}
 /* 分发表只保留 manageTabs 里的十六个页签。
    growth/base/state/reply/preferences 五个死键已删——它们既不在侧栏、
    也不被 configLink() 指向，留着只会让旧深链接渲染出重复页。
@@ -5137,7 +5260,10 @@ document.addEventListener('click',event=>{
     toast('正在重新读取…');
     return;
   }
-  if(el.dataset.openNavigation!==undefined){$('#navigationDialog').showModal();return;}
+  if(el.dataset.allGo){const [next,tab,subtab='']=el.dataset.allGo.split('|');navigate(next,tab,subtab);return;}
+  if(el.dataset.allJump){const target=document.getElementById(el.dataset.allJump);if(target){target.open=true;target.scrollIntoView({behavior:'smooth',block:'start'});}return;}
+  if(el.dataset.openSearch!==undefined){openSearch();return;}
+  if(el.dataset.openNavigation!==undefined){navigate('manage','all');return;}
   if(el.dataset.closeNavigation!==undefined){$('#navigationDialog').close();return;}
   if(el.dataset.navRoute){$('#navigationDialog').close();navigate(el.dataset.navRoute,el.dataset.navTab);return;}
   if(el.dataset.closeDetail!==undefined){closeDetail();return;}
@@ -5259,6 +5385,7 @@ document.addEventListener('change',event=>{
 });
 document.addEventListener('input',event=>{
   const el=event.target;
+  if(el.dataset.allFilter!==undefined){filterAllFunctions(el.value);return;}
   /* QQ 空间的草稿只在这里同步进状态：动作结束后整块重画，正文才不会丢。 */
   if(el.dataset.qzoneDraft==='publish'){qzoneState.publishDraft=el.value;qzoneCounts();}
   if(el.dataset.qzoneDraft==='reply'){qzoneState.replyDraft=el.value;qzoneState.replyDraftFor=Number(el.dataset.qzonePost);qzoneCounts();}
