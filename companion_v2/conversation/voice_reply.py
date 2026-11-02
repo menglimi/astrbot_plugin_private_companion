@@ -164,6 +164,8 @@ class VoiceReplyPolicy:
     group_ja_provider_id: str = ""
     group_en_provider_id: str = ""
     extra_prompt: str = ""
+    # 表演指令/风格强化：关闭、按 Provider 自动识别、IndexTTS2、FishAudio。
+    direction_mode: str = "auto"
 
     def __post_init__(self):
         choices = ((self.trigger_mode, {"always", "request", "adaptive"}),
@@ -173,7 +175,8 @@ class VoiceReplyPolicy:
                    (self.delivery_mode, {"voice_and_text", "voice_only"}),
                    (self.position, {"after_media", "after_text", "before_text"}),
                    (self.language, {"zh", "ja", "en"}),
-                   (self.foreign_text_mode, {"original", "translation", "bilingual"}))
+                   (self.foreign_text_mode, {"original", "translation", "bilingual"}),
+                   (self.direction_mode, {"off", "auto", "indextts2", "fishaudio"}))
         if any(value not in options for value, options in choices):
             raise ValueError("voice reply mode is unsupported")
         for value in (self.probability, self.private_probability, self.group_probability,
