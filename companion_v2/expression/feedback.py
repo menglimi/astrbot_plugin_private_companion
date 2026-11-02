@@ -8,11 +8,13 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 import json
+import logging
 import re
 
 from companion_v2.execution.models import digest, stamp
 
 
+logger = logging.getLogger(__name__)
 INJECTION_PREFIX = "role.expression.feedback.injection.v1:"
 PENDING_PREFIX = "role.expression.feedback.pending.v1:"
 USAGE_PREFIX = "role.expression.feedback.usage.v1:"
@@ -88,8 +90,19 @@ def stage_injection(runtime, *, batch_id, owner_key, scope_key, signal_ids, at):
         _write(connection, injection_key(batch_id), value)
 
 
-def confirm_delivery(connection, *, batch_id, owner_key, scope_key, delivered_at, rotation_record):
-    """Promote a staged injection only after its first trusted delivery receipt."""
+def confirm_delivery(connection, *, batch_id, owner_key, scope_key, delivered_at, rotation_record,
+                     family_scopes=None):
+    """Promote a staged injection only after its first trusted delivery receipt.
+
+    ``family_scopes`` receives the injected rules' windows other than this one
+    and returns the conversation's scope family, exactly as injection reads it.
+    It is only asked when such a rule exists, so a batch learned in the answered
+    window reads no conversation table. An injected rule may come from an
+    earlier window or the V1 group identity scope, and the feedback window must
+    keep every rule the family owns; otherwise a rotated rule would never hear
+    that the reply was disliked. A rule of another relationship never enters
+    this window, and rotation counters stay under each rule's own scope.
+    """
     key = pending_key(owner_key, scope_key)
     candidate = _read(connection, injection_key(batch_id))
     current = _read(connection, key)
@@ -120,19 +133,41 @@ def confirm_delivery(connection, *, batch_id, owner_key, scope_key, delivered_at
     )
     if valid_candidate:
         identifiers = tuple(candidate["signal_ids"])
-        by_source_scope = {}
+        source_scopes, by_source_scope = {}, {}
         for signal_id in identifiers:
             signal = connection.execute("""SELECT scope_key FROM expression_style_signals
                 WHERE signal_id = ? AND owner_key = ? AND state = 'adopted'""",
                 (signal_id, owner_key)).fetchone()
             if signal is not None:
+                source_scopes[signal_id] = signal["scope_key"]
                 by_source_scope.setdefault(signal["scope_key"], []).append(signal_id)
         for source_scope, source_ids in by_source_scope.items():
             rotation_record(connection, owner_key, source_scope, tuple(source_ids), delivered_at)
-        local_identifiers = by_source_scope.get(scope_key, ())
-        if local_identifiers:
+        # A batch learned in the answered window is answered without reading the
+        # conversation tables; the family is only resolved when an injected rule
+        # really lives in another window. Either way each rule is taken once.
+        family = {scope_key}
+        foreign = {scope for scope in source_scopes.values() if scope != scope_key}
+        if foreign and family_scopes is not None:
+            try:
+                resolved = family_scopes(foreign)
+            except Exception as error:
+                # The receipt shares the caller's savepoint with the rotation
+                # record, so a broken family read must not escape: fall back to
+                # the answered window alone, which is what a family without
+                # earlier windows would have been. The failure is only named by
+                # its type, so no conversation content reaches the log.
+                logger.warning("V2 expression feedback family unavailable, using the answered window: %s",
+                               type(error).__name__)
+                resolved = ()
+            for family_key in resolved or ():
+                if type(family_key) is str and family_key:
+                    family.add(family_key)
+        family_identifiers = tuple(signal_id for signal_id in identifiers
+                                   if source_scopes.get(signal_id) in family)
+        if family_identifiers:
             _write(connection, key, {"batch_id": batch_id, "owner_key": owner_key,
-                "scope_key": scope_key, "signal_ids": list(local_identifiers),
+                "scope_key": scope_key, "signal_ids": list(family_identifiers),
                 "delivered_at": stamp(delivered_at), "seen_after": 0})
         else:
             connection.execute("DELETE FROM runtime_metadata WHERE key = ?", (key,))
@@ -188,7 +223,12 @@ def usage(runtime, owner_key, scope_key):
 
 
 def consume_feedback(connection, *, owner_key, scope_key, channel, text, received_at):
-    """Apply one same-scope input to the prior delivered rule set, if eligible."""
+    """Apply one same-conversation input to the prior delivered rule set, if eligible.
+
+    The delivery receipt already staged only the scope family's rules, so a
+    rewritten conversation keeps counting the same rule under the one scope it
+    was learned in instead of losing it or copying it into the current window.
+    """
     key = pending_key(owner_key, scope_key)
     pending = _read(connection, key)
     required = {"batch_id", "owner_key", "scope_key", "signal_ids", "delivered_at", "seen_after"}
@@ -231,12 +271,13 @@ def consume_feedback(connection, *, owner_key, scope_key, channel, text, receive
     for signal_id in dict.fromkeys(pending["signal_ids"]):
         if type(signal_id) is not str or not signal_id or len(signal_id) > 512:
             continue
-        row = connection.execute("""SELECT state FROM expression_style_signals
-            WHERE signal_id = ? AND owner_key = ? AND scope_key = ?""",
-            (signal_id, owner_key, scope_key)).fetchone()
+        row = connection.execute("""SELECT scope_key, state FROM expression_style_signals
+            WHERE signal_id = ? AND owner_key = ?""",
+            (signal_id, owner_key)).fetchone()
         if row is None or row["state"] != "adopted":
             continue
-        metadata_key = _usage_prefix(owner_key, scope_key) + digest(signal_id)
+        source_scope = row["scope_key"]
+        metadata_key = _usage_prefix(owner_key, source_scope) + digest(signal_id)
         stored = connection.execute("SELECT value FROM runtime_metadata WHERE key = ?", (metadata_key,)).fetchone()
         previous = _usage_entry(stored["value"], signal_id) if stored is not None else None
         previous = previous or {"signal_id": signal_id, "positive_count": 0, "negative_count": 0,
@@ -254,7 +295,7 @@ def consume_feedback(connection, *, owner_key, scope_key, channel, text, receive
             changed = connection.execute("""UPDATE expression_style_signals
                 SET state = 'pending', decided_at = ?, decided_by = 'expression_feedback', decision_key = ?
                 WHERE signal_id = ? AND owner_key = ? AND scope_key = ? AND state = 'adopted'""",
-                (stamp(received_at), decision_key, signal_id, owner_key, scope_key))
+                (stamp(received_at), decision_key, signal_id, owner_key, source_scope))
             if changed.rowcount:
                 previous["review_reason"] = reason
                 demoted += 1

@@ -225,6 +225,53 @@ class GroupExpressionFamilyTests(GroupFixture, unittest.IsolatedAsyncioTestCase)
         self.assertTrue(page.is_success, page.failure)
         self.assertEqual([item["signal_id"] for item in page.unwrap()["items"]], [LEGACY_SIGNAL])
 
+    async def test_a_rotated_group_rule_takes_negative_feedback_and_returns_to_review(self):
+        await self.start_host()
+        first = await self.turn()
+        app = self.controller.session.application
+        at = app.tasks.now().isoformat()
+        # One rule came from the V1 group import and one from an imported share
+        # pack: both are self-contained, so both survive the rotation.
+        window, handles = legacy_window(at)
+        self.write_rule(app, scope=group_identity_scope(first.scope), role=first.role_binding.role,
+                        signal_id=LEGACY_SIGNAL, run_id=LEGACY_RUN, window=window, evidence=handles)
+        window, handles = shared_window(at)
+        self.write_rule(app, scope=first.scope, role=first.role_binding.role,
+                        signal_id=SHARED_SIGNAL, run_id=SHARED_RUN, window=window, evidence=handles)
+
+        self.native.conversations["qq-main:GroupMessage:300"] = "conversation-rotated"
+        second = await self.turn()
+        self.assertNotEqual(digest(first.scope), digest(second.scope))
+
+        style = app.expression_style_context
+        delivered_at = app.tasks.now()
+        for attempt in (1, 2):
+            captured_at = delivered_at + timedelta(seconds=attempt * 10)
+            snapshot = style.capture(second, captured_at)
+            self.assertEqual(sorted(item["signal_id"] for item in snapshot["references"]),
+                             sorted([LEGACY_SIGNAL, SHARED_SIGNAL]))
+            batch = f"rotated-group-feedback-{attempt}"
+            style.contributions(snapshot, second, captured_at, batch_id=batch)
+            with app.runtime.transaction() as connection:
+                style.confirm_delivery(connection, batch_id=batch, context=second,
+                                       delivered_at=captured_at + timedelta(seconds=1))
+            with app.runtime.transaction() as connection:
+                consumed = style.consume_feedback(connection, context=second, text="别这么说",
+                                                  received_at=captured_at + timedelta(seconds=2))
+            self.assertEqual((consumed["signal"], consumed["updated_rules"], consumed["demoted_rules"]),
+                             ("negative", 2, 0 if attempt == 1 else 2))
+
+        # Each rule keeps one counter set inside the family, so the review page
+        # shows two complaints per rule rather than one set per window.
+        page = ExpressionStyleManagement(app).list(
+            operator=self.operator(app), context=second, state="pending")
+        self.assertTrue(page.is_success, page.failure)
+        items = page.unwrap()["items"]
+        self.assertEqual(sorted(item["signal_id"] for item in items),
+                         sorted([LEGACY_SIGNAL, SHARED_SIGNAL]))
+        self.assertEqual([item["negative_feedback"] for item in items], [2, 2])
+        self.assertTrue(all("退回复审" in item["review_reason"] for item in items))
+
     async def test_a_rotated_group_window_keeps_the_group_rules(self):
         await self.start_host()
         first = await self.turn()
