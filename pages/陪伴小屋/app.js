@@ -924,7 +924,7 @@ function mountPanelWorkspaces(){
     :window.CompanionSelfReviewPage?.unmount());
   const decisionHost=$('#decisionWorkspace');
   guarded('决策页',()=>decisionHost
-    ?window.CompanionDecisionPage?.mount(decisionHost,{groupSettingsMarkup:renderDecisionOriginal()})
+    ?window.CompanionDecisionPage?.mount(decisionHost,{groupSettingsMarkup:renderDecisionOriginal(),harassmentApi:(()=>{const role=product.role?.();return typeof role?.reply_api==="string"?role.reply_api+"/harassment":"";})()})
     :window.CompanionDecisionPage?.unmount());
   const memoryHost=$('#memoryWorkspace');
   guarded('事实与经历',()=>memoryHost

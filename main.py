@@ -266,6 +266,28 @@ class PrivateCompanionV2StagingPlugin(Star):
                              event_ref, type(error).__name__)
         return event_ref
 
+    def _harassment_guard(self):
+        guard = getattr(self, "_harassment", None)
+        if guard is None:
+            from .astrbot_host.harassment import HarassmentGuard
+            guard = HarassmentGuard()
+            self._harassment = guard
+        return guard
+
+    @staticmethod
+    def _harassment_scope(event):
+        origin = getattr(event, "unified_msg_origin", "")
+        return str(origin or getattr(event, "session_id", "") or "")
+
+    @staticmethod
+    def _harassment_user(event):
+        sender = getattr(getattr(event, "message_obj", None), "sender", None)
+        user_id = getattr(sender, "user_id", "")
+        if not user_id:
+            getter = getattr(event, "get_sender_id", None)
+            user_id = getter() if callable(getter) else ""
+        return str(user_id or "")
+
     def _private_debounce_manager(self):
         manager = getattr(self, "_private_debounce", None)
         if manager is None:
@@ -773,6 +795,17 @@ class PrivateCompanionV2StagingPlugin(Star):
             self._record_no_reply(event, "duplicate_private_delivery", origin_key=origin_key,
                                   channel=channel, event_ref=event_ref, stage="intake", expected=False)
             return
+        if channel == "private":
+            now = self.staging.now()
+            verdict = self._harassment_guard().check(
+                self.staging.runtime, scope=self._harassment_scope(event),
+                user_id=self._harassment_user(event),
+                text=str(getattr(event, "message_str", "") or ""),
+                now=now.timestamp() if hasattr(now, "timestamp") else None)
+            if verdict.get("blocked"):
+                # 名单在决策页管理；命中后本条静默丢弃，不再进入模型或记忆。
+                suppress_default_reply(event)
+                return
         if channel == "private" and getattr(target, "participant_id", None):
             processor = getattr(self.staging, "process_private_relay_receipts", None)
             if callable(processor):
