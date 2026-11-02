@@ -41,6 +41,37 @@ class CoreGroupSegmentationTests(unittest.IsolatedAsyncioTestCase):
         prepare_core_reply_streaming_boundary(event)
         return event
 
+    async def test_group_parts_keep_the_configured_gap_without_concurrent_pressure(self):
+        from unittest.mock import AsyncMock, patch
+
+        event = self.prepare(channel="group")
+        core = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
+        core["_reply_segmentation"]["settings"]["part_gap_ms"] = 800
+        activate_core_reply_delivery_guard(event)
+        with patch("astrbot_host.core_reply_segmentation.asyncio.sleep", new_callable=AsyncMock) as sleep_mock:
+            await event.send(MessageChain(chain=[Plain(FIRST + SECOND)]))
+            sleep_mock.assert_awaited()
+            self.assertEqual(sleep_mock.await_args.args[0], 0.8)
+
+    async def test_group_stream_parts_keep_the_configured_gap(self):
+        from unittest.mock import AsyncMock, patch
+        from astrbot_host.core_reply_segmentation import send_group_stream
+
+        event = self.prepare(channel="group", streaming=True)
+        core = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
+        core["_group_segmentation"]["settings"].update(
+            {"streaming_mode": "incremental", "part_gap_mode": "fixed", "part_gap_ms": 800})
+        activate_core_reply_delivery_guard(event)
+
+        async def chunks():
+            yield FIRST
+            yield SECOND
+
+        with patch("astrbot_host.core_reply_segmentation.asyncio.sleep", new_callable=AsyncMock) as sleep_mock:
+            await send_group_stream(event, chunks())
+            sleep_mock.assert_awaited()
+            self.assertEqual(sleep_mock.await_args.args[0], 0.8)
+
     async def test_concurrent_group_turns_skip_inter_segment_sleep_to_prevent_interleaving(self):
         from unittest.mock import AsyncMock, patch
         from astrbot_host.core_reply_tracking import CORE_REPLY_TRACKING_EXTRA

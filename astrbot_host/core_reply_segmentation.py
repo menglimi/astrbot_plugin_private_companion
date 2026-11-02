@@ -290,6 +290,7 @@ async def _send_part(event, state, part, args=(), kwargs=None):
             if gap:
                 await asyncio.sleep(gap)
         attempts = core["send_attempts"]
+        sent_before = state["sent"]
         result = await state["send"](part, *args, **(kwargs or {}))
     except BaseException:
         # RespondStage catches send failures per component. A later component
@@ -299,6 +300,11 @@ async def _send_part(event, state, part, args=(), kwargs=None):
         finish_core_reply_presence(event, force=True)
         raise
     if core["send_attempts"] > attempts:
+        state["sent"] += 1
+    elif state["sent"] == sent_before:
+        # Group streaming can send through the frozen transport without the
+        # outer tracking wrapper, so send_attempts may not move.  A confirmed
+        # return still advances the part counter and preserves the gap.
         state["sent"] += 1
     return result
 
