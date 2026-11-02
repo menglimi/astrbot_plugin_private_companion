@@ -13,7 +13,8 @@ from PIL import Image as PILImage
 
 from astrbot_host.core_reply import CORE_REPLY_CONTEXT_EXTRA, prepare_core_reply_event
 from astrbot_host.core_reply_media import (
-    bind_native_quoted_image_sources, capture_native_input_images, frozen_image_locators,
+    bind_native_quoted_image_sources, capture_native_input_images, direct_image_locators,
+    frozen_image_locators,
 )
 from astrbot_host.core_reply_tools import inject_core_reply_tools
 from companion_v2.adapters.astrbot.native import NativeConversationInput
@@ -21,7 +22,7 @@ from companion_v2.capabilities.models import CapabilityAuthorizationState
 from companion_v2.capabilities.repositories import CapabilityRepository
 from companion_v2.conversation.native_tool_sources import native_input_images
 from companion_v2.conversation.recalls import MessageRecall
-from companion_v2.execution.models import TaskContext, require
+from companion_v2.execution.models import TaskContext, digest, require
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import ScopeKind
 from companion_v2.identity_policy.group_audience import group_audience
@@ -146,6 +147,67 @@ class CoreReplyQuotedImageTests(NativeImageFixture, HostFixture, unittest.Isolat
         self.result(received, "blue")
         self.assertEqual(calls, [("get_msg", {"message_id": "group-quote"})])
         self.assertEqual(self.image_backend.calls[0][1][0].data, source)
+        self.assert_no_reply_work(event)
+
+    async def test_direct_locators_drop_every_quote_before_passive_capture(self):
+        self.use_group()
+        attached = image(image_bytes("red"))
+        event, _request = self.bind("direct-next-to-quote",
+            [Reply(id="group-quote", sender_id="other-member"), Plain("看这个"), attached])
+        locators = frozen_image_locators(event)
+        self.assertEqual([type(item).__name__ for item in locators],
+                         ["NativeImageLocator", "_QuotedImages"])
+        direct = direct_image_locators(locators)
+        self.assertEqual([type(item).__name__ for item in direct], ["NativeImageLocator"])
+        self.assertEqual(direct[0].position, 2)
+        self.assertEqual(direct_image_locators(()), ())
+
+    async def test_direct_attachment_is_captured_when_the_same_message_quotes_a_text_message(self):
+        self.use_group()
+        calls = []
+        source = image_bytes("red")
+
+        async def dispatch(action, **parameters):
+            calls.append((action, parameters))
+            return {"data": self.raw("text-quote", "other-member", image_bytes("green"))}
+
+        event, _request = self.bind("attachment-next-to-text-quote",
+            [Reply(id="text-quote", sender_id="other-member", chain=[]), Plain("看这个"), image(source)],
+            dispatch=dispatch)
+        prepared = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)["prepared"]
+        observed = await capture_native_input_images(self.app, prepared, frozen_image_locators(event),
+                                                     authorize=lambda: None)
+        # The quote needs a lookup and is dropped; the sender's own attachment stays collectable.
+        self.assertEqual(calls, [])
+        self.assertIsNotNone(observed)
+        self.assertEqual(len(observed.images), 1)
+        turn_id = "core-reply:" + digest([prepared["context"].key, prepared["event_id"]])
+        original = native_input_images(self.app.messages, self.context, turn_id)
+        record = self.app.messages._read_source(original.source, self.context, "text", self.clock.now())
+        provenance = json.loads(record.payload)["image_sources"]
+        self.assertEqual([item["origin"] for item in provenance], ["attachment"])
+        captured = self.app.messages.images.read(self.context, (observed,), self.clock.now())
+        self.assertEqual([item.descriptor.content_hash for item in captured],
+                         [observed.images[0].content_hash])
+        self.assert_no_reply_work(event)
+
+    async def test_quote_only_passive_capture_returns_none_without_reading_it(self):
+        self.use_group()
+        calls = []
+
+        async def dispatch(action, **parameters):
+            calls.append((action, parameters))
+            return {"data": self.raw("quote-only", "other-member", image_bytes("green"))}
+
+        event, _request = self.bind("quote-only-passive", [Reply(id="quote-only", sender_id="other-member")],
+                                    dispatch=dispatch)
+        prepared = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)["prepared"]
+        observed = await capture_native_input_images(self.app, prepared, frozen_image_locators(event),
+                                                     authorize=lambda: None)
+        self.assertIsNone(observed)
+        self.assertEqual(calls, [])
+        turn_id = "core-reply:" + digest([prepared["context"].key, prepared["event_id"]])
+        self.assertIsNone(native_input_images(self.app.messages, self.context, turn_id, optional=True))
         self.assert_no_reply_work(event)
 
     async def test_private_bot_quote_requires_the_exact_peer_history(self):

@@ -47,6 +47,18 @@ class _QuotedImages:
         return not self.images or self.sender_id is None
 
 
+def direct_image_locators(locators):
+    """Keep the direct attachments and drop every quoted reference.
+
+    ``frozen_image_locators`` freezes attachments and quotes in one sequence so
+    that explicit image tools keep AstrBot's component order.  Passive reaction
+    collection must never read a quote: the model may not have seen that image
+    at all, and a quote that still needs a lookup would otherwise take the
+    sender's own attachment down with it.
+    """
+    return tuple(item for item in locators if not isinstance(item, _QuotedImages))
+
+
 def frozen_image_locators(event):
     """Freeze current attachments and quotes, in AstrBot's attachment order."""
     images, quotes = [], []
@@ -170,9 +182,12 @@ async def capture_native_input_images(application, prepared, image_locators, *, 
     """Capture an admitted input asynchronously, including all SQL and checks."""
     # Reply-id lookup belongs to the model's explicit image tool need. Passive
     # collection must not duplicate core get_msg parsing or publish half a turn.
-    if any(isinstance(item, _QuotedImages) and item.needs_lookup for item in image_locators):
+    # A quote that still needs a lookup only disqualifies itself: the sender's
+    # own attachments are already frozen and stay collectable on their own.
+    locators = direct_image_locators(image_locators)
+    if not locators:
         return None
-    return await _capture_native_images(application, prepared, image_locators,
+    return await _capture_native_images(application, prepared, locators,
         turn_id=prepared.get("turn_id") or "core-reply:" + digest([prepared["context"].key, prepared["event_id"]]),
         authorize_sync=authorize)
 
