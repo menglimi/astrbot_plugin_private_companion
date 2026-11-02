@@ -16,7 +16,7 @@ window.CompanionModelsPage = (() => {
       ["conversation.context_image_caption", "图片摘要", "为已授权的历史图片提取可见内容"],
       ["conversation.image_narration", "当前图片转述", "为本轮已授权图片生成简短文字描述"],
       ["conversation.video_narration", "原生视频转述", "将原视频交给支持视频输入的模型直接理解"]]],
-    ["感知", [["screen.interpretation", "屏幕解读", "分析本次已授权截图，需要支持图片的模型"],
+    ["感知", [["screen.interpretation", "屏幕解读", "分析已授权截图与摄像头单帧，需要支持图片的模型"],
       ["screen.peek", "屏幕速览", "为已授权屏幕画面生成简短摘要"],
       ["image_review", "图片审核", "检查群聊成图的可见内容"],
       ["conversation.image_review", "图片审核", "检查群聊成图的可见内容"]]],

@@ -60,6 +60,27 @@ class CameraVisionFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(host.context.providers["closed"].calls, 1)
         self.assertEqual(host.context.providers["working"].calls, 1)
 
+    async def test_task_panel_route_wins_over_the_legacy_camera_provider(self):
+        class Integration:
+            @staticmethod
+            def reality_model_route(user_id, kind):
+                return {"provider": "panel", "fallback": ""}
+
+        class RouteHost(CameraHost):
+            controller = type("Controller", (), {"integration": Integration()})()
+            context = Context({"panel": Provider(), "closed": Provider(fail=True), "working": Provider()})
+
+        host = RouteHost()
+        observation = await host._analyze_reality_touch_camera_frame(
+            {"jpeg_bytes": b"frame", "brightness": "normal", "width": 1280, "height": 720},
+            "用户让我看看他现在在做什么",
+            user_id="user-1",
+        )
+        self.assertTrue(observation["analyzed"])
+        self.assertEqual(host.context.providers["panel"].calls, 1)
+        self.assertEqual(host.context.providers["closed"].calls, 0)
+        self.assertEqual(host.context.providers["working"].calls, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
