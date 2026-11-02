@@ -370,9 +370,20 @@ class SessionTopology:
         platform = controller.context.get_platform_inst(platform_id)
         message, session, meta = event.message_obj, event.session, event.platform_meta
         login = event_account_id(event)
-        if (platform is None or not supported_platform_name(meta.name)
-                or platform.get_client() is not event.bot
-                or not native_client_connected(platform, login, event.bot)):
+        if platform is None:
+            logger.debug("[CompanionV2] 跳过事件：找不到平台实例 %s", platform_id)
+            return
+        if not supported_platform_name(meta.name):
+            logger.debug("[CompanionV2] 跳过事件：平台 %s 不在支持名单", meta.name)
+            return
+        if platform.get_client() is not event.bot:
+            logger.debug(
+                "[CompanionV2] 跳过事件：事件携带的 bot(%s) 不是平台当前的 client",
+                type(getattr(event, "bot", None)).__name__,
+            )
+            return
+        if not native_client_connected(platform, login, event.bot):
+            logger.debug("[CompanionV2] 跳过事件：账号 %s 没有可用的原生连接", login)
             return
         if kind == "group":
             native = group_event_route(event)
