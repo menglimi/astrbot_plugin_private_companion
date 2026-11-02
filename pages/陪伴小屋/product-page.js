@@ -935,7 +935,9 @@ window.CompanionProduct = (() => {
     if(!["host","life","relationships","identity","persona","designer"].includes(name)) return "";
     const title = name === "identity"
       ? ({network:"关系网",people:"用户",groups:"群聊"}[tab] || "关系管理")
-      : {host:"账号与会话",life:"日记与生活",relationships:"人物与关系",persona:"人格问卷",designer:"新的她"}[name];
+      : name === "designer"
+        ? ({create:"创建人格",optimize:"拟人优化"}[tab] || "人格处理")
+        : {host:"账号与会话",life:"日记与生活",relationships:"人物与关系",persona:"规范人格"}[name];
     const available = ["host","designer"].includes(name) ? bridgeReady : !loading && !!catalog;
     if(!available) {
       /* 不用 I()：那是 app.js 里的顶层 const，product-page.js 是独立 IIFE，
@@ -1115,7 +1117,8 @@ window.CompanionProduct = (() => {
         clearTimeout(previous.loadTimer);
         workspaceFrames.set(owner,context);
       }
-      if (!["host","identity","designer"].includes(context.kind) && previous.key!==context.key) {
+      const tabChanged = context.kind === "designer" && previous.tab !== context.tab;
+      if ((!["host","identity","designer"].includes(context.kind) && previous.key!==context.key) || tabChanged) {
         setWorkspaceLoadState(owner,"loading","正在切换当前对象…");
         if(window.CompanionWorkspaceBundle?.[context.kind])owner.srcdoc=window.CompanionWorkspaceBundle[context.kind];
         else startWorkspace(owner,context);
