@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+import time
 import unittest
 
 from astrbot_host.relay_pending import add_task, claim_private_receipts
@@ -46,7 +47,7 @@ class RelayPendingEventTests(unittest.IsolatedAsyncioTestCase):
             "kind": "group_wait", "state": "waiting", "group_id": "5005",
             "target_user_id": "7777", "mention_id": "7777", "text": "看到后回我",
             "source_kind": "private", "source_id": "1001", "source_user": "1001",
-            "expires_at": NOW.timestamp() + 3600, "signature": "delayed-1",
+            "expires_at": time.time() + 3600, "signature": "delayed-1",
         })
         target = SimpleNamespace(group_id="5005", platform_id="onebot", account_id="account")
         context = SimpleNamespace(actor=SimpleNamespace(principal=SimpleNamespace(native_account_id="7777")))
@@ -62,7 +63,7 @@ class RelayPendingEventTests(unittest.IsolatedAsyncioTestCase):
             "kind": "private_receipt", "state": "waiting_reply", "target_user_id": "2002",
             "source_kind": "private", "source_id": "1001", "source_user": "1001",
             "question": "今晚来吗", "sent_text": "今晚来吗", "confirm_before_report": False,
-            "expires_at": NOW.timestamp() + 3600, "signature": "receipt-1",
+            "expires_at": time.time() + 3600, "signature": "receipt-1",
         })
         target = SimpleNamespace(participant_id="2002", platform_id="onebot", account_id="account")
         await process_private_receipts(self.controller, self.event, target)
@@ -77,7 +78,7 @@ class RelayPendingEventTests(unittest.IsolatedAsyncioTestCase):
             "kind": "private_receipt", "state": "waiting_reply", "target_user_id": "2002",
             "source_kind": "private", "source_id": "1001", "source_user": "1001",
             "question": "方便吗", "sent_text": "方便吗", "confirm_before_report": True,
-            "expires_at": NOW.timestamp() + 3600, "signature": "receipt-2",
+            "expires_at": time.time() + 3600, "signature": "receipt-2",
         })
         target = SimpleNamespace(participant_id="2002", platform_id="onebot", account_id="account")
         await process_private_receipts(self.controller, self.event, target)
