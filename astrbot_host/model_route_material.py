@@ -19,7 +19,7 @@ INSTRUCTION = (
     "不要拿别的项顶替，也不要猜模型名。")
 
 VISION_KIND = "conversation.context_image_caption"
-VISION_KINDS = ("screen.interpretation", VISION_KIND, "image_review", "conversation.image_review")
+VISION_KINDS = ("screen.interpretation", VISION_KIND, "conversation.image_review")
 
 
 def _label(meta) -> str:
