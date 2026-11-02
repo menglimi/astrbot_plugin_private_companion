@@ -259,10 +259,13 @@ class AstrBotMultiController:
         if binding.persona_id:
             from .identity_derivation import normalize_persona_id
             wanted = normalize_persona_id(binding.persona_id)
-            if not any(persona.bot_id == match.bot_id
-                       and normalize_persona_id(persona.persona_id) == wanted
-                       for persona in settings.personas):
-                return None
+            candidates = [persona for persona in settings.personas if persona.bot_id == match.bot_id]
+            if not any(normalize_persona_id(persona.persona_id) == wanted for persona in candidates):
+                # 上游把人设改名后，parked binding 里还是旧名。单人格窗口的结果唯一，
+                # 直接认它并在后续 _repair_parked_binding() 里把名字写回；
+                # 同一 Bot 下有多个人格时无法判断，仍然拒绝，避免猜错。
+                if len(candidates) != 1:
+                    return None
         return match
 
     async def proactive_diagnostic_target(self):
