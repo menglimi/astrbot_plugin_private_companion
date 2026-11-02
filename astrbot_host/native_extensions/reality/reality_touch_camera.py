@@ -917,6 +917,12 @@ class RealityTouchCameraMixin:
         if lock is None:
             lock = asyncio.Lock()
             self._reality_touch_camera_operation_lock = lock
+        # A camera is a single physical resource.  If another observation is
+        # already holding it, report busy instead of queueing: the second capture
+        # would otherwise open the device again and compete with the first (and
+        # with whatever app the user is already using the camera in).
+        if lock.locked():
+            return {"status": "busy", "message": "摄像头正在被其他观察任务使用，本次不抢占"}
         async with lock:
             users = self.data.get("users", {}) if isinstance(getattr(self, "data", None), dict) else {}
             user = users.get(str(user_id)) if isinstance(users, dict) else None
