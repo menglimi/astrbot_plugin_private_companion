@@ -16,7 +16,8 @@ window.CompanionDecisionPage = (() => {
   let root = null;
   let activeView = "overview";
   let replyStatus = null;
-  const harassment = {endpoint: "", data: null, draft: null, loading: false, busy: false, notice: "", bad: false};
+  const harassment = {endpoint: "", data: null, draft: null, loading: false, busy: false,
+    notice: "", bad: false, tab: "detect", manual: {scope: "", user: "", hours: 24}, exported: ""};
 
   const icon = name => `<i data-lucide="${name}" aria-hidden="true"></i>`;
   const number = value => value == null || value === "" ? null
@@ -309,56 +310,130 @@ window.CompanionDecisionPage = (() => {
   }
 
 
-  function guardEscape(value) {
-    return String(value ?? "").replace(/[&<>"']/g, char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[char]));
-  }
-
-  function guardTime(value) {
+  const guardEscape = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[char]));
+  const guardTime = value => {
     const seconds = Number(value);
-    if (!Number.isFinite(seconds) || seconds <= 0) return "—";
-    const date = new Date(seconds * 1000);
-    return date.toLocaleString("zh-CN", {hour12: false});
-  }
+    if (!Number.isFinite(seconds) || seconds <= 0) return "永久";
+    return new Date(seconds * 1000).toLocaleString("zh-CN", {hour12: false});
+  };
+  const guardCount = value => {
+    const text = String(value ?? "").replace(/，/g, ",").replace(/\n/g, ",");
+    return text.split(",").map(item => item.trim()).filter(Boolean).length;
+  };
+  const guardDetectors = [
+    {key: "rate_enabled", label: "刷屏频率", hint: "窗口内消息总数超过上限", window: "rate_window_seconds",
+      max: "rate_max_messages", unit: "条", seconds: true},
+    {key: "burst_enabled", label: "短时突发", hint: "更短的窗口内连续消息", window: "burst_window_seconds",
+      max: "burst_max_messages", unit: "条", seconds: true},
+    {key: "duplicate_enabled", label: "复读", hint: "同一句话反复发送", window: "duplicate_window_seconds",
+      max: "duplicate_max_repeats", unit: "次", seconds: true},
+    {key: "mention_enabled", label: "@轰炸", hint: "窗口内 @ 次数", window: "mention_window_seconds",
+      max: "mention_max", unit: "次", seconds: true},
+    {key: "link_enabled", label: "链接轰炸", hint: "窗口内链接数量", window: "link_window_seconds",
+      max: "link_max", unit: "条", seconds: true},
+    {key: "media_enabled", label: "媒体刷屏", hint: "只发表情、图片或语音", window: "media_window_seconds",
+      max: "media_max", unit: "条", seconds: true},
+    {key: "split_enabled", label: "拆句轰炸", hint: "连续发很短的句子", window: "split_window_seconds",
+      max: "split_max", unit: "条", seconds: true},
+  ];
+  const guardTabs = [["detect", "拦截判断"], ["action", "拦截处置"], ["list", "黑名单管理"]];
+  const guardField = (key, label, type, draft, extra = "") => {
+    const value = draft[key];
+    if (type === "bool") return `<label class="guard-check"><input type="checkbox" data-guard-field="${key}" ${value ? "checked" : ""} ${extra}>${label}</label>`;
+    if (type === "number") return `<label>${label}<input type="number" data-guard-field="${key}" value="${guardEscape(value)}" ${extra}></label>`;
+    if (type === "select") {
+      return `<label>${label}<select data-guard-field="${key}" ${extra}>${["silent", "text"].map(item =>
+        `<option value="${item}" ${value === item ? "selected" : ""}>${item === "silent" ? "静默不回复" : "回一句固定话"}</option>`).join("")}</select></label>`;
+    }
+    if (type === "textarea") return `<label class="guard-wide">${label}<textarea rows="3" data-guard-field="${key}" ${extra}>${guardEscape(value)}</textarea></label>`;
+    return `<label class="guard-wide">${label}<input type="text" data-guard-field="${key}" value="${guardEscape(value)}" ${extra}></label>`;
+  };
 
   function guardMarkup() {
     const data = harassment.data;
-    if (!harassment.endpoint) {
-      return `<div class="decision-empty"><strong>防骚扰不可用</strong><p>当前页面没有拿到设置接口，请刷新后重试。</p></div>`;
-    }
+    if (!harassment.endpoint) return `<div class="decision-empty"><strong>防骚扰不可用</strong><p>当前页面没有拿到设置接口，请刷新后重试。</p></div>`;
     if (harassment.loading && !data) return `<div class="decision-empty"><strong>正在读取防骚扰设置…</strong></div>`;
-    const draft = harassment.draft || (data ? {...data.settings, keywords: data.settings.keywords || ""} : null);
-    if (!draft) {
-      return `<div class="decision-empty"><strong>暂时无法读取防骚扰设置</strong><p>${guardEscape(harassment.notice || "请稍后重试。")}</p></div>`;
-    }
-    const entries = data?.entries || [];
-    const rows = entries.length ? entries.map(item => `
-      <tr>
+    const draft = harassment.draft;
+    if (!draft) return `<div class="decision-empty"><strong>暂时无法读取防骚扰设置</strong><p>${guardEscape(harassment.notice || "请稍后重试。")}</p>
+      <button type="button" class="button small" data-guard-retry>重试</button></div>`;
+    const disabled = harassment.busy ? "disabled" : "";
+    const tabs = guardTabs.map(([id, label]) => `<button type="button" class="section-chip${harassment.tab === id ? " is-active" : ""}"
+      data-guard-tab="${id}" aria-pressed="${harassment.tab === id}">${label}</button>`).join("");
+    let body = "";
+    if (harassment.tab === "detect") {
+      const keyword = `<div class="guard-settings">
+        ${guardField("keywords_strong", "强词（命中直接拉黑）", "textarea", draft, disabled)}
+        ${guardField("keywords_weak", "弱词（命中先冷却）", "textarea", draft, disabled)}
+        ${guardField("keyword_regex", "正则（可选）", "text", draft, disabled)}
+        ${guardField("judge_enabled", "判断模型（预留，当前版本未接入）", "bool", draft, "disabled")}
+        ${guardField("model_tag_enabled", "模型输出标签（预留，当前版本未接入）", "bool", draft, "disabled")}
+      </div>
+      <div class="guard-signals">${guardDetectors.map(item => `<div class="guard-signal">
+        ${guardField(item.key, item.label, "bool", draft, disabled)}
+        <small>${item.hint}</small>
+        <div class="guard-signal-params">
+          <label>窗口（秒）<input type="number" data-guard-field="${item.window}" value="${guardEscape(draft[item.window])}" ${disabled}></label>
+          <label>上限（${item.unit}）<input type="number" data-guard-field="${item.max}" value="${guardEscape(draft[item.max])}" ${disabled}></label>
+        </div></div>`).join("")}</div>`;
+      body = `${keyword}${body}${keyword ? "" : ""}`;
+    } else if (harassment.tab === "action") {
+      body = `<div class="guard-settings">
+        ${guardField("dry_run", "试运行（只记录，不真正拦截）", "bool", draft, disabled)}
+        ${guardField("cooldown_seconds", "冷却时长（秒）", "number", draft, disabled)}
+        ${guardField("auto_block_hours", "自动拉黑（小时，0=永久）", "number", draft, disabled)}
+        ${guardField("strike_block_at", "第几次命中升级为拉黑", "number", draft, disabled)}
+        ${guardField("strike_permanent_at", "第几次命中升级为永久", "number", draft, disabled)}
+        ${guardField("strike_decay_hours", "命中次数重置（小时）", "number", draft, disabled)}
+        ${guardField("notice_mode", "被拦时", "select", draft, disabled)}
+        ${guardField("notice_text", "固定话术", "textarea", draft, disabled)}
+        ${guardField("exempt_admins", "豁免指定用户", "bool", draft, disabled)}
+        ${guardField("exempt_ids", "豁免用户 ID（逗号或换行）", "textarea", draft, disabled)}
+      </div>`;
+    } else {
+      const entries = data?.entries || [];
+      const rows = entries.length ? entries.map(item => `<tr>
         <td><code>${guardEscape(item.user_id)}</code><small>${guardEscape(item.scope)}</small></td>
-        <td>${guardEscape(item.reason_text || item.reason || "手动加入")}${item.count ? ` · ${Number(item.count)} 条` : ""}</td>
-        <td>${guardTime(item.updated_at || item.created_at)}</td>
-        <td><button type="button" class="button small" data-guard-unblock="${guardEscape(item.user_id)}"
-          data-guard-scope="${guardEscape(item.scope)}" ${harassment.busy ? "disabled" : ""}>解除</button></td>
-      </tr>`).join("") : `<tr><td colspan="4" class="decision-empty-row">黑名单还是空的。命中限流或关键词后，对应用户会自动出现在这里。</td></tr>`;
+        <td>${(item.reasons || []).map(reason => `<span class="guard-tag">${guardEscape(data.reasons?.[reason] || reason)}</span>`).join("")}
+          <small>${guardEscape(item.evidence || "")}</small></td>
+        <td>${item.kind === "cooldown" ? "冷却" : "拉黑"}<small>到 ${guardTime(item.until)}</small></td>
+        <td class="guard-actions">
+          <button type="button" class="button small" data-guard-unblock="${guardEscape(item.user_id)}" data-guard-scope="${guardEscape(item.scope)}" ${disabled}>解除</button>
+          <button type="button" class="button small" data-guard-extend="${guardEscape(item.user_id)}" data-guard-scope="${guardEscape(item.scope)}" data-guard-hours="24" ${disabled}>+1 天</button>
+          <button type="button" class="button small" data-guard-extend="${guardEscape(item.user_id)}" data-guard-scope="${guardEscape(item.scope)}" data-guard-hours="0" ${disabled}>永久</button>
+          <button type="button" class="button small" data-guard-false="${guardEscape(item.user_id)}" data-guard-scope="${guardEscape(item.scope)}" ${disabled}>误伤</button>
+        </td></tr>`).join("") : `<tr><td colspan="4" class="decision-empty-row">名单还是空的。命中规则后会自动出现在这里，也可以手动加入。</td></tr>`;
+      const audits = (data?.audit || []).slice(0, 20).map(item => `<li><span>${guardTime(item.at)}</span>
+        <b>${guardEscape(item.action)}</b><code>${guardEscape(item.user_id)}</code>
+        <small>${(item.reasons || []).map(reason => data.reasons?.[reason] || reason).join("、")} ${guardEscape(item.evidence || "")}</small></li>`).join("");
+      body = `<div class="guard-directory"><div class="guard-heading"><h3>黑名单目录</h3><span>${entries.length} 人</span></div>
+        <table class="guard-table"><thead><tr><th>用户</th><th>原因</th><th>期限</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>
+        <div class="guard-settings guard-manual">
+          <label>手动拉黑 · 窗口 / 会话<input type="text" data-guard-manual="scope" value="${guardEscape(harassment.manual.scope)}" placeholder="umo 或会话标识"></label>
+          <label>用户 ID<input type="text" data-guard-manual="user" value="${guardEscape(harassment.manual.user)}" placeholder="平台账号 ID"></label>
+          <label>时长（小时，0=永久）<input type="number" data-guard-manual="hours" value="${guardEscape(harassment.manual.hours)}"></label>
+          <button type="button" class="button primary" data-guard-manual-add ${disabled}>加入黑名单</button>
+        </div>
+        <div class="guard-audit"><div class="guard-heading"><h3>最近记录</h3><span>${audits ? "" : "暂无"}</span></div><ol>${audits}</ol></div>
+        <div class="guard-settings guard-transfer">
+          <button type="button" class="button small" data-guard-export ${disabled}>导出</button>
+          <button type="button" class="button small" data-guard-import ${disabled}>从下方 JSON 导入</button>
+        </div>
+        <textarea class="guard-json" rows="4" data-guard-json placeholder="导出后在这里编辑或粘贴 JSON，再点导入">${guardEscape(harassment.exported || "")}</textarea>`;
+    }
     return `<div class="guard-panel">
       <div class="decision-stats decision-stats-four">
-        ${stat("限流", draft.enabled ? "已开启" : "未开启", `每 ${shown(draft.window_seconds)} 秒窗口`)}
-        ${stat("阈值", `${shown(draft.max_messages)} 条`, "超过后自动移入黑名单")}
-        ${stat("关键词", count(draft.keywords) + " 个", "命中任意一个也会拦截")}
-        ${stat("当前黑名单", `${entries.length} 人`, "可随时解除")}
+        ${stat("总开关", draft.enabled ? "已开启" : "未开启", draft.dry_run ? "试运行中 · 只记录" : "正式拦截")}
+        ${stat("判断", `${guardCount(draft.keywords_strong) + guardCount(draft.keywords_weak)} 词 · ${guardDetectors.filter(item => draft[item.key]).length} 个信号`, "关键词与行为信号并行")}
+        ${stat("处置", draft.dry_run ? "只记录" : `${Math.round(draft.cooldown_seconds / 60)} 分钟冷却`, `第 ${draft.strike_block_at} 次升级拉黑`)}
+        ${stat("黑名单", `${(data?.entries || []).length} 人`, "在「黑名单管理」里解除")}
       </div>
-      <div class="guard-settings">
-        <label class="guard-switch"><input type="checkbox" data-guard-field="enabled" ${draft.enabled ? "checked" : ""} ${harassment.busy ? "disabled" : ""}>启用防骚扰</label>
-        <label>时间窗口（秒）<input type="number" min="10" max="86400" data-guard-field="window_seconds" value="${guardEscape(draft.window_seconds)}" ${harassment.busy ? "disabled" : ""}></label>
-        <label>窗口内最多消息<input type="number" min="2" max="500" data-guard-field="max_messages" value="${guardEscape(draft.max_messages)}" ${harassment.busy ? "disabled" : ""}></label>
-        <label class="guard-wide">触发关键词（逗号或换行分隔）<textarea rows="3" data-guard-field="keywords" ${harassment.busy ? "disabled" : ""}>${guardEscape(draft.keywords)}</textarea></label>
-        <button type="button" class="button primary" data-guard-save ${harassment.busy ? "disabled" : ""}>保存防骚扰设置</button>
+      <div class="guard-topbar">
+        <nav class="section-chips" aria-label="防骚扰分区">${tabs}</nav>
+        <label class="guard-master"><input type="checkbox" data-guard-field="enabled" ${draft.enabled ? "checked" : ""} ${disabled}>启用防骚扰</label>
       </div>
-      <div class="guard-directory">
-        <div class="guard-heading"><h3>黑名单目录</h3><span>${entries.length} 人</span></div>
-        <table class="guard-table"><thead><tr><th>用户</th><th>原因</th><th>时间</th><th></th></tr></thead>
-          <tbody>${rows}</tbody></table>
-      </div>
-      ${harassment.notice ? `<div class="model-notice${harassment.bad ? " error" : ""}">${guardEscape(harassment.notice)}</div>` : ""}
+      <div class="guard-body">${body}</div>
+      <div class="guard-footer"><button type="button" class="button primary" data-guard-save ${disabled}>保存设置</button>
+        ${harassment.notice ? `<span class="model-notice${harassment.bad ? " error" : ""}">${guardEscape(harassment.notice)}</span>` : ""}</div>
     </div>`;
   }
 
@@ -375,15 +450,18 @@ window.CompanionDecisionPage = (() => {
     return value;
   }
 
+  function guardAdopt(snapshot) {
+    harassment.data = snapshot;
+    harassment.draft = {...snapshot.settings};
+  }
+
   async function loadHarassment() {
     if (!harassment.endpoint || harassment.loading || harassment.busy) return;
     harassment.loading = true;
     harassment.notice = "";
     renderPanels();
     try {
-      const data = await guardRequest("GET", "");
-      harassment.data = data;
-      harassment.draft = {...data.settings};
+      guardAdopt(await guardRequest("GET", ""));
       harassment.bad = false;
     } catch (error) {
       harassment.bad = true;
@@ -394,63 +472,94 @@ window.CompanionDecisionPage = (() => {
     }
   }
 
-  async function saveHarassment() {
-    if (!harassment.draft || harassment.busy) return;
+  async function guardMutate(path, body, done) {
+    if (harassment.busy) return;
     harassment.busy = true;
-    harassment.notice = "正在保存防骚扰设置…";
+    harassment.notice = "正在处理…";
     renderPanels();
     try {
-      const data = await guardRequest("POST", "/settings", {changes: harassment.draft});
-      harassment.data = data;
-      harassment.draft = {...data.settings};
-      harassment.notice = "防骚扰设置已保存。";
+      const snapshot = await guardRequest("POST", path, body);
+      guardAdopt(snapshot);
+      harassment.notice = done || "已保存。";
       harassment.bad = false;
     } catch (error) {
       harassment.bad = true;
-      harassment.notice = "保存失败：" + (error?.message || "未知错误");
+      harassment.notice = "操作失败：" + (error?.message || "未知错误");
     } finally {
       harassment.busy = false;
       renderPanels();
     }
   }
 
-  async function unblockHarassment(userId, scope) {
-    if (harassment.busy) return;
-    harassment.busy = true;
-    harassment.notice = "正在解除…";
-    renderPanels();
-    try {
-      const data = await guardRequest("POST", "/unblock", {scope, user_id: userId});
-      harassment.data = {...(harassment.data || {}), entries: data.entries};
-      harassment.notice = "已解除该用户的拦截。";
-      harassment.bad = false;
-    } catch (error) {
-      harassment.bad = true;
-      harassment.notice = "解除失败：" + (error?.message || "未知错误");
-    } finally {
-      harassment.busy = false;
-      renderPanels();
-    }
-  }
+  const saveHarassment = () => guardMutate("/settings", {changes: harassment.draft}, "防骚扰设置已保存。");
 
   function onGuardInput(event) {
     const field = event.target?.dataset?.guardField;
+    const manual = event.target?.dataset?.guardManual;
+    if (manual) {
+      harassment.manual[manual] = event.target.value;
+      return;
+    }
+    if (event.target?.dataset?.guardJson !== undefined) {
+      harassment.exported = event.target.value;
+      return;
+    }
     if (!field) return;
     harassment.draft ||= {};
-    if (field === "enabled") harassment.draft.enabled = !!event.target.checked;
-    else if (field === "window_seconds" || field === "max_messages") harassment.draft[field] = Number(event.target.value);
+    if (event.target.type === "checkbox") harassment.draft[field] = !!event.target.checked;
+    else if (event.target.type === "number") harassment.draft[field] = Number(event.target.value);
     else harassment.draft[field] = event.target.value;
   }
 
   function onGuardClick(event) {
-    const save = event.target?.closest?.("[data-guard-save]");
-    if (save) { void saveHarassment(); return; }
+    const tab = event.target?.closest?.("[data-guard-tab]");
+    if (tab) { harassment.tab = tab.dataset.guardTab; renderPanels(); return; }
+    if (event.target?.closest?.("[data-guard-save]")) { void saveHarassment(); return; }
+    if (event.target?.closest?.("[data-guard-retry]")) { void loadHarassment(); return; }
     const unblock = event.target?.closest?.("[data-guard-unblock]");
     if (unblock) {
-      void unblockHarassment(unblock.dataset.guardUnblock, unblock.dataset.guardScope);
+      void guardMutate("/unblock", {scope: unblock.dataset.guardScope,
+        user_id: unblock.dataset.guardUnblock}, "已解除。");
       return;
     }
-    if (event.target?.closest?.("[data-guard-retry]")) void loadHarassment();
+    const extend = event.target?.closest?.("[data-guard-extend]");
+    if (extend) {
+      void guardMutate("/extend", {scope: extend.dataset.guardScope,
+        user_id: extend.dataset.guardExtend, hours: Number(extend.dataset.guardHours)}, "期限已更新。");
+      return;
+    }
+    const falsePositive = event.target?.closest?.("[data-guard-false]");
+    if (falsePositive) {
+      void guardMutate("/false-positive", {scope: falsePositive.dataset.guardScope,
+        user_id: falsePositive.dataset.guardFalse, note: "页面标记误伤"}, "已按误伤解除。");
+      return;
+    }
+    if (event.target?.closest?.("[data-guard-manual-add]")) {
+      const scope = String(harassment.manual.scope || "").trim();
+      const user = String(harassment.manual.user || "").trim();
+      if (!scope || !user) { harassment.notice = "手动拉黑需要填写窗口和用户 ID。"; harassment.bad = true; renderPanels(); return; }
+      void guardMutate("/block", {scope, user_id: user, hours: Number(harassment.manual.hours) || 0,
+        note: "页面手动加入"}, "已加入黑名单。");
+      return;
+    }
+    if (event.target?.closest?.("[data-guard-export]")) {
+      harassment.busy = true;
+      void guardRequest("POST", "/export", {scope: ""}).then(document => {
+        harassment.exported = JSON.stringify(document, null, 2);
+        harassment.notice = "已导出到下框。";
+        harassment.bad = false;
+      }).catch(error => {
+        harassment.notice = "导出失败：" + (error?.message || "未知错误");
+        harassment.bad = true;
+      }).finally(() => { harassment.busy = false; renderPanels(); });
+      return;
+    }
+    if (event.target?.closest?.("[data-guard-import]")) {
+      let document;
+      try { document = JSON.parse(harassment.exported || "{}"); }
+      catch { harassment.notice = "下方 JSON 无法解析。"; harassment.bad = true; renderPanels(); return; }
+      void guardMutate("/import", {document}, "已导入。");
+    }
   }
 
   function mount(node, options = {}) {
