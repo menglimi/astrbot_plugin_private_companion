@@ -1006,6 +1006,19 @@ class DeepSeekNewsAdapterTests(unittest.IsolatedAsyncioTestCase):
         port = configured_search_port(context, query="科技",
                                       deepseek_provider_id="invalid-search-provider-selection")
         self.assertIsNone(port)
+    async def test_source_priority_picks_which_source_is_tried_first(self):
+        provider = SimpleNamespace(id="deepseek_a", provider_config={"api_base": "https://api.deepseek.com/v1"},
+                                   get_current_key=lambda: "provider-secret")
+        context = SimpleNamespace(get_all_providers=lambda: [provider],
+            get_config=lambda **kwargs: {"provider_settings": {
+                "web_search": True, "websearch_provider": "tavily", "websearch_tavily_key": ["fixture-key"]}})
+        with patch.dict("os.environ", {"COMPANION_V2_DEEPSEEK_API_KEY": "", "DEEPSEEK_API_KEY": ""}):
+            astrbot_first = configured_search_port(context, query="科技", deepseek_provider_id="deepseek_a",
+                                                   source_priority="astrbot")
+            deepseek_first = configured_search_port(context, query="科技", deepseek_provider_id="deepseek_a",
+                                                    source_priority="deepseek")
+        self.assertIsInstance(astrbot_first, AstrBotWebSearchNewsPort)
+        self.assertIsInstance(deepseek_first, DeepSeekSearchNewsPort)
     async def test_v1_astrbot_search_provider_remains_a_fallback(self):
         from astrbot.core.tools import web_search_tools
 
