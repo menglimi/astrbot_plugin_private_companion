@@ -1,5 +1,7 @@
 """Exact selection and role binding for invocation-local image references."""
 
+from .types import MAX_REFERENCE_IMAGES
+
 
 EDIT_REFERENCE_ROLES = frozenset({
     "identity", "outfit", "pose", "scene", "style", "background", "continuity", "edit_source",
@@ -17,8 +19,9 @@ def select_edit_tickets(arguments, inbound, saved_by_id):
     if indices is None:
         selected_inbound = tuple(inbound)
     else:
-        if (type(indices) is not list or len(indices) > 8
-                or any(type(index) is not int or not 0 <= index < 8 for index in indices)
+        if (type(indices) is not list or len(indices) > MAX_REFERENCE_IMAGES
+                or any(type(index) is not int or not 0 <= index < MAX_REFERENCE_IMAGES
+                       for index in indices)
                 or len(set(indices)) != len(indices)):
             raise ReferenceSelectionError("invalid_reference_indices")
         if any(index >= len(inbound) for index in indices):
@@ -26,7 +29,7 @@ def select_edit_tickets(arguments, inbound, saved_by_id):
         selected_inbound = tuple(inbound[index] for index in indices)
 
     reference_ids = arguments.get("reference_ids", [])
-    if (type(reference_ids) is not list or len(reference_ids) > 8
+    if (type(reference_ids) is not list or len(reference_ids) > MAX_REFERENCE_IMAGES
             or any(type(identifier) is not str or not identifier for identifier in reference_ids)
             or len(set(reference_ids)) != len(reference_ids)):
         raise ReferenceSelectionError("invalid_reference_ids")

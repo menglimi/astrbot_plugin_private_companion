@@ -10,6 +10,7 @@
 5. 真发了才关闭默认模型回复，其他插件仍能检测消息。
 """
 
+import json
 import unittest
 
 from companion_v2.relationships.private_access import DENIED_REPLY
@@ -169,3 +170,26 @@ class StrangerNoticeTests(StrangerFixture, unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await self.handle(group))
         self.assertIsNone(await self.handle(notice))
         self.assertEqual(self.sent_texts(), [])
+
+    async def test_every_stranger_attempt_is_visible_even_when_nothing_is_sent(self):
+        """被拒也是发生过的私聊：开关关掉、冷却拦住时仍要留下可解释的记录。"""
+        from astrbot_host.stranger_notice import CONTACT_KIND
+
+        app = await self.start_host()
+
+        await self.handle(self.event(identifier="first", sender="991"))
+        await self.handle(self.event(identifier="second", sender="991"))
+        self.set_config(app, stranger_notice_enabled=False)
+        await self.handle(self.event(identifier="third", sender="992"))
+        # 已配置的人与别的号不属于这条边界，不该被记进被拒名单。
+        await self.handle(self.event(identifier="configured", sender="200"))
+        await self.handle(self.event(identifier="foreign", login="555", sender="993"))
+
+        rows = app.runtime.read_all(
+            "SELECT document_json FROM memory_views WHERE kind = ?", (CONTACT_KIND,))
+        documents = {json.loads(row["document_json"])["peer"]: json.loads(row["document_json"])
+                     for row in rows}
+        self.assertEqual(set(documents), {"991", "992"})
+        self.assertEqual(documents["991"]["attempts"], 2)
+        self.assertEqual(documents["991"]["last_outcome"], "stranger_notice_cooldown")
+        self.assertEqual(documents["992"]["last_outcome"], "stranger_notice_disabled")

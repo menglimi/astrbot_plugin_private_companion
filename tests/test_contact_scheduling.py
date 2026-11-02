@@ -37,6 +37,29 @@ class ContactSchedulingTests(ContactScheduleFixture, unittest.IsolatedAsyncioTes
         app.contact_schedule.validate_diagnostic_origin(
             context, candidate["diagnostic_origin"], at, purpose="news")
 
+    async def test_synthetic_diagnostic_without_conversation_uses_current_persona(self):
+        host, _batch_id = await self.scheduled(automatic=False)
+        app = host.application
+        context = self.contact_context()
+        at = self.clock.now()
+        role_instruction = "当前角色人格提示"
+
+        with patch.object(app.contact_schedule, "latest_conversation", return_value=None):
+            candidate = await app.contact_schedule.synthetic_diagnostic_candidate(
+                context, "chat", at=at, test_id="attempt-without-history",
+                role_instruction=role_instruction)
+            receipt = candidate["diagnostic_origin"]["_diagnostic"]
+            self.assertEqual(candidate["role_instruction"], role_instruction)
+            self.assertIsNone(receipt["batch_id"])
+            self.assertEqual(receipt["source_mode"], "no_conversation")
+            app.contact_schedule.validate_diagnostic_origin(
+                context, candidate["diagnostic_origin"], at, purpose="chat",
+                role_instruction=role_instruction)
+            with self.assertRaises(TaskError):
+                app.contact_schedule.validate_diagnostic_origin(
+                    context, candidate["diagnostic_origin"], at, purpose="chat",
+                    role_instruction="changed persona")
+
     async def test_legacy_group_flows_are_not_considered_for_private_contact(self):
         host, batch_id = await self.scheduled()
         app = host.application

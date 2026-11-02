@@ -44,8 +44,13 @@ def inject_core_reaction_instruction(event, request, semantic, turn_id):
     context = core["prepared"]["context"]
     capable = semantic.reaction_capable(context)
     enabled = capable and semantic.reaction_available(context, turn_id)
-    core["_reaction_reply"] = core.get("_reaction_reply", {}) | {
-        "semantic": semantic, "context": context, "turn_id": turn_id, "enabled": enabled}
+    previous = core.get("_reaction_reply")
+    previous = previous if isinstance(previous, dict) else {}
+    core["_reaction_reply"] = previous | {
+        "semantic": semantic, "context": context, "turn_id": turn_id, "enabled": enabled,
+        # Kept here so an attempted/deferred turn still has a readable reason;
+        # the response observer logs it before any capture can run.
+        "reason": previous.get("reason", "")}
     if capable and INSTRUCTION not in (request.system_prompt or ""):
         request.system_prompt = ((request.system_prompt or "").rstrip() + "\n\n" + INSTRUCTION).lstrip()
     # The per-turn roll belongs to the current user message, not the system
@@ -94,20 +99,25 @@ def observe_core_reaction_response(event, response):
         return
     source = getattr(response, "completion_text", "") or ""
     cleaned, intent = extract_reply_intent(source)
-    reaction = core.get("_reaction_reply")
-    if (intent and isinstance(reaction, dict) and reaction.get("enabled")
-            and not getattr(response, "tools_call_name", ())):
-        reaction["intent"] = intent
-    if isinstance(reaction, dict) and reaction.get("enabled") and not getattr(response, "tools_call_name", ()):
-        _capture_reply_intent(core, source)
-        logger.info("[CompanionV2][media] stage=response event_ref=%s media=reaction authored_intent=%s lookup=%s reason=%s",
-                    core["prepared"].get("event_ref", "unknown"), bool(intent),
-                    bool(reaction.get("intent")), reaction.get("reason", "unset"))
+    # Strip before any side effect: capture/logging used to abort on a missing
+    # reason and leave the protocol in text AstrBot was about to send.
     if cleaned != source:
         response.completion_text = cleaned
         for part in getattr(getattr(response, "result_chain", None), "chain", ()):
             if isinstance(part, Plain):
                 part.text = extract_reply_intent(part.text)[0]
+    reaction = core.get("_reaction_reply")
+    try:
+        if (intent and isinstance(reaction, dict) and reaction.get("enabled")
+                and not getattr(response, "tools_call_name", ())):
+            reaction["intent"] = intent
+        if isinstance(reaction, dict) and reaction.get("enabled") and not getattr(response, "tools_call_name", ()):
+            _capture_reply_intent(core, source)
+            logger.info("[CompanionV2][media] stage=response event_ref=%s media=reaction authored_intent=%s lookup=%s reason=%s",
+                        core["prepared"].get("event_ref", "unknown"), bool(intent),
+                        bool(reaction.get("intent")), reaction.get("reason", "unset"))
+    except Exception:
+        logger.debug("[CompanionV2][media] reaction observer degraded", exc_info=True)
 
 
 async def prepare_core_reaction_message(event, message, *, authorize, segment_index=0, segment_count=1):

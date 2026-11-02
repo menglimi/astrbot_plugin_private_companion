@@ -10,7 +10,9 @@
 * **只发配置里那一行**：不建身份、不写 ``conversation_*``、不签发 grant、不读记忆。
 * **频率兜底**：同一账号冷却期内只回一次，另有每日总量上限（``0`` = 完全不回）。
 * **回执有界**：账号、时间、当天第几条、命中哪条配置——够回答"为什么回了这个人"，
-  也不构成第二份通讯录。
+  也不构成第二份通讯录。被拒的账号另记一条**有界**的联系记录（平台、收信号、账号、
+  次数、最后一次结果），供管理页显示"近期私聊被拒"；它不建身份、不写会话、
+  不签发任何 grant。
 
 属于本功能的一次产品选择：真发了这一句之后会关闭默认模型回复，把这一轮从 AstrBot
 自己的回复管线里拿走。既然插件已经作答，就不该让陌生人收到两条回复。
@@ -35,6 +37,7 @@ UPSERT = """INSERT INTO memory_views VALUES (?, ?, ?, ?, 'active', ?, ?, ?)
 
 COOLDOWN_KIND = "relationship.stranger_notice.v1"
 DAILY_KIND = "relationship.stranger_notice_day.v1"
+CONTACT_KIND = "relationship.stranger_contact.v1"
 OWNER = "relationship.stranger_notice"
 
 
@@ -115,6 +118,21 @@ class StrangerNotice:
             connection.execute(UPSERT, (view_id, view_id, kind, (row["revision"] + 1) if row else 1,
                                         encode(document), encode({"owner": OWNER}), stamp(at)))
 
+    def _touch_contact(self, route, at, outcome):
+        """Remember that this account tried to open a private chat.
+
+        A bounded contact ledger only: no subject, no binding, no grant and no
+        conversation row. It exists so the administrator can see who was turned
+        away even when nothing was sent (disabled, cooldown, daily cap).
+        """
+        view_id = "stranger-contact:" + route.platform_id + ":" + route.login + ":" + route.peer
+        document = self._read(view_id, CONTACT_KIND)
+        attempts = int(document.get("attempts") or 0) + 1
+        self._write(view_id, CONTACT_KIND, {
+            "version": 1, "platform_id": route.platform_id, "login": route.login, "peer": route.peer,
+            "first_seen_at": document.get("first_seen_at") or stamp(at),
+            "last_seen_at": stamp(at), "attempts": attempts, "last_outcome": outcome}, at)
+
     def _cooldown_ok(self, route, at, cooldown):
         if cooldown <= 0:
             return True
@@ -152,9 +170,11 @@ class StrangerNotice:
         if route is None:
             return None
         reported = False
+        outcome = ["stranger_notice_processing_failed"]
 
         def report(state, reason_code):
             nonlocal reported
+            outcome[0] = reason_code
             if reported:
                 return
             reported = True
@@ -202,6 +222,13 @@ class StrangerNotice:
             if not reported:
                 report("no_reply", "stranger_notice_processing_failed")
             return None
+        finally:
+            # Visibility outlives every gate: a stranger is listed even when the
+            # notice was disabled, rate-limited or failed to send.
+            try:
+                self._touch_contact(route, controller.now(), outcome[0])
+            except Exception:  # noqa: BLE001 - the ledger must never block message handling
+                pass
 
 
 async def refuse_stranger(controller, event, *, on_outcome=None):

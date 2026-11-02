@@ -4,7 +4,7 @@ import asyncio
 import unittest
 from unittest.mock import patch
 
-from astrbot_host.private_debounce import PrivateDebounce
+from astrbot_host.private_debounce import PrivateDebounce, PrivateDeliveryDedup
 from companion_v2.configuration.models import ConfigurationError
 from companion_v2.conversation.private_debounce import (
     Policy,
@@ -213,6 +213,43 @@ class PrivateDebounceStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await waiter, "closed")
         self.assertTrue(manager.closed)
         self.assertIsNone(manager.reserve("target", object(), "在吗"))
+
+
+class PrivateDeliveryDedupTests(unittest.TestCase):
+    def test_same_key_is_duplicate_within_the_window_and_expires(self):
+        now = [0.0]
+        dedup = PrivateDeliveryDedup(ttl_seconds=120, clock=lambda: now[0])
+        key = ("target", "1555918896")
+
+        self.assertFalse(dedup.duplicate(key))
+        now[0] = 0.65
+        self.assertTrue(dedup.duplicate(key))
+        now[0] = 120.0
+        self.assertFalse(dedup.duplicate(key))
+
+    def test_targets_and_message_ids_are_independent(self):
+        dedup = PrivateDeliveryDedup(clock=lambda: 0.0)
+
+        self.assertFalse(dedup.duplicate(("a", "1")))
+        self.assertFalse(dedup.duplicate(("b", "1")))
+        self.assertFalse(dedup.duplicate(("a", "2")))
+        self.assertTrue(dedup.duplicate(("a", "1")))
+
+    def test_limit_evicts_the_oldest_key(self):
+        now = [0.0]
+        dedup = PrivateDeliveryDedup(ttl_seconds=600, limit=2, clock=lambda: now[0])
+
+        self.assertFalse(dedup.duplicate(("a", "1")))
+        now[0] = 1.0
+        self.assertFalse(dedup.duplicate(("a", "2")))
+        now[0] = 2.0
+        self.assertFalse(dedup.duplicate(("a", "3")))
+        self.assertFalse(dedup.duplicate(("a", "1")))
+
+    def test_invalid_arguments_are_rejected(self):
+        for ttl, limit in ((0, 10), (-1, 10), (10, 0), (10, -1)):
+            with self.subTest(ttl=ttl, limit=limit), self.assertRaises(ValueError):
+                PrivateDeliveryDedup(ttl_seconds=ttl, limit=limit)
 
 
 if __name__ == "__main__":

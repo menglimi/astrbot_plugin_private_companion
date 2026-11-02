@@ -33,10 +33,6 @@ class WakeupAlarmMixin(RealityTouchCameraMixin, RealityTouchAudioMixin):
         return consent if isinstance(consent, dict) else {}
 
     def _reality_touch_capability_consented(self, user: dict[str, Any], capability: str) -> bool:
-        # 管理员（V2 核心管理身份或显式授权名单）默认可用，不再需要逐用户确认。
-        user_id = _single_line(user.get("user_id"), 120)
-        if user_id and self._is_configured_admin_user_id(user_id):
-            return True
         consent = self._reality_touch_consent(user)
         capabilities = consent.get("granted_capabilities")
         return (
@@ -818,11 +814,29 @@ class WakeupAlarmMixin(RealityTouchCameraMixin, RealityTouchAudioMixin):
                 except Exception:
                     context = {}
                 context = context if isinstance(context, dict) else {}
+                location = context.get("location") if isinstance(context.get("location"), dict) else {}
+                place = location.get("place") if isinstance(location.get("place"), dict) else {}
+                location_area = _single_line(
+                    place.get("area_label") or place.get("name") or place.get("parent_name"), 80
+                )
+                location_summary = {
+                    "available": location.get("available") is True,
+                    "area": location_area or ("已收到地点上报" if location.get("available") else ""),
+                    "captured_at": location.get("captured_at"),
+                    "age_seconds": location.get("age_seconds"),
+                }
+                connection_getter = getattr(self, "_mobile_connection_status", None)
+                try:
+                    connection = connection_getter(user_id) if user_id and callable(connection_getter) else {}
+                except Exception:
+                    connection = {}
                 mobile_observations.append(
                     {
                         "user_id": user_id,
                         "label": _single_line(row.get("label") or user_id, 80),
+                        "connections": connection.get("devices", []) if isinstance(connection, dict) else [],
                         "device": context.get("device") if isinstance(context.get("device"), dict) else {},
+                        "location": location_summary,
                         "activity": context.get("activity") if isinstance(context.get("activity"), dict) else {},
                         "telemetry": context.get("telemetry") if isinstance(context.get("telemetry"), dict) else {},
                     }

@@ -1345,6 +1345,11 @@
     if (documentTitle) documentTitle.textContent = `${pageMeta.name} · 陪伴`;
     const refresh = $("refresh");
     if (refresh) refresh.title = pageMeta.refresh;
+    /* 新用户默认权限是「用户」目录自己的规则，入口跟着标题走；其他两个视图
+       是关系总览和群聊，放这个按钮只会让人误以为它管的是当前视图。 */
+    const access = $("open-private-access");
+    if (access) access.hidden = next !== "people";
+    if (next === "people") void loadStrangers();
     const currentNotice = $("notice");
     currentNotice.hidden = !currentNotice.textContent || Boolean(noticeView && noticeView !== next);
     document.querySelectorAll(".tab").forEach((item) => {
@@ -1406,6 +1411,42 @@
     if (background && previous && (!selected || displayPersonKey(selected) !== previous)) renderDetail();
   }
 
+  function strangerRow(item) {
+    const row = document.createElement("li");
+    row.className = "stranger-row";
+    const who = document.createElement("strong");
+    who.textContent = `账号 ${item.peer || "未知"} · 收到方 ${item.login || "未知"}`;
+    const outcomes = {
+      stranger_notice_sent: "已回婉拒",
+      stranger_notice_disabled: "未回（婉拒已关闭）",
+      stranger_notice_cooldown: "未回（冷却中）",
+      stranger_notice_daily_cap: "未回（超每日上限）",
+      stranger_notice_delivery_unavailable: "未回（通道不可用）",
+      stranger_notice_send_failed: "未回（发送失败）",
+    };
+    const meta = document.createElement("small");
+    const seen = item.last_seen_at ? new Date(item.last_seen_at).toLocaleString() : "未知";
+    meta.textContent = `${outcomes[item.last_outcome] || "未回"} · 共 ${Number(item.attempts) || 0} 次 · 最近 ${seen}`;
+    row.append(who, meta);
+    return row;
+  }
+  /* 被拒私聊不在目录里（没有身份/路由），但管理员需要看到“谁在敲门”。
+     只读、有界，账号与时间而已，不在页面里提供授予入口。 */
+  async function loadStrangers() {
+    const section = $("stranger-contacts");
+    if (!section || !bridge) return;
+    try {
+      const payload = unwrap(await bridge.apiGet("acquaintance/strangers", {}));
+      const items = Array.isArray(payload?.items) ? payload.items : [];
+      const list = $("stranger-list");
+      if (list) list.replaceChildren(...items.map(strangerRow));
+      const count = $("stranger-count");
+      if (count) count.textContent = `${items.length} 人`;
+      section.hidden = !items.length;
+    } catch {
+      section.hidden = true;
+    }
+  }
   async function supplementDirectory(sequence, edits) {
     try {
       const result = unwrap(await bridge.apiGet(endpoint, {}));
@@ -1444,6 +1485,7 @@
       const result = unwrap(await bridge.apiGet(endpoint, {read_mode: "stored"}));
       if (sequence !== requestSequence) return;
       applyDirectory(result);
+      void loadStrangers();
       setSyncState("ready", result.directory_refresh_pending ? "本地关系已读取，正在更新补充资料" : "V2 数据已同步");
       if (!preserveNotice) notice("");
       if (result.directory_refresh_pending) void supplementDirectory(sequence, memberChangeSequence);
@@ -1533,6 +1575,11 @@
     activateGraphNode(target);
   });
   $("refresh").addEventListener("click", () => { notice(""); load(); });
+  /* 这里只做转发：设置弹窗由外壳（陪伴小屋）统一渲染，工作区里再画一份会
+     出现两套配置控件争同一个 sparse owner。 */
+  $("open-private-access")?.addEventListener("click", () => {
+    parent.postMessage({channel: "companion-workspace", kind: "open-settings", target: "private-access"}, "*");
+  });
   document.addEventListener("companion-mappings-change", () => { if (bridge) void load(); });
   document.addEventListener("companion-navigate-failed", (event) => {
     notice(event.detail?.message || "目标入口暂时不可用，请重新读取群聊目录后再试。", true);

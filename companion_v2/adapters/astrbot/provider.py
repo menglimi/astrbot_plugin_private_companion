@@ -8,6 +8,7 @@ The V2 gateway alone owns tool execution, fallback and durable accounting.
 from copy import copy, deepcopy
 from dataclasses import dataclass, replace
 from logging import getLogger
+import json
 import re
 from types import SimpleNamespace
 from uuid import uuid4
@@ -18,7 +19,7 @@ from companion_v2.model_gateway.failures import ModelFailure
 from companion_v2.model_gateway.models import Amount, CapturedModelOutput, LocalProvider, ProviderResponse
 from companion_v2.model_gateway.response_diagnostics import ResponseDiagnostics, ResponseTextSummary
 
-from .model_wire import build_wire, decode_response
+from .model_wire import build_wire, decode_response, decode_text_response
 from .native import check_version, native_id
 from .memory_output import capture, explicit_refusal, response_format
 from .streaming import StreamTranscript
@@ -29,6 +30,7 @@ from .provider_transport import definitely_not_sent, rejected_before_generation
 RESERVED_EXTRA = frozenset({"model", "messages", "tools", "functions", "function_call", "tool_choice",
     "stream", "stream_options", "max_tokens", "max_completion_tokens", "max_output_tokens", "n",
     "response_format", "extra_body"})
+STRUCTURED_TOOL = "emit_json"
 logger = getLogger(__name__)
 _MEDIA_KEYS = frozenset(("url", "image_url", "data", "data_base64", "video_data", "input_audio"))
 _SECRET_KEYS = frozenset(("api_key", "access_token", "authorization", "password", "secret", "token"))
@@ -176,6 +178,26 @@ def provider_fingerprint(native):
                    sorted(getattr(native, "default_params", {}))])
 
 
+def provider_class_matches(provider, classes):
+    """Class identity that also survives AstrBot re-importing provider modules."""
+    if provider is None:
+        return False
+    if isinstance(provider, classes):
+        return True
+    actual = type(provider)
+    return any(actual.__module__ == expected.__module__
+               and actual.__qualname__ == expected.__qualname__ for expected in classes)
+
+
+def provider_config_drift(expected, provider):
+    """List changed captured config keys without exposing their values."""
+    config = getattr(provider, "provider_config", None)
+    if not isinstance(config, dict):
+        return ("provider_config",)
+    return tuple(sorted(key for key, value in (expected or {}).items()
+                        if key not in config or not _same_config_value(value, config[key])))
+
+
 @dataclass(frozen=True)
 class UsageTariff:
     """Explicit rated cost in microUSD per million tokens; not a billing receipt."""
@@ -212,6 +234,29 @@ def _same_config_value(left, right):
         return digest(left) == digest(right)
     except (TypeError, ValueError):
         return left == right
+
+
+#: AstrBot 会把 0（自动）的上下文长度在运行时补成具体数值。
+#:
+#: 装配时捕获到的 ``max_context_tokens`` 可能还是 0；普通聊天之后宿主把它写成
+#: 供应商实际的窗口大小。这不是“模型配置被替换”，只是自动补全，不能据此拦住
+#: 主动联系等后台任务。超出这个集合的字段仍按原规则比较。
+AUTO_FILLED_CONFIG_KEYS = frozenset({"max_context_tokens"})
+
+
+def _is_auto_value(value):
+    return value in (0, None, "", "auto")
+
+
+def _is_concrete_limit(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _auto_filled_equivalent(key, expected, actual):
+    """同一个字段的“自动（0）”与“已补全的具体值”视为等价。"""
+    return (key in AUTO_FILLED_CONFIG_KEYS
+            and ((_is_auto_value(expected) and _is_concrete_limit(actual))
+                 or (_is_concrete_limit(expected) and _is_auto_value(actual))))
 
 
 #: 主回复任务的模型能力要求：只需要文本。
@@ -259,22 +304,42 @@ class AstrBotTextProvider:
         self.context, self.bridge, self.binding, self.provider_id = context, bridge, binding, provider_id
         self.native = context.get_provider_by_id(provider_id)
         self.verified_type = isinstance(self.native, classes)
-        if not self.verified_type and not looks_like_text_provider(self.native):
+        self.compat = (not self.verified_type
+                       and not looks_like_text_provider(self.native)
+                       and callable(getattr(self.native, "text_chat", None)))
+        if not self.verified_type and not looks_like_text_provider(self.native) and not self.compat:
             raise ValueError("provider needs the verified native provider class")
         self.provider_types, self.provider_type = classes, classes[0]
         native_config = getattr(self.native, "provider_config", {})
         native_kind = str(native_config.get("type") or "") if isinstance(native_config, dict) else ""
         client = getattr(self.native, "client", None)
-        openai_hooks = (callable(getattr(self.native, "_prepare_chat_payload", None))
+        openai_hooks = (not self.compat
+                        and callable(getattr(self.native, "_prepare_chat_payload", None))
                         and callable(getattr(self.native, "_parse_openai_completion", None))
                         and callable(getattr(client, "with_options", None)))
         # 只有具备 OpenAI 专用钩子的 provider 才走 OpenAI 分支；其余按归一化响应处理。
-        self.kind = ("openai" if openai_hooks
+        self.kind = ("compat" if self.compat else
+                     "openai" if openai_hooks
                      else "gemini" if native_kind.startswith("googlegenai") else "native")
-        self.config = deepcopy(self.native.provider_config)
+        protocol = " ".join((native_kind, type(self.native).__module__,
+                             type(self.native).__name__)).casefold()
+        self.is_anthropic = "anthropic" in protocol or "claude" in protocol
+        # Anthropic's messages.create has no response_format keyword: sending it
+        # raises TypeError before the request is even made.  Other native
+        # protocols are equally free to reject the OpenAI-only field, so only
+        # the OpenAI-compatible path opts in; the prompt already asks for JSON
+        # and the decoder accepts fenced JSON as a fallback.
+        self.supports_response_format = self.kind == "openai" and not self.is_anthropic
+        self.config = deepcopy(self.native.provider_config) if isinstance(
+            getattr(self.native, "provider_config", None), dict) else {}
         self.config_hash = digest(self.config)
-        self.model = self.native.get_model()
-        self.client = self.native.client
+        # 自动补全后的上下文长度快照：只用于后续漂移比较，不写回宿主配置。
+        self._auto_resolved = {}
+        get_model = getattr(self.native, "get_model", None)
+        self.model = (get_model() if callable(get_model) else
+                      str(self.config.get("model") or self.config.get("model_id") or ""))
+        self.client = getattr(self.native, "client", None)
+        self.output_key = self._output_key(self.model, output_parameter, protocol)
         self.parameters = frozenset(getattr(self.native, "default_params", {}))
         self.function_tool_type, self.tool_set_type = function_tool_type, tool_set_type
         self.tariff, self.output_parameter = tariff, output_parameter
@@ -295,7 +360,12 @@ class AstrBotTextProvider:
 
     def local_provider(self):
         capabilities = host_capabilities(self.config)
-        transport = ("astrbot_openai" if self.kind == "openai" else
+        if self.compat:
+            # text_chat is the host's public transport; V2 cannot inject its
+            # own tool loop into it, so do not advertise tools it cannot run.
+            capabilities = tuple(item for item in capabilities if item != "tools")
+        transport = ("astrbot_compat" if self.kind == "compat" else
+                     "astrbot_openai" if self.kind == "openai" else
                      "astrbot_gemini" if self.kind == "gemini" else "astrbot_native")
         return LocalProvider(self.binding, capabilities, self.maximum_output_tokens,
                              self.reserve, self.generate, transport=transport, default_streaming=self.streaming,
@@ -326,8 +396,15 @@ class AstrBotTextProvider:
         config = getattr(provider, "provider_config", None)
         if not isinstance(config, dict):
             return ("provider_config",)
-        return tuple(sorted(key for key, value in self.config.items()
-                            if key not in config or not _same_config_value(config[key], value)))
+        expected = {**self.config, **self._auto_resolved}
+        drifted = []
+        for key, value in expected.items():
+            if key not in config:
+                drifted.append(key)
+            elif (not _same_config_value(config[key], value)
+                  and not _auto_filled_equivalent(key, value, config[key])):
+                drifted.append(key)
+        return tuple(sorted(drifted))
 
     def _same_provider_kind(self, provider):
         """未登记或重新导入的宿主类，至少要是同一种 Provider 类型。"""
@@ -340,7 +417,9 @@ class AstrBotTextProvider:
         if current is None:
             raise TaskError("host_provider_changed", "original host provider is unavailable")
         if not self._provider_class_matches(current) and not (
-                looks_like_text_provider(current) and self._same_provider_kind(current)):
+                looks_like_text_provider(current) and self._same_provider_kind(current)
+                or self.compat and callable(getattr(current, "text_chat", None))
+                and self._same_provider_kind(current)):
             raise TaskError("host_provider_changed", "original host provider is unavailable")
         # AstrBot may rebuild provider instances when its provider registry is
         # refreshed. That is not a provider change if the model, configuration
@@ -356,7 +435,12 @@ class AstrBotTextProvider:
             if drifted:
                 detail += " (changed_keys: " + ", ".join(drifted) + ")"
             raise TaskError("host_provider_changed", detail)
-        self.native, self.client = current, current.client
+        self.native, self.client = current, getattr(current, "client", None)
+        # 宿主把“自动”补成具体值之后，把具体值记进快照；以后再变才继续判为漂移。
+        for key in AUTO_FILLED_CONFIG_KEYS & set(self.config):
+            resolved = current.provider_config.get(key)
+            if _is_concrete_limit(resolved) and _is_auto_value(self.config[key]):
+                self._auto_resolved[key] = resolved
 
     def _estimate(self, envelope, wire):
         estimated = wire.input_estimate()
@@ -439,6 +523,12 @@ class AstrBotTextProvider:
         self._current()
         native = copy(self.native)
         native.provider_config = deepcopy(self.config)
+        if self.kind == "compat":
+            result = await native.text_chat(prompt="Reply OK.", request_max_retries=1)
+            self._current()
+            if result is None:
+                raise ValueError("compat provider probe returned no result")
+            return
         if self.kind != "openai":
             # Gemini 客户端没有 OpenAI 的 with_options；重试次数由 request_max_retries 控制。
             payload = {"model": self.model, "messages": [{"role": "user", "content": "Reply OK."}],
@@ -454,11 +544,33 @@ class AstrBotTextProvider:
         # AstrBot 的 `_query` 固定以 stream=False 调用原生 client；payload 里
         # 再带 stream 会触发 `multiple values for keyword argument 'stream'`。
         payload = {"model": self.model, "messages": [{"role": "user", "content": "Reply OK."}],
-                   self.output_parameter: 8}
+                   self.output_key: 8}
         result = await native._query(payload, None, request_max_retries=1)
         self._current()
         if result is None:
             raise ValueError("native probe returned no result")
+
+    @staticmethod
+    def _output_key(model, configured, protocol):
+        """Pick the output-token field the selected protocol actually accepts."""
+        if "responses" in protocol:
+            return "max_output_tokens"
+        name = str(model or "").casefold()
+        if configured == "max_tokens" and name.startswith(("gpt-6", "gpt-5", "o1", "o3", "o4")):
+            return "max_completion_tokens"
+        return configured
+
+    @staticmethod
+    def _response_format_unsupported(error):
+        """Whether the provider rejected only the optional structured-output field."""
+        message = str(error).casefold()
+        if isinstance(error, TypeError):
+            return ("response_format" in message or "unexpected keyword" in message
+                    or "unexpected argument" in message)
+        if "response_format" not in message:
+            return False
+        status = getattr(error, "status_code", None)
+        return type(status) is int and status in (400, 404, 422)
 
     async def generate(self, envelope):
         receipt = "astrbot-model-" + uuid4().hex
@@ -479,6 +591,38 @@ class AstrBotTextProvider:
             self._current()
             native = copy(self.native)
             native.provider_config = deepcopy(self.config)
+            if self.kind == "compat":
+                # Providers that expose only AstrBot's public text_chat surface
+                # (for example plugin-provided MiMo/relay classes) still work
+                # for one-shot tasks.  V2 cannot own their tool loop, so the
+                # local capability set omits tools; the prompt and decoder are
+                # the same as every other transport.
+                response = await native.text_chat(prompt=None,
+                    contexts=deepcopy(wire.messages),
+                    model=envelope.model_override or self.model,
+                    request_max_retries=1)
+                if response is None:
+                    raise ValueError("compat provider returned no result")
+                observed.append(response)
+                diagnostics = observe_completion(response)
+                verified_refusal = explicit_refusal(response)
+                usage = self._usage(response)
+                receipt = self._receipt(response, receipt)
+                self._current()
+                await self.bridge.verify_role(envelope.original.event.scope,
+                    envelope.original.role_binding, envelope.original.host_role_instruction)
+                if wire.output_format == "memory_reflection":
+                    return ProviderResponse("generated", captured_output=capture(response),
+                        usage=usage, receipt_ref=receipt,
+                        diagnostics=replace(diagnostics, parse_state="captured"))
+                if verified_refusal:
+                    return ProviderResponse("generated",
+                        captured_output=CapturedModelOutput("", "refusal"), usage=usage,
+                        receipt_ref=receipt, diagnostics=replace(diagnostics, parse_state="refusal"))
+                draft, calls = decode_response(response, wire)
+                return ProviderResponse("generated", draft=draft, tool_calls=calls, usage=usage,
+                    receipt_ref=receipt, diagnostics=replace(diagnostics, parse_state="validated",
+                        visible=ResponseTextSummary.from_text(draft.text) if draft is not None else None))
             if self.kind == "openai":
                 native.client = self.client.with_options(max_retries=0)
                 if native.client.max_retries != 0:
@@ -505,7 +649,18 @@ class AstrBotTextProvider:
                                                           envelope.original.host_role_instruction)
                             await envelope.on_reply_prefix(draft)
                 transcript = StreamTranscript(native.client, on_content)
-            tools = self.tool_set_type(tools=[self.function_tool_type(**t, handler=None) for t in wire.tools]) if wire.tools else None
+            tool_specs = [self.function_tool_type(**t, handler=None) for t in wire.tools]
+            structured_tool = None
+            if (self.is_anthropic and wire.output_format not in ("conversation", "memory_reflection")
+                    and not wire.tools):
+                tool_specs.append(self.function_tool_type(
+                    name=STRUCTURED_TOOL,
+                    description="Return the final structured result for the current task.",
+                    parameters={"type": "object", "properties": {},
+                                "additionalProperties": True},
+                    handler=None))
+                structured_tool = STRUCTURED_TOOL
+            tools = self.tool_set_type(tools=tool_specs) if tool_specs else None
 
             async def parse(completion, offered):
                 # Retain actual usage even if the host parser rejects an empty/filtered result.
@@ -555,7 +710,7 @@ class AstrBotTextProvider:
                         return [message for message in messages if isinstance(message.get("content"), list)]
                     if image_materials(payload["messages"]) != image_materials(wire.messages):
                         raise ValueError("native preparation changed original images or their coverage and attribution")
-                payload[self.output_parameter] = envelope.max_output_tokens
+                payload[self.output_key] = envelope.max_output_tokens
             else:
                 # 原生 Gemini 接受 OpenAI 形状的 messages，由宿主转换为 generate_content；
                 # 输出上限使用 Gemini 认得的 max_tokens。
@@ -563,8 +718,10 @@ class AstrBotTextProvider:
                            "messages": deepcopy(_gemini_messages(wire.messages)),
                            "max_tokens": envelope.max_output_tokens}
             structured = response_format(envelope.original)
-            if structured is not None:
+            if structured is not None and self.supports_response_format:
                 payload["response_format"] = structured
+            if structured_tool is not None:
+                payload["tool_choice"] = {"type": "tool", "name": structured_tool}
             logger.debug("[CompanionV2][开发者追踪] 实际模型请求 provider=%s model=%s payload=%s",
                          self.provider_id, payload.get("model", self.model), _developer_payload(payload))
             self._current()
@@ -600,9 +757,25 @@ class AstrBotTextProvider:
                                     failure=ModelFailure.PREPARATION,
                                     diagnostics=diagnostics)
         failure = ModelFailure.TRANSPORT
+        async def dispatch_once():
+            return (await transcript.query(native, payload, tools) if transcript is not None
+                    else await native._query(payload, tools, request_max_retries=1))
         try:
-            response = (await transcript.query(native, payload, tools) if transcript is not None
-                        else await native._query(payload, tools, request_max_retries=1))
+            try:
+                response = await dispatch_once()
+            except Exception as error:
+                # A relay or native SDK may reject the OpenAI-only field even
+                # when its provider class looks OpenAI-compatible.  The error
+                # happens before generation, so one retry without the field is
+                # safe; the prompt still requires JSON and the decoder accepts
+                # a fenced object.
+                if "response_format" in payload and self._response_format_unsupported(error):
+                    logger.info("[CompanionV2] 模型协议不接受 response_format，降级重试 provider=%s error_type=%s",
+                                self.provider_id, type(error).__name__)
+                    payload.pop("response_format", None)
+                    response = await dispatch_once()
+                else:
+                    raise
             if self.kind != "openai":
                 # Gemini 的 LLMResponse 没有 OpenAI 解析钩子；直接观察归一化结果。
                 observed.append(response)
@@ -629,6 +802,22 @@ class AstrBotTextProvider:
                              self.provider_id)
                 return ProviderResponse("generated", captured_output=CapturedModelOutput("", "refusal"),
                                         usage=usage, receipt_ref=receipt, diagnostics=replace(diagnostics, parse_state="refusal"))
+            if structured_tool is not None:
+                names = list(response.tools_call_name or ())
+                arguments = list(response.tools_call_args or ())
+                if names == [structured_tool]:
+                    if len(arguments) != 1 or type(arguments[0]) is not dict:
+                        raise ValueError("structured tool result must be one JSON object")
+                    draft, calls = decode_text_response(
+                        json.dumps(arguments[0], ensure_ascii=False, separators=(",", ":")), wire)
+                    return ProviderResponse("generated", draft=draft, tool_calls=calls, usage=usage,
+                        receipt_ref=receipt, diagnostics=replace(diagnostics, parse_state="validated",
+                            visible=ResponseTextSummary.from_text(draft.text) if draft is not None else None))
+                if not names and isinstance(response.completion_text, str):
+                    draft, calls = decode_text_response(response.completion_text, wire)
+                    return ProviderResponse("generated", draft=draft, tool_calls=calls, usage=usage,
+                        receipt_ref=receipt, diagnostics=replace(diagnostics, parse_state="validated",
+                            visible=ResponseTextSummary.from_text(draft.text) if draft is not None else None))
             draft, calls = decode_response(response, wire)
             logger.debug("[CompanionV2][开发者追踪] 模型正文处理 provider=%s stage=decoded body=%r claims=%r tool_calls=%r",
                          self.provider_id, draft.text if draft is not None else None,

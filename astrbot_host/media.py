@@ -19,6 +19,25 @@ from companion_v2.execution.models import TaskError
 from .animation import inspect_animation
 
 
+# Transparent DNS proxies (Clash/mihomo ``fake-ip`` mode) answer ordinary
+# names from the RFC 2544 benchmarking range so that the proxy stack can route
+# them.  Such an address never belongs to a local service: the connector hands
+# the packet to the proxy, which resolves the original name again.  A name
+# resolved there is still a public fetch, so only that resolver answer may use
+# the exception.  A literal address in the range stays refused in
+# ``public_url``, and every other non-global answer (loopback, private,
+# link-local, CGNAT, cloud metadata) keeps its existing denial.
+_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+
+
+def _resolved_publicly(value):
+    """Whether a resolver answer may be connected to for a public attachment."""
+    address = ipaddress.ip_address(value)
+    if address.version == 6 and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    return address.is_global or address in _FAKE_IP_NETWORK
+
+
 def public_url(value):
     if type(value) is not str or not value or len(value) > 8192 or any(c.isspace() or ord(c) < 32 for c in value):
         raise TaskError("host_image_location_invalid", "image URL is invalid")
@@ -49,7 +68,7 @@ class PublicImageResolver(aiohttp.ThreadedResolver):
         values = await super().resolve(host, port, family)
         # Validate the addresses actually handed to the connector. A separate
         # DNS preflight would allow a later lookup to bind to a different host.
-        if not values or any(not ipaddress.ip_address(v["host"]).is_global for v in values):
+        if not values or any(not _resolved_publicly(v["host"]) for v in values):
             raise TaskError("host_image_location_invalid", "image attachment resolved outside the public network")
         return values
 

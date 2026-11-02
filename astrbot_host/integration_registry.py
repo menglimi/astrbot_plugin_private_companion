@@ -270,6 +270,9 @@ class UnifiedCompanionExtensionAPI:
     def mobile_pairing_candidates(self):
         return self._mobile_together.pairing_candidates()
 
+    def mobile_core_pairing_candidates(self):
+        return self._mobile_together.core_pairing_candidates()
+
     def reality_mobile_context(self, user_id):
         """Return the verified V2 identity used by the native Reality gateway.
 

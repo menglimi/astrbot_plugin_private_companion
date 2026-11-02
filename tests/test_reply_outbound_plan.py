@@ -87,6 +87,14 @@ class OutboundPlanContractTests(unittest.TestCase):
                                         first_text_sequence=1, text=REPLY_TEXT,
                                         inputs=(("event-1", "user-1"),)))
 
+    def test_group_reply_quotes_a_negative_onebot_message_id(self):
+        plan = outbound_plan(settings={"reply_quote_enabled": True}, scope_kind="group", sequence=1,
+                             first_text_sequence=1, text=REPLY_TEXT,
+                             inputs=(("-1990354492", "200"),))
+        self.assertEqual(plan.document(), {"quote": "-1990354492"})
+        with self.assertRaises(ValueError):
+            OutboundPlan("-0")
+
     def test_addressing_follows_the_same_sealed_trigger(self):
         plan = outbound_plan(settings={"reply_mention_speaker_enabled": True}, scope_kind="group", sequence=1,
                              first_text_sequence=1, text=REPLY_TEXT, inputs=SEALED_INPUTS)

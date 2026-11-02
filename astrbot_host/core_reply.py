@@ -505,6 +505,47 @@ def finish_core_reply_presence(event: Any, *, force=False) -> None:
             pass  # Optional presentation must not turn a returned send into an error.
 
 
+def repair_tool_call_history(contexts: Any) -> int:
+    """Drop tool-call batches whose tool results are no longer in the history.
+
+    AstrBot keeps one shared context list; trimming, another plugin's history
+    cleanup or an interrupted tool batch can leave an assistant message with
+    ``tool_calls`` but no matching ``tool`` messages.  OpenAI-compatible
+    providers reject that whole request with a 400, so remove the orphan batch
+    (and its stray tool messages) while keeping the assistant's visible text.
+    """
+    if not isinstance(contexts, list):
+        return 0
+    output, removed, index = [], 0, 0
+    while index < len(contexts):
+        message = contexts[index]
+        if not (isinstance(message, dict) and message.get("role") == "assistant"
+                and message.get("tool_calls")):
+            output.append(message)
+            index += 1
+            continue
+        end = index + 1
+        while (end < len(contexts) and isinstance(contexts[end], dict)
+               and contexts[end].get("role") == "tool"):
+            end += 1
+        calls = [call for call in message["tool_calls"] if isinstance(call, dict)]
+        answered = {str(part.get("tool_call_id")) for part in contexts[index + 1:end]
+                    if isinstance(part, dict)}
+        identifiers = [str(call.get("id")) for call in calls if call.get("id") is not None]
+        if identifiers and set(identifiers) <= answered:
+            output.append(message)
+            output.extend(contexts[index + 1:end])
+            index = end
+            continue
+        removed += 1
+        if str(message.get("content") or "").strip():
+            output.append({key: value for key, value in message.items() if key != "tool_calls"})
+        index = end
+    if removed:
+        contexts[:] = output
+    return removed
+
+
 def inject_core_reply_prompt(event: Any, req: Any) -> None:
     """Append only turn-stable V2 guidance to the selected core request."""
     state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)

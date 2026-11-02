@@ -541,6 +541,7 @@ button.summary-record:hover strong,.summary-memory:hover>strong,.summary-note:ho
 .search-result[aria-selected=true]>svg{color:var(--t-accent-ink)}
 .search-result>span{min-width:0}
 .search-result small{display:block;line-height:1.55;overflow-wrap:anywhere}
+.search-result mark{padding:0 .12em;border-radius:3px;background:var(--t-accent-quiet);color:inherit;font-weight:650}
 .search-empty{display:grid;gap:var(--sp-2);line-height:1.7}
 .search-empty::before{content:"";width:26px;height:1px;margin:0 auto var(--sp-1);background:var(--t-line-firm)}
 .search-hint{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3)}

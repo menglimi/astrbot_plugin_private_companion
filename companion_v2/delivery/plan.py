@@ -36,11 +36,21 @@ MAX_SPEECH_CHARS = 2000
 
 
 def _number(value, *, field_name):
-    """A platform message number or account id, in its canonical decimal form."""
+    """A platform account id, in its canonical decimal form."""
     if type(value) is not str or not value.isascii() or not value.isdecimal():
         raise ValueError(f"{field_name} requires the platform's decimal identifier")
     if not 1 <= len(value) <= 20 or value.startswith("0"):
         raise ValueError(f"{field_name} is outside the supported identifier range")
+    return value
+
+
+def _message_id(value):
+    """OneBot message ids are signed; account ids are not."""
+    if type(value) is not str or not value.isascii():
+        raise ValueError("quoted message requires the platform's decimal identifier")
+    digits = value[1:] if value.startswith("-") else value
+    if not digits.isdecimal() or not 1 <= len(digits) <= 19 or digits.startswith("0"):
+        raise ValueError("quoted message is outside the supported identifier range")
     return value
 
 
@@ -55,7 +65,7 @@ class OutboundPlan:
 
     def __post_init__(self):
         if self.quote:
-            _number(self.quote, field_name="quoted message")
+            _message_id(self.quote)
         for value in (self.mentions, self.faces, self.order):
             if type(value) is not tuple:
                 raise ValueError("outbound plan collections must be tuples")

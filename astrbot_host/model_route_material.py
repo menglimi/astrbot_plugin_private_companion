@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from companion_v2.conversation.media.models import MAX_REFERENCE_IMAGES
+
 KEYWORDS = ("模型", "视觉", "生图", "画图", "语音", "tts", "provider")
 INSTRUCTION = (
     "这是当前角色窗口实际生效的模型摘要，只列名称，不含密钥、额度或费用。"
@@ -95,7 +97,7 @@ def _online_edit_reference_limit(endpoint):
             return None
     if platform not in {"openai", "openrouter", "agnes", "sensenova", "doubao"}:
         return None
-    value = endpoint.get("max_reference_images", 1)
+    value = endpoint.get("max_reference_images", MAX_REFERENCE_IMAGES)
     return value if type(value) is int and value > 0 else None
 
 

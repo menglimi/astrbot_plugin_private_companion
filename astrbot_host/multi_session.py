@@ -57,7 +57,7 @@ from companion_v2.memory.reflection import reflection_profile
 from companion_v2.proactive.service import contact_profile, persona_judge_profile
 from companion_v2.role_work.journal.writing import writing_profiles
 from companion_v2.role_work.reader import reading_profile
-from companion_v2.role_work.state.maintenance import state_profile
+from companion_v2.role_work.state.maintenance import state_output_budget, state_profile
 from companion_v2.agenda.planning import planning_profile
 from .weather_settings import configured_weather_ports
 from companion_v2.role_work.growth.progress import growth_progress_profile
@@ -438,13 +438,13 @@ class MultiHostSession:
             binding=ProviderBinding("model.text", common.provider_id, native_types.version, provider_fingerprint),
             provider_id=common.provider_id, version=native_types.version, provider_type=native_types.provider_types,
             function_tool_type=native_types.function_tool, tool_set_type=native_types.tool_set,
-            tariff=common.tariff, maximum_output_tokens=common.max_output_tokens,
+            tariff=common.tariff, maximum_output_tokens=max(common.max_output_tokens, 8192),
             maximum_input_estimate=common.maximum_input_estimate, output_parameter=common.output_parameter,
             streaming=common.streaming)
         self.model._current()
         self.models = (self.model,) + assemble_providers(native_context, bridge=self.bridge,
             native_types=native_types, primary_id=common.provider_id, additional=common.additional_providers,
-            defaults=TextProviderSettings(common.provider_id, common.tariff, common.max_output_tokens,
+            defaults=TextProviderSettings(common.provider_id, common.tariff, max(common.max_output_tokens, 8192),
                 common.maximum_input_estimate, common.output_parameter, common.streaming))
         fallback_provider_id, replacement_rules = loaded_routing(common.fallback_provider_id,
             common.replacement_rules, (model.binding.provider for model in self.models))
@@ -457,7 +457,7 @@ class MultiHostSession:
                     contact_profile(common.provider_id, max_output_tokens=common.max_output_tokens),
                     persona_judge_profile(common.provider_id, max_output_tokens=common.max_output_tokens),
                     reflection_profile(common.provider_id, max_output_tokens=common.max_output_tokens),
-                    state_profile(common.provider_id, max_output_tokens=common.max_output_tokens),
+                    state_profile(common.provider_id, max_output_tokens=state_output_budget(common.max_output_tokens, self.models)),
                     planning_profile(common.provider_id, max_output_tokens=common.max_output_tokens),
                     growth_progress_profile(common.provider_id, max_output_tokens=common.max_output_tokens),
                     self_review_profile(common.provider_id, max_output_tokens=common.max_output_tokens),
@@ -798,6 +798,16 @@ class MultiHostSession:
                         context, captured.instruction, at=captured.at, settings=settings)
                     if reason and not group_high_intensity.allows(reason, closeout):
                         reason = ""
+                    if not reason and facts["has_image"] and self.core_reply_observations is not None:
+                        try:
+                            self.core_reply_observations.media(event, {
+                                "context": context, "native_input": captured,
+                                "event_id": captured.event_id,
+                                "turn_id": "core-reply:" + digest([context.key, captured.event_id]),
+                            }, collection_only=True)
+                        except Exception as error:
+                            logger.warning("[CompanionV2] 群表情后台收录调度降级 error_type=%s",
+                                           type(error).__name__)
                     from companion_v2.conversation.reply_settings import group_wakeup_settings
                     wakeup = group_wakeup_settings(settings)
                     return Outcome.success({"admitted": bool(reason), "reason": reason,

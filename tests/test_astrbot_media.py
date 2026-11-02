@@ -52,6 +52,23 @@ class StaticImageLoaderTests(unittest.IsolatedAsyncioTestCase):
         with patch("aiohttp.ThreadedResolver.resolve", AsyncMock(return_value=[{"host": "8.8.8.8"}])):
             self.assertEqual(await resolver.resolve("public.example"), [{"host": "8.8.8.8"}])
 
+    async def test_transparent_proxy_fake_ip_answers_are_public_but_literals_are_not(self):
+        """Clash/mihomo fake-ip answers are proxy routes, not local services."""
+        resolver = PublicImageResolver()
+        self.addAsyncCleanup(resolver.close)
+        for address in ("198.18.0.22", "198.19.255.254", "::ffff:198.18.0.22"):
+            with self.subTest(address=address), patch(
+                    "aiohttp.ThreadedResolver.resolve", AsyncMock(return_value=[{"host": address}])):
+                self.assertEqual(await resolver.resolve("multimedia.nt.qq.com.cn"), [{"host": address}])
+        for addresses in (["198.18.0.22", "10.0.0.1"], ["198.18.0.22", "127.0.0.1"]):
+            with self.subTest(addresses=addresses), patch(
+                    "aiohttp.ThreadedResolver.resolve", AsyncMock(return_value=[{"host": v} for v in addresses])):
+                with self.assertRaises(TaskError):
+                    await resolver.resolve("public.example")
+        with self.assertRaises(TaskError) as caught:
+            public_url("https://198.18.0.22/image")
+        self.assertEqual(caught.exception.code, "host_image_location_invalid")
+
     async def test_obfuscated_numeric_hosts_cannot_bypass_the_checked_resolver(self):
         for host in ("2130706433", "127.1", "0177.0.0.1", "127.0.0.1.", "１２７.０.０.１"):
             with self.subTest(host=host), patch("astrbot_host.media.aiohttp.ClientSession") as session:

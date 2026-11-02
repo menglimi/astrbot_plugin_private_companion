@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 import asyncio
 import json
+import logging
 import re
 from typing import Any
 
@@ -27,6 +28,9 @@ from .core_reply import CORE_REPLY_CONTEXT_EXTRA
 from .core_reply_tool_execution import executor_for, supports_native_external
 
 
+logger = logging.getLogger(__name__)
+
+
 MEMORY_READ_ACTIONS = frozenset({
     "memory.query", "memory.legacy.query", "memory.sources", "memory.operation.get", "memory.query.status",
 })
@@ -35,7 +39,7 @@ GROUP_READ_ACTIONS = frozenset({"group.memory.query", "group.memory.legacy.query
 # Stable window-level manifests.  The order is part of the cached tool prefix:
 # append new actions at the end and bump TOOL_MANIFEST_VERSION when the schema
 # changes, never splice a tool in because one message looks special.
-TOOL_MANIFEST_VERSION = "2026-10-29.1"
+TOOL_MANIFEST_VERSION = "2026-10-31.2"
 LEAN_GROUP_TOOL_ORDER = ("group.participation.choose", "group.memory.query",
                          "group.memory.remember", "acquaintance.recall",
                          "reaction.search", "slang.search")
@@ -211,10 +215,9 @@ class CoreReplyToolSession:
         tools = app.tools
         offered = []
         if context.scope.kind is ScopeKind.PRIVATE:
-            if _field(self.prepared, "native_source_future") is not None:
-                for spec in tools.catalog:
-                    if spec.action == "source.read":
-                        offered.append(_OfferedTool(spec, "source"))
+            for spec in tools.catalog:
+                if spec.action == "source.read":
+                    offered.append(_OfferedTool(spec, "source"))
             if getattr(tools, "diagnostics", None) is not None:
                 for spec in tools.catalog:
                     if spec.action.startswith("diagnostics."):
@@ -270,8 +273,13 @@ class CoreReplyToolSession:
             offered.extend(_OfferedTool(spec, "weather") for spec in weather.catalog_for(context))
         semantic = getattr(tools, "semantic", None)
         if semantic is not None:
-            offered.extend(_OfferedTool(spec, "semantic")
-                           for spec in semantic.catalog_for(context, self.turn_id, mount_stable=True))
+            try:
+                semantic_tools = tuple(semantic.catalog_for(context, self.turn_id, mount_stable=True))
+            except Exception as error:
+                logger.warning("[CompanionV2] 语义工具目录暂不可用，继续挂载其他能力 error_type=%s",
+                               type(error).__name__)
+            else:
+                offered.extend(_OfferedTool(spec, "semantic") for spec in semantic_tools)
             news = getattr(semantic, "news_context", None)
             if news is not None:
                 offered.extend(_OfferedTool(spec, "news") for spec in news.catalog_for(context))
@@ -280,12 +288,10 @@ class CoreReplyToolSession:
             native_tools = tuple(spec for spec in external.catalog_for(context) if supports_native_external(spec.action))
             offered.extend(_OfferedTool(spec, "external") for spec in native_tools)
             authoring = getattr(tools, "authoring", None)
-            if authoring is not None and _field(self.prepared, "native_input") is not None and _field(
-                    self.prepared, "native_source_future") is not None:
+            if authoring is not None:
                 offered.extend(_OfferedTool(spec, "authoring") for spec in authoring.catalog_for(
                     context, (spec.action for spec in native_tools)))
-        if _field(self.prepared, "native_source_future") is not None:
-            offered.append(_OfferedTool(EVIDENCE_SPEC, "evidence"))
+        offered.append(_OfferedTool(EVIDENCE_SPEC, "evidence"))
         if self.context.scope.kind is ScopeKind.GROUP and self.group_tool_profile in ("lean", "standard"):
             return group_tool_manifest(offered, self.group_tool_profile)
         return tuple(offered)
@@ -583,6 +589,12 @@ def inject_core_reply_tools(event, req, *, application):
         session = CoreReplyToolSession(event, state, application)
         state["_tool_session"] = session
     from .core_reply_image_prompt import core_image_tools, inject_core_image_prompt
+    # Consent is scoped to the exact AstrBot conversation. A new conversation id
+    # (persona switch, restart, new private session) makes every retained image
+    # capability invisible until it is provisioned for this scope again, so do it
+    # here, on the real event context, before the catalogue is filtered.
+    from .image_access import ensure_image_access
+    ensure_image_access(application.runtime, session.context, observed_at=application.tasks.now())
     offered, image_values = core_image_tools(session, session.catalog())
     semantic = getattr(application.tools, "semantic", None)
     if semantic is not None:

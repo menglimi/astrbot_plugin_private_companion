@@ -234,6 +234,34 @@ class NativeVoiceProviderTests(unittest.IsolatedAsyncioTestCase):
             context.get_using_tts_provider = lambda _: NS(get_audio=slow)
             self.assertIsNone(await native.render(task_context, "hello", timeout_seconds=0.001))
 
+    async def test_mimo_voice_clone_tool_bridge_is_used_when_no_astrbot_tts_exists(self):
+        task_context = NS(scope=NS(kind=NS(value="private"), platform="qq-main", session_id="200"))
+        calls = []
+
+        class MimoPlugin:
+            def __init__(self, audio):
+                self.audio = audio
+
+            async def synthesize_text(self, text, **kwargs):
+                calls.append((text, kwargs))
+                return str(self.audio)
+
+        plugin = MimoPlugin(self.audio)
+        tool = NS(handler=plugin.synthesize_text)
+        manager = NS(get_tool=lambda name: tool if name == "mimo_tts_speak" else None)
+        context = NS(get_using_tts_provider=lambda _: None,
+                     get_provider_by_id=lambda _: None,
+                     get_all_tts_providers=lambda: [],
+                     get_llm_tool_manager=lambda: manager)
+        with patch("astrbot_host.voice.get_astrbot_temp_path", return_value=str(self.root)), \
+                patch("astrbot_host.voice.get_astrbot_data_path", return_value=str(self.root)):
+            result = await NativeVoiceReply(context).render(task_context, "晚安")
+        self.assertIsNotNone(result)
+        self.assertEqual(base64.b64decode(result["data"]["file"].removeprefix("base64://")),
+                         self.audio.read_bytes())
+        self.assertEqual(calls[0][0], "晚安")
+        self.assertEqual(calls[0][1]["group_id"], "qq-main:FriendMessage:200")
+
     async def test_streamed_wav_lengths_are_finalized_before_returning_the_record(self):
         pcm = b"\x00\x00" * 4410
         header = (b"RIFF" + struct.pack("<I", 0xFFFFFF24) + b"WAVEfmt " + struct.pack("<IHHIIHH", 16,

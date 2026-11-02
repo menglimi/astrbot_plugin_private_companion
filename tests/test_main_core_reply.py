@@ -51,9 +51,21 @@ class CoreReplyEvent:
 
 
 class MainCoreReplyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_same_native_message_id_is_suppressed_before_a_second_turn(self):
+        plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
+        target = NS(target_id="target")
+        first, second, no_id = CoreReplyEvent(), CoreReplyEvent(), CoreReplyEvent()
+        first.message_obj.message_id = "1555918896"
+        second.message_obj.message_id = "1555918896"
+
+        self.assertFalse(plugin._private_delivery_duplicate(first, target))
+        self.assertTrue(plugin._private_delivery_duplicate(second, target))
+        self.assertFalse(plugin._private_delivery_duplicate(no_id, target))
+
     async def test_admitted_private_turn_uses_core_and_rechecks_before_delivery(self):
         plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
         event = CoreReplyEvent()
+        event.message_obj.message_id = "1555918896"
         target = NS(key="target", target_id="target")
         prepared = {
             "context": object(),
@@ -86,6 +98,11 @@ class MainCoreReplyTests(unittest.IsolatedAsyncioTestCase):
 
         staging.persona_mapping_for_event.assert_not_awaited()
         staging.prepare_core_reply.assert_awaited_once_with(event, target, group_admission=None)
+        duplicate_event = CoreReplyEvent()
+        duplicate_event.message_obj.message_id = "1555918896"
+        await plugin.receive_companion_message(duplicate_event)
+        staging.prepare_core_reply.assert_awaited_once_with(event, target, group_admission=None)
+        self.assertFalse(getattr(duplicate_event, "sent", []))
         self.assertTrue(event.is_wake)
         self.assertTrue(event.is_at_or_wake_command)
         self.assertFalse(event.call_llm)

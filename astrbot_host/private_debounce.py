@@ -342,3 +342,44 @@ class PrivateDebounce:
             for item in pending:
                 item.state = "closed"
                 item.wake.set()
+
+
+class PrivateDeliveryDedup:
+    """Suppress a repeated delivery of the same native message id.
+
+    AstrBot can emit one platform message more than once (adapter reconnect,
+    duplicate acknowledgement, or a file upload event arriving beside the
+    message event).  The private text debounce is not a substitute: media and
+    file messages do not enter it, and the duplicate can arrive while the first
+    reply is still running.  Keys are scoped per target and expire quickly, so
+    a deliberate re-send later still reaches the model.
+    """
+
+    def __init__(self, ttl_seconds=120.0, limit=512, *, clock=time.monotonic):
+        if type(ttl_seconds) not in (int, float) or ttl_seconds <= 0:
+            raise ValueError("dedup window must be positive")
+        if type(limit) is not int or limit <= 0:
+            raise ValueError("dedup limit must be a positive integer")
+        self.ttl_seconds = float(ttl_seconds)
+        self.limit = limit
+        self._clock = clock
+        self._seen: dict[tuple[str, str], float] = {}
+
+    def duplicate(self, key: tuple[str, str]) -> bool:
+        """Record one delivery and report whether it is already in the window."""
+        now = self._clock()
+        previous = self._seen.get(key)
+        if previous is not None and now - previous < self.ttl_seconds:
+            return True
+        if len(self._seen) >= self.limit:
+            self._prune(now)
+            if len(self._seen) >= self.limit:
+                oldest = min(self._seen, key=self._seen.get)
+                self._seen.pop(oldest, None)
+        self._seen[key] = now
+        return False
+
+    def _prune(self, now: float) -> None:
+        expired = [key for key, at in self._seen.items() if now - at >= self.ttl_seconds]
+        for key in expired:
+            del self._seen[key]

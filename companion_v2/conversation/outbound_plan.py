@@ -66,10 +66,20 @@ def sealed_inputs(runtime, batch_id):
 
 
 def _native_number(value):
-    """Only a platform message number or account id may be quoted or addressed."""
+    """Only a platform account id may be quoted or addressed."""
     if type(value) is not str or not value.isascii() or not value.isdecimal():
         return ""
     if not 1 <= len(value) <= 20 or value.startswith("0"):
+        return ""
+    return value
+
+
+def _native_message_id(value):
+    """OneBot message ids are signed integers, unlike account ids."""
+    if type(value) is not str or not value.isascii():
+        return ""
+    digits = value[1:] if value.startswith("-") else value
+    if not digits.isdecimal() or not 1 <= len(digits) <= 19 or digits.startswith("0"):
         return ""
     return value
 
@@ -85,7 +95,7 @@ def quote_target(settings, *, text, inputs):
     threshold = settings.get("reply_quote_skip_chars", 0)
     if threshold and len("".join(text.split())) <= threshold:
         return ""
-    return _native_number(inputs[0][0])
+    return _native_message_id(inputs[0][0])
 
 
 def mention_targets(settings, *, inputs):
