@@ -596,3 +596,26 @@ button.summary-record:hover strong,.summary-memory:hover>strong,.summary-note:ho
 .all-function-card .all-function-subs{padding:var(--sp-3) var(--sp-4) var(--sp-4)}
 .all-function-card[hidden]{display:none}
 @media(max-width:650px){.all-function-fold-head{grid-template-columns:auto minmax(0,1fr) auto}.all-function-fold-preview{display:none}}
+.all-functions-loading,.all-functions-empty,.all-functions-error{display:grid;gap:var(--sp-3);padding:var(--sp-6);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface);color:var(--muted)}
+.all-functions-error{color:var(--danger)}
+.all-functions-notice{margin:0;color:var(--green);font-size:var(--fs-body)}
+.all-feature-domain{border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface);overflow:hidden}
+.all-feature-domain+.all-feature-domain{margin-top:var(--sp-3)}
+.all-feature-domain[hidden]{display:none}
+.all-feature-domain>summary{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);padding:var(--sp-4);cursor:pointer;list-style:none}
+.all-feature-domain>summary::-webkit-details-marker{display:none}
+.all-feature-domain>summary span{font-size:var(--fs-body);font-weight:600}
+.all-feature-domain>summary small{color:var(--muted);font-size:var(--fs-micro)}
+.all-feature-list{border-top:1px solid var(--t-line)}
+.all-feature-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:start;gap:var(--sp-3);padding:var(--sp-3) var(--sp-4);cursor:pointer;border-top:1px solid var(--t-line)}
+.all-feature-row:first-child{border-top:0}
+.all-feature-row:hover{background:var(--t-surface-sunken)}
+.all-feature-row.is-dirty{background:var(--t-accent-quiet)}
+.all-feature-row[hidden]{display:none}
+.all-feature-switch{display:flex;align-items:center;padding-top:2px}
+.all-feature-switch input{width:18px;height:18px;accent-color:var(--t-accent-ink);cursor:pointer}
+.all-feature-copy{display:grid;gap:3px;min-width:0}
+.all-feature-copy strong{font-size:var(--fs-body);font-weight:600}
+.all-feature-copy small{color:var(--muted);font-size:var(--fs-tiny);line-height:1.55}
+.all-feature-scope{color:var(--muted);font-size:var(--fs-micro);white-space:nowrap;padding-top:3px}
+@media(max-width:650px){.all-feature-row{grid-template-columns:auto minmax(0,1fr)}.all-feature-scope{display:none}}
