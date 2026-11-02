@@ -69,7 +69,11 @@
     "host-options.css": "f5dad033ba835a44008fe1f2d7e6114302c2c694ec598197e7f577b050974085",
     "huawei-health-page.js": "ab21d9aefb182aac53935ae3916e158af5a4539044d58ad541f85325cd651c56",
     "image-materials-page.js": "e69dff898f443616529aef67ffe90130e7f518ed140ea47f47adcb850cca041b",
+<<<<<<< HEAD
     "index.html": "551c5040d6dfbeb80f016d5a971a77983af57038fe120775639e92428b3f44bf",
+=======
+    "index.html": "f8e9017d9634ede4534bda818674e3939626592015f59d91fe990d5251ee7c5c",
+>>>>>>> ae00b6d31d1 (feat(search): 可指定搜索来源优先级，并把搜索端口接进多账号模式 (#472))
     "learning-hub.css": "2493307fee9bd35c37f979ae57408a79f9d305c4dd8634e615bde0601d4238ef",
     "learning-overview.js": "6e3f67eb7ce381e297020040b42e0293f606ec6d85998e7062681543f63e700d",
     "learning-page.css": "53023c0e6f097bfd7285a3084beec0d4d84b5f9fbefd415f84d0e5febee6b235",
@@ -83,8 +87,13 @@
     "migration-config-review.js": "a4425eadfb7bdf581acb2517d29311e4620b61014e9c3edc0c251ba66c7b9d22",
     "migration-config-table.css": "ecfec6bb849a6e7c13b1dbfb621a415a5725d1dde7776784806128bccb01f4d9",
     "migration-config-table.js": "415a19f08c44560542f5387e7880fe5b2137066e5656eefbe72a3e2c6d9d37b1",
+<<<<<<< HEAD
     "models-page.css": "29abbadd9867ff21e5373d2999c460b7098c37efbae55e4ca9c85a02ff0104d5",
     "models-page.js": "9dbdc6aaef63dd46198f85e92384f6fc919064dab6f6cd39d6b2ad8a0cc610de",
+=======
+    "models-page.css": "ffb3da27a038cbbb76bb9b60695297c14fa331bc0dd815dee8ed50e2fb5960e3",
+    "models-page.js": "50e44ccb0680d562df84757f84b8c0819105f375a09434c5c25c5f1f23f4ed76",
+>>>>>>> ae00b6d31d1 (feat(search): 可指定搜索来源优先级，并把搜索端口接进多账号模式 (#472))
     "module-ready.js": "f8c28a5c483221d98efd01234d92cc3132ec224ecb8bf3f7c62e352834e85dc7",
     "native-extension-management.js": "0b26e158231e755e15a8492d617b202d556c1ca7f122978b75e7086c6d4934fb",
     "native-extension-panel.css": "49d2103ed54d0fe85d093d7c410457d7c5762fb96e44fd6397a9fcd669ec28ab",

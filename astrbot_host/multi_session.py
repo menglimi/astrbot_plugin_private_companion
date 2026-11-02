@@ -408,9 +408,11 @@ class MultiHostSession:
     def __init__(self, runtime, native_context, *, settings, personas, authority, native_types,
                  provider_fingerprint, runtime_instance_id, now, native_tool_port=None, news_port=None,
                  solar_term_port=None, qzone_transport=None, balance_port=None, weather_ports=None,
-                 persona_window_snapshot_lookup=None, persona_window_snapshot_update=None):
+                 persona_window_snapshot_lookup=None, persona_window_snapshot_update=None,
+                 search_port_factory=None):
         self.runtime, self.settings, self.authority, self.types, self.now = runtime, settings, authority, native_types, now
         self.native_tool_port = native_tool_port
+        self.search_port_factory = search_port_factory
         self.huawei_health = get_huawei_health_service_for_root(runtime.data_root, logger=logger)
         common = settings.common
         weather_port, weather_alert_port = weather_ports or configured_weather_ports(None)
@@ -504,6 +506,7 @@ class MultiHostSession:
             weather_alert_port=weather_alert_port,
             balance_port=balance_port,
             news_port=news_port,
+            search_port_factory=search_port_factory,
             solar_term_port=solar_term_port,
             qzone_transport=qzone_transport,
             voice_policy=common.voice_reply_policy if common.voice_reply_enabled else None,

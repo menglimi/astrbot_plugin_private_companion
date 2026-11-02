@@ -1410,9 +1410,9 @@ test('search service binds and saves an AstrBot DeepSeek Provider id', async () 
   node.click('[data-search-save]');
   const save = requests.find(item => item.method === 'POST' && item.route === 'model/search/save');
   assert.deepEqual(JSON.parse(JSON.stringify(save.values)), {
-    revision: 'search-r1', changes: {deepseek_provider_id: 'deepseek_main'},
+    revision: 'search-r1', changes: {deepseek_provider_id: 'deepseek_main', source_priority: 'auto'},
   });
-  save.resolve({deepseek_provider_id: 'deepseek_main', revision: 'search-r2', provider_available: true,
+  save.resolve({deepseek_provider_id: 'deepseek_main', source_priority: 'auto', revision: 'search-r2', provider_available: true,
     providers: [{id: 'deepseek_main', name: 'DeepSeek 主账号'}]});
   await flush();
   assert.match(node.innerHTML, /后续搜索立即生效/);
