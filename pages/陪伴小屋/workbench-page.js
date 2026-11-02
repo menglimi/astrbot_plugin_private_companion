@@ -2563,6 +2563,20 @@ window.CompanionWorkbench = (() => {
           resets_ = [];
           if (onStatus) onStatus(fresh);
         }
+        /* 🔴 保存成功后广播「这个分区已落盘」。
+         *
+         * 为什么必需：本工作台的基线（state.base）只在自己这条保存/读取路径上
+         * 更新，而**同样展示这份资料的其他编辑面**（例如「自我 → 角色档案」里
+         * 那个由 `CompanionRoleProfileDraft` 打开的整理草稿）各自留着一份
+         * 生成时的旧快照。它们的脏判断是「我的草稿 vs 我的旧基线」，
+         * 于是主页面明明已经保存，切分区仍然弹「还有未保存的改动」。
+         * （情绪 2026-11-02 报障：自我界面保存后切换仍提示未保存。）
+         *
+         * 只有 profile 这两个分区有对应的外部草稿监听者，所以只在这两处派发；
+         * 事件名沿用 role-profile-draft 既有的约定，不另造一套词汇。 */
+        const updatedEvent = {role_profile: "companion:role-profile-updated",
+          relationship_profile: "companion:relationship-profile-updated"}[group];
+        if (updatedEvent) document.dispatchEvent(new Event(updatedEvent));
         state.busy = false;
         /* 幂等重放：勾画两遍，视觉上区分「新写入」与「复用旧请求确认」。 */
         state.savedState = receipt.replayed ? " is-saved is-replayed" : " is-saved";

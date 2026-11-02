@@ -530,6 +530,26 @@ window.CompanionRoleProfileDraft = (() => {
       const changes = pending.body.changes;
       clearPendingApply(pending);
       for (const field of Object.keys(changes)) state.selectedFields?.delete(field);
+      /* 🔴 已写入的字段要同时更新草稿基线与当前值，否则 isDirty() 恒为真。
+       *
+       * isDirty() 比的是 fieldValues 与 draft.fields：
+       *   保存成功后 draft.fields 仍是**生成草稿时**的旧值，
+       *   fieldValues 仍是**用户改过**的新值 ⇒ 两者恒不相等
+       *   ⇒ 换任何分区都弹「还有未保存的改动」，可用户明明已经保存了。
+       * （情绪 2026-11-02 报障：自我界面保存后切换仍提示未保存。）
+       *
+       * 所以把两边都对齐到**刚写进去的值**：textarea 继续显示保存后的内容
+       * （不回落到旧草稿），而基线与当前值相等 ⇒ 不再计为未保存。
+       *
+       * ⚠️ 只处理真正写进去的那几个字段，不整个清空：用户可能还改了别的字段
+       * 但没勾选，那些改动必须继续算未保存，不能被这次保存顺手掩盖。 */
+      if (state.draft) {
+        state.draft.fields = state.draft.fields || {};
+        for (const [field, value] of Object.entries(changes)) {
+          state.draft.fields[field] = value;
+          state.fieldValues[field] = value;
+        }
+      }
       document.dispatchEvent(new Event(pending.target === "relationship_profile"
         ? "companion:relationship-profile-updated" : "companion:role-profile-updated"));
       const savedMessage = (receipt.replayed ? "原保存已确认" : "已保存") + " " + Object.keys(changes).length +
@@ -712,6 +732,28 @@ window.CompanionRoleProfileDraft = (() => {
   document.addEventListener("cancel", event => {
     if (event.target?.id === "roleProfileDraftDialog") cancelPendingGeneration();
   }, true);
+
+  /* 🔴 主编辑页保存成功后，把草稿的脏状态抹掉。
+   *
+   * `isDirty()` 比的是 fieldValues 与 draft.fields；而草稿一旦生成过，
+   * 那份 draft 对象就一直留在 state 里，**从不随外部保存更新**。
+   * 于是用户在主页面（角色档案/基础身份）保存之后，草稿这边仍然
+   * 认为「有改动没提交」，切任何分区都弹「还有未保存的改动」。
+   * （情绪 2026-11-02 报障：自我界面保存后切换仍提示未保存。）
+   *
+   * 外部保存意味着草稿已经过期（它的基线是保存前的资料），继续拿旧基线
+   * 判脏必然误报；直接丢弃草稿比假装它还准确更安全 —— 用户要看新内容
+   * 重新生成一次即可，而误报会拦住所有正常换页。 */
+  const dropStaleDraft = target => {
+    if (state.target !== target || !state.draft) return;
+    state.draft = null;
+    state.fieldValues = {};
+    state.selectedFields = null;
+  };
+  document.addEventListener("companion:role-profile-updated",
+    () => dropStaleDraft("role_profile"));
+  document.addEventListener("companion:relationship-profile-updated",
+    () => dropStaleDraft("relationship_profile"));
 
   /* 页面级未保存守卫（page-guards.js）用：草稿里改过但没提交的字段。
      valueOf() 的回落规则是「fieldValues 优先，否则用 draft.fields」，
