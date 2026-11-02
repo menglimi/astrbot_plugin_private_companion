@@ -4118,46 +4118,7 @@ const allFunctionsGroups=[
       ['存储','storage'],['备份','backup'],['迁移','migration']]],
   ]],
 ];
-function renderAllFunctionsPage(){
-  const groups=allFunctionsGroups.map(([title,items],index)=>{
-    const sectionId=`all-function-group-${index}`;
-    const cards=items.map(([key,icon,name,description,subs=[]])=>{
-      const life=key.startsWith('life:');
-      const next=life?'life':'manage', tab=life?key.slice('life:'.length):key;
-      const target=`${next}|${tab}`;
-      const chips=subs.length?`<div class="all-function-subs" aria-label="${escapeHTML(name)}的分段">${subs.map(([label,sub])=>
-        `<button type="button" class="all-function-sub" data-all-go="${target}|${escapeHTML(sub)}">${escapeHTML(label)}</button>`).join('')}</div>`:'';
-      const searchText=normalizeSearchText([name,description,...subs.map(([label])=>label)].join(' '));
-      return `<article class="all-function-card" data-all-search="${escapeHTML(searchText)}">
-        <header><span class="all-function-icon">${I(icon)}</span>
-          <span class="all-function-copy"><strong>${escapeHTML(name)}</strong><small>${escapeHTML(description)}</small></span></header>
-        <div class="all-function-card-actions">${button('打开',`data-all-go="${target}"`,'small')}</div>
-        ${chips}</article>`;
-    }).join('');
-    const preview=items.slice(0,4).map(([, , name])=>`<span>${escapeHTML(name)}</span>`).join('')
-      +(items.length>4?`<span>+${items.length-4}</span>`:'');
-    return `<details class="all-function-fold" id="${sectionId}"${index===0?' open':''}>
-      <summary class="all-function-fold-head">
-        <span class="all-function-fold-kicker">功能分组</span>
-        <span class="all-function-fold-title"><strong>${escapeHTML(title)}</strong><small>${items.length} 个入口</small></span>
-        <span class="all-function-fold-preview" aria-hidden="true">${preview}</span>
-        <span class="all-function-fold-toggle" aria-hidden="true">展开</span>
-      </summary>
-      <div class="all-function-fold-body"><div class="all-function-grid">${cards}</div></div>
-    </details>`;
-  }).join('');
-  const nav=allFunctionsGroups.map(([title],index)=>
-    `<button type="button" data-all-jump="all-function-group-${index}">${escapeHTML(title)}</button>`).join('');
-  return `<div class="all-functions-page">
-    <header class="all-functions-head"><div><p class="eyebrow">配置与功能</p><h1>全部功能</h1>
-      <p>把分散在各处的入口集中到一页，按功能分组；展开分组进入主页面，小标签直达分段。</p></div>
-      <div class="all-functions-actions">${button('回到小屋','data-shell-home','small')}${button(I('search')+' 搜索全部功能','data-open-search','small')}</div></header>
-    <nav class="all-functions-section-nav" aria-label="功能分组">${nav}</nav>
-    <label class="all-functions-filter"><span>筛选功能</span>
-      <input type="search" data-all-filter placeholder="功能名、说明或分段" autocomplete="off" />
-      <small data-all-filter-count></small></label>
-    ${groups}</div>`;
-}
+function renderAllFunctionsPage(){return renderAllFeatureBoard();}
 function filterAllFunctions(value){
   const query=normalizeSearchText(value).trim();
   let visible=0;
@@ -4174,6 +4135,169 @@ function filterAllFunctions(value){
   });
   const count=document.querySelector?.('[data-all-filter-count]');
   if(count)count.textContent=query?`${visible} 个入口`:'';
+}
+/* 全部功能：按 6.7.0 配置页的“功能开关总表”重做。只收真实布尔配置项，
+   按领域分组，行内切换、页面内保存；非布尔配置仍进入对应详情页。 */
+const allFeatureDomainOrder=["通用能力","私聊陪伴","用户与好感度","群聊功能","环境感知","外部记忆联动","长线主动","主动动作","图像与创作","实验功能","运行设置","其他功能"];
+const allFeatureDomainOf={
+  'expression.learning':'通用能力',reaction:'通用能力',recall:'通用能力',busy_gate:'通用能力',
+  web_understanding:'通用能力','role.growth.skills':'通用能力',
+  person:'用户与好感度',relationship_profile:'用户与好感度',private_access:'用户与好感度',role_profile:'私聊陪伴',
+  group_participation:'群聊功能',screen:'环境感知',knowledge:'环境感知',
+  'proactive.contact':'长线主动',qzone:'长线主动','photo.reference':'主动动作',
+  'image.output':'图像与创作',image_review:'图像与创作',quota:'图像与创作','content.authoring':'图像与创作',
+  wardrobe:'图像与创作',library:'图像与创作',budget:'运行设置',relay:'运行设置',
+};
+const allFeaturesState={roleKey:'',loading:false,loaded:false,attempted:false,error:'',notice:'',sections:{},draft:{},saving:false};
+function pluginRelativePath(path){
+  const prefix='/astrbot_plugin_private_companion/';
+  return typeof path==='string'&&path.startsWith(prefix)?path.slice(prefix.length):'';
+}
+function allFeatureFieldSpec(group,field){
+  const spec=window.CompanionConfigEditors?.spec?.[group]||{};
+  return {label:spec.labels?.[field]||field,help:spec.helps?.[field]||"",groupTitle:spec.title||group};
+}
+function allFeatureRows(section){
+  const rows=[],fields=section?.fields||{},settings=section?.settings||{};
+  for(const [field,meta] of Object.entries(fields)){
+    if(meta?.kind!=='boolean'||!(field in settings))continue;
+    const spec=allFeatureFieldSpec(section?.group_id||'',field);
+    rows.push({field,label:spec.label,help:spec.help});
+  }
+  return rows;
+}
+function allFeatureBoardGroups(){
+  const groups={};
+  for(const [name,section] of Object.entries(allFeaturesState.sections||{})){
+    const rows=allFeatureRows(section);
+    if(!rows.length)continue;
+    const domain=allFeatureDomainOf[name]||'其他功能';
+    (groups[domain]||(groups[domain]=[])).push({name,section,rows});
+  }
+  return allFeatureDomainOrder.filter(domain=>groups[domain]?.length).map(domain=>({domain,groups:groups[domain]}));
+}
+function allFeatureDirty(group,field,value){
+  const section=allFeaturesState.sections?.[group];
+  return section?Boolean(value)!==Boolean(section.settings?.[field]):false;
+}
+function allFeatureDirtyCount(){
+  let count=0;
+  for(const [group,fields] of Object.entries(allFeaturesState.draft||{}))
+    for(const [field,value] of Object.entries(fields))
+      if(allFeatureDirty(group,field,value))count+=1;
+  return count;
+}
+function allFeatureErrorText(error){
+  const code=error?.code||error?.message||'';
+  return window.CompanionProduct?.errorLabel?.(code)||String(error?.message||error||'读取配置失败');
+}
+function updateAllFeatureSaveState(){
+  const button=document.querySelector('[data-all-feature-save]');
+  if(!button)return;
+  const count=allFeatureDirtyCount();
+  button.disabled=allFeaturesState.saving||count===0;
+  button.textContent=allFeaturesState.saving?'正在保存…':count?`保存更改（${count}）`:'保存更改';
+}
+async function loadAllFeatures(){
+  if(allFeaturesState.loading)return;
+  const roleKey=window.CompanionProduct?.scopeKey?.()||'';
+  const endpoint=pluginRelativePath(window.CompanionProduct?.role?.()?.config_api);
+  allFeaturesState.loading=true;allFeaturesState.attempted=true;allFeaturesState.error='';allFeaturesState.loaded=false;
+  if(allFeaturesState.roleKey!==roleKey){allFeaturesState.roleKey=roleKey;allFeaturesState.sections={};allFeaturesState.draft={};}
+  if(manageTab==='all')paintPanel();
+  try{
+    if(!endpoint)throw new Error('当前角色没有配置入口');
+    const payload=await window.CompanionProduct.request('GET',endpoint);
+    const sections=payload?.sections||{};
+    allFeaturesState.sections=sections;
+    allFeaturesState.draft={};
+    for(const [name,section] of Object.entries(sections)){
+      allFeaturesState.draft[name]={};
+      for(const [field,meta] of Object.entries(section.fields||{}))
+        if(meta?.kind==='boolean'&&field in (section.settings||{}))
+          allFeaturesState.draft[name][field]=Boolean(section.settings[field]);
+    }
+    allFeaturesState.loaded=true;
+  }catch(error){allFeaturesState.error=allFeatureErrorText(error);}
+  finally{allFeaturesState.loading=false;if(manageTab==='all')paintPanel();}
+}
+async function saveAllFeatures(){
+  if(allFeaturesState.saving)return;
+  const endpoint=pluginRelativePath(window.CompanionProduct?.role?.()?.config_api);
+  if(!endpoint)return;
+  const pending=[];
+  for(const [group,fields] of Object.entries(allFeaturesState.draft||{})){
+    const changes={};
+    for(const [field,value] of Object.entries(fields))
+      if(allFeatureDirty(group,field,value))changes[field]=Boolean(value);
+    if(Object.keys(changes).length)pending.push({group,changes});
+  }
+  if(!pending.length)return;
+  allFeaturesState.saving=true;allFeaturesState.notice='';allFeaturesState.error='';
+  updateAllFeatureSaveState();
+  try{
+    for(const item of pending){
+      const section=allFeaturesState.sections[item.group];
+      const key=(globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random()}`).replace(/-/g,'');
+      await window.CompanionProduct.request('POST',endpoint+'/configure',{
+        section:item.group,operation_key:key,edit_token:section.edit_token,changes:item.changes});
+    }
+    allFeaturesState.notice='已保存';
+    await loadAllFeatures();
+  }catch(error){allFeaturesState.error=allFeatureErrorText(error);}
+  finally{allFeaturesState.saving=false;updateAllFeatureSaveState();}
+}
+function renderAllFeatureBoard(){
+  if(!allFeaturesState.loaded&&!allFeaturesState.loading&&!allFeaturesState.attempted)setTimeout(loadAllFeatures,0);
+  const dirtyCount=allFeatureDirtyCount();
+  const head=`<header class="all-functions-head"><div><p class="eyebrow">配置与功能</p><h1>全部功能</h1>
+    <p>按功能领域整理当前角色的功能开关；行内修改，页面内保存；复杂配置进入对应详情页。</p></div>
+    <div class="all-functions-actions">${button('回到小屋','data-shell-home','small')}
+      ${button('重新读取','data-all-feature-reload','small')}
+      ${button(dirtyCount?`保存更改（${dirtyCount}）`:'保存更改',`data-all-feature-save ${dirtyCount?'':'disabled'}`,'small primary')}</div></header>`;
+  if(allFeaturesState.loading&&!allFeaturesState.loaded)
+    return `<div class="all-functions-page">${head}<div class="all-functions-loading" role="status">正在读取全部配置…</div></div>`;
+  if(allFeaturesState.error)
+    return `<div class="all-functions-page">${head}<div class="all-functions-error" role="alert">${escapeHTML(allFeaturesState.error)}<button type="button" class="button small" data-all-feature-reload>重新读取</button></div></div>`;
+  const board=allFeatureBoardGroups();
+  const sections=board.map(({domain,groups})=>{
+    const id='all-feature-'+allFeatureDomainOrder.indexOf(domain);
+    const rows=groups.flatMap(({name,section,rows})=>rows.map(row=>{
+      const checked=Boolean(allFeaturesState.draft?.[name]?.[row.field]);
+      const dirty=allFeatureDirty(name,row.field,checked);
+      const search=normalizeSearchText([row.label,row.help,row.field,domain,section.group_id||''].join(' '));
+      return `<label class="all-feature-row${dirty?' is-dirty':''}" data-all-feature-search="${escapeHTML(search)}">
+        <span class="all-feature-switch"><input type="checkbox" data-all-feature-toggle data-all-feature-group="${escapeHTML(name)}" data-all-feature-field="${escapeHTML(row.field)}" ${checked?'checked':''}></span>
+        <span class="all-feature-copy"><strong>${escapeHTML(row.label)}</strong><small>${escapeHTML(row.help||row.field)}</small></span>
+        <span class="all-feature-scope">${escapeHTML(section.scope||'')}</span></label>`;
+    })).join('');
+    return `<details class="all-feature-domain" id="${id}" open>
+      <summary><span>${escapeHTML(domain)}</span><small>${groups.reduce((sum,item)=>sum+item.rows.length,0)} 项</small></summary>
+      <div class="all-feature-list">${rows}</div></details>`;
+  }).join('');
+  const nav=board.map(({domain})=>`<button type="button" data-all-feature-jump="all-feature-${allFeatureDomainOrder.indexOf(domain)}">${escapeHTML(domain)}</button>`).join('');
+  return `<div class="all-functions-page">${head}
+    ${allFeaturesState.notice?`<p class="all-functions-notice" role="status">${escapeHTML(allFeaturesState.notice)}</p>`:''}
+    <nav class="all-functions-section-nav" aria-label="功能领域">${nav}</nav>
+    <label class="all-functions-filter"><span>筛选功能</span>
+      <input type="search" data-all-feature-filter placeholder="功能名、说明或字段键" autocomplete="off" />
+      <small data-all-feature-count></small></label>
+    ${board.length?sections:'<div class="all-functions-empty" role="status">当前角色没有可读取的布尔功能开关。</div>'}
+  </div>`;
+}
+function filterAllFeatures(value){
+  const query=normalizeSearchText(value).trim();
+  let visible=0;
+  document.querySelectorAll?.('.all-feature-domain').forEach(section=>{
+    let shown=0;
+    section.querySelectorAll?.('.all-feature-row').forEach(row=>{
+      const hit=!query||(row.dataset.allFeatureSearch||'').includes(query);
+      row.hidden=!hit;if(hit)shown+=1;
+    });
+    section.hidden=shown===0;if(query)section.open=true;visible+=shown;
+  });
+  const count=document.querySelector?.('[data-all-feature-count]');
+  if(count)count.textContent=query?`${visible} 项`:'';
 }
 /* 分发表只保留 manageTabs 里的十六个页签。
    growth/base/state/reply/preferences 五个死键已删——它们既不在侧栏、
@@ -5262,6 +5386,9 @@ document.addEventListener('click',event=>{
   }
   if(el.dataset.allGo){const [next,tab,subtab='']=el.dataset.allGo.split('|');navigate(next,tab,subtab);return;}
   if(el.dataset.allJump){const target=document.getElementById(el.dataset.allJump);if(target){target.open=true;target.scrollIntoView({behavior:'smooth',block:'start'});}return;}
+  if(el.dataset.allFeatureReload!==undefined){allFeaturesState.error='';allFeaturesState.attempted=false;loadAllFeatures();return;}
+  if(el.dataset.allFeatureSave!==undefined){saveAllFeatures();return;}
+  if(el.dataset.allFeatureJump){const target=document.getElementById(el.dataset.allFeatureJump);if(target){target.open=true;target.scrollIntoView({behavior:'smooth',block:'start'});}return;}
   if(el.dataset.openSearch!==undefined){openSearch();return;}
   if(el.dataset.openNavigation!==undefined){navigate('manage','all');return;}
   if(el.dataset.closeNavigation!==undefined){$('#navigationDialog').close();return;}
@@ -5350,6 +5477,14 @@ document.addEventListener('click',event=>{
 document.addEventListener('change',event=>{
   const el=event.target;
   if(handleRoomEditorChange(el))return;
+  if(el.dataset.allFeatureToggle!==undefined){
+    const group=el.dataset.allFeatureGroup;
+    allFeaturesState.draft[group][el.dataset.allFeatureField]=el.checked;
+    el.closest?.('.all-feature-row')?.classList.toggle('is-dirty',
+      allFeatureDirty(group,el.dataset.allFeatureField,el.checked));
+    updateAllFeatureSaveState();
+    return;
+  }
   if(el.dataset.learningScopeTarget){
     if(changeLearningScope(el.dataset.learningScopeTarget,'target',el.value))paintPanel();
     return;
@@ -5385,7 +5520,7 @@ document.addEventListener('change',event=>{
 });
 document.addEventListener('input',event=>{
   const el=event.target;
-  if(el.dataset.allFilter!==undefined){filterAllFunctions(el.value);return;}
+  if(el.dataset.allFeatureFilter!==undefined){filterAllFeatures(el.value);return;}
   /* QQ 空间的草稿只在这里同步进状态：动作结束后整块重画，正文才不会丢。 */
   if(el.dataset.qzoneDraft==='publish'){qzoneState.publishDraft=el.value;qzoneCounts();}
   if(el.dataset.qzoneDraft==='reply'){qzoneState.replyDraft=el.value;qzoneState.replyDraftFor=Number(el.dataset.qzonePost);qzoneCounts();}
