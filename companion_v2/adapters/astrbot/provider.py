@@ -354,6 +354,14 @@ def _auto_filled_equivalent(key, expected, actual):
                  or (_is_concrete_limit(expected) and _is_auto_value(actual))))
 
 
+_CREDENTIAL_KEYS = frozenset(("key",))
+
+
+def _refreshable_credentials(drifted):
+    """面板重存 Provider 时只替换凭据，不替换模型和端点。"""
+    return bool(drifted) and set(drifted).issubset(_CREDENTIAL_KEYS)
+
+
 def provider_class_matches(provider, expected_types):
     """宿主刷新注册表时会重新导入适配器模块，类对象随之更换。
 
@@ -513,7 +521,19 @@ class AstrBotTextProvider:
         # instead of failing every background task admitted before the refresh.
         drifted = provider_config_drift(self.config, current, self._auto_resolved)
         parameters = frozenset(getattr(current, "default_params", {}) or {})
-        if current.get_model() != self.model or drifted or parameters != self.parameters:
+        model_changed = current.get_model() != self.model
+        parameters_changed = parameters != self.parameters
+        current_config = getattr(current, "provider_config", None)
+        credentials_present = (isinstance(current_config, dict)
+                               and all(key in current_config for key in drifted))
+        if (credentials_present and _refreshable_credentials(drifted)
+                and not model_changed and not parameters_changed):
+            logger.info("[CompanionV2] 宿主 Provider 凭据已刷新，后台任务改用当前凭据 provider=%s",
+                        self.provider_id)
+            self.config = deepcopy(current_config)
+            self.config_hash = digest(self.config)
+            drifted = ()
+        if model_changed or drifted or parameters_changed:
             if drifted:
                 logger.warning("[CompanionV2] 宿主 Provider 配置已变化 provider=%s keys=%s",
                                self.provider_id, ",".join(drifted))
