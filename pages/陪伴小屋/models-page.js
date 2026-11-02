@@ -1064,7 +1064,7 @@ window.CompanionModelsPage = (() => {
     try { const data = await api("GET", path + "/search"); if (!current(ticket, s)) return;
       if (!searchDirty(x) || x.stale) x.draft = {deepseek_provider_id: data.deepseek_provider_id || ""};
       x.data = data; x.loaded = true; x.stale = false; x.bad = false;
-      x.notice = data.provider_available ? "已读取 DeepSeek 搜索 Provider。" : "当前选择的 Provider 未加载或已失效；搜索不会自动切换。";
+      x.notice = data.provider_available ? "已读取 DeepSeek 搜索 Provider。" : "当前选择的 Provider 未加载或已失效；搜索会改用 AstrBot 里配置的搜索服务。";
     } catch (err) { if (!current(ticket, s)) return; x.bad = true; x.notice = fail(err, "无法读取搜索服务配置。"); }
     finally { x.loading = false; if (current(ticket, s)) render(); } }
   async function searchSave(s) { const x = s.search; if (x.busy || x.loading || !x.data || x.stale || !searchDirty(x)) return;
@@ -1072,7 +1072,7 @@ window.CompanionModelsPage = (() => {
     x.busy = true; x.notice = "正在保存搜索服务配置…"; render();
     try { const data = await api("POST", path + "/search/save", {revision: x.data.revision, changes}); if (!current(ticket, s)) return;
       x.data = data; x.draft = {deepseek_provider_id: data.deepseek_provider_id || ""}; x.stale = false; x.bad = false;
-      x.notice = data.provider_available ? "搜索 Provider 已保存，后续搜索立即生效。" : "配置已保存，但 Provider 当前不可用；搜索不会自动切换。";
+      x.notice = data.provider_available ? "搜索 Provider 已保存，后续搜索立即生效。" : "配置已保存，但 Provider 当前不可用；搜索会改用 AstrBot 里配置的搜索服务。";
     } catch (err) { if (!current(ticket, s)) return; x.bad = true; x.notice = fail(err, "搜索服务配置保存未完成。"); }
     finally { x.busy = false; if (current(ticket, s)) render(); } }
   function searchPane(s) { const x = s.search, data = x.data, draft = x.draft || {deepseek_provider_id: ""};
