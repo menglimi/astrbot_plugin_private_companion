@@ -37,7 +37,7 @@ from .settings import DELIVERY_AUTHORIZATION_TTL, INSTALLATION_PREFIX, PROFILE_P
 from .binding import describe_pin, event_identity, is_private_message, message_text, parse_bind_command
 from .calendar_command import receive_calendar_command
 from .binding_store import PendingBinding, binding_path, clear_binding, read_binding, write_binding
-from .news import configured_news_port
+from .news import configured_news_port, configured_search_port
 from .service_balance import configured_balance_port
 from .weather_settings import configured_weather_ports
 from .files.parsing import parser_availability
@@ -669,14 +669,22 @@ class AstrBotMultiController:
             image_settings_path=self.data_root / "model_image_routes.json",
             bundled_extensions=bundled_extensions, bundled_issues=bundled_issues,
             managed_extensions=MANAGED_EXTENSIONS)
-        search_provider_resolver = SearchSettingsStore(self.data_root).selected_provider_id
+        search_settings = SearchSettingsStore(self.data_root)
+        search_provider_resolver = search_settings.selected_provider_id
+        def search_port_factory(context, query, result_count):
+            return configured_search_port(self.context, query=query, result_count=result_count,
+                task_context=context, topic="general",
+                deepseek_provider_resolver=search_provider_resolver,
+                source_priority=search_settings.source_priority())
         self.session = MultiHostSession(self.runtime, self.context, settings=self.settings, personas=personas,
             authority=self.authority, native_types=self.native_types, provider_fingerprint=manifest["provider_fingerprint"],
             runtime_instance_id="astrbot-multi-" + uuid4().hex, native_tool_port=self.native_extensions, now=self.now,
             persona_window_snapshot_lookup=self.session_topology.persona_selection_snapshot,
             persona_window_snapshot_update=self.session_topology.update_persona_selection_snapshot,
             news_port=configured_news_port(self.config, context=self.context,
-                deepseek_provider_resolver=search_provider_resolver),
+                deepseek_provider_resolver=search_provider_resolver,
+                search_priority_resolver=search_settings.source_priority),
+            search_port_factory=search_port_factory,
             balance_port=configured_balance_port(self.config),
             weather_ports=configured_weather_ports(self.config),
             qzone_transport=build_qzone_transport(self.context, data_root=self.data_root),
