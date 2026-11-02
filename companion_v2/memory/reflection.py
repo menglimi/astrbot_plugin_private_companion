@@ -7,7 +7,7 @@ import logging
 
 from companion_v2.conversation.foreground import PromptMaterial, PromptRequest, SealedForegroundContext
 from companion_v2.conversation.models import InboundConversationEvent
-from companion_v2.execution.models import (Lane, ProviderBinding, SideEffect, TaskContext, TaskDefinition,
+from companion_v2.execution.models import (Lane, ProviderBinding, QUEUED, SideEffect, TaskContext, TaskDefinition,
     TaskError, TaskRegistration, TaskResult, TaskSpec, digest, encode, require, stamp)
 from companion_v2.execution.runner import ExactTaskRunner
 from companion_v2.execution.service import outcome
@@ -58,7 +58,13 @@ class MemoryReflection:
             raise ValueError("memory reflection must attach once to its original runtime")
         self.memory, self.gateway, self.tasks = memory, gateway, gateway.tasks
         self._require_running = require_running
-        self.runner = ExactTaskRunner(self.tasks, frozenset({KIND}), self._generate)
+        # Retain capacity refusals: MemoryReflectionJobs own this row's
+        # convergence by ID (they re-queue on the refusal code and retry), so a
+        # momentarily full lane must not retire the reservation.
+        # `runner.CAPACITY_REFUSALS` is the execution-layer notion of "capacity";
+        # `reflection_jobs.RETRYABLE` is this owner's retry policy. They answer
+        # different questions and are deliberately not the same constant.
+        self.runner = ExactTaskRunner(self.tasks, frozenset({KIND}), self._generate, retain_refusals=True)
 
     def _sequence(self, context):
         return self.runtime.read_one("SELECT COALESCE(MAX(sequence), 0) n FROM memory_changes WHERE owner_key = ?", (owner_key(context),))["n"]
@@ -270,6 +276,13 @@ class MemoryReflection:
                 self._invocations.discard(invocation)
             if not result.is_success:
                 return result
+            attempt = result.unwrap()
+            if attempt.task is not None and attempt.task.state in QUEUED:
+                # Nothing ran and the reservation is still queued: the supervisor
+                # refused this attempt transiently. Continuing the batch here would
+                # report unexecuted work as an owner result.
+                return Outcome.failed(attempt.refused or attempt.failure_code or "task_not_admitted",
+                                      "the reflection attempt was not admitted")
             return await self._after_run(context, batch_id)
         except TaskError as error:
             recovery.quarantine_stale(self, context, batch_id, error.code)
