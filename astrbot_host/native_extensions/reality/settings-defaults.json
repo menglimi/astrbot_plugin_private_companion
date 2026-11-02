@@ -1,7 +1,6 @@
 {
   "enabled": true,
   "authorized_user_ids": [],
-  "vision_provider_id": "",
   "audio": {
     "default_playback_volume": 35
   },

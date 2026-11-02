@@ -78,7 +78,6 @@
   },
   "draw_guess": {
     "enabled": true,
-    "vision_provider_id": "",
     "duration_seconds": 120,
     "max_guesses": 5
   },

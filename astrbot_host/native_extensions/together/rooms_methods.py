@@ -399,12 +399,28 @@ class TogetherRoomsMethods:
         return f'{binding.platform}:{kind}:{binding.session_id}'
 
     def _room_chat_provider(self, room: RoomSession | None) -> Any | None:
+        route_provider = self._task_route_provider(room.user_id, 'conversation.reply') if room else None
+        if route_provider is not None:
+            return route_provider
         if room is None or room.native_v2 is None:
-            return self._get_chat_provider()
-        provider = self._get_provider_by_id(room.native_v2.model_provider_id)
-        return provider if callable(getattr(provider, 'text_chat', None)) else None
+            provider = self._get_chat_provider()
+        else:
+            provider = self._get_provider_by_id(room.native_v2.model_provider_id)
+        if provider is not None and callable(getattr(provider, 'text_chat', None)):
+            return provider
+        getter = getattr(self.context, 'get_using_provider', None)
+        if room is not None and callable(getter):
+            try:
+                provider = getter(room.session_id)
+            except Exception:
+                provider = None
+        return provider if provider is not None and callable(getattr(provider, 'text_chat', None)) else None
 
     def _room_vision_provider(self, room: RoomSession | None) -> Any | None:
+        if room is not None:
+            routed = self._task_route_provider(room.user_id, 'screen.interpretation')
+            if routed is not None and self._provider_image_capability(routed) is not False:
+                return routed
         if room is None or room.native_v2 is None:
             return self._get_vision_provider()
         provider_id = str(getattr(self, 'vision_provider_id', '') or '').strip()

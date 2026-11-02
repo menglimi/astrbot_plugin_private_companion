@@ -241,8 +241,44 @@ class GameActivityMethods:
             raise
         return {'guess': item['guess'], 'correct': item['correct'], 'number': item['number']}
 
+    @staticmethod
+    def _game_image_capable(provider: Any) -> bool:
+        config = getattr(provider, 'provider_config', None) or getattr(provider, 'config', None) or {}
+        modalities = config.get('modalities') if isinstance(config, dict) else getattr(config, 'modalities', None)
+        if isinstance(modalities, (list, tuple, set)):
+            normalized = {str(item or '').strip().lower() for item in modalities}
+            return 'image' in normalized or 'vision' in normalized
+        return True
+
+    def _task_vision_provider(self, room: GameRoom) -> Any | None:
+        """Follow the panel's screen-interpretation route for the canvas image."""
+        integration = getattr(getattr(self, 'controller', None), 'integration', None)
+        resolver = getattr(integration, 'task_model_route', None)
+        user_id = str(getattr(room, 'creator_qq', '') or getattr(room, 'player_qq', '') or '').strip()
+        if not user_id or not callable(resolver):
+            return None
+        try:
+            route = resolver(user_id, 'screen.interpretation') or {}
+        except Exception:
+            return None
+        getter = getattr(self.context, 'get_provider_by_id', None)
+        if not callable(getter):
+            return None
+        for key in ('provider', 'fallback'):
+            provider_id = str(route.get(key) or '').strip()
+            if not provider_id:
+                continue
+            try:
+                provider = getter(provider_id)
+            except Exception:
+                continue
+            if (provider is not None and callable(getattr(provider, 'text_chat', None))
+                    and self._game_image_capable(provider)):
+                return provider
+        return None
+
     async def _guess_drawing(self, room: GameRoom, game: DrawGuessGame, image_data_url: str) -> str:
-        provider = None
+        provider = self._task_vision_provider(room)
         if self.draw_guess_vision_provider_id:
             getter = getattr(self.context, 'get_provider_by_id', None)
             if callable(getter):

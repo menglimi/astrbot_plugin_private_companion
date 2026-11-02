@@ -164,7 +164,7 @@ test('registered review, media and authoring tasks have searchable Chinese names
   const h = harness(), node = h.root(), data = status();
   const labels = {
     'proactive.judge': '主动联系复核',
-    'image_review': '图片审核',
+    'conversation.image_review': '图片审核',
     'conversation.context_image_caption': '图片摘要',
     'content.authoring.draft': '内容起草',
     'conversation.image_narration': '当前图片转述',
@@ -185,7 +185,7 @@ test('registered review, media and authoring tasks have searchable Chinese names
   }
   node.input('[data-model-search]', {value: '主动联系复核'});
   assert.match(node.innerHTML, /data-fncard="proactive.judge"/);
-  assert.doesNotMatch(node.innerHTML, /data-fncard="image_review"/);
+  assert.doesNotMatch(node.innerHTML, /data-fncard="conversation\.image_review"/);
   node.input('[data-model-search]', {value: ''});
   node.click('[data-model-sub]', {modelSub: 'map'});
   for (const [kind, label] of Object.entries(labels)) {

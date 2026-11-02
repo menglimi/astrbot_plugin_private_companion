@@ -138,6 +138,22 @@ class TogetherModelMethods:
             return provider
         return None
 
+    def _task_route_provider(self, user_id: str, kind: str) -> Any | None:
+        """Prefer the task panel's route so Together cannot drift from it."""
+        integration = getattr(getattr(self, 'controller', None), 'integration', None)
+        resolver = getattr(integration, 'task_model_route', None)
+        if not user_id or not callable(resolver):
+            return None
+        try:
+            route = resolver(user_id, kind) or {}
+        except Exception:
+            return None
+        for key in ('provider', 'fallback'):
+            provider = self._get_provider_by_id(_single_line(route.get(key), 160))
+            if provider is not None and callable(getattr(provider, 'text_chat', None)):
+                return provider
+        return None
+
     @staticmethod
     def _provider_image_capability(provider: Any) -> bool | None:
         if provider is None:
