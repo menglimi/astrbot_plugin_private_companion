@@ -5,6 +5,7 @@ window.CompanionDecisionPage = (() => {
     ["response", "bell", "回应判断"],
     ["tempo", "clock-3", "参与节奏"],
     ["safety", "shield", "沉默与安全"],
+    ["guard", "shield-alert", "防骚扰"],
     ["group", "users-round", "群聊参与"],
   ];
   const replyViewSections = {
@@ -15,6 +16,7 @@ window.CompanionDecisionPage = (() => {
   let root = null;
   let activeView = "overview";
   let replyStatus = null;
+  const harassment = {endpoint: "", data: null, draft: null, loading: false, busy: false, notice: "", bad: false};
 
   const icon = name => `<i data-lucide="${name}" aria-hidden="true"></i>`;
   const number = value => value == null || value === "" ? null
@@ -135,6 +137,7 @@ window.CompanionDecisionPage = (() => {
   }
 
   function panelMarkup(view) {
+    if (view === "guard") return guardMarkup();
     const s = setting();
     const g = participation();
     const replyReady = ready(s), groupReady = ready(g);
@@ -196,6 +199,7 @@ window.CompanionDecisionPage = (() => {
         response: `总闸 · ${replyReady ? on(s, "group_wakeup_enabled") ? "默认开" : "已关闭" : "读取中"}`,
         tempo: `冷群重启 · ${flag(s, "group_wakeup_cold_group_enabled")}`,
         safety: `沉默 · ${flag(s, "recall_silence_enabled")} · 护栏 ${replyReady ? ["enable_group_injection_guard", "enable_group_privacy_guard", "enable_group_reality_promise_guard"].filter(key => on(s, key)).length + " / 3" : "读取中"}`,
+        guard: harassment.data ? `已拦截 ${harassment.data.entries.length} 人 · ${harassment.data.settings.enabled ? "已开启" : "未开启"}` : "读取中",
         group: `复读跟读 · ${flag(g, "enable_group_repeat_follow")}`,
       };
       current.textContent = states[activeView] || states.overview;
@@ -225,6 +229,7 @@ window.CompanionDecisionPage = (() => {
     if (jokeHeading) jokeHeading.hidden = view !== "safety";
     const domainLink = root.querySelector?.("[data-decision-domain-link]");
     if (domainLink) domainLink.hidden = view !== "group";
+    if (view === "guard") void loadHarassment();
     window.CompanionReplyPage?.setDecisionView?.(view);
     const groupEditor = root.querySelector?.("#groupParticipationConfigWorkspace")?.companionConfigEditor;
     const groupSections = view === "safety" ? ["joke_guard"]
@@ -292,9 +297,160 @@ window.CompanionDecisionPage = (() => {
     root.addEventListener?.("keydown", onKeydown);
     root.addEventListener?.("input", onGroupInput);
     root.addEventListener?.("change", onGroupInput);
+    root.removeEventListener?.("click", onGuardClick);
+    root.removeEventListener?.("input", onGuardInput);
+    root.removeEventListener?.("change", onGuardInput);
+    root.addEventListener?.("click", onGuardClick);
+    root.addEventListener?.("input", onGuardInput);
+    root.addEventListener?.("change", onGuardInput);
     renderPanels();
     setView(activeView);
     window.lucide?.createIcons?.({nodes: root.querySelectorAll?.("[data-lucide]")});
+  }
+
+
+  function guardEscape(value) {
+    return String(value ?? "").replace(/[&<>"']/g, char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[char]));
+  }
+
+  function guardTime(value) {
+    const seconds = Number(value);
+    if (!Number.isFinite(seconds) || seconds <= 0) return "—";
+    const date = new Date(seconds * 1000);
+    return date.toLocaleString("zh-CN", {hour12: false});
+  }
+
+  function guardMarkup() {
+    const data = harassment.data;
+    if (!harassment.endpoint) {
+      return `<div class="decision-empty"><strong>防骚扰不可用</strong><p>当前页面没有拿到设置接口，请刷新后重试。</p></div>`;
+    }
+    if (harassment.loading && !data) return `<div class="decision-empty"><strong>正在读取防骚扰设置…</strong></div>`;
+    const draft = harassment.draft || (data ? {...data.settings, keywords: data.settings.keywords || ""} : null);
+    if (!draft) {
+      return `<div class="decision-empty"><strong>暂时无法读取防骚扰设置</strong><p>${guardEscape(harassment.notice || "请稍后重试。")}</p></div>`;
+    }
+    const entries = data?.entries || [];
+    const rows = entries.length ? entries.map(item => `
+      <tr>
+        <td><code>${guardEscape(item.user_id)}</code><small>${guardEscape(item.scope)}</small></td>
+        <td>${guardEscape(item.reason_text || item.reason || "手动加入")}${item.count ? ` · ${Number(item.count)} 条` : ""}</td>
+        <td>${guardTime(item.updated_at || item.created_at)}</td>
+        <td><button type="button" class="button small" data-guard-unblock="${guardEscape(item.user_id)}"
+          data-guard-scope="${guardEscape(item.scope)}" ${harassment.busy ? "disabled" : ""}>解除</button></td>
+      </tr>`).join("") : `<tr><td colspan="4" class="decision-empty-row">黑名单还是空的。命中限流或关键词后，对应用户会自动出现在这里。</td></tr>`;
+    return `<div class="guard-panel">
+      <div class="decision-stats decision-stats-four">
+        ${stat("限流", draft.enabled ? "已开启" : "未开启", `每 ${shown(draft.window_seconds)} 秒窗口`)}
+        ${stat("阈值", `${shown(draft.max_messages)} 条`, "超过后自动移入黑名单")}
+        ${stat("关键词", count(draft.keywords) + " 个", "命中任意一个也会拦截")}
+        ${stat("当前黑名单", `${entries.length} 人`, "可随时解除")}
+      </div>
+      <div class="guard-settings">
+        <label class="guard-switch"><input type="checkbox" data-guard-field="enabled" ${draft.enabled ? "checked" : ""} ${harassment.busy ? "disabled" : ""}>启用防骚扰</label>
+        <label>时间窗口（秒）<input type="number" min="10" max="86400" data-guard-field="window_seconds" value="${guardEscape(draft.window_seconds)}" ${harassment.busy ? "disabled" : ""}></label>
+        <label>窗口内最多消息<input type="number" min="2" max="500" data-guard-field="max_messages" value="${guardEscape(draft.max_messages)}" ${harassment.busy ? "disabled" : ""}></label>
+        <label class="guard-wide">触发关键词（逗号或换行分隔）<textarea rows="3" data-guard-field="keywords" ${harassment.busy ? "disabled" : ""}>${guardEscape(draft.keywords)}</textarea></label>
+        <button type="button" class="button primary" data-guard-save ${harassment.busy ? "disabled" : ""}>保存防骚扰设置</button>
+      </div>
+      <div class="guard-directory">
+        <div class="guard-heading"><h3>黑名单目录</h3><span>${entries.length} 人</span></div>
+        <table class="guard-table"><thead><tr><th>用户</th><th>原因</th><th>时间</th><th></th></tr></thead>
+          <tbody>${rows}</tbody></table>
+      </div>
+      ${harassment.notice ? `<div class="model-notice${harassment.bad ? " error" : ""}">${guardEscape(harassment.notice)}</div>` : ""}
+    </div>`;
+  }
+
+  async function guardRequest(method, path, body) {
+    const bridge = window.CompanionProduct?.bridgeNow?.() || await window.CompanionProduct?.bridgeFor?.();
+    if (!bridge) throw new Error("bridge_unavailable");
+    const endpoint = harassment.endpoint + path;
+    const response = method === "GET" ? await bridge.apiGet(endpoint) : await bridge.apiPost(endpoint, body);
+    const wrapped = ["ok", "error"].includes(response?.status) && response?.data !== undefined ? response
+      : ["ok", "error"].includes(response?.data?.status) && response?.data?.data !== undefined ? response.data : null;
+    if (wrapped?.status === "error") throw Object.assign(new Error(wrapped.message || "request_failed"), {code: wrapped.message});
+    const value = wrapped ? wrapped.data : response;
+    if (!value || typeof value !== "object") throw new Error("invalid_response");
+    return value;
+  }
+
+  async function loadHarassment() {
+    if (!harassment.endpoint || harassment.loading || harassment.busy) return;
+    harassment.loading = true;
+    harassment.notice = "";
+    renderPanels();
+    try {
+      const data = await guardRequest("GET", "");
+      harassment.data = data;
+      harassment.draft = {...data.settings};
+      harassment.bad = false;
+    } catch (error) {
+      harassment.bad = true;
+      harassment.notice = "读取防骚扰设置失败：" + (error?.message || "未知错误");
+    } finally {
+      harassment.loading = false;
+      renderPanels();
+    }
+  }
+
+  async function saveHarassment() {
+    if (!harassment.draft || harassment.busy) return;
+    harassment.busy = true;
+    harassment.notice = "正在保存防骚扰设置…";
+    renderPanels();
+    try {
+      const data = await guardRequest("POST", "/settings", {changes: harassment.draft});
+      harassment.data = data;
+      harassment.draft = {...data.settings};
+      harassment.notice = "防骚扰设置已保存。";
+      harassment.bad = false;
+    } catch (error) {
+      harassment.bad = true;
+      harassment.notice = "保存失败：" + (error?.message || "未知错误");
+    } finally {
+      harassment.busy = false;
+      renderPanels();
+    }
+  }
+
+  async function unblockHarassment(userId, scope) {
+    if (harassment.busy) return;
+    harassment.busy = true;
+    harassment.notice = "正在解除…";
+    renderPanels();
+    try {
+      const data = await guardRequest("POST", "/unblock", {scope, user_id: userId});
+      harassment.data = {...(harassment.data || {}), entries: data.entries};
+      harassment.notice = "已解除该用户的拦截。";
+      harassment.bad = false;
+    } catch (error) {
+      harassment.bad = true;
+      harassment.notice = "解除失败：" + (error?.message || "未知错误");
+    } finally {
+      harassment.busy = false;
+      renderPanels();
+    }
+  }
+
+  function onGuardInput(event) {
+    const field = event.target?.dataset?.guardField;
+    if (!field) return;
+    harassment.draft ||= {};
+    if (field === "enabled") harassment.draft.enabled = !!event.target.checked;
+    else if (field === "window_seconds" || field === "max_messages") harassment.draft[field] = Number(event.target.value);
+    else harassment.draft[field] = event.target.value;
+  }
+
+  function onGuardClick(event) {
+    const save = event.target?.closest?.("[data-guard-save]");
+    if (save) { void saveHarassment(); return; }
+    const unblock = event.target?.closest?.("[data-guard-unblock]");
+    if (unblock) {
+      void unblockHarassment(unblock.dataset.guardUnblock, unblock.dataset.guardScope);
+      return;
+    }
+    if (event.target?.closest?.("[data-guard-retry]")) void loadHarassment();
   }
 
   function mount(node, options = {}) {
@@ -303,7 +459,9 @@ window.CompanionDecisionPage = (() => {
       unmount();
       root = node;
     }
+    harassment.endpoint = typeof options.harassmentApi === "string" ? options.harassmentApi : "";
     render(options.groupSettingsMarkup || "");
+    if (harassment.endpoint && !harassment.data) void loadHarassment();
   }
 
   function updateReplyStatus(status) {
@@ -321,8 +479,15 @@ window.CompanionDecisionPage = (() => {
       root.removeEventListener?.("keydown", onKeydown);
       root.removeEventListener?.("input", onGroupInput);
       root.removeEventListener?.("change", onGroupInput);
+      root.removeEventListener?.("click", onGuardClick);
+      root.removeEventListener?.("input", onGuardInput);
+      root.removeEventListener?.("change", onGuardInput);
     }
     root = null;
+    harassment.endpoint = "";
+    harassment.data = null;
+    harassment.draft = null;
+    harassment.notice = "";
     replyStatus = null;
   }
 

@@ -40,7 +40,15 @@ class ReplyWebAPI:
                 (PREFIX + "/style/command", self.style_command, ["POST"],
                  "Decide a learned expression signal"),
                 (PREFIX + "/recalls", self.recalls, ["GET"],
-                 "Read this window's withdrawn messages within the configured bound")]
+                 "Read this window's withdrawn messages within the configured bound"),
+                (PREFIX + "/harassment", self.harassment, ["GET"],
+                 "Read anti-harassment settings and the blacklist directory"),
+                (PREFIX + "/harassment/settings", self.harassment_settings, ["POST"],
+                 "Save anti-harassment thresholds"),
+                (PREFIX + "/harassment/block", self.harassment_block, ["POST"],
+                 "Move one private user into the blacklist"),
+                (PREFIX + "/harassment/unblock", self.harassment_unblock, ["POST"],
+                 "Remove one private user from the blacklist")]
 
     def _tts_catalog(self):
         from .voice import tts_provider_catalog
@@ -305,3 +313,100 @@ class ReplyWebAPI:
             return outcome_response(Outcome.failed(error.code, str(error)))
         except (ValueError, TypeError, KeyError):
             return outcome_response(Outcome.failed("recall_request_invalid", "invalid recall query"))
+
+
+    # ---- 防骚扰：决策页管理设置与黑名单目录 ----
+
+    def _harassment_runtime(self):
+        controller = self.controller
+        if getattr(controller, "_terminated", False):
+            raise TaskError("staging_host_terminated", "plugin is stopped")
+        runtime = getattr(controller, "runtime", None)
+        if runtime is None:
+            raise TaskError("staging_not_initialized", "load the V2 profile first")
+        return runtime
+
+    @staticmethod
+    async def _harassment_body(fields):
+        raw = await request.body()
+        if len(raw) > 20000:
+            raise ValueError("harassment request is too large")
+
+        def unique(pairs):
+            values = {}
+            for key, value in pairs:
+                if key in values:
+                    raise ValueError("duplicate field")
+                values[key] = value
+            return values
+
+        data = json.loads(raw.decode("utf-8"), object_pairs_hook=unique)
+        if type(data) is not dict or set(data) != set(fields):
+            raise ValueError("unexpected or missing harassment fields")
+        return data
+
+    async def harassment(self):
+        from .web_api import outcome_response
+        from companion_v2.relationships import harassment as policy
+        try:
+            async with self.controller._control_lock:
+                runtime = self._harassment_runtime()
+                return outcome_response(Outcome.success({
+                    "settings": policy.read_settings(runtime),
+                    "entries": policy.entries(runtime),
+                }))
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+
+    async def harassment_settings(self):
+        from .web_api import outcome_response
+        from companion_v2.relationships import harassment as policy
+        try:
+            data = await self._harassment_body({"changes"})
+            if type(data["changes"]) is not dict:
+                raise ValueError("harassment changes must be an object")
+            async with self.controller._control_lock:
+                runtime = self._harassment_runtime()
+                settings = policy.save_settings(runtime, data["changes"])
+                return outcome_response(Outcome.success({
+                    "settings": settings, "entries": policy.entries(runtime)}))
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
+            return outcome_response(Outcome.failed("harassment_config_invalid", "防骚扰设置无效"))
+
+    async def harassment_block(self):
+        from .web_api import outcome_response
+        from companion_v2.relationships import harassment as policy
+        try:
+            data = await self._harassment_body({"scope", "user_id", "reason"})
+            scope, user_id = data["scope"], data["user_id"]
+            if type(scope) is not str or not scope or type(user_id) is not str or not user_id:
+                raise ValueError("block needs scope and user")
+            reason = data["reason"] if type(data["reason"]) is str and data["reason"] in {
+                "rate", "keyword", "manual"} else "manual"
+            async with self.controller._control_lock:
+                runtime = self._harassment_runtime()
+                policy.add_entry(runtime, scope=scope, user_id=user_id, reason=reason)
+                return outcome_response(Outcome.success({"entries": policy.entries(runtime)}))
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
+            return outcome_response(Outcome.failed("harassment_entry_invalid", "黑名单条目无效"))
+
+    async def harassment_unblock(self):
+        from .web_api import outcome_response
+        from companion_v2.relationships import harassment as policy
+        try:
+            data = await self._harassment_body({"scope", "user_id"})
+            scope, user_id = data["scope"], data["user_id"]
+            if type(scope) is not str or not scope or type(user_id) is not str or not user_id:
+                raise ValueError("unblock needs scope and user")
+            async with self.controller._control_lock:
+                runtime = self._harassment_runtime()
+                policy.remove_entry(runtime, scope=scope, user_id=user_id)
+                return outcome_response(Outcome.success({"entries": policy.entries(runtime)}))
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
+            return outcome_response(Outcome.failed("harassment_entry_invalid", "黑名单条目无效"))
