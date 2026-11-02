@@ -789,7 +789,8 @@ class RealityTouchCameraMixin:
         observation["summary"] = "；".join(summary_parts)
         return observation
 
-    async def _analyze_reality_touch_camera_frame(self, frame: dict[str, Any], purpose: str) -> dict[str, Any]:
+    async def _analyze_reality_touch_camera_frame(self, frame: dict[str, Any], purpose: str,
+                                                  *, user_id: str = "") -> dict[str, Any]:
         fallback = self._sanitize_reality_touch_camera_observation(
             {},
             local_brightness=_single_line(frame.get("brightness"), 16).lower(),
@@ -805,10 +806,19 @@ class RealityTouchCameraMixin:
         if not callable(getter):
             return fallback
         configured = _single_line(getattr(self, "plugin_vision_provider_id", ""), 160)
+        route = {}
+        integration = getattr(getattr(self, "controller", None), "integration", None)
+        resolver = getattr(integration, "reality_model_route", None)
+        if user_id and callable(resolver):
+            route = resolver(user_id, "screen.interpretation") or {}
         fallbacks = getattr(self, "reality_touch_camera_vision_fallback_ids", ()) or ()
-        candidates = tuple(dict.fromkeys(
-            item for item in (configured, *fallbacks) if _single_line(item, 160)
-        ))
+        preferred = (
+            _single_line(route.get("provider"), 160),
+            _single_line(route.get("fallback"), 160),
+            configured,
+            *fallbacks,
+        )
+        candidates = tuple(dict.fromkeys(item for item in preferred if _single_line(item, 160)))
         if not candidates:
             return fallback
         food_requested = self._reality_touch_camera_food_request_matches(purpose)
@@ -990,7 +1000,7 @@ class RealityTouchCameraMixin:
                     jpeg_bytes = frame.get("jpeg_bytes")
                     if isinstance(jpeg_bytes, (bytes, bytearray)) and jpeg_bytes:
                         preview_data_url = "data:image/jpeg;base64," + base64.b64encode(bytes(jpeg_bytes)).decode("ascii")
-                observation = await self._analyze_reality_touch_camera_frame(frame, purpose_text)
+                observation = await self._analyze_reality_touch_camera_frame(frame, purpose_text, user_id=user_id)
                 item = self._record_reality_touch_camera_observation(
                     user,
                     purpose=purpose_text,
