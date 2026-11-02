@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- 决策页新增「防骚扰」：按人限流（窗口内消息数）与关键词命中后，把该用户移入可管理的黑名单目录；被拦截的私聊不再进入模型，名单可随时解除。
 - 语音表演指令/风格强化改为可配置：`voice_direction_mode` 提供「关闭 / 自动识别 / IndexTTS2 / FishAudio」四档，默认自动；自动只在选中引擎明确支持时下发（FishAudio Drama 3、IndexTTS2），强制档位在引擎不匹配时不发指令。
 - 核心回复的提示词组装移到工作线程：私聊消息不再因为 `proactive_inspirations` 的依赖遍历在主线程读库而阻塞事件循环（曾出现 30–36s 事件循环停顿、群聊/私聊一起排队）。
 - 修复提醒工具的参数字段只有空 schema 的问题：`reminder.create` 现在声明 `schedule`（anchor/timezone_name/frequency）与 `message` 的类型和说明，并允许“关联已有便签”的第二种用法；工具说明同时要求用户明确要求未来提醒时必须调用 `reminder.create`，不得静默退化成 `memo.create`。
