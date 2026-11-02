@@ -33,10 +33,13 @@ def revise(styles, *, operator, context, signal_id, view_token, operation_key, c
         styles._basis(row, owner, context, at)
         identity = form_identity(form)
         if identity is not None:
-            others = styles.runtime.read_all("""SELECT signal_id FROM expression_style_signals
-                WHERE owner_key = ? AND scope_key = ? AND signal_id != ?
-                  AND state IN ('pending', 'adopted')""",
-                (digest(owner), digest(context.scope), signal_id))
+            # A group owns its rules across conversation windows, so the same
+            # situation and pattern is still one rule there.
+            keys = styles._family(context)
+            placeholders = ",".join("?" * len(keys))
+            others = styles.runtime.read_all(f"""SELECT signal_id FROM expression_style_signals
+                WHERE owner_key = ? AND scope_key IN ({placeholders}) AND signal_id != ?
+                  AND state IN ('pending', 'adopted')""", (digest(owner), *keys, signal_id))
             if any(form_identity(rule_details.form_for(styles.runtime, other)) == identity for other in others):
                 raise TaskError("expression_duplicate_rule",
                                 "another active rule already uses this situation and pattern")

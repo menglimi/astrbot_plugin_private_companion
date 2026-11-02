@@ -14,6 +14,7 @@ from companion_v2.role_work.life.management import RoleLifeManagement
 from .budget import effective_soft
 from .cache_diagnostics import checked_signature, event_severity, signature_changes, signature_snapshot
 from .core_observations import availability_summary, observations_for_role, request_rows
+from .models import MAX_MODEL_OUTPUT_TOKENS
 from .reply_efficiency import reply_efficiency_report
 from .refusal import canonical_refusal_terms
 from .replacement_rules import checked_rules, validate_targets
@@ -652,6 +653,7 @@ class ModelManagement:
                         reports[key].add_hour(row)
                 recent_rows = self.app.runtime.read_all(f"""WITH samples AS (
                     SELECT c.state, c.position, c.actual_tokens, c.reserved_tokens,
+                        c.receipt_ref,
                         c.actual_cost, c.input_tokens, c.cached_input_tokens, c.cache_creation_tokens, c.output_tokens,
                         c.latency_ms, c.finished_at, c.started_at, r.created_at, t.kind, c.provider_json,
                         f.code AS failure_code, d.summary_json AS response_summary_json,
@@ -704,10 +706,15 @@ class ModelManagement:
                       "spent_tokens": plugin_usage["spent_tokens"],
                       "held_tokens": plugin_usage["held_tokens"]}
             reservations = self.app.gateway.ledger.reservation_sources(today_account)
+            released = self.app.gateway.ledger.released_usage(today_account)
             pending = [item for item in reservations if item["state"] not in ("reserved", "dispatched")]
             budget.update(reservation_sources=reservations,
                           pending_usage_calls=sum(item["calls"] for item in pending),
                           pending_usage_tokens=sum(item["held_tokens"] for item in pending),
+                          released_calls=released["calls"],
+                          released_tokens=released["tokens"],
+                          released_cost_microusd=released["cost_microusd"],
+                          reclaim=self.app.gateway.ledger.reclaim_audit(),
                           remaining_tokens=(max(0, budget["limit_tokens"] - budget["spent_tokens"] - budget["held_tokens"])
                                             if policy.enabled else None))
             soft = effective_soft(self.app.runtime, self.context, self.app.gateway.ledger.soft)
@@ -767,7 +774,7 @@ class ModelManagement:
                 or type(values["prompt"]) is not str
                 or len(values["prompt"]) > 8000 or type(values["max_output_tokens"]) is not int
                 or type(values["fallback_on_refusal"]) is not bool
-                or not 1 <= values["max_output_tokens"] <= 32768
+                or not 1 <= values["max_output_tokens"] <= MAX_MODEL_OUTPUT_TOKENS
                 or type(values["timeout_seconds"]) is not int or not 1 <= values["timeout_seconds"] <= 600
                 or values["replacement_scope"] not in ("all", "plugin", "conversation")):
             raise TaskError("model_configuration_invalid", "check task prompt and output token limit")
@@ -783,7 +790,12 @@ class ModelManagement:
             if not set(profile.capabilities).issubset(provider.capabilities):
                 raise TaskError("model_capability_mismatch", "the provider lacks task capabilities")
             if values["max_output_tokens"] > provider.maximum_output_tokens:
-                raise TaskError("model_output_limit", "output limit exceeds the selected provider")
+                # Only a provider ceiling can refuse a task limit, so the message names
+                # the field, the provider and that ceiling; the rejected value stays out
+                # of the text, and an undeclared provider never produces this error.
+                raise TaskError("model_output_limit",
+                                f"max_output_tokens is limited to {provider.maximum_output_tokens}"
+                                " by provider " + provider_id)
         try:
             validate_targets(checked_rules(values["replacement_rules"]), self.app.router.providers,
                              capabilities=profile.capabilities, max_output_tokens=values["max_output_tokens"])

@@ -308,6 +308,7 @@ class PromptRequest:
     # The captured host persona survives a task-role reference substitution so
     # the native role guard still compares the host window, not the self page.
     role_guard_instruction: str | None = None
+    user_input_image_sources: tuple[SourceRef, ...] = ()
 
     @property
     def host_role_instruction(self) -> str:
@@ -319,6 +320,12 @@ class PromptRequest:
         if self.role_guard_instruction is not None and (
                 type(self.role_guard_instruction) is not str or len(self.role_guard_instruction) > 65536):
             raise ReferenceValidationError("host role guard instruction must be bounded text")
+        if (type(self.user_input_image_sources) is not tuple
+                or any(not isinstance(source, SourceRef) for source in self.user_input_image_sources)
+                or len(set(self.user_input_image_sources)) != len(self.user_input_image_sources)
+                or any(source not in {image.source for image in self.images}
+                       for source in self.user_input_image_sources)):
+            raise ReferenceValidationError("user input image labels must reference this request's original images")
         if (type(self.perception_options) is not tuple or len(self.perception_options) != 3
                 or any(type(value) is not bool for value in self.perception_options)):
             raise ReferenceValidationError("perception options must be captured booleans")
@@ -363,7 +370,7 @@ class PromptRequest:
             raise ReferenceValidationError("native video input requires a captured original video")
         if self.response_format not in ("text", "json_object", "json_schema"):
             raise ReferenceValidationError("unsupported structured response mode")
-        if self.response_format != "text" and self.output_format not in ("memory_reflection", "content_authoring", "role_expression_learning", "role_expression_review", "role_state", "calendar_planning"):
+        if self.response_format != "text" and self.output_format not in ("memory_reflection", "content_authoring", "role_expression_learning", "role_expression_review", "role_state", "calendar_planning", "role_self_review"):
             raise ReferenceValidationError("structured response mode requires its task owner")
         if self.response_schema_json is not None:
             if not isinstance(self.response_schema_json, str) or len(self.response_schema_json) > 32768:
@@ -372,7 +379,7 @@ class PromptRequest:
                 raise ReferenceValidationError("response schema requires an object")
         if self.response_format == "json_schema" and self.response_schema_json is None:
             raise ReferenceValidationError("strict structured response requires a schema")
-        if self.output_format not in ("conversation", "journal", "journal_derivatives", "journal_selection", "role_reading", "role_state", "memory_reflection", "content_authoring", "proactive_contact", "calendar_planning", "role_growth_progress", "image_review", "screen_interpretation", "role_expression_learning", "role_expression_review"):
+        if self.output_format not in ("conversation", "journal", "journal_derivatives", "journal_selection", "role_reading", "role_state", "memory_reflection", "content_authoring", "proactive_contact", "calendar_planning", "role_growth_progress", "role_self_review", "image_review", "screen_interpretation", "role_expression_learning", "role_expression_review"):
 
             raise ReferenceValidationError("prompt output format must be host-selected")
         if self.role_binding.scope != self.event.scope:

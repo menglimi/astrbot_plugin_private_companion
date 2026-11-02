@@ -21,6 +21,7 @@ from types import SimpleNamespace
 with tempfile.TemporaryDirectory(prefix="learning-page-qa-") as data_root:
     os.environ["ASTRBOT_ROOT"] = data_root
     from astrbot.dashboard.services.plugin_page_service import PluginPageService
+    from tools.host_page_render import render_css, render_html
     from companion_v2.configuration.registry import FieldRegistry
     from companion_v2.configuration.contract import contract_of
     from companion_v2.expression.configuration import configuration_fields
@@ -30,9 +31,9 @@ with tempfile.TemporaryDirectory(prefix="learning-page-qa-") as data_root:
     page = root / "pages" / "陪伴小屋"
     service = PluginPageService(SimpleNamespace(plugin_store_path=str(root.parent)))
     args, query = ("astrbot_plugin_private_companion", "陪伴小屋"), {"asset_token":"synthetic-learning-qa"}
-    assets = {"index.html":service.rewrite_plugin_page_html((page/"index.html").read_text(encoding="utf-8"),*args,"index.html",theme="light",extra_query_params=query)}
+    assets = {"index.html":render_html(service,(page/"index.html").read_text(encoding="utf-8"),*args,file_name="index.html",theme="light",extra_query_params=query)}
     for css in page.glob("*.css"):
-        assets[css.name] = service.rewrite_plugin_page_css(css.read_text(encoding="utf-8"),*args,css.name,extra_query_params=query)
+        assets[css.name] = render_css(service,css.read_text(encoding="utf-8"),*args,file_name=css.name,extra_query_params=query)
     for fields in (configuration_fields(), skill_configuration_fields()):
         group = fields[0].group_id
         registry = FieldRegistry(version="learning-qa.v1", fields=fields)

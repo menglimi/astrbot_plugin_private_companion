@@ -122,6 +122,25 @@ RETRYABLE_HOST_STARTUP_CODES = frozenset({
     "host_persona_window_unbound", "host_conversation_changed", "host_startup_failed",
     "staging_preflight_failed",
 })
+# A denied final send is the one refusal the user feels as silence, and it is
+# never replayed. Say which gate refused the reply and whether it can clear by
+# itself, so an operator can tell a dropped account from a removed target.
+CORE_REPLY_SEND_DENIAL_HINTS = {
+    "host_client_offline": "该账号的原生连接在生成期间断开，本条回复作废（不会补发）",
+    "host_not_claimed": "该事件已不在当前配置的目标里，本条回复作废",
+    "host_not_accepting": "共享宿主已停止接收入站消息，本条回复作废",
+    "host_not_running": "共享宿主未在运行，本条回复作废",
+    "host_terminated": "共享宿主正在停止，本条回复作废",
+    "host_target_mismatch": "本轮回复的目标在生成期间改变，本条回复作废",
+    "core_reply_target_changed": "本轮回复的目标在准入之后改变，本条回复作废",
+    "core_reply_event_changed": "原生事件在准入之后改变，本条回复作废",
+    "core_reply_context_changed": "身份、路由或角色在准入之后改变，本条回复作废",
+    "core_reply_instruction_changed": "人格提示词在准入之后改变，本条回复作废",
+    "host_persona_changed": "当前人格与准入时不同，本条回复作废",
+    "message_withdrawn": "触发消息已被撤回，本条回复按撤回静默",
+    "group_llm_blocked": "该群已开启模型封锁，本条回复作废",
+    "private_access_dialogue_denied": "该私聊用户已失去对话权限，本条回复作废",
+}
 
 
 def _can_continue_astrbot_core_reply(code):
@@ -605,8 +624,10 @@ class PrivateCompanionV2StagingPlugin(Star):
             self._record_no_reply(event, "core_reply_send_denied", origin_key=origin_key,
                                   channel=channel, event_ref=event_ref, stage="delivery",
                                   turn=event_ref, code=reason)
-            logger.warning("[CompanionV2] 核心回复发送前复核失败 event_ref=%s code=%s",
-                           event_ref, reason)
+            logger.warning("[CompanionV2] 核心回复发送前复核失败，这条已生成的回复没有发出 "
+                           "event_ref=%s code=%s 说明=%s", event_ref, reason,
+                           CORE_REPLY_SEND_DENIAL_HINTS.get(
+                               reason, "发送前复核未通过，这条已生成的回复没有发出"))
 
         def observe_core_send(current, text):
             observer = getattr(getattr(self.staging, "session", None), "core_reply_observations", None)
@@ -1080,6 +1101,15 @@ class PrivateCompanionV2StagingPlugin(Star):
             return
         self._adopt_core_reply_delivery(event)
         self._apply_private_follow_ups_to_request(event, req)
+        # Repair an unpaired tool-call batch before the provider sees it: a
+        # missing tool result makes the whole request fail with a 400 and the
+        # provider fallback then answers without tools at all.
+        try:
+            removed = repair_tool_call_history(getattr(req, "contexts", None))
+        except Exception:
+            removed = 0
+        if removed:
+            logger.warning("[CompanionV2] 修复缺少工具结果的历史轮次 batches=%s", removed)
         prepared = state.get("prepared")
         try:
             with measure_core_preparation(event, "request_authorization", now=self.staging.now):
@@ -1170,6 +1200,21 @@ class PrivateCompanionV2StagingPlugin(Star):
     @filter.on_llm_tool_respond()
     async def observe_companion_core_tool_done(self, event: AstrMessageEvent, tool, tool_args, tool_result):
         observe_core_tool_finished(event, tool)
+
+    # The agent boundary is the last chance to make the history legal: the SDK
+    # converts req.contexts into run_context.messages right after the request
+    # hooks, and one unanswered assistant tool call fails the turn on every
+    # provider of the fallback chain at once. Lowest priority runs last, so this
+    # sees every other plugin's rewrite of the same request.
+    @filter.on_llm_request(priority=-1000000)
+    async def repair_companion_core_request_history(self, event: AstrMessageEvent, req):
+        from .astrbot_host.core_reply_history_guard import repair_request_history
+        repair_request_history(event, req)
+
+    @filter.on_agent_begin(priority=-1000000)
+    async def repair_companion_core_runner_history(self, event: AstrMessageEvent, run_context):
+        from .astrbot_host.core_reply_history_guard import repair_run_context_history
+        repair_run_context_history(event, run_context)
 
     @filter.after_message_sent(priority=1000000)
     async def observe_companion_core_reply_sent(self, event: AstrMessageEvent):
@@ -1291,6 +1336,10 @@ class PrivateCompanionV2StagingPlugin(Star):
             logger.info("[CompanionV2] 窗口临时上下文已清理")
 
     async def terminate(self) -> None:
+        extension_api = getattr(self, "extension_api", None)
+        close_memory = getattr(extension_api, "close_memory_providers", None)
+        if callable(close_memory):
+            close_memory()
         debounce_manager = getattr(self, "_private_debounce", None)
         if debounce_manager is not None:
             try:

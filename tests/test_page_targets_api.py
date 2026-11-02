@@ -3,6 +3,7 @@
 import json
 import asyncio
 from pathlib import Path
+import re
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace as NS
 import unittest
@@ -19,6 +20,7 @@ from companion_v2.identity_policy.models import AuthorizationTier
 from companion_v2.identity_policy.object_access import ObjectAccessPolicy
 from companion_v2.memory.person.management import PersonAcquaintanceDirectory
 from companion_v2.relationships.group_network import GroupRelationshipStore, VERSION, metadata_key, route_owner_key
+from tools.host_page_render import render_html
 
 
 class PageRequests:
@@ -393,22 +395,31 @@ class SinglePageTests(PageRequests, unittest.IsolatedAsyncioTestCase):
         self.assertEqual([page.name for page in pages], ["陪伴小屋"])
         page = next(page for page in pages if page.name == "陪伴小屋")
         entry = await service.resolve_plugin_page_file(plugin, page.name, "")
-        html = service.rewrite_plugin_page_html(entry.read_text(encoding="utf-8"), plugin_root.name, page.name,
-                                               "index.html", theme="light")
+        html = render_html(service, entry.read_text(encoding="utf-8"), plugin_root.name, page.name,
+                           "index.html", theme="light")
         self.assertIn("assets/voxel-room.js", html)
         self.assertIn("memory-page.js", html)
         self.assertIn("models-page.js", html)
         self.assertIn("perception-native-page.js", html)
         self.assertIn("/api/plugin/page/bridge-sdk.js", html)
         self.assertIn('name="companion-api-host"', html)
-        # GIF 地址必须来自静态 HTML 属性，宿主才能把它改写到插件资源路由；
-        # 内联脚本只负责从 template 中随机克隆，不再把裸相对路径交给浏览器。
-        for asset in ("room-loading-tea-coffee.gif", "room-loading-mug.gif"):
-            self.assertRegex(
-                html,
-                rf'src="/api/plugin/page/content/astrbot_plugin_private_companion/[^" ]+/assets/{asset}\?'
-            )
-            self.assertNotIn(f'src="assets/{asset}', html)
+        # GIF 地址必须来自静态 HTML 属性；内联脚本只负责从 template 中随机克隆，
+        # 不再把裸相对路径交给浏览器。
+        if callable(getattr(service, "process_plugin_page_html", None)):
+            # 4.29 起视图由路径令牌路由提供，相对地址按自身解析即可，宿主不再改写，
+            # 因此这里钉住两件事：地址仍是静态属性的相对路径，且引用的文件确实存在。
+            page_root = await service.resolve_plugin_page_root(plugin, page.name)
+            for asset in ("room-loading-tea-coffee.gif", "room-loading-mug.gif"):
+                self.assertIn(f'src="assets/{asset}?', html)
+                self.assertTrue((page_root / "assets" / asset).is_file())
+        else:
+            # 4.28 以前的宿主把相对资源改写成带资源的绝对路由，这里钉住改写结果。
+            for asset in ("room-loading-tea-coffee.gif", "room-loading-mug.gif"):
+                self.assertRegex(
+                    html,
+                    rf'src="/api/plugin/page/content/{re.escape(plugin_root.name)}/[^" ]+/assets/{asset}\?'
+                )
+                self.assertNotIn(f'src="assets/{asset}', html)
         host_page = await service.resolve_plugin_page_file(plugin, "陪伴小屋", "workspaces/host/index.html")
         host_html = host_page.read_text(encoding="utf-8")
         self.assertRegex(host_html, r'<script src="app\.js(?:\?[^\"]*)?" defer></script>')

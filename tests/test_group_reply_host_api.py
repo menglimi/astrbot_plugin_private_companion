@@ -11,7 +11,7 @@ from astrbot.api.web import PluginRequest, bind_request_context
 from starlette.requests import Request
 
 from astrbot_host.management_identity import dashboard_operator
-from companion_v2.execution.models import TaskContext, digest
+from companion_v2.execution.models import TaskContext, digest, encode
 from companion_v2.identity_policy.models import AuthorizationTier
 from companion_v2.identity_policy.object_access import ObjectAccessPolicy
 from companion_v2.configuration.models import ConfigLayer, ConfigTarget
@@ -19,7 +19,7 @@ from companion_v2.configuration.owners import SparseConfigurationOwner
 from companion_v2.conversation.participation import (ACTION, CONFIG_GROUP as PARTICIPATION_GROUP,
     group_participation_settings)
 from companion_v2.expression.configuration import GROUP_SCOPE_GROUP
-from companion_v2.foundation.refs import ScopeKind, ScopeRef
+from companion_v2.foundation.refs import RoleOwnerRef, ScopeKind, ScopeRef
 from tests.group_host_support import GroupFixture, group_config
 from tests.native_adapter_support import completion
 from tests.test_group_participation import command
@@ -398,6 +398,76 @@ class GroupReplyHostAPITests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.controller.session.application.notify()
         await wait_for_batch(self.controller.session, pending)
 
+    async def test_style_list_without_a_group_session_is_an_empty_page_but_commands_still_fail(self):
+        await self.start_host()
+        # A configured group that has never produced a V2 turn is an expected
+        # empty state, not a page-level read failure. The page must still know
+        # why it is empty.
+        listing = await self.request("/style", query="state=adopted&limit=50")
+        self.assertEqual(listing["status"], "ok", listing)
+        self.assertEqual(listing["data"]["items"], [])
+        self.assertEqual(listing["data"]["unavailable_reason"], "role_binding_missing")
+        self.assertIsNone(listing["data"]["next_cursor"])
+        self.assertEqual(listing["data"]["legacy_orphan_count"], 0)
+        # Authorization and identity errors are not swallowed by that fallback.
+        unauthenticated = await self.request("/style", username=None, query="state=adopted&limit=50")
+        self.assertEqual(unauthenticated["status"], "error", unauthenticated)
+        self.assertEqual(unauthenticated["data"]["code"], "dashboard_identity_required")
+        # Decisions still need a real conversation context and keep failing.
+        command = await self.request("/style/command", data={
+            "signal_id": "signal-missing", "action": "retire",
+            "view_token": "token", "operation_key": "group-style-command"})
+        self.assertEqual(command["status"], "error", command)
+        self.assertEqual(command["data"]["code"], "expression_group_context_required")
+
+    async def test_style_list_reads_old_synthetic_scope_rules_without_moving_them(self):
+        await self.start_host()
+        # A V1 group expression import wrote its rules under the synthetic group
+        # identity scope (conversation_id = session_id = group id). That scope is
+        # part of the group's scope family now, so the page reads those rules in
+        # place instead of reporting them as "not yet effective".
+        await self.receive_group()
+        runtime = self.controller.runtime
+        target = self.controller.settings.target("group-a")
+        legacy = ScopeRef(runtime.installation_id, target.platform_id, ScopeKind.GROUP,
+            target.group_id, target.bot_id, target.account_id, target.group_id, target.group_id)
+        owner = digest(RoleOwnerRef(runtime.installation_id, target.bot_id, "role-a"))
+        now = self.clock.now().isoformat()
+        handle = "legacy-expression-rule:test:evidence:0"
+        text = "旧版群里说惯的那句话"
+        window = {"opened_at": now, "closed_at": now, "handles": [handle],
+                  "characters": len(text), "source_kind": "legacy_expression",
+                  "legacy": {"source_kind": "group", "source_id": "v1-group-source", "samples": [],
+                             "evidence": {handle: text}, "rules": {}}}
+        applicability = {"channels": ["group"], "relationship_stages": ["any"],
+                         "emotion_gates": ["any"], "intent": "any", "keywords": []}
+        with runtime.transaction() as connection:
+            connection.execute("""INSERT INTO expression_style_runs
+                (run_id, owner_key, scope_key, sample_json, material_hash, summary, state, created_at, decided_at)
+                VALUES (?, ?, ?, ?, 'synthetic', '旧版表达', 'decided', ?, ?)""",
+                ("legacy-expression:test", owner, digest(legacy), encode(window), now, now))
+            connection.execute("""INSERT INTO expression_style_signals
+                (signal_id, run_id, owner_key, scope_key, dimension, observation, proposal,
+                 applicability_json, confidence, evidence_json, state, created_at, decided_at, decided_by,
+                 decision_key, ordinal)
+                VALUES (?, ?, ?, ?, 'diction', '旧版群规则', '继续使用', ?, 1.0, ?, 'adopted', ?, ?,
+                        'legacy_migration', 'legacy:adopted', 0)""",
+                ("legacy-signal:test", "legacy-expression:test", owner, digest(legacy),
+                 encode(applicability), encode([handle]), now, now))
+        listing = await self.request("/style", query="state=adopted&limit=50")
+        self.assertEqual(listing["status"], "ok", listing)
+        items = listing["data"]["items"]
+        self.assertEqual([item["signal_id"] for item in items], ["legacy-signal:test"])
+        self.assertIsNone(items[0]["unavailable_reason"])
+        self.assertEqual(items[0]["source_kind"], "legacy_expression")
+        self.assertEqual(items[0]["actions"], ["retire"])
+        # The family already covers the old scope, so no row is an orphan.
+        self.assertEqual(listing["data"]["legacy_orphan_count"], 0)
+        # Reading is still read-only: the old row keeps its original scope.
+        row = runtime.read_one("SELECT scope_key FROM expression_style_signals WHERE signal_id = ?",
+                               ("legacy-signal:test",))
+        self.assertEqual(row["scope_key"], digest(legacy))
+
     async def test_invalid_json_identity_session_role_and_core_downgrade(self):
         await self.start_host()
         status = await self.request()
@@ -436,6 +506,67 @@ class GroupReplyHostAPITests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.request("/preview", data={"settings": status["data"]["settings"],
                                                                "text": "offline"}))["data"]["code"],
                          "core_access_required")
+
+    async def test_style_samples_without_a_group_session_is_an_empty_page(self):
+        await self.start_host()
+        # The samples page lists one source per configured group, so a group
+        # that has not produced a V2 turn yet is an empty page and not a
+        # page-level read failure.
+        samples = await self.request("/style/samples", query="state=all&limit=24")
+        self.assertEqual(samples["status"], "ok", samples)
+        self.assertEqual(samples["data"]["items"], [])
+        self.assertEqual(samples["data"]["counts"], {})
+        self.assertIsNone(samples["data"]["next_cursor"])
+        self.assertEqual(samples["data"]["unavailable_reason"], "role_binding_missing")
+        self.assertIs(samples["data"]["sample_review_enabled"], False)
+        # The reader aggregates one runtime block per source, so the empty page
+        # keeps the same stable shape instead of leaving it undefined.
+        runtime = samples["data"]["runtime"]
+        self.assertIsInstance(runtime, dict)
+        self.assertIsNone(runtime["last_result"])
+        self.assertIs(runtime["running"], False)
+        self.assertIs(runtime["learning_enabled"], False)
+        self.assertIs(runtime["application_enabled"], False)
+        self.assertEqual((runtime["minimum_samples"], runtime["eligible_samples"]), (0, 0))
+        self.assertIsNone(runtime["new_messages"])
+        self.assertIsNone(runtime["required_new_messages"])
+        self.assertEqual((runtime["group_batches_today"], runtime["group_daily_batch_limit"]), (0, 0))
+        # Identity errors are not an empty group, and decisions still need a
+        # real conversation context.
+        unauthenticated = await self.request("/style/samples", username=None, query="state=all&limit=24")
+        self.assertEqual(unauthenticated["status"], "error", unauthenticated)
+        self.assertEqual(unauthenticated["data"]["code"], "dashboard_identity_required")
+        command = await self.request("/style/samples/command", data={
+            "handle": "input:missing", "action": "approve",
+            "view_token": "token", "operation_key": "group-sample-command"})
+        self.assertEqual(command["status"], "error", command)
+        self.assertEqual(command["data"]["code"], "expression_group_context_required")
+
+    async def test_style_samples_without_an_original_group_conversation_is_an_empty_page(self):
+        await self.start_host()
+        # The reported symptom is a group whose role is bound but whose window
+        # has no V2 turn yet: binding the role without sending a message
+        # reproduces that state, so the samples page must answer with an empty
+        # page carrying the reason instead of a page-level read failure.
+        selected = self.controller.settings.target("group-a")
+        session = self.controller.session
+        bridge = session.bridge.groups
+        account = bridge.accounts[(selected.platform_id, selected.account_id)]
+        conversation_id, role, _ = await bridge._role(account, selected.group_id)
+        scope = ScopeRef(self.controller.runtime.installation_id, selected.platform_id, ScopeKind.GROUP,
+                         selected.group_id, selected.bot_id, selected.account_id, conversation_id, selected.group_id)
+        session.application.tasks.identity.bind_role(
+            scope=scope, role=role, expected_revision=0, observed_at=self.clock.now())
+        samples = await self.request("/style/samples", query="state=all&limit=24")
+        command = await self.request("/style/samples/command", data={
+            "handle": "input:missing", "action": "approve",
+            "view_token": "token", "operation_key": "group-sample-command"})
+        self.assertEqual(samples["status"], "ok", samples)
+        self.assertEqual(samples["data"]["items"], [])
+        self.assertEqual(samples["data"]["unavailable_reason"], "expression_group_context_required")
+        self.assertIn("runtime", samples["data"])
+        self.assertEqual(command["status"], "error", command)
+        self.assertEqual(command["data"]["code"], "expression_group_context_required")
 
 
 if __name__ == "__main__":

@@ -21,7 +21,7 @@ function status() {
   };
 }
 
-function harness() {
+function harness(requestOverride) {
   const requests = [];
   const listeners = new Map();
   const fields = new Map();
@@ -68,12 +68,12 @@ function harness() {
     },
   };
   const product = {
-    request: async (method, route, body, options) => {
+    request: requestOverride || (async (method, route, body, options) => {
       requests.push({method, route, body, options});
       if (route === "huawei-health/status") return status();
       if (route === "perception-native") return {model: {edit_token: "token", settings: {health_enabled: false}}};
       return {ok: true, status: status()};
-    },
+    }),
   };
   const window = {CompanionProduct: product};
   vm.runInNewContext(source, {window, crypto, setInterval, clearInterval, setTimeout, clearTimeout, console});
@@ -124,6 +124,27 @@ test("buttons dispatch credential and cookie actions instead of doing nothing", 
   assert.equal(imported?.body.json, '[{"name":"sid","value":"sid-value"}]');
   assert.equal(imported?.body.fields.CASTGC, "cookie-value");
   assert.equal(imported?.body.fields.sid, "");
+});
+
+test("cookie import shows the specific missing-cookie reason", async () => {
+  const failure = Object.assign(new Error("huawei_health_cookie_invalid"), {
+    data: {code: "huawei_health_cookie_invalid"},
+    reason: "缺少必要的 cookie：CASTGC、sid。请把六项都填上，或改用整段 JSON 导出。",
+  });
+  const {root, fields} = harness(async (method, route) => {
+    if (route === "huawei-health/status") return status();
+    if (route === "perception-native") return {model: {edit_token: "token", settings: {health_enabled: false}}};
+    throw failure;
+  });
+  await flush();
+  assert.match(root.innerHTML, /\.id1\.cloud\.huawei\.com/);
+  assert.match(root.innerHTML, /不在 health 域/);
+  fields.get("[data-hw-cookie-json]").value = '[{"name":"CASLOGINSITE","value":"1"}]';
+  root.dispatch("input", {});
+  click(root, {hwAction: "cookie-import"});
+  await flush();
+  assert.match(root.innerHTML, /Cookie 导入失败：缺少必要的 cookie/);
+  assert.match(root.innerHTML, /CASTGC/);
 });
 
 test("login actions forward checkbox choices and keep drafts across rerenders", async () => {

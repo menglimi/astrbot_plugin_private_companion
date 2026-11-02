@@ -93,6 +93,22 @@ class TaskContext:
                        "binding": [self.actor.binding_id, self.actor.binding_revision],
                        "role": asdict(self.role_binding), "audience": asdict(self.audience)})
 
+    def same_window(self, other: object) -> bool:
+        """Whether ``other`` denotes this exact conversation window.
+
+        A window is the principal, its subject, the identity binding, the role
+        binding and the audience — exactly ``key``. ``actor.policy_revision``
+        is excluded on purpose: the identity directory advances it for every
+        unrelated bind, grant or revoke in the installation, so two snapshots
+        of one unchanged window routinely carry different revisions. Comparing
+        whole records for equality (``==``) keeps that revision and must not be
+        used to decide whether a role is still bound.
+
+        A changed participant, conversation scope, role or audience produces a
+        different ``key`` and therefore a different window.
+        """
+        return isinstance(other, TaskContext) and self.key == other.key
+
     @classmethod
     def restore(cls, value: dict) -> TaskContext:
         def subject(data):

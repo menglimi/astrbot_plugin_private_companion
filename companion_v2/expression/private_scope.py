@@ -1,4 +1,11 @@
-"""Role-wide private expression scopes derived from currently bound identities."""
+"""Private-chat expression scope helpers.
+
+Only private concerns live here: the participants bound to this role and the
+private source contexts that belong to them. Scope-family resolution -- for both
+private participants and group ownership -- lives in
+``companion_v2.conversation.scope_family`` so the review page and reply
+injection share one implementation instead of two entries.
+"""
 
 import json
 

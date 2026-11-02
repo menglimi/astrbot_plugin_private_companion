@@ -42,6 +42,15 @@ REPLY_CONTRACT = (
 BACKGROUND_OUTPUT_NOTES = {
     "role_state": "本轮是后台状态维护。只输出包含 energy、hunger、health、sleep、busy、mood、location、cycle、presence、online_mode、conditions 的完整 JSON 对象；字段类型遵循本轮状态协议，不写聊天回复。",
     "calendar_planning": "本轮是后台日程规划。仅输出本轮模式要求的 JSON 对象：daily/horizon 使用 items，refine 使用 detail，intervention 使用 changes；不写聊天回复或额外说明。",
+    "role_self_review": (
+        "本轮是后台自我复盘。只输出一个 JSON 对象，顶层只允许 summary 和 guidance 两个字段："
+        "summary 是不超过 800 字的字符串；guidance 是最多 2 条的数组，每条必须且只能包含 "
+        "kind、observation、next_action、confidence、evidence_handles、expires_at。"
+        "kind 只能取 try_next_time、keep、ask_user、no_change；confidence 是 0 到 1 的数字；"
+        "evidence_handles 必须只引用材料里实际出现的 evidence_handle（形如 e_…），至少一个；"
+        "expires_at 是带时区的 ISO 8601 时间且晚于当前时间；next_action 写成角色给自己留心的一句短提醒。"
+        "不要输出顶层 review、candidates、safety_check 等其它结构，不要 Markdown 围栏或解释。"
+    ),
 }
 
 
@@ -147,7 +156,7 @@ def build_wire(envelope, *, model_name=""):
         stream_contract = "\n" + STREAM_REPLY_INSTRUCTION
         contract += stream_contract
     reply_images = {"e_" + digest(i.source): i.source for i in request.images} if request.reply_images else {}
-    if reply_images:
+    if request.reply_images:
         contract += "\n" + REPLY_IMAGE_INSTRUCTION
     if request.output_format == "conversation":
         action_names = {"text": "文字", "image": "表情图", "voice_only": "仅语音",
@@ -186,6 +195,8 @@ def build_wire(envelope, *, model_name=""):
                 metadata = {"image_evidence": handle,
                     "parent_source_id": image.parent.source_id, "component_position": image.descriptor.position,
                     "coverage": "one_static_image"}
+                if original.source in request.user_input_image_sources:
+                    metadata["image_origin"] = "user_input"
                 if reply_images:
                     metadata["sendable_image"] = "e_" + digest(original.source)
                 if isinstance(original, PromptAnimation):
@@ -259,26 +270,58 @@ def build_wire(envelope, *, model_name=""):
     return wire
 
 
+def _field(value, name, default=None):
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _responses_function_calls(completion):
+    """Return raw Responses ``function_call`` items in output order."""
+    output = _field(completion, "output", ())
+    if not isinstance(output, (list, tuple)):
+        return ()
+    return tuple(item for item in output if _field(item, "type") == "function_call")
+
+
 def _decode_host_parsed_response(response, wire):
     """Decode a normalized AstrBot response without a ChatCompletion object.
 
     OpenAI-compatible Responses API providers return an ``LLMResponse`` whose
     ``raw_completion`` is a Responses object with ``output`` items instead of
     ``choices``. AstrBot has already normalized text and function calls onto
-    the response, so validate those fields rather than assuming ChatCompletions.
+    the response, but its parser repairs invalid argument JSON to ``{}``; the
+    original ``function_call.arguments`` text is therefore validated here so a
+    malformed effectful call can never execute as a zero-argument operation.
     """
     names = list(response.tools_call_name or ())
     arguments = list(response.tools_call_args or ())
     identifiers = list(response.tools_call_ids or ())
+    original_calls = _responses_function_calls(response.raw_completion)
     if names or arguments or identifiers:
         if (len(names) != len(arguments) or len(names) != len(identifiers)
                 or not 1 <= len(names) <= 8):
             raise ValueError("incomplete or unbounded tool result")
+        if original_calls and len(original_calls) != len(names):
+            raise ValueError("native tool result differs from its original completion")
         calls = []
-        for call_id, name, raw_arguments in zip(identifiers, names, arguments):
+        for position, (call_id, name, raw_arguments) in enumerate(zip(identifiers, names, arguments)):
             if type(call_id) is not str or not call_id or type(name) is not str or name not in wire.aliases:
                 raise ValueError("model requested an undeclared tool")
-            if isinstance(raw_arguments, str):
+            if original_calls:
+                original = original_calls[position]
+                if _field(original, "call_id") != call_id or _field(original, "name") != name:
+                    raise ValueError("native tool result differs from its original completion")
+                source_arguments = _field(original, "arguments", "{}")
+                if isinstance(source_arguments, str):
+                    parsed_arguments = strict_json(source_arguments)
+                elif isinstance(source_arguments, dict):
+                    parsed_arguments = source_arguments
+                else:
+                    raise ValueError("model tool arguments must be an object")
+                if parsed_arguments != raw_arguments:
+                    raise ValueError("native tool result differs from its original completion")
+            elif isinstance(raw_arguments, str):
                 parsed_arguments = strict_json(raw_arguments)
             elif isinstance(raw_arguments, dict):
                 parsed_arguments = raw_arguments
@@ -290,6 +333,8 @@ def _decode_host_parsed_response(response, wire):
         if len({call.call_id for call in calls}) != len(calls):
             raise ValueError("duplicate tool call id")
         return None, tuple(calls)
+    if original_calls:
+        raise ValueError("incomplete tool result")
     return decode_text_response(response.completion_text, wire)
 
 

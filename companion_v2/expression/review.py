@@ -22,7 +22,14 @@ from companion_v2.model_gateway.models import ModelTaskProfile
 KIND = "role.expression.review"
 CONTACT_KIND = "role.expression.contact_review"
 OWNER = KIND
-REVIEW_TIMEOUT_SECONDS = 8
+# A long role instruction makes every review call slow: a 14.7k-character
+# persona measured 8.9-19.2 s per turn. Every review budget therefore derives
+# from one ceiling, ordered so the provider call expires first, then the
+# supervised task, then the waiting parent; each layer records its own reason.
+REVIEW_BUDGET_SECONDS = 35
+REVIEW_MARGIN_SECONDS = 5
+REVIEW_PROVIDER_TIMEOUT_SECONDS = REVIEW_BUDGET_SECONDS - REVIEW_MARGIN_SECONDS
+REVIEW_WAIT_SECONDS = REVIEW_BUDGET_SECONDS + REVIEW_MARGIN_SECONDS
 logger = logging.getLogger(__name__)
 PROMPT = (
     "你只负责已写好回复的表达复核。检查学到的句式是否生硬套用、照抄用户、标点或表情堆叠，"
@@ -37,7 +44,7 @@ PROMPT = (
 def expression_review_profile(provider, *, max_output_tokens=2048, contact=False):
     return ModelTaskProfile(CONTACT_KIND if contact else KIND, Lane.FOREGROUND if contact else Lane.BACKGROUND,
                            provider, "检查本轮表达学习是否造成生硬或过度模仿。",
-                           max_output_tokens=max_output_tokens, timeout_seconds=REVIEW_TIMEOUT_SECONDS)
+                           max_output_tokens=max_output_tokens, timeout_seconds=REVIEW_PROVIDER_TIMEOUT_SECONDS)
 
 
 def reviewed_text(raw, original, claims, protected_statements=()):
@@ -65,7 +72,7 @@ class ExpressionDraftReview:
         self.registrations = tuple(TaskRegistration(TaskDefinition(kind, OWNER, "role.expression.read",
             lane, side_effect=SideEffect.NONE,
             binding=ProviderBinding(OWNER, "local", "1", "expression-review-1"),
-            timeout_seconds=10, max_attempts=1, concurrency=2, per_scope_concurrency=1), self.validate)
+            timeout_seconds=REVIEW_BUDGET_SECONDS, max_attempts=1, concurrency=2, per_scope_concurrency=1), self.validate)
             for kind, lane in ((KIND, Lane.BACKGROUND), (CONTACT_KIND, Lane.FOREGROUND)))
 
     def attach(self, app):
@@ -105,8 +112,8 @@ class ExpressionDraftReview:
         try:
             with self.runtime.transaction():
                 require(self.tasks.submit(TaskSpec(task_id, context, kind, batch_id, task_id,
-                                                   at, at + timedelta(seconds=10))))
-            result = await asyncio.wait_for(runner.run(context, task_id), timeout=REVIEW_TIMEOUT_SECONDS)
+                                                   at, at + timedelta(seconds=REVIEW_BUDGET_SECONDS))))
+            result = await asyncio.wait_for(runner.run(context, task_id), timeout=REVIEW_WAIT_SECONDS)
             if result.failure:
                 return original
             finished = result.unwrap()
@@ -114,7 +121,11 @@ class ExpressionDraftReview:
                 return original
             parent_run.validate()
             return self.results.pop(task_id, original)
-        except (TaskError, TimeoutError, ValueError):
+        except TimeoutError:
+            logger.info("[CompanionV2] 表达审查超出预算，本轮保留原回复 task=%s kind=%s code=%s wait_seconds=%s",
+                        task_id, kind, "expression_review_budget_exhausted", REVIEW_WAIT_SECONDS)
+            return original
+        except (TaskError, ValueError):
             return original
         except Exception as error:
             logger.warning("Expression wording review unavailable: %s", type(error).__name__)

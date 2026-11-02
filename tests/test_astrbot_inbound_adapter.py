@@ -7,8 +7,9 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from companion_v2.adapters.astrbot.inbound import AstrBotInboundAdapter
+from companion_v2.conversation.models import InboundConversationEvent
 from companion_v2.foundation.outcome import Outcome
-from companion_v2.foundation.refs import AudienceRef, ScopeKind, ScopeRef, SubjectKind, SubjectRef
+from companion_v2.foundation.refs import AudienceRef, ScopeKind, ScopeRef, SourceRef, SubjectKind, SubjectRef, VersionRef
 from companion_v2.identity_policy.directory import IdentityDirectory
 from companion_v2.identity_policy.models import AuthenticatedHostPrincipal, AuthorizationTier
 from companion_v2.identity_policy.personas import (
@@ -127,6 +128,39 @@ class FakeIdentityPort:
 
 
 class AstrBotInboundAdapterTests(unittest.TestCase):
+    def test_same_group_message_id_is_scoped_by_bot_and_account(self) -> None:
+        def input_event(bot_id: str, account_id: str) -> InboundConversationEvent:
+            event_scope = ScopeRef(
+                installation_id=INSTALLATION_ID,
+                platform="onebot",
+                kind=ScopeKind.GROUP,
+                native_scope_id="group-300",
+                bot_id=bot_id,
+                account_id=account_id,
+                conversation_id="group-300",
+                session_id="group-300",
+            )
+            event_principal = AuthenticatedHostPrincipal(
+                installation_id=INSTALLATION_ID,
+                host_id="astrbot-fixture-host",
+                platform="onebot",
+                native_account_id=account_id,
+                bot_id=bot_id,
+                account_id=account_id,
+            )
+            source = SourceRef("same-source", "conversation.input", event_scope,
+                               VersionRef("same-source", 1), NOW)
+            return InboundConversationEvent("same-platform-message-id", event_principal,
+                                            event_scope, source, CAPABILITY, "same-input", NOW)
+
+        first = input_event("bot-a", "account-a")
+        other_account = input_event("bot-a", "account-b")
+        other_bot = input_event("bot-b", "account-a")
+
+        self.assertEqual(first.event_id, other_account.event_id)
+        self.assertEqual(first.scope.native_scope_id, other_account.scope.native_scope_id)
+        self.assertEqual(len({first.scoped_key, other_account.scoped_key, other_bot.scoped_key}), 3)
+
     def test_host_verified_identity_is_used_even_when_body_claims_another_account(self) -> None:
         with TemporaryDirectory(prefix="companion-v2-astrbot-") as temporary:
             runtime = StorageRuntime.open(

@@ -20,7 +20,8 @@ from companion_v2.foundation.refs import SourceRef, SubjectKind, SubjectRef, Ver
 from companion_v2.identity_policy.personas import PersonaBinding, PersonaSelector, SelectorKind
 from companion_v2.model_gateway.budget import BudgetLedger
 from companion_v2.model_gateway.failures import ModelFailure
-from companion_v2.model_gateway.models import Amount, BudgetPolicy, CacheSignature, LocalProvider, ModelTaskProfile, ProviderResponse
+from companion_v2.model_gateway.models import (Amount, BudgetPolicy, CacheSignature, CapturedModelOutput,
+    LocalProvider, MAX_MODEL_OUTPUT_TOKENS, ModelTaskProfile, ProviderResponse, is_released)
 from companion_v2.model_gateway.perception import capability_instruction
 from companion_v2.model_gateway.routing import ModelRouter, configuration_fields
 from companion_v2.model_gateway.service import LocalModelGateway
@@ -49,7 +50,7 @@ class ModelFixture(ExecutionFixture):
         self.ledger = BudgetLedger(self.runtime, self.budget_policy)
         self.gateway = LocalModelGateway(self.router, self.ledger, self.tasks)
 
-    def provider(self, name):
+    def provider(self, name, reserve=None):
         async def generate(envelope):
             self.called.append((name, envelope))
             response = self.responses.get(name)
@@ -58,7 +59,13 @@ class ModelFixture(ExecutionFixture):
             return response or ProviderResponse("generated", ModelDraft("private draft", ()), Amount(15, 40), "receipt-" + name)
 
         return LocalProvider(ProviderBinding("model.text", name, "1", "local-1"), ("text",), 100,
-                             lambda envelope: self.estimate, generate)
+                             reserve or (lambda envelope: self.estimate), generate)
+
+    def gateway_with(self, *providers):
+        self.providers = providers
+        self.router = ModelRouter(self.configuration, self.profiles, self.providers)
+        self.router.start(expected_generation=1)
+        self.gateway = LocalModelGateway(self.router, self.ledger, self.tasks)
 
     def request(self, context=None):
         context = context or self.context
@@ -99,6 +106,27 @@ class ModelFixture(ExecutionFixture):
 
 
 class ModelGatewayTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_captured_provider_overrides_and_independent_checks_keep_separate_rounds(self):
+        ceiling = Amount(100_000, 1_000_000)
+        self.ledger = BudgetLedger(self.runtime, BudgetPolicy(ceiling, ceiling, ceiling, ceiling, ceiling))
+        self.gateway = LocalModelGateway(self.router, self.ledger, self.tasks)
+        run = self.model_run(kind="fixture.background")
+        request = self.request()
+        session = self.gateway.open_session(run, request, independent_providers=("fallback", ""))
+
+        first = await session.generate(session.plan.envelope.original)
+        second = await session.generate(session.plan.envelope.original)
+
+        self.assertEqual([name for name, _ in self.called], ["fallback", "primary"])
+        self.assertTrue(first.draft)
+        self.assertTrue(second.draft)
+        rounds = self.runtime.read_all("SELECT round_no FROM model_rounds WHERE task_id=? ORDER BY round_no",
+                                       (run.task.task_id,))
+        self.assertEqual([row["round_no"] for row in rounds], [0, 1])
+        with self.assertRaises(TaskError) as error:
+            self.gateway.open_session(run, request)
+        self.assertEqual(error.exception.code, "model_request_already_started")
+
     async def test_proactive_prompt_archive_keeps_only_the_latest_ten_model_wires(self):
         ceiling = Amount(100_000, 1_000_000)
         self.ledger = BudgetLedger(self.runtime, BudgetPolicy(ceiling, ceiling, ceiling, ceiling, ceiling))
@@ -422,6 +450,51 @@ class ModelGatewayTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("private credential", json.dumps(report))
         self.assertNotIn("private credential", str(tuple(self.runtime.read_one("SELECT * FROM model_call_failures", ()))))
 
+    async def test_a_local_limit_keeps_its_own_code_instead_of_a_generic_estimation_failure(self):
+        def reserve(envelope):
+            raise TaskError("host_model_limit_input", "input limit exceeded: estimated=2048 maximum=1024")
+
+        self.gateway_with(self.provider("primary", reserve), self.provider("fallback"))
+        run = self.model_run()
+
+        with self.assertLogs("companion_v2.model_gateway.service", level="WARNING") as captured:
+            with self.assertRaises(TaskError) as error:
+                await self.gateway.generate(run, self.request())
+
+        self.assertEqual(error.exception.code, "host_model_limit_input")
+        self.assertIn("estimated=2048", str(error.exception))
+        message = "\n".join(captured.output)
+        self.assertIn("code=host_model_limit_input", message)
+        self.assertIn("error_type=TaskError", message)
+        # 数值要出现在 WARNING 里：线上日志级别就足以判断差多少。
+        self.assertIn("estimated=2048", message)
+        self.assertIn("maximum=1024", message)
+        # 越界不静默换 provider，也不写 model_calls：台账里留下的是可执行的那个 code。
+        self.assertEqual(self.called, [])
+        self.assertEqual(self.call_rows(), ())
+        rounds = self.runtime.read_all(
+            "SELECT round_no, state, call_id FROM model_rounds WHERE task_id = ?", (run.task.task_id,))
+        self.assertEqual([(row["round_no"], row["state"], row["call_id"]) for row in rounds], [(0, "started", None)])
+
+    async def test_an_unexpected_reserve_error_keeps_its_error_type_and_its_message_private(self):
+        def reserve(envelope):
+            raise ValueError("duplicate offered tool")
+
+        self.gateway_with(self.provider("primary", reserve), self.provider("fallback"))
+        run = self.model_run()
+
+        with self.assertLogs("companion_v2.model_gateway.service", level="WARNING") as captured:
+            with self.assertRaises(TaskError) as error:
+                await self.gateway.generate(run, self.request())
+
+        self.assertEqual(error.exception.code, "model_estimation_failed")
+        self.assertIn("ValueError", str(error.exception))
+        self.assertNotIn("details omitted", str(error.exception))
+        self.assertNotIn("duplicate offered tool", str(error.exception))
+        self.assertIn("error_type=ValueError", "\n".join(captured.output))
+        self.assertEqual(self.called, [])
+        self.assertEqual(self.call_rows(), ())
+
     async def test_revocation_discards_late_draft_but_records_actual_usage(self):
         async def revoke(envelope):
             self.identity.revoke_binding(self.important.binding_id, expected_revision=self.identity.revision, revoked_at=NOW)
@@ -614,6 +687,107 @@ class ModelGatewayTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.called, [])
 
 
+class ProviderCeilingTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
+    """A task may raise its output limit up to what its Provider accepts.
+
+    The Provider ceiling used to be a copy of the global default budget, so a task
+    could never ask for more than that default and the refusal blamed the selected
+    Provider. These cases keep the two ideas apart: raise the task above the default
+    budget and the request carries it, up to the product ceiling; exceed a Provider's
+    own declared ceiling and it is still refused.
+    """
+
+    def gateway_at(self, ceiling, *, reserve_tokens):
+        providers = tuple(replace(provider, maximum_output_tokens=ceiling) for provider in self.providers)
+        self.router = ModelRouter(self.configuration, self.profiles, providers)
+        self.router.start(expected_generation=1)
+        # A larger ceiling needs a reservation that covers it; the budget itself is
+        # not the subject of these cases.
+        self.estimate = Amount(reserve_tokens, 100)
+        roomy = BudgetPolicy(*(Amount(1_000_000, 1_000_000) for _ in range(4)),
+                             background=Amount(1_000_000, 1_000_000))
+        return LocalModelGateway(self.router, BudgetLedger(self.runtime, roomy), self.tasks)
+
+    async def test_a_task_limit_above_the_default_budget_reaches_the_provider(self):
+        self.patch_model(max_output_tokens=4096)
+
+        await self.gateway_at(MAX_MODEL_OUTPUT_TOKENS, reserve_tokens=5000).generate(self.model_run(), self.request())
+
+        self.assertEqual(self.called[0][1].max_output_tokens, 4096)
+
+    async def test_a_task_limit_can_reach_the_product_ceiling(self):
+        self.patch_model(max_output_tokens=MAX_MODEL_OUTPUT_TOKENS)
+
+        await self.gateway_at(MAX_MODEL_OUTPUT_TOKENS, reserve_tokens=MAX_MODEL_OUTPUT_TOKENS).generate(
+            self.model_run(), self.request())
+
+        self.assertEqual(self.called[0][1].max_output_tokens, MAX_MODEL_OUTPUT_TOKENS)
+
+    async def test_a_declared_provider_ceiling_still_refuses_a_larger_task_limit(self):
+        self.patch_model(max_output_tokens=4096)
+
+        with self.assertRaises(TaskError) as error:
+            await self.gateway_at(1024, reserve_tokens=5000).generate(self.model_run(), self.request())
+
+        self.assertEqual(error.exception.code, "model_output_limit")
+        self.assertEqual(self.called, [])
+
+
+class ModelTruncationTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
+    """A body cut off by the output ceiling belongs to the format that validates it.
+
+    The transport only states what happened (``length``). Deciding whether a
+    partial body is still usable belongs to the workflow that owns the result and
+    re-validates a complete contract before writing anything, exactly like the
+    private memory owner that has always received its raw body.
+    """
+
+    def truncated(self, text='{"items":[{"title":"练琴"'):
+        return ProviderResponse("generated", captured_output=CapturedModelOutput(text, "length"),
+                                usage=Amount(15, 40), receipt_ref="receipt-primary")
+
+    async def test_a_truncated_body_reaches_the_format_that_validates_it(self):
+        self.responses["primary"] = self.truncated()
+
+        completion = await self.gateway.generate(self.model_run(),
+            replace(self.request(), output_format="calendar_planning"))
+
+        # The owner re-validates each part, so the raw body arrives as its draft
+        # while the classification stays visible on the completion.
+        self.assertEqual(completion.draft.text, '{"items":[{"title":"练琴"')
+        self.assertEqual(completion.draft.claims, ())
+        self.assertEqual(completion.captured_output.finish_reason, "length")
+        # The provider was charged for this round; the receipt is not a zero.
+        self.assertEqual(self.call_rows()[0]["state"], "generated")
+
+    async def test_a_truncated_reply_is_never_handed_to_the_conversation_contract(self):
+        # Half a reply and half a JSON object are both unusable as a delivered
+        # message, and only the ceiling is to blame, so the code must say so.
+        self.responses["primary"] = self.truncated()
+
+        with self.assertRaises(TaskError) as caught:
+            await self.gateway.generate(self.model_run(), self.request())
+        self.assertEqual(caught.exception.code, "model_output_truncated")
+        self.assertEqual(self.call_rows()[0]["state"], "discarded")
+
+    async def test_an_unusable_capture_still_requires_its_private_memory_owner(self):
+        self.responses["primary"] = ProviderResponse("generated",
+            captured_output=CapturedModelOutput("", "invalid"), usage=Amount(15, 40), receipt_ref="receipt-primary")
+
+        with self.assertRaises(TaskError) as caught:
+            await self.gateway.generate(self.model_run(),
+                replace(self.request(), output_format="calendar_planning"))
+        self.assertEqual(caught.exception.code, "model_capture_unavailable")
+
+    async def test_a_private_memory_reflection_keeps_its_captured_body(self):
+        self.responses["primary"] = self.truncated('{"facts": [')
+
+        completion = await self.gateway.generate(self.model_run(),
+            replace(self.request(), output_format="memory_reflection"))
+
+        self.assertEqual(completion.captured_output.text, '{"facts": [')
+
+
 class ModelBudgetTests(ModelFixture):
     def test_two_connections_compete_for_last_reservation_without_partial_holds(self):
         first = self.model_run()
@@ -664,6 +838,102 @@ class ModelBudgetTests(ModelFixture):
             self.ledger.recover(self.tasks)
         ledger.reconcile_usage("task-2", self.providers[0].binding, Amount(10, 15), receipt_ref="after-restart", observed_at=NOW)
         self.assertTrue(all(a["held_tokens"] == 0 for a in self.accounts()))
+
+    def test_expired_reclaim_releases_only_reservations_past_their_task_timeout(self):
+        stale = self.model_run("stale-call")
+        self.stage_plan(stale)
+        self.ledger.reserve(stale, call_id="stale-call", position=0,
+                            provider=self.providers[0].binding, amount=Amount(30, 100))
+        self.ledger.dispatch(stale, "stale-call")
+        old = (NOW - timedelta(seconds=301)).isoformat(timespec="microseconds")
+        with self.runtime.transaction() as connection:
+            connection.execute("UPDATE model_calls SET started_at = ? WHERE call_id = 'stale-call'", (old,))
+        self.tasks.finish(stale.claim, TaskResult("succeeded")).unwrap()
+        fresh = self.model_run("fresh-call")
+        self.stage_plan(fresh)
+        self.ledger.reserve(fresh, call_id="fresh-call", position=0,
+                            provider=self.providers[0].binding, amount=Amount(20, 50))
+        self.ledger.dispatch(fresh, "fresh-call")
+
+        report = self.ledger.reclaim_expired(self.tasks)
+
+        self.assertEqual((report["released_calls"], report["released_tokens"], report["released_cost_microusd"]),
+                         (1, 30, 100))
+        rows = {row["call_id"]: row for row in self.call_rows()}
+        self.assertEqual(rows["stale-call"]["state"], "dispatched")
+        self.assertTrue(rows["stale-call"]["receipt_ref"].startswith("local:released:expired-reservation"))
+        self.assertIsNone(rows["fresh-call"]["receipt_ref"])
+        self.assertTrue(all((a["held_tokens"], a["held_cost"]) == (20, 50) for a in self.accounts()))
+        self.assertEqual(self.ledger.reclaim_expired(self.tasks)["released_calls"], 0)
+        audit = self.ledger.reclaim_audit()
+        self.assertEqual((audit["released_calls"], audit["released_tokens"]), (1, 30))
+        self.assertIn("at", audit)
+
+    def test_reclaim_threshold_follows_the_owning_task_timeout(self):
+        registrations = tuple(TaskRegistration(replace(entry.definition, timeout_seconds=400), entry.validate)
+                              for entry in self.registrations)
+        supervisor = self.supervisor(registrations=registrations)
+        supervisor.attach(expected_generation=1).unwrap()
+        supervisor.submit(self.spec("slow-call")).unwrap()
+        claim = supervisor.claim(Lane.FOREGROUND).unwrap().claim
+        supervisor.begin(claim).unwrap()
+        run = TaskRun(supervisor, claim, supervisor.read(self.context, "slow-call").unwrap())
+        self.stage_plan(run)
+        self.ledger.reserve(run, call_id="slow-call", position=0,
+                            provider=self.providers[0].binding, amount=Amount(30, 100))
+        self.ledger.dispatch(run, "slow-call")
+        for age, expected in ((500, 0), (801, 1)):
+            with self.runtime.transaction() as connection:
+                connection.execute("UPDATE model_calls SET started_at = ? WHERE call_id = 'slow-call'",
+                                   ((NOW - timedelta(seconds=age)).isoformat(timespec="microseconds"),))
+            self.assertEqual(self.ledger.reclaim_expired(supervisor)["released_calls"], expected)
+
+    def test_release_is_idempotent_and_a_late_receipt_charges_only_once(self):
+        run = self.model_run()
+        self.stage_plan(run)
+        self.ledger.reserve(run, call_id="released-call", position=0,
+                            provider=self.providers[0].binding, amount=Amount(30, 100))
+        self.ledger.dispatch(run, "released-call")
+
+        released = self.ledger.release("released-call", observed_at=self.clock.now())
+        self.assertEqual((released.tokens, released.cost_microusd), (30, 100))
+        self.assertTrue(all(a["held_tokens"] == 0 for a in self.accounts()))
+        self.assertEqual(self.ledger.release("released-call", observed_at=self.clock.now()), Amount(0, 0))
+        self.ledger.settle("released-call", self.providers[0].binding,
+                           ProviderResponse("unknown", failure=ModelFailure.TRANSPORT),
+                           observed_at=self.clock.now())
+        self.assertTrue(is_released(self.call_rows()[0]["receipt_ref"]))
+        self.assertTrue(all(a["held_tokens"] == 0 for a in self.accounts()))
+
+        self.ledger.reconcile_usage("released-call", self.providers[0].binding, Amount(9, 21),
+                                    receipt_ref="late-receipt", observed_at=self.clock.now())
+        self.assertTrue(all((a["held_tokens"], a["spent_tokens"], a["spent_cost"]) == (0, 9, 21)
+                            for a in self.accounts()))
+        self.assertFalse(is_released(self.call_rows()[0]["receipt_ref"]))
+        with self.assertRaises(TaskError):
+            self.ledger.reconcile_usage("released-call", self.providers[0].binding, Amount(10, 21),
+                                        receipt_ref="changed", observed_at=self.clock.now())
+
+    def test_concurrent_release_of_one_reservation_returns_the_hold_once(self):
+        run = self.model_run()
+        self.stage_plan(run)
+        self.ledger.reserve(run, call_id="shared-call", position=0,
+                            provider=self.providers[0].binding, amount=Amount(70, 100))
+        self.ledger.dispatch(run, "shared-call")
+        other = BudgetLedger(self.open_runtime(), self.budget_policy)
+
+        def release(ledger):
+            return ledger.release("shared-call", observed_at=self.clock.now()).tokens
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = tuple(pool.map(release, (self.ledger, other)))
+        self.assertEqual(sorted(results), [0, 70])
+        self.assertTrue(all(a["held_tokens"] == 0 for a in self.accounts()))
+
+    def test_reclaim_requires_the_current_supervisor(self):
+        with self.assertRaises(TaskError) as error:
+            self.ledger.reclaim_expired(self.supervisor())
+        self.assertEqual(error.exception.code, "supervisor_fenced")
 
     def test_same_day_policy_change_cannot_reset_spending_or_expand_budget(self):
         run = self.model_run()

@@ -26,7 +26,7 @@ const DEFAULTS = {
   group_wakeup_enabled: true, group_wakeup_direct_words: '[]',
   group_wakeup_context_words: '[]', group_wakeup_interest_keywords: '[]',
   group_wakeup_question_enabled: false, group_wakeup_bot_name: '',
-  group_wakeup_primary_member_ids: '[]', group_wakeup_owner_direct_words: '[]',
+  group_wakeup_primary_member_ids: '[]', group_wakeup_owner_direct_words: '[]', group_tool_profile: 'full',
   group_wakeup_interest_probability: 0.18, group_wakeup_question_threshold: 65,
   group_wakeup_cold_group_enabled: false, group_wakeup_cold_group_threshold: 65,
   group_wakeup_cold_group_idle_minutes: 25, group_wakeup_cooldown_seconds: 90,
@@ -79,6 +79,9 @@ const DEFAULTS = {
   voice_primary_mention_prompt: '',
   voice_provider_id: '', voice_zh_provider_id: '', voice_ja_provider_id: '',
   voice_en_provider_id: '', voice_extra_prompt: '', style_prompt: '',
+  voice_private_zh_provider_id: '', voice_private_ja_provider_id: '',
+  voice_private_en_provider_id: '', voice_group_zh_provider_id: '',
+  voice_group_ja_provider_id: '', voice_group_en_provider_id: '',
   enable_humanized_expression: false, humanized_expression_prompt: '',
 };
 const LIMITS = {
@@ -169,7 +172,8 @@ function harness() {
     'wakeup_cold_group', 'wakeup_fatigue', 'group_continuation', 'private_debounce',
     'silence_policy', 'group_air_guard',
     'private_closing', 'group_content_safety',
-    'context_image', 'image_narration', 'video_narration', 'file_understanding', 'forwards', 'voice', 'components', 'checks'];
+    'context_image', 'image_narration', 'video_narration', 'file_understanding', 'forwards', 'voice',
+    'voice_channels', 'components', 'checks'];
   const sectionTabs = sectionIds.map(id => {
     const tab = {dataset: {wbSection: id}, focus() {}, click() {
       listeners['settings:click']?.({target: {closest: selector => selector === '[data-wb-section]' ? tab : null}});
@@ -368,7 +372,7 @@ test('the card is split into labelled groups but keeps one save', async () => {
   const instance = live(harnessed);
   /* vm 上下文里的数组与宿主 realm 不同，比较前先过 plain()。 */
   const ids = plain(instance.state.container.groups.map(group => group.id));
-  assert.deepEqual(ids, ['segment', 'style', 'cleanup', 'voice', 'components', 'checks']);
+  assert.deepEqual(ids, ['segment', 'style', 'cleanup', 'voice', 'voice_channels', 'components', 'checks']);
   assert.ok(plain(instance.state.container.groups.find(group => group.id === 'voice').fields)
     .includes('voice_provider_id'));
   assert.ok(!ids.some(id => ['wakeup_direct', 'wakeup_interest', 'wakeup_members', 'wakeup_cold_group',
@@ -384,6 +388,7 @@ test('the card is split into labelled groups but keeps one save', async () => {
   assert.equal(instance.state.container.fields.forward_message_adaptation_enabled, undefined);
   /* 段落只是阅读顺序：仍然只有一个 edit_token、一次保存。 */
   assert.equal(instance.state.container.fields.enabled.editable.includes('window'), true);
+  assert.equal(instance.state.container.fields.group_tool_profile, undefined);
   assert.ok(plain(instance.state.container.groups.find(group => group.id === 'segment').fields)
     .includes('part_gap_mode'), 'message spacing is part of the segmentation workspace');
   assert.equal(harnessed.page.selectSection('timing'), true, 'the old timing jump resolves to segmentation');
@@ -564,9 +569,39 @@ test('expression modules render only their own navigation and panels after every
   assert.match(h.slots.scope.innerHTML, /音色与 TTS 合成后端在「模型与连接」中配置/);
   assert.doesNotMatch(h.slots.scope.innerHTML, /核心回复|历史兼容|群唤醒/);
   html = h.slots.settings.innerHTML;
-  assert.doesNotMatch(html, /data-wb-section=|data-wb-section-panel=/);
+  assert.match(html, /data-wb-section="voice"/);
+  assert.match(html, /data-wb-section="voice_channels"/);
+  assert.match(html, /data-wb-section-panel="voice_channels"/);
+  assert.equal(instance.state.activeGroupId, 'voice');
   assert.match(html, /data-wb-row="voice_enabled"/);
+  assert.doesNotMatch(html, /data-wb-section="segment"|data-wb-section="components"|data-wb-section="checks"/);
   assert.doesNotMatch(html, /data-wb-row="reply_quote_enabled"|data-wb-row="enabled"/);
+  h.page.unmount();
+});
+
+test('voice channel overrides are reachable and save from the voice module', async () => {
+  const h = await loaded(harness());
+  h.page.setExpressionModule('expression-voice');
+  assert.equal(h.page.selectSection('voice_channels'), true);
+  const instance = live(h);
+  assert.equal(instance.state.activeGroupId, 'voice_channels');
+  const overrides = ['voice_private_zh_provider_id', 'voice_private_ja_provider_id',
+    'voice_private_en_provider_id', 'voice_group_zh_provider_id',
+    'voice_group_ja_provider_id', 'voice_group_en_provider_id'];
+  for (const name of overrides) {
+    assert.ok(instance.state.container.fields[name], `${name} is editable`);
+    assert.match(h.slots.settings.innerHTML, new RegExp(`data-wb-field="${name}"`));
+    instance.state.draft[name] = 'tts-a';
+  }
+  const saving = instance.save(false);
+  await drains();
+  assert.deepEqual(plain(h.requests[1].body.changes),
+    Object.fromEntries(overrides.map(name => [name, 'tts-a'])));
+  h.requests[1].resolve({result: {operation_id: 'voice-channels', replayed: false},
+    status: status(Object.fromEntries(overrides.map(name => [name, 'tts-a'])), 'f'.repeat(64))});
+  await saving;
+  await drains();
+  assert.equal(instance.state.base.voice_private_ja_provider_id, 'tts-a');
   h.page.unmount();
 });
 
@@ -617,6 +652,56 @@ test('word-list chips add and remove entries while saving the existing wire form
   assert.deepEqual(plain(JSON.parse(instance.state.draft.content_cleanup_words)), original);
 });
 
+test('the registered newline default of the file formats opens as entries and saves clean', async () => {
+  /* 后端注册默认值是多行文本（companion_v2/conversation/media/understanding.py），
+     不是 JSON 数组。编辑器只认 JSON 的话这里会读成 0 个词条、valid=false，
+     整张「文件理解」卡连保存都会被拦。 */
+  const registered = '文本\nPDF\nWord（DOCX）\nExcel（XLSX）\nPowerPoint（PPTX）';
+  const expected = ['文本', 'PDF', 'Word（DOCX）', 'Excel（XLSX）', 'PowerPoint（PPTX）'];
+  const harnessed = harness();
+  harnessed.page.mount(harnessed.root, {view: 'perception', perceptionModule: 'file'});
+  await drains();
+  harnessed.requests[0].resolve(status({file_understanding_format_groups: registered}));
+  await drains();
+  const instance = live(harnessed);
+  const field = instance.state.container.fields.file_understanding_format_groups;
+  assert.equal(field.input, 'word-list');
+  assert.equal(harnessed.workbench.valid(field, instance.state.draft.file_understanding_format_groups),
+    true, 'the registered default must parse into entries the editor can validate');
+  assert.deepEqual(plain(JSON.parse(instance.state.draft.file_understanding_format_groups)), expected);
+  assert.deepEqual(plain(JSON.parse(instance.state.base.file_understanding_format_groups)), expected);
+  assert.equal(instance.dirty(), false, 'reading the backend default is not a pending edit');
+  assert.match(harnessed.slots.settings.innerHTML,
+    /data-wb-word-list="file_understanding_format_groups"/);
+
+  /* 快捷添加从同一份归一化结果起手：删一项再点「文本」加回来，仍是 5 类而不是 1 类。 */
+  const removeFirst = {dataset: {wbWordRemove: 'file_understanding_format_groups', wbWordIndex: '0'}};
+  harnessed.listeners['settings:click']({target: {closest: selector =>
+    selector === '[data-wb-word-remove]' ? removeFirst : null}});
+  assert.deepEqual(plain(JSON.parse(instance.state.draft.file_understanding_format_groups)),
+    expected.slice(1));
+  const quickAdd = {dataset: {wbWordValue: '文本', wbWordField: 'file_understanding_format_groups'}};
+  harnessed.listeners['settings:click']({target: {closest: selector =>
+    selector === '[data-wb-word-value]' ? quickAdd : null}});
+  assert.deepEqual(plain(JSON.parse(instance.state.draft.file_understanding_format_groups)),
+    [...expected.slice(1), '文本']);
+
+  /* 只改同段的其他开关：默认的换行串不能被当成新改动重发。 */
+  instance.state.draft.file_understanding_format_groups =
+    instance.state.base.file_understanding_format_groups;
+  instance.state.draft.file_understanding_enabled = true;
+  const saving = instance.save(false);
+  await drains();
+  assert.deepEqual(plain(harnessed.requests[1].body.changes), {file_understanding_enabled: true});
+  harnessed.requests[1].resolve({result: {operation_id: 'word-list', replayed: false},
+    status: status({file_understanding_format_groups: registered,
+      file_understanding_enabled: true}, 'f'.repeat(64))});
+  await saving;
+  await drains();
+  assert.equal(instance.dirty(), false);
+  harnessed.page.unmount();
+});
+
 test('replacement pairs and component order are edited without JSON controls', async () => {
   const harnessed = await loaded(harness());
   const instance = live(harnessed);
@@ -659,26 +744,25 @@ test('replacement pairs and component order are edited without JSON controls', a
 });
 
 test('reply expression, perception, and decision settings partition every field exactly once', async () => {
-  const harnessed = await loaded(harness());
-  const expression = plain(live(harnessed).state.container.groups.flatMap(group => group.fields));
-  harnessed.page.mount(harnessed.root, {view: 'decision'});
-  await drains();
-  harnessed.requests[1].resolve(status());
-  await drains();
-  const decision = plain(live(harnessed).state.container.groups.flatMap(group => group.fields));
-  assert.deepEqual(plain(live(harnessed).state.container.groups.map(group => group.id)),
+  const expressionHarness = await loaded(harness());
+  const expression = plain(live(expressionHarness).state.container.groups.flatMap(group => group.fields));
+  const decisionHarness = await loaded(harness(), 'decision');
+  const decisionState = live(decisionHarness).state.container;
+  const decision = plain(decisionState.groups.flatMap(group => group.fields));
+  assert.ok(decision.includes('group_tool_profile'));
+  assert.deepEqual(plain(decisionState.fields.group_tool_profile.choices),
+    {full: '完整工具', standard: '常用工具', lean: '精简工具'});
+  assert.deepEqual(plain(decisionState.groups.map(group => group.id)),
     ['wakeup_direct', 'wakeup_interest', 'wakeup_members', 'wakeup_cold_group', 'wakeup_fatigue',
       'group_continuation', 'private_debounce', 'silence_policy', 'group_air_guard', 'private_closing', 'group_content_safety']);
-  harnessed.page.mount(harnessed.root, {view: 'perception'});
-  await drains();
-  harnessed.requests[2].resolve(status());
-  await drains();
-  const perception = plain(live(harnessed).state.container.groups.flatMap(group => group.fields));
+  const perceptionHarness = await loaded(harness(), 'perception');
+  const perceptionState = live(perceptionHarness).state.container;
+  const perception = plain(perceptionState.groups.flatMap(group => group.fields));
   const exposed = [...expression, ...perception, ...decision];
   assert.equal(exposed.length, new Set(exposed).size, 'a setting must not be duplicated across modules');
   assert.deepEqual([...exposed].sort(), Object.keys(DEFAULTS)
     .filter(name => name !== 'rules_enabled' && name !== 'file_understanding_formats').sort());
-  assert.deepEqual(plain(live(harnessed).state.container.groups.map(group => group.id)),
+  assert.deepEqual(plain(perceptionState.groups.map(group => group.id)),
     ['media_permissions', 'context_image', 'image_narration', 'video_narration', 'file_understanding', 'forwards']);
   assert.deepEqual(perception, ['image_understanding_private_enabled', 'image_understanding_group_enabled',
     'video_understanding_private_enabled', 'video_understanding_group_enabled',
@@ -694,10 +778,10 @@ test('reply expression, perception, and decision settings partition every field 
     'file_understanding_format_groups', 'file_understanding_max_size_mb',
     'file_understanding_max_chars', 'file_understanding_timeout_seconds', 'file_understanding_prompt',
     'forward_message_adaptation_enabled']);
-  assert.equal(harnessed.page.selectSection('segment'), false);
-  assert.equal(harnessed.page.selectSection('context_image'), true);
-  assert.equal(harnessed.page.selectSection('forwards'), true);
-  harnessed.page.unmount();
+  assert.equal(perceptionHarness.page.selectSection('segment'), false);
+  assert.equal(perceptionHarness.page.selectSection('context_image'), true);
+  assert.equal(perceptionHarness.page.selectSection('forwards'), true);
+  perceptionHarness.page.unmount();
 });
 
 test('decision view edits the same reply route and omits expression-only tools', async () => {

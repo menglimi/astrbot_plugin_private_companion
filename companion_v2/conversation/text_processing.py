@@ -193,6 +193,22 @@ _CONTROL_TAG_SPECS = (
     ("personality_sync", True, ()),
     ("tts", False, ("pc_tts",)),
     ("thinking", False, ()),
+    # The host itself injects <system_reminder> blocks and keeps them as
+    # first-class conversation content:
+    #   astrbot/core/astr_main_agent.py:1033
+    #       "<system_reminder>" + "\n".join(system_parts) + "</system_reminder>"
+    #   astrbot/builtin_stars/astrbot/group_chat_context.py:33-39  group context
+    #   astrbot/dashboard/services/chat_service.py:446  recognises the prefix
+    ("system_reminder", False, ()),
+    # AstrBot names <think> as a real provider spelling beside <thinking>
+    # (astrbot/core/provider/sources/openai_source.py:862 comment, and the regex
+    # r"<(think|thinking)>" at :864), so registering only the long spelling
+    # covered half of what its own parser accepts.
+    # <reasoning> is deliberately NOT registered: nothing in AstrBot 4.29.1
+    # produces it — there is no such literal anywhere in the tree, and
+    # gemini_source.py:527-529 reads reasoning from the structured
+    # ``part.thought`` flag rather than from text tags.
+    ("think", False, ()),
     ("timer", False, ()),
     ("private_companion_context", False, ()),
     ("core_memory", False, ()),
@@ -736,9 +752,13 @@ class ReplyTextPolicy:
 
     def _clean_scoped(self, text, deadline, scopes, *, left_edge=True, right_edge=True,
                       allow_leading=True, allow_trailing=True):
+        # 词表模式只有真的配置了词条时才按词表清理。空词表必须退回下面的正则
+        # 规则：否则「文字整理」开着、词表为空时除首尾空白外什么都不做，
+        # 用户填的正则规则永远没有入口。
+        words = self.words() if self.content_cleanup_mode == "words" else ()
         if "all" in scopes:
-            if self.content_cleanup_mode == "words":
-                for word in self.words():
+            if words:
+                for word in words:
                     text = text.replace(word, "")
                 return text
             pattern = _pattern(self.content_cleanup_rule)
@@ -748,8 +768,8 @@ class ReplyTextPolicy:
                 return pattern.sub("", text, timeout=deadline - monotonic())
             except TimeoutError as error:
                 raise ValueError("presentation cleanup pattern exceeded its execution budget") from error
-        if self.content_cleanup_mode == "words":
-            words = sorted(set(self.words()), key=len, reverse=True)
+        if words:
+            words = sorted(set(words), key=len, reverse=True)
             if "leading" in scopes and allow_leading:
                 text = text.lstrip()
                 while text:

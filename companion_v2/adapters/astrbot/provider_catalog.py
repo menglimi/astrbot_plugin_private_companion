@@ -1,10 +1,26 @@
-"""Adapters for the text providers currently loaded by AstrBot."""
+"""Adapters for the text providers currently loaded by AstrBot.
+
+Two different limits live here and must not be derived from each other:
+
+* ``model.max_output_tokens`` is the default output budget of a task: how long
+  the next request should be unless the task configuration says otherwise;
+* a provider's ``maximum_output_tokens`` is an assertion about what that
+  provider accepts in one call, so it decides whether a task configuration is
+  valid at all.
+
+Sharing one number used to mean a task could never ask for more than the global
+default, and raising it was refused in the provider's name even though nobody
+had ever declared a ceiling for that provider. Undeclared providers therefore
+carry the product ceiling; an explicit per-provider declaration still wins and
+may be smaller.
+"""
 
 from dataclasses import dataclass, replace
 import json
 from logging import getLogger
 
 from companion_v2.execution.models import ProviderBinding, TaskError
+from companion_v2.model_gateway.models import MAX_MODEL_OUTPUT_TOKENS
 from .provider import AstrBotTextProvider, UsageTariff, provider_fingerprint
 
 logger = getLogger(__name__)
@@ -14,20 +30,27 @@ logger = getLogger(__name__)
 class TextProviderSettings:
     provider_id: str
     tariff: UsageTariff
-    maximum_output_tokens: int = 2048
+    maximum_output_tokens: int = MAX_MODEL_OUTPUT_TOKENS
     maximum_input_estimate: int = 131072
     output_parameter: str = "max_tokens"
     streaming: bool = False
 
     def __post_init__(self):
         if (type(self.provider_id) is not str or not self.provider_id.strip()
-                or self.provider_id != self.provider_id.strip() or len(self.provider_id) > 512
-                or not isinstance(self.tariff, UsageTariff)
-                or type(self.maximum_output_tokens) is not int or not 1 <= self.maximum_output_tokens <= 32768
-                or type(self.maximum_input_estimate) is not int or not 1024 <= self.maximum_input_estimate <= 1000000
-                or self.output_parameter not in ("max_tokens", "max_completion_tokens")
-                or type(self.streaming) is not bool):
-            raise ValueError("invalid additional model provider profile")
+                or self.provider_id != self.provider_id.strip() or len(self.provider_id) > 512):
+            raise ValueError("model provider ID is invalid")
+        if not isinstance(self.tariff, UsageTariff):
+            raise ValueError("model provider tariff is invalid")
+        if (type(self.maximum_output_tokens) is not int
+                or not 1 <= self.maximum_output_tokens <= MAX_MODEL_OUTPUT_TOKENS):
+            raise ValueError("model provider output limit is invalid")
+        if (type(self.maximum_input_estimate) is not int
+                or not 1024 <= self.maximum_input_estimate <= 1000000):
+            raise ValueError("model provider input estimate is invalid")
+        if self.output_parameter not in ("max_tokens", "max_completion_tokens"):
+            raise ValueError("model provider output parameter is invalid")
+        if type(self.streaming) is not bool:
+            raise ValueError("model provider streaming switch is invalid")
 
 
 def _provider_id(native):
@@ -49,6 +72,29 @@ def _text_provider(native_types, native):
     return callable(getattr(native, "text_chat", None))
 
 
+UNAVAILABLE_REASON_CHARS = 180
+
+
+def _unavailable_detail(error):
+    """Bounded single-line reason for one provider the catalog cannot wrap.
+
+    The type name alone cannot separate a configuration refusal from a defect:
+    ``AstrBotTextProvider`` raises ``ValueError`` for a wrong class, an
+    unusable streaming request and an overriding ``custom_extra_body``, while
+    this module raises ``TaskError`` when the host swaps the provider during
+    assembly. Every one of those messages is a fixed contract string written by
+    this plugin, never user text, so quoting it is safe; anything unrecognized
+    keeps the historical type name only.
+    """
+    if isinstance(error, TaskError):
+        return f"{type(error).__name__} code={error.code}"
+    if isinstance(error, (TypeError, ValueError)):
+        reason = " ".join(str(error).split())[:UNAVAILABLE_REASON_CHARS]
+        if reason:
+            return f"{type(error).__name__}: {reason}"
+    return type(error).__name__
+
+
 def loaded_routing(fallback_provider_id, replacement_rules, provider_ids):
     """Keep saved default routes only while their AstrBot providers are loaded."""
     available = frozenset(provider_ids)
@@ -68,6 +114,11 @@ def assemble_providers(context, *, bridge, native_types, primary_id, additional=
 
     ``additional`` remains a compatibility layer for existing installations that
     saved per-provider limits or tariffs. It no longer controls availability.
+
+    ``defaults`` supplies the shared tariff, input estimate, output parameter and
+    streaming choice. Its ``maximum_output_tokens`` is deliberately not copied to
+    providers that declare no limit of their own: that field is a task budget,
+    while the provider ceiling is the product ceiling ``MAX_MODEL_OUTPUT_TOKENS``.
     """
     additional = tuple(additional)
     overrides = {item.provider_id: item for item in additional}
@@ -84,15 +135,19 @@ def assemble_providers(context, *, bridge, native_types, primary_id, additional=
     candidates = []
     seen = set()
     for native in inventory:
-        if native_types.video_provider_type is not None and isinstance(native, native_types.video_provider_type):
-            adapter_kind = "video"
-        elif _text_provider(native_types, native):
+        # This catalog builds fallback text adapters; a provider registered for
+        # both surfaces (such as native Gemini) belongs to the text lane here.
+        if _text_provider(native_types, native):
             adapter_kind = "text"
+        elif native_types.video_provider_type is not None and isinstance(native, native_types.video_provider_type):
+            adapter_kind = "video"
         else:
             continue
         try:
             provider_id = _provider_id(native)
-        except (AttributeError, TypeError, ValueError):
+        except (AttributeError, TypeError, ValueError) as error:
+            logger.warning("Loaded AstrBot provider has no readable ID and stays unavailable to V2 (%s)",
+                           _unavailable_detail(error))
             continue
         if not provider_id or provider_id in seen or provider_id == primary_id:
             continue
@@ -100,7 +155,8 @@ def assemble_providers(context, *, bridge, native_types, primary_id, additional=
         candidates.append((provider_id, native, adapter_kind))
 
     for provider_id, native, adapter_kind in candidates:
-        settings = overrides.get(provider_id) or replace(defaults, provider_id=provider_id)
+        settings = overrides.get(provider_id) or replace(defaults, provider_id=provider_id,
+                                                        maximum_output_tokens=MAX_MODEL_OUTPUT_TOKENS)
         try:
             if context.get_provider_by_id(provider_id) is not native:
                 raise TaskError("host_provider_changed", "AstrBot provider changed during model assembly")
@@ -122,7 +178,7 @@ def assemble_providers(context, *, bridge, native_types, primary_id, additional=
             if provider_id in overrides:
                 raise
             logger.warning("Loaded AstrBot %s provider %s is unavailable to V2 (%s)", adapter_kind,
-                           provider_id, type(error).__name__)
+                           provider_id, _unavailable_detail(error))
             continue
         adapters.append(adapter)
     return tuple(adapters)

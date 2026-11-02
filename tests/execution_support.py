@@ -2,7 +2,7 @@
 
 from companion_v2.storage.schema import (
     MEMORY_TABLES, V10_MIGRATION_STATEMENTS, V15_MIGRATION_STATEMENTS, V36_MIGRATION_STATEMENTS,
-    V56_MIGRATION_STATEMENTS, V59_MIGRATION_STATEMENTS,
+    V56_MIGRATION_STATEMENTS, V59_MIGRATION_STATEMENTS, V61_MIGRATION_STATEMENTS,
 )
 
 
@@ -47,10 +47,33 @@ def remove_v64(connection):
 
 
 def remove_v66(connection):
+    remove_v67(connection)
     connection.execute('DROP INDEX IF EXISTS "relationship_anniversary_active_day_idx"')
     connection.execute('DROP INDEX IF EXISTS "relationship_anniversary_active_idx"')
     connection.execute('DROP TABLE IF EXISTS "relationship_anniversaries"')
     connection.execute("DELETE FROM schema_migrations WHERE migration_id = 'companion-v2.storage.v65-to-v66'")
+
+
+def remove_v67(connection):
+    """Restore the narrow `mode` constraint that only knows local and remote.
+
+    v67 rebuilt this table to admit `jev`; v61 already owns the exact v66 DDL,
+    so the fixture reuses it instead of restating a second copy that could drift.
+    """
+    if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'laya_decision_events'").fetchone():
+        if connection.execute(
+                "SELECT 1 FROM laya_decision_events WHERE mode = 'jev' LIMIT 1").fetchone():
+            raise ValueError("cannot downgrade Jev events to a v66 fixture")
+        connection.execute("CREATE TEMP TABLE laya_decision_events_v67_saved AS SELECT * FROM laya_decision_events")
+        connection.execute('DROP TABLE "laya_decision_events"')
+        for statement in (V61_MIGRATION_STATEMENTS[1],):
+            connection.execute(statement)
+        connection.execute("INSERT INTO laya_decision_events SELECT * FROM laya_decision_events_v67_saved")
+        connection.execute("DROP TABLE laya_decision_events_v67_saved")
+        for statement in V61_MIGRATION_STATEMENTS[4:]:
+            connection.execute(statement)
+    connection.execute("DELETE FROM schema_migrations WHERE migration_id = 'companion-v2.storage.v66-to-v67'")
 
 
 def remove_v65(connection):

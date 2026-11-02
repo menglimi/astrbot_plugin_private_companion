@@ -5,6 +5,7 @@ from dataclasses import replace
 import json
 import sys
 import types
+from urllib.error import HTTPError, URLError
 
 import pytest
 
@@ -437,6 +438,116 @@ def test_remote_adapter_uses_systemone_contract_and_parses_answers(monkeypatch):
     assert client.last_trace["processing"]["contract_decision"] == decision_document()
 
 
+def test_workers_ai_adapter_wraps_input_and_parses_result(monkeypatch):
+    captured = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self, _limit):
+            return json.dumps({"success": True, "result": laya_result()},
+                              ensure_ascii=False).encode("utf-8")
+
+    def open_url(request, timeout):
+        captured["url"] = request.full_url
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr("astrbot_host.laya_client.urlopen", open_url)
+    client = LayaDecisionClient(
+        mode="workers_ai",
+        endpoint="https://api.cloudflare.com/client/v4/accounts/acc-1/ai/run",
+        api_key="cf-key", timeout_seconds=21, model="typesafe/jev-1.14.0")
+    result = asyncio.run(client.decide({"message_kind": "text", "user_text": "你好"}))
+    assert result.document() == decision_document()
+    assert captured["url"] == "https://api.cloudflare.com/client/v4/accounts/acc-1/ai/run"
+    assert captured["body"]["model"] == "typesafe/jev-1.14.0"
+    assert set(captured["body"]["input"]) == {"state", "questions"}
+    assert captured["body"]["input"]["state"] == client.last_trace["request"]["state"]
+    assert set(captured["body"]["input"]["questions"]) == set(DECISION_QUESTIONS)
+    assert captured["timeout"] == 21
+
+
+@pytest.mark.parametrize("endpoint", [
+    "https://api.cloudflare.com/client/v4/accounts/acc-1/ai/run",
+    "https://api.cloudflare.com/client/v4/accounts/acc-1/ai/run/",
+    "https://api.cloudflare.com/client/v4/accounts/acc-1/ai",
+    "https://api.cloudflare.com/client/v4/accounts/acc-1",
+])
+def test_workers_ai_endpoint_normalisation(endpoint):
+    client = LayaDecisionClient(mode="workers_ai", endpoint=endpoint,
+                                model="typesafe/jev-1.14.0")
+    assert client.endpoint == "https://api.cloudflare.com/client/v4/accounts/acc-1/ai/run"
+
+
+def test_workers_ai_defaults_to_cloudflares_free_decision_model():
+    client = LayaDecisionClient(
+        mode="workers_ai",
+        endpoint="https://api.cloudflare.com/client/v4/accounts/acc-1/ai/run")
+    assert client.model == "@cf/cloudflare/clef"
+
+
+def test_workers_ai_rejects_unrelated_endpoint():
+    with pytest.raises(LayaClientError) as error:
+        LayaDecisionClient(mode="workers_ai", endpoint="https://example.com/v1",
+                           model="typesafe/jev-1.14.0")
+    assert error.value.code == "laya_endpoint_invalid"
+
+
+def test_workers_ai_rejects_a_systemone_style_address():
+    """Pasting the SystemOne or chat-completions address must fail loudly."""
+    for endpoint in (
+        "https://api.cloudflare.com/client/v4/accounts/acc-1/v1/systemone",
+        "https://api.cloudflare.com/client/v4/accounts/acc-1/ai/v1/chat/completions",
+    ):
+        with pytest.raises(LayaClientError) as error:
+            LayaDecisionClient(mode="workers_ai", endpoint=endpoint)
+        assert error.value.code == "laya_endpoint_invalid"
+
+
+def test_workers_ai_parses_json_string_result_and_reports_errors(monkeypatch):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self, _limit):
+            return json.dumps({"success": True, "result": {
+                "response": json.dumps(laya_result(), ensure_ascii=False)}},
+                ensure_ascii=False).encode("utf-8")
+
+    monkeypatch.setattr("astrbot_host.laya_client.urlopen", lambda request, timeout: Response())
+    client = LayaDecisionClient(mode="workers_ai",
+                                endpoint="https://api.cloudflare.com/client/v4/accounts/acc-1/ai/run",
+                                model="typesafe/jev-1.14.0")
+    assert asyncio.run(client.decide({"message_kind": "text", "user_text": "你好"})).document() == decision_document()
+
+    class Rejected:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self, _limit):
+            return json.dumps({"success": False, "errors": [
+                {"code": 2021, "message": "Insufficient balance"}]},
+                ensure_ascii=False).encode("utf-8")
+
+    monkeypatch.setattr("astrbot_host.laya_client.urlopen", lambda request, timeout: Rejected())
+    with pytest.raises(LayaClientError) as error:
+        asyncio.run(client.decide({"message_kind": "text", "user_text": "你好"}))
+    assert error.value.code == "laya_response_invalid"
+    assert "Insufficient balance" in error.value.reason
+
+
 def test_call_log_persists_model_input_raw_answer_and_processed_decision(tmp_path):
     from companion_v2.storage.runtime import StorageRuntime
 
@@ -763,3 +874,246 @@ def test_background_warmup_is_shared_and_does_not_queue_expired_message_inferenc
     finally:
         runtime.close()
         laya_client._LOCAL_ROUTERS.clear()
+
+
+def jev_envelope(document=None):
+    """One OpenAI chat completion whose text carries a SystemOne answer document."""
+    return {"id": "chatcmpl-jev-test", "object": "chat.completion", "model": "jev-latest",
+            "choices": [{"index": 0, "finish_reason": "stop", "message": {
+                "role": "assistant", "content": json.dumps(document or laya_result(), ensure_ascii=False)}}]}
+
+
+def jev_response(monkeypatch, payload):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self, _limit):
+            return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+    monkeypatch.setattr("astrbot_host.laya_client.urlopen", lambda *_args, **_kwargs: Response())
+
+
+def test_jev_adapter_wraps_the_decision_document_in_one_chat_message(monkeypatch):
+    captured = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self, _limit):
+            return json.dumps(jev_envelope(), ensure_ascii=False).encode("utf-8")
+
+    def open_url(request, timeout):
+        captured["url"] = request.full_url
+        captured["headers"] = request.headers
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr("astrbot_host.laya_client.urlopen", open_url)
+    client = LayaDecisionClient(mode="jev", endpoint="https://gateway.test/v1",
+                                api_key="jev-key", timeout_seconds=23)
+    result = asyncio.run(client.decide({"message_kind": "text", "user_text": "你好"}))
+    decision_request = json.loads(captured["body"]["messages"][0]["content"])
+
+    assert result.document() == decision_document()
+    assert captured["url"] == "https://gateway.test/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer jev-key"
+    assert captured["timeout"] == 23
+    assert captured["body"]["model"] == "jev-latest"
+    assert captured["body"]["messages"][0]["role"] == "user"
+    assert decision_request["model"] == "jev-latest"
+    assert set(decision_request["questions"]) == set(DECISION_QUESTIONS)
+    assert all("instructions" in question and "criteria" in question
+               for question in decision_request["questions"].values())
+    assert json.loads(decision_request["state"])["facts"]["user_text"] == "你好"
+    assert client.last_trace["request"]["model"] == "jev-latest"
+    assert client.last_trace["request"]["sent"] is True
+    assert json.loads(client.last_trace["response"]["body"])["object"] == "chat.completion"
+    assert client.last_trace["response"]["value"]["answers"]["action"]["choice"] == "reply"
+    assert client.last_trace["processing"]["contract_decision"] == decision_document()
+
+
+def test_jev_endpoint_model_and_mode_are_validated_before_any_request():
+    assert LayaDecisionClient(mode="jev", endpoint="https://gateway.test").endpoint == \
+        "https://gateway.test/v1/chat/completions"
+    assert LayaDecisionClient(mode="jev", endpoint="https://gateway.test/v1").endpoint == \
+        "https://gateway.test/v1/chat/completions"
+    assert LayaDecisionClient(mode="jev", endpoint="https://gateway.test/v1/chat/completions").endpoint == \
+        "https://gateway.test/v1/chat/completions"
+    assert LayaDecisionClient(mode="jev", endpoint="https://gateway.test").model == "jev-latest"
+    assert LayaDecisionClient(mode="jev", endpoint="https://gateway.test", model="jev-1.14.0").model == \
+        "jev-1.14.0"
+    # The official backend keeps its own path and checkpoint.
+    assert LayaDecisionClient(mode="remote", endpoint="https://laya.test").endpoint == \
+        "https://laya.test/v1/systemone"
+    assert LayaDecisionClient(mode="remote", endpoint="https://laya.test").model == "multilingual"
+    assert LayaDecisionClient(mode="local").endpoint == ""
+
+    with pytest.raises(LayaClientError) as error:
+        LayaDecisionClient(mode="openai_structured")
+    assert error.value.code == "laya_mode_invalid"
+    with pytest.raises(LayaClientError) as error:
+        LayaDecisionClient(mode="jev", endpoint="gateway.test")
+    assert error.value.code == "laya_endpoint_invalid"
+
+
+def test_jev_adapter_reports_a_rejected_credential_without_leaking_it(monkeypatch):
+    class Rejected:
+        def read(self, _limit):
+            return b'{"error":{"message":"invalid token jev-key"}}'
+
+        def close(self):
+            pass
+
+    def reject(*_args, **_kwargs):
+        raise HTTPError("https://gateway.test/v1/chat/completions", 401, "Unauthorized", {}, Rejected())
+
+    monkeypatch.setattr("astrbot_host.laya_client.urlopen", reject)
+    client = LayaDecisionClient(mode="jev", endpoint="https://gateway.test", api_key="jev-key")
+    with pytest.raises(LayaClientError) as error:
+        asyncio.run(client.decide({"message_kind": "text", "user_text": "你好"}))
+    assert error.value.code == "laya_auth_failed"
+    assert "jev-key" not in error.value.reason
+    assert "HTTP 401" in error.value.reason
+
+
+def test_jev_adapter_reports_a_transport_failure(monkeypatch):
+    def offline(*_args, **_kwargs):
+        raise URLError("connection refused")
+
+    monkeypatch.setattr("astrbot_host.laya_client.urlopen", offline)
+    client = LayaDecisionClient(mode="jev", endpoint="https://gateway.test")
+    with pytest.raises(LayaClientError) as error:
+        asyncio.run(client.decide({"message_kind": "text", "user_text": "你好"}))
+    assert error.value.code == "laya_transport_failed"
+
+
+def test_jev_adapter_rejects_an_envelope_without_decision_content(monkeypatch):
+    for payload in ({"choices": []},
+                    {"choices": [{"message": {"role": "assistant", "content": ""}}]},
+                    {"choices": [{"message": {"role": "assistant", "content": "我这边不是 JSON"}}]}):
+        jev_response(monkeypatch, payload)
+        client = LayaDecisionClient(mode="jev", endpoint="https://gateway.test")
+        with pytest.raises(LayaClientError) as error:
+            asyncio.run(client.decide({"message_kind": "text", "user_text": "你好"}))
+        assert error.value.code == "laya_response_invalid"
+        # The raw envelope still reaches the diagnostics log for debugging.
+        assert json.loads(client.last_trace["response"]["body"]) == payload
+
+
+def test_jev_adapter_requires_every_enabled_answer(monkeypatch):
+    incomplete = laya_result()
+    incomplete["answers"].pop("action")
+    jev_response(monkeypatch, jev_envelope(incomplete))
+    client = LayaDecisionClient(mode="jev", endpoint="https://gateway.test")
+    with pytest.raises(LayaClientError) as error:
+        asyncio.run(client.decide({"message_kind": "text", "user_text": "你好"}))
+    assert error.value.code == "laya_response_invalid"
+    assert "action" in error.value.reason
+    assert client.last_trace["processing"]["stages"][-1] == {"name": "contract_conversion", "status": "failed"}
+
+
+def test_workers_ai_decisions_are_recorded_with_the_remote_ledger_mode(tmp_path, monkeypatch):
+    """Workers AI must not lose its ledger row to the three-backend CHECK constraint."""
+    from companion_v2.storage.runtime import StorageRuntime
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self, _limit):
+            return json.dumps({"success": True, "result": laya_result()},
+                              ensure_ascii=False).encode("utf-8")
+
+    monkeypatch.setattr("astrbot_host.laya_client.urlopen", lambda request, timeout: Response())
+    store = LayaSettingsStore(tmp_path / "settings", "target", "role")
+    store.update(store.raw()["revision"], {
+        "enabled": True, "mode": "workers_ai",
+        "endpoint": "https://api.cloudflare.com/client/v4/accounts/acc-1/ai/run",
+        "api_key": "cf-key", "remote_model": "typesafe/jev-1.14.0"})
+    runtime = StorageRuntime.open(data_root=tmp_path / "runtime",
+                                  installation_id="laya-workers-ledger")
+    try:
+        service = LayaDecisionService(store, runtime=runtime, origin_key="role-key",
+                                      client_factory=LayaDecisionClient)
+        service.set_trace(event_ref="reply-" + "b" * 32, source="conversation")
+        result = asyncio.run(service.decide({"message_kind": "text", "user_text": "你好"}))
+        assert result["status"] == "ok"
+        event = service.recent()["events"][0]
+        assert event["status"] == "ok"
+        assert event["mode"] == "remote"
+        stored = runtime.read_one(
+            "SELECT mode, request_json FROM laya_decision_events WHERE event_id = ?",
+            (event["event_id"],))
+        assert stored["mode"] == "remote"
+        assert json.loads(stored["request_json"])["model"] == "typesafe/jev-1.14.0"
+    finally:
+        runtime.close()
+
+
+def test_jev_mode_and_remote_model_are_persisted_and_validated(tmp_path):
+    store = LayaSettingsStore(tmp_path, "target", "role")
+    status = store.read()
+    assert status["default_model"] == "multilingual"
+
+    status = store.update(status["revision"], {"mode": "jev", "endpoint": "https://gateway.test/v1",
+                                               "api_key": "jev-key", "remote_model": "jev-1.14.0"})
+    assert status["mode"] == "jev"
+    assert status["remote_model"] == "jev-1.14.0"
+    assert status["default_model"] == "jev-1.14.0"
+    assert status["api_key_set"] is True
+    assert "jev-key" not in str(status)
+
+    status = store.update(status["revision"], {"remote_model": ""})
+    assert status["default_model"] == "jev-latest"
+
+    with pytest.raises(LayaSettingsError) as error:
+        store.update(status["revision"], {"mode": "openai_structured"})
+    assert error.value.code == "laya_config_invalid"
+
+
+def test_jev_mode_requires_an_endpoint_before_any_request(tmp_path):
+    store = LayaSettingsStore(tmp_path, "target", "role")
+    store.update(store.raw()["revision"], {"enabled": True, "mode": "jev"})
+    service = LayaDecisionService(store, client_factory=LayaDecisionClient)
+    with pytest.raises(LayaClientError) as error:
+        asyncio.run(service.decide({"message_kind": "text", "user_text": "你好"}))
+    assert error.value.code == "laya_endpoint_missing"
+
+
+def test_jev_decisions_are_recorded_in_the_runtime_ledger(tmp_path, monkeypatch):
+    """The ledger DDL must accept the third backend, not just local and remote."""
+    from companion_v2.storage.runtime import StorageRuntime
+
+    jev_response(monkeypatch, jev_envelope())
+    store = LayaSettingsStore(tmp_path / "settings", "target", "role")
+    store.update(store.raw()["revision"], {"enabled": True, "mode": "jev",
+                                           "endpoint": "https://gateway.test/v1", "api_key": "jev-key"})
+    runtime = StorageRuntime.open(data_root=tmp_path / "runtime", installation_id="laya-jev-ledger")
+    try:
+        service = LayaDecisionService(store, runtime=runtime, origin_key="role-key",
+                                      client_factory=LayaDecisionClient)
+        service.set_trace(event_ref="reply-" + "a" * 32, source="conversation")
+        result = asyncio.run(service.decide({"message_kind": "text", "user_text": "你好"}))
+        assert result["status"] == "ok"
+        event = service.recent()["events"][0]
+        assert event["status"] == "ok"
+        assert event["mode"] == "jev"
+        assert event["decision"]["action"] == decision_document()["action"]
+        stored = runtime.read_one("SELECT mode, request_json FROM laya_decision_events WHERE event_id = ?",
+                                  (event["event_id"],))
+        assert stored["mode"] == "jev"
+        assert json.loads(stored["request_json"])["model"] == "jev-latest"
+    finally:
+        runtime.close()

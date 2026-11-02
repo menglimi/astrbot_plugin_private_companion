@@ -18,11 +18,24 @@ MAX_BACK_TIMES = 5
 MODEL_REPLY_KIND = "conversation.poke_reply"
 MODEL_REPLY_OWNER = "conversation.pokes"
 MODEL_REPLY_PROMPT = (
-    "把这次戳一戳当作轻量互动，按角色个性与当下状态自然回应，可以俏皮、亲近、犯困或简短接住。不推断对方为什么戳、当时的情绪或你们的关系，不编造刚发生的事；保持一条适合直接发送的简短正文，不解释选择或复述规则，最终输出遵循本轮宿主提供的回复格式。"
+    "把这次戳一戳当作轻量互动，按角色个性与当下状态自然回应，可以俏皮、亲近、犯困或简短接住。不推断对方为什么戳、当时的情绪或你们的关系，不编造刚发生的事；保持一条适合直接发送的简短正文，不解释选择或复述规则，最终输出遵循本轮宿主提供的回复格式。\n"
+    "输出必须是 JSON 对象，格式：{\"text\": \"回复正文\", \"claims\": [{\"id\": \"c1\", \"kind\": \"subjective\", \"statement\": \"与正文相同的一句话\", \"evidence\": null}]}。"
+    "text 与 statement 都不要句号；不要输出 JSON 之外的任何文字。"
+)
+CONTEXT_STREAM_PROMPT = (
+    "拍一拍发生几秒后，你看到了群里最近的聊天记录（附在通知文本里）。"
+    "请判断这段记录里有没有需要你接的内容：有人在问问题（不管是不是直接问你的）、"
+    "有话题明显没聊完、有人提到你或点你名字，就回一句把那个接住；"
+    "如果话题已经被别人接住、只是普通闲聊互怼、或与你无关，只输出 [SKIP]，不要输出任何别的内容。"
+    "需要回应时保持一条适合直接发送的简短正文，按角色个性与当下状态自然说话，"
+    "单条内部不换行，不解释选择或复述规则，最终输出遵循本轮宿主提供的回复格式。\n"
+    "输出必须是 JSON 对象，格式：{\"text\": \"回复正文\", \"claims\": [{\"id\": \"c1\", \"kind\": \"subjective\", \"statement\": \"与正文相同的一句话\", \"evidence\": null}]}。"
+    "text 与 statement 都不要句号；判[SKIP]时输出 JSON：{\"text\": \"[SKIP]\", \"claims\": [{\"id\": \"c1\", \"kind\": \"subjective\", \"statement\": \"[SKIP]\", \"evidence\": null}]}。"
+    "不要输出 JSON 之外的任何文字。"
 )
 
 
-def poke_reply_profile(provider, *, max_output_tokens=128):
+def poke_reply_profile(provider, *, max_output_tokens=1024):
     return ModelTaskProfile(MODEL_REPLY_KIND, Lane.BACKGROUND, provider,
         "依据已配置角色身份回应当前戳一戳互动。", max_output_tokens=max_output_tokens,
         capabilities=("text",), timeout_seconds=15)
@@ -37,6 +50,8 @@ class PokePolicy:
     back_times: int = 1
     model_reply_enabled: bool = False
     model_reply_probability: float = 0.3
+    context_reply_enabled: bool = False
+    context_delay_seconds: int = 5
 
     @classmethod
     def parse(cls, value):
@@ -44,12 +59,17 @@ class PokePolicy:
             value = {}
         if type(value) is not dict or set(value) - {
                 "enabled", "trigger_probability", "replies", "back_probability", "back_times",
-                "model_reply_enabled", "model_reply_probability"}:
+                "model_reply_enabled", "model_reply_probability",
+                "context_reply_enabled", "context_delay_seconds"}:
             raise ValueError("poke settings contain unknown fields")
         enabled = value.get("enabled", False)
         replies = value.get("replies", list(DEFAULT_REPLIES))
         model_reply_enabled = value.get("model_reply_enabled", False)
+        context_reply_enabled = value.get("context_reply_enabled", False)
+        context_delay_seconds = value.get("context_delay_seconds", 5)
         if (type(enabled) is not bool or type(model_reply_enabled) is not bool
+                or type(context_reply_enabled) is not bool
+                or type(context_delay_seconds) is not int or not 0 <= context_delay_seconds <= 30
                 or type(replies) is not list or not 1 <= len(replies) <= 20):
             raise ValueError("poke switch or replies are invalid")
         if any(type(item) is not str or not item.strip() or len(item) > 120 for item in replies):
@@ -67,7 +87,7 @@ class PokePolicy:
 
         return cls(enabled, probability("trigger_probability", 1.0), tuple(item.strip() for item in replies),
                    probability("back_probability", 0.0), back_times, model_reply_enabled,
-                   probability("model_reply_probability", 0.3))
+                   probability("model_reply_probability", 0.3), context_reply_enabled, context_delay_seconds)
 
     @staticmethod
     def _fraction(event_key, purpose):
@@ -92,6 +112,8 @@ class PokeReplyJob:
     context: TaskContext
     role_instruction: str
     event_key: str
+    mode: str = "reply"
+    recent_context: str = ""
 
 
 class PokeReplyModel:
@@ -124,13 +146,15 @@ class PokeReplyModel:
         require(self.tasks.check_context_access(job.context, action="conversation.reply", observed_at=at))
         return True
 
-    async def reply(self, context, role_instruction, event_key):
+    async def reply(self, context, role_instruction, event_key, *, mode: str = "reply", recent_context: str = ""):
         if self.closed or self.runner is None:
             raise TaskError("poke_model_unavailable", "the supervised poke model is unavailable")
+        if mode not in ("reply", "context"):
+            raise TaskError("poke_model_context_invalid", "the poke reply mode is invalid")
         if not isinstance(context, TaskContext) or not isinstance(role_instruction, str) or not role_instruction.strip():
             raise TaskError("poke_model_context_invalid", "the original role context is unavailable")
-        task_id = "poke-reply-" + digest(event_key)
-        job = PokeReplyJob(context, role_instruction, event_key)
+        task_id = ("poke-context-reply-" if mode == "context" else "poke-reply-") + digest(event_key)
+        job = PokeReplyJob(context, role_instruction, event_key, mode, str(recent_context or "").strip())
         self.pending[task_id] = job
         invocation = asyncio.current_task()
         self.invocations.add(invocation)
@@ -177,12 +201,26 @@ class PokeReplyModel:
                         notice_text += "（角色当前自身状态参考：" + "，".join(parts) + "）"
             except Exception:
                 pass
+        recent_text = str(getattr(job, "recent_context", "") or "").strip()
+        if recent_text:
+            notice_text += "\n" + recent_text
         material = PromptMaterial(MODEL_REPLY_OWNER, "native_poke_notice", notice_text)
+        context_mode = job.mode == "context"
+        prompt_text = CONTEXT_STREAM_PROMPT if context_mode else MODEL_REPLY_PROMPT
         request = PromptRequest(trigger, job.role_instruction,
-            SealedForegroundContext((material,), (), ()), MODEL_REPLY_PROMPT, job.context.role_binding)
-        completion = await self.gateway.generate(run, request)
+            SealedForegroundContext((material,), (), ()), prompt_text, job.context.role_binding)
+        try:
+            completion = await self.gateway.generate(run, request)
+        except TaskError:
+            # Reasoning models occasionally ignore the JSON wire contract; one
+            # immediate retry keeps the stream usable without weakening it.
+            completion = await self.gateway.generate(run, request)
         draft = completion.draft
         text = draft.text.strip() if draft is not None and draft.action == "text" else ""
+        if context_mode and (text == "[SKIP]" or text.upper() == "SKIP"):
+            run.validate()
+            self.results[run.task.task_id] = ""
+            return TaskResult("succeeded", result_ref=digest(""))
         if not text or len(text) > 240:
             if completion.call_id:
                 self.gateway.ledger.discard(completion.call_id)

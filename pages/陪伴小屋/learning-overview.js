@@ -75,6 +75,9 @@ window.CompanionLearningOverviewPage = (() => {
         active: growthItems.filter(item=>item.state==="active").length,
         adopted: (value(4)?.items||[]).length,
         rules: Number.isInteger(settings?.rules_per_turn) ? settings.rules_per_turn : null,
+        learning: value(5)?.learning || null,
+        review: value(2)?.status || null,
+        access: value(0)?.access || null,
       };
     });
     const selection=semantic?.global===true?{global:true}:semantic?.target&&semantic?.role
@@ -97,6 +100,9 @@ window.CompanionLearningOverviewPage = (() => {
     const configured = valid.find(result=>Number.isInteger(result.rules));
     data.counts.rules = configured?.rules ?? null;
     data.counts.scan = semanticResult.scan;
+    data.learning = valid.map(result=>result.learning).find(item=>item&&typeof item==="object"&&item.state)||null;
+    data.review = valid.map(result=>result.review).find(item=>item&&typeof item==="object"&&item.state)||null;
+    data.access = valid.map(result=>result.access).find(item=>item&&typeof item==="object"&&item.settings)||null;
     data.loading=false;
     render();
   }
@@ -106,6 +112,69 @@ window.CompanionLearningOverviewPage = (() => {
     if (seconds % 3600 === 0) return `${seconds / 3600} 小时`;
     if (seconds % 60 === 0) return `${seconds / 60} 分钟`;
     return `${seconds} 秒`;
+  }
+
+  const LEARNING_STATES = {
+    not_run: "还没运行过",
+    waiting_for_new_messages: "等待新消息",
+    waiting_for_sample_review: "等待样本审核",
+    insufficient_samples: "样本不足",
+    source_not_selected: "当前私聊未选中为学习来源",
+    learning_disabled: "该窗口未开启表达学习",
+    capacity_reached: "待审与启用规则已达上限",
+    daily_budget_reached: "今日群聊学习批次已用完",
+    already_attempted: "本批素材已学习，等待新消息",
+    failed: "上次学习失败",
+    blocked: "来源校验未通过",
+  };
+  // 失败码的中文原因：只解释稳定 code 的含义与处置动作，原始 code 仍照常显示，
+  // 便于和日志、台账对照。
+  const LEARNING_FAILURE_CODES = {
+    model_estimation_failed: "本地预估没能完成，先按日志里的 error_type 排查",
+    host_model_limit_input: "要发送的材料超过本地输入上限；请调大「最大输入估算」或减少参考规则",
+    host_model_limit_output: "输出上限不足以写完这次结果；请调高该任务的输出上限",
+    model_output_truncated: "模型输出被输出上限截断；请调高该任务的输出上限",
+  };
+  function learningLine(item) {
+    if (!item || typeof item !== "object" || !item.state) return "";
+    const label = LEARNING_STATES[item.state] || item.state;
+    const counts = item.state === "capacity_reached" && Number.isInteger(item.active)
+      ? `（${item.active}/${item.limit ?? "?"} 条规则）`
+      : Number.isInteger(item.available)
+        ? `（${item.available}/${Number.isInteger(item.required) ? item.required : "?"} 条样本）` : "";
+    const reason = item.code && LEARNING_FAILURE_CODES[item.code] ? `（${e(LEARNING_FAILURE_CODES[item.code])}）` : "";
+    const failure = item.code ? ` · ${item.code}` : "";
+    const last = item.last_run_at ? ` · 上次 ${when(item.last_run_at)}` : "";
+    return `表达学习：${e(label)}${e(counts)}${reason}${e(failure)}${e(last)}`;
+  }
+
+  const REVIEW_STATES = {
+    not_run: "还没运行过",
+    failed: "上次失败",
+    blocked: "来源校验未通过",
+    no_reviewable_window: "暂无可复盘窗口",
+    already_attempted: "该窗口已复盘过",
+    succeeded: "最近一次已产出",
+    completed: "最近一次已产出",
+  };
+  function reviewLine(item) {
+    if (!item || typeof item !== "object" || !item.state) return "";
+    const label = REVIEW_STATES[item.state] || item.state;
+    const failure = item.code ? ` · ${item.code}` : "";
+    const last = item.last_run_at ? ` · 上次 ${when(item.last_run_at)}` : "";
+    const next = item.state === "failed" && item.next_check_at
+      ? ` · 下次 ${when(item.next_check_at)}` : "";
+    return `每日复盘：${e(label)}${e(failure)}${e(last)}${e(next)}`;
+  }
+
+  function growthLine(access) {
+    if (!access || typeof access !== "object" || !access.settings) return "";
+    const effective = access.effective || {};
+    if (effective.proposals_enabled?.allowed) return "";
+    const reason = effective.proposals_enabled?.reason || effective.read_enabled?.reason || "";
+    return reason
+      ? `成长链路：成长提案权限不可用（${reason}）；开启后角色才会提出技能或长期目标。`
+      : "成长链路：尚未开启成长提案权限；开启后角色才会提出技能或长期目标。";
   }
 
   function growthCard(item) {
@@ -140,6 +209,9 @@ window.CompanionLearningOverviewPage = (() => {
     root.innerHTML=`<div class="lh-overview-toolbar"><span>${data.errors?"部分记录归属暂不可用":`汇总 ${sources.length} 个记录归属`}</span>
       <button type="button" class="lh-refresh" data-lh-refresh aria-label="重新读取" title="重新读取" ${data.loading||data.writing?"disabled":""}><i data-lucide="refresh-cw"></i></button></div>
       ${data.notice?`<p class="lh-inline-status${data.error?" is-error":""}" role="status">${e(data.notice)}</p>`:""}
+      ${data.learning?`<p class="lh-inline-status" role="status">${learningLine(data.learning)}</p>`:""}
+      ${data.review?`<p class="lh-inline-status" role="status">${reviewLine(data.review)}</p>`:""}
+      ${data.access?`<p class="lh-inline-status" role="status">${growthLine(data.access)}</p>`:""}
       <section class="lh-kpis" aria-label="学习数据">${cards.map(([label,value,detail,icon])=>`<article class="lh-kpi">
         <span class="lh-kpi-icon" aria-hidden="true"><i data-lucide="${icon}"></i></span><span class="lh-kpi-label">${label}</span>
         <strong>${e(value)}</strong><small>${label==="待裁决"?"进展 · 表达 · 指导":label==="培育中"?"技能与目标":label==="规则注入"?e(detail):label==="语义扫描"?"群词义整理间隔":""}</small></article>`).join("")}</section>

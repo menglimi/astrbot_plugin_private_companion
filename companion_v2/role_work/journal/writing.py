@@ -449,6 +449,7 @@ class RoleJournalWriter:
             metadata=metadata,
             confidence=0.82 if dream else 0.86,
             importance=0.5 if dream else 0.52,
+            context=job.context,
         )
         await push_memory(self.memory_push, record)
 

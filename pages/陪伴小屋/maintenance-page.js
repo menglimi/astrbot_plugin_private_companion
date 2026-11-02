@@ -108,8 +108,27 @@ window.CompanionMaintenancePage = (() => {
     inbound_processing_failed: "入站处理失败",
     conversation_task_failed: "对话任务失败",
     conversation_task_expired: "对话任务超时",
+    core_reply_send_denied: "已生成回复，发送前复核未通过",
   })[value] || ("未回复 · " + String(value || "原因未知"));
-  const failureName = value => ({
+  // 复核拒绝的是“这条已经写好的回复”，原因码决定用户该修什么：
+  // 连接断开等下一次就好，目标被删除需要改配置。
+  const denialName = value => ({
+    host_client_offline: "该账号的原生连接已断开",
+    host_not_claimed: "事件已不在配置目标内",
+    host_not_accepting: "V2 已停止接收",
+    host_not_running: "V2 未运行",
+    host_terminated: "V2 正在停止",
+    host_target_mismatch: "本轮目标已改变",
+    core_reply_target_changed: "本轮目标已改变",
+    core_reply_event_changed: "原生事件已改变",
+    core_reply_context_changed: "身份或路由已改变",
+    core_reply_instruction_changed: "人格提示词已改变",
+    host_persona_changed: "人格已改变",
+    message_withdrawn: "触发消息已撤回",
+    group_llm_blocked: "该群已开启模型封锁",
+    private_access_dialogue_denied: "该用户已失去对话权限",
+  })[value];
+  const failureName = value => denialName(value) || ({
     model_budget_exhausted: "插件本地硬预算已触发",
     model_budget_soft_deferred: "插件本地软限额已触发",
     model_budget_policy_changed: "模型预算策略已变化",
@@ -145,10 +164,29 @@ window.CompanionMaintenancePage = (() => {
     ["proactive", "主动触达", "已记录的主动任务"], ["image_generation", "生图", "原生图片工具注册"],
     ["voice", "语音", "TTS Provider 与合成"],
     ["storage", "SQLite", "存储连接与完整性"], ["prompt", "上下文注入", "仅来源元数据"],
+    ["backup", "备份与磁盘", "最近成功备份、是否跨盘与磁盘余量"],
+    ["mobile", "手机网关", "启用、配对令牌与模块运行状态"],
     ["budget", "预算", "硬预算与后台软限额"], ["cache", "缓存", "Provider 实报与低命中样本"],
   ];
   const IMAGE_GENERATION_ACTION = "image.generate";
   const imageActionReady = (actions, action) => actions.some(row => row.action === action && row.registered && row.current);
+  const gibibytes = value => {
+    const amount = Number(value);
+    return Number.isFinite(amount) && amount >= 0 ? (amount / (1024 ** 3)).toFixed(1) + " GiB" : "未知";
+  };
+  const mobileModuleName = value => ({
+    running: "运行中", starting: "正在启动", inactive: "未运行", failed: "启动失败",
+    unavailable: "不可用",
+  })[value] || "状态未知";
+  const hostChecksOf = data => data?.host_checks && typeof data.host_checks === "object" ? data.host_checks : {};
+  const backupCheckOf = data => {
+    const value = hostChecksOf(data).backup;
+    return value && typeof value === "object" ? value : null;
+  };
+  const mobileCheckOf = data => {
+    const value = hostChecksOf(data).mobile;
+    return value && typeof value === "object" ? value : null;
+  };
   const sourceDescriptions = {
     conversation: ["对话 · AstrBot 核心与历史", "分项统计尚未同步。", "重新加载 V2 后刷新统计。"],
     astrbot_core: ["AstrBot 核心回复", "核心回复观测尚未同步。", "本页只统计已映射到当前角色的核心回复，收到实际模型回执后显示用量。"],
@@ -1309,6 +1347,62 @@ window.CompanionMaintenancePage = (() => {
       add("warn", "storage", "SQLite 未使用 WAL", "当前连接模式为 " + storage.journal_mode.toUpperCase() + "；可运行完整性检查核对数据库状态。", "storage");
     }
     if (storage.foreign_keys === false) add("error", "storage", "SQLite 外键保护未启用", "当前存储连接没有启用外键约束。", "storage");
+    /* 备份、磁盘与手机网关属于安装级事实；后端随同一个 maintenance 读取返回
+       host_checks（不新增轮询），页面只做判定与文案。 */
+    const backup = backupCheckOf(data);
+    const mobile = mobileCheckOf(data);
+    /* 旧后端没有 host_checks 时保持原来 9 类检查的表述，不凭空报「读取失败」。 */
+    const hostChecksAvailable = Object.keys(hostChecksOf(data)).length > 0;
+    if (!hostChecksAvailable) {
+      // No additive host facts in this response (older host): skip silently.
+    } else if (!backup || backup.available !== true) {
+      add("info", "backup", "备份状态未能读取", "后端没有返回可核对的快照摘要或磁盘位置；重新同步后再检查。", "backup");
+    } else {
+      const snapshots = Number(backup.snapshot_count) || 0;
+      if (!snapshots) {
+        add("error", "backup", "还没有可用的备份快照",
+          "运行资料还没有成功快照；在「资料与维护 → 备份与还原」创建第一份后再核对还原路径。", "backup");
+      } else if (!backup.latest_success_at || Number.isNaN(new Date(backup.latest_success_at).getTime())) {
+        add("warn", "backup", "最近成功备份缺少时间",
+          "已有 " + number(snapshots) + " 份快照，但无法确认最近一次成功时间；请重新检查备份页。", "backup");
+      } else if (Date.now() - new Date(backup.latest_success_at).getTime() > 7 * 86400000) {
+        add("warn", "backup", "最近成功备份已超过 7 天",
+          "最近成功快照 " + time(backup.latest_success_at) + "；建议创建新快照并确认备份在其他磁盘。", "backup");
+      }
+      if (backup.same_volume === true) {
+        add("warn", "backup", "备份与运行资料在同一块磁盘",
+          "备份目录 " + (backup.backup_root || "默认目录") + " 与运行资料同盘；磁盘故障会同时影响两份。可在资料与维护中改用另一块磁盘。", "backup");
+      }
+      if (Number(backup.problem_count) > 0) {
+        add("warn", "backup", "备份目录存在不完整快照",
+          number(backup.problem_count) + " 个快照缺少完整载荷；可在备份页核对或隔离。", "backup");
+      }
+      const disk = hostChecksOf(data).disk?.data_root;
+      const free = Number(disk?.free_bytes), total = Number(disk?.total_bytes);
+      if (Number.isFinite(free) && free >= 0) {
+        const ratio = Number.isFinite(total) && total > 0 ? free / total : null;
+        const size = gibibytes(free) + " / " + gibibytes(total) + (ratio == null ? "" : "（" + percent(ratio * 100) + "）");
+        if (free < 2 * 1024 ** 3 || (ratio != null && ratio < .03)) {
+          add("error", "backup", "运行资料所在磁盘余量不足", "剩余 " + size + "；清理旧快照或更换存储位置后再继续。", "backup");
+        } else if (free < 10 * 1024 ** 3 || (ratio != null && ratio < .10)) {
+          add("warn", "backup", "运行资料所在磁盘余量偏低", "剩余 " + size + "；建议清理或把数据与备份迁到更大的磁盘。", "backup");
+        }
+      }
+    }
+    if (!hostChecksAvailable) {
+      // Older host without host_checks: no mobile gateway signal to show.
+    } else if (!mobile || mobile.available !== true) {
+      add("info", "mobile", "手机网关状态未能读取", "无法读取现实触及的手机连接设置；重新同步后再检查。", "mobile");
+    } else if (!mobile.enabled) {
+      add("info", "mobile", "手机网关未启用",
+        "手机端陪伴终端当前不可用；需要时在「手机连接」生成配对令牌并启用网关。", "mobile");
+    } else if (mobile.pairing_token_configured !== true) {
+      add("error", "mobile", "手机网关已启用但缺少配对令牌",
+        "网关需要至少 24 位配对令牌才能启动；请重新生成后再配对。", "mobile");
+    } else if (mobile.module_state && mobile.module_state !== "running") {
+      add("warn", "mobile", "手机网关已配置但模块未运行",
+        "现实触及模块状态为" + mobileModuleName(mobile.module_state) + "；启用模块后再配对。", "mobile");
+    }
     const flows = Array.isArray(runtime.conversation) ? runtime.conversation : [];
     const failedParts = flows.reduce((sum, row) => sum + (Number(row.failed_parts) || 0), 0);
     const uncertainParts = flows.reduce((sum, row) => sum + (Number(row.unknown_parts) || 0), 0);
@@ -1344,6 +1438,12 @@ window.CompanionMaintenancePage = (() => {
     const materials = Array.isArray(runtime.prompt_materials) ? runtime.prompt_materials : [];
     const storage = runtime.storage || {};
     const proactive = runtime.proactive || {};
+    const backup = backupCheckOf(data);
+    const mobile = mobileCheckOf(data);
+    const backupEvidence = !backup || backup.available !== true ? "状态未知"
+      : number(backup.snapshot_count) + " 份快照 · " + (backup.same_volume === true ? "同盘" : "跨盘");
+    const mobileEvidence = !mobile || mobile.available !== true ? "状态未知"
+      : !mobile.enabled ? "未启用" : mobile.pairing_token_configured === true ? "已配对" : "缺少令牌";
     return ({
       all: number(items.length) + " 项信号",
       model: number(items.filter(item => item.category === "model").length) + " 项信号",
@@ -1353,6 +1453,8 @@ window.CompanionMaintenancePage = (() => {
       image_generation: imageActionReady(actions, IMAGE_GENERATION_ACTION) ? "工具已注册" : "工具未就绪",
       voice: voices.length ? number(voices.length) + " 个 Provider" : "暂无 Provider",
       storage: storage.journal_mode ? String(storage.journal_mode).toUpperCase() : "状态未知",
+      backup: backupEvidence,
+      mobile: mobileEvidence,
       delivery: number(inboundNoReplies.length + flows.length) + " 条轨迹",
       prompt: number(materials.length) + " 类来源",
       budget: data.budget?.soft_limit_enabled ? "软限额已开" : "软限额未开",
@@ -1382,6 +1484,8 @@ window.CompanionMaintenancePage = (() => {
     const textProviders = Array.isArray(data.providers) ? data.providers : [];
     const voiceProviders = Array.isArray(state.integrations?.voice?.providers) ? state.integrations.voice.providers : [];
     const imageActions = Array.isArray(state.integrations?.image?.actions) ? state.integrations.image.actions : [];
+    const backupCheck = backupCheckOf(data) || {};
+    const mobileCheck = mobileCheckOf(data) || {};
     const currentCategory = state.category;
     const category = diagnosticCategories.find(item => item[0] === currentCategory) || diagnosticCategories[0];
     let facts = [];
@@ -1428,6 +1532,18 @@ window.CompanionMaintenancePage = (() => {
       facts = [["日志模式", String(storage.journal_mode || "未知").toUpperCase()], ["外键", storage.foreign_keys ? "开启" : "关闭"], ["最近检查", state.storageTest?.title || "尚未运行"]];
       addAction("test-zone", "运行只读检查");
       note = "完整性检查使用 quick_check 与外键核对，不修改数据库。";
+    } else if (currentCategory === "backup") {
+      facts = [["快照", number(backupCheck.snapshot_count) + " 份"],
+        ["最近成功", time(backupCheck.latest_success_at)],
+        ["位置", backupCheck.available !== true ? "状态未知" : backupCheck.same_volume === true ? "与运行资料同盘" : backupCheck.same_volume === false ? "另一块磁盘" : "状态未知"]];
+      addAction("backup", "查看备份与磁盘");
+      note = "只读取已完成快照的摘要与磁盘余量；创建、删除或还原快照仍在资料与维护中手动执行。";
+    } else if (currentCategory === "mobile") {
+      facts = [["网关", mobileCheck.available !== true ? "状态未知" : mobileCheck.enabled ? "已启用" : "未启用"],
+        ["配对令牌", mobileCheck.pairing_token_configured === true ? "已配置" : "缺少"],
+        ["模块", mobileModuleName(mobileCheck.module_state)]];
+      addAction("mobile", "查看手机网关");
+      note = "只读取手机连接设置与模块状态，不启动网关、不回显令牌，也不触发配对。";
     } else if (currentCategory === "prompt") {
       facts = [["材料来源", number(materials.length)], ["统计范围", "最近 20 条输入"], ["显示正文", "从不展示"]];
       addAction("prompt-evidence", "查看来源元数据");
@@ -1504,6 +1620,8 @@ window.CompanionMaintenancePage = (() => {
     const identity = runtime.identity_scope || {};
     const debounce = Array.isArray(runtime.debounce_trace) ? runtime.debounce_trace : [];
     const sync = ({0: "关闭", 1: "普通", 2: "完整", 3: "额外完整"})[storage.synchronous] || "未知";
+    const backupCheck = backupCheckOf(data) || {};
+    const mobileCheck = mobileCheckOf(data) || {};
     const category = state.category;
     const show = (categories) => category === "all" || categories.includes(category);
     const flowRows = flows.length ? flows.slice(0, 6).map(row => {
@@ -1551,6 +1669,20 @@ window.CompanionMaintenancePage = (() => {
       '<div><span>同步级别</span><b>' + escapeHtml(sync) + '</b></div><div><span>锁等待</span><b>' + number(storage.busy_timeout_ms) + ' ms</b></div>' +
       '<div><span>外键</span><b>' + (storage.foreign_keys ? "开启" : "关闭") + '</b></div><div><span>数据库页</span><b>' + number(storage.page_count) + '</b></div></div>' +
       '</section>');
+    if (show(["backup"]) && backupCheckOf(data)) sections.push('<section data-evidence-kind="backup" data-focus-target="backup"><div class="maint-subhead"><strong>备份与磁盘</strong><span>' +
+      escapeHtml(backupCheck.available !== true ? "状态未知" : number(backupCheck.snapshot_count) + " 份快照") + '</span></div><div class="maint-evidence-stats">' +
+      '<div><span>最近成功</span><b>' + escapeHtml(time(backupCheck.latest_success_at)) + '</b></div>' +
+      '<div><span>备份位置</span><b>' + escapeHtml(backupCheck.same_volume === true ? "与运行资料同盘" : backupCheck.same_volume === false ? "另一块磁盘" : "状态未知") + '</b></div>' +
+      '<div><span>运行资料余量</span><b>' + escapeHtml(gibibytes(hostChecksOf(data).disk?.data_root?.free_bytes)) + '</b></div>' +
+      '<div><span>不完整快照</span><b>' + number(backupCheck.problem_count) + '</b></div></div>' +
+      '<p class="maint-evidence-note">只读取已完成快照的摘要与磁盘余量；不会创建、删除或还原快照。</p></section>');
+    if (show(["mobile"]) && mobileCheckOf(data)) sections.push('<section data-evidence-kind="mobile" data-focus-target="mobile"><div class="maint-subhead"><strong>手机网关</strong><span>' +
+      escapeHtml(mobileCheck.available !== true ? "状态未知" : mobileCheck.enabled ? "已启用" : "未启用") + '</span></div><div class="maint-evidence-stats">' +
+      '<div><span>配对令牌</span><b>' + (mobileCheck.pairing_token_configured === true ? "已配置" : "缺少") + '</b></div>' +
+      '<div><span>模块状态</span><b>' + escapeHtml(mobileModuleName(mobileCheck.module_state)) + '</b></div>' +
+      '<div><span>监听端口</span><b>' + number(mobileCheck.port || 6322) + '</b></div>' +
+      '<div><span>监听地址</span><b>' + escapeHtml(mobileCheck.host || "未记录") + '</b></div></div>' +
+      '<p class="maint-evidence-note">不显示令牌内容，也不会启动网关或发起配对；需要时在「手机连接」手动生成。</p></section>');
     if (show(["delivery", "model"])) sections.push('<section data-evidence-kind="delivery" data-focus-target="delivery-evidence"><div class="maint-subhead"><strong>消息收口与投递</strong><span>当前身份 / 角色范围</span></div><div class="maint-evidence-flow">' + flowRows + '</div></section>');
     if (show(["delivery"])) sections.push('<section data-evidence-kind="no-reply" data-focus-target="delivery-evidence"><div class="maint-subhead"><strong>未回复记录</strong><span>最多保留 500 条</span></div><div class="maint-evidence-flow">' + noReplyRows + '</div><p class="maint-evidence-note">仅显示时间、类别、原因和随机事件编号；不含消息正文或用户、群号。</p></section>');
     if (show(["delivery"])) sections.push('<section data-evidence-kind="debounce" data-focus-target="debounce-evidence"><div class="maint-subhead"><strong>消息聚合与防抖追踪</strong><span>最近 ' + number(debounce.length) + ' 条</span></div>' +
@@ -1706,6 +1838,14 @@ window.CompanionMaintenancePage = (() => {
         ["SQLite 检查会修改数据吗？", "不会。检查通过只读快照执行 quick_check 和外键一致性核对。", "test-zone", "运行只读检查"],
         ["WAL 状态异常怎么办？", "先运行完整检查并核对插件连接状态；不要在页面中清理或重置数据库。", "test-zone", "检查存储"],
       ],
+      backup: [
+        ["备份检查会创建快照吗？", "不会。这里只读取已完成快照的摘要、位置与磁盘余量；创建、删除或还原仍在「资料与维护 → 备份与还原」中手动执行。", "backup", "查看备份与磁盘"],
+        ["为什么备份要放在另一块磁盘？", "默认备份目录跟随运行资料，同一块磁盘故障会同时影响数据和备份。填写外部绝对路径后，快照会落到另一块磁盘的独立安装目录。", "backup", "查看备份位置"],
+      ],
+      mobile: [
+        ["网关关闭时还能看到令牌字段吗？", "不能。令牌、监听地址和端口都依赖网关开关，网关关闭时不再渲染；已经填过的值会留在草稿里，不会因为隐藏而被清空。", "mobile", "查看手机网关"],
+        ["提示缺少配对令牌怎么办？", "在「手机连接」点「生成并启用网关」；生成后会同时启用网关并显示一次令牌，复制到手机端完成配对。", "mobile", "打开手机连接"],
+      ],
       prompt: [
         ["为什么看不到提示词正文？", "本页只保留材料来源、用途与纳入状态，不显示或记录提示词、消息和注入正文。", "prompt-evidence", "查看来源"],
         ["来源标记 omitted 是什么？", "该轮材料被记录但没有纳入最终上下文；这里只提供来源计数，不推断具体文本原因。", "prompt-evidence", "查看材料状态"],
@@ -1857,6 +1997,8 @@ window.CompanionMaintenancePage = (() => {
     const identityReady = identityScope.dashboard_operator === "verified" && identityScope.role_access === "verified"
       && identityScope.token_ledger === "current_role";
     const debounceCount = Array.isArray(data.runtime?.debounce_trace) ? data.runtime.debounce_trace.length : null;
+    const backupSummary = backupCheckOf(data);
+    const mobileSummary = mobileCheckOf(data);
     const runtime = [
       ["all", "管理与记录", number(stats.calls) + " 次调用 · 当前角色隔离", "ok"],
       ["identity", "统一身份与隔离", identityReady ? "授权通过 · 当前角色账本" : "身份或范围未确认", identityReady ? "ok" : "warn"],
@@ -1865,6 +2007,13 @@ window.CompanionMaintenancePage = (() => {
       ["delivery", "消息收口", debounceCount == null ? "防抖状态未知" : number(debounceCount) + " 条防抖记录", debounceCount == null ? "unknown" : "ok"],
       ["voice", "TTS Provider", voice ? number((voice.providers || []).length) + " 个已加载" : "状态未知", voice ? "ok" : "unknown"],
       ["image_generation", "图片工具", image ? number((image.actions || []).filter(row => row.registered && row.current).length) + " 个当前注册" : "状态未知", image ? "ok" : "unknown"],
+      ["backup", "备份快照", backupSummary?.available !== true ? "状态未知"
+        : number(backupSummary.snapshot_count) + " 份 · " + (backupSummary.same_volume === true ? "同盘" : "跨盘"),
+        backupSummary?.available !== true ? "unknown" : number(backupSummary.snapshot_count) ? "ok" : "warn"],
+      ["mobile", "手机网关", mobileSummary?.available !== true ? "状态未知"
+        : !mobileSummary.enabled ? "未启用" : mobileSummary.pairing_token_configured === true ? "已配对" : "缺少令牌",
+        mobileSummary?.available !== true ? "unknown" : !mobileSummary.enabled ? "idle"
+          : mobileSummary.pairing_token_configured === true ? "ok" : "warn"],
     ].filter(item => state.category === "all" || item[0] === state.category
       || (state.category === "model" && item[0] === "all"));
     const severityButtons = [["all", "全部"], ["error", "错误"], ["warn", "警告"], ["info", "信息"]].map(([key, label]) =>
@@ -1879,6 +2028,8 @@ window.CompanionMaintenancePage = (() => {
       if (item.action === "identity") action = '<button type="button" data-focus-panel="identity-evidence">查看边界</button>';
       if (item.action === "provider") action = '<button type="button" data-focus-panel="test-zone">定位测试</button>';
       if (item.action === "budget") action = '<button type="button" data-focus-panel="budget-block">查看限额</button>';
+      if (item.action === "backup") action = '<button type="button" data-go="manage" data-manage="data">打开资料与维护</button>';
+      if (item.action === "mobile") action = '<button type="button" data-go="manage" data-manage="mobile">打开手机连接</button>';
       return fmt('<article class="maint-diagnostic-item" data-severity="{{0}}"><span class="maint-severity-mark">{{1}}</span><div><strong>{{2}}</strong><p>{{3}}</p></div>{{4}}</article>',
         item.severity, item.severity === "error" ? "!" : item.severity === "warn" ? "△" : "i",
         escapeHtml(item.title), escapeHtml(item.detail), action);
@@ -1947,6 +2098,7 @@ window.CompanionMaintenancePage = (() => {
     const purposeLabel = proactivePurposes.find(item => item[0] === state.proactivePurpose)?.[1] || state.proactivePurpose;
     const skipReasonLabels = {
       duplicate: "与近期已发送内容重复", low_confidence: "模型把握不足，按沉默阈值暂缓发送",
+      continuation_after_silence: "刚回复过且用户未再发言，这次主动只是在接自己的话，已跳过",
       persona_review: "人格复核未放行", framework_guard: "正文含框架标记，发送前检查拦截",
       presentation_empty: "文字清理后正文为空", forbidden_word: "命中当前禁用词规则",
       source_coverage: "来源材料不足以支持当前表述", no_sendable_content: "处理后没有可发送正文",

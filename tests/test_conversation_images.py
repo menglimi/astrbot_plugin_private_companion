@@ -24,6 +24,8 @@ from companion_v2.identity_policy.personas import RuntimeIdentity
 from companion_v2.model_gateway.models import Amount, BudgetPolicy
 from companion_v2.sources.dependencies import key
 from tests.native_adapter_support import NativeFixture, FakeEvent, completion, final_text
+from tests.image_delivery_support import (attach_originals, intercept_image_delivery_verification,
+                                          user_content, user_message)
 
 
 def image_bytes(color="red", kind="PNG", size=(3, 2)):
@@ -76,11 +78,11 @@ class ConversationImageTests(ImageFixture, unittest.IsolatedAsyncioTestCase):
         captured = await self.capture(self.image_event(with_text=False))
         host = await self.setup_host()
         def image_evidence(payload):
-            content = payload["messages"][2]["content"]
+            content = user_content(payload)
             metadata = json.loads(content[0]["text"])
             return next(m["evidence"] for m in metadata["materials"] if m["owner"] == "conversation.image")
         async def respond(payload, _):
-            content = payload["messages"][2]["content"]
+            content = user_content(payload)
             self.assertTrue(content[-1]["image_url"]["url"].startswith("data:image/png;base64,"))
             self.assertEqual(base64.b64decode(content[-1]["image_url"]["url"].split(",", 1)[1]), image_bytes())
             return completion(final_text("图片中是一片红色。", evidence=image_evidence(payload)))
@@ -102,7 +104,7 @@ class ConversationImageTests(ImageFixture, unittest.IsolatedAsyncioTestCase):
     async def test_tool_continuation_keeps_original_images_and_evidence_until_confirmed_reply(self):
         originals, evidence = [], []
         async def respond(payload, _):
-            content = payload["messages"][2]["content"]
+            content = user_content(payload)
             originals.append(content[1:])
             materials = json.loads(content[0]["text"])["materials"]
             evidence.append([m for m in materials if m["owner"] == "conversation.image"])
@@ -128,7 +130,7 @@ class ConversationImageTests(ImageFixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_confirmed_memory_quote_keeps_image_dependencies_and_rechecks_original_access(self):
         async def respond(payload, _):
-            materials = json.loads(payload["messages"][2]["content"][0]["text"])["materials"]
+            materials = json.loads(user_content(payload)[0]["text"])["materials"]
             evidence = next(m["evidence"] for m in materials if m["owner"] == "conversation.image")
             return completion(final_text("图片中是一片红色。", evidence=evidence))
         self.native.provider.client.state.behavior = respond
@@ -213,17 +215,20 @@ class ConversationImageTests(ImageFixture, unittest.IsolatedAsyncioTestCase):
     async def test_withdrawal_during_native_preparation_prevents_model_dispatch(self):
         captured = await self.capture(self.image_event())
         entered, release = asyncio.Event(), asyncio.Event()
-        async def wait(_):
+        provider = self.native.provider
+        prepare = provider._prepare_chat_payload
+        async def wait(**kwargs):
             entered.set()
             await release.wait()
+            return await prepare(**kwargs)
         host = await self.setup_host()
-        self.native.before_resolve = wait
-        batch = host.receive(captured).unwrap()
-        await asyncio.wait_for(entered.wait(), 2)
-        app = host.application
-        app.withdraw(self.context(app, batch), self.original(app, batch).scoped_key).unwrap()
-        release.set()
-        await self.done(app, batch)
+        with patch.object(provider, "_prepare_chat_payload", wait):
+            batch = host.receive(captured).unwrap()
+            await asyncio.wait_for(entered.wait(), 2)
+            app = host.application
+            app.withdraw(self.context(app, batch), self.original(app, batch).scoped_key).unwrap()
+            release.set()
+            await self.done(app, batch)
         self.assertEqual(self.native.provider.client.state.calls, [])
         self.assertEqual(self.native.platform.client._api._wsr_api.calls, [])
 
@@ -267,14 +272,16 @@ class ConversationImageTests(ImageFixture, unittest.IsolatedAsyncioTestCase):
         batch = host.receive(await self.capture(self.image_event())).unwrap()
         await self.done(host.application, batch)
         self.assertEqual(self.native.provider.client.state.calls, [])
-        self.assertEqual(self.native.platform.client._api._wsr_api.calls, [])
+        sends = self.native.platform.client._api._wsr_api.calls
+        self.assertEqual(len(sends), 1)
+        self.assertEqual([part["type"] for part in sends[0][1]["message"]], ["text"])
 
     async def test_native_preparer_cannot_drop_or_replace_images(self):
         host = await self.setup_host()
         original = type(self.native.provider)._prepare_chat_payload
         async def drop_images(native, **kwargs):
             payload, contexts = await original(native, **kwargs)
-            payload["messages"][2]["content"] = "text only"
+            user_message(payload)["content"] = "text only"
             return payload, contexts
         with patch.object(type(self.native.provider), "_prepare_chat_payload", drop_images):
             batch = host.receive(await self.capture(self.image_event())).unwrap()
@@ -321,6 +328,7 @@ class ConversationImageTests(ImageFixture, unittest.IsolatedAsyncioTestCase):
             app.messages.images.read(replace(context, role_binding=other_role), (event,), self.clock.now())
 
     async def test_asset_revoked_after_generation_prevents_platform_send(self):
+        self.native.provider.client.state.behavior = attach_originals
         host = await self.setup_host()
         app = host.application
         batch = host.receive(await self.capture(self.image_event())).unwrap()
@@ -332,8 +340,9 @@ class ConversationImageTests(ImageFixture, unittest.IsolatedAsyncioTestCase):
             if self.native.provider.client.state.calls and not revoked:
                 app.messages.images.assets.revoke(asset, expected_governance_revision=1, observed_at=self.clock.now()).unwrap()
                 revoked = True
-        self.native.before_resolve = revoke_after_model
+        reached = intercept_image_delivery_verification(self.bridge, app.runtime, revoke_after_model)
         await self.done(app, batch)
+        self.assertTrue(reached())
         self.assertTrue(revoked)
         self.assertEqual(len(self.native.provider.client.state.calls), 1)
         self.assertEqual(self.native.platform.client._api._wsr_api.calls, [])
@@ -349,7 +358,9 @@ class ConversationImageTests(ImageFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(host.receive(captured).unwrap(), batch)
         await asyncio.sleep(0)
         self.assertEqual(len(self.native.provider.client.state.calls), 1)
-        self.assertEqual(self.native.platform.client._api._wsr_api.calls, [])
+        sends = self.native.platform.client._api._wsr_api.calls
+        self.assertEqual(len(sends), 1)
+        self.assertEqual([part["type"] for part in sends[0][1]["message"]], ["text"])
 
     async def test_credentials_are_redacted_without_corrupting_image_bytes(self):
         event = self.image_event()

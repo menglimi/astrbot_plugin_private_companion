@@ -667,7 +667,9 @@ class ConversationMessages:
         if audios:
             request = replace(request, audios=tuple(audios), instruction=request.instruction + "\n" + AUDIO_INSTRUCTION)
         if images:
-            request = replace(request, images=tuple(images), instruction=request.instruction + "\n" + IMAGE_INSTRUCTION)
+            request = replace(request, images=tuple(images),
+                user_input_image_sources=tuple(image.source for image in images),
+                instruction=request.instruction + "\n" + IMAGE_INSTRUCTION)
             if self.reply_images.enabled and context.scope.kind in (ScopeKind.PRIVATE, ScopeKind.GROUP):
                 request = replace(request, reply_images=True)
         if any(getattr(event, "quotes", ()) for event in events):

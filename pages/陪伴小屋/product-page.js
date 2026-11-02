@@ -51,6 +51,10 @@ window.CompanionProduct = (() => {
     setup_conversation_unavailable:"还没有跟它说过话，先在这个对象的私聊里发一条消息。",
     setup_test_confirmation_invalid:"测试记录已变化，请刷新后确认收到的是本次测试消息。",
     setup_test_non_replayable:"这次测试已经发送过，请在收到后确认；本次不会重发。",
+    /* 引导没走完和「测试已经跑过」是两件无关的事：前者要做的是去补步骤，
+       后者要做的才是去确认已经发出去的那条。少了这一行，新码会落进
+       fail() 的兜底「暂不可读取，请刷新核对。」——用户会以为页面读不到数据。 */
+    setup_steps_incomplete:"还有引导步骤没有完成，请先完成（或跳过）剩下的步骤，再做这次测试。",
     staging_delivery_not_enabled:"这个运行实例没有可用的 OneBot 私聊通道。请核对绑定的 Bot 账号、私聊对象和人格。",
     staging_delivery_window_invalid:"当前 OneBot 投递通道配置无效，请核对账号与目标。",
     staging_delivery_profile_required:"这个窗口的角色配置尚未就绪，请重新读取账号与会话。",
@@ -301,9 +305,13 @@ window.CompanionProduct = (() => {
       preferenceSaveTimer = null;
       if (preferencesApplying || !bridgeReady) return;
       api("POST", "page/display-preferences", displayPreferencesSnapshot()).catch(error => {
-        console.warn("[CompanionV2] Display preferences were not saved", {
-          code:error?.code || "display_preferences_unavailable",
-        });
+        const code = error?.code || "display_preferences_unavailable";
+        /* 外观页承诺「同一账号换设备同步」。只写 console 的话用户以为已保存，
+           换设备才发现回到默认；这里保留诊断，同时走现有 changed() 通道让外壳
+           用 toast 给出可见失败提示。成功路径不变。 */
+        console.warn("[CompanionV2] Display preferences were not saved", {code});
+        if (typeof changed === "function") changed({kind:"display-preferences-error", code,
+          message:"外观偏好没有保存成功；刷新或换设备后可能仍是旧设置。"});
       });
     }, 120);
   }
@@ -736,6 +744,10 @@ window.CompanionProduct = (() => {
         || typeof operationKey !== "string" || !operationKey) throw fail("integration_lifecycle_request_invalid");
     const result = await api("POST", "integration/lifecycle", {
       extension_id: item.extension_id, action, expected_revision: expectedRevision, operation_key: operationKey,
+      // 装配后由服务端补一次角色启用；装配按钮开在当前角色的小屋里，所以把
+      // 当前选中的角色和目标一起送过去，避免多角色安装时猜默认角色。
+      ...(selected.role_id && selected.target_id
+        ? {role_id: selected.role_id, target_id: selected.target_id} : {}),
     });
     await refreshIntegrations();
     return result;
@@ -1220,6 +1232,7 @@ window.CompanionProduct = (() => {
         const allowed=(method==="GET"&&path==="host/status")
           || (method==="POST"&&path==="host/start") || path==="accounts"
           || (method==="POST"&&path==="accounts/model-provider")
+          || (method==="POST"&&["accounts/window-link","accounts/window-unlink"].includes(path))
           || (method==="GET"&&path==="acquaintance"&&typeof catalog?.acquaintance_api==="string");
         if(!allowed)throw fail("invalid_response");
         mapped=path==="acquaintance"?relative(catalog.acquaintance_api):path;
@@ -1246,7 +1259,11 @@ window.CompanionProduct = (() => {
       const result=await bounded(method==="GET"?bridge.apiGet(mapped,message.body):bridge.apiPost(mapped,message.body),timeoutMs);valid();
       send({kind:"response",requestId:message.requestId,ok:true,data:result});
     } catch(error){
-      const code=typeof error?.code==="string"?error.code.slice(0,80):"";
+      /* 宿主页面桥对 status=error 只抛出 `new Error(message)`，不带 `code`；
+         后端偏偏把机器码放在 message 上。这里回填一次，否则工作区只能看到
+         一串英文码，无法翻译成来源级原因。 */
+      const messageCode=typeof error?.message==="string"&&CODE.test(error.message)?error.message.slice(0,80):"";
+      const code=(typeof error?.code==="string"&&error.code?error.code.slice(0,80):"")||messageCode;
       const rawReason=[error?.reason,error?.message].find(value=>typeof value==="string"&&value.trim());
       const reason=rawReason?rawReason.replace(/[\u0000-\u001f\u007f]/g," ").slice(0,1200):"";
       const expectedCode=code&&(Object.hasOwn(errors,code)||/(?:_invalid|_required|_denied|_conflict|_changed|_not_found|_unavailable|_running|_forbidden|_expired|_not_initialized)$/.test(code));
@@ -1254,9 +1271,17 @@ window.CompanionProduct = (() => {
         method,endpoint:diagnosticEndpoint(path),elapsed_ms:Date.now()-startedAt,
         timeout_ms:timeoutMs,code:code||"unknown",confirmed:false,
       });
+      /* 一次失败只属于实际请求的那条来源路由，不能拿主页面当前选中的
+         目标冒充；先从 endpoint 里的 target/role 反查标签，再退回当前选择。 */
+      const routeTarget=/(?:^|\/)targets\/([^/]+)\/roles\/([^/]+)(?:\/|$)/.exec(path||"");
+      const routeOwner=routeTarget?catalog?.targets?.find(item=>item.target_id===routeTarget[1]):null;
+      const routeRole=routeOwner?.roles?.find(item=>item.role_id===routeTarget[2]);
+      const sourceLabel=routeOwner?[targetLabel(routeOwner),routeRole?roleLabel(routeRole):""].filter(Boolean).join(" · ")
+        :[target()?targetLabel(target()):"",role()?roleLabel(role()):""].filter(Boolean).join(" · ");
       send({kind:"response",requestId:message.requestId,ok:false,
         error:errors[code]||reason||"请求未完成，请刷新核对当前状态后重试。",
-        code:code||undefined,reason:reason||undefined,confirmed:error?.confirmed===true});
+        code:code||undefined,reason:reason||undefined,sourceLabel:sourceLabel||undefined,
+        confirmed:error?.confirmed===true});
     }
   });
   function extensionsMarkup(ids) {

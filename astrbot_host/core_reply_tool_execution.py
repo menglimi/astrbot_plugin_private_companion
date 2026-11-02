@@ -197,9 +197,10 @@ class CoreReplyToolExecutor:
             run.validate()
             self.external.admit(provider.descriptor, run.task.spec.context, self.tasks.now())
 
-        invocation = ExternalToolInvocation(row["invocation_id"], session.turn_id, row["call_id"],
-            run.task.spec.context, provider.descriptor, row["arguments_json"], run.task.spec.deadline_at, before_dispatch)
         try:
+            descriptor = self.external.resolve(provider.descriptor)
+            invocation = ExternalToolInvocation(row["invocation_id"], session.turn_id, row["call_id"],
+                run.task.spec.context, descriptor, row["arguments_json"], run.task.spec.deadline_at, before_dispatch)
             response = await provider.invoke(invocation)
             self._accept(row, invocation, response)
         except asyncio.CancelledError:

@@ -25,7 +25,7 @@ from companion_v2.identity_policy.models import AuthorizationTier
 from companion_v2.identity_policy.interventions import CALENDAR_INTERVENTION
 from companion_v2.model_gateway.routing import configuration_fields
 from companion_v2.model_gateway.budget import BudgetLedger
-from companion_v2.model_gateway.models import Amount, BudgetPolicy
+from companion_v2.model_gateway.models import Amount, BudgetPolicy, CapturedModelOutput, ProviderResponse
 from companion_v2.proactive.management import ContactManagement
 from companion_v2.role_work.growth import RoleGrowthRecord, GrowthKind
 from companion_v2.role_work.growth.progress import growth_progress_profile
@@ -277,6 +277,31 @@ class CalendarPlanningTests(StateFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resumed["state"], "succeeded", resumed)
         self.assertNotEqual(resumed["task_id"], result["task_id"])
         self.assertEqual(len(self.called), 1)
+
+    async def test_a_plan_cut_off_by_the_output_ceiling_keeps_the_items_that_arrived_whole(self):
+        """A cut-off round is evidence, not a lost day.
+
+        Production lost every calendar round whose body ended at the output
+        ceiling, because the transport refused to hand the body over at all.
+        The planning contract already salvages complete items and discards the
+        trailing one, so the body must reach it.
+        """
+        app, context, _ = await self.ready()
+        kept = output(self.clock.now())
+        half_body = ('{"items":[' + json.dumps(kept, ensure_ascii=False)
+                     + ',{"title":"被截断的半截')
+
+        async def truncated(envelope):
+            return ProviderResponse("generated", captured_output=CapturedModelOutput(half_body, "length"),
+                                    usage=Amount(15, 40), receipt_ref="truncated-usage")
+
+        self.model_behavior = truncated
+
+        result = await self.plan(app, context)
+
+        self.assertEqual(result["state"], "succeeded", result)
+        self.assertEqual(result["saved"], 1)
+        self.assertEqual(result["rejected"], [])
 
     async def response(self, envelope):
         return answered(json.dumps({"items": [output(self.clock.now())]}, ensure_ascii=False))

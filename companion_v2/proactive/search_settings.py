@@ -12,7 +12,7 @@ from uuid import uuid4
 
 
 DEFAULTS = {"deepseek_provider_id": ""}
-PROVIDER_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}\Z")
+PROVIDER_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,79}\Z")
 _SETTINGS_LOCK = threading.RLock()
 
 

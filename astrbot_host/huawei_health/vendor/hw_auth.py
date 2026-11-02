@@ -37,6 +37,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+import shutil
 
 try:  # 延迟到真正需要浏览器时才失败，缺包不应该让整个插件加载不了
     import websocket
@@ -63,8 +64,15 @@ DEFAULT_BROWSERS = [
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
     "/usr/bin/microsoft-edge",
+    "/usr/bin/microsoft-edge-stable",
     "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/snap/bin/chromium",
+    "/opt/google/chrome/chrome",
     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 ]
 
 
@@ -317,6 +325,12 @@ def find_browser(explicit: str = "") -> str:
     for p in DEFAULT_BROWSERS:
         if os.path.exists(p):
             return p
+    # PATH 安装（Docker、Nix、Homebrew、snap）不一定落在上面的固定路径。
+    for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
+                 "microsoft-edge", "microsoft-edge-stable", "chrome"):
+        found = shutil.which(name)
+        if found:
+            return found
     return ""
 
 
@@ -431,9 +445,10 @@ class HuaweiAuth:
             return COOKIE_MAGIC + _protect(payload)
         except DPAPIUnavailableError:
             # 非 Windows：DPAPI 不可用，退回明文（下面会 chmod 0600）。
+            # 这是 Linux/Docker 的正常路径，不是故障，用 info 免得住刷警告。
             if not self._plaintext_warned:
                 self._plaintext_warned = True
-                self._log("warning", "当前系统不支持 DPAPI，cookie 文件将以 0600 明文保存")
+                self._log("info", "当前系统非 Windows，cookie 文件以 0600 权限保存（不使用 DPAPI）")
             return payload
         except Exception as exc:
             if not self._plaintext_warned:
@@ -604,7 +619,8 @@ class HuaweiAuth:
         fatal = [n for n in missing if n in REQUIRED_COOKIES]
         if fatal:
             raise HuaweiAuthError(
-                "缺少必要的 cookie：%s。请把六项都填上，或改用整段 JSON 导出。"
+                "缺少必要的 cookie：%s。关键项在登录域 .id1.cloud.huawei.com 下，"
+                "不会出现在 health 域的导出里；请切到该域导出，或改用六项分填。"
                 % "、".join(fatal))
         if missing:
             self._log("warning", "导入的 cookie 里缺少：%s（如登录失败请补齐）" % "、".join(missing))
@@ -728,9 +744,6 @@ class HuaweiAuth:
 
     def _fetch_token_locked(self) -> str:
         started = time.monotonic()
-        self._log("info", "认证阶段开始")
-        # 上一次异常退出可能留下 Edge 子进程，启动前先清理本插件自己的 profile。
-        self._cleanup_orphan_browsers()
         browser = find_browser(self.browser_path)
         if not browser:
             # 纯配置错误：用户填好路径立刻就能用，不该进 180 秒冷却。
@@ -742,6 +755,11 @@ class HuaweiAuth:
                 "没有 cookie。请先用 Cookie-Editor 从已登录的华为运动健康网页端导出，"
                 "再把 JSON 导入插件。"
             )
+        # Only a real browser + cookie attempt reaches this point; configuration
+        # errors above no longer print "认证阶段开始" once per parallel request.
+        self._log("info", "认证阶段开始")
+        # 上一次异常退出可能留下 Edge 子进程，启动前先清理本插件自己的 profile。
+        self._cleanup_orphan_browsers()
 
         os.makedirs(self.profile_dir, exist_ok=True)
         clear_devtools_port_file(self.profile_dir)

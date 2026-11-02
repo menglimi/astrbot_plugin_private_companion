@@ -12,7 +12,7 @@ from companion_v2.conversation.foreground import PromptRequest
 from companion_v2.execution.models import TaskError, digest, require
 from companion_v2.execution.runner import TaskRun
 
-from .models import LocalProvider, ModelEnvelope, ModelTaskProfile
+from .models import LocalProvider, MAX_MODEL_OUTPUT_TOKENS, ModelEnvelope, ModelTaskProfile
 from .refusal import parse_refusal_terms
 from .replacement_rules import checked_rules, match_route, validate_targets
 
@@ -35,7 +35,7 @@ def configuration_fields(profiles: tuple[ModelTaskProfile, ...]) -> tuple[FieldD
             ("replacement_scope", ValueKind.TEXT, profile.replacement_scope),
         ):
             boundaries = ({"minimum": 1, "maximum": 600} if suffix == "timeout_seconds" else
-                          {"minimum": 1, "maximum": 32768} if kind is ValueKind.INTEGER else {})
+                          {"minimum": 1, "maximum": MAX_MODEL_OUTPUT_TOKENS} if kind is ValueKind.INTEGER else {})
             if suffix == "refusal_terms":
                 boundaries = {"maximum_chars": 4096}
             fields.append(FieldDefinition(profile.group + "." + suffix, profile.group, CONSUMER,
@@ -140,7 +140,7 @@ class ModelRouter:
         return (primary.binding.provider, match.model if match and match.model else primary.model,
                 providers)
 
-    def resolve(self, run: TaskRun, request: PromptRequest) -> ResolvedModelPlan:
+    def resolve(self, run: TaskRun, request: PromptRequest, *, provider_id=None) -> ResolvedModelPlan:
         task = run.validate()
         context = task.spec.context
         profile = self.profiles.get(task.spec.kind)
@@ -153,15 +153,20 @@ class ModelRouter:
                               context.role_binding.role, context.scope)
         snapshot = require(self.configuration.read(context.actor, target=target,
                            group_id=profile.group, observed_at=run.supervisor.now()))
-        provider_default = self.provider_default(context, profile, snapshot)
+        provider_default = self.provider_default(context, profile, snapshot) if provider_id is None else None
         routed_snapshot = self.apply_provider_default(profile, snapshot, provider_default)
         values = {name.rsplit(".", 1)[1]: item.value for name, item in routed_snapshot.fields.items()}
         fallback_field = routed_snapshot.fields[profile.group + ".fallback"]
-        if values["fallback"] and values["fallback"] == values["provider"] and fallback_field.explicit:
+        if provider_id is None and values["fallback"] and values["fallback"] == values["provider"] and fallback_field.explicit:
             raise TaskError("model_fallback_duplicate", "fallback must select a different provider")
         evaluated_at = run.supervisor.now()
         try:
-            match, selected, in_scope = self._route_selection(profile, values, context, request, evaluated_at)
+            if provider_id is None:
+                match, selected, in_scope = self._route_selection(profile, values, context, request, evaluated_at)
+            else:
+                if provider_id not in self.providers:
+                    raise TaskError("model_provider_unavailable", "the selected review provider has no local adapter")
+                match, selected, in_scope = None, (self.providers[provider_id],), False
         except TaskError:
             # TaskError is itself a ValueError, but its stable code is the
             # product diagnostic we need to preserve (for example, an
@@ -192,6 +197,7 @@ class ModelRouter:
                              "explicit": item.explicit, "revision": item.source_revision}
                        for key, item in routed_snapshot.fields.items()},
             "provider_default": provider_default or profile.default_provider,
+            "provider_override": provider_id,
             "providers": [asdict(p.binding) for p in selected],
             "role_revision": context.role_binding.revision,
             "role_prompt_hash": digest(request.role_instruction),

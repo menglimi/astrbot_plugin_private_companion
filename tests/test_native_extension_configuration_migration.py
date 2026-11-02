@@ -33,8 +33,9 @@ class ConverterTests(TestCase):
                          "speech": {"tts_provider_id": "old-tts"}}, **baseline("together"))
         self.assertEqual(game.changes, {"native_v2.gomoku_enabled": False})
         self.assertEqual(together.changes, {"conversation.history_turns": 20,
-                                            "conversation.chat_provider_id": "old-provider",
                                             "speech.tts_provider_id": "old-tts"})
+        self.assertNotIn("conversation.chat_provider_id", together.changes,
+                         "Together now follows the task model panel instead of a native provider id")
         self.assertIn("game.server.enabled", {item["field"] for item in game.differences})
         self.assertNotIn("server.enabled", game.changes)
 
@@ -82,9 +83,10 @@ class ConverterTests(TestCase):
                              "record_shared_experiences": False},
             "speech": {"stt_provider_id": "old-stt", "tts_timeout_seconds": 75}},
             **baseline("together"))
-        self.assertEqual(converted.changes, {"conversation.vision_provider_id": "old-vision",
+        self.assertEqual(converted.changes, {
             "conversation.system_prompt": "角色提示", "speech.stt_provider_id": "old-stt",
             "speech.tts_timeout_seconds": 75})
+        self.assertNotIn("conversation.vision_provider_id", converted.changes)
         self.assertEqual(next(item["kind"] for item in converted.differences
             if item["field"] == "together.conversation.record_shared_experiences"), "changed_semantics")
 

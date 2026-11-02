@@ -259,10 +259,30 @@ class AstrBotMultiController:
         if binding.persona_id:
             from .identity_derivation import normalize_persona_id
             wanted = normalize_persona_id(binding.persona_id)
-            if not any(persona.bot_id == match.bot_id
-                       and normalize_persona_id(persona.persona_id) == wanted
-                       for persona in settings.personas):
-                return None
+            exact = [persona for persona in settings.personas
+                     if persona.bot_id == match.bot_id
+                     and normalize_persona_id(persona.persona_id) == wanted]
+            if not exact:
+                # AstrBot can rename a persona in place.  The parked binding keeps
+                # the old name, so an exact comparison deadlocks setup before the
+                # existing repair path can run.  Accept a unique mapping whose
+                # role still carries the old name, or the only persona for this
+                # bot; multiple candidates stay rejected rather than guessed.
+                by_role = [persona for persona in settings.personas
+                           if persona.bot_id == match.bot_id
+                           and normalize_persona_id(persona.role_id) == wanted]
+                candidates = by_role or [persona for persona in settings.personas
+                                         if persona.bot_id == match.bot_id]
+                if len(candidates) != 1:
+                    explicit = [persona for persona in candidates
+                                if normalize_persona_id(persona.persona_id)]
+                    if len(explicit) == 1:
+                        candidates = explicit
+                if len(candidates) != 1:
+                    return None
+                logger.warning(
+                    "[CompanionV2] 管理员绑定的人格 %s 已不在当前映射中，按唯一映射 %s 继续",
+                    binding.persona_id, candidates[0].persona_id)
         return match
 
     async def proactive_diagnostic_target(self):
@@ -470,6 +490,35 @@ class AstrBotMultiController:
             write_binding(self.binding_root, PendingBinding(parked.platform_id, parked.account_id,
                 parked.participant_id, parked.persona_id, confirmed=True))
         return {"confirmed": True, "binding": self.binding_state()}
+
+    def reset_binding(self):
+        """Withdraw the confirmation so the reviewed window can be re-confirmed.
+
+        ``receive_binding`` refuses a rebind with "reset the first-run setup
+        first", but nothing implemented that reset: the confirmed file could only
+        be replaced by editing the data directory. Worse, deleting the file is
+        *not* a reset here -- ``binding_state`` then recovers the window from the
+        persistent identity ledger and still reports ``confirmed``, so the guide
+        jumps straight back to "已绑定".
+
+        So the file stays and only ``confirmed`` flips to ``False``. The page then
+        reads ``pending``, re-renders step 1 and its「确认此窗口」button re-pins
+        whatever mapping is current at that moment. Configured targets, personas,
+        the storage installation and every stored memory are untouched.
+        """
+        parked = self._parked_binding()
+        if parked is None or not parked.confirmed:
+            return {"reset": False, "reason": "setup_binding_missing",
+                    "detail": "there is no confirmed core administrator window to reset"}
+        try:
+            write_binding(self.binding_root, PendingBinding(
+                parked.platform_id, parked.account_id, parked.participant_id,
+                parked.persona_id, confirmed=False))
+        except (OSError, ValueError):
+            return {"reset": False, "reason": "setup_binding_write_failed",
+                    "detail": "the setup binding could not be rewritten"}
+        logger.info("[CompanionV2] 核心管理员窗口已重置为待确认 target=%s", parked.participant_id)
+        return {"reset": True, "binding": self.binding_state()}
 
     def _failure(self, error, *, operation=""):
         code = (error.code if isinstance(error, (TaskError, HostControlError)) else
@@ -713,8 +762,14 @@ class AstrBotMultiController:
             report_parser_availability(logger)
         except Exception as error:
             logger.warning("[CompanionV2] 文档解析组件自检失败 error_type=%s", type(error).__name__)
-        from .knowledge_sources import attach_official_knowledge
+        from .knowledge_sources import attach_official_knowledge, import_configured_sources_at_startup
         attach_official_knowledge(self.session.application, self.context)
+        # 配置的世界书材料在启动时刷新一次；来源缺失或损坏只记日志，不拦启动，重复刷新按内容去重。
+        try:
+            import_configured_sources_at_startup(self.session.application.runtime, self.context,
+                                                 at=self.now())
+        except Exception as error:
+            logger.warning("[CompanionV2] 启动知识导入失败 error_type=%s", type(error).__name__)
         from .semantic_models import NativeSemanticModels, configured_slang_search_port
         self.session.application.attach_semantics(NativeSemanticModels(self.context, self.settings.common.provider_id,
             configured_slang_search_port(self.context, deepseek_provider_resolver=search_provider_resolver)),
@@ -1080,7 +1135,16 @@ class AstrBotMultiController:
                                       ("model_gateway",))
         return task, model
 
-    def target_for_event(self, event):
+    def target_for_event(self, event, *, connected=True):
+        """The configured target this native event belongs to, if any.
+
+        ``connected=False`` keeps the routing answer and drops the liveness
+        probe: an event whose settings still map it to a target stays that
+        target's even while the account has no client to send with.  Callers
+        that report *why* a reply cannot be delivered need the difference,
+        because an unconfigured route and a disconnected account are not the
+        same refusal.
+        """
         if not isinstance(event, self.native_types.event) or self.settings is None:
             return None
         try:
@@ -1090,7 +1154,8 @@ class AstrBotMultiController:
                 target = self.settings.group_target(route.platform_id, route.account_id, route.group_id)
                 platform = self.context.get_platform_inst(meta.id)
                 if (target is None or platform is None or platform.get_client() is not event.bot
-                        or not native_client_connected(platform, route.account_id, event.bot)):
+                        or (connected and not native_client_connected(
+                            platform, route.account_id, event.bot))):
                     return None
                 return target
             sender, login = event_peer_id(event), event_account_id(event)
@@ -1153,6 +1218,28 @@ class AstrBotMultiController:
             return False
         return bool(self._accepting and not self._terminated and self.session is not None
                     and self.session.application.state == "running" and self.target_for_event(event) is not None)
+
+    def _delivery_denial(self, event, route):
+        """Why a reply that was already admitted cannot be sent now.
+
+        Intake needs one yes/no answer; a written reply needs the same gate
+        plus a reason an operator can act on.  A route that no longer maps
+        here, a host that stopped, and an account whose native client just
+        went away all refuse the send, and one code for all three hides the
+        only case that recovers by itself.
+        """
+        if route is None:
+            return Outcome.failed("host_not_claimed", "the native event is outside the active configured targets")
+        if self._terminated:
+            return Outcome.failed("host_terminated", "the shared host is stopping or terminated")
+        session = self.session
+        if session is None or session.application.state != "running":
+            return Outcome.failed("host_not_running", "the shared host is not running")
+        if not self._accepting:
+            return Outcome.failed("host_not_accepting", "the shared host is not accepting replies")
+        if self.target_for_event(event) is not None:
+            return Outcome.failed("host_not_claimed", "the native event is outside the active configured targets")
+        return Outcome.failed("host_client_offline", "this account's native client is not connected")
 
     async def receive_notice(self, event):
         from .pokes import is_poke_notice, receive_poke
@@ -1274,11 +1361,14 @@ class AstrBotMultiController:
             else:
                 requested_target = prepared_or_target
             session = self.session
-            target = self.target_for_event(event)
-            if requested_target is not None and requested_target != target:
+            # Route identity first, then liveness: the target the caller
+            # snapshotted at admission is compared with the configured route,
+            # so a dropped client cannot masquerade as a changed target.
+            target = self.target_for_event(event, connected=False)
+            if target is not None and requested_target is not None and requested_target != target:
                 raise TaskError("host_target_mismatch", "the requested core reply target is not the current native route")
-            if not self.claims(event) or session is None or target is None:
-                return Outcome.failed("host_not_claimed", "the native event is outside the active configured targets")
+            if not self.claims(event) or session is None:
+                return self._delivery_denial(event, target)
             return await session.authorize_core_reply(event, target, prepared)
         except TaskError as error:
             return Outcome.failed(error.code, str(error))

@@ -88,8 +88,13 @@ class AuthoringContractTests(unittest.TestCase):
             self.assertEqual(error.exception.code, code)
 
     def test_writing_route_has_time_for_the_authoring_workflow(self):
-        from companion_v2.conversation.content.authoring_tasks import authoring_profiles
-        self.assertEqual(authoring_profiles("primary")[0].timeout_seconds, 180)
+        from companion_v2.conversation.content.authoring_tasks import (AUTHORING_BUDGET_SECONDS,
+            AUTHORING_PROVIDER_TIMEOUT_SECONDS, authoring_profiles)
+        self.assertEqual(authoring_profiles("primary")[0].timeout_seconds, AUTHORING_PROVIDER_TIMEOUT_SECONDS)
+        self.assertGreaterEqual(AUTHORING_PROVIDER_TIMEOUT_SECONDS, 120,
+                                "a 4096-token draft still needs minutes, not seconds")
+        self.assertLess(AUTHORING_PROVIDER_TIMEOUT_SECONDS, AUTHORING_BUDGET_SECONDS,
+                        "the writing round must expire before the task that owns it")
 
     def test_continuation_must_save_against_the_version_it_read(self):
         request = service.prepare(action="continue", brief="接着写", base_version="v-3")

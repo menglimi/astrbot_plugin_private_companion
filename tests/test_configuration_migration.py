@@ -454,6 +454,27 @@ class BehaviorConfigurationMigrationTests(unittest.TestCase):
         disabled = self.convert({"basic_config": {"quiet_hours": ""}})
         self.assertIs(disabled.changes["proactive.contact.quiet_enabled"], False)
 
+    def test_legacy_text_cleanup_migrates_into_the_presentation_fields(self):
+        from companion_v2.conversation.reply_settings import configuration_fields
+        from companion_v2.conversation.segmentation import SegmentationPolicy
+
+        result = self.convert({"legacy_compat_config": {
+            "enable_segmented_proactive_reply": True,
+            "enable_segmented_proactive_content_cleanup": True,
+            "segmented_proactive_content_cleanup_scope": "all",
+            "segmented_proactive_content_cleanup_rule": "[\\n。？！]",
+            "segmented_proactive_content_cleanup_words": ["。", "，"]}})
+        changes = result.changes
+        defaults = {field.field_id: field.default
+                    for field in configuration_fields(SegmentationPolicy(enabled=False), True, 1.5)}
+        self.assertTrue(defaults["conversation.presentation.content_cleanup_enabled"])
+        self.assertIs(changes["conversation.presentation.content_cleanup_enabled"], True)
+        self.assertEqual(changes["conversation.presentation.content_cleanup_scope"], "all")
+        self.assertEqual(changes["conversation.presentation.content_cleanup_rule"], "[\\n。？！]")
+        self.assertEqual(json.loads(changes["conversation.presentation.content_cleanup_words"]), ["。", "，"])
+        self.assertNotIn("conversation.presentation.content_cleanup_words",
+                         {item.field_id for item in result.differences if item.kind == "invalid_value"})
+
     def test_expression_settings_use_their_corresponding_live_fields(self):
         result = self.convert({"memory_habit_config": {
             "expression_learning_mode": "aggressive",

@@ -2795,7 +2795,7 @@
       "transform": "json_list",
       "contract": {
         "type": "text",
-        "default": "[\"。\", \"？\", \"！\", \"~\", \"～\", \"?\", \".\", \"!\", \";\", \"；\", \"……\", \"）\", \"“\", \"…\"]"
+        "default": "[\"。\", \"？\", \"！\", \"~\", \"～\", \"?\", \".\", \"!\", \";\", \"；\", \"……\", \"）\", \"…\"]"
       }
     },
     {
@@ -2889,7 +2889,7 @@
     "segmentation.enabled": true,
     "segmentation.llm_controlled": false,
     "segmentation.rule_mode": "words",
-    "segmentation.split_words": "[\"。\", \"？\", \"！\", \"~\", \"～\", \"?\", \".\", \"!\", \";\", \"；\", \"……\", \"）\", \"“\", \"…\"]",
+    "segmentation.split_words": "[\"。\", \"？\", \"！\", \"~\", \"～\", \"?\", \".\", \"!\", \";\", \"；\", \"……\", \"）\", \"…\"]",
     "segmentation.match_width_variants": true,
     "segmentation.rule_regex": "(?<=[。！？!?…~～])\\s*|\\n+",
     "segmentation.threshold": 500,

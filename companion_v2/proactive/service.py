@@ -33,7 +33,7 @@ from companion_v2.execution.service import outcome
 from companion_v2.expression.configuration import read_settings as expression_settings
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import OperationRef, VersionRef, normalize_utc
-from companion_v2.model_gateway.models import ModelTaskProfile
+from companion_v2.model_gateway.models import ModelTaskProfile, is_released
 from companion_v2.relationships.private_access import REVOCABLE_ABSENCE_CODES
 from companion_v2.role_work.state import humanized
 from companion_v2.sources.repositories import SourceRepository
@@ -497,6 +497,38 @@ class ProactiveContacts:
         if hashes is not None and tuple(record.content_hash for record in records) != hashes:
             raise TaskError("contact_source_changed", "contact evidence changed after selection")
         return tuple(records)
+
+    @staticmethod
+    def _dangling_after_own_reply(job, segments):
+        """True when a proactive turn only continues the role's own last reply.
+
+        ``contacts_since_last_input`` counts proactive contacts, not passive
+        replies.  After the role spoke last and the user stayed silent, a new
+        slot can therefore open immediately; starting it with ``哦？/那/照这么``
+        reads as the role answering itself instead of opening a new turn.
+        Such a message is skipped rather than sent as a dangling half-dialogue.
+        """
+        if not segments:
+            return False
+        last = job.last_reply or {}
+        interaction = job.interaction or {}
+        try:
+            replied_at = datetime.fromisoformat(last["observed_at"])
+            input_at = datetime.fromisoformat(interaction["last_input_at"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        if replied_at <= input_at:
+            return False
+        openers = ("哦", "噢", "嗯", "啊", "唉", "那", "所以", "照这么", "这么说",
+                   "然后", "不过", "可是", "而且", "说到", "接着", "对", "是嘛",
+                   "真的", "确实", "也是", "还有")
+        for part in segments[:2]:
+            text = part.strip().strip("。，！？!?…~～、,.;:： ")
+            if not text or len(text) > 12:
+                continue
+            if any(text == opener or text.startswith(opener) for opener in openers):
+                return True
+        return False
 
     def _duplicate(self, context, body, preferences, at, *, purpose, contact_id="", origin=None,
                    administrator_test=False):
@@ -978,6 +1010,11 @@ class ProactiveContacts:
                 body, reaction_intent = None, None
                 segments = ()
                 presentation_reason = "forbidden_word"
+            dangling_reason = None
+            if body is not None and self._dangling_after_own_reply(job, segments):
+                body, reaction_intent = None, None
+                segments = ()
+                dangling_reason = "continuation_after_silence"
             dedup_reason = None
             if body is not None and self._duplicate(job.context, body, preferences, self.tasks.now(),
                     purpose=job.intent.purpose, origin=source_origin,
@@ -994,7 +1031,9 @@ class ProactiveContacts:
                     presentation_reason = "persona_judge"
             skip_reason = None
             if body is None:
-                if dedup_reason:
+                if dangling_reason:
+                    skip_reason = dangling_reason
+                elif dedup_reason:
                     skip_reason = "duplicate"
                 elif confidence_skip:
                     skip_reason = "low_confidence"
@@ -1724,12 +1763,15 @@ class ProactiveContacts:
                 model_task_ids.append(judge_task_id)
             placeholders = ",".join("?" for _ in model_task_ids)
             model_rows = self.runtime.read_all(f"""SELECT state, actual_tokens, actual_cost,
-                    reserved_tokens, reserved_cost, latency_ms FROM model_calls
+                    reserved_tokens, reserved_cost, latency_ms, receipt_ref FROM model_calls
                 WHERE task_id IN ({placeholders})""", tuple(model_task_ids))
             provider_calls = sum(row["state"] in ("dispatched", "generated", "unknown", "discarded")
                                  for row in model_rows)
             confirmed_calls = sum(row["actual_tokens"] is not None for row in model_rows)
             latency_values = [row["latency_ms"] for row in model_rows if row["latency_ms"] is not None]
+            outstanding = tuple(row for row in model_rows
+                                if row["actual_tokens"] is None and row["state"] in ("reserved", "dispatched", "unknown")
+                                and not is_released(row["receipt_ref"]))
             model_metrics = {"provider_calls": provider_calls,
                 "pending_reservations": sum(row["state"] == "reserved" for row in model_rows),
                 "unknown_calls": sum(row["state"] == "unknown" for row in model_rows),
@@ -1737,10 +1779,8 @@ class ProactiveContacts:
                 "tokens": sum(row["actual_tokens"] or 0 for row in model_rows),
                 "cost_microusd": (sum(row["actual_cost"] or 0 for row in model_rows)
                     if any(row["actual_cost"] is not None for row in model_rows) else None),
-                "held_tokens": sum(row["reserved_tokens"] for row in model_rows
-                    if row["actual_tokens"] is None and row["state"] in ("reserved", "dispatched", "unknown")),
-                "held_cost_microusd": sum(row["reserved_cost"] for row in model_rows
-                    if row["actual_cost"] is None and row["state"] in ("reserved", "dispatched", "unknown")),
+                "held_tokens": sum(row["reserved_tokens"] for row in outstanding),
+                "held_cost_microusd": sum(row["reserved_cost"] for row in outstanding),
                 "avg_latency_ms": round(sum(latency_values) / len(latency_values)) if latency_values else None}
             delivery_metrics = {"expected_parts": expected_parts, "created_parts": len(deliveries),
                 "delivered_parts": sum(state == "delivered" for state in states),

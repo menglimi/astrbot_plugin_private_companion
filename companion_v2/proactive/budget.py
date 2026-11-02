@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 
 from companion_v2.execution.models import TaskError, stamp
 from companion_v2.foundation.refs import normalize_utc
+from companion_v2.model_gateway.models import RELEASE_RECEIPT_PREFIX
 
 
 DIAGNOSTIC_TASK_PREFIX = "contact-diagnostic-task-"
@@ -153,8 +154,10 @@ class ContactBudget:
                 SUM(COALESCE(c.actual_cost, 0)) AS cost_microusd,
                 COUNT(c.actual_cost) AS cost_samples,
                 SUM(CASE WHEN c.actual_tokens IS NULL AND c.state IN ('reserved', 'dispatched', 'unknown')
+                         AND COALESCE(c.receipt_ref, '') NOT LIKE ?
                          THEN c.reserved_tokens ELSE 0 END) AS held_tokens,
                 SUM(CASE WHEN c.actual_cost IS NULL AND c.state IN ('reserved', 'dispatched', 'unknown')
+                         AND COALESCE(c.receipt_ref, '') NOT LIKE ?
                          THEN c.reserved_cost ELSE 0 END) AS held_cost_microusd,
                 AVG(c.latency_ms) AS avg_latency_ms
             FROM model_calls c
@@ -163,7 +166,8 @@ class ContactBudget:
             WHERE t.kind IN ('proactive.compose', 'proactive.judge')
                 AND COALESCE(c.started_at, c.finished_at, r.created_at) >= ? AND """
 
-        row = self.runtime.read_one(base + "t.origin_key = ?", (cutoff, context.key))
+        row = self.runtime.read_one(base + "t.origin_key = ?",
+            (RELEASE_RECEIPT_PREFIX + "%", RELEASE_RECEIPT_PREFIX + "%", cutoff, context.key))
         return {"session": {"calls": row["calls"], "pending_reservations": row["pending_reservations"],
                     "unknown_calls": row["unknown_calls"], "confirmed_calls": row["confirmed_calls"],
                     "tokens": row["tokens"],

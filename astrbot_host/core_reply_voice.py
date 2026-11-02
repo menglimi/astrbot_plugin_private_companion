@@ -14,9 +14,13 @@ from companion_v2.conversation.voice_reply import (
     speech_candidates,
     speech_chunks,
     strip_voice_markup,
+    voice_wrapper_pairing,
 )
 from .core_reply import CORE_REPLY_CONTEXT_EXTRA
 from companion_v2.conversation.voice_markup import slice_speech, visible_speech
+
+
+SEGMENTED_TTS_BUDGET_SECONDS = 8.0
 
 
 def voice_prompt_instruction(policy, provider_instruction=""):
@@ -74,7 +78,21 @@ def capture_core_voice_message(event, message):
     if spans:
         core["_voice_authored"] = {"visible": visible, "spans": spans, "cursor": 0, "used": set()}
         return cleaned
-    return message
+    source = _plain_text(message)
+    if visible == source:
+        return message
+    # 未配对/未闭合的语音包装已经被 separate_spoken 去掉；这里如果退回原始消息，
+    # 字面量 <pc_tts> 就会随正文发给用户，因为下游协议清洗刻意排除了 tts 家族。
+    # plain 生成模式下成对标签也走这条分支，所以 state 只描述"清理了包装"，
+    # 由 pairing 区分成对/未成对，避免把成对标签误记成 unpaired。
+    paired, stray = voice_wrapper_pairing(source)
+    pairing = "unpaired" if stray else ("paired" if paired else "other")
+    logger.info("[CompanionV2][media] stage=voice_cleanup event_ref=%s media=voice "
+                "state=voice_wrapper_cleanup pairing=%s paired_wrappers=%d stray_tags=%d "
+                "removed_chars=%d visible_chars=%d",
+                prepared.get("event_ref", "unknown"), pairing, paired, stray,
+                len(source) - len(visible), len(visible))
+    return cleaned
 
 
 def _captured_speech(core, visible):
@@ -203,27 +221,32 @@ async def prepare_core_reply_voice_message(
                                        any(isinstance(component, Record) for component in chain)):
         note["state"] = "native_voice_exists"
         return message
+    segment_index = max(0, int(segment_index))
+    segment_count = max(1, int(segment_count))
+    # Whole-reply voice speaks the joined text of the turn, so a segment with no
+    # text of its own (a trailing image, say) still has to reach the bucket
+    # below: bailing out here dropped the speech collected so far and the turn
+    # ended silently.
+    whole = policy.segment_mode == "whole" and isinstance(core, dict)
     source = _plain_text(message)
-    if not source.strip():
+    if not source.strip() and not whole:
         note["state"] = "no_text"
         return message
 
     visible, spans, cleaned_message = _clean_plain_runs(message, policy)
-    if not visible.strip():
+    if not visible.strip() and not whole:
         note["state"] = "no_visible_text"
         return cleaned_message
-
-    segment_index = max(0, int(segment_index))
-    segment_count = max(1, int(segment_count))
     captured_speech = _captured_speech(core, getattr(message, "_companion_v2_voice_source", visible)) if not spans else ""
     candidates = speech_candidates(visible, (visible,), spans, policy)
     segment_speech = captured_speech or (candidates[0].strip() if candidates else "")
-    if policy.segment_mode == "whole" and isinstance(core, dict):
+    if whole:
         # Whole-reply voice waits until every text segment has been prepared,
         # then synthesizes the joined speech once.  Per-segment TTS cuts the
         # sentence context and produces noticeably flatter prosody.
         bucket = core.setdefault("_voice_whole_segments", {"visible": [], "speech": []})
-        bucket["visible"].append(visible)
+        if visible.strip():
+            bucket["visible"].append(visible)
         if segment_speech:
             bucket["speech"].append(segment_speech)
         if segment_index < segment_count - 1:
@@ -277,7 +300,16 @@ async def prepare_core_reply_voice_message(
                 render_options["model_override"] = model_override
             if voice_override:
                 render_options["voice_override"] = voice_override
-            audio = await renderer(context, chunk, **render_options)
+            render = renderer(context, chunk, **render_options)
+            if segment_count > 1:
+                # A whole-reply voice is synthesized while the last text segment
+                # is waiting.  A slow or failing TTS endpoint must not hold that
+                # segment for a minute; cap the budget and degrade to text.
+                configured = float(policy.timeout_seconds or 0)
+                budget = min(configured, SEGMENTED_TTS_BUDGET_SECONDS) if configured > 0 else SEGMENTED_TTS_BUDGET_SECONDS
+                audio = await asyncio.wait_for(render, timeout=budget)
+            else:
+                audio = await render
             audio_data = audio.get("data") if isinstance(audio, dict) and audio.get("type") == "record" else None
             file_value = audio_data.get("file") if isinstance(audio_data, dict) else None
             if not isinstance(file_value, str) or not file_value.startswith("base64://"):

@@ -163,11 +163,29 @@ class GroupReplyAdmissionTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         prepared = await self.core_turn(event)
         prompt = "\n".join(part.text for part in event.core_request.extra_user_content_parts)
         self.assertIn("group_participation", prepared["context_sections"])
-        for text in ("求助强度参考 95/100", "兴趣话题自主接话宜低频", "参考强度约 1%",
+        for text in ("求助强度参考 95/100", "兴趣话题自主接话宜低频", "兴趣候选抽取概率为 1%",
                      "自主插话参考额度剩余 0/0", "最小间隔参考 33 分钟", "本轮没有明确 @"):
             self.assertIn(text, prompt)
         self.assertIsNotNone(event.core_request.func_tool.get_tool(native_tool_name("group.participation.choose")))
         self.assert_no_v2_generation()
+
+    async def test_interest_probability_is_a_candidate_gate(self):
+        await self.configure(group_wakeup_interest_keywords='["星图"]',
+                             group_wakeup_interest_probability=0)
+        blocked = await self.candidate(self.event("interest-zero", "我在看星图的介绍"))
+        self.assertNotEqual(blocked["reason"], "interest")
+        await self.configure(group_wakeup_interest_probability=1)
+        admitted = await self.candidate(self.event("interest-one", "我在看星图的介绍"))
+        self.assertEqual(admitted["reason"], "interest")
+
+    async def test_interest_probability_samples_candidates_below_one(self):
+        await self.configure(group_wakeup_interest_keywords='["星图"]',
+                             group_wakeup_interest_probability=0.5)
+        results = [await self.candidate(self.event(f"interest-sample-{index}", "我在看星图的介绍"))
+                   for index in range(8)]
+        reasons = [result["reason"] for result in results]
+        self.assertIn("interest", reasons)
+        self.assertTrue(any(reason != "interest" for reason in reasons))
 
     async def test_native_group_skip_is_silent_and_never_counts_as_a_successful_send_or_missing_reply(self):
         event = self.event("core-skip", "这个问题有人知道怎么处理吗")

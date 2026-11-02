@@ -37,6 +37,51 @@ MAX_SUMMARY_CHARS = 500
 MAX_OBSERVATION_CHARS = 800
 MAX_PROPOSAL_CHARS = 1200
 
+# One run asks for a whole candidate set at once, and every candidate carries an
+# observation, a proposal, an applicability map and a concrete expression form.
+# Measured answers (2026-10-30): summary plus three short candidates and their
+# JSON envelope occupied 1098-1318 output tokens, i.e. 300-370 tokens per
+# candidate. The ceiling such a request executes under is
+# ``model.role.expression.learn.max_output_tokens``, which defaults to the
+# reply-sized ceiling of the same window, and a thinking model spends part of it
+# on its own reasoning before it writes one visible character (Gemini 3 counts
+# thinking inside max_output_tokens). Asking for the product maximum regardless
+# of that ceiling is how one run ended with a 123-character body while ~1968
+# tokens of its ceiling never became visible text, so the count is derived here
+# instead of fixed.
+LEARNING_SIGNAL_TOKENS = 400
+LEARNING_SUMMARY_TOKENS = 150
+LEARNING_ANSWER_SHARE = (2, 3)
+CHARS_PER_TOKEN = (9, 5)
+MODE_SIGNAL_CAPS = {"light": 3, "balanced": 6, "aggressive": 12}
+
+
+def signal_limit(mode, max_output_tokens):
+    """How many complete candidates fit in the ceiling this run can use.
+
+    Keeps the answer inside ``LEARNING_ANSWER_SHARE`` of the ceiling so the
+    model's own reasoning keeps the remainder, and never exceeds the product cap
+    of the mode. A ceiling too small for even one candidate still asks for one:
+    the mode's own evidence rules decide whether it is worth persisting.
+    """
+    cap = MODE_SIGNAL_CAPS[mode]
+    if type(max_output_tokens) is not int or max_output_tokens < 1:
+        return 1
+    share, total = LEARNING_ANSWER_SHARE
+    usable = max_output_tokens * share // total - LEARNING_SUMMARY_TOKENS
+    return max(1, min(cap, usable // LEARNING_SIGNAL_TOKENS))
+
+
+def text_budget(limit):
+    """The total character budget the same estimate pays for.
+
+    Measured answers run 1.88-1.96 characters per output token; 1.8 keeps the
+    written bound in the same place as the token estimate it comes from.
+    """
+    characters, tokens = CHARS_PER_TOKEN
+    estimated = limit * LEARNING_SIGNAL_TOKENS + LEARNING_SUMMARY_TOKENS
+    return estimated * characters // tokens
+
 
 def candidate_signature(dimension, observation, proposal, applicability=None, expression=None):
     """Normalize formatting differences without collapsing distinct rule meaning."""
@@ -153,53 +198,66 @@ INSTRUCTION = """只观察可借鉴的表达形式：句长、节奏、标点、
 FORM_INSTRUCTION = """每条候选填写 expression：kind=style 是具体情境表达，pattern 保留有辨识度的短说法或带占位的说法，例如在彼此已有共识、不需解释时用“懂的都懂”；kind=grammar 是可复用句法，pattern 写出结构，例如“先用两三个字确认，再省略主语接一句补充”。situation 说明何时合适，avoid 说明何时别用，proposal 说明角色怎样自然化用。
 不要把“更自然、简短口语化、温柔一些”这样的泛泛评价当作学到的表达。短而有辨识度的原话可以保留，长句、私人经历和身份信息不照搬；一次出现可成为局部情境候选，但不要宣称是长期习惯。样本、情境、说法、用法须对应，不能编造证据。对照 existing_rules 的情境与模板：同一说法、同一用法即使 observation 或 proposal 有新措辞也不要另提候选；已拒绝或已停用的规则也不要擅自复活。同一情境下不同的说法，以及相同说法在真正不同情境中的用法可以共存。"""
 
-MODE_INSTRUCTIONS = {
-    "light": "轻量学习：只提炼跨情境通用的句长、停顿呼吸感、标点和排版习惯，最多提出3条。不要提取场景短语或口头禅。",
-    "balanced": "均衡学习：兼顾稳定语法习惯和有重复证据的情境表达与接话节奏，最多提出6条；保留角色自己的表达底色，自然化用而不模仿用户身份。",
-    "aggressive": "深入学习：可提出最多12条细分的情境表达、熟稔语气和句法模板，明确使用条件；不因强度提高而降低证据要求。",
+MODE_GUIDANCE = {
+    "light": "轻量学习：只提炼跨情境通用的句长、停顿呼吸感、标点和排版习惯，最多提出{limit}条。不要提取场景短语或口头禅。",
+    "balanced": "均衡学习：兼顾稳定语法习惯和有重复证据的情境表达与接话节奏，最多提出{limit}条；保留角色自己的表达底色，自然化用而不模仿用户身份。",
+    "aggressive": "深入学习：可提出最多{limit}条细分的情境表达、熟稔语气和句法模板，明确使用条件；不因强度提高而降低证据要求。",
 }
+BUDGET_INSTRUCTION = "本次调用可用输出预算只够 {limit} 条：summary 与全部候选的文字合计不超过 {characters} 字，条数以这条为上限，宁可少提也不凑满。"
 
-SCHEMA = {
-    "type": "object",
-    "properties": {
-        "summary": {"type": "string", "maxLength": MAX_SUMMARY_CHARS},
-        "signals": {
-            "type": "array",
-            "maxItems": MAX_SIGNALS_PER_RUN,
-            "items": {
-                "type": "object",
-                "properties": {
-                    "dimension": {"type": "string", "enum": sorted(DIMENSIONS)},
-                    "observation": {"type": "string", "maxLength": MAX_OBSERVATION_CHARS},
-                    "proposal": {"type": "string", "maxLength": MAX_PROPOSAL_CHARS},
-                    "applicability": {
-                        "type": "object",
-                        "properties": {
-                            "channels": {"type": "array", "items": {"type": "string", "enum": list(CHANNELS)},
-                                         "minItems": 1, "maxItems": len(CHANNELS)},
-                            "relationship_stages": {"type": "array", "items": {"type": "string", "enum": list(RELATIONSHIP_STAGES)},
-                                                    "minItems": 1, "maxItems": len(RELATIONSHIP_STAGES)},
-                            "emotion_gates": {"type": "array", "items": {"type": "string", "enum": list(EMOTION_GATES)},
-                                              "minItems": 1, "maxItems": len(EMOTION_GATES)},
-                            "intent": {"type": "string", "enum": sorted(INTENTS)},
-                            "keywords": {"type": "array", "maxItems": MAX_KEYWORDS,
-                                         "items": {"type": "string", "maxLength": MAX_KEYWORD_CHARS}},
+
+def mode_instruction(mode, limit):
+    """One mode's guidance with the candidate count this run can afford."""
+    return MODE_GUIDANCE[mode].format(limit=limit) + "\n" + BUDGET_INSTRUCTION.format(
+        limit=limit, characters=text_budget(limit))
+
+
+def schema(limit=MAX_SIGNALS_PER_RUN):
+    """The exact output contract for one run, bounded to the derived count."""
+    return {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string", "maxLength": MAX_SUMMARY_CHARS},
+            "signals": {
+                "type": "array",
+                "maxItems": limit,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "dimension": {"type": "string", "enum": sorted(DIMENSIONS)},
+                        "observation": {"type": "string", "maxLength": MAX_OBSERVATION_CHARS},
+                        "proposal": {"type": "string", "maxLength": MAX_PROPOSAL_CHARS},
+                        "applicability": {
+                            "type": "object",
+                            "properties": {
+                                "channels": {"type": "array", "items": {"type": "string", "enum": list(CHANNELS)},
+                                             "minItems": 1, "maxItems": len(CHANNELS)},
+                                "relationship_stages": {"type": "array", "items": {"type": "string", "enum": list(RELATIONSHIP_STAGES)},
+                                                        "minItems": 1, "maxItems": len(RELATIONSHIP_STAGES)},
+                                "emotion_gates": {"type": "array", "items": {"type": "string", "enum": list(EMOTION_GATES)},
+                                                  "minItems": 1, "maxItems": len(EMOTION_GATES)},
+                                "intent": {"type": "string", "enum": sorted(INTENTS)},
+                                "keywords": {"type": "array", "maxItems": MAX_KEYWORDS,
+                                             "items": {"type": "string", "maxLength": MAX_KEYWORD_CHARS}},
+                            },
+                            "required": sorted(APPLICABILITY_FIELDS),
+                            "additionalProperties": False,
                         },
-                        "required": sorted(APPLICABILITY_FIELDS),
-                        "additionalProperties": False,
+                        "expression": FORM_SCHEMA,
+                        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                        "evidence_handles": {"type": "array", "items": {"type": "string"}},
                     },
-                    "expression": FORM_SCHEMA,
-                    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                    "evidence_handles": {"type": "array", "items": {"type": "string"}},
+                    "required": ["dimension", "observation", "proposal", "applicability", "expression", "confidence", "evidence_handles"],
+                    "additionalProperties": False,
                 },
-                "required": ["dimension", "observation", "proposal", "applicability", "expression", "confidence", "evidence_handles"],
-                "additionalProperties": False,
             },
         },
-    },
-    "required": ["summary", "signals"],
-    "additionalProperties": False,
-}
+        "required": ["summary", "signals"],
+        "additionalProperties": False,
+    }
+
+
+SCHEMA = schema()
 
 
 @dataclass(frozen=True)

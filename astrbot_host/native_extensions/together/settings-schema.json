@@ -70,21 +70,6 @@
         "_special": "select_persona",
         "hint": "V2 原生房间使用创建房间时 AstrBot 当前选中的人格；此项仅用于旧式本机房间。"
       },
-      "chat_provider_id": {
-        "description": "通话与观影对话模型",
-        "type": "string",
-        "default": "",
-        "required": true,
-        "_special": "select_provider",
-        "hint": "必选。负责实时通话、观影对话和人格上下文；支持图片时会直接读取视频帧。"
-      },
-      "vision_provider_id": {
-        "description": "视觉模型",
-        "type": "string",
-        "default": "",
-        "_special": "select_provider",
-        "hint": "可选。对话模型支持图片时无需配置；对话模型没有视觉能力时，可选择独立视觉模型转述观影或视频通话画面，再由对话模型结合人格与上下文回复。留空还会尝试 AstrBot 默认图片描述模型。"
-      },
       "history_turns": {
         "description": "房间上下文轮数",
         "type": "int",

@@ -524,8 +524,14 @@ class AstrBotStagingController:
             ensure_image_access(self.runtime, self.session.profile.target, observed_at=self.now())
         except Exception as error:
             logger.warning("[CompanionV2] 生图能力授权补齐失败 error_type=%s", type(error).__name__)
-        from .knowledge_sources import attach_official_knowledge
+        from .knowledge_sources import attach_official_knowledge, import_configured_sources_at_startup
         attach_official_knowledge(self.session.application, self.context)
+        # 配置的世界书材料在启动时刷新一次；来源缺失或损坏只记日志，不拦启动，重复刷新按内容去重。
+        try:
+            import_configured_sources_at_startup(self.session.application.runtime, self.context,
+                                                 at=self.now())
+        except Exception as error:
+            logger.warning("[CompanionV2] 启动知识导入失败 error_type=%s", type(error).__name__)
         self.session.bridge.forward_intake = self.settings.forward_intake
         from .semantic_models import NativeSemanticModels, configured_slang_search_port
         self.session.application.attach_semantics(NativeSemanticModels(self.context, self.settings.provider_id,
@@ -924,6 +930,33 @@ class AstrBotStagingController:
             write_binding(self.binding_root, PendingBinding(parked.platform_id, parked.account_id,
                 parked.participant_id, parked.persona_id, confirmed=True))
         return {"confirmed": True, "binding": self.binding_state()}
+
+    def reset_binding(self) -> dict[str, Any]:
+        """Withdraw the confirmation so the reviewed window can be re-confirmed.
+
+        The parked binding is what the guide reads while nothing is pinned, so
+        flipping ``confirmed`` back to ``False`` puts step 1 back into its
+        "confirm this window" state. A pinned profile (``intent``) is a separate
+        document and deliberately untouched: it records the identity that day-one
+        review already approved, and ``receive_binding`` refuses to rebind on top
+        of it by design.
+        """
+        pinned = self._read_intent()
+        if pinned is not None:
+            return {"reset": False, "reason": "host_binding_exists",
+                    "detail": "这个安装已经固定过目标；要更换请先在宿主管理里停止并清除运行档。"}
+        parked = self._parked_binding()
+        if parked is None or not parked.confirmed:
+            return {"reset": False, "reason": "setup_binding_missing",
+                    "detail": "there is no confirmed core administrator window to reset"}
+        try:
+            write_binding(self.binding_root, PendingBinding(parked.platform_id, parked.account_id,
+                parked.participant_id, parked.persona_id, confirmed=False))
+        except (OSError, ValueError):
+            return {"reset": False, "reason": "setup_binding_write_failed",
+                    "detail": "the setup binding could not be rewritten"}
+        logger.info("[CompanionV2] 待确认绑定已重置")
+        return {"reset": True, "binding": self.binding_state()}
 
     def handles_binding(self, event: object) -> bool:
         """Whether this private message is part of the bind vocabulary.

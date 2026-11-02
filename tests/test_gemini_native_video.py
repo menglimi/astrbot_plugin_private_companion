@@ -12,7 +12,7 @@ from tests.test_model_gateway import ModelFixture
 from companion_v2.adapters.astrbot.model_wire import build_wire, tool_alias
 from companion_v2.adapters.astrbot.provider import UsageTariff
 from companion_v2.adapters.astrbot.provider_catalog import TextProviderSettings
-from companion_v2.model_gateway.models import ModelEnvelope, ToolExchange, ToolSpec
+from companion_v2.model_gateway.models import Amount, ModelEnvelope, ToolExchange, ToolSpec
 from astrbot_host.video.gemini_provider import GeminiNativeVideoProvider
 
 
@@ -184,6 +184,67 @@ class NativeGeminiConversationTests(ModelFixture, unittest.IsolatedAsyncioTestCa
         await adapter.probe()
         self.assertEqual(native.calls[-1]["contents"][0].parts[0].text, "Reply OK.")
         self.assertEqual(native.calls[-1]["config"]["max_output_tokens"], 64)
+
+
+class NativeGeminiUsageTests(unittest.TestCase):
+    """A counter the upstream leaves unset must not cost the whole usage receipt."""
+
+    @staticmethod
+    def adapter():
+        class FakeGemini:
+            provider_config = {"id": "gemini-native", "model": "gemini-3.8-flash"}
+            model_name = "gemini-3.8-flash"
+            default_params = {}
+
+            def meta(self):
+                return NS(id="gemini-native")
+
+            def get_model(self):
+                return self.model_name
+
+        native = FakeGemini()
+        native_types = NS(video_provider_type=FakeGemini, version="4.29.1")
+        settings = TextProviderSettings("gemini-native", UsageTariff(1, 1, 1),
+                                        maximum_output_tokens=128, maximum_input_estimate=131072)
+        return GeminiNativeVideoProvider(NS(get_provider_by_id=lambda provider_id: native),
+                                         NS(), native_types, native, settings=settings)
+
+    def usage(self, metadata):
+        return self.adapter()._usage(NS(usage_metadata=metadata))
+
+    def test_a_cached_count_left_unset_still_produces_a_receipt(self):
+        # The SDK reports the cached count as an explicit ``None`` on ordinary
+        # calls: the attribute exists, so ``getattr``'s default never applies.
+        self.assertEqual(self.usage(NS(prompt_token_count=1306, candidates_token_count=63,
+                                       cached_content_token_count=None)),
+                         Amount(1369, 1, input_tokens=1306, cached_input_tokens=0, output_tokens=63))
+
+    def test_a_prompt_or_output_count_left_unset_is_read_as_zero(self):
+        self.assertEqual(self.usage(NS(prompt_token_count=None, candidates_token_count=63,
+                                       cached_content_token_count=None)),
+                         Amount(63, 1, input_tokens=0, cached_input_tokens=0, output_tokens=63))
+        self.assertEqual(self.usage(NS(prompt_token_count=1306, candidates_token_count=None,
+                                       cached_content_token_count=None)),
+                         Amount(1306, 1, input_tokens=1306, cached_input_tokens=0, output_tokens=0))
+
+    def test_a_counter_the_metadata_does_not_expose_is_read_as_zero(self):
+        # A relay may hand back a slimmer metadata object without the attribute.
+        self.assertEqual(self.usage(NS(prompt_token_count=50, candidates_token_count=20)),
+                         Amount(70, 1, input_tokens=50, cached_input_tokens=0, output_tokens=20))
+
+    def test_a_metadata_object_without_any_counter_records_a_zero_receipt(self):
+        # Documented, not accidental: the host's own ``_extract_usage`` reads a
+        # missing counter as zero too. A real response omits ``usage_metadata``
+        # as a whole instead of returning an empty one.
+        self.assertEqual(self.usage(NS()),
+                         Amount(0, 0, input_tokens=0, cached_input_tokens=0, output_tokens=0))
+
+    def test_a_response_without_usage_metadata_is_still_no_receipt(self):
+        self.assertIsNone(self.adapter()._usage(NS(usage_metadata=None)))
+
+    def test_an_impossible_cache_count_is_still_refused(self):
+        self.assertIsNone(self.usage(NS(prompt_token_count=10, candidates_token_count=3,
+                                        cached_content_token_count=99)))
 
 
 async def _ok():

@@ -167,6 +167,8 @@ window.CompanionSetup = (() => {
       bridge_timeout: "连接超时，请重新读取；原操作结果需要核对。",
       invalid_response: "服务返回的数据不完整，请重新读取。",
       setup_progress_unavailable: "读取设置进度失败（已保留上次结果）；点「重新读取」再试一次，仍失败请查看 AstrBot 日志。",
+      setup_model_invalid: "请选择当前已加载的文本模型后再试。",
+      setup_model_apply_failed: "模型已通过校验，但保存或初始化没有完成。请查看 AstrBot 日志并重新读取状态。",
       model_route_unavailable: "当前小屋角色没有可编辑的模型路由，请切换到已关联私聊的人格。",
       model_route_scope_changed: "小屋角色已经切换，请重新读取当前角色的模型路由后再保存。",
       legacy_plan_stale: "配置在执行前已更新；重新执行会先重新试算再写入。",
@@ -2892,8 +2894,9 @@ window.CompanionSetup = (() => {
         <p class="setup-kicker">第 1 步 · 已完成</p><h3>核心管理员窗口已绑定</h3>
         ${bindingFacts(binding)}
         <p>这个私聊窗口用于管理员控制，也是主动消息测试的目标。下一步配置模型后，当前版本才会建立运行实例。</p>
+        <p class="setup-confirm-copy">要换到另一个私聊窗口、或这个人格在上游改过名字时，先在这里解除确认再重新绑定。已保存的角色映射、模型和记忆都不会被删除。</p>
         ${noticeMarkup()}
-        <div class="setup-actions">${button("refresh", "继续配置模型", {primary: true})}</div>
+        <div class="setup-actions">${button("refresh", "继续配置模型", {primary: true})}${button("reset-binding", "解除确认并重新绑定")}</div>
       </section>`;
     }
     return `<section class="setup-stage">
@@ -3809,6 +3812,16 @@ window.CompanionSetup = (() => {
     try {
       if (action === "confirm-binding") {
         await api("POST", "/binding/confirm", {});
+      } else if (action === "reset-binding") {
+        const accepted = typeof window.CompanionConfirm === "function"
+          && await window.CompanionConfirm({
+            title: "解除核心管理员窗口的确认？",
+            message: "解除后需要重新确认这个私聊窗口，才能继续接收管理员指令和主动消息。"
+              + "已保存的角色映射、模型、人格和记忆都不会被删除。",
+            confirmText: "解除确认", cancelText: "保持现状", danger: true});
+        if (!accepted) return;
+        await api("POST", "/binding/reset", {confirm: true});
+        notice = "已解除确认。核对下面的窗口信息后，点「确认此窗口」重新绑定。";
       } else if (action === "prepare-upgrade") {
         const result = await api("POST", "/upgrade", {confirmed: true, plan_token: state?.upgrade?.plan_token});
         if (!result.started) throw new Error(result.startup_error || "旧版连接已保存，请核对运行状态。");

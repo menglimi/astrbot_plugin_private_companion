@@ -3,6 +3,7 @@
 window.CompanionModelsPage = (() => {
   const PREFIX = "/astrbot_plugin_private_companion/";
   const routing = ["provider", "fallback", "max_output_tokens"];
+  const MAX_MODEL_OUTPUT_TOKENS = 65536;
   const TASK_CONFIG_TIMEOUT_MS = 30000;
   const TASK_CONFIG_RETRY_TIMEOUT_MS = 30000;
   const VOICE_SAVE_TIMEOUT_MS = 30000;
@@ -15,10 +16,9 @@ window.CompanionModelsPage = (() => {
       ["conversation.context_image_caption", "图片摘要", "为已授权的历史图片提取可见内容"],
       ["conversation.image_narration", "当前图片转述", "为本轮已授权图片生成简短文字描述"],
       ["conversation.video_narration", "原生视频转述", "将原视频交给支持视频输入的模型直接理解"]]],
-    ["感知", [["screen.interpretation", "屏幕解读", "分析本次已授权截图，需要支持图片的模型"],
-      ["screen.peek", "屏幕速览", "为已授权屏幕画面生成简短摘要"],
-      ["image_review", "图片审核", "检查群聊成图的可见内容"],
-      ["conversation.image_review", "图片审核", "检查群聊成图的可见内容"]]],
+    ["感知", [["screen.interpretation", "屏幕解读", "分析已授权截图与摄像头单帧，需要支持图片的模型"],
+      ["conversation.image_review", "图片审核", "检查群聊成图的可见内容"],
+      ["reality.text", "现实提醒文案", "现实提醒、唤醒回执和短回复的文字生成"]]],
     ["主动与记忆", [["proactive.compose", "主动联系", "有真实契机时组织联系内容"],
       ["proactive.judge", "主动联系复核", "复核主动消息是否符合当前人格与来源"],
       ["memory.reflect", "记忆整理", "从已授权素材整理认识"]]],
@@ -60,14 +60,15 @@ window.CompanionModelsPage = (() => {
     tts_provider_test_unsupported: "该语音服务不支持连接自检，可继续使用测试合成验证。",
     tts_provider_unloaded: "语音服务尚未加载，请先启用并刷新宿主状态。",
     laya_config_conflict: "Laya 配置已变化，请刷新后再保存。", laya_config_invalid: "Laya 配置未通过校验，请核对接入方式。",
-    laya_config_unreadable: "Laya 配置无法读取，请检查插件数据目录。", laya_endpoint_missing: "远程模式需要填写 Laya 服务地址。",
+    laya_config_unreadable: "Laya 配置无法读取，请检查插件数据目录。", laya_endpoint_missing: "远程或 Jev 模式需要填写判断服务地址。",
     laya_endpoint_invalid: "Laya 服务地址必须是 HTTP(S) 地址。", laya_model_invalid: "Laya 检查点选择无效。",
     laya_mode_invalid: "Laya 接入方式无效。", laya_package_missing: "当前 AstrBot Python 环境未安装 Laya。",
     laya_initialization_failed: "Laya Router 初始化失败，请检查安装和运行环境。", laya_inference_failed: "Laya 本地推理失败，请查看详细日志。",
     laya_initializing: "Laya 本地模型正在预热，请就绪后再测试；聊天继续按原有流程处理。",
     laya_model_path_invalid: "本地检查点目录不完整，请选择含有 Laya 权重、配置和分词器的文件夹。",
     laya_inference_timeout: "Laya 本地判断超过调用超时，本轮继续普通回复流程。",
-    laya_transport_failed: "Laya 连接失败，请检查地址、网络和远程服务状态。", laya_http_error: "Laya HTTP 服务返回错误，详细信息见下方。",
+    laya_transport_failed: "Laya 连接失败，请检查地址、网络和远程服务状态；部分网关会直接断开无效密钥，请同时核对 API Key。", laya_http_error: "Laya HTTP 服务返回错误，详细信息见下方。",
+    laya_auth_failed: "判断服务鉴权失败，请核对 API Key 与服务端访问权限。",
     laya_response_invalid: "Laya 返回缺少官方 SystemOne 所需分类。", laya_contract_invalid: "Laya 分类超出插件决策合同，已拒绝采用。",
     laya_rule_skip: "这类事件由程序规则处理，不调用 Laya。", laya_no_decision_fields: "没有启用任何 Laya 决策分类。",
     search_config_conflict: "搜索配置已变化，请刷新后再保存。", search_config_invalid: "搜索配置无效，请刷新并重新选择 Provider。",
@@ -122,9 +123,9 @@ window.CompanionModelsPage = (() => {
   const available = (s, task) => s.status.providers.filter(p => task.capabilities.every(cap => p.capabilities.includes(cap)));
   const effective = (task, draft, name) => draft.inherited[name] ? task.fields[name].inherited_value : draft.values[name];
   const providerFor = (task, draft) => coreReply(task) ? "" : effective(task, draft, "provider");
-  const limitFor = (s, task, draft) => Math.min(32768, ...["provider", "fallback"]
+  const limitFor = (s, task, draft) => Math.min(MAX_MODEL_OUTPUT_TOKENS, ...["provider", "fallback"]
     .map(name => effective(task, draft, name)).filter(Boolean)
-    .map(id => s.status.providers.find(provider => provider.id === id)?.max_output_tokens || 32768));
+    .map(id => s.status.providers.find(provider => provider.id === id)?.max_output_tokens || MAX_MODEL_OUTPUT_TOKENS));
   function fitLimit(s, task, draft) { const limit = limitFor(s, task, draft);
     if (effective(task, draft, "max_output_tokens") <= limit) return false;
     draft.values.max_output_tokens = limit; draft.inherited.max_output_tokens = false; return true; }
@@ -248,7 +249,7 @@ window.CompanionModelsPage = (() => {
     : (patch.reset.includes(name) ? task.fields[name].inherited_value : task.fields[name].value);
   function validatePatch(task, p) { if (!Object.keys(p.changes).length && !p.reset.length) return false;
     if (Object.hasOwn(p.changes, "prompt") && (typeof p.changes.prompt !== "string" || p.changes.prompt.length > 8000)) return false;
-    if (Object.hasOwn(p.changes, "max_output_tokens") && (!Number.isInteger(p.changes.max_output_tokens) || p.changes.max_output_tokens < 1 || p.changes.max_output_tokens > 32768)) return false;
+    if (Object.hasOwn(p.changes, "max_output_tokens") && (!Number.isInteger(p.changes.max_output_tokens) || p.changes.max_output_tokens < 1 || p.changes.max_output_tokens > MAX_MODEL_OUTPUT_TOKENS)) return false;
     if (Object.hasOwn(p.changes, "timeout_seconds") && (!Number.isInteger(p.changes.timeout_seconds) || p.changes.timeout_seconds < 1 || p.changes.timeout_seconds > 600)) return false;
     if (Object.hasOwn(p.changes, "replacement_scope") && !["plugin", "conversation", "all"].includes(p.changes.replacement_scope)) return false;
     if (Object.hasOwn(p.changes, "fallback_on_refusal") && typeof p.changes.fallback_on_refusal !== "boolean") return false;
@@ -1055,7 +1056,7 @@ window.CompanionModelsPage = (() => {
       l.notice = "本地 Laya 无法测试：当前 AstrBot Python 的 PyTorch 不支持 CUDA。请安装 CUDA 版 PyTorch 并重启，或切换到远程 HTTP 服务。";
       render(); return;
     }
-    const ticket = version; l.busy = true; l.test = {status: "testing"}; l.notice = l.data.mode === "local" ? "正在调用官方 Router；首次测试会自动下载检查点…" : "正在调用官方 SystemOne HTTP 接口…"; render();
+    const ticket = version; l.busy = true; l.test = {status: "testing"}; l.notice = l.data.mode === "local" ? "正在调用官方 Router；首次测试会自动下载检查点…" : l.data.mode === "jev" ? "正在调用 Jev 判断服务…" : l.data.mode === "workers_ai" ? "正在调用 Cloudflare Workers AI…" : "正在调用官方 SystemOne HTTP 接口…"; render();
     try { const result = await api("POST", path + "/laya/test", {}, 600000); if (!current(ticket, s)) return;
       l.test = result; l.notice = "Laya 调用完成；当前模式和检查点已验证。"; l.bad = false; await layaRefreshQuiet(s, ticket); }
     catch (err) { if (!current(ticket, s)) return; l.test = {status: "unknown", code: err.code || err.message, reason: err.reason || ""}; l.bad = true; l.notice = fail(err, "Laya 连接测试未完成。"); }
@@ -1158,13 +1159,17 @@ window.CompanionModelsPage = (() => {
   function layaPane(s) { const l = s.laya; if (!l.data) return `<div class="model-card"><p class="model-empty">${esc(l.notice || "正在读取 Laya 配置…")}</p></div>`;
     const dirty = layaDirty(l), installed = l.data.package_installed, mode = l.draft?.mode || l.data.mode;
     const gpuUnavailable = mode === "local" && l.data.local_runtime_state === "gpu_unavailable";
-    const runtimeLabel = gpuUnavailable ? "CUDA 不可用" : mode === "local" ? "本地 Python" : "远程 HTTP";
+    const runtimeLabel = gpuUnavailable ? "CUDA 不可用" : mode === "local" ? "本地 Python" : mode === "jev" ? "Jev 判断服务" : mode === "workers_ai" ? "Cloudflare Workers AI" : "远程 HTTP";
+    const packageKpi = mode === "local" ? installed ? `已安装 ${l.data.package_version || ""}` : "待安装" : "外部服务";
+    const modelKpi = mode === "jev" ? l.data.default_model || "jev-latest"
+      : mode === "workers_ai" ? l.data.default_model || "未填写"
+      : mode === "remote" ? "远程管理" : l.data.model_cache_ready ? "已缓存" : "首次调用下载";
     const torchText = [l.data.torch_version, l.data.cuda_version ? `CUDA ${l.data.cuda_version}` : "无 CUDA"]
       .filter(Boolean).join(" · ");
     return `<div class="model-subpane model-laya-pane">
-      <div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">可选能力 · 语义决策</span><h3>Laya 决策模型</h3><p class="model-note">在回复前判断是否接话、等待、沉默及表达形式。配置全局生效；仅群聊候选进入 Laya 判断，私聊始终走 AstrBot 核心回复，另由回复页的私聊收尾判断在纯道别时安静。模型不输出时间、段数等数值；行动概率只用于下方可选的连续接话阈值，执行仍遵循宿主配置和权限。</p></div><button type="button" class="button small" data-laya-refresh ${l.loading || l.busy ? "disabled" : ""}>刷新</button></div>
-        <div class="model-kpis">${kpi(!l.data.enabled ? "未启用" : mode === "local" && l.data.local_runtime_state === "warming" ? "正在预热" : "已启用", "运行状态", l.data.enabled ? "g" : "a")}${kpi(mode === "remote" ? "远程模式" : installed ? `已安装 ${l.data.package_version || ""}` : "待安装", "Python 包")}${kpi(mode === "remote" ? "远程管理" : l.data.model_cache_ready ? "已缓存" : "首次调用下载", "模型权重")}${kpi(runtimeLabel, "接入方式", gpuUnavailable ? "r" : "")}</div>
-        ${gpuUnavailable ? `<div class="model-alert"><b>本地 Laya 当前不可用：</b>当前 AstrBot Python 使用的是 CPU 版 PyTorch${torchText ? `（${esc(torchText)}）` : ""}。Laya 本地模式需要 CUDA；请安装与驱动匹配的 CUDA 版 PyTorch 后重启 AstrBot，或在上方把接入方式切到「远程 HTTP 服务」。
+      <div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">可选能力 · 语义决策</span><h3>Laya 决策模型</h3><p class="model-note">在回复前判断是否接话、等待、沉默及表达形式。配置全局生效；仅群聊候选进入 Laya 判断，私聊始终走 AstrBot 核心回复，另由回复页的私聊收尾判断在纯道别时安静。模型不输出时间、段数等数值；行动概率只用于下方可选的连续接话阈值，执行仍遵循宿主配置和权限。接入方式支持本地 Laya 包、官方 SystemOne 服务、Jev 判断服务与 Cloudflare Workers AI，四者共用同一份决策合同。</p></div><button type="button" class="button small" data-laya-refresh ${l.loading || l.busy ? "disabled" : ""}>刷新</button></div>
+        <div class="model-kpis">${kpi(!l.data.enabled ? "未启用" : mode === "local" && l.data.local_runtime_state === "warming" ? "正在预热" : "已启用", "运行状态", l.data.enabled ? "g" : "a")}${kpi(packageKpi, mode === "local" ? "Python 包" : "依赖来源")}${kpi(modelKpi, mode === "jev" || mode === "workers_ai" ? "判断模型" : "模型权重")}${kpi(runtimeLabel, "接入方式", gpuUnavailable ? "r" : "")}</div>
+        ${gpuUnavailable ? `<div class="model-alert"><b>本地 Laya 当前不可用：</b>当前 AstrBot Python 使用的是 CPU 版 PyTorch${torchText ? `（${esc(torchText)}）` : ""}。Laya 本地模式需要 CUDA；请安装与驱动匹配的 CUDA 版 PyTorch 后重启 AstrBot，或在上方把接入方式切到「远程 HTTP 服务」或「Jev 判断服务」。
           <div class="model-editor-actions"><button type="button" class="button small" data-laya-copy="torch_install_command">复制 CUDA PyTorch 安装命令</button></div>
           ${l.data.torch_install_command ? `<code class="model-laya-cmd">${esc(l.data.torch_install_command)}</code><small>命令默认使用 cu128；请按显卡驱动把 cu128 换成 cu126 等兼容版本。安装会替换当前 CPU 版 torch，但不会改动已安装的 laya。</small>` : ""}</div>` : ""}
         <div class="model-laya-fields">${layaField(l, "enabled", "启用 Laya", "关闭时调用会跳过", "bool")}${layaSelect(l, "mode", "接入方式", "选择 AstrBot 本地 Python 或官方服务接口", [["local", "本地 Python 包"], ["remote", "远程 HTTP 服务"]])}${mode === "remote" ? layaSelect(l, "request_format", "接口格式", "官方 SystemOne 平铺，或 Cloudflare Workers AI 的 input 包装", [["native", "Laya 官方 SystemOne"], ["cloudflare", "Cloudflare Workers AI"]]) : ""}${mode === "remote" ? layaField(l, "endpoint", "服务地址", (l.draft.request_format || l.data.request_format) === "cloudflare" ? "填到 /ai/run；请求会包 input，返回的 result 会自动拆开" : "可填服务根地址、/v1 或完整 /v1/systemone") : ""}${mode === "remote" ? layaField(l, "remote_model", "远程模型名", "官方服务填 multilingual；Cloudflare 填 Workers AI 模型标识，例如 typesafe/jev-1.14.0；留空按 multilingual") : ""}${mode === "remote" ? layaField(l, "api_key", "API Key", l.data.api_key_set ? "已配置；留空保留现有密钥" : "可选，按远程服务配置", "password") : ""}${layaField(l, "timeout_seconds", "调用超时（秒）", "用于本地推理或远程连接，不参与语义判断", "number")}${layaPercentField(l, "followup_confidence_threshold", "连续接话置信阈值", "0 关闭；仅约束非点名续接。Laya 行动概率低于此值时改为旁听，建议从 40–55% 起按日志校准")}</div>
@@ -1174,12 +1179,18 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
         <div class="model-editor-actions"><button type="button" class="button primary" data-laya-save ${!dirty || l.busy || l.loading || l.stale ? "disabled" : ""}>保存 Laya 配置</button><button type="button" class="button" data-laya-test ${l.busy || l.loading || gpuUnavailable ? "disabled" : ""}>${mode === "local" && installed && !l.data.model_cache_ready ? "下载并验证模型" : "测试 Laya 调用"}</button></div>
         ${l.stale ? '<div class="model-alert">配置已在别处变化，请刷新后核对。</div>' : ""}${l.notice ? `<div class="model-notice${l.bad ? " error" : ""}">${esc(l.notice)}</div>` : ""}${l.test ? layaResult(l.test) : ""}
       </div>
-      <div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">官方依赖与权重缓存</span><h3>安装 Laya Python 包</h3></div></div><p class="model-note">插件发行包不包含 Laya 包或检查点权重。将下方命令复制到 AstrBot 所在环境执行；本地首次推理会由官方 Router 自动从 Hugging Face 下载所选检查点。</p>
+      ${mode === "workers_ai" ? `<div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">外部判断服务</span><h3>Cloudflare Workers AI</h3></div></div><p class="model-note">Cloudflare Workers AI 把模型判断放在 <code>/ai/run</code>：模型名写在请求体里，<code>state</code> 与 <code>questions</code> 需要嵌进 <code>input</code> 对象，而不是与 <code>model</code> 平级。插件会按这个外壳发送，并把返回的 <code>result</code> 解包成同一份 <code>answers</code> 决策合同；判断失败只影响本轮判断，不会阻塞正常回复。</p>
+        <div class="model-state">判断模型：<code>${esc(l.data.default_model || "@cf/cloudflare/clef")}</code> · 请求路径：<code>/ai/run</code> · 请求体：<code>{"model": ..., "input": {"state": ..., "questions": ...}}</code></div>
+        <div class="model-state"><code>@cf/cloudflare/clef</code> 与 <code>clef-flash</code> 使用 Workers AI 每日免费神经元额度；<code>typesafe/jev-1.14.0</code> 等第三方模型不共享该额度，额度不足时 Cloudflare 返回 402，原因显示在下方运行记录里。</div>
+      </div>` : ""}${mode === "jev" ? `<div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">外部判断服务</span><h3>Jev 判断服务</h3></div></div><p class="model-note">Jev 是结构化判断模型：不生成文本，也不识别像素，只按 state 与分类问题返回每个分类的概率。插件把这份判断请求包进一次 OpenAI 兼容的 <code>chat/completions</code> 调用，再把 answers 按同一份决策合同解析；判断失败只影响本轮判断，不会阻塞正常回复。这种接入方式不需要本地 Python 包或权重缓存。</p>
+        <div class="model-state">判断模型：<code>${esc(l.data.default_model || "jev-latest")}</code> · 请求路径：<code>/v1/chat/completions</code> · 决策合同：<code>state + questions → answers</code></div>
+        <div class="model-state">密钥只保存在插件数据目录的决策配置里，不写入调用日志；失败原因显示在下方运行记录。</div>
+      </div>` : mode === "workers_ai" ? "" : `<div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">官方依赖与权重缓存</span><h3>安装 Laya Python 包</h3></div></div><p class="model-note">插件发行包不包含 Laya 包或检查点权重。将下方命令复制到 AstrBot 所在环境执行；本地首次推理会由官方 Router 自动从 Hugging Face 下载所选检查点。</p>
         <div class="model-laya-install"><code>${esc(l.data.install_command || "")}</code><button type="button" class="button small" data-laya-copy="install_command" ${l.busy || l.loading ? "disabled" : ""}>复制安装命令</button></div>
         ${mode === "remote" ? `<p class="model-note">远程服务端使用 Laya 官方 SystemOne 接口，地址以 <code>/v1/systemone</code> 结尾；服务端需要单独部署，以下命令使用本机 AstrBot Python 作为示例。</p><div class="model-laya-install"><code>${esc(l.data.remote_install_command || "")}</code><button type="button" class="button small" data-laya-copy="remote_install_command" ${l.busy || l.loading ? "disabled" : ""}>复制服务端安装命令</button></div><div class="model-laya-install"><code>${esc(l.data.remote_start_command || "")}</code><button type="button" class="button small" data-laya-copy="remote_start_command" ${l.busy || l.loading ? "disabled" : ""}>复制服务启动命令</button></div>` : ""}
         <div class="model-state">Python：<code>${esc(l.data.python_executable || "未知")}</code> · 权重缓存：<code>${esc(l.data.model_cache_path || "由 Hugging Face 默认配置决定")}</code></div>
         <div class="model-state">上游源码与版本：<a href="https://github.com/NandhaKishorM/laya" target="_blank" rel="noreferrer">NandhaKishorM/laya</a> · <a href="https://huggingface.co/convaiinnovations/laya-multilingual" target="_blank" rel="noreferrer">Multilingual 权重</a></div>
-      </div>
+      </div>`}
       <div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">调用预览</span><h3>测试一次语义决策</h3></div></div><label class="model-fd"><span class="model-cap">测试消息<em>只提交这段文字与固定的文本类型事实</em></span><textarea data-laya-preview rows="4" ${l.busy || l.loading ? "disabled" : ""}>${esc(l.previewText || "")}</textarea></label><div class="model-editor-actions"><button type="button" class="button primary" data-laya-decide ${l.busy || l.loading || !l.data.enabled ? "disabled" : ""}>调用 Laya</button></div>${l.preview ? layaResult(l.preview) : ""}</div>
       <div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">运行记录 · 最近 50 条</span><h3>Laya 调用日志</h3></div></div>${layaHistoryMarkup(l)}</div>
     </div>`; }
@@ -1802,7 +1813,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
   }
   /* ---------- top-level render & routing ---------- */
   function semanticBanner() {
-    return `<div class="model-note cfg"><span>向量嵌入、候选重排和视觉分析不在任务路由里，而在「学习与成长 → 语义目录」统一配置；列表为空时先在 AstrBot 模型服务中加载对应模型。</span><button type="button" class="button small" data-go="manage" data-manage="learning" data-manage-subtab="semantic">打开向量模型配置</button></div>`;
+    return `<div class="model-note cfg"><span>向量嵌入、候选重排和视觉分析不在任务路由里，而在「学习与反思 → 语义目录」统一配置；列表为空时先在 AstrBot 模型服务中加载对应模型。</span><button type="button" class="button small" data-go="manage" data-manage="learning" data-manage-subtab="semantic">打开向量模型配置</button></div>`;
   }
   function tabBar(s) { const tabs = [["fn", "功能模型", ICONS.fn, snapshot(s).length],
       ["voice", "语音模型", ICONS.voice, s.voice.data ? s.voice.data.providers.length : ""],
@@ -1853,7 +1864,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
         ${items || '<p class="model-empty">没有匹配的任务。</p>'}</section>`; }).join("");
     const legend = (s.status?.providers || []).map(p => `<span><i style="background:${pillColor(p.id)}"></i><em>${esc(p.id)}</em></span>`).join("");
     return `<div class="model-subpane"><div class="model-kpis">${fnKpis(s)}</div>${sitFilters(s)}
-      <div class="model-mlgd legend">${legend}</div>
+      <details class="model-mlgd-box"><summary><span>模型提供方图例</span><small>${(s.status?.providers || []).length} 个 · 点击展开</small></summary><div class="model-mlgd legend">${legend}</div></details>
       <div class="model-rgrid">${list}</div>${testBar(s)}</div>`; }
   const probeLabel = result => result.status === "ok" ? `连接成功 · ${result.latency_ms} ms`
     : result.status === "testing" ? "测试中…" : errors[result.code] || "结果未知";
@@ -2401,7 +2412,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     if (s.image && imageConfigDirty(s.image)) changed.push(...imageChangedFields(s.image));
     if (s.laya && layaDirty(s.laya)) {
       const labels = {enabled:'启用决策', mode:'运行方式', endpoint:'服务地址', local_model_path:'本地模型路径',
-        api_key:'API Key', timeout_seconds:'请求超时', followup_confidence_threshold:'连续接话置信阈值'};
+        remote_model:'判断模型名', api_key:'API Key', timeout_seconds:'请求超时', followup_confidence_threshold:'连续接话置信阈值'};
       for (const name of Object.keys(layaChanges(s.laya))) {
         if (name === 'decision_fields') changed.push(...LAYA_DECISION_FIELDS.filter(([key]) =>
           s.laya.draft.decision_fields[key] !== (s.laya.data.decision_fields?.[key] !== false)).map(([, label]) => `Laya · ${label}`));

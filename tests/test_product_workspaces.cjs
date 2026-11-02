@@ -301,6 +301,25 @@ test("server rejection envelopes stay confirmed through the product and workspac
   assert.equal(response.confirmed, true);
 });
 
+test("a bridge-only machine code is recovered and labeled with its workspace source", async () => {
+  /* The live Dashboard page bridge rejects with `new Error(message)` only:
+     a status=error envelope loses `data.code` before a workspace sees it. The
+     broker must recover the snake_case code and attach the source label so the
+     embedded page can explain which source failed. */
+  const h = await harness(null, [], {
+    getFailureEndpoint: "targets/first/roles/synthetic-role/persona",
+    getFailure: new Error("expression_group_context_required"),
+  });
+  h.product.mountWorkspace();
+  await h.request(h.persona, "GET", "persona", "persona-machine-code");
+  const response = h.persona.messages.find(message => message.requestId === "persona-machine-code");
+  assert.equal(response.ok, false);
+  assert.equal(response.code, "expression_group_context_required");
+  assert.match(response.sourceLabel, /私聊/);
+  assert.match(response.sourceLabel, /小伴/);
+  assert.equal(response.reason, "expression_group_context_required");
+});
+
 test("request timeouts are configurable and timeout diagnostics omit target and query identifiers", async () => {
   const h = await harness(null, [], {captureTimers: true, captureWarnings: true});
   h.timers.length = 0;
@@ -464,19 +483,21 @@ test("display labels preserve names while internal role and executor keys stay o
 test("the account workspace relays account discovery, mappings, relationship discoveries and startup", async () => {
   const h = await harness();
   h.product.mountWorkspace();
-  for (const [method, endpoint] of [["GET", "accounts"], ["POST", "accounts"], ["POST", "accounts/model-provider"], ["POST", "host/start"]]) {
+  for (const [method, endpoint] of [["GET", "accounts"], ["POST", "accounts"], ["POST", "accounts/model-provider"],
+    ["POST", "accounts/window-link"], ["POST", "accounts/window-unlink"], ["POST", "host/start"]]) {
     await h.request(h.host, method, endpoint);
     assert.equal(h.host.messages.at(-1).ok, true);
   }
   await h.request(h.host, "GET", "acquaintance");
   assert.equal(h.host.messages.at(-1).ok, true);
   assert.deepEqual(h.calls.map(call => `${call.method} ${call.endpoint}`),
-    ["GET accounts", "POST accounts", "POST accounts/model-provider", "POST host/start", "GET acquaintance"]);
+    ["GET accounts", "POST accounts", "POST accounts/model-provider", "POST accounts/window-link",
+      "POST accounts/window-unlink", "POST host/start", "GET acquaintance"]);
   await h.request(h.host, "GET", "accounts/session");
   await h.request(h.host, "POST", "accounts/session/extra");
   await h.request(h.host, "POST", "acquaintance");
   await h.request(h.host, "GET", "acquaintance/authorization");
-  assert.equal(h.calls.length, 5);
+  assert.equal(h.calls.length, 7);
   assert.equal(h.host.messages.at(-1).ok, false);
 });
 
@@ -735,7 +756,7 @@ test("requests in flight during a mapping refresh receive a bounded stale-scope 
   assert.equal(h.relationships.messages.at(-1).code, "scope_changed");
 });
 
-test("account editor cannot relay manual runtime operations or native window edits", async () => {
+test("account editor cannot relay manual runtime operations or native session edits", async () => {
   const h = await harness();
   h.product.mountWorkspace();
   for (const endpoint of ["host/probe", "host/initialize", "host/stop", "accounts/session"]) {
@@ -794,11 +815,11 @@ test("bundled Image and Screen furniture use the V2 lifecycle route and never li
   const lifecycle = h.calls.find(call => call.endpoint === "integration/lifecycle");
   assert.equal(lifecycle.method, "POST");
   assert.equal(JSON.stringify(lifecycle.body), JSON.stringify({extension_id: "image", action: "assemble",
-    expected_revision: 0, operation_key: "image-assemble"}));
+    expected_revision: 0, operation_key: "image-assemble", role_id: "synthetic-role", target_id: "first"}));
   await h.product.manageExtension("screen", "update", 4, "screen-sync");
   const update = h.calls.filter(call => call.endpoint === "integration/lifecycle").at(-1);
   assert.equal(JSON.stringify(update.body), JSON.stringify({extension_id: "companion.screen.native", action: "update",
-    expected_revision: 4, operation_key: "screen-sync"}));
+    expected_revision: 4, operation_key: "screen-sync", role_id: "synthetic-role", target_id: "first"}));
   assert.equal(h.calls.at(-1).endpoint, "integration/manifest", "家具状态来自真实 V2 manifest 刷新");
 });
 
@@ -810,7 +831,7 @@ test("Content, Reality, Together, Game and Live share the V2 lifecycle route", a
     await h.product.manageExtension(name, "pause", 3, name + "-pause");
     const command = h.calls.filter(call => call.endpoint === "integration/lifecycle").at(-1);
     assert.equal(JSON.stringify(command.body), JSON.stringify({extension_id:name, action:"pause",
-      expected_revision:3, operation_key:name + "-pause"}));
+      expected_revision:3, operation_key:name + "-pause", role_id:"synthetic-role", target_id:"first"}));
   }
 });
 

@@ -164,8 +164,8 @@ def route_id(value):
     if len(value) > 128 or ":" in value or any(
             char.isspace() or ord(char) < 32 or ord(char) == 127 for char in value):
         raise ValueError("native route identifiers must be bounded opaque ids without separators")
-    if value.isascii() and value.isdecimal() and (int(value) <= 0 or str(int(value)) != value):
-        raise ValueError("numeric route identifiers must be canonical positive numbers")
+    if value.isascii() and value.isdecimal() and int(value) <= 0:
+        raise ValueError("numeric route identifiers must be positive numbers")
     return value
 
 

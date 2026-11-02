@@ -27,7 +27,7 @@ from .identity_derivation import derive_bot_id, derive_role_id, normalize_person
 from .management_identity import dashboard_operator
 from .persona_catalog import available_personas
 from .settings import HostControlError
-from .setup_state import SETUP_STEPS, SetupStateStore
+from .setup_state import SETUP_STEPS, SetupStateStore, SetupStepsIncomplete
 from .display_names import display_names
 
 
@@ -211,6 +211,7 @@ class SetupWebAPI:
             (PREFIX + "/upgrade", self.prepare_upgrade, ["POST"], "Confirm existing legacy account and persona mappings"),
             (PREFIX + "/targets", self.api_targets, ["GET"], "Read connected OneBot accounts and native personas"),
             (PREFIX + "/binding/confirm", self.confirm_binding, ["POST"], "Confirm the Companion V2 core administrator window"),
+            (PREFIX + "/binding/reset", self.reset_binding, ["POST"], "Release the confirmed core administrator window so it can be bound again"),
             (PREFIX + "/model", self.model, ["POST"], "Choose the initial Companion V2 text provider"),
             (PREFIX + "/model-tasks", self.model_tasks, ["GET"], "Read per-task model routes for the setup role"),
             (PREFIX + "/model-tasks/configure", self.configure_model_task, ["POST"], "Configure one setup-role model task"),
@@ -509,6 +510,38 @@ class SetupWebAPI:
         except (ValueError, TypeError, KeyError, OSError):
             return self._error("setup_binding_confirmation_failed", "the pending private window could not be confirmed")
 
+    async def reset_binding(self):
+        """Release the confirmed core administrator window so it can be bound again.
+
+        ``receive_binding`` tells the operator to "reset the first-run setup" in
+        this guide before switching windows, but until now no route implemented
+        that: an already-confirmed window could only be replaced by editing the
+        plugin data directory by hand. Worse, the refusal named a control that
+        did not exist, so the command, the page and the docs each blamed another.
+
+        Only the *confirmation* is withdrawn. The configured mapping, the
+        storage installation and every stored memory stay exactly as they are;
+        after this call ``binding_state`` reports ``pending`` again and the
+        normal confirm flow re-pins the *currently* reviewed mapping.
+        """
+        try:
+            self._admin()
+            await self._body({"confirm"})
+            clear = getattr(self.controller, "reset_binding", None)
+            if not callable(clear):
+                raise TaskError("setup_binding_unavailable",
+                                "the active host cannot reset a private window")
+            result = clear()
+            if result.get("reset") is not True:
+                raise TaskError(result.get("reason", "setup_binding_missing"),
+                                result.get("detail", "there is no confirmed core administrator window to reset"))
+            return self._response(Outcome.success({"binding": self._binding(), "reset": True}))
+        except TaskError as error:
+            return self._error(error.code, str(error))
+        except (ValueError, TypeError, KeyError, OSError):
+            return self._error("setup_binding_reset_failed",
+                               "the confirmed private window could not be reset")
+
     async def model(self):
         try:
             self._admin()
@@ -521,6 +554,13 @@ class SetupWebAPI:
             provider_id = data["provider_id"]
             if type(provider_id) is not str or not provider_id.strip() or len(provider_id) > 512:
                 raise ValueError("invalid provider")
+        except TaskError as error:
+            return self._error(error.code, str(error))
+        except (ValueError, TypeError, KeyError, OSError, UnicodeError):
+            return self._error("setup_model_invalid", "choose a loaded AstrBot text provider and retry")
+
+        stage = "provider_validation"
+        try:
             status = self._status_document()
             if status["step"] != "model":
                 raise TaskError("setup_step_order_invalid", "confirm the core administrator window before choosing a model")
@@ -549,13 +589,16 @@ class SetupWebAPI:
                 ]
             if model_settings.get("fallback_provider_id") == provider_id:
                 model_settings["fallback_provider_id"] = ""
+            stage = "config_persistence"
             save(candidate)
+            stage = "settings_refresh"
             refresh = getattr(self.controller, "refresh_settings", None)
             if callable(refresh):
                 refresh()
             settings_error = getattr(self.controller, "settings_error", None)
             if settings_error is not None:
                 raise TaskError(settings_error.code, str(settings_error))
+            stage = "profile_initialization"
             initialized = await self.controller.initialize_profile()
             if initialized.failure is not None:
                 if initialized.failure.code != "host_must_stop":
@@ -570,8 +613,11 @@ class SetupWebAPI:
                 "prepared": True, "status": self._status_document()}))
         except TaskError as error:
             return self._error(error.code, str(error))
-        except (ValueError, TypeError, KeyError, OSError, UnicodeError):
-            return self._error("setup_model_invalid", "choose a loaded AstrBot text provider and retry")
+        except Exception as error:
+            logger.warning("[CompanionV2] Initial model setup failed stage=%s error_type=%s",
+                           stage, type(error).__name__)
+            return self._error("setup_model_apply_failed",
+                               "the selected provider was accepted, but setup could not save or initialize it")
 
     async def reconnect_host(self):
         try:
@@ -761,6 +807,11 @@ class SetupWebAPI:
                 # 窗口目标没变时，角色漂移只修绑定、不阻断测试。
                 if not self._repair_parked_binding(target, context):
                     logger.warning("[CompanionV2] 管理员私聊窗口角色与绑定不一致，按当前窗口继续 code=host_persona_binding_changed")
+            else:
+                # The role can still match while the persona was renamed
+                # upstream; rewrite the parked persona key once target
+                # resolution has accepted the unique live mapping.
+                self._repair_parked_binding(target, context)
             return session, context, instruction, target
         else:
             context = session.profile.target
@@ -945,6 +996,13 @@ class SetupWebAPI:
                 attempt_id = uuid4().hex
                 try:
                     self.progress.begin_proactive_test(attempt_id=attempt_id, started_at=started)
+                except SetupStepsIncomplete as error:
+                    # "The guide is not finished" and "this attempt already ran and
+                    # cannot be replayed" have nothing in common. Collapsing both
+                    # into setup_test_non_replayable told the operator to hunt a
+                    # replay problem while proactive_test was still null, i.e. while
+                    # no attempt had ever existed.
+                    raise TaskError("setup_steps_incomplete", str(error)) from error
                 except ValueError as error:
                     raise TaskError("setup_test_non_replayable", str(error)) from error
                 self._test_task = asyncio.create_task(self._execute_proactive_test(username, attempt_id),

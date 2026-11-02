@@ -80,3 +80,123 @@ test("规则库导出与 V1 分享包预览/导入使用已选择角色路由", 
   context.window.CompanionExpressionSignalsPage.unmount();
   assert.equal(listeners.size,0);
 });
+
+test("多来源部分读取失败时保留失败来源与错误码", async () => {
+  const bridge = {
+    apiGet: async route => {
+      if (route === "targets/profile-b/roles/role-b/reply/style") {
+        /* 真实宿主桥的形态：status=error 只抛 message，code 已经丢失。 */
+        throw new Error("expression_group_context_required");
+      }
+      if (route === "targets/profile-c/roles/role-c/reply/style") {
+        throw Object.assign(new Error("future_source_failure"), {code: "future_source_failure"});
+      }
+      return {status: "ok", data: {items: [{signal_id: "signal-a", run_id: "run-a", dimension: "diction",
+        source_kind: "conversation_input", observation: "来源甲可读", proposal: "继续使用", state: "adopted",
+        created_at: "2026-10-08T10:00:00+00:00", actions: ["retire"], injections: 1, can_revise: true,
+        expression: {kind: "style", situation: "日常", pattern: "来源甲规则", avoid: ""},
+        evidence: [], view_token: "token"}], capacity: {active: 1, limit: 50}, counts: {adopted: 1}}};
+    },
+    apiPost: async () => ({status: "ok", data: {}}),
+  };
+  const root = {isConnected: true, innerHTML: "", addEventListener() {}, removeEventListener() {},
+    querySelector: () => null};
+  const window = {CompanionProduct: {bridgeNow: () => bridge, unwrap: value => value},
+    lucide: {createIcons() {}}};
+  const context = vm.createContext({window, setTimeout, clearTimeout, TextEncoder, JSON, Date, Math,
+    Number, Object, Array, String, URLSearchParams});
+  vm.runInContext(source, context);
+  const page = context.window.CompanionExpressionSignalsPage;
+  await page.mount(root, {sources: [
+    {key: "source-a", scopeKey: "scope-a", label: "来源甲",
+      replyApi: `/${HOST}/targets/profile-a/roles/role-a/reply`},
+    {key: "source-b", scopeKey: "scope-b", label: "来源乙",
+      replyApi: `/${HOST}/targets/profile-b/roles/role-b/reply`},
+    {key: "source-c", scopeKey: "scope-c", label: "来源丙",
+      replyApi: `/${HOST}/targets/profile-c/roles/role-c/reply`},
+  ]});
+  for (let index = 0; index < 40 && page.state.busy; index++) await flush();
+  assert.equal(page.state.notice, "3 个来源中 2 个读取失败，已显示可用记录。");
+  assert.match(root.innerHTML, /来源甲规则/);
+  assert.match(root.innerHTML, /3 个来源中 2 个读取失败/);
+  assert.match(root.innerHTML, /来源乙/);
+  assert.match(root.innerHTML, /该群还没有可用于表达学习的对话/);
+  assert.match(root.innerHTML, /来源丙/);
+  assert.match(root.innerHTML, /原始依据已不可读取/);
+  assert.match(root.innerHTML, /role="status"/);
+  assert.match(root.innerHTML, /data-code="expression_group_context_required"/);
+  assert.match(root.innerHTML, /data-code="future_source_failure"/);
+  assert.doesNotMatch(root.innerHTML, /部分规则暂时无法读取，已显示可用记录。/);
+  page.unmount();
+});
+
+test("空页的 unavailable_reason 作为中性说明而不是读取失败", async () => {
+  const bridge = {
+    apiGet: async route => route === "targets/profile-b/roles/role-b/reply/style"
+      ? {status: "ok", data: {items: [], counts: {}, next_cursor: null,
+        unavailable_reason: "role_binding_missing"}}
+      : {status: "ok", data: {items: [{signal_id: "signal-a", run_id: "run-a", dimension: "diction",
+        source_kind: "conversation_input", observation: "私聊规则可读", proposal: "继续使用", state: "adopted",
+        created_at: "2026-10-08T10:00:00+00:00", actions: ["retire"], injections: 0, can_revise: true,
+        expression: {kind: "style", situation: "日常", pattern: "私聊规则", avoid: ""},
+        evidence: [], view_token: "token"}], capacity: {active: 1, limit: 50}, counts: {adopted: 1}}},
+    apiPost: async () => ({status: "ok", data: {}}),
+  };
+  const root = {isConnected: true, innerHTML: "", addEventListener() {}, removeEventListener() {},
+    querySelector: () => null};
+  const window = {CompanionProduct: {bridgeNow: () => bridge, unwrap: value => value},
+    lucide: {createIcons() {}}};
+  const context = vm.createContext({window, setTimeout, clearTimeout, TextEncoder, JSON, Date, Math,
+    Number, Object, Array, String, URLSearchParams});
+  vm.runInContext(source, context);
+  const page = context.window.CompanionExpressionSignalsPage;
+  await page.mount(root, {sources: [
+    {key: "source-a", scopeKey: "scope-a", label: "私聊来源",
+      replyApi: `/${HOST}/targets/profile-a/roles/role-a/reply`},
+    {key: "source-b", scopeKey: "scope-b", label: "群聊来源",
+      replyApi: `/${HOST}/targets/profile-b/roles/role-b/reply`},
+  ]});
+  for (let index = 0; index < 40 && page.state.busy; index++) await flush();
+  assert.equal(page.state.notice, "1 个来源还没有可读取的表达学习记录，已显示其他来源。");
+  assert.match(root.innerHTML, /私聊规则/);
+  assert.match(root.innerHTML, /群聊来源/);
+  assert.match(root.innerHTML, /这个来源还没有绑定角色/);
+  assert.match(root.innerHTML, /data-code="role_binding_missing"/);
+  assert.doesNotMatch(root.innerHTML, /lh-inline-status is-error/);
+  page.unmount();
+});
+
+test("旧作用域规则只作为可展开诊断，不冒充读取失败", async () => {
+  const bridge = {
+    apiGet: async route => route === "targets/profile-b/roles/role-b/reply/style"
+      ? {status: "ok", data: {items: [], counts: {}, next_cursor: null, legacy_orphan_count: 4}}
+      : {status: "ok", data: {items: [{signal_id: "signal-a", run_id: "run-a", dimension: "diction",
+        source_kind: "conversation_input", observation: "私聊规则可读", proposal: "继续使用", state: "adopted",
+        created_at: "2026-10-08T10:00:00+00:00", actions: ["retire"], injections: 0, can_revise: true,
+        expression: {kind: "style", situation: "日常", pattern: "私聊规则", avoid: ""},
+        evidence: [], view_token: "token"}], capacity: {active: 1, limit: 50}, counts: {adopted: 1},
+        legacy_orphan_count: 0}},
+    apiPost: async () => ({status: "ok", data: {}}),
+  };
+  const root = {isConnected: true, innerHTML: "", addEventListener() {}, removeEventListener() {},
+    querySelector: () => null};
+  const window = {CompanionProduct: {bridgeNow: () => bridge, unwrap: value => value},
+    lucide: {createIcons() {}}};
+  const context = vm.createContext({window, setTimeout, clearTimeout, TextEncoder, JSON, Date, Math,
+    Number, Object, Array, String, URLSearchParams});
+  vm.runInContext(source, context);
+  const page = context.window.CompanionExpressionSignalsPage;
+  await page.mount(root, {sources: [
+    {key: "source-a", scopeKey: "scope-a", label: "私聊来源",
+      replyApi: `/${HOST}/targets/profile-a/roles/role-a/reply`},
+    {key: "source-b", scopeKey: "scope-b", label: "群聊来源",
+      replyApi: `/${HOST}/targets/profile-b/roles/role-b/reply`},
+  ]});
+  for (let index = 0; index < 40 && page.state.busy; index++) await flush();
+  assert.equal(page.state.notice, "4 条旧版群规则保存在旧作用域，暂未生效。");
+  assert.match(root.innerHTML, /群聊来源/);
+  assert.match(root.innerHTML, /4 条旧版群规则保存在旧作用域，暂未生效；需要单独迁移后才能读取和生效。/);
+  assert.match(root.innerHTML, /data-code="legacy_expression_scope"/);
+  assert.doesNotMatch(root.innerHTML, /lh-inline-status is-error/);
+  page.unmount();
+});

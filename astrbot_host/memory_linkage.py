@@ -4,7 +4,10 @@ from collections.abc import Mapping
 from typing import Any
 
 from companion_v2.adapters.astrbot.memory_owner import read_memory_owner
+from companion_v2.adapters.astrbot.memory_providers import memory_provider_registry
 from companion_v2.foundation.refs import ScopeKind
+
+from .external_memory import memory_read_request
 
 
 V2_PLUGIN_ID = "astrbot_plugin_private_companion"
@@ -47,7 +50,26 @@ async def read_external_memory_summary(controller, context) -> dict[str, Any]:
     database, generic search, or unscoped memory APIs.
     """
 
-    owner = read_memory_owner(getattr(controller, "context", None))
+    native_context = getattr(controller, "context", None)
+    providers = memory_provider_registry(native_context)
+    entry = providers.select("summary") if providers is not None else None
+    if entry is not None:
+        if context.scope.kind is not ScopeKind.PRIVATE:
+            return _unavailable("unsupported_scope", entry.provider_id, entry.display_name, "private_target_required")
+        try:
+            request = memory_read_request(context, purpose="summary", max_chars=0)
+            raw = await providers.invoke(entry, "summary", request)
+            if (not isinstance(raw, Mapping) or not isinstance(raw.get("counts"), Mapping)
+                    or raw.get("state", "ready") != "ready" or raw.get("ok", True) is not True):
+                raise ValueError("memory summary requires counts")
+            counts = {key: _count(raw["counts"].get(key)) for key in (*SUMMARY_CATEGORIES, "total")}
+        except Exception:
+            return _unavailable("unavailable", entry.provider_id, entry.display_name, "summary_read_failed")
+        return {"state": "ready", "provider": entry.provider_id, "display_name": entry.display_name,
+                "reason": "", "counts": counts,
+                "categories": [{"key": key, "count": counts[key]} for key in SUMMARY_CATEGORIES]}
+
+    owner = read_memory_owner(native_context)
     provider = owner.ownership.provider or ""
     display_name = owner.ownership.display_name or "记忆插件"
     if not owner.ownership.delegated or owner.handle is None:
@@ -61,8 +83,8 @@ async def read_external_memory_summary(controller, context) -> dict[str, Any]:
     if producer is None:
         return _unavailable("unavailable", provider, display_name, "v2_registration_unavailable")
     try:
-        register = getattr(owner.handle, "register_private_companion_memory_summary_reader", None)
-        create_context = getattr(owner.handle, "create_private_companion_memory_summary_context", None)
+        register = getattr(owner.handle, "register_private_companion", None)
+        create_context = getattr(owner.handle, "create_user_memory_context", None)
         read_summary = getattr(owner.handle, "read_user_memory_summary", None)
         if not all(callable(method) for method in (register, create_context, read_summary)):
             return _unavailable("unavailable", provider, display_name, "summary_contract_unavailable")
@@ -86,7 +108,8 @@ async def read_external_memory_summary(controller, context) -> dict[str, Any]:
         error = str(raw.get("error_code") or "summary_not_ready")
         allowed = {"bridge_disabled", "bridge_exception", "bridge_method_unavailable", "bridge_unavailable",
                    "invalid_store_response", "invalid_bridge_response", "missing_user_id", "store_query_failed",
-                   "store_unavailable", "session_identity_mismatch"}
+                   "store_unavailable", "session_identity_mismatch", "requester_context_required",
+                   "requester_identity_mismatch"}
         return _unavailable("unavailable", provider, display_name, error if error in allowed else "summary_not_ready")
     raw_counts = raw.get("counts") if isinstance(raw.get("counts"), Mapping) else {}
     counts = {key: _count(raw_counts.get(key)) for key in (*SUMMARY_CATEGORIES, "total")}

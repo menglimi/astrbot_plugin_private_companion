@@ -803,6 +803,26 @@ class CapabilityRepository:
                 result.append(projection.unwrap())
             return Outcome.success(tuple(result))
 
+    def role_selection(self, *, extension_id: str, role: SubjectRef, bot_id: str | None = None) -> Outcome[CapabilityRoleSelection]:
+        """Read one role selection without requiring an installed package."""
+
+        if role.kind is not SubjectKind.BOT:
+            raise ReferenceValidationError("role must be a bot subject")
+        if role.installation_id != self._runtime.installation_id:
+            raise ReferenceValidationError("role belongs to another installation")
+        if bot_id is not None:
+            _opaque(bot_id, field="bot_id")
+        row = self._runtime.read_one(
+            """
+            SELECT * FROM capability_role_selections
+            WHERE extension_id = ? AND role_kind = ? AND role_id = ? AND bot_id = ?
+            """,
+            (extension_id, role.kind.value, role.subject_id, bot_id or ""),
+        )
+        if row is None:
+            return Outcome.failed("capability_role_not_enabled", "the capability has no selection for this role")
+        return Outcome.success(_role_from_row(row, installation_id=self._runtime.installation_id))
+
     def require_role_enabled(self, *, extension_id: str, role: SubjectRef, bot_id: str | None = None) -> Outcome[CapabilityRoleSelection]:
         with self._runtime.read_snapshot():
             return self._require_role_enabled(extension_id=extension_id, role=role, bot_id=bot_id)

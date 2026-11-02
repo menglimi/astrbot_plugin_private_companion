@@ -86,7 +86,7 @@ class GroupParticipationHintTests(unittest.TestCase):
         self.assertNotIn("图片中与你明确兴趣", self.hints(settings=settings))
         hint = self.hints(settings=settings, images=(object(),))
         self.assertIn("图片中与你明确兴趣", hint)
-        self.assertIn("参考权重 35%", hint)
+        self.assertIn("图片候选抽取概率 35%", hint)
         self.assertIn("不要求接话", hint)
         self.assertIn('["星星", "小星"]', hint)
         self.assertIn('["小星同学"]', hint)

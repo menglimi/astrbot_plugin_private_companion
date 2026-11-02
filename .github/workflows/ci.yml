@@ -14,8 +14,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
+      # On pull_request, checkout gives the merge commit GitHub built, and git show
+      # prints no diff for a merge commit by default -- this step would have nothing
+      # to check. Compare against its first parent (the base branch) instead: that
+      # range is exactly the lines the PR adds. The push event keeps the original
+      # command and still checks only the pushed commit.
       - name: Check patch whitespace
-        run: git show --check --oneline HEAD
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git show --check --oneline -m --first-parent HEAD
+          else
+            git show --check --oneline HEAD
+          fi
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -23,12 +33,16 @@ jobs:
         with:
           node-version: '22'
       - name: Install contract test dependencies
-        run: python -m pip install PyYAML regex Pillow httpx
+        run: python -m pip install PyYAML regex Pillow httpx aiohttp 'cryptography>=42'
       - name: Check generated page and migration contracts
         run: |
           python -X utf8 tools/sync_framework_page.py --check
-          python -X utf8 -m unittest -q tests.test_release_secret_detection tests.test_native_release_version_guard tests.test_configuration_migration
+          python -X utf8 -m unittest -q tests.test_release_secret_detection tests.test_native_release_version_guard tests.test_configuration_migration tests.test_reply_pipeline_regressions tests.test_image_configuration_migration tests.test_image_output_migration_guard tests.test_r1_image_protocol tests.test_r1_image_round1fix tests.test_proactive_diagnostic_routes tests.test_proactive_weather_change_events
           node --test tests/test_page_route.cjs tests/test_models_page.cjs tests/test_qzone_config_mount.cjs
+      - name: Check weather provider contracts
+        run: python -X utf8 -m unittest -q tests.test_qweather_weather_source tests.test_qweather_alert_source tests.test_weather_migration
+      - name: Check native provider adapter contract
+        run: python -X utf8 -m unittest -q tests.test_astrbot_gemini_provider
       - name: Build current plugin source
         run: python -X utf8 tools/build_v2_release.py --output "$RUNNER_TEMP/companion-release"
       - name: Verify assembled archive

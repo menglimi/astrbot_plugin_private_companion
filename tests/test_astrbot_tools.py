@@ -40,17 +40,31 @@ class AstrBotToolMappingTests(ExternalFixture, unittest.IsolatedAsyncioTestCase)
         self.assertEqual(invocation.arguments_json, encode({"query": "status"}))
         self.assertEqual(len(self.port.called), 1)
 
-    async def test_unload_and_rebind_invalidate_original_material(self):
+    async def test_unload_invalidates_original_material(self):
         self.model_uses()
         batch = await self.generate()
-        original = self.port.current.pop("astrbot:device.read")
+        self.port.current.pop("astrbot:device.read")
         self.assertNotIn("device.read", {s.action for s in self.tools.catalog_for(self.context)})
         self.assertEqual(self.delivery.queue_next(self.context, batch, deadline_at=self.deadline).failure.code,
                          "external_provider_changed")
-        self.port.current[original.host_tool_id] = replace(original, descriptor=replace(original.descriptor,
-            binding=replace(original.descriptor.binding, generation="host-reloaded")))
-        self.assertEqual(self.extension.catalog_for(self.context), (self.descriptors[1].tool,))
         self.assertEqual(len(self.port.called), 1)
+
+    async def test_rebind_remaps_to_the_current_host_binding(self):
+        self.model_uses()
+        batch = await self.generate()
+        original = self.port.current["astrbot:device.read"]
+        self.port.current[original.host_tool_id] = replace(original, descriptor=replace(
+            original.descriptor, binding=replace(original.descriptor.binding, version="2",
+                                                 generation="host-reloaded")))
+        with self.assertLogs("companion_v2.conversation.external_tools", level="WARNING") as logs:
+            self.assertIn("device.read", {s.action for s in self.extension.catalog_for(self.context)})
+        self.assertEqual(len(logs.records), 1)
+        await self.deliver_next(batch)
+        self.assertEqual(len(self.port.called), 1)
+        self.model_uses()
+        await self.generate(self.event("input-2"))
+        self.assertEqual(self.port.called[-1][1].descriptor.binding.version, "2")
+        self.assertEqual(self.port.called[-1][1].descriptor.binding.generation, "host-reloaded")
 
     async def test_duplicate_host_id_or_action_is_rejected(self):
         declaration = self.port.items[0]

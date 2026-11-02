@@ -5,6 +5,7 @@ from companion_v2.adapters.astrbot.provider_catalog import TextProviderSettings
 from companion_v2.execution.models import encode
 from companion_v2.execution.models import TaskError
 from companion_v2.foundation.refs import ScopeKind
+from companion_v2.model_gateway.models import MAX_MODEL_OUTPUT_TOKENS
 from companion_v2.model_gateway.replacement_rules import checked_rules
 
 
@@ -57,7 +58,10 @@ def parse_routing(model):
             tariff=UsageTariff(raw.get("input_microusd_per_million", 0),
                               raw.get("cached_input_microusd_per_million", 0),
                               raw.get("output_microusd_per_million", 0)),
-            maximum_output_tokens=raw.get("max_output_tokens", model.get("max_output_tokens", 2048)),
+            # An undeclared provider carries the product ceiling: the global
+            # ``model.max_output_tokens`` is the task default budget, so copying it
+            # here would cap every task at the default and blame the provider.
+            maximum_output_tokens=raw.get("max_output_tokens", MAX_MODEL_OUTPUT_TOKENS),
             maximum_input_estimate=raw.get("maximum_input_estimate", model.get("maximum_input_estimate", 131072)),
             output_parameter=raw.get("output_parameter", model.get("output_parameter", "max_tokens")),
             streaming=raw.get("streaming", model.get("streaming", False)))

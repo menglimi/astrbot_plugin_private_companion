@@ -61,6 +61,26 @@ class ModelManagementTests(HostFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recent["held_tokens"], call["reserved_tokens"])
         self.assertEqual(recent["usage_state"], "awaiting_receipt")
 
+    async def test_released_reservation_leaves_pending_usage_and_is_reported(self):
+        call = self.app.runtime.read_one("SELECT * FROM model_calls LIMIT 1", ())
+        with self.app.runtime.transaction() as connection:
+            connection.execute("UPDATE execution_tasks SET kind = 'calendar.plan' WHERE task_id = ?",
+                               (call["task_id"],))
+            connection.execute("""UPDATE model_calls SET state = 'unknown', actual_tokens = NULL,
+                actual_cost = NULL, receipt_ref = NULL WHERE call_id = ?""", (call["call_id"],))
+        released = self.app.gateway.ledger.release(call["call_id"], observed_at=self.app.now())
+        self.assertEqual(released.tokens, call["reserved_tokens"])
+
+        report = self.manager.maintenance(self.core).unwrap()
+        budget = report["budget"]
+        self.assertEqual((budget["pending_usage_calls"], budget["pending_usage_tokens"]), (0, 0))
+        self.assertEqual((budget["released_calls"], budget["released_tokens"]), (1, call["reserved_tokens"]))
+        self.assertEqual(budget["held_tokens"], 0)
+        recent = next(item for item in report["usage_sources"]["plugin"]["recent"]
+                      if item["usage_state"] == "released")
+        self.assertEqual((recent["held_tokens"], recent["reserved_tokens"]),
+                         (0, call["reserved_tokens"]))
+
     async def test_disabled_hard_budget_is_reported_without_a_fictitious_remaining_quota(self):
         ledger = self.app.gateway.ledger
         ledger.policy = replace(ledger.policy, enabled=False)
@@ -635,3 +655,16 @@ class ModelManagementTests(HostFixture, unittest.IsolatedAsyncioTestCase):
             "露骨性行为", "没办法提交这个请求", "这个请求没办法提交",
             "The prompt could not be submitted", "request could not be submitted")))
         self.assertFalse(field["explicit"])
+
+    async def test_output_limit_refusal_names_the_field_the_provider_and_its_ceiling(self):
+        # 拒绝只来自 Provider 的显式上限，报文必须能看出是哪一档上限；被拒的配置值
+        # 本身不进报文。
+        before = self.manager.status(self.core, layer="window").unwrap()
+        refused = self.manager.configure(self.core, self.request(before, changes={
+            "max_output_tokens": 101}, key="above-provider-ceiling"))
+
+        self.assertEqual(refused.failure.code, "model_output_limit")
+        self.assertIn("max_output_tokens", refused.failure.reason)
+        self.assertIn("primary", refused.failure.reason)
+        self.assertIn("100", refused.failure.reason)
+        self.assertNotIn("101", refused.failure.reason)

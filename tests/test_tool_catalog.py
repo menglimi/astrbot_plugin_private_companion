@@ -1,6 +1,7 @@
 """Installation registries and per-conversation model budgets are independent."""
 
 from dataclasses import replace
+import json
 from types import SimpleNamespace
 import unittest
 
@@ -63,6 +64,16 @@ class ToolCatalogTests(MessageFixture):
         self.assertEqual(self.runtime.read_all("SELECT * FROM conversation_tool_calls", ()), ())
         external.allowed = ()
         self.assertEqual(len(registry.catalog_for(self.context)), base_count)
+
+    def test_reminder_create_declares_its_schedule_shape(self):
+        spec = specification("reminder.create", *TOOL_FIELDS["reminder.create"])
+        schema = json.loads(spec.parameters_json)
+        schedule = schema["properties"]["schedule"]
+        self.assertEqual(schedule["type"], "object")
+        self.assertEqual(schedule["required"], ["anchor", "timezone_name"])
+        self.assertEqual(schedule["properties"]["anchor"]["format"], "date-time")
+        self.assertIn({"required": ["schedule", "message"]}, schema["anyOf"])
+        self.assertEqual(schema["properties"]["message"]["minLength"], 1)
 
     def test_agenda_catalog_rechecks_current_feature_authority(self):
         registry, _ = self.tool_registry()
