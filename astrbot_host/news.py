@@ -588,10 +588,12 @@ class AstrBotWebSearchNewsPort:
 
 
 def configured_search_port(context, *, query, result_count=8, search_url="", auth=None, task_context=None,
-                           topic="news", deepseek_provider_id=None, deepseek_provider_resolver=None):
-    """Resolve V2 search through an explicit endpoint, DeepSeek, then AstrBot's V1 search provider."""
+                           topic="news", deepseek_provider_id=None, deepseek_provider_resolver=None,
+                           source_priority="auto"):
+    """Resolve V2 search through an explicit endpoint, the preferred source, then the other one."""
     auth = auth or {}
     umo = _task_umo(task_context)
+    priority = source_priority if source_priority in {"auto", "astrbot", "deepseek"} else "auto"
     if deepseek_provider_id is None and callable(deepseek_provider_resolver):
         try:
             deepseek_provider_id = deepseek_provider_resolver()
@@ -612,14 +614,30 @@ def configured_search_port(context, *, query, result_count=8, search_url="", aut
             return DeepSeekSearchNewsPort(api_key=api_key, query=query, result_count=result_count,
                                           search_url=configured_url)
         return WebSearchNewsPort(url=configured_url, query=query, result_count=result_count, **auth)
-    api_key = deepseek_api_key(context, umo, provider_id=deepseek_provider_id or None)
-    if api_key:
-        return DeepSeekSearchNewsPort(api_key=api_key, query=query, result_count=result_count)
-    if deepseek_provider_id:
+    if deepseek_provider_id == "invalid-search-provider-selection":
+        # 选择项本身读不出来：不猜、不静默换到别的 Provider。
         return None
-    if astrbot_web_search_available(context, umo):
-        return AstrBotWebSearchNewsPort(context=context, query=query, result_count=result_count, umo=umo, topic=topic)
-    return None
+
+    def astrbot_port():
+        if astrbot_web_search_available(context, umo):
+            return AstrBotWebSearchNewsPort(context=context, query=query, result_count=result_count,
+                                            umo=umo, topic=topic)
+        return None
+
+    def provider_port(provider_id):
+        api_key = deepseek_api_key(context, umo, provider_id=provider_id or None)
+        if api_key:
+            return DeepSeekSearchNewsPort(api_key=api_key, query=query, result_count=result_count)
+        return None
+
+    # 显式选了 Provider 时它仍是“首选”；优先级只决定“首选不可用时先试谁”。
+    if priority == "astrbot":
+        return astrbot_port() or provider_port(deepseek_provider_id)
+    if priority == "deepseek":
+        return provider_port(deepseek_provider_id) or astrbot_port()
+    if deepseek_provider_id:
+        return provider_port(deepseek_provider_id) or astrbot_port()
+    return astrbot_port() or provider_port("")
 
 
 class HotTrendNewsPort:
@@ -684,13 +702,14 @@ class NewsSourceRouter:
 
     def __init__(self, default_source, *, auth, default_source_auth=True, bilibili_cookie="", search_url="",
                  hot_sources=("weibo", "hackernews"), hot_result_count=10, host_context=None,
-                 deepseek_provider_resolver=None):
+                 deepseek_provider_resolver=None, search_priority_resolver=None):
         self.default_source, self.auth, self.bilibili_cookie = default_source, auth, bilibili_cookie
         self.default_source_auth = default_source_auth
         self.search_url, self.hot_sources = search_url, tuple(hot_sources)
         self.hot_result_count = max(3, min(30, int(hot_result_count)))
         self.host_context = host_context
         self.deepseek_provider_resolver = deepseek_provider_resolver
+        self.search_priority_resolver = search_priority_resolver
 
     def for_settings(self, values, task_context=None):
         source = NewsSource.read(values)
@@ -705,7 +724,9 @@ class NewsSourceRouter:
             return configured_search_port(self.host_context, query=query,
                 result_count=values.get("web_exploration_result_count", 8), search_url=self.search_url,
                 auth=self.auth, task_context=task_context, topic="news",
-                deepseek_provider_resolver=self.deepseek_provider_resolver)
+                deepseek_provider_resolver=self.deepseek_provider_resolver,
+                source_priority=(self.search_priority_resolver() if callable(self.search_priority_resolver)
+                                 else "auto"))
         if source.kind == "hot":
             configured = values.get("news_hot_sources", "")
             selected = tuple(item.strip().lower() for item in configured.split(",") if item.strip()) or self.hot_sources
@@ -718,7 +739,8 @@ class NewsSourceRouter:
         return NewsJsonPort(url=source.url, **auth)
 
 
-def configured_news_port(config=None, *, context=None, deepseek_provider_resolver=None):
+def configured_news_port(config=None, *, context=None, deepseek_provider_resolver=None,
+                         search_priority_resolver=None):
     names = ("URL", "API_KEY", "AUTH_HEADER", "AUTH_SCHEME", "BILIBILI_COOKIE", "SEARCH_URL")
     values = {name: os.environ.get("COMPANION_V2_NEWS_" + name, "") for name in names}
     auth = {"api_key": values["API_KEY"], "auth_header": values["AUTH_HEADER"] or "Authorization",
@@ -756,6 +778,7 @@ def configured_news_port(config=None, *, context=None, deepseek_provider_resolve
                               search_url=settings.get("search_url") or values["SEARCH_URL"],
                               hot_sources=tuple(item.strip().lower() for item in hot_sources.split(",")),
                               hot_result_count=settings.get("hot_result_count", 10), host_context=context,
-                              deepseek_provider_resolver=deepseek_provider_resolver)
+                              deepseek_provider_resolver=deepseek_provider_resolver,
+                              search_priority_resolver=search_priority_resolver)
     router.for_settings({})
     return router
