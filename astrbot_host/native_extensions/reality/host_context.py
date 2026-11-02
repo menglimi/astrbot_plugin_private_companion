@@ -123,9 +123,21 @@ class RealityHostContext:
         runtime = original[3]
         host = self.controller.context
         origin = self.origin(original[2])
-        if provider_id:
+        provider = None
+        if not provider_id:
+            resolver = getattr(getattr(self.controller, "integration", None), "task_model_route", None)
+            route = resolver(user_id, "reality.text") if callable(resolver) else {}
+            for key in ("provider", "fallback"):
+                candidate_id = str((route or {}).get(key) or "").strip()
+                if not candidate_id:
+                    continue
+                candidate = host.get_provider_by_id(candidate_id)
+                if candidate is not None and callable(getattr(candidate, "text_chat", None)):
+                    provider, provider_id = candidate, candidate_id
+                    break
+        if provider_id and provider is None:
             provider = host.get_provider_by_id(provider_id)
-        else:
+        if provider is None:
             identifier = await host.get_current_chat_provider_id(origin)
             self.recheck(original, user_id, umo=umo)
             provider = host.get_provider_by_id(identifier)

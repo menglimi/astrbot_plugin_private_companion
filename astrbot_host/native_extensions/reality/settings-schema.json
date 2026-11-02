@@ -11,12 +11,6 @@
     "hint": "在 V2 当前私聊窗口中额外允许发起现实设备授权的用户；音频和摄像头仍需本人分别确认。V2 核心管理员可直接发起确认。",
     "default": []
   },
-  "vision_provider_id": {
-    "description": "摄像头视觉模型",
-    "type": "string",
-    "hint": "选择支持图片输入的 Provider ID。留空时只返回本地亮度和分辨率，不进行场景理解。",
-    "default": ""
-  },
   "audio": {
     "description": "本机音频",
     "type": "object",
