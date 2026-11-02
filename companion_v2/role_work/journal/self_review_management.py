@@ -17,6 +17,16 @@ from companion_v2.execution.service import outcome
 from ..growth.management import RoleGrowthManagement
 
 
+# A page cursor names the ``(created_at, item_id)`` of the last row of the page.
+# A bare item id is the cursor older builds emitted when this list was ordered and
+# paged by the hashed item id; that order cannot be resumed under the time order.
+CURSOR_SEPARATOR = "|"
+
+
+def cursor_text(row) -> str:
+    return row["created_at"] + CURSOR_SEPARATOR + row["item_id"]
+
+
 class SelfReviewManagement:
     def __init__(self, app):
         self.app = app
@@ -81,6 +91,28 @@ class SelfReviewManagement:
             raise TaskError("self_review_evidence_changed", error.reason) from None
         return run, handles, descriptions
 
+    def _cursor(self, value):
+        """Decode a page cursor into the ``(created_at, item_id)`` bound it names.
+
+        A bare item id was emitted by builds that paged this bucket by the hashed
+        item id in ascending order.  Resuming it under the time order cannot be
+        both complete and duplicate free (rows sharing one ``created_at`` would be
+        replayed or skipped), so it is rejected and the page simply re-reads from
+        the first page.
+        """
+        if value is None:
+            return None
+        created_at, separator, item_id = value.partition(CURSOR_SEPARATOR)
+        if not separator:
+            raise TaskError("self_review_query_invalid", "invalid self-review cursor")
+        try:
+            named = datetime.fromisoformat(created_at)
+        except ValueError:
+            raise TaskError("self_review_query_invalid", "invalid self-review cursor") from None
+        if named.tzinfo is None or named.utcoffset() is None or not item_id:
+            raise TaskError("self_review_query_invalid", "invalid self-review cursor")
+        return stamp(named), item_id
+
     @outcome
     def list(self, *, operator, context, state="pending", limit=20, after_id=None):
         if state not in ("pending", "active", "decided") or type(limit) is not int or not 1 <= limit <= 50 or (after_id is not None and
@@ -99,10 +131,20 @@ class SelfReviewManagement:
             state_clause, state_values = "(state = 'rejected' OR (state = 'accepted' AND expires_at <= ?))", (stamp(at),)
         with self.runtime.read_snapshot():
             owner, policy_revision = self.management._authorize(operator, context, at)
+            owner_key, scope_key = digest(owner), digest(context.scope)
+            cursor = self._cursor(after_id)
+            if cursor is None:
+                cursor_clause, cursor_values = "", ()
+            else:
+                cursor_clause = "AND (created_at < ? OR (created_at = ? AND item_id < ?))"
+                cursor_values = (cursor[0], cursor[0], cursor[1])
+            # Newest first: the dashboard reads this bucket one page at a time, so a
+            # page must be the newest rows rather than an arbitrary hash-ordered
+            # subset of it.  The item id only breaks ties inside one review run.
             rows = self.runtime.read_all(f"""SELECT * FROM role_self_review_items
                 WHERE owner_key = ? AND scope_key = ? AND {state_clause}
-                  AND (? IS NULL OR item_id > ?) ORDER BY item_id LIMIT ?""",
-                (digest(owner), digest(context.scope), *state_values, after_id, after_id, limit + 1))
+                  {cursor_clause} ORDER BY created_at DESC, item_id DESC LIMIT ?""",
+                (owner_key, scope_key, *state_values, *cursor_values, limit + 1))
             items, expired = [], 0
             for row in rows[:limit]:
                 unavailable, expires_at, run_summary, evidence = None, row["expires_at"], None, []
@@ -137,7 +179,7 @@ class SelfReviewManagement:
                 "minimum_evidence": getattr(reviewer, "minimum_evidence", 1),
             }
             return {"items": items, "expired_in_page": expired, "policy": policy,
-                "next_cursor": rows[limit - 1]["item_id"] if len(rows) > limit else None,
+                "next_cursor": cursor_text(rows[limit - 1]) if len(rows) > limit else None,
                 "context_key": context.key, "role_id": owner.persona_id}
 
     @outcome
