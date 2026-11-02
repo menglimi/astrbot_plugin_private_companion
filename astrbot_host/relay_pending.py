@@ -15,6 +15,8 @@ from uuid import uuid4
 
 KEY = "conversation.relay.pending.v1"
 MAX_TASKS = 200
+LIVE_STATES = frozenset({"waiting", "sending", "waiting_reply", "reporting", "waiting_permission"})
+REPORTABLE_KINDS = frozenset({"group_wait", "private_receipt"})
 
 
 def _read(runtime):
@@ -45,6 +47,20 @@ def _prune(data, now):
             continue
         expires_at = task.get("expires_at")
         if isinstance(expires_at, (int, float)) and expires_at <= now:
+            # 还没结论的待办不直接丢：标记成 expired，等下一次同群事件
+            # 把“没等到人、已撤回”回报给发起窗口；其余（已发/已失败）照旧清理。
+            if (task.get("state") in LIVE_STATES
+                    and task.get("kind") in REPORTABLE_KINDS
+                    and not task.get("expired_notice_sent")):
+                task["state"] = "expired"
+                task["expired_at"] = now
+            elif task.get("state") != "expired":
+                del tasks[task_id]
+                continue
+        # 过期通知最多保留一天：同群一直没新消息时不至于长期占着队列。
+        expired_at = task.get("expired_at")
+        if (task.get("state") == "expired" and isinstance(expired_at, (int, float))
+                and now - expired_at > 24 * 60 * 60):
             del tasks[task_id]
     if len(tasks) > MAX_TASKS:
         ordered = sorted(tasks.items(), key=lambda item: item[1].get("created_at", 0))
@@ -109,6 +125,29 @@ def claim_private_receipts(runtime, target_user_id, now=None, *, permission=Fals
     return claimed
 
 
+def claim_expired(runtime, group_id=None, now=None):
+    """Take expired tasks once so their origin window can be told the relay was dropped.
+
+    Expiry is recorded by ``_prune``; the task is removed here because the notice is
+    best-effort and must not be repeated on every later group message.
+    """
+    now = time() if now is None else now
+    claimed = []
+    with runtime.transaction() as connection:
+        data = _read(runtime)
+        _prune(data, now)
+        for task_id, task in list(data["tasks"].items()):
+            if task.get("state") != "expired":
+                continue
+            if group_id is not None and (
+                    task.get("kind") != "group_wait" or task.get("group_id") != group_id):
+                continue
+            claimed.append(dict(task))
+            del data["tasks"][task_id]
+        _write(connection, data)
+    return claimed
+
+
 def finish(runtime, task_id, state):
     with runtime.transaction() as connection:
         data = _read(runtime)
@@ -137,5 +176,5 @@ def requeue(runtime, task_id):
         _write(connection, data)
 
 
-__all__ = ["KEY", "add_task", "claim_group", "claim_private_receipts", "finish",
+__all__ = ["KEY", "add_task", "claim_group", "claim_private_receipts", "claim_expired", "finish",
            "mark_waiting_permission", "requeue"]
