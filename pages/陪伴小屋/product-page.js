@@ -1262,10 +1262,11 @@ window.CompanionProduct = (() => {
         mapped=relative(context.api)+suffix;
       } else {
         const name=context.kind;
-        const personaStandardize=name==="persona"&&path==="persona/standardize"&&method==="POST";
-        if(!personaStandardize&&((path!==name&&path!==name+"/command")||(method==="GET")!==(path===name)))
+        const personaModelCall=name==="persona"&&method==="POST"
+          &&["persona/standardize","persona/tryouts","persona/style-rules"].includes(path);
+        if(!personaModelCall&&((path!==name&&path!==name+"/command")||(method==="GET")!==(path===name)))
           throw fail("invalid_response");
-        mapped=relative(context.api)+(personaStandardize?"/standardize":path===name?"":"/command");
+        mapped=relative(context.api)+(personaModelCall?path.slice(name.length):path===name?"":"/command");
       }
       // Preserve original response envelopes and error reasons for each workspace.
       timeoutMs=requestTimeout({timeoutMs:message.timeoutMs});

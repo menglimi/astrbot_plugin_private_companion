@@ -28,7 +28,10 @@ apiGet:async(endpoint,body)=>{
   if(endpoint==='page/display-preferences')return {preferences:null};
   if(endpoint==='persona-designer/options')return {models:[{id:'design-model',name:'共创模型'},{id:'design-model-2',name:'备用共创模型'}],
     personas:[{id:'configured',name:'配置人设',default:true},{id:'other',name:'另一人设'}],default_persona_id:'configured'};
-  if(endpoint==='persona-designer/persona')return {id:body.id,text:'原文强调！ 原文强调！  \n\n'};
+  if(endpoint==='persona-designer/persona'){
+    if(mock.personaFail)throw Object.assign(new Error('persona_designer_persona_missing'),{code:'persona_designer_persona_missing'});
+    return {id:body.id,text:body.id==='other'?'另一人格住在海边。':'原文强调！ 原文强调！  \n\n'};
+  }
   if(endpoint==='persona-designer/drafts')return {items:(await testSaved()).map(s=>({id:s.id,title:s.title,created_at:'2026-11-01T09:00:00Z'})),next_before:null};
   if(endpoint==='persona-designer/draft')return (await testSaved()).find(s=>s.id===body.id);
   return {};
@@ -101,6 +104,104 @@ class PersonaDesignerBrowserTests(unittest.TestCase):
     def wait_reply(self):
         self.frame.locator(".chat-message.assistant").first.wait_for()
         self.frame.locator("#send-turn:not([disabled])").wait_for()
+
+    def load_persona(self, identifier):
+        self.frame.locator("#choose-persona").click()
+        self.frame.locator("#persona-select").select_option(identifier)
+        self.frame.locator("#load-persona").click()
+
+    def prepare_existing_design(self):
+        self.choose_model()
+        self.load_persona("configured")
+        self.frame.locator("#persona-dialog").wait_for(state="hidden")
+        self.frame.locator("#chat-input").fill("只属于 A 的讨论")
+        self.frame.locator("#send-turn").click()
+        self.wait_reply()
+        self.frame.locator("#confirmed").fill("只属于 A 的设定")
+        self.frame.locator("#draft-text").fill("只属于 A 的正文")
+        self.frame.locator(".lorebook-panel summary").click()
+        self.frame.locator("#lorebook").fill("只属于 A 的背景")
+        self.frame.locator("#chat-input").fill("A 尚未发送的想法")
+
+    def assert_existing_design(self):
+        self.assertEqual(self.frame.locator("#source-text").input_value(), "原文强调！ 原文强调！  \n\n")
+        for selector, value in (("#confirmed", "只属于 A 的设定"), ("#draft-text", "只属于 A 的正文"),
+                                ("#lorebook", "只属于 A 的背景"), ("#chat-input", "A 尚未发送的想法")):
+            self.assertEqual(self.frame.locator(selector).input_value(), value)
+        self.assertEqual(self.frame.locator(".chat-message").count(), 2)
+
+    def test_switch_persona_cancel_then_confirm_starts_fresh_and_saved_a_is_recoverable(self):
+        self.prepare_existing_design()
+        self.load_persona("other")
+        dialog = self.frame.locator("#switch-persona-dialog")
+        dialog.wait_for(state="visible")
+        self.assertIn("保存草稿", dialog.inner_text())
+        dialog.locator("[data-close]").click()
+        self.assert_existing_design()
+        self.assertFalse(self.page.evaluate("mock.calls.some(c=>c.endpoint==='persona-designer/persona'&&c.body.id==='other')"))
+        self.frame.locator("#save-draft").click()
+        self.frame.locator("#draft-title").fill("人格 A 初稿")
+        self.frame.locator("#confirm-save").click()
+        self.frame.locator("#notice").filter(has_text="已保存").wait_for()
+        original_snapshot = json.loads(json.dumps(self.saved))
+
+        self.load_persona("other")
+        self.frame.locator("#confirm-persona-switch").click()
+        self.frame.locator("#switch-persona-dialog").wait_for(state="hidden")
+        self.assertEqual(self.frame.locator("#source-text").input_value(), "另一人格住在海边。")
+        for selector in ("#confirmed", "#draft-text", "#lorebook", "#chat-input"):
+            self.assertEqual(self.frame.locator(selector).input_value(), "")
+        self.assertEqual(self.frame.locator(".chat-message").count(), 0)
+        self.assertEqual(self.frame.locator('[aria-current="step"]').get_attribute("data-stage"), "positioning")
+        self.assertIn("共创模型", self.frame.locator("#choose-model").inner_text())
+        self.frame.locator("#chat-input").fill("开始设计 B")
+        self.frame.locator("#send-turn").click()
+        self.wait_reply()
+        sent = self.page.evaluate("mock.calls.filter(c=>c.endpoint==='persona-designer/turn').at(-1).body.state")
+        self.assertEqual(sent["source_persona_id"], "other")
+        self.assertEqual(sent["messages"], [{"role": "user", "content": "开始设计 B"}])
+        self.assertNotIn("属于 A", json.dumps(sent, ensure_ascii=False))
+        self.assertEqual(self.saved, original_snapshot)
+        self.frame.locator("#open-drafts").click()
+        self.frame.locator(".saved-item button").click()
+        self.frame.locator("#drafts-dialog").wait_for(state="hidden")
+        self.assert_existing_design()
+        self.assertIn("configured", self.frame.locator("#source-label").inner_text())
+        self.assertFalse(self.browser_errors, self.browser_errors)
+
+    def test_failed_persona_switch_keeps_all_previous_edits(self):
+        self.prepare_existing_design()
+        self.page.evaluate("mock.personaFail=true")
+        self.load_persona("other")
+        self.frame.locator("#confirm-persona-switch").click()
+        self.frame.locator("#notice.error").wait_for(state="visible")
+        self.assert_existing_design()
+        self.assertIn("configured", self.frame.locator("#source-label").inner_text())
+        self.assertFalse(self.saved)
+
+    def test_reloading_same_persona_preserves_design(self):
+        self.prepare_existing_design()
+        self.load_persona("configured")
+        self.frame.locator("#persona-dialog").wait_for(state="hidden")
+        self.assert_existing_design()
+
+    def test_loading_persona_over_pasted_source_requires_confirmation(self):
+        self.choose_model()
+        self.frame.locator('[data-mode="create"]').click()
+        self.frame.locator("#chat-input").fill("从零模式的独立想法")
+        self.frame.locator('[data-mode="optimize"]').click()
+        self.frame.locator("#source-text").fill("手动粘贴的人设")
+        self.frame.locator("#draft-text").fill("手工编辑的初稿")
+        self.load_persona("configured")
+        self.frame.locator("#switch-persona-dialog [data-close]").click()
+        self.assertEqual(self.frame.locator("#source-text").input_value(), "手动粘贴的人设")
+        self.assertEqual(self.frame.locator("#draft-text").input_value(), "手工编辑的初稿")
+        self.load_persona("configured")
+        self.frame.locator("#confirm-persona-switch").click()
+        self.frame.locator("#switch-persona-dialog").wait_for(state="hidden")
+        self.assertEqual(self.frame.locator("#draft-text").input_value(), "")
+        self.frame.locator('[data-mode="create"]').click()
+        self.assertEqual(self.frame.locator("#chat-input").input_value(), "从零模式的独立想法")
 
     def test_late_reply_modes_and_inputs_survive_internal_navigation_without_autosave(self):
         self.choose_model()

@@ -2,6 +2,7 @@
 
 import asyncio
 import builtins
+from copy import deepcopy
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -15,6 +16,7 @@ from astrbot_host.persona_designer_api import PersonaDesignerWebAPI, PREFIX
 from astrbot_host.optional_persona_designer import register_optional_designer
 from companion_v2.execution.models import TaskError
 from tests.test_persona_designer import response, state
+from tests.test_persona_workshop_api import PersonaWorkshopFixture
 
 
 def request(body=None, query=None, username="admin"):
@@ -76,6 +78,53 @@ class DesignerAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["personas"], [])
         self.assertEqual(len(result["models"]), 1)
         self.assertTrue(result["persona_issue"])
+
+    async def test_generate_save_and_reopen_for_two_personas_never_writes_host_configuration(self):
+        config = {"provider_settings": {"default_personality": "configured", "provider_id": "chat-model"}}
+        self.context.get_config = lambda **_: config
+        self.personas[1]["_begin_dialogs_processed"] = [
+            {"role": "user", "content": "旧示例，保留空格  ", "_no_save": True},
+            {"role": "assistant", "content": "旧回答\n"}]
+        before_personas, before_config = deepcopy(self.personas), deepcopy(config)
+        writes = [AsyncMock(side_effect=AssertionError("persona writes are forbidden")) for _ in range(4)]
+        for name, write in zip(("create_persona", "update_persona", "delete_persona", "set_persona"), writes):
+            setattr(self.manager, name, write)
+        for index, record in enumerate(before_personas):
+            read = await self.call("/persona", query={"id": record["name"]})
+            self.assertEqual(read["status"], "ok", read)
+            text = read["data"]["text"]
+            self.assertTrue(text.startswith(record["prompt"]))
+            if index == 1:
+                examples = json.loads(text.rsplit("\n", 1)[-1])
+                self.assertEqual(examples, [{"role": "user", "content": "旧示例，保留空格  "},
+                                            {"role": "assistant", "content": "旧回答\n"}])
+                self.assertNotIn("_no_save", text)
+            snapshot = state(mode="optimize", source_persona_id=record["name"], source_text=text)
+            self.provider.text_chat.return_value = NS(completion_text=response(draft="生成的新稿" + str(index)))
+            result = await self.call("/turn", method="POST", body=self.turn_body(state=snapshot))
+            self.assertEqual(result["status"], "ok", result)
+            snapshot["draft"] = result["data"]["draft"]
+            identifier = str(index + 1) * 32
+            saved = await self.call("/drafts", method="POST", body={"id": identifier, "title": record["name"], "state": snapshot})
+            self.assertEqual(saved["status"], "ok", saved)
+            restored = await self.call("/draft", query={"id": identifier})
+            self.assertEqual(restored["data"]["state"], snapshot)
+            self.assertEqual(self.personas, before_personas)
+            self.assertEqual(config, before_config)
+        for write in writes:
+            write.assert_not_called()
+        self.assertEqual(len((await self.call("/drafts"))["data"]["items"]), 2)
+
+    async def test_legacy_async_persona_reader_preserves_original_and_missing_persona_is_local(self):
+        original = {"name": "legacy", "prompt": "旧版原文  \n\t\n"}
+        self.context.persona_manager = NS(get_personas=AsyncMock(return_value=[original]),
+                                          get_persona=AsyncMock(return_value=original))
+        result = await self.call("/persona", query={"id": "legacy"})
+        self.assertEqual(result["status"], "ok", result)
+        self.assertEqual(result["data"]["text"], "旧版原文  \n\t\n")
+        missing = await self.call("/persona", query={"id": "deleted"})
+        self.assertEqual(missing["message"], "persona_designer_persona_missing")
+        self.assertEqual((await self.call("/options"))["status"], "ok")
 
     async def test_dashboard_identity_cannot_be_supplied_in_body(self):
         for name in (None, "", " admin", "api_key:test"):
@@ -192,6 +241,53 @@ class DesignerAPITests(unittest.IsolatedAsyncioTestCase):
             finally:
                 release.set()
                 await asyncio.gather(first, second)
+
+
+class ExistingWorkshopDataTests(PersonaWorkshopFixture):
+    async def test_existing_questionnaire_and_role_profile_survive_designer_save_and_close(self):
+        from tests.test_persona_workshop_api import (
+            RoleProfileConfigurationOwner, role_profile_fields, role_profile_target_for, support)
+
+        # Create existing data using the original APIs before enabling the designer.
+        with patch("astrbot_host.optional_persona_designer.register_optional_designer", return_value=False):
+            await self.initialize()
+        saved = await self.post({"action": "save", "text": "原问卷旧草稿  \n", "note": "原有版本", "expected_current": ""})
+        self.assertEqual(saved["status"], "ok", saved)
+        runtime = self.controller.runtime
+        owner = RoleProfileConfigurationOwner(runtime)
+        fields = role_profile_fields()
+        target = role_profile_target_for(self.controller.session.profile.target)
+        previous = owner.read(target, fields)
+        owner.write(target, fields, changes={"role.profile.name": "原角色档案", "role.profile.personality": "保留原性格"},
+                    reset=(), expected_revision=previous.revision, observed_at=support.NOW)
+        previous_profile = owner.read(target, fields)
+        previous_workshop = await self.state()
+        previous_persona = deepcopy(self.native.persona)
+        with runtime.read_only_snapshot() as db:
+            previous_database = list(db.iterdump())
+
+        api = PersonaDesignerWebAPI(self.controller)
+        routes = {(path, methods[0]): handler for path, handler, methods, _ in api.routes()}
+        async def call(suffix, method="GET", body=None, query=None):
+            with patch("astrbot_host.persona_designer_api.request", request(body, query)):
+                return await routes[(PREFIX + suffix, method)]()
+        try:
+            read = await call("/persona", query={"id": "original"})
+            self.assertEqual(read["status"], "ok", read)
+            self.assertEqual(read["data"]["text"], previous_workshop["persona"]["text"])
+            snapshot = state(mode="optimize", source_persona_id="original", source_text=read["data"]["text"], draft="仅存于新的她")
+            saved = await call("/drafts", "POST", {"id": "d" * 32, "title": "独立草稿", "state": snapshot})
+            self.assertEqual(saved["status"], "ok", saved)
+            self.assertEqual((await call("/draft", query={"id": "d" * 32}))["data"]["state"], snapshot)
+        finally:
+            api.close()
+
+        # Original readers still see exactly the same data after the feature closes.
+        self.assertEqual(await self.state(), previous_workshop)
+        self.assertEqual(owner.read(target, fields), previous_profile)
+        self.assertEqual(self.native.persona, previous_persona)
+        with runtime.read_only_snapshot() as db:
+            self.assertEqual(list(db.iterdump()), previous_database)
 
 
 class OptionalRegistrationTests(unittest.TestCase):

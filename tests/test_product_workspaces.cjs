@@ -335,6 +335,27 @@ test("persona questionnaire reads the selected source and relays standardization
   assert.equal(h.persona.messages.at(-1).ok, true);
 });
 
+test("persona questionnaire relays all model steps only within its selected role", async () => {
+  const h = await harness();
+  h.product.mountWorkspace();
+  for (const operation of ["standardize", "tryouts", "style-rules"]) {
+    await h.request(h.persona, "POST", "persona/" + operation, "questionnaire-" + operation, 180000);
+    assert.equal(h.persona.messages.at(-1).ok, true, operation);
+    assert.equal(h.calls.at(-1).endpoint, "targets/first/roles/synthetic-role/persona/" + operation);
+  }
+  const before = h.calls.length;
+  for (const [frame, method, path] of [
+    [h.persona, "GET", "persona/tryouts"],
+    [h.persona, "POST", "persona/apply"],
+    [h.persona, "POST", "persona/style-rules/extra"],
+    [h.relationships, "POST", "persona/tryouts"],
+  ]) {
+    await h.request(frame, method, path);
+    assert.equal(frame.messages.at(-1).ok, false, path);
+  }
+  assert.equal(h.calls.length, before);
+});
+
 test("server rejection envelopes stay confirmed through the product and workspace bridges", async () => {
   const direct = await harness(null, [], {summaryErrors: {"host/status": "core_access_required"}});
   await assert.rejects(direct.product.request("GET", "host/status"), error =>

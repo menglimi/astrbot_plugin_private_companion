@@ -38,6 +38,7 @@
   };
   let bridge, root = fresh(), options = {models: [], personas: []}, loaded = false, disposed = false;
   let working = false, nextBefore = null, pollTimer, loadingDrafts = false, polling = false;
+  let pendingPersonaId = "";
   const session = () => root.sessions[root.activeMode];
   const doc = () => session().document;
   const generating = () => Object.values(root.sessions).some(s => s.pending);
@@ -74,6 +75,7 @@
     $("retry-turn").hidden = !session().retry || anyBusy;
     $("generation-state").textContent = ownBusy ? "正在推敲，请稍候…" : anyBusy ? "另一模式正在生成" : "";
     ["source-text", "confirmed", "draft-text", "lorebook", "choose-persona", "choose-model"].forEach(id => $(id).disabled = ownBusy || working);
+    $("choose-persona").disabled ||= anyBusy || !!root.pendingSave;
     ["generate-draft", "tryout"].forEach(id => $(id).disabled = !loaded || anyBusy || working || !modelAvailable);
     $("tryout").disabled ||= !d.draft.trim();
     ["save-draft", "save-version"].forEach(id => $(id).disabled = !loaded || !!root.pendingSave || anyBusy || working);
@@ -318,17 +320,39 @@
   $("choose-persona").addEventListener("click", () => {
     fillSelect("persona-select", options.personas, doc().source_persona_id || options.default_persona_id || options.personas[0]?.id, "暂无人设"); $("persona-dialog").showModal();
   });
-  $("persona-form").addEventListener("submit", async event => {
-    event.preventDefault(); const id = $("persona-select").value, current = session();
-    if (!id || working) return;
+  async function loadPersona(id) {
+    const current = session(), mode = root.activeMode;
+    if (!id || working || generating() || root.pendingSave) return;
     working = true; $("load-persona").disabled = true; controls();
     try {
       const result = await api("GET", "designer/persona", {id});
-      current.document.source_persona_id = result.id; current.document.source_text = result.text;
-      await persist(); $("persona-dialog").close(); notice("已载入人设，可以先说说希望调整的地方。"); render();
-    } catch (error) { notice(errorText(error), true); $("persona-dialog").close(); }
+      if (result.id !== id || typeof result.text !== "string") throw new Error("persona_designer_response_invalid");
+      // Fetch first: a failed read must leave the previous design recoverable.
+      if (current.document.source_persona_id !== id) {
+        const document = newDocument(mode);
+        document.provider_id = current.document.provider_id;
+        document.source_persona_id = id; document.source_text = result.text;
+        root.sessions[mode] = {document};
+      } else {
+        current.document.source_text = result.text;
+      }
+      await persist(); $("persona-dialog").close(); $("switch-persona-dialog").close();
+      notice("已载入人设，可以先说说希望调整的地方。"); render();
+    } catch (error) {
+      notice(errorText(error), true); $("persona-dialog").close(); $("switch-persona-dialog").close();
+    }
     finally { working = false; $("load-persona").disabled = !options.personas.length; controls(); }
+  }
+  $("persona-form").addEventListener("submit", event => {
+    event.preventDefault(); const id = $("persona-select").value, d = doc();
+    if (!id || working || generating() || root.pendingSave) return;
+    const hasContent = d.messages.length || ["source_text", "confirmed", "draft", "lorebook", "input"].some(key => d[key].length);
+    if (id !== d.source_persona_id && hasContent) {
+      pendingPersonaId = id; $("persona-dialog").close(); $("switch-persona-dialog").showModal();
+    } else loadPersona(id);
   });
+  $("confirm-persona-switch").addEventListener("click", () => loadPersona(pendingPersonaId));
+  $("switch-persona-dialog").addEventListener("close", () => { pendingPersonaId = ""; });
   $("refresh-options").addEventListener("click", loadOptions); $("refresh-personas").addEventListener("click", loadOptions);
   ["save-draft", "save-version"].forEach(id => $(id).addEventListener("click", openSave));
   $("retry-save").addEventListener("click", () => saveSnapshot(root.retrySave));
