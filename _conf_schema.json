@@ -465,6 +465,18 @@
         "default": "plain",
         "hint": "plain 朗读选中的可见段落；model_tag 只朗读模型用 <pc_tts> 包裹的内容。"
       },
+      "direction_mode": {
+        "description": "表演指令 / 风格强化",
+        "type": "string",
+        "options": [
+          "off",
+          "auto",
+          "indextts2",
+          "fishaudio"
+        ],
+        "default": "auto",
+        "hint": "off 关闭；auto 只在选中引擎明确支持时生效（FishAudio Drama 3 / IndexTTS2）；indextts2 或 fishaudio 强制指定指令格式，引擎不匹配时不发指令。"
+      },
       "segment_mode": {
         "description": "语音分段范围",
         "type": "string",
