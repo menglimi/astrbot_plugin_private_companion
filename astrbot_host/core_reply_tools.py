@@ -431,8 +431,19 @@ class CoreReplyToolSession:
                 result = await self.evidence()
             elif offered.owner == "external":
                 if action in ("image.edit", "image.mask_edit"):
-                    from .core_reply_media import prepare_native_input_images
-                    await prepare_native_input_images(self, wrapper)
+                    # An explicit empty inbound selection means this edit only
+                    # uses saved reference_ids. Capturing every current/quoted
+                    # image first can fail on an unrelated local quoted file
+                    # (host_image_location_invalid) before the reference edit
+                    # ever starts.
+                    only_saved_references = (
+                        action == "image.edit"
+                        and arguments.get("reference_indices") == []
+                        and bool(arguments.get("reference_ids"))
+                    )
+                    if not only_saved_references:
+                        from .core_reply_media import prepare_native_input_images
+                        await prepare_native_input_images(self, wrapper)
                 if action in ("reality.camera.observe", "content.work.create", "content.work.save_candidate"):
                     await self.wait_source()
                 result = await executor_for(self.application).execute(
