@@ -32,48 +32,127 @@ window.CompanionLearningReviewPage = (() => {
     return product?.unwrap ? product.unwrap(response) : response?.data ?? response;
   }
 
-  async function read(current, append = false) {
-    if (!live(current) || data.writing || (append && data.loading)) return;
+  /* 每页记下「已经读过的游标」（第 1 页是 ""）：刷新时按它原地重读同一批页，
+     而不是退回只读第 1 页。 */
+  function buildPages() {
+    return sources.flatMap(source => {
+      const growth = relative(source.growthApi || source.api), reply = relative(source.replyApi);
+      return [
+        growth && {source,type:"growth",path:routeFor(source,growth,"/progress"),query:{limit:20}},
+        reply && {source,type:"style",path:routeFor(source,reply,"/style"),query:{state:"pending",limit:20}},
+        growth && {source,type:"self",path:routeFor(source,growth,"/self-review"),query:{state:"pending",limit:20}},
+      ].filter(Boolean).map(page => ({...page,items:[],cursors:[""],next:"",loaded:false}));
+    });
+  }
+  const ID_FIELD = {growth:"review_id",style:"signal_id",self:"item_id"};
+  /* 按 key 合并：就地更新同一条、保留刷新时后端没有返回的旧行。
+     待裁决队列会因为「别处处理掉了」而变短，撤掉旧行等于用户眼前少了几条。 */
+  function mergeRows(previous, incoming) {
+    const merged = previous.slice();
+    const positions = new Map(merged.map((row, position) => [keyFor(row), position]));
+    incoming.forEach(row => {
+      const position = positions.get(keyFor(row));
+      if (position === undefined) {positions.set(keyFor(row), merged.length); merged.push(row);}
+      else merged[position] = row;
+    });
+    return merged;
+  }
+  function dedupeRows(rows) {
+    const seen = new Set();
+    return rows.filter(row => {
+      const key = keyFor(row);
+      if (seen.has(key)) return false;
+      seen.add(key); return true;
+    });
+  }
+  /* 待裁决队列自己是个滚动容器（`.lh-review-queue`），重绘前记位置、重绘后复位。 */
+  function queueNode() {
+    try { return root?.querySelector?.(".lh-review-queue") || null; } catch (_) { return null; }
+  }
+  /* 按游标列表逐页读。中途某页读不到就停在该页：已经读到的行仍然有效，
+     下一页游标保持原样，下次「加载更多」还会重试它。 */
+  async function readChain(page, cursors) {
+    const rows = [];
+    let next = "", failed = false;
+    for (const cursor of cursors) {
+      let value;
+      try {
+        value = await api("GET",page.path,{...page.query,...(cursor?{after_id:cursor}:{})});
+      } catch (error) { failed = true; break; }
+      if (!Array.isArray(value?.items)) { failed = true; break; }
+      rows.push(...value.items.filter(item=>page.type!=="self"||item.kind==="ask_user")
+        .map(item=>({...item,_type:page.type,_source:page.source,_id:item[ID_FIELD[page.type]]})));
+      next = typeof value.next_cursor === "string" ? value.next_cursor : "";
+    }
+    return {rows, next, failed};
+  }
+  /* 读取有三种模式：
+       reset   首次挂载/换筛选：重建页记录，只读第 1 页（用户主动重置）；
+       append  「加载更多」：往后读一页并追加；
+       refresh 重新读取 / 裁决后：按已读游标原地重读同一批页并按 key 合并，
+               **不减少**已经显示的行，也不清掉选中与勾选。
+     除用户主动切筛选外，任何刷新都不走 reset —— 那是「队列被打回第一页」的根源。 */
+  async function read(current, mode = "reset") {
+    const append = mode === true || mode === "append";
+    const refresh = mode === "refresh";
+    if (!live(current) || !data || data.writing || ((append || refresh) && data.loading)) return;
     const request = ++readTicket;
-    const previousNotice = data?.notice || "";
-    const previousError = !!data?.error;
-    if (!append) {
+    const scrollTop = append || refresh ? queueNode()?.scrollTop : undefined;
+    if (!append && !refresh) {
+      const previousNotice = data?.notice || "";
+      const previousError = !!data?.error;
       data = {loading:true, writing:false, items:[], selected:"", checked:new Set(), filter:data?.filter || "all",
         notice:previousNotice, error:previousError, confirming:null, errors:0};
-      pages = sources.flatMap(source => {
-        const growth = relative(source.growthApi || source.api), reply = relative(source.replyApi);
-        return [
-          growth && {source,type:"growth",path:routeFor(source,growth,"/progress"),query:{limit:20}},
-          reply && {source,type:"style",path:routeFor(source,reply,"/style"),query:{state:"pending",limit:20}},
-          growth && {source,type:"self",path:routeFor(source,growth,"/self-review"),query:{state:"pending",limit:20}},
-        ].filter(Boolean).map(page => ({...page,items:[],next:"",loaded:false}));
-      });
+      pages = buildPages();
     } else data.loading = true;
     render();
-    const requested = pages.filter(page => !page.loaded || (append && page.next));
-    const fetched = await Promise.allSettled(requested.map(page => api("GET",page.path,
-      {...page.query,...(page.next?{after_id:page.next}:{})})));
+    const wanted = pages
+      .filter(page => (append ? Boolean(page.next) : true))
+      .map(page => ({page, cursors: append ? [page.next]
+        /* 刷新时重读已加载的整条游标链；首次读取失败过的页（loaded=false）重试第 1 页。 */
+        : page.loaded ? page.cursors.slice() : [""]}));
+    const fetched = await Promise.allSettled(wanted.map(({page,cursors}) => readChain(page,cursors)));
     if (!live(current) || request !== readTicket) return;
     data.errors = 0;
     fetched.forEach((result,index) => {
-      const page = requested[index];
-      if(result.status === "rejected" || !Array.isArray(result.value?.items)) { data.errors++; return; }
-      const idField = {growth:"review_id",style:"signal_id",self:"item_id"}[page.type];
-      const rows = result.value.items.filter(item=>page.type!=="self"||item.kind==="ask_user")
-        .map(item=>({...item,_type:page.type,_source:page.source,_id:item[idField]}));
-      page.items.push(...rows);page.loaded=true;
-      const next = typeof result.value.next_cursor === "string" ? result.value.next_cursor : "";
-      page.next = next === page.next ? "" : next;
+      const {page,cursors} = wanted[index];
+      if (result.status === "rejected") { data.errors++; return; }
+      const value = result.value;
+      if (value.failed) data.errors++;
+      /* 一页都没读到：旧行与旧游标原地不动，等于这次刷新什么也没换成。 */
+      if (value.failed && !value.rows.length) return;
+      if (!append && !refresh) {
+        page.items = dedupeRows(value.rows);
+        page.cursors = [""];
+      } else if (append) {
+        page.items = dedupeRows(page.items.concat(value.rows));
+        page.cursors = page.cursors.concat(cursors);
+      } else {
+        page.items = mergeRows(page.items, value.rows);
+        if (!value.failed) page.cursors = cursors.slice();
+      }
+      if (!value.failed) {
+        /* 服务端把同一个游标又发回来时收掉「加载更多」，避免原地打转。 */
+        const requested = cursors[cursors.length - 1] || "";
+        page.next = (refresh ? value.next : (value.next === requested ? "" : value.next));
+      }
+      page.loaded = true;
     });
     const seen = new Set();
     data.items = pages.flatMap(page=>page.items).filter(item=>{
       const key=keyFor(item);if(seen.has(key))return false;seen.add(key);return true;
     });
-    data.items.sort((a,b) => Date.parse(b.created_at || 0) - Date.parse(a.created_at || 0));
+    data.items.sort((a,b) => (Date.parse(b.created_at || "") || 0) - (Date.parse(a.created_at || "") || 0));
     data.items.forEach(keyFor);
-    if (!data.items.some(item => keyFor(item) === data.selected)) data.selected = data.items[0]?._key || "";
+    /* 选中与勾选按 key 保留：刷新不该把用户正在看/正在挑的那几条换掉。 */
+    const present = new Set(data.items.map(item => keyFor(item)));
+    data.checked = new Set([...data.checked].filter(key => present.has(key)));
+    if (data.confirming?.key && !present.has(data.confirming.key)) data.confirming = null;
+    if (!present.has(data.selected)) data.selected = data.items[0]?._key || "";
     data.loading = false;
     render();
+    const node = queueNode();
+    if (node && Number.isFinite(scrollTop)) node.scrollTop = scrollTop;
   }
 
   function keyFor(item) { return item._key || (item._key = `${item._source.key}::${item._type}::${item._id}`); }
@@ -151,6 +230,18 @@ window.CompanionLearningReviewPage = (() => {
     window.lucide?.createIcons({attrs:{"aria-hidden":"true"}});
   }
 
+  /* 裁决成功后就地把这条从待裁决队列里摘掉：它已经不在 pending 里了。
+     随后的 refresh 会原地更新其余已加载的页，队列不会被打回第一页。 */
+  function dropItem(item) {
+    const key = keyFor(item);
+    pages.forEach(page => {page.items = page.items.filter(row => keyFor(row) !== key);});
+    data.items = data.items.filter(row => keyFor(row) !== key);
+    const checked = new Set(data.checked);
+    checked.delete(key);
+    data.checked = checked;
+    if (data.selected === key) data.selected = "";
+    if (data.confirming?.key === key) data.confirming = null;
+  }
   async function decide(item, action) {
     if (data.writing || !item || !actions(item).includes(action)) return;
     const current = ticket;
@@ -171,8 +262,12 @@ window.CompanionLearningReviewPage = (() => {
       }
       await api("POST",routeFor(item._source,"",path),body);
       if (!live(current)) return;
+      /* 先取消在途读取：那份响应是裁决前的快照，回来时会把刚摘掉的行又 concat 回队列。
+         同时清掉 loading，否则紧接着的 refresh 会被自己的护栏挡掉。 */
+      readTicket += 1; data.loading = false;
+      dropItem(item);
       data.writing = false; data.notice = action==="reject"?"已驳回。":item._type==="growth"?"已确认申报。":"已采纳。";
-      await read(current);
+      await read(current, "refresh");
     } catch (error) {
       if (!live(current)) return;
       data.writing = false; data.error = true; data.notice = ERRORS[error?.code] || "操作未完成，请重新读取。"; render();
@@ -189,6 +284,7 @@ window.CompanionLearningReviewPage = (() => {
     const current=ticket;
     data.writing=true;data.confirming=null;data.notice="";render();
     let completed=0,failed=null;
+    const decided=[];
     for(const {item,command} of requests){
       if(!live(current))return;
       try{
@@ -200,12 +296,16 @@ window.CompanionLearningReviewPage = (() => {
           signal_id:item.signal_id,action:command,view_token:item.view_token,operation_key});
         else await api("POST",routeFor(item._source,base,"/self-review/command"),{
           item_id:item.item_id,action:command,view_token:item.view_token,operation_key});
+        decided.push(item);
         completed++;
       }catch(error){failed=error;break;}
     }
     if(!live(current))return;
     data.writing=false;data.checked.clear();data.confirming=null;
-    await read(current);
+    /* 同上：批量裁决后先取消在途读取，再原地刷新。 */
+    readTicket += 1; data.loading = false;
+    decided.forEach(dropItem);
+    await read(current, "refresh");
     if(!live(current))return;
     data.notice=failed?`已处理 ${completed} 条，其余未提交。${ERRORS[failed?.code]||"请刷新后核对。"}`:`已处理 ${completed} 条。`;
     data.error=!!failed;render();
@@ -215,8 +315,8 @@ window.CompanionLearningReviewPage = (() => {
     if(!data||data.writing)return;
     const filter = event.target.closest("[data-review-filter]");
     if (filter) { data.filter=filter.dataset.reviewFilter; data.confirming=null; render(); return; }
-    if (event.target.closest("[data-review-refresh]")) { void read(ticket); return; }
-    if (event.target.closest("[data-review-more]")) { void read(ticket,true); return; }
+    if (event.target.closest("[data-review-refresh]")) { void read(ticket, "refresh"); return; }
+    if (event.target.closest("[data-review-more]")) { void read(ticket, "append"); return; }
     const bulk=event.target.closest("[data-review-bulk]");
     if(bulk){const action=bulk.dataset.reviewBulk;data.confirming={bulk:true,action};render();return;}
     const select = event.target.closest("[data-review-select]");
