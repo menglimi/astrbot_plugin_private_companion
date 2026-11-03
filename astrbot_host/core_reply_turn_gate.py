@@ -89,7 +89,8 @@ def install_core_reply_turn(event, run_context):
         gate = {"runner": runner, "run_context": run_context, "event": event, "methods": {},
                 "hold_fragments": _hold_fragments(event, runner), "draft": None,
                 "emitted": False, "blank": None, "failed": False, "rounds_with_tools": 0,
-                "deferred": 0, "released": 0, "restored": False, "closed": False}
+                "deferred": 0, "released": 0, "restored": False, "closed": False,
+                "had_tools": getattr(getattr(runner, "req", None), "func_tool", None) is not None}
 
         async def gated_responses(*args, **kwargs):
             try:
@@ -636,11 +637,9 @@ def _turn_over(gate):
     runner = gate.get("runner")
     if _done(runner) or _aborted(runner):
         return True
-    budget_max = getattr(runner, "_step_budget_max", None)
-    budget_used = getattr(runner, "_step_budget_used", None)
-    if isinstance(budget_max, int) and isinstance(budget_used, int) and budget_used > budget_max:
-        # The host's forced final step runs with the tool set removed and is the
-        # last step of the turn; a tool round there can never dispatch.
+    if gate.get("had_tools") and getattr(getattr(runner, "req", None), "func_tool", None) is None:
+        # run_agent removes the tool set before its forced final step. A model
+        # may still return tool-call fields there, but no further step follows.
         return True
     return False
 
