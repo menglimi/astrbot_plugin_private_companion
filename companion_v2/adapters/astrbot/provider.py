@@ -306,13 +306,20 @@ def provider_class_matches(provider, classes):
                and actual.__qualname__ == expected.__qualname__ for expected in classes)
 
 
-def provider_config_drift(expected, provider, _auto_resolved=None):
-    """List changed captured config keys without exposing their values."""
+def provider_config_drift(expected, provider, auto_resolved=None):
+    """Compare captured keys, including host-resolved automatic limits, without exposing values."""
     config = getattr(provider, "provider_config", None)
     if not isinstance(config, dict):
         return ("provider_config",)
-    return tuple(sorted(key for key, value in (expected or {}).items()
-                        if key not in config or not _same_config_value(value, config[key])))
+    snapshot = {**expected, **(auto_resolved or {})}
+    drifted = []
+    for key, value in snapshot.items():
+        if key not in config:
+            drifted.append(key)
+        elif (not _same_config_value(config[key], value)
+              and not _auto_filled_equivalent(key, value, config[key])):
+            drifted.append(key)
+    return tuple(sorted(drifted))
 
 
 @dataclass(frozen=True)
@@ -454,12 +461,18 @@ class AstrBotTextProvider:
         native_config = getattr(self.native, "provider_config", {})
         native_kind = str(native_config.get("type") or "") if isinstance(native_config, dict) else ""
         client = getattr(self.native, "client", None)
+        responses_create = getattr(getattr(client, "responses", None), "create", None)
+        responses_hooks = (native_kind == "openai_responses"
+                           and callable(getattr(self.native, "_parse_response", None))
+                           and callable(responses_create))
+        if native_kind == "openai_responses" and not responses_hooks:
+            raise ValueError("openai_responses provider lacks the verified Responses API surface")
         openai_hooks = (not self.compat
                         and callable(getattr(self.native, "_prepare_chat_payload", None))
                         and callable(getattr(self.native, "_parse_openai_completion", None))
                         and callable(getattr(client, "with_options", None)))
-        # 只有具备 OpenAI 专用钩子的 provider 才走 OpenAI 分支；其余按归一化响应处理。
         self.kind = ("compat" if self.compat else
+                     "openai_responses" if responses_hooks else
                      "openai" if openai_hooks
                      else "gemini" if native_kind.startswith("googlegenai") else "native")
         protocol = " ".join((native_kind, type(self.native).__module__,
@@ -509,6 +522,7 @@ class AstrBotTextProvider:
             # own tool loop into it, so do not advertise tools it cannot run.
             capabilities = tuple(item for item in capabilities if item != "tools")
         transport = ("astrbot_compat" if self.kind == "compat" else
+                     "astrbot_openai_responses" if self.kind == "openai_responses" else
                      "astrbot_openai" if self.kind == "openai" else
                      "astrbot_gemini" if self.kind == "gemini" else "astrbot_native")
         return LocalProvider(self.binding, capabilities, self.maximum_output_tokens,
@@ -693,7 +707,15 @@ class AstrBotTextProvider:
             if result is None:
                 raise ValueError("compat provider probe returned no result")
             return
-        if self.kind != "openai":
+        if self.kind == "openai_responses":
+            native.client = self.client.with_options(max_retries=0)
+            if native.client.max_retries != 0:
+                raise ValueError("native probe retries could not be disabled")
+            payload, _ = await native._prepare_chat_payload(
+                prompt="Reply OK.", contexts=[], model=self.model)
+            payload["max_output_tokens"] = PROBE_OUTPUT_TOKENS
+            result = await native._query(payload, None, request_max_retries=1)
+        elif self.kind != "openai":
             # Gemini 客户端没有 OpenAI 的 with_options；重试次数由 request_max_retries 控制。
             payload = {"model": self.model, "messages": [{"role": "user", "content": "Reply OK."}],
                        "max_tokens": PROBE_OUTPUT_TOKENS}
@@ -707,18 +729,6 @@ class AstrBotTextProvider:
             payload = {"model": self.model, "messages": [{"role": "user", "content": "Reply OK."}],
                        self.output_parameter: PROBE_OUTPUT_TOKENS}
             result = await native._query(payload, None, request_max_retries=1)
-            self._current()
-            if result is None:
-                raise ValueError("native probe returned no result")
-            return
-        native.client = self.client.with_options(max_retries=0)
-        if native.client.max_retries != 0:
-            raise ValueError("native probe retries could not be disabled")
-        # AstrBot 的 `_query` 固定以 stream=False 调用原生 client；payload 里
-        # 再带 stream 会触发 `multiple values for keyword argument 'stream'`。
-        payload = {"model": self.model, "messages": [{"role": "user", "content": "Reply OK."}],
-                   self.output_key: 8}
-        result = await native._query(payload, None, request_max_retries=1)
         self._current()
         if result is None:
             raise ValueError("native probe returned no result")
@@ -796,7 +806,7 @@ class AstrBotTextProvider:
                 return ProviderResponse("generated", draft=draft, tool_calls=calls, usage=usage,
                     receipt_ref=receipt, diagnostics=replace(diagnostics, parse_state="validated",
                         visible=ResponseTextSummary.from_text(draft.text) if draft is not None else None))
-            if self.kind == "openai":
+            if self.kind in ("openai", "openai_responses"):
                 native.client = self.client.with_options(max_retries=0)
                 if native.client.max_retries != 0:
                     raise ValueError("client retry layer could not be disabled")
@@ -891,16 +901,28 @@ class AstrBotTextProvider:
                         raise ValueError("native Responses preparation returned no input")
                     if _responses_image_urls(input_items) != _chat_image_urls(wire.messages):
                         raise ValueError("native preparation changed original images or their coverage and attribution")
-                payload[self.output_key] = envelope.max_output_tokens
+                    payload["max_output_tokens"] = envelope.max_output_tokens
+                else:
+                    if envelope.original.images or envelope.original.audios or envelope.original.videos:
+                        def image_materials(messages):
+                            return [message for message in messages if isinstance(message.get("content"), list)]
+                        if image_materials(payload["messages"]) != image_materials(wire.messages):
+                            raise ValueError("native preparation changed original images or their coverage and attribution")
+                    payload[self.output_key] = envelope.max_output_tokens
             else:
                 # 原生 Gemini 接受 OpenAI 形状的 messages，由宿主转换为 generate_content；
                 # 输出上限使用 Gemini 认得的 max_tokens。
                 payload = {"model": envelope.model_override or self.model,
                            "messages": deepcopy(_gemini_messages(wire.messages)),
                            "max_tokens": envelope.max_output_tokens}
-            structured = response_format(envelope.original)
-            if structured is not None and self.supports_response_format:
-                payload["response_format"] = structured
+            if self.kind == "openai_responses":
+                text_format = responses_text_format(envelope.original)
+                if text_format is not None:
+                    payload["text"] = text_format
+            else:
+                structured = response_format(envelope.original)
+                if structured is not None and self.supports_response_format:
+                    payload["response_format"] = structured
             if structured_tool is not None:
                 payload["tool_choice"] = {"type": "tool", "name": structured_tool}
             logger.debug("[CompanionV2][开发者追踪] 实际模型请求 provider=%s model=%s payload=%s",
@@ -986,6 +1008,13 @@ class AstrBotTextProvider:
                              self.provider_id)
                 return ProviderResponse("generated", captured_output=CapturedModelOutput("", "refusal"),
                                         usage=usage, receipt_ref=receipt, diagnostics=replace(diagnostics, parse_state="refusal"))
+            if wire.output_format != "conversation" and observed:
+                ceiling = capture(observed[-1])
+                if ceiling.finish_reason == "length":
+                    logger.debug("[CompanionV2][开发者追踪] 模型正文被输出上限截断 provider=%s output_format=%s",
+                                 self.provider_id, wire.output_format)
+                    return ProviderResponse("generated", captured_output=ceiling, usage=usage, receipt_ref=receipt,
+                                            diagnostics=replace(diagnostics, parse_state="captured"))
             if structured_tool is not None:
                 names = list(response.tools_call_name or ())
                 arguments = list(response.tools_call_args or ())
