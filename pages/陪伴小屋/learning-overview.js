@@ -225,17 +225,27 @@ window.CompanionLearningOverviewPage = (() => {
     // the page must not conclude that learning produced nothing yet.
     const allFailed=sources.length>0&&data.failedSources>=sources.length;
     const cards=[
-      ["待裁决",counts.pending,"progress-review","clipboard-list"],
-      ["培育中",counts.active,"active-growth","sprout"],
-      ["规则注入",counts.rules===null?"—":`每轮 ${counts.rules} 条`,`${counts.adopted} 条已采纳`,"messages-square"],
-      ["语义扫描",duration(counts.scan),"semantic-interval","scan-search"],
+      ["待裁决",counts.pending,"进展 · 表达 · 指导","clipboard-list","review"],
+      ["培育中",counts.active,"技能与目标","sprout","chain"],
+      ["规则注入",counts.rules===null?"—":`每轮 ${counts.rules} 条`,`${counts.adopted} 条已采纳`,"messages-square","expression"],
+      ["语义扫描",duration(counts.scan),"群词义整理间隔","scan-search","semantic"],
     ];
+    const hasGrowth=data.growth.length>0;
+    const nothingYet=!data.errors&&!counts.pending&&!counts.active&&!counts.adopted;
     const lanes=STAGES.map(([state,label,color])=>{
       const items=data.growth.filter(item=>item.state===state);
       return `<section class="lh-overview-lane" data-state="${state}"><header><span class="lh-lane-dot" style="--lane:${color}"></span><strong>${label}</strong><span>${items.length}</span></header>
         <div class="lh-lane-items">${items.length?items.slice(0,4).map(growthCard).join(""):`<p class="lh-lane-empty">—</p>`}</div></section>`;
     }).join("");
     const summary=allFailed?"全部记录归属读取失败":data.errors?"部分记录归属暂不可用":`汇总 ${sources.length} 个记录归属`;
+    const track=hasGrowth
+      ? `<section class="lh-overview-track"><header><h2>培育轨道</h2><a href="#manage/learning/chain">全部记录</a></header>
+        <div class="lh-track-axis" aria-hidden="true">${STAGES.map(([state,label])=>`<span data-state="${state}"><i></i><b>${label}</b></span>`).join("")}</div>
+        <div class="lh-overview-lanes">${lanes}</div></section>`
+      : allFailed
+        ? `<section class="lh-overview-track is-empty"><header><h2>培育轨道</h2><a href="#manage/learning/chain">全部记录</a></header><div class="lh-track-empty"><strong>成长记录暂不可读</strong><p>来源读取失败，请先重新读取；已有记录不会因为这次失败被清空。</p></div></section>`
+        : `<section class="lh-overview-track is-empty"><header><h2>培育轨道</h2><a href="#manage/learning/chain">全部记录</a></header>
+        <div class="lh-track-empty"><strong>${nothingYet?"学习还没有产出":"还没有成长记录"}</strong><p>${counts.pending?`有 ${counts.pending} 条待裁决，先到审阅中心处理；成长记录会在通过后进入轨道。`:"每日复盘会在后台自动运行，表达学习可在「表达学习」点「立即学习」，成长记录需要先给对应用户开启成长提案权限。"}</p><div class="lh-track-actions"><a href="#manage/learning/review">去审阅中心</a><a href="#manage/learning/expression">去表达学习</a></div></div></section>`;
     root.setAttribute?.("aria-busy",data.loading?"true":"false");
     root.innerHTML=`<div class="lh-overview-toolbar"><span>${summary}</span>
       <button type="button" class="lh-refresh" data-lh-refresh aria-label="重新读取" title="重新读取" ${data.loading||data.writing?"disabled":""}><i data-lucide="refresh-cw"></i></button></div>
@@ -244,17 +254,12 @@ window.CompanionLearningOverviewPage = (() => {
       ${data.learning?`<p class="lh-inline-status" role="status">${learningLine(data.learning)}</p>`:""}
       ${data.review?`<p class="lh-inline-status" role="status">${reviewLine(data.review)}</p>`:""}
       ${data.access?`<p class="lh-inline-status" role="status">${growthLine(data.access)}</p>`:""}
-      <section class="lh-kpis" aria-label="学习数据">${cards.map(([label,value,detail,icon])=>`<article class="lh-kpi">
+      <section class="lh-kpis" aria-label="学习数据">${cards.map(([label,value,detail,icon,route])=>`<a class="lh-kpi" href="#manage/learning/${route}">
         <span class="lh-kpi-icon" aria-hidden="true"><i data-lucide="${icon}"></i></span><span class="lh-kpi-label">${label}</span>
-        <strong>${e(value)}</strong><small>${label==="待裁决"?"进展 · 表达 · 指导":label==="培育中"?"技能与目标":label==="规则注入"?e(detail):label==="语义扫描"?"群词义整理间隔":""}</small></article>`).join("")}</section>
-      <section class="lh-overview-track"><header><h2>培育轨道</h2><a href="#manage/learning/chain">全部记录</a></header>
-        <div class="lh-track-axis" aria-hidden="true">${STAGES.map(([state,label])=>`<span data-state="${state}"><i></i><b>${label}</b></span>`).join("")}</div>
-        <div class="lh-overview-lanes">${lanes}</div></section>
+        <strong>${e(value)}</strong><small>${label==="规则注入"?e(detail):label==="待裁决"?"进展 · 表达 · 指导":label==="培育中"?"技能与目标":"群词义整理间隔"}</small></a>`).join("")}</section>
+      ${track}
       ${data.confirming?`<div class="lh-review-confirm" role="alertdialog" aria-label="确认${ACTIONS[data.confirming.action]}"><span>${ACTIONS[data.confirming.action]}这条记录？</span><button type="button" data-lh-confirm="yes">确认${ACTIONS[data.confirming.action]}</button><button type="button" data-lh-confirm="no">取消</button></div>`:""}
-      ${data.loading&&!data.settled?`<p class="lh-empty">正在读取…</p>`:""}
-      ${!data.loading&&!data.errors&&!data.growth.length&&!counts.pending&&!counts.active&&!counts.adopted
-        ?`<p class="lh-empty">学习还没有产出。每日复盘会在后台自动运行，表达学习可在「表达学习」点「立即学习」，成长记录需要先给对应用户开启成长提案权限。</p>`
-        :!data.loading&&!data.errors&&!data.growth.length?`<p class="lh-empty">暂无成长记录</p>`:""}`;
+      ${data.loading&&!data.settled?`<p class="lh-empty">正在读取…</p>`:""}`;
     window.lucide?.createIcons({attrs:{"aria-hidden":"true"}});
   }
 

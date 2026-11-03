@@ -60,7 +60,7 @@ let route='life', lifeTab='home', manageTab='host', selfPane='profile', libraryF
 let navigationIntent=0;
 let outputTabId='visual';
 let selfProfileSection='identity';
-let personaRecreationMode='questionnaire';
+let personaRecreationMode=(()=>{try{const saved=localStorage.getItem('companion.persona-mode');return ['questionnaire','create','optimize'].includes(saved)?saved:'questionnaire';}catch{return 'questionnaire';}})();
 let maintenancePane='';
 let dataPane='storage';
 let tokenTaskSettingsJump=0;
@@ -4050,9 +4050,33 @@ function renderConfigEditors(){
 }
 document.addEventListener('companion:role-profile-updated',()=>roleProfileConfigMount?.read?.());
 function renderPersonaPage(){
-  const modes=[['questionnaire','规范人格'],['create','创建人格'],['optimize','拟人优化']];
-  const workspace=personaRecreationMode==='questionnaire'?product.workspace('persona'):product.workspace('designer',personaRecreationMode);
-  return `<nav class="section-chips" aria-label="人格处理">${modes.map(([id,label])=>`<button type="button" class="section-chip${personaRecreationMode===id?' is-active':''}" data-persona-recreation="${id}" aria-pressed="${personaRecreationMode===id}">${label}</button>`).join('')}</nav>${workspace}`;
+  const modes=[
+    {id:'questionnaire',label:'规范人格',kicker:'结构化核对',icon:'notebook-pen',
+      summary:'把已有设定按字段整理、补齐、校对，生成可保存的底稿。',
+      best:'适合：已有完整人设，想统一格式或补齐字段。',
+      steps:['选择 AstrBot 人格，或粘贴一份人格文本。','按字段核对并选择整理强度。','生成基础稿，审核后保存版本。']},
+    {id:'create',label:'创建人格',kicker:'从零共创',icon:'sparkles',
+      summary:'从一个想法开始，和助手逐步聊出性格、经历、关系与说话方式。',
+      best:'适合：还没有完整人设，或想重新设计一个角色。',
+      steps:['选一个模型，可以直接说出一个念头。','按五个阶段推敲，随时让助手给方向。','整理成稿，保存草稿或复制到 AstrBot。']},
+    {id:'optimize',label:'拟人优化',kicker:'基于现有人设',icon:'sliders-horizontal',
+      summary:'选一份现有人设，带着“哪里不像”逐段推敲，保留原来的她。',
+      best:'适合：已有人设，但说话、反应或关系处理不够像。',
+      steps:['载入现有人设，指出最想改的地方。','围绕身份、性格、说话方式逐段优化。','对照原文确认，再保存或复制正文。']},
+  ];
+  const current=modes.find(mode=>mode.id===personaRecreationMode)||modes[0];
+  const workspace=current.id==='questionnaire'?product.workspace('persona'):product.workspace('designer',current.id);
+  const cards=modes.map(mode=>{
+    const active=mode.id===current.id;
+    return `<button type="button" role="tab" id="persona-mode-${mode.id}" class="persona-mode-card${active?' is-active':''}" data-persona-recreation="${mode.id}" aria-selected="${active}" aria-controls="persona-workspace-panel"><span class="persona-mode-icon">${I(mode.icon)}</span><span class="persona-mode-copy"><small>${mode.kicker}</small><strong>${mode.label}</strong><span>${mode.summary}</span><em>${mode.best}</em></span><span class="persona-mode-current" aria-hidden="true">${active?'当前':''}</span></button>`;
+  }).join('');
+  const steps=current.steps.map((step,index)=>`<li><span>0${index+1}</span><p>${step}</p></li>`).join('');
+  return `<div class="persona-hub">
+    <header class="persona-hub-head"><div class="persona-hub-title"><span class="persona-hub-mark">${I('notebook-pen')}</span><div><p class="persona-hub-kicker">角色 · 人格</p><h2>人格处理</h2><p>按你手上有多少设定选择入口。三种方式共用同一个角色，先产出可核对的底稿/草稿，不会直接覆盖 AstrBot 人设。</p></div></div><span class="persona-hub-badge">三种方式 · 一个角色</span></header>
+    <div class="persona-mode-grid" role="tablist" aria-label="人格处理方式">${cards}</div>
+    <section class="persona-guide" aria-live="polite"><div class="persona-guide-copy"><span class="persona-guide-kicker">当前路径 · ${current.kicker}</span><h3>${current.label}</h3><p>${current.summary}</p><small>${current.best}</small></div><ol class="persona-steps">${steps}</ol><details class="persona-helper"><summary>不知道选哪个？</summary><p>已有完整人格文本、想按字段核对 → 规范人格；只有零散想法、想从零聊出来 → 创建人格；已有人设、但说话或反应不够像 → 拟人优化。</p><p class="persona-helper-note">创建人格与拟人优化共用同一套 5 阶段共创，规范人格是 5 步结构化审核；三种入口都不会直接覆盖 AstrBot 人设，切换入口也不会丢已有草稿。</p></details></section>
+    <section class="persona-workspace" id="persona-workspace-panel" role="tabpanel" aria-labelledby="persona-mode-${current.id}">${workspace}</section>
+  </div>`;
 }
 function renderHostWorkspace(){return product.workspace("host");}
 function renderAppearancePageOriginal(){
@@ -5345,6 +5369,7 @@ document.addEventListener('click',event=>{
   if(el.dataset.personaRecreation){
     if(!['questionnaire','create','optimize'].includes(el.dataset.personaRecreation))return;
     personaRecreationMode=el.dataset.personaRecreation;
+    try{localStorage.setItem('companion.persona-mode',personaRecreationMode);}catch{}
     paintPanel();
     product.mountWorkspace();
     requestAnimationFrame(()=>document.querySelector('[data-persona-recreation="'+personaRecreationMode+'"]')?.focus({preventScroll:true}));
