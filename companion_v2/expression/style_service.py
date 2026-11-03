@@ -279,6 +279,19 @@ def retry_wait_seconds(epoch):
 FAMILY_CACHE_SECONDS = 60
 MAX_FAMILY_CACHE_ENTRIES = 256
 
+# One discovery pass serves every window that is due, not only the first one it
+# meets. The pass stays bounded so a store with many due windows cannot hold the
+# event loop or start a burst of provider calls: at most this many workers are
+# started per pass, and a window that was already served is gated for a minute by
+# its own ``next_checks`` entry. Windows a pass did not reach keep their turn and
+# are served by the next one.
+MAX_SCAN_SERVICES = 8
+
+# A learned batch is worth one line in the log, not one per discovery pass. The
+# notes are keyed by the operation that closed the batch and stay bounded: a very
+# long process may repeat the newest ones, never grow without limit.
+MAX_LEARNED_NOTES = 512
+
 
 class ExpressionStyleService:
     page_size = 16
@@ -290,6 +303,7 @@ class ExpressionStyleService:
         self.pending, self.committed, self.workers, self.results = {}, set(), {}, {}
         self._family_cache = {}
         self.next_checks = {}
+        self._learned_notes = set()
         self._next_discovery_at = None
         self.cursor = 0
         self.closed = False
@@ -1562,30 +1576,88 @@ class ExpressionStyleService:
         return tuple(candidates)
 
     def _scan(self, context, instruction, at, work_key=None):
-        """Prepare one due window; returns True when a worker was started.
+        """Serve one due window; returns True when a worker was started.
 
         ``work_key`` is authoritative when the caller already resolved it from
         the discovered candidate: a group window is scanned through its live
         binding, and both spellings must report one place, not two.
+
+        Only a served window reschedules itself. A refusal — at capacity, not due
+        yet, nothing to prepare — is a look, not a service, and it must not push
+        this window's next check out: that would let one window that keeps
+        failing to prepare delay the work the pass was actually looking for. The
+        same gate is what serves each window at most once per pass, because a
+        started worker moves it a minute ahead of the pass that started it.
         """
         work_key = self._work_key(context) if work_key is None else work_key
         if self.next_checks.get(context.key, at) > at:
             return False
-        self.next_checks[context.key] = at + timedelta(seconds=60)
+        if work_key in self.workers and not self.workers[work_key].done():
+            return False
         policy = self._policy(context, at)
-        active_count = self._active_signal_count(context)
-        if active_count >= policy.active_signal_limit:
+        if self._active_signal_count(context) >= policy.active_signal_limit:
             self.results[work_key] = {"state": "capacity_reached", "limit": policy.active_signal_limit}
             return False
         scan_minutes = self._scan_interval_minutes(policy, context)
         if not self.due(context, at, scan_minutes=scan_minutes):
             return False
-        if self.prepare(context, instruction, at) is None:
+        job = self.prepare(context, instruction, at)
+        if job is None:
             return False
+        learned = self._learned_batch(context, job, work_key)
+        if learned is not None:
+            # These exact samples are already learned, so there is no work and
+            # nothing to ask the model. Preparing a worker for them only buys the
+            # same "already attempted" skip, and spending the pass' service on it
+            # is how a due retry never got its turn. The window goes back to its
+            # own rescan interval, and the note is written once per batch instead
+            # of once per minute.
+            identifier, receipt, epoch = learned
+            self.results[work_key] = {"state": "already_attempted", "task_id": identifier}
+            self.next_checks[context.key] = at + timedelta(minutes=scan_minutes)
+            self._note_learned_once(identifier, job, receipt, epoch=epoch, at=at)
+            return False
+        self.next_checks[context.key] = at + timedelta(seconds=60)
         self.workers[work_key] = asyncio.create_task(
             self.run(context, instruction), name="companion:expression-learn")
         self.workers[work_key].add_done_callback(lambda done: self.app.notify())
         return True
+
+    def _learned_batch(self, context, job, work_key):
+        """The completed receipt already covering this exact batch, or ``None``.
+
+        ``_claim_attempt`` would skip these samples at once, so the point of
+        asking before a worker exists is to not start one: a worker that only
+        skips still takes the pass' turn and writes the same skip line again. The
+        decision is the one the claim makes — the receipt of the current attempt
+        epoch is ``completed`` — and it reads the lease, so a batch retried under
+        a later epoch is judged by that epoch's receipt. An unreadable lease is
+        left to the worker, which already reports it to the page.
+        """
+        request_key = digest([work_key, job["material_hash"], job["policy"].learning_mode])
+        try:
+            epoch = self._lease_epoch(request_key)
+        except TaskError as error:
+            if error.code != "expression_lease_invalid":
+                raise
+            return None
+        identifier = self._attempt_identifier(context, request_key, epoch)
+        receipt = self.operations.get(identifier)
+        if not receipt.is_success:
+            return None
+        value = receipt.value
+        if getattr(value, "state", None) is not OperationState.COMPLETED:
+            return None
+        return identifier, value, epoch
+
+    def _note_learned_once(self, identifier, job, receipt, *, epoch, at):
+        """Say a learned batch is learned once, not on every discovery pass."""
+        if identifier in self._learned_notes:
+            return
+        if len(self._learned_notes) >= MAX_LEARNED_NOTES:
+            self._learned_notes.clear()
+        self._learned_notes.add(identifier)
+        self._note_skipped(identifier, job, receipt, epoch=epoch, at=at)
 
     def start(self, context, instruction):
         if self.closed or KIND not in self.gateway.router.profiles:
@@ -1732,8 +1804,16 @@ class ExpressionStyleService:
         if not bindings and not group_contexts:
             self.next_checks.clear()
             return
+        # A pass serves every window that is due, up to a bounded number of
+        # workers. Stopping at the first window it served is what made one
+        # already-learned window — which is always due, because only a commit
+        # moves its checkpoint — take the whole pass every minute and starve the
+        # retry that had just finished waiting.
+        served = 0
         scanned_private = set()
         for _ in range(min(16, len(bindings))):
+            if served >= MAX_SCAN_SERVICES:
+                break
             context, instruction, _ = bindings[self.cursor % len(bindings)]
             self.cursor += 1
             at = self.tasks.now()
@@ -1771,13 +1851,15 @@ class ExpressionStyleService:
                     continue
                 try:
                     if self._scan(candidate, source_instruction, at):
-                        return
+                        served += 1
                 except TaskError as error:
                     # The failure belongs to the window whose read failed, not to
                     # the binding that happened to seed this discovery pass.
                     self.results[self._work_key(candidate)] = {"state": "blocked", "code": error.code}
         # Group learning is opt-in per group and runs after the private queue.
         for candidate in group_contexts:
+            if served >= MAX_SCAN_SERVICES:
+                break
             at = self.tasks.now()
             # The group work key belongs to the role and the window, so the
             # discovered candidate and the live binding that replaces it report
@@ -1791,7 +1873,7 @@ class ExpressionStyleService:
                 if instruction is None:
                     continue
                 if self._scan(context, instruction, at, work_key):
-                    return
+                    served += 1
             except TaskError as error:
                 self.results[work_key] = {"state": "blocked", "code": error.code}
 
