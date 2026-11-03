@@ -1758,6 +1758,8 @@
         }
         renderBindingEditor(result.configuration);
       }
+      acquaintanceDirectory = null;
+      window.parent?.postMessage?.({channel: "companion-workspace", kind: "host-mappings-updated"}, "*");
       try { await readStatus(); }
       catch { notice("群目标已保存；运行状态暂未读到，可重新读取。", "info"); return; }
       const saved = (bindingConfig?.groups || []).map(groupRouteKey).sort();

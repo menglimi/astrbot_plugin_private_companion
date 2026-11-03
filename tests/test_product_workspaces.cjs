@@ -14,6 +14,41 @@ const source = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/produ
 const designerMemorySource = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/persona-designer-memory.js"), "utf8");
 const relationshipApi = "host/targets/first/roles/role-first/relationships";
 const groupMemoryApi = "host/targets/first/roles/role-first/group-memory";
+const hostSource = fs.readFileSync(path.join(__dirname, "../pages/宿主管理/app.js"), "utf8");
+
+async function saveGroupSelection(h, directory, groups, {statusFailure = false} = {}) {
+  const notifications = [], notices = [];
+  const account = {platform_id: "qq-main", bot_id: "bot-a", account_id: "100"};
+  const personas = [{bot_id: "bot-a", persona_id: "小伴", role_id: "synthetic-role"}];
+  const context = vm.createContext({
+    configuration: {enabled: true, accounts: [account], personas, groups: []}, groups, personas,
+    selectedGroupTargets: () => groups, activeRoleAssignments: () => personas,
+    async api(method, endpoint, body) {
+      assert.equal(method, "POST"); assert.equal(endpoint, "accounts");
+      assert.deepEqual(JSON.parse(JSON.stringify(body.groups)), groups);
+      h.setDirectory(directory);
+      return {configuration: body};
+    },
+    async readStatus() { if (statusFailure) throw new Error("status unavailable"); },
+    notice: message => notices.push(message), publicError: error => error.message,
+    setBusy() {}, renderGroupTargets() {}, updateGroupTargetControls() {},
+    window: {parent: {postMessage(message) {
+      notifications.push(h.events.message({source: h.host.contentWindow, data: message}));
+    }}},
+  });
+  const section = (start, end) => hostSource.slice(hostSource.indexOf(start), hostSource.indexOf(end));
+  vm.runInContext(`let bindingConfig = configuration, bindingsDirty = false,
+    groupTargetsDirty = true, groupTargetDraft = groups, acquaintanceDirectory = {};
+    const accountApi = "accounts";
+    function renderBindingEditor(value) { bindingConfig = value; }
+    ${section("  const groupRouteKey =", "  function groupTargetRows(")}
+    ${section("  const sameGroupTargets =", "  function markGroupTargetsDirty(")}
+    ${section("  async function saveGroupTargets(", "  function updateBindingCheck(")}
+    globalThis.save = saveGroupTargets;`, context);
+  await context.save();
+  await Promise.all(notifications);
+  return {notifications, notices};
+}
 
 async function harness(savedTheme = null, extensions = [], options = {}) {
   const events = {}, calls = [], frames = [], timers = [], warnings = [], loadedScripts = [], fetchCalls = [];
@@ -726,18 +761,53 @@ test("identity workspace opens only the selected configured group's reply and me
   await h.events.message({source: h.identity.contentWindow, data: {channel: "companion-workspace",
     kind: "navigate", target: {tab: "group-memory", platform_id: "qq-main", bot_id: "bot-a",
       account_id: "100", group_id: "300", role_id: "synthetic-role"}}});
-  assert.deepEqual(h.navigations, [["manage", "decision", ""], ["manage", "governance", "relationship"]]);
+  assert.deepEqual(h.navigations, [["manage", "decision", ""], ["manage", "identity-feelings", ""]]);
   await h.events.message({source: h.identity.contentWindow, data: {channel: "companion-workspace",
     kind: "navigate", target: {tab: "group-reply", platform_id: "qq-main", bot_id: "bot-a",
       account_id: "100", group_id: "300", role_id: "another-role"}}});
   await h.events.message({source: h.identity.contentWindow, data: {channel: "companion-workspace",
     kind: "navigate", target: {tab: "group-memory", platform_id: "qq-main", bot_id: "wrong-bot",
       account_id: "100", group_id: "300", role_id: "synthetic-role"}}});
-  assert.deepEqual(h.navigations, [["manage", "decision", ""], ["manage", "governance", "relationship"]],
+  assert.deepEqual(h.navigations, [["manage", "decision", ""], ["manage", "identity-feelings", ""]],
     "unknown roles and group routes cannot redirect the workspace");
   const navigationFailures = h.identity.messages.filter(message => message.kind === "navigate-failed");
   assert.equal(navigationFailures.length, 2);
   assert.match(navigationFailures[0].message, /角色映射已经变化.*重新读取群聊目录/);
+});
+
+for (const statusFailure of [false, true]) test(`saving a group makes its buttons usable without reloading (status failure: ${statusFailure})`, async () => {
+  const h = await harness();
+  h.product.mountWorkspace();
+  const directory = JSON.parse(JSON.stringify(h.catalog));
+  const group = {target_id: "added-group", scope_kind: "group", group_id: "300",
+    platform_id: "qq-main", bot_id: "bot-a", account_id: "100", roles: [{role_id: "synthetic-role",
+      reply_api: "/" + HOST + "/targets/added-group/roles/synthetic-role/reply",
+      group_memory_api: "/" + HOST + "/targets/added-group/roles/synthetic-role/group-memory"}]};
+  directory.targets.push(group);
+  const selection = {platform_id: group.platform_id, bot_id: group.bot_id,
+    account_id: group.account_id, group_id: group.group_id};
+  const saved = await saveGroupSelection(h, directory, [selection], {statusFailure});
+  assert.equal(saved.notifications.length, 1, "saving must refresh the cottage's navigation directory");
+  for (const tab of ["group-reply", "group-memory"]) {
+    await h.events.message({source: h.identity.contentWindow, data: {channel: "companion-workspace",
+      kind: "navigate", target: {...selection, role_id: "synthetic-role", tab}}});
+  }
+  assert.equal(h.identity.messages.filter(message => message.kind === "navigate-failed").length, 0);
+  assert.equal(h.product.selection().target_id, group.target_id);
+  assert.deepEqual(h.navigations, [["manage", "decision", ""], ["manage", "identity-feelings", ""]]);
+  assert.match(h.product.workspace("relationships"), /product-workspace-frame/);
+  await h.request(h.relationships, "GET", "group-memory");
+  assert.equal(h.calls.at(-1).endpoint, "targets/added-group/roles/synthetic-role/group-memory");
+  h.product.unmountWorkspace();
+});
+
+test("group archive mounts with only a group memory endpoint and never falls back to private records", async () => {
+  const h = await harness(null, [], {groupMode: true});
+  assert.equal(h.product.role().relationships_api, null);
+  assert.match(h.product.workspace("relationships"), /product-workspace-frame/);
+  h.catalog.targets[0].roles[0].group_memory_api = null;
+  h.catalog.targets[0].roles[0].relationships_api = "/" + HOST + "/" + relationshipApi;
+  assert.doesNotMatch(h.product.workspace("relationships"), /product-workspace-frame/);
 });
 
 test("identity workspace can navigate to first connection for group-target setup", async () => {
@@ -867,7 +937,7 @@ test("workspace links remain inside the cottage and preserve embedded tab destin
   assert.equal(h.product.workspaceAddress("life", "reading"), "#life/diary/reading");
   assert.equal(h.product.workspaceAddress("life", "sleep"), "#life/diary/sleep");
   assert.equal(h.product.workspaceAddress("persona"), "#manage/governance/questionnaire");
-  assert.equal(h.product.workspaceAddress("relationships"), "#manage/governance/relationship");
+  assert.equal(h.product.workspaceAddress("relationships"), "#manage/identity-feelings");
   assert.equal(h.product.workspaceAddress("missing"), "");
 });
 
