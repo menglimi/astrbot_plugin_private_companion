@@ -43,7 +43,7 @@ from astrbot_host.core_reply_tool_dispatch import (
     CORE_TOOL_DISPATCH_EXTRA, observe_core_tool_dispatch_begin, restore_core_tool_dispatch,
 )
 from astrbot_host.core_reply_turn_gate import (
-    RESPONSE_STREAM, _blank, _downstream_buffers, _restore_blank,
+    DISPATCH, EXHAUSTED_REPLY, RESPONSE_STREAM, STEP, _blank, _downstream_buffers, _restore_blank,
     _turn_round, close_core_reply_turn, install_core_reply_turn, turn_gate,
 )
 
@@ -221,12 +221,42 @@ def sent_text(event):
                    if hasattr(message, "get_plain_text"))
 
 
+class _StaticRunner:
+    """A runner the gate can install on, for the exits outside the agent loop."""
+
+    streaming = False
+
+    def __init__(self, event, used=1, budget=8, aborted=False):
+        self.run_context = NS(context=NS(event=event))
+        self._step_budget_max = budget
+        self._step_budget_used = used
+        self._aborted = aborted
+
+    async def _iter_llm_responses_with_fallback(self):
+        yield  # pragma: no cover
+
+    async def _handle_function_tools(self, *args, **kwargs):
+        yield  # pragma: no cover
+
+    async def step(self):
+        yield  # pragma: no cover
+
+    def done(self):
+        return False
+
+    def was_aborted(self):
+        return self._aborted
+
+
 class TurnGateTests(unittest.IsolatedAsyncioTestCase):
     async def run_turn(self, rounds, *, streaming=False, buffered=True, observe=True, install=True,
-                       event=None, max_step=8, stop_after=False):
+                       event=None, max_step=8, stop_after=False, participation=None, close=True):
         """Run one turn end to end and return what a chat would see."""
         event = event or GateEvent(buffered=buffered)
-        event.set_extra(CORE_REPLY_CONTEXT_EXTRA, {"prepared": {"channel": "group", "event_ref": "turn-gate"}})
+        extra = {"prepared": {"channel": "group", "event_ref": "turn-gate"}}
+        if participation is not None:
+            extra["group_participation"] = participation
+        event.set_extra(CORE_REPLY_CONTEXT_EXTRA, extra)
         provider = ScriptedProvider(rounds)
         tool = ParticipationTool()
         tool.stop_after = stop_after
@@ -242,7 +272,8 @@ class TurnGateTests(unittest.IsolatedAsyncioTestCase):
                     gate["state"] = install_core_reply_turn(event, run_context)
 
             async def on_agent_done(self, run_context, response):
-                await close_turn(event, response, release=True)
+                if close:
+                    await close_turn(event, response, release=True)
                 restore_core_tool_dispatch(event, run_context)
 
         runner = ToolLoopAgentRunner()
@@ -453,7 +484,7 @@ class TurnGateTests(unittest.IsolatedAsyncioTestCase):
     async def test_the_gate_is_installed_once_per_turn(self):
         result = await self.run_turn([tool_round(), text_round(OTHER)])
         state = result["gate"]
-        self.assertEqual(list(state["methods"]), [RESPONSE_STREAM, "step"])
+        self.assertEqual(list(state["methods"]), [RESPONSE_STREAM, DISPATCH, STEP])
         self.assertTrue(state["closed"])
         self.assertTrue(state["restored"])
 
@@ -468,20 +499,132 @@ class TurnGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNot(second["gate"], first["gate"])
         self.assertEqual(second["text"], OTHER, second["visible"])
 
-    # -- fail open ------------------------------------------------------------
-    async def test_without_the_dispatch_observer_nothing_is_withheld(self):
-        # The observer owns the point where withheld text goes back, so the gate
-        # must refuse to run rather than risk corrupting the assistant history.
-        result = await self.run_turn([tool_round(), text_round(BODY)], observe=False)
-        self.assertIsNone(result["gate"])
-        self.assertIsNone(turn_gate(result["event"]))
-        self.assertEqual(result["visible"], [BODY, BODY], "unchanged from today without the gate")
+    # -- the gate brings its own restore point --------------------------------
+    async def test_without_the_dispatch_observer_the_turn_says_one_thing(self):
+        # The gate restores the withheld text itself, so a host that installs no
+        # dispatch observer must still get one message per turn.  Without this the
+        # tool round's prose and the answer go out as two messages.
+        result = await self.run_turn([tool_round(), text_round(OTHER)], observe=False)
+        self.assertIsNotNone(result["gate"], "the gate must install without the observer")
+        self.assertIs(turn_gate(result["event"]), result["gate"])
+        self.assertEqual(result["text"], OTHER, result["visible"])
 
-    async def test_without_an_active_runner_nothing_is_withheld(self):
+    async def test_without_the_dispatch_observer_the_draft_returns_to_history(self):
+        # The restore has to happen before the SDK writes the assistant message,
+        # otherwise withholding the text would corrupt the history instead.
+        result = await self.run_turn([tool_round(), text_round(OTHER)], observe=False)
+        self.assertEqual(result["provider"].responses[0].completion_text, BODY)
+        self.assertIn(BODY, [part.text for part in result["messages"][1].content],
+                      "history lost the prose")
+        self.assertNotIn(DISPATCH, result["runner"].__dict__)
+
+    async def test_the_host_binding_missing_still_finds_the_runner(self):
+        # A host that files the runner under another key makes its own lookup miss.
+        # The gate must still recognise this turn's runner rather than fail open.
         with patch("astrbot_host.core_reply_tool_dispatch.active_core_runner", return_value=None):
+            result = await self.run_turn([tool_round(), text_round(OTHER)])
+        self.assertIsNotNone(result["gate"], "the gate must still install")
+        self.assertEqual(result["text"], OTHER, result["visible"])
+
+    async def test_without_any_registered_runner_nothing_is_withheld(self):
+        # No registry entry at all: the runner cannot be proven to be this turn's,
+        # so the round is left untouched rather than attributed to another session.
+        with patch("astrbot_host.core_reply_tool_dispatch.active_core_runner", return_value=None), \
+                patch("astrbot_host.core_reply_turn_gate._runner_by_identity", return_value=None):
             result = await self.run_turn([tool_round(), text_round(BODY)])
         self.assertIsNone(result["gate"])
         self.assertEqual(result["visible"], [BODY, BODY])
+
+    # -- a turn that said nothing at all --------------------------------------
+    async def test_a_turn_that_exhausts_its_steps_without_any_text_still_says_something(self):
+        # Every round called a tool and wrote nothing, so there is no draft to
+        # release.  Ending there is a silent turn: one short line takes its place,
+        # exactly once.
+        result = await self.run_turn(
+            [tool_round(""), tool_round("", call_id="call-2"), silent_round()], max_step=2)
+        self.assertEqual((result["text"] + result["sent"]).count(EXHAUSTED_REPLY), 1,
+                         result["visible"])
+        self.assertTrue(result["gate"]["said"])
+
+    async def test_a_turn_that_exhausts_its_steps_reaches_the_reader_without_the_close_hook(self):
+        # The step loop is its own exit: a host that never calls the close hook must
+        # still get the floor line, so the turn does not depend on one integration.
+        result = await self.run_turn(
+            [tool_round(""), tool_round("", call_id="call-2"), silent_round()],
+            max_step=2, close=False)
+        self.assertEqual((result["text"] + result["sent"]).count(EXHAUSTED_REPLY), 1,
+                         result["visible"])
+
+    async def test_a_turn_that_exhausts_its_steps_without_any_text_still_says_something_when_streaming(self):
+        result = await self.run_turn(
+            [tool_round(""), tool_round("", call_id="call-2"), silent_round()],
+            max_step=2, streaming=True)
+        self.assertEqual((result["text"] + result["sent"]).count(EXHAUSTED_REPLY), 1,
+                         result["visible"])
+
+    async def test_a_turn_that_keeps_listening_stays_silent_when_the_budget_runs_out(self):
+        # choose(mode=skip) means the turn decided not to speak.  The floor line
+        # must not turn that decision into a reply.
+        result = await self.run_turn(
+            [tool_round(""), tool_round("", call_id="call-2"), silent_round()],
+            max_step=2, participation={"mode": "skip"})
+        self.assertNotIn(EXHAUSTED_REPLY, result["text"] + result["sent"], result["visible"])
+        self.assertFalse(result["gate"]["said"])
+
+    async def test_a_turn_the_user_stopped_stays_silent_when_the_budget_runs_out(self):
+        # The user asked for silence; a floor line would be a reply they stopped.
+        event = GateEvent()
+        event.set_extra(CORE_REPLY_CONTEXT_EXTRA, {"prepared": {}})
+        runner = _StaticRunner(event, used=9, aborted=True)
+        _ACTIVE_AGENT_RUNNERS[event.unified_msg_origin] = runner
+        self.addCleanup(_ACTIVE_AGENT_RUNNERS.pop, event.unified_msg_origin, None)
+        observe_core_tool_dispatch_begin(event, runner.run_context)
+        gate = install_core_reply_turn(event, runner.run_context)
+        self.assertIsNotNone(gate)
+        self.addCleanup(restore_core_tool_dispatch, event, runner.run_context)
+        await close_turn(event, None, release=True)
+        self.assertNotIn(EXHAUSTED_REPLY, sent_text(event))
+        self.assertFalse(gate["said"])
+
+    async def test_a_turn_that_said_something_is_never_given_a_floor_line(self):
+        # The budget is exhausted and the last round was forced, but the turn did
+        # put a word on the wire, so the floor line would be a second message.
+        result = await self.run_turn(
+            [tool_round(""), tool_round("", call_id="call-2"), text_round(OTHER)], max_step=2)
+        self.assertEqual(result["text"] + result["sent"], OTHER, result["visible"])
+        self.assertTrue(result["gate"]["said"])
+
+    async def test_a_close_without_a_response_says_the_draft_instead_of_dropping_it(self):
+        # No final response means nothing superseded the draft, so closing must not
+        # treat it as "the answer wins" and throw the turn's only text away.
+        event = GateEvent()
+        event.set_extra(CORE_REPLY_CONTEXT_EXTRA, {"prepared": {}})
+        runner = _StaticRunner(event)
+        _ACTIVE_AGENT_RUNNERS[event.unified_msg_origin] = runner
+        self.addCleanup(_ACTIVE_AGENT_RUNNERS.pop, event.unified_msg_origin, None)
+        observe_core_tool_dispatch_begin(event, runner.run_context)
+        gate = install_core_reply_turn(event, runner.run_context)
+        self.assertIsNotNone(gate)
+        self.addCleanup(restore_core_tool_dispatch, event, runner.run_context)
+        gate["draft"] = {"fragments": [], "text": BODY, "chain": None}
+        await close_turn(event, None, release=True)
+        self.assertIn(BODY, sent_text(event), "the draft must reach the event")
+        self.assertEqual(gate["released"], 1)
+        self.assertIsNone(gate["draft"])
+
+    async def test_a_close_with_no_draft_and_no_response_still_says_one_line(self):
+        # An exhausted turn that also lost its draft must not close silently.
+        event = GateEvent()
+        event.set_extra(CORE_REPLY_CONTEXT_EXTRA, {"prepared": {}})
+        runner = _StaticRunner(event, used=9)
+        _ACTIVE_AGENT_RUNNERS[event.unified_msg_origin] = runner
+        self.addCleanup(_ACTIVE_AGENT_RUNNERS.pop, event.unified_msg_origin, None)
+        observe_core_tool_dispatch_begin(event, runner.run_context)
+        gate = install_core_reply_turn(event, runner.run_context)
+        self.assertIsNotNone(gate)
+        self.addCleanup(restore_core_tool_dispatch, event, runner.run_context)
+        await close_turn(event, None, release=True)
+        self.assertIn(EXHAUSTED_REPLY, sent_text(event))
 
     async def test_a_runner_without_a_response_stream_is_left_alone(self):
         runner = NS(run_context=NS(context=NS(event=None)), _handle_function_tools=lambda: None,
