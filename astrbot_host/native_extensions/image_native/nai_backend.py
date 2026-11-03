@@ -54,9 +54,17 @@ class NAIImageBackend:
             capability = api.capability_status(self)
             available = capability.get("available") is True
             call_mode = str(status.get("call_mode", "direct"))
-            operations = ["generate"] if available else []
-            if available and call_mode == "openai" and status.get("reference_supported") is True:
-                operations.append("edit")
+            declared = capability.get("operations", status.get("operations"))
+            if isinstance(declared, (list, tuple)):
+                operations = [operation for operation in ("generate", "edit")
+                              if available and operation in declared]
+            else:
+                # Older NAI APIs do not declare operations. Both transports can
+                # carry references; model-specific validation remains in NAI.
+                operations = ["generate"] if available else []
+                if (available and call_mode in ("openai", "novelai")
+                        and status.get("reference_supported") is True):
+                    operations.append("edit")
             result.update(available=available, reason=str(capability.get("reason", ""))[:80],
                           call_mode=call_mode,
                           api_profile=str(status.get("api_profile", ""))[:40],

@@ -21,7 +21,7 @@ class NAIBackendTests(unittest.IsolatedAsyncioTestCase):
         self.mode = "openai"
         self.available = True
         self.api = NS(
-            status=lambda: {"call_mode": self.mode, "reference_supported": self.mode == "openai",
+            status=lambda: {"call_mode": self.mode, "reference_supported": self.mode in ("openai", "novelai"),
                             "api_profile": "starbridge", "default_model": "nai-diffusion-5-full",
                             "default_style": "custom", "default_size": "竖图",
                             "prompt_format": "nai tag模式", "reference_mode": "director",
@@ -74,6 +74,43 @@ class NAIBackendTests(unittest.IsolatedAsyncioTestCase):
         self.metadata = NS(activated=True, star_cls=NS(extension_api=self.api))
         self.available = False
         self.assertEqual(self.backend.operations, ())
+
+    def test_novelai_transport_keeps_reference_editing_for_legacy_api(self):
+        self.mode = "novelai"
+        self.assertEqual(self.backend.operations, ("generate", "edit"))
+        self.assertEqual(self.backend.status()["call_mode"], "novelai")
+
+    def test_explicit_operations_override_transport_inference(self):
+        for mode in ("openai", "novelai", "future"):
+            with self.subTest(mode=mode):
+                self.mode = mode
+                self.api.capability_status = lambda owner: {
+                    "available": self.available, "operations": ["generate"],
+                }
+                self.assertEqual(self.backend.operations, ("generate",))
+                self.api.capability_status = lambda owner: {
+                    "available": self.available, "operations": ["generate", "edit", "unknown"],
+                }
+                self.assertEqual(self.backend.operations, ("generate", "edit"))
+                self.available = False
+                self.assertEqual(self.backend.operations, ())
+                self.available = True
+        self.api.capability_status = lambda owner: {"available": True, "operations": []}
+        self.assertEqual(self.backend.operations, ())
+
+    def test_status_operations_are_used_when_capability_has_no_operation_list(self):
+        self.api.status = lambda: {"call_mode": "novelai", "operations": ["generate", "edit"]}
+        self.assertEqual(self.backend.operations, ("generate", "edit"))
+
+    async def test_novelai_edit_dispatches_references_without_changing_transport(self):
+        self.mode = "novelai"
+        reference = ReferenceImage("reference", image_bytes("red"), "source", "0" * 64)
+        result = await self.backend.execute(self.invocation("edit", reference_ids=("reference",)),
+            (reference,), self.dispatch)
+        self.assertEqual(self.requests[0]["workflow_kind"], "edit")
+        self.assertEqual(len(self.requests[0]["reference_image_paths"]), 1)
+        self.assertEqual(result.images, (image_bytes("blue"),))
+        self.assertEqual(self.backend.status()["call_mode"], "novelai")
 
     def test_reload_resolves_the_current_instance_without_cached_credentials(self):
         self.metadata.star_cls = None

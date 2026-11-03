@@ -4,6 +4,7 @@
 
 - `astrbot_host/native_extensions/image_native/output_routing.py` 按文生图、改图各自保存的队列顺序选择后端。NAI 使用已经加载的 NAI 插件公开接口，不复制密钥或地址。
 - 图片能力仍由内置 `image.native` 登记、授权和保存产物。NAI 的付费调用在 `companion_v2/model_gateway/images.py` 的 `IMAGE_PROVIDERS` 中登记为 `image.nai`，支持文生图及接口实际允许的参考图改图，不登记为文字模型。
+- 可用操作优先读取 NAI 联动 API 的 `operations` 声明；旧版接口未声明时，根据 `reference_supported` 为 OpenAI 和 NovelAI 两种接入保留参考图改图。`call_mode` 保留真实接入方式，不把 NovelAI 伪装成 OpenAI。传输协议和改图入口可用均不代表具体模型支持精准参考；型号限制仍由 NAI 插件在提交前校验。
 - 原生聊天工具与陪伴回复中的图片工具均携带原始子任务的运行凭证。`NativeExtensionRegistry` 经 `LocalModelGateway.image_session` 建立一次性调用边界，由图片适配器传给 NAI 后端；运行凭证和回调不进入 JSON、提示词、持久化回执或第三方请求。
 - 网关为原始子任务建立调用计划，并经过现有 `BudgetLedger.reserve/dispatch/settle`。调用记录、身份账号索引、耗时、固定失败分类和响应诊断使用同一套网关台账。重启或结果未知后不能重开同一调用。
 
