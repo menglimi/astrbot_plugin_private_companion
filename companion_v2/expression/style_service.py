@@ -41,6 +41,7 @@ from collections.abc import Mapping
 from datetime import datetime, timedelta
 import json
 from logging import getLogger
+from time import perf_counter
 
 from companion_v2.conversation.foreground import (BackgroundPromptTrigger, PromptMaterial, PromptRequest,
     SealedForegroundContext)
@@ -50,6 +51,7 @@ from companion_v2.execution.models import (Lane, ProviderBinding, SideEffect, TE
 from companion_v2.execution.runner import ExactTaskRunner
 from companion_v2.execution.service import outcome
 from companion_v2.foundation.refs import OperationRef, ScopeKind, VersionRef
+from companion_v2.model_gateway.cache_diagnostics import estimated_text_tokens
 from companion_v2.model_gateway.models import ModelTaskProfile
 from companion_v2.storage.models import OperationState
 from companion_v2.storage.repositories import OperationRepository
@@ -177,6 +179,38 @@ def trim_rounds(limit):
 # A bound keeps a pathological estimate from looping forever; it is exactly the
 # number of steps the read window needs, never fewer than the trim policy uses.
 MAX_TRIM_ROUNDS = trim_rounds(RULE_READ_LIMIT)
+
+
+def _milliseconds(started):
+    """One phase's measured wall time; observation only, never an input to a decision."""
+    return max(0, round((perf_counter() - started) * 1000))
+
+
+def input_estimate_tokens(*texts):
+    """A log-only input estimate built from the gateway's own token heuristic.
+
+    The wire carries the role prompt, the task instruction and the material pack
+    as separate parts, so the estimate sums them. The CJK/ASCII formula itself
+    stays in the model gateway: reusing it keeps this figure comparable with the
+    gateway's cache diagnostics instead of introducing a second estimate.
+    """
+    return sum(estimated_text_tokens(text) for text in texts if type(text) is str and text)
+
+
+def _carried_flag(job, completion, name):
+    """One retry/limit flag as ``yes``/``no``/``unknown``, never a guess.
+
+    The gateway's one ceiling-raise retry and this owner's one truncation degrade
+    retry are separate changes, and neither may be assumed here: a hard-coded
+    ``no`` would keep claiming "no retry" after either merges, which is the one
+    thing a log line must not do. Only a boolean this attempt actually carries is
+    reported; anything a build does not carry stays ``unknown``.
+    """
+    for source in (job, completion):
+        value = source.get(name) if isinstance(source, Mapping) else getattr(source, name, None)
+        if type(value) is bool:
+            return "yes" if value else "no"
+    return "unknown"
 
 
 def parse_output(raw, *, allowed_evidence, default_channels=None):
@@ -316,18 +350,33 @@ class ExpressionStyleService:
 
         ``run`` stores the same code it logs, so the page and the log agree: the
         supervisor's ``worker_error`` is replaced by the owner's own failure code
-        when there is one. ``retry`` names what happens to the batch next — the
+when there is one. ``retry`` names what happens to the batch next — the
         next epoch after its lease, or immediately for a known, side-effect-free
-        round such as an output-ceiling truncation.
+        round such as an output-ceiling truncation. ``stage`` and the partial
+        phase timings come from the observation ``generate`` left in the job, so a
+        round that never reached its commit still says how far it got — including
+        a model wait that ended in the error the gateway raised.
         """
         state = getattr(result.task, "state", None)
         if state == "succeeded":
             return
+        # ``generate`` writes its stage and timings into the pending copy of the
+        # job; the caller's dict was snapshotted when the attempt was admitted.
+        observation = self.pending.get(identifier) or job
+        timings = observation.get("timings") or {}
+
+        def timing(name):
+            value = timings.get(name)
+            return "unavailable" if value is None else str(value)
+
         logger.warning("[CompanionV2] 表达学习本轮未提交 task=%s material=%s mode=%s state=%s "
-                       "code=%s epoch=%s retry=%s", identifier,
-                       str(job.get("material_hash") or "")[:12], job["policy"].learning_mode,
+                       "code=%s stage=%s committed=no retry=%s epoch=%s truncated=%s elapsed_assemble_ms=%s "
+                       "elapsed_wait_ms=%s elapsed_parse_ms=%s elapsed_commit_ms=%s", identifier,
+                       str(observation.get("material_hash") or "")[:12], observation["policy"].learning_mode,
                        state, result.failure_code or getattr(result.task, "reason", None),
-                       epoch, retry)
+observation.get("stage") or "assemble", retry, epoch,
+                       "yes" if observation.get("truncated") else "no", timing("assemble_ms"),
+                       timing("wait_ms"), timing("parse_ms"), timing("commit_ms"))
 
     def _note_truncated_retry(self, identifier, job, epoch, limit, retry_limit):
         """Say that a cut-off round is retried now, with fewer candidates.
@@ -856,8 +905,89 @@ class ExpressionStyleService:
                 ceiling = min(ceiling, limit)
         return max(1, ceiling)
 
+    def _note_prepared(self, task_id, job, *, rules, limit, input_estimate, input_ceiling):
+        """What this round is about to send, as counts only — never its text."""
+        logger.info("[CompanionV2] 表达学习组装完成 task=%s material=%s mode=%s samples=%d "
+                    "sample_chars=%d existing_read=%d existing_sent=%d input_est_tokens=%d "
+                    "input_ceiling=%s output_ceiling=%d declared=%d trimmed=%d",
+                    task_id, str(job.get("material_hash") or "")[:12], job["policy"].learning_mode,
+                    len(job["samples"].samples), job["sample_document"]["characters"],
+                    len(job["existing_rules"]), len(rules), input_estimate,
+                    "unavailable" if input_ceiling is None else input_ceiling,
+                    self.gateway.router.profiles[KIND].max_output_tokens, limit,
+                    len(job["existing_rules"]) - len(rules))
+
+    @staticmethod
+    def _note_model_returned(task_id, job, completion, wait_ms):
+        """The raw size and visible size of one answer, without one word of it.
+
+        ``finish_reason`` is the captured classification when the adapter reports
+        one. A non-conversation body cut by the ceiling never reaches this line:
+        the gateway raises ``model_output_truncated`` first, so a decoded draft
+        here is a complete ``stop`` result.
+
+        ``degraded`` and ``ceiling_raised`` are read from whatever this attempt
+        actually carries (see ``carried_flag``); neither retry exists in a build
+        that does not expose it, so both say ``unknown`` rather than ``no``.
+        """
+        draft = completion.draft
+        text = draft.text if draft is not None else ""
+        visible = text.strip()
+        finish_reason = (getattr(completion.captured_output, "finish_reason", None)
+                         or ("stop" if draft is not None else "unavailable"))
+        logger.info("[CompanionV2] 表达学习模型返回 task=%s material=%s mode=%s raw_chars=%d "
+                    "visible_chars=%d visible_tokens=%d finish_reason=%s truncated=%s degraded=%s "
+                    "ceiling_raised=%s wait_ms=%d",
+                    task_id, str(job.get("material_hash") or "")[:12], job["policy"].learning_mode,
+                    len(text), len(visible), estimated_text_tokens(visible), finish_reason,
+                    "yes" if finish_reason == "length" else "no",
+                    _carried_flag(job, completion, "degraded"),
+                    _carried_flag(job, completion, "ceiling_raised"), wait_ms)
+
+    @staticmethod
+    def _note_parsed(task_id, job, proposed, counters):
+        """How many candidates the model proposed and what happened to each."""
+        logger.info("[CompanionV2] 表达学习解析结果 task=%s material=%s mode=%s proposed=%d "
+                    "dedup_signature=%d dedup_form=%d capacity_dropped=%d inserted=%d pending=%d "
+                    "adopted=%d support=%d",
+                    task_id, str(job.get("material_hash") or "")[:12], job["policy"].learning_mode,
+                    proposed, counters["signature"], counters["form"], counters["capacity"],
+                    counters["inserted"], counters["inserted"], 0, counters["support"])
+
+    def _checkpoint_state(self, context):
+        """Whether this window holds a scan checkpoint; read-only, log-only.
+
+        The scheduler advances the checkpoint before the model round, so having
+        one at commit time does not mean *this* run advanced it. The value names
+        presence, not progress; reading it twice around the commit and comparing
+        would be the only way to print ``advanced`` truthfully.
+        """
+        try:
+            _, closed_at = self._cursor(context)
+        except Exception:  # observation must never turn a committed run into a failure
+            return "unavailable"
+        return "present" if closed_at is not None else "absent"
+
+    def _note_committed(self, task_id, job, run_id, *, usage_known, inserted, timings, started):
+        """The commit decision and the four measured phases of this round."""
+        logger.info("[CompanionV2] 表达学习提交 task=%s run=%s material=%s mode=%s committed=yes "
+                    "checkpoint=%s quota=%s inserted=%d elapsed_assemble_ms=%d elapsed_wait_ms=%d "
+                    "elapsed_parse_ms=%d elapsed_commit_ms=%d elapsed_total_ms=%d",
+                    task_id, run_id, str(job.get("material_hash") or "")[:12],
+                    job["policy"].learning_mode, self._checkpoint_state(job["context"]),
+                    "accounted" if usage_known else "unconfirmed", inserted,
+                    timings.get("assemble_ms", 0), timings.get("wait_ms", 0),
+                    timings.get("parse_ms", 0), timings.get("commit_ms", 0),
+                    _milliseconds(started))
+
     async def generate(self, run):
         job = self.pending[run.task.task_id]
+        # One word for everything before the model round: ``run``'s own early
+        # failures and this attempt's guard/validate/assembly all report
+        # ``stage=assemble``, so the same failure is not spelled two ways.
+        job["stage"] = "assemble"
+        job["timings"] = timings = {}
+        started = perf_counter()
         context = job["context"]
         await self.guard(context, job["instruction"])
         run.validate()
@@ -896,14 +1026,43 @@ class ExpressionStyleService:
             logger.info("[CompanionV2] 表达学习材料超出模型档案，已按预算裁剪参考规则 "
                         "task=%s rules=%d trimmed=%d ceiling=%s",
                         run.task.task_id, len(rules), job["trimmed_rules"], job["input_ceiling"])
-        completion = await self.gateway.generate(run, request, allow_ceiling_retry=False)
+        timings["assemble_ms"] = _milliseconds(started)
+        material = next((item.payload for item in request.context.materials
+                         if item.purpose == "role_expression_samples"), "")
+        self._note_prepared(run.task.task_id, job, rules=rules, limit=limit,
+                            input_estimate=input_estimate_tokens(
+                                request.role_instruction, request.instruction, material),
+                            input_ceiling=ceiling)
+        job["stage"] = "model"
+        waiting = perf_counter()
+        try:
+            # The owner keeps the gateway's ceiling-raise retry off for this task:
+            # one truncation degrade of its own is the only retry it wants (#456).
+            completion = await self.gateway.generate(run, request, allow_ceiling_retry=False)
+        except BaseException as error:
+            # Observation only: the gateway error keeps propagating unchanged.
+            # The wait is measured on the same clock as the success path, because
+            # a failing round is exactly the one whose time budget matters.
+            timings["wait_ms"] = _milliseconds(waiting)
+            job["truncated"] = getattr(error, "code", None) == "model_output_truncated"
+            raise
+        timings["wait_ms"] = _milliseconds(waiting)
+        self._note_model_returned(run.task.task_id, job, completion, timings["wait_ms"])
+        job["stage"] = "parse"
         try:
             if completion.draft is None:
                 raise TaskError("expression_output_invalid", "style learning needs a complete response")
+            parsing = perf_counter()
             output = parse_output(completion.draft.text,
                 allowed_evidence=sample_handles(job["samples"]),
                 default_channels=(context.scope.kind.value,))
+            timings["parse_ms"] = _milliseconds(parsing)
             await self.guard(context, job["instruction"])
+            job["stage"] = "commit"
+            # Counters exist only for the parse log line; the accepted list and
+            # every write keep exactly the order and conditions they had.
+            counters = {"signature": 0, "form": 0, "capacity": 0, "support": 0}
+            committing = perf_counter()
             with self.runtime.transaction() as connection:
                 run.validate()
                 run.begin_effect()
@@ -947,14 +1106,20 @@ class ExpressionStyleService:
                                 window={**job["sample_document"], "context_key": job["sample_context_key"]},
                                 handles=item.evidence_handles,
                                 original_handles=json.loads(prior["evidence_json"]))
+                            counters["support"] += 1
+                        counters["form"] += 1
                         continue
                     if signature in signatures:
+                        counters["signature"] += 1
                         continue
                     signatures.add(signature)
                     if identity is not None:
                         forms[identity] = None
                     if len(accepted_signals) < remaining:
                         accepted_signals.append(item)
+                    else:
+                        counters["capacity"] += 1
+                counters["inserted"] = len(accepted_signals)
                 run_id = "expression-run:" + digest([context.key, job["request_key"]])
                 at = stamp(self.tasks.now())
                 connection.execute("""INSERT INTO expression_style_runs VALUES
@@ -978,10 +1143,17 @@ class ExpressionStyleService:
                     next_state=OperationState.COMPLETED, observed_at=self.tasks.now()))
                 self.committed.add(run.task.task_id)
                 run.record_operation(run.task.task_id)
+            timings["commit_ms"] = _milliseconds(committing)
+            self._note_parsed(run.task.task_id, job, len(output.signals), counters)
+            self._note_committed(run.task.task_id, job, run_id, usage_known=completion.usage_known,
+                                 inserted=len(accepted_signals), timings=timings, started=started)
             self.app.notify()
             return TaskResult("succeeded", effect="committed", result_ref=run_id,
                 receipt_ref=run.task.task_id, operation_id=run.task.task_id)
-        except BaseException:
+        except BaseException as error:
+            # Same cleanup and propagation as before; only the failure annotation
+            # is new so the owner's "not committed" line can name the truncation.
+            job["truncated"] = job.get("truncated") or getattr(error, "code", None) == "model_output_truncated"
             if run.task.task_id not in self.committed:
                 self.gateway.ledger.discard(completion.call_id)
             raise
@@ -1309,6 +1481,14 @@ class ExpressionStyleService:
                     if error:
                         self.results[key] = {"state": "failed",
                                              "code": getattr(error, "code", "expression_learn_failed")}
+                        # A worker that raised before its model round (a binding,
+                        # sample or admission error) never reaches the owner's own
+                        # "not committed" line; without this one it disappears into
+                        # the generic supervisor error. `stage=assemble` is the same
+                        # word generate uses for everything before the model round.
+                        # No window key or text here.
+                        logger.warning("[CompanionV2] 表达学习工作线程失败 stage=assemble code=%s retry=next_scan",
+                                       getattr(error, "code", "expression_learn_failed"))
         if self.workers or KIND not in self.gateway.router.profiles:
             return
         at = self.tasks.now()
