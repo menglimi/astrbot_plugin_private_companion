@@ -19,11 +19,48 @@ def images(owner, row, context, at):
         capability=descriptor.binding.capability, authorizer=_SourceAccess(external, descriptor, context), at=at)
 
 
+def _origin_keys(owner, context):
+    """同一角色/窗口的旧 origin key 也算图库内容。
+
+    ``context.key`` 把身份绑定和角色绑定 revision 都算进去：保存一次角色档案、
+    重新确认映射或换一轮会话都会得到新的 key。图库如果只认当前 key，之前
+    生成的图片会整体消失。这里按“角色主体 + 窗口作用域”聚合历史 key。
+    """
+    scope = context.role_binding.scope
+    role = context.role_binding.role
+    rows = owner.runtime.read_all(
+        "SELECT DISTINCT context_key, context_json FROM conversation_native_turns")
+    keys = []
+    for row in rows:
+        try:
+            data = json.loads(row["context_json"] or "{}")
+        except (TypeError, ValueError):
+            continue
+        binding = data.get("role_binding") or {}
+        candidate_role = binding.get("role") or {}
+        candidate_scope = binding.get("scope") or {}
+        if candidate_role.get("subject_id") != role.subject_id:
+            continue
+        if (candidate_scope.get("platform"), candidate_scope.get("account_id"),
+                candidate_scope.get("kind"), candidate_scope.get("native_scope_id")) != (
+                scope.platform, scope.account_id, scope.kind.value, scope.native_scope_id):
+            continue
+        key = row["context_key"]
+        if key and key not in keys:
+            keys.append(key)
+    if context.key not in keys:
+        keys.append(context.key)
+    return tuple(keys)
+
+
 def _selection(owner, context):
     from .generated import IMAGE_ACTIONS
+    keys = _origin_keys(owner, context)
+    placeholders = ",".join("?" for _ in keys)
     return ("""FROM runtime_metadata m JOIN execution_tasks t ON t.task_id = json_extract(m.value, '$.task_id')
-        WHERE substr(m.key, 1, ?) = ? AND json_extract(m.value, '$.origin_key') = ?
-        AND json_extract(m.value, '$.action') IN (?,?,?)""", (len(PREFIX), PREFIX, context.key, *sorted(IMAGE_ACTIONS)))
+        WHERE substr(m.key, 1, ?) = ? AND json_extract(m.value, '$.origin_key') IN (""" + placeholders + """)
+        AND json_extract(m.value, '$.action') IN (?,?,?)""",
+            (len(PREFIX), PREFIX, *keys, *sorted(IMAGE_ACTIONS)))
 
 
 def page(owner, context, at, *, before=None, limit=24):
@@ -57,7 +94,8 @@ def page(owner, context, at, *, before=None, limit=24):
 def image(owner, context, at, invocation_id, position):
     from .generated import GeneratedAlbumImage, IMAGE_ACTIONS
     row = operation_row(owner.runtime, invocation_id)
-    if row is None or row["origin_key"] != context.key or row["action"] not in IMAGE_ACTIONS:
+    if row is None or row["origin_key"] not in _origin_keys(owner, context) \
+            or row["action"] not in IMAGE_ACTIONS:
         raise TaskError("generated_image_missing", "the native album image is unavailable")
     for captured in images(owner, row, context, at):
         if captured.descriptor.position == position:
