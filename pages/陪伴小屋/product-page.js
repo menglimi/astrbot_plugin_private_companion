@@ -1165,6 +1165,15 @@ window.CompanionProduct = (() => {
       send({kind:"appearance",appearance:{...appearance}});return;
     }
     if(message.kind==="resize"){if(Number.isFinite(message.height))owner.style.height=Math.max(620,Math.min(2400,message.height+12))+"px";return;}
+    if(message.kind==="designer-mode"){
+      if(context.kind!=="designer"||!["create","optimize"].includes(message.mode))return;
+      valid();
+      context.tab=message.mode;
+      owner.parentElement.dataset.workspaceTab=message.mode;
+      owner.title=({create:"创建人格",optimize:"拟人优化"}[message.mode])+"工作区";
+      document.dispatchEvent(new CustomEvent("companion:persona-mode-change",{detail:{mode:message.mode}}));
+      return;
+    }
     if(message.kind==="host-mappings-updated"){
       if(context.kind!=="host")return;
       try { valid();await refreshDirectoryAfterMapping(); }
