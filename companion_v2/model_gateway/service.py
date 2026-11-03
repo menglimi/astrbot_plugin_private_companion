@@ -160,12 +160,18 @@ class LocalModelGateway:
         self.runtime = tasks.runtime
         self.role_reference = TaskRoleReference(self.runtime)
 
-    async def generate(self, run: TaskRun, request: PromptRequest) -> ModelCompletion:
+    def image_session(self, run, invocation):
+        from .images import ImageModelSession
+        return ImageModelSession(self, run, invocation)
+
+    async def generate(self, run: TaskRun, request: PromptRequest, *,
+                       allow_ceiling_retry: bool | None = None) -> ModelCompletion:
         session = self.open_session(run, request)
         # open_session may replace the captured persona with the task role
         # reference. Continue with the exact request frozen into the plan so
         # ModelSession's first-round context check compares like with like.
-        return await session.generate(session.plan.envelope.original)
+        return await session.generate(session.plan.envelope.original,
+                                      allow_ceiling_retry=allow_ceiling_retry)
 
     def _task_role_request(self, run: TaskRun, request: PromptRequest) -> PromptRequest:
         """Use the self page as the task role, with the captured persona as fallback."""
@@ -733,6 +739,7 @@ class ModelSession:
         raise TaskError("model_context_mismatch", "continuation must preserve its original authorized context")
 
     async def generate(self, request, *, history=(), owner_refresh=None, media_refresh=None, on_reply_prefix=None,
+                       allow_ceiling_retry=None,
                        reply_prefix_ready=None):
         if self.closed or self.busy or self.round_no > 8:
             raise TaskError("model_session_closed", "original model session cannot generate again")
@@ -797,7 +804,8 @@ class ModelSession:
                     (self.run.task.task_id, self.round_no, self.run.claim.attempt_id, digest(envelope)))
             completion = await self.gateway._generate(self.run, self.plan, envelope, self.round_no,
                                                       on_reply_prefix, reply_prefix_ready,
-                                                      allow_ceiling_retry=not self.independent_plans)
+                                                      allow_ceiling_retry=(not self.independent_plans)
+                                                      if allow_ceiling_retry is None else allow_ceiling_retry)
             self.history = history
             self.pending = completion.tool_calls
             self.round_no += 1
