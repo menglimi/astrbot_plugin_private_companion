@@ -632,3 +632,166 @@ test("早于上下文重置的依据仍可展开并标注为重置前的记录",
   assert.doesNotMatch(root.innerHTML, /依据已失效|lh-signal-unavailable/);
   page.unmount();
 });
+
+/* ---------------------------------------------------------------------------
+ * 轮换规则：容量行按「另有 N 条仅原会话窗口」显示，卡片按 injectable 说明是否生效。
+ * 这组用例来自 fix/expression-dialogue-rule-scope，随该分支一起变基到新主线。
+ * ------------------------------------------------------------------------- */
+
+function rotatedMountPage(bridge) {
+  const listeners = new Map();
+  const root = {isConnected: true, innerHTML: "", querySelector: () => null,
+    addEventListener: (name, callback) => listeners.set(name, callback),
+    removeEventListener: name => listeners.delete(name)};
+  const window = {CompanionProduct: {bridgeNow: () => bridge, unwrap: value => value},
+    lucide: {createIcons() {}}};
+  const context = vm.createContext({window, setTimeout, clearTimeout, TextEncoder, JSON, Date, Math,
+    Number, Object, Array, String, URLSearchParams});
+  vm.runInContext(source, context);
+  const page = context.window.CompanionExpressionSignalsPage;
+  return {root, page, listeners};
+}
+async function rotatedSettle(page, root, options) {
+  await page.mount(root, options);
+  for (let index = 0; index < 50 && page.state.busy; index++) await flush();
+}
+const rotatedSingleSource = [{key: "source-a", scopeKey: "scope-a", label: "测试来源",
+  replyApi: `/${HOST}/targets/profile-a/roles/role-a/reply`}];
+async function rotatedMountWithData(data, sources = rotatedSingleSource) {
+  const bridge = {apiGet: async () => ({status: "ok", data}),
+    apiPost: async () => ({status: "ok", data: {}})};
+  const {root, page} = rotatedMountPage(bridge);
+  await rotatedSettle(page, root, {sources});
+  return {root, page};
+}
+
+test("轮换规则的容量行使用另有计数，说明不再注入且不承诺释放容量", async () => {
+  const rotated = {
+    signal_id: "signal-rotated", run_id: "run-rotated", dimension: "diction",
+    source_kind: "conversation_input", observation: "群里接话时", proposal: "懂的都懂",
+    state: "adopted", created_at: "2026-10-08T10:00:00+00:00", actions: ["retire"],
+    injections: 0, can_revise: false, injectable: false,
+    expression: {kind: "style", situation: "群里接话时", pattern: "懂的都懂", avoid: "认真求助时不用"},
+    evidence: [], unavailable_reason: "expression_rule_window_rotated", view_token: "token-rotated",
+  };
+  const {root, page} = await rotatedMountWithData({
+    items: [rotated], next_cursor: null,
+    capacity: {active: 0, limit: 60}, counts: {adopted: 0}, rotated_rules: 1,
+  });
+
+  assert.equal(page.state.capacity.active, 0);
+  assert.match(root.innerHTML, /待审与启用 0 \/ 60 · 另有 1 条仅原会话窗口/);
+  assert.doesNotMatch(root.innerHTML, /其中 1 条/);
+  assert.match(root.innerHTML, /已启用<span>0<\/span>/,
+    "the enabled tab counts the same injectable set as the capacity");
+  assert.match(root.innerHTML, /已启用 · 仅原会话窗口/);
+  assert.match(root.innerHTML, /该会话窗口已轮换，之后不再注入；停用后无法恢复。/);
+  assert.doesNotMatch(root.innerHTML, /停用可释放容量/,
+    "retiring a rotated rule does not free capacity because it never occupied one");
+  assert.doesNotMatch(root.innerHTML, /不影响这条规则继续生效/);
+  assert.match(root.innerHTML, /懂的都懂/,
+    "a rotated rule keeps its reviewed form and does not fall back to 依据已失效");
+  assert.doesNotMatch(root.innerHTML, /依据已失效/);
+  page.unmount();
+});
+
+test("依据不可读但可注入的规则保留正文和继续生效说明", async () => {
+  const {root, page} = await rotatedMountWithData({
+    items: [{
+      signal_id: "signal-injectable", run_id: "run-injectable", dimension: "diction",
+      source_kind: "shared_pack", observation: "私下接话时", proposal: "用原来如此呀接话",
+      state: "adopted", created_at: "2026-10-08T10:00:00+00:00", actions: ["retire"],
+      injections: 1, can_revise: false, injectable: true,
+      expression: {kind: "style", situation: "私下接话时", pattern: "原来如此呀", avoid: ""},
+      evidence: [], unavailable_reason: "expression_sample_changed",
+      view_token: "token-injectable",
+    }],
+    next_cursor: null, capacity: {active: 1, limit: 60}, counts: {adopted: 1}, rotated_rules: 0,
+  });
+
+  assert.match(root.innerHTML, /依据原文不可读取，不影响这条规则继续生效，仍可停用。/,
+    "an injectable rule keeps the existing promise");
+  assert.match(root.innerHTML, /原来如此呀/, "the reviewed body stays visible");
+  assert.doesNotMatch(root.innerHTML, /依据已失效/);
+  assert.doesNotMatch(root.innerHTML, /不会注入/);
+  page.unmount();
+});
+
+test("依据不可读且不可注入的规则保留正文但明确说明不会注入", async () => {
+  const {root, page} = await rotatedMountWithData({
+    items: [{
+      signal_id: "signal-revoked", run_id: "run-revoked", dimension: "diction",
+      source_kind: "conversation_input", observation: "群里接话时", proposal: "懂的都懂",
+      state: "adopted", created_at: "2026-10-08T10:00:00+00:00", actions: ["retire"],
+      injections: 0, can_revise: false, injectable: false,
+      expression: {kind: "style", situation: "群里接话时", pattern: "懂的都懂", avoid: ""},
+      evidence: [], unavailable_reason: "expression_rule_review_revoked",
+      view_token: "token-revoked",
+    }],
+    next_cursor: null, capacity: {active: 0, limit: 60}, counts: {adopted: 0}, rotated_rules: 0,
+  });
+
+  assert.doesNotMatch(root.innerHTML, /不影响这条规则继续生效/,
+    "a rule that will not be injected must not claim that it still takes effect");
+  assert.match(root.innerHTML, /懂的都懂/, "the reviewed body stays visible");
+  assert.match(root.innerHTML, /依据原文不可读取，这条规则不会注入；可停用。/);
+  assert.match(root.innerHTML, /data-signal-action="retire"/,
+    "the card still offers the action that is actually available");
+  page.unmount();
+});
+
+test("依据可读但不可注入的已启用规则不再声称继续生效", async () => {
+  const {root, page} = await rotatedMountWithData({
+    items: [{
+      signal_id: "signal-readable-blocked", run_id: "run-readable-blocked", dimension: "diction",
+      source_kind: "conversation_input", observation: "群里接话时", proposal: "懂的都懂",
+      state: "adopted", created_at: "2026-10-08T10:00:00+00:00", actions: ["retire"],
+      injections: 0, can_revise: true, injectable: false,
+      expression: {kind: "style", situation: "群里接话时", pattern: "懂的都懂", avoid: ""},
+      evidence: ["原会话里的那句接话"], unavailable_reason: null, view_token: "token-readable-blocked",
+    }],
+    next_cursor: null, capacity: {active: 0, limit: 60}, counts: {adopted: 0}, rotated_rules: 0,
+  });
+
+  assert.match(root.innerHTML, /懂的都懂/, "the readable body stays visible");
+  assert.doesNotMatch(root.innerHTML, /继续生效/);
+  assert.match(root.innerHTML, /这条规则在当前会话不会注入；可停用。/);
+  page.unmount();
+});
+
+test("多来源重复列出的轮换规则按 signal_id 只计一次", async () => {
+  const rotated = {
+    signal_id: "signal-shared", run_id: "run-shared", dimension: "diction",
+    source_kind: "conversation_input", observation: "群里接话时", proposal: "懂的都懂",
+    state: "adopted", created_at: "2026-10-08T10:00:00+00:00", actions: ["retire"],
+    injections: 0, can_revise: false, injectable: false,
+    expression: {kind: "style", situation: "群里接话时", pattern: "懂的都懂", avoid: ""},
+    evidence: [], unavailable_reason: "expression_rule_window_rotated", view_token: "token-shared",
+  };
+  const bridge = {
+    apiGet: async () => ({status: "ok", data: {
+      items: [rotated], next_cursor: null,
+      capacity: {active: 0, limit: 30}, counts: {adopted: 0}, rotated_rules: 1,
+    }}),
+    apiPost: async () => ({status: "ok", data: {}}),
+  };
+  const {root, page, listeners} = rotatedMountPage(bridge);
+  await rotatedSettle(page, root, {sources: [
+    {key: "source-a", scopeKey: "scope-a", label: "来源甲",
+      replyApi: `/${HOST}/targets/profile-a/roles/role-a/reply`},
+    {key: "source-b", scopeKey: "scope-b", label: "来源乙",
+      replyApi: `/${HOST}/targets/profile-b/roles/role-b/reply`},
+  ]});
+
+  assert.match(root.innerHTML, /另有 1 条仅原会话窗口/,
+    "the same signal listed by two sources is one rotated rule");
+  assert.doesNotMatch(root.innerHTML, /另有 2 条/);
+  assert.doesNotMatch(root.innerHTML, /其中 1 条/);
+  assert.equal((root.innerHTML.match(/<article class="lh-signal-card /g) || []).length, 1,
+    "the duplicate card is folded into one, matching the deduped count");
+  listeners.get("change")({target: {closest: selector =>
+    selector === "[data-rule-source-filter]" ? {value: "source-b"} : null}});
+  assert.match(root.innerHTML, /记录来源 · 来源乙/,
+    "filtering to one source keeps that source's own copy");
+  page.unmount();
+});

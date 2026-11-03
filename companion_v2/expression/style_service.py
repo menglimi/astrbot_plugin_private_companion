@@ -70,6 +70,7 @@ from . import rule_support
 from .configuration import (application_subject_allowed_for_context, read_settings,
                             source_subject_allowed_for_context)
 from .style_evidence import INPUT_SAMPLE_SOURCE, MAX_WINDOW_HOURS, sample_document, sample_handles
+from .window_scope import active_rule_count, row_usable
 
 logger = getLogger(__name__)
 
@@ -340,14 +341,17 @@ class ExpressionStyleService:
         return keys
 
     def _active_signal_count(self, context, family_keys=None):
-        """Rules this window's owner already holds across its whole family."""
+        """Rules this window can inject among the family its owner already holds.
+
+        The family supplies the budget's scope, but only rules this exact window
+        can inject may spend it: a group dialogue rule from a rotated window, or
+        one whose sample approval was withdrawn, is listed by the review page yet
+        can never be injected here.
+        """
         keys = tuple(self._family_keys(context) if family_keys is None else family_keys)
-        placeholders = ",".join("?" for _ in keys)
-        row = self.runtime.read_one(f"""SELECT COUNT(*) AS count FROM expression_style_signals
-            WHERE owner_key = ? AND scope_key IN ({placeholders})
-              AND state IN ('pending', 'adopted')""",
-            (digest(self.samples.role_owner(context)), *keys))
-        return int(row["count"]) if row is not None else 0
+        return active_rule_count(self.runtime, context,
+                                 digest(self.samples.role_owner(context)), keys,
+                                 samples=self.samples, at=self.tasks.now())
 
     def _note_skipped(self, identifier, job, receipt, *, epoch, at):
         """Say which earlier attempt owns this batch instead of only skipping it.
@@ -752,10 +756,14 @@ class ExpressionStyleService:
             return None
         owner_key = digest(self.samples.role_owner(context))
         placeholders = ",".join("?" for _ in family_keys)
-        existing_rows = self.runtime.read_all(f"""SELECT signal_id, dimension, observation, proposal, applicability_json, state
-            FROM expression_style_signals WHERE owner_key = ? AND scope_key IN ({placeholders})
-              ORDER BY created_at DESC, signal_id LIMIT ?""",
+        existing_rows = [row for row in self.runtime.read_all(f"""SELECT s.signal_id, s.dimension,
+                s.observation, s.proposal, s.applicability_json, s.evidence_json, s.state,
+                s.scope_key, r.sample_json
+            FROM expression_style_signals s JOIN expression_style_runs r ON r.run_id = s.run_id
+            WHERE s.owner_key = ? AND s.scope_key IN ({placeholders})
+            ORDER BY s.created_at DESC, s.signal_id LIMIT ?""",
             (owner_key, *family_keys, RULE_READ_LIMIT))
+            if row_usable(context, row, samples=self.samples, at=at)]
         existing_rules = tuple({"signal_id": row["signal_id"],
                                 "dimension": row["dimension"], "observation": row["observation"][:800],
                                 "proposal": row["proposal"][:1200],
@@ -1176,17 +1184,18 @@ class ExpressionStyleService:
                 # and spend the remaining family budget on it.
                 family_keys = tuple(job.get("family_keys") or self._family_keys(context))
                 placeholders = ",".join("?" for _ in family_keys)
-                active_count = connection.execute(f"""SELECT COUNT(*) FROM expression_style_signals
-                    WHERE owner_key = ? AND scope_key IN ({placeholders})
-                      AND state IN ('pending', 'adopted')""",
-                    (owner_key, *family_keys)).fetchone()[0]
+                active_count = active_rule_count(self.runtime, context, owner_key, family_keys,
+                                                 samples=self.samples, at=self.tasks.now(),
+                                                 connection=connection)
                 remaining = max(0, self._policy(context, self.tasks.now()).active_signal_limit - active_count)
-                existing_rows = connection.execute(f"""SELECT s.signal_id, s.dimension, s.observation, s.proposal,
-                        s.applicability_json, s.evidence_json, s.state, r.sample_json
+                existing_rows = [row for row in connection.execute(f"""SELECT s.signal_id, s.dimension,
+                        s.observation, s.proposal, s.applicability_json, s.evidence_json, s.state,
+                        s.scope_key, r.sample_json
                     FROM expression_style_signals s JOIN expression_style_runs r ON r.run_id = s.run_id
                     WHERE s.owner_key = ? AND s.scope_key IN ({placeholders})
                     ORDER BY s.created_at DESC""",
                     (owner_key, *family_keys)).fetchall()
+                    if row_usable(context, row, samples=self.samples, at=self.tasks.now())]
                 signatures = {learning.candidate_signature(row["dimension"], row["observation"], row["proposal"],
                     learning.normalize_applicability(json.loads(row["applicability_json"])),
                     rule_details.form_for(self.runtime, row))
