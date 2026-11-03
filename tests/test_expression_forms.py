@@ -308,7 +308,7 @@ class ExpressionFormContractTests(unittest.TestCase):
         style = ConversationExpressionStyleContext(SimpleNamespace(runtime=None))
         intents = ("comfort", "play", "question")
 
-        def material(reference, _context, _at):
+        def material(reference, _context, _at, memo=None):
             return json.dumps({"signal_id": reference["signal_id"],
                 "applicability": learning.normalize_applicability({"channels": ["private"],
                     "intent": intents[int(reference["signal_id"])]})})
