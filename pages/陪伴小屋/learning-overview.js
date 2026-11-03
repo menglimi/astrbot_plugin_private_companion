@@ -149,6 +149,7 @@ window.CompanionLearningOverviewPage = (() => {
     capacity_reached: "待审与启用规则已达上限",
     daily_budget_reached: "今日群聊学习批次已用完",
     already_attempted: "本批素材已学习，等待新消息",
+    succeeded: "上次学习已产出",
     failed: "上次学习失败",
     blocked: "来源校验未通过",
   };
@@ -158,7 +159,7 @@ window.CompanionLearningOverviewPage = (() => {
     model_estimation_failed: "本地预估没能完成，先按日志里的 error_type 排查",
     host_model_limit_input: "要发送的材料超过本地输入上限；请调大「最大输入估算」或减少参考规则",
     host_model_limit_output: "输出上限不足以写完这次结果；请调高该任务的输出上限",
-    model_output_truncated: "模型输出被输出上限截断；请调高该任务的输出上限",
+    model_output_truncated: "模型没写完就被输出上限截断：思考型模型会把上限大量花在思考上，可见输出只占一小部分。可把「模型 → 学习 → 表达学习」的「单次输出上限」调到约 4 倍以上（例如 4096 → 16384，仍失败就继续加倍），或在 Provider 处调低思考等级/关闭思考、改用非思考模型，也可减少参考规则与样本；改完到「表达学习 → 观察素材」点「立即学习」重试。",
   };
   function learningLine(item) {
     if (!item || typeof item !== "object" || !item.state) return "";
