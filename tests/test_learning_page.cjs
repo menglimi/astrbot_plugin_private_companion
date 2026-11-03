@@ -467,3 +467,307 @@ test('卸载后清干净，重复挂载不叠加', async () => {
   await boot(h, [record('g-1', 'active')]);
   assert.equal(h.page.state.data.ready, true);
 });
+
+/* ---- 分页：写操作与刷新不能把已经翻出来的页丢掉 ------------------------
+ *
+ * 这一页的分页状态是 `listCursors` / `reviewCursors`（每个来源一条 after_id）
+ * 加上已读页数。历史实现里 `load()` 一律先把游标清空再读第一页，
+ * 所以「暂停/确认/修订/采纳」之后用户刚翻出来的第二页就不见了——
+ * 重新点「读取下一页」也不一定能再拿到同样的位置。
+ *
+ * 下面几条用例把「写操作与刷新只重读已加载的页」和「已显示的记录不能减少」
+ * 固化下来。夹具按游标串页：每个用例自己给出第 1..N 页。
+ */
+
+async function drive(h, answer) {
+  const answered = new Set();
+  for (let round = 0; round < 80; round++) {
+    const pending = h.requests.filter(request => !answered.has(request));
+    if (!pending.length) {
+      await h.settle();
+      if (!h.requests.some(request => !answered.has(request))) return;
+      continue;
+    }
+    for (const request of pending) {
+      answered.add(request);
+      const payload = answer(request);
+      if (payload && payload.__fail) h.fail(request, payload.code);
+      else if (payload && payload.__error) h.fail(request, payload.__error);
+      else h.reply(request, payload ?? {});
+    }
+    await h.settle();
+  }
+  throw new Error('页面请求没有安静下来');
+}
+function pickPage(pages, after) {
+  const index = after
+    ? pages.findIndex((entry, position) => position > 0 && pages[position - 1].next === after)
+    : 0;
+  return pages[index < 0 ? pages.length - 1 : index];
+}
+/* pages: {list:[{items,next}], reviews:[{items,next}]}，每页按上一页的 next 串起来。 */
+function pagedAnswer(pages) {
+  return request => {
+    if (request.route.endsWith('/evidence')) {
+      return {items: [{text: '本轮可核验的原始依据', issued_at: '2026-10-07T08:00:00+00:00'}]};
+    }
+    const after = request.params?.after_id || '';
+    if (request.route.endsWith('/progress')) {
+      const entry = pickPage(pages.reviews, after);
+      return {items: entry.items, next_cursor: entry.next, context_key: 'ctx', role_id: 'role-1'};
+    }
+    if (request.route === 'growth' || request.route.endsWith('/growth')) {
+      const entry = pickPage(pages.list, after);
+      return {items: withActions(entry.items), next_cursor: entry.next, context_key: 'ctx',
+        role_id: 'role-1', profile_id: 'profile-1', operator_name: 'operator', access: access()};
+    }
+    return {};
+  };
+}
+async function mountPaged(h, pages, options = {}) {
+  const mounted = h.page.mount(h.element, {growthApi: GROWTH, scopeKey: 'selected-growth-scope',
+    roleLabel: '选定角色', ...options});
+  await drive(h, pagedAnswer(pages));
+  await mounted;
+  return h;
+}
+const listReads = (h, after = 0) => h.requests.slice(after)
+  .filter(request => request.method === 'GET' && (request.route === 'growth' || request.route.endsWith('/growth')));
+const reviewReads = (h, after = 0) => h.requests.slice(after)
+  .filter(request => request.method === 'GET' && request.route.endsWith('/progress'));
+const cursorsOf = requests => requests.map(request => request.params?.after_id || '(first)');
+
+test('动作完成后：已加载的第二页与游标都保留，刷新重读已加载的页', async () => {
+  const h = harness();
+  const pages = {
+    list: [
+      {items: [record('g-1', 'active'), record('g-2', 'active')], next: 'c1'},
+      {items: [record('g-3', 'active'), record('g-4', 'active')], next: 'c2'},
+    ],
+    reviews: [{items: [], next: null}],
+  };
+  await mountPaged(h, pages);
+  assert.equal(h.page.state.data.items.length, 2, '第一页两条');
+  click(h, {action: 'more'});
+  await drive(h, pagedAnswer(pages));
+  assert.equal(h.page.state.data.items.length, 4, '两页四条');
+  const sourceKey = Object.keys(h.page.state.data.listCursors)[0];
+  assert.equal(h.page.state.data.listCursors[sourceKey], 'c2', '第二页读完后的游标');
+  const before = h.requests.length;
+  /* 后端在暂停之后返回的是 paused 状态。 */
+  pages.list[0].items = [record('g-1', 'paused'), record('g-2', 'active')];
+  click(h, {act: 'pause', id: 'g-1'});
+  await drive(h, request => request.method === 'POST' ? {revision: 3} : pagedAnswer(pages)(request));
+  assert.deepEqual(cursorsOf(listReads(h, before)), ['(first)', 'c1'],
+    '动作后的刷新应重读已加载的两页，而不是只剩第一页');
+  assert.equal(h.page.state.data.items.length, 4, '动作不该让已经显示的记录消失');
+  assert.equal(h.page.state.data.listCursors[sourceKey], 'c2', '游标不能被清空');
+});
+
+test('裁决一条审阅后：其余审阅记录与游标保留', async () => {
+  const h = harness();
+  const pages = {
+    list: [{items: [record('g-1', 'active')], next: null}],
+    reviews: [
+      {items: [review('r-1'), review('r-2')], next: 'p1'},
+      {items: [review('r-3')], next: 'p2'},
+    ],
+  };
+  await mountPaged(h, pages);
+  click(h, {view: 'reviews'});
+  await drive(h, pagedAnswer(pages));
+  click(h, {action: 'more-reviews'});
+  await drive(h, pagedAnswer(pages));
+  assert.equal(h.page.state.data.reviews.length, 3, '两页三条待审阅');
+  const reviewKey = Object.keys(h.page.state.data.reviewCursors)[0];
+  assert.equal(h.page.state.data.reviewCursors[reviewKey], 'p2', '第二页读完后的审阅游标');
+  pages.reviews[0].items = [review('r-2')];
+  click(h, {review: 'accept', id: 'r-1'});
+  await drive(h, request => request.method === 'POST' ? {} : pagedAnswer(pages)(request));
+  assert.equal(h.page.state.data.reviews.length, 2, '裁决掉一条，其余保留');
+  assert.equal(h.page.state.data.reviewCursors[reviewKey], 'p2', '审阅游标不能被清空');
+});
+
+test('重新读取：列表页与审阅页都按已加载的页数重读，一条都不少', async () => {
+  const h = harness();
+  const pages = {
+    list: [
+      {items: [record('g-1', 'active'), record('g-2', 'active')], next: 'c1'},
+      {items: [record('g-3', 'active'), record('g-4', 'active')], next: 'c2'},
+    ],
+    reviews: [
+      {items: [review('r-1')], next: 'p1'},
+      {items: [review('r-2')], next: 'p2'},
+    ],
+  };
+  await mountPaged(h, pages);
+  click(h, {action: 'more'});
+  await drive(h, pagedAnswer(pages));
+  click(h, {view: 'reviews'});
+  await drive(h, pagedAnswer(pages));
+  click(h, {action: 'more-reviews'});
+  await drive(h, pagedAnswer(pages));
+  assert.equal(h.page.state.data.items.length, 4);
+  assert.equal(h.page.state.data.reviews.length, 2);
+  const before = h.requests.length;
+  click(h, {action: 'refresh'});
+  await drive(h, pagedAnswer(pages));
+  assert.deepEqual(cursorsOf(listReads(h, before)), ['(first)', 'c1'],
+    '列表：已加载的两页都要重读');
+  assert.deepEqual(cursorsOf(reviewReads(h, before)), ['(first)', 'p1'],
+    '审阅：已加载的两页都要重读');
+  assert.equal(h.page.state.data.items.length, 4, '刷新后记录数不能减少');
+  assert.equal(h.page.state.data.reviews.length, 2, '刷新后审阅数不能减少');
+});
+
+test('加载更多：重叠的一页不会出现两份记录', async () => {
+  const h = harness();
+  const pages = {
+    list: [
+      {items: [record('g-1', 'active'), record('g-2', 'active')], next: 'c1'},
+      {items: [record('g-2', 'active'), record('g-3', 'active')], next: null},
+    ],
+    reviews: [{items: [], next: null}],
+  };
+  await mountPaged(h, pages);
+  click(h, {action: 'more'});
+  await drive(h, pagedAnswer(pages));
+  assert.equal(h.page.state.data.items.length, 3, '重叠的那条只算一次');
+});
+
+test('刷新失败或某一页变短：已显示的记录保留，并提示没有读到最新内容', async () => {
+  const h = harness();
+  const pages = {
+    list: [
+      {items: [record('g-1', 'active'), record('g-2', 'active')], next: 'c1'},
+      {items: [record('g-3', 'active'), record('g-4', 'active')], next: 'c2'},
+    ],
+    reviews: [{items: [], next: null}],
+  };
+  await mountPaged(h, pages);
+  click(h, {action: 'more'});
+  await drive(h, pagedAnswer(pages));
+  assert.equal(h.page.state.data.items.length, 4, '现场两页四条');
+
+  /* 刷新时列表请求全部失败：保留旧记录，只说清这次没读到。 */
+  click(h, {action: 'refresh'});
+  await drive(h, request => request.route === 'growth'
+    ? {__fail: true} : pagedAnswer(pages)(request));
+  assert.equal(h.page.state.data.items.length, 4, '刷新失败不能把已经显示的记录抹掉');
+  assert.match(h.element.innerHTML, /已保留当前内容/, '要说清这次没读到，并说明内容已保留');
+
+  /* 再刷新一次，第二页这次只剩一条（比上次短）：旧的那条仍要留着。 */
+  const shrunk = {
+    list: [
+      {items: [record('g-1', 'active'), record('g-2', 'active')], next: 'c1'},
+      {items: [record('g-3', 'active')], next: null},
+    ],
+    reviews: pages.reviews,
+  };
+  click(h, {action: 'refresh'});
+  await drive(h, pagedAnswer(shrunk));
+  assert.equal(h.page.state.data.items.length, 4, '页变短时已显示的记录保留');
+  assert.ok(h.page.state.data.items.some(row => row.growth_id === 'g-4'), '上一次读到的第四条还在');
+});
+
+/* ---- 确认条：链式版式与详情视图也必须渲染 ---------------------------------
+ *
+ * 回归：确认条此前只在轨道视图（trackView）里渲染。而生产唯一版式是 chain，
+ * 详情视图也不渲染它——点「归档 / 撤回」只把 data.confirm 置上再原样重绘：
+ * DOM 不变、0 请求、notice 空，动作永远发不出去。
+ */
+
+test('链式版式：归档先出确认条，确认后只发一次请求并原地刷新', async () => {
+  const h = harness();
+  const pages = {
+    list: [
+      {items: [record('g-1', 'active'), record('g-2', 'active')], next: 'c1'},
+      {items: [record('g-3', 'active')], next: null},
+    ],
+    reviews: [{items: [], next: null}],
+  };
+  await mountPaged(h, pages, {layout: 'chain'});
+  click(h, {action: 'more'});
+  await drive(h, pagedAnswer(pages));
+  assert.equal(h.page.state.data.items.length, 3, '现场两页三条');
+  const before = h.requests.length;
+  click(h, {act: 'retire', id: 'g-1'});
+  assert.match(h.element.innerHTML, /lea-confirm/, '链式版式点归档要出确认条');
+  assert.match(h.element.innerHTML, /确认归档/, '确认条要写清动作');
+  click(h, {confirm: 'yes'});
+  await drive(h, request => request.method === 'POST' ? {revision: 3} : pagedAnswer(pages)(request));
+  const posts = h.requests.slice(before).filter(request => request.method === 'POST');
+  assert.equal(posts.length, 1, '确认只发一次请求');
+  assert.deepEqual(Object.keys(posts[0].values).sort(),
+    ['action', 'expected_revision', 'growth_id', 'operation_key', 'view_token']);
+  assert.equal(posts[0].values.action, 'retire');
+  assert.equal(posts[0].values.growth_id, 'g-1');
+  assert.deepEqual(cursorsOf(listReads(h, before)), ['(first)', 'c1'],
+    '归档成功后走原地刷新：重读已加载的两页，不退回第一页');
+});
+
+test('链式版式：撤回同样要先确认，且只发一次请求', async () => {
+  const h = harness();
+  const pages = {list: [{items: [record('g-1', 'proposed')], next: null}],
+    reviews: [{items: [], next: null}]};
+  await mountPaged(h, pages, {layout: 'chain'});
+  const before = h.requests.length;
+  click(h, {act: 'withdraw', id: 'g-1'});
+  assert.match(h.element.innerHTML, /lea-confirm/, '链式版式点撤回要出确认条');
+  assert.match(h.element.innerHTML, /确认撤回/, '确认条要写清动作');
+  click(h, {confirm: 'yes'});
+  await drive(h, request => request.method === 'POST' ? {revision: 2} : pagedAnswer(pages)(request));
+  const posts = h.requests.slice(before).filter(request => request.method === 'POST');
+  assert.equal(posts.length, 1, '确认只发一次请求');
+  assert.equal(posts[0].values.action, 'withdraw');
+});
+
+test('详情视图：归档也要出确认条', async () => {
+  const h = harness();
+  const pages = {list: [{items: [record('g-1', 'active')], next: null}],
+    reviews: [{items: [], next: null}]};
+  await mountPaged(h, pages);
+  click(h, {open: 'g-1'});
+  assert.match(h.element.innerHTML, /lea-detail/, '详情视图已经打开');
+  click(h, {act: 'retire', id: 'g-1'});
+  assert.match(h.element.innerHTML, /lea-confirm/, '详情视图点归档也要出确认条');
+  assert.match(h.element.innerHTML, /确认归档/);
+});
+
+test('确认条取消：链式版式点取消什么都不发', async () => {
+  const h = harness();
+  const pages = {list: [{items: [record('g-1', 'active')], next: null}],
+    reviews: [{items: [], next: null}]};
+  await mountPaged(h, pages, {layout: 'chain'});
+  click(h, {act: 'retire', id: 'g-1'});
+  assert.match(h.element.innerHTML, /lea-confirm/);
+  const before = h.requests.length;
+  click(h, {confirm: 'no'});
+  await h.settle();
+  assert.equal(h.requests.slice(before).filter(request => request.method === 'POST').length, 0,
+    '取消就什么都不发');
+  assert.doesNotMatch(h.element.innerHTML, /lea-confirm/, '取消后确认条要收起来');
+});
+
+test('深链补读到多页后，重新读取的请求数有上限', async () => {
+  const h = harness();
+  const pages = {list: [], reviews: [{items: [], next: null}]};
+  for (let index = 0; index < 12; index++) {
+    pages.list.push({items: [record('g-' + (index + 1), 'active')],
+      next: index < 11 ? 'c' + (index + 1) : null});
+  }
+  await mountPaged(h, pages, {layout: 'chain', recordFocus: {growth_id: 'g-12'}});
+  assert.equal(listReads(h).length, 12, '深链一路扫到第 12 页才找到目标记录');
+  assert.equal(h.page.state.data.items.length, 12);
+  const before = h.requests.length;
+  click(h, {action: 'refresh'});
+  await drive(h, pagedAnswer(pages));
+  assert.equal(listReads(h, before).length, 1,
+    '刷新只重读用户可见的那一页；深链扫过的页不能被当成「已加载页」逐页重读');
+  assert.equal(h.page.state.data.items.length, 12, '深链读到的记录仍然在列表里');
+  assert.match(h.element.innerHTML, /g-12 的标题/, '目标记录仍在详情里');
+  const second = h.requests.length;
+  click(h, {action: 'refresh'});
+  await drive(h, pagedAnswer(pages));
+  assert.equal(listReads(h, second).length, 1, '第二次刷新也只重读一页');
+});
