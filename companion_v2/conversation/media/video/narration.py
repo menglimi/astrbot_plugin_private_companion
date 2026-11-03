@@ -193,7 +193,9 @@ class NativeVideoNarrationService:
             required.add("image")
         if request.audios:
             required.add("audio")
-        return all(required.issubset(provider.capabilities) for provider in reply_chain)
+        # The native video transport does not accept a separate voice attachment.
+        return not request.audios and all(required.issubset(provider.capabilities)
+                                          for provider in reply_chain)
 
     async def _summarize_one(self, parent_run, batch_id, parent_request, video, settings):
         context = parent_run.task.spec.context

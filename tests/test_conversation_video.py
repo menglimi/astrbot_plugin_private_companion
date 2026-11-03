@@ -22,7 +22,26 @@ from tests.native_adapter_support import completion, final_text
 from tests.image_delivery_support import user_content
 from tests.test_conversation_images import FakeImage
 from tests.video_support import VideoFixture, FakeVideo, video_bytes
-from companion_v2.conversation.media.video.narration import video_narration_profile
+from companion_v2.conversation.media.video.narration import (KIND, NativeVideoNarrationService,
+    video_narration_profile)
+
+
+class NativeVideoRouteTests(unittest.TestCase):
+    def test_separate_audio_attachment_uses_video_narration(self):
+        provider = NS(capabilities=("text", "tools", "image", "audio", "video"))
+        router = NS(profiles={KIND: object()}, selected_route=lambda *_args, **_kwargs:
+                    ("gemini", "gemini-3.8-flash", (provider,)))
+        service = NativeVideoNarrationService(None)
+        service.gateway = NS(router=router)
+        service.tasks = NS(now=lambda: None)
+        run = NS(task=NS(spec=NS(context=NS(scope=object()))))
+        settings = {"video_understanding_enabled": True}
+        with patch("companion_v2.conversation.media.video.narration.media_scope_enabled",
+                   return_value=True):
+            self.assertTrue(service.can_use_reply_model(run,
+                NS(images=(), audios=()), settings))
+            self.assertFalse(service.can_use_reply_model(run,
+                NS(images=(), audios=(object(),)), settings))
 
 
 class ConversationVideoTests(VideoFixture, unittest.IsolatedAsyncioTestCase):

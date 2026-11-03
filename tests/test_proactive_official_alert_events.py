@@ -6,9 +6,12 @@ import unittest
 
 from companion_v2.conversation.foreground import BackgroundPromptTrigger
 from companion_v2.conversation.reply_management import ReplyManagement
+from companion_v2.configuration.registry import FieldRegistry
 from companion_v2.execution.models import TaskError
+from companion_v2.model_gateway.routing import configuration_fields
 from companion_v2.proactive.official_alert_events import SOURCE_OWNER, SOURCE_URL
 from companion_v2.proactive.prompts import contact_output
+from companion_v2.proactive.service import plan_profile
 from companion_v2.proactive.weather_alerts import normalize_qweather_alerts
 from companion_v2.role_work.state.management import StateManagement
 from tests.contact_schedule_support import ContactScheduleFixture
@@ -221,6 +224,39 @@ class OfficialAlertContactTests(ContactScheduleFixture, unittest.IsolatedAsyncio
         saved = json.loads(self.contacts(app)[0]["record_json"])
         self.assertEqual(saved["skip_reason"], "source_coverage")
         self.assertEqual(app.runtime.read_one("SELECT COUNT(*) FROM background_deliveries", ())[0], 0)
+
+    async def test_two_stage_official_alert_keeps_coverage_and_attribution(self):
+        self.profiles += (plan_profile("primary", max_output_tokens=100),)
+        self.registry = FieldRegistry(version="official-alert-two-stage.v1",
+                                      fields=configuration_fields(self.profiles))
+        app, context = await self.setup_alerts()
+        self.settings(app, {"generation_mode": "two_stage"}).unwrap()
+        app.contact_schedule.official_alert_events.port = AlertPort(self.clock, [[self.alert()]])
+
+        async def staged(envelope):
+            if envelope.original.output_format == "proactive_plan":
+                self.assertIn("官方预警", envelope.original.instruction)
+                return answered('{"decision":"send","decision_confidence":0.9,'
+                                '"angle":"提醒防范大风","facts":[],"avoid":[]}')
+            self.assertIn("coverage_quote", envelope.original.instruction)
+            return answered(json.dumps({"text": "请留意这条大风预警。", "coverage": "covered",
+                "coverage_quote": "全市发布大风预警"}, ensure_ascii=False))
+
+        self.model_behavior = staged
+        self.advance(app, 60)
+        candidate = await app.contact_schedule.diagnostic_candidate(
+            context, "environment", at=self.clock.now(), variant="official_alert")
+        result = await app.proactive.contact(context, candidate["opportunity"], candidate["intents"],
+            role_instruction=candidate["role_instruction"], selection_seed="two-stage-alert-diagnostic",
+            administrator_test=True, diagnostic_source_backed=True,
+            diagnostic_origin=candidate["diagnostic_origin"])
+        self.assertIsNone(result.failure, result.failure)
+        task = result.unwrap().task
+        await self.delivery_state(app, task.task_id, "delivered")
+        self.assertIn("来源：和风天气 " + SOURCE_URL,
+                      self.runtime.read_one("SELECT body FROM proactive_contacts WHERE task_id = ?",
+                                            (task.task_id,))["body"])
+        self.assertEqual(app.proactive.observe(context, task.task_id).unwrap()["plan_decision"], "send")
 
     async def test_opt_in_and_attribution_is_program_added(self):
         app, _ = await self.setup_alerts(enabled=False)

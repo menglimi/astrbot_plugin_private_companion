@@ -22,7 +22,8 @@ from companion_v2.adapters.astrbot.onebot_group import OneBotGroupSender
 from companion_v2.adapters.astrbot.platform_sender import AstrBotPlatformSender
 from companion_v2.adapters.astrbot.presence import OneBotPresencePort
 from companion_v2.adapters.astrbot.provider import AstrBotTextProvider, REPLY_TASK_CAPABILITIES
-from companion_v2.adapters.astrbot.provider_catalog import TextProviderSettings, assemble_providers, loaded_routing
+from companion_v2.adapters.astrbot.provider_catalog import (TextProviderSettings, assemble_providers,
+    attach_native_video, loaded_routing)
 from companion_v2.adapters.astrbot.tools import CompositeAstrBotToolPort
 from companion_v2.configuration.registry import FieldRegistry
 from companion_v2.conversation.content.authoring_tasks import authoring_profiles
@@ -56,7 +57,7 @@ from companion_v2.model_gateway.models import MAX_MODEL_OUTPUT_TOKENS, ModelTask
 from companion_v2.model_gateway.output_defaults import with_thinking_margins
 from companion_v2.model_gateway.routing import configuration_fields
 from companion_v2.memory.reflection import reflection_profile
-from companion_v2.proactive.service import contact_profile, persona_judge_profile
+from companion_v2.proactive.service import contact_profile, persona_judge_profile, plan_profile
 from companion_v2.role_work.journal.writing import writing_profiles
 from companion_v2.role_work.reader import reading_profile
 from companion_v2.role_work.state.maintenance import state_output_budget, state_profile
@@ -468,6 +469,10 @@ class MultiHostSession:
             maximum_input_estimate=common.maximum_input_estimate, output_parameter=common.output_parameter,
             streaming=common.streaming)
         self.model._current()
+        self.model = attach_native_video(native_context, bridge=self.bridge, native_types=native_types,
+            text=self.model, settings=TextProviderSettings(common.provider_id, common.tariff,
+                max(common.max_output_tokens, 8192), common.maximum_input_estimate,
+                common.output_parameter, common.streaming))
         self.models = (self.model,) + assemble_providers(native_context, bridge=self.bridge,
             native_types=native_types, primary_id=common.provider_id, additional=common.additional_providers,
             defaults=TextProviderSettings(common.provider_id, common.tariff, max(common.max_output_tokens, 8192),
@@ -481,6 +486,7 @@ class MultiHostSession:
                     prompt_sections=expression_prompt_sections()),
                     poke_reply_profile(common.provider_id, max_output_tokens=min(1024, common.max_output_tokens)),
                     contact_profile(common.provider_id, max_output_tokens=common.max_output_tokens),
+                    plan_profile(common.provider_id, max_output_tokens=min(1024, common.max_output_tokens)),
                     persona_judge_profile(common.provider_id, max_output_tokens=common.max_output_tokens),
                     reflection_profile(common.provider_id, max_output_tokens=common.max_output_tokens),
                     state_profile(common.provider_id, max_output_tokens=state_output_budget(common.max_output_tokens, self.models)),

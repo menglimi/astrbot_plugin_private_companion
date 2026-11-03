@@ -1392,6 +1392,14 @@ window.CompanionContactPage = (() => {
       const latency = Number.isFinite(Number(model.avg_latency_ms)) ? ` · 平均 ${Number(model.avg_latency_ms)} ms` : "";
       const unknown = Number(model.unknown_calls) > 0 ? ` · 未知 ${Number(model.unknown_calls)} 次` : "";
       stageLines.push(`本轮 Provider 模型：${Number(model.provider_calls)} 次调用 · ${Number(model.tokens || 0)} Tokens · ${fmtCost(model.cost_microusd)}${latency}${unknown}`);
+      if (model.stages?.plan) {
+        for (const [stage, label] of [["plan", "规划"], ["write", "写作"], ["judge", "复核"]]) {
+          const usage = model.stages[stage];
+          if (!usage) continue;
+          const cache = usage.cached_input_tokens == null ? "" : ` · 缓存输入 ${Number(usage.cached_input_tokens)} Tokens`;
+          stageLines.push(`${label}：${Number(usage.provider_calls)} 次调用 · ${Number(usage.tokens || 0)} Tokens · ${fmtCost(usage.cost_microusd)}${cache}`);
+        }
+      }
     }
     if (delivery && Number.isFinite(Number(delivery.expected_parts))) {
       stageLines.push(`本轮投递：${Number(delivery.delivered_parts || 0)} / ${Number(delivery.expected_parts)} 段已确认 · ${Number(delivery.unresolved_parts || 0)} 段待确认 · ${Number(delivery.failed_parts || 0)} 段失败`);
@@ -1772,10 +1780,12 @@ window.CompanionContactPage = (() => {
         srcNumber("poke_action_daily_limit", "每日上限", "次", 0, 20, ""),
         srcNumber("poke_action_cooldown_minutes", "冷却", "分钟", 0, 1440, ""),
       ]},
-      {id:"context", icon:ICON.context, title:"约定与生成上下文", hint:"约定前后的静默，以及开口前那一次自评。", wide:true, body:[
+      {id:"context", icon:ICON.context, title:"约定与生成上下文", hint:"约定前后的静默，以及主动联系的生成方式。", wide:true, body:[
         srcNumber("appointment_lead_minutes", "约定提前量", "分钟", 0, 240, ""),
         srcNumber("appointment_lag_minutes", "约定延后量", "分钟", 0, 180, ""),
         srcNumber("appointment_pre_silence_minutes", "约定前静默", "分钟", 0, 240, "约定前先安静一段，避免连着说两遍。"),
+        srcSelect("generation_mode", "生成方式", [["single","一次调用"],["two_stage","先规划再写作"]],
+          "两阶段先规划，决定发送后再写作；规划模型可在模型路由中单独设置。实际费用见运行统计。"),
         srcToggle("enable_llm_proactive_persona_judge", "开口前先自评", "多一次模型调用，按阈值决定这条要不要发。"),
         srcNumber("proactive_persona_judge_threshold", "自评阈值", "", 0, 100, ""),
         srcNumber("proactive_persona_judge_cache_minutes", "自评缓存", "分钟", 0, 720, ""),
@@ -1848,9 +1858,9 @@ window.CompanionContactPage = (() => {
     return srcRow(name, label, help, "number", `<input type="number" data-field="${e(name)}" value="${e(current ?? "")}" min="${min}" max="${max}"
       step="1" inputmode="numeric" aria-label="${e(label)}" title="${e(range)}"><i>${e(unit)}</i>`);
   }
-  function srcSelect(name, label, options) {
+  function srcSelect(name, label, options, help="") {
     const current = value(name);
-    return srcRow(name, label, "", "select", `<select data-field="${e(name)}" aria-label="${e(label)}">${options.map(([v, text]) =>
+    return srcRow(name, label, help, "select", `<select data-field="${e(name)}" aria-label="${e(label)}">${options.map(([v, text]) =>
       `<option value="${e(v)}"${String(current ?? "") === v ? " selected" : ""}>${e(text)}</option>`).join("")}</select>`);
   }
   function materialTime(value) {

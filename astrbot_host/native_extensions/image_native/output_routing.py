@@ -306,6 +306,38 @@ def resolve_platform(config):
     return "openai"
 
 
+_REFERENCE_ROLE_INSTRUCTIONS = {
+    "identity": "character identity and fixed appearance only",
+    "outfit": "clothing and outfit reference only",
+    "pose": "body pose, gestures and framing reference only",
+    "scene": "scene and environment reference only",
+    "style": "visual style reference only",
+    "background": "background reference only",
+    "continuity": "visual continuity reference only",
+    "edit_source": "source image to edit",
+    "edit_mask": "edit mask only",
+}
+
+
+def _prompt_with_reference_roles(prompt, references):
+    """Bind each uploaded image to its role in the provider-visible prompt."""
+    if len(references) < 2:
+        return prompt
+    roles = tuple(_REFERENCE_ROLE_INSTRUCTIONS.get(reference.role) for reference in references)
+    if any(role is None for role in roles):
+        return prompt
+    assignments = "\n".join(
+        f"image {index} = {reference.role} ({role})"
+        for index, (reference, role) in enumerate(zip(references, roles), start=1)
+    )
+    return (
+        "Reference images are uploaded in this exact order:\n" + assignments +
+        "\nUse each uploaded image only for its assigned role. "
+        "Do not replace an uploaded reference with a text-only description.\n"
+        "User request:\n" + prompt
+    )
+
+
 class OnlineImageBackend:
     def __init__(self, config, network=None):
         self.config = config
@@ -362,7 +394,9 @@ class OnlineImageBackend:
         accepted = accepted_request_fields(platform, config.get("model", ""),
                                            quality=config.get("quality", ""),
                                            response_format=config.get("response_format", ""))
-        body = {"model": config["model"], "prompt": invocation.prompt, "n": 1, "size": size}
+        request_prompt = (_prompt_with_reference_roles(invocation.prompt, references)
+                          if invocation.operation == "edit" else invocation.prompt)
+        body = {"model": config["model"], "prompt": request_prompt, "n": 1, "size": size}
         if accepted["response_format"]:
             body["response_format"] = accepted["response_format"]
         if platform == "minimax":

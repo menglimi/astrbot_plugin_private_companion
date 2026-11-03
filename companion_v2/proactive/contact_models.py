@@ -51,3 +51,6 @@ class ContactJob:
     dialogue_history: dict | None = None
     diagnostic_image_intent: str | None = None
     voice_policy: VoiceReplyPolicy | None = None
+    plan: dict | None = None
+    plan_call_id: str | None = None
+    plan_usage_known: bool = False

@@ -9,12 +9,15 @@ when the host swaps the provider mid-assembly. Those four causes need four
 different responses, so the reason has to reach the log.
 """
 
+import asyncio
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from companion_v2.adapters.astrbot.provider import UsageTariff
-from companion_v2.adapters.astrbot.provider_catalog import TextProviderSettings, assemble_providers
+from companion_v2.adapters.astrbot.provider_catalog import TextProviderSettings, TextVideoProvider, assemble_providers
+from companion_v2.execution.models import ProviderBinding
+from companion_v2.model_gateway.models import LocalProvider
 
 LOGGER = "companion_v2.adapters.astrbot.provider_catalog"
 
@@ -66,26 +69,61 @@ def warning_lines(logs):
 
 
 class CatalogUnavailableReasonTests(unittest.TestCase):
-    def test_native_provider_registered_for_text_and_video_uses_text_adapter(self):
+    def test_native_provider_registered_for_text_and_video_keeps_both_transports(self):
         native = CatalogProvider("gemini-native")
         video_calls = []
+        async def text_generate(_envelope):
+            return "text transport"
+
+        async def video_generate(_envelope):
+            return "native video transport"
+
+        text = SimpleNamespace(native=native, provider_id="gemini-native", _current=lambda: None,
+            reserve=lambda _envelope: "text reservation", generate=text_generate)
+        video = SimpleNamespace(native=native, provider_id="gemini-native", _current=lambda: None,
+            reserve=lambda _envelope: "video reservation", generate=video_generate)
+        async def video_probe():
+            video_calls.append("probe")
+
+        video.probe = video_probe
+        text.local_provider = lambda: LocalProvider(
+            ProviderBinding("model.text", "gemini-native", "4.29.1", "generation"),
+            ("text", "audio"), 8192, text.reserve, text.generate)
+        video.local_provider = lambda: LocalProvider(
+            ProviderBinding("model.native_video", "gemini-native", "4.29.1", "generation"),
+            ("text", "tools", "image", "video"), 8192, video.reserve, video.generate)
+
+        def video_factory(*args):
+            video_calls.append(args)
+            return video
+
         native_types = SimpleNamespace(
             version="4.29.1", provider=CatalogProvider, provider_types=(CatalogProvider,),
             is_text_provider=lambda item: isinstance(item, CatalogProvider),
             video_provider_type=CatalogProvider,
-            video_provider_factory=lambda *args: video_calls.append(args),
+            video_provider_factory=video_factory,
             function_tool=object, tool_set=object,
         )
-        adapter = SimpleNamespace(native=native, _current=lambda: None)
         with patch("companion_v2.adapters.astrbot.provider_catalog.AstrBotTextProvider",
-                   return_value=adapter) as text_factory:
+                   return_value=text) as text_factory:
             adapters = assemble_providers(context([native]), bridge=None, native_types=native_types,
                 primary_id="unused-primary",
                 defaults=TextProviderSettings("unused-primary", UsageTariff(0, 0, 0)))
 
-        self.assertEqual(adapters, (adapter,))
-        self.assertEqual(video_calls, [])
+        self.assertEqual(len(adapters), 1)
+        self.assertIsInstance(adapters[0], TextVideoProvider)
+        self.assertEqual(adapters[0].local_provider().capabilities, ("text", "audio", "video"))
+        self.assertEqual(len(video_calls), 1)
+        self.assertIs(video_calls[0][3], native)
         self.assertEqual(text_factory.call_args.kwargs["binding"].capability, "model.text")
+        ordinary = SimpleNamespace(original=SimpleNamespace(native_video_input=False, audios=(object(),)))
+        original_video = SimpleNamespace(original=SimpleNamespace(native_video_input=True, audios=()))
+        self.assertEqual(adapters[0].reserve(ordinary), "text reservation")
+        self.assertEqual(adapters[0].reserve(original_video), "video reservation")
+        self.assertEqual(asyncio.run(adapters[0].generate(ordinary)), "text transport")
+        self.assertEqual(asyncio.run(adapters[0].generate(original_video)), "native video transport")
+        asyncio.run(adapters[0].probe())
+        self.assertEqual(video_calls[-1], "probe")
 
     def test_a_refused_provider_names_the_contract_it_violated(self):
         refused = CatalogProvider("relay/deepseek", provider_config={"custom_extra_body": {"tools": []}})

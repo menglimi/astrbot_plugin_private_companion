@@ -1,6 +1,8 @@
 import asyncio
 import base64
 import io
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -41,6 +43,22 @@ class StaticImageLoaderTests(unittest.IsolatedAsyncioTestCase):
                     await load_native_image(NativeImageLocator(0, locator))
                 session.assert_not_called()
         self.assertEqual(public_url("https://public.example/image?download=1"), "https://public.example/image?download=1")
+
+    async def test_only_host_resolved_absolute_cache_files_are_read_locally(self):
+        source = image_bytes("green")
+        with TemporaryDirectory() as directory:
+            cached = Path(directory) / "quoted-image.png"
+            cached.write_bytes(source)
+            with patch("astrbot_host.media.aiohttp.ClientSession") as session:
+                captured = await load_native_image(NativeImageLocator(4, str(cached), host_resolved=True))
+                session.assert_not_called()
+            self.assertEqual(captured.content, source)
+            self.assertEqual(captured.descriptor.position, 4)
+
+            # The same existing file remains forbidden without the trusted marker.
+            with self.assertRaises(TaskError) as caught:
+                await load_native_image(NativeImageLocator(0, str(cached)))
+            self.assertEqual(caught.exception.code, "host_image_location_invalid")
 
     async def test_dns_result_used_by_connector_rejects_private_or_mixed_addresses(self):
         resolver = PublicImageResolver()

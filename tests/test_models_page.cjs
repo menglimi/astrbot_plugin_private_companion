@@ -200,6 +200,31 @@ test('registered review, media and authoring tasks have searchable Chinese names
   h.page.unmount();
 });
 
+test('video narration offers only native-video providers and saves the selected model', async () => {
+  const h = harness(), node = h.root(), data = status();
+  data.tasks.push(editable('conversation.video_narration', 'gemini-a', ['text', 'video'], 'background'));
+  data.providers.push(
+    {id: 'gemini-a', model: 'gemini-3.8-flash', capabilities: ['text', 'video'], max_output_tokens: 8192},
+    {id: 'gemini-b', model: 'gemini-3.8-pro', capabilities: ['text', 'video'], max_output_tokens: 8192},
+  );
+  h.page.mount(node);
+  h.requests[0].resolve(data);
+  await flush();
+  node.click('[data-model-sub]', {modelSub: 'cfg'});
+  node.click('[data-model-open]', {modelOpen: 'conversation.video_narration'});
+  const card = node.innerHTML.split('data-fncard="conversation.video_narration"')[1].split('</article>')[0];
+  assert.match(card, /<option value="gemini-a" selected>gemini-a · gemini-3\.8-flash<\/option>/);
+  assert.match(card, /<option value="gemini-b"[^>]*>gemini-b · gemini-3\.8-pro<\/option>/);
+  assert.doesNotMatch(card, /<option value="primary"|<option value="secondary"/);
+  node.change('[data-model-field]', {modelField: 'provider', modelKind: 'conversation.video_narration', value: 'gemini-b'});
+  node.click('[data-model-action]', {modelAction: 'save-one', modelKind: 'conversation.video_narration'});
+  const post = h.requests.find(request => request.method === 'POST');
+  assert.deepEqual({...post.values.changes}, {provider: 'gemini-b'});
+  post.resolve({replayed: false, task: editable('conversation.video_narration', 'gemini-b', ['text', 'video'], 'background')});
+  await flush();
+  h.page.unmount();
+});
+
 test('core reply uses AstrBot routing and saves only its effective extra prompt', async () => {
   const h = harness(), node = h.root(), data = status();
   const core = data.tasks[0];

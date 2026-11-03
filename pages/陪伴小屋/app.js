@@ -5209,6 +5209,7 @@ const tokenTaskSettings={
   'conversation.reply':{next:'manage',tab:'identity-people',identitySettings:'private-access',identityField:'dialogue_default'},
   'conversation.group.review':{next:'manage',tab:'decision',decisionView:'group',
     workbench:{root:'#groupInterjectionConfigWorkspace',field:'enable_group_interjection'}},
+  'proactive.plan':{next:'manage',tab:'contact',contactView:'sources'},
   'proactive.compose':{next:'manage',tab:'contact',contactView:'purposes'},
   'proactive.judge':{next:'manage',tab:'contact',contactView:'gates'},
   'memory.reflect':{next:'manage',tab:'memory',memorySection:'reflection',memoryField:'reflection_enabled'},

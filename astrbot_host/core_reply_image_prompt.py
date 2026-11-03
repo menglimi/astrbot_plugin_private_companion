@@ -56,7 +56,9 @@ def core_image_tool_contract(action, description, parameters, *, reference_limit
     if isinstance(prompt, dict):
         prompt["description"] = ("本次画面或修改要求，按图片调用偏好的格式书写；"
                                   "有身份参考图时只写动作、镜头、场景、光线和用户明确要求的变化，"
-                                  "不要重复或改写参考图已有的固定外貌；自拍写明 selfie。")
+                                  "不要重复或改写参考图已有的固定外貌；自拍写明 selfie。"
+                                  "多张参考图按实际上传顺序写明图一、图二等用途；"
+                                  "模仿用户附图姿势时必须实际选择该图并赋予 pose，不能只转述姿势后省略图片。")
     if action == "image.edit" and type(reference_limit) is int and reference_limit > 0:
         for name in ("reference_ids", "reference_indices", "reference_roles"):
             reference = properties.get(name)
@@ -186,6 +188,8 @@ def _attachment_guidance(session):
         "reference_roles 先写附图用途（scene、style、pose、outfit 等），"
         "额度允许时再按顺序追加 reference_ids 的 identity；"
         "不要用 reference_indices=[] 把本轮附图排除。"
+        "模仿附图姿势时，必须实际上传该图并赋予 pose，同时保留 identity；"
+        "不能只把姿势写成文字后省略附图，prompt 要按顺序写明图一姿势、图二身份等用途。"
         "只有用户没有指向附图时，才用 reference_indices=[] 只选已存素材。"
     )
 
