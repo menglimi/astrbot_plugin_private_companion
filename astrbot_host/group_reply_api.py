@@ -1,5 +1,7 @@
 """Dashboard-only reply preferences for one configured group, role and native session."""
 
+import asyncio
+from contextlib import nullcontext
 import json
 
 from astrbot.api.web import request
@@ -409,74 +411,81 @@ class GroupReplyWebAPI:
             elif not command:
                 int(query.get("limit", "20"))
 
-            async with self.controller._control_lock:
-                controller = self.controller
-                if controller._terminated:
-                    raise TaskError("staging_host_terminated", "plugin is stopped")
-                username = request.username
-                if type(username) is not str or not username.strip() or username.startswith("api_key:"):
-                    raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
-                session = controller.session or controller.last_session
-                if session is None or controller.runtime is None:
-                    raise TaskError("staging_not_initialized", "load the V2 profile first")
-                selected = controller.settings.target(self.target_id)
-                if not isinstance(selected, GroupTarget) or not any(
-                        p.bot_id == selected.bot_id and p.role_id == self.role_id for p in controller.settings.personas):
-                    raise TaskError("group_reply_target_required", "the configured group/role is unavailable")
-                session_id = self._session(selected.group_id, allowed=allowed - {"session_id"})
-                bridge = session.bridge.groups
-                account = self._account(bridge, selected)
-                conversation_id, role, _ = await bridge._role(account, session_id)
-                if role.subject_id != self.role_id or role.installation_id != controller.runtime.installation_id:
-                    raise TaskError("group_reply_role_changed", "the native group session selected another role")
-                scope = ScopeRef(controller.runtime.installation_id, selected.platform_id, ScopeKind.GROUP,
-                                 selected.group_id, selected.bot_id, selected.account_id, conversation_id, session_id)
-                if bridge.target_for_scope(scope) != selected:
-                    raise TaskError("group_reply_target_required", "the native group target changed")
-                current = session.application.tasks.identity.resolve_role(scope, observed_at=controller.now())
-                if current.failure:
-                    if method in ("list", "list_samples") and current.failure.code in DEGRADED_STYLE_REASONS:
-                        page = self._degraded_style_page(controller, scope, current.failure.code,
-                                                         samples=method == "list_samples", role_id=self.role_id)
-                        return outcome_response(Outcome.success(page))
-                    if method in ("list", "list_samples"):
-                        # Installation, authorization and identity failures are
-                        # not an empty group and must stay visible.
-                        raise TaskError(current.failure.code, current.failure.reason)
-                    # Decisions still need a real conversation context.
-                    raise TaskError("expression_group_context_required", "this group session has no original conversation yet")
-                binding = current.unwrap()
-                if binding.role != role:
-                    raise TaskError("group_reply_role_changed", "the native group session selected another role")
-                try:
-                    context = self._style_context(controller, session_id, binding, scope)
-                except TaskError as error:
-                    if method in ("list", "list_samples") and error.code in DEGRADED_STYLE_REASONS:
-                        page = self._degraded_style_page(controller, scope, error.code,
-                                                         samples=method == "list_samples",
-                                                         role_id=binding.role.subject_id)
-                        return outcome_response(Outcome.success(page))
-                    raise
-                operator = dashboard_operator(controller.runtime, username, at=controller.now())
-                manager = ExpressionStyleManagement(session.application)
-                if command:
-                    result = getattr(manager, method)(operator=operator, context=context, **data)
-                else:
+            async with (self.controller._lifecycle_lock if method == "list" else nullcontext()):
+                async with self.controller._control_lock:
+                    controller = self.controller
+                    if controller._terminated:
+                        raise TaskError("staging_host_terminated", "plugin is stopped")
+                    username = request.username
+                    if type(username) is not str or not username.strip() or username.startswith("api_key:"):
+                        raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
+                    session = controller.session or controller.last_session
+                    if session is None or controller.runtime is None:
+                        raise TaskError("staging_not_initialized", "load the V2 profile first")
+                    selected = controller.settings.target(self.target_id)
+                    if not isinstance(selected, GroupTarget) or not any(
+                            p.bot_id == selected.bot_id and p.role_id == self.role_id for p in controller.settings.personas):
+                        raise TaskError("group_reply_target_required", "the configured group/role is unavailable")
+                    session_id = self._session(selected.group_id, allowed=allowed - {"session_id"})
+                    bridge = session.bridge.groups
+                    account = self._account(bridge, selected)
+                    conversation_id, role, _ = await bridge._role(account, session_id)
+                    if role.subject_id != self.role_id or role.installation_id != controller.runtime.installation_id:
+                        raise TaskError("group_reply_role_changed", "the native group session selected another role")
+                    scope = ScopeRef(controller.runtime.installation_id, selected.platform_id, ScopeKind.GROUP,
+                                     selected.group_id, selected.bot_id, selected.account_id, conversation_id, session_id)
+                    if bridge.target_for_scope(scope) != selected:
+                        raise TaskError("group_reply_target_required", "the native group target changed")
+                    current = session.application.tasks.identity.resolve_role(scope, observed_at=controller.now())
+                    if current.failure:
+                        if method in ("list", "list_samples") and current.failure.code in DEGRADED_STYLE_REASONS:
+                            page = self._degraded_style_page(controller, scope, current.failure.code,
+                                                             samples=method == "list_samples", role_id=self.role_id)
+                            return outcome_response(Outcome.success(page))
+                        if method in ("list", "list_samples"):
+                            # Installation, authorization and identity failures are
+                            # not an empty group and must stay visible.
+                            raise TaskError(current.failure.code, current.failure.reason)
+                        # Decisions still need a real conversation context.
+                        raise TaskError("expression_group_context_required", "this group session has no original conversation yet")
+                    binding = current.unwrap()
+                    if binding.role != role:
+                        raise TaskError("group_reply_role_changed", "the native group session selected another role")
                     try:
-                        limit = int(query.get("limit", "20"))
-                    except (TypeError, ValueError):
-                        raise ValueError("invalid page size") from None
-                    arguments = {"state": query.get("state") or ("all" if method == "list_samples" else "pending"),
-                                 "limit": limit, "after_id": query.get("after_id") or None}
-                    if method == "list":
-                        arguments["dimension"] = query.get("dimension") or None
-                    result = getattr(manager, method)(operator=operator, context=context, **arguments)
-                    if method == "list" and result.is_success:
+                        context = self._style_context(controller, session_id, binding, scope)
+                    except TaskError as error:
+                        if method in ("list", "list_samples") and error.code in DEGRADED_STYLE_REASONS:
+                            page = self._degraded_style_page(controller, scope, error.code,
+                                                             samples=method == "list_samples",
+                                                             role_id=binding.role.subject_id)
+                            return outcome_response(Outcome.success(page))
+                        raise
+                    operator = dashboard_operator(controller.runtime, username, at=controller.now())
+                    manager = ExpressionStyleManagement(session.application)
+                    if command:
+                        result = getattr(manager, method)(operator=operator, context=context, **data)
+                        return outcome_response(result)
+                    else:
+                        try:
+                            limit = int(query.get("limit", "20"))
+                        except (TypeError, ValueError):
+                            raise ValueError("invalid page size") from None
+                        arguments = {"state": query.get("state") or ("all" if method == "list_samples" else "pending"),
+                                     "limit": limit, "after_id": query.get("after_id") or None}
+                        if method == "list":
+                            arguments["dimension"] = query.get("dimension") or None
+                        else:
+                            result = getattr(manager, method)(operator=operator, context=context, **arguments)
+                            return outcome_response(result)
+                def read_list():
+                    result = manager.list(operator=operator, context=context, **arguments)
+                    if result.is_success:
                         page = result.unwrap()
                         page["legacy_orphan_count"] = self._legacy_expression_count(
                             controller, scope, binding.role.subject_id)
-                        result = Outcome.success(page)
-                return outcome_response(result)
+                        return Outcome.success(page)
+                    return result
+                return outcome_response(await asyncio.to_thread(read_list))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):

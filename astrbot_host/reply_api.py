@@ -1,5 +1,7 @@
 """Dashboard-only reply preferences, offline preview and sanitized diagnostics."""
 
+import asyncio
+from contextlib import nullcontext
 import json
 
 from astrbot.api.web import request
@@ -148,16 +150,21 @@ class ReplyWebAPI:
             username = request.username
             if type(username) is not str or not username.strip() or username.startswith("api_key:"):
                 raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
-            async with self.controller._control_lock:
-                controller = self.controller
-                if controller._terminated:
-                    raise TaskError("staging_host_terminated", "plugin is stopped")
-                session = controller.session or controller.last_session
-                if session is None or controller.runtime is None:
-                    raise TaskError("staging_not_initialized", "load an initialized V2 profile first")
-                operator = dashboard_operator(controller.runtime, username, at=controller.now())
-                manager = ExpressionStyleManagement(session.application)
-                result = getattr(manager, method)(operator=operator, context=session.profile.target, **arguments)
+            controller = self.controller
+            async with (controller._lifecycle_lock if method == "list" else nullcontext()):
+                async with controller._control_lock:
+                    if controller._terminated:
+                        raise TaskError("staging_host_terminated", "plugin is stopped")
+                    session = controller.session or controller.last_session
+                    if session is None or controller.runtime is None:
+                        raise TaskError("staging_not_initialized", "load an initialized V2 profile first")
+                    operator = dashboard_operator(controller.runtime, username, at=controller.now())
+                    manager = ExpressionStyleManagement(session.application)
+                    context = session.profile.target
+                    if method != "list":
+                        result = getattr(manager, method)(operator=operator, context=context, **arguments)
+                        return outcome_response(result)
+                result = await asyncio.to_thread(manager.list, operator=operator, context=context, **arguments)
                 return outcome_response(result)
         except (TaskError, ConfigurationError) as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
