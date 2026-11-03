@@ -1,8 +1,10 @@
 """Reply controls use the authenticated Dashboard and lazy native voice adapters."""
 
+import asyncio
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import threading
 from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
@@ -15,6 +17,7 @@ from tests.test_management_access import NOW
 from astrbot_host.controller import AstrBotStagingController
 from astrbot_host.reply_api import ReplyWebAPI
 from companion_v2.adapters.astrbot.staging import NativeAdapterTypes
+from companion_v2.foundation.outcome import Outcome
 
 
 RECORD = {"type": "record", "data": {"file": "base64://YQ=="}}
@@ -124,6 +127,34 @@ class ReplyWebAPITests(MultiFixture, unittest.IsolatedAsyncioTestCase):
 
 
 class SingleReplyWebAPITests(unittest.IsolatedAsyncioTestCase):
+    async def test_style_list_runs_off_loop_without_holding_control_lock(self):
+        entered, release = threading.Event(), threading.Event()
+
+        def slow_list(**kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("the style list was not released")
+            return Outcome.success({"items": []})
+
+        controller = NS(_lifecycle_lock=asyncio.Lock(), _control_lock=asyncio.Lock(),
+                        _terminated=False, session=NS(application=object(),
+                        profile=NS(target=object())), last_session=None,
+                        runtime=object(), now=lambda: NOW)
+        api = ReplyWebAPI(controller)
+        with patch("astrbot_host.reply_api.dashboard_operator", return_value=object()), patch(
+                "astrbot_host.reply_api.ExpressionStyleManagement",
+                return_value=NS(list=slow_list)):
+            listing = asyncio.create_task(request(api.style))
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait, 5))
+                self.assertFalse(listing.done(), "the event loop must stay responsive")
+                await asyncio.wait_for(controller._control_lock.acquire(), timeout=1)
+                controller._control_lock.release()
+            finally:
+                release.set()
+                result = await listing
+        self.assertEqual(result["status"], "ok")
+
     async def test_single_host_enables_voice_without_reload(self):
         temporary = TemporaryDirectory(prefix="companion-reply-api-")
         self.addCleanup(temporary.cleanup)

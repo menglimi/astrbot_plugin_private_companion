@@ -41,6 +41,7 @@
   let bridge, root = fresh(), options = {models: [], personas: []}, loaded = false, disposed = false;
   let working = false, nextBefore = null, pollTimer, loadingDrafts = false, polling = false;
   let pendingPersonaId = "";
+  let entryMode = "";
   const session = () => root.sessions[root.activeMode];
   const doc = () => session().document;
   const generating = () => Object.values(root.sessions).some(s => s.pending);
@@ -274,7 +275,12 @@
             const d = saved.state;
             if (!["optimize", "create"].includes(d?.mode) || !Array.isArray(d.messages)) throw new Error("persona_designer_response_invalid");
             root.sessions[d.mode] = {document: d}; root.activeMode = d.mode;
-            await persist(); $("drafts-dialog").close(); notice("已读取“" + saved.title + "”。"); render();
+            await persist();
+            if (entryMode && entryMode !== d.mode) {
+              entryMode = d.mode;
+              parent.postMessage({channel: "companion-workspace", kind: "designer-mode", mode: d.mode}, "*");
+            }
+            $("drafts-dialog").close(); notice("已读取“" + saved.title + "”。"); render();
           } catch (error) { notice(errorText(error), true); } finally { working = false; button.disabled = false; controls(); }
         });
         row.append(description, button); $("draft-list").append(row);
@@ -295,9 +301,12 @@
       catch { notice("已选中文本，请使用系统的复制操作。"); }
     }
   }
-  document.querySelectorAll("[data-mode]").forEach(button => button.addEventListener("click", () => {
-    const provider = doc().provider_id; root.activeMode = button.dataset.mode;
+  function selectMode(mode) {
+    const provider = doc().provider_id; root.activeMode = mode;
     if (!doc().provider_id) doc().provider_id = provider;
+  }
+  document.querySelectorAll("[data-mode]").forEach(button => button.addEventListener("click", () => {
+    selectMode(button.dataset.mode);
     persist(); notice(session().error || "", !!session().error); render();
   }));
   document.querySelectorAll("[data-stage]").forEach(button => button.addEventListener("click", () => {
@@ -382,14 +391,16 @@
   });
   async function initialize() {
     try {
-      bridge = window.AstrBotPluginPage; await bridge.ready();
+      bridge = window.AstrBotPluginPage;
+      const context = await bridge.ready();
+      entryMode = ["create", "optimize"].includes(context?.tab) ? context.tab : "";
       const cached = await api("GET", "designer/client-state", {});
       root = cached.state?.version === 1 ? cached.state : fresh();
-      const requested = bridge.getContext?.()?.tab;
-      if (requested === "create" || requested === "optimize") {
-        root.activeMode = requested;
-        if (!root.sessions?.[requested]) root.sessions[requested] = {document: newDocument(requested)};
-      }
+      // Apply the entry after restoring memory; a bridge-generated click before
+      // the read finishes would otherwise overwrite or lose the selected mode.
+      if (entryMode) selectMode(entryMode);
+      document.querySelector(".mode-switch").hidden = !!entryMode;
+      await persist();
       render(); await loadOptions();
       if (session().error) notice(session().error, true);
       await poll();

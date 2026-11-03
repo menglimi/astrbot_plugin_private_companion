@@ -475,7 +475,7 @@ class PrivateAcquaintanceLearningManagement(PrivateAcquaintanceSettingsMixin, Gr
 
 
 class PrivateAccessManagement(GroupEditor):
-    """私聊用户权限的默认值与拒绝文案。
+    """Role defaults for known private users and their refusal line.
 
     这一组**不是**按人开关：每个人的对话/主动权限始终是 grant
     （``conversation.reply`` / ``proactive.contact``），由关系页按人读写。
@@ -487,6 +487,36 @@ class PrivateAccessManagement(GroupEditor):
     owner = ConfigurationService.OWNER
     layers = private_access_fields()[0].layers
     error_prefix = "private_access"
+    visible_fields = frozenset({"dialogue_default", "proactive_default",
+                                "denied_reply", "notice_cooldown_seconds"})
+
+    @property
+    def short_names(self):
+        return self.visible_fields
+
+    def _settings(self, snapshot):
+        return {key: value for key, value in super()._settings(snapshot).items()
+                if key in self.visible_fields}
+
+    def _definitions(self):
+        return {key: value for key, value in super()._definitions().items()
+                if key in self.visible_fields}
+
+    def _provenance(self, snapshot):
+        return {key: value for key, value in super()._provenance(snapshot).items()
+                if key in self.visible_fields}
+
+    def _field_contract(self):
+        return {key: value for key, value in super()._field_contract().items()
+                if key in self.visible_fields}
+
+
+class StrangerPrivateAccessManagement(PrivateAccessManagement):
+    """Installation defaults read by unbound private accounts."""
+
+    target_layer = ConfigLayer.INSTALLATION
+    visible_fields = frozenset({"denied_reply", "notice_cooldown_seconds",
+                                "stranger_notice_enabled", "stranger_notice_daily_cap"})
 
 
 class RoleGrowthManagement(GroupEditor):

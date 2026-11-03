@@ -15,6 +15,7 @@ from urllib.parse import urlsplit, urlunsplit
 import aiohttp
 
 from .backends import NativeTransportBackend
+from .nai_backend import NAIImageBackend
 from .output_configuration import accepted_request_fields
 from .owner import checked
 from .types import MAX_REFERENCE_IMAGES, BackendResult, NativeImageError, fingerprint
@@ -103,7 +104,10 @@ REJECTED_REQUEST = "request_invalid"
 # Local, pre-execution codes that must abort routing instead of being read as
 # "this endpoint is unavailable".  Anything else raised before the fence is
 # endpoint-local configuration and may fall through to the next route.
-ABORTING_CODES = frozenset({"image_authority_revoked", "image_provider_stopped"})
+ABORTING_CODES = frozenset({"image_authority_revoked", "image_provider_stopped",
+                           "image_usage_unavailable", "model_budget_exhausted", "model_budget_policy_changed",
+                           "image_model_task_mismatch", "image_model_provider_unavailable",
+                           "image_model_session_closed", "model_request_already_started"})
 
 MAX_ERROR_BODY_BYTES = 4096
 MAX_ERROR_DETAIL_CHARS = 160
@@ -524,10 +528,11 @@ class OnlineImageBackend:
 
 
 class OutputRoutingBackend:
-    def __init__(self, settings, directory):
+    def __init__(self, settings, directory, *, context=None):
         self.config = json.loads(json.dumps(settings))
         self.backend = settings["backend"]
         self.directory = Path(directory)
+        self.context = context
         self.revision = fingerprint(settings)
         self._closed = False
 
@@ -557,6 +562,9 @@ class OutputRoutingBackend:
                     if endpoint and endpoint.get("enabled"):
                         yield OnlineImageBackend(endpoint, self.config.get("network", {}))
                     continue
+                if route == "nai":
+                    yield NAIImageBackend(self.context, self.directory / "nai")
+                    continue
                 if route in {"comfyui", "sd_webui"}:
                     try:
                         yield NativeTransportBackend(route, self.config.get(route, {}), self.directory / route)
@@ -565,6 +573,8 @@ class OutputRoutingBackend:
             return
 
         selected = self.backend
+        if selected == "nai":
+            yield NAIImageBackend(self.context, self.directory / "nai")
         if selected in {"auto", "online_api"}:
             for endpoint in self.config.get("endpoints", []):
                 if endpoint.get("enabled"):
@@ -587,9 +597,14 @@ class OutputRoutingBackend:
         rate_budget = RATE_LIMIT_ATTEMPTS
         for backend in self._routes(invocation.operation):
             routed = True
-            if invocation.operation not in backend.operations:
+            operations = backend.operations
+            if invocation.operation not in operations:
                 # A route that cannot serve this operation is a configuration gap
                 # for this endpoint only; it must not be reported as "no route".
+                if isinstance(backend, NAIImageBackend) and not operations:
+                    diagnostics.append(_diagnostic({"id": "nai"}, 0, "nai_plugin_unavailable",
+                                                   "", scope=SCOPE_ENDPOINT))
+                    rejected = True
                 continue
             dispatched = False
 
@@ -622,6 +637,14 @@ class OutputRoutingBackend:
                 rejected = True
                 continue
             except Exception as exc:
+                if getattr(exc, "code", "") in ABORTING_CODES:
+                    raise NativeImageError(exc.code, unconfirmed=dispatched, diagnostics=(
+                        _diagnostic(_backend_config(backend), 0, exc.code, "", scope=SCOPE_ENDPOINT),)) from None
+                if (isinstance(exc, NativeImageError) and not exc.unconfirmed
+                        and exc.code == "nai_plugin_unavailable"):
+                    diagnostics.extend(exc.diagnostics)
+                    rejected = True
+                    continue
                 if dispatched:
                     # A transport failure after the fence is never retried: the
                     # provider may already have executed and billed the request.

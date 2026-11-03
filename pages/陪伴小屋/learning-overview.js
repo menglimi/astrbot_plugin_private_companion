@@ -150,9 +150,14 @@ window.CompanionLearningOverviewPage = (() => {
     daily_budget_reached: "今日群聊学习批次已用完",
     already_attempted: "本批素材已学习，等待新消息",
     succeeded: "上次学习已产出",
+    retry_backoff: "上次失败，等待下次重试",
+    retry_exhausted: "本批素材重试已达上限，等待新素材",
     failed: "上次学习失败",
     blocked: "来源校验未通过",
   };
+  // 重试相关状态的中文文案已经把处置说清楚（等待或停止），不再回显
+  // expression_retry_exhausted 这类机器码，否则同一行会同时出现中文与机器码。
+  const RETRY_STATES = new Set(["retry_exhausted", "retry_backoff"]);
   // 失败码的中文原因：只解释稳定 code 的含义与处置动作，原始 code 仍照常显示，
   // 便于和日志、台账对照。
   const LEARNING_FAILURE_CODES = {
@@ -169,7 +174,9 @@ window.CompanionLearningOverviewPage = (() => {
       : Number.isInteger(item.available)
         ? `（${item.available}/${Number.isInteger(item.required) ? item.required : "?"} 条样本）` : "";
     const reason = item.code && LEARNING_FAILURE_CODES[item.code] ? `（${e(LEARNING_FAILURE_CODES[item.code])}）` : "";
-    const failure = item.code ? ` · ${item.code}` : "";
+    // 重试类状态的中文文案已经说明了该怎么办；同一行再挂上
+    // expression_retry_exhausted 只会让「已停止、等待新素材」看起来像故障码。
+    const failure = item.code && !RETRY_STATES.has(item.state) ? ` · ${item.code}` : "";
     const last = item.last_run_at ? ` · 上次 ${when(item.last_run_at)}` : "";
     return `表达学习：${e(label)}${e(counts)}${reason}${e(failure)}${e(last)}`;
   }

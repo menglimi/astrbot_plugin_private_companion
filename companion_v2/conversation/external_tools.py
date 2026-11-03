@@ -24,7 +24,7 @@ from companion_v2.execution.models import (
     Lane, ProviderBinding, SideEffect, TaskClaim, TaskContext, TaskDefinition, TaskError,
     TaskRegistration, TaskResult, TaskSpec, digest, encode, require, stamp,
 )
-from companion_v2.execution.runner import ExactTaskRunner
+from companion_v2.execution.runner import ExactTaskRunner, TaskRun
 from companion_v2.execution.service import outcome
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import ScopeKind, SourceRef
@@ -153,6 +153,7 @@ class ExternalToolInvocation:
     arguments_json: str
     deadline_at: datetime
     before_dispatch: Callable[[], object] | None = field(default=None, compare=False, repr=False)
+    task_run: TaskRun | None = field(default=None, compare=False, repr=False)
 
     @property
     def arguments_hash(self):
@@ -594,7 +595,8 @@ class ExternalToolExecutor:
                 self._admit(descriptor, run.task.spec.context, self.tasks.now())
 
             invocation = ExternalToolInvocation(row["invocation_id"], row["parent_task_id"], row["tool_call_id"],
-                run.task.spec.context, descriptor, row["arguments_json"], run.task.spec.deadline_at, before_dispatch)
+                run.task.spec.context, descriptor, row["arguments_json"], run.task.spec.deadline_at, before_dispatch,
+                task_run=run)
         try:
             provider, dispatch_descriptor = self._provider(descriptor)
             if dispatch_descriptor.binding != descriptor.binding:

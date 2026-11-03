@@ -210,6 +210,35 @@ test("表达学习已学过的批次显示中文状态而不是机器码",async(
   page.page.unmount();
 });
 
+test("表达学习的重试上限与退避显示中文状态而不是机器码",async()=>{
+  const renderFor=async learning=>{
+    const page=harness({apiGet:async route=>{
+      const data=route.endsWith("/style")?{items:[]}
+        :route.endsWith("/self-review")?{items:[],status:{state:"succeeded"}}
+        :route.endsWith("/expression")?expression({learning})
+        :route==="semantic"?{settings:{learning_interval_seconds:21600}}
+        :{items:[]};
+      return {status:"ok",data};
+    }});
+    page.mount();
+    await page.settle();
+    const html=page.root.innerHTML;
+    page.page.unmount();
+    return html;
+  };
+  // 后端 status 的字段名是 retry_epoch / retry_limit（不是 retries），上限 3；
+  // 用尽后 code 报 expression_retry_exhausted，页面只该显示中文处置说明。
+  const exhausted=await renderFor({state:"retry_exhausted",code:"expression_retry_exhausted",
+    retry_epoch:3,retry_limit:3,rules_per_turn:2});
+  assert.match(exhausted,/重试已达上限/);
+  assert.doesNotMatch(exhausted,/expression_retry_exhausted/);
+  assert.doesNotMatch(exhausted,/表达学习[^<]*retry_exhausted/);
+  const waiting=await renderFor({state:"retry_backoff",retry_epoch:1,retry_limit:3,
+    next_check_at:"2026-11-01T19:34:28+08:00",rules_per_turn:2});
+  assert.match(waiting,/等待下次重试/);
+  assert.doesNotMatch(waiting,/表达学习[^<]*retry_backoff/);
+});
+
 test("重新读取期间保留上一轮 KPI 与培育轨道，不清零不重画",async()=>{
   const page=harness(settledBridge());
   page.mount();

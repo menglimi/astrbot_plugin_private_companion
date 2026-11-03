@@ -268,6 +268,14 @@ class CoreReplyImagePromptTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("最多接收 1 张参考图", description)
         self.assertIn("优先用户指向的附图", parameters["properties"]["reference_ids"]["description"])
 
+    def test_reference_guidance_omits_artifact_id(self):
+        self.inject()
+        self.assertIn("省略 artifact_id", self.request.system_prompt)
+        _description, parameters = core_image_tool_contract("image.edit", "", {
+            "properties": {"artifact_id": {"type": "string"}},
+        })
+        self.assertIn("不要传空字符串", parameters["properties"]["artifact_id"]["description"])
+
     async def test_reference_changes_only_update_temporary_user_context(self):
         self.inject()
         first_system = self.request.system_prompt

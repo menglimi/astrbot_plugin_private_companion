@@ -1071,7 +1071,8 @@ window.CompanionModelsPage = (() => {
     decision_fields: Object.fromEntries(LAYA_DECISION_FIELDS.map(([key]) => [key, data.decision_fields?.[key] !== false]))});
   const layaChanges = l => { const changes = {};
     ["enabled", "mode", "request_format", "remote_model", "endpoint", "timeout_seconds", "local_model_path", "followup_confidence_threshold"].forEach(key => {
-      const current = key === "local_model_path" ? l.data[key] || ""
+      const current = key === "request_format" ? l.data[key] || "native"
+        : key === "remote_model" || key === "local_model_path" ? l.data[key] || ""
         : key === "followup_confidence_threshold" ? Math.max(0, Math.min(100, Number(l.data[key]) || 0))
         : l.data[key];
       if (l.draft[key] !== current) changes[key] = l.draft[key]; });
@@ -1113,7 +1114,7 @@ window.CompanionModelsPage = (() => {
     try { const data = await api("GET", path + "/search"); if (!current(ticket, s)) return;
       if (!searchDirty(x) || x.stale) x.draft = {deepseek_provider_id: data.deepseek_provider_id || "", source_priority: data.source_priority || "auto"};
       x.data = data; x.loaded = true; x.stale = false; x.bad = false;
-      x.notice = data.provider_available ? "已读取 DeepSeek 搜索 Provider。" : "当前选择的 Provider 未加载或已失效；搜索不会自动切换。";
+      x.notice = data.provider_available ? "已读取 DeepSeek 搜索 Provider。" : "当前选择的 Provider 未加载或已失效；搜索会改用 AstrBot 里配置的搜索服务。";
     } catch (err) { if (!current(ticket, s)) return; x.bad = true; x.notice = fail(err, "无法读取搜索服务配置。"); }
     finally { x.loading = false; if (current(ticket, s)) render(); } }
   async function searchSave(s) { const x = s.search; if (x.busy || x.loading || !x.data || x.stale || !searchDirty(x)) return;
@@ -1221,7 +1222,7 @@ window.CompanionModelsPage = (() => {
         ${gpuUnavailable ? `<div class="model-alert"><b>本地 Laya 当前不可用：</b>当前 AstrBot Python 使用的是 CPU 版 PyTorch${torchText ? `（${esc(torchText)}）` : ""}。Laya 本地模式需要 CUDA；请安装与驱动匹配的 CUDA 版 PyTorch 后重启 AstrBot，或在上方把接入方式切到「远程 HTTP 服务」或「Jev 判断服务」。
           <div class="model-editor-actions"><button type="button" class="button small" data-laya-copy="torch_install_command">复制 CUDA PyTorch 安装命令</button></div>
           ${l.data.torch_install_command ? `<code class="model-laya-cmd">${esc(l.data.torch_install_command)}</code><small>命令默认使用 cu128；请按显卡驱动把 cu128 换成 cu126 等兼容版本。安装会替换当前 CPU 版 torch，但不会改动已安装的 laya。</small>` : ""}</div>` : ""}
-        <div class="model-laya-fields">${layaField(l, "enabled", "启用 Laya", "关闭时调用会跳过", "bool")}${layaSelect(l, "mode", "接入方式", "选择 AstrBot 本地 Python 或官方服务接口", [["local", "本地 Python 包"], ["remote", "远程 HTTP 服务"]])}${mode === "remote" ? layaSelect(l, "request_format", "接口格式", "官方 SystemOne 平铺，或 Cloudflare Workers AI 的 input 包装", [["native", "Laya 官方 SystemOne"], ["cloudflare", "Cloudflare Workers AI"]]) : ""}${mode === "remote" ? layaField(l, "endpoint", "服务地址", (l.draft.request_format || l.data.request_format) === "cloudflare" ? "填到 /ai/run；请求会包 input，返回的 result 会自动拆开" : "可填服务根地址、/v1 或完整 /v1/systemone") : ""}${mode === "remote" ? layaField(l, "remote_model", "远程模型名", "官方服务填 multilingual；Cloudflare 填 Workers AI 模型标识，例如 typesafe/jev-1.14.0；留空按 multilingual") : ""}${mode === "remote" ? layaField(l, "api_key", "API Key", l.data.api_key_set ? "已配置；留空保留现有密钥" : "可选，按远程服务配置", "password") : ""}${layaField(l, "timeout_seconds", "调用超时（秒）", "用于本地推理或远程连接，不参与语义判断", "number")}${layaPercentField(l, "followup_confidence_threshold", "连续接话置信阈值", "0 关闭；仅约束非点名续接。Laya 行动概率低于此值时改为旁听，建议从 40–55% 起按日志校准")}</div>
+        <div class="model-laya-fields">${layaField(l, "enabled", "启用 Laya", "关闭时调用会跳过", "bool")}${layaSelect(l, "mode", "接入方式", "选择 AstrBot 本地 Python、官方 SystemOne 服务、Jev 判断服务或 Cloudflare Workers AI", [["local", "本地 Python 包"], ["remote", "远程 HTTP 服务"], ["jev", "Jev 判断服务"], ["workers_ai", "Cloudflare Workers AI"]])}${mode === "remote" ? layaSelect(l, "request_format", "接口格式", "官方 SystemOne 平铺，或 Cloudflare Workers AI 的 input 包装", [["native", "Laya 官方 SystemOne"], ["cloudflare", "Cloudflare Workers AI"]]) : ""}${mode === "remote" ? layaField(l, "endpoint", "SystemOne 服务地址", (l.draft.request_format || l.data.request_format) === "cloudflare" ? "填到 /ai/run；请求会包 input，返回的 result 会自动拆开" : "可填服务根地址、/v1 或完整 /v1/systemone") : ""}${mode === "jev" ? layaField(l, "endpoint", "判断服务地址", "可填服务根地址、/v1 或完整 /v1/chat/completions；走 OpenAI 兼容接口") : ""}${mode === "workers_ai" ? layaField(l, "endpoint", "Workers AI 地址", "填 accounts/<ACCOUNT_ID>/ai/run，或只填 accounts/<ACCOUNT_ID>；模型写在请求体里") : ""}${mode !== "local" ? layaField(l, "api_key", "API Key", l.data.api_key_set ? "已配置；留空保留现有密钥" : "按服务端要求填写；留空表示不鉴权", "password") : ""}${mode !== "local" ? layaField(l, "remote_model", "判断模型名", mode === "jev" ? "留空使用 jev-latest；网关上的模型名可在此覆盖" : mode === "workers_ai" ? "留空使用 @cf/cloudflare/clef（吃每日免费神经元额度）；更快可用 @cf/cloudflare/clef-flash，第三方模型如 typesafe/jev-1.14.0 需单独付费" : "留空使用官方 multilingual；仅自建服务改名时才需要填写") : ""}${layaField(l, "timeout_seconds", "调用超时（秒）", "用于本地推理或远程连接，不参与语义判断", "number")}${layaPercentField(l, "followup_confidence_threshold", "连续接话置信阈值", "0 关闭；仅约束非点名续接。Laya 行动概率低于此值时改为旁听，建议从 40–55% 起按日志校准")}</div>
 ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cloudflare" ? '<p class="model-note">Cloudflare Workers AI：服务地址填到 <code>/ai/run</code>；请求体会自动包成 <code>{"model": "...", "input": {"state": "...", "questions": {...}}}</code>，HTTP 200 的 <code>result</code> 会自动拆开。模型名按 Workers AI 的模型标识填写。</p>' : ""}
         ${mode === "local" ? `<div class="model-laya-fields">${layaField(l, "local_model_path", "本地检查点目录", "可选择微调模型；留空使用官方多语言模型。所有会话共用此选择。")}</div>` : ""}
         <section class="model-laya-decisions" aria-label="决策分类配置"><div><strong>决策分类</strong><span>仅启用的分类会发送给 Laya；关闭的分类沿用宿主配置。</span></div><div class="model-laya-decision-grid">${LAYA_DECISION_FIELDS.map(([key, label, hint]) => `<label class="model-laya-option"><span><strong>${label}</strong><small>${hint}</small></span><span class="model-switch"><input type="checkbox" data-laya-decision="${key}" ${l.draft.decision_fields[key] ? "checked" : ""} ${l.loading || l.busy ? "disabled" : ""}><i></i></span></label>`).join("")}</div></section>
@@ -1262,7 +1263,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
   const IMAGE_LABELS = {"image.generate": "文生图", "image.edit": "参考图改图", "image.mask_edit": "蒙版局部改图"};
   const IMAGE_VIEWS = {generate: {label: "文生图", operation: "generate", actions: ["image.generate"]},
     edit: {label: "改图", operation: "edit", actions: ["image.edit", "image.mask_edit"]}};
-  const IMAGE_LOCAL_LABELS = {comfyui: "ComfyUI", sd_webui: "SD WebUI"};
+  const IMAGE_LOCAL_LABELS = {comfyui: "ComfyUI", sd_webui: "SD WebUI", nai: "NAI 生图插件"};
   const IMAGE_DIAGNOSTICS = {native_registry_unavailable: "V2 原生能力注册表尚未就绪",
     native_extension_unavailable: "Image 模块未创建，启动过程未提供具体错误码",
     native_provider_unavailable: "Image 模块没有创建生图 Provider",
@@ -1292,6 +1293,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     if (["auto", "online_api"].includes(selected)) routes.push(...(config.endpoints || []).map(item => `online:${item.id}`));
     if (["auto", "comfyui"].includes(selected)) routes.push("comfyui");
     if (["auto", "sd_webui"].includes(selected)) routes.push("sd_webui");
+    if (selected === "nai") routes.push("nai");
     return {generate: [...routes], edit: [...routes]};
   };
   const IMAGE_PLATFORMS = {auto: "自动识别", openai: "OpenAI 兼容", openrouter: "OpenRouter", agnes: "Agnes", sensenova: "商汤日日新", minimax: "MiniMax", bailian: "阿里云百炼", modelscope: "魔搭社区", doubao: "火山引擎 / 豆包", gemini: "Google Gemini"};
@@ -1559,7 +1561,10 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
   const imageCurrentOperation = i => IMAGE_VIEWS[i.view || "generate"].operation;
   const imageEndpointLabel = (item, fallback = "未命名图片模型") =>
     String(item?.name || "").trim() || String(item?.model || "").trim() || fallback;
-  function imageRouteAvailable(config, route, operation) {
+  function imageRouteAvailable(config, route, operation, nai = null) {
+    if (route === "nai") return !nai?.available ? "NAI 插件未就绪" :
+      !config.enabled ? "生图后端已关闭" : nai.operations?.includes(operation) ?
+        (operation === "generate" ? "可用于文生图" : "可用于参考图改图") : "当前接入方式不支持";
     if (route.startsWith("online:")) {
       const endpoint = config.endpoints.find(item => item.id === route.slice(7));
       if (!endpoint) return "模型配置缺失";
@@ -1616,6 +1621,11 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     const disabled = i.configSaving || i.configLoading || !!i.endpointTesting;
     const expanded = i.expandedImageRoutes?.[ref] ?? index === 0;
     const controls = `<div class="model-img-route-tools"><button type="button" class="output-icon-button" data-img-route-move="up" data-img-route-index="${index}" aria-label="上移优先级"${disabled || index === 0 ? " disabled" : ""}><i data-lucide="arrow-up" aria-hidden="true"></i></button><button type="button" class="output-icon-button" data-img-route-move="down" data-img-route-index="${index}" aria-label="下移优先级"${disabled || index === (config.operation_routes[imageCurrentOperation(i)] || []).length - 1 ? " disabled" : ""}><i data-lucide="arrow-down" aria-hidden="true"></i></button><button type="button" class="output-icon-button" data-img-route-remove="${esc(ref)}" aria-label="从当前功能移除" title="从当前功能移除"${disabled ? " disabled" : ""}><i data-lucide="x" aria-hidden="true"></i></button></div>`;
+    if (ref === "nai") {
+      const status = i.config?.nai || {}, support = imageRouteAvailable(config, ref, imageCurrentOperation(i), status);
+      const service = status.call_mode === "openai" ? (status.api_profile === "starbridge" ? "星桥（Almoon）" : "OpenAI 兼容接口") : "nai.sta1n.cn 直连";
+      return `<article class="model-img-route" data-img-route-card="nai"><header><span class="model-img-priority">${index + 1}</span><div class="model-img-route-title"><strong>NAI 生图插件</strong><div class="model-img-route-meta"><span>${esc(status.default_model || service)}</span></div></div><span class="model-img-route-support ${imageRouteSupportTone(support)}">${esc(support)}</span>${controls}</header><div class="model-note">配置来源：NAI 生图插件 · ${esc(service)}${status.default_size ? ` · ${esc(status.default_size)}` : ""}</div></article>`;
+    }
     if (ref.startsWith("online:")) {
       const endpointId = ref.slice(7), endpointIndex = config.endpoints.findIndex(item => item.id === endpointId), item = config.endpoints[endpointIndex];
       if (!item) return `<article class="model-img-route"><header><span class="model-img-priority">${index + 1}</span><strong>模型配置缺失</strong>${controls}</header></article>`;
@@ -1663,8 +1673,13 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     if (!config) return `<div class="model-img-loading" role="status">${esc(i.configNotice || "尚未读取生图模型配置。")}<button type="button" class="button small" data-img-config-refresh>读取模型配置</button></div>`;
     const operation = imageCurrentOperation(i), routes = config.operation_routes[operation] || [], current = new Set(routes);
     const choices = [...config.endpoints.filter(item => !current.has(`online:${item.id}`)).map(item => [`online:${item.id}`, `${imageEndpointLabel(item, "图片模型")} · ${item.model || item.id}`]),
-      ...Object.entries(IMAGE_LOCAL_LABELS).filter(([key]) => !current.has(key)).map(([key, label]) => [key, label])];
+      ...Object.entries(IMAGE_LOCAL_LABELS).filter(([key]) => !current.has(key)
+        && (key !== "nai" || i.config.nai?.available && i.config.nai?.operations?.includes(operation))).map(([key, label]) => [key, label])];
     const dirty = imageConfigDirty(i), locked = i.configSaving || i.configLoading || !!i.endpointTesting;
+    const nai = i.config.nai, naiSupported = nai?.available && nai.operations?.includes(operation);
+    const naiState = !nai ? "状态暂不可读" : !nai.available ? "插件尚未就绪" :
+      !naiSupported ? "当前接入方式不支持此功能" : [nai.default_model, nai.default_size].filter(Boolean).join(" · ") || "已就绪";
+    const naiSource = current.has("nai") || nai?.installed === false ? "" : `<div class="model-img-nai-source" data-img-nai-source><div><strong>NAI 生图插件</strong><span>${esc(naiState)}</span></div><button type="button" class="button small" data-img-nai-add${locked || !naiSupported ? " disabled" : ""}><i data-lucide="plus" aria-hidden="true"></i>加入${IMAGE_VIEWS[i.view || "generate"].label}队列</button></div>`;
     const legacyOptions = config.legacy_options || {}, selectedWorkflows = legacyOptions.image_companion_selected_workflows || {};
     const extraWorkflows = legacyOptions.image_companion_extra_workflows || [];
     const workflowLabels = {generate: "文生图", edit: "改图", mask_edit: "蒙版局部改图"};
@@ -1680,6 +1695,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     return `<section class="model-img-route-editor" aria-label="生图模型与优先级">
       ${migrationBanner}
       <header class="model-imgconfig-head"><div><span class="model-eb">${operation === "generate" ? "文本提示生成图片" : "参考图片编辑"}</span><h3>${IMAGE_VIEWS[i.view || "generate"].label}模型与优先级</h3><p>${operation === "generate" ? "按列表顺序选择文生图模型；首个成功执行的模型结束本次尝试。" : "普通改图与蒙版局部改图共用模型队列；不支持当前操作的模型会跳过。"}</p></div><label class="model-img-enable"><input type="checkbox" data-img-config-field="enabled"${config.enabled ? " checked" : ""}${locked ? " disabled" : ""}>启用 V2 生图后端</label></header>
+      ${naiSource}
       <div class="model-img-main"><div class="model-img-sectionhead"><div><b>当前功能的模型顺序</b><span>数字越小越先尝试 · 使用上下移按钮调整优先级</span></div><span class="model-tag">${routes.length} 个模型</span></div>
         <div class="model-img-routes">${routes.map((route, index) => imageRouteCard(i, route, index, config)).join("") || '<div class="model-img-empty">此功能尚未配置模型。添加在线图片模型或本地后端后，调用会按此列表顺序尝试。</div>'}</div>
         <div class="model-img-addbar"><label><span>添加已配置模型</span><select data-img-route-choice aria-label="选择要加入当前功能的模型"${locked || !choices.length ? " disabled" : ""}><option value="">选择模型或后端</option>${choices.map(([value, label]) => `<option value="${esc(value)}">${esc(label)}</option>`).join("")}</select></label><button type="button" class="button small" data-img-route-add${locked || !choices.length ? " disabled" : ""}>添加</button><button type="button" class="button small primary" data-img-model-add${locked || config.endpoints.length >= (i.config.limits?.max_endpoints || 24) ? " disabled" : ""}>新增在线模型</button></div>
@@ -1844,7 +1860,18 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     }
     if (t.closest("[data-img-route-add]") && i.configDraft && !i.configSaving) {
       const choice = root?.querySelector("[data-img-route-choice]")?.value, queue = i.configDraft.operation_routes[imageCurrentOperation(i)];
-      if (choice && !queue.includes(choice)) queue.push(choice);
+      if (choice && !queue.includes(choice)) {
+        queue.push(choice);
+        if (choice === "nai") i.configDraft.enabled = true;
+      }
+      render(); return;
+    }
+    if (t.closest("[data-img-nai-add]") && i.configDraft && !i.configSaving && !i.configLoading && !i.endpointTesting) {
+      const operation = imageCurrentOperation(i), nai = i.config?.nai;
+      if (!nai?.available || !nai.operations?.includes(operation)) return;
+      const queue = i.configDraft.operation_routes[operation];
+      if (!queue.includes("nai")) queue.push("nai");
+      i.configDraft.enabled = true;
       render(); return;
     }
     if (t.closest("[data-img-model-add]") && i.configDraft && !i.configSaving) {

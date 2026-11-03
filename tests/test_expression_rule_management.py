@@ -12,12 +12,15 @@ Four review-page defects are covered here:
   subset.
 """
 
+import asyncio
 import json
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from astrbot_host.management_identity import dashboard_operator
-from companion_v2.execution.models import TaskContext, digest, encode, stamp
+from companion_v2.execution.models import TaskContext, TaskError, digest, encode, stamp
 from companion_v2.expression import feedback as style_feedback
 from companion_v2.expression import rule_details
 from companion_v2.expression.configuration import read_settings
@@ -269,6 +272,46 @@ class ExpressionRulePageTests(HostFixture, unittest.IsolatedAsyncioTestCase):
     def selected_context(self):
         binding = self.identity.resolve_role(SCOPE, observed_at=self.clock.now()).unwrap()
         return TaskContext(self.important, binding, AudienceRef(SCOPE, (self.important.subject,)))
+
+    async def test_slow_list_projection_does_not_hold_the_sqlite_lock(self):
+        host = await self.start()
+        app = host.application
+        manager = ExpressionStyleManagement(app)
+        entered, release = threading.Event(), threading.Event()
+
+        def pause_projection(*args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("the projection was not released")
+            return {}, 0
+
+        reader = None
+        with patch("companion_v2.expression.style_management.rule_scope_counts",
+                   side_effect=pause_projection):
+            listing = asyncio.create_task(asyncio.to_thread(manager.list,
+                operator=self.core, context=self.selected_context()))
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait, 5))
+                reader = asyncio.create_task(asyncio.to_thread(
+                    app.runtime.read_one, "SELECT 1", ()))
+                done, _ = await asyncio.wait({reader}, timeout=1)
+                self.assertIn(reader, done, "a slow review page must not block other V2 reads")
+            finally:
+                release.set()
+                await listing
+                if reader is not None:
+                    await reader
+
+    async def test_list_rechecks_authorization_before_returning(self):
+        host = await self.start()
+        manager = ExpressionStyleManagement(host.application)
+        context = self.selected_context()
+        authorized = manager._authorize(self.core, context, self.clock.now())
+        with patch.object(manager, "_authorize", side_effect=[authorized,
+                TaskError("expression_binding_changed", "the role was revoked")]) as check:
+            result = manager.list(operator=self.core, context=context)
+        self.assertEqual(result.failure.code, "expression_binding_changed")
+        self.assertEqual(check.call_count, 2)
 
     async def test_the_list_is_newest_first_and_the_cursor_keeps_the_position(self):
         host = await self.start()

@@ -15,7 +15,8 @@ from PIL import Image as PILImage
 
 from astrbot_host.core_reply import CORE_REPLY_CONTEXT_EXTRA, prepare_core_reply_event
 from astrbot_host.core_reply_media import (
-    bind_native_quoted_image_sources, capture_native_input_images, frozen_image_locators,
+    bind_native_quoted_image_sources, capture_native_input_images, direct_image_locators,
+    frozen_image_locators,
 )
 from astrbot_host.core_reply_tools import inject_core_reply_tools
 from companion_v2.adapters.astrbot.native import NativeConversationInput
@@ -23,7 +24,7 @@ from companion_v2.capabilities.models import CapabilityAuthorizationState
 from companion_v2.capabilities.repositories import CapabilityRepository
 from companion_v2.conversation.native_tool_sources import native_input_images
 from companion_v2.conversation.recalls import MessageRecall
-from companion_v2.execution.models import TaskContext, require
+from companion_v2.execution.models import TaskContext, digest, require
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import ScopeKind
 from companion_v2.identity_policy.group_audience import group_audience

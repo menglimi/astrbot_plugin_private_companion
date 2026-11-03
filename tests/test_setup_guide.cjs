@@ -1217,7 +1217,7 @@ test('start page lists the configuration guide and opens the matching editor in 
   await settle();
 
   assert.match(page.html, /setup-guide-list/);
-  for (const label of ['回复与分段', '人物与资料', '日程与作息', '主动联系', '群聊参与', '模型路由']) {
+  for (const label of ['回复与分段', '人物与资料', '陌生号处理', '日程与作息', '主动联系', '群聊参与', '模型路由']) {
     assert.match(page.html, new RegExp(label));
   }
   // 旧版引导是一页清单：点某一项就在本页展开对应设置，不跳去别的页面。
@@ -1225,6 +1225,8 @@ test('start page lists the configuration guide and opens the matching editor in 
   assert.match(page.html, /setup-advanced-shell/);
   assert.deepEqual(page.editorCalls.at(-1).kinds,
     ['role_profile', 'relationship_profile', 'knowledge', 'private_access']);
+  page.clickGuideBlock('strangers');
+  assert.deepEqual(page.editorCalls.at(-1).kinds, ['private_access_installation']);
 });
 
 test('the guide carries the proactive, schedule and group steps with their editors in place', async () => {

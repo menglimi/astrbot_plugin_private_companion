@@ -44,7 +44,7 @@ def _entry(provider_id: str, model: str = "") -> dict[str, Any]:
     return {"provider": provider_id, "model": model} if model else {"provider": provider_id}
 
 
-def _image_settings(native_tool_port):
+def _image_configuration(native_tool_port):
     """Read the public Image settings once, without exposing credentials."""
     if native_tool_port is None:
         return None
@@ -66,7 +66,7 @@ def _image_settings(native_tool_port):
             pending.extend(ports)
     output = api.output_configuration() if api is not None else None
     settings = output.get("settings") if isinstance(output, dict) else None
-    return settings if isinstance(settings, dict) and settings.get("enabled") is True else None
+    return output if isinstance(settings, dict) and settings.get("enabled") is True else None
 
 
 def _image_routes(settings, operation):
@@ -126,9 +126,11 @@ def _local_edit_reference_limit(settings, route):
 def image_edit_reference_limit(native_tool_port):
     """Return the conservative reference count accepted by the active edit route."""
     try:
-        settings = _image_settings(native_tool_port)
-        if settings is None:
+        configuration = _image_configuration(native_tool_port)
+        if configuration is None:
             return None
+        settings = configuration["settings"]
+        nai = configuration.get("nai") or {}
         endpoints, routes = _image_routes(settings, "edit")
         limits = []
         for route in routes:
@@ -138,6 +140,8 @@ def image_edit_reference_limit(native_tool_port):
                 limit = _online_edit_reference_limit(endpoints.get(route[7:], {}))
             elif route in ("sd_webui", "comfyui"):
                 limit = _local_edit_reference_limit(settings, route)
+            elif route == "nai" and nai.get("available") is True and "edit" in (nai.get("operations") or ()):
+                limit = 1
             else:
                 limit = None
             if limit is not None:
@@ -272,9 +276,11 @@ def image_route_snapshot(native_tool_port):
     if native_tool_port is None:
         return unavailable
     try:
-        settings = _image_settings(native_tool_port)
-        if settings is None:
+        configuration = _image_configuration(native_tool_port)
+        if configuration is None:
             return unavailable
+        settings = configuration["settings"]
+        nai = configuration.get("nai") or {}
         endpoints, routes = _image_routes(settings, "generate")
         entries = []
         for route in routes:
@@ -295,6 +301,9 @@ def image_route_snapshot(native_tool_port):
                 if isinstance(backend, dict) and backend.get("base_url"):
                     model = backend.get("model", "")
                     entries.append(_entry(route, str(model).strip() if isinstance(model, str) else ""))
+            elif route == "nai" and nai.get("available") is True and "generate" in (nai.get("operations") or ()):
+                model = nai.get("default_model", "")
+                entries.append(_entry("NAI 生图插件", model.strip() if isinstance(model, str) else ""))
         if not entries:
             return unavailable
         result = dict(entries[0])

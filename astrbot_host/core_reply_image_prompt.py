@@ -65,6 +65,9 @@ def core_image_tool_contract(action, description, parameters, *, reference_limit
             if isinstance(reference, dict):
                 reference["description"] = (str(reference.get("description") or "").rstrip("。")
                                              + f"；当前路线最多选择 {reference_limit} 张，优先用户指向的附图与 identity")
+    if action == "image.edit" and isinstance(properties.get("artifact_id"), dict):
+        properties["artifact_id"]["description"] = (
+            "仅编辑已保存生成产物时填写真实的非空 ID；使用 reference_ids 或本轮附图时省略此字段，不要传空字符串。")
     return description, parameters
 
 
@@ -165,7 +168,7 @@ def _identity_reference_guidance(material, reference_limit=None):
         "当前参考材料有可用的 identity 身份参考；其中标注 base_identity 的素材应作为主身份锚点。"
         "角色本人自拍、穿搭照或需要保持人物一致时，"
         "优先调用 image.edit，使用 companion_v2_context 中对应的 reference_ids，"
-        "并按所选顺序填写 reference_roles。"
+        "并按所选顺序填写 reference_roles，省略 artifact_id。"
         + attachment_route +
         "只有没有可用身份参考，或用户明确要求全新角色时才使用 image.generate。"
         "选用身份参考后，prompt 只写动作、镜头、场景、光线和用户明确要求的变化；"
@@ -254,7 +257,8 @@ def inject_core_image_prompt(session, request, offered, values):
             "角色自拍有可用身份锚点时，可通过改图工具的 reference_ids 与 reference_roles 保持人物一致；"
             "用户指向本轮附图时，先用 reference_indices 选中附图、reference_roles 先写附图用途，"
             "额度允许时再按顺序追加 reference_ids 的 identity；"
-            "只有用户没有指向本轮附图、仅采用已存素材时才用 reference_indices=[]。"
+            "只有用户没有指向本轮附图、仅采用已存素材时才用 reference_indices=[]；"
+            "使用参考图时省略 artifact_id，避免误走产物编辑。"
             "没有可用身份图时，依照已知角色外观使用生成工具；只有改图工具可用且没有任何参考图时，"
             "简短说明需要图片参考，不猜素材 ID。\n" + IMAGE_REFERENCE_INSTRUCTION
         )

@@ -20,7 +20,7 @@ from companion_v2.configuration.management import (AcquaintanceManagement, BusyG
                                                    ImageReviewManagement, KnowledgeManagement,
                                                    LibraryManagement,
                                                    ModelBudgetManagement, ProactiveContactManagement,
-                                                   PrivateAccessManagement,
+                                                   PrivateAccessManagement, StrangerPrivateAccessManagement,
                                                    ReactionRetrievalManagement,
                                                    RecallManagement, ReferenceManagement,
                                                    WebUnderstandingManagement,
@@ -54,8 +54,9 @@ SECTIONS = {"quota": ImageQuotaManagement, "image_review": ImageReviewManagement
             # QQ 空间拓展的角色级开关与节流；安装与逐会话同意不在这里，归能力安装路由。
             "qzone": QzoneManagement,
             "person": AcquaintanceManagement,
-            # 私聊用户权限的默认值与拒绝文案（层只有安装与角色：默认值不跟窗口走）。
+            # Known users use role defaults; unbound accounts use installation settings.
             "private_access": PrivateAccessManagement,
+            "private_access_installation": StrangerPrivateAccessManagement,
             "role.growth.skills": RoleGrowthSkillsManagement,
             "expression.learning": ExpressionLearningManagement,
             "knowledge": KnowledgeManagement, "life": DiaryAndRestManagement,

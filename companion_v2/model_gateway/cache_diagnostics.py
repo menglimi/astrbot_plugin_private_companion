@@ -39,6 +39,17 @@ def _estimated_text_tokens(text):
     return max(1, int(cjk * 0.6 + (len(text) - cjk) * 0.25))
 
 
+def estimated_text_tokens(text):
+    """Expose the one token estimate the gateway already uses for its signatures.
+
+    Callers that only need a loggable number (the expression-learning owner, for
+    example) reuse this instead of inventing a second formula. The estimate is a
+    CJK/ASCII heuristic, not reported provider usage, so it is always a rough
+    input estimate and never a billing figure.
+    """
+    return _estimated_text_tokens(text)
+
+
 def _text_parts(content):
     if type(content) is str:
         return content

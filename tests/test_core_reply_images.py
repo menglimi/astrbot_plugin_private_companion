@@ -2,6 +2,7 @@
 
 import base64
 from dataclasses import replace
+import hashlib
 import json
 import io
 from pathlib import Path
@@ -26,10 +27,19 @@ from companion_v2.conversation.media.quota import GROUP, QUOTA_FIELDS, ImageQuot
 from companion_v2.conversation.media.output_settings import (
     GROUP as OUTPUT_GROUP, ImageOutputConfigurationOwner, configuration_fields as output_fields,
 )
-from companion_v2.execution.models import TaskContext, require
+from companion_v2.execution.models import TaskContext, digest, require
 from datetime import timedelta
 from companion_v2.foundation.refs import AudienceRef
 from companion_v2.identity_policy.personas import ConversationRoute
+from companion_v2.references.configuration import (
+    GROUP as REFERENCE_GROUP, ReferenceConfigurationOwner, configuration_fields as reference_fields,
+    target_for as reference_target,
+)
+from companion_v2.references.models import (
+    ContentDigest, ReferenceAsset, ReferenceKind, ReferenceRole, ReferenceSource,
+)
+from companion_v2.references.repositories import ReferenceAssetRepository
+from companion_v2.references.service import owner_key as reference_owner_key
 from tests.native_image_support import NativeImageFixture
 from tests.test_astrbot_core_reply import FakeEvent
 from tests.test_conversation_images import image_bytes
@@ -274,6 +284,34 @@ class CoreReplyImagesTests(NativeImageFixture, HostFixture, unittest.IsolatedAsy
         reference = self.image_backend.calls[0][1][0]
         self.assertEqual(reference.data, image_bytes("red"))
         self.assertEqual(reference.role, "edit_source")
+        self.assert_no_reply_work(event)
+
+    async def test_empty_artifact_id_uses_selected_saved_reference(self):
+        reference_config = ReferenceConfigurationOwner(self.runtime)
+        reference_config.write(reference_target(self.context), reference_fields(),
+            changes={REFERENCE_GROUP + ".enabled": True}, reset=(),
+            expected_revision=0, observed_at=self.clock.now())
+        payload = image_bytes("purple")
+        asset = ReferenceAsset("saved-identity", ReferenceKind.REFERENCE_IMAGE,
+            ReferenceRole.IDENTITY, ContentDigest(hashlib.sha256(payload).hexdigest()),
+            len(payload), "image/png", "role-reference:test:saved-identity",
+            ReferenceSource.OPERATOR, created_at=self.clock.now())
+        ReferenceAssetRepository(self.runtime).put(
+            reference_owner_key(self.context), asset, created_at=self.clock.now(), payload=payload)
+
+        event, request = self.prepare("native-edit-empty-artifact")
+        tool = request.func_tool.get_tool(native_tool_name("image.edit"))
+        self.assertIn("省略此字段", tool.parameters["properties"]["artifact_id"]["description"])
+        arguments = {"prompt": "保留角色身份，背景改为蓝色", "artifact_id": "",
+                     "reference_ids": ["saved-identity"], "reference_indices": [],
+                     "reference_roles": ["identity"]}
+        received = await self.call(event, request, "image.edit", arguments, "empty-artifact")
+        self.result(received, "blue")
+        invocation, references = self.image_backend.calls[0]
+        self.assertEqual(invocation.envelope["arguments"], arguments)
+        self.assertEqual(invocation.envelope["arguments_hash"], digest(arguments))
+        self.assertEqual(len(references), 1)
+        self.assertEqual((references[0].role, references[0].data), ("identity", payload))
         self.assert_no_reply_work(event)
 
     async def test_mask_edit_receives_original_input_and_mask_through_native_references(self):

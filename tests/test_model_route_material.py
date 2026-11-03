@@ -112,6 +112,22 @@ class ModelRouteMaterialTests(unittest.TestCase):
         summary = image_route_snapshot(LocalNativePort())
         self.assertEqual(summary, {"provider": "sd_webui"})
 
+    def test_nai_route_reports_plugin_defaults_and_omits_unavailable_operations(self):
+        port = NativePort()
+        port.api.settings["operation_routes"] = {"generate": ["nai"], "edit": ["nai"]}
+        port.api.nai = {"available": True, "default_model": "nai-diffusion-5-full",
+                        "operations": ["generate", "edit"], "api_key": "must-not-escape"}
+        summary = image_route_snapshot(port)
+        self.assertEqual(summary, {"provider": "NAI 生图插件", "model": "nai-diffusion-5-full"})
+        self.assertEqual(image_edit_reference_limit(port), 1)
+        port.api.nai["operations"] = ["generate"]
+        self.assertIsNone(image_edit_reference_limit(port))
+        port.api.nai["available"] = False
+        self.assertEqual(image_route_snapshot(port)["state"], "unavailable")
+        port.api.nai["available"] = True
+        port.api.settings["enabled"] = False
+        self.assertEqual(image_route_snapshot(port)["state"], "unavailable")
+
     def test_edit_reference_limit_uses_the_most_conservative_configured_fallback(self):
         port = NativePort()
         settings = port.image_extension_api().output_configuration()["settings"]
@@ -213,6 +229,7 @@ class RouteHost:
 
 class ImageAPI:
     def __init__(self):
+        self.nai = None
         self.settings = {
             "enabled": True,
             "operation_routes": {"generate": ["online:primary"], "edit": ["online:primary"]},
@@ -221,7 +238,7 @@ class ImageAPI:
         }
 
     def output_configuration(self):
-        return {"settings": self.settings}
+        return {"settings": self.settings, "nai": self.nai}
 
 
 class NativePort:

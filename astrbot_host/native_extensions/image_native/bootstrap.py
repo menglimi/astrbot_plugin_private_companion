@@ -22,7 +22,8 @@ def build_provider(plugin, *, version: str):
     if not plugin.enabled or not isinstance(settings, dict):
         return None
     directory = Path(plugin.data_dir) / "native_v2"
-    backend = OutputRoutingBackend(output_settings(plugin), directory / "transport")
+    backend = OutputRoutingBackend(output_settings(plugin), directory / "transport",
+                                   context=getattr(plugin, "context", None))
     owner = NativeImageOwner(directory, backend, identity_key=fingerprint({"package": package_hash(), "version": version, "backend": backend.revision}))
     return NativeImageProvider(owner, package_version=version, wait_budget_seconds=backend.config.get("timeout_seconds", 300))
 
