@@ -2,6 +2,10 @@
 
 ## 未发布
 
+- 修复「新的她」在所选文本模型拒绝 8000 输出上限时只显示“暂时不可用”的问题：收到 400 时自动降载到 4096 重试一次；仍被拒绝则明确提示换模型或缩短人设/对话，当前编辑内容继续保留。
+- 修复核心管理员在关闭某私聊参与者回复权限后，角色状态/日程读取被 `authorization_revoked` 拦截的问题：管理面读取只校验管理员的 `role.life.manage`，不再要求参与者的 `conversation.reply`。
+- 修复表达规则库读取在全局 `read_snapshot` 内逐条重放证据导致 26–29 秒锁和事件循环 lag 的问题：分页查询后释放快照，逐行证据在工作线程读取，其他 V2 读写不再排队等整页。
+- 原生工具执行失败日志补充 `error_type`，便于区分 provider 路由缺失与真实调用异常（不改失败语义）。
 - 兼容 AstrBot 4.30 的主 Agent 入口迁移：`MainAgentBuildConfig` / `build_main_agent` 优先从 `astrbot.core.astr_agent_runtime.main_agent` 导入，仍回退旧 `astrbot.core.astr_main_agent`；宿主移除旧模块时插件不再加载失败，缺少构建入口时 B 站直播自动回复显式降级。
 - 修复产出图库在角色档案保存、换会话或升级图片 provider 后变空的问题：图库跟随角色跨私聊/群聊窗口聚合，并直接读取已保存的原图与 source/asset，不再因当前 context key 或 provider 版本不一致而跳过旧图。
 - 产出图库支持选中一张图片直接加入当前角色的参考图（可填名称并勾选身份/穿搭/场景等用途），不必先切换到参考素材页。

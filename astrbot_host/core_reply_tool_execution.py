@@ -208,8 +208,12 @@ class CoreReplyToolExecutor:
             self._save(row)
             raise
         except Exception as error:
-            code = error.code if isinstance(error, TaskError) else "core_tool_provider_unavailable"
-            logger.warning("[CompanionV2] 原生工具调用未取得可确认结果 action=%s code=%s", row["action"], code)
+            native_code = getattr(error, "code", None)
+            code = (error.code if isinstance(error, TaskError)
+                    else native_code if isinstance(native_code, str) and native_code
+                    else "core_tool_provider_unavailable")
+            logger.warning("[CompanionV2] 原生工具调用未取得可确认结果 action=%s code=%s error_type=%s",
+                           row["action"], code, type(error).__name__)
             row.update(state="unknown", effect="unknown" if effectful else "none")
             row["result"] = {"state": "unknown", "effect": row["effect"],
                              "invocation_id": row["invocation_id"], "code": code}

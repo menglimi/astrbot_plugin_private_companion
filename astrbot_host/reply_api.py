@@ -1,5 +1,6 @@
 """Dashboard-only reply preferences, offline preview and sanitized diagnostics."""
 
+import asyncio
 import json
 
 from astrbot.api.web import request
@@ -157,7 +158,13 @@ class ReplyWebAPI:
                     raise TaskError("staging_not_initialized", "load an initialized V2 profile first")
                 operator = dashboard_operator(controller.runtime, username, at=controller.now())
                 manager = ExpressionStyleManagement(session.application)
-                result = getattr(manager, method)(operator=operator, context=session.profile.target, **arguments)
+                # Reading the review page rechecks every signal's original
+                # evidence and can take seconds on a large history. Keep the
+                # event loop free; the storage lock now only covers the page
+                # query, not the per-row evidence walk.
+                result = await asyncio.to_thread(
+                    lambda: getattr(manager, method)(
+                        operator=operator, context=session.profile.target, **arguments))
                 return outcome_response(result)
         except (TaskError, ConfigurationError) as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
