@@ -6,7 +6,7 @@ background task that may only allow or withhold the sealed draft.
 """
 
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 import json
 import unittest
 
@@ -15,7 +15,7 @@ from companion_v2.configuration.models import ConfigurationError
 from companion_v2.configuration.registry import FieldRegistry
 from companion_v2.execution.models import encode
 from companion_v2.model_gateway.routing import configuration_fields as model_fields
-from companion_v2.proactive import persona_judge
+from companion_v2.proactive import persona_judge, prompts
 from companion_v2.proactive.prompts import TOPIC_CONTINUITY_INSTRUCTION
 from companion_v2.proactive.configuration import GROUP, configuration_fields
 from companion_v2.proactive.service import persona_judge_profile
@@ -413,6 +413,44 @@ class JudgeCacheTests(JudgeFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.judge_calls), 1)
         await self.delivery_state(app, self.contacts(app)[0]["task_id"], "delivered")
         self.assertEqual(len(self.sent), 2)
+
+    async def test_judge_reads_the_configured_zone_not_the_utc_stamp(self):
+        """The judge needs the local vocabulary compose used, not a bare UTC stamp."""
+        host = await self.judged_host()
+        app = host.application
+        await self.judged(app)
+
+        draft = json.loads(next(item.payload for item in self.judge_calls[-1].original.context.materials
+                                if item.purpose == persona_judge.DRAFT_PURPOSE))
+        self.assertEqual(draft["timezone"], "Asia/Shanghai")
+        for name in ("local_now", "local_date", "local_time", "weekday", "period"):
+            self.assertIn(name, draft)
+        # The UTC stamp keeps its meaning; the local projection must differ from
+        # it, otherwise a judge reading either field would see the wrong day.
+        self.assertNotEqual(draft["contact_now"], draft["local_now"])
+        self.assertTrue(draft["local_now"].endswith("+08:00"))
+        self.assertTrue(draft["contact_now"].endswith("+00:00"))
+        # Same instant: the local projection is a view of contact_now, not a new clock.
+        self.assertEqual(datetime.fromisoformat(draft["local_now"]),
+                         datetime.fromisoformat(draft["contact_now"]))
+        self.assertEqual(draft["local_time"], datetime.fromisoformat(draft["local_now"]).strftime("%H:%M"))
+
+    async def test_judge_instruction_bounds_period_and_question_presuppositions(self):
+        """Both root causes are enforced on the judge, so neither can be re-litigated."""
+        self.assertIn("疑问句同样携带事实预设", persona_judge.INSTRUCTION)
+        self.assertIn("必须有材料直接支持，否则 drop", persona_judge.INSTRUCTION)
+        self.assertIn("contact_now 是 UTC 机器时间", persona_judge.INSTRUCTION)
+        self.assertIn("period 只说明一天中的时段", persona_judge.INSTRUCTION)
+        # The existing statement-only rule must survive: this widens it, not replaces it.
+        self.assertIn("你又/总是/老是", persona_judge.INSTRUCTION)
+
+    def test_compose_instruction_separates_period_from_the_users_activity(self):
+        """period is a clock bucket, never evidence for what the user is doing."""
+        self.assertIn("period 只说明一天中的时段", prompts.INSTRUCTION)
+        self.assertIn("应理解为快下班，而不是去上班", prompts.INSTRUCTION)
+        self.assertIn("角色自己先前发出的主动消息只是当时那样表达", prompts.INSTRUCTION)
+        # The pre-existing evidence rule stays intact around it.
+        self.assertIn("人格中的「关心健康/监督饮食」本身不是证据", prompts.INSTRUCTION)
 
     async def test_judge_settings_have_no_daily_cap_field(self):
         fields = {field.field_id for field in configuration_fields()}

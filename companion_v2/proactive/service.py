@@ -50,7 +50,7 @@ from .platform_circuit import ProactivePlatformCircuit
 from .news_events import SOURCE_OWNER as NEWS_SOURCE_OWNER, news_provenance
 from .planner import ProactivePlanner
 from .preferences import ProactivePreferences
-from .prompts import (contact_output, history_round_groups, news_presentation_instruction,
+from .prompts import (contact_output, history_round_groups, local_time_fields, news_presentation_instruction,
                       prompt_sections, request_for)
 from .staged_prompts import plan_output, plan_request_for, write_output, write_request_for
 from .official_alert_events import SOURCE_OWNER as OFFICIAL_ALERT_SOURCE_OWNER, attribution_suffix
@@ -1554,6 +1554,9 @@ class ProactiveContacts:
         entry = {"context": context, "purpose": data["purpose"], "body": row["body"], "at": stamp(at),
                  "note": preferences.values["note"], "confidence": data.get("decision_confidence", 1.0),
                  "role_instruction": batch["role_instruction"], "observed_at": at,
+                 # Same instant, same zone, same vocabulary as compose: the judge
+                 # must not have to reconstruct local time from a UTC stamp.
+                 "local": local_time_fields(at, preferences.values["quiet_timezone"]),
                  "records": records, "thought": data.get("thought_summary"),
                  "cause_id": run.task.task_id, "history": history, "dialogue": dialogue, "last_reply": last_reply,
                  "role_state": role_state_for_prompt(
