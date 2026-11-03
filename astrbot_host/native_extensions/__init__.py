@@ -439,7 +439,7 @@ class NativeExtensionRegistry(AstrBotToolPort):
         action = invocation.descriptor.tool.action
         reference_lease = None
         if action == "image.mask_edit" or (action == "image.edit"
-                and "artifact_id" not in json.loads(invocation.arguments_json)):
+                and json.loads(invocation.arguments_json).get("artifact_id", "") == ""):
             reference_lease = ImageReferenceLease(self, invocation)
         screen_check = self.screen.preflight(invocation) if self.screen is not None and invocation.descriptor.tool.action == SCREEN_ACTION else None
         camera_check = None

@@ -105,6 +105,7 @@ window.CompanionExpressionSamplesPage = (() => {
     if (state === "waiting_for_sample_review" || state === "insufficient_samples") return `可用素材 ${value.available || 0} / ${value.required || runtime.minimum_samples}`;
     return {succeeded:"学习完成 · 候选已进入审阅中心", already_attempted:"本批素材已学习", learning_disabled:"该来源的学习已关闭",
       capacity_reached:"规则容量已满", daily_budget_reached:"今日学习批次已用完", failed:"学习失败", blocked:"学习暂不可用",
+      retry_backoff:"上次失败，等待下次重试", retry_exhausted:"重试已达上限，等待新素材",
       cancelled:"学习已取消", timed_out:"学习超时"}[state] || (runtime.learning_enabled === false ? "学习已关闭" : "尚未学习");
   }
   function canLearn() {
