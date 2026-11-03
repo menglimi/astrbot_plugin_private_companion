@@ -2,16 +2,50 @@ from datetime import datetime, timedelta, timezone
 import logging
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from astrbot_host.huawei_health.api import HuaweiHealthWebAPI
 from astrbot_host.huawei_health.service import HuaweiHealthService
+from astrbot_host.huawei_health.vendor import hw_credentials
 
 
 class HuaweiHealthApiContractTests(unittest.TestCase):
     def test_status_and_credential_routes_share_the_service_resolver(self):
         self.assertTrue(callable(getattr(HuaweiHealthWebAPI, "_service", None)))
         self.assertTrue(callable(getattr(HuaweiHealthWebAPI, "status", None)))
+
+
+class HuaweiHealthAclTests(unittest.TestCase):
+    def test_current_process_sid_is_used_before_inheritance_is_removed(self):
+        sid = "S-1-5-21-123-456-789-1001"
+        results = [SimpleNamespace(returncode=0, stdout='"HOST\\user","' + sid + '"\n'),
+                   SimpleNamespace(returncode=0), SimpleNamespace(returncode=0)]
+        with patch.object(hw_credentials.os, "name", "nt"), \
+                patch.object(hw_credentials.os.path, "isdir", return_value=True), \
+                patch.object(hw_credentials.subprocess, "run", side_effect=results) as run:
+            self.assertEqual(hw_credentials.harden_dir_permissions("health-dir"), "")
+        self.assertEqual(run.call_args_list[0].args[0], ["whoami", "/user", "/fo", "csv", "/nh"])
+        self.assertIn("*" + sid + ":(OI)(CI)F", run.call_args_list[1].args[0])
+        self.assertEqual(run.call_args_list[2].args[0], ["icacls", "health-dir", "/inheritance:r"])
+
+    def test_unverified_identity_never_removes_inherited_access(self):
+        with patch.object(hw_credentials.os, "name", "nt"), \
+                patch.object(hw_credentials.os.path, "isdir", return_value=True), \
+                patch.object(hw_credentials.subprocess, "run",
+                             return_value=SimpleNamespace(returncode=1, stdout="")) as run:
+            self.assertIn("SID", hw_credentials.harden_dir_permissions("health-dir"))
+        self.assertEqual(run.call_count, 1)
+
+    def test_failed_grant_does_not_remove_inherited_access(self):
+        results = [SimpleNamespace(returncode=0, stdout='"HOST\\user","S-1-5-21-123-456-789-1001"\n'),
+                   SimpleNamespace(returncode=5)]
+        with patch.object(hw_credentials.os, "name", "nt"), \
+                patch.object(hw_credentials.os.path, "isdir", return_value=True), \
+                patch.object(hw_credentials.subprocess, "run", side_effect=results) as run:
+            self.assertIn("授权返回码 5", hw_credentials.harden_dir_permissions("health-dir"))
+        self.assertEqual(run.call_count, 2)
 
 
 class HuaweiHealthServiceTests(unittest.IsolatedAsyncioTestCase):
