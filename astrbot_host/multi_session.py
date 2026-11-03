@@ -52,6 +52,7 @@ from companion_v2.identity_policy.models import AuthenticatedHostPrincipal, Auth
 from companion_v2.identity_policy.personas import ConversationRoute
 from companion_v2.identity_policy.personas import RuntimeIdentity
 from companion_v2.model_gateway.models import MAX_MODEL_OUTPUT_TOKENS, ModelTaskProfile
+from companion_v2.model_gateway.output_defaults import with_thinking_margins
 from companion_v2.model_gateway.routing import configuration_fields
 from companion_v2.memory.reflection import reflection_profile
 from companion_v2.proactive.service import contact_profile, persona_judge_profile
@@ -480,6 +481,8 @@ class MultiHostSession:
                     *((video_narration_profile(next(model.binding.provider for model in self.models
                         if "video" in model.local_provider().capabilities)),)
                       if any("video" in model.local_provider().capabilities for model in self.models) else ()))
+        # The host budget is a reply budget; structural tasks register a larger default.
+        profiles = with_thinking_margins(profiles)
         modes = ["onebot_private", "onebot_group"]
         self.sender_binding = ProviderBinding("message.delivery", "astrbot-multi." + ".".join(modes),
             native_types.version, digest([runtime.installation_id, *modes]))
