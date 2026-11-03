@@ -306,7 +306,7 @@ def provider_class_matches(provider, classes):
                and actual.__qualname__ == expected.__qualname__ for expected in classes)
 
 
-def provider_config_drift(expected, provider):
+def provider_config_drift(expected, provider, _auto_resolved=None):
     """List changed captured config keys without exposing their values."""
     config = getattr(provider, "provider_config", None)
     if not isinstance(config, dict):

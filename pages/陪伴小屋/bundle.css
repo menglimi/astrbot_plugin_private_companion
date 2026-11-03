@@ -18068,6 +18068,19 @@ body.reduce-motion .role-profile-draft-dialog *::after{transition:none}
 .role-profile-transfer-spacer{flex:1}
 @media(max-width:650px){.role-profile-transfer-row{grid-template-columns:26px minmax(0,1fr)}.role-profile-transfer-row.is-head{display:none}.role-profile-transfer-value{grid-column:2;max-height:none}}
 
+
+
+/* 拟人优化：本地检查面板 */
+.humanize-page{display:grid;gap:14px}
+.humanize-intro .self-organizer-head p{margin:4px 0 0;color:var(--t-muted);font-size:var(--fs-small)}
+.humanize-results{padding:14px 16px;border:1px solid var(--t-line);border-radius:10px;background:var(--t-surface)}
+.humanize-empty{margin:0;color:var(--t-muted);font-size:var(--fs-small)}
+.humanize-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
+.humanize-summary strong{font-size:var(--fs-title)}
+.humanize-summary span{color:var(--t-accent);font-size:var(--fs-small)}
+.humanize-list{margin:0;padding-left:20px;display:grid;gap:8px;color:var(--t-ink);font-size:var(--fs-small);line-height:1.65}
+.humanize-note{margin:12px 0 0;color:var(--t-muted);font-size:var(--fs-micro);line-height:1.6}
+
 /* theme-skins.css */
 /* 主题的结构语言：页面基底、标题、导航、面板边界和常用控件共用一组皮肤令牌。 */
 :root[data-theme="night"],:root[data-theme="walnut"]{color-scheme:dark}
