@@ -3,6 +3,7 @@
 window.CompanionOutputPage=(()=>{
   const BACKENDS={auto:"自动",online_api:"在线 API",comfyui:"ComfyUI",sd_webui:"SD WebUI"};
   const PLATFORMS={auto:"自动识别",openai:"OpenAI 兼容接口",minimax:"MiniMax"};
+  const REFERENCE_ROLES=[["identity","身份"],["outfit","穿搭"],["pose","姿态"],["scene","场景"],["style","风格"],["background","背景"],["continuity","连续性"],["edit_source","编辑源"],["edit_mask","编辑遮罩"]];
   const ERRORS={model_image_output_unavailable:"生图伴侣尚未加载，请更新插件并重新读取状态。",
     model_image_output_conflict:"配置已在其他页面更新，请重新读取后核对。",
     model_image_output_busy:"正在执行生图任务，请等待当前任务结束后保存。",
@@ -17,9 +18,17 @@ window.CompanionOutputPage=(()=>{
     generated_album_export_too_large:"选中的图片总大小超过导出上限，请少选几张。",
     generated_album_folder_unavailable:"V2 数据目录当前不可用。",
     generated_album_open_failed:"无法打开 V2 数据目录，请检查运行环境权限。",
-    generated_image_missing:"选中的图片已经不在图库中，请刷新后重试。"};
+    generated_image_missing:"选中的图片已经不在图库中，请刷新后重试。",
+    photo_reference_disabled:"参考图功能当前关闭，请先在「参考图与衣柜」里开启。",
+    reference_roles_invalid:"请至少选择一个参考用途。",
+    reference_label_invalid:"参考图名称不能超过 120 个字符。",
+    reference_operation_invalid:"这次登记没有生成有效的操作编号，请重新提交。",
+    reference_operation_conflict:"这张图的登记编号已经对应了另一组资料，请重新选择后提交。",
+    reference_scope_invalid:"参考素材只支持已绑定的私聊角色。",
+    reference_asset_missing:"图片还没有保存到参考图库，请稍后重试。"};
   let root=null,abort=null,ticket=0,scope="",base=null,draft=null,revision="",busy="",notice="",bad=false,hostRegistered=false,expanded=new Set(),tests=new Map(),testKeys=new Map(),observation=null,observationBusy=false,observationError="",sceneEditorOpen=false,sceneDraft=null,sceneError="",sceneSaving=false;
   let albumItems=[],albumCursor=null,albumLoaded=false,albumLoading=false,albumError="",albumSelected=-1,albumSelectedIds=new Set(),albumNotice="",albumBusy="";
+  let albumReferenceOpen=false,albumReferenceImageId="",albumReferenceLabel="",albumReferenceRoles=new Set(["identity"]),albumReferenceError="";
   const product=()=>window.CompanionProduct;
   const esc=value=>String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const endpointLabel=item=>String(item?.name||"").trim()||String(item?.model||"").trim()||"未命名模型";
@@ -34,6 +43,7 @@ window.CompanionOutputPage=(()=>{
     if(typeof endpoint!=="string"||!endpoint)throw Object.assign(new Error("当前角色尚无可读取的图片相册"),{code:"image_material_unavailable"});
     return product().relative(endpoint)+"/album";
   };
+  const referenceEndpoint=()=>albumEndpoint().replace(/\/album$/,"")+"/references";
   const options=(values,current)=>Object.entries(values).map(([key,label])=>`<option value="${esc(key)}"${key===current?" selected":""}>${esc(label)}</option>`).join("");
   function updateMarkup(node,html){
     if(node.outputMarkup===html)return;
@@ -68,6 +78,20 @@ window.CompanionOutputPage=(()=>{
     const checked=albumSelectedIds.has(item.image_id);
     return '<article class="output-album-card'+(checked?' is-selected':'')+'"><label class="output-album-select"><input type="checkbox" data-output-album-select="'+esc(item.image_id)+'"'+(checked?' checked':'')+' aria-label="选择产出图片 '+(index+1)+'"></label><button type="button" class="output-album-open" data-output-native-action="album-open" data-output-image-index="'+index+'" aria-label="查看产出图片 '+(index+1)+'"><img src="'+esc(item.thumbnail)+'" alt="'+esc(item.action||'生成图片')+'" loading="lazy" decoding="async"><span class="output-album-card-meta"><strong>'+esc(formatTime(item.created_at))+'</strong><small>'+esc(meta)+'</small></span></button></article>';
   }
+  function renderAlbumReference(){
+    if(!albumReferenceOpen)return "";
+    const item=albumItems.find(candidate=>candidate.image_id===albumReferenceImageId);
+    if(!item)return "";
+    const roles=REFERENCE_ROLES.map(([value,label])=>`<label class="output-reference-role"><input type="checkbox" data-output-reference-role="${value}"${albumReferenceRoles.has(value)?" checked":""}>${label}</label>`).join("");
+    return `<section class="output-album-reference" role="dialog" aria-label="加入参考图">
+      <header><div><strong>加入参考图</strong><small>${esc(albumMeta(item))}</small></div><button type="button" class="output-icon-button" data-output-native-action="album-reference-close" aria-label="关闭">${icon("x")}</button></header>
+      <div class="output-reference-body"><img src="${esc(item.thumbnail)}" alt="选中的产出图">
+        <div class="output-reference-fields"><label>名称（可选）<input type="text" maxlength="120" data-output-reference-label value="${esc(albumReferenceLabel)}" placeholder="例如：春日头像"></label>
+        <fieldset><legend>允许的参考用途</legend><div class="output-reference-roles">${roles}</div></fieldset></div></div>
+      ${albumReferenceError?`<p class="output-reference-error" role="alert">${esc(albumReferenceError)}</p>`:""}
+      <footer><button type="button" class="button small" data-output-native-action="album-reference-close">取消</button><button type="button" class="button small primary" data-output-native-action="album-reference-save"${albumReferenceRoles.size&&!albumBusy?"":" disabled"}>${albumBusy==="reference"?"正在加入…":"确认加入"}</button></footer>
+    </section>`;
+  }
   function renderAlbum(){
     const host=root?.querySelector("#outputAlbumWorkspace");
     if(!host)return;
@@ -80,8 +104,9 @@ window.CompanionOutputPage=(()=>{
     if(albumItems.length){
       const selected=albumSelectedIds.size;
       const all=albumItems.every(item=>albumSelectedIds.has(item.image_id));
-      body+='<div class="output-album-toolbar"><label class="output-album-check"><input type="checkbox" data-output-album-select-all'+(all?' checked':'')+' aria-label="全选产出图片">全选</label><span class="output-album-selected">已选 <b>'+selected+'</b> 张</span><div class="output-album-actions"><button type="button" class="button small primary" data-output-native-action="album-export"'+(selected&&!albumBusy?'':' disabled')+'>'+(albumBusy==='export'?'正在导出…':'导出选中')+'</button><button type="button" class="button small danger" data-output-native-action="album-hide"'+(selected&&!albumBusy?'':' disabled')+'>'+(albumBusy==='hide'?'正在删除…':'删除选中')+'</button><button type="button" class="button small" data-output-native-action="album-open-folder"'+(albumBusy?' disabled':'')+'>'+(albumBusy==='folder'?'正在打开…':'打开数据目录')+'</button><button type="button" class="button small" data-output-native-action="album-refresh"'+(albumBusy?' disabled':'')+'>刷新图库</button></div></div>';
+      body+='<div class="output-album-toolbar"><label class="output-album-check"><input type="checkbox" data-output-album-select-all'+(all?' checked':'')+' aria-label="全选产出图片">全选</label><span class="output-album-selected">已选 <b>'+selected+'</b> 张</span><div class="output-album-actions"><button type="button" class="button small primary" data-output-native-action="album-export"'+(selected&&!albumBusy?'':' disabled')+'>'+(albumBusy==='export'?'正在导出…':'导出选中')+'</button><button type="button" class="button small" data-output-native-action="album-reference"'+(selected===1&&!albumBusy?'':' disabled')+'>加入参考图</button><button type="button" class="button small danger" data-output-native-action="album-hide"'+(selected&&!albumBusy?'':' disabled')+'>'+(albumBusy==='hide'?'正在删除…':'删除选中')+'</button><button type="button" class="button small" data-output-native-action="album-open-folder"'+(albumBusy?' disabled':'')+'>'+(albumBusy==='folder'?'正在打开…':'打开数据目录')+'</button><button type="button" class="button small" data-output-native-action="album-refresh"'+(albumBusy?' disabled':'')+'>刷新图库</button></div></div>';
     }
+    body+=renderAlbumReference();
     if(albumNotice)body+='<div class="output-album-notice'+(albumError?' is-error':'')+'" role="status">'+esc(albumNotice)+'</div>';
     if(albumItems.length)body+='<div class="output-album-grid">'+albumItems.map(albumCard).join('')+'</div>';
     if(albumCursor)body+='<div class="output-album-more"><button type="button" class="button small" data-output-native-action="album-more"'+(albumLoading?' disabled':'')+'>'+(albumLoading?'正在读取…':'读取更早的产出')+'</button></div>';
@@ -170,6 +195,29 @@ window.CompanionOutputPage=(()=>{
       albumNotice=`已打开数据目录：${data?.path||"当前运行数据目录"}`;
     }catch(error){if(live(id)){albumError=ERRORS[error?.code]||ERRORS[error?.message]||error?.message||"无法打开数据目录";albumNotice=albumError;}}
     finally{if(live(id)){albumBusy="";renderAlbum();}}
+  }
+  function openAlbumReference(){
+    if(albumBusy||albumSelectedIds.size!==1)return;
+    albumReferenceImageId=[...albumSelectedIds][0];
+    albumReferenceLabel="";albumReferenceRoles=new Set(["identity"]);albumReferenceError="";albumReferenceOpen=true;renderAlbum();
+  }
+  function closeAlbumReference(){
+    if(albumBusy==="reference")return;
+    albumReferenceOpen=false;albumReferenceImageId="";albumReferenceError="";renderAlbum();
+  }
+  async function saveAlbumReference(){
+    if(albumBusy||!albumReferenceOpen||!albumReferenceImageId||!albumReferenceRoles.size)return;
+    const id=ticket,imageId=albumReferenceImageId,label=albumReferenceLabel.trim();
+    albumBusy="reference";albumReferenceError="";renderAlbum();
+    try{
+      await product().request("POST",referenceEndpoint(),{image_id:imageId,label,
+        roles:[...albumReferenceRoles],operation_key:crypto.randomUUID()});
+      if(!live(id))return;
+      albumReferenceOpen=false;albumReferenceImageId="";
+      albumNotice=`已加入参考图库${label?`：${label}`:""}`;
+    }catch(error){
+      if(live(id))albumReferenceError=ERRORS[error?.code]||ERRORS[error?.message]||error?.message||"加入参考图失败";
+    }finally{if(live(id)){albumBusy="";renderAlbum();}}
   }
   function renderScenePresets(){
     const host=root?.querySelector("#outputScenePresetList");
@@ -388,6 +436,12 @@ window.CompanionOutputPage=(()=>{
   }
   function input(event){
     const target=event.target;
+    if(target.matches("[data-output-reference-label]")){albumReferenceLabel=target.value;return;}
+    if(target.matches("[data-output-reference-role]")){
+      if(target.checked)albumReferenceRoles.add(target.dataset.outputReferenceRole);
+      else albumReferenceRoles.delete(target.dataset.outputReferenceRole);
+      albumReferenceError="";renderAlbum();return;
+    }
     if(target.matches("[data-output-album-select-all]")){selectAllAlbums(target.checked);return;}
     if(target.matches("[data-output-album-select]")){toggleAlbumSelection(target.dataset.outputAlbumSelect,target.checked);return;}
     if(target.matches("[data-output-scene-index][data-output-scene-field]")&&Array.isArray(sceneDraft)){
@@ -452,6 +506,9 @@ window.CompanionOutputPage=(()=>{
     if(action==="album-refresh"){void loadAlbum(false);return;}
     if(action==="album-export"){void exportAlbum();return;}
     if(action==="album-hide"){void hideAlbum();return;}
+    if(action==="album-reference"){openAlbumReference();return;}
+    if(action==="album-reference-close"){closeAlbumReference();return;}
+    if(action==="album-reference-save"){void saveAlbumReference();return;}
     if(action==="album-open-folder"){void openAlbumFolder();return;}
     if(action==="album-more"){void loadAlbum(true);return;}
     if(action==="album-open"){openAlbum(Number(target.dataset.outputImageIndex));return;}
@@ -472,7 +529,7 @@ window.CompanionOutputPage=(()=>{
     if(action==="remove"&&index>=0){draft.endpoints.splice(index,1);for(const operation of ["generate","edit"])if(Array.isArray(draft.operation_routes?.[operation]))draft.operation_routes[operation]=draft.operation_routes[operation].filter(route=>route!==`online:${identifier}`);}
     render();
   }
-  function unmount(){ticket++;abort?.abort();abort=null;root=null;draft=base=null;busy="";scope="";observation=null;observationBusy=false;sceneEditorOpen=false;sceneDraft=null;sceneSaving=false;albumItems=[];albumCursor=null;albumLoaded=false;albumLoading=false;albumError="";albumSelected=-1;albumSelectedIds=new Set();albumNotice="";albumBusy="";}
+  function unmount(){ticket++;abort?.abort();abort=null;root=null;draft=base=null;busy="";scope="";observation=null;observationBusy=false;sceneEditorOpen=false;sceneDraft=null;sceneSaving=false;albumItems=[];albumCursor=null;albumLoaded=false;albumLoading=false;albumError="";albumSelected=-1;albumSelectedIds=new Set();albumNotice="";albumBusy="";albumReferenceOpen=false;albumReferenceImageId="";albumReferenceLabel="";albumReferenceRoles=new Set(["identity"]);albumReferenceError="";}
   function mount(node){
     unmount();root=node;scope=product()?.scopeKey?.()||"";expanded=new Set();tests=new Map();testKeys=new Map();notice="";bad=false;observation=null;observationError="";sceneError="";
     if(!root)return;

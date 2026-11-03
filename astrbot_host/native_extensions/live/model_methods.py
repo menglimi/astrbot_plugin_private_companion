@@ -391,6 +391,9 @@ class LiveModelMethods:
             synthetic_event.set_extra('bili_live_events', [event.raw for event in selected])
             cfg = self.context.get_config(umo=session_id)
             provider_settings = cfg.get('provider_settings', {}) if isinstance(cfg, dict) else {}
+            if not callable(build_main_agent) or MainAgentBuildConfig is None:
+                logger.warning('[B站直播] 当前 AstrBot 没有兼容的主 Agent 构建入口，跳过框架式自动回应。')
+                return False
             build_cfg = MainAgentBuildConfig(tool_call_timeout=int(provider_settings.get('tool_call_timeout', 120) or 120), llm_safety_mode=False, streaming_response=False)
             req = ProviderRequest(prompt=prompt, conversation=conv, session_id=session_id)
             t_build = time.perf_counter()

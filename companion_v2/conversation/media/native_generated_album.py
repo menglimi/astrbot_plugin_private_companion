@@ -3,46 +3,69 @@
 import json
 import sqlite3
 
-from companion_v2.execution.models import TaskContext, TaskError
+from companion_v2.execution.models import TaskError, encode
+from companion_v2.conversation.media.models import CapturedImage, ImageDescriptor
 from companion_v2.conversation.messages import source_from_document
 from companion_v2.conversation.native_tool_results import PREFIX, operation_row
-from companion_v2.conversation.native_tool_media import read_native_images
 
 
-def _original_context(row, fallback):
-    """Use the image's own conversation snapshot for historical album keys.
+def _active(owner, table, *, id_value, lineage_value, revision_value,
+            id_column, lineage_column, revision_column):
+    row = owner.messages.runtime.read_one(
+        f"SELECT state FROM {table} WHERE {id_column}=? AND {lineage_column}=? AND {revision_column}=?",
+        (id_value, lineage_value, revision_value))
+    return row is not None and row["state"] == "active"
 
-    ``_origin_keys`` deliberately includes older keys from the same role and
-    window, but the native receipt still checks ``origin_key == context.key``.
-    Reading with the current key would silently drop every image created before
-    the last profile save or session rotation.
+
+def _payload_images(owner, row):
+    """Read the stored original, not the provider invocation that produced it.
+
+    The album must survive a provider upgrade: the image bytes and their
+    source/asset receipts do not change when the native image package version
+    changes.  The current operator was already authorized by the album manager;
+    this read only rechecks that the stored source and asset are still active.
     """
-    raw = row.get("context_json") if isinstance(row, dict) else None
+    raw = row.get("result_source_json") if isinstance(row, dict) else None
     if not raw:
-        return fallback
-    try:
-        return TaskContext.restore(json.loads(raw))
-    except (TypeError, ValueError, KeyError):
-        return fallback
-
-
-def images(owner, row, context, at):
-    external = owner.messages.tools.external
-    result, material = external.snapshot(row, context, at)
-    if result["state"] != "succeeded" or material is None:
         return ()
-    from companion_v2.conversation.external_tools import _SourceAccess
-    descriptor = external._descriptor(row)
-    return read_native_images(owner.messages, context, material.source, row["action"], row.get("images", []),
-        capability=descriptor.binding.capability, authorizer=_SourceAccess(external, descriptor, context), at=at)
+    try:
+        parent = source_from_document(json.loads(raw))
+    except (TypeError, ValueError, KeyError):
+        return ()
+    if not _active(owner, "sources", id_value=parent.source_id,
+                   lineage_value=parent.version.lineage_id, revision_value=parent.version.revision,
+                   id_column="source_id", lineage_column="lineage_id", revision_column="source_revision"):
+        return ()
+    images = []
+    for document in row.get("images") or ():
+        try:
+            descriptor = ImageDescriptor(**document)
+        except TypeError:
+            continue
+        record = owner.messages.runtime.read_one(
+            """SELECT * FROM conversation_image_payloads
+               WHERE parent_id=? AND parent_lineage=? AND parent_revision=? AND position=?""",
+            (parent.source_id, parent.version.lineage_id, parent.version.revision, descriptor.position))
+        if (record is None or record["descriptor_json"] != encode(descriptor)
+                or not _active(owner, "sources", id_value=record["source_id"],
+                               lineage_value=record["source_lineage"], revision_value=record["source_revision"],
+                               id_column="source_id", lineage_column="lineage_id",
+                               revision_column="source_revision")
+                or not _active(owner, "assets", id_value=record["asset_id"],
+                               lineage_value=record["asset_lineage"], revision_value=record["asset_revision"],
+                               id_column="asset_id", lineage_column="lineage_id",
+                               revision_column="asset_revision")):
+            continue
+        images.append(CapturedImage(descriptor, record["content"]))
+    return tuple(images)
 
 
 def _origin_keys(owner, context):
-    """同一角色/窗口的旧 origin key 也算图库内容。
+    """同一角色的旧 origin key 也算图库内容。
 
     ``context.key`` 把身份绑定和角色绑定 revision 都算进去：保存一次角色档案、
-    重新确认映射或换一轮会话都会得到新的 key。图库如果只认当前 key，之前
-    生成的图片会整体消失。这里按“角色主体 + 窗口作用域”聚合历史 key。
+    重新确认映射或换一轮会话都会得到新的 key。图库跟随角色，私聊/群聊窗口
+    只作为分类，不再用当前窗口过滤历史图。
     """
     scope = context.role_binding.scope
     role = context.role_binding.role
@@ -66,8 +89,7 @@ def _origin_keys(owner, context):
         if candidate_role.get("subject_id") != role.subject_id:
             continue
         if (candidate_scope.get("platform"), candidate_scope.get("account_id"),
-                candidate_scope.get("kind"), candidate_scope.get("native_scope_id")) != (
-                scope.platform, scope.account_id, scope.kind.value, scope.native_scope_id):
+                candidate_scope.get("bot_id")) != (scope.platform, scope.account_id, scope.bot_id):
             continue
         key = row["context_key"]
         if key and key not in keys:
@@ -99,9 +121,8 @@ def page(owner, context, at, *, before=None, limit=24):
     items = []
     for selected in rows:
         row = operation_row(owner.runtime, selected["invocation_id"])
-        try:
-            captured = images(owner, row, _original_context(row, context), at)
-        except TaskError:
+        captured = _payload_images(owner, row)
+        if not captured:
             continue
         parent = source_from_document(json.loads(row["result_source_json"]))
         for image in captured:
@@ -121,7 +142,7 @@ def image(owner, context, at, invocation_id, position):
     if row is None or row["origin_key"] not in _origin_keys(owner, context) \
             or row["action"] not in IMAGE_ACTIONS:
         raise TaskError("generated_image_missing", "the native album image is unavailable")
-    for captured in images(owner, row, _original_context(row, context), at):
+    for captured in _payload_images(owner, row):
         if captured.descriptor.position == position:
             parent = source_from_document(json.loads(row["result_source_json"]))
             return GeneratedAlbumImage("generated-image:" + invocation_id + ":" + str(position),
