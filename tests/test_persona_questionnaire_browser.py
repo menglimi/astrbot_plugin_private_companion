@@ -118,12 +118,11 @@ class OriginalQuestionnaireBrowserTests(unittest.TestCase):
         self.assertFalse(self.browser_errors, self.browser_errors)
 
     def test_designer_failure_then_questionnaire_persona_selection_and_paste_generation(self):
-        self.page.locator('[data-persona-recreation="designer"]').click()
+        self.page.locator('[data-persona-recreation="create"]').click()
         designer = self.page.frame_locator('[data-workspace="designer"] iframe')
         designer.locator("#choose-model").click()
         designer.locator("#model-select").select_option("design-model")
         designer.locator("#confirm-model").click()
-        designer.locator('[data-mode="create"]').click()
         self.page.evaluate("mock.fail=true")
         designer.locator("#send-turn").click()
         designer.locator("#retry-turn").wait_for(state="visible")
