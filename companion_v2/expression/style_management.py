@@ -31,6 +31,58 @@ from .sharing import MAX_IMPORT_SIGNALS, build_pack, normalize_pack
 SHARE_PACK_SOURCE = "shared_pack"
 
 
+def _exported_form_identity(dimension, observation, proposal):
+    """The form a rule without one is exported and re-imported as.
+
+    ``sharing.build_pack`` writes such a rule as kind/situation/pattern, and
+    ``normalize_pack`` turns those back into a form. Deriving the same form
+    identity from the stored rule keeps its own share pack from adding a second
+    copy. A rule whose fields cannot form a valid form exports none either, so
+    the ordinary field signature still recognises that round trip.
+    """
+    try:
+        return form_identity({"kind": "grammar" if dimension == "sentence_rhythm" else "style",
+            "situation": " ".join(observation.split()), "pattern": " ".join(proposal.split()),
+            "avoid": ""})
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+# A page cursor names the ``(created_at, signal_id)`` of the last row of the
+# page. A bare signal id is the cursor older builds emitted when this list was
+# ordered and paged by the identifier; that order cannot be resumed under the
+# time order, so it is refused.
+CURSOR_SEPARATOR = "|"
+
+
+def page_cursor(row):
+    """The page key: creation time, then the identifier as its tie-break."""
+    return row["created_at"] + CURSOR_SEPARATOR + row["signal_id"]
+
+
+def _page_after(value):
+    """Decode a page cursor into the ``(created_at, signal_id)`` bound it names.
+
+    A bare signal id was emitted by builds that paged this bucket by the
+    identifier, ascending and unrelated to creation time. Resuming it under the
+    time order cannot be both complete and duplicate free, so the page re-reads
+    from the first page instead.
+    """
+    if value is None:
+        return None, None
+    created_at, separator, signal_id = value.partition(CURSOR_SEPARATOR)
+    if not separator:
+        raise TaskError("expression_query_invalid",
+                        "the rule list was reordered; reload the list before loading more")
+    try:
+        named = datetime.fromisoformat(created_at)
+    except ValueError:
+        raise TaskError("expression_query_invalid", "invalid style cursor") from None
+    if named.tzinfo is None or named.utcoffset() is None or not signal_id:
+        raise TaskError("expression_query_invalid", "invalid style cursor")
+    return stamp(named), signal_id
+
+
 class ExpressionStyleManagement:
     def __init__(self, app):
         self.app = app
@@ -175,17 +227,25 @@ class ExpressionStyleManagement:
             owner_key = digest(owner)
             keys = self._family(context)
             placeholders = ",".join("?" * len(keys))
+            after_created, after_signal = _page_after(after_id)
+            # Newest first, with the identifier only breaking ties inside one
+            # creation timestamp. The queue index of the signals table already
+            # matches this order.
             rows = self.runtime.read_all(f"""SELECT * FROM expression_style_signals
                 WHERE owner_key = ? AND scope_key IN ({placeholders}) AND state = ?
                   AND (? IS NULL OR dimension = ?)
-                  AND (? IS NULL OR signal_id > ?) ORDER BY signal_id LIMIT ?""",
-                (owner_key, *keys, state, dimension, dimension, after_id, after_id, limit + 1))
+                  AND (? IS NULL OR created_at < ? OR (created_at = ? AND signal_id < ?))
+                ORDER BY created_at DESC, signal_id DESC LIMIT ?""",
+                (owner_key, *keys, state, dimension, dimension, after_created,
+                 after_created, after_created, after_signal, limit + 1))
             items = []
             # Adopted rules rotate by how recently they were injected, so the
             # review view reports that ledger: a rule used on every turn while
             # others wait is exactly the distribution this page has to show.
+            # A rule that negative feedback returned to review keeps that
+            # ledger, so pending rules report it too instead of reading as new.
             usage_map = {}
-            if state in ("adopted", "retired"):
+            if state in ("pending", "adopted", "retired"):
                 for scope_key in keys:
                     for signal_id, (injections, last) in style_rotation.usage(
                             self.runtime, owner_key, scope_key).items():
@@ -279,7 +339,7 @@ class ExpressionStyleManagement:
                     "can_revise": unavailable is None,
                     "view_token": self._token(operator, context, row, policy_revision)})
             return {"items": items, "state": state,
-                "next_cursor": rows[limit - 1]["signal_id"] if len(rows) > limit else None,
+                "next_cursor": page_cursor(rows[limit - 1]) if len(rows) > limit else None,
                 "context_key": context.key, "role_id": owner.persona_id, "capacity": capacity, "counts": counts}
 
     @outcome
@@ -332,28 +392,35 @@ class ExpressionStyleManagement:
             return {"signal_id": signal_id, "state": self._target(action), "replayed": False}
 
     def _share_preview(self, *, operator, context, owner, policy_revision, pack):
-        owner_key, scope_key = digest(owner), digest(context.scope)
-        active = self.runtime.read_one("""SELECT COUNT(*) AS count FROM expression_style_signals
-            WHERE owner_key = ? AND scope_key = ? AND state IN ('pending', 'adopted')""",
-            (owner_key, scope_key))
+        owner_key = digest(owner)
+        # Capacity and duplicates follow the same scope family as the review
+        # page and reply injection: a rule adopted in an earlier window of this
+        # group (or of this participant) is already an active rule here.
+        keys = self._family(context)
+        placeholders = ",".join("?" * len(keys))
+        active = self.runtime.read_one(f"""SELECT COUNT(*) AS count FROM expression_style_signals
+            WHERE owner_key = ? AND scope_key IN ({placeholders})
+              AND state IN ('pending', 'adopted')""", (owner_key, *keys))
         active_count = int(active["count"]) if active is not None else 0
         limit = read_settings(self.runtime, context).active_signal_limit
-        rows = self.runtime.read_all("""SELECT signal_id, dimension, observation, proposal,
-                applicability_json, state FROM expression_style_signals
-            WHERE owner_key = ? AND scope_key = ?""",
-            (owner_key, scope_key))
-        existing = {candidate_signature(row["dimension"], row["observation"], row["proposal"],
-                    normalize_applicability(json.loads(row["applicability_json"])),
-                    rule_details.form_for(self.runtime, row))
-                    for row in rows if row["state"] in ("pending", "adopted")}
+        rows = self.runtime.read_all(f"""SELECT signal_id, dimension, observation, proposal,
+                applicability_json FROM expression_style_signals
+            WHERE owner_key = ? AND scope_key IN ({placeholders})
+              AND state IN ('pending', 'adopted')""", (owner_key, *keys))
+        existing, known_forms = set(), set()
+        for row in rows:
+            applicability = normalize_applicability(json.loads(row["applicability_json"]))
+            form = rule_details.form_for(self.runtime, row)
+            existing.add(candidate_signature(row["dimension"], row["observation"],
+                                             row["proposal"], applicability, form))
+            identity = (form_identity(form) if form is not None else
+                        _exported_form_identity(row["dimension"], row["observation"], row["proposal"]))
+            if identity is not None:
+                known_forms.add(identity)
         # The same situation and pattern is the same rule here just as it is in
         # learning, so a reworded observation cannot import a second live copy.
         # Rejected and retired rules stay dormant: importing a pack again is the
         # operator's explicit recovery path once the original evidence is gone.
-        known_forms = {identity for identity in
-            (form_identity(rule_details.form_for(self.runtime, row)) for row in rows
-             if row["state"] in ("pending", "adopted"))
-            if identity is not None}
         rejected = list(pack["rejected"])
         in_pack_duplicates = sum(item["reason"] == "duplicate_in_pack" for item in rejected)
         candidates, duplicate_count, blocked_count = [], in_pack_duplicates, 0
@@ -461,11 +528,15 @@ class ExpressionStyleManagement:
                     raise TaskError("expression_operation_conflict", "the import operation key was used for another pack")
                 count = connection.execute("SELECT COUNT(*) AS count FROM expression_style_signals WHERE run_id = ?",
                                           (run_id,)).fetchone()["count"]
+                # Report the same family capacity the preview and the review
+                # page use, not just this window's share of it.
+                keys = self._family(context)
+                placeholders = ",".join("?" * len(keys))
+                active = connection.execute(f"""SELECT COUNT(*) AS count
+                    FROM expression_style_signals WHERE owner_key = ? AND scope_key IN ({placeholders})
+                      AND state IN ('pending', 'adopted')""", (digest(owner), *keys)).fetchone()["count"]
                 return {"imported_count": int(count), "state": "pending_review", "replayed": True,
-                        "capacity": {"active": int(connection.execute("""SELECT COUNT(*) AS count
-                            FROM expression_style_signals WHERE owner_key = ? AND scope_key = ?
-                              AND state IN ('pending', 'adopted')""",
-                            (digest(owner), digest(context.scope))).fetchone()["count"]),
+                        "capacity": {"active": int(active),
                             "limit": read_settings(self.runtime, context).active_signal_limit}}
             if type(preview_token) is not str or len(preview_token) != 64:
                 raise TaskError("expression_import_stale", "preview this share pack again before importing")
