@@ -1,11 +1,29 @@
 """Album projection of images accepted through AstrBot's native tool ledger."""
 
 import json
+import sqlite3
 
-from companion_v2.execution.models import TaskError
+from companion_v2.execution.models import TaskContext, TaskError
 from companion_v2.conversation.messages import source_from_document
 from companion_v2.conversation.native_tool_results import PREFIX, operation_row
 from companion_v2.conversation.native_tool_media import read_native_images
+
+
+def _original_context(row, fallback):
+    """Use the image's own conversation snapshot for historical album keys.
+
+    ``_origin_keys`` deliberately includes older keys from the same role and
+    window, but the native receipt still checks ``origin_key == context.key``.
+    Reading with the current key would silently drop every image created before
+    the last profile save or session rotation.
+    """
+    raw = row.get("context_json") if isinstance(row, dict) else None
+    if not raw:
+        return fallback
+    try:
+        return TaskContext.restore(json.loads(raw))
+    except (TypeError, ValueError, KeyError):
+        return fallback
 
 
 def images(owner, row, context, at):
@@ -30,6 +48,13 @@ def _origin_keys(owner, context):
     role = context.role_binding.role
     rows = owner.runtime.read_all(
         "SELECT DISTINCT context_key, context_json FROM conversation_native_turns", ())
+    try:
+        rows = owner.runtime.read_all(
+            "SELECT DISTINCT context_key, context_json FROM conversation_native_turns", ())
+    except sqlite3.OperationalError:
+        # Older fixtures/databases may not have the native-turn ledger yet.
+        # The current key is still a valid album projection in that case.
+        rows = ()
     keys = []
     for row in rows:
         try:
@@ -76,7 +101,7 @@ def page(owner, context, at, *, before=None, limit=24):
     for selected in rows:
         row = operation_row(owner.runtime, selected["invocation_id"])
         try:
-            captured = images(owner, row, context, at)
+            captured = images(owner, row, _original_context(row, context), at)
         except TaskError:
             continue
         parent = source_from_document(json.loads(row["result_source_json"]))
@@ -97,7 +122,7 @@ def image(owner, context, at, invocation_id, position):
     if row is None or row["origin_key"] not in _origin_keys(owner, context) \
             or row["action"] not in IMAGE_ACTIONS:
         raise TaskError("generated_image_missing", "the native album image is unavailable")
-    for captured in images(owner, row, context, at):
+    for captured in images(owner, row, _original_context(row, context), at):
         if captured.descriptor.position == position:
             parent = source_from_document(json.loads(row["result_source_json"]))
             return GeneratedAlbumImage("generated-image:" + invocation_id + ":" + str(position),
