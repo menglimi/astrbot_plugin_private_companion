@@ -2056,3 +2056,34 @@ test('business templates select, save, inherit and keep conflicted drafts indepe
   assert.equal(saved.length, 3);
   h.page.unmount();
 });
+
+/* 注册默认值高于 Provider 上限是常态：维护页只提示「发送时按上限生效」，
+   不把它当成路由错误；只有显式保存的值才算错误。 */
+test('a registry default above a provider ceiling is guidance, not a routing error', async () => {
+  const base = {generated_at: localStamp(), summary: {calls: 0, tokens: 0}, totals: {}, daily: [], history: [],
+    recent: [], budget: {}, runtime: {identity_scope: {dashboard_operator: 'verified', role_access: 'verified',
+      token_ledger: 'current_role'}}};
+  const model = tasks => ({tasks, providers: [{id: 'small', capabilities: ['text'], max_output_tokens: 4096}]});
+  const fields = (limit, source, explicit) => ({provider: {value: 'small', source: 'role', explicit: true},
+    fallback: {value: '', source: 'default', explicit: false},
+    max_output_tokens: {value: limit, source, explicit}});
+
+  const inherited = harness({maintenance: base, voice: {providers: []}, image: {actions: []},
+    model: model([{kind: 'memory.reflect', capabilities: ['text'], application_state: 'applied',
+      fields: fields(8192, 'default', false)}])});
+  inherited.page.mount(inherited.root, {activeView: 'diagnostics'});
+  await flush();
+  assert.match(inherited.root.innerHTML, /输出上限按 Provider 生效/);
+  assert.match(inherited.root.innerHTML, /是插件默认值，发送时按 Provider 上限 4,096 钳制/);
+  assert.doesNotMatch(inherited.root.innerHTML, /输出上限过高/);
+  inherited.page.unmount();
+
+  const explicit = harness({maintenance: base, voice: {providers: []}, image: {actions: []},
+    model: model([{kind: 'memory.reflect', capabilities: ['text'], application_state: 'applied',
+      fields: fields(8192, 'role', true)}])});
+  explicit.page.mount(explicit.root, {activeView: 'diagnostics'});
+  await flush();
+  assert.match(explicit.root.innerHTML, /输出上限过高/);
+  assert.doesNotMatch(explicit.root.innerHTML, /是插件默认值/);
+  explicit.page.unmount();
+});

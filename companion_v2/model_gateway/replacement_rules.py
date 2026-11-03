@@ -147,17 +147,43 @@ def checked_rules(raw: str) -> tuple[RouteRule, ...]:
     return result.rules
 
 
-def validate_targets(rules, providers, *, capabilities, max_output_tokens):
+def validate_targets(rules, providers, *, capabilities, max_output_tokens=None):
+    """Check every declared route target against the loaded providers.
+
+    ``max_output_tokens=None`` compares no ceiling: a registry default is
+    evaluated after the provider chain is known and is clamped to the selected
+    provider there, while an explicitly saved value is still compared here.
+    """
     for rule in rules:
         provider = providers.get(rule.provider_id)
         if provider is None:
             raise ValueError("route target has no registered V2 provider")
         if not set(capabilities).issubset(provider.capabilities):
             raise ValueError("route target lacks required task capabilities")
-        if max_output_tokens > provider.maximum_output_tokens:
+        if max_output_tokens is not None and max_output_tokens > provider.maximum_output_tokens:
             raise ValueError("route target output limit is too small")
         if rule.model and not provider.supports_model_override:
             raise ValueError("route target does not support a model name override")
+
+
+def output_capabilities(values, providers):
+    """Every output capability this task's route can actually send to.
+
+    One request can land on the primary provider, on the fallback, or on any
+    replacement-rule target, so the budget a task declares has to fit all of
+    them -- a value that only fits the primary still fails after a keyword
+    match. Dispatch and the settings projection read the same answer here,
+    which is what keeps the ceiling a page shows equal to the one that is sent.
+    Malformed rules are skipped: they are refused where rules are saved or
+    dispatched, and a settings page must still render.
+    """
+    provider_ids = [values["provider"], values["fallback"]]
+    try:
+        provider_ids += [rule.provider_id for rule in checked_rules(values["replacement_rules"])]
+    except ValueError:
+        pass
+    return tuple(providers[provider_id].maximum_output_tokens
+                 for provider_id in provider_ids if provider_id in providers)
 
 
 def _keyword_match(rule: RouteRule, message: str) -> str | None:
