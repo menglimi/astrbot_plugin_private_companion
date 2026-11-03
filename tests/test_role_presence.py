@@ -374,6 +374,13 @@ class NativePresenceTests(NativeFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await port.online_status(self.native_context, "sleeping"))["state"], "not_started")
         self.assertEqual(len(calls), 6)
 
+    async def test_napcat_custom_status_success_string_is_accepted_only_for_that_action(self):
+        port = await self.setup_port()
+        api = self.native.platform.client._api._wsr_api
+        api.result = "set status success"
+        self.assertEqual((await port.custom_status(self.native_context, "阅读中"))["state"], "accepted")
+        self.assertEqual((await port.typing(self.native_context))["code"], "presence_action_rejected")
+
     async def test_revoked_grant_and_wrong_account_never_dispatch(self):
         port = await self.setup_port()
         # Persona resolution uses the startup snapshot. Permission revocation
