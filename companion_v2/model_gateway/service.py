@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import json
 from logging import getLogger
+import math
 from time import perf_counter
 from uuid import uuid4
 
@@ -18,7 +19,8 @@ from companion_v2.sources.repositories import SourceRepository
 
 from .budget import BudgetDeferral, BudgetLedger
 from .failures import ModelFailure
-from .models import MAX_TOOL_CATALOG, Amount, ModelCompletion, ProviderResponse, ToolSpec
+from .models import (MAX_MODEL_OUTPUT_TOKENS, MAX_TOOL_CATALOG, Amount, LocalProvider, ModelCompletion,
+                     ModelEnvelope, ProviderResponse, ToolSpec)
 from .refusal import matches_refusal_text
 from .routing import ModelRouter
 from .response_diagnostics import checked_response_diagnostics
@@ -49,6 +51,76 @@ CEILING_BODY_FORMATS = frozenset({"calendar_planning"})
 # 本地估算越界是可测的确定性结论，不是"估不出来"：把 adapter 的这两个 code 原样交给
 # 任务台账，运维才分得清该调输入上限还是输出上限（由 provider._estimate 产出）。
 PROVIDER_LIMIT_CODES = frozenset({"host_model_limit_input", "host_model_limit_output"})
+# 与 expression/learning.py 的 (9, 5) 同一口径：可见正文的 token 由字符数折算，
+# 不用 provider 的 output_tokens —— 它在不同 adapter 上是否包含思考并不一致。
+CHARS_PER_TOKEN = 1.8
+# 有界审计：只回答"发生过多少次升限重试、结果如何"，不参与任何判定。
+CEILING_RETRY_AUDIT_KEY = "model.output_ceiling_retry.v1"
+CEILING_RETRY_AUDIT_LIMIT = 32
+# 重试时不能被预算/估算拒绝"接管"：任务已经有一次确定的截断结论，把它改成延期
+# 等于让调度器挂起一批已知结果的活。这些 code 一律回到 model_output_truncated。
+CEILING_RETRY_REFUSAL_CODES = frozenset({
+    "model_budget_exhausted", "model_budget_soft_deferred", "model_estimation_failed",
+    "host_model_limit_input", "host_model_limit_output",
+})
+# 一轮网关调用最多派发 3 次：provider 链本身 1 次 + 合同回退 1 次 + 升限重试 1 次
+# （没有备用 provider 或没发生合同回退时是 2 次）。owner 对同一学习轮还有一次
+# 整轮降载重试，所以同一任务叠加后的上界是 2 × 3 = 6 次。
+
+
+@dataclass(frozen=True)
+class CeilingRetryPolicy:
+    """思考型截断的升限重试阈值；只在构造网关时注入，不新增用户可见配置。
+
+    ``visible_ratio`` 是"可见正文 token / 声明上限"的百分比：思考模型只留下
+    个位数百分比，真正需要更长正文的模型会写满接近上限。把它做成
+    ``StagingConfiguration`` 字段会扰动 pinned profile 的指纹，因此本版只保留
+    构造函数注入点。
+    """
+
+    enabled: bool = True
+    visible_ratio: int = 15
+    factor: int = 4
+    min_seconds: int = 30
+    finish_reserve_seconds: int = 30
+
+    def __post_init__(self):
+        if type(self.enabled) is not bool:
+            raise ValueError("ceiling retry needs an explicit switch")
+        if type(self.visible_ratio) is not int or not 1 <= self.visible_ratio <= 100:
+            raise ValueError("the visible-output ratio must be a bounded percentage")
+        if type(self.factor) is not int or not 2 <= self.factor <= 8:
+            raise ValueError("the raised ceiling factor must stay bounded")
+        if type(self.min_seconds) is not int or self.min_seconds < 1:
+            raise ValueError("ceiling retry needs a positive time budget")
+        if type(self.finish_reserve_seconds) is not int or self.finish_reserve_seconds < 0:
+            raise ValueError("ceiling retry must reserve nonnegative finishing time")
+
+
+def _visible_tokens(text: str) -> int:
+    return math.ceil(len(text) / CHARS_PER_TOKEN)
+
+
+@dataclass(frozen=True)
+class _CeilingRetry:
+    """The second attempt's only differences: a wider ceiling and its own round."""
+
+    envelope: ModelEnvelope
+    provider: LocalProvider
+    provider_position: int
+    timeout_seconds: float
+    visible_tokens: int
+    visible_chars: int
+    floor: int
+    raised: int
+
+
+class _CeilingCut(Exception):
+    """A captured body cut by the declared ceiling; the gateway may retry it wider."""
+
+    def __init__(self, retry: _CeilingRetry):
+        super().__init__("the output ceiling cut this result before its contract was complete")
+        self.retry = retry
 
 
 def _redact_prompt_media(value):
@@ -74,12 +146,17 @@ def _redact_prompt_media(value):
 
 
 class LocalModelGateway:
-    def __init__(self, router: ModelRouter, ledger: BudgetLedger, tasks: TaskSupervisor):
+    def __init__(self, router: ModelRouter, ledger: BudgetLedger, tasks: TaskSupervisor, *,
+                 ceiling_retry: CeilingRetryPolicy | None = None):
         if router.configuration.runtime is not tasks.runtime or ledger.runtime is not tasks.runtime:
             raise ValueError("gateway components must share the original runtime")
+        policy = CeilingRetryPolicy() if ceiling_retry is None else ceiling_retry
+        if not isinstance(policy, CeilingRetryPolicy):
+            raise ValueError("ceiling retry policy must be explicit")
         self.router = router
         self.ledger = ledger
         self.tasks = tasks
+        self.ceiling_retry = policy
         self.runtime = tasks.runtime
         self.role_reference = TaskRoleReference(self.runtime)
 
@@ -196,7 +273,76 @@ class LocalModelGateway:
                                (run.task.task_id, digest(request), encode(plan.audit), stamp(self.tasks.now())))
         return ModelSession(self, run, plan, tools, independent_plans=plans)
 
-    async def _generate(self, run, plan, envelope, round_no, on_reply_prefix=None, reply_prefix_ready=None):
+    async def _generate(self, run, plan, envelope, round_no, on_reply_prefix=None, reply_prefix_ready=None,
+                        allow_ceiling_retry=False):
+        """Dispatch the provider chain, and once more wider when thinking ate the budget.
+
+        The first attempt is exactly the pre-existing chain. A ``length`` cut whose
+        visible body is a small fraction of the declared ceiling can be a thinking
+        model using most of the budget for reasoning; that one gets a second,
+        structurally bounded attempt with a higher ceiling on the same provider and
+        the same request. Anything else keeps today's outcome and error code.
+
+        One gateway round therefore dispatches at most three calls: the chain's
+        own call, its one contract fallback, and this one retry (two calls when no
+        contract fallback happened). The retry owns the next round number, so it
+        is never allowed to be a tool round: it either ends as a final answer or
+        as the original failure, and the session never asks for a round whose
+        number is already taken.
+        """
+        try:
+            return await self._generate_chain(
+                run, plan, envelope, round_no, tuple(enumerate(plan.providers)),
+                allow_fallback=True, allow_ceiling_retry=allow_ceiling_retry,
+                on_reply_prefix=on_reply_prefix, reply_prefix_ready=reply_prefix_ready)
+        except _CeilingCut as cut:
+            retry = cut.retry
+            kind = plan.audit["profile"]["kind"]
+            logger.warning(
+                "[CompanionV2] 模型输出被思考占用（可见输出远低于上限），升限重试 "
+                "task=%s kind=%s output_format=%s provider=%s round=%d position=%d "
+                "from=%d to=%d visible_tokens=%d visible_ratio=%d%% reason=reasoning_headroom",
+                run.task.task_id, kind, retry.envelope.original.output_format,
+                retry.provider.binding.provider, round_no, round_no * 2 + retry.provider_position,
+                retry.floor, retry.raised, retry.visible_tokens,
+                retry.visible_tokens * 100 // retry.floor)
+            try:
+                completion = await self._generate_chain(
+                    run, plan, retry.envelope, round_no + 1,
+                    ((retry.provider_position, retry.provider),),
+                    allow_fallback=False, allow_ceiling_retry=False, retry_round=True,
+                    timeout_seconds=retry.timeout_seconds, record_deferral=False,
+                    begin_round=lambda: self._begin_round(run, plan, retry.envelope, round_no + 1))
+            except _CeilingCut:
+                self._remember_ceiling_retry(run, plan, retry, "truncated")
+                raise TaskError("model_output_truncated",
+                                "the output ceiling cut this result before its contract was complete") from None
+            except BudgetDeferral as error:
+                self._remember_ceiling_retry(run, plan, retry, "refused")
+                logger.info("[CompanionV2] 升限重试未被预算接纳，保留原截断结论 task=%s kind=%s provider=%s",
+                            run.task.task_id, kind, retry.provider.binding.provider)
+                raise TaskError("model_output_truncated",
+                                "the output ceiling cut this result before its contract was complete") from error
+            except TaskError as error:
+                if error.code in CEILING_RETRY_REFUSAL_CODES:
+                    self._remember_ceiling_retry(run, plan, retry, "refused")
+                    logger.info("[CompanionV2] 升限重试未被预算接纳，保留原截断结论 "
+                                "task=%s kind=%s provider=%s code=%s",
+                                run.task.task_id, kind, retry.provider.binding.provider, error.code)
+                    raise TaskError("model_output_truncated",
+                                    "the output ceiling cut this result before its contract was complete") from None
+                self._remember_ceiling_retry(run, plan, retry, "failed")
+                raise
+            except Exception:
+                self._remember_ceiling_retry(run, plan, retry, "failed")
+                raise
+            self._remember_ceiling_retry(run, plan, retry, "succeeded")
+            return completion
+
+    async def _generate_chain(self, run, plan, envelope, round_no, providers, *, allow_fallback,
+                              allow_ceiling_retry=False, timeout_seconds=None, record_deferral=True,
+                              begin_round=None, retry_round=False,
+                              on_reply_prefix=None, reply_prefix_ready=None):
         def before_dispatch():
             run.validate()
             self.router.validate_plan(plan)
@@ -212,7 +358,7 @@ class LocalModelGateway:
                 require(sources.validate_reference(reference, observed_at=self.tasks.now()))
 
         contract_fallback_used = False
-        for provider_position, provider in enumerate(plan.providers):
+        for provider_position, provider in providers:
             provider_envelope = replace(envelope,
                 model_override=envelope.model_override if provider_position == 0 else "",
                 provider_capabilities=provider.capabilities)
@@ -247,10 +393,17 @@ class LocalModelGateway:
             try:
                 with self.runtime.transaction():
                     self.router.validate_plan(plan)
+                    if begin_round is not None:
+                        # 回合行先于任何预算 hold 落库，并且和 hold 在同一个事务里：
+                        # 之后 run.validate()/validate_plan/reserve/dispatch 任何一步
+                        # 失败，回滚后既没有 hold，也不会留下"已派发但没有 settle/
+                        # discard"的 model_calls 行。回合行本身也因此不会单独残留。
+                        begin_round()
                     self.ledger.reserve(run, call_id=call_id, position=position, provider=provider.binding, amount=amount)
                     self.ledger.dispatch(run, call_id)
             except BudgetDeferral as error:
-                self.ledger.record_deferral(run, error)
+                if record_deferral:
+                    self.ledger.record_deferral(run, error)
                 raise
 
             def record_cache_signature(signature):
@@ -285,7 +438,7 @@ class LocalModelGateway:
                                                   if envelope.original.output_format == "proactive_contact" else None),
                                               on_reply_prefix=publish_prefix if on_reply_prefix is not None else None,
                                               reply_prefix_ready=reply_prefix_ready)),
-                    timeout=plan.audit["timeout_seconds"])
+                    timeout=(plan.audit["timeout_seconds"] if timeout_seconds is None else timeout_seconds))
                 if not isinstance(response, ProviderResponse):
                     raise TypeError("provider returned no trusted outcome")
                 logger.debug("[CompanionV2][开发者追踪] 模型网关回合结果 task=%s round=%d provider=%s status=%s failure=%s draft=%r claims=%r tool_calls=%r diagnostics=%r",
@@ -340,7 +493,7 @@ class LocalModelGateway:
                 if ((provider_refusal and (envelope.original.output_format != "memory_reflection"
                                            or plan.audit["fallback_on_refusal"])) or text_refusal):
                     self.ledger.discard(call_id, failure=ModelFailure.REFUSAL, observed_at=self.tasks.now())
-                    if not prefix_committed and plan.audit["fallback_on_refusal"] and provider_position + 1 < len(plan.providers):
+                    if not prefix_committed and allow_fallback and plan.audit["fallback_on_refusal"] and provider_position + 1 < len(plan.providers):
                         continue
                     raise TaskError("model_refused", "provider explicitly refused the request")
                 captured = response.captured_output
@@ -359,6 +512,13 @@ class LocalModelGateway:
                                        envelope.original.output_format, envelope.max_output_tokens,
                                        provider.binding.provider, len(captured.text))
                         self.ledger.discard(call_id, failure=ModelFailure.WIRE_DECODE, observed_at=self.tasks.now())
+                        retry = (self._ceiling_retry_plan(
+                            run, plan, envelope, round_no, provider, provider_position, captured,
+                            usage_known=usage_known, prefix_committed=prefix_committed,
+                            tool_calls=response.tool_calls)
+                            if allow_ceiling_retry else None)
+                        if retry is not None:
+                            raise _CeilingCut(retry)
                         raise TaskError("model_output_truncated",
                                         "the output ceiling cut this result before its contract was complete")
                     # The owner validates the parts that arrived whole, so the body
@@ -368,6 +528,16 @@ class LocalModelGateway:
                                    plan.audit["profile"]["kind"], envelope.original.output_format,
                                    len(captured.text))
                     draft = ModelDraft(captured.text, ())
+                if retry_round and response.tool_calls:
+                    # 升限重试已经把下一回合号写进了 model_rounds；若它带回工具调用，
+                    # 会话会带着同一个回合号再 INSERT 一次而撞主键。这里不让它成为
+                    # 工具回合：按原截断结论安全失败（错误码不变），也不做下一轮。
+                    logger.warning("[CompanionV2] 升限重试带回工具调用，按原截断结论失败 "
+                                   "task=%s round=%d provider=%s tool_calls=%d",
+                                   run.task.task_id, round_no, provider.binding.provider, len(response.tool_calls))
+                    self.ledger.discard(call_id, failure=ModelFailure.WIRE_DECODE, observed_at=self.tasks.now())
+                    raise TaskError("model_output_truncated",
+                                    "the raised ceiling produced a tool round; the retry cannot continue")
                 if response.tool_calls and not envelope.tools:
                     self.ledger.discard(call_id)
                     raise TaskError("model_tools_unavailable", "no tool dispatch is allowed for this model round")
@@ -398,7 +568,7 @@ class LocalModelGateway:
                     diagnostics.parsed.chars if diagnostics is not None and diagnostics.parsed is not None else "unavailable",
                     diagnostics.visible.chars if diagnostics is not None and diagnostics.visible is not None else "unavailable",
                     prefix_committed)
-                if (not prefix_committed and not contract_fallback_used
+                if (allow_fallback and not prefix_committed and not contract_fallback_used
                         and failure is ModelFailure.WIRE_DECODE and usage_known
                         and provider_position + 1 < len(plan.providers)):
                     # 结构化任务拿不到合法 JSON，但这次调用的用量已由 Provider 确认：
@@ -413,6 +583,87 @@ class LocalModelGateway:
                     continue
                 raise TaskError("model_usage_unknown", "provider processing is unknown; no fallback was dispatched")
         raise TaskError("model_not_started", "configured providers confirmed they did not process the request")
+
+    def _ceiling_retry_plan(self, run, plan, envelope, round_no, provider, provider_position, captured,
+                            *, usage_known, prefix_committed, tool_calls):
+        """The one wider retry this cut may take, or ``None`` to keep the failure.
+
+        Every condition here is structural or measured, never guessed: the cut
+        must be a whole-result format on the task's first round, nothing may have
+        left the process, the visible body must be a small fraction of the
+        declared ceiling, a higher ceiling must actually exist, and the remaining
+        task budget must fit one minimum call plus finishing time.
+        """
+        policy = self.ceiling_retry
+        if not policy.enabled or round_no != 0:
+            return None
+        if prefix_committed or tool_calls or not usage_known:
+            return None
+        visible = _visible_tokens(captured.text)
+        if visible * 100 > envelope.max_output_tokens * policy.visible_ratio:
+            return None
+        raised = min(envelope.max_output_tokens * policy.factor, provider.maximum_output_tokens,
+                     MAX_MODEL_OUTPUT_TOKENS)
+        if raised <= envelope.max_output_tokens:
+            return None
+        try:
+            remaining = (run.validate().spec.deadline_at - self.tasks.now()).total_seconds()
+        except Exception:
+            return None
+        seconds = min(float(plan.audit["timeout_seconds"]), remaining - policy.finish_reserve_seconds)
+        if seconds < policy.min_seconds:
+            return None
+        return _CeilingRetry(replace(envelope, max_output_tokens=raised), provider, provider_position,
+                             float(seconds), visible, len(captured.text),
+                             envelope.max_output_tokens, raised)
+
+    def _begin_round(self, run, plan, envelope, round_no):
+        """Write the retry's own ``model_rounds`` row inside the dispatch transaction.
+
+        It runs before the budget hold exists and shares the caller's transaction,
+        so a ``run.validate()``/``validate_plan`` failure here rolls back the row
+        together with any reservation instead of leaving a dispatched
+        ``model_calls`` row that nothing would ever settle or discard.
+        """
+        with self.runtime.transaction() as connection:
+            run.validate()
+            self.router.validate_plan(plan)
+            connection.execute("""INSERT INTO model_rounds
+                (task_id, round_no, attempt_id, request_hash, state) VALUES (?, ?, ?, ?, 'started')""",
+                (run.task.task_id, round_no, run.claim.attempt_id, digest(envelope)))
+
+    def _remember_ceiling_retry(self, run, plan, retry, outcome):
+        """Best-effort bounded audit: how often a retry happened, and how it ended."""
+        record = {"at": stamp(self.tasks.now()), "task_id": run.task.task_id,
+                  "kind": plan.audit["profile"]["kind"], "provider": retry.provider.binding.provider,
+                  "from": retry.floor,
+                  "to": retry.raised, "visible_chars": retry.visible_chars, "outcome": outcome}
+        try:
+            with self.runtime.transaction() as connection:
+                row = connection.execute("SELECT value FROM runtime_metadata WHERE key = ?",
+                                         (CEILING_RETRY_AUDIT_KEY,)).fetchone()
+                records = json.loads(row["value"]).get("records") if row is not None else []
+                if type(records) is not list:
+                    records = []
+                records.append(record)
+                connection.execute("""INSERT INTO runtime_metadata(key, value) VALUES (?, ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+                    (CEILING_RETRY_AUDIT_KEY, encode({"records": records[-CEILING_RETRY_AUDIT_LIMIT:]})))
+        except Exception as error:
+            logger.debug("[CompanionV2] 升限重试审计写入失败 task=%s error_type=%s",
+                         run.task.task_id, type(error).__name__, exc_info=True)
+
+    def ceiling_retry_audit(self):
+        """Read the bounded ceiling-retry audit without exposing prompt text."""
+        row = self.runtime.read_one("SELECT value FROM runtime_metadata WHERE key = ?",
+                                    (CEILING_RETRY_AUDIT_KEY,))
+        if row is None:
+            return None
+        try:
+            value = json.loads(row["value"])
+        except (TypeError, ValueError):
+            return None
+        return value if type(value) is dict else None
 
     def _record_proactive_prompt_snapshot(self, task_id, call_id, provider_id, model_name, messages):
         snapshot = _redact_prompt_media(messages)
@@ -545,7 +796,8 @@ class ModelSession:
                     (task_id, round_no, attempt_id, request_hash, state) VALUES (?, ?, ?, ?, 'started')""",
                     (self.run.task.task_id, self.round_no, self.run.claim.attempt_id, digest(envelope)))
             completion = await self.gateway._generate(self.run, self.plan, envelope, self.round_no,
-                                                      on_reply_prefix, reply_prefix_ready)
+                                                      on_reply_prefix, reply_prefix_ready,
+                                                      allow_ceiling_retry=not self.independent_plans)
             self.history = history
             self.pending = completion.tool_calls
             self.round_no += 1
