@@ -84,17 +84,29 @@ class ProviderIdentityTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, "host_provider_changed")
 
-    def test_changed_captured_field_is_rejected_and_named_without_its_value(self):
+    def test_refreshed_credential_is_rebound_without_recording_its_value(self):
         provider, _native = make_provider()
         replacement = StubProvider()
         replacement.provider_config["key"] = ["another-secret"]
+        provider.context.provider = replacement
+
+        provider._current()
+
+        self.assertIs(provider.native, replacement)
+        self.assertEqual(provider.config["key"], ["another-secret"])
+        self.assertNotIn("another-secret", str(provider.binding))
+
+    def test_credential_refresh_does_not_hide_another_changed_field(self):
+        provider, _native = make_provider()
+        replacement = StubProvider()
+        replacement.provider_config["key"] = ["another-secret"]
+        replacement.provider_config["model"] = "gemini-y"
         provider.context.provider = replacement
 
         with self.assertRaises(TaskError) as raised:
             provider._current()
 
         self.assertEqual(raised.exception.code, "host_provider_changed")
-        self.assertIn("key", str(raised.exception))
         self.assertNotIn("another-secret", str(raised.exception))
 
     def test_removed_captured_field_is_rejected(self):

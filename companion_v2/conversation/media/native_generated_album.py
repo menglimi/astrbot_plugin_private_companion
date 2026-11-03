@@ -46,8 +46,7 @@ def _origin_keys(owner, context):
     """
     scope = context.role_binding.scope
     role = context.role_binding.role
-    rows = owner.runtime.read_all(
-        "SELECT DISTINCT context_key, context_json FROM conversation_native_turns", ())
+    rows = ()
     try:
         rows = owner.runtime.read_all(
             "SELECT DISTINCT context_key, context_json FROM conversation_native_turns", ())
