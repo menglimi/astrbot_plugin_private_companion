@@ -60,6 +60,7 @@ def remove_v67(connection):
     v67 rebuilt this table to admit `jev`; v61 already owns the exact v66 DDL,
     so the fixture reuses it instead of restating a second copy that could drift.
     """
+    remove_v68(connection)
     if connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'laya_decision_events'").fetchone():
         if connection.execute(
@@ -74,6 +75,13 @@ def remove_v67(connection):
         for statement in V61_MIGRATION_STATEMENTS[4:]:
             connection.execute(statement)
     connection.execute("DELETE FROM schema_migrations WHERE migration_id = 'companion-v2.storage.v66-to-v67'")
+
+
+def remove_v68(connection):
+    """Drop the two lookup indexes v68 added; they carry no data of their own."""
+    connection.execute('DROP INDEX IF EXISTS "proactive_contacts_origin_recent_idx"')
+    connection.execute('DROP INDEX IF EXISTS "background_deliveries_source_ref_idx"')
+    connection.execute("DELETE FROM schema_migrations WHERE migration_id = 'companion-v2.storage.v67-to-v68'")
 
 
 def remove_v65(connection):

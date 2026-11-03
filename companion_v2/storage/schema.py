@@ -2143,6 +2143,26 @@ MIGRATION_V66_TO_V67_FINGERPRINT = hashlib.sha256(
     "\n".join(V67_MIGRATION_STATEMENTS).encode("utf-8")
 ).hexdigest()
 
+# Indexes only, so no table is rebuilt: the proactive rhythm reads the newest
+# contact of one window on every scheduling tick, and its correlated delivery
+# lookup resolves one contact's receipts by a JSON field that no index covered.
+# Both statements are idempotent because a data root that already carries the
+# indexes for another reason must still record the migration.
+V68_MIGRATION_STATEMENTS = (
+    "CREATE INDEX IF NOT EXISTS proactive_contacts_origin_recent_idx ON proactive_contacts(origin_key, created_at DESC, contact_id DESC)",
+    "CREATE INDEX IF NOT EXISTS background_deliveries_source_ref_idx ON background_deliveries(owner, state, json_extract(request_json, '$.source_ref'), delivered_at)",
+)
+V68_REQUIRED_TABLES = V67_REQUIRED_TABLES
+V68_SCHEMA_STATEMENTS = V67_SCHEMA_STATEMENTS + V68_MIGRATION_STATEMENTS
+REQUIRED_TABLES = V68_REQUIRED_TABLES
+SCHEMA_STATEMENTS = V68_SCHEMA_STATEMENTS
+SCHEMA_VERSION_V68 = "companion-v2.storage.v68"
+SCHEMA_VERSION = SCHEMA_VERSION_V68
+MIGRATION_V67_TO_V68_ID = "companion-v2.storage.v67-to-v68"
+MIGRATION_V67_TO_V68_FINGERPRINT = hashlib.sha256(
+    "\n".join(V68_MIGRATION_STATEMENTS).encode("utf-8")
+).hexdigest()
+
 
 def migration_count() -> int:
     """How many ordered migrations a fully upgraded data root records.
