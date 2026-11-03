@@ -319,6 +319,54 @@ class OfficialMultiHostTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(official["platform_name"], "qq_official")
         self.assertEqual(official["account_id"], ACCOUNT)
 
+    async def test_account_discovery_keeps_unconfigured_official_groups_visible(self):
+        private_umo = f"{ACCOUNT}:FriendMessage:{OFFICIAL_OPENID}"
+        group_umo = f"{ACCOUNT}:GroupMessage:{GROUP_OPENID}"
+        sessions = {private_umo: "private-cid", group_umo: "group-cid"}
+        rows = [{"session_id": umo, "conversation_id": cid, "persona_id": "original"}
+                for umo, cid in sessions.items()]
+        self.native.conversation_manager = NS(
+            get_curr_conversation_id=AsyncMock(side_effect=sessions.get),
+            db=NS(get_session_conversations=AsyncMock(return_value=(rows, len(rows)))),
+            get_conversation=AsyncMock(side_effect=AssertionError("history must not be loaded")),
+        )
+        self.types = replace(self.types, persona_selection_lookup=lambda *_args: "original")
+        request = NS(username="admin", query={})
+        for platform_name in ("qq_official", "qq_official_webhook"):
+            for private_bound in (True, False):
+                with self.subTest(platform_name=platform_name, private_bound=private_bound):
+                    self.native.platform.metadata.name = platform_name
+                    config = deepcopy(self.config)
+                    if not private_bound:
+                        config["multi_host"]["targets"] = []
+                    controller = self.make_controller(config)
+                    before = deepcopy(controller.config)
+                    with patch("astrbot_host.account_session_api.request", request), \
+                            patch("astrbot_host.setup_api.request", request), \
+                            patch("astrbot_host.setup_api.display_names",
+                                  return_value=NS(targets=AsyncMock(side_effect=lambda items: items))), \
+                            patch.object(controller.session_topology, "services", AsyncMock(return_value={})):
+                        response = await AccountSessionWebAPI(controller).get()
+                        self.assertEqual(response["status"], "ok", response)
+                        discovered = response["data"]["discovered"]
+                        self.assertTrue(discovered["directory"]["complete"])
+                        windows = {row["unified_msg_origin"]: row for row in discovered["targets"]
+                                   if row["native"]}
+                        self.assertEqual(set(windows), set(sessions))
+                        self.assertEqual(windows[private_umo]["scope_kind"], "private")
+                        group = windows[group_umo]
+                        self.assertEqual(group["scope_kind"], "group")
+                        self.assertEqual(group["group_id"], GROUP_OPENID)
+                        self.assertEqual(group["account_id"], ACCOUNT)
+                        self.assertEqual(group["roles"][0]["role_id"], "role-a")
+                        self.assertFalse(group["managed"])
+                        # Runtime preparation must still require an explicit group binding.
+                        runtime = await controller.session_topology.inventory(settings=controller.settings)
+                        self.assertFalse(any(row["scope_kind"] == "group" for row in runtime))
+                    self.assertEqual(controller.config, before)
+        self.native.conversation_manager.get_conversation.assert_not_awaited()
+        self.assertEqual(self.native.platform.sent, [])
+
     async def test_fresh_public_plugin_data_root_can_open_installations_storage(self):
         public = self.root / "astrbot-data" / "plugin_data" / "astrbot_plugin_private_companion"
         public.mkdir(parents=True)

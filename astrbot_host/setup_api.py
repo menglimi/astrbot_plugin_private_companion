@@ -434,7 +434,8 @@ class SetupWebAPI:
             if inventory_settings is not None and not hasattr(inventory_settings, "targets"):
                 # Single-target HostSettings has no shared account inventory.
                 inventory_settings = None
-            directory = await self.controller.session_topology.inventory_report(settings=inventory_settings)
+            directory = await self.controller.session_topology.inventory_report(
+                settings=inventory_settings, include_unmanaged=True)
             targets = directory["targets"]
             # The setup page runs before the first runtime profile exists, so
             # page/targets cannot supply migration routes yet. The setup catalog

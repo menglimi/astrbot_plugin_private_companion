@@ -492,11 +492,14 @@ class SessionTopology:
     async def inventory(self, *, settings=None, scope_kind=None):
         return (await self.inventory_report(settings=settings, scope_kind=scope_kind))["targets"]
 
-    async def inventory_report(self, *, settings=None, scope_kind=None):
+    async def inventory_report(self, *, settings=None, scope_kind=None, include_unmanaged=False):
+        # Discovery needs unbound windows even when normalized runtime settings
+        # supply the account and persona mappings. Startup still limits its inventory.
+        managed_only = settings is not None and not include_unmanaged
         accounts, configured = self.accounts(settings), self.configured(settings)
         if scope_kind is not None:
             configured = [row for row in configured if row["scope_kind"] == scope_kind]
-        if settings is not None:
+        if managed_only:
             routes = {(row["platform_id"], row["account_id"]) for row in configured}
             accounts = [row for row in accounts if (row["platform_id"], row["account_id"]) in routes]
         platforms = {row["platform_id"] for row in accounts}
@@ -519,7 +522,7 @@ class SessionTopology:
             async with slots:
                 try:
                     rows = await self._session_windows(umo, item, accounts, configured, mappings, observed,
-                                                       managed_only=settings is not None)
+                                                       managed_only=managed_only)
                     return rows, None
                 except TaskError as error:
                     return self._partial_windows(umo, accounts, configured, observed), error
