@@ -70,7 +70,7 @@ class NativeImageProvider:
             properties = {"prompt": {"type": "string"}, "negative_prompt": {"type": "string"}}
             required = ["prompt"]
             if operation == "edit":
-                properties["artifact_id"] = {"type": "string", "description": "可选：编辑本身份与当前会话范围内 Image 已保存的原图；留空时使用当前轮私聊或群聊消息中的图片。不能填写路径。"}
+                properties["artifact_id"] = {"type": "string", "description": "仅编辑本身份与当前会话范围内 Image 已保存的原图时填写非空产物 ID；使用本轮附图或 reference_ids 时省略此字段，不能填写路径。"}
                 properties["reference_ids"] = {"type": "array", "items": {"type": "string"},
                     "description": "从当前角色的 V2 参考目录中选择素材 ID；群聊使用还需打开角色的群聊参考图开关。"}
                 properties["reference_indices"] = {"type": "array", "items": {"type": "integer"},
@@ -136,7 +136,7 @@ class NativeImageProvider:
         require_text(args["prompt"], "prompt")
         if not isinstance(args.get("negative_prompt", ""), str):
             raise NativeImageError("invalid_negative_prompt")
-        if operation == "edit" and "artifact_id" in args:
+        if operation == "edit" and "artifact_id" in args and args["artifact_id"] != "":
             require_text(args["artifact_id"], "artifact_id")
             if any(name in args for name in ("reference_roles", "reference_ids", "reference_indices")):
                 raise NativeImageError("invalid_image_arguments")
@@ -266,7 +266,7 @@ class NativeImageProvider:
         if any(identifier not in saved_by_id for identifier in requested_ids):
             raise NativeImageError("native_reference_id_unavailable")
         saved = tuple(saved_by_id[identifier] for identifier in requested_ids)
-        if operation == "edit" and "artifact_id" in arguments:
+        if operation == "edit" and arguments.get("artifact_id", "") != "":
             artifact_id = arguments["artifact_id"]
             metadata, _ = self.owner.store.artifact(scope, artifact_id)
             original_operation = self.owner.store.get(scope, metadata["operation_id"])
