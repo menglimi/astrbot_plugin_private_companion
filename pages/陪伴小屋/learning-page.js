@@ -138,6 +138,9 @@ window.CompanionLearningPage = (() => {
     return {view:"track",layout:"default",roleLabel:"",
       path:"", profileId:"", operatorName:"",
       sources:[], listCursors:{}, reviewCursors:{},
+      /* 每个来源已经读过几页：原地刷新时按它把读过的页重读一遍，
+         而不是退回第一页——用户翻到哪，刷新之后就还在哪。 */
+      listPages:{}, reviewPages:{},
       accesses:{},
       recordFocus:null,
       items:[], cursor:"", next:null, stateFilter:"", kindFilter:"",
@@ -204,6 +207,55 @@ window.CompanionLearningPage = (() => {
     return (Date.parse(right.updated_at || right.created_at || "") || 0)
       - (Date.parse(left.updated_at || left.created_at || "") || 0);
   }
+  /* 原地刷新：新读到的行按 _rowKey 覆盖旧的，这次没读到的旧行保留。
+     某一页这次变短了、或者某个来源这次失败，已经显示过的记录都不能凭空消失。 */
+  function mergeKept(previous, incoming) {
+    const byKey = new Map(incoming.map(row => [row._rowKey, row]));
+    const kept = previous.filter(row => !byKey.has(row._rowKey));
+    return [...kept, ...incoming].sort(byUpdatedAt);
+  }
+  /* 后端已经接受这次状态动作，先把这一行改成本地已知的新状态：
+     列表不必等一次整表重读才反映用户的点击；随后的 refresh 再用后端值校正。 */
+  const TRANSITIONS = {confirm:"active", resume:"active", pause:"paused",
+    complete:"achieved", withdraw:"retired", retire:"retired"};
+  function applyTransition(row, action, payload, extra) {
+    if (!row) return;
+    if (TRANSITIONS[action]) row.state = TRANSITIONS[action];
+    if (extra) Object.assign(row, extra);
+    row.revision = Number(payload?.revision) || Number(row.revision || 0) + 1;
+    row.updated_at = new Date().toISOString();
+    row.actions = [];
+  }
+  /* 重绘是整块 innerHTML（见 render）：滚动位置只留在数字上，列表高度一变，
+     用户看到的就是另一批记录。重绘前记住「视口里第一条记录 + 它的屏幕位置
+     + 展开了哪些块」，重绘后按同一把 key 复位。没有 DOM 的测试夹具会安全跳过。 */
+  const viewNodes = () => (root?.querySelectorAll ? [...root.querySelectorAll("[data-view-key]")] : []);
+  function snapshotView() {
+    if (!root?.querySelectorAll) return null;
+    const nodes = viewNodes();
+    const anchor = nodes.find(node => node.getBoundingClientRect().bottom > 0);
+    return {
+      key: anchor?.dataset.viewKey || "",
+      top: anchor ? anchor.getBoundingClientRect().top : null,
+      open: nodes.flatMap(node => [...node.querySelectorAll("details")]
+        .map((details, index) => details.open ? node.dataset.viewKey + "#" + index : ""))
+        .filter(Boolean),
+    };
+  }
+  function restoreView(view) {
+    if (!view || !root?.querySelectorAll) return;
+    if (view.open.length) {
+      const wanted = new Set(view.open);
+      viewNodes().forEach(node => [...node.querySelectorAll("details")].forEach((details, index) => {
+        if (wanted.has(node.dataset.viewKey + "#" + index)) details.open = true;
+      }));
+    }
+    if (!view.key || view.top === null) return;
+    const anchor = viewNodes().find(node => node.dataset.viewKey === view.key);
+    if (!anchor) return;
+    const shift = anchor.getBoundingClientRect().top - view.top;
+    if (Math.abs(shift) > 1) window.scrollBy?.(0, shift);
+  }
 
   /* ---- 读 ------------------------------------------------------------- */
   function listQuery(afterId = "") {
@@ -218,41 +270,71 @@ window.CompanionLearningPage = (() => {
      而 load() 的护栏正是那个忙标志——于是它立即早退，忙标志再也没人清，
      整页从此卡住：动作发出去了、结果也回来了，界面却停在原地。
      两个标志职责不同：loading 管"正在读"，writing 管"正在写"。 */
-  async function load() {
+  /* 两种读法，区别只在「从哪一页开始」与「读到的行怎么并进现有列表」：
+       reset   换视图、换筛选、首次读取：清空重来，每个来源从第一页开始；
+       refresh 刷新与写操作之后：把这次已经读过的页数原地重读一遍，
+               新数据按 _rowKey 覆盖旧行，这次没读到的旧行保留。
+     两种模式都不会让已经显示的记录凭空消失。
+     refresh 的重读页数有上限：已加载页数会被「加载更多」一路抬高，而刷新是动作后的
+     常见路径——不设上限就等于一次动作串行发几十次请求。上限之内的页重读不到的行
+     由合并保留，游标退回上限处，用户再点「加载更多」会顺着往后走（合并会去重）。 */
+  const MAX_REFRESH_PAGES = 8;
+  async function load({mode = "reset"} = {}) {
     if (!data.sources.length || data.loading) return;
     const ticket = version;
-    data.listCursors = {};
-    data.accesses = {};
+    const reset = mode === "reset";
+    const previous = reset ? [] : data.items.slice();
+    if (reset) { data.listCursors = {}; data.listPages = {}; data.accesses = {}; }
     data.loading = true; render();
     try {
       const requests = await Promise.allSettled(data.sources.map(async source => {
-        let page = await api("GET", source.path, listQuery(data.listCursors[sourceKey(source)] || ""));
-        if (!Array.isArray(page.items)) throw problem("invalid_response");
-        const rows = page.items.map(row => attachRow(source, row, row.growth_id));
-        let cursor = page.next_cursor || null;
+        const listed = Math.max(1, Number(data.listPages[sourceKey(source)] || 1));
+        const rounds = reset ? 1 : Math.min(MAX_REFRESH_PAGES, listed);
+        const rows = [];
+        let cursor = null, first = null, pages = 0;
+        for (let index = 0; index < rounds; index++) {
+          const page = await api("GET", source.path, listQuery(cursor || ""));
+          if (!Array.isArray(page.items)) throw problem("invalid_response");
+          if (!first) first = page;
+          pages++;
+          rows.push(...page.items.map(row => attachRow(source, row, row.growth_id)));
+          cursor = page.next_cursor || null;
+          if (!cursor) break;
+        }
+        /* 深链：目标记录不在前几页时继续往后读（保持原行为）。
+           两个约束：① 扫过的页不算「已加载页」，否则之后每次刷新都会按页数重读；
+           ② 目标记录已经在列表里就不再扫——挂载时扫一次足够，每次刷新/动作都重扫
+           等于串行发 N 次请求（N 上限 200）。 */
+        const focusLoaded = previous.some(row => row.growth_id === data.recordFocus?.growth_id
+          && row._source?.target?.target_id === data.recordFocus?.target_id
+          && row._source?.role?.role_id === data.recordFocus?.role_id);
         let guard = 0;
-        while (data.layout === "chain" && data.recordFocus?.growth_id
+        while (!focusLoaded && data.layout === "chain" && data.recordFocus?.growth_id
           && data.recordFocus.target_id === source.target?.target_id
           && data.recordFocus.role_id === source.role?.role_id
           && !rows.some(row => row.growth_id === data.recordFocus.growth_id)
           && cursor && guard++ < 200) {
-          page = await api("GET", source.path, listQuery(cursor));
+          const page = await api("GET", source.path, listQuery(cursor));
           if (!Array.isArray(page.items)) throw problem("invalid_response");
           rows.push(...page.items.map(row => attachRow(source, row, row.growth_id)));
           cursor = page.next_cursor || null;
         }
-        return {source, rows, cursor, access:page.access || null,
-          profileId:page.profile_id || "", operatorName:page.operator_name || ""};
+        return {source, rows, cursor, pages, access:first?.access || null,
+          profileId:first?.profile_id || "", operatorName:first?.operator_name || ""};
       }));
       if (!live(ticket)) return;
       const valid = requests.filter(result => result.status === "fulfilled").map(result => result.value);
       const failed = requests.length - valid.length;
       if (!valid.length) throw requests.find(result => result.status === "rejected")?.reason || problem("invalid_response");
-      data.items = [...new Map(valid.flatMap(result => result.rows).map(row => [row._rowKey, row])).values()]
-        .sort(byUpdatedAt);
+      const merged = [...new Map(valid.flatMap(result => result.rows).map(row => [row._rowKey, row])).values()];
+      data.items = reset ? merged.sort(byUpdatedAt) : mergeKept(previous, merged);
       data.accesses = Object.fromEntries(valid.filter(result => validAccess(result.access))
         .map(result => [sourceKey(result.source), result.access]));
-      data.listCursors = Object.fromEntries(valid.map(result => [sourceKey(result.source), result.cursor]));
+      for (const result of valid) {
+        const key = sourceKey(result.source);
+        data.listCursors[key] = result.cursor;
+        data.listPages[key] = result.pages;
+      }
       data.cursor = data.stateFilter || data.kindFilter ? "" : "all";
       data.next = Object.values(data.listCursors).some(Boolean) ? "more" : null;
       data.profileId = "";
@@ -275,8 +357,11 @@ window.CompanionLearningPage = (() => {
       if(data.layout==="chain"&&data.detailId)await loadEvidence(data.detailId);
     } catch (error) {
       if (!live(ticket)) return;
-      data.items = []; data.detail = null; data.next = null;
-      notice(error.code ? reason(error.code) : "连接中断，已清空旧内容。请刷新核对。", true);
+      /* 只有 reset 才清空：刷新失败时保留已经显示的记录，一次网络抖动不该把
+         用户翻出来的第二页抹掉；下方那条提示已经说明了原因。 */
+      if (reset) { data.items = []; data.detail = null; data.next = null; }
+      const failure = error.code ? reason(error.code) : "连接中断，请刷新核对。";
+      notice(reset ? failure : failure + "（已保留当前内容）", true);
       if (denied.has(error.code)) { data.ready = false; data.sources = []; data.path = ""; }
     } finally {
       if (live(ticket)) { data.loading = false; render(); }
@@ -318,7 +403,11 @@ window.CompanionLearningPage = (() => {
       if(!valid.length&&pages.length)throw pages[0].reason||problem("invalid_response");
       const incoming=valid.flatMap(({source,page})=>page.items.map(row=>attachRow(source,row,row.growth_id)));
       data.items=[...new Map(data.items.concat(incoming).map(row=>[row._rowKey,row])).values()].sort(byUpdatedAt);
-      for(const {source,page} of valid)data.listCursors[sourceKey(source)]=page.next_cursor||null;
+      for(const {source,page} of valid){
+        const key=sourceKey(source);
+        data.listCursors[key]=page.next_cursor||null;
+        data.listPages[key]=Number(data.listPages[key]||1)+1;
+      }
       data.next=Object.values(data.listCursors).some(Boolean)?"more":null;
       if(valid.length<pages.length)notice("部分记录归属暂不可读取，已显示其余记录。",true);
     } catch (error) {
@@ -331,30 +420,50 @@ window.CompanionLearningPage = (() => {
      共用一个的话，挂载时 `await load()` 期间它一直是 true，
      随后调用的 loadReviews() 会直接早退——审阅队列永远是空的，
      而用户看到的只是"没有待审阅"，不会报错。 */
-  async function loadReviews() {
+  /* 审阅队列与列表一样分页：reset 从第一页重来，refresh 把已经读过的页数原地重读，
+     新数据按 _rowKey 覆盖旧行、没读到的旧行保留。 */
+  async function loadReviews({mode = "reset"} = {}) {
     if (!data.sources.length || data.loadingReviews) return;
     const ticket = version;
-    data.reviewCursors = {};
+    const reset = mode === "reset";
+    const previous = reset ? [] : data.reviews.slice();
+    if (reset) { data.reviewCursors = {}; data.reviewPages = {}; }
     data.loadingReviews = true; render();
     try {
       const results=await Promise.allSettled(data.sources.map(async source=>{
-        const page=await api("GET",source.path+"/progress");
-        if(!Array.isArray(page.items))throw problem("invalid_response");
-        return {source,page};
+        const listed = Math.max(1, Number(data.reviewPages[sourceKey(source)] || 1));
+        /* 与列表同一条上限：审阅队列也可能被「加载更多」堆到十几页。 */
+        const rounds = reset ? 1 : Math.min(MAX_REFRESH_PAGES, listed);
+        const rows = [];
+        let cursor = null, pages = 0;
+        for (let index = 0; index < rounds; index++) {
+          const page = await api("GET", source.path + "/progress", cursor ? {after_id:cursor} : undefined);
+          if(!Array.isArray(page.items))throw problem("invalid_response");
+          pages++;
+          rows.push(...page.items.map(row=>attachRow(source,row,row.review_id)));
+          cursor = page.next_cursor || null;
+          if (!cursor) break;
+        }
+        return {source, rows, cursor, pages};
       }));
       if (!live(ticket)) return;
       const valid=results.filter(result=>result.status==="fulfilled").map(result=>result.value);
       if(!valid.length&&results.length)throw results.find(result=>result.status==="rejected")?.reason||problem("invalid_response");
-      data.reviews=valid.flatMap(({source,page})=>page.items.map(row=>attachRow(source,row,row.review_id)))
-        .sort(byUpdatedAt);
-      data.reviewCursors=Object.fromEntries(valid.map(({source,page})=>[sourceKey(source),page.next_cursor||null]));
+      const merged=[...new Map(valid.flatMap(result=>result.rows).map(row=>[row._rowKey,row])).values()];
+      data.reviews=(reset?merged:mergeKept(previous,merged)).sort(byUpdatedAt);
+      for (const result of valid) {
+        const key = sourceKey(result.source);
+        data.reviewCursors[key] = result.cursor;
+        data.reviewPages[key] = result.pages;
+      }
       data.reviewNext=Object.values(data.reviewCursors).some(Boolean)?"more":null;
       if(valid.length<results.length)notice("部分审阅记录归属暂不可读取。",true);
       data.ready = true;
     } catch (error) {
       if (!live(ticket)) return;
-      data.reviews = [];
-      notice(error.code ? reason(error.code) : "审阅列表没有读到。", true);
+      if (reset) data.reviews = [];
+      const failure = error.code ? reason(error.code) : "审阅列表没有读到。";
+      notice(reset ? failure : failure + "（已保留当前内容）", true);
     } finally {
       if (live(ticket)) { data.loadingReviews = false; render(); }
     }
@@ -373,9 +482,13 @@ window.CompanionLearningPage = (() => {
       if (!live(ticket)) return;
       const valid=pages.filter(result=>result.status==="fulfilled").map(result=>result.value);
       if(!valid.length&&pages.length)throw pages[0].reason||problem("invalid_response");
-      data.reviews=data.reviews.concat(valid.flatMap(({source,page})=>page.items.map(row=>attachRow(source,row,row.review_id))))
-        .sort(byUpdatedAt);
-      for(const {source,page} of valid)data.reviewCursors[sourceKey(source)]=page.next_cursor||null;
+      const incoming=valid.flatMap(({source,page})=>page.items.map(row=>attachRow(source,row,row.review_id)));
+      data.reviews=mergeKept(data.reviews,incoming);
+      for(const {source,page} of valid){
+        const key=sourceKey(source);
+        data.reviewCursors[key]=page.next_cursor||null;
+        data.reviewPages[key]=Number(data.reviewPages[key]||1)+1;
+      }
       data.reviewNext=Object.values(data.reviewCursors).some(Boolean)?"more":null;
     } catch (error) {
       if (live(ticket)) notice(error.code ? reason(error.code) : "下一页审阅没有读到。", true);
@@ -395,7 +508,7 @@ window.CompanionLearningPage = (() => {
       /* 后端没给这个动作就绝不发。发出去一定被拒，而且会把可用动作刷一遍，
          用户看到按钮跳走却不知道为什么。 */
       notice("当前状态不接受「" + (ACTIONS[action]?.label || "这项操作") + "」，已刷新可用动作。", true);
-      await load(); return;
+      await load({mode:"refresh"}); return;
     }
     const ticket = version;
     data.writing = true; render();
@@ -405,18 +518,21 @@ window.CompanionLearningPage = (() => {
       if (extra) Object.assign(body, extra);
       const payload = await api("POST", sourcePath(row._source, "/command"), body);
       if (!live(ticket)) return;
+      /* 先把这一行改成已知的新状态，再原地刷新：列表不必整表重来，
+         用户翻到第几页、看的是哪条记录，动作之后都还在原处。 */
+      applyTransition(row, action, payload, extra);
       data.detailId = data.layout === "chain" ? id : null;
       data.detail = null; data.form = null;
       data.entered.add(id);
       data.writing = false;
       notice((ACTIONS[action]?.label || "操作") + "已完成，版本 " + (payload?.revision ?? row.revision + 1) + "。");
-      await load();
+      await load({mode:"refresh"});
     } catch (error) {
       if (!live(ticket)) return;
       data.writing = false;
       const code = error.code || "";
       notice(reason(code), true);
-      if (code === "growth_revision_conflict" || code === "growth_transition_invalid") await load();
+      if (code === "growth_revision_conflict" || code === "growth_transition_invalid") await load({mode:"refresh"});
       else render();
     }
   }
@@ -437,7 +553,7 @@ window.CompanionLearningPage = (() => {
       data.form = null;
       data.writing = false;
       notice("已提出，等待确认。");
-      await load();
+      await load({mode:"refresh"});
     } catch (error) {
       if (!live(ticket)) return;
       data.writing = false; notice(reason(error.code), true); render();
@@ -462,14 +578,17 @@ window.CompanionLearningPage = (() => {
         review_id:row.review_id, action, expected_revision:row.base_revision,
         view_token:row.view_token, operation_key:operationKey("review")});
       if (!live(ticket)) return;
+      /* 被裁决的那一条先本地移除（它是「待审阅」，裁决完就不该在这里），
+         其余的原地刷新——已经翻出来的第二页审阅记录不能因为这次裁决消失。 */
       data.reviews = data.reviews.filter(entry => entry._rowKey !== row._rowKey);
       data.writing = false;
       notice(action === "accept" ? "已采纳，进展写进目标。" : "已记下这次审阅。");
-      await load();
+      await load({mode:"refresh"});
+      await loadReviews({mode:"refresh"});
     } catch (error) {
       if (!live(ticket)) return;
       data.writing = false; notice(reason(error.code), true);
-      if (error.code === "growth_review_conflict") await loadReviews(); else render();
+      if (error.code === "growth_review_conflict") await loadReviews({mode:"refresh"}); else render();
     }
   }
 
@@ -494,7 +613,7 @@ window.CompanionLearningPage = (() => {
       if (!live(ticket)) return;
       data.writing = false;
       notice(reason(error.code), true);
-      if (error.code === "configuration_revision_conflict") await load();
+      if (error.code === "configuration_revision_conflict") await load({mode:"refresh"});
       else render();
     }
   }
@@ -616,7 +735,7 @@ window.CompanionLearningPage = (() => {
     const key = rowKey(row);
     const entering = data.entered.has(key);
     return `<article class="lea-card${blind ? " is-blind" : ""}${entering ? " is-entered" : ""}"
-      data-id="${e(key)}" tabindex="0" role="button"
+      data-view-key="${e(key)}" data-id="${e(key)}" tabindex="0" role="button"
       aria-label="${e(blind ? "来源不可读取的记录" : row.title || "未命名记录")}">
       <div class="lea-card-top">
         <span class="lea-kind">${e(KIND_LABEL[row.kind] || "成长记录")}</span>
@@ -677,6 +796,7 @@ window.CompanionLearningPage = (() => {
         }).join("")}</div>`
         : `<p class="lea-lane-empty">当前状态没有可用动作。</p>`}
       </section>
+      ${confirmMarkup()}
       ${data.layout!=="chain"&&(row.actions || []).includes("revise") ? reviseForm(row) : ""}
     </div>`;
   }
@@ -687,7 +807,7 @@ window.CompanionLearningPage = (() => {
       const stage=STATE_BY_KEY[row.state]||{};
       const key=rowKey(row);
       return `<button type="button" class="lea-chain-row${rowKey(current)===key?" is-selected":""}"
-        data-open="${e(key)}" aria-pressed="${rowKey(current)===key}">
+        data-view-key="${e(key)}" data-open="${e(key)}" aria-pressed="${rowKey(current)===key}">
         <span class="lea-lane-dot ${stage.tone||""}" aria-hidden="true"></span>
         <span class="lea-chain-row-copy"><strong>${e(row.unavailable_reason?"来源已不可读取":row.title||"未命名记录")}</strong>
         <small>记录归属 · ${e(row._source?.label||"")} · ${e(KIND_LABEL[row.kind]||"成长记录")} · v${e(row.revision)} · ${e(row.source_count??0)} 条依据 · ${e(when(row.updated_at))}</small></span>
@@ -742,7 +862,8 @@ window.CompanionLearningPage = (() => {
       <p class="lea-reviews-sum"><strong>${data.reviews.length}</strong> 条待审阅</p>
       ${data.reviews.map((row, index) => {
         const blind = !!row.unavailable_reason;
-        return `<article class="lea-review${blind ? " is-blind" : ""}" style="--i:${index}">
+        return `<article class="lea-review${blind ? " is-blind" : ""}" style="--i:${index}"
+          data-view-key="${e(row._rowKey||row.review_id)}">
           <header>
             <span class="lea-review-target">${e(row.growth_title || "目标已不可读取")}</span>
             <span class="lea-review-time">${e(row._source?.label||"")}</span>
@@ -791,11 +912,14 @@ window.CompanionLearningPage = (() => {
   }
   function render() {
     if (!root || !data) return;
+    const view = snapshotView();
     if(data.layout==="chain"){
       root.innerHTML=`<div class="lea-chain-workspace">${gateView()}${!data.ready?emptyMarkup():chainWorkView()}</div>`;
+      restoreView(view);
       return;
     }
     root.innerHTML = `<div class="lea-app">${railMarkup()}<div class="lea-main">${headMarkup()}${noticeMarkup()}${gateView()}${body()}</div></div>`;
+    restoreView(view);
   }
 
   /* ---- 交互 ------------------------------------------------------------ */
@@ -817,8 +941,8 @@ window.CompanionLearningPage = (() => {
     const action = event.target.closest("[data-action]")?.dataset.action;
     if (action === "refresh") {
       data.notice = "";
-    if (data.view === "reviews" || data.view === "track") loadReviews();
-      load(); return;
+      if (data.view === "reviews" || data.view === "track") loadReviews({mode:"refresh"});
+      load({mode:"refresh"}); return;
     }
     if (action === "dismiss") { data.notice = ""; render(); return; }
     if (action === "cancel-revision") {data.form=null;render();return;}
@@ -846,8 +970,12 @@ window.CompanionLearningPage = (() => {
         return;
       }
       if (name === "withdraw" || name === "retire") {
-        /* 两个不可逆动作走一次确认：它们把记录移出活跃列表。 */
-        data.notice = ""; data.confirm = {id, name}; render(); return;
+        /* 两个不可逆动作走一次确认：它们把记录移出活跃列表。
+           确认条在链式版式里挂在详情下方，与点下去的那颗按钮不在同一个容器，
+           所以渲染完把焦点交给「确认」，键盘用户不用重新找。 */
+        data.notice = ""; data.confirm = {id, name}; render();
+        root?.querySelector?.('[data-confirm="yes"]')?.focus?.({preventScroll:true});
+        return;
       }
       act(id, name); return;
     }
@@ -863,11 +991,13 @@ window.CompanionLearningPage = (() => {
       data.detailId = card.dataset.id; data.detail = item(card.dataset.id); data.form = null; render();
     }
   }
-  /* 确认条渲染在轨道里、被点卡片所属的那一段下方——不居中弹窗。
-     弹窗会把轨道整个盖住，用户看不到自己正要移走的那张卡。
-     用 state 里的一条标记驱动，而不是 document.createElement：
+  /* 确认条用 state 里的一条标记驱动，而不是 document.createElement：
      这一页其余部分全是字符串模板，混进一个 DOM 构造会让测试夹具
-     必须多实现一套 API，而多出来的那套没有别的东西在验证。 */
+     必须多实现一套 API，而多出来的那套没有别的东西在验证。
+     渲染位置跟着版式走，但三个入口都用同一个 confirmMarkup：
+     轨道视图挂在被点卡片所属那一段下方（trackView），
+     详情视图与链式版式挂在详情动作区下方（detailView）——
+     后两者此前漏了，于是链式版式点「归档 / 撤回」只置状态、不发请求。 */
   function confirmMarkup() {
     const pending = data.confirm;
     if (!pending) return "";
