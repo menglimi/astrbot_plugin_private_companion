@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 
 from .types import MAX_REFERENCE_IMAGES, NativeImageError, fingerprint
 
-BACKENDS = {"auto", "online_api", "sd_webui", "comfyui"}
+BACKENDS = {"auto", "online_api", "sd_webui", "comfyui", "nai"}
 # Keep the complete V1 provider vocabulary in the persisted contract.  A saved
 # provider can be shown and edited even when its protocol adapter is not loaded;
 # routing reports it as unsupported instead of silently changing it to OpenAI.
@@ -35,7 +35,7 @@ GPT_IMAGE_MODEL_PREFIXES = ("gpt-image-", "chatgpt-image-")
 GPT_IMAGE_QUALITIES = frozenset({"auto", "low", "medium", "high"})
 DALL_E_MODEL_PREFIXES = ("dall-e", "dalle")
 IMAGE_OPERATIONS = ("generate", "edit")
-LOCAL_ROUTES = {"comfyui", "sd_webui"}
+LOCAL_ROUTES = {"comfyui", "sd_webui", "nai"}
 # One image operation is bounded by the same budget everywhere: the tool task
 # deadline, the HTTP call and the polling wait.  300s is the historical total
 # budget and 1800s is the documented maximum an endpoint may configure.
@@ -162,6 +162,8 @@ def _default_operation_routes(value):
         routes.append("comfyui")
     if selected in {"auto", "sd_webui"}:
         routes.append("sd_webui")
+    if selected == "nai":
+        routes.append("nai")
     return {operation: list(routes) for operation in IMAGE_OPERATIONS}
 
 
@@ -201,7 +203,7 @@ def _validate_operation_routes(value, endpoints):
     result = {}
     for operation in IMAGE_OPERATIONS:
         routes = raw.get(operation)
-        if not isinstance(routes, list) or len(routes) > 26:
+        if not isinstance(routes, list) or len(routes) > 24 + len(LOCAL_ROUTES):
             raise NativeImageError("invalid_configuration")
         seen = set()
         normalized = []
@@ -275,7 +277,9 @@ def public_configuration(plugin):
     network = result.setdefault("network", {})
     network["download_proxy_set"] = bool(network.pop("download_proxy", ""))
     provider = getattr(plugin, "_native_v2_provider", None)
-    return {"revision": fingerprint(_revision_source(source)), "settings": result,
+    from .nai_backend import NAIImageBackend
+    nai = NAIImageBackend(getattr(plugin, "context", None), Path(plugin.data_dir) / "nai").status()
+    return {"revision": fingerprint(_revision_source(source)), "settings": result, "nai": nai,
             "live": bool(provider and not provider._closed),
             "limits": {"max_endpoints": 24, "timeout_min": 1, "timeout_max": MAX_TASK_TIMEOUT_SECONDS},
             "supported_backends": sorted(BACKENDS), "supported_platforms": sorted(PLATFORMS)}
@@ -472,7 +476,8 @@ def save_configuration(plugin, revision, changes):
     if provider and provider.owner._tasks:
         raise NativeImageError("configuration_busy")
     from .output_routing import OutputRoutingBackend
-    backend = OutputRoutingBackend(candidate, Path(plugin.data_dir) / "native_v2" / "transport")
+    backend = OutputRoutingBackend(candidate, Path(plugin.data_dir) / "native_v2" / "transport",
+                                   context=getattr(plugin, "context", None))
     if candidate["enabled"] and not backend.operations:
         raise NativeImageError("native_endpoint_unconfigured")
     original = copy.deepcopy(plugin.config.get("native_v2", {}))

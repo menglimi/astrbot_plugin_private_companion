@@ -551,6 +551,9 @@ class AstrBotSetupFlowTests(unittest.IsolatedAsyncioTestCase):
         result = await self.call("confirm_binding")
         self.assertEqual(result["status"], "ok", result)
 
+    def _binding(self):
+        return self.controller.binding_state()
+
     async def enter_model_step(self):
         self.attach_config_writer()
         await self.bind_core_window()
@@ -706,6 +709,13 @@ class AstrBotSetupFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved["data"]["task"]["configuration_layer"], "role")
 
     async def test_reset_binding_releases_the_confirmed_window_and_keeps_the_mapping(self):
+        """🔴 `companion_unbind` 让操作员「先在开始使用里重置首次设置」，而此前没有任何实现。
+
+        这条判据守三件事：
+          ① 已确认的窗口能被页面重置回 pending（否则命令、页面、文档互相推责）；
+          ② 重置**不动**已保存的账号/人格映射（换窗口不等于重配全部）；
+          ③ 重置后能**用当前映射**重新确认 —— 这才让人设改名之类的漂移在页面上可修。
+        """
         await self.controller.terminate()
         self.config["staging"]["enabled"] = False
         self.config["multi_host"] = {"enabled": True, "installation_id": "setup-reset"}
@@ -717,19 +727,19 @@ class AstrBotSetupFlowTests(unittest.IsolatedAsyncioTestCase):
         self.attach_config_writer()
 
         await self.bind_core_window()
-        self.assertTrue(self.controller.binding_state()["confirmed"])
+        self.assertTrue(self._binding()["confirmed"])
         personas_before = deepcopy(self.config["multi_host"]["personas"])
         targets_before = deepcopy(self.config["multi_host"]["targets"])
 
+        # 反向判据：不带确认字段的请求必须被拒（这不是一次随手误点的操作）。
         rejected = await self.call("reset_binding", {})
         self.assertEqual(rejected["status"], "error", rejected)
-        self.assertTrue(self.controller.binding_state()["confirmed"],
-                        "被拒的请求不该改动状态")
+        self.assertTrue(self._binding()["confirmed"], "被拒的请求不该改动状态")
 
         reset = await self.call("reset_binding", {"confirm": True})
         self.assertEqual(reset["status"], "ok", reset)
         self.assertTrue(reset["data"]["reset"])
-        binding = self.controller.binding_state()
+        binding = self._binding()
         self.assertFalse(binding["confirmed"])
         self.assertTrue(binding["pending"])
         self.assertEqual(self.config["multi_host"]["personas"], personas_before,
@@ -737,12 +747,14 @@ class AstrBotSetupFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.config["multi_host"]["targets"], targets_before,
                          "重置绑定不能顺手删掉窗口目标")
 
+        # 重置后必须能重新确认，且确认结果回到已绑定。
         again = await self.call("confirm_binding")
         self.assertEqual(again["status"], "ok", again)
-        self.assertTrue(self.controller.binding_state()["confirmed"])
-        self.assertFalse(self.controller.binding_state()["pending"])
+        self.assertTrue(self._binding()["confirmed"])
+        self.assertFalse(self._binding()["pending"])
 
     async def test_reset_binding_reports_a_missing_window_instead_of_pretending(self):
+        """没有已确认窗口时必须如实报错，不能静默返回成功（假成功比报错更贵）。"""
         missing = await self.call("reset_binding", {"confirm": True})
         self.assertEqual(missing["status"], "error", missing)
         self.assertEqual(missing["data"]["code"], "setup_binding_missing")

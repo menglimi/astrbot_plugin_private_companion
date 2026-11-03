@@ -18,6 +18,8 @@ function harness(sessionStore, outcomes, options = {}) {
   };
   const dialog = {open: true, querySelector: selector => fieldControl(selector), querySelectorAll: () => []};
   const noticeNode = {textContent: "", dataset: {}};
+  /* 让 harness 能注册事件监听：判据要真的派发一次「外部已保存」事件。 */
+  const listeners = {};
   const document = {
     querySelector(selector) {
       if (selector === "#roleProfileDraftDialog") return dialog;
@@ -30,8 +32,13 @@ function harness(sessionStore, outcomes, options = {}) {
       }
       return [];
     },
-    addEventListener() {},
-    dispatchEvent(event) { events.push(event.type); },
+    addEventListener(type, handler) {
+      (listeners[type] = listeners[type] || []).push(handler);
+    },
+    dispatchEvent(event) {
+      events.push(event.type);
+      (listeners[event.type] || []).forEach(handler => handler(event));
+    },
   };
   const window = {
     CompanionProduct: {
@@ -62,7 +69,7 @@ function harness(sessionStore, outcomes, options = {}) {
   };
   if (options.localStorage) context.localStorage = options.localStorage;
   vm.runInNewContext(testSource, context);
-  return {module: window.CompanionRoleProfileDraft, calls, notices, events, noticeNode};
+  return {module: window.CompanionRoleProfileDraft, calls, notices, events, noticeNode, document};
 }
 
 test("an unknown role-profile save survives reload and confirms by replaying the same request", async () => {
@@ -187,4 +194,49 @@ test("role-profile apply never gates submission on pending persistence", () => {
   assert.doesNotMatch(source, /if \(!storePendingApply\(pending\)\) \{\s*state\.pendingApply = null/);
   assert.match(source, /pendingApplyMemory/);
   assert.match(source, /writeHistoryPendingApply/);
+});
+
+/* 🔴 情绪 2026-11-02 报障：「自我」界面已经保存了，但切换到别的界面就提示
+ * 「还有未保存的改动」。
+ *
+ * 根因：`isDirty()` 比的是 `fieldValues` 与 `draft.fields`，而草稿一旦生成就
+ * 一直留在 state 里、**从不随外部保存更新**。用户在「基础身份」保存之后，
+ * 草稿这边仍拿生成时的旧基线比对 ⇒ 恒为脏 ⇒ 拦下所有换页。
+ *
+ * 这条判据必须验「保存后真的不再算脏」。只验 `isDirty` 存在是抓不住的 ——
+ * 它在 bug 状态下也存在，只是永远返回 true。 */
+test("an external profile save clears the stale draft so leaving stops warning", () => {
+  const h = harness(new Map(), []);
+  const state = h.module.state;
+
+  /* 造出「草稿已生成、用户改过某个字段」的状态。 */
+  state.target = "role_profile";
+  state.draft = {fields: {name: "旧名字", birthday: "2000-11-26"}};
+  state.fieldValues = {name: "新名字"};
+  state.selectedFields = new Set(["name"]);
+
+  assert.equal(h.module.isDirty(), true, "改过且未保存时应当是脏的（前置条件）");
+  assert.deepEqual(h.module.changedFields(), ["name"]);
+
+  /* 主编辑页保存成功 —— 工作台会派发这个事件。 */
+  h.document.dispatchEvent({type: "companion:role-profile-updated"});
+
+  assert.equal(h.module.isDirty(), false,
+    "外部保存后草稿必须不再算脏，否则每次换页都会误报未保存");
+  assert.deepEqual(h.module.changedFields(), []);
+});
+
+/* 反向保护：不相关的事件不能顺手把草稿清掉，否则用户真的会丢掉未保存的编辑。 */
+test("an unrelated event must not discard the draft", () => {
+  const h = harness(new Map(), []);
+  const state = h.module.state;
+  state.target = "role_profile";
+  state.draft = {fields: {name: "旧名字"}};
+  state.fieldValues = {name: "新名字"};
+
+  h.document.dispatchEvent({type: "companion:relationship-profile-updated"});
+  assert.equal(h.module.isDirty(), true, "关系资料的事件不能清掉角色草稿");
+
+  h.document.dispatchEvent({type: "companion:something-else"});
+  assert.equal(h.module.isDirty(), true, "无关事件不能影响草稿");
 });

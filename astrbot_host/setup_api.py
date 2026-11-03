@@ -522,7 +522,9 @@ class SetupWebAPI:
         Only the *confirmation* is withdrawn. The configured mapping, the
         storage installation and every stored memory stay exactly as they are;
         after this call ``binding_state`` reports ``pending`` again and the
-        normal confirm flow re-pins the *currently* reviewed mapping.
+        normal confirm flow re-pins the *currently* reviewed mapping. That is
+        what makes a renamed persona or a moved window fixable from the page
+        instead of by editing ``binding.json``.
         """
         try:
             self._admin()

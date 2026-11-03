@@ -6,7 +6,7 @@ import io
 import json
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from PIL import Image, ImageChops
 
@@ -156,6 +156,7 @@ class ImageInvocation:
     parameters: Mapping[str, Any] = field(default_factory=dict)
     reference_ids: tuple[str, ...] = ()
     envelope: Mapping[str, Any] = field(default_factory=dict)
+    model_call: Callable | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self):
         for name in ("scope_key", "request_id", "invocation_id", "origin_key", "prompt"):

@@ -71,7 +71,7 @@ class NativeImageProvider:
             properties = {"prompt": {"type": "string"}, "negative_prompt": {"type": "string"}}
             required = ["prompt"]
             if operation == "edit":
-                properties["artifact_id"] = {"type": "string", "description": "可选：编辑本身份与当前会话范围内 Image 已保存的原图；留空时使用当前轮私聊或群聊消息中的图片。不能填写路径。"}
+                properties["artifact_id"] = {"type": "string", "description": "仅编辑本身份与当前会话范围内 Image 已保存的原图时填写非空产物 ID；使用本轮附图或 reference_ids 时省略此字段，不能填写路径。"}
                 properties["reference_ids"] = {"type": "array", "items": {"type": "string"},
                     "description": "从当前角色的 V2 参考目录中选择素材 ID；群聊使用还需打开角色的群聊参考图开关。"}
                 properties["reference_indices"] = {"type": "array", "items": {"type": "integer"},
@@ -137,7 +137,7 @@ class NativeImageProvider:
         require_text(args["prompt"], "prompt")
         if not isinstance(args.get("negative_prompt", ""), str):
             raise NativeImageError("invalid_negative_prompt")
-        if operation == "edit" and "artifact_id" in args:
+        if operation == "edit" and "artifact_id" in args and args["artifact_id"] != "":
             require_text(args["artifact_id"], "artifact_id")
             if any(name in args for name in ("reference_roles", "reference_ids", "reference_indices")):
                 raise NativeImageError("invalid_image_arguments")
@@ -234,16 +234,19 @@ class NativeImageProvider:
             raise NativeImageError("native_references_invalid")
         return tuple(sorted(result, key=lambda item: item["position"]))
 
-    async def execute(self, request: dict, *, before_dispatch, host_references=(), fetch_reference=None) -> dict:
+    async def execute(self, request: dict, *, before_dispatch, host_references=(), fetch_reference=None,
+                      model_call=None) -> dict:
         task = asyncio.current_task()
         self._tasks.add(task)
         try:
             return await self._execute(request, before_dispatch=before_dispatch,
-                                       host_references=host_references, fetch_reference=fetch_reference)
+                                       host_references=host_references, fetch_reference=fetch_reference,
+                                       model_call=model_call)
         finally:
             self._tasks.discard(task)
 
-    async def _execute(self, request: dict, *, before_dispatch, host_references=(), fetch_reference=None) -> dict:
+    async def _execute(self, request: dict, *, before_dispatch, host_references=(), fetch_reference=None,
+                       model_call=None) -> dict:
         value = self._request(request)
         # Snapshot the live budget once, before any I/O.  A dashboard save while
         # this task is running changes the next task only; it must never extend
@@ -265,7 +268,7 @@ class NativeImageProvider:
         if any(identifier not in saved_by_id for identifier in requested_ids):
             raise NativeImageError("native_reference_id_unavailable")
         saved = tuple(saved_by_id[identifier] for identifier in requested_ids)
-        if operation == "edit" and "artifact_id" in arguments:
+        if operation == "edit" and arguments.get("artifact_id", "") != "":
             artifact_id = arguments["artifact_id"]
             metadata, _ = self.owner.store.artifact(scope, artifact_id)
             original_operation = self.owner.store.get(scope, metadata["operation_id"])
@@ -328,10 +331,17 @@ class NativeImageProvider:
                     or not isinstance(image_prompt["negative"], str)):
                 raise NativeImageError("invalid_image_prompt_preferences")
             envelope["image_prompt"] = image_prompt
+        nai_prompt = value.get("nai_prompt")
+        if nai_prompt is not None:
+            if (not isinstance(nai_prompt, dict) or set(nai_prompt) != {"positive", "negative"}
+                    or any(not isinstance(nai_prompt[key], str) for key in ("positive", "negative"))):
+                raise NativeImageError("invalid_image_prompt_preferences")
+            envelope["nai_prompt"] = nai_prompt
         invocation = ImageInvocation(scope, value["invocation_id"], value["invocation_id"], value["origin_key"],
                                      operation, arguments["prompt"], negative_prompt=arguments.get("negative_prompt", ""),
                                      reference_ids=(tuple(ref.reference_id for ref in refs)
-                                                    or tuple(offer.reference_id for offer in reference_offers)), envelope=envelope)
+                                                    or tuple(offer.reference_id for offer in reference_offers)),
+                                     envelope=envelope, model_call=model_call)
         operation = await self.owner.execute(invocation, references=refs, reference_offers=reference_offers,
                                              resolve_references=resolver, before_dispatch=before_dispatch)
         if operation["state"] == "pending":

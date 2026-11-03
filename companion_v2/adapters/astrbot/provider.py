@@ -384,6 +384,22 @@ def _refreshable_credentials(drifted):
     return bool(drifted) and set(drifted).issubset(_CREDENTIAL_KEYS)
 
 
+def provider_class_matches(provider, expected_types):
+    """宿主刷新注册表时会重新导入适配器模块，类对象随之更换。
+
+    模块与限定名都相同的类仍视为同一个宿主类；一旦换到别的类（例如同一
+    ID 下替换了 Provider 类型）则拒绝。
+    """
+    if provider is None:
+        return False
+    if isinstance(provider, expected_types):
+        return True
+    actual = type(provider)
+    return any(actual.__module__ == expected.__module__
+               and actual.__qualname__ == expected.__qualname__
+               for expected in expected_types)
+
+
 #: 主回复任务的模型能力要求：只需要文本。
 #:
 #: “能不能用工具”是**每一轮**的运行时决定（``model_gateway/service.py`` 在真的要

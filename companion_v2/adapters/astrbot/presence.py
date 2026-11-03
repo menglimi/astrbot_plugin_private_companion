@@ -41,9 +41,10 @@ class OneBotPresencePort:
                 return {"state": "accepted"}
             # NapCat's OneBot implementation may acknowledge status actions with
             # a plain success string instead of an empty/dict payload.
-            if isinstance(value, str) and value.strip().lower() in {
-                    "set status success", "set online status success",
-                    "set input status success", "success", "ok"}:
+            status_ack = {"set_diy_online_status": "set status success",
+                          "set_online_status": "set online status success",
+                          "set_input_status": "set input status success"}
+            if isinstance(value, str) and value.strip().lower() == status_ack.get(action):
                 return {"state": "accepted"}
             return {"state": "failed", "code": "presence_action_rejected"}
         except Exception:

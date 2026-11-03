@@ -33,10 +33,10 @@ class CoreTargetPersonaTests(unittest.TestCase):
         controller = self.controller([persona("liloth", role="new-role")])
         self.assertIs(controller._core_target(self.binding("莉莉丝")), controller.settings.targets[0])
 
-    def test_default_placeholder_does_not_make_the_renamed_persona_ambiguous(self):
+    def test_default_placeholder_keeps_the_renamed_persona_ambiguous(self):
         controller = self.controller([persona("[%None]", role="default"),
                                       persona("liloth", role="new-role")])
-        self.assertIs(controller._core_target(self.binding("莉莉丝")), controller.settings.targets[0])
+        self.assertIsNone(controller._core_target(self.binding("莉莉丝")))
 
     def test_multiple_personas_stay_rejected_instead_of_guessed(self):
         controller = self.controller([persona("first", role="one"),

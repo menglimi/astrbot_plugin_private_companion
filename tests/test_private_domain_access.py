@@ -15,6 +15,7 @@ NOW = datetime(2026, 11, 3, tzinfo=timezone.utc)
 class _Tasks:
     def __init__(self):
         self.context_checks = []
+        self.binding_checks = 0
         self.identity_checks = []
         self.operator_checks = []
         self.policy = SimpleNamespace(scope_access=self._scope_access)
@@ -24,6 +25,10 @@ class _Tasks:
 
     def check_context_access(self, context, *, action, observed_at):
         self.context_checks.append(action)
+        return Outcome.success(True)
+
+    def check_context_binding(self, context, *, observed_at):
+        self.binding_checks += 1
         return Outcome.success(True)
 
     def _scope_access(self, operator, *, scope, action, observed_at, core_only):
@@ -56,6 +61,7 @@ class PrivateDomainManagerTests(unittest.TestCase):
         tasks = _Tasks()
         self._access(tasks).check(_context(), "calendar.read", operator=SimpleNamespace(subject="dashboard"))
         self.assertEqual(tasks.context_checks, [])
+        self.assertEqual(tasks.binding_checks, 1)
         self.assertEqual(tasks.identity_checks, [])
         self.assertEqual(tasks.operator_checks, [("role.life.manage", True)])
 

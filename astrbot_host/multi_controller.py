@@ -271,13 +271,8 @@ class AstrBotMultiController:
                 by_role = [persona for persona in settings.personas
                            if persona.bot_id == match.bot_id
                            and normalize_persona_id(persona.role_id) == wanted]
-                candidates = by_role or [persona for persona in settings.personas
-                                         if persona.bot_id == match.bot_id]
-                if len(candidates) != 1:
-                    explicit = [persona for persona in candidates
-                                if normalize_persona_id(persona.persona_id)]
-                    if len(explicit) == 1:
-                        candidates = explicit
+                candidates = by_role if len(by_role) == 1 else [
+                    persona for persona in settings.personas if persona.bot_id == match.bot_id]
                 if len(candidates) != 1:
                     return None
                 logger.warning(
