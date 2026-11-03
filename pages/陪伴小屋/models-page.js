@@ -123,12 +123,45 @@ window.CompanionModelsPage = (() => {
   const available = (s, task) => s.status.providers.filter(p => task.capabilities.every(cap => p.capabilities.includes(cap)));
   const effective = (task, draft, name) => draft.inherited[name] ? task.fields[name].inherited_value : draft.values[name];
   const providerFor = (task, draft) => coreReply(task) ? "" : effective(task, draft, "provider");
-  const limitFor = (s, task, draft) => Math.min(MAX_MODEL_OUTPUT_TOKENS, ...["provider", "fallback"]
-    .map(name => effective(task, draft, name)).filter(Boolean)
+  /* The routing ceiling of one draft: the strictest output capability among the
+     providers this task can be sent to. Replacement-rule targets count too,
+     because routing may pick one of them for the same task. */
+  const limitFor = (s, task, draft) => Math.min(MAX_MODEL_OUTPUT_TOKENS, ...[...new Set([
+      effective(task, draft, "provider"), effective(task, draft, "fallback"),
+      ...ruleOf(s, task.kind).map(rule => String(rule.provider_id || ""))])]
+    .filter(Boolean)
     .map(id => s.status.providers.find(provider => provider.id === id)?.max_output_tokens || MAX_MODEL_OUTPUT_TOKENS));
-  function fitLimit(s, task, draft) { const limit = limitFor(s, task, draft);
-    if (effective(task, draft, "max_output_tokens") <= limit) return false;
-    draft.values.max_output_tokens = limit; draft.inherited.max_output_tokens = false; return true; }
+  const limitExcess = (s, task, draft) => { const limit = limitFor(s, task, draft);
+    const value = effective(task, draft, "max_output_tokens");
+    return value > limit ? {value, limit} : null; };
+  /* A registry default is clamped by routing at send time, so a task may keep
+     following it even when the ceiling is lower. */
+  const limitIsDefault = task => (task.fields.max_output_tokens.inherited_source || "default") === "default";
+  /* Only a value the user saved explicitly is clamped to the ceiling. An
+     inherited value keeps following its source: pinning it would silently turn
+     "follow the default" into a saved number, which is exactly what the larger
+     registry defaults must not cause. */
+  function fitLimit(s, task, draft) { const excess = limitExcess(s, task, draft);
+    if (!excess) return null;
+    if (draft.inherited.max_output_tokens) return {basis: "inherited", ...excess};
+    draft.values.max_output_tokens = excess.limit; draft.inherited.max_output_tokens = false;
+    return {basis: "adjusted", ...excess}; }
+  function limitNotice(task, draft, fit) { const label = taskName(task.kind).label;
+    if (fit.basis === "adjusted") return `${label} 的输出上限已调整为 ${fit.limit}，请核对后保存。`;
+    return limitIsDefault(task)
+      ? `${label}：继承的默认输出上限 ${fit.value} 高于所选模型提供方的 ${fit.limit}，发送时会按 ${fit.limit} 生效。`
+      : `${label}：继承的输出上限 ${fit.value} 超过所选模型提供方的 ${fit.limit}；跟随上级不会被改写，请显式设置上限或改回上级。`; }
+  function limitHint(s, task, draft) { const excess = limitExcess(s, task, draft); if (!excess) return "";
+    if (!draft.inherited.max_output_tokens)
+      return `输出上限 ${excess.value} 超过所选模型提供方的 ${excess.limit}，保存会被拒绝。`;
+    return limitIsDefault(task)
+      ? `继承的默认输出上限 ${excess.value} 高于所选模型提供方的 ${excess.limit}，发送时会按 ${excess.limit} 生效。`
+      : `继承的输出上限 ${excess.value} 超过所选模型提供方的 ${excess.limit}，发出时会被拒绝；请显式设置上限或改回上级。`; }
+  function limitProblem(s, task, draft) { const excess = limitExcess(s, task, draft); if (!excess) return "";
+    if (!draft.inherited.max_output_tokens)
+      return `输出上限 ${excess.value} 超过所选模型提供方的 ${excess.limit}，请调低后再保存`;
+    return limitIsDefault(task) ? ""
+      : `继承的输出上限 ${excess.value} 超过所选模型提供方的 ${excess.limit}，请显式设置上限或改回上级`; }
   const storageKey = kind => key + ":" + kind;
   const shown = (s, task) => { const info = taskName(task.kind), custom = taskFields(task).some(name => !s.drafts.get(task.kind).inherited[name]);
     return (!s.providerFilter || s.providerFilter === providerFor(task, s.drafts.get(task.kind)))
@@ -247,7 +280,7 @@ window.CompanionModelsPage = (() => {
     if (s.expanded && !kinds.has(s.expanded)) s.expanded = null; }
   const projected = (task, patch, name) => Object.hasOwn(patch.changes, name) ? patch.changes[name]
     : (patch.reset.includes(name) ? task.fields[name].inherited_value : task.fields[name].value);
-  function validatePatch(task, p) { if (!Object.keys(p.changes).length && !p.reset.length) return false;
+  function validatePatch(task, draft, p) { if (!Object.keys(p.changes).length && !p.reset.length) return false;
     if (Object.hasOwn(p.changes, "prompt") && (typeof p.changes.prompt !== "string" || p.changes.prompt.length > 8000)) return false;
     if (Object.hasOwn(p.changes, "max_output_tokens") && (!Number.isInteger(p.changes.max_output_tokens) || p.changes.max_output_tokens < 1 || p.changes.max_output_tokens > MAX_MODEL_OUTPUT_TOKENS)) return false;
     if (Object.hasOwn(p.changes, "timeout_seconds") && (!Number.isInteger(p.changes.timeout_seconds) || p.changes.timeout_seconds < 1 || p.changes.timeout_seconds > 600)) return false;
@@ -260,8 +293,15 @@ window.CompanionModelsPage = (() => {
     const picked = [primary, ...(fallback ? [fallback] : [])], providers = picked.map(id => state.status.providers.find(provider => provider.id === id));
     const fallbackExplicit = Object.hasOwn(p.changes, "fallback")
       || (!p.reset.includes("fallback") && task.fields.fallback.explicit);
+    /* A registry default is clamped by routing at send time, so a task may keep
+       following it even when the selected provider is smaller: the save only
+       carries the provider, and the sent envelope fits. */
+    const limitDefault = !Object.hasOwn(p.changes, "max_output_tokens")
+      && (p.reset.includes("max_output_tokens") || !task.fields.max_output_tokens.explicit)
+      && limitIsDefault(task);
     return (!fallbackExplicit || !fallback || fallback !== primary)
-      && providers.every(provider => provider && task.capabilities.every(cap => provider.capabilities.includes(cap)) && limit <= provider.max_output_tokens); }
+      && providers.every(provider => provider && task.capabilities.every(cap => provider.capabilities.includes(cap)))
+      && (limitDefault || limit <= limitFor(state, task, draft)); }
   /* ---------- functional markup (design alignment: MODEL_CONFIG_UI_UX_DESIGN_20260926) ---------- */
   /* Stable per-provider hue for the colored routing pills and map dots. */
   const hue = id => { let h = 0; for (const ch of String(id || "")) h = (h * 31 + ch.charCodeAt(0)) % 360; return h; };
@@ -365,7 +405,7 @@ window.CompanionModelsPage = (() => {
     if (coreReply(task)) return coreReplyCard(s, task);
     const fieldLocked = locked || !!draft.pending;
     const picked = s.selection.includes(task.kind), open = s.expanded === task.kind, waiting = dirty(task, draft) && !draft?.pending;
-    const limit = limitFor(s, task, draft);
+    const limit = limitFor(s, task, draft), limitMessage = limitHint(s, task, draft);
     const main = providerFor(task, draft), fallback = effective(task, draft, "fallback");
     const own = fields.some(name => !draft.inherited[name]);
     const caps = available(s, task);
@@ -392,6 +432,7 @@ window.CompanionModelsPage = (() => {
           <label class="model-fd"><span class="model-cap">单次输出上限</span>
             <span class="model-unit"><input type="number" min="1" max="${limit}" step="1" data-model-field="max_output_tokens" data-model-kind="${esc(task.kind)}" value="${esc(effective(task, draft, "max_output_tokens"))}" ${fieldLocked ? "disabled" : ""}><i>令牌</i></span></label>
         </div>
+        ${limitMessage ? `<div class="model-alert" role="alert">${esc(limitMessage)}</div>` : ""}
         <label class="model-fd dash"><span class="model-cap">任务附加提示词 <em>最多 8000 字</em></span>
           <textarea rows="3" maxlength="8000" data-model-field="prompt" data-model-kind="${esc(task.kind)}" ${fieldLocked ? "disabled" : ""}>${esc(draft.inherited.prompt ? task.fields.prompt.inherited_value : draft.values.prompt)}</textarea></label>
         <div class="model-inh"><span class="lab">未单独设置时跟随上级</span>
@@ -499,7 +540,7 @@ window.CompanionModelsPage = (() => {
       let payload = draft.pending;
       if (!payload) {
         const patch = patchFor(task, draft);
-        if (!validatePatch(task, patch)) { failed.push(`${taskName(kind).label}：字段校验未通过`); continue; }
+        if (!validatePatch(task, draft, patch)) { failed.push(`${taskName(kind).label}：${limitProblem(s, task, draft) || "字段校验未通过"}`); continue; }
         payload = {kind, layer: draft.layer, operation_key: crypto.randomUUID(), edit_token: draft.token, ...patch};
         draft.pending = payload; storePending(kind, payload); render();
       }
@@ -579,7 +620,7 @@ window.CompanionModelsPage = (() => {
       ? (Number.isFinite(target.valueAsNumber) ? target.valueAsNumber : draft.values[name]) : target.value;
     draft.inherited[name] = false;
     const adjusted = (name === "provider" || name === "fallback") && fitLimit(s, task, draft);
-    if (adjusted) { s.notice = `${taskName(kind).label} 的输出上限已调整为 ${draft.values.max_output_tokens}，请核对后保存。`; s.bad = false; }
+    if (adjusted) { s.notice = limitNotice(task, draft, adjusted); s.bad = false; }
     draft.touched = true;
     if (event.type === "change") render(); else syncInput(kind); }
   function fnClick(event) { const s = state; if (!s) return;
@@ -2178,7 +2219,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
       if (!task || !draft || draft.pending || s.busy || s.loading || s.denied) return;
       draft.values.fallback = t.value; draft.inherited.fallback = false;
       const adjusted = fitLimit(s, task, draft); draft.touched = true; s.bad = false;
-      s.notice = adjusted ? `${taskName(task.kind).label} 的输出上限已调整为 ${draft.values.max_output_tokens}。`
+      s.notice = adjusted ? limitNotice(task, draft, adjusted)
         : `${taskName(task.kind).label} 的拒答备用模型已改动，保存本任务后生效。`;
       render(); return; }
     if (t.matches("[data-peak-start]") || t.matches("[data-peak-end]")) { s.peak[t.matches("[data-peak-start]") ? "start" : "end"] = t.value;

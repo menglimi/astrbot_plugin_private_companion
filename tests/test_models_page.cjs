@@ -410,12 +410,14 @@ test('provider search narrows tasks and a routed task opens its editor', async (
   assert.doesNotMatch(node.innerHTML, /\bProvider\b|MODEL ROUTING/);
 });
 
-test('a lower-capacity provider adjusts the draft output limit before saving', async () => {
+test('a lower-capacity provider adjusts an explicit draft output limit before saving', async () => {
   const {page, requests, root} = harness();
   const node = root();
   page.mount(node);
   const constrained = status();
   constrained.providers[1].max_output_tokens = 2048;
+  constrained.tasks[1].fields.max_output_tokens = {value: 8192, inherited_value: 8192,
+    source: 'window', inherited_source: 'installation', explicit: true};
   requests[0].resolve(constrained);
   await flush();
   node.click('[data-model-sub]', {modelSub: 'cfg'});
@@ -429,6 +431,75 @@ test('a lower-capacity provider adjusts the draft output limit before saving', a
   post.resolve({replayed: false, task: saved});
   await flush();
   assert.match(node.innerHTML, /已保存 1 项/);
+});
+
+/* 默认值提高后，选中低上限 Provider 是常事：继承的默认值必须继续跟随，
+   只提示「发送时按上限生效」，绝不能被写成显式值钉死。 */
+test('a lower-capacity provider never pins an inherited default output limit', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  page.mount(node);
+  const data = status();
+  data.providers[1].max_output_tokens = 2048;
+  data.tasks[1].fields.max_output_tokens = {value: 8192, inherited_value: 8192,
+    source: 'default', inherited_source: 'default', explicit: false};
+  requests[0].resolve(data);
+  await flush();
+  node.click('[data-model-sub]', {modelSub: 'cfg'});
+  node.change('[data-model-field]', {modelField: 'provider', modelKind: 'memory.reflect', value: 'secondary'});
+  assert.doesNotMatch(node.innerHTML, /输出上限已调整为/);
+  assert.match(node.innerHTML, /继承的默认输出上限 8192 高于所选模型提供方的 2048，发送时会按 2048 生效/);
+  const card = node.innerHTML.split('data-fncard="memory.reflect"')[1].split('</article>')[0];
+  assert.match(card, /data-model-inherit="max_output_tokens"[^>]*checked/);
+  assert.match(card, /data-model-field="max_output_tokens"[^>]*value="8192"/);
+  assert.doesNotMatch(card, /value="2048"/);
+  node.click('[data-model-action]', {modelAction: 'save-one', modelKind: 'memory.reflect'});
+  const post = requests.find(request => request.method === 'POST');
+  assert.deepEqual({...post.values.changes}, {provider: 'secondary'});
+  assert.deepEqual([...post.values.reset], []);
+  post.resolve({replayed: false, task: task('memory.reflect', 'secondary', ['text'], 'background')});
+  await flush();
+  assert.match(node.innerHTML, /已保存 1 项/);
+});
+
+/* 值来自上级显式配置（安装级保存、页面在角色层编辑）时，路由会按显式值拒绝；
+   页面只提示，不偷偷改成显式。 */
+test('an output limit saved upstream warns instead of being rewritten', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  page.mount(node);
+  const data = status();
+  data.providers[1].max_output_tokens = 2048;
+  data.tasks[1].fields.max_output_tokens = {value: 8192, inherited_value: 8192,
+    source: 'installation', inherited_source: 'installation', explicit: false};
+  requests[0].resolve(data);
+  await flush();
+  node.click('[data-model-sub]', {modelSub: 'cfg'});
+  node.change('[data-model-field]', {modelField: 'provider', modelKind: 'memory.reflect', value: 'secondary'});
+  assert.match(node.innerHTML, /跟随上级不会被改写/);
+  const card = node.innerHTML.split('data-fncard="memory.reflect"')[1].split('</article>')[0];
+  assert.match(card, /data-model-inherit="max_output_tokens"[^>]*checked/);
+  assert.match(card, /value="8192"/);
+  node.click('[data-model-action]', {modelAction: 'save-one', modelKind: 'memory.reflect'});
+  assert.equal(requests.some(request => request.method === 'POST'), false);
+  assert.match(node.innerHTML, /继承的输出上限 8192 超过所选模型提供方的 2048，请显式设置上限或改回上级/);
+});
+
+/* 页面与路由共用同一条上限：替换规则的目标 Provider 也算在内。 */
+test('the editor ceiling follows replacement-rule targets like routing does', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  page.mount(node);
+  const data = status();
+  data.providers.push({id: 'small', capabilities: ['text'], max_output_tokens: 1024});
+  data.tasks[1].fields.max_output_tokens = {value: 8192, inherited_value: 8192,
+    source: 'default', inherited_source: 'default', explicit: false};
+  data.tasks[1].fields.replacement_rules = {value: JSON.stringify([{id: 'small-rule', provider_id: 'small',
+    keywords: ['私有']}]), inherited_value: '[]', source: 'window', inherited_source: 'default', explicit: true};
+  requests[0].resolve(data);
+  await flush();
+  node.click('[data-model-sub]', {modelSub: 'cfg'});
+  assert.match(node.innerHTML, /发送时会按 1024 生效/);
 });
 
 test('typing a prompt keeps the editor mounted until the field changes', async () => {

@@ -1322,9 +1322,16 @@ window.CompanionMaintenancePage = (() => {
           add("error", task.kind === "conversation.reply" ? "model" : "tasks", title + "能力不匹配", primary + " 缺少此任务要求的能力。", "route");
         }
         const outputLimit = Number(task.fields?.max_output_tokens?.value) || 0;
+        /* A registry default is clamped by routing at send time; only a value
+           the user saved explicitly can actually exceed a Provider here. */
+        const limitDefault = task.fields?.max_output_tokens?.source === "default";
         if (primaryModel && outputLimit > Number(primaryModel.max_output_tokens || 0)) {
-          add("error", task.kind === "conversation.reply" ? "model" : "tasks", title + "输出上限过高",
-            number(outputLimit) + " 超过 Provider 可用上限 " + number(primaryModel.max_output_tokens) + "。", "route");
+          add(limitDefault ? "info" : "error", task.kind === "conversation.reply" ? "model" : "tasks",
+            title + (limitDefault ? "输出上限按 Provider 生效" : "输出上限过高"),
+            limitDefault
+              ? number(outputLimit) + " 是插件默认值，发送时按 Provider 上限 " + number(primaryModel.max_output_tokens)
+                + " 钳制；未显式设置，不会被改写。"
+              : number(outputLimit) + " 超过 Provider 可用上限 " + number(primaryModel.max_output_tokens) + "。", "route");
         }
         if (fallback && !byId.has(fallback)) add("warn", task.kind === "conversation.reply" ? "model" : "tasks", title + "的备用 Provider 不可用", fallback + " 未出现在当前 V2 模型路由中。", "route");
       }
@@ -1705,7 +1712,11 @@ window.CompanionMaintenancePage = (() => {
       const required = Array.isArray(task.capabilities) ? task.capabilities : [];
       const compatible = route && required.every(capability => (route.capabilities || []).includes(capability));
       const outputLimit = Number(task.fields?.max_output_tokens?.value) || 0;
-      const outputFits = !route || !outputLimit || outputLimit <= Number(route.max_output_tokens || 0);
+      /* A registry default never fails the route: routing clamps it to the
+         Provider at send time. Only an explicitly saved value can be too big. */
+      const limitDefault = task.fields?.max_output_tokens?.source === "default";
+      const outputFits = !route || !outputLimit || limitDefault
+        || outputLimit <= Number(route.max_output_tokens || 0);
       const result = !primary || !route ? "warn" : !compatible || !outputFits ? "error" : "ok";
       const label = result === "ok" ? "路由正常" : result === "error" ? "能力或上限不匹配" : "Provider 不可用";
       const routeText = primary ? primary + (fallback ? " · 备用 " + fallback : " · 无备用") : "未设置主 Provider";
