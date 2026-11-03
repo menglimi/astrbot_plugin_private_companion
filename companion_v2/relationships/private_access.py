@@ -100,23 +100,38 @@ class PrivateAccessSettings:
             snapshot = self.owner.read(target_for(context), self.definitions)
             return {key: item.value for key, item in snapshot.fields.items()}
 
-    def read_installation(self, installation_id):
-        """安装层读数：给**没有角色**的对象用（陌生号就是这样）。
+    def read_installation(self, installation_id, *, role_targets=()):
+        """Optionally fall back per field to one explicitly configured role.
 
-        陌生号没有绑定、没有窗口，也就没有角色可挂；默认值里"没人决定过的人从哪开始"
-        这件事本身是安装级的判断，所以这里读安装层，而不是去编一个角色出来。
+        Multiple roles storing a field are ambiguous even if their values agree.
+        Callers omitting role targets keep installation-only behavior.
         """
         target = ConfigTarget(installation_id, ConfigLayer.INSTALLATION)
         with self.configuration.runtime.read_snapshot():
             snapshot = self.owner.read(target, self.definitions)
-            return {key: item.value for key, item in snapshot.fields.items()}
+            values = {key: item.value for key, item in snapshot.fields.items()}
+            candidates = {key: [] for key, item in snapshot.fields.items() if not item.explicit}
+            if not candidates:
+                return values
+            fields = tuple(field for field in self.definitions if field.field_id in candidates)
+            for role_target in {item.key: item for item in role_targets}.values():
+                if role_target.installation_id != installation_id or role_target.layer is not ConfigLayer.ROLE:
+                    raise ValueError("private access fallback requires role targets in this installation")
+                role = self.owner.read(role_target, fields)
+                for key in candidates:
+                    if role.fields[key].explicit:
+                        candidates[key].append(role.fields[key].value)
+            for key, items in candidates.items():
+                if len(items) == 1:
+                    values[key] = items[0]
+            return values
 
     def defaults(self, context):
         """The starting point for a private user nobody has decided about."""
         return _defaults_of(self.read(context))
 
-    def defaults_installation(self, installation_id):
-        return _defaults_of(self.read_installation(installation_id))
+    def defaults_installation(self, installation_id, *, role_targets=()):
+        return _defaults_of(self.read_installation(installation_id, role_targets=role_targets))
 
 
 def _defaults_of(values):

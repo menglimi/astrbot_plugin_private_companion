@@ -156,12 +156,29 @@ class StrangerNotice:
 
     # -- 主流程 --------------------------------------------------------------
 
-    def defaults(self):
+    def defaults(self, route):
         application = self.controller.session.application if self.controller.session else None
         settings = getattr(application, "private_access_settings", None)
         if settings is None:
             return None
-        return settings.defaults_installation(self.controller.runtime.installation_id)
+        from companion_v2.configuration.models import ConfigLayer, ConfigTarget
+        from companion_v2.foundation.refs import SubjectKind, SubjectRef
+
+        installation_id = self.controller.runtime.installation_id
+        host = self.controller.settings
+        if hasattr(host, "accounts"):
+            bot_id = next((account.bot_id for account in host.accounts
+                           if (account.platform_id, account.self_id) == (route.platform_id, route.login)), None)
+            if bot_id is None:
+                return settings.defaults_installation(installation_id)
+            roles = {mapping.role_id for mapping in host.personas if mapping.bot_id == bot_id}
+        else:
+            host = self.controller._with_bound_identity(host)
+            bot_id, roles = host.bot_id, {host.role_id}
+        targets = tuple(ConfigTarget(installation_id, ConfigLayer.ROLE,
+                                     SubjectRef(installation_id, SubjectKind.BOT, role), bot_id=bot_id)
+                        for role in sorted(roles))
+        return settings.defaults_installation(installation_id, role_targets=targets)
 
     async def handle(self, event, *, on_outcome=None):
         """Return the original send receipt and report every recognized silent gate."""
@@ -190,7 +207,7 @@ class StrangerNotice:
         try:
             if session is None or controller.runtime is None or session.application.state != "running":
                 return no_reply("stranger_notice_session_unavailable")
-            defaults = self.defaults()
+            defaults = self.defaults(route)
             if defaults is None:
                 return no_reply("stranger_notice_settings_unavailable")
             if not defaults["stranger_notice"]:

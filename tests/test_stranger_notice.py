@@ -66,18 +66,18 @@ class StrangerNoticeTests(StrangerFixture, unittest.IsolatedAsyncioTestCase):
 
         return await refuse_stranger(self.controller, event)
 
-    def set_config(self, app, **changes):
+    def set_config(self, app, *, target=None, **changes):
         from astrbot_host.management_identity import dashboard_operator
 
         from companion_v2.configuration.models import ConfigLayer, ConfigTarget
         from companion_v2.foundation.refs import OperationRef, VersionRef
         from companion_v2.relationships.private_access import GROUP
 
-        target = ConfigTarget(app.runtime.installation_id, ConfigLayer.INSTALLATION)
+        target = target or ConfigTarget(app.runtime.installation_id, ConfigLayer.INSTALLATION)
         operator = dashboard_operator(app.runtime, "tester", at=self.clock.now())
         snapshot = app.configuration.read(operator, target=target, group_id=GROUP,
                                          observed_at=self.clock.now()).unwrap()
-        identifier = "stranger-notice-" + ",".join(sorted(changes))
+        identifier = "stranger-notice-" + target.key + "-" + str(snapshot.revision) + "-" + ",".join(sorted(changes))
         owner = app.configuration.registry.group(GROUP)[0].owner_id
         return app.configuration.patch(
             operator, target=target, group_id=GROUP, expected_edit_token=snapshot.edit_token,
@@ -193,3 +193,76 @@ class StrangerNoticeTests(StrangerFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(documents["991"]["attempts"], 2)
         self.assertEqual(documents["991"]["last_outcome"], "stranger_notice_cooldown")
         self.assertEqual(documents["992"]["last_outcome"], "stranger_notice_disabled")
+
+
+class StrangerRoleDefaultsTests(StrangerFixture, unittest.IsolatedAsyncioTestCase):
+    set_config = StrangerNoticeTests.set_config
+    handle = StrangerNoticeTests.handle
+
+    def role_target(self, app, bot="bot-a", index=0):
+        from companion_v2.configuration.models import ConfigLayer, ConfigTarget
+        from companion_v2.foundation.refs import SubjectKind, SubjectRef
+
+        roles = sorted({item.role_id for item in self.controller.settings.personas if item.bot_id == bot})
+        return ConfigTarget(app.runtime.installation_id, ConfigLayer.ROLE,
+                            SubjectRef(app.runtime.installation_id, SubjectKind.BOT, roles[index]), bot_id=bot)
+
+    def stranger_defaults(self):
+        from astrbot_host.stranger_notice import StrangerNotice, stranger_route
+
+        return StrangerNotice(self.controller).defaults(stranger_route(self.controller, self.event()))
+
+    async def test_one_role_values_apply(self):
+        app = await self.start_host()
+        self.set_config(app, target=self.role_target(app), stranger_notice_enabled=False,
+                        denied_reply="role refusal", notice_cooldown_seconds=0, stranger_notice_daily_cap=0)
+        values = self.stranger_defaults()
+        self.assertFalse(values["stranger_notice"])
+        self.assertEqual(values["denied_reply"], "role refusal")
+        self.assertEqual(values["notice_cooldown_seconds"], 0)
+        self.assertEqual(values["stranger_daily_cap"], 0)
+        self.assertTrue(app.private_access_settings.defaults_installation(app.runtime.installation_id)["stranger_notice"])
+        self.assertIsNone(await self.handle(self.event()))
+        self.assertEqual(self.sent_texts(), [])
+        self.set_config(app, target=self.role_target(app), stranger_notice_enabled=True, stranger_notice_daily_cap=3)
+        await self.handle(self.event(identifier="role-line"))
+        self.assertEqual(self.sent_texts()[0][0]["data"]["text"], "role refusal")
+
+    async def test_installation_wins_per_field(self):
+        app = await self.start_host()
+        self.set_config(app, target=self.role_target(app), denied_reply="role refusal", stranger_notice_enabled=False)
+        self.set_config(app, denied_reply="installation refusal")
+        values = self.stranger_defaults()
+        self.assertEqual(values["denied_reply"], "installation refusal")
+        self.assertFalse(values["stranger_notice"])
+        self.set_config(app, stranger_notice_enabled=True)
+        await self.handle(self.event())
+        self.assertEqual(self.sent_texts()[0][0]["data"]["text"], "installation refusal")
+
+    async def test_two_roles_are_ambiguous_per_field(self):
+        app = await self.start_host()
+        self.set_config(app, target=self.role_target(app), denied_reply="first", stranger_notice_enabled=False)
+        self.set_config(app, target=self.role_target(app, index=1), denied_reply="second")
+        self.assertEqual(self.stranger_defaults()["denied_reply"], DENIED_REPLY)
+        self.assertFalse(self.stranger_defaults()["stranger_notice"])
+
+    async def test_no_role_values_uses_factory_defaults(self):
+        app = await self.start_host()
+        self.assertEqual(self.stranger_defaults(),
+                         app.private_access_settings.defaults_installation(app.runtime.installation_id))
+        self.assertEqual(self.stranger_defaults()["denied_reply"], DENIED_REPLY)
+
+    async def test_other_account_role_values_are_ignored(self):
+        app = await self.start_host()
+        self.set_config(app, target=self.role_target(app, bot="bot-b"), denied_reply="other account",
+                        stranger_notice_enabled=False)
+        self.assertEqual(self.stranger_defaults()["denied_reply"], DENIED_REPLY)
+        self.assertTrue(self.stranger_defaults()["stranger_notice"])
+        await self.handle(self.event())
+        self.assertEqual(self.sent_texts()[0][0]["data"]["text"], DENIED_REPLY)
+
+    async def test_equal_values_in_two_roles_are_still_ambiguous(self):
+        app = await self.start_host()
+        for index in (0, 1):
+            self.set_config(app, target=self.role_target(app, index=index), denied_reply="same")
+        self.assertEqual(self.stranger_defaults()["denied_reply"], DENIED_REPLY)
