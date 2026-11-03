@@ -364,3 +364,22 @@
 .output-album-select input{width:15px;height:15px;margin:0}
 .output-album-open img{display:block;width:100%;height:100%;object-fit:cover;transition:transform .18s ease}
 .output-album-card:hover .output-album-open img{transform:scale(1.035)}
+
+.output-album-reference{display:grid;gap:var(--sp-3);margin:0 0 var(--sp-3);padding:var(--sp-3);border:1px solid var(--t-line-firm);border-radius:var(--r-md);background:var(--t-surface-raised)}
+.output-album-reference>header{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2)}
+.output-album-reference>header>div{display:grid;gap:2px;min-width:0}
+.output-album-reference>header strong{color:var(--t-text-strong);font-size:var(--fs-body)}
+.output-album-reference>header small{color:var(--t-text-faint);font-size:var(--fs-micro)}
+.output-reference-body{display:grid;grid-template-columns:112px minmax(0,1fr);gap:var(--sp-3);align-items:start}
+.output-reference-body>img{display:block;width:112px;height:112px;object-fit:cover;border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft)}
+.output-reference-fields{display:grid;gap:var(--sp-2);min-width:0}
+.output-reference-fields label{display:grid;gap:4px;color:var(--t-text-soft);font-size:var(--fs-micro)}
+.output-reference-fields input{width:100%;padding:7px 9px;border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface);color:var(--t-text);font:inherit}
+.output-reference-fields fieldset{display:grid;gap:6px;margin:0;padding:0;border:0}
+.output-reference-fields legend{padding:0;color:var(--t-text-soft);font-size:var(--fs-micro)}
+.output-reference-roles{display:flex;flex-wrap:wrap;gap:6px 12px}
+.output-reference-role{display:inline-flex;align-items:center;gap:4px;color:var(--t-text-soft);font-size:var(--fs-micro);cursor:pointer}
+.output-reference-role input{accent-color:var(--t-accent);cursor:pointer}
+.output-reference-error{margin:0;color:var(--t-danger);font-size:var(--fs-micro);line-height:1.55}
+.output-album-reference>footer{display:flex;justify-content:flex-end;gap:var(--sp-2)}
+@media(max-width:560px){.output-reference-body{grid-template-columns:1fr}.output-reference-body>img{width:100%;height:auto;max-height:220px}}
