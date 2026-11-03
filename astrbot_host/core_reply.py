@@ -104,6 +104,35 @@ def _is_core_reply_result(event: Any) -> bool:
     return bool(check()) if callable(check) else False
 
 
+def _watch_delivery_turn_end(event: Any, state: dict) -> None:
+    """Drop this turn's send net when the task that owns the reply finishes.
+
+    The net is bound to the turn identity, so a leftover one can never be read by
+    a later turn; removing it anyway keeps the event's reply state from keeping a
+    body after the turn it belonged to is over.  Without a running task (a plain
+    synchronous host call) there is nothing to watch and the identity alone still
+    protects the next turn.
+    """
+    try:
+        task = asyncio.current_task()
+    except RuntimeError:
+        return
+    if task is None:
+        return
+    old_task, old_callback = state.pop("_delivery_net_task", None), state.pop(
+        "_delivery_net_task_done", None)
+    if old_task is not None and old_callback is not None:
+        old_task.remove_done_callback(old_callback)
+
+    def delivery_net_done(_task):
+        if event.get_extra(CORE_REPLY_CONTEXT_EXTRA) is state:
+            from .core_reply_idempotency import finish_core_reply_delivery_turn
+            finish_core_reply_delivery_turn(event)
+
+    state["_delivery_net_task"], state["_delivery_net_task_done"] = task, delivery_net_done
+    task.add_done_callback(delivery_net_done)
+
+
 def prepare_core_reply_event(
     event: Any,
     prepared: Any,
@@ -186,8 +215,16 @@ def prepare_core_reply_event(
                     message = await message
             from .core_reply_media_delivery import native_reply_messages, native_wire_message
             from .core_reply_voice import commit_pending_voice_claim, release_pending_voice_claim
+            from .core_reply_idempotency import record_core_reply_delivery, should_drop_core_reply_duplicate
             result = None
             for part in native_reply_messages(event, message):
+                # A repeat right after an accepted body is the same delivery twice.
+                # Only this guarded native loop is compared: send_streaming paths
+                # that do not re-enter it (native streaming bubbles) are not seen.
+                # Dropping it here keeps the send accounting honest: no attempt, no
+                # notification and no behavior record for a body that never leaves.
+                if should_drop_core_reply_duplicate(event, part):
+                    continue
                 try:
                     await authorize_delivery()
                     wire = await native_wire_message(event, part)
@@ -212,6 +249,7 @@ def prepare_core_reply_event(
                     observe_core_behavior_delivery(event, part, "failed")
                     raise TaskError("core_reply_platform_unavailable", "the platform did not accept this reply")
                 state["send_returns"] += 1
+                record_core_reply_delivery(event, part)
                 from astrbot.core.message.components import Record
                 if any(isinstance(component, Record) for component in getattr(part, "chain", ())):
                     commit_pending_voice_claim(event)
@@ -375,6 +413,12 @@ def prepare_core_reply_event(
         _presence_stream_active=False,
     )
     event.set_extra(CORE_REPLY_CONTEXT_EXTRA, state)
+    from .core_reply_idempotency import begin_core_reply_delivery_turn, reset_core_reply_delivery_net
+    if begin_core_reply_delivery_turn(event):
+        # A new turn may legitimately repeat the last turn's words.  Re-entering
+        # prepare with the same snapshot keeps the net instead of losing dedupe.
+        reset_core_reply_delivery_net(event)
+    _watch_delivery_turn_end(event, state)
     if on_reply_end is not None:
         # The native message task owns intake, the agent and RespondStage. Its
         # completion is a cleanup backstop for SDK paths with no final hook.
