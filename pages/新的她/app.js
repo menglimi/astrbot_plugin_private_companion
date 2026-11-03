@@ -8,6 +8,7 @@
     core_access_required: "当前账号没有管理本安装的权限。",
     persona_designer_invalid: "设计内容过长或格式不完整，请检查后重试。",
     persona_designer_unavailable: "新的她暂时不可用，当前编辑内容仍保留，可以稍后重试。",
+    persona_designer_model_rejected: "模型没有接受这次设计请求；可以换一个文本模型，或缩短人设/对话后重试。",
     persona_designer_model_missing: "所选文本模型尚未加载，请重新选择模型。",
     persona_designer_source_required: "先输入人设，或从“选择人设”载入一份。",
     persona_designer_draft_required: "先生成或填写一份人设稿，再进行情景试演。",

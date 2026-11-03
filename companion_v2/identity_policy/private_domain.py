@@ -28,10 +28,13 @@ class PrivateDomainAccess:
         if (context.scope.kind is not ScopeKind.PRIVATE or context.actor.subject.kind is not SubjectKind.HUMAN
                 or context.audience.recipients != (context.actor.subject,)):
             raise TaskError("private_domain_audience", "select one current private participant")
-        # A manager is an independent operator, never substituted for the data's subject.
-        require(self.tasks.check_context_access(context,
-            action=action if operator is None else "conversation.reply", observed_at=at))
+        # A manager is an independent operator, never substituted for the data's
+        # subject.  The dashboard read/write is gated by the operator's
+        # ``role.life.manage`` permission only: closing the participant's
+        # ``conversation.reply`` must not hide the role's state or calendar from
+        # the core administrator.
         if operator is None:
+            require(self.tasks.check_context_access(context, action=action, observed_at=at))
             require(self.tasks.identity.authorize(context.actor, scope=context.scope, capability=action, observed_at=at))
         if operator is not None:
             require(self.tasks.policy.scope_access(operator, scope=context.scope, action="role.life.manage",
