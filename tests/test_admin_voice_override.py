@@ -5,9 +5,9 @@ from companion_v2.conversation.voice_reply import VoiceReplyPolicy, with_voice_o
 
 
 CATALOG = {"state": "ready", "providers": [
-    {"id": "fishaudio_tts2", "model": "s2.1-pro-free", "voice": "高木さん",
+    {"id": "fixture_tts_s21", "model": "s2.1-pro-free", "voice": "示例音色甲",
      "provider_type": "fishaudio_tts_api"},
-    {"id": "fishaudio_drama3", "model": "drama-3", "voice": "戏剧音色",
+    {"id": "fixture_tts_drama3", "model": "drama-3", "voice": "示例音色乙",
      "provider_type": "fishaudio_tts_api"},
 ]}
 
@@ -18,7 +18,7 @@ class AdminVoiceOverrideTests(unittest.TestCase):
                                   group_probability=0.1)
         result = admin_voice_override(policy, "这次用 drama3 模型语音回复", CATALOG)
         self.assertIsNotNone(result)
-        self.assertEqual(result.provider_for_language(), "fishaudio_drama3")
+        self.assertEqual(result.provider_for_language(), "fixture_tts_drama3")
         self.assertEqual(result.trigger_mode, "always")
         self.assertEqual((result.probability, result.group_probability), (1.0, -1.0))
 
@@ -26,7 +26,7 @@ class AdminVoiceOverrideTests(unittest.TestCase):
         result = admin_voice_override(
             VoiceReplyPolicy(), "请用日语，2.1free 模型语音回复", CATALOG)
         self.assertIsNotNone(result)
-        self.assertEqual(result.provider_for_language(), "fishaudio_tts2")
+        self.assertEqual(result.provider_for_language(), "fixture_tts_s21")
         self.assertEqual(result.language, "ja")
 
     def test_unknown_model_hint_keeps_saved_provider_and_sets_turn_override(self):
@@ -51,21 +51,21 @@ class AdminVoiceOverrideTests(unittest.TestCase):
                 self.provider_config = config
                 self.provider_settings = settings
 
-        original = FishProvider({"model": "s2.1-pro-free", "fishaudio-tts-character": "高木さん",
+        original = FishProvider({"model": "s2.1-pro-free", "fishaudio-tts-character": "示例音色甲",
                                  "api_key": "secret"}, {"timeout": 20})
-        cloned = _provider_with_overrides(original, "drama-3", "戏剧音色")
+        cloned = _provider_with_overrides(original, "drama-3", "示例音色乙")
         self.assertEqual(cloned.provider_config["model"], "drama-3")
-        self.assertEqual(cloned.provider_config["fishaudio-tts-character"], "戏剧音色")
+        self.assertEqual(cloned.provider_config["fishaudio-tts-character"], "示例音色乙")
         self.assertEqual(original.provider_config["model"], "s2.1-pro-free")
 
     def test_catalog_does_not_expose_secrets(self):
         class Meta:
-            id = "fishaudio_tts2"
+            id = "fixture_tts_s21"
             model = "s2.1-pro-free"
 
         class Provider:
             provider_config = {"api_key": "secret", "model": "s2.1-pro-free",
-                               "fishaudio-tts-character": "高木さん"}
+                               "fishaudio-tts-character": "示例音色甲"}
 
             def meta(self):
                 return Meta()
@@ -76,8 +76,8 @@ class AdminVoiceOverrideTests(unittest.TestCase):
 
         catalog = tts_provider_catalog(Context())
         self.assertEqual(catalog["state"], "ready")
-        self.assertEqual(catalog["providers"][0]["id"], "fishaudio_tts2")
-        self.assertEqual(catalog["providers"][0]["voice"], "高木さん")
+        self.assertEqual(catalog["providers"][0]["id"], "fixture_tts_s21")
+        self.assertEqual(catalog["providers"][0]["voice"], "示例音色甲")
         self.assertNotIn("secret", str(catalog))
 
 

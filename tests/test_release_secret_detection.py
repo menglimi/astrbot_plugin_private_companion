@@ -4,9 +4,23 @@ import unittest
 from pathlib import Path
 
 from tools.build_v2_release import CORE_DIRS, ROOT, allowed, checked_payload, sources
+from tools.check_tracked_privacy import is_private_path
 
 
 class ReleaseSecretDetectionTests(unittest.TestCase):
+    def test_git_inventory_rejects_runtime_and_host_config(self):
+        for name in (
+            "data/cmd_config.json", "plugin_data/companion-7/state.db",
+            "AGENTS.md", ".env.local", "astrbot_plugin_private_companion_config.json",
+            "docs/private.zip", "DATA/CMD_CONFIG.JSON", "docs/private.tar.gz",
+            "docs/design-preview/index.html",
+        ):
+            with self.subTest(path=name):
+                self.assertTrue(is_private_path(name))
+        for name in ("_conf_schema.json", "fixtures/astrbot_staging.example.json"):
+            with self.subTest(path=name):
+                self.assertFalse(is_private_path(name))
+
     def test_core_release_sources_include_astrbot_changelog(self):
         self.assertIn(ROOT / "CHANGELOG.md", sources(ROOT, CORE_DIRS))
 
@@ -22,6 +36,7 @@ class ReleaseSecretDetectionTests(unittest.TestCase):
             "pages/陪伴小屋/shell-preview-mock.html",
             "docs/page-designs/01-cottage-home.md",
             "docs/page-designs/learning-track-preview.html",
+            "docs/design-preview/index.html",
             "pages/陪伴小屋/design-previews/old/index.html",
             "docs/RELEASE_V2_0.md",
             "docs/INTEGRATION_ACCEPTANCE_V2_0.md",
@@ -43,6 +58,7 @@ class ReleaseSecretDetectionTests(unittest.TestCase):
         self.assertNotIn("fixtures/reply_efficiency_preview.json", names)
         self.assertFalse(any("/page-designs/" in "/" + name for name in names))
         self.assertFalse(any("/design-previews/" in "/" + name for name in names))
+        self.assertFalse(any("/design-preview/" in "/" + name for name in names))
         self.assertNotIn("docs/V670_TO_V700_MIGRATION_20261019.md", names)
         self.assertNotIn("docs/RELEASE_V2_0.md", names)
         self.assertNotIn("docs/INTEGRATION_ACCEPTANCE_V2_0.md", names)
@@ -54,6 +70,12 @@ class ReleaseSecretDetectionTests(unittest.TestCase):
         manifest = json.loads((ROOT / "pages" / "陪伴小屋" / "page-build.json").read_text(encoding="utf-8"))
         self.assertNotIn("shell-preview.html", manifest["files"])
         self.assertNotIn("semantic-page.css.backup", manifest["files"])
+
+    def test_catalog_contains_navigation_only(self):
+        catalog = (ROOT / "pages" / "陪伴小屋" / "catalog.html").read_text(encoding="utf-8")
+        self.assertIn("function readLive()", catalog)
+        self.assertIn("function pageHref(", catalog)
+        self.assertNotRegex(catalog, r"\b(?:settings|metric)\s*:")
 
     def scan(self, payload):
         with tempfile.TemporaryDirectory() as temporary:

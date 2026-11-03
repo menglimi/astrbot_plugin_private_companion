@@ -98,15 +98,24 @@ def print_report(report, *, limit: int = 40) -> None:
             print("  … 另有 %d 个" % (len(rows) - limit))
 
 
-def make_plan(source: Path, live: Path, backup_root: Path, names: list[str] | None = None) -> Path:
+def make_plan(source: Path, live: Path, backup_root: Path, names: list[str] | None = None,
+              remove_names: list[str] | None = None) -> Path:
     report = compare(source, live, names)
     verify_files = sorted(set(names)) if names is not None else None
     changes = sorted(set(report["missing"]) | set(report["different"]))
+    removals = sorted(set(remove_names or []))
+    for name in removals:
+        if any(part in IGNORED_PARTS for part in Path(name).parts):
+            raise ValueError("不能删除运行数据：" + name)
+        if target(source, name).exists():
+            raise ValueError("源码仍包含待删除文件：" + name)
+        if not target(live, name).is_file():
+            raise FileNotFoundError("运行目录缺少待删除文件：" + name)
     stamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d-%H%M%S")
     directory = backup_root / ("runtime-sync-" + stamp)
     directory.mkdir(parents=True, exist_ok=True)
     rows = []
-    for name in changes:
+    for name in changes + removals:
         source_path = target(source, name)
         live_path = target(live, name)
         before = live_path.read_bytes() if live_path.is_file() else None
@@ -119,7 +128,7 @@ def make_plan(source: Path, live: Path, backup_root: Path, names: list[str] | No
         rows.append({
             "path": name,
             "before": sha(before) if before is not None else None,
-            "after": sha(source_path.read_bytes()),
+            "after": None if name in removals else sha(source_path.read_bytes()),
         })
     plan = {
         "source": str(source),
@@ -144,7 +153,8 @@ def apply_plan(plan_path: Path) -> None:
     for row in rows:
         source_path = target(source, row["path"])
         live_path = target(live, row["path"])
-        if sha(source_path.read_bytes()) != row["after"]:
+        after = None if row["after"] is None else sha(source_path.read_bytes())
+        if after != row["after"] or (after is None and source_path.exists()):
             raise ValueError("源码在生成计划后变化：" + row["path"])
         before = sha(live_path.read_bytes()) if live_path.is_file() else None
         if before != row["before"]:
@@ -152,6 +162,9 @@ def apply_plan(plan_path: Path) -> None:
     for row in rows:
         source_path = target(source, row["path"])
         live_path = target(live, row["path"])
+        if row["after"] is None:
+            live_path.unlink()
+            continue
         live_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = live_path.with_name(live_path.name + ".companion-sync.tmp")
         shutil.copy2(source_path, temporary)
@@ -163,6 +176,8 @@ def apply_plan(plan_path: Path) -> None:
         raise ValueError("同步计划的校验文件列表无效")
     mismatches = [name for name in verify_files
                   if target(source, name).read_bytes() != target(live, name).read_bytes()]
+    mismatches.extend(row["path"] for row in rows
+                      if row["after"] is None and target(live, row["path"]).exists())
     if mismatches:
         raise AssertionError("同步后仍有差异：" + "、".join(mismatches))
     print("已同步 %d 个文件；源码与运行目录一致。" % len(rows))
@@ -176,6 +191,8 @@ def main(argv=None) -> int:
     parser.add_argument("--plan-path", type=Path, help="要应用的 plan.json")
     parser.add_argument("--include", action="append", dest="include_files",
                         help="只检查或计划同步指定的源码相对路径；可重复传入")
+    parser.add_argument("--remove", action="append", dest="remove_files",
+                        help="计划删除运行目录中已从源码移除的指定文件；可重复传入")
     parser.add_argument("--source", type=Path, default=SOURCE)
     parser.add_argument("--live", type=Path, default=DEFAULT_LIVE)
     parser.add_argument("--backup-root", type=Path, default=DEFAULT_BACKUP_ROOT)
@@ -191,14 +208,17 @@ def main(argv=None) -> int:
         if args.plan_path is None:
             print("--apply 需要同时指定 --plan-path", file=sys.stderr)
             return 2
-        if args.include_files:
-            print("--apply 使用计划文件中的校验范围，不要传入 --include", file=sys.stderr)
+        if args.include_files or args.remove_files:
+            print("--apply 使用计划文件中的校验范围，不要传入 --include 或 --remove", file=sys.stderr)
             return 2
         apply_plan(args.plan_path)
         return 0
     if args.plan:
-        make_plan(args.source, args.live, args.backup_root, args.include_files)
+        make_plan(args.source, args.live, args.backup_root, args.include_files, args.remove_files)
         return 0
+    if args.remove_files:
+        print("--remove 只能与 --plan 一起使用", file=sys.stderr)
+        return 2
     report = compare(args.source, args.live, args.include_files)
     print_report(report)
     return 1 if report["missing"] or report["different"] else 0

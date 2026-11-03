@@ -147,7 +147,7 @@ function status(changes = {}, token = TOKEN) {
     provenance: Object.fromEntries(Object.keys(settings).map(name =>
       [name, {layer: 'window', explicit: true, revision: 1}])),
     fields: FIELDS, recent: [], participation_recent: [], participation_limit: 80,
-    tts: {state: 'ready', providers: [{id: 'tts-a', model: 's2.1-pro-free', voice: '高木さん'}, {id: 'tts-b'}]},
+    tts: {state: 'ready', providers: [{id: 'tts-a', model: 's2.1-pro-free', voice: '示例音色甲'}, {id: 'tts-b'}]},
   };
 }
 
@@ -980,7 +980,7 @@ test('the TTS provider catalog comes from the read result, not a page-local list
   const entries = item.catalog();
   assert.equal(entries[''], '跟随 AstrBot');
   assert.deepEqual(Object.keys(entries).filter(Boolean).sort(), ['tts-a', 'tts-b']);
-  assert.equal(entries['tts-a'], 'tts-a · s2.1-pro-free · 高木さん');
+  assert.equal(entries['tts-a'], 'tts-a · s2.1-pro-free · 示例音色甲');
   const zh = live(harnessed).state.container.fields.voice_zh_provider_id.catalog();
   assert.equal(zh[''], '使用通用扩展');
 });

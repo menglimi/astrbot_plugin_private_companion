@@ -103,7 +103,7 @@ EXCLUDED_DIRS = {
     "dist", "build", "_archive", "protected_model", "desktop_pet", ".codex-plugin", "%SystemDrive%",
     # Design exports and expression-page design boards are development references,
     # not runtime resources. RC22 shipped 13 of them (about 5.4 MB) by mistake.
-    "page-designs", "design-previews", "design-exports", "expression-redesign-20261007",
+    "page-designs", "design-preview", "design-previews", "design-exports", "expression-redesign-20261007",
 }
 EXCLUDED_FILES = {
     # 生成物与开发快照：不是运行时资源。pages/ 下的这些文件此前有 14.06 MB
