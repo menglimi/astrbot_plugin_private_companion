@@ -12,8 +12,9 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from astrbot_host.news import (DEFAULT_AI_NEWS_FEED_LABEL, DEFAULT_AI_NEWS_FEED_URL,
-                               DeepSeekSearchNewsPort, NewsJsonPort, NewsRssPort, configured_news_port,
-                               WebSearchNewsPort, configured_search_port, deepseek_api_key)
+                               AstrBotWebSearchNewsPort, DeepSeekSearchNewsPort, NewsJsonPort,
+                               NewsRssPort, configured_news_port, WebSearchNewsPort,
+                               configured_search_port, deepseek_api_key)
 from astrbot_host.news_parsing import parse_rss_news
 from companion_v2.proactive.external_materials import parse_news_response
 from companion_v2.proactive.news_events import SOURCE_OWNER
@@ -975,7 +976,9 @@ class DeepSeekNewsAdapterTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(port.api_key, "provider-b-secret")
             self.assertEqual(deepseek_api_key(context, provider_id="missing"), "")
             missing = configured_search_port(context, query="科技", deepseek_provider_id="missing")
-            self.assertIsNone(missing)
+            # 选中的 Provider 没有 Key 时回落到 AstrBot 搜索，而不是直接不可用。
+            self.assertIsInstance(missing, AstrBotWebSearchNewsPort)
+            self.assertEqual(missing.provider, "tavily")
 
         router = configured_news_port({"news": {"source_kind": "host"}}, context=context,
                                       deepseek_provider_resolver=lambda: "deepseek_b")
