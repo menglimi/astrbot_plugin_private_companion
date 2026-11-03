@@ -268,6 +268,7 @@
 .lh-signal-evidence ol{display:flex;flex-direction:column;gap:var(--sp-1);max-height:240px;overflow:auto;margin:var(--sp-2) 0 0;padding-inline-start:1.25rem}
 .lh-signal-evidence li{color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.5;overflow-wrap:anywhere}
 .lh-signal-unavailable{margin:0;padding:var(--sp-2) var(--sp-3);background:var(--t-warn-quiet);color:var(--t-warn-ink);font-size:var(--fs-tiny)}
+.lh-signal-evidence-note{margin:0;color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.5}
 .lh-signal-confirm{display:flex;align-items:center;gap:var(--sp-2);padding:var(--sp-2) var(--sp-3);border:1px solid var(--t-warn);border-radius:var(--r-sm);background:var(--t-warn-quiet);color:var(--t-warn-ink);font-size:var(--fs-tiny)}
 .lh-signal-confirm span{flex:1;min-width:0}
 .lh-signal-confirm button{min-height:30px;padding:var(--sp-1) var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface);color:var(--t-text);font:inherit;font-size:var(--fs-tiny);cursor:pointer}

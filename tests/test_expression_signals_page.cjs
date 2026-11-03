@@ -533,3 +533,102 @@ test("刷新中途某页失败后，已加载的后页仍会继续刷新", async
     "失败过的页与它后面的页都要继续刷新，不能只留在成功前缀上");
   page.unmount();
 });
+
+function signalsPage(bridge) {
+  const root = {isConnected: true, innerHTML: "", listeners: new Map(),
+    addEventListener(name, callback) { this.listeners.set(name, callback); },
+    removeEventListener(name) { this.listeners.delete(name); },
+    querySelector: () => null};
+  const window = {CompanionProduct: {bridgeNow: () => bridge, unwrap: value => value},
+    lucide: {createIcons() {}}};
+  const context = vm.createContext({window, setTimeout, clearTimeout, TextEncoder, JSON, Date, Math,
+    Number, Object, Array, String, URLSearchParams});
+  vm.runInContext(source, context);
+  return {root, page: context.window.CompanionExpressionSignalsPage};
+}
+
+const settle = async page => {
+  for (let index = 0; index < 40 && page.state.busy; index++) await flush();
+};
+
+const unavailableRule = (state, signalId, actions) => ({signal_id: signalId, run_id: "run-1",
+  dimension: "diction", source_kind: "conversation_input", state,
+  observation: "群里习惯把话说完再收尾", proposal: "用一句完整的话收尾",
+  expression: {kind: "style", situation: "群里聊到熟悉的话题时", pattern: "一句话说完",
+    avoid: "认真求助时不用"},
+  applicability: {channels: ["group"], relationship_stages: ["any"], emotion_gates: ["any"],
+    intent: "any", keywords: []},
+  created_at: "2026-10-08T10:00:00+00:00", injections: 0, can_revise: false,
+  evidence: [], unavailable_reason: "expression_sample_changed", actions, view_token: "token"});
+
+test("依据原文不可读时保留规则正文并按状态说明还能做什么", async () => {
+  const items = {
+    adopted: [unavailableRule("adopted", "signal-adopted", ["retire"])],
+    retired: [unavailableRule("retired", "signal-retired", [])],
+    pending: [unavailableRule("pending", "signal-pending", ["reject"])],
+  };
+  const bridge = {
+    apiGet: async (route, query) => ({status: "ok", data: {items: items[query?.state] || [],
+      capacity: {active: 1, limit: 60}, counts: {}}}),
+    apiPost: async () => ({status: "ok", data: {}}),
+  };
+  const {root, page} = signalsPage(bridge);
+  await page.mount(root, {sources: [{key: "source-a", scopeKey: "scope-a", label: "私聊来源",
+    replyApi: `/${HOST}/targets/profile-a/roles/role-a/reply`}]});
+  await settle(page);
+  const html = () => root.innerHTML;
+  // 已启用：正文与用法都保留，停用不受影响，也不再出现错误的失效承诺。
+  assert.match(html(), /一句话说完/);
+  assert.match(html(), /群里聊到熟悉的话题时/);
+  assert.match(html(), /用一句完整的话收尾/);
+  assert.match(html(), /依据原文不可读取，不影响这条规则继续生效，仍可停用。/);
+  assert.match(html(), /data-signal-action="retire"/);
+  assert.doesNotMatch(html(), /data-signal-edit/);
+  assert.doesNotMatch(html(), /依据已失效|暂不可恢复/);
+  assert.doesNotMatch(html(), /expression_sample_changed|lh-sample-changed/);
+  const clickState = async key => {
+    root.listeners.get("click")({target: {closest: selector => selector === "[data-signal-state]"
+      ? {dataset: {signalState: key}} : null}});
+    await settle(page);
+  };
+  // 已停用：说明无法恢复启用，也不再给恢复按钮。
+  await clickState("retired");
+  assert.match(html(), /依据原文不可读取，无法恢复启用。/);
+  assert.match(html(), /一句话说完/);
+  assert.doesNotMatch(html(), /data-signal-action="restore"/);
+  // 待审：只能拒绝，不能采纳一条无法复核依据的候选。
+  await clickState("pending");
+  assert.match(html(), /依据原文不可读取，这条候选只能拒绝。/);
+  assert.match(html(), /data-signal-action="reject"/);
+  assert.doesNotMatch(html(), /data-signal-action="adopt"/);
+  page.unmount();
+});
+
+test("早于上下文重置的依据仍可展开并标注为重置前的记录", async () => {
+  // 合成时间戳：夹具不得带入任何真实重置时间。
+  const resetAt = "2026-10-31T12:00:00+00:00";
+  const bridge = {
+    apiGet: async () => ({status: "ok", data: {items: [{signal_id: "signal-reset", run_id: "run-1",
+      dimension: "diction", source_kind: "conversation_input", state: "adopted",
+      observation: "群里习惯把话说完再收尾", proposal: "用一句完整的话收尾",
+      expression: {kind: "style", situation: "群里聊到熟悉的话题时", pattern: "一句话说完", avoid: ""},
+      applicability: {channels: ["group"], relationship_stages: ["any"], emotion_gates: ["any"],
+        intent: "any", keywords: []},
+      created_at: "2026-10-08T10:00:00+00:00", injections: 3, can_revise: true,
+      evidence: ["嗯哼，这样的说法很轻松"],
+      evidence_reset_at: resetAt, actions: ["retire"], view_token: "token"}],
+      capacity: {active: 1, limit: 60}, counts: {adopted: 1}}}),
+    apiPost: async () => ({status: "ok", data: {}}),
+  };
+  const {root, page} = signalsPage(bridge);
+  await page.mount(root, {sources: [{key: "source-a", scopeKey: "scope-a", label: "私聊来源",
+    replyApi: `/${HOST}/targets/profile-a/roles/role-a/reply`}]});
+  await settle(page);
+  const shown = new Date(resetAt).toLocaleString("zh-CN",
+    {hour12: false, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit"});
+  assert.match(root.innerHTML, /嗯哼，这样的说法很轻松/);
+  assert.ok(root.innerHTML.includes(`依据早于 ${shown} 的上下文重置，原消息仍可读取。`));
+  assert.match(root.innerHTML, /data-signal-edit/);
+  assert.doesNotMatch(root.innerHTML, /依据已失效|lh-signal-unavailable/);
+  page.unmount();
+});
