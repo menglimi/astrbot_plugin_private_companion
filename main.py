@@ -74,7 +74,7 @@ from .astrbot_host.group_command import receive_group_llm_command
 from .astrbot_host.reset_command import receive_reset_command
 from companion_v2.conversation.group_llm_block import GroupLLMBlock
 from companion_v2.conversation import debounce_log
-from .astrbot_host.private_debounce import PrivateDebounce
+from .astrbot_host.private_debounce import PrivateDebounce, PrivateDeliveryDedup
 from .astrbot_host.private_reply_followup import PrivateReplyFollowUps
 from .astrbot_host.event_routing import (
     COMPANION_INTAKE_PRIORITY, competing_command_handler, suppress_default_reply,
@@ -310,6 +310,21 @@ class PrivateCompanionV2StagingPlugin(Star):
             manager = PrivateDebounce()
             self._private_debounce = manager
         return manager
+
+    def _private_delivery_dedup(self):
+        dedup = getattr(self, "_private_delivery_seen", None)
+        if dedup is None:
+            dedup = PrivateDeliveryDedup()
+            self._private_delivery_seen = dedup
+        return dedup
+
+    def _private_delivery_duplicate(self, event, target):
+        """Whether the platform delivered this exact native message twice."""
+        message_id = getattr(getattr(event, "message_obj", None), "message_id", None)
+        if message_id is None or message_id == "":
+            return False
+        key = (str(getattr(target, "target_id", "") or ""), str(message_id))
+        return self._private_delivery_dedup().duplicate(key)
 
     def _private_reply_followups(self):
         manager = getattr(self, "_private_followup", None)
@@ -786,6 +801,16 @@ class PrivateCompanionV2StagingPlugin(Star):
         origin_key = self._origin_key_for_event(event)
         kind = getattr(getattr(getattr(event, "message_obj", None), "type", None), "value", None)
         channel = "private" if kind == "FriendMessage" else "group" if kind == "GroupMessage" else "unknown"
+        if channel == "private" and self._private_delivery_duplicate(event, target):
+            # AstrBot can surface one platform message twice (adapter reconnect,
+            # duplicate file acknowledgement).  The first delivery already owns
+            # the reply; the duplicate must not start a second model turn.
+            suppress_default_reply(event)
+            logger.info("[CompanionV2] 重复投递已忽略 event_ref=%s message_id=%s", event_ref,
+                        getattr(getattr(event, "message_obj", None), "message_id", ""))
+            self._record_no_reply(event, "duplicate_private_delivery", origin_key=origin_key,
+                                  channel=channel, event_ref=event_ref, stage="intake", expected=False)
+            return
         if channel == "private":
             now = self.staging.now()
             mentions, media = self._harassment_features(event)
@@ -1120,6 +1145,15 @@ class PrivateCompanionV2StagingPlugin(Star):
 
     @filter.on_llm_request(priority=250000)
     async def prepare_companion_core_request(self, event: AstrMessageEvent, req):
+        # Repair before the state check: an unconfigured plugin still runs this
+        # hook, and leaving an orphan tool-call batch untouched makes the whole
+        # AstrBot request fail with a 400 even though V2 takes no other action.
+        try:
+            removed = repair_tool_call_history(getattr(req, "contexts", None))
+        except Exception:
+            removed = 0
+        if removed:
+            logger.warning("[CompanionV2] 修复缺少工具结果的历史轮次 batches=%s", removed)
         state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
         if not isinstance(state, dict):
             prepare_native_host_request(self.staging, event, req)

@@ -183,8 +183,10 @@ class LayaDecisionService:
         if self.client_factory is None:
             raise LayaClientError("laya_client_unavailable", "Laya 执行适配器暂不可用，本轮继续普通回复流程")
         return self.client_factory(mode=values["mode"], endpoint=values["endpoint"],
-                                   local_model_path=values["local_model_path"], model=values["remote_model"],
-                                   api_key=values["api_key"], timeout_seconds=values["timeout_seconds"])
+                                   local_model_path=values["local_model_path"],
+                                   api_key=values["api_key"], timeout_seconds=values["timeout_seconds"],
+                                   request_format=values.get("request_format", "native"),
+                                   model=(values.get("remote_model", "").strip() or "multilingual"))
 
     async def test(self) -> dict:
         values = self.store.raw()

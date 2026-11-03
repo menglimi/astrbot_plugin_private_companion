@@ -13,6 +13,7 @@ from typing import Any
 from companion_v2.product import CORE_COMPONENTS, PRODUCT_DISPLAY_NAME, PRODUCT_ID, PRODUCT_VERSION
 from companion_v2.capabilities.models import CapabilityDesiredState
 from companion_v2.capabilities.repositories import CapabilityRepository
+from companion_v2.configuration.models import ConfigLayer, ConfigTarget
 from companion_v2.adapters.astrbot.memory_providers import ExternalMemoryProviderRegistry, PROVIDER_API_VERSION
 from companion_v2.diagnostics.readonly_status import read_p6_readonly_status
 from .memory_page_api import MemoryPageAPI
@@ -258,6 +259,46 @@ class UnifiedCompanionExtensionAPI:
 
     async def generate_reality_touch_text(self, prompt, **kwargs):
         return await self._reality_context.generate(prompt, **kwargs)
+
+    def _task_model_route(self, application, context, kind):
+        group = "model." + str(kind or "").strip()
+        target = ConfigTarget(context.scope.installation_id, ConfigLayer.WINDOW,
+                              context.role_binding.role, context.scope, subject=context.actor.subject)
+        snapshot = application.configuration.read(
+            context.actor, target=target, group_id=group, observed_at=application.now())
+        if not snapshot.is_success:
+            return {}
+        values = snapshot.unwrap().values
+        return {
+            "provider": str(values.get(group + ".provider") or "").strip(),
+            "fallback": str(values.get(group + ".fallback") or "").strip(),
+        }
+
+    def task_model_route(self, user_id, kind):
+        """Read any task route for a user's active V2 window, without module checks."""
+        try:
+            resolved = self._mobile_together._target_context(str(user_id or "").strip())
+            if resolved is None:
+                return {}
+            _session, application, context = resolved
+            return self._task_model_route(application, context, kind)
+        except Exception:
+            return {}
+
+    def reality_model_route(self, user_id, kind="screen.interpretation"):
+        """Read a model route from the task panel for the active private window.
+
+        Reality's camera used to keep a second provider id in its own config, so
+        the model panel showed one visual model while the camera called another
+        (often a retired endpoint).  Reading the same group here keeps the panel
+        authoritative; unavailable routes simply return empty and the camera's
+        local fallback still applies.
+        """
+        try:
+            _session, application, context, _service = self._reality_context.target(user_id)
+            return self._task_model_route(application, context, kind)
+        except Exception:
+            return {}
 
     async def get_realtime_context(self, user_id, **kwargs):
         return await self._reality_context.realtime(user_id, **kwargs)

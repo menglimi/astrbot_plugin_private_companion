@@ -22,7 +22,7 @@ window.CompanionPerceptionPage = (() => {
     || fallback;
   const realitySections = {
     global: {title:"运行与模型", fields:[
-      ["enabled","启用现实触及","bool"],["vision_provider_id","摄像头视觉模型","provider"],["timezone","时区","string"]]},
+      ["enabled","启用现实触及","bool"],["timezone","时区","string"]]},
     camera: {title:"摄像头", fields:[
       ["camera_enabled","启用摄像头","bool"],["camera_index","摄像头序号","int",0,100000],
       ["min_interval_seconds","最短观察间隔 / 秒","int",10,3600],["capture_timeout_seconds","采集超时 / 秒","int",2,20],

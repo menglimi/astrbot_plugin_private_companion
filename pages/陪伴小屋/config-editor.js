@@ -493,10 +493,10 @@ window.CompanionConfigEditors = (() => {
     },
     relay: {
       title: "跨窗口与跨群递话",
-      note: "默认关闭。打开后：你可以让 bot 帮你向白名单里的私聊或群聊带话（默认先确认）；"
-        + "其他人只能让 bot 给你带话，发不到别处。",
+      note: "核心管理员向外递话默认开启，但仍只发白名单目标并默认先确认；"
+        + "其他人向核心管理员递话也默认开启，可单独限制发送者、正文长度或直接关闭。",
       labels: {
-        enabled: "允许在本窗口使用递话",
+        enabled: "允许核心管理员在本窗口向外递话",
         require_confirm: "你发起的递话需要先确认",
         max_text_chars: "单次递话最长字数",
         allowed_targets: "可递话的私聊目标",
@@ -506,9 +506,12 @@ window.CompanionConfigEditors = (() => {
         multi_target_limit: "单次多目标上限",
         default_style: "默认转述风格",
         core_target_id: "你的私聊目标（其他人只能递到这里）",
+        member_relay_enabled: "允许其他人向核心管理员递话",
+        member_relay_max_text_chars: "他人递话最长字数",
+        member_relay_allowed_senders: "可向核心管理员递话的人",
       },
       helps: {
-        enabled: "关闭时任何人都不能通过本窗口递话。",
+        enabled: "关闭后，核心管理员也不能通过本窗口向外递话；其他人向核心管理员递话不受此项影响。",
         require_confirm: "开启后，你发起的递话会先弹确认，确认后才真正发出。",
         allowed_targets: "填私聊 id，多个用逗号分隔；留空表示你不能主动私聊递话。",
         allowed_groups: "填群号，多个用逗号分隔；群名会被解析到这些白名单群。",
@@ -517,11 +520,15 @@ window.CompanionConfigEditors = (() => {
         multi_target_limit: "一次 relay_message_many / relay_send_many 最多处理几个目标。",
         default_style: "original 逐字发送；soft 更委婉；persona 按角色语气。模型会在调用工具前完成改写。",
         core_target_id: "其他用户发起的递话只会送到这个私聊，不会发到别处。",
+        member_relay_enabled: "默认开启。关闭后，其他人不能通过本窗口向核心管理员递话。",
+        member_relay_max_text_chars: "只限制其他人递给核心管理员的正文长度，不影响核心管理员向外递话。",
+        member_relay_allowed_senders: "填私聊账号 ID，多个用逗号分隔；留空表示所有能私聊到你的人都可以递话。",
       },
       choices: {default_style: {original: "逐字原样", soft: "委婉一点", persona: "按角色语气"}},
       order: ["enabled", "require_confirm", "max_text_chars", "allowed_targets", "allowed_groups",
               "member_cache_minutes", "prefer_relationship_names", "multi_target_limit",
-              "default_style", "core_target_id"],
+              "default_style", "core_target_id", "member_relay_enabled",
+              "member_relay_max_text_chars", "member_relay_allowed_senders"],
     },
     screen: {
       title: "屏幕解读与日记素材",

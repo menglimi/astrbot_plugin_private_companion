@@ -77,7 +77,7 @@ class SessionTopology:
                 if "unsupported native event platform" in detail:
                     logger.debug("[CompanionV2] 跳过非常规平台事件: %s", detail[:120])
                 else:
-                    logger.warning("[CompanionV2] 会话目录后台更新失败 error_type=%s detail=%s",
+                    logger.warning("[CompanionV2] 会话目录后台更新失败 error_type=%s reason=%s",
                                    type(error).__name__, detail[:200])
 
         task = asyncio.create_task(record(), name="companion-v2-session-observation")
@@ -104,13 +104,34 @@ class SessionTopology:
                     for item in section.get(field, []) if isinstance(item, dict)]
         return controller.status().get("targets", [])
 
-    def accounts(self, settings=None):
+    def _native_platforms(self):
+        """按多个宿主版本可能提供的入口取平台实例。
+
+        AstrBot 升级后 `platform_manager` 上的取数入口可能改名（4.28 是
+        `get_insts()`，之后出现过 `platform_insts` 与 `context.platforms`）。
+        只依赖其中一个名字会让整页读出“0 个会话/0 个账号”。
+        """
         context = self.controller.context
-        enumerator = getattr(getattr(context, "platform_manager", None), "get_insts", None)
-        platforms = list(enumerator() or []) if callable(enumerator) else []
-        if not platforms:
-            fallback = getattr(context, "platform", None)
-            platforms = list(getattr(context, "platforms", {}).values()) or ([fallback] if fallback else [])
+        manager = getattr(context, "platform_manager", None)
+        enumerator = getattr(manager, "get_insts", None)
+        if callable(enumerator):
+            try:
+                values = list(enumerator() or [])
+            except Exception:
+                values = []
+            if values:
+                return values
+        insts = getattr(manager, "platform_insts", None)
+        if isinstance(insts, (list, tuple)) and insts:
+            return list(insts)
+        platforms = getattr(context, "platforms", None)
+        if isinstance(platforms, dict) and platforms:
+            return list(platforms.values())
+        single = getattr(context, "platform", None)
+        return [single] if single is not None else []
+
+    def accounts(self, settings=None):
+        platforms = self._native_platforms()
         configured = self.configured(settings)
         aliases = {(row["platform_id"], row["account_id"]): row["bot_id"]
                    for row in configured
@@ -177,7 +198,14 @@ class SessionTopology:
                     remember(meta.id, meta.id, platform_name=meta.name)
             except (AttributeError, ValueError, TypeError):
                 continue
-        return sorted(result.values(), key=lambda row: (row["platform_id"], row["account_id"]))
+        rows = sorted(result.values(), key=lambda row: (row["platform_id"], row["account_id"]))
+        if not rows:
+            # 升级后排障：把“为什么一个账号都没发现”一次性说清楚。
+            logger.info("[CompanionV2] 账号发现为空 native_platforms=%d configured=%d registered=%d "
+                        "platform_names=%s", len(platforms), len(configured),
+                        len(registered) if isinstance(registered, list) else 0,
+                        ",".join(sorted(set(platform_names.values()))) or "-")
+        return rows
 
     def _observed(self):
         if not self.path.is_file():

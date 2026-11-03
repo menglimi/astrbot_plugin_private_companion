@@ -12,7 +12,20 @@ from .segment_control import LLM_SEGMENT_MARKER, controlled_parts, protected_ran
 from .text_processing import literal_ranges
 
 
-DEFAULT_SPLIT_WORDS = ("。", "？", "！", "~", "～", "?", ".", "!", ";", "；", "……", "）", "…")
+DEFAULT_SPLIT_WORDS = ("。", "？", "！", "~", "～", "?", "!", ";", "；", "……", "…")
+# The 7.0/7.1 default also split on an English period and a closing full-width
+# parenthesis.  Those two made English sentences and parentheticals become
+# their own bubbles; profiles that never customised the list are migrated in
+# SegmentationPolicy.__post_init__ instead of requiring a manual edit.
+LEGACY_DEFAULT_SPLIT_WORDS = ("。", "？", "！", "~", "～", "?", ".", "!", ";", "；", "……", "）", "…")
+# Older UI builds saved the same default with a comma, newline and space added.
+# Recognise that pool as an untouched legacy list too; a genuinely custom word
+# outside the pool keeps the old list exactly as configured.
+LEGACY_SPLIT_WORD_POOL = frozenset(LEGACY_DEFAULT_SPLIT_WORDS) | {"，", "\n", " "}
+# A literal space in the old list split every English word at its spaces; the
+# period and full-width closing parenthesis made whole English sentences or
+# parentheticals their own bubble.  Remove all three from untouched legacy lists.
+LEGACY_REMOVED_SPLIT_WORDS = (".", "）", " ")
 DEFAULT_RULE_REGEX = r"(?<=[。！？!?…~～])\s*|\n+"
 PART_GAP_MODES = frozenset(("fixed", "random", "log"))
 # 开引号与开括号只属于后一句。把边界落在它们之后等于把引文从中间切开：
@@ -199,6 +212,23 @@ def _word_boundaries(text, words, protected):
                 and end < len(text) and text[end].isdigit():
             position = end
             continue
+        if word == "." and position > 0 and end < len(text) \
+                and text[position - 1].isalpha() and text[end].isalnum():
+            # A dot inside an English word is not a sentence boundary:
+            # ``example.com``, ``U.S.`` and ``e.g.`` must stay one token.
+            position = end
+            continue
+        if word == "." and position > 0:
+            start = position - 1
+            while start >= 0 and (text[start].isalnum() or text[start] in "._-"):
+                start -= 1
+            token = text[start + 1:end]
+            if token.count(".") >= 2 and len(token) <= 24:
+                # The trailing dot of an abbreviation (``e.g.`` / ``U.S.``)
+                # follows a dotted token; splitting it would leave the
+                # abbreviation alone as its own bubble.
+                position = end
+                continue
         if word in ("~", "～", "-", "－", "—") and position > 0 and text[position - 1].isdigit() \
                 and next((char for char in text[end:] if not char.isspace()), "").isdigit():
             position = end
@@ -258,6 +288,14 @@ class SegmentationPolicy:
             words = json.loads(self.split_words)
         except ValueError as error:
             raise ValueError("segmentation words need a JSON list") from error
+        if (type(words) is list and all(type(word) is str for word in words)
+                and set(LEGACY_DEFAULT_SPLIT_WORDS) <= set(words)
+                and set(words) <= LEGACY_SPLIT_WORD_POOL):
+            # Migrate the old untouched defaults (and the older UI variant with
+            # comma/newline/space) in place.  A customised list that contains
+            # words outside that pool is left exactly as configured.
+            words = [word for word in words if word not in LEGACY_REMOVED_SPLIT_WORDS]
+            object.__setattr__(self, "split_words", json.dumps(words, ensure_ascii=False))
         if (type(words) is not list or len(words) > 80
                 or any(type(word) is not str or not 1 <= len(word) <= 40
                        or any(ord(char) < 32 and char != "\n" for char in word) for word in words)

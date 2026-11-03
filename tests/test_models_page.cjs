@@ -164,7 +164,7 @@ test('registered review, media and authoring tasks have searchable Chinese names
   const h = harness(), node = h.root(), data = status();
   const labels = {
     'proactive.judge': '主动联系复核',
-    'image_review': '图片审核',
+    'conversation.image_review': '图片审核',
     'conversation.context_image_caption': '图片摘要',
     'content.authoring.draft': '内容起草',
     'conversation.image_narration': '当前图片转述',
@@ -185,7 +185,7 @@ test('registered review, media and authoring tasks have searchable Chinese names
   }
   node.input('[data-model-search]', {value: '主动联系复核'});
   assert.match(node.innerHTML, /data-fncard="proactive.judge"/);
-  assert.doesNotMatch(node.innerHTML, /data-fncard="image_review"/);
+  assert.doesNotMatch(node.innerHTML, /data-fncard="conversation\.image_review"/);
   node.input('[data-model-search]', {value: ''});
   node.click('[data-model-sub]', {modelSub: 'map'});
   for (const [kind, label] of Object.entries(labels)) {
@@ -197,6 +197,31 @@ test('registered review, media and authoring tasks have searchable Chinese names
   for (const label of Object.values(labels)) assert.ok(node.innerHTML.includes(label), label);
   assert.doesNotMatch(node.innerHTML, /日程规划|角色状态/,
     'quick configuration covers registered tasks rather than unavailable placeholders');
+  h.page.unmount();
+});
+
+test('video narration offers only native-video providers and saves the selected model', async () => {
+  const h = harness(), node = h.root(), data = status();
+  data.tasks.push(editable('conversation.video_narration', 'gemini-a', ['text', 'video'], 'background'));
+  data.providers.push(
+    {id: 'gemini-a', model: 'gemini-3.8-flash', capabilities: ['text', 'video'], max_output_tokens: 8192},
+    {id: 'gemini-b', model: 'gemini-3.8-pro', capabilities: ['text', 'video'], max_output_tokens: 8192},
+  );
+  h.page.mount(node);
+  h.requests[0].resolve(data);
+  await flush();
+  node.click('[data-model-sub]', {modelSub: 'cfg'});
+  node.click('[data-model-open]', {modelOpen: 'conversation.video_narration'});
+  const card = node.innerHTML.split('data-fncard="conversation.video_narration"')[1].split('</article>')[0];
+  assert.match(card, /<option value="gemini-a" selected>gemini-a · gemini-3\.8-flash<\/option>/);
+  assert.match(card, /<option value="gemini-b"[^>]*>gemini-b · gemini-3\.8-pro<\/option>/);
+  assert.doesNotMatch(card, /<option value="primary"|<option value="secondary"/);
+  node.change('[data-model-field]', {modelField: 'provider', modelKind: 'conversation.video_narration', value: 'gemini-b'});
+  node.click('[data-model-action]', {modelAction: 'save-one', modelKind: 'conversation.video_narration'});
+  const post = h.requests.find(request => request.method === 'POST');
+  assert.deepEqual({...post.values.changes}, {provider: 'gemini-b'});
+  post.resolve({replayed: false, task: editable('conversation.video_narration', 'gemini-b', ['text', 'video'], 'background')});
+  await flush();
   h.page.unmount();
 });
 
@@ -289,6 +314,24 @@ test('switching a provider inline raises one queued change and posting saves tha
   await flush();
   assert.match(node.innerHTML, /已保存 1 项/);
   assert.doesNotMatch(node.innerHTML, /项改动待保存/);
+});
+
+test('an explicit fallback equal to the primary is normalized instead of blocking the save', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  page.mount(node);
+  const data = status();
+  data.tasks[1].fields.fallback = {value: 'primary', inherited_value: '', source: 'window',
+    inherited_source: 'default', explicit: true};
+  requests[0].resolve(data);
+  await flush();
+  node.click('[data-model-sub]', {modelSub: 'cfg'});
+  node.change('[data-model-field]', {modelField: 'prompt', modelKind: 'memory.reflect', value: '保持简短'});
+  assert.match(node.innerHTML, /项改动待保存/);
+  node.click('[data-model-action]', {modelAction: 'save-one', modelKind: 'memory.reflect'});
+  const post = requests.find(request => request.method === 'POST');
+  assert.equal(post.values.changes.fallback, '', 'a duplicate fallback must be cleared explicitly');
+  assert.equal(post.values.changes.prompt, '保持简短');
 });
 
 test('multi-select assigns one provider to several tasks and keeps capability mismatches out', async () => {
@@ -1116,6 +1159,9 @@ test('the functional page exposes the design subtabs and the situation map deriv
   assert.match(node.innerHTML, /可用模型/);
   assert.match(node.innerHTML, /对话回复/);
   assert.match(node.innerHTML, /按能力槽/);
+  assert.match(node.innerHTML, /模型提供方图例/);
+  assert.match(node.innerHTML, /class="model-mlgd-box"/);
+  assert.doesNotMatch(node.innerHTML, /class="model-mlgd-box" open/);
   node.click('[data-model-av]', {modelAv: 'lane'});
   assert.match(node.innerHTML, /前台/);
   assert.match(node.innerHTML, /后台/);
@@ -1665,7 +1711,7 @@ test('Laya page exposes official local install, first-run download, and SystemOn
   await flush();
 
   node.change('[data-laya-field]', {layaField: 'mode', value: 'remote'});
-  assert.match(node.innerHTML, /SystemOne 服务地址/);
+  assert.match(node.innerHTML, /服务地址/);
   assert.match(node.innerHTML, /\/v1\/systemone/);
   assert.match(node.innerHTML, /复制服务启动命令/);
   assert.match(node.innerHTML, /data-laya-save/);

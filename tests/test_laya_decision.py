@@ -10,6 +10,7 @@ from urllib.error import HTTPError, URLError
 import pytest
 
 from companion_v2.decision.client import LayaClientError
+from astrbot_host import laya_client as laya_module
 from astrbot_host.laya_client import LayaDecisionClient, _LOCAL_ROUTERS, _decision_from_result
 from companion_v2.decision.contract import DecisionContractError, deterministic_skip_reason, parse_decision
 from companion_v2.decision.prompt import DECISION_QUESTIONS, build_state
@@ -80,6 +81,51 @@ def test_followup_confidence_threshold_is_validated_and_persisted(tmp_path):
     status = store.update(store.read()["revision"], {"followup_confidence_threshold": 55})
     assert status["followup_confidence_threshold"] == 55
     assert store.raw()["followup_confidence_threshold"] == 55
+
+
+def test_cloudflare_request_format_is_validated_and_persisted(tmp_path):
+    store = LayaSettingsStore(tmp_path, "target", "role")
+    assert store.read()["request_format"] == "native"
+
+    with pytest.raises(LayaSettingsError) as error:
+        store.update(store.raw()["revision"], {"request_format": "unknown"})
+    assert error.value.code == "laya_config_invalid"
+
+    status = store.update(store.read()["revision"], {"request_format": "cloudflare"})
+    assert status["request_format"] == "cloudflare"
+    assert store.raw()["request_format"] == "cloudflare"
+
+
+def test_cloudflare_body_wraps_input_and_unwraps_result(monkeypatch):
+    captured = {}
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self, limit):
+            return self.payload
+
+    def fake_urlopen(request, timeout=0):
+        captured["body"] = json.loads(request.data)
+        return Response(json.dumps({"success": True, "result": laya_result()}).encode())
+
+    monkeypatch.setattr(laya_module, "urlopen", fake_urlopen)
+    client = LayaDecisionClient(mode="remote",
+        endpoint="https://api.cloudflare.com/client/v4/accounts/example/ai/run",
+        api_key="token", request_format="cloudflare", model="typesafe/jev-1.14.0")
+    decision = asyncio.run(client.probe())
+
+    assert captured["body"]["model"] == "typesafe/jev-1.14.0"
+    assert set(captured["body"]) == {"model", "input"}
+    assert set(captured["body"]["input"]) == {"state", "questions"}
+    assert decision.document()["action"] == "reply"
 
 
 def test_followup_confidence_gate_suppresses_only_weak_automatic_continuations(tmp_path):

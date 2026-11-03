@@ -37,7 +37,7 @@ from .settings import DELIVERY_AUTHORIZATION_TTL, INSTALLATION_PREFIX, PROFILE_P
 from .binding import describe_pin, event_identity, is_private_message, message_text, parse_bind_command
 from .calendar_command import receive_calendar_command
 from .binding_store import PendingBinding, binding_path, clear_binding, read_binding, write_binding
-from .news import configured_news_port
+from .news import configured_news_port, configured_search_port
 from .service_balance import configured_balance_port
 from .weather_settings import configured_weather_ports
 from .files.parsing import parser_availability
@@ -259,13 +259,25 @@ class AstrBotMultiController:
         if binding.persona_id:
             from .identity_derivation import normalize_persona_id
             wanted = normalize_persona_id(binding.persona_id)
-            candidates = [persona for persona in settings.personas if persona.bot_id == match.bot_id]
-            if not any(normalize_persona_id(persona.persona_id) == wanted for persona in candidates):
-                # 上游把人设改名后，parked binding 里还是旧名。单人格窗口的结果唯一，
-                # 直接认它并在后续 _repair_parked_binding() 里把名字写回；
-                # 同一 Bot 下有多个人格时无法判断，仍然拒绝，避免猜错。
+            exact = [persona for persona in settings.personas
+                     if persona.bot_id == match.bot_id
+                     and normalize_persona_id(persona.persona_id) == wanted]
+            if not exact:
+                # AstrBot can rename a persona in place.  The parked binding keeps
+                # the old name, so an exact comparison deadlocks setup before the
+                # existing repair path can run.  Accept a unique mapping whose
+                # role still carries the old name, or the only persona for this
+                # bot; multiple candidates stay rejected rather than guessed.
+                by_role = [persona for persona in settings.personas
+                           if persona.bot_id == match.bot_id
+                           and normalize_persona_id(persona.role_id) == wanted]
+                candidates = by_role if len(by_role) == 1 else [
+                    persona for persona in settings.personas if persona.bot_id == match.bot_id]
                 if len(candidates) != 1:
                     return None
+                logger.warning(
+                    "[CompanionV2] 管理员绑定的人格 %s 已不在当前映射中，按唯一映射 %s 继续",
+                    binding.persona_id, candidates[0].persona_id)
         return match
 
     async def proactive_diagnostic_target(self):
@@ -548,8 +560,17 @@ class AstrBotMultiController:
                   str(error) if code.split("__", 1)[0] == "host_native_lookup_timeout"
                   or code in ("host_binding_changed", "account_config_save_failed", "account_config_persistence_unavailable",
                               "backup_restore_rollback_incomplete", "backup_restore_journal_unreadable",
-                              "backup_restore_startup_blocked") else
+                              "backup_restore_startup_blocked", "setup_binding_missing") else
                   "shared host configuration, native route or authority could not be verified")
+        if code == "host_control_failed":
+            # 把“在哪一层炸的”带回来：只有位置，不含任何配置值或会话内容。
+            frames = traceback.extract_tb(error.__traceback__) if error.__traceback__ else []
+            origin = ""
+            if frames:
+                last = frames[-1]
+                origin = " @ {} ({}:{})".format(last.name, last.filename.replace("\\", "/").rsplit("/", 1)[-1], last.lineno)
+            reason = "宿主操作异常中断：{} | operation={}{}；请把日志里「宿主操作异常」这一整段发出来。".format(
+                type(error).__name__, operation or "control", origin)
         self.last_failure = {"code": code, "reason": reason}
         if operation:
             self.last_failure["operation"] = operation
@@ -732,14 +753,22 @@ class AstrBotMultiController:
             image_settings_path=self.data_root / "model_image_routes.json",
             bundled_extensions=bundled_extensions, bundled_issues=bundled_issues,
             managed_extensions=MANAGED_EXTENSIONS)
-        search_provider_resolver = SearchSettingsStore(self.data_root).selected_provider_id
+        search_settings = SearchSettingsStore(self.data_root)
+        search_provider_resolver = search_settings.selected_provider_id
+        def search_port_factory(context, query, result_count):
+            return configured_search_port(self.context, query=query, result_count=result_count,
+                task_context=context, topic="general",
+                deepseek_provider_resolver=search_provider_resolver,
+                source_priority=search_settings.source_priority())
         self.session = MultiHostSession(self.runtime, self.context, settings=self.settings, personas=personas,
             authority=self.authority, native_types=self.native_types, provider_fingerprint=manifest["provider_fingerprint"],
             runtime_instance_id="astrbot-multi-" + uuid4().hex, native_tool_port=self.native_extensions, now=self.now,
             persona_window_snapshot_lookup=self.session_topology.persona_selection_snapshot,
             persona_window_snapshot_update=self.session_topology.update_persona_selection_snapshot,
             news_port=configured_news_port(self.config, context=self.context,
-                deepseek_provider_resolver=search_provider_resolver),
+                deepseek_provider_resolver=search_provider_resolver,
+                search_priority_resolver=search_settings.source_priority),
+            search_port_factory=search_port_factory,
             balance_port=configured_balance_port(self.config),
             weather_ports=configured_weather_ports(self.config),
             qzone_transport=build_qzone_transport(self.context, data_root=self.data_root),
@@ -808,6 +837,12 @@ class AstrBotMultiController:
         async with self._lifecycle_lock:
             try:
                 self.refresh_settings()
+                settings = self.settings
+                if (settings is None or not getattr(settings, "targets", ())
+                        or not getattr(settings, "personas", ())):
+                    raise TaskError("setup_binding_missing",
+                        "还没有可加载的 Bot 账号与人格：请先在「账号与会话」绑定窗口并保存角色映射，"
+                        "再回来初始化。")
                 manifest, conversations = await self._probe()
                 previous_session = self.session
                 restore_running = bool(previous_session is not None

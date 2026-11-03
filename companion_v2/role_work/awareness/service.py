@@ -31,6 +31,8 @@ def _when(value):
 
 
 CONTINUITY_SIMILARITY = 0.62
+HANDOFF_CUES = frozenset({"来了", "我来了", "继续", "继续吧", "然后呢", "刚才那个", "刚才说的", "那个"})
+HANDOFF_REPLY_MARKERS = ("私聊", "来找我", "来私聊", "到这里", "继续")
 
 
 def _normalized_topic(value):
@@ -185,7 +187,7 @@ class RoleAwareness:
         if values.get("person.cross_window_continuity_enabled", True) is False:
             return None
         current = _normalized_topic(current_text)
-        if len(current) < 4:
+        if not current:
             return None
         minutes = self._integer(values, "person.cross_window_continuity_minutes", 30, 5, 180)
         cutoff = at - timedelta(minutes=minutes)
@@ -202,6 +204,32 @@ class RoleAwareness:
             timeline.append((when, index, item))
         timeline.sort(key=lambda row: (row[0], row[1]))
 
+        if current in HANDOFF_CUES:
+            # The user explicitly followed a group invitation into private chat.
+            # Keep the same run's prior request, but only when the role's own
+            # group reply actually invited them here; otherwise "来了" is just
+            # an ordinary greeting.
+            for when, index, item in reversed(timeline):
+                if item["kind"] != "spoke" or item["subject"] != subject or not item["topic"]:
+                    continue
+                prior_reply = ""
+                for later_at, later_index, later in timeline:
+                    if later_index <= index:
+                        continue
+                    if later["group_id"] != item["group_id"]:
+                        continue
+                    if later["kind"] == "spoke":
+                        break
+                    if later["kind"] == "reply" and later["topic"]:
+                        prior_reply = later["topic"]
+                        break
+                if prior_reply and any(marker in prior_reply for marker in HANDOFF_REPLY_MARKERS):
+                    return {"state": "handoff",
+                            "minutes_ago": max(0, int((at - when).total_seconds() // 60)),
+                            "prior_question": item["topic"], "prior_reply": prior_reply}
+            return None
+        if len(current) < 4:
+            return None
         best = None
         for when, index, item in timeline:
             if item["kind"] != "spoke" or item["subject"] != subject or not item["topic"]:

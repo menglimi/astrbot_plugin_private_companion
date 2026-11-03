@@ -40,7 +40,7 @@
     persona_draft_too_large: "草稿超出单次保存的长度上限。",
     persona_draft_conflict: "草稿在编辑期间已经有新版本，已重新读取；请核对后重试。",
     persona_version_unavailable: "这一版已不在当前角色的记录里，请刷新列表。",
-    persona_workshop_scope_unsupported: "人格问卷目前只适用于私聊对象。",
+    persona_workshop_scope_unsupported: "创建人格目前只适用于私聊对象。",
     persona_workshop_request_invalid: "请求与当前接口不匹配，请刷新页面后重试。",
     persona_standardization_invalid: "问卷或模型返回内容不符合要求，请检查后重试。",
     persona_standardization_source_too_large: "所选人格文本过长，暂时无法整理。",

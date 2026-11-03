@@ -83,6 +83,16 @@ def _native_number(value):
     return value
 
 
+def _native_message_id(value):
+    """OneBot message ids are signed integers, unlike account ids."""
+    if type(value) is not str or not value.isascii():
+        return ""
+    digits = value[1:] if value.startswith("-") else value
+    if not digits.isdecimal() or not 1 <= len(digits) <= 19 or digits.startswith("0"):
+        return ""
+    return value
+
+
 def quote_target(settings, *, text, inputs):
     """The native message this part quotes, or an empty string."""
     if not settings.get("reply_quote_enabled", False):
@@ -94,7 +104,7 @@ def quote_target(settings, *, text, inputs):
     threshold = settings.get("reply_quote_skip_chars", 0)
     if threshold and len("".join(text.split())) <= threshold:
         return ""
-    return _native_number(inputs[0][0])
+    return _native_message_id(inputs[0][0])
 
 
 def mention_targets(settings, *, inputs):

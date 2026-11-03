@@ -69,6 +69,19 @@ class DesignerAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call["contexts"], [])
         self.assertFalse((self.controller.data_root / "persona_designer").exists())
 
+    async def test_bad_request_output_ceiling_retries_once_at_4096(self):
+        class BadRequestError(Exception):
+            pass
+
+        self.provider.text_chat = AsyncMock(side_effect=[
+            BadRequestError("400 invalid max_tokens"),
+            NS(completion_text=response()),
+        ])
+        result = await self.call("/turn", method="POST", body=self.turn_body())
+        self.assertEqual(result["status"], "ok")
+        limits = [call.kwargs["max_tokens"] for call in self.provider.text_chat.call_args_list]
+        self.assertEqual(limits, [8000, 4096])
+
     async def test_new_agent_runner_default_and_persona_list_failure_are_local(self):
         self.context.get_config = lambda **_: {"agent_runner": {"runner_type": "local",
             "config": {"persona": {"persona_id": "conversation-role"}}}}

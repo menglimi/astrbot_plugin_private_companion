@@ -3147,10 +3147,14 @@ class LegacyMigrationWebAPI:
         changes = {}
         for field, value in intent.changes.items():
             if f"{intent.group_id}.{field}" in HOST_VERIFIED_FIELDS and not self._legacy_provider_available(field, value):
+                # Preserve the configured provider id even when this host has no
+                # loaded instance yet.  Blanking it loses the user's explicit
+                # choice and makes the room look "unconfigured"; keeping it lets
+                # the room say "selected provider unavailable" and lets the user
+                # reselect without guessing what was configured before.
                 differences.append({"field": f"{intent.group_id}.{field}",
-                                    "kind": "provider_reselection_required",
-                                    "explain": "旧模型提供方在当前宿主没有可用实例，请在新版共处电话设置中重新选择。"})
-                continue
+                                    "kind": "provider_unavailable_preserved",
+                                    "explain": "旧模型提供方在当前宿主没有可用实例，已保留原选择，请在新版共处电话设置中核对或重新选择。"})
             default = native_setting_value(baseline, field)
             current = native_setting_value(config, field, default)
             if current == value:

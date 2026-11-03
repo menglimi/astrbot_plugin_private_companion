@@ -352,6 +352,37 @@ async def cancel_laya_warmup():
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
+def _cloudflare_result(document: dict) -> dict:
+    """Unwrap Workers AI's ``{"success": ..., "result": {...}}`` envelope."""
+    if document.get("success") is False:
+        errors = document.get("errors") or document.get("messages") or "Workers AI request failed"
+        raise LayaClientError("laya_http_error", "Laya HTTP 200："
+                              + _diagnostic_response_text(errors)[:1000])
+    result = document.get("result")
+    if isinstance(result, dict):
+        if "answers" not in result:
+            for key in ("response", "output"):
+                nested = result.get(key)
+                if isinstance(nested, dict) and "answers" in nested:
+                    return nested
+                if isinstance(nested, str):
+                    try:
+                        parsed = json.loads(nested)
+                    except (TypeError, ValueError):
+                        continue
+                    if isinstance(parsed, dict) and "answers" in parsed:
+                        return parsed
+        return result
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+        except (TypeError, ValueError) as error:
+            raise LayaClientError("laya_response_invalid", "Workers AI result 不是 JSON 对象") from error
+        if isinstance(parsed, dict):
+            return parsed
+    raise LayaClientError("laya_response_invalid", "Workers AI 响应缺少 result 对象")
+
+
 def _parse_document(raw: str) -> dict:
     try:
         value = json.loads(raw)
@@ -492,11 +523,17 @@ class LayaDecisionClient:
     runtime_status = staticmethod(local_runtime_status)
 
     def __init__(self, *, mode: str = "local", endpoint: str = "", api_key: str = "",
-                 timeout_seconds: int = 8, local_model_path: str = "", model: str = ""):
-        if mode not in MODE_MODELS:
-            raise LayaClientError("laya_mode_invalid",
-                                  "Laya 接入方式必须是 local、remote、jev 或 workers_ai")
+                 timeout_seconds: int = 8, local_model_path: str = "",
+                 request_format: str = "native", model: str = DEFAULT_MODEL):
+        if mode not in {"local", "remote"}:
+            raise LayaClientError("laya_mode_invalid", "Laya 接入方式必须是 local 或 remote")
+        if request_format not in {"native", "cloudflare"}:
+            raise LayaClientError("laya_request_format_invalid", "Laya 请求格式必须是 native 或 cloudflare")
+        if type(model) is not str or not model.strip() or len(model) > 256:
+            raise LayaClientError("laya_model_invalid", "Laya 远程模型名无效")
         self.mode = mode
+        self.request_format = request_format
+        self.model = model.strip() if mode == "remote" else DEFAULT_MODEL
         self.local_model_path = local_model_path
         self.model = str(model or "").strip() or MODE_MODELS[mode]
         self.endpoint, self.transport = "", None
@@ -555,7 +592,7 @@ class LayaDecisionClient:
             self.last_trace["request"]["sent"] = True
             raw_body = await self._post(model_state, questions)
             self.last_trace["response"] = {"format": "json", "body": raw_body}
-            raw_result = self.transport.document(raw_body)
+            raw_result = self._parse_body(raw_body)
             self.last_trace["response"]["value"] = raw_result
         if type(raw_result) is not dict:
             raise LayaClientError("laya_response_invalid", "Laya predict 返回的结果不是对象")
@@ -622,7 +659,7 @@ class LayaDecisionClient:
             self.last_trace["request"]["sent"] = True
             raw_body = await self._post(model_state, questions)
             self.last_trace["response"] = {"format": "json", "body": raw_body}
-            raw_result = self.transport.document(raw_body)
+            raw_result = self._parse_body(raw_body)
             self.last_trace["response"]["value"] = raw_result
         if type(raw_result) is not dict:
             raise LayaClientError("laya_response_invalid", "Laya intervention result is not an object")
@@ -649,9 +686,20 @@ class LayaDecisionClient:
             "connection_test": True,
         }, enabled_fields=enabled_fields)
 
+    def _parse_body(self, raw: str) -> dict:
+        document = _parse_document(raw)
+        if self.request_format == "cloudflare":
+            return _cloudflare_result(document)
+        return document
+
     async def _post(self, model_state: str, questions: dict) -> str:
-        body = json.dumps(self.transport.payload(model_state, questions),
-                          ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        if self.request_format == "cloudflare":
+            # Cloudflare Workers AI wraps the model payload under ``input``.
+            payload = {"model": self.model,
+                       "input": {"state": model_state, "questions": questions}}
+        else:
+            payload = {"state": model_state, "questions": questions, "model": self.model}
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         if self.api_key:
             headers["Authorization"] = "Bearer " + self.api_key

@@ -18,3 +18,19 @@ button:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outli
 dialog{width:min(540px,calc(100% - 32px));max-height:calc(100% - 32px);padding:var(--pad);border:1px solid var(--line-strong);border-radius:var(--r-lg);background:var(--surface);color:var(--ink);box-shadow:0 16px 60px #0003}dialog::backdrop{background:#15251e66}.dialog-heading{margin-bottom:12px}.dialog-heading h2{font-size:1.1em}.close-button{width:32px;height:32px;border:0;background:var(--surface-muted);border-radius:var(--r-sm);font-size:22px;line-height:1}.field{display:grid;gap:7px;margin-top:16px}.dialog-foot{justify-content:flex-end;margin-top:20px}.draft-list{display:grid;gap:8px;margin:14px 0}.saved-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px;border:1px solid var(--line);border-radius:var(--r-sm)}.saved-item div{min-width:0}.saved-item strong{display:block;overflow-wrap:anywhere;font-size:.95em}.saved-item small{display:block;color:var(--muted)}.saved-item button{flex-shrink:0}.compare-dialog{width:min(1120px,calc(100% - 32px))}.comparison{display:grid;grid-template-columns:1fr 1fr;gap:var(--gap)}.comparison section{min-width:0}.comparison pre{min-height:200px;max-height:65vh;overflow:auto;padding:12px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-muted);white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;font-size:.92em}
 @media(max-width:850px){.workbench{grid-template-columns:1fr}.workbench-head{align-items:flex-start}.workbench-head>.actions{margin-left:auto}.messages{height:320px}.manuscript textarea{min-height:280px}.stages button{flex:0 0 auto}.stages{justify-content:space-between}.comparison{grid-template-columns:1fr}}
 @media(max-width:480px){.designer{padding:12px}.workbench-head>.actions{margin-left:0;width:100%}.workbench-head>.actions button{flex:1;padding-inline:8px}.mode-row{margin-top:16px;gap:8px}.memory-note{font-size:.8em}.card:not(details){padding:12px}.card summary{padding:12px}.card-body{padding:0 12px 12px}.composer-foot>.actions{width:100%;justify-content:flex-end}.draft-foot>.actions{width:100%}.draft-foot>.actions button{flex:1}.stages{gap:2px;padding:5px}.stages button{padding:7px;font-size:.82em;gap:5px}}
+
+/* 嵌入「人格处理」时由外层模式卡导航，隐藏重复的标题与模式开关 */
+.is-embedded .workbench-head .heading{display:none}
+.is-embedded .workbench-head{justify-content:flex-end}
+.is-embedded .mode-row{justify-content:flex-end}
+.is-embedded .mode-row .mode-switch{display:none}
+
+/* 操作区按场景分组：顶部只放工作区设置，正文底部放交付动作 */
+.workbench-head>.actions{gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.section-heading>div{display:grid;gap:2px;min-width:0}
+.draft-hint{color:var(--muted);font-size:.78em;line-height:1.45}
+.manuscript .section-heading{align-items:flex-start}
+.draft-foot{position:sticky;bottom:-1px;z-index:2;margin-top:10px;padding-top:10px;border-top:1px solid var(--line);background:var(--surface)}
+.draft-foot .actions{gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.draft-foot .actions .button.primary{min-width:96px}
+@media(max-width:560px){.draft-foot{align-items:flex-start;flex-direction:column}.draft-foot .actions{width:100%}.draft-foot .actions .button{flex:1}}

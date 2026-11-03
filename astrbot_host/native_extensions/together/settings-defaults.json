@@ -10,8 +10,6 @@
     "primary_user_id": "",
     "bot_qq_id": "",
     "persona_id": "",
-    "chat_provider_id": "",
-    "vision_provider_id": "",
     "history_turns": 12,
     "enable_memory_context": true,
     "call_proactive_enabled": true,

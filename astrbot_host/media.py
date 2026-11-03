@@ -5,6 +5,7 @@ import base64
 import hashlib
 import io
 import ipaddress
+from pathlib import Path
 from urllib.parse import urljoin
 import warnings
 
@@ -17,6 +18,25 @@ from companion_v2.conversation.media.models import CapturedImage, ImageDescripto
 from companion_v2.execution.models import TaskError
 
 from .animation import inspect_animation
+
+
+# Transparent DNS proxies (Clash/mihomo ``fake-ip`` mode) answer ordinary
+# names from the RFC 2544 benchmarking range so that the proxy stack can route
+# them.  Such an address never belongs to a local service: the connector hands
+# the packet to the proxy, which resolves the original name again.  A name
+# resolved there is still a public fetch, so only that resolver answer may use
+# the exception.  A literal address in the range stays refused in
+# ``public_url``, and every other non-global answer (loopback, private,
+# link-local, CGNAT, cloud metadata) keeps its existing denial.
+_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+
+
+def _resolved_publicly(value):
+    """Whether a resolver answer may be connected to for a public attachment."""
+    address = ipaddress.ip_address(value)
+    if address.version == 6 and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    return address.is_global or address in _FAKE_IP_NETWORK
 
 
 def public_url(value):
@@ -49,7 +69,7 @@ class PublicImageResolver(aiohttp.ThreadedResolver):
         values = await super().resolve(host, port, family)
         # Validate the addresses actually handed to the connector. A separate
         # DNS preflight would allow a later lookup to bind to a different host.
-        if not values or any(not ipaddress.ip_address(v["host"]).is_global for v in values):
+        if not values or any(not _resolved_publicly(v["host"]) for v in values):
             raise TaskError("host_image_location_invalid", "image attachment resolved outside the public network")
         return values
 
@@ -115,6 +135,18 @@ def inspect_image(content, position):
         raise TaskError("host_image_invalid", "image bytes could not be verified") from None
 
 
+def _read_host_resolved_image(value):
+    """Read only an absolute local file returned by the trusted quote resolver."""
+    path = Path(value)
+    if not path.is_absolute() or value.startswith(("\\\\", "//")) or not path.is_file():
+        raise TaskError("host_image_location_invalid", "resolved image cache must be a local absolute file")
+    with path.open("rb") as stream:
+        content = stream.read(MAX_IMAGE_BYTES + 1)
+    if len(content) > MAX_IMAGE_BYTES:
+        raise TaskError("host_image_limit", "image exceeds the intake byte budget")
+    return content
+
+
 async def load_native_image(locator):
     if not isinstance(locator, NativeImageLocator):
         raise TaskError("host_image_location_invalid", "image intake needs a frozen host component")
@@ -125,6 +157,8 @@ async def load_native_image(locator):
             if len(encoded) > (MAX_IMAGE_BYTES + 2) // 3 * 4:
                 raise TaskError("host_image_limit", "image exceeds the intake byte budget")
             content = base64.b64decode(encoded, validate=True)
+        elif locator.host_resolved is True and Path(value).is_absolute():
+            content = await asyncio.to_thread(_read_host_resolved_image, value)
         else:
             # Do not interpret a network message's file/path field as local disk authority.
             content = await fetch_image(value)

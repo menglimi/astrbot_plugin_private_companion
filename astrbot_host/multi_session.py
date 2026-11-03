@@ -22,7 +22,8 @@ from companion_v2.adapters.astrbot.onebot_group import OneBotGroupSender
 from companion_v2.adapters.astrbot.platform_sender import AstrBotPlatformSender
 from companion_v2.adapters.astrbot.presence import OneBotPresencePort
 from companion_v2.adapters.astrbot.provider import AstrBotTextProvider, REPLY_TASK_CAPABILITIES
-from companion_v2.adapters.astrbot.provider_catalog import TextProviderSettings, assemble_providers, loaded_routing
+from companion_v2.adapters.astrbot.provider_catalog import (TextProviderSettings, assemble_providers,
+    attach_native_video, loaded_routing)
 from companion_v2.adapters.astrbot.tools import CompositeAstrBotToolPort
 from companion_v2.configuration.registry import FieldRegistry
 from companion_v2.conversation.content.authoring_tasks import authoring_profiles
@@ -42,6 +43,7 @@ from companion_v2.conversation.media.image_narration import image_narration_prof
 from companion_v2.conversation.media.video.narration import video_narration_profile
 from companion_v2.conversation.media.understanding import intake_settings as file_intake_settings
 from companion_v2.screen.interpretation import screen_interpretation_profile
+from companion_v2.reality.model_profile import reality_text_profile
 from .settings import HostControlError
 from .huawei_health.service import get_huawei_health_service_for_root
 from companion_v2.conversation.voice_reply import VoiceReplyDelivery
@@ -55,10 +57,10 @@ from companion_v2.model_gateway.models import MAX_MODEL_OUTPUT_TOKENS, ModelTask
 from companion_v2.model_gateway.output_defaults import with_thinking_margins
 from companion_v2.model_gateway.routing import configuration_fields
 from companion_v2.memory.reflection import reflection_profile
-from companion_v2.proactive.service import contact_profile, persona_judge_profile
+from companion_v2.proactive.service import contact_profile, persona_judge_profile, plan_profile
 from companion_v2.role_work.journal.writing import writing_profiles
 from companion_v2.role_work.reader import reading_profile
-from companion_v2.role_work.state.maintenance import state_profile
+from companion_v2.role_work.state.maintenance import state_output_budget, state_profile
 from companion_v2.agenda.planning import planning_profile
 from .weather_settings import configured_weather_ports
 from companion_v2.role_work.growth.progress import growth_progress_profile
@@ -463,15 +465,17 @@ class MultiHostSession:
             binding=ProviderBinding("model.text", common.provider_id, native_types.version, provider_fingerprint),
             provider_id=common.provider_id, version=native_types.version, provider_type=native_types.provider_types,
             function_tool_type=native_types.function_tool, tool_set_type=native_types.tool_set,
-            # Provider ceiling, not the default budget: the budgets below travel with
-            # each task profile, so sharing one number caps every task at the default.
-            tariff=common.tariff, maximum_output_tokens=MAX_MODEL_OUTPUT_TOKENS,
+            tariff=common.tariff, maximum_output_tokens=max(common.max_output_tokens, 8192),
             maximum_input_estimate=common.maximum_input_estimate, output_parameter=common.output_parameter,
             streaming=common.streaming)
         self.model._current()
+        self.model = attach_native_video(native_context, bridge=self.bridge, native_types=native_types,
+            text=self.model, settings=TextProviderSettings(common.provider_id, common.tariff,
+                max(common.max_output_tokens, 8192), common.maximum_input_estimate,
+                common.output_parameter, common.streaming))
         self.models = (self.model,) + assemble_providers(native_context, bridge=self.bridge,
             native_types=native_types, primary_id=common.provider_id, additional=common.additional_providers,
-            defaults=TextProviderSettings(common.provider_id, common.tariff, MAX_MODEL_OUTPUT_TOKENS,
+            defaults=TextProviderSettings(common.provider_id, common.tariff, max(common.max_output_tokens, 8192),
                 common.maximum_input_estimate, common.output_parameter, common.streaming))
         fallback_provider_id, replacement_rules = loaded_routing(common.fallback_provider_id,
             common.replacement_rules, (model.binding.provider for model in self.models))
@@ -482,9 +486,10 @@ class MultiHostSession:
                     prompt_sections=expression_prompt_sections()),
                     poke_reply_profile(common.provider_id, max_output_tokens=min(1024, common.max_output_tokens)),
                     contact_profile(common.provider_id, max_output_tokens=common.max_output_tokens),
+                    plan_profile(common.provider_id, max_output_tokens=min(1024, common.max_output_tokens)),
                     persona_judge_profile(common.provider_id, max_output_tokens=common.max_output_tokens),
                     reflection_profile(common.provider_id, max_output_tokens=common.max_output_tokens),
-                    state_profile(common.provider_id, max_output_tokens=common.max_output_tokens),
+                    state_profile(common.provider_id, max_output_tokens=state_output_budget(common.max_output_tokens, self.models)),
                     planning_profile(common.provider_id, max_output_tokens=common.max_output_tokens),
                     growth_progress_profile(common.provider_id, max_output_tokens=common.max_output_tokens),
                     self_review_profile(common.provider_id, max_output_tokens=common.max_output_tokens),
@@ -495,6 +500,7 @@ class MultiHostSession:
                     image_review_profile(common.provider_id),
                     context_caption_profile(common.provider_id),
                     screen_interpretation_profile(common.provider_id),
+                    reality_text_profile(common.provider_id),
                     *authoring_profiles(common.provider_id, draft_tokens=common.max_output_tokens),
                     *writing_profiles(common.provider_id, max_output_tokens=common.max_output_tokens),
                     *((image_narration_profile(next(model.binding.provider for model in self.models

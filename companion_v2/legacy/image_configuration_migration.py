@@ -6,6 +6,8 @@ import json
 import re
 from dataclasses import dataclass
 
+from companion_v2.conversation.media.models import MAX_REFERENCE_IMAGES
+
 
 IMAGE_CONFIGURATION_SOURCES = frozenset({
     "photo_action_config.photo_generation_backend",
@@ -275,7 +277,10 @@ def _endpoints(raw, *, reference_images, source, differences):
             "id": f"legacy-image-{index + 1:02d}", "name": name, "enabled": enabled,
             "platform": platform, "model": model, "width": width, "height": height,
             "quality": quality, "response_format": "",
-            "max_reference_images": 1 if reference_images else 0,
+            # V1 only exposed an on/off reference switch.  An enabled switch
+            # migrates to the GPT Image input ceiling; a narrower provider can
+            # be lowered per endpoint after migration.
+            "max_reference_images": MAX_REFERENCE_IMAGES if reference_images else 0,
             "base_url": base_url, "api_key": api_key, "timeout_seconds": timeout,
             "custom_headers": headers, "ratio": ratio, "size_label": size_label,
         })
@@ -470,7 +475,7 @@ def convert_image_configuration(config: dict) -> ImageConfigurationMigration:
             reference_images = _boolean(raw_reference)
         except ValueError as error:
             differences.append({"field": "image.output.endpoints[].max_reference_images", "kind": "invalid_value",
-                                "explain": f"参考图开关无法识别，端点按允许一张参考图迁移：{error}。"})
+                                "explain": f"参考图开关无法识别，端点按参考图上限迁移：{error}。"})
 
     backend_present, raw_backend = read("photo_generation_backend")
     backend = None

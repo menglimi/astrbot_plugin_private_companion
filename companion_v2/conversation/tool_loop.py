@@ -98,6 +98,27 @@ class ToolSource:
             raise ValueError("source offer requires an exact original reference")
 
 
+def _schedule_schema():
+    return {
+        "type": "object",
+        "description": "Absolute local schedule: anchor must include a UTC offset, timezone_name is IANA.",
+        "properties": {
+            "anchor": {"type": "string", "format": "date-time",
+                       "description": "ISO-8601 timestamp with offset, e.g. 2026-11-03T07:55:00+08:00."},
+            "timezone_name": {"type": "string",
+                              "description": "IANA timezone such as Asia/Shanghai."},
+            "frequency": {"type": "string",
+                          "enum": ["once", "daily", "weekly", "monthly", "yearly"]},
+            "interval": {"type": "integer", "minimum": 1},
+            "count": {"type": "integer", "minimum": 1},
+            "fold": {"type": "integer", "enum": [0, 1]},
+            "gap_policy": {"type": "string", "enum": ["reject", "shift_forward"]},
+        },
+        "required": ["anchor", "timezone_name"],
+        "additionalProperties": False,
+    }
+
+
 def specification(action, required, optional=(), description="Use the original role's authorized local agenda."):
     properties = {key: dict(_FIELD_SCHEMAS.get(key, {})) for key in sorted(set(required) | set(optional))}
     if action in ("memo.create", "memo.list"):
@@ -173,6 +194,8 @@ class LocalRoleTools:
             "memo.create": "Save one private agenda note. Use purpose=open_loop only for a concrete conversation explicitly left to continue; it expires automatically.",
             "memo.list": "List the current participant's private agenda notes; purpose=open_loop returns only unfinished conversation threads.",
             "memo.edit": "Revise an existing note or open loop; edit an existing loop instead of creating a duplicate.",
+            "reminder.create": "Create a reminder that will actually fire. Pass schedule={anchor: ISO-8601 with UTC offset, timezone_name: IANA}; never use memo.create as a substitute.",
+            "reminder.reschedule": "Move an existing reminder to a new absolute schedule; keep its reminder_id and expected_revision.",
             "operation.lookup": "仅查询便签和提醒的原操作回执，不能查询生图、语音或设备操作；查不到不改变其他工具已返回的操作状态。",
         }
         self.catalog = (

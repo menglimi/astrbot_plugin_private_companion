@@ -712,7 +712,7 @@ window.CompanionSetup = (() => {
     role_relation:"用户与角色的关系", interaction:"相处方式", extra:"其他关系补充",
   };
   const TASK_LABELS = {
-    "conversation.reply":"对话回复", "proactive.compose":"主动联系", "proactive.judge":"主动内容审核",
+    "conversation.reply":"对话回复", "proactive.plan":"主动联系规划", "proactive.compose":"主动联系写作", "proactive.judge":"主动内容审核",
     "memory.reflect":"记忆整理", "role.state.maintain":"角色状态", "calendar.plan":"日程规划",
     "role.growth.progress":"成长进展", "role.self_review":"自我复盘", "role.expression.learn":"表达学习",
     "role.expression.review":"回复表达复核", "role.expression.contact_review":"主动表达复核",

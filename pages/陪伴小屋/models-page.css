@@ -147,6 +147,13 @@
 .model-state{font-size:var(--fs-tiny);color:var(--m-ink3);white-space:nowrap}
 .model-state.warn{color:var(--m-amber)}
 /* ---- 态势图 ---- */
+.model-mlgd-box{border:1px solid var(--m-line);border-radius:var(--m-r);background:var(--m-card);overflow:hidden}
+.model-mlgd-box>summary{display:flex;align-items:center;gap:var(--sp-2);padding:var(--sp-2) var(--sp-3);cursor:pointer;list-style:none;font-size:var(--fs-tiny);color:var(--m-ink3)}
+.model-mlgd-box>summary::-webkit-details-marker{display:none}
+.model-mlgd-box>summary span{font-weight:600;color:var(--m-ink2)}
+.model-mlgd-box>summary small{margin-left:auto;white-space:nowrap}
+.model-mlgd-box[open]>summary{border-bottom:1px solid var(--m-line)}
+.model-mlgd-box .model-mlgd.legend{padding:var(--sp-2) var(--sp-3)}
 .model-mlgd.legend{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;font-size:var(--fs-tiny);color:var(--m-ink3)}
 .model-mlgd.legend span{display:inline-flex;align-items:center;gap:var(--sp-1)}
 .model-mlgd.legend i{width:7px;height:7px;border-radius:50%;display:inline-block}

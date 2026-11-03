@@ -33,7 +33,7 @@ window.CompanionMaintenancePage = (() => {
     }).format(date);
   };
   const taskName = value => ({
-    "conversation.reply": "对话回复", "proactive.compose": "主动联系",
+    "conversation.reply": "对话回复", "proactive.plan": "主动联系规划", "proactive.compose": "主动联系写作",
     "conversation.astrbot_core": "AstrBot 核心对话",
     "proactive.judge": "主动联系复核", "memory.reflect": "记忆整理",
     "role.state.maintain": "角色状态", "calendar.plan": "日程规划",
@@ -58,7 +58,7 @@ window.CompanionMaintenancePage = (() => {
     ["对话", [["conversation.reply", "对话回复", "AstrBot 核心回复的 V2 附加提示"],
       ["conversation.image_narration", "当前图片转述", "为本轮已授权图片生成简短文字描述"],
       ["conversation.video_narration", "原生视频转述", "将原视频交给支持视频输入的模型直接理解"]]],
-    ["主动与记忆", [["proactive.compose", "主动联系", "有真实契机时组织联系内容"], ["proactive.judge", "主动联系复核", "复核是否符合当前人格与来源"], ["memory.reflect", "记忆整理", "从已授权素材整理认识"]]],
+    ["主动与记忆", [["proactive.plan", "主动联系规划", "双阶段模式下判断时机与切口"], ["proactive.compose", "主动联系写作", "生成主动联系正文"], ["proactive.judge", "主动联系复核", "复核是否符合当前人格与来源"], ["memory.reflect", "记忆整理", "从已授权素材整理认识"]]],
     ["生活与成长", [["calendar.plan", "日程规划", "基于已有目标规划下一步"], ["role.state.maintain", "角色状态", "维护角色的连续生活状态"], ["role.reading.consume", "阅读理解", "阅读实际提供的原文"], ["role.growth.progress", "成长进展", "根据已完成确认提出进展"], ["role.self_review", "自我复盘", "回看已完成的角色生活记录"], ["role.expression.learn", "表达学习", "从已授权表达样本提炼风格"]]],
     ["私人书写", [["role.journal.diary", "日记", "保存私人书写"], ["role.journal.dream", "梦境", "保存梦境记录"], ["role.journal.derive", "书写整理", "整理已有文字素材"], ["role.journal.select", "素材选择", "选择本次书写素材"]]],
     ["视觉与媒体", [["conversation.context_image_caption", "图片摘要", "从已授权图片提取可见事实"], ["image_review", "图片审核", "按合同检查图片内容"], ["conversation.image_review", "图片审核", "按合同检查图片内容"], ["screen.interpretation", "屏幕理解", "理解已授权屏幕画面"], ["screen.peek", "屏幕速览", "对已授权屏幕进行短摘要"]]],

@@ -73,8 +73,9 @@ class PersonaDesignerWebAPI:
                         "reason": "这次设计请求格式不完整，请检查后重试。", "data": {"code": "persona_designer_invalid"}}
             except Exception as error:
                 # Provider/storage exceptions may contain credentials, URLs or persona text.
-                logger.warning("[CompanionV2] 新的她请求失败 operation=%s error_type=%s",
-                               handler.__name__, type(error).__name__)
+                logger.warning("[CompanionV2] 新的她请求失败 operation=%s error_type=%s status=%s",
+                               handler.__name__, type(error).__name__,
+                               getattr(error, "status_code", None) or getattr(error, "status", None))
                 return {"status": "error", "message": "persona_designer_unavailable",
                         "reason": "新的她暂时未能完成这次操作，当前编辑内容仍保留，可以稍后重试。",
                         "data": {"code": "persona_designer_unavailable"}}
@@ -194,6 +195,38 @@ class PersonaDesignerWebAPI:
             raise TaskError("persona_designer_source_large", "这份人设较长，请手动选取需要优化的部分。")
         return {"id": identifier, "name": record.get("name") or identifier, "text": text}
 
+    async def _text_chat(self, provider, *, prompt, system):
+        """Ask the selected host model, with one conservative 400 retry.
+
+        A provider that exposes a smaller output ceiling than the designer's
+        desired 8000 tokens rejects the whole turn with a bare 400.  Nothing was
+        generated in that case, so retrying once at 4096 is safe and keeps the
+        page usable instead of reporting the generic "temporarily unavailable".
+        """
+        limit = 8000
+        config = getattr(provider, "provider_config", None)
+        if isinstance(config, dict):
+            declared = config.get("max_tokens")
+            if (isinstance(declared, int) and not isinstance(declared, bool)
+                    and 0 < declared < limit):
+                limit = declared
+        try:
+            return await provider.text_chat(prompt=prompt, system_prompt=system, contexts=[], max_tokens=limit)
+        except Exception as error:
+            if (type(error).__name__ not in ("BadRequestError", "InvalidRequestError", "InvalidArgument")
+                    or limit <= 4096):
+                raise
+            logger.warning("[CompanionV2] 新的她模型拒绝输出上限 max_tokens=%s，降载到 4096 重试", limit)
+            try:
+                return await provider.text_chat(prompt=prompt, system_prompt=system, contexts=[], max_tokens=4096)
+            except Exception as second:
+                if type(second).__name__ in ("BadRequestError", "InvalidRequestError", "InvalidArgument"):
+                    raise TaskError(
+                        "persona_designer_model_rejected",
+                        "模型没有接受这次设计请求；可以换一个文本模型，或缩短人设/对话后重试。",
+                    ) from second
+                raise
+
     async def turn(self, owner):
         data = await self._body(("request_id", "action", "state"))
         identifier = data["request_id"]
@@ -206,7 +239,7 @@ class PersonaDesignerWebAPI:
         if provider is None:
             raise TaskError("persona_designer_model_missing", "所选文本模型尚未加载，请重新选择模型。")
         system, prompt = model_request(state, data["action"])
-        task = asyncio.create_task(provider.text_chat(prompt=prompt, system_prompt=system, contexts=[], max_tokens=8000),
+        task = asyncio.create_task(self._text_chat(provider, prompt=prompt, system=system),
                                    name="companion:persona-designer:" + identifier)
         job = DesignJob(identifier, task, asyncio.Event())
         self.jobs[owner] = job

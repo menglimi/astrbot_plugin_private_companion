@@ -615,7 +615,7 @@ const CONTACT_FIELDS = {
     "balance_low_percent_threshold", "balance_low_threshold", "balance_message_cooldown_hours",
     "date_checkin_enabled", "date_checkin_time", "dedup_weather_window_minutes",
     "enable_llm_proactive_persona_judge", "external_event_self_link_enabled",
-    "generation_history_limit", "history_max_chars", "important_date_lookahead_days",
+    "generation_history_limit", "generation_mode", "history_max_chars", "important_date_lookahead_days",
     "meal_care_followup_minutes", "meal_checkin_enabled", "meal_dinner_time",
     "meal_lunch_time", "news_check_interval_minutes", "news_daily_hot_read_enabled",
     "news_hot_sources", "news_share_enabled", "news_source_kind", "news_source_uid",
@@ -651,7 +651,7 @@ test('设置视图渲染出的字段清单与本页写出口完全一致', async
     assert.deepEqual(names.slice().sort(), expected.slice(),
       view + ' 的字段清单变了。加字段要连这份清单一起改；少字段说明有控件没接上。');
   }
-  assert.equal(seen.size, 134, '设置视图合起来必须是 134 个 data-field 绑定');
+  assert.equal(seen.size, 135, '设置视图合起来必须是 135 个 data-field 绑定');
   /* 强度档位是五档共用一个字段，走 data-tier 而不是 data-field：
      只数 data-field 会把它整个漏掉。三个问候锚点同理（它们不是控件，是环上的热点）。 */
   h.element.dispatch('click', {target: {closest: sel => sel === '[data-view]' ? {dataset: {view: 'dial'}} : null}});
@@ -1629,8 +1629,11 @@ test('主动消息类型卡片可确认后运行真实诊断并显示结果', as
   h.reply(request, {state: 'passed', purpose: 'news', purpose_label: '外部资讯',
     event_mode: 'source_backed', route: {label: '真实资讯抓取'},
     delivery_state: 'delivered', receipt_ref: 'receipt-1',
-    stage_metrics: {model: {provider_calls: 1, tokens: 42, cost_microusd: 7, avg_latency_ms: 1500,
-      unknown_calls: 0}, delivery: {expected_parts: 2, delivered_parts: 2, unresolved_parts: 0, failed_parts: 0}},
+    stage_metrics: {model: {provider_calls: 2, tokens: 42, cost_microusd: 7, avg_latency_ms: 1500,
+      unknown_calls: 0, stages: {
+        plan: {provider_calls: 1, tokens: 12, cost_microusd: 2, cached_input_tokens: 6},
+        write: {provider_calls: 1, tokens: 30, cost_microusd: 5, cached_input_tokens: null},
+      }}, delivery: {expected_parts: 2, delivered_parts: 2, unresolved_parts: 0, failed_parts: 0}},
     usage_summary: {decisions: {session: {used: 2, calls: 2, pending: 0}},
       deliveries: {session: {used: 1, occupied: 1, limit: 3, delivered: 1, unresolved: 0}},
       model: {session: {calls: 2, tokens: 100, cost_microusd: 30}}}, stages: [
@@ -1649,7 +1652,10 @@ test('主动消息类型卡片可确认后运行真实诊断并显示结果', as
   assert.match(h.element.innerHTML, /诊断步骤/);
   assert.match(h.element.innerHTML, /人格复核/);
   assert.match(h.element.innerHTML, /平台已确认投递/);
-  assert.match(h.element.innerHTML, /本轮 Provider 模型：1 次调用/);
+  assert.match(h.element.innerHTML, /本轮 Provider 模型：2 次调用/);
+  assert.match(h.element.innerHTML, /规划：1 次调用 · 12 Tokens/);
+  assert.match(h.element.innerHTML, /缓存输入 6 Tokens/);
+  assert.match(h.element.innerHTML, /写作：1 次调用 · 30 Tokens/);
   assert.match(h.element.innerHTML, /本轮投递：2 \/ 2 段已确认/);
   assert.match(h.element.innerHTML, /主动模型决策已调用 2 次（待处理 0，仅统计）/);
   assert.match(h.element.innerHTML, /实际联系已确认发送 1 条（每日上限占用 1\/3，待确认 0）/);

@@ -18,7 +18,8 @@ from companion_v2.sources.models import SourceRecord
 
 from ..media import inspect_image
 from .image_native.references import ReferenceSelectionError, edit_role, select_edit_tickets
-from .image_native.types import NativeImageError, inspect_image as inspect_reference_image
+from .image_native.types import (MAX_REFERENCE_IMAGES, NativeImageError,
+                                 inspect_image as inspect_reference_image)
 
 
 IMAGE_ACTIONS = frozenset({"image.generate", "image.edit", "image.mask_edit"})
@@ -81,7 +82,7 @@ class ImageReferenceLease:
                 if view.source != reference:
                     raise TaskError("native_reference_binding_mismatch", "input image source differs from its manifest")
                 position = len(self._tickets)
-                if position >= 8:
+                if position >= MAX_REFERENCE_IMAGES:
                     raise TaskError("native_reference_limit", "the current turn has too many image references")
                 handle = uuid4().hex
                 reference_id = "inbound-image-" + digest([invocation.invocation_id, reference, position])[:40]
@@ -105,7 +106,7 @@ class ImageReferenceLease:
         if invocation.descriptor.tool.action in {"image.edit", "image.mask_edit"}:
             arguments = json.loads(invocation.arguments_json)
             reference_ids = arguments.get("reference_ids", [])
-            if (type(reference_ids) is not list or len(reference_ids) > 8
+            if (type(reference_ids) is not list or len(reference_ids) > MAX_REFERENCE_IMAGES
                     or any(type(item) is not str or not item or len(item) > 128 for item in reference_ids)
                     or len(set(reference_ids)) != len(reference_ids)):
                 raise TaskError("reference_ids_invalid", "saved reference IDs must be a unique bounded list")
@@ -114,7 +115,7 @@ class ImageReferenceLease:
                 if references is None:
                     raise TaskError("reference_media_unavailable", "the V2 reference library is unavailable")
                 position = len(self._tickets)
-                if position >= 8:
+                if position >= MAX_REFERENCE_IMAGES:
                     raise TaskError("native_reference_limit", "the current edit has too many image references")
                 asset, raw, roles = references.read_asset(invocation.context, asset_id)
                 image = _inspect_role_reference(asset, raw)

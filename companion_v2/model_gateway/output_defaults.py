@@ -31,6 +31,7 @@ THINKING_MARGIN = MappingProxyType({
     "role.expression.contact_review": (2, 4096),
     "role.state.maintain": (2, 4096),
     "proactive.compose": (2, 4096),
+    "proactive.plan": (1, 0),
     "role.journal.diary": (2, 4096),
     "role.journal.dream": (2, 4096),
     "role.journal.derive": (2, 4096),

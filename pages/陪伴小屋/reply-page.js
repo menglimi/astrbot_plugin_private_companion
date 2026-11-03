@@ -80,7 +80,7 @@ window.CompanionReplyPage = (() => {
       group_wakeup_topic_interest_max_boost: "话题兴趣加权上限（%）",
       group_wakeup_debounce_pending_penalty: "待回复期间兴趣降权（%）",
       group_wakeup_image_enabled: "考虑本轮图片相关性",
-      group_wakeup_image_weight: "图片候选抽取概率",
+      group_wakeup_image_weight: "图片相关性权重",
       group_wakeup_image_default_guidance_enabled: "图片唤醒默认克制提示",
       group_wakeup_short_text_wait_ms: "短消息合并等待（毫秒）",
       group_wakeup_log_limit: "近期判定记录上限",
@@ -181,7 +181,7 @@ window.CompanionReplyPage = (() => {
       part_gap_log_base: "按长度调节的曲线基数；数值越接近 1，长段与短段的间隔差异越明显。",
       prompt: "模型自主决定边界时使用。最多 4000 字；可用 {{split_marker}} 表示边界。预览不调用模型，可用“模型边界示例”检查标记后的最终分段。",
       rule_mode: "选择分段词、分段正则或句子/段落规则；规则补充分段始终生效。",
-      split_words: "输入标点或其他分隔词，回车添加；换行和空格可从常用分段词直接添加。",
+      split_words: "输入标点或其他分隔词，回车添加；换行和空格可从常用分段词直接添加。默认不按英文句点 . 和全角右括号 ）分段；e.g. / U.S. / example.com 这类点号连写也会保持完整。",
       match_width_variants: "词列表模式下，把常见全角、半角标点视为同一分段标记。",
       rule_regex: "分段方式选择“正则表达式”时使用；支持服务端正则语法，最多 512 字。",
       style_prompt: "补充此对象的日常表达偏好；留空时不增加额外风格要求。",
@@ -240,8 +240,8 @@ window.CompanionReplyPage = (() => {
       group_wakeup_topic_interest_max_boost: "话题记忆对兴趣相关性的最大加权比例。",
       group_wakeup_debounce_pending_penalty: "群聊已有回复等待发送时，兴趣话题参与倾向的降权比例。",
       group_wakeup_image_enabled: "开启后，只有本轮确实提供图片材料时才把图片相关性纳入判断。",
-      group_wakeup_image_weight: "本轮有图时，按此概率进入模型参与判断，范围 0–1。0 表示关闭，1 表示全部进入；抽中仍不代表必须回复。明确 @、直呼等信号独立生效。",
-      group_wakeup_image_default_guidance_enabled: "开启后，本轮只有图片、表情包或没有可读文字时，提示模型不要仅凭图片接话：只有图中清楚直呼角色，或图片本身是成员明确提出的问题、请求、求助才考虑参与；有文字时以文字为主。抽中候选只表示可以判断，不代表一定要接话。关闭后只保留概率说明。",
+      group_wakeup_image_weight: "图片相关性对群聊参与判断的权重，范围 0–1。纯图片、表情包等没有可读文字的消息只有权重 ≥ 0.5 才会单独进入候选；低于 0.5 时图片只作为有文字内容的补充线索。",
+      group_wakeup_image_default_guidance_enabled: "开启后，本轮只有图片、表情包或没有可读文字时，提示模型不要仅凭图片接话：只有图中清楚直呼角色，或图片本身是成员明确提出的问题、请求、求助才考虑参与；有文字时以文字为主。关闭后只保留权重说明。",
       group_wakeup_short_text_wait_ms: "短文本触发后等待后续消息再判断；0 表示不等待。",
       group_wakeup_log_limit: "回复工作台最多读取的近期群聊判定记录数，不改变参与规则。",
       group_air_guard_enabled: "开启后将近期连续回复与礼貌收尾次数作为群聊提示参考，不机械截断回复。",
@@ -653,7 +653,7 @@ window.CompanionReplyPage = (() => {
   function summary(v) {
     return `${v.streaming ? (v.streaming_mode === "incremental" ? "边生成边分段发送" : "收齐后分段发送") : "完整响应"} · `
       + (v.enabled ? `${v.llm_controlled ? "模型 + 规则分段" : "规则分段"}，最多 ${v.max_segments} 条` : "单条回复")
-      + ` · 段间 ${v.part_gap_ms / 1000} 秒 · ${imageLabel(v.image_position)} · `
+      + ` · 段间 ${spacingLabel(v)} · ${imageLabel(v.image_position)} · `
       + `${v.enable_humanized_expression ? "拟人 Prompt 已开启" : "拟人 Prompt 关闭"} · `
       + (v.voice_enabled
         ? `${choiceText("voice_language", v.voice_language)}语音 · ${choiceText("voice_segment_mode", v.voice_segment_mode)}`

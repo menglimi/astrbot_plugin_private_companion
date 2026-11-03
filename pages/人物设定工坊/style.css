@@ -654,3 +654,6 @@ footer { margin-top: calc(var(--gap) + 10px); color: var(--ink-soft); font-size:
 @media (prefers-reduced-motion: reduce) {
   .seg-panel.active { animation: none; }
 }
+
+/* 规范人格的五步操作条：滚动时保持主操作可见 */
+.seg-foot{position:sticky;bottom:0;z-index:3;padding:var(--sp-2) 0;border-top:1px solid var(--t-line);background:linear-gradient(180deg,color-mix(in srgb,var(--t-surface) 82%,transparent),var(--t-surface) 38%);backdrop-filter:blur(8px)}

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import json
 import logging
 
@@ -30,10 +31,10 @@ from companion_v2.knowledge.configuration import read_settings as read_knowledge
 from companion_v2.knowledge.retrieval import KnowledgeCandidate, KnowledgeRetriever, query_for_context
 from companion_v2.persona_craft import PersonaSnapshot, PersonaWorkshop
 from companion_v2.legacy.data_migration import persona_profile_settings
-from companion_v2.role_profile.configuration import (FIELD_LIMITS as ROLE_PROFILE_FIELD_LIMITS,
-    GROUP as ROLE_PROFILE_GROUP, RoleProfileConfigurationOwner,
-    configuration_fields as role_profile_configuration_fields,
-    target_for as role_profile_target_for)
+from companion_v2.role_profile.configuration import (CONTROL_FIELDS,
+    FIELD_LIMITS as ROLE_PROFILE_FIELD_LIMITS, GROUP as ROLE_PROFILE_GROUP,
+    RoleProfileConfigurationOwner, configuration_fields as role_profile_configuration_fields,
+    target_for as role_profile_target_for, validate_values as validate_role_profile_values)
 from companion_v2.role_profile.drafts import (MAX_KNOWLEDGE_CHARS, MAX_KNOWLEDGE_ITEMS,
     DRAFT_FIELD_LIMITS, MAX_SOURCE_CHARS, MAX_SUPPLEMENT_CHARS, build_role_profile_prompt,
     normalize_knowledge_references, parse_role_profile_draft)
@@ -187,6 +188,12 @@ class PersonaWorkshopWebAPI:
                  "Preview explicit role-canon fields from an AstrBot persona"),
                 (PREFIX + "/profile-migration-apply", self.profile_migration_apply, ["POST"],
                  "Import the reviewed explicit role-canon fields into V2"),
+                (PREFIX + "/profile-export", self.profile_export, ["GET"],
+                 "Export the current role-canon fields as a portable JSON document"),
+                (PREFIX + "/profile-import/preview", self.profile_import_preview, ["POST"],
+                 "Preview a role-canon import as per-field differences"),
+                (PREFIX + "/profile-import/apply", self.profile_import_apply, ["POST"],
+                 "Apply selected role-canon fields from an import document"),
                 (PREFIX + "/standardize", self.standardize, ["POST"],
                  "Generate a reviewable persona draft from a questionnaire"),
                 (PREFIX + "/tryouts", self.tryouts, ["POST"],
@@ -419,6 +426,124 @@ class PersonaWorkshopWebAPI:
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
             return outcome_response(Outcome.failed("persona_workshop_request_invalid",
                                                    "invalid UTF-8 persona workshop command"))
+
+    @staticmethod
+    def _role_profile_snapshot(controller, session):
+        target = role_profile_target_for(session.profile.target)
+        fields = role_profile_configuration_fields()
+        snapshot = RoleProfileConfigurationOwner(controller.runtime).read(target, fields)
+        values = {name: snapshot.fields[f"{ROLE_PROFILE_GROUP}.{name}"].value
+                  for name in ROLE_PROFILE_FIELD_LIMITS}
+        return target, fields, snapshot, values
+
+    @staticmethod
+    def _import_document(data):
+        document = data.get("document") if type(data) is dict else None
+        if (type(document) is not dict or document.get("format") != "companion.role-profile"
+                or document.get("version") != 1 or type(document.get("fields")) is not dict):
+            raise ValueError("this is not a Companion role-profile export")
+        fields = document["fields"]
+        if set(fields) - set(ROLE_PROFILE_FIELD_LIMITS):
+            raise ValueError("the import contains unsupported role-profile fields")
+        for name, value in fields.items():
+            if type(value) is not str or len(value) > ROLE_PROFILE_FIELD_LIMITS[name]:
+                raise ValueError(f"{name} is invalid or too long")
+        return document
+
+    async def profile_export(self):
+        from .web_api import outcome_response
+        try:
+            if request.query:
+                raise ValueError("role-profile export does not accept query fields")
+            async with self.controller._control_lock:
+                controller = self.controller
+                session, _ = self._authorized(controller)
+                _, _, snapshot, values = self._role_profile_snapshot(controller, session)
+                role_id = session.profile.target.role_binding.role.subject_id
+            excluded = set(CONTROL_FIELDS) | {"avatar_data_url"}
+            document = {
+                "format": "companion.role-profile",
+                "version": 1,
+                "exported_at": datetime.now(timezone.utc).isoformat(),
+                "role_id": role_id,
+                "fields": {name: value for name, value in values.items() if name not in excluded},
+            }
+            return outcome_response(Outcome.success(document))
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError) as error:
+            return outcome_response(Outcome.failed("role_profile_export_invalid", str(error)))
+
+    async def profile_import_preview(self):
+        from .web_api import outcome_response
+        try:
+            raw = await request.body()
+            if len(raw) > 200000:
+                raise ValueError("import document is too large")
+            data = self._document(raw)
+            if set(data) != {"document"}:
+                raise ValueError("provide one import document")
+            document = self._import_document(data)
+            async with self.controller._control_lock:
+                controller = self.controller
+                session, _ = self._authorized(controller)
+                _, _, _, current = self._role_profile_snapshot(controller, session)
+            merged = {**current, **document["fields"]}
+            validate_role_profile_values(merged)
+            rows = []
+            for name, imported in document["fields"].items():
+                before = current.get(name, "")
+                if imported == before:
+                    continue
+                rows.append({"field": name, "current": before, "imported": imported,
+                             "changed": True,
+                             "default_selected": name not in CONTROL_FIELDS and name != "avatar_data_url"})
+            return outcome_response(Outcome.success({
+                "role_id": document.get("role_id"),
+                "exported_at": document.get("exported_at"),
+                "fields": rows,
+            }))
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError) as error:
+            return outcome_response(Outcome.failed("role_profile_import_invalid", str(error)))
+
+    async def profile_import_apply(self):
+        from .web_api import outcome_response
+        try:
+            raw = await request.body()
+            if len(raw) > 200000:
+                raise ValueError("import document is too large")
+            data = self._document(raw)
+            if set(data) != {"document", "fields"} or type(data["fields"]) is not list:
+                raise ValueError("provide one import document and selected fields")
+            selected = data["fields"]
+            if (not selected or len(selected) > len(ROLE_PROFILE_FIELD_LIMITS)
+                    or any(type(name) is not str or name not in ROLE_PROFILE_FIELD_LIMITS for name in selected)
+                    or len(set(selected)) != len(selected)):
+                raise ValueError("selected fields are invalid")
+            document = self._import_document(data)
+            async with self.controller._control_lock:
+                controller = self.controller
+                session, _ = self._authorized(controller)
+                target, fields, snapshot, current = self._role_profile_snapshot(controller, session)
+                changes = {f"{ROLE_PROFILE_GROUP}.{name}": document["fields"][name]
+                           for name in selected if name in document["fields"]}
+                if not changes:
+                    raise ValueError("none of the selected fields is present in the import")
+                merged = {**current, **document["fields"]}
+                validate_role_profile_values(merged)
+                updated = RoleProfileConfigurationOwner(controller.runtime).write(
+                    target, fields, changes=changes, reset=(),
+                    expected_revision=snapshot.revision, observed_at=controller.now())
+                refreshed = RoleProfileConfigurationOwner(controller.runtime).read(target, fields)
+                values = {name: refreshed.fields[f"{ROLE_PROFILE_GROUP}.{name}"].value
+                          for name in ROLE_PROFILE_FIELD_LIMITS}
+            return outcome_response(Outcome.success({"updated": len(changes), "fields": values}))
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError) as error:
+            return outcome_response(Outcome.failed("role_profile_import_invalid", str(error)))
 
     async def profile_draft(self):
         """Generate a role-owned or current-relationship draft without saving it."""

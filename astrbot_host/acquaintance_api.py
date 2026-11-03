@@ -235,10 +235,15 @@ def _authorization_participants(runtime, settings, *, observed_at=None):
     the grant written against it would not be the one the reply path checks.
     """
     wanted = {entry["key"] for entry in _configured_windows(settings)}
-    participants = []
+    participants = {}
     identity = PersistentIdentityDirectory(runtime)
     at = observed_at or datetime.now(timezone.utc)
-    for row in runtime.read_all("SELECT record_json FROM conversation_routes", ()):
+    # A private person can accumulate several conversation_routes rows: the
+    # current conversation, an older one and an ``unopened-*`` placeholder.
+    # They all describe the same person on the same Bot/account/role.  The
+    # management page must not turn that into acquaintance_route_required;
+    # keep the newest usable row for each routing tuple instead.
+    for row in runtime.read_all("SELECT rowid AS route_rowid, record_json FROM conversation_routes ORDER BY rowid", ()):
         route = ConversationRoute.restore(json.loads(row["record_json"]))
         if route.scene_kind is not ScopeKind.PRIVATE or route.user is None or not route.scope.is_resolved:
             continue
@@ -255,10 +260,14 @@ def _authorization_participants(runtime, settings, *, observed_at=None):
                   if hasattr(settings, "all_targets") else {settings.role_id})
         if role_id not in mapped:
             continue
-        participants.append({"target": None, "subject_id": route.user.subject_id,
-                             "subject": route.user, "scope": scope,
-                             "role_id": role_id})
-    return participants
+        entry = {"target": None, "subject_id": route.user.subject_id,
+                 "subject": route.user, "scope": scope, "role_id": role_id}
+        dedupe_key = (*key, role_id)
+        rank = (0 if str(scope.conversation_id).startswith("unopened-") else 1, int(row["route_rowid"]))
+        previous = participants.get(dedupe_key)
+        if previous is None or rank > previous[0]:
+            participants[dedupe_key] = (rank, entry)
+    return [entry for _, entry in participants.values()]
 
 
 def _directory_routes(settings):

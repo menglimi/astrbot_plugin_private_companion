@@ -24,6 +24,13 @@ class SearchSettingsTests(unittest.TestCase):
             store.update(initial["revision"], {"deepseek_provider_id": ""})
         self.assertEqual(error.exception.code, "search_config_conflict")
 
+    def test_astrbot_prefixed_provider_ids_are_valid(self):
+        store = SearchSettingsStore(self.root)
+        provider_id = "deepseek/deepseek-v4.1-flash-expires-on-0910"
+        saved = store.update(store.read()["revision"], {"deepseek_provider_id": provider_id})
+        self.assertEqual(saved["deepseek_provider_id"], provider_id)
+        self.assertEqual(store.selected_provider_id(), provider_id)
+
     def test_model_search_projection_lists_only_verified_deepseek_providers(self):
         from astrbot_host.model_api import ModelWebAPI
 

@@ -90,6 +90,7 @@
     resumeToken: "",
     reconnectAttempts: 0,
     reconnectTimer: 0,
+    wakeLock: null,
     pendingResumeTime: 0,
     videoSeekFeedbackTimer: 0,
     videoControlsHideTimer: 0,
@@ -149,6 +150,84 @@
   function setConnection(text, connected = state.connected) {
     $("#connectionStatus").textContent = text;
     $("#sendMessage").disabled = !connected;
+    const button = $("#reconnectButton");
+    if (button) {
+      const retryable = !connected && /断开|无法|关闭/.test(text);
+      button.hidden = !retryable;
+    }
+  }
+
+  async function requestWakeLock() {
+    if (!state.callActive || state.wakeLock || document.visibilityState === "hidden") return;
+    if (!navigator.wakeLock?.request) return;
+    try {
+      const lock = await navigator.wakeLock.request("screen");
+      if (!state.callActive) {
+        try { lock.release(); } catch { /* already released */ }
+        return;
+      }
+      state.wakeLock = lock;
+      lock.addEventListener("release", () => {
+        if (state.wakeLock === lock) state.wakeLock = null;
+      }, { once: true });
+    } catch {
+      state.wakeLock = null;
+    }
+  }
+
+  function releaseWakeLock() {
+    const lock = state.wakeLock;
+    state.wakeLock = null;
+    if (!lock) return;
+    try { lock.release(); } catch { /* the browser may already have released it */ }
+  }
+
+  function reconnectNow() {
+    window.clearTimeout(state.reconnectTimer);
+    state.reconnectAttempts = 0;
+    if (state.socket && state.socket.readyState <= WebSocket.OPEN) return;
+    const stale = state.socket;
+    state.socket = null;
+    if (stale) {
+      try { stale.close(); } catch { /* already closed */ }
+    }
+    setConnection("正在重新连接", false);
+    connect();
+  }
+
+  function pageCleanup() {
+    releaseWakeLock();
+    stopCall(false);
+    stopAudio();
+    window.clearTimeout(state.cameraFrameTimer);
+    window.clearInterval(state.frameTimer);
+    window.clearInterval(state.pingTimer);
+    window.clearTimeout(state.reconnectTimer);
+    window.clearTimeout(state.openingTimer);
+    window.clearTimeout(state.videoControlsHideTimer);
+    window.cancelAnimationFrame(state.volumeAnimationFrame);
+    if (state.objectVideoUrl) URL.revokeObjectURL(state.objectVideoUrl);
+    const socket = state.socket;
+    state.socket = null;
+    state.connected = false;
+    if (socket?.readyState === WebSocket.OPEN) socket.close();
+  }
+
+  function handleVisibilityChange() {
+    if (document.visibilityState === "hidden") {
+      releaseWakeLock();
+      window.clearTimeout(state.cameraFrameTimer);
+      state.cameraFrameTimer = 0;
+      return;
+    }
+    if (state.callActive) {
+      requestWakeLock();
+      if (state.cameraEnabled) scheduleCameraFrame(1200);
+    }
+    if (!state.connected
+        && (!state.socket || state.socket.readyState === WebSocket.CLOSED)) {
+      reconnectNow();
+    }
   }
 
   function setRoomStatus(status, text) {
@@ -1368,6 +1447,7 @@
     }
     state.callActive = true;
     document.body.classList.add("call-connected");
+    requestWakeLock();
     send({ type: "call_state", active: true });
     updateCallButtons();
     updateCameraButton();
@@ -1387,6 +1467,7 @@
   function stopCall(notify = true) {
     const wasActive = state.callActive;
     state.callActive = false;
+    releaseWakeLock();
     clearCancellableUtterances();
     document.body.classList.remove("call-connected");
     clearCallIdleTimer();
@@ -1585,6 +1666,25 @@
     updateCameraButton();
   }
 
+  function cameraFrameInterval() {
+    const connection = navigator.connection || navigator.mozConnection || {};
+    if (connection.saveData) return 20000;
+    if (/^(slow-2g|2g|3g)$/.test(String(connection.effectiveType || ""))) return 20000;
+    if (state.botSpeaking) return 15000;
+    if (state.voiceActivityLastHeardAt && Date.now() - state.voiceActivityLastHeardAt > 20000) return 15000;
+    return 8000;
+  }
+
+  function scheduleCameraFrame(delay = cameraFrameInterval()) {
+    window.clearTimeout(state.cameraFrameTimer);
+    state.cameraFrameTimer = 0;
+    if (!state.cameraEnabled || !state.callActive || document.visibilityState === "hidden") return;
+    state.cameraFrameTimer = window.setTimeout(async () => {
+      await sendCameraFrame();
+      scheduleCameraFrame();
+    }, delay);
+  }
+
   async function startCamera({ silent = false } = {}) {
     if (!state.callActive || state.cameraEnabled) return;
     try {
@@ -1625,9 +1725,9 @@
           }
         }
       }
-      window.clearInterval(state.cameraFrameTimer);
-      state.cameraFrameTimer = window.setInterval(sendCameraFrame, 8000);
-      window.setTimeout(sendCameraFrame, 600);
+      window.clearTimeout(state.cameraFrameTimer);
+      state.cameraFrameTimer = 0;
+      scheduleCameraFrame(600);
       if (!silent) {
         showToast(cameraVisionAvailable() ? "摄像头已开启" : "摄像头已开启；未配置视觉模型，当前仅本机预览", 4200);
       }
@@ -1641,7 +1741,7 @@
 
   function stopCamera(notify = true) {
     const wasEnabled = state.cameraEnabled;
-    window.clearInterval(state.cameraFrameTimer);
+    window.clearTimeout(state.cameraFrameTimer);
     state.cameraFrameTimer = 0;
     state.cameraStream?.getTracks().forEach((track) => track.stop());
     state.cameraStream = null;
@@ -2772,6 +2872,7 @@
     $$("[data-mode-tab]").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.modeTab)));
     $("#settingsButton").addEventListener("click", () => setSettingsOpen($("#settingsPanel").hidden));
     $("#inviteButton").addEventListener("click", requestInviteLink);
+    $("#reconnectButton").addEventListener("click", reconnectNow);
     $("#copyInviteLink").addEventListener("click", copyInviteLink);
     $("#closeSettings").addEventListener("click", () => setSettingsOpen(false, true));
     $("#ttsVolume").addEventListener("input", (event) => setTtsVolume(event.target.value, { persist: true }));
@@ -3092,17 +3193,18 @@
         updateTalkControls();
       }
     });
-    window.addEventListener("beforeunload", () => {
-      clearCancellableUtterances();
-      stopCall(false);
-      stopAudio();
-      window.clearInterval(state.frameTimer);
-      window.clearInterval(state.pingTimer);
-      window.clearTimeout(state.openingTimer);
-      window.clearTimeout(state.videoControlsHideTimer);
-      window.cancelAnimationFrame(state.volumeAnimationFrame);
-      if (state.objectVideoUrl) URL.revokeObjectURL(state.objectVideoUrl);
-      if (state.socket?.readyState === WebSocket.OPEN) state.socket.close();
+    window.addEventListener("beforeunload", pageCleanup);
+    window.addEventListener("pagehide", pageCleanup);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("online", () => {
+      state.reconnectAttempts = 0;
+      if (!state.connected) {
+        setConnection("网络已恢复，正在重连", false);
+        reconnectNow();
+      }
+    });
+    window.addEventListener("offline", () => {
+      if (!state.connected) setConnection("网络已断开，等待恢复", false);
     });
   }
 

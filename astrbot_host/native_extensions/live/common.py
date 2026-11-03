@@ -29,7 +29,7 @@ from astrbot.api import logger
 from astrbot.api.message_components import Plain, Record
 from astrbot.api.provider import ProviderRequest
 from astrbot.core.agent.message import AssistantMessageSegment
-from astrbot.core.astr_main_agent import MainAgentBuildConfig, build_main_agent
+from astrbot_host.astrbot_compat import MainAgentBuildConfig, build_main_agent
 from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
 from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.platform.message_type import MessageType

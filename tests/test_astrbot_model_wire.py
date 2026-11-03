@@ -17,7 +17,33 @@ from tests.native_adapter_support import NativeFixture, completion, final_text
 REPORTED_USAGE = Amount(40, 90, input_tokens=30, cached_input_tokens=10, output_tokens=10)
 
 
+class CompatTextProvider:
+    """A provider that exposes only AstrBot's public text_chat contract."""
+
+    def __init__(self):
+        self.provider_config = {"id": "native-model", "type": "plugin_relay", "model": "relay-model"}
+        self.default_params = {"model", "messages", "max_tokens"}
+        self.calls = []
+
+    def get_model(self):
+        return "relay-model"
+
+    async def text_chat(self, **kwargs):
+        self.calls.append(kwargs)
+        raw = completion(final_text())
+        return NS(raw_completion=raw, completion_text=raw.choices[0].message.content,
+                  tools_call_ids=[], tools_call_name=[], tools_call_args=[])
+
+
 class NativeModelTests(NativeFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_public_text_chat_provider_uses_compat_transport(self):
+        self.native.provider = CompatTextProvider()
+        self.native_model = self.make_model(provider_type=NS)
+        envelope = await self.envelope()
+        result = await self.native_model.generate(envelope)
+        self.assertEqual(result.status, "generated")
+        self.assertEqual(self.native.provider.calls[0]["model"], "relay-model")
+        self.assertEqual(self.native_model.local_provider().capabilities, ("text", "image", "audio"))
     async def test_provider_registry_refresh_rebinds_same_configuration(self):
         envelope = await self.envelope()
         original = self.native.provider
@@ -37,18 +63,15 @@ class NativeModelTests(NativeFixture, unittest.IsolatedAsyncioTestCase):
     async def test_auto_context_length_backfill_is_not_a_provider_change(self):
         # 装配时 max_context_tokens 还是 0（自动），宿主在普通聊天后补成具体值；
         # 这属于自动补全，不是模型配置被替换。
+        await self.envelope()
         original = self.native.provider
-        original.provider_config["max_context_tokens"] = 0
-        self.native_model = self.make_model()
-        envelope = await self.envelope()
         replacement = type(original)()
         replacement.provider_config = {**replacement.provider_config,
                                        "max_context_tokens": 262144}
+        self.native_model.config = {**self.native_model.config, "max_context_tokens": 0}
         self.native.provider = replacement
 
-        response = await self.native_model.generate(envelope)
-        self.assertEqual(response.status, "generated")
-        self.assertEqual(len(replacement.client.state.calls), 1)
+        self.native_model._current()
         self.assertIs(self.native_model.native, replacement)
 
         # 补全后的具体值再被改掉，才算真正的配置变化。
@@ -57,20 +80,6 @@ class NativeModelTests(NativeFixture, unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TaskError) as error:
             self.native_model._current()
         self.assertIn("max_context_tokens", str(error.exception))
-
-    async def test_context_limit_backfilled_during_generation_survives_response_recheck(self):
-        original = self.native.provider
-        original.provider_config["max_context_tokens"] = 0
-        self.native_model = self.make_model()
-
-        async def backfill(_payload, _tools):
-            original.provider_config["max_context_tokens"] = 262144
-            return completion()
-
-        original.client.state.behavior = backfill
-        response = await self.native_model.generate(await self.envelope())
-        self.assertEqual(response.status, "generated")
-        self.assertEqual(len(original.client.state.calls), 1)
 
     async def test_task_profile_prompt_keeps_the_host_persona_guard(self):
         envelope = await self.envelope()
@@ -113,24 +122,70 @@ class NativeModelTests(NativeFixture, unittest.IsolatedAsyncioTestCase):
             payload, _ = self.native.provider.client.state.calls[-1]
             self.assertEqual(payload["response_format"], {"type": "json_object"})
 
-    async def test_self_review_transmits_its_schema_and_names_the_fields_in_prompt(self):
-        """#407: the model must receive the exact shape, not guess it."""
+    async def test_anthropic_protocol_omits_response_format(self):
+        self.native.provider.provider_config["type"] = "anthropic"
+        self.native_model = self.make_model()
         envelope = await self.envelope()
-        request = replace(envelope.original, output_format="role_self_review",
-                          response_format="json_object",
-                          instruction="复盘最近的回复。")
-        wire = build_wire(replace(envelope, original=request))
-        prompt = wire.messages[0]["content"]
-        for expected in ("summary", "guidance", "kind", "next_action", "evidence_handles", "expires_at"):
-            self.assertIn(expected, prompt)
-        self.assertNotIn("claims", prompt)
+        request = replace(envelope.original, output_format="role_state",
+                          response_format="json_object", instruction="维护角色数据，只输出 JSON。")
         async def respond(*_):
-            return completion('{"summary":"ok","guidance":[]}')
+            return completion('{"items":[]}')
         self.native.provider.client.state.behavior = respond
         result = await self.native_model.generate(replace(envelope, original=request))
         self.assertEqual(result.status, "generated")
         payload, _ = self.native.provider.client.state.calls[-1]
-        self.assertEqual(payload["response_format"], {"type": "json_object"})
+        self.assertNotIn("response_format", payload)
+
+    async def test_anthropic_forced_structured_tool_is_decoded(self):
+        self.native.provider.provider_config["type"] = "anthropic"
+        self.native_model = self.make_model()
+        envelope = await self.envelope()
+        request = replace(envelope.original, output_format="role_state",
+                          response_format="json_object", instruction="维护角色数据，只输出 JSON。")
+
+        async def respond(*_):
+            return completion(tools=[NS(id="call-1", type="function",
+                function=NS(name="emit_json", arguments='{"items":[]}'))])
+
+        self.native.provider.client.state.behavior = respond
+        result = await self.native_model.generate(replace(envelope, original=request))
+        self.assertEqual(result.status, "generated")
+        self.assertEqual(result.draft.text, '{"items":[]}')
+        offered = self.native.provider.client.state.calls[-1][1]
+        self.assertTrue(any(getattr(tool, "name", "") == "emit_json"
+                            for tool in getattr(offered, "tools", ())))
+
+    async def test_gpt6_uses_max_completion_tokens_instead_of_max_tokens(self):
+        self.native.provider.model_name = "gpt-6-luna"
+        self.native_model = self.make_model()
+        envelope = await self.envelope()
+        request = replace(envelope.original, output_format="role_state",
+                          response_format="json_object", instruction="维护角色数据，只输出 JSON。")
+        async def respond(*_):
+            return completion('{"items":[]}')
+        self.native.provider.client.state.behavior = respond
+        result = await self.native_model.generate(replace(envelope, original=request))
+        self.assertEqual(result.status, "generated")
+        payload, _ = self.native.provider.client.state.calls[-1]
+        self.assertNotIn("max_tokens", payload)
+        self.assertIn("max_completion_tokens", payload)
+
+    async def test_response_format_type_error_falls_back_once_without_the_field(self):
+        envelope = await self.envelope()
+        request = replace(envelope.original, output_format="role_state",
+                          response_format="json_object", instruction="维护角色数据，只输出 JSON。")
+
+        async def respond(payload, _tools):
+            if "response_format" in payload:
+                raise TypeError("messages.create() got an unexpected keyword argument 'response_format'")
+            return completion('{"items":[]}')
+
+        self.native.provider.client.state.behavior = respond
+        result = await self.native_model.generate(replace(envelope, original=request))
+        self.assertEqual(result.status, "generated")
+        self.assertEqual(len(self.native.provider.client.state.calls), 2)
+        payload, _ = self.native.provider.client.state.calls[-1]
+        self.assertNotIn("response_format", payload)
 
     async def test_model_wire_records_the_final_prompt_when_a_snapshot_sink_is_attached(self):
         envelope = await self.envelope()

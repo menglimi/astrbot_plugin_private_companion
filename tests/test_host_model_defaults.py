@@ -142,8 +142,10 @@ class NativeConversationModelTests(unittest.TestCase):
         group = NS(scope=NS(kind=ScopeKind.GROUP, platform="qq", native_scope_id="300"))
         self.assertEqual(self.resolve(private, NS(kind="conversation.reply")), "gemini")
         self.assertEqual(self.resolve(private, NS(kind="proactive.compose")), "gemini")
+        self.assertEqual(self.resolve(private, NS(kind="proactive.plan")), "gemini")
         self.assertEqual(self.resolve(group, NS(kind="conversation.reply")), "deepseek")
-        self.assertEqual(self.lookups, ["qq:FriendMessage:200", "qq:FriendMessage:200", "qq:GroupMessage:300"])
+        self.assertEqual(self.lookups, ["qq:FriendMessage:200", "qq:FriendMessage:200",
+                                        "qq:FriendMessage:200", "qq:GroupMessage:300"])
 
     def test_maintenance_does_not_read_the_conversation_model(self):
         self.assertIsNone(self.resolve(NS(), NS(kind="calendar.plan")))
