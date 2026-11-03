@@ -16,6 +16,7 @@ from astrbot.core.provider.entities import LLMResponse, ProviderRequest
 
 from astrbot_host.core_reply import CORE_REPLY_CONTEXT_EXTRA
 from astrbot_host.core_reply_tool_dispatch import observe_core_tool_dispatch_begin, restore_core_tool_dispatch
+from astrbot_host.core_reply_turn_gate import close_core_reply_turn, install_core_reply_turn
 from astrbot_host.core_reply_voice_authoring import prepare_core_voice_authoring, restore_core_voice_authoring
 from companion_v2.conversation.voice_reply import VoiceReplyPolicy
 from tests.test_core_reply_voice import FakeEvent
@@ -32,17 +33,22 @@ class SearchTool(FunctionTool):
 
 
 class MediaToolPresentationTests(unittest.IsolatedAsyncioTestCase):
-    async def run_search(self, name, *, voice=False, streaming=False):
+    async def run_search(self, name, *, voice=False, streaming=False, empty_final_round=False):
         event = FakeEvent()
         event.unified_msg_origin = "test:media-tool-presentation"
         policy = VoiceReplyPolicy(generation_mode="model_tag", language="ja", foreign_text_mode="translation")
         event.set_extra(CORE_REPLY_CONTEXT_EXTRA, {"prepared": {"event_ref": "test-media",
             "voice_reply_policy": policy if voice else None}})
         text = "<pc_tts>おめでとう。</pc_tts>生日快乐。" if voice else "生日快乐。"
+        if streaming:
+            # A host that publishes fragments is only held when the turn's own
+            # boundary already collects them; the plugin turns that off for a
+            # private, segmented reply, so mirror the same contract here.
+            event.set_extra("enable_streaming", False)
         draft = LLMResponse(role="assistant", completion_text=text,
             result_chain=MessageChain(chain=[Plain(text)]), tools_call_name=[name],
             tools_call_args=[{}], tools_call_ids=["real-media-call"])
-        outputs = [draft, LLMResponse(role="assistant", completion_text=text)]
+        outputs = [draft, LLMResponse(role="assistant", completion_text="" if empty_final_round else text)]
         requests = []
 
         async def respond(**kwargs):
@@ -64,8 +70,10 @@ class MediaToolPresentationTests(unittest.IsolatedAsyncioTestCase):
             async def on_agent_begin(self, run_context):
                 prepare_core_voice_authoring(event, run_context)
                 observe_core_tool_dispatch_begin(event, run_context)
+                install_core_reply_turn(event, run_context)
 
             async def on_agent_done(self, run_context, response):
+                await close_core_reply_turn(event, response, release=True)
                 restore_core_voice_authoring(event)
                 restore_core_tool_dispatch(event, run_context)
 
@@ -108,6 +116,15 @@ class MediaToolPresentationTests(unittest.IsolatedAsyncioTestCase):
         _, shown = await self.run_search("companion_v2_group_participation_choose")
         self.assertEqual(shown, ["生日快乐。"])
 
-    async def test_other_tools_keep_native_progress_prose(self):
+    async def test_any_tool_step_prose_is_folded_into_the_final_reply(self):
+        # The tool round's prose is a step note, not the reply. Which tool it was
+        # must not matter: AstrBot delivers that prose before running the tool and
+        # then delivers the answer, so every tool would otherwise say two things.
         _, shown = await self.run_search("other_search")
-        self.assertEqual(shown, ["生日快乐。", "生日快乐。"])
+        self.assertEqual(shown, ["生日快乐。"])
+
+    async def test_a_turn_that_ends_without_text_still_says_its_draft_once(self):
+        # The mirrored turn: the tool round wrote prose and the last round said
+        # nothing. Holding prose must never turn that into a silent turn.
+        event, shown = await self.run_search("other_search", empty_final_round=True)
+        self.assertEqual(shown, ["生日快乐。"])

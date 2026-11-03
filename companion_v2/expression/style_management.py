@@ -33,6 +33,7 @@ from . import rule_support
 from .configuration import read_settings
 from .learning import DIMENSIONS, candidate_signature, form_identity, normalize_applicability
 from .sharing import MAX_IMPORT_SIGNALS, build_pack, normalize_pack
+from .window_scope import active_rule_count, row_usable, rule_reason, rule_scope_counts
 
 
 SHARE_PACK_SOURCE = "shared_pack"
@@ -231,140 +232,188 @@ class ExpressionStyleManagement:
                 (type(after_id) is not str or not after_id.strip() or len(after_id) > 512)):
             raise TaskError("expression_query_invalid", "invalid style page")
         at = self.management.ledger.now()
-        with self.runtime.read_snapshot():
-            owner, policy_revision = self._authorize(operator, context, at)
-            owner_key = digest(owner)
-            keys = self._family(context)
-            placeholders = ",".join("?" * len(keys))
-            after_created, after_signal = _page_after(after_id)
-            # Newest first, with the identifier only breaking ties inside one
-            # creation timestamp. The queue index of the signals table already
-            # matches this order.
-            rows = self.runtime.read_all(f"""SELECT * FROM expression_style_signals
-                WHERE owner_key = ? AND scope_key IN ({placeholders}) AND state = ?
-                  AND (? IS NULL OR dimension = ?)
-                  AND (? IS NULL OR created_at < ? OR (created_at = ? AND signal_id < ?))
-                ORDER BY created_at DESC, signal_id DESC LIMIT ?""",
-                (owner_key, *keys, state, dimension, dimension, after_created,
-                 after_created, after_created, after_signal, limit + 1))
-            items = []
-            # Adopted rules rotate by how recently they were injected, so the
-            # review view reports that ledger: a rule used on every turn while
-            # others wait is exactly the distribution this page has to show.
-            # A rule that negative feedback returned to review keeps that
-            # ledger, so pending rules report it too instead of reading as new.
-            usage_map = {}
-            if state in ("pending", "adopted", "retired"):
-                for scope_key in keys:
-                    for signal_id, (injections, last) in style_rotation.usage(
-                            self.runtime, owner_key, scope_key).items():
-                        previous = usage_map.get(signal_id, (0, None))
-                        latest = max((item for item in (previous[1], last) if item is not None),
-                                     default=None)
-                        usage_map[signal_id] = (previous[0] + injections, latest)
-            feedback_map = {}
+        # A review page is a live projection; decision tokens fence concurrent changes.
+        # Keep the SQLite lock around each read, not the full source recheck.
+        owner, policy_revision = self._authorize(operator, context, at)
+        owner_key = digest(owner)
+        keys = self._family(context)
+        placeholders = ",".join("?" * len(keys))
+        after_created, after_signal = _page_after(after_id)
+        # Newest first, with the identifier only breaking ties inside one
+        # creation timestamp. The queue index of the signals table already
+        # matches this order.
+        rows = self.runtime.read_all(f"""SELECT * FROM expression_style_signals
+            WHERE owner_key = ? AND scope_key IN ({placeholders}) AND state = ?
+              AND (? IS NULL OR dimension = ?)
+              AND (? IS NULL OR created_at < ? OR (created_at = ? AND signal_id < ?))
+            ORDER BY created_at DESC, signal_id DESC LIMIT ?""",
+            (owner_key, *keys, state, dimension, dimension, after_created,
+             after_created, after_created, after_signal, limit + 1))
+        items = []
+        # Adopted rules rotate by how recently they were injected, so the
+        # review view reports that ledger: a rule used on every turn while
+        # others wait is exactly the distribution this page has to show.
+        # A rule that negative feedback returned to review keeps that
+        # ledger, so pending rules report it too instead of reading as new.
+        usage_map = {}
+        if state in ("pending", "adopted", "retired"):
             for scope_key in keys:
-                feedback_map.update(style_feedback.usage(self.runtime, owner_key, scope_key))
-            capacity = {"active": 0, "limit": read_settings(self.runtime, context).active_signal_limit}
-            counts = {}
-            for scope_key in keys:
-                active_count = self.runtime.read_one("""SELECT COUNT(*) AS count FROM expression_style_signals
-                    WHERE owner_key = ? AND scope_key = ? AND state IN ('pending', 'adopted')""",
-                    (owner_key, scope_key))
-                capacity["active"] += int(active_count["count"]) if active_count is not None else 0
-                for item in self.runtime.read_all("""SELECT state, COUNT(*) AS count
-                        FROM expression_style_signals WHERE owner_key = ? AND scope_key = ? GROUP BY state""",
-                        (owner_key, scope_key)):
-                    counts[item["state"]] = counts.get(item["state"], 0) + item["count"]
-            for row in rows[:limit]:
-                unavailable, evidence = None, []
-                applicability = None
-                source_kind = "confirmed_reply"
-                reset_at = None
-                if state in ("pending", "adopted", "retired", "rejected"):
+                for signal_id, (injections, last) in style_rotation.usage(
+                        self.runtime, owner_key, scope_key).items():
+                    previous = usage_map.get(signal_id, (0, None))
+                    latest = max((item for item in (previous[1], last) if item is not None),
+                                 default=None)
+                    usage_map[signal_id] = (previous[0] + injections, latest)
+        feedback_map = {}
+        for scope_key in keys:
+            feedback_map.update(style_feedback.usage(self.runtime, owner_key, scope_key))
+        # The family holds rules from every window, but only the rules reply
+        # injection can really use here may consume the budget, count in the
+        # state tabs, or hide a learnable rule from the learning gate.
+        usable_counts, rotated_rules = rule_scope_counts(self.runtime, context, owner_key, keys,
+                                                         samples=self.samples, at=at)
+        capacity = {"active": sum(usable_counts.values()),
+                    "limit": read_settings(self.runtime, context).active_signal_limit}
+        counts = {}
+        for scope_key in keys:
+            for item in self.runtime.read_all("""SELECT state, COUNT(*) AS count
+                    FROM expression_style_signals WHERE owner_key = ? AND scope_key = ? GROUP BY state""",
+                    (owner_key, scope_key)):
+                counts[item["state"]] = counts.get(item["state"], 0) + item["count"]
+        # The state tabs read the same injectable set as the capacity: a
+        # rotated group dialogue rule is still listed, but not as an available
+        # enabled rule. Its row count stays visible as ``rotated_rules``.
+        for name in ("pending", "adopted"):
+            counts[name] = usable_counts.get(name, 0)
+        for row in rows[:limit]:
+            unavailable, evidence = None, []
+            applicability = None
+            source_kind = "confirmed_reply"
+            reset_at = None
+            run = None
+            # Whether reply injection would really use this rule here. It is
+            # the answer the capacity, the state tabs, the restore gate, the
+            # learning budget and the import preview share, so it is decided
+            # by the predicate alone and never by what the page can display.
+            injectable = False
+            # The stored run window is the rule's own record. When it cannot
+            # be read the reviewed form is unknown, so the body stays hidden;
+            # that is a different failure from a rule this window can no
+            # longer inject.
+            damaged = False
+            if state in ("pending", "adopted", "retired", "rejected"):
+                try:
+                    applicability = normalize_applicability(json.loads(row["applicability_json"]))
+                except (TypeError, ValueError):
+                    unavailable = "expression_applicability_invalid"
+                if unavailable is None:
                     try:
-                        applicability = normalize_applicability(json.loads(row["applicability_json"]))
+                        run, window, handles = self._run(row, owner, context)
+                        source_kind = window.get("source_kind", "confirmed_reply")
+                        opened_at, closed_at = self._window(window, at)
+                    except TaskError as error:
+                        unavailable, damaged = error.code, True
                     except (TypeError, ValueError):
-                        unavailable = "expression_applicability_invalid"
-                    if unavailable is None:
-                        try:
-                            run, window, handles = self._run(row, owner, context)
-                            source_kind = window.get("source_kind", "confirmed_reply")
-                            opened_at, closed_at = self._window(window, at)
-                            if source_kind == "legacy_expression":
-                                from .legacy_import import evidence as legacy_evidence
-                                evidence = legacy_evidence(window, handles)
-                            elif source_kind != SHARE_PACK_SOURCE:
-                                if source_kind == "conversation_input" and not self.samples.reviews.allows_handles(context, handles):
-                                    raise TaskError("expression_sample_changed", "sample approval was revoked")
-                                sample_context = self._evidence_context(window, context)
-                                evidence = self.samples.describe_handles(handles, opened_at, closed_at,
-                                    sample_context, at, source_kind=source_kind, durable=True)
-                                reset_at = self.samples.evidence_reset_at(sample_context, closed_at)
-                                if source_kind == "conversation_input":
-                                    for extra in rule_support.observations(self.runtime, row["signal_id"]):
-                                        try:
-                                            extra_window, extra_handles = extra["window"], extra["handles"]
-                                            extra_start, extra_end = self._window(extra_window, at)
-                                            extra_context = self._evidence_context(extra_window, context)
-                                            if self.samples.reviews.allows_handles(extra_context, extra_handles):
-                                                evidence.extend(self.samples.describe_handles(extra_handles,
-                                                    extra_start, extra_end, extra_context, at,
-                                                    source_kind="conversation_input", durable=True))
-                                        except (TaskError, KeyError, TypeError, ValueError):
-                                            continue
-                        except TaskError as error:
-                            unavailable = error.code
-                        except (TypeError, ValueError):
-                            # Damaged stored evidence is unreadable evidence; it
-                            # is not a problem with the rule's applicability.
-                            unavailable = "expression_sample_changed"
-                if state == "pending":
-                    actions = ["reject"] if unavailable is not None else ["adopt", "reject"]
-                elif state == "adopted":
-                    # A rule can always be paused, even if the source has
-                    # since become unavailable. The pause itself does not
-                    # depend on re-reading the old evidence.
-                    actions = ["retire"]
-                elif state == "retired":
-                    actions = [] if unavailable is not None else ["restore"]
-                else:
-                    actions = [] if unavailable is not None else ["reconsider"]
-                injections, last = usage_map.get(row["signal_id"], (0, None))
-                feedback = feedback_map.get(row["signal_id"], {})
-                detail = rule_details.read(self.runtime, row["signal_id"])
-                legacy = rule_details.legacy_counts(detail)
-                injections += legacy["use_count"]
-                items.append({"signal_id": row["signal_id"], "run_id": row["run_id"],
-                    "dimension": row["dimension"], "source_kind": source_kind,
-                    "applicability": applicability,
-                    # An unreadable source never removes the rule itself: only
-                    # the evidence it can no longer recheck is withheld, so the
-                    # reviewed form stays visible and actionable.
-                    "expression": detail["form"] if detail else None,
-                    "observation": row["observation"],
-                    "proposal": row["proposal"],
-                    "evidence": evidence if unavailable is None else [],
-                    "evidence_reset_at": reset_at if unavailable is None else None,
-                    "confidence": row["confidence"], "state": row["state"],
-                    "created_at": row["created_at"], "decided_at": row["decided_at"],
-                    "injections": injections,
-                    "last_injected_at": last.isoformat() if last is not None else None,
-                    "positive_feedback": feedback.get("positive_count", 0) + legacy.get("positive_feedback", 0),
-                    "negative_feedback": feedback.get("negative_count", 0) + legacy.get("negative_feedback", 0),
-                    "last_feedback": feedback.get("last_feedback"),
-                    "last_feedback_at": feedback.get("last_feedback_at"),
-                    "review_reason": feedback.get("review_reason"),
-                    "source_title": run["summary"] if unavailable is None and source_kind in (SHARE_PACK_SOURCE, "legacy_expression") else None,
-                    "unavailable_reason": unavailable, "actions": actions,
-                    # Editing, restoring and reconsidering all recheck the
-                    # original evidence, so they stay closed while it cannot be
-                    # read; retiring never needed it.
-                    "can_revise": unavailable is None,
-                    "view_token": self._token(operator, context, row, policy_revision)})
-            return {"items": items, "state": state,
-                "next_cursor": page_cursor(rows[limit - 1]) if len(rows) > limit else None,
-                "context_key": context.key, "role_id": owner.persona_id, "capacity": capacity, "counts": counts}
+                        # Damaged stored evidence is unreadable evidence; it
+                        # is not a problem with the rule's applicability.
+                        unavailable, damaged = "expression_sample_changed", True
+                    else:
+                        # The rule itself is intact; the only question is
+                        # whether reply injection would really use it here.
+                        # Window ownership, a re-readable source and the
+                        # sample approval are the same preconditions
+                        # injection applies.
+                        unavailable = rule_reason(context, row["scope_key"], window, handles,
+                                                  samples=self.samples, at=at)
+                        injectable = unavailable is None and row["state"] in ("pending", "adopted")
+                        if unavailable is None:
+                            try:
+                                if source_kind == "legacy_expression":
+                                    from .legacy_import import evidence as legacy_evidence
+                                    evidence = legacy_evidence(window, handles)
+                                elif source_kind != SHARE_PACK_SOURCE:
+                                    sample_context = self._evidence_context(window, context)
+                                    evidence = self.samples.describe_handles(handles, opened_at, closed_at,
+                                        sample_context, at, source_kind=source_kind, durable=True)
+                                    reset_at = self.samples.evidence_reset_at(sample_context, closed_at)
+                                    if source_kind == "conversation_input":
+                                        for extra in rule_support.observations(self.runtime, row["signal_id"]):
+                                            try:
+                                                extra_window, extra_handles = extra["window"], extra["handles"]
+                                                extra_start, extra_end = self._window(extra_window, at)
+                                                extra_context = self._evidence_context(extra_window, context)
+                                                if self.samples.reviews.allows_handles(extra_context, extra_handles):
+                                                    evidence.extend(self.samples.describe_handles(extra_handles,
+                                                        extra_start, extra_end, extra_context, at,
+                                                        source_kind="conversation_input", durable=True))
+                                            except (TaskError, KeyError, TypeError, ValueError):
+                                                continue
+                            except TaskError as error:
+                                # Only the text behind the rule cannot be shown.
+                                # The rule is still injectable here, so the page
+                                # may say the reference is unreadable without
+                                # pretending the rule stopped working.
+                                unavailable = error.code
+                            except (TypeError, ValueError):
+                                unavailable = "expression_applicability_invalid"
+            if state == "pending":
+                actions = ["reject"] if unavailable is not None else ["adopt", "reject"]
+            elif state == "adopted":
+                # A rule can always be paused, even if the source has
+                # since become unavailable. The pause itself does not
+                # depend on re-reading the old evidence.
+                actions = ["retire"]
+            elif state == "retired":
+                actions = [] if unavailable is not None else ["restore"]
+            else:
+                actions = [] if unavailable is not None else ["reconsider"]
+            injections, last = usage_map.get(row["signal_id"], (0, None))
+            feedback = feedback_map.get(row["signal_id"], {})
+            detail = rule_details.read(self.runtime, row["signal_id"])
+            legacy = rule_details.legacy_counts(detail)
+            injections += legacy["use_count"]
+            # A rule whose window moved on or whose approval was withdrawn
+            # keeps its reviewed form: the rule is intact, only its influence
+            # ended. Unreadable evidence keeps the body too and only hides the
+            # cited text. A damaged stored record still hides the body,
+            # because nothing verifiable is left to show.
+            visible = unavailable is None or not damaged
+            items.append({"signal_id": row["signal_id"], "run_id": row["run_id"],
+                "dimension": row["dimension"], "source_kind": source_kind,
+                "applicability": applicability,
+                # An unreadable source never removes the rule itself: only
+                # the evidence it can no longer recheck is withheld, so the
+                # reviewed form stays visible and actionable. A damaged
+                # stored record is the exception: nothing verifiable is
+                # left, so the body stays hidden.
+                "expression": detail["form"] if detail and visible else None,
+                "observation": row["observation"] if visible else None,
+                "proposal": row["proposal"] if visible else None,
+                "evidence": evidence if unavailable is None else [],
+                "evidence_reset_at": reset_at if unavailable is None else None,
+                "confidence": row["confidence"], "state": row["state"],
+                "created_at": row["created_at"], "decided_at": row["decided_at"],
+                "injections": injections,
+                "last_injected_at": last.isoformat() if last is not None else None,
+                "positive_feedback": feedback.get("positive_count", 0) + legacy.get("positive_feedback", 0),
+                "negative_feedback": feedback.get("negative_count", 0) + legacy.get("negative_feedback", 0),
+                "last_feedback": feedback.get("last_feedback"),
+                "last_feedback_at": feedback.get("last_feedback_at"),
+                "review_reason": feedback.get("review_reason"),
+                "source_title": run["summary"] if visible and source_kind in (SHARE_PACK_SOURCE, "legacy_expression") else None,
+                "unavailable_reason": unavailable, "injectable": injectable, "actions": actions,
+                # Editing, restoring and reconsidering all recheck the
+                # original evidence, so they stay closed while it cannot be
+                # read; retiring never needed it.
+                "can_revise": unavailable is None,
+                "view_token": self._token(operator, context, row, policy_revision)})
+        current_owner, current_revision = self._authorize(operator, context, self.management.ledger.now())
+        if current_owner != owner or current_revision != policy_revision:
+            raise TaskError("expression_view_stale", "the rule view changed while it was being read")
+        return {"items": items, "state": state,
+            "next_cursor": page_cursor(rows[limit - 1]) if len(rows) > limit else None,
+            "context_key": context.key, "role_id": owner.persona_id, "capacity": capacity,
+            "counts": counts, "rotated_rules": rotated_rules}
 
     @outcome
     def command(self, *, operator, context, signal_id, action, view_token, operation_key):
@@ -397,11 +446,10 @@ class ExpressionStyleManagement:
                 # The active-rule budget belongs to the family, exactly as the
                 # review page counts it: restoring a rule stored in an earlier
                 # window of the same group cannot exceed the configured limit.
-                placeholders = ",".join("?" * len(keys))
-                capacity = self.runtime.read_one(f"""SELECT COUNT(*) AS count FROM expression_style_signals
-                    WHERE owner_key = ? AND scope_key IN ({placeholders})
-                      AND state IN ('pending', 'adopted')""", (digest(owner), *keys))
-                if capacity["count"] >= read_settings(self.runtime, context).active_signal_limit:
+                # A rule this window cannot inject must not hold a slot either.
+                active = active_rule_count(self.runtime, context, digest(owner), keys,
+                                           samples=self.samples, at=at, connection=connection)
+                if active >= read_settings(self.runtime, context).active_signal_limit:
                     raise TaskError("expression_capacity_reached", "retire an unused rule before restoring another")
             # Decide the stored row in the window it belongs to; a group rule
             # learned in an earlier window keeps its own scope and evidence.
@@ -415,22 +463,26 @@ class ExpressionStyleManagement:
             self.app.notify()
             return {"signal_id": signal_id, "state": self._target(action), "replayed": False}
 
-    def _share_preview(self, *, operator, context, owner, policy_revision, pack):
+    def _share_preview(self, *, operator, context, owner, policy_revision, pack, at):
         owner_key = digest(owner)
         # Capacity and duplicates follow the same scope family as the review
-        # page and reply injection: a rule adopted in an earlier window of this
-        # group (or of this participant) is already an active rule here.
+        # page and reply injection: a share-pack rule imported in an earlier
+        # window of this group is still injectable here.
         keys = self._family(context)
         placeholders = ",".join("?" * len(keys))
-        active = self.runtime.read_one(f"""SELECT COUNT(*) AS count FROM expression_style_signals
-            WHERE owner_key = ? AND scope_key IN ({placeholders})
-              AND state IN ('pending', 'adopted')""", (owner_key, *keys))
-        active_count = int(active["count"]) if active is not None else 0
+        # The budget is the family's *injectable* rows, exactly as the review
+        # page, the restore gate and the learning budget count them: a rule this
+        # window cannot inject holds no slot.
+        active_count = active_rule_count(self.runtime, context, owner_key, keys,
+                                         samples=self.samples, at=at)
         limit = read_settings(self.runtime, context).active_signal_limit
-        rows = self.runtime.read_all(f"""SELECT signal_id, dimension, observation, proposal,
-                applicability_json FROM expression_style_signals
-            WHERE owner_key = ? AND scope_key IN ({placeholders})
-              AND state IN ('pending', 'adopted')""", (owner_key, *keys))
+        rows = [row for row in self.runtime.read_all(f"""SELECT s.signal_id, s.dimension,
+                s.observation, s.proposal, s.applicability_json, s.state,
+                s.scope_key, s.evidence_json, r.sample_json
+            FROM expression_style_signals s JOIN expression_style_runs r ON r.run_id = s.run_id
+            WHERE s.owner_key = ? AND s.scope_key IN ({placeholders})
+              AND s.state IN ('pending', 'adopted')""", (owner_key, *keys))
+            if row_usable(context, row, samples=self.samples, at=at)]
         existing, known_forms = set(), set()
         for row in rows:
             applicability = normalize_applicability(json.loads(row["applicability_json"]))
@@ -529,7 +581,7 @@ class ExpressionStyleManagement:
         with self.runtime.read_snapshot():
             owner, policy_revision = self._authorize(operator, context, at)
             return self._share_preview(operator=operator, context=context, owner=owner,
-                                       policy_revision=policy_revision, pack=pack)
+                                       policy_revision=policy_revision, pack=pack, at=at)
 
     @outcome
     def import_pack(self, *, operator, context, raw_pack, preview_token, operation_key):
@@ -552,20 +604,18 @@ class ExpressionStyleManagement:
                     raise TaskError("expression_operation_conflict", "the import operation key was used for another pack")
                 count = connection.execute("SELECT COUNT(*) AS count FROM expression_style_signals WHERE run_id = ?",
                                           (run_id,)).fetchone()["count"]
-                # Report the same family capacity the preview and the review
-                # page use, not just this window's share of it.
+                # Report the same family and injectable capacity as the preview
+                # and the review page, not this window's raw row count.
                 keys = self._family(context)
-                placeholders = ",".join("?" * len(keys))
-                active = connection.execute(f"""SELECT COUNT(*) AS count
-                    FROM expression_style_signals WHERE owner_key = ? AND scope_key IN ({placeholders})
-                      AND state IN ('pending', 'adopted')""", (digest(owner), *keys)).fetchone()["count"]
+                active = active_rule_count(self.runtime, context, digest(owner), keys,
+                                           samples=self.samples, at=at, connection=connection)
                 return {"imported_count": int(count), "state": "pending_review", "replayed": True,
                         "capacity": {"active": int(active),
                             "limit": read_settings(self.runtime, context).active_signal_limit}}
             if type(preview_token) is not str or len(preview_token) != 64:
                 raise TaskError("expression_import_stale", "preview this share pack again before importing")
             preview = self._share_preview(operator=operator, context=context, owner=owner,
-                                          policy_revision=policy_revision, pack=pack)
+                                          policy_revision=policy_revision, pack=pack, at=at)
             if preview["preview_token"] != preview_token:
                 raise TaskError("expression_import_stale", "the target or import preview changed; preview again")
             candidates = preview["candidates"]

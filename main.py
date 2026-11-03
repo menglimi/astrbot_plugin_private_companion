@@ -46,6 +46,7 @@ from .astrbot_host.core_reply_decision import prepare_core_reply_decision
 from .astrbot_host.core_reply_closing import prepare_private_closing_decision
 from .astrbot_host.native import warm_session_settings
 from .astrbot_host.core_reply_tool_dispatch import observe_core_tool_dispatch_begin, restore_core_tool_dispatch
+from .astrbot_host.core_reply_turn_gate import close_core_reply_turn, install_core_reply_turn
 from .astrbot_host.core_reply_native_send import inject_core_reply_send_tool
 from .astrbot_host.core_reply_perception import (
     inject_core_reply_perception_context, inject_core_reply_perception_policy,
@@ -1200,7 +1201,13 @@ class PrivateCompanionV2StagingPlugin(Star):
         finalize_core_reply_media_prompt(event, run_context)
         from .astrbot_host.core_reply_voice_authoring import prepare_core_voice_authoring
         prepare_core_voice_authoring(event, run_context)
+        # One reply per turn: hold a tool round's prose until the turn says which
+        # text is the answer. The dispatch observer installs first because it owns
+        # the point where withheld text goes back before the tool runs. Neither
+        # install raises; a host that cannot host the gate keeps today's delivery,
+        # and the send-side net still applies.
         observe_core_tool_dispatch_begin(event, run_context)
+        install_core_reply_turn(event, run_context)
         observe_core_agent_begin(event, run_context)
 
     @filter.on_agent_done()
@@ -1208,6 +1215,7 @@ class PrivateCompanionV2StagingPlugin(Star):
         from .astrbot_host.core_reply_voice_authoring import restore_core_voice_authoring
         self._private_reply_followups().finish(event)
         restore_core_voice_authoring(event)
+        await close_core_reply_turn(event, response, release=True)
         restore_core_tool_dispatch(event, run_context)
         observe_core_agent_done(event, run_context, response)
         state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
@@ -1245,6 +1253,7 @@ class PrivateCompanionV2StagingPlugin(Star):
         from .astrbot_host.core_reply_voice_authoring import restore_core_voice_authoring
         self._private_reply_followups().finish(event)
         restore_core_voice_authoring(event)
+        await close_core_reply_turn(event)
         state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
         if isinstance(state, dict):
             if not state.get("delivery_guard_active"):

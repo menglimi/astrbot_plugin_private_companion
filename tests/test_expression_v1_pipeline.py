@@ -7,6 +7,7 @@ import asyncio
 from dataclasses import replace
 from datetime import datetime, timedelta
 import json
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -470,6 +471,27 @@ class ExpressionGroupPipelineTests(GroupFixture, unittest.IsolatedAsyncioTestCas
         self.controller.register_routes()
         self.routes = {(path, methods[0]): handler for path, handler, methods, _ in self.native.registered_web_apis}
         self.sequence = 0
+
+    async def test_group_style_list_releases_control_lock_while_projecting(self):
+        await self.start_host()
+        await self.input()
+        entered, release = threading.Event(), threading.Event()
+
+        def slow_list(*args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("the group style list was not released")
+            return Outcome.success({"items": [], "counts": {}, "next_cursor": None})
+
+        with patch.object(ExpressionStyleManagement, "list", slow_list):
+            listing = asyncio.create_task(self.request("/style"))
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait, 5))
+                await asyncio.wait_for(self.controller._control_lock.acquire(), timeout=1)
+                self.controller._control_lock.release()
+            finally:
+                release.set()
+                await listing
 
     async def request(self, suffix, data=None, *, query=""):
         from companion_v2.execution.models import digest
